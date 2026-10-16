@@ -3,10 +3,14 @@ from __future__ import annotations
 from angr.angrdb.models import DbKnowledgeBase
 from angr.knowledge_base import KnowledgeBase
 
+from .bookmarks import BookmarksSerializer
+from .callgraph import CallGraphSerializer
+from .callsite_prototypes import CallsitePrototypesSerializer
 from .cfg_model import CFGModelSerializer
 from .comments import CommentsSerializer
 from .funcs import FunctionManagerSerializer
 from .labels import LabelsSerializer
+from .patterns import PatternsSerializer
 from .structured_code import StructuredCodeManagerSerializer
 from .variables import VariableManagerSerializer
 from .xrefs import XRefsSerializer
@@ -38,10 +42,15 @@ class KnowledgeBaseSerializer:
                 CFGModelSerializer.dump(session, db_kb, "CFGFast", cfg_model)
 
         FunctionManagerSerializer.dump(session, db_kb, kb.functions)
+        CallGraphSerializer.dump(session, db_kb, kb.functions.callgraph)
         XRefsSerializer.dump(session, db_kb, kb.xrefs)
         CommentsSerializer.dump(session, db_kb, kb.comments)
+        BookmarksSerializer.dump(session, db_kb, kb.bookmarks)
+        PatternsSerializer.dump(session, db_kb, kb.patterns)
         LabelsSerializer.dump(session, db_kb, kb.labels)
+        CallsitePrototypesSerializer.dump(session, db_kb, kb.callsite_prototypes)
         VariableManagerSerializer.dump(session, db_kb, kb.variables)
+        VariableManagerSerializer.dump_dvars(session, db_kb, kb.dec_variables)
         StructuredCodeManagerSerializer.dump(session, db_kb, kb.decompilations)
 
     @staticmethod
@@ -63,8 +72,12 @@ class KnowledgeBaseSerializer:
         if cfg_model is not None:
             kb.cfgs["CFGFast"] = cfg_model
 
+        # Load the callgraph. Databases created before callgraph serialization was introduced do not store a
+        # callgraph; in that case, the callgraph is rebuilt from function transition graphs.
+        callgraph = CallGraphSerializer.load(session, db_kb)
+
         # Load functions
-        funcs = FunctionManagerSerializer.load(session, db_kb, kb)
+        funcs = FunctionManagerSerializer.load(session, db_kb, kb, callgraph=callgraph, cfg_model=cfg_model)
         if funcs is not None:
             kb.functions = funcs
 
@@ -78,15 +91,31 @@ class KnowledgeBaseSerializer:
         if comments is not None:
             kb.comments = comments
 
+        # Load bookmarks
+        bookmarks = BookmarksSerializer.load(session, db_kb, kb)
+        if bookmarks is not None:
+            kb.bookmarks = bookmarks
+
+        # Load fuzzy patterns
+        kb.patterns = PatternsSerializer.load(session, db_kb, kb)
+
         # Load labels
         labels = LabelsSerializer.load(session, db_kb, kb)
         if labels is not None:
             kb.labels = labels
 
+        # Load call-site prototypes (empty for databases written before the table existed)
+        kb.callsite_prototypes = CallsitePrototypesSerializer.load(session, db_kb, kb)
+
         # Load variables
         variables = VariableManagerSerializer.load(session, db_kb, kb)
         if variables is not None:
             kb.variables = variables
+
+        # Load decompilation variables (kb.dec_variables)
+        dec_variables = VariableManagerSerializer.load_dvars(session, db_kb, kb)
+        if dec_variables is not None:
+            kb.dec_variables = dec_variables
 
         # Load structured code
         structured_code = StructuredCodeManagerSerializer.load(session, db_kb, kb)
@@ -95,13 +124,7 @@ class KnowledgeBaseSerializer:
 
         if cfg_model is not None:
             # CFG may not exist for all knowledge bases
-
-            # fill in CFGNode.function_address
-            for func in funcs.values():
-                for block_addr in func.block_addrs_set:
-                    node = cfg_model.get_any_node(block_addr)
-                    if node is not None:
-                        node.function_address = func.addr
+            # note that CFGNode.function_address is filled in by FunctionManagerSerializer.load()
 
             # re-initialize CFGModel.insn_addr_to_memory_data
             # fill in insn_addr_to_memory_data

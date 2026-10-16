@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from angr.ailment.block import Block
 from angr.ailment.expression import BinaryOp, Const, Tmp
 from angr.ailment.statement import Assignment
 
@@ -17,7 +18,7 @@ class RolRorRewriter(PeepholeOptimizationStmtBase):
     NAME = "ROL/ROR rewriter"
     stmt_classes = (Assignment,)
 
-    def optimize(self, stmt: Assignment, stmt_idx: int | None = None, block=None, **kwargs):
+    def optimize(self, stmt: Assignment, stmt_idx: int, block: Block, **kwargs):
         # Rol example:
         #    61 | t304 = Shr32(t301,0x19)
         #    62 | t306 = Shl32(t301,0x07)
@@ -35,6 +36,9 @@ class RolRorRewriter(PeepholeOptimizationStmtBase):
 
         op0, op1 = stmt.src.operands
         if isinstance(op0, Tmp) and isinstance(op1, Tmp):
+            # matches against the two preceding statements, so it may start matching once the block changes
+            self.fixpoint_reached = False
+
             if stmt_idx < 2:
                 return None
 
@@ -60,7 +64,12 @@ class RolRorRewriter(PeepholeOptimizationStmtBase):
             if not (stmt1_op0.likes(stmt2_op0)):
                 return None
 
-            if not (isinstance(stmt1_op1, Const) and isinstance(stmt2_op1, Const)):
+            if not (
+                isinstance(stmt1_op1, Const)
+                and isinstance(stmt1_op1.value, int)
+                and isinstance(stmt2_op1, Const)
+                and isinstance(stmt2_op1.value, int)
+            ):
                 return None
 
             if (
@@ -69,7 +78,8 @@ class RolRorRewriter(PeepholeOptimizationStmtBase):
                 and (shiftleft_amount := get_expr_shift_left_amount(stmt_1.src)) is not None
                 and shiftleft_amount + stmt2_op1.value == stmt.dst.bits
             ):
-                rol_amount = Const(self.manager.next_atom(), None, shiftleft_amount, 8, **stmt1_op1.tags)
+                rol_amount = Const(self.manager.next_atom(), shiftleft_amount, 8, **stmt1_op1.tags)
+                self.fixpoint_reached = True
                 return Assignment(
                     stmt.idx,
                     stmt.dst,
@@ -89,6 +99,7 @@ class RolRorRewriter(PeepholeOptimizationStmtBase):
                 and (shiftleft_amount := get_expr_shift_left_amount(stmt_2.src)) is not None
                 and stmt1_op1.value + shiftleft_amount == stmt.dst.bits
             ):
+                self.fixpoint_reached = True
                 return Assignment(
                     stmt.idx,
                     stmt.dst,
@@ -121,7 +132,7 @@ class RolRorRewriter(PeepholeOptimizationStmtBase):
                 and (op0_shiftamount := get_expr_shift_left_amount(op0)) is not None
                 and op0_shiftamount + op1_v == stmt.dst.bits
             ):
-                shiftamount = Const(self.manager.next_atom(), None, op0_shiftamount, 8, **op0.operands[1].tags)
+                shiftamount = Const(self.manager.next_atom(), op0_shiftamount, 8, **op0.operands[1].tags)
                 return Assignment(
                     stmt.idx,
                     stmt.dst,

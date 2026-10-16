@@ -28,6 +28,7 @@ initializer!
 .. code-block:: python
 
    >>> import angr
+   >>> from angr import claripy
    >>> class MyFirstPlugin(angr.SimStatePlugin):
    ...     def __init__(self, foo):
    ...         super(MyFirstPlugin, self).__init__()
@@ -37,7 +38,8 @@ initializer!
    ...     def copy(self, memo):
    ...         return MyFirstPlugin(self.foo)
 
-   >>> state = angr.SimState(arch='AMD64')
+   >>> project = angr.load_shellcode(b'\x90', 'AMD64')
+   >>> state = angr.SimState(project=project)
    >>> state.register_plugin('my_plugin', MyFirstPlugin('bar'))
    >>> assert state.my_plugin.foo == 'bar'
 
@@ -149,14 +151,6 @@ ancestor of the states being merged. It may not be available for all merges, in
 which case it will be None. There are no rules for how exactly you should use
 this to improve the quality of your merges, but you may find it useful in more
 complex setups.
-
-Widening
---------
-
-There is another kind of merging called *widening* which takes several states
-and produces a more general state. It is used during static analysis.
-
-.. todo:: Explain what this means
 
 Serialization
 -------------

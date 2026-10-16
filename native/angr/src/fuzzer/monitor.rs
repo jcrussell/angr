@@ -1,24 +1,15 @@
 use std::time::Duration;
 
-use backtrace::Backtrace;
 use libafl::monitors::Monitor;
 use libafl_bolts::current_time;
 use pyo3::{exceptions::PyTypeError, prelude::*};
 
 /// Python view into libafl client statistics
 #[pyclass(module = "angr.rustylib.fuzzer")]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct ClientStats {
     inner: libafl::monitors::stats::ClientStats,
 }
 
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 #[pymethods]
 impl ClientStats {
     #[getter]
@@ -88,7 +79,7 @@ impl ClientStats {
 }
 
 #[derive(Default)]
-pub(crate) struct CallbackMonitor {
+pub struct CallbackMonitor {
     callback: Option<Py<PyAny>>,
 }
 
@@ -118,16 +109,9 @@ impl Monitor for CallbackMonitor {
             };
             if let Some(self_callback) = &self.callback {
                 self_callback
-                    .call1(py, (stats, event_msg.to_string(), sender_id.0))
-                    .map_err(|e: PyErr| {
-                        let traceback = e
-                            .traceback(py)
-                            .and_then(|tb| tb.format().ok())
-                            .unwrap_or_default();
-                        libafl::Error::Unknown(
-                            format!("Python error in monitor callback: {e}\n{traceback}"),
-                            Backtrace::new(),
-                        )
+                    .call1(py, (stats, event_msg, sender_id.0))
+                    .map_err(|e| {
+                        libafl::Error::unknown(format!("progress callback raised: {e}"))
                     })?;
             }
             Ok(())

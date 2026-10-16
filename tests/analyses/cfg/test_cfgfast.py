@@ -4,8 +4,10 @@ from __future__ import annotations
 
 __package__ = __package__ or "tests.analyses.cfg"  # pylint:disable=redefined-builtin
 
+import io
 import logging
 import os
+import random
 import unittest
 
 import archinfo
@@ -397,7 +399,9 @@ class TestCfgfast(unittest.TestCase):
 
     def test_cfg_function_stubs_with_single_jumpouts(self):
         proj = angr.Project(os.path.join(test_location, "x86_64", "printenv-rust-stripped"), auto_load_libs=False)
-        cfg = proj.analyses.CFG()
+        # Scan only the 64KB around the two functions: the whole-binary CFG takes over a minute, and the stub/function
+        # split is decided by their immediate neighbourhood (a 4KB window is too narrow to recover 0x486500).
+        cfg = proj.analyses.CFG(regions=[(0x480000, 0x490000)], start_at_entry=False)
 
         # the function at 0x4864f0 is a function stub that jumps directly to function at 0x486500. ensure that CFGFast
         # discovers both functions correctly instead of merging them together
@@ -736,6 +740,47 @@ class TestCfgfast(unittest.TestCase):
 
         assert len(cfg.model.graph) == 2
 
+    def test_entry_jump_within_function_symbol_is_not_tail_jump(self):
+        """Loop rotation may put an unconditional jump at a function's entry."""
+        binary_path = os.path.join(test_location, "x86_64", "cfg_entry_jump_within_function")
+        proj = angr.Project(binary_path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(normalize=True)
+        function_symbol = proj.loader.find_symbol("rotated_loop")
+        assert function_symbol is not None
+        function_addr = function_symbol.rebased_addr
+        entry = cfg.model.get_any_node(function_addr)
+
+        assert entry is not None
+        assert len(entry.successors) == 1
+        assert entry.successors[0].function_address == function_addr
+        assert entry.successors[0].addr in {node.addr for node in cfg.functions[function_addr].graph}
+
+    def test_entry_tail_jump_to_lower_unnamed_function_armel(self):
+        """asctime_r is `mov r2, #26; b <callee>` where the static callee lies below it, has no symbol, and is only
+        reached by tail jumps."""
+        binary_path = os.path.join(test_location, "armel", "libc.so.6")
+        proj = angr.Project(binary_path, auto_load_libs=False)
+        base = proj.loader.main_object.mapped_base
+        thunk_addr, callee_addr = base + 0x8A888, base + 0x8A73C
+        cfg = proj.analyses.CFGFast(
+            symbols=False,
+            function_starts=[thunk_addr],
+            regions=[(callee_addr, base + 0x8A890)],
+            start_at_entry=False,
+            force_smart_scan=False,
+            force_complete_scan=False,
+            normalize=True,
+        )
+
+        assert callee_addr in cfg.functions
+        thunk = cfg.functions[thunk_addr]
+        assert thunk.block_addrs_set == {thunk_addr}
+        assert {node.addr for node in thunk.jumpout_sites} == {thunk_addr}
+        entry = cfg.model.get_any_node(thunk_addr)
+        assert entry is not None
+        assert [(succ.addr, succ.function_address) for succ in entry.successors] == [(callee_addr, callee_addr)]
+        assert len(cfg.functions[callee_addr].block_addrs_set) > 1
+
     def test_starting_point_ordering(self):
         # project entry should always be first
         # so edge/path to unlabeled main function from _start
@@ -984,6 +1029,206 @@ class TestCfgfast(unittest.TestCase):
         ]
         for addr in not_separate_functions:
             assert addr not in cfg.kb.functions, f"{hex(addr)} should not be a separate function"
+
+    @staticmethod
+    def _blob_project(data: bytes, arch: str | archinfo.Arch = "AMD64") -> angr.Project:
+        return angr.Project(
+            io.BytesIO(data),
+            main_opts={"backend": "blob", "arch": arch, "base_addr": 0, "entry_point": 0},
+            auto_load_libs=False,
+            use_sim_procedures=False,
+        )
+
+    def test_smart_scan_marks_decode_error_blocks_as_nodecode(self):
+        # 0x0: xor eax, eax; ret       - a real function
+        # 0x3: inc rax; <bad opcode>   - garbage that the linear sweep lands on and that dies on a decode error
+        proj = self._blob_project(b"\x31\xc0\xc3" + b"\x48\xff\xc0\x0f\x39" + b"\x00" * 16)
+        cfg = proj.analyses.CFGFast(force_smart_scan=True, data_references=True)
+
+        assert 0 in cfg.kb.functions
+        assert 3 not in cfg.kb.functions
+        # the whole block is data, not a run of code followed by a single nodecode byte
+        assert cfg._seg_list.occupied_by_sort(3) == "nodecode"
+
+    def test_smart_scan_does_not_explode_on_random_data(self):
+        # a blob of random bytes has no functions at all, but every address decodes into something, so the smart
+        # scan used to cover it with thousands of one-block functions that drop_bad_functions() threw away again
+        rng = random.Random(0xDEADBEEF)
+        proj = self._blob_project(bytes(rng.getrandbits(8) for _ in range(32768)))
+        cfg = proj.analyses.CFGFast(normalize=True, nodecode_threshold=0.3)
+
+        assert len(cfg.kb.functions) < 150, f"32 KB of random data produced {len(cfg.kb.functions)} functions"
+
+    def test_smart_scan_does_not_miss_functions_armel_blob(self):
+        binary_path = os.path.join(test_location, "armel", "chall.bin")
+        proj = angr.Project(binary_path, main_opts={"backend": "blob", "arch": "ARMEL", "base_addr": 0x0})
+        cfg = proj.analyses.CFGFast(normalize=True)
+        func_addrs = [
+            0x81D,
+            0x901,
+            0x9E5,
+            0xAB5,
+            0xB85,
+            0xC55,
+            0xD61,
+        ]
+        for func_addr in func_addrs:
+            assert cfg.kb.functions.contains_addr(func_addr), f"function at {func_addr:#x} was not found"
+
+    def test_function_the_symbol_table_names_is_kept(self):
+        # glibc's EVEX string routines and the AVX-512 PLT resolvers are ordinary code that VEX cannot lift, so
+        # a block in each ends in Ijk_NoDecode and drop_bad_functions() deleted the whole function. The file's
+        # own symbol table gives each of them a name and a size, so the premise of that pass -- that the linear
+        # scan decoded data as code -- does not hold here.
+        proj = angr.Project(os.path.join(test_location, "x86_64", "langdetect_gcc"), auto_load_libs=False)
+        # Scan only the regions around the four functions: a whole-binary CFG of this static glibc build takes about
+        # a minute, and whether drop_bad_functions() keeps a function is decided by that function's own symbol.
+        cfg = proj.analyses.CFGFast(
+            normalize=True,
+            regions=[(0x424000, 0x432000), (0x45B000, 0x45C000), (0x468000, 0x469000)],
+            start_at_entry=False,
+        )
+
+        for addr, name in (
+            (0x424CC0, "__stpcpy_evex"),
+            (0x430CE0, "__strlen_evex"),
+            (0x45B480, "__memcmp_evex_movbe"),
+            (0x4686A0, "_dl_runtime_resolve_xsavec"),
+        ):
+            assert addr in cfg.kb.functions, f"{name} at {addr:#x} was dropped"
+
+    def _check_single_instruction_indirect_jump(self, data: bytes, arch: str | archinfo.Arch) -> None:
+        # a lifter turns an instruction it cannot translate into a trap that leaves through a non-constant
+        # target, so the block is a single instruction long. CFGFast looks for the branch of a delay-slot
+        # block in the instruction before the last one, and used to abort the whole analysis when a block
+        # was too short to have one. See https://github.com/angr/angr/issues/6763.
+        proj = self._blob_project(data, arch=arch)
+        assert proj.arch.branch_delay_slot
+
+        trap_block = proj.factory.block(proj.entry)
+        assert len(trap_block.instruction_addrs) == 1
+        assert not trap_block.vex.constant_jump_targets  # so the scan takes the indirect jump path
+
+        cfg = proj.analyses.CFGFast()
+
+        node = cfg.model.get_any_node(0)
+        assert node is not None
+        # a block this short cannot hold both a branch and its delay slot, so the indirect goto is an artifact of
+        # the trap rather than a jump to anywhere: the node gets no successors and is not queued for resolution
+        assert not list(cfg.graph.successors(node))
+        assert 0 not in cfg.indirect_jumps
+        assert 4 in cfg.kb.functions
+
+    def test_x86_ud2_is_part_of_the_block(self):
+        # VEX decodes ud2 on x86, as it has always done on AMD64, and counts it towards the block
+        # size. The scan has to resume right after the ud2; it used to treat the instruction as
+        # undecodable on x86 and pick back up one byte into it.
+        for arch in ("x86", "amd64"):
+            with self.subTest(arch=arch):
+                # xor eax, eax; ud2; then padding the scan picks up as a second function
+                proj = self._blob_project(b"\x31\xc0\x0f\x0b" + b"\x90" * 12, arch=arch)
+                cfg = proj.analyses.CFGFast()
+
+                assert proj.factory.block(0).size == 4
+                assert cfg.kb.functions.contains_addr(4), "the scan did not resume right after the ud2"
+                assert not cfg.kb.functions.contains_addr(5)
+
+    def test_single_instruction_indirect_jump_on_sparc(self):
+        # 0x0: illtrap 0   - a run of zero bytes, which p-code lifts to a trap and an indirect goto
+        # 0x4: retl; nop   - a real function that the scan must still pick up afterwards
+        self._check_single_instruction_indirect_jump(
+            b"\x00\x00\x00\x00" + b"\x81\xc3\xe0\x08" + b"\x01\x00\x00\x00",
+            archinfo.ArchPcode("sparc:BE:32:default"),
+        )
+
+    def test_merged_branch_and_delay_slot_indirect_jump_on_mips(self):
+        # 0x0: jr $t9; nop   - libVEX 3.27.1+ lifts the branch and its delay slot as one IMark. the block is a
+        #                      single IMark long but holds two instructions, so it is a real indirect jump
+        # 0x8: jr $ra; nop
+        proj = self._blob_project(
+            b"\x03\x20\x00\x08" + b"\x00\x00\x00\x00" + b"\x03\xe0\x00\x08" + b"\x00\x00\x00\x00",
+            arch=archinfo.ArchMIPS32(endness=archinfo.Endness.BE),
+        )
+        block = proj.factory.block(proj.entry)
+        assert len(block.instruction_addrs) == 1 and block.size == 8
+
+        cfg = proj.analyses.CFGFast()
+
+        assert 0 in cfg.indirect_jumps
+        assert cfg.indirect_jumps[0].ins_addr == 0
+        node = cfg.model.get_any_node(0)
+        assert node is not None
+        assert list(cfg.graph.successors(node))
+
+    def test_single_instruction_indirect_jump_on_mips(self):
+        # 0x0: trunc.l.s $f0, $f0   - an instruction VEX does not implement, so it lifts to Ijk_SigILL
+        # 0x4: jr $ra; nop          - a real function that the scan must still pick up afterwards
+        self._check_single_instruction_indirect_jump(
+            b"\x46\x00\x00\x09" + b"\x03\xe0\x00\x08" + b"\x00\x00\x00\x00",
+            "MIPS64",
+        )
+
+    def test_long_repeating_byte_run_is_not_decoded_as_code(self):
+        # Issue #6968: 0x91 is `xchg ecx, eax`, so a run of it decodes cleanly and forever. The linear sweep landed
+        # on the non-repeating bytes just before the run -- where every data heuristic correctly passes -- and then
+        # emitted a fall-through block every VEX_IRSB_MAX_INST instructions until the run ended, half a megabyte
+        # later, burying the real function on the far side of it.
+        real_func = b"\x31\xc0\xc3"  # xor eax, eax; ret
+        junk = b"\x48\x31\xc9\x48\x83\xc1\x01"  # xor rcx, rcx; add rcx, 1 -- decodes and falls through
+        filler = b"\x91" * 8192
+        filler_start = len(real_func) + len(junk)
+        second_func = filler_start + len(filler)
+
+        proj = self._blob_project(real_func + junk + filler + real_func)
+        cfg = proj.analyses.CFGFast(normalize=True)
+
+        assert not [n for n in cfg.model.graph.nodes if filler_start <= n.addr < second_func]
+        assert 0 in cfg.kb.functions
+        assert second_func in cfg.kb.functions
+
+    def test_repeating_byte_run_threshold(self):
+        # pin the threshold: a run one byte shorter than it is still decoded, a run of exactly it is not
+        def block_size(run_length: int, filler: bytes = b"\x91", **kwargs) -> int | None:
+            proj = self._blob_project(filler * run_length + b"\xc3")
+            cfg = proj.analyses.CFGFast(
+                force_smart_scan=False, force_complete_scan=False, function_prologues=False, **kwargs
+            )
+            node = cfg.model.get_any_node(0)
+            return None if node is None else node.size
+
+        # 64 is four times the longest run any node in a corpus of real binaries starts with, and one more than the
+        # longest padding run that aligning to a 64-byte boundary can produce
+        assert self._blob_project(b"\xc3").analyses.CFGFast()._repeating_byte_run_threshold == 64
+        assert block_size(63) == 64
+        assert block_size(64) is None
+        assert block_size(20, repeating_byte_run_threshold=16) is None
+        assert block_size(15, repeating_byte_run_threshold=16) == 16
+        # 0 disables the check entirely
+        assert block_size(4096, repeating_byte_run_threshold=0) == 99
+        # nops are exempt at any length: a nop run is transparent, execution really does flow through it
+        assert block_size(4096, filler=b"\x90") is not None
+
+    def test_normalize_should_skip_legitimate_node_pairs(self):
+        path = os.path.join(
+            test_location, "x86_64", "windows", "1817a5bf9c01035bcf8a975c9f1d94b0ce7f6a200339485d8f93859f8f6d730c.exe"
+        )
+        proj = angr.Project(path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
+        node_0 = cfg.model.get_any_node(0x21514B6908)
+        assert node_0 is not None
+        assert node_0.instruction_addrs == [0x21514B6908]
+        node_1 = cfg.model.get_any_node(0x21514B690C)
+        assert node_1 is None  # this overlapping node is currently removed, but maybe we want to keep it?
+        # assert node_1.instruction_addrs == [0x21514B690C, 0x21514B690E, 0x21514B690F]
+
+    def test_elfcore_without_main_object(self):
+        # issue #7411: the core has no identifiable main object; CFGFast must complete with an empty graph
+        path = os.path.join(test_location, "aarch64", "elfcore_freebsd_aarch64.core")
+        proj = angr.Project(path, auto_load_libs=False, load_options={"main_opts": {"backend": "elfcore"}})
+        assert proj.entry == 0
+        cfg = proj.analyses.CFGFast(normalize=True, data_references=False, show_progressbar=False)
+        assert len(cfg.kb.functions) == 0
+        assert cfg.graph.number_of_nodes() == 0
 
 
 if __name__ == "__main__":

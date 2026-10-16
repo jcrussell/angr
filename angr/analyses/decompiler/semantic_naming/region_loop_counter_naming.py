@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from angr.ailment import Block
 from angr.ailment.expression import BinaryOp, Expression
 from angr.ailment.statement import Assignment, Statement
 from angr.analyses.decompiler.structurer_nodes import (
@@ -21,6 +22,7 @@ from angr.analyses.decompiler.structurer_nodes import (
     CodeNode,
     ConditionNode,
     LoopNode,
+    MultiNode,
     SequenceNode,
 )
 from angr.sim_variable import SimVariable
@@ -53,8 +55,9 @@ class RegionLoopCounterNaming(RegionNamingBase):
         region: BaseNode,
         variable_manager: VariableManagerInternal,
         functions: FunctionManager,
+        variable_map,
     ):
-        super().__init__(region, variable_manager, functions)
+        super().__init__(region, variable_manager, functions, variable_map)
 
         # Track loops and their nesting
         self._loop_nodes: list[LoopNode] = []
@@ -82,7 +85,7 @@ class RegionLoopCounterNaming(RegionNamingBase):
 
         return self._var_to_new_name
 
-    def _collect_loop_nodes(self, node: BaseNode, nesting_depth: int) -> None:
+    def _collect_loop_nodes(self, node: BaseNode | MultiNode | Block, nesting_depth: int) -> None:
         """
         Recursively collect all LoopNodes from the region structure.
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
+import struct
 
-import claripy
 import pyvex
 
-from angr import errors
+from angr import claripy, errors
 from angr import sim_options as o
 from angr.engines.vex.light import VEXMixin
 
@@ -15,11 +15,24 @@ l = logging.getLogger(__name__)
 zero = claripy.BVV(0, 32)
 
 
-def value(ty: str, val: int | float, size: int | None = None):
+def value(ty: str, val: float, size: int | None = None):
     if ty == "Ity_F32":
         return claripy.FPV(float(val), claripy.FSORT_FLOAT)
     if ty == "Ity_F64":
         return claripy.FPV(float(val), claripy.FSORT_DOUBLE)
+    if size is not None:
+        return claripy.BVV(int(val), size)
+    return claripy.BVV(int(val), pyvex.get_type_size(ty))
+
+
+def value_bv(ty: str, val: float, size: int | None = None) -> claripy.ast.BV:
+    """
+    Like value(), but floating-point constants are returned as bitvectors holding their IEEE bit pattern.
+    """
+    if ty == "Ity_F32":
+        return claripy.BVV(struct.pack(">f", val))
+    if ty == "Ity_F64":
+        return claripy.BVV(struct.pack(">d", val))
     if size is not None:
         return claripy.BVV(int(val), size)
     return claripy.BVV(int(val), pyvex.get_type_size(ty))
@@ -126,16 +139,23 @@ class ClaripyDataMixin(VEXMixin):
                 raise errors.UnsupportedCCallError(f"Unsupported ccall {func_name}") from e
 
         try:
-            return func(self.state, *args)
-        except ccall.CCallMultivaluedException as e:
-            cases, to_replace = e.args
-            for i, arg in enumerate(args):  # noqa: B007
-                if arg is to_replace:
-                    break
-            else:
-                raise errors.UnsupportedCCallError("Trying to concretize a value which is not an argument")
-            evaluated_cases = [(case, func(self.state, *args[:i], value_, *args[i + 1 :])) for case, value_ in cases]
             try:
+                return func(self.state, *args)
+            except ccall.CCallMultivaluedException as e:
+                cases, to_replace = e.args
+                for i, arg in enumerate(args):
+                    if arg is to_replace:
+                        break
+                else:
+                    raise errors.UnsupportedCCallError("Trying to concretize a value which is not an argument")
+                evaluated_cases = [
+                    (case, func(self.state, *args[:i], value_, *args[i + 1 :])) for case, value_ in cases
+                ]
                 return claripy.ite_cases(evaluated_cases, value(ty, 0))
-            except claripy.ClaripyError as ce:
-                raise errors.SimOperationError("Claripy failed") from ce
+        except (claripy.UnsatError, claripy.ClaripySolverInterruptError):
+            # SimulationManager.step_state handles each of these ahead of its
+            # resilience tuple, so converting them would cost the interrupted
+            # stash and the unreachable-state bookkeeping.
+            raise
+        except claripy.ClaripyError as e:
+            raise errors.SimOperationError(f"ccall {func_name} raised {type(e).__name__}") from e

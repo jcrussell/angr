@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import claripy
-
+from angr import claripy
 from angr.storage.memory_mixins.memory_mixin import MemoryMixin
 
 
@@ -13,8 +12,6 @@ class ConditionalMixin(MemoryMixin):
         return res
 
     def store(self, addr, data, size=None, *, condition=None, **kwargs):
-        condition = self.state._adjust_condition(condition)
-
         if condition is None or self.state.solver.is_true(condition):
             super().store(addr, data, size=size, **kwargs)
             return

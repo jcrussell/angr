@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import logging
 
+from angr.rustylib.ailment import ExpressionKind
+
 from . import expression, statement
 from .block import Block
 from .block_walker import AILBlockRewriter, AILBlockViewer, AILBlockWalker
 from .converter_common import Converter
-from .expression import BinaryOp, Const, Expression, Register, Tmp, UnaryOp
+from .expression import BinaryOp, Const, Expression, IRegister, Register, Tmp, UnaryOp
 from .manager import Manager
-from .statement import Assignment, Statement
+from .statement import Assignment, NoOp, Statement
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +71,11 @@ __all__ = [
     "Const",
     "Expr",
     "Expression",
+    "ExpressionKind",
     "IRSBConverter",
+    "IRegister",
     "Manager",
+    "NoOp",
     "PCodeIRSBConverter",
     "Register",
     "Statement",

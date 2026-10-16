@@ -416,7 +416,7 @@ class CFGNode(Serializable):
 
     def __eq__(self, other):
         if isinstance(other, SimSuccessors):
-            raise ValueError("You do not want to be comparing a SimSuccessors instance to a CFGNode.")
+            raise TypeError("You do not want to be comparing a SimSuccessors instance to a CFGNode.")
         if type(other) is not CFGNode:
             return False
         return self.addr == other.addr and self.size == other.size and self.simprocedure_name == other.simprocedure_name
@@ -567,7 +567,7 @@ class CFGENode(CFGNode):
 
     def __eq__(self, other):
         if isinstance(other, SimSuccessors):
-            raise ValueError("You do not want to be comparing a SimSuccessors instance to a CFGNode.")
+            raise TypeError("You do not want to be comparing a SimSuccessors instance to a CFGNode.")
         if not isinstance(other, CFGENode):
             return False
         return (
@@ -657,7 +657,7 @@ class CFGENode(CFGNode):
         # Parse block_id
         block_id = None
         bid = cmsg.block_id_obj
-        if bid.HasField("callsite_tuples"):
+        if bid.callsite_tuples:
             callsite_tuples = tuple(entry.value if entry.has_value else None for entry in bid.callsite_tuples)
         else:
             callsite_tuples = None

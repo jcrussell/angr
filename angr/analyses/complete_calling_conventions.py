@@ -10,13 +10,14 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import TYPE_CHECKING
 
-import claripy
 import networkx
 
+from angr import claripy
 from angr.analyses.analysis import Analysis, register_analysis
 from angr.analyses.calling_convention import CallingConventionAnalysis
 from angr.analyses.cfg import CFGFast
 from angr.analyses.variable_recovery import VariableRecoveryFast
+from angr.errors import AngrRuntimeError
 from angr.knowledge_plugins.cfg import CFGModel
 from angr.knowledge_plugins.functions.function import PrototypeSource
 from angr.simos import SimWindows
@@ -33,6 +34,10 @@ if TYPE_CHECKING:
 _l = logging.getLogger(name=__name__)
 
 _mp_context = mp_context()
+
+# How long (in seconds) the result collector keeps polling the results queue after it observes that every worker
+# process has exited.
+DEAD_WORKER_GRACE_PERIOD = 5.0
 
 
 class CallingConventionAnalysisMode(Enum):
@@ -74,6 +79,7 @@ class CompleteCallingConventionsAnalysis(Analysis):
         auto_start: bool = True,
         func_graphs: dict[int, networkx.DiGraph] | None = None,
         target_functions: set[int] | None = None,
+        flavor: str | None = None,
     ):
         """
 
@@ -90,7 +96,10 @@ class CompleteCallingConventionsAnalysis(Analysis):
         :param max_function_size:   Do not perform calling convention analysis on functions whose sizes are more than
                                     `max_function_size`. Setting it to None disables this check.
         :param workers:             Number of multiprocessing workers.
+        :param flavor:              The decompilation flavor whose prototypes the analysis reads and writes (None:
+                                    the default flavor).
         """
+        self._flavor = flavor
 
         self.mode = mode
         self._recover_variables = recover_variables
@@ -164,7 +173,7 @@ class CompleteCallingConventionsAnalysis(Analysis):
                 continue
 
             func = self.kb.functions.get_by_addr(func_addr)
-            if (func.calling_convention is None or func.prototype is None) or self._force:
+            if (func.calling_convention is None or func.get_prototype(self._flavor) is None) or self._force:
                 if func.is_alignment:
                     # skip all alignments
                     continue
@@ -213,13 +222,16 @@ class CompleteCallingConventionsAnalysis(Analysis):
         prototype_source: PrototypeSource | None,
     ) -> None:
         if (
-            func.prototype is None
-            or func.is_prototype_guessed
-            or (prototype_source is not None and func.prototype_source.value < prototype_source.value)
+            func.get_prototype(self._flavor) is None
+            or func.is_prototype_guessed_for(self._flavor)
+            or (prototype_source is not None and func.get_prototype_source(self._flavor).value < prototype_source.value)
             or self._force
         ):
-            func.prototype_source = prototype_source if prototype_source is not None else PrototypeSource.NONE
-            func.prototype = prototype
+            func.set_prototype(
+                self._flavor,
+                prototype,
+                source=prototype_source if prototype_source is not None else PrototypeSource.NONE,
+            )
             func.prototype_libname = prototype_libname
 
     def work(self):
@@ -295,6 +307,9 @@ class CompleteCallingConventionsAnalysis(Analysis):
             self._update_progress(0)
             idx = 0
             assert self._results_lock is not None
+            # the timestamp when we first noticed that all workers had exited.
+            # None while at least one worker is still alive.
+            all_workers_dead_since: float | None = None
             while idx < total_funcs:
                 try:
                     with self._results_lock:
@@ -302,8 +317,25 @@ class CompleteCallingConventionsAnalysis(Analysis):
                             True, timeout=0.01
                         )
                 except queue.Empty:
+                    # No result is available right now.
+                    # If all workers have exited then no result will ever become available, and looping here would
+                    # hang forever (angr #6529). Detect that and fail loudly.
+                    if any(proc.is_alive() for proc in procs):
+                        all_workers_dead_since = None
+                    elif all_workers_dead_since is None:
+                        all_workers_dead_since = time.time()
+                    elif time.time() - all_workers_dead_since >= DEAD_WORKER_GRACE_PERIOD:
+                        exitcodes = ", ".join(f"{proc.name}: {proc.exitcode}" for proc in procs)
+                        raise AngrRuntimeError(
+                            f"All {len(procs)} CompleteCallingConventions worker processes exited before the "
+                            f"analysis finished; only {idx} of {total_funcs} functions were analyzed. Worker exit "
+                            f"codes: {exitcodes}."
+                        ) from None
                     time.sleep(0.1)
                     continue
+
+                # we made progress, so any previously observed all-dead state is no longer interesting
+                all_workers_dead_since = None
 
                 func = self.kb.functions.get_by_addr(func_addr)
                 if cc is not None or proto is not None:
@@ -376,8 +408,13 @@ class CompleteCallingConventionsAnalysis(Analysis):
             except Exception:  # pylint:disable=broad-except
                 _l.error("Worker %d: Exception occurred during _analyze_core().", worker_id, exc_info=True)
                 cc, proto, proto_libname, proto_source, varman = None, None, None, None, None
-            with self._results_lock:
-                self._results.put((func_addr, cc, proto, proto_libname, proto_source, varman))
+            try:
+                with self._results_lock:
+                    self._results.put((func_addr, cc, proto, proto_libname, proto_source, varman))
+            except Exception:  # pylint:disable=broad-except
+                _l.error(
+                    "Worker %d: Failed to report the result for function %#x.", worker_id, func_addr, exc_info=True
+                )
 
     def _analyze_core(
         self, func_addr: int
@@ -388,10 +425,10 @@ class CompleteCallingConventionsAnalysis(Analysis):
         if func.ran_cca and not self._force:
             return (
                 func.calling_convention,
-                func.prototype,
+                func.get_prototype(self._flavor),
                 func.prototype_libname,
-                func.prototype_source,
-                self.kb.variables.get_function_manager(func_addr),
+                func.get_prototype_source(self._flavor),
+                self._variable_manager_of(func_addr),
             )
 
         if (
@@ -425,6 +462,7 @@ class CompleteCallingConventionsAnalysis(Analysis):
             collect_facts=self.mode in (CallingConventionAnalysisMode.FAST, CallingConventionAnalysisMode.FASTISH),
             collect_facts_arg_uses=self.mode == CallingConventionAnalysisMode.FASTISH,
             collect_facts_arg_passthru=self.mode == CallingConventionAnalysisMode.FASTISH,
+            flavor=self._flavor,
         )
 
         if cc_analysis.cc is not None:
@@ -434,10 +472,18 @@ class CompleteCallingConventionsAnalysis(Analysis):
                 cc_analysis.prototype,
                 cc_analysis.prototype_libname if cc_analysis.prototype_libname is not None else func.prototype_libname,
                 PrototypeSource.SIMPROC if cc_analysis.proto_from_symbol else PrototypeSource.CCA_LOW,
-                self.kb.variables.get_function_manager(func_addr),
+                self._variable_manager_of(func_addr),
             )
         _l.info("Cannot determine calling convention for %r.", func)
-        return None, None, None, None, self.kb.variables.get_function_manager(func_addr)
+        return None, None, None, None, self._variable_manager_of(func_addr)
+
+    def _variable_manager_of(self, func_addr: int) -> VariableManagerInternal | None:
+        if self.mode == CallingConventionAnalysisMode.VARIABLES:
+            return self.kb.variables.get_function_manager(func_addr)
+        # fact collection does not touch variables: creating an empty manager for each function only bloats the heap
+        if self.kb.variables.has_function_manager(func_addr):
+            return self.kb.variables.get_function_manager(func_addr)
+        return None
 
     def prioritize_functions(self, func_addrs_to_prioritize: Iterable[int]):
         """
@@ -466,7 +512,12 @@ class CompleteCallingConventionsAnalysis(Analysis):
         for callee in self.kb.functions.callgraph.successors(caller_func_addr):
             if callee != caller_func_addr and callee not in d:
                 func = self.kb.functions.get_by_addr(callee)
-                tpl = func.calling_convention, func.prototype, func.prototype_libname, func.prototype_source
+                tpl = (
+                    func.calling_convention,
+                    func.get_prototype(self._flavor),
+                    func.prototype_libname,
+                    func.get_prototype_source(self._flavor),
+                )
                 d[callee] = tpl
         return d
 

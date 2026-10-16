@@ -1,4 +1,4 @@
-# pylint:disable=no-member
+# pylint:disable=no-member,protected-access
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ from angr.engines.vex.lifter import VEX_IRSB_MAX_SIZE
 from angr.errors import AngrCFGError
 from angr.protos import cfg_pb2, primitives_pb2
 from angr.serializable import Serializable
-from angr.utils.enums_conv import cfg_jumpkind_from_pb, cfg_jumpkind_to_pb
+from angr.utils.enums_conv import cfg_jumpkind_to_pb
 
 from .cfg_node import CFGNode
 from .indirect_jump import IndirectJump
@@ -49,10 +49,10 @@ class CFGModel(Serializable):
         "_cache_limit",
         "_cfg_manager",
         "_db_batch_size",
-        "_edge_cache_limit",
-        "_edge_db_batch_size",
         "_iropt_level",
         "_node_addrs",
+        "_node_function_addrs_complete",
+        "_segment_budget",
         "edges_to_repair",
         "graph",
         "ident",
@@ -70,18 +70,16 @@ class CFGModel(Serializable):
         is_arm=False,
         cache_limit: int | None = None,
         db_batch_size: int = 800,
-        edge_cache_limit: int | None = None,
-        edge_db_batch_size: int = 800,
         addr_type: CFG_ADDR_TYPES = "int",
+        segment_budget: int | None = None,
     ):
         self.ident = ident
         self._cfg_manager = cfg_manager
         self.is_arm = is_arm
         self._cache_limit = cache_limit
         self._db_batch_size = db_batch_size
-        self._edge_cache_limit = edge_cache_limit
-        self._edge_db_batch_size = edge_db_batch_size
-        self.graph = None  # type:ignore
+        self._segment_budget = segment_budget
+        self.graph: SpillingCFG = None  # type:ignore
         self._addr_type: CFG_ADDR_TYPES = addr_type
 
         # Necessary settings
@@ -98,9 +96,8 @@ class CFGModel(Serializable):
             cfg_model=self,
             cache_limit=cache_limit,
             db_batch_size=db_batch_size,
-            edge_cache_limit=edge_cache_limit,
-            edge_db_batch_size=edge_db_batch_size,
             addr_type=self.addr_type,
+            segment_budget=segment_budget,
         )
 
         # Jump tables
@@ -123,6 +120,11 @@ class CFGModel(Serializable):
         self.normalized = False
 
         self.edges_to_repair = []
+
+        # True if this model was deserialized through the spilled fast path and every serialized node record
+        # carried a function_address; in that case, filling in CFGNode.function_address after loading functions is
+        # unnecessary (on-demand node deserialization restores it), and FunctionManagerSerializer skips it
+        self._node_function_addrs_complete: bool = False
 
     #
     # Properties
@@ -181,6 +183,9 @@ class CFGModel(Serializable):
         return {x: self.__getattribute__(x) for x in self.__slots__ if x not in {"__weakref__", "_cfg_manager"}}
 
     def __setstate__(self, state):
+        # defaults for attributes that may be missing from states pickled by older versions of angr
+        self._node_function_addrs_complete = False
+
         for attribute, value in state.items():
             self.__setattr__(attribute, value)
 
@@ -206,29 +211,53 @@ class CFGModel(Serializable):
         cmsg.ident = self.ident
 
         # nodes
-        nodes = []
-        for n in self.graph.nodes():
-            nodes.append(n.serialize_to_cmessage())
-        cmsg.nodes.extend(nodes)
+        # When the graph supports spilling, byte-copy the serialized message of every clean/spilled node
+        # straight out of the LMDB backing store instead of creating a CFGNode and re-serializing it.
+        key_to_addr: dict = {}
+        spilling = isinstance(self.graph, SpillingCFG)
+        if spilling:
+            for block_key, msg_bytes, _copied in self.graph.export_serialized_nodes():
+                node_pb = cmsg.nodes.add()
+                node_pb.ParseFromString(msg_bytes)
+                key_to_addr[block_key] = node_pb.ea
+        else:
+            nodes = [n.serialize_to_cmessage() for n in self.graph.nodes()]
+            cmsg.nodes.extend(nodes)
 
         # edges
-        edges = []
-        for src, dst, data in self.graph.edges(data=True):
-            edge = primitives_pb2.Edge()  # type:ignore
-            edge.src_ea = src.addr
-            edge.dst_ea = dst.addr
-            for k, v in data.items():
-                if k == "jumpkind":
-                    jk = cfg_jumpkind_to_pb(v)
-                    edge.jumpkind = primitives_pb2.Edge.UnknownJumpkind if jk is None else jk  # type:ignore
-                elif k == "ins_addr":
-                    edge.ins_addr = v if v is not None else 0xFFFF_FFFF_FFFF_FFFF
-                elif k == "stmt_idx":
-                    edge.stmt_idx = v if v is not None else -1
-                else:
-                    l.warning('Unexpected edge data type "%s" found during CFG serialization.', k)
-            edges.append(edge)
-        cmsg.edges.extend(edges)
+        # Integer-keyed graphs are written as the packed store's segment blobs (evicted segments are copied
+        # straight out of the backend, nothing is materialized); other key types fall back to per-edge messages.
+        if spilling and self.graph.addr_type == "int":
+            header, blobs = self.graph._graph.to_blobs()
+            cmsg.graph_header = header
+            cmsg.graph_segments.extend(blobs)
+            if self.graph._extra_edge_attrs:
+                l.warning("Non-standard CFG edge attributes are not serialized.")
+        else:
+            if spilling:
+                store = self.graph._graph
+                key_of = self.graph._keys.key_of
+                edge_iter = (
+                    (key_to_addr[key_of(s)], key_to_addr[key_of(d)], jk, ins_addr, stmt_idx)
+                    for s, d, jk, ins_addr, stmt_idx in store.edges_with_tuples()
+                )
+            else:
+                edge_iter = (
+                    (src.addr, dst.addr, data.get("jumpkind"), data.get("ins_addr"), data.get("stmt_idx"))
+                    for src, dst, data in self.graph.edges(data=True)
+                )
+            edges = []
+            for src_ea, dst_ea, jumpkind, ins_addr, stmt_idx in edge_iter:
+                edge = primitives_pb2.Edge()  # type:ignore
+                edge.src_ea = src_ea
+                edge.dst_ea = dst_ea
+                # missing attributes are written as None (their sentinels), not as the protobuf default 0
+                jk = cfg_jumpkind_to_pb(jumpkind)
+                edge.jumpkind = primitives_pb2.Edge.UnknownJumpkind if jk is None else jk  # type:ignore
+                edge.ins_addr = ins_addr if ins_addr is not None else 0xFFFF_FFFF_FFFF_FFFF
+                edge.stmt_idx = stmt_idx if stmt_idx is not None else -1
+                edges.append(edge)
+            cmsg.edges.extend(edges)
 
         # memory data
         memory_data = []
@@ -250,28 +279,40 @@ class CFGModel(Serializable):
 
     @classmethod
     def parse_from_cmessage(cls, cmsg, cfg_manager=None, loader=None):  # pylint:disable=arguments-differ
+        from angr.angrdb.v2 import AngrDbV2  # pylint:disable=import-outside-toplevel
+
         # create a new model unassociated from any project
         model = cls(cmsg.ident) if cfg_manager is None else cfg_manager.new_model(cmsg.ident)
 
-        # nodes
-        for node_pb2 in cmsg.nodes:
-            node = CFGNode.parse_from_cmessage(node_pb2, cfg=model)
-            node.dirty = True  # mark dirty so the node is saved to LMDB if evicted from the spilling cache
-            model.graph.add_node(node)
+        has_blobs = bool(cmsg.graph_header)
+        if has_blobs:
+            if model.addr_type != "int":
+                raise ValueError("serialized CFG graph segments require an integer-keyed graph")
+            model.graph._load_graph_blobs(bytes(cmsg.graph_header), [bytes(b) for b in cmsg.graph_segments])
 
-        model._node_addrs = None
+        if (
+            model.graph._spilling_enabled
+            and model.graph._nodes.rtdb is not None
+            and model.addr_type == "int"
+            and len(cmsg.nodes) > model.graph._nodes.cache_limit
+        ):
+            # Move the serialized node bytes directly into the LMDB backing store and the adjacency structure is built
+            # without creating any CFGNode object. Nodes are then deserialized on-demand upon first access.
+            cls._parse_graph_spilled(cmsg, model)
+            if not has_blobs:
+                AngrDbV2.parse_cfg_edges_spilled(cmsg, model.graph)
+        else:
+            # nodes
+            for node_pb2 in cmsg.nodes:
+                node = CFGNode.parse_from_cmessage(node_pb2, cfg=model)
+                node.dirty = True  # mark dirty so the node is saved to LMDB if evicted from the spilling cache
+                model.graph.add_node(node)
 
-        # edges
-        for edge_pb2 in cmsg.edges:
-            # more than one node at a given address is unsupported, grab the first one
-            src = next(model.graph.nodes_by_addr(edge_pb2.src_ea))
-            dst = next(model.graph.nodes_by_addr(edge_pb2.dst_ea))
-            data = {
-                "jumpkind": cfg_jumpkind_from_pb(edge_pb2.jumpkind),
-                "ins_addr": edge_pb2.ins_addr if edge_pb2.ins_addr != 0xFFFF_FFFF_FFFF_FFFF else None,
-                "stmt_idx": edge_pb2.stmt_idx if edge_pb2.stmt_idx != -1 else None,
-            }
-            model.graph.add_edge(src, dst, **data)
+            model._node_addrs = None
+
+            # edges are already in the store when graph segments were loaded
+            if not has_blobs:
+                AngrDbV2.parse_cfg_edges(cmsg, model)
 
         # memory data
         for data_pb2 in cmsg.memory_data:
@@ -293,6 +334,31 @@ class CFGModel(Serializable):
 
         return model
 
+    @staticmethod
+    def _parse_graph_spilled(cmsg, model: CFGModel) -> None:
+        """
+        Parse the nodes of a serialized CFG directly into the spilling backing store of the graph of the given model,
+        without materializing CFGNode objects.
+        """
+
+        graph = model.graph
+
+        # nodes
+        items = []
+        function_addrs_complete = True
+        for node_pb2 in cmsg.nodes:
+            # this mirrors what get_block_key() returns for the node that CFGNode.parse_from_cmessage() would build:
+            # the block ID (which defaults to the node address) and the node size.
+            block_id = node_pb2.block_id[0] if node_pb2.block_id else node_pb2.ea
+            block_key = (block_id, node_pb2.size)
+            items.append((block_key, node_pb2.ea, b"\x00" + node_pb2.SerializeToString()))
+            if function_addrs_complete and not node_pb2.HasField("function_address"):
+                function_addrs_complete = False
+        model._node_function_addrs_complete = function_addrs_complete
+
+        graph.bulk_import_serialized_nodes(items)
+        model._node_addrs = None
+
     #
     # Other methods
     #
@@ -304,9 +370,8 @@ class CFGModel(Serializable):
             is_arm=self.is_arm,
             cache_limit=self._cache_limit,
             db_batch_size=self._db_batch_size,
-            edge_cache_limit=self._edge_cache_limit,
-            edge_db_batch_size=self._edge_db_batch_size,
             addr_type=self.addr_type,
+            segment_budget=self._segment_budget,
         )
         model.graph = self.graph.copy()
         model.graph._cfg_model = model
@@ -314,11 +379,12 @@ class CFGModel(Serializable):
         model.memory_data = self.memory_data.copy()
         model.insn_addr_to_memory_data = self.insn_addr_to_memory_data.copy()
         model.edges_to_repair = self.edges_to_repair.copy()
+        model._node_function_addrs_complete = self._node_function_addrs_complete
 
         return model
 
     def _build_node_addr_index(self):
-        self._node_addrs = SortedList(iter(k for k, lst in self.graph._keys_by_addr.items() if lst))
+        self._node_addrs = SortedList(self.graph.node_addrs())
 
     #
     # Node insertion and removal
@@ -771,7 +837,7 @@ class CFGModel(Serializable):
                 else:
                     boundary = min(last_addr, next_data_addr)
 
-                if next_sec_addr is not None:
+                if boundary is not None and next_sec_addr is not None:
                     boundary = min(boundary, next_sec_addr)
 
                 if boundary is not None:
@@ -985,19 +1051,12 @@ class CFGModel(Serializable):
 
         pointer_size = self.project.arch.bytes
 
-        # who's using it?
-        irsb_addr, stmt_idx = None, None
-        if xrefs is not None and seg_list is not None:
-            try:
-                ref: XRef = next(iter(xrefs.get_xrefs_by_dst(data_addr)))
-                irsb_addr = ref.block_addr
-            except StopIteration:
-                pass
-        if irsb_addr is not None and isinstance(self.project.loader.main_object, cle.MetaELF):
-            plt_entry = self.project.loader.main_object.reverse_plt.get(irsb_addr, None)
-            if plt_entry is not None:
-                # IRSB is owned by plt!
-                return MemoryDataSort.GOTPLTEntry, pointer_size
+        # who's using it? a GOT slot read by any PLT stub is a GOT PLT entry
+        if xrefs is not None and seg_list is not None and isinstance(self.project.loader.main_object, cle.MetaELF):
+            reverse_plt = self.project.loader.main_object.reverse_plt
+            for ref in xrefs.get_xrefs_by_dst(data_addr):
+                if ref.block_addr is not None and ref.block_addr in reverse_plt:
+                    return MemoryDataSort.GOTPLTEntry, pointer_size
 
         # is it in a section with zero bytes, like .bss?
         obj = self.project.loader.find_object_containing(data_addr)
@@ -1074,12 +1133,10 @@ class CFGModel(Serializable):
         # is it a code reference?
         irsb_addr, stmt_idx = None, None
         if xrefs is not None and seg_list is not None:
-            try:
-                ref: XRef = next(iter(xrefs.get_xrefs_by_dst(data_addr)))
+            ref = self._first_xref(xrefs.get_xrefs_by_dst(data_addr))
+            if ref is not None:
                 irsb_addr = ref.block_addr
                 stmt_idx = ref.stmt_idx
-            except StopIteration:
-                pass
 
             if seg_list.is_occupied(data_addr) and seg_list.occupied_by_sort(data_addr) == "code":
                 # it's a code reference
@@ -1094,6 +1151,20 @@ class CFGModel(Serializable):
                     return sort, size
 
         return None, None
+
+    @staticmethod
+    def _first_xref(refs: set[XRef]) -> XRef | None:
+        # lowest-addressed xref; set iteration order is not a stable choice
+        return min(
+            refs,
+            key=lambda r: (
+                r.ins_addr if r.ins_addr is not None else -1,
+                r.block_addr if r.block_addr is not None else -1,
+                r.stmt_idx if r.stmt_idx is not None else -1,
+                r.type if r.type is not None else -1,
+            ),
+            default=None,
+        )
 
     def _guess_data_type_pointer_array(
         self,

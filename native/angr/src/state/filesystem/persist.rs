@@ -129,7 +129,7 @@ impl FileSystem {
             .iter()
             .map(|(k, d)| {
                 let mut d = d.clone();
-                d.content_sym = d.content_sym.as_ref().map(&translate_vec);
+                d.content_sym = d.content_sym.as_ref().map(translate_vec);
                 (*k, d)
             })
             .collect();

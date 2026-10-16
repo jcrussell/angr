@@ -4,7 +4,7 @@ import logging
 
 import networkx as nx
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.ailment import Const
 from angr.ailment.block import Block
 from angr.ailment.statement import ConditionalJump, Jump, Statement
@@ -64,7 +64,10 @@ def bfs_list_blocks(start_block: Block, graph: nx.DiGraph):
         if len(children) == 1:
             blocks += children
         elif len(children) == 2:
-            if_stmt: ConditionalJump = source.statements[-1]
+            if_stmt = source.statements[-1]
+            if not isinstance(if_stmt, ConditionalJump):
+                # a call-terminated block whose callee may or may not return has two successors as well
+                raise UnsupportedAILNodeError(f"Stmt {if_stmt} forks the control flow without a condition")
             if children[0].addr == if_stmt.true_target.value:
                 blocks += [children[0], children[1]]
             else:
@@ -111,7 +114,7 @@ def deepcopy_ail_jump(stmt: Jump, idx=1):
     target: Const = stmt.target
     tags = stmt.tags.copy()
 
-    return Jump(idx, Const(1, target.variable, target.value, target.bits, **target.tags.copy()), **tags)
+    return Jump(idx, Const(1, target.value, target.bits, **target.tags.copy()), **tags)
 
 
 def deepcopy_ail_condjump(stmt: ConditionalJump, idx=1):
@@ -122,8 +125,8 @@ def deepcopy_ail_condjump(stmt: ConditionalJump, idx=1):
     return ConditionalJump(
         idx,
         stmt.condition.copy(),
-        Const(1, true_target.variable, true_target.value, true_target.bits, **true_target.tags.copy()),
-        Const(1, false_target.variable, false_target.value, false_target.bits, **false_target.tags.copy()),
+        Const(1, true_target.value, true_target.bits, **true_target.tags.copy()),
+        Const(1, false_target.value, false_target.bits, **false_target.tags.copy()),
         **tags,
     )
 
@@ -148,10 +151,20 @@ def correct_jump_targets(stmt, replacement_map: dict[int, int], new_stmt=True):
         true_target, false_target = cond_stmt.true_target, cond_stmt.false_target
 
         if isinstance(true_target, Const) and true_target.value in replacement_map:
-            true_target.value = replacement_map[true_target.value]
+            cond_stmt.true_target = Const(
+                true_target.idx,
+                replacement_map[true_target.value],
+                true_target.bits,
+                **true_target.tags,
+            )
 
         if isinstance(false_target, Const) and false_target.value in replacement_map:
-            false_target.value = replacement_map[false_target.value]
+            cond_stmt.false_target = Const(
+                false_target.idx,
+                replacement_map[false_target.value],
+                false_target.bits,
+                **false_target.tags,
+            )
 
         return cond_stmt
     if isinstance(stmt, Jump) and isinstance(stmt.target, Const):
@@ -159,7 +172,12 @@ def correct_jump_targets(stmt, replacement_map: dict[int, int], new_stmt=True):
         target = jump_stmt.target
 
         if isinstance(target, Const) and target.value in replacement_map:
-            target.value = replacement_map[target.value]
+            jump_stmt.target = Const(
+                target.idx,
+                replacement_map[target.value],
+                target.bits,
+                **target.tags,
+            )
 
         return jump_stmt
     return stmt

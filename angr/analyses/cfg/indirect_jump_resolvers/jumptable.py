@@ -4,19 +4,20 @@ import contextlib
 import enum
 import functools
 import logging
+import struct
 from collections import OrderedDict, defaultdict
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal, cast
 
-import claripy
 import pyvex
 from archinfo.arch_arm import is_arm_arch
-from claripy.annotation import UninitializedAnnotation
 
+from angr import claripy
 from angr import sim_options as o
 from angr.analyses.propagator.top_checker_mixin import ClaripyDataVEXEngineMixin
 from angr.annocfg import AnnotatedCFG
 from angr.blade import Blade
+from angr.claripy.annotation import UninitializedAnnotation
 from angr.concretization_strategies import SimConcretizationStrategyAny
 from angr.engines.light import RegisterOffset, SimEngineNostmtVEX, SpOffset
 from angr.engines.vex.claripy import ccall
@@ -39,7 +40,9 @@ except ImportError:
     pcode = None
 
 if TYPE_CHECKING:
+    from angr.block import Block
     from angr.knowledge_plugins import Function
+    from angr.sim_state import SimState
 
 l = logging.getLogger(name=__name__)
 
@@ -215,16 +218,11 @@ class RegOffsetAnnotation(claripy.Annotation):
 
     __slots__ = ("reg_offset",)
 
+    relocatable = False
+    eliminatable = False
+
     def __init__(self, reg_offset: RegisterOffset):
         self.reg_offset = reg_offset
-
-    @property
-    def relocatable(self):
-        return False
-
-    @property
-    def eliminatable(self):
-        return False
 
 
 binop_handler = SimEngineNostmtVEX[JumpTableProcessorState, claripy.ast.BV, JumpTableProcessorState].binop_handler
@@ -454,6 +452,40 @@ class JumpTableProcessor(
     def _handle_binop_CmpGT(self, expr):
         return self._handle_Comparison(*expr.args)
 
+    @binop_handler
+    def _handle_binop_CmpEQ(self, expr):
+        shr_args = self._match_shr_zero_bound_check(expr)
+        if shr_args is not None:
+            return self._handle_Comparison(*shr_args)
+        return super()._handle_binop_CmpEQ(expr)
+
+    @binop_handler
+    def _handle_binop_CmpNE(self, expr):
+        shr_args = self._match_shr_zero_bound_check(expr)
+        if shr_args is not None:
+            return self._handle_Comparison(*shr_args)
+        return super()._handle_binop_CmpNE(expr)
+
+    def _match_shr_zero_bound_check(self, expr) -> tuple[pyvex.IRExpr.IRExpr, pyvex.IRExpr.Const] | None:
+        # libVEX 3.27+ spechelpers fold the unsigned bound check `x <=u 2**k-1` into `CmpEQ(Shr(x, k), 0)` (and its
+        # negation into CmpNE). Recognize this form and return (x, k) so it can be treated as a comparison against
+        # a constant bound.
+        arg0, arg1 = expr.args
+        if not (isinstance(arg1, pyvex.IRExpr.Const) and arg1.con.value == 0 and isinstance(arg0, pyvex.IRExpr.RdTmp)):
+            return None
+        for stmt in self.block.vex.statements:
+            if isinstance(stmt, pyvex.IRStmt.WrTmp) and stmt.tmp == arg0.tmp:
+                data = stmt.data
+                if (
+                    isinstance(data, pyvex.IRExpr.Binop)
+                    and data.op in {"Iop_Shr8", "Iop_Shr16", "Iop_Shr32", "Iop_Shr64"}
+                    and isinstance(data.args[1], pyvex.IRExpr.Const)
+                    and data.args[1].con.value > 0
+                ):
+                    return data.args[0], data.args[1]
+                return None
+        return None
+
     def _handle_expr_CCall(self, expr):
         if isinstance(expr.args[0], pyvex.IRExpr.Const):
             cond_type_enum = expr.args[0].con.value
@@ -656,6 +688,48 @@ class PutHook:
         )
 
 
+class ShrBoundsConstraintHook:
+    """
+    Hook for rewriting folded bound-check constraints.
+
+    libVEX 3.27+ spechelpers fold the unsigned bound check `x <=u 2**k-1` into `Shr(x, k) == 0`. The VSA constraint
+    handler keys its replacement on the LShR expression instead of x itself, so the bound never narrows x (and thus
+    the jump table address) during slice execution. Rewrite such constraints into the canonical ULE/UGT form.
+    """
+
+    @staticmethod
+    def hook(state):
+        constraints = state.inspect.attrs.added_constraints
+        if constraints:
+            rewritten = [ShrBoundsConstraintHook._rewrite(c) for c in constraints]
+            if any(r is not c for c, r in zip(constraints, rewritten)):
+                state.inspect.attrs.added_constraints = tuple(rewritten)
+
+    @staticmethod
+    def _rewrite(cons):
+        if cons.op == "Not":
+            r = ShrBoundsConstraintHook._rewrite_cmp(cons.args[0], invert=True)
+        else:
+            r = ShrBoundsConstraintHook._rewrite_cmp(cons, invert=False)
+        return r if r is not None else cons
+
+    @staticmethod
+    def _rewrite_cmp(cons, invert: bool):
+        if cons.op not in {"__eq__", "__ne__"}:
+            return None
+        arg0, arg1 = cons.args
+        if arg1.op == "LShR":
+            arg0, arg1 = arg1, arg0
+        if not (arg0.op == "LShR" and arg1.op == "BVV" and arg1.args[0] == 0):
+            return None
+        value_expr, shift = arg0.args
+        if shift.op != "BVV" or not 0 < shift.args[0] < value_expr.size():
+            return None
+        bound = (1 << shift.args[0]) - 1
+        is_le = (cons.op == "__eq__") ^ invert
+        return claripy.ULE(value_expr, bound) if is_le else claripy.UGT(value_expr, bound)
+
+
 class RegisterInitializerHook:
     """
     Hook for register init.
@@ -795,6 +869,16 @@ class JumpTableResolver(IndirectJumpResolver):
         # should be cleared before every symbolic execution run on the slice
         self._cached_memread_addrs = {}
 
+        # the address-independent part of the slice-execution start state; copied for every slice source
+        self._blank_state_template: SimState | None = None
+
+        # set when resolution was declined because the data references that bound an unbounded jump table are not
+        # collected yet. the CFG re-runs these jumps once the rest of the analysis is exhausted.
+        self.deferred = False
+
+        # set when a table was rejected because none of its targets is executable; reported once per jump
+        self._rejected_unmapped_table = False
+
         self._find_bss_region()
 
     def filter(self, cfg, addr, func_addr, block, jumpkind):
@@ -819,6 +903,9 @@ class JumpTableResolver(IndirectJumpResolver):
         :rtype: tuple
         """
 
+        self.deferred = False
+        self._rejected_unmapped_table = False
+
         if not cfg.kb.functions.contains_addr(func_addr):
             # fix for angr issue #3768
             # the function must exist in the KB
@@ -836,6 +923,9 @@ class JumpTableResolver(IndirectJumpResolver):
         else:
             cv_manager = None
 
+        # blocks lifted for one slice are reused by the deeper slices and by the precheck
+        block_cache: dict[int, Block] = {}
+
         for slice_steps in range(1, 5):
             # Perform a backward slicing from the jump target
             # Important: Do not go across function call boundaries
@@ -851,6 +941,7 @@ class JumpTableResolver(IndirectJumpResolver):
                 base_state=self.base_state,
                 stop_at_calls=True,
                 cross_insn_opt=True,
+                block_cache=block_cache,
             )
 
             l.debug("Try resolving %#x with a %d-level backward slice...", addr, slice_steps)
@@ -873,11 +964,18 @@ class JumpTableResolver(IndirectJumpResolver):
                 base_state=self.base_state,
                 stop_at_calls=True,
                 cross_insn_opt=True,
+                block_cache=block_cache,
             )
-            return self._resolve(
+            r, targets = self._resolve(
                 cfg, addr, func, b, cv_manager, potential_call_table=True, func_graph_complete=func_graph_complete
             )
+            if r:
+                return r, targets
 
+        if self._rejected_unmapped_table:
+            l.warning(
+                "Jump table at %#x has no target in executable memory; treating the indirect jump as unresolved.", addr
+            )
         return False, None
 
     #
@@ -942,15 +1040,26 @@ class JumpTableResolver(IndirectJumpResolver):
         # for a typical vtable call (or jump if at the end of a function), the block as two predecessors that form a
         # diamond shape
         curr_node = func.get_node(addr)
-        if curr_node is None or curr_node not in func.transition_graph:
+        if curr_node is None or not func.has_node(curr_node):
             l.debug("Could not find the node %#x in the function transition graph", addr)
             return False, None
-        preds = list(func.transition_graph.predecessors(curr_node))
+        preds = curr_node.predecessors()
         pred_endaddrs = {pred.addr + pred.size for pred in preds}  # handle non-normalized CFGs
-        if func_graph_complete and not is_arm and not potential_call_table:
+        # sometimes if the compiler (e.g., LLVM) can prove that the index must be in range, it will not generate any
+        # predecessor block to check the range of the index varaible (common in Rust binaries). in this case, we rely
+        # on the location of the next jump table offset to determine the size of the current jump table.
+        unbounded_jumptable = func_graph_complete and not is_arm and not potential_call_table and not pred_endaddrs
+        if unbounded_jumptable and cfg._defer_unbounded_jumptables and not cfg._unbounded_jumptable_final_pass:
+            # Sizing an unbounded table depends on the data references collected so far, and resolving it now would
+            # bake in a size that is too large when a closer reference shows up later. Let the CFG come back to it
+            # once everything else is exhausted.
+            l.debug("Deferring unbounded jump table at %#x until data references are complete.", addr)
+            self.deferred = True
+            return False, None
+        if func_graph_complete and not is_arm and not potential_call_table and pred_endaddrs:
             # on ARM you can do a single-block jump table...
             if len(pred_endaddrs) == 1:
-                pred_succs = [succ for succ in func.transition_graph.successors(preds[0]) if succ.addr != preds[0].addr]
+                pred_succs = [succ for succ in preds[0].successors() if succ.addr != preds[0].addr]
                 if len(pred_succs) != 2:
                     l.debug("Expect two successors to the single predecessor, found %d.", len(pred_succs))
                     return False, None
@@ -995,16 +1104,25 @@ class JumpTableResolver(IndirectJumpResolver):
         # get the full range of possibilities
         b.slice.remove_nodes_from(stmts_to_remove)
 
+        # Create the annotated CFG; shared by the precheck and the slice execution below
+        annotatedcfg = AnnotatedCFG(project, None, detect_loops=False)
+        annotatedcfg.from_digraph(b.slice)
+
         stmts_to_instrument, regs_to_initialize = [], []
         try:
-            stmts_to_instrument, regs_to_initialize = self._jumptable_precheck(b, {pred.addr for pred in preds})
+            stmts_to_instrument, regs_to_initialize = self._jumptable_precheck(
+                b, {pred.addr for pred in preds}, annotatedcfg
+            )
             l.debug(
                 "jumptable_precheck provides stmts_to_instrument = %s, regs_to_initialize = %s",
                 stmts_to_instrument,
                 regs_to_initialize,
             )
         except NotAJumpTableNotification:
-            if not potential_call_table and not is_arm:
+            if unbounded_jumptable:
+                # no bounds check exists to find; keep going and size the table from data
+                l.debug("Indirect jump at %#x has no bounds check; trying data-driven table sizing.", addr)
+            elif not potential_call_table and not is_arm:
                 l.debug("Indirect jump at %#x does not look like a jump table. Skip.", addr)
                 return False, None
             if (
@@ -1023,10 +1141,6 @@ class JumpTableResolver(IndirectJumpResolver):
         # Get all sources
         sources = [n_ for n_ in b.slice.nodes() if b.slice.in_degree(n_) == 0]
 
-        # Create the annotated CFG
-        annotatedcfg = AnnotatedCFG(project, None, detect_loops=False)
-        annotatedcfg.from_digraph(b.slice)
-
         # pylint: disable=too-many-nested-blocks
         for block_addr, _ in sources:
             # Use slicecutor to execute each one, and get the address
@@ -1039,6 +1153,10 @@ class JumpTableResolver(IndirectJumpResolver):
             self._cached_memread_addrs.clear()
             init_registers_on_demand_bp = BP(when=BP_BEFORE, enabled=True, action=self._init_registers_on_demand)
             start_state.inspect.add_breakpoint("mem_read", init_registers_on_demand_bp)
+
+            # rewrite folded bound-check constraints (Shr(x, k) == 0) into forms that VSA can narrow x with
+            shr_bounds_bp = BP(when=BP_BEFORE, enabled=True, action=ShrBoundsConstraintHook.hook)
+            start_state.inspect.add_breakpoint("constraints", shr_bounds_bp)
 
             # constant value manager
             if cv_manager is not None:
@@ -1076,6 +1194,7 @@ class JumpTableResolver(IndirectJumpResolver):
             # Get the jumping targets
             for r in simgr.found:
                 jt2, jt2_addr, jt2_entrysize, jt2_size = None, None, None, None
+                entries_guessed = False
                 if load_stmt is not None:
                     ret = self._try_resolve_targets_load(
                         r,
@@ -1087,6 +1206,7 @@ class JumpTableResolver(IndirectJumpResolver):
                         stmts_adding_base_addr,
                         transformations,
                         potential_call_table,
+                        unbounded_jumptable,
                     )
                     if ret is None:
                         # Try the next state
@@ -1102,6 +1222,7 @@ class JumpTableResolver(IndirectJumpResolver):
                         jt2_addr,
                         jt2_entrysize,
                         jt2_size,
+                        entries_guessed,
                     ) = ret
                     if sort == "jumptable":
                         ij_type = IndirectJumpType.Jumptable_AddressLoadedFromMemory
@@ -1135,11 +1256,21 @@ class JumpTableResolver(IndirectJumpResolver):
                     else:
                         all_targets = [t_ for t_ in all_targets if t_ % alignment == 0]
 
+                if not any(self._is_target_valid(cfg, t_) for t_ in all_targets):
+                    # e.g., entries read from wrongly relocated memory; do not record a bogus table
+                    l.debug("Jump table at %#x has no target in executable memory. Try the next state.", addr)
+                    self._rejected_unmapped_table = True
+                    if jumptable_addr is not None and cfg.tag == "CFGFast":
+                        # the table location is still known; keep it from being scanned as code
+                        cfg._seg_list.occupy(jumptable_addr, jumptable_size, "data")
+                    continue
+
                 l.info(
-                    "Jump table at %#x has %d targets: %s",
+                    "Jump table at %#x has %d targets: %s (guessed: %s)",
                     addr,
                     len(all_targets),
                     ", ".join([hex(a) for a in all_targets]),
+                    entries_guessed,
                 )
 
                 # write to the IndirectJump object in CFG
@@ -1154,7 +1285,14 @@ class JumpTableResolver(IndirectJumpResolver):
                             ij.jumptable = True
                         else:
                             ij.jumptable = False
-                        ij.add_jumptable(jumptable_addr, jumptable_size, entry_size, jump_table, is_primary=True)
+                        ij.add_jumptable(
+                            jumptable_addr,
+                            jumptable_size,
+                            entry_size,
+                            jump_table,
+                            is_primary=True,
+                            entries_guessed=entries_guessed,
+                        )
                         ij.resolved_targets = set(jump_table)
                         ij.type = ij_type
                     else:
@@ -1557,26 +1695,38 @@ class JumpTableResolver(IndirectJumpResolver):
                 # next must be an RdTmp
                 break
             stmt = block.statements[stmt_idx]
-            if (
-                isinstance(stmt, pyvex.IRStmt.WrTmp)
-                and stmt.tmp == block.next.tmp
-                and isinstance(stmt.data, pyvex.IRExpr.ITE)
-            ):
-                # yes!
-                ite_stmt, ite_stmt_loc = stmt, stmt_loc
-                break
+            if isinstance(stmt, pyvex.IRStmt.WrTmp) and stmt.tmp == block.next.tmp:
+                if isinstance(stmt.data, pyvex.IRExpr.ITE):
+                    # yes!
+                    ite_stmt, ite_stmt_loc = stmt, stmt_loc
+                    break
+                if self._is_const_plus_tmp(stmt.data):
+                    # unconditional ADD PC, PC, Rn / ADD PC, Rm, Rn; keep the statement so its value can be read
+                    stmts_to_remove.pop()
+                    ite_stmt, ite_stmt_loc = stmt, stmt_loc
+                    break
 
         return ite_stmt, ite_stmt_loc, stmts_to_remove
 
-    def _jumptable_precheck(self, b, indirect_jump_node_pred_addrs):
+    @staticmethod
+    def _is_const_plus_tmp(expr: pyvex.IRExpr.IRExpr) -> bool:
+        return (
+            isinstance(expr, pyvex.IRExpr.Binop)
+            and expr.op.startswith("Iop_Add")
+            and isinstance(expr.args[0], pyvex.IRExpr.Const)
+            and isinstance(expr.args[1], pyvex.IRExpr.RdTmp)
+        )
+
+    def _jumptable_precheck(self, b, indirect_jump_node_pred_addrs, annotatedcfg: AnnotatedCFG):
         """
         Perform a pre-check on the slice to determine whether it is a jump table or not. Please refer to the docstring
         of JumpTableProcessor for how precheck and statement instrumentation works. A NotAJumpTableNotification
         exception will be raised if the slice fails this precheck.
 
-        :param b:   The statement slice generated by Blade.
-        :return:    A list of statements to instrument, and a list of registers to initialize.
-        :rtype:     tuple of lists
+        :param b:               The statement slice generated by Blade.
+        :param annotatedcfg:    The annotated CFG built from the slice.
+        :return:                A list of statements to instrument, and a list of registers to initialize.
+        :rtype:                 tuple of lists
         """
 
         # pylint:disable=no-else-continue
@@ -1585,9 +1735,6 @@ class JumpTableResolver(IndirectJumpResolver):
 
         sources = [n for n in b.slice.nodes() if b.slice.in_degree(n) == 0]
 
-        annotatedcfg = AnnotatedCFG(self.project, None, detect_loops=False)
-        annotatedcfg.from_digraph(b.slice)
-
         for src in sources:
             state = JumpTableProcessorState(self.project.arch)
             traced = {src[0]}
@@ -1595,7 +1742,7 @@ class JumpTableResolver(IndirectJumpResolver):
                 state._tmpvar_source.clear()
                 block_addr, _ = src
 
-                block = self.project.factory.block(block_addr, cross_insn_opt=True, backup_state=self.base_state)
+                block = b.get_block(block_addr)
                 stmt_whitelist = annotatedcfg.get_whitelisted_statements(block_addr)
                 assert isinstance(stmt_whitelist, list)
                 try:
@@ -1676,6 +1823,175 @@ class JumpTableResolver(IndirectJumpResolver):
 
         return None
 
+    def _load_jumptable_entries(
+        self, cfg, table_base: int, stride: int, load_size: int, count: int
+    ) -> list[int] | None:
+        """
+        Read `count` table entries of `load_size` bytes spaced `stride` bytes apart, or None if any entry is not
+        mapped. When the whole table lies in one memory backer, which is what unpack_word() would consult for every
+        entry, the entries are unpacked from that backer directly instead of resolving the backer per entry.
+        """
+        memory = self.project.loader.memory
+        if count > 0 and load_size <= 8:
+            try:
+                backer_start, backer = next(memory.backers(table_base))
+            except StopIteration:
+                backer_start, backer = None, None
+            if (
+                backer_start is not None
+                and not isinstance(backer, list)
+                and backer_start <= table_base
+                and table_base + (count - 1) * stride + load_size <= backer_start + len(backer)
+            ):
+                fmt = memory._arch.struct_fmt(size=load_size, signed=False, endness=None)
+                unpack_from = struct.Struct(fmt).unpack_from
+                offset = table_base - backer_start
+                return [unpack_from(backer, offset + i * stride)[0] for i in range(count)]
+
+        entries = []
+        for i in range(count):
+            a = table_base + i * stride
+            target = cfg._fast_memory_load_pointer(a, size=load_size)
+            if target is None:
+                l.debug("Cannot load pointer from address %#x. Skip.", a)
+                return None
+            entries.append(target)
+        return entries
+
+    def _is_jumptable_base_plausible(self, table_base: int) -> bool:
+        """
+        A jump table lives in mapped, read-only memory. Loads whose address is not a constant base plus an index
+        (state.solver.min() returns 0 for those) are rejected here.
+        """
+
+        if not table_base:
+            return False
+        section = self.project.loader.find_section_containing(table_base)
+        if section is not None:
+            return not section.is_writable
+        segment = self.project.loader.find_segment_containing(table_base)
+        return segment is not None and not segment.is_writable
+
+    def _build_target_reconstructor(
+        self,
+        cfg,
+        transformations: dict[tuple[int, int], AddressTransformation],
+        stmts_adding_base_addr,
+        jt_2nd_memloads: dict[int, int],
+    ):
+        """
+        Build a callable that turns a raw jump table entry into a jump target by applying the address
+        transformations that the slice performs (sign extension, shifts, base addition, secondary loads, ...).
+
+        :return:    A callable taking a raw entry and returning a jump target (or None when the entry cannot be
+                    transformed), or None if the transformation chain is unsupported.
+        """
+
+        mask = (2**self.project.arch.bits) - 1
+        transformation_list = list(reversed([v for v in transformations.values() if not v.first_load]))
+
+        def handle_signed_ext(a):
+            return (a | 0xFFFFFFFF00000000) if a >= 0x80000000 else a
+
+        def handle_unsigned_ext(a):
+            return a
+
+        def handle_trunc_64_32(a):
+            return a & 0xFFFFFFFF
+
+        def handle_or1(a):
+            return a | 1
+
+        def handle_lshift(num_bits, a):
+            return a << num_bits
+
+        def handle_rshift(num_bits, a):
+            return a >> num_bits
+
+        def handle_add(con, a):
+            return (a + con) & mask
+
+        def handle_load(size, a):
+            if a not in jt_2nd_memloads:
+                jt_2nd_memloads[a] = size
+            else:
+                jt_2nd_memloads[a] = max(jt_2nd_memloads[a], size)
+            return cfg._fast_memory_load_pointer(a, size=size)
+
+        invert_conversion_ops = []
+        for tran in transformation_list:
+            tran_op, args = tran.op, tran.operands
+            if tran_op is AddressTransformationTypes.SignedExtension:
+                if args == [32, 64, AddressSingleton]:
+                    lam = handle_signed_ext
+                else:
+                    raise NotImplementedError("Unsupported signed extension operation.")
+            elif tran_op is AddressTransformationTypes.UnsignedExtension:
+                lam = handle_unsigned_ext
+            elif tran_op is AddressTransformationTypes.Truncation:
+                if args == [64, 32, AddressSingleton]:
+                    lam = handle_trunc_64_32
+                else:
+                    raise NotImplementedError("Unsupported truncation operation.")
+            elif tran_op is AddressTransformationTypes.Or1:
+                lam = handle_or1
+            elif tran_op is AddressTransformationTypes.ShiftLeft:
+                lam = functools.partial(handle_lshift, next(iter(arg for arg in args if arg is not AddressSingleton)))
+            elif tran_op is AddressTransformationTypes.ShiftRight:
+                lam = functools.partial(handle_rshift, next(iter(arg for arg in args if arg is not AddressSingleton)))
+            elif tran_op is AddressTransformationTypes.Add:
+                add_arg = next(iter(arg for arg in args if arg is not AddressSingleton))
+                if not isinstance(add_arg, int):
+                    # unsupported cases (Tmp, for example). abort
+                    return None
+                lam = functools.partial(handle_add, add_arg)
+            elif tran_op is AddressTransformationTypes.Load:
+                lam = functools.partial(handle_load, args[1])
+            elif tran_op is AddressTransformationTypes.Assignment:
+                continue
+            else:
+                raise NotImplementedError("Unsupported transformation operation.")
+            invert_conversion_ops.append(lam)
+
+        base_addr = None
+        if len(stmts_adding_base_addr) == 1:
+            base_addr = stmts_adding_base_addr[0].base_addr
+            if base_addr is None:
+                return None
+
+        def reconstruct(entry: int) -> int | None:
+            for lam in invert_conversion_ops:
+                entry = lam(entry)
+                if entry is None:
+                    return None
+            if base_addr is not None:
+                entry = (entry + base_addr) & mask
+            return entry
+
+        return reconstruct
+
+    def _scan_jumptable_bound(self, cfg, table_base: int, stride: int, load_size: int, reconstruct, cap: int) -> int:
+        """
+        Determine how many entries a jump table has by reading it until an entry no longer transforms into a legal
+        jump target. Used to bound jump tables that the compiler emitted without a bounds check.
+
+        :return:    The number of consecutive plausible entries starting at ``table_base``.
+        """
+
+        count = 0
+        for i in range(cap):
+            entry = cfg._fast_memory_load_pointer(table_base + i * stride, size=load_size)
+            if entry is None:
+                break
+            try:
+                target = reconstruct(entry)
+            except (AngrError, SimError):
+                break
+            if target is None or not self._is_jumptarget_legal(target):
+                break
+            count += 1
+        return count
+
     def _try_resolve_targets_load(
         self,
         r,
@@ -1687,6 +2003,7 @@ class JumpTableResolver(IndirectJumpResolver):
         stmts_adding_base_addr,
         transformations: dict[tuple[int, int], AddressTransformation],
         potential_call_table: bool = False,
+        unbounded_jumptable: bool = False,
     ):
         """
         Try loading all jump targets from a jump table or a vtable.
@@ -1740,10 +2057,14 @@ class JumpTableResolver(IndirectJumpResolver):
                     if jump_base_addr.tmp_1 == addr_holder[1]:
                         # swap the two tmps
                         jump_base_addr.tmp, jump_base_addr.tmp_1 = jump_base_addr.tmp_1, jump_base_addr.tmp
-                    # Load the concrete base address
-                    with contextlib.suppress(SimError):
-                        # silently eat the claripy exception
-                        jump_base_addr.base_addr = state.solver.eval(state.scratch.temps[jump_base_addr.tmp_1])
+                    # Load the concrete base address. The statement that adds the base is removed
+                    # from the slice before the slice runs, so this tmp holds a value only when some
+                    # other statement that stayed in the slice wrote it.
+                    base_addr_expr = state.scratch.temps[jump_base_addr.tmp_1]
+                    if base_addr_expr is not None:
+                        with contextlib.suppress(SimError):
+                            # silently eat the claripy exception
+                            jump_base_addr.base_addr = state.solver.eval(base_addr_expr)
             else:
                 # We do not support the cases where the base address involves more than one addition.
                 # One such case exists in libc-2.27.so shipped with Ubuntu x86 where esi is used as the address of the
@@ -1772,7 +2093,7 @@ class JumpTableResolver(IndirectJumpResolver):
             stride = 0
         else:
             try:
-                jumptable_si = claripy.backends.vsa.simplify(jumptable_addr)
+                jumptable_si = claripy.vsa.simplify(jumptable_addr)
                 si_annotation = jumptable_si.get_annotation(claripy.annotation.StridedIntervalAnnotation)
                 stride = si_annotation.stride if si_annotation is not None else 0
             except claripy.ClaripyError:
@@ -1789,6 +2110,48 @@ class JumpTableResolver(IndirectJumpResolver):
         else:
             total_cases = jumptable_addr.cardinality
             sort = "jumptable"
+
+        if unbounded_jumptable and sort == "jumptable" and total_cases > 1 and jumptable_addr.op != "BVV":
+            # The index is unconstrained because the compiler omitted the bounds check, so the table size must come
+            # from the data. Two independent bounds are combined: the next address that any instruction references
+            # (LLVM emits jump tables back to back, so the next table's base ends this one), and a scan that stops at
+            # the first entry which does not transform into a legal jump target.
+            table_base = state.solver.min(jumptable_addr)
+            if stride != load_size or not self._is_jumptable_base_plausible(table_base):
+                l.debug("Unbounded jump table at %#x: implausible table base. Skip.", table_base)
+                return None
+
+            next_ref = cfg.kb.xrefs.get_next_xref_addr_by_dst(table_base + 1)
+            nextref_cases = (
+                (next_ref - table_base) // stride if next_ref is not None and next_ref > table_base else None
+            )
+
+            reconstruct = self._build_target_reconstructor(cfg, transformations, stmts_adding_base_addr, {})
+            scan_cases = (
+                self._scan_jumptable_bound(
+                    cfg, table_base, stride, load_size, reconstruct, min(total_cases, self._max_targets)
+                )
+                if reconstruct is not None
+                else None
+            )
+
+            bounds = [b for b in (nextref_cases, scan_cases) if b is not None]
+            if not bounds:
+                l.debug("Unbounded jump table at %#x: nothing bounds it. Skip.", table_base)
+                return None
+            bounded_cases = min(bounds)
+            if bounded_cases < 2:
+                l.debug("Unbounded jump table at %#x: implausible size %d. Skip.", table_base, bounded_cases)
+                return None
+            l.debug(
+                "Unbounded jump table at %#x: bounded to %d entries (next referenced address %s -> %s, scan -> %s).",
+                table_base,
+                bounded_cases,
+                f"{next_ref:#x}" if next_ref is not None else None,
+                nextref_cases,
+                scan_cases,
+            )
+            total_cases = min(total_cases, bounded_cases)
 
         assert self._max_targets is not None
         if total_cases > self._max_targets:
@@ -1808,11 +2171,16 @@ class JumpTableResolver(IndirectJumpResolver):
 
                 if table_base_addr is not None:
                     addr = table_base_addr
+                    # Stop at the immediate next referenced data address
+                    stop_addr = cfg.kb.xrefs.get_next_xref_addr_by_dst(table_base_addr + 1)
                     # FIXME: May want to support NULL targets for handlers that are not filled in / placeholders
                     # FIXME: Try negative offsets too? (this would be unusual)
                     l.debug("Inspecting table at %#x for plausible targets...", addr)
                     for i in range(self._max_targets):
                         target = cfg._fast_memory_load_pointer(addr, size=load_size)
+                        if stop_addr is not None and addr >= stop_addr:
+                            l.debug("Reached the next referenced data address %#x. Stop scanning.", stop_addr)
+                            break
                         if target is None or not self._is_jumptarget_legal(target):
                             break
                         l.debug("- %#x[%d] -> %#x", table_base_addr, i, target)
@@ -1841,6 +2209,7 @@ class JumpTableResolver(IndirectJumpResolver):
                             None,
                             None,
                             None,
+                            True,
                         )
 
             # We resolved too many targets for this indirect jump. Something might have gone wrong.
@@ -1882,108 +2251,26 @@ class JumpTableResolver(IndirectJumpResolver):
             return None
 
         # Load the jump table from memory
-        should_skip = False
-        for idx, a in enumerate(range(min_jumptable_addr, max_jumptable_addr + 1, stride)):
-            if idx % 100 == 0 and idx != 0:
-                l.debug("%d targets have been resolved for the indirect jump at %#x...", idx, addr)
-            if idx >= total_cases:
-                break
-            target = cfg._fast_memory_load_pointer(a, size=load_size)
-            if target is None:
-                l.debug("Cannot load pointer from address %#x. Skip.", a)
-                should_skip = True
-                break
-            all_targets.append(target)
-        if should_skip:
+        entry_count = min(total_cases, len(range(min_jumptable_addr, max_jumptable_addr + 1, stride)))
+        loaded = self._load_jumptable_entries(cfg, min_jumptable_addr, stride, load_size, entry_count)
+        if loaded is None:
             return None
+        all_targets = loaded
 
         # Adjust entries inside the jump table
-        mask = (2**self.project.arch.bits) - 1
         transformation_list = list(reversed([v for v in transformations.values() if not v.first_load]))
         jt_2nd_memloads: dict[int, int] = {}
-        if transformation_list:
-
-            def handle_signed_ext(a):
-                return (a | 0xFFFFFFFF00000000) if a >= 0x80000000 else a
-
-            def handle_unsigned_ext(a):
-                return a
-
-            def handle_trunc_64_32(a):
-                return a & 0xFFFFFFFF
-
-            def handle_or1(a):
-                return a | 1
-
-            def handle_lshift(num_bits, a):
-                return a << num_bits
-
-            def handle_rshift(num_bits, a):
-                return a >> num_bits
-
-            def handle_add(con, a):
-                return (a + con) & mask
-
-            def handle_load(size, a):
-                if a not in jt_2nd_memloads:
-                    jt_2nd_memloads[a] = size
-                else:
-                    jt_2nd_memloads[a] = max(jt_2nd_memloads[a], size)
-                return cfg._fast_memory_load_pointer(a, size=size)
-
-            invert_conversion_ops = []
-            for tran in transformation_list:
-                tran_op, args = tran.op, tran.operands
-                if tran_op is AddressTransformationTypes.SignedExtension:
-                    if args == [32, 64, AddressSingleton]:
-                        lam = handle_signed_ext
-                    else:
-                        raise NotImplementedError("Unsupported signed extension operation.")
-                elif tran_op is AddressTransformationTypes.UnsignedExtension:
-                    lam = handle_unsigned_ext
-                elif tran_op is AddressTransformationTypes.Truncation:
-                    if args == [64, 32, AddressSingleton]:
-                        lam = handle_trunc_64_32
-                    else:
-                        raise NotImplementedError("Unsupported truncation operation.")
-                elif tran_op is AddressTransformationTypes.Or1:
-                    lam = handle_or1
-                elif tran_op is AddressTransformationTypes.ShiftLeft:
-                    lam = functools.partial(
-                        handle_lshift, next(iter(arg for arg in args if arg is not AddressSingleton))
-                    )
-                elif tran_op is AddressTransformationTypes.ShiftRight:
-                    lam = functools.partial(
-                        handle_rshift, next(iter(arg for arg in args if arg is not AddressSingleton))
-                    )
-                elif tran_op is AddressTransformationTypes.Add:
-                    add_arg = next(iter(arg for arg in args if arg is not AddressSingleton))
-                    if not isinstance(add_arg, int):
-                        # unsupported cases (Tmp, for example). abort
-                        return None
-                    lam = functools.partial(handle_add, add_arg)
-                elif tran_op is AddressTransformationTypes.Load:
-                    lam = functools.partial(handle_load, args[1])
-                elif tran_op is AddressTransformationTypes.Assignment:
-                    continue
-                else:
-                    raise NotImplementedError("Unsupported transformation operation.")
-                invert_conversion_ops.append(lam)
-            all_targets_copy = all_targets
-            all_targets = []
-            for target_ in all_targets_copy:
-                for lam in invert_conversion_ops:
-                    target_ = lam(target_)
-                    if target_ is None:
-                        # transformation failed. abort
-                        return None
-                all_targets.append(target_)
-            if None in all_targets:
+        reconstruct = self._build_target_reconstructor(cfg, transformations, stmts_adding_base_addr, jt_2nd_memloads)
+        if reconstruct is None:
+            return None
+        all_targets_copy = all_targets
+        all_targets = []
+        for target_ in all_targets_copy:
+            target_ = reconstruct(target_)
+            if target_ is None:
+                # transformation failed. abort
                 return None
-        if len(stmts_adding_base_addr) == 1:
-            stmt_adding_base_addr = stmts_adding_base_addr[0]
-            base_addr = stmt_adding_base_addr.base_addr
-            all_targets = [(target + base_addr) & mask for target in all_targets]
+            all_targets.append(target_)
 
         # special case for ARM: if the source block is in THUMB mode, all jump targets should be in THUMB mode, too
         if is_arm_arch(self.project.arch) and (addr & 1) == 1:
@@ -2046,6 +2333,7 @@ class JumpTableResolver(IndirectJumpResolver):
             jt_2nd_baseaddr,
             jt_2nd_entrysize,
             jt_2nd_size,
+            False,
         )
 
     def _try_resolve_targets_ite(self, r, addr, cfg, annotatedcfg, ite_stmt: pyvex.IRStmt.WrTmp):  # pylint:disable=unused-argument
@@ -2070,21 +2358,27 @@ class JumpTableResolver(IndirectJumpResolver):
 
         state = all_states[0]  # Just take the first state
         temps = state.scratch.temps
-        if not isinstance(ite_stmt.data, pyvex.IRExpr.ITE):
+        if self._is_const_plus_tmp(ite_stmt.data):
+            # unconditional computed jump
+            target_expr = temps[ite_stmt.tmp]
+        elif isinstance(ite_stmt.data, pyvex.IRExpr.ITE):
+            # load the default
+            if not isinstance(ite_stmt.data.iffalse, pyvex.IRExpr.Const):
+                return None
+            # ite_stmt.data.iffalse.con.value is garbage introduced by the VEX ARM lifter and should be ignored
+            if not isinstance(ite_stmt.data.iftrue, pyvex.IRExpr.RdTmp):
+                return None
+            if not isinstance(ite_stmt.data.cond, pyvex.IRExpr.RdTmp):
+                return None
+            cond = temps[ite_stmt.data.cond.tmp]
+            # apply the constraint
+            state.add_constraints(cond == 1)
+            # load the target
+            target_expr = temps[ite_stmt.data.iftrue.tmp]
+        else:
             return None
-        # load the default
-        if not isinstance(ite_stmt.data.iffalse, pyvex.IRExpr.Const):
+        if target_expr is None:
             return None
-        # ite_stmt.data.iffalse.con.value is garbage introduced by the VEX ARM lifter and should be ignored
-        if not isinstance(ite_stmt.data.iftrue, pyvex.IRExpr.RdTmp):
-            return None
-        if not isinstance(ite_stmt.data.cond, pyvex.IRExpr.RdTmp):
-            return None
-        cond = temps[ite_stmt.data.cond.tmp]
-        # apply the constraint
-        state.add_constraints(cond == 1)
-        # load the target
-        target_expr = temps[ite_stmt.data.iftrue.tmp]
         try:
             jump_table = state.solver.eval_upto(target_expr, self._max_targets + 1)
         except SimError:
@@ -2250,7 +2544,7 @@ class JumpTableResolver(IndirectJumpResolver):
             )
             print(s)
 
-    def _initial_state(self, block_addr, cfg, func_addr: int):
+    def _make_blank_state_template(self) -> SimState:
         add_options = {
             o.DO_RET_EMULATION,
             o.TRUE_RET_EMULATION_GUARD,
@@ -2261,9 +2555,10 @@ class JumpTableResolver(IndirectJumpResolver):
             # be quiet!!!!!!
             o.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
             o.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+            # we execute a slice, so guards may refer to stale values; never drop successors on them
+            o.LAZY_SOLVES,
         }
         state = self.project.factory.blank_state(
-            addr=block_addr,
             mode="static",
             add_options=add_options,
             remove_options={
@@ -2273,6 +2568,24 @@ class JumpTableResolver(IndirectJumpResolver):
             | o.refs,
         )
         state.regs._sp = 0x7FFF_FFF0
+
+        # FIXME:
+        # this is a hack: for certain architectures, we do not initialize the base pointer, since the jump table on
+        # those architectures may use the bp register to store value
+        if self.project.arch.name != "S390X":
+            state.regs.bp = state.arch.initial_sp + 0x2000
+
+        return state
+
+    def _initial_state(self, block_addr, cfg, func_addr: int):
+        # blank_state() is expensive (permission maps, OS-specific memory setup); build it once and copy. The copy
+        # carries no breakpoints, so the per-slice hooks below are installed in the same order as before.
+        if self._blank_state_template is None:
+            self._blank_state_template = self._make_blank_state_template()
+        state = self._blank_state_template.copy()
+        state.regs._ip = block_addr
+        state.scratch.ins_addr = block_addr
+        state.scratch.bbl_addr = block_addr
 
         # any read from an uninitialized segment should be unconstrained
         if self._bss_regions:
@@ -2304,12 +2617,6 @@ class JumpTableResolver(IndirectJumpResolver):
                 mips_gp_write_bp = BP(when=BP_AFTER, enabled=True, action=mips_gp_hook.gp_register_write_hook)
                 state.inspect.add_breakpoint("reg_read", mips_gp_read_bp)
                 state.inspect.add_breakpoint("reg_write", mips_gp_write_bp)
-
-        # FIXME:
-        # this is a hack: for certain architectures, we do not initialize the base pointer, since the jump table on
-        # those architectures may use the bp register to store value
-        if self.project.arch.name != "S390X":
-            state.regs.bp = state.arch.initial_sp + 0x2000
 
         return state
 

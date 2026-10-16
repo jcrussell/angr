@@ -14,7 +14,7 @@ class TestRustPatternMatchSimplifier(unittest.TestCase):
     def test_extracts_sign_bit_niche_discriminant(self):
         vvar = VirtualVariable(None, 0, 64, VirtualVariableCategory.STACK, -0x20)
         cast = Convert(None, 64, 64, True, vvar)
-        zero = Const(None, None, 0, 64)
+        zero = Const(None, 0, 64)
         condition = Convert(
             None,
             64,
@@ -33,7 +33,7 @@ class TestRustPatternMatchSimplifier(unittest.TestCase):
                         ],
                         bits=64,
                     ),
-                    Const(None, None, 63, 8),
+                    Const(None, 63, 8),
                 ],
                 bits=64,
             ),
@@ -43,10 +43,61 @@ class TestRustPatternMatchSimplifier(unittest.TestCase):
             condition
         )
 
-        self.assertIs(scrutinee, vvar)
+        self.assertTrue(scrutinee is not None and scrutinee.likes(vvar))
         self.assertEqual(discriminant, -(1 << 63))
         self.assertEqual(cmp_op, "CmpEQ")
         self.assertIsNone(leftover)
+
+    def test_extracts_truthiness_discriminant(self):
+        # `Conv(N -> 1, disc)`, rendered `if result as i8`, means `disc != 0`.
+        vvar = VirtualVariable(None, 0, 64, VirtualVariableCategory.STACK, -0x20)
+        condition = Convert(None, 64, 1, False, vvar)
+
+        scrutinee, discriminant, cmp_op, leftover = PrePatternMatchSimplifier.extract_scrutinee_and_discriminant(
+            condition
+        )
+
+        self.assertEqual(scrutinee, vvar)
+        self.assertEqual(discriminant, 0)
+        self.assertEqual(cmp_op, "CmpNE")
+        self.assertIsNone(leftover)
+
+    def test_extracts_negated_truthiness_discriminant(self):
+        # `Not(Conv(N -> 1, disc))`, rendered `if !(result as i8)`, means `disc == 0`.
+        vvar = VirtualVariable(None, 0, 64, VirtualVariableCategory.STACK, -0x20)
+        condition = UnaryOp(None, "Not", Convert(None, 64, 1, False, vvar))
+
+        scrutinee, discriminant, cmp_op, leftover = PrePatternMatchSimplifier.extract_scrutinee_and_discriminant(
+            condition
+        )
+
+        self.assertEqual(scrutinee, vvar)
+        self.assertEqual(discriminant, 0)
+        self.assertEqual(cmp_op, "CmpEQ")
+        self.assertIsNone(leftover)
+
+    def test_truthiness_discriminant_preserves_logical_and_leftover(self):
+        vvar = VirtualVariable(None, 0, 64, VirtualVariableCategory.STACK, -0x20)
+        rest = Const(None, 1, 8)
+        condition = BinaryOp(None, "LogicalAnd", [Convert(None, 64, 1, False, vvar), rest], bits=8)
+
+        scrutinee, discriminant, cmp_op, leftover = PrePatternMatchSimplifier.extract_scrutinee_and_discriminant(
+            condition
+        )
+
+        self.assertEqual(scrutinee, vvar)
+        self.assertEqual(discriminant, 0)
+        self.assertEqual(cmp_op, "CmpNE")
+        self.assertEqual(leftover, rest)
+
+    def test_non_boolean_conversion_is_not_a_discriminant(self):
+        # A wider truncation (`to_bits != 1`) is an ordinary cast, not a truthiness test.
+        vvar = VirtualVariable(None, 0, 64, VirtualVariableCategory.STACK, -0x20)
+        condition = Convert(None, 64, 8, False, vvar)
+
+        result = PrePatternMatchSimplifier.extract_scrutinee_and_discriminant(condition)
+
+        self.assertEqual(result, (None, None, None, None))
 
     def test_enum_variant_lookup_matches_signed_and_unsigned_discriminants(self):
         enum_ty = RustSimTypeResult(

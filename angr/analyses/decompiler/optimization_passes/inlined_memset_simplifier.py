@@ -7,6 +7,7 @@ from typing import Any, Literal
 from angr.ailment.expression import BinaryOp, Call, Const, StackBaseOffset, VirtualVariable
 from angr.ailment.statement import Assignment, SideEffectStatement, Statement, Store
 from angr.ailment.utils import is_none_or_likeable
+from angr.analyses.decompiler.variable_map import variable_map_of
 from angr.procedures import SIM_LIBRARIES
 
 from .optimization_pass import OptimizationPass, OptimizationPassStage
@@ -103,7 +104,7 @@ class InlinedMemsetSimplifier(OptimizationPass):
             replaced_indices: set[int] = set()
             replacements: dict[int, SideEffectStatement] = {}
 
-            for _kind, lst in info_by_kind.items():
+            for lst in info_by_kind.values():
                 if len(lst) <= 1:
                     continue
                 candidates = self._find_memset_candidates(lst)
@@ -117,14 +118,14 @@ class InlinedMemsetSimplifier(OptimizationPass):
                             # Creating memsets on the stack is a recipe to screw up variable identification.
                             base_expr = None
                         case "global":
-                            base_expr = Const(self.manager.next_atom(), None, candidate.offset, self.project.arch.bits)
+                            base_expr = Const(self.manager.next_atom(), candidate.offset, self.project.arch.bits)
                         case "heap":
                             base_expr = BinaryOp(
                                 self.manager.next_atom(),
                                 "Add",
                                 [
                                     candidate.base,
-                                    Const(self.manager.next_atom(), None, candidate.offset, self.project.arch.bits),
+                                    Const(self.manager.next_atom(), candidate.offset, self.project.arch.bits),
                                 ],
                                 False,
                                 bits=self.project.arch.bits,
@@ -138,19 +139,22 @@ class InlinedMemsetSimplifier(OptimizationPass):
                         replaced_indices.add(k)
 
                     ref_stmt = statements[start_stmt_idx]
+                    call = Call(
+                        self.manager.next_atom(),
+                        "memset",
+                        args=[
+                            base_expr,
+                            Const(self.manager.next_atom(), candidate.value, 8),
+                            Const(self.manager.next_atom(), candidate.count, self.project.arch.bits),
+                        ],
+                        **ref_stmt.tags,
+                    )
+                    variable_map_of(self.manager).set_prototype(
+                        call, SIM_LIBRARIES["libc.so"][0].get_prototype("memset", arch=self.project.arch)
+                    )
                     call_stmt = SideEffectStatement(
-                        ref_stmt.idx,
-                        Call(
-                            ref_stmt.idx,
-                            "memset",
-                            args=[
-                                base_expr,
-                                Const(self.manager.next_atom(), None, candidate.value, 8),
-                                Const(self.manager.next_atom(), None, candidate.count, self.project.arch.bits),
-                            ],
-                            prototype=SIM_LIBRARIES["libc.so"][0].get_prototype("memset", arch=self.project.arch),
-                            **ref_stmt.tags,
-                        ),
+                        self.manager.next_atom(),
+                        call,
                         **ref_stmt.tags,
                     )
                     replacements[start_stmt_idx] = call_stmt

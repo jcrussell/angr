@@ -18,7 +18,6 @@ class IcicleStateTranslationData:
     to an angr state.
     """
 
-    base_state: SimState[int, int]
     registers: set[str]
     mapped_pages: set[int]
     writable_pages: set[int]
@@ -82,9 +81,6 @@ class SimStateIcicle(SimStatePlugin):
         )
 
     def merge(self, others, merge_conditions, common_ancestor=None):
-        return False
-
-    def widen(self, others):
         return False
 
 

@@ -7,11 +7,10 @@ from abc import abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
-import claripy
 import pyvex
 from pyvex.expr import IRExpr
 
-from angr import ailment
+from angr import ailment, claripy
 from angr.block import Block
 from angr.code_location import CodeLocation
 from angr.engines.engine import SimEngine
@@ -20,6 +19,8 @@ from angr.misc.ux import once
 
 if TYPE_CHECKING:
     from angr.project import Project
+
+_l = logging.getLogger(__name__)
 
 
 class BlockProtocol(Protocol):
@@ -128,7 +129,7 @@ T = TypeVar("T")
 
 
 def longest_prefix_lookup[T](haystack: str, mapping: dict[str, T]) -> T | None:
-    for l in reversed(range(len(haystack))):
+    for l in reversed(range(len(haystack) + 1)):
         handler = mapping.get(haystack[:l])
         if handler is not None:
             return handler
@@ -136,6 +137,35 @@ def longest_prefix_lookup[T](haystack: str, mapping: dict[str, T]) -> T | None:
 
 
 # noinspection PyPep8Naming
+_VEX_HANDLER_PREFIXES = (
+    "_handle_unop_",
+    "_handle_binop_",
+    "_handle_binopv_",
+    "_handle_triop_",
+    "_handle_qop_",
+    "_handle_ccall_",
+    "_handle_dirty_",
+)
+_vex_handler_name_cache: dict[type, dict[str, list[str]]] = {}
+
+
+def _vex_handler_names(cls: type) -> dict[str, list[str]]:
+    """
+    Handler method names of a SimEngineLightVEX subclass grouped by prefix. Engines are instantiated per analysis
+    run, so the dir() scan is cached per class.
+    """
+    names = _vex_handler_name_cache.get(cls)
+    if names is None:
+        names = {prefix: [] for prefix in _VEX_HANDLER_PREFIXES}
+        for name in dir(cls):
+            for prefix in _VEX_HANDLER_PREFIXES:
+                if name.startswith(prefix):
+                    names[prefix].append(name)
+                    break
+        _vex_handler_name_cache[cls] = names
+    return names
+
+
 class SimEngineLightVEX[StateType, DataType_co, ResultType, StmtDataType](
     SimEngineLight[StateType, DataType_co, Block, ResultType]
 ):
@@ -192,6 +222,7 @@ class SimEngineLightVEX[StateType, DataType_co, ResultType, StmtDataType](
                 raise TypeError(f"Handle {h} is not validated for {attr}")
             return h
 
+        handler_names = _vex_handler_names(type(self))
         self._stmt_handlers: dict[str, Callable[[Any], StmtDataType]] = {
             "Ist_WrTmp": self._handle_stmt_WrTmp,
             "Ist_Put": self._handle_stmt_Put,
@@ -226,38 +257,31 @@ class SimEngineLightVEX[StateType, DataType_co, ResultType, StmtDataType](
         }
         self._unop_handlers: dict[str, Callable[[pyvex.expr.Unop], DataType_co]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "unop_handler")
-            for name in dir(self)
-            if name.startswith("_handle_unop_")
+            for name in handler_names["_handle_unop_"]
         }
         self._binop_handlers: dict[str, Callable[[pyvex.expr.Binop], DataType_co]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "binop_handler")
-            for name in dir(self)
-            if name.startswith("_handle_binop_")
+            for name in handler_names["_handle_binop_"]
         }
         self._binopv_handlers: dict[str, Callable[[int, int, pyvex.expr.Binop], DataType_co]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "binopv_handler")
-            for name in dir(self)
-            if name.startswith("_handle_binopv_")
+            for name in handler_names["_handle_binopv_"]
         }
         self._triop_handlers: dict[str, Callable[[pyvex.expr.Triop], DataType_co]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "triop_handler")
-            for name in dir(self)
-            if name.startswith("_handle_triop_")
+            for name in handler_names["_handle_triop_"]
         }
         self._qop_handlers: dict[str, Callable[[pyvex.expr.Qop], DataType_co]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "qop_handler")
-            for name in dir(self)
-            if name.startswith("_handle_qop_")
+            for name in handler_names["_handle_qop_"]
         }
         self._ccall_handlers: dict[str, Callable[[pyvex.expr.CCall], DataType_co]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "ccall_handler")
-            for name in dir(self)
-            if name.startswith("_handle_ccall_")
+            for name in handler_names["_handle_ccall_"]
         }
         self._dirty_handlers: dict[str, Callable[[pyvex.stmt.Dirty], StmtDataType]] = {
             name.split("_", 3)[-1]: checked(getattr(self, name), "dirty_handler")
-            for name in dir(self)
-            if name.startswith("_handle_dirty_")
+            for name in handler_names["_handle_dirty_"]
         }
 
     def process(
@@ -406,12 +430,19 @@ class SimEngineLightVEX[StateType, DataType_co, ResultType, StmtDataType](
         except (UnsupportedIROpError, SimOperationError):
             simop = None
 
+        result_size = pyvex.get_type_size(expr.result_type(self.tyenv))
         if simop is not None and "Reinterp" not in expr.op and simop.op_attrs.get("conversion", None):
-            return self._handle_conversion(simop._from_size, simop._to_size, simop.is_signed, expr.args[0])
+            # SimOp reads these sizes off the operation's name, so for a lane-wise conversion they are
+            # lane widths: Iop_F32toI32Sx4_RZ says 32 bits for a 128-bit operand, and the vector forms
+            # have no to_size at all. _handle_conversion converts a single scalar value.
+            from_size, to_size = simop._from_size, simop._to_size
+            operand_size = pyvex.get_type_size(expr.args[0].result_type(self.tyenv))
+            if from_size == operand_size and to_size == result_size:
+                return self._handle_conversion(from_size, to_size, simop.is_signed, expr.args[0])
 
         if once(expr.op) and self.l is not None:
             self.l.info("Unsupported Unop %s.", expr.op)
-        return self._top(pyvex.get_type_size(expr.result_type(self.tyenv)))
+        return self._top(result_size)
 
     @abstractmethod
     def _handle_conversion(self, from_size: int, to_size: int, signed: bool, operand: IRExpr) -> DataType_co: ...
@@ -420,7 +451,9 @@ class SimEngineLightVEX[StateType, DataType_co, ResultType, StmtDataType](
         assert expr.op.startswith("Iop_")
 
         # vector information
-        m = re.match(r"Iop_[^\d]+(\d+)[SU]{0,1}x(\d+)", expr.op)
+        # Matches integer vectors (Add32x4, CmpLT32Sx4), packed float vectors
+        # (Add32Fx4), and scalar-in-vector float ops (Add32F0x4, CmpLT32F0x4).
+        m = re.match(r"Iop_[^\d]+(\d+)(?:[SU]|F0?)?x(\d+)", expr.op)
         if m is not None:
             vector_size = int(m.group(1))
             vector_count = int(m.group(2))
@@ -553,6 +586,8 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
             "Reinterpret": self._handle_expr_Reinterpret,
             "Load": self._handle_expr_Load,
             "Register": self._handle_expr_Register,
+            # the default IRegister handler yields None
+            "IRegister": cast(Callable[[Any], DataType_co], self._handle_expr_IRegister),
             "ITE": self._handle_expr_ITE,
             "Extract": self._handle_expr_Extract,
             "Insert": self._handle_expr_Insert,
@@ -571,6 +606,7 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
             "ComboRegister": self._handle_expr_ComboRegister,
         }
         self._unop_handlers: dict[str, Callable[[ailment.UnaryOp], DataType_co]] = {
+            "Abs": self._handle_unop_Abs,
             "Not": self._handle_unop_Not,
             "Neg": self._handle_unop_Neg,
             "BitwiseNeg": self._handle_unop_BitwiseNeg,
@@ -578,6 +614,10 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
             "Dereference": self._handle_unop_Dereference,
             "Clz": self._handle_unop_Clz,
             "Ctz": self._handle_unop_Ctz,
+            # libVEX 3.27+ renamed the scalar Clz/Ctz ops to ClzNat/CtzNat (result at zero is defined for the
+            # Nat variants; the approximation used here is the same)
+            "ClzNat": self._handle_unop_Clz,
+            "CtzNat": self._handle_unop_Ctz,
             "GetMSBs": self._handle_unop_GetMSBs,
             "unpack": self._handle_unop_unpack,
             "Sqrt": self._handle_unop_Sqrt,
@@ -633,11 +673,15 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
             "CmpNEV": self._handle_binop_CmpNEV,
             "CmpGEV": self._handle_binop_CmpGEV,
             "CmpGTV": self._handle_binop_CmpGTV,
-            "CmpLEV": self._handle_binop_CmpLTV,
-            "CmpLTV": self._handle_binop_CmpLEV,
+            "CmpLEV": self._handle_binop_CmpLEV,
+            "CmpLTV": self._handle_binop_CmpLTV,
             "MinV": self._handle_binop_MinV,
             "MaxV": self._handle_binop_MaxV,
+            "HAddV": self._handle_binop_HAddV,
+            "MinF": self._handle_binop_MinF,
+            "MaxF": self._handle_binop_MaxF,
             "QAddV": self._handle_binop_QAddV,
+            "QSubV": self._handle_binop_QSubV,
             "QNarrowBinV": self._handle_binop_QNarrowBinV,
             "PermV": self._handle_binop_PermV,
             "Set": self._handle_binop_Set,
@@ -697,7 +741,7 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
                 continue
 
             self.stmt_idx = stmt_idx
-            self.ins_addr = stmt.tags["ins_addr"]
+            self.ins_addr = stmt.tags.get("ins_addr")
             stmt_result = self._stmt(stmt)
             result.append(stmt_result)
             if self._stmt_diverges(stmt_result):
@@ -706,7 +750,10 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
         return result
 
     def _stmt(self, stmt: ailment.statement.Statement) -> StmtDataType:
-        stmt_type_name = type(stmt).__name__
+        # Every AIL Statement is the universal pyclass; the variant tag
+        # is exposed as ``stmt.kind_name``. Pure-Python statement
+        # subclasses don't have it and fall back to ``type(stmt).__name__``.
+        stmt_type_name = getattr(stmt, "kind_name", None) or type(stmt).__name__
         return self._stmt_handlers[stmt_type_name](stmt)
 
     @abstractmethod
@@ -744,7 +791,7 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
     #
 
     def _expr(self, expr: ailment.Expression) -> DataType_co:
-        expr_type_name = type(expr).__name__
+        expr_type_name = getattr(expr, "kind_name", None) or type(expr).__name__
         return self._expr_handlers[expr_type_name](expr)
 
     def _handle_expr_Atom(self, expr: ailment.expression.Atom) -> DataType_co:
@@ -766,10 +813,25 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
         raise TypeError("We should never see raw Ops")
 
     def _handle_expr_UnaryOp(self, expr: ailment.expression.UnaryOp) -> DataType_co:
-        return self._unop_handlers[expr.op](expr)
+        handler = self._unop_handlers.get(expr.op)
+        if handler is None:
+            return self._handle_unop_Default(expr)
+        return handler(expr)
 
     def _handle_expr_BinaryOp(self, expr: ailment.expression.BinaryOp) -> DataType_co:
-        return self._binop_handlers[expr.op](expr)
+        handler = self._binop_handlers.get(expr.op)
+        if handler is None:
+            return self._handle_binop_Default(expr)
+        return handler(expr)
+
+    def _handle_unop_Default(self, expr: ailment.expression.UnaryOp) -> DataType_co:
+        # an operation this engine has no handler for (e.g., a vector op): its value is unknown
+        _l.debug("Unsupported unary operation %s", expr.op)
+        return cast(DataType_co, None)
+
+    def _handle_binop_Default(self, expr: ailment.expression.BinaryOp) -> DataType_co:
+        _l.debug("Unsupported binary operation %s", expr.op)
+        return cast(DataType_co, None)
 
     @abstractmethod
     def _handle_expr_Convert(self, expr: ailment.expression.Convert) -> DataType_co: ...
@@ -782,6 +844,10 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
 
     @abstractmethod
     def _handle_expr_Register(self, expr: ailment.expression.Register) -> DataType_co: ...
+
+    def _handle_expr_IRegister(self, expr: ailment.expression.IRegister) -> DataType_co | None:
+        self._expr(expr.reg_offset)
+        return None
 
     @abstractmethod
     def _handle_expr_ITE(self, expr: ailment.expression.ITE) -> DataType_co: ...
@@ -846,6 +912,10 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
     #
     # UnOps
     #
+
+    def _handle_unop_Abs(self, expr: ailment.expression.UnaryOp) -> DataType_co:
+        self._expr(expr.operand)
+        return self._top(expr.bits)
 
     @abstractmethod
     def _handle_unop_Not(self, expr: ailment.expression.UnaryOp) -> DataType_co: ...
@@ -1042,8 +1112,20 @@ class SimEngineLightAIL[StateType, DataType_co, StmtDataType, ResultType](
     @abstractmethod
     def _handle_binop_MaxV(self, expr: ailment.expression.BinaryOp) -> DataType_co: ...
 
+    def _handle_binop_MinF(self, expr: ailment.expression.BinaryOp) -> DataType_co:
+        return self._handle_binop_MinV(expr)
+
+    def _handle_binop_MaxF(self, expr: ailment.expression.BinaryOp) -> DataType_co:
+        return self._handle_binop_MaxV(expr)
+
+    @abstractmethod
+    def _handle_binop_HAddV(self, expr: ailment.expression.BinaryOp) -> DataType_co: ...
+
     @abstractmethod
     def _handle_binop_QAddV(self, expr: ailment.expression.BinaryOp) -> DataType_co: ...
+
+    @abstractmethod
+    def _handle_binop_QSubV(self, expr: ailment.expression.BinaryOp) -> DataType_co: ...
 
     @abstractmethod
     def _handle_binop_QNarrowBinV(self, expr: ailment.expression.BinaryOp) -> DataType_co: ...
@@ -1128,6 +1210,9 @@ class SimEngineNoexprAIL[StateType, DataType_co, StmtDataType, ResultType](
 
     def _handle_expr_Register(self, expr: ailment.expression.Register) -> DataType_co | None:
         pass
+
+    def _handle_expr_IRegister(self, expr: ailment.expression.IRegister) -> DataType_co | None:
+        self._expr(expr.reg_offset)
 
     def _handle_expr_ITE(self, expr: ailment.expression.ITE) -> DataType_co | None:
         pass

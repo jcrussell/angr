@@ -5,13 +5,13 @@ from typing import Any
 
 import networkx
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.ailment import AILBlockRewriter, Block
 from angr.ailment.expression import Const, Phi, VirtualVariable
-from angr.ailment.statement import Assignment, ConditionalJump, Jump, Label, Return, SideEffectStatement
+from angr.ailment.statement import Assignment, ConditionalJump, Jump, Label, Return
 from angr.analyses.decompiler.condition_processor import ConditionProcessor, EmptyBlockNotice
-from angr.analyses.decompiler.graph_region import GraphRegion
 from angr.analyses.decompiler.region_identifier import RegionIdentifier
+from angr.analyses.decompiler.region_overlay import RegionOverlay
 from angr.analyses.decompiler.structurer_nodes import ConditionNode, MultiNode
 from angr.analyses.decompiler.utils import calls_in_graph, remove_labels, to_ail_supergraph
 from angr.utils.ail import is_phi_assignment
@@ -44,8 +44,7 @@ class FreshVirtualVariableRewriter(AILBlockRewriter):
                 dst.bits,
                 dst.category,
                 dst.oident,
-                variable=dst.variable,
-                variable_offset=dst.variable_offset,
+                reg_vvars=dst.reg_vvars,
                 **dst.tags,
             )
 
@@ -63,8 +62,7 @@ class FreshVirtualVariableRewriter(AILBlockRewriter):
                 expr.bits,
                 expr.category,
                 expr.oident,
-                variable=expr.variable,
-                variable_offset=expr.variable_offset,
+                reg_vvars=expr.reg_vvars,
                 **expr.tags,
             )
         return expr
@@ -208,7 +206,9 @@ class ReturnDuplicatorBase:
                 # there is no need to duplicate it
                 continue
 
-            if any(self._is_indirect_jump_ailblock(src) for src, _ in in_edges):
+            # a jump-table dispatch cannot be retargeted to a copy; duplicate only for the direct predecessors
+            in_edges = [(src, dst) for src, dst in in_edges if not self._is_indirect_jump_ailblock(src)]
+            if not in_edges:
                 continue
 
             # to assure we are not copying like crazy, set a max amount of code (which is estimated in calls)
@@ -317,6 +317,12 @@ class ReturnDuplicatorBase:
                 new_src_and_vvars = [
                     (src, vvar) for src, vvar in stmt.src.src_and_vvars if src != (pred.addr, pred.idx)
                 ]
+                if len(new_src_and_vvars) == 1 and new_src_and_vvars[0][1] is not None:
+                    # a single remaining source is a plain copy, which later propagation can see through
+                    node.statements[idx] = Assignment(
+                        stmt.idx, stmt.dst, new_src_and_vvars[0][1], **stmt.tags, dephi=True
+                    )
+                    continue
                 new_phi = Phi(stmt.src.idx, stmt.src.bits, new_src_and_vvars, **stmt.src.tags)
                 node.statements[idx] = Assignment(stmt.idx, stmt.dst, new_phi, **stmt.tags)
 
@@ -331,7 +337,7 @@ class ReturnDuplicatorBase:
     ):
         updated_regions = endnode_regions.copy()
         assert self._ri is not None
-        assert isinstance(self._ri.region, GraphRegion)
+        assert isinstance(self._ri.region, RegionOverlay)
         all_region_block_addrs = list(self._find_block_sets_in_all_regions(self._ri.region).values())
         for region_head, (in_edges, region) in endnode_regions.items():
             is_single_const_ret_region = self._is_simple_return_graph(region)
@@ -419,8 +425,16 @@ class ReturnDuplicatorBase:
             if node.statements:
                 stmts += node.statements
 
-        # all statements must be either a return, a jump, an assignment, or a side-effect statement (e.g. a call)
-        type_white_list = (Return, Jump, Assignment, SideEffectStatement)
+        if not stmts:
+            # every node in this graph is statement-less. graph recovery emits a zero-size block for a
+            # fall-through that no instruction backs, and remove_labels() then strips the label that was its
+            # only statement. Such a graph carries no return statement, so it is not a simple return graph.
+            return False
+
+        # all statements must be either a return, a jump, or an assignment. A call is work rather than a return:
+        # copying `f(); g(); return;` into every predecessor shows the reader the same two calls twice, and a void
+        # function's tail is exactly where such calls sit
+        type_white_list = (Return, Jump, Assignment)
         for stmt in stmts:
             if not isinstance(stmt, type_white_list):
                 return False
@@ -572,7 +586,7 @@ class ReturnDuplicatorBase:
         return True
 
     @staticmethod
-    def _find_block_sets_in_all_regions(top_region: GraphRegion):
+    def _find_block_sets_in_all_regions(top_region: RegionOverlay):
         def _unpack_block_type_to_addrs(node):
             if isinstance(node, Block):
                 return {node.addr}
@@ -582,17 +596,17 @@ class ReturnDuplicatorBase:
                 return _unpack_block_type_to_addrs(node.true_node) | _unpack_block_type_to_addrs(node.false_node)
             return set()
 
-        def _unpack_region_to_block_addrs(region: GraphRegion):
+        def _unpack_region_to_block_addrs(region: RegionOverlay):
             region_addrs = set()
             for node in region.graph.nodes:
                 if isinstance(node, (Block, MultiNode, ConditionNode)):
                     region_addrs |= _unpack_block_type_to_addrs(node)
-                elif isinstance(node, GraphRegion):
+                elif isinstance(node, RegionOverlay):
                     region_addrs |= _unpack_region_to_block_addrs(node)
 
             return region_addrs
 
-        def _unpack_every_region(region: GraphRegion, addrs_by_region: dict):
+        def _unpack_every_region(region: RegionOverlay, addrs_by_region: dict):
             addrs_by_region[region] = set()
             for node in region.graph.nodes:
                 if isinstance(node, Block):

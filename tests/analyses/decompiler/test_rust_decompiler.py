@@ -6,41 +6,29 @@ __package__ = __package__ or "tests.analyses.decompiler"  # pylint:disable=redef
 import os
 import re
 import unittest
-from functools import wraps
+
+import networkx
 
 import angr
+from angr.analyses.decompiler.edits import rename_variable
+from angr.rust.sim_type import RustSimEnum, RustSimType
 from angr.rust.utils.rust_sigs import get_default_sig_dir
-from tests.common import bin_location
+from tests.common import bin_location, recover_call_tree_cfg
 
 RUST_BINARIES_BASE = os.path.join(bin_location, "tests", "x86_64", "rust", "coreutils")
-
-ALL_RUST_CONFIGS = (
-    "nightly-2023-05-22-O3",
-    "nightly-2025-05-22-O3",
-    "nightly-2025-05-22-O0",
-)
 
 
 def rust_binary_path(configuration: str, binary: str) -> str:
     return os.path.join(RUST_BINARIES_BASE, configuration, binary)
 
 
-def for_all_rust_configs(func):
-    """Run a test once per configuration in ALL_RUST_CONFIGS, injecting ``configuration`` as a kwarg."""
-
-    @wraps(func)
-    def inner(self, *args, **kwargs):
-        ran = 0
-        for config in ALL_RUST_CONFIGS:
-            try:
-                func(self, *args, configuration=config, **kwargs)
-                ran += 1
-            except unittest.SkipTest:
-                continue
-        if ran == 0:
-            raise unittest.SkipTest("no rust binaries found for any configuration")
-
-    return inner
+def executable_regions(proj: angr.Project) -> list[tuple[int, int]]:
+    """Address ranges of the executable sections of the main object."""
+    return [
+        (sec.vaddr, sec.vaddr + sec.memsize)
+        for sec in proj.loader.main_object.sections
+        if sec.is_executable and sec.memsize > 0
+    ]
 
 
 class TestRustcVersionIdentification(unittest.TestCase):
@@ -52,33 +40,55 @@ class TestRustcVersionIdentification(unittest.TestCase):
         "nightly-2025-05-22-O0": "1.88.0",
     }
 
+    #: How many bytes at the end of each executable section the pre-built CFG covers.
+    CFG_TAIL_BYTES = 128 * 1024
+
     def test_default_sig_dir(self):
         sig_dir = get_default_sig_dir()
         self.assertTrue(sig_dir is not None, "get_default_sig_dir() returned None")
 
-    @for_all_rust_configs
-    def test_fmt_version(self, configuration):
+    def _check_fmt_version(self, configuration):
         path = rust_binary_path(configuration, "fmt")
-        if not os.path.isfile(path):
-            self.skipTest(f"{configuration}/fmt not found")
+        assert os.path.isfile(path)
         expected = self.EXPECTED_VERSIONS[configuration]
         p = angr.Project(path)
+        # Pre-build a sampled, region-limited CFG so this test does not pay for a whole-binary one.
+        #
+        # rustc ships std/core/alloc as prebuilt rlibs, and the linker emits the crate's own object files before those
+        # rlibs, so the library code the FLIRT signatures actually describe sits at the end of .text. Hence we limit
+        # the CFG to the last 128 KB of each executable section for better speed.
+        regions = [
+            (sec.vaddr + sec.memsize - min(self.CFG_TAIL_BYTES, sec.memsize), sec.vaddr + sec.memsize)
+            for sec in p.loader.main_object.sections
+            if sec.is_executable and sec.memsize > 0
+        ]
+        p.analyses.CFGFast(normalize=True, regions=regions)
         p.analyses.RustcVersionIdentification()
         version = p.rustc_version
         self.assertEqual(version, expected, f"fmt [{configuration}]: expected {expected}, got {version}")
+
+    def test_fmt_version_nightly_2023_05_22_O3(self):
+        self._check_fmt_version("nightly-2023-05-22-O3")
+
+    def test_fmt_version_nightly_2025_05_22_O3(self):
+        self._check_fmt_version("nightly-2025-05-22-O3")
+
+    def test_fmt_version_nightly_2025_05_22_O0(self):
+        self._check_fmt_version("nightly-2025-05-22-O0")
 
 
 class RustDecompilationTarget(unittest.TestCase):
     """Base class for per-binary Rust decompilation tests.
 
     A subclass pins one binary (``BINARY``) and any number of functions inside it
-    (``FUNC_ADDRS``: ``{func_label: {configuration: address}}``). ``setUpClass``
-    builds the Project once per configuration, then decompiles every listed function
-    against it, stashing the codegen text in ``cls.decompilations[label][config]``.
-    Each feature test iterates the configs for the label it cares about under
-    ``subTest`` so a failure in one configuration doesn't hide failures in others.
+    (``FUNC_ADDRS``: ``{func_label: {configuration: address}}``).
+    :meth:`decompile_functions` builds one Project per referenced configuration,
+    decompiles every listed function against it, and returns the codegen text
+    keyed as ``{label: {configuration: text}}``. Each feature ``test_*`` method
+    calls it and asserts against the function it cares about under ``subTest`` so
+    a failure in one configuration doesn't hide failures in others.
 
-    Adding a feature assertion = a new ``check_*`` method. Adding a function to
+    Adding a feature assertion = a new ``test_*`` method. Adding a function to
     an existing binary = a new ``FUNC_ADDRS`` entry. Adding a binary = a new
     subclass.
     """
@@ -86,115 +96,244 @@ class RustDecompilationTarget(unittest.TestCase):
     BINARY: str = ""
     FUNC_ADDRS: dict[str, dict[str, int]] = {}
 
-    decompilations: dict[str, dict[str, str]] = {}
+    #: When set, CFG recovery is scoped to the functions in ``FUNC_ADDRS`` plus this many levels of
+    #: callees instead of scanning the whole binary.
+    CALL_TREE_DEPTH: int | None = None
 
-    @classmethod
-    def setUpClass(cls):
-        if cls is RustDecompilationTarget:
-            raise unittest.SkipTest("base class")
-        cls.decompilations = {label: {} for label in cls.FUNC_ADDRS}
+    #: Recover the CFG by recursive descent from the functions under test instead of scanning the whole binary.
+    CFG_FROM_FUNCS_UNDER_TEST: bool = False
 
-        configs_needed = {config for addrs in cls.FUNC_ADDRS.values() for config in addrs}
+    #: Limit the call depth of complete calling convention analysis. None refers to the entire call tree.
+    #: We manually tuned CCC_CALL_DEPTH for each test case to get equivalent decompilation output to a whole-binary
+    #: run; we may need a different CCC_CALL_DEPTH value in the future when angr decompiler changes substantially.
+    CCC_CALL_DEPTH: int | None = None
+
+    def decompile_functions(self):
+        """Decompile every function in ``FUNC_ADDRS`` and return ``{label: {configuration: codegen_text}}``.
+
+        One Project is built per configuration referenced by ``FUNC_ADDRS``;
+        configurations whose binary is missing are skipped.
+        """
+        decompilations = {label: {} for label in self.FUNC_ADDRS}
+        configs_needed = {config for addrs in self.FUNC_ADDRS.values() for config in addrs}
         for config in configs_needed:
-            path = rust_binary_path(config, cls.BINARY)
-            if not os.path.isfile(path):
-                continue
+            path = rust_binary_path(config, self.BINARY)
+            assert os.path.isfile(path), f"{path} not found"
             proj = angr.Project(path, auto_load_libs=False)
             assert proj.is_rust_binary, f"{path} is not identified as a rust binary."
-            proj.analyses.CFGFast(normalize=True)
-            proj.analyses.CompleteCallingConventions(recover_variables=False)
+            func_addrs = {
+                addr for per_config_addrs in self.FUNC_ADDRS.values() if (addr := per_config_addrs.get(config))
+            }
+            if self.CALL_TREE_DEPTH is not None:
+                recover_call_tree_cfg(proj, func_addrs, depth=self.CALL_TREE_DEPTH)
+            elif self.CFG_FROM_FUNCS_UNDER_TEST:
+                proj.analyses.CFGFast(
+                    normalize=True,
+                    regions=executable_regions(proj),
+                    start_at_entry=False,
+                    function_starts=sorted(func_addrs),
+                    force_smart_scan=False,
+                )
+            else:
+                proj.analyses.CFGFast(normalize=True)
+            callgraph = proj.kb.functions.callgraph
+            ccc_funcs = set(func_addrs)
+            for addr in func_addrs:
+                if self.CCC_CALL_DEPTH is None:
+                    ccc_funcs |= networkx.descendants(callgraph, addr)
+                else:
+                    ccc_funcs |= set(
+                        networkx.single_source_shortest_path_length(callgraph, addr, cutoff=self.CCC_CALL_DEPTH)
+                    )
+            proj.analyses.CompleteCallingConventions(prioritize_func_addrs=ccc_funcs, skip_other_funcs=True)
             proj.rustc_version = TestRustcVersionIdentification.EXPECTED_VERSIONS[config]
             proj.analyses.RustSymbolRecovery()
             proj.analyses.TypeDBLoader()
-            for label, per_config_addrs in cls.FUNC_ADDRS.items():
+            for label, per_config_addrs in self.FUNC_ADDRS.items():
                 func_addr = per_config_addrs.get(config)
                 if func_addr is None:
                     continue
                 func = proj.kb.functions[func_addr]
                 dec = proj.analyses.Decompiler(func=func, flavor="rust")
-                assert dec.codegen is not None, f"Decompiler produced no codegen for {cls.BINARY}::{label} [{config}]"
+                assert dec.codegen is not None, f"Decompiler produced no codegen for {self.BINARY}::{label} [{config}]"
                 assert dec.codegen.text is not None, (
-                    f"Decompiler produced no codegen text for {cls.BINARY}::{label} [{config}]"
+                    f"Decompiler produced no codegen text for {self.BINARY}::{label} [{config}]"
                 )
-                cls.decompilations[label][config] = dec.codegen.text
-
-        if not any(cls.decompilations.values()):
-            raise unittest.SkipTest(f"no rust binaries found for {cls.BINARY} in any target configuration")
-
-    def test_rust_decompilation_features(self):
-        for name in sorted(dir(self)):
-            if name.startswith("check_"):
-                with self.subTest(check=name):
-                    getattr(self, name)()
+                decompilations[label][config] = dec.codegen.text
+        return decompilations
 
 
-class TestFmt(RustDecompilationTarget):
-    """Feature tests for functions in the ``fmt`` coreutils binary."""
+class _FmtTests(RustDecompilationTarget):
+    """Feature tests for functions in the ``fmt`` coreutils binary.
+
+    The concrete subclasses below each pin a single rustc configuration so the
+    decompilation work (one Project build per configuration) is split across
+    independently-runnable test cases instead of one slow case that builds
+    every configuration up front. Each function gets a single ``test_*`` method
+    that asserts every recovered feature, skipping configurations whose binary
+    does not contain that function.
+    """
 
     BINARY = "fmt"
-    FUNC_ADDRS = {
-        "uumain": {
-            "nightly-2025-05-22-O3": 0x496920,
-            "nightly-2025-05-22-O0": 0x4D42F0,
-        },
-        "parse_arguments": {
-            "nightly-2023-05-22-O3": 0x416160,
-        },
-    }
 
-    def check_uumain_macro_recovery_format(self):
-        for config, text in self.decompilations["uumain"].items():
+    def _check_uumain(self):
+        uumain = self.decompile_functions().get("uumain")
+        assert uumain, "uumain not decompiled for this configuration"
+        for config, text in uumain.items():
             with self.subTest(configuration=config):
                 self.assertIn('format!("invalid width: {}"', text, f"Expected to see the format! macro [{config}]")
-
-    def check_uumain_recovers_option_and_result_types(self):
-        for config, text in self.decompilations["uumain"].items():
-            with self.subTest(configuration=config):
                 self.assertRegex(text, r"Option<struct\d+>", f"Expected an Option<T> type annotation [{config}]")
                 self.assertRegex(
                     text,
                     r"Result<struct\d+, struct\d+>",
                     f"Expected a Result<T, E> type annotation [{config}]",
                 )
+                # The optimized build lowers the Result match to an `if let Ok(...)`; the -O0 build does not.
+                if config == "nightly-2025-05-22-O3":
+                    self.assertRegex(
+                        text,
+                        r"if let Ok\([^)]*\) = v\d+ \{",
+                        f"Expected to see an if let Ok(...) pattern [{config}]",
+                    )
 
-    def check_uumain_recovers_if_let_result_pattern(self):
-        text = self.decompilations["uumain"].get("nightly-2025-05-22-O3")
-        if text is None:
-            self.skipTest("nightly-2025-05-22-O3/uumain not found")
-        self.assertRegex(text, r"if let Ok\([^)]*\) = v\d+ \{", "Expected to see an if let Ok(...) pattern")
+        self._check_codegen_recovers_struct_literals("fmt:uumain", uumain)
 
-    def check_parse_arguments_macro_recovery_format(self):
-        expected = (
+    def _check_parse_arguments(self):
+        parse_arguments = self.decompile_functions().get("parse_arguments")
+        assert parse_arguments, "parse_arguments not decompiled for this configuration"
+        expected_macros = (
             'format!("Invalid WIDTH specification: {}: {}"',
             "format!(\"invalid width: '{}': Numerical result out of range\"",
             'format!("Invalid GOAL specification: {}: {}"',
             'format!("Invalid TABWIDTH specification: {}: {}"',
         )
-        for config, text in self.decompilations["parse_arguments"].items():
-            for needle in expected:
-                with self.subTest(configuration=config, needle=needle):
-                    self.assertIn(needle, text, f"Expected to see {needle!r} [{config}]")
-
-    def check_parse_arguments_recovers_result_return_type(self):
-        for config, text in self.decompilations["parse_arguments"].items():
+        for config, text in parse_arguments.items():
             with self.subTest(configuration=config):
+                for needle in expected_macros:
+                    self.assertIn(needle, text, f"Expected to see {needle!r} [{config}]")
                 self.assertRegex(
                     text,
                     r"fn sub_[0-9a-f]+\(.*\) -> Result<struct\d+, struct\d+>",
                     f"Expected Result<T, E> function return type [{config}]",
                 )
-
-    def check_parse_arguments_recovers_ok_struct_return(self):
-        for config, text in self.decompilations["parse_arguments"].items():
-            with self.subTest(configuration=config):
                 self.assertIn("return Ok(struct112 {", text, f"Expected Ok(struct112 {{ ... }}) return [{config}]")
 
-    def check_codegen_recovers_struct_literals(self):
+        self._check_codegen_recovers_struct_literals("fmt:parse_arguments", parse_arguments)
+
+    def _check_codegen_recovers_struct_literals(self, label, decompilations):
         struct_literal = re.compile(r"=\s*struct\d+ \{\n\s+field_")
-        for label, per_config_decompilations in self.decompilations.items():
-            for config, text in per_config_decompilations.items():
-                with self.subTest(function=label, configuration=config):
-                    self.assertRegex(text, struct_literal, f"Expected a recovered struct literal [{label} {config}]")
+        for config, text in decompilations.items():
+            with self.subTest(function=label, configuration=config):
+                self.assertRegex(text, struct_literal, f"Expected a recovered struct literal [{label} {config}]")
+
+
+class TestFmtNightly20250522O3(_FmtTests):
+    """``fmt`` decompilation feature tests for the nightly-2025-05-22-O3 build."""
+
+    FUNC_ADDRS = {
+        "uumain": {"nightly-2025-05-22-O3": 0x496920},
+    }
+    CFG_FROM_FUNCS_UNDER_TEST = True
+    CCC_CALL_DEPTH = 4
+
+    def test_uumain_2025052203(self):
+        self._check_uumain()
+
+
+class TestFmtNightly20250522O0(_FmtTests):
+    """``fmt`` decompilation feature tests for the nightly-2025-05-22-O0 build."""
+
+    FUNC_ADDRS = {
+        "uumain": {"nightly-2025-05-22-O0": 0x4D42F0},
+    }
+    CALL_TREE_DEPTH = 5
+
+    def test_uumain_2025052200(self):
+        self._check_uumain()
+
+
+class TestFmtNightly20230522O3(_FmtTests):
+    """``fmt`` decompilation feature tests for the nightly-2023-05-22-O3 build."""
+
+    FUNC_ADDRS = {
+        "parse_arguments": {"nightly-2023-05-22-O3": 0x416160},
+    }
+    CFG_FROM_FUNCS_UNDER_TEST = True
+    CCC_CALL_DEPTH = 4
+
+    def test_parse_arguments_2023052203(self):
+        self._check_parse_arguments()
+
+
+class TestFlavorSwitch(unittest.TestCase):
+    """Decompiling a function with the Rust flavor and then the C flavor must not reuse Rust-flavor variables."""
+
+    FUNC_ADDR = 0x4359E0  # its local v2 is typed Result<T, E> by the Rust flavor
+
+    @classmethod
+    def _project(cls) -> angr.Project:
+        proj = angr.Project(rust_binary_path("nightly-2023-05-22-O3", "fmt"), auto_load_libs=False)
+        recover_call_tree_cfg(proj, [cls.FUNC_ADDR], depth=1)
+        proj.analyses.CompleteCallingConventions(prioritize_func_addrs=[cls.FUNC_ADDR], skip_other_funcs=True)
+        proj.rustc_version = TestRustcVersionIdentification.EXPECTED_VERSIONS["nightly-2023-05-22-O3"]
+        proj.analyses.RustSymbolRecovery()
+        proj.analyses.TypeDBLoader()
+        return proj
+
+    def test_rust_then_c_flavor(self):
+        func_addr = self.FUNC_ADDR
+        # the reference: a C-only decompilation
+        proj = self._project()
+        c_only = proj.analyses.Decompiler(proj.kb.functions[func_addr], fail_fast=True)
+        assert c_only.codegen is not None and c_only.codegen.text is not None
+        c_only_prototype = str(proj.kb.functions[func_addr].prototype)
+
+        proj = self._project()
+        func = proj.kb.functions[func_addr]
+        c_prototype_before = str(func.prototype)
+        assert not func.has_prototype_for_flavor("rust")
+
+        dec = proj.analyses.Decompiler(func, flavor="rust", fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        # the Rust flavor keeps its prototype apart from the C one
+        assert func.has_prototype_for_flavor("rust")
+        assert str(func.prototype) == c_prototype_before
+        varman = proj.kb.dec_variables[func_addr]
+        assert varman.flavor == "rust"
+        assert any(isinstance(ty, RustSimEnum) for ty in varman.variable_to_types.values())
+        rust_varman = varman
+        rust_var_ids = {id(v) for v in rust_varman.variable_to_types}
+        # globals are kept per flavor too: the Rust run never touches the C global manager
+        global_managers = proj.kb.dec_variables.global_managers
+        assert "rust" in global_managers
+        assert global_managers["rust"].flavor == "rust"
+        assert global_managers["rust"].get_variables()
+        assert not any(
+            isinstance(ty, RustSimType) for ty in proj.kb.dec_variables.global_manager.variable_to_types.values()
+        )
+
+        dec = proj.analyses.Decompiler(func, fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        varman = proj.kb.dec_variables[func_addr]
+        assert varman.flavor == "pseudocode"
+        # a fresh manager: no variables (or their types) left over from the Rust-flavor run
+        assert varman is not rust_varman
+        assert rust_var_ids.isdisjoint(id(v) for v in varman.variable_to_types)
+        # the C flavor never runs the Rust type translator, so no Rust type at all
+        assert not any(isinstance(ty, RustSimType) for ty in varman.variable_to_types.values())
+        assert not any(
+            isinstance(ty, RustSimType) for ty in proj.kb.dec_variables.global_manager.variable_to_types.values()
+        )
+        assert "Result<" not in dec.codegen.text
+        # the Rust run left no trace in the C output or the C prototype
+        assert str(func.prototype) == c_only_prototype
+        assert dec.codegen.text == c_only.codegen.text
+
+        # user renames of the Rust flavor survive switching back to it
+        rename_variable(proj, func, "v1", "user_named", flavor="rust")
+        dec = proj.analyses.Decompiler(func, flavor="rust", fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        assert "user_named" in dec.codegen.text
 
 
 if __name__ == "__main__":

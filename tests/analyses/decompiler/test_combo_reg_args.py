@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+# pylint: disable=missing-class-docstring,no-self-use,no-member
+"""Tests for decompiling functions whose prototypes have by-value struct arguments passed in registers.
+
+A by-value struct argument that is passed entirely in registers becomes a combo-register argument
+(SimComboRegisterVariable); a struct argument with no known locations (empty or unknown struct
+layout, e.g. std::forward_iterator_tag parsed from an Itanium-mangled name) must be treated as an
+opaque variable instead. Both used to crash ssailification with `assert offset is not None` in
+RewritingAnalysis._initial_abstract_state.
+"""
+
+from __future__ import annotations
+
+__package__ = __package__ or "tests.analyses.decompiler"  # pylint:disable=redefined-builtin
+
+import os
+import unittest
+from collections import OrderedDict
+
+import angr
+from angr.calling_conventions import SimCCARM, SimCCGoAMD64, SimCCSystemVAMD64
+from angr.knowledge_plugins.functions.function import PrototypeSource
+from angr.sim_type import (
+    SimStruct,
+    SimTypeBottom,
+    SimTypeChar,
+    SimTypeFunction,
+    SimTypeInt,
+    SimTypeInt128,
+    SimTypeLongLong,
+    SimTypePointer,
+)
+from tests.common import bin_location, load_project_with_scoped_cfg, print_decompilation_result
+
+test_location = os.path.join(bin_location, "tests")
+
+
+class TestComboRegArgs(unittest.TestCase):
+    def _decompile_authenticate(self, proto: SimTypeFunction) -> str:
+        bin_path = os.path.join(test_location, "x86_64", "fauxware")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(fail_fast=True, normalize=True, data_references=True)
+
+        func = cfg.functions["authenticate"]
+        assert func is not None
+        func.prototype = proto.with_arch(proj.arch)
+        func.calling_convention = SimCCSystemVAMD64(proj.arch)
+        func.prototype_libname = None
+        func.prototype_source = PrototypeSource.USER
+
+        dec = proj.analyses.Decompiler(func, cfg=cfg.model, fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        return dec.codegen.text
+
+    def test_two_register_combo_argument(self):
+        # a 16-byte struct passed by value lands in two registers (rdi, rsi on SysV AMD64) and becomes a
+        # combo-register argument
+        pair = SimStruct(OrderedDict(a=SimTypeLongLong(), b=SimTypeLongLong()), name="pair_t", pack=False)
+        proto = SimTypeFunction([pair], SimTypeInt(signed=True), arg_names=["p"])
+
+        text = self._decompile_authenticate(proto)
+        assert "pair_t p" in text
+        assert "/* unsupported instruction */" not in text
+
+    def test_empty_struct_argument(self):
+        # an empty struct has no argument locations; it must be treated as an opaque variable instead of a
+        # zero-register combo-register argument
+        empty = SimStruct(OrderedDict(), name="empty_t", pack=False)
+        char_ptr = SimTypePointer(SimTypeChar())
+        proto = SimTypeFunction([empty, char_ptr, char_ptr], SimTypeInt(signed=True), arg_names=["e", "s", "t"])
+
+        text = self._decompile_authenticate(proto)
+        assert "authenticate" in text
+
+    def test_combo_reg_return_survives_return_duplication(self):
+        # runtime.mapiternext returns an int128_t in rax:rbx; runtime.mapiterinit calls it in a block that
+        # ReturnDuplicator copies with fresh vvars, which used to drop reg_vvars from the combo-register vvar and crash
+        # variable linking with "'NoneType' object is not iterable"
+        bin_path = os.path.join(
+            test_location, "x86_64", "windows", "131252a8059fdbb12d77cd4711e597c45bb48e6d4bc3ddc808697a5e0488ff2c"
+        )
+        proj, cfg = load_project_with_scoped_cfg(
+            bin_path, 0x40EF60, project_kwargs={"auto_load_libs": False}, expand_call_tree=False, run_ccc=False
+        )
+        # the prototype CompleteCallingConventions recovers for runtime.mapiternext on the whole binary
+        callee = cfg.functions[0x40F1E0]
+        callee.calling_convention = SimCCGoAMD64(proj.arch)
+        callee.prototype = SimTypeFunction([SimTypePointer(SimTypeBottom(label="void"))], SimTypeInt128()).with_arch(
+            proj.arch
+        )
+        callee.prototype_source = PrototypeSource.USER
+
+        dec = proj.analyses.Decompiler(cfg.functions[0x40EF60], cfg=cfg, fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert "mapiternext" in dec.codegen.text
+
+    def test_arm_long_long_register_pair_arguments(self):
+        # AAPCS passes each long long argument of __divdi3 in a register pair (r0:r1 and r2:r3), which the calling
+        # convention describes as SimComboArg([<r0>, <r1>]); the argument list used to assert that every SimComboArg
+        # lives on the stack
+        bin_path = os.path.join(test_location, "armel", "decompiler", "rm")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(fail_fast=True, normalize=True, data_references=True)
+
+        func = cfg.functions["__divdi3"]
+        assert func is not None
+        proto = SimTypeFunction(
+            [SimTypeLongLong(signed=True), SimTypeLongLong(signed=True)],
+            SimTypeLongLong(signed=True),
+            arg_names=["numerator", "denominator"],
+        ).with_arch(proj.arch)
+        assert isinstance(proto, SimTypeFunction)
+        func.set_prototype(None, proto, PrototypeSource.USER)
+        func.calling_convention = SimCCARM(proj.arch)
+        func.prototype_libname = None
+
+        dec = proj.analyses.Decompiler(func, cfg=cfg.model)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        assert "long long numerator" in dec.codegen.text
+        assert "long long denominator" in dec.codegen.text
+
+
+if __name__ == "__main__":
+    unittest.main()

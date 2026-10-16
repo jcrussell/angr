@@ -3,4 +3,5 @@ include README.md
 include Cargo.toml
 include Cargo.lock
 graft native
-recursive-include angr/procedures/definitions *.json
+recursive-include angr/protos *.proto
+recursive-exclude angr/protos *_pb2.py

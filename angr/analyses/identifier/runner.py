@@ -4,8 +4,7 @@ import logging
 import os
 import random
 
-import claripy
-
+from angr import claripy
 from angr import sim_options as so
 from angr.errors import AngrCallableError, AngrCallableMultistateError, AngrError, SimError
 from angr.procedures import SIM_LIBRARIES
@@ -192,7 +191,7 @@ class Runner:
                 curr_buf_loc += max(len(i), 0x1000)
             else:
                 if not isinstance(i, int):
-                    raise Exception(f"Expected int/bytes got {type(i)}")
+                    raise TypeError(f"Expected int/bytes got {type(i)}")
                 mapped_input.append(i)
 
         cc = self.project.factory.cc()
@@ -219,7 +218,7 @@ class Runner:
                     curr_buf_loc += max(len(i), 0x1000)
                 else:
                     if not isinstance(i, int):
-                        raise Exception(f"Expected int/str got {type(i)}")
+                        raise TypeError(f"Expected int/str got {type(i)}")
                     mapped_input.append(i)
         else:
             for i, off in zip(test_data.input_args, custom_offs):
@@ -229,7 +228,7 @@ class Runner:
                     curr_buf_loc += max(len(i), 0x1000)
                 else:
                     if not isinstance(i, int):
-                        raise Exception(f"Expected int/str got {type(i)}")
+                        raise TypeError(f"Expected int/str got {type(i)}")
                     mapped_input.append(i)
 
         cc = self.project.factory.cc()
@@ -325,7 +324,7 @@ class Runner:
                     curr_buf_loc += max(len(i), 0x1000)
                 else:
                     if not isinstance(i, int):
-                        raise Exception(f"Expected int/bytes got {type(i)}")
+                        raise TypeError(f"Expected int/bytes got {type(i)}")
                     mapped_input.append(i)
 
         else:
@@ -336,7 +335,7 @@ class Runner:
                     curr_buf_loc += max(len(i), 0x1000)
                 else:
                     if not isinstance(i, int):
-                        raise Exception(f"Expected int/bytes got {type(i)}")
+                        raise TypeError(f"Expected int/bytes got {type(i)}")
                     mapped_input.append(i)
 
         cc = self.project.factory.cc()

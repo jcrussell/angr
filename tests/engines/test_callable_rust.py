@@ -23,7 +23,7 @@ __package__ = __package__ or "tests.engines"  # pylint:disable=redefined-builtin
 
 import os
 
-import claripy
+from angr import claripy
 import pytest
 
 import angr

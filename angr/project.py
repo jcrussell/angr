@@ -8,7 +8,7 @@ import types
 from collections import defaultdict
 from io import BytesIO, IOBase
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import archinfo
 import cle
@@ -17,12 +17,16 @@ from archinfo.arch_soot import ArchSoot, SootAddressDescriptor
 from angr.knowledge_base import KnowledgeBase
 
 from .analyses.analysis import AnalysesHub, AnalysesHubWithDefault
-from .errors import AngrNoPluginError
+from .engines.pcode.lifter import PcodeBasicBlockLifter
+from .errors import AngrNoPluginError, AngrValueError
 from .factory import AngrObjectFactory
 from .llm_client import LLMClient
 from .procedures import SIM_LIBRARIES, SIM_PROCEDURES
 from .sim_procedure import SimProcedure
 from .simos import SimOS, os_mapping
+
+if TYPE_CHECKING:
+    from angr.go.utils.version import GoVersionRange
 
 l = logging.getLogger(name=__name__)
 
@@ -68,7 +72,12 @@ def load_shellcode(shellcode: bytes | str, arch, start_offset=0, load_address=0,
     )
 
 
-CACHE_CONFIG_KEYS = {"functions", "cfg_nodes", "cfg_edges"}
+CACHE_CONFIG_KEYS = {"functions", "cfg_nodes", "cfg_segment_bytes"}
+# Graphs of binaries with more executable code than this are paged to the RuntimeDb.
+CFG_PAGED_EXECUTABLE_BYTES = 1024 * 1024
+CFG_SEGMENT_BUDGET_MIN = 128 * 1024 * 1024
+CFG_SEGMENT_BUDGET_MAX = 512 * 1024 * 1024
+_SIM_LIBRARY_COMPATIBILITY_ALIASES = {"wsock32.dll": "ws2_32.dll"}
 
 _UNSET = object()
 
@@ -120,6 +129,8 @@ class Project:
     """
 
     arch: archinfo.Arch
+    # class-level default so that projects unpickled from before this attribute existed still work
+    _language_confidence: str | None = None
 
     def __init__(
         self,
@@ -139,7 +150,6 @@ class Project:
         store_function=None,
         load_function=None,
         analyses_preset=None,
-        concrete_target=None,
         eager_ifunc_resolution=None,
         cache_limits: dict[str, int | None] | None = None,
         rustc_version=None,
@@ -174,7 +184,7 @@ class Project:
             # use angr's loader, provided by cle
             l.info("Loading binary %s", thing)
             self.filename = str(thing)
-            self.loader = cle.Loader(self.filename, concrete_target=concrete_target, **load_options)
+            self.loader = cle.Loader(self.filename, **load_options)
 
         # Step 2: determine its CPU architecture, ideally falling back to CLE's guess
         if isinstance(arch, str):
@@ -199,21 +209,6 @@ class Project:
 
         self._sim_procedures = {}
 
-        self.concrete_target = concrete_target
-
-        # It doesn't make any sense to have auto_load_libs
-        # if you have the concrete target, let's warn the user about this.
-        if self.concrete_target and load_options.get("auto_load_libs"):
-            l.critical(
-                "Incompatible options selected for this project, please disable auto_load_libs if "
-                "you want to use a concrete target."
-            )
-            raise Exception("Incompatible options for the project")
-
-        if self.concrete_target and self.arch.name not in ["X86", "AMD64", "ARMHF", "ARMEL", "MIPS32"]:
-            l.critical("Concrete execution does not support yet the selected architecture. Aborting.")
-            raise Exception("Incompatible options for the project")
-
         self._default_analysis_mode = default_analysis_mode
         self._exclude_sim_procedures_func = exclude_sim_procedures_func
         self._exclude_sim_procedures_list = exclude_sim_procedures_list
@@ -237,6 +232,8 @@ class Project:
             l.warning("Disabling IRSB translation cache because support for self-modifying code is enabled.")
 
         self.entry = self.loader.main_object.entry
+        if isinstance(self.entry, int) and self.entry < 0:
+            raise AngrValueError(f"Main object {self.loader.main_object} has a negative entry address {self.entry}")
         self.storage = defaultdict(list)
         self.store_function = store_function or self._store
         self.load_function = load_function or self._load
@@ -270,7 +267,12 @@ class Project:
         if not set(self.cache_limits.keys()).issubset(CACHE_CONFIG_KEYS):
             raise ValueError(f"Invalid cache configuration keys: {set(self.cache_limits.keys()) - CACHE_CONFIG_KEYS}")
 
+        self._pcode_block_lifter: PcodeBasicBlockLifter | None = None
+
         self._languages: list[str] | None = None
+        self._language_confidence: str | None = None
+        self._detected_languages: list[str] | None = None
+        self._go_version_range: Any = _UNSET
         self.is_java_project = isinstance(self.arch, ArchSoot)
         self.is_java_jni_project = isinstance(self.arch, ArchSoot) and getattr(
             self.simos, "is_javavm_with_jni_support", False
@@ -320,7 +322,7 @@ class Project:
         try:
             return self._knowledge_bases[name]
         except KeyError:
-            kb = KnowledgeBase(self, name)
+            kb = KnowledgeBase(self, name=name)
             self._knowledge_bases[name] = kb
             return kb
 
@@ -350,12 +352,13 @@ class Project:
         # Step 1: get the set of libraries we are allowed to use to resolve unresolved symbols
         missing_libs = []
         missing_wincore_dlls = False
-        for lib_name in self.loader.missing_dependencies:
+        for requested_lib_name in self.loader.missing_dependencies:
+            lib_name = _SIM_LIBRARY_COMPATIBILITY_ALIASES.get(requested_lib_name, requested_lib_name)
             try:
                 missing_libs.extend(SIM_LIBRARIES[lib_name])
             except KeyError:
-                l.info("There are no simprocedures for missing library %s :(", lib_name)
-                if lib_name.startswith("api-ms-win-"):
+                l.info("There are no simprocedures for missing library %s :(", requested_lib_name)
+                if requested_lib_name.startswith("api-ms-win-"):
                     missing_wincore_dlls = True
         if missing_wincore_dlls:
             # some of the missing api-ms-win-*.dll libraries are actually provided by kernel32.dll and advapi32.dll
@@ -367,8 +370,11 @@ class Project:
         # additionally provide libraries we _have_ loaded as a fallback fallback
         # this helps in the case that e.g. CLE picked up a linux arm libc to satisfy an android arm binary
         for lib in self.loader.all_objects:
-            if lib.provides is not None and lib.provides in SIM_LIBRARIES:
-                simlibs = SIM_LIBRARIES[lib.provides]
+            if lib.provides is None:
+                continue
+            lib_name = _SIM_LIBRARY_COMPATIBILITY_ALIASES.get(lib.provides, lib.provides)
+            if lib_name in SIM_LIBRARIES:
+                simlibs = SIM_LIBRARIES[lib_name]
                 for simlib in simlibs:
                     if simlib not in missing_libs:
                         missing_libs.append(simlib)
@@ -425,6 +431,7 @@ class Project:
                 owner_name = export.owner.provides
                 if isinstance(self.loader.main_object, cle.backends.pe.PE):
                     owner_name = owner_name.lower()
+                owner_name = _SIM_LIBRARY_COMPATIBILITY_ALIASES.get(owner_name, owner_name)
                 if owner_name not in SIM_LIBRARIES:
                     continue
                 sim_libs = SIM_LIBRARIES[owner_name]
@@ -441,8 +448,12 @@ class Project:
             # An important consideration is that even if we're stubbing a function out,
             # we still want to try as hard as we can to figure out where it comes from
             # so we can get the calling convention as close to right as possible.
-            elif reloc.resolvewith is not None and reloc.resolvewith in SIM_LIBRARIES:
-                sim_lib = sorted(SIM_LIBRARIES[reloc.resolvewith], key=lambda lib: lib.has_prototype(export.name))[-1]
+            elif (
+                reloc.resolvewith is not None
+                and (sim_lib_name := _SIM_LIBRARY_COMPATIBILITY_ALIASES.get(reloc.resolvewith, reloc.resolvewith))
+                in SIM_LIBRARIES
+            ):
+                sim_lib = max(SIM_LIBRARIES[sim_lib_name], key=lambda lib: lib.has_prototype(export.name))
                 if self._check_user_blacklists(export.name):
                     if not func.is_weak:
                         l.info("Using stub SimProcedure for unresolved %s from %s", func.name, sim_lib.name)
@@ -672,7 +683,7 @@ class Project:
                 for reloc in self.loader.find_relevant_relocations(symbol_name):
                     assert reloc.symbol is not None
                     if not reloc.symbol.is_weak:
-                        raise Exception("Symbol is strong but we couldn't find its resolution? Report to @rhelmot.")
+                        raise ValueError("Symbol is strong but we couldn't find its resolution? Report to @rhelmot.")
                     if new_sym is None:
                         new_sym = self.loader.extern_object.make_extern(symbol_name)
                     reloc.resolve(new_sym)
@@ -820,6 +831,22 @@ class Project:
         return hook_decorator
 
     #
+    # P-code
+    #
+
+    def pcode_block_lifter(self, arch: archinfo.Arch) -> PcodeBasicBlockLifter:
+        """
+        Get the p-code basic block lifter, and therefore the Sleigh context, this project decodes `arch` with.
+
+        Sleigh records context variables per address, so the blocks of one binary decode with one context and no
+        block of another binary touches it. `arch` is normally this project's own; a `Block` may name another, and
+        decoding that with this project's context would answer for the wrong architecture, so it gets its own.
+        """
+        if self._pcode_block_lifter is None or self._pcode_block_lifter.arch != arch:
+            self._pcode_block_lifter = PcodeBasicBlockLifter(arch)
+        return self._pcode_block_lifter
+
+    #
     # Pickling
     #
 
@@ -836,6 +863,7 @@ class Project:
                 not in {
                     "analyses",
                     "_llm_client",
+                    "_pcode_block_lifter",
                 }
             }
         finally:
@@ -843,7 +871,9 @@ class Project:
 
     def __setstate__(self, s):
         self.__dict__.update(s)
+        self.__dict__.setdefault("_go_version_range", _UNSET)
         self._llm_client = _UNSET
+        self._pcode_block_lifter = None
         try:
             self._initialize_analyses_hub()
         except AngrNoPluginError:
@@ -913,13 +943,64 @@ class Project:
         if not self._languages:
             detector = self.analyses.LanguageDetector()
             self._languages = [detector.language]
+            self._detected_languages = self._languages
+            self._language_confidence = detector.confidence.value
         if not self._languages:
             self._languages.append("unknown")
         return self._languages
 
     @property
+    def language_confidence(self) -> str | None:
+        """
+        How sure LanguageDetector is about :meth:`languages` ("high", "medium" or "low"), or None when the language did
+        not come from detection.
+        """
+        self.languages()
+        detected_languages = getattr(self, "_detected_languages", self._languages)
+        return self._language_confidence if self._languages is detected_languages else None
+
+    @property
+    def language_is_certain(self) -> bool:
+        """
+        Whether the detected language is solid enough to base language-specific ABI decisions on. A single matching
+        symbol name is enough for LanguageDetector to report a language, but not enough to reinterpret every argument
+        and return value in the binary.
+        """
+        return self.language_confidence in (None, "high")
+
+    @property
     def is_rust_binary(self) -> bool:
-        return "rust" in self.languages()
+        """
+        Whether the main binary was identified as Rust with enough confidence to enable Rust-specific analyses.
+        """
+        return "rust" in self.languages() and self.language_confidence in (None, "medium", "high")
+
+    @property
+    def is_go_binary(self) -> bool:
+        """
+        Whether the main binary was confidently identified as Go. Go's ABI differs from the platform default in every
+        argument and return value, so a low-confidence detection is deliberately not enough.
+        """
+        return "go" in self.languages() and self.language_is_certain
+
+    @property
+    def go_version_range(self) -> GoVersionRange | None:
+        """
+        The (oldest, newest) Go releases the main binary may have been built with; see
+        :func:`angr.go.utils.version.go_version_range`.
+        """
+        if self._go_version_range is _UNSET:
+            from angr.go.utils.version import go_version_range  # pylint:disable=import-outside-toplevel
+
+            self._go_version_range = go_version_range(self)
+        return self._go_version_range
+
+    @property
+    def goos(self) -> str | None:
+        """The main binary's GOOS, when its container format tells."""
+        from angr.go.utils.version import identify_goos  # pylint:disable=import-outside-toplevel
+
+        return identify_goos(self)
 
     #
     # Cache limit settings
@@ -973,26 +1054,34 @@ class Project:
             return None  # if the binary is small, don't cache CFG nodes
         return min(((sz // 256) // 100 + 1) * 30, 5000)
 
-    def get_cfg_edge_cache_limit(self) -> int | None:
-        """
-        Get the cache limit for CFG edge caches (adjacency data spilling).
-
-        :return: The cache limit, or None to disable the cache.
-        """
-        if "cfg_edges" in self.cache_limits:
-            return self.cache_limits["cfg_edges"]
-
+    def _main_object_size(self) -> int | None:
         if self.loader.main_object.cached_content is not None:
-            sz = len(self.loader.main_object.cached_content)
-        else:
-            # estimate a size using max address - min address
-            if self.loader.main_object.max_addr is not None and self.loader.main_object.min_addr is not None:
-                sz = self.loader.main_object.max_addr - self.loader.main_object.min_addr
-            else:
-                sz = None
+            return len(self.loader.main_object.cached_content)
+        if self.loader.main_object.max_addr is not None and self.loader.main_object.min_addr is not None:
+            return self.loader.main_object.max_addr - self.loader.main_object.min_addr
+        return None
 
-        if sz is None:
-            return 10000  # sigh
-        if sz < 256 * 1024:
-            return None  # if the binary is small, don't cache CFG edges
-        return min(((sz // 256) // 100 + 1) * 50, 800)
+    def executable_bytes(self) -> int:
+        """
+        The number of bytes of executable code in the main object (sections, else segments, else the whole object).
+        """
+        obj = self.loader.main_object
+        size = sum(sec.memsize for sec in obj.sections if sec.is_executable)
+        if size == 0:
+            size = sum(seg.memsize for seg in obj.segments if seg.is_executable)
+        if size == 0:
+            size = self._main_object_size() or 0
+        return size
+
+    def get_cfg_segment_budget(self) -> int | None:
+        """
+        Byte budget for resident CFG graph segments (cache_limits key ``cfg_segment_bytes``); a graph with a budget
+        is paged to the RuntimeDb from the start. None keeps the graph fully resident. By default only binaries with
+        more than CFG_PAGED_EXECUTABLE_BYTES of executable code are paged.
+        """
+        if "cfg_segment_bytes" in self.cache_limits:
+            return self.cache_limits["cfg_segment_bytes"]
+        code = self.executable_bytes()
+        if code <= CFG_PAGED_EXECUTABLE_BYTES:
+            return None
+        return min(max(CFG_SEGMENT_BUDGET_MIN, code * 16), CFG_SEGMENT_BUDGET_MAX)

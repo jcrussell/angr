@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 
-import claripy
-
+from angr import claripy
 from angr.engines.soot.expressions import SimSootExpr_NewArray, SimSootExpr_NullConstant
 from angr.engines.soot.values import SimSootValue_StringRef, SimSootValue_ThisRef
 from angr.procedures.java import JavaSimProcedure
@@ -35,8 +34,6 @@ class MapInit(JavaSimProcedure):
         this_ref.store_field(self.state, MAP_SIZE, "int", claripy.BVV(0, 32))
         array_ref = SimSootExpr_NewArray.new_array(self.state, "java.lang.Object", claripy.BVV(1000, 32))
         this_ref.store_field(self.state, MAP_KEYS, "java.lang.Object[]", array_ref)
-
-        return
 
 
 class MapPut(JavaSimProcedure):

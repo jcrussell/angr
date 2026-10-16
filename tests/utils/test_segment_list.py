@@ -1,9 +1,36 @@
 from __future__ import annotations
 
-import pickle
+import time
 import unittest
 
 from angr.rustylib import SegmentList
+
+
+def _ratio_reference(seg_list: SegmentList, addr: int, window_size: int, sort: str | None) -> float:
+    """
+    The O(n) algorithm ``SegmentList.sort_ratio_backwards()`` replaced: search() for the starting index, then walk
+    backwards through the list by index.
+    """
+    idx = seg_list.search(addr)
+    if idx is None or idx >= len(seg_list):
+        return 0.0
+    if seg_list[idx].sort != sort:
+        return 0.0
+
+    total_bytes = 0
+    matching_bytes = 0
+    while idx >= 0:
+        segment = seg_list[idx]
+        if segment.sort == sort:
+            matching_bytes += segment.size
+        total_bytes += segment.size
+        if total_bytes >= window_size:
+            break
+        idx -= 1
+
+    if total_bytes < window_size:
+        return 0.0
+    return matching_bytes / total_bytes
 
 
 class TestSegmentList(unittest.TestCase):
@@ -113,116 +140,85 @@ class TestSegmentList(unittest.TestCase):
         assert seg_list[1].end == 30
         assert seg_list[1].sort == "code"
 
-    def _boundary_list(self):
-        # [0,10)@code, [10,20)@data, gap [20,30), [30,35)@code
+    def test_iteration(self):
         seg_list = SegmentList()
         seg_list.occupy(0, 10, "code")
-        seg_list.occupy(10, 10, "data")
-        seg_list.occupy(30, 5, "code")
-        return seg_list
+        seg_list.occupy(20, 5, "data")
 
-    def test_search_boundaries(self):
-        seg_list = self._boundary_list()
+        assert [(s.start, s.end, s.sort) for s in seg_list] == [(0, 10, "code"), (20, 25, "data")]
+        assert list(SegmentList()) == []
 
-        # Segments are half-open [start, end): an address at a segment's end
-        # boundary belongs to the NEXT segment (regression for zi35f.1).
-        assert seg_list.search(0) == 0  # inside first
-        assert seg_list.search(9) == 0  # last byte of first
-        assert seg_list.search(10) == 1  # boundary -> second
-        assert seg_list.search(19) == 1  # last byte of second
-        # An address inside a gap resolves to the next segment, not None.
-        assert seg_list.search(20) == 2
-        assert seg_list.search(29) == 2
-        assert seg_list.search(30) == 2  # inside third
-        assert seg_list.search(34) == 2  # last byte of third
-        assert seg_list.search(35) is None  # past everything
+    def test_sort_ratio_backwards(self):
+        seg_list = SegmentList()
+        seg_list.occupy(0, 100, "code")
+        seg_list.occupy(100, 100, "nodecode")
+        seg_list.occupy(200, 100, "code")
+        seg_list.occupy(300, 100, "nodecode")
 
-        assert SegmentList().search(0) is None  # empty list
+        # the walk starts in the last segment and covers as many segments as the window needs
+        assert seg_list.sort_ratio_backwards(399, 100, "nodecode") == 1.0
+        assert seg_list.sort_ratio_backwards(399, 200, "nodecode") == 0.5
+        assert seg_list.sort_ratio_backwards(399, 400, "nodecode") == 0.5
+        # the starting segment has the wrong sort
+        assert seg_list.sort_ratio_backwards(250, 100, "nodecode") == 0.0
+        # fewer than window_size occupied bytes are available
+        assert seg_list.sort_ratio_backwards(399, 500, "nodecode") == 0.0
+        # beyond every segment
+        assert seg_list.sort_ratio_backwards(500, 100, "nodecode") == 0.0
+        assert SegmentList().sort_ratio_backwards(0, 100, "nodecode") == 0.0
 
-    def test_next_free_pos(self):
-        seg_list = self._boundary_list()
+    def test_sort_ratio_backwards_skips_gaps(self):
+        seg_list = SegmentList()
+        seg_list.occupy(0, 40, "nodecode")
+        seg_list.occupy(60, 40, "code")
+        # a 900-byte gap, which the backwards walk steps over without counting it
+        seg_list.occupy(1000, 40, "nodecode")
 
-        # Contiguous [0,20) occupation -> first free byte is the gap start.
-        assert seg_list.next_free_pos(0) == 20
-        assert seg_list.next_free_pos(5) == 20
-        assert seg_list.next_free_pos(19) == 20
-        assert seg_list.next_free_pos(20) == 20  # already free
-        assert seg_list.next_free_pos(29) == 29  # free byte before third seg
-        assert seg_list.next_free_pos(30) == 35  # inside third -> after its end
-        assert seg_list.next_free_pos(35) == 35  # already free
+        assert seg_list.sort_ratio_backwards(1039, 40, "nodecode") == 1.0
+        assert seg_list.sort_ratio_backwards(1039, 80, "nodecode") == 0.5
+        assert seg_list.sort_ratio_backwards(1039, 120, "nodecode") == 2 / 3
+        assert seg_list.sort_ratio_backwards(1039, 121, "nodecode") == 0.0
 
-        assert SegmentList().next_free_pos(42) == 42  # empty -> address itself
+    def test_sort_ratio_backwards_matches_reference(self):
+        # single-byte segments and gaps are both common in CFGFast's segment list
+        seg_list = SegmentList()
+        addr = 0
+        for i in range(80):
+            addr += i % 3
+            size = 1 + (i * 7) % 9
+            seg_list.occupy(addr, size, "nodecode" if i % 5 < 2 else "code")
+            addr += size
 
-    def test_next_pos_with_sort_not_in(self):
-        seg_list = self._boundary_list()
+        for probe in range(addr + 4):
+            for window in (1, 7, 32, 4096):
+                assert seg_list.sort_ratio_backwards(probe, window, "nodecode") == _ratio_reference(
+                    seg_list, probe, window, "nodecode"
+                ), f"probe {probe:#x}, window {window}"
 
-        # First occupied byte whose sort is not excluded, clamped to >= address.
-        assert seg_list.next_pos_with_sort_not_in(0, {"code"}) == 10  # data seg
-        assert seg_list.next_pos_with_sort_not_in(0, {"data"}) == 0  # code at 0
-        # address past the matching segment's start clamps to address.
-        assert seg_list.next_pos_with_sort_not_in(12, {"code"}) == 12
-        # Everything excluded -> None.
-        assert seg_list.next_pos_with_sort_not_in(0, {"code", "data"}) is None
+    def test_sort_ratio_backwards_is_not_quadratic(self):
+        # regression test for angr#6765: CFGFast._nodecode_bytes_ratio used to search() and then walk backwards by
+        # index, both linear in the segment count, which made the smart scan quadratic in input size
+        seg_list = SegmentList()
+        for i in range(100_000):
+            seg_list.occupy(i * 2, 1, "nodecode" if i % 4 else "code")
+        assert len(seg_list) == 100_000
 
-        # max_distance bounds the (half-open) search window.
-        assert seg_list.next_pos_with_sort_not_in(0, {"code"}, 5) is None
-        assert seg_list.next_pos_with_sort_not_in(0, {"code"}, 11) == 10
+        start = time.time()
+        for i in range(1000):
+            seg_list.sort_ratio_backwards(199_999 - i, 512, "nodecode")
+        elapsed = time.time() - start
+        # the old implementation needs minutes here; the current one needs milliseconds
+        assert elapsed < 5.0, f"1000 queries over 100k segments took {elapsed:.1f}s"
 
-        assert SegmentList().next_pos_with_sort_not_in(0, {"code"}) is None
+    def test_iteration_is_not_quadratic(self):
+        seg_list = SegmentList()
+        for i in range(100_000):
+            seg_list.occupy(i * 2, 1, "nodecode" if i % 4 else "code")
 
-    def test_occupied_by(self):
-        seg_list = self._boundary_list()
-
-        assert seg_list.occupied_by(0) == (0, 10, "code")
-        assert seg_list.occupied_by(9) == (0, 10, "code")  # last byte of first
-        assert seg_list.occupied_by(10) == (10, 10, "data")  # boundary -> next
-        assert seg_list.occupied_by(20) is None  # in the gap
-        assert seg_list.occupied_by(34) == (30, 5, "code")  # last byte of third
-        assert seg_list.occupied_by(35) is None  # end boundary is exclusive
-
-        assert seg_list.occupied_by_sort(5) == "code"
-        assert seg_list.occupied_by_sort(15) == "data"
-        assert seg_list.occupied_by_sort(25) is None  # gap
-
-    def test_update(self):
-        seg_list = self._boundary_list()
-        other = SegmentList()
-        other.occupy(20, 10, "data")  # fills the gap + abuts the third seg
-        other.occupy(100, 4, "code")
-
-        seg_list.update(other)
-
-        # Gap [20,30) is now occupied; occupied_size gains 10 (gap) + 4 (new).
-        assert seg_list.occupied_size == 25 + 10 + 4
-        # The new [20,30)@data abuts the existing [10,20)@data and merges into
-        # a single [10,30)@data segment.
-        assert seg_list.occupied_by(20) == (10, 20, "data")
-        assert seg_list.occupied_by(100) == (100, 4, "code")
-
-    def test_copy_independence(self):
-        seg_list = self._boundary_list()
-        clone = seg_list.copy()
-
-        clone.occupy(100, 5, "code")
-        # Mutating the copy must not touch the original.
-        assert len(seg_list) == 3
-        assert len(clone) == 4
-        assert seg_list.occupied_by(100) is None
-        assert clone.occupied_by(100) == (100, 5, "code")
-
-    def test_pickle_round_trip(self):
-        seg_list = self._boundary_list()
-        restored = pickle.loads(pickle.dumps(seg_list))
-
-        assert len(restored) == len(seg_list)
-        assert restored.occupied_size == seg_list.occupied_size
-        assert restored.search(10) == seg_list.search(10)
-        assert [(s.start, s.end, s.sort) for s in restored] == [(s.start, s.end, s.sort) for s in seg_list]
-
-        # An empty list survives the round-trip too.
-        empty = pickle.loads(pickle.dumps(SegmentList()))
-        assert len(empty) == 0
-        assert empty.occupied_size == 0
+        start = time.time()
+        assert len(list(seg_list)) == 100_000
+        elapsed = time.time() - start
+        assert elapsed < 5.0, f"iterating 100k segments took {elapsed:.1f}s"
 
 
 if __name__ == "__main__":

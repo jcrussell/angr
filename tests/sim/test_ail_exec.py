@@ -6,15 +6,14 @@ import unittest
 from functools import cache
 from types import SimpleNamespace
 
-import claripy
-
 import angr
-from angr import ailment
+from angr import ailment, claripy
 from angr.analyses.decompiler.clinic import Clinic
 from angr.engines.ail.callstack import AILCallStack
 from angr.engines.ail.engine_light import SimEngineAILSimState
 from angr.engines.successors import SimSuccessors
 from angr.procedures.libc.snprintf import snprintf
+from angr.rustylib.ailment import RoundingMode  # pylint:disable=import-error,no-name-in-module
 from angr.state_plugins.history import SimStateHistory
 from angr.storage import DefaultMemory
 from tests.common import bin_location
@@ -23,6 +22,95 @@ test_location = os.path.join(bin_location, "tests")
 
 
 class TestAILExec(unittest.TestCase):
+    def test_vector_convert_is_lane_wise(self):
+        class _Engine(SimEngineAILSimState):
+            value: claripy.ast.Bits
+
+            def _expr(self, expr):  # pylint: disable=unused-argument
+                return self.value
+
+        engine = object.__new__(_Engine)
+        operand = ailment.Expr.Const(None, 0, 128)
+        # lanes: 1.0, 2.0, 3.0, -4.0 -> truncating float-to-int keeps the sign of the last lane
+        engine.value = claripy.BVV(0x3F800000_40000000_40400000_C0800000, 128)
+        f2i = ailment.Expr.Convert(
+            None,
+            128,
+            128,
+            True,
+            operand,
+            from_type=ailment.Expr.Convert.TYPE_FP,
+            to_type=ailment.Expr.Convert.TYPE_INT,
+            rounding_mode=RoundingMode.RM_TowardsZero,
+            vector_count=4,
+        )
+        r = engine._handle_expr_Convert(f2i)  # pylint: disable=protected-access
+        assert isinstance(r, claripy.ast.BV)
+        assert r.concrete and r.concrete_value == 0x00000001_00000002_00000003_FFFFFFFC
+
+        engine.value = claripy.BVV(0x00000001_00000002_00000003_FFFFFFFC, 128)
+        i2f = ailment.Expr.Convert(
+            None,
+            128,
+            128,
+            True,
+            operand,
+            from_type=ailment.Expr.Convert.TYPE_INT,
+            to_type=ailment.Expr.Convert.TYPE_FP,
+            vector_count=4,
+        )
+        r = engine._handle_expr_Convert(i2f)  # pylint: disable=protected-access
+        assert isinstance(r, claripy.ast.BV)
+        assert r.concrete and r.concrete_value == 0x3F800000_40000000_40400000_C0800000
+
+    def test_abs_expression_preserves_fp_sort(self):
+        class _Engine(SimEngineAILSimState):
+            value: claripy.ast.Bits
+
+            def _expr(self, expr):  # pylint: disable=unused-argument
+                return self.value
+
+        engine = object.__new__(_Engine)
+        expr = SimpleNamespace(operand=object(), bits=32)
+
+        engine.value = claripy.FPV(-1.5, claripy.FSORT_FLOAT)
+        fp_result = engine._handle_unop_Abs(expr)  # pyright: ignore[reportArgumentType]  # pylint: disable=protected-access
+        assert isinstance(fp_result, claripy.ast.FP)
+        assert fp_result.sort == claripy.FSORT_FLOAT
+        assert fp_result.concrete and fp_result.args[0] == 1.5
+
+        engine.value = claripy.BVV(0x80000000, 32)
+        bv_result = engine._handle_unop_Abs(expr)  # pyright: ignore[reportArgumentType]  # pylint: disable=protected-access
+        assert isinstance(bv_result, claripy.ast.BV)
+        assert len(bv_result) == 32
+        assert (
+            bv_result.op == "BVS"
+            and isinstance(bv_result.args[0], str)
+            and bv_result.args[0].startswith("ail_engine_top")
+        )
+
+    def test_haddv_expression(self):
+        p = angr.load_shellcode(b"\x00", arch="ARMEL", load_address=0x400000)
+        state = p.factory.blank_state()
+        successors = SimSuccessors(state.addr, state)
+        engine = SimEngineAILSimState(p, successors)
+
+        left = ailment.expression.Const(None, 0xFF008877, 32)
+        right = ailment.expression.Const(None, 0x11111111, 32)
+        for signed, expected in ((True, 0x0808CC44), (False, 0x88084C44)):
+            with self.subTest(signed=signed):
+                expr = ailment.expression.BinaryOp(
+                    None,
+                    "HAddV",
+                    (left, right),
+                    signed,
+                    bits=32,
+                    vector_count=4,
+                    vector_size=8,
+                )
+                result = engine._expr_bv(expr)  # pylint: disable=protected-access
+                assert result.concrete and result.concrete_value == expected
+
     def test_smoketest(self):
         p = angr.Project(os.path.join(test_location, "x86_64", "true"), auto_load_libs=False)
         cfg = p.analyses.CFGFast(normalize=True)
@@ -76,10 +164,10 @@ class TestAILExec(unittest.TestCase):
 
         # armg_calculate_condition(state, cond_n_op, cc_dep1, cc_dep2, cc_dep3) -> I32
         # Use ARMCondAL so the result should be 1.
-        cond_n_op = ailment.expression.Const(None, None, 0xE0, 32)  # (AL<<4) | 0
-        cc_dep1 = ailment.expression.Const(None, None, 0, 32)
-        cc_dep2 = ailment.expression.Const(None, None, 0, 32)
-        cc_dep3 = ailment.expression.Const(None, None, 0, 32)
+        cond_n_op = ailment.expression.Const(None, 0xE0, 32)  # (AL<<4) | 0
+        cc_dep1 = ailment.expression.Const(None, 0, 32)
+        cc_dep2 = ailment.expression.Const(None, 0, 32)
+        cc_dep3 = ailment.expression.Const(None, 0, 32)
         ccall_expr = ailment.expression.VEXCCallExpression(
             idx=0,
             callee="armg_calculate_condition",
@@ -89,11 +177,11 @@ class TestAILExec(unittest.TestCase):
         r0_offset = p.arch.registers["r0"][0]
         assign_stmt = ailment.statement.Assignment(
             idx=0,
-            dst=ailment.expression.Register(None, None, r0_offset, 32),
+            dst=ailment.expression.Register(None, r0_offset, 32),
             src=ccall_expr,
         )
         assign_stmt.tags["ins_addr"] = 0x400000
-        jump_stmt = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, None, 0x400004, 32))
+        jump_stmt = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, 0x400004, 32))
         jump_stmt.tags["ins_addr"] = 0x400000
         block = ailment.Block(0x400000, 0, statements=[assign_stmt, jump_stmt])
 
@@ -123,9 +211,9 @@ class TestAILExec(unittest.TestCase):
         state.register_plugin("callstack", bottom_frame)
         state.callstack.push(top_frame)
 
-        cond_bv1 = ailment.expression.Const(None, None, 1, 1)  # BV1(1)
-        true_tgt = ailment.expression.Const(None, None, 0x400004, 64)
-        false_tgt = ailment.expression.Const(None, None, 0x400008, 64)
+        cond_bv1 = ailment.expression.Const(None, 1, 1)  # BV1(1)
+        true_tgt = ailment.expression.Const(None, 0x400004, 64)
+        false_tgt = ailment.expression.Const(None, 0x400008, 64)
         cjmp = ailment.statement.ConditionalJump(0, cond_bv1, true_tgt, false_tgt)
         cjmp.tags["ins_addr"] = 0x400000
         block = ailment.Block(0x400000, 0, statements=[cjmp])
@@ -168,7 +256,7 @@ class TestAILExec(unittest.TestCase):
         state.callstack.push(top_frame)
 
         # predecessor block: jump to successor
-        pred_jump = ailment.statement.Jump(idx=0, target=ailment.expression.Const(None, None, 0x400004, 64))
+        pred_jump = ailment.statement.Jump(idx=0, target=ailment.expression.Const(None, 0x400004, 64))
         pred_jump.tags["ins_addr"] = 0x400000
         pred_block = ailment.Block(0x400000, 0, statements=[pred_jump])
 
@@ -193,11 +281,11 @@ class TestAILExec(unittest.TestCase):
         rax_offset = p.arch.registers["rax"][0]
         assign = ailment.statement.Assignment(
             idx=0,
-            dst=ailment.expression.Register(None, None, rax_offset, 64),
+            dst=ailment.expression.Register(None, rax_offset, 64),
             src=phi,
         )
         assign.tags["ins_addr"] = 0x400004
-        succ_jump = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, None, 0x400008, 64))
+        succ_jump = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, 0x400008, 64))
         succ_jump.tags["ins_addr"] = 0x400004
         succ_block = ailment.Block(0x400004, 0, statements=[assign, succ_jump])
 
@@ -238,16 +326,16 @@ class TestAILExec(unittest.TestCase):
             varid=217,
             bits=8,
             category=ailment.expression.VirtualVariableCategory.STACK,
-            oident="s-212",
+            oident=-212,
         )
         ref = ailment.expression.UnaryOp(idx=0, op="Reference", operand=vvar, bits=p.arch.bits)
 
-        call_tgt = ailment.expression.Const(None, None, 0xDEADBEEF, p.arch.bits)
+        call_tgt = ailment.expression.Const(None, 0xDEADBEEF, p.arch.bits)
         call_expr = ailment.expression.Call(idx=0, target=call_tgt, args=[ref], bits=p.arch.bits)
         call = ailment.statement.SideEffectStatement(idx=0, expr=call_expr)
         call.tags["ins_addr"] = 0x400000
 
-        jmp = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, None, 0x400004, p.arch.bits))
+        jmp = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, 0x400004, p.arch.bits))
         jmp.tags["ins_addr"] = 0x400000
 
         block = ailment.Block(0x400000, 0, statements=[call, jmp])
@@ -284,7 +372,7 @@ class TestAILExec(unittest.TestCase):
         # A Call expression wrapped in SideEffectStatement with no return assignment (unused return value).
         call_expr = ailment.expression.Call(
             idx=0,
-            target=ailment.expression.Const(None, None, 0x5000, 32),
+            target=ailment.expression.Const(None, 0x5000, 32),
             args=[],
             bits=32,
         )
@@ -297,7 +385,7 @@ class TestAILExec(unittest.TestCase):
         # The light AIL engine expects statements to carry an instruction address tag.
         call_stmt.tags["ins_addr"] = 0x400000
         # Add a diverging statement afterwards to avoid requiring a real lifter/graph in _process_block_end().
-        jump_stmt = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, None, 0x400004, 32))
+        jump_stmt = ailment.statement.Jump(idx=1, target=ailment.expression.Const(None, 0x400004, 32))
         jump_stmt.tags["ins_addr"] = 0x400000
         block = ailment.Block(0x400000, 0, statements=[call_stmt, jump_stmt])
 
@@ -380,7 +468,7 @@ class TestAILExec(unittest.TestCase):
 
         state.globals["ail_lifter"] = lambda _addr: _FakeClinic()  # type: ignore
 
-        jump = ailment.statement.Jump(0, ailment.expression.Const(None, None, 0x400004, 64))
+        jump = ailment.statement.Jump(0, ailment.expression.Const(None, 0x400004, 64))
         jump.tags["ins_addr"] = 0x400000
         block = ailment.Block(0x400000, 0, statements=[jump])
 

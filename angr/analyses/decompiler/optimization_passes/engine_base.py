@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.engines.light import SimEngineLightAIL
+from angr.utils.ail import is_scalar_int_convert
 
 _l = logging.getLogger(name=__name__)
 
@@ -97,9 +98,7 @@ class SimplifierAILEngine(
 
         # replace
         if (addr, data) != (stmt.addr, stmt.data):
-            return ailment.statement.Store(
-                stmt.idx, addr, data, stmt.size, stmt.endness, variable=stmt.variable, **stmt.tags
-            )
+            return ailment.statement.Store(stmt.idx, addr, data, stmt.size, stmt.endness, **stmt.tags)
 
         return stmt
 
@@ -141,10 +140,9 @@ class SimplifierAILEngine(
         return ailment.statement.SideEffectStatement(
             stmt.idx,
             ailment.expression.Call(
-                stmt.idx,
+                # Reuse the original Call's idx so its VariableMap entry (calling_convention/prototype) is preserved.
+                stmt.expr.idx,
                 target,
-                calling_convention=stmt.expr.calling_convention,
-                prototype=stmt.expr.prototype,
                 args=new_args,
                 bits=stmt.expr.bits,
                 **stmt.tags,
@@ -208,6 +206,16 @@ class SimplifierAILEngine(
         # optimization engine.
         return expr
 
+    def _handle_expr_IRegister(self, expr):
+        # Pass unresolved IRegisters through, rewriting only the index expression. IRegReplacer overrides this to
+        # resolve constant indices to concrete Registers.
+        reg_offset = self._expr(expr.reg_offset)
+        if reg_offset is not expr.reg_offset:
+            new_expr = expr.copy()
+            new_expr.reg_offset = reg_offset
+            return new_expr
+        return expr
+
     def _handle_binop_Mul(self, expr):
         operand_0 = self._expr(expr.operands[0])
         operand_1 = self._expr(expr.operands[1])
@@ -227,23 +235,43 @@ class SimplifierAILEngine(
     def _handle_expr_Convert(self, expr):
         operand_expr = self._expr(expr.operand)
 
-        if isinstance(operand_expr, ailment.expression.Convert):
+        # the rewrites below only hold for scalar integer conversions
+        if (
+            is_scalar_int_convert(expr)
+            and isinstance(operand_expr, ailment.expression.Convert)
+            and is_scalar_int_convert(operand_expr)
+        ):
             if expr.from_bits == operand_expr.to_bits and expr.to_bits == operand_expr.from_bits:
                 # eliminate the redundant Convert
                 return operand_expr.operand
+            if expr.from_type == operand_expr.to_type:
+                # safe to merge: the intermediate type matches, e.g. 32I->64I->32I or 32F->64F->32F
+                return ailment.expression.Convert(
+                    expr.idx,
+                    operand_expr.from_bits,
+                    expr.to_bits,
+                    expr.is_signed,
+                    operand_expr.operand,
+                    from_type=operand_expr.from_type,
+                    to_type=expr.to_type,
+                    rounding_mode=expr.rounding_mode,
+                    **expr.tags,
+                )
+            # type mismatch in the middle (e.g. 32I->64I then 64F->32I) -- keep both
             return ailment.expression.Convert(
                 expr.idx,
-                operand_expr.from_bits,
+                expr.from_bits,
                 expr.to_bits,
                 expr.is_signed,
-                operand_expr.operand,
-                from_type=operand_expr.from_type,
+                operand_expr,
+                from_type=expr.from_type,
                 to_type=expr.to_type,
                 rounding_mode=expr.rounding_mode,
+                vector_count=expr.vector_count,
                 **expr.tags,
             )
         if (
-            type(operand_expr) is ailment.expression.Const
+            isinstance(operand_expr, ailment.expression.Const)
             and expr.from_type == ailment.expression.Convert.TYPE_INT
             and expr.to_type == ailment.expression.Convert.TYPE_INT
         ):
@@ -251,15 +279,20 @@ class SimplifierAILEngine(
             value = operand_expr.value
             mask = (2**expr.to_bits) - 1
             value &= mask
-            return ailment.expression.Const(expr.idx, operand_expr.variable, value, expr.to_bits, **expr.tags)
-        if type(operand_expr) is ailment.expression.BinaryOp and operand_expr.op in {
-            "Mul",
-            "Shl",
-            "Div",
-            "Mod",
-            "Add",
-            "Sub",
-        }:
+            return ailment.expression.Const(expr.idx, value, expr.to_bits, **expr.tags)
+        if (
+            is_scalar_int_convert(expr)
+            and isinstance(operand_expr, ailment.expression.BinaryOp)
+            and operand_expr.op
+            in {
+                "Mul",
+                "Shl",
+                "Div",
+                "Mod",
+                "Add",
+                "Sub",
+            }
+        ):
             if isinstance(operand_expr.operands[1], ailment.expression.Const):
                 if (
                     isinstance(operand_expr.operands[0], ailment.expression.Register)
@@ -270,7 +303,6 @@ class SimplifierAILEngine(
                     )
                     converted_const = ailment.expression.Const(
                         operand_expr.operands[1].idx,
-                        operand_expr.operands[1].variable,
                         operand_expr.operands[1].value,
                         expr.to_bits,
                         **operand_expr.operands[1].tags,
@@ -319,6 +351,7 @@ class SimplifierAILEngine(
             from_type=expr.from_type,
             to_type=expr.to_type,
             rounding_mode=expr.rounding_mode,
+            vector_count=expr.vector_count,
             **expr.tags,
         )
 
@@ -335,10 +368,8 @@ class SimplifierAILEngine(
         return ailment.expression.ITE(
             expr.idx,
             self._expr(expr.cond),
-            self._expr(expr.iffalse),
             self._expr(expr.iftrue),
-            variable=expr.variable,
-            variable_offset=expr.variable_offset,
+            self._expr(expr.iffalse),
             **expr.tags,
         )
 
@@ -380,11 +411,10 @@ class SimplifierAILEngine(
     def _handle_unop_Default(self, expr):
         operand = self._expr(expr.operand)
         if operand != expr.operand:
-            return ailment.expression.UnaryOp(
-                expr.idx, expr.op, operand, variable=expr.variable, variable_offset=expr.variable_offset, **expr.tags
-            )
+            return ailment.expression.UnaryOp(expr.idx, expr.op, operand, **expr.tags)
         return expr
 
+    _handle_unop_Abs = _handle_unop_Default
     _handle_unop_Not = _handle_unop_Default
     _handle_unop_Neg = _handle_unop_Default
     _handle_unop_BitwiseNeg = _handle_unop_Default
@@ -406,8 +436,6 @@ class SimplifierAILEngine(
                 expr.op,
                 (lhs, rhs),
                 expr.signed,
-                variable=expr.variable,
-                variable_offset=expr.variable_offset,
                 bits=expr.bits,
                 floating_point=expr.floating_point,
                 rounding_mode=expr.rounding_mode,
@@ -519,7 +547,11 @@ class SimplifierAILEngine(
 
     _handle_binop_MaxV = _handle_binop_Default
 
+    _handle_binop_HAddV = _handle_binop_Default
+
     _handle_binop_QAddV = _handle_binop_Default
+
+    _handle_binop_QSubV = _handle_binop_Default
 
     _handle_binop_QNarrowBinV = _handle_binop_Default
 

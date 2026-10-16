@@ -1,17 +1,17 @@
 # pylint:disable=unused-argument
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
-import claripy
 import pyvex
 from archinfo.arch_arm import is_arm_arch
 
+from angr import claripy
 from angr.analyses.typehoon import typeconsts, typevars
 from angr.block import Block
-from angr.calling_conventions import SimRegArg, SimStackArg, SimTypeFunction, default_cc
+from angr.calling_conventions import SimRegArg, SimStackArg, SimTypeFunction, default_cc, is_x87_stack_arg
 from angr.engines.light import SimEngineNostmtVEX
-from angr.engines.vex.claripy.datalayer import value as claripy_value
+from angr.engines.vex.claripy.datalayer import value_bv as claripy_value_bv
 from angr.errors import SimMemoryMissingError
 from angr.knowledge_plugins import Function
 from angr.sim_type import SimTypeBottom, SimTypeRef
@@ -19,9 +19,6 @@ from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValu
 
 from .engine_base import RichR, SimEngineVRBase
 from .irsb_scanner import VEXIRSBScanner
-
-if TYPE_CHECKING:
-    pass
 
 binop_handler = SimEngineNostmtVEX[
     "VariableRecoveryFastState", RichR[claripy.ast.BV | claripy.ast.FP], None
@@ -118,6 +115,25 @@ class SimEngineVRVEX(
             result_size = self.tyenv.sizeof(stmt.result)
             self.tmps[stmt.result] = RichR(claripy.BVV(1, result_size))
 
+    # Dirty helpers
+
+    @SimEngineNostmtVEX.dirty_handler
+    def _handle_dirty_x86g_dirtyhelper_loadF80le(self, stmt: pyvex.stmt.Dirty):
+        """Treat loadF80le(addr) as a 12-byte load (long double) for variable recovery."""
+        if len(stmt.args) >= 1:
+            addr = self._expr_bv(stmt.args[0])
+            result = self._load(addr, 12)
+            if stmt.tmp not in (-1, 0xFFFFFFFF):
+                self.tmps[stmt.tmp] = result
+
+    @SimEngineNostmtVEX.dirty_handler
+    def _handle_dirty_x86g_dirtyhelper_storeF80le(self, stmt: pyvex.stmt.Dirty):
+        """Treat storeF80le(addr, val) as a 12-byte store (long double) for variable recovery."""
+        if len(stmt.args) >= 2:
+            addr = self._expr_bv(stmt.args[0])
+            data = self._expr(stmt.args[1])
+            self._store(addr, data, 12, atom=stmt)
+
     # Expression handlers
 
     def _expr_bv(self, expr) -> RichR[claripy.ast.BV]:
@@ -205,6 +221,8 @@ class SimEngineVRVEX(
 
         for arg_loc in arg_locs:
             for loc in arg_loc.get_footprint():
+                if is_x87_stack_arg(loc):
+                    continue
                 if isinstance(loc, SimRegArg):
                     self._read_from_register(self.arch.registers[loc.reg_name][0] + loc.reg_offset, loc.size)
                 elif isinstance(loc, SimStackArg):
@@ -248,7 +266,7 @@ class SimEngineVRVEX(
                 ret_reg = cc.return_val(proto.returnty)
             else:
                 ret_reg = cc.RETURN_VAL
-            if isinstance(ret_reg, SimRegArg):
+            if isinstance(ret_reg, SimRegArg) and ret_reg.reg_name in self.arch.registers:
                 reg_offset, reg_size = self.arch.registers[ret_reg.reg_name]
                 data = self._top(reg_size * self.arch.byte_width)
                 self._assign_to_register(reg_offset, data, reg_size, create_variable=False)
@@ -284,7 +302,7 @@ class SimEngineVRVEX(
 
     def _handle_expr_Const(self, expr):
         return RichR(
-            claripy_value(expr.con.type, expr.con.value, size=expr.con.size),
+            claripy_value_bv(expr.con.type, expr.con.value, size=expr.con.size),
             typevar=typeconsts.int_type(expr.con.size),
         )
 
@@ -314,7 +332,9 @@ class SimEngineVRVEX(
 
         typevar = None
         if r0.typevar is not None and r1.data.concrete:
-            typevar = self.tv_manager.new_dtv(r0.typevar, label=typevars.AddN(r1.data.concrete_value))
+            typevar = self.tv_manager.new_dtv(
+                r0.typevar, label=typevars.add_label(r1.data.concrete_value, r1.data.size())
+            )
 
         tc: set[typevars.TypeConstraint] = set()
         if r0.typevar is not None and r1.typevar is not None:
@@ -337,7 +357,9 @@ class SimEngineVRVEX(
 
         typevar = None
         if r0.typevar is not None and r1.data.concrete:
-            typevar = self.tv_manager.new_dtv(r0.typevar, label=typevars.SubN(r1.data.concrete_value))
+            typevar = self.tv_manager.new_dtv(
+                r0.typevar, label=typevars.sub_label(r1.data.concrete_value, r1.data.size())
+            )
 
         return RichR(
             diff,

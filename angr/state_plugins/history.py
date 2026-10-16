@@ -6,9 +6,7 @@ import logging
 import operator
 from collections.abc import Reversible
 
-import claripy
-
-from angr import sim_options
+from angr import claripy, sim_options
 from angr.sim_state import SimState
 from angr.state_plugins.sim_action import SimActionObject
 
@@ -23,8 +21,6 @@ class SimStateHistory(SimStatePlugin):
     """
     This class keeps track of historically-relevant information for paths.
     """
-
-    STRONGREF_STATE = True
 
     def __init__(self, parent=None, clone=None):
         SimStatePlugin.__init__(self)
@@ -71,6 +67,11 @@ class SimStateHistory(SimStatePlugin):
 
         self.strongref_state = None if clone is None else clone.strongref_state
         self.arch = None
+
+    def set_state(self, state):
+        super().set_state(state)
+        if sim_options.EFFICIENT_STATE_MERGING in state.options:
+            self.strongref_state = state
 
     def init_state(self):
         self.successor_ip = self.state._ip
@@ -128,10 +129,6 @@ class SimStateHistory(SimStatePlugin):
 
         return f"<StateHistory @ {addr_str}>"
 
-    def set_strongref_state(self, state):
-        if sim_options.EFFICIENT_STATE_MERGING in state.options:
-            self.strongref_state = state
-
     @property
     def addr(self):
         if not self.recent_bbl_addrs:
@@ -175,10 +172,6 @@ class SimStateHistory(SimStatePlugin):
         # self.recent_stack_actions = [e.recent_stack_actions for e in itertools.chain([self], others)]
 
         return True
-
-    def widen(self, others):  # pylint: disable=unused-argument
-        l.warning("history widening is not implemented!")
-        return  # TODO
 
     @SimStatePlugin.memo
     def copy(self, memo):  # pylint: disable=unused-argument
@@ -509,9 +502,9 @@ class TreeIter:
 
     def __getitem__(self, k):
         if isinstance(k, slice):
-            raise ValueError("Please use .hardcopy to use slices")
+            raise TypeError("Please use .hardcopy to use slices")
         if k >= 0:
-            raise ValueError("Please use .hardcopy to use nonnegative indexes")
+            raise TypeError("Please use .hardcopy to use nonnegative indexes")
         i = 0
         for item in reversed(self):
             i -= 1

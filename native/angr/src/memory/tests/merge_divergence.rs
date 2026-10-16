@@ -89,7 +89,7 @@ fn test_merge_ite_cells_survive_skip() {
         "one ITE cell per divergent byte survives the CoW skip"
     );
     let dpage = (BASE >> 12) + DIVERGENT_PAGE_IDX;
-    for (&addr, _) in a.symbolic_objects.iter() {
+    for &addr in a.symbolic_objects.keys() {
         assert_eq!(
             addr.page_num(),
             dpage,

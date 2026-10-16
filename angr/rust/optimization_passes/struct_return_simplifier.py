@@ -5,6 +5,8 @@ from collections import defaultdict
 from angr.ailment.expression import Const, Load, RustEnum, StackBaseOffset, Struct, VirtualVariable
 from angr.ailment.statement import Return, Store
 from angr.analyses.decompiler.optimization_passes.optimization_pass import OptimizationPass, OptimizationPassStage
+from angr.analyses.decompiler.variable_map import variable_map_of
+from angr.enums import Flavors
 from angr.rust.analyses.rust_calling_convention import Pathfinder
 from angr.rust.mixins.cfg_transformation_mixin import CFGTransformationMixin
 from angr.rust.mixins.srda_mixin import SRDAMixin
@@ -30,7 +32,7 @@ class StructReturnSimplifier(OptimizationPass, SRDAMixin, CFGTransformationMixin
 
     def __init__(self, func, manager, **kwargs):
         super().__init__(func, manager, **kwargs)
-        SRDAMixin.__init__(self, func, self._graph, self.project)
+        SRDAMixin.__init__(self, func, self._graph, self.project, variable_map_of(manager))
         CFGTransformationMixin.__init__(self, self._graph)
         self.analyze()
 
@@ -96,7 +98,7 @@ class StructReturnSimplifier(OptimizationPass, SRDAMixin, CFGTransformationMixin
         return Struct(self.manager.next_atom(), struct_ty.name, new_fields, struct_ty.offsets, struct_ty.size)
 
     def try_convert_to_enum(self, struct: Struct):
-        prototype = self._func.prototype
+        prototype = self._func.get_prototype(Flavors.RUST_FLAVOR)
         if isinstance(prototype, RustSimTypeFunction):
             prototype = prototype.normalize()
             discriminant = None
@@ -105,6 +107,7 @@ class StructReturnSimplifier(OptimizationPass, SRDAMixin, CFGTransformationMixin
             variant = None
             returnty = prototype.returnty
             if isinstance(returnty, (RustSimTypeResult, RustSimTypeOption)):
+                returnty = returnty.with_arch(self.project.arch)
                 variant = returnty.get_variant(discriminant)
                 if not variant and discriminant is not None:
                     variant = returnty.get_variant(None)
@@ -112,9 +115,7 @@ class StructReturnSimplifier(OptimizationPass, SRDAMixin, CFGTransformationMixin
                     new_expr = self._remove_discriminant_from_struct(struct, variant)
                     if len(new_expr.fields) == 1 and 0 in new_expr.fields:
                         new_expr = new_expr.fields[0]
-                    return RustEnum(
-                        self.manager.next_atom(), variant.name, [new_expr], returnty.with_arch(self.project.arch).size
-                    )
+                    return RustEnum(self.manager.next_atom(), variant.name, [new_expr], returnty.size)
         return struct
 
     def collect_ret_expr(self, path):

@@ -5,6 +5,7 @@ import contextlib
 import copy
 import logging
 import pathlib
+from collections import deque
 from collections.abc import Iterable
 from types import FunctionType
 from typing import Any, cast
@@ -20,7 +21,7 @@ from angr.analyses.decompiler.peephole_optimizations.base import (
     PeepholeOptimizationExprBase,
     PeepholeOptimizationMultiStmtBase,
 )
-from angr.utils.ail import is_phi_assignment
+from angr.utils.ail import BlockDefs, GraphVVarDefs, is_phi_assignment
 
 from .seq_to_blocks import SequenceToBlocks
 from .structurer_nodes import (
@@ -28,6 +29,7 @@ from .structurer_nodes import (
     CascadingConditionNode,
     CodeNode,
     ConditionNode,
+    IncompleteSwitchCaseNode,
     LoopNode,
     MultiNode,
     SequenceNode,
@@ -39,6 +41,65 @@ with contextlib.suppress(ImportError):
     pdb = __import__("ipdb")
 
 _l = logging.getLogger(__name__)
+
+
+def const_with_value(expr: ailment.Expr.Const, value: int) -> ailment.Expr.Const:
+    """
+    Return a copy of ``expr`` carrying ``value``. AIL expressions must not be mutated in place: attribute access on a
+    statement returns a fresh wrapper, so ``stmt.target.value = x`` silently updates a throwaway copy.
+    """
+    return ailment.Expr.Const(expr.idx, value, expr.bits, **expr.tags)
+
+
+def copy_expr_with_tags(expr: ailment.Expr.Expression, **tags) -> ailment.Expr.Expression:
+    """
+    Return a copy of expr (same idx) with tags merged in.
+
+    Note that `stmt.src.tags[k] = v` is a no-op because stmt.src returns a fresh copy of the expression.
+    """
+    new_expr = expr.copy()
+    new_expr.tags.update(tags)
+    return new_expr
+
+
+def update_jump_target(stmt: ailment.Stmt.Jump, old_addr: int, new_addr: int) -> bool:
+    """
+    Update a Jump statement from old_addr to new_addr through the statement setter. Returns True if the update
+    succeeded.
+    """
+    target = stmt.target
+    if isinstance(target, ailment.Expr.Const) and target.value == old_addr:
+        stmt.target = const_with_value(target, new_addr)
+        return True
+    return False
+
+
+def update_conditional_jump_target(stmt: ailment.Stmt.ConditionalJump, old_addr: int, new_addr: int) -> bool:
+    """
+    Update every branch of a ConditionalJump that points to ``old_addr`` so it points to ``new_addr``. Returns True
+    if any branch was updated.
+    """
+    patched = False
+    tt = stmt.true_target
+    if isinstance(tt, ailment.Expr.Const) and tt.value == old_addr:
+        stmt.true_target = const_with_value(tt, new_addr)
+        patched = True
+    ft = stmt.false_target
+    if isinstance(ft, ailment.Expr.Const) and ft.value == old_addr:
+        stmt.false_target = const_with_value(ft, new_addr)
+        patched = True
+    return patched
+
+
+def set_conditional_jump_targets(stmt: ailment.Stmt.ConditionalJump, true_addr: int, false_addr: int) -> None:
+    """
+    Point the branches of a ConditionalJump (with constant targets) at ``true_addr`` and ``false_addr``.
+    """
+    tt = stmt.true_target
+    ft = stmt.false_target
+    assert isinstance(tt, ailment.Expr.Const) and isinstance(ft, ailment.Expr.Const)
+    stmt.true_target = const_with_value(tt, true_addr)
+    stmt.false_target = const_with_value(ft, false_addr)
 
 
 def remove_last_statement(node):
@@ -321,6 +382,9 @@ def switch_extract_bitwiseand_jumptable_info(last_stmt: ailment.Stmt.Jump) -> tu
 
         Load(addr=(((vvar_9{reg 36} & 0x3<32>) * 0x4<32>) + 0x42cd28<32>), size=4, endness=Iend_LE)
 
+    Logical right shifts also bound unsigned indexes. For example, ``status() >> 31`` on a 32-bit value
+    selects one of two entries. Keep the bounded expression intact, including any calls it contains.
+
     :param last_stmt:   The last statement of the switch-case header node.
     :return:            A tuple of ``(index expression, lower bound, upper bound)``, or None.
     """
@@ -397,16 +461,29 @@ def switch_extract_bitwiseand_jumptable_info(last_stmt: ailment.Stmt.Jump) -> tu
                     ub = expr.operands[1].value  # type: ignore
                     index_expr = expr
                     break
-                if isinstance(expr.operands[0], ailment.Expr.Const) and expr.operands[1].value in masks:
+                if isinstance(expr.operands[0], ailment.Expr.Const) and expr.operands[0].value in masks:
                     lb = 0
                     ub = expr.operands[0].value  # type: ignore
                     index_expr = expr
                     break
                 return None
+            elif expr.op == "Shr" and isinstance(expr.operands[1], ailment.Expr.Const):
+                shift = expr.operands[1].value
+                bits = expr.operands[0].bits
+                if not isinstance(shift, int) or not 0 <= shift < bits:
+                    return None
+                remaining_bits = bits - shift
+                # Match the same maximum table size as the supported masks.
+                if not 1 <= remaining_bits <= 10:
+                    return None
+                lb = 0
+                ub = (1 << remaining_bits) - 1
+                index_expr = expr
+                break
             else:
                 return None
         elif isinstance(expr, ailment.Expr.Convert):
-            if expr.is_signed is False:
+            if expr.is_signed is False and expr.from_bits <= expr.to_bits:
                 expr = expr.operand
             else:
                 return None
@@ -502,6 +579,17 @@ def insert_node(parent, insert_location: str, node, node_idx: int, label=None):
             raise TypeError(
                 f'Unsupported label value "{label}". Must be one of the following: switch_expr, case, default.'
             )
+    elif isinstance(parent, IncompleteSwitchCaseNode):
+        if label == "case":
+            new_nodes = [parent.cases[node_idx], node] if insert_location == "after" else [node, parent.cases[node_idx]]
+            seq = SequenceNode(new_nodes[0].addr, nodes=new_nodes)
+            parent.cases[node_idx] = seq
+        elif label == "default":
+            new_nodes = [parent.head, node] if insert_location == "after" else [node, parent.head]
+            seq = SequenceNode(new_nodes[0].addr, nodes=new_nodes)
+            parent.head = seq
+        else:
+            raise TypeError(f'Unsupported label value "{label}". Must be one of the following: case, default.')
     elif isinstance(parent, LoopNode):
         if label == "condition":
             raise ValueError("Cannot insert nodes into a condition expression.")
@@ -521,13 +609,19 @@ def _merge_ail_nodes(graph, node_a: ailment.Block, node_b: ailment.Block) -> ail
 
     a_ogs = graph.nodes[node_a].get("original_nodes", [])
     b_ogs = graph.nodes[node_b].get("original_nodes", [])
-    new_node = node_a.copy() if node_a.addr <= node_b.addr else node_b.copy()
-    old_node = node_b if new_node == node_a else node_a
+    # node_a is the predecessor: its statements come first and the merged node keeps its identity (its address is
+    # where control enters). Picking the lower address instead is only equivalent for fall-through pairs. A pair
+    # joined backwards (a successor at a lower address, which the KnownPatternOutliner produces routinely because it
+    # numbers the blocks it splits off in the order it creates them) would have its statements reversed, leaving a
+    # conditional jump in the middle of the block.
+    new_node = node_a.copy()
+    old_node = node_b
     # remove jumps in the middle of nodes when merging
     if new_node.statements and isinstance(new_node.statements[-1], ailment.Stmt.Jump):
         new_node.statements = new_node.statements[:-1]
     new_node.statements += old_node.statements
-    new_node.original_size += old_node.original_size
+    if new_node.original_size is not None and old_node.original_size is not None:
+        new_node.original_size += old_node.original_size
 
     graph.remove_node(node_a)
     graph.remove_node(node_b)
@@ -560,22 +654,37 @@ def to_ail_supergraph(transition_graph: networkx.DiGraph, allow_fake=False) -> n
     transition_graph = networkx.DiGraph(transition_graph)
     networkx.set_node_attributes(transition_graph, {node: [node] for node in transition_graph.nodes}, "original_nodes")
 
-    while True:
-        for src, dst, data in transition_graph.edges(data=True):
-            type_ = data.get("type", None)
+    # Worklist-driven single pass. The original implementation restarted a full edge scan after every single merge or
+    # removal, which is quadratic in the number of nodes. Here we only re-examine the nodes whose in/out degree could
+    # have changed (the merged node and its neighbors), so the whole contraction is roughly linear.
+    worklist: deque = deque(transition_graph.nodes())
+    while worklist:
+        src = worklist.popleft()
+        if src not in transition_graph:
+            # already merged away or removed
+            continue
+        for dst in list(transition_graph.successors(src)):
+            if src is dst:
+                continue
+            type_ = transition_graph.edges[src, dst].get("type", None)
 
-            if len(list(transition_graph.successors(src))) == 1 and len(list(transition_graph.predecessors(dst))) == 1:
+            if transition_graph.out_degree(src) == 1 and transition_graph.in_degree(dst) == 1:
                 # calls in the middle of blocks OR boring jumps
                 if (type_ == "fake_return") or (src.addr + src.original_size == dst.addr) or allow_fake:
-                    _merge_ail_nodes(transition_graph, src, dst)
+                    new_node = _merge_ail_nodes(transition_graph, src, dst)
+                    # the merged node and its neighbors may now be mergeable
+                    worklist.append(new_node)
+                    worklist.extend(transition_graph.predecessors(new_node))
+                    worklist.extend(transition_graph.successors(new_node))
                     break
 
             # calls to functions with no return
             elif type_ == "call":
                 transition_graph.remove_node(dst)
+                # src lost a successor, so it (and its predecessors) may now be mergeable
+                worklist.append(src)
+                worklist.extend(transition_graph.predecessors(src))
                 break
-        else:
-            break
 
     return transition_graph
 
@@ -653,7 +762,7 @@ def last_nonlabel_statement(block: ailment.Block) -> ailment.Stmt.Statement | No
     return None
 
 
-def last_node(node: BaseNode) -> BaseNode | ailment.Block | None:
+def last_node(node: BaseNode | Block) -> BaseNode | ailment.Block | None:
     """
     Get the last node in a sequence or code node.
     """
@@ -838,7 +947,11 @@ def structured_node_is_simple_return_strict(node: BaseNode | SequenceNode | Mult
 def is_statement_terminating(stmt: ailment.statement.Statement, functions) -> bool:
     if isinstance(stmt, ailment.Stmt.Return):
         return True
-    if isinstance(stmt, ailment.Stmt.SideEffectStatement) and isinstance(stmt.expr.target, ailment.Expr.Const):
+    if (
+        isinstance(stmt, ailment.Stmt.SideEffectStatement)
+        and isinstance(stmt.expr, ailment.Expr.Call)
+        and isinstance(stmt.expr.target, ailment.Expr.Const)
+    ):
         # is it calling a non-returning function?
         target_func_addr = stmt.expr.target.value
         try:
@@ -857,16 +970,52 @@ class _PeepholeExprsWalker(ailment.AILBlockRewriter):
     def __init__(self, *args, expr_opts: list[PeepholeOptimizationExprBase], **kwargs):
         self.expr_opts = expr_opts
         self.any_update = False
-        self.expr_opts_by_type: dict[type, list[PeepholeOptimizationExprBase]] = {}
+        # IDs of the statements this pass left untouched and whose expr optimizers all reported fixpoint_reached.
+        # Only valid until the next ``reset()``, and only for statements of the block just walked.
+        self.fixpoint_stmts: set[int] = set()
+        self._stmt_touched = False
+        self._stmt_fixpoint = True
+        self._block_defs: BlockDefs | None = None
+        # unique whole-graph vvar definitions, set by the caller when the block belongs to a graph
+        self.graph_defs: GraphVVarDefs | None = None
+        self.expr_opts_by_kind: dict[str, list[PeepholeOptimizationExprBase]] = {}
 
         for expr_opt in expr_opts:
-            for cls in expr_opt.expr_classes if isinstance(expr_opt.expr_classes, tuple) else (expr_opt.expr_classes,):
+            classes = expr_opt.expr_classes if isinstance(expr_opt.expr_classes, tuple) else (expr_opt.expr_classes,)
+            for cls in classes:
                 assert isinstance(cls, type)
-                if cls not in self.expr_opts_by_type:
-                    self.expr_opts_by_type[cls] = []
-                self.expr_opts_by_type[cls].append(expr_opt)
+                tags = getattr(cls, "_kinds", None) or {getattr(cls, "_kind", cls.__name__)}
+                for tag in tags:
+                    self.expr_opts_by_kind.setdefault(tag, []).append(expr_opt)
 
         super().__init__(*args, **kwargs)
+
+    def reset(self) -> None:
+        self.any_update = False
+        self.fixpoint_stmts.clear()
+
+    def walk(self, block: Block) -> Block:
+        # statements are only replaced at block end, so the pre-walk defs stay valid for the whole walk
+        self._block_defs = BlockDefs(block.statements, all_defs=self.graph_defs)
+        try:
+            return super().walk(block)
+        finally:
+            self._block_defs = None
+
+    def _handle_stmt(self, stmt_idx: int, stmt: ailment.Stmt.Statement, block) -> ailment.Stmt.Statement:
+        if stmt.peephole_optimized is True:
+            # a previous peephole pass ran this statement (and its expressions) to fixpoint
+            return stmt
+        # MultiStatementExpression re-enters _handle_stmt() mid-statement; losing the enclosing False here would
+        # wrongly mark the enclosing statement as being at its fixpoint.
+        outer_fixpoint = self._stmt_fixpoint
+        self._stmt_touched = False
+        self._stmt_fixpoint = True
+        new_stmt = super()._handle_stmt(stmt_idx, stmt, block)
+        if not self._stmt_touched and new_stmt is stmt and self._stmt_fixpoint:
+            self.fixpoint_stmts.add(id(stmt))
+        self._stmt_fixpoint &= outer_fixpoint
+        return new_stmt
 
     def _handle_expr(
         self, expr_idx: int, expr: ailment.Expr.Expression, stmt_idx: int, stmt: ailment.Stmt.Statement | None, block
@@ -878,27 +1027,49 @@ class _PeepholeExprsWalker(ailment.AILBlockRewriter):
         redo = True
         while redo:
             redo = False
-            if type(expr) not in self.expr_opts_by_type:
+            expr_opts = self.expr_opts_by_kind.get(expr.pykind)
+            if not expr_opts:
                 break
-            expr_opts = self.expr_opts_by_type[type(expr)]
             for expr_opt in expr_opts:
-                r = expr_opt.optimize(expr, stmt_idx=stmt_idx, block=block)
+                # context-insensitive optimizers never touch the flag, so default it to True here.
+                expr_opt.fixpoint_reached = True
+                r = expr_opt.optimize(expr, stmt_idx=stmt_idx, block=block, block_defs=self._block_defs)
+                self._stmt_fixpoint &= expr_opt.fixpoint_reached
                 if r is not None and r is not expr:
-                    assert expr.bits == r.bits
+                    if r.bits > expr.bits:
+                        # Widening a result is unsafe (a few optimizers don't preserve bits);
+                        # log + skip until the optimizers are audited. Narrowing is allowed:
+                        # e.g. X87CmpF lowers a 32-bit status word to a 1-bit comparison.
+                        _l.warning(
+                            "Peephole %s widened bits %s -> %s on %s; skipping",
+                            type(expr_opt).__name__,
+                            expr.bits,
+                            r.bits,
+                            getattr(expr, "kind", type(expr).__name__),
+                        )
+                        continue
                     expr = r
                     redo = True
                     break
 
         if expr is not old_expr:
             self.any_update = True
+            self._stmt_touched = True
 
         return expr
 
 
-def peephole_optimize_exprs(block, expr_opts):
+def peephole_optimize_exprs(block, expr_opts, walker=None, graph_defs: GraphVVarDefs | None = None):
     # run expression optimizers
-    walker = _PeepholeExprsWalker(expr_opts=expr_opts)
-    walker.walk(block)
+    if walker is None:
+        walker = _PeepholeExprsWalker(expr_opts=expr_opts)
+    else:
+        walker.reset()
+    walker.graph_defs = graph_defs
+    try:
+        walker.walk(block)
+    finally:
+        walker.graph_defs = None
     return walker.any_update
 
 
@@ -960,9 +1131,27 @@ def copy_graph(graph: networkx.DiGraph[Block]) -> networkx.DiGraph[Block]:
     return graph_copy
 
 
-def peephole_optimize_stmts(block, stmt_opts):
+def build_stmt_opts_by_kind(stmt_opts):
+    """Index statement-peephole optimizers by ``kind`` string."""
+    by_kind: dict[str, list] = {}
+    for opt in stmt_opts:
+        classes = opt.stmt_classes if isinstance(opt.stmt_classes, tuple) else (opt.stmt_classes,)
+        for cls in classes:
+            tags = getattr(cls, "_kinds", None) or {getattr(cls, "_kind", cls.__name__)}
+            for tag in tags:
+                by_kind.setdefault(tag, []).append(opt)
+    return by_kind
+
+
+def peephole_optimize_stmts(block, stmt_opts, *, stmt_opts_by_kind=None, fixpoint_exprs=None):
+    """
+    :param fixpoint_exprs:  IDs of the statements the preceding expression pass left untouched *and* whose
+                            expression optimizers all reported ``fixpoint_reached``.
+    """
     any_update = False
     statements = []
+    if stmt_opts_by_kind is None:
+        stmt_opts_by_kind = build_stmt_opts_by_kind(stmt_opts)
 
     # run statement optimizers
     # note that an optimizer may optionally edit or remove statements whose statement IDs are greater than stmt_idx
@@ -970,27 +1159,42 @@ def peephole_optimize_stmts(block, stmt_opts):
     while stmt_idx < len(block.statements):
         stmt = block.statements[stmt_idx]
         old_stmt = stmt
+        if stmt.peephole_optimized is True:
+            # a previous peephole pass ran this statement to fixpoint
+            statements.append(stmt)
+            stmt_idx += 1
+            continue
+        stmt_fixpoint = True
         redo = True
         while redo:
             redo = False
-            for opt in stmt_opts:
-                if isinstance(stmt, opt.stmt_classes):
-                    r = opt.optimize(stmt, stmt_idx=stmt_idx, block=block)
-                    if r is not None and r is not stmt:
-                        stmt = r
-                        if r == ():
-                            # the statement is gone; no more redo
-                            redo = False
-                            break
-                        redo = True
+            opts_for_kind = stmt_opts_by_kind.get(stmt.pykind)
+            if not opts_for_kind:
+                break
+            for opt in opts_for_kind:
+                # context-insensitive optimizers never touch the flag, so default it to True here.
+                opt.fixpoint_reached = True
+                r = opt.optimize(stmt, stmt_idx=stmt_idx, block=block)
+                stmt_fixpoint &= opt.fixpoint_reached
+                if r is not None and r != stmt:
+                    stmt = r
+                    if r == ():
+                        # the statement is gone; no more redo
+                        redo = False
                         break
+                    redo = True
+                    break
 
-        if stmt is not None and stmt is not old_stmt:
+        if stmt is not None and stmt != old_stmt:
             if stmt != ():
                 statements.append(stmt)
             any_update = True
         else:
             statements.append(old_stmt)
+            if stmt_fixpoint and fixpoint_exprs is not None and id(old_stmt) in fixpoint_exprs:
+                # nothing matched and nothing may start matching if the block changes: at the peephole
+                # fixpoint until this statement is rebuilt.
+                old_stmt.peephole_optimized = True
         stmt_idx += 1
 
     return statements, any_update

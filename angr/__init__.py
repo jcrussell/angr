@@ -1,7 +1,7 @@
 # pylint: disable=wrong-import-position
 from __future__ import annotations
 
-__version__ = "9.2.222.dev0"
+__version__ = "10.0.5.dev0"
 
 if bytes is str:
     raise Exception("""
@@ -20,6 +20,26 @@ Good luck!
 """)
 
 # isort: off
+# rustylib links z3, so load the z3 shared library first. See angr._z3.
+from . import _z3
+
+_z3.load()
+
+# claripy is built from the vendored clarirs sources as part of angr.rustylib;
+# its canonical module paths are angr.rustylib.claripy.*. Alias it (and every
+# submodule) as angr.claripy in sys.modules before anything imports it. There
+# is deliberately no top-level `claripy` module: import it as
+# `from angr import claripy` (or `angr.claripy`).
+import sys
+
+from .rustylib import claripy
+
+sys.modules["angr.claripy"] = claripy
+_CLARIPY_PREFIX = "angr.rustylib.claripy."
+for _name in [k for k in sys.modules if k.startswith(_CLARIPY_PREFIX)]:
+    sys.modules["angr.claripy." + _name[len(_CLARIPY_PREFIX) :]] = sys.modules[_name]
+del _name, _CLARIPY_PREFIX, sys
+
 from .utils.formatting import setup_terminal
 
 setup_terminal()
@@ -34,32 +54,6 @@ from .misc.loggers import Loggers
 loggers = Loggers()
 del Loggers
 del logging
-
-# On Windows the rustylib extension carries no runpath (PE has none), so the z3
-# it links must be put on the DLL search path before anything imports
-# angr.rustylib — the extension and claripy have to resolve the SAME libz3 or
-# Z3 AST passthrough hands pointers across two contexts. No-op elsewhere.
-from .misc.z3_dll import add_z3_dll_directory
-from .misc.z3_compat import install as _install_z3_compat
-
-add_z3_dll_directory()
-del add_z3_dll_directory
-# claripy 9.2.209 vs the z3-solver 5.x bindings; see the module docstring.
-_install_z3_compat()
-del _install_z3_compat
-
-# Upstream angr 10 absorbed claripy as `angr.claripy` (built into angr.rustylib)
-# and has no top-level `claripy` module; angr-examples and the fork's own code
-# spell the import `from angr import claripy`. Until the merge brings the real
-# thing, alias the standalone package and every submodule it has loaded under
-# `angr.claripy.*` so both spellings resolve to one module object.
-import sys as _sys
-
-import claripy  # noqa: F401  -- re-exported as angr.claripy (alias block below)
-
-for _name in [k for k in _sys.modules if k == "claripy" or k.startswith("claripy.")]:
-    _sys.modules["angr." + _name] = _sys.modules[_name]
-del _name, _sys
 
 # angr.state_plugins and angr.sim_state are mutually dependent: the plugin modules register themselves
 # on SimState at import time, while SimState needs the SimStatePlugin base class. Importing the
@@ -105,6 +99,7 @@ from .errors import (
     AngrDataGraphError,
     AngrDBError,
     AngrDDGError,
+    AngrDecompilationComplexityError,
     AngrDecompilationError,
     AngrDelayJobNotice,
     AngrDirectorError,
@@ -211,6 +206,8 @@ from .exploration import (
     RustZ3Error,
 )
 from .exploration_techniques import ExplorationTechnique
+from .go import analyses as go_analyses
+from .go import knowledge_plugins as go_knowledge_plugins
 from .knowledge_base import KnowledgeBase
 from .llm_client import LLMClient
 from .procedures import SIM_LIBRARIES, SIM_PROCEDURES, SIM_TYPE_COLLECTIONS, SimProcedures
@@ -235,8 +232,6 @@ from .storage.file import (
     SimPackets,
     SimPacketsStream,
 )
-
-# for compatibility reasons
 
 options = sim_options  # alias
 
@@ -272,6 +267,7 @@ __all__ = (
     "AngrDBError",
     "AngrDDGError",
     "AngrDataGraphError",
+    "AngrDecompilationComplexityError",
     "AngrDecompilationError",
     "AngrDelayJobNotice",
     "AngrDirectorError",
@@ -409,6 +405,8 @@ __all__ = (
     "default_cc",
     "engines",
     "exploration_techniques",
+    "go_analyses",
+    "go_knowledge_plugins",
     "knowledge_plugins",
     "load_shellcode",
     "manager",

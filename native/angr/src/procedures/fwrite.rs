@@ -100,16 +100,16 @@ impl NativeSimProcedure for NativeFwrite {
 
         let mut bytes = Vec::with_capacity(total as usize);
         for i in 0..total {
-            match state.memory_load(src.wrapping_add(i), 1) {
-                Ok(bv) => match bv.as_u64() {
+            {
+                let bv = state.memory_load(src.wrapping_add(i), 1)?;
+                match bv.as_u64() {
                     Some(val) => bytes.push(val as u8),
                     None => {
                         return Err(ProcedureError::SymbolicArgument(format!(
                             "symbolic byte at src+{i}"
                         )));
                     }
-                },
-                Err(e) => return Err(e.into()),
+                }
             }
         }
         // Unreachable after the gate above; choke-point insurance (see

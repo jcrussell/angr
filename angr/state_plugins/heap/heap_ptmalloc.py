@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 
-import claripy
-
+from angr import claripy
 from angr.errors import SimHeapError, SimMergeError, SimSolverError
 from angr.state_plugins.plugin import SimStatePlugin
 
@@ -367,6 +366,12 @@ class SimHeapPTMalloc(SimHeapFreelist):
         while chunk is None:
             free_size = free_chunk.get_size()
             free_size = concretize(free_size, self.state.solver, sym_free_size_handler)
+            if free_size >= size:
+                # This chunk is about to be carved up. The heap region is mapped lazily, so make sure the chunk
+                # itself, plus the metadata of whatever chunk ends up following it, is backed before anything
+                # writes to it. This is the only place where this heap reaches above the chunks it already
+                # handed out; free()/realloc() only ever touch chunks that malloc() has already mapped.
+                self._ensure_mapped(free_chunk.base + size + 2 * self._chunk_min_size)
             if free_size < size:
                 # Chunk is too small to be used; move to the next or fail
                 fwd = free_chunk.fwd_chunk()
@@ -449,8 +454,7 @@ class SimHeapPTMalloc(SimHeapFreelist):
                 fwd.set_bck_chunk(chunk)
             chunk.set_bck_chunk(bck)
             chunk.set_fwd_chunk(fwd)
-            if chunk < self.free_head_chunk:
-                self.free_head_chunk = chunk
+            self.free_head_chunk = min(self.free_head_chunk, chunk)
         elif not p_in_use and not n_in_use:
             # If both the adjacent chunks are free, merging between all three will be needed
             p_ptr = chunk.prev_chunk()  # The previous chunk will be the base of the overall new chunk
@@ -474,8 +478,7 @@ class SimHeapPTMalloc(SimHeapFreelist):
                 fwd = n_ptr.fwd_chunk()
 
                 # In case the freed chunk preceded the free head
-                if base < self.free_head_chunk:
-                    self.free_head_chunk = base
+                self.free_head_chunk = min(self.free_head_chunk, base)
 
                 # In case the following chunk was the last free chunk, we can't use its links due to the merge
                 if bck == fwd and bck == n_ptr:
@@ -582,16 +585,33 @@ class SimHeapPTMalloc(SimHeapFreelist):
         if any(o._chunk_align_mask != self._chunk_align_mask for o in others):
             raise SimMergeError("Cannot merge heaps with different chunk alignments")
 
+        self._combine_mapped_end(others)
+
         return False
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint:disable=unused-argument
         return self._combine(others)
 
-    def widen(self, others):
-        return self._combine(others)
+    def _map_final_page(self):
+        """
+        This heap keeps the usage information of the real final chunk in the last word of the heap region (see
+        ``_set_final_freeness``), which is written by ``init_state`` and read or written by every operation that
+        touches the last chunk. The region is mapped lazily and will not normally grow that far, so map the single
+        page that holds that word up front.
+        """
+        if self._mapped_end is None:
+            return
+        page_size = getattr(self.state.memory, "page_size", 0x1000)
+        region_end = self.heap_base + self.heap_size
+        final_page = (region_end - 1) - ((region_end - 1) % page_size)
+        if final_page < self._mapped_end:
+            # already covered by the initial mapping
+            return
+        self._map_range(final_page, region_end)
 
     def init_state(self):
         super().init_state()
+        self._map_final_page()
 
         self._chunk_size_t_size = self.state.arch.bytes
         self._chunk_min_size = 4 * self._chunk_size_t_size

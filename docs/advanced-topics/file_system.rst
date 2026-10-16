@@ -80,7 +80,7 @@ default SimFile position is just the number of bytes from the start of the file.
 .. code-block:: python
 
    >>> data, actual_size, new_pos = simfile.read(0, 5)
-   >>> import claripy
+   >>> from angr import claripy
    >>> assert claripy.is_true(data == 'hello')
    >>> assert claripy.is_true(actual_size == 5)
    >>> assert claripy.is_true(new_pos == 5)
@@ -293,6 +293,12 @@ file data when the program asks for it:
 
 You can write whatever kind of mount you want to instrument filesystem access by
 subclassing ``angr.SimMount``!
+
+The filesystem also has a root directory, which ``state.fs.chroot`` changes -
+this is what the ``chroot`` simprocedure calls. The new root is resolved inside
+the filesystem the state already has, so a guest calling ``chroot`` can only
+reduce what it is able to reach; it never gains access to anything you did not
+mount yourself.
 
 Stdio streams
 ^^^^^^^^^^^^^

@@ -7,6 +7,7 @@ import re
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
+import networkx
 from rich import progress as rich_progress
 from rich.console import Console
 from rich.logging import RichHandler
@@ -17,6 +18,7 @@ import angr
 from angr.analyses.decompiler.decompilation_options import PARAM_TO_OPTION
 from angr.analyses.decompiler.presets import DECOMPILATION_PRESETS
 from angr.analyses.decompiler.structuring import DEFAULT_STRUCTURER, STRUCTURER_CLASSES
+from angr.enums import Flavors
 from angr.utils.formatting import ansi_color_enabled
 
 if TYPE_CHECKING:
@@ -56,6 +58,39 @@ def parse_function_args(proj: angr.Project, func_args: list[str] | None) -> Gene
                 continue
 
         log.error('Function "%s" not found', func_arg)
+
+
+def resolve_function_starts(proj: angr.Project, func_args: list[str]) -> list[int]:
+    """
+    Resolve function identifiers to addresses without a CFG, so recovery can be seeded with them.
+
+    Identifiers that the loader cannot resolve are skipped.
+
+    :param proj:      Project to query.
+    :param func_args: Sequence of function identifiers, either numeric or symbol names.
+    """
+    addrs = set()
+    for func_arg in func_args:
+        if NUMERIC_ARG_RE.match(func_arg):
+            addrs.add(int(func_arg, 0))
+            continue
+        symbol = proj.loader.find_symbol(func_arg)
+        if symbol is not None:
+            addrs.add(symbol.rebased_addr)
+        else:
+            log.error('Function "%s" cannot be resolved without a whole-binary CFG', func_arg)
+    return sorted(addrs)
+
+
+def executable_regions(proj: angr.Project) -> list[tuple[int, int]]:
+    """
+    Address ranges of the executable sections of the main object.
+    """
+    return [
+        (section.vaddr, section.vaddr + section.memsize)
+        for section in proj.loader.main_object.sections
+        if section.is_executable and section.memsize > 0
+    ]
 
 
 def _make_status_console() -> tuple[Console, bool]:
@@ -262,6 +297,7 @@ def decompile(args):
     """
     structurer = args.structurer or DEFAULT_STRUCTURER.NAME
     rust_mode = args.rust
+    go_mode = args.go
     should_highlight = ansi_color_enabled and not args.no_colors
     err, show_status = _make_status_console()
     if not args.pbar:
@@ -285,20 +321,58 @@ def decompile(args):
             "[yellow]Warning:[/yellow] --rust was supplied but the binary does not appear to be a Rust binary. "
             "Rust-specific analyses may have no effect."
         )
+    if go_mode and show_status and not proj.is_go_binary:
+        err.print(
+            "[yellow]Warning:[/yellow] --go was supplied but the binary does not appear to be a Go binary. "
+            "Go-specific analyses may have no effect."
+        )
+
+    # Seed addresses for scoped recovery, if it was asked for and the identifiers can be resolved
+    func_starts = resolve_function_starts(proj, args.functions) if args.scope_to_functions and args.functions else []
+    if args.scope_to_functions and not func_starts:
+        if show_status:
+            err.print(
+                "[yellow]Warning:[/yellow] --scope-to-functions needs --functions with addresses or resolvable "
+                "symbol names. Falling back to whole-binary recovery."
+            )
+        else:
+            log.warning("--scope-to-functions had nothing to seed recovery with; recovering the whole binary.")
 
     # CFG recovery with progress on stderr
     with _stderr_progress(err, "Recovering control flow graph", show=show_status) as progress_cb:
-        cfg = proj.analyses.CFG(  # pyright: ignore[reportCallIssue]
-            normalize=True, data_references=True, progress_callback=progress_cb
-        )
+        if func_starts:
+            # Recursive descent from the functions under analysis instead of a linear scan of the binary
+            cfg = proj.analyses.CFGFast(  # pyright: ignore[reportCallIssue]
+                normalize=True,
+                data_references=True,
+                regions=executable_regions(proj),
+                start_at_entry=False,
+                function_starts=func_starts,
+                force_smart_scan=False,
+                progress_callback=progress_cb,
+            )
+        else:
+            cfg = proj.analyses.CFG(  # pyright: ignore[reportCallIssue]
+                normalize=True, data_references=True, progress_callback=progress_cb
+            )
 
     # Complete calling conventions with progress on stderr. Rust decompilation always needs this
     # to recover prototypes before TypeDBLoader can refine them.
-    if args.cca or rust_mode:
+    if args.cca or rust_mode or go_mode:
+        ccc_kwargs = {}
+        if func_starts:
+            # Only the callees of the functions under analysis can affect their decompilation
+            callgraph = proj.kb.functions.callgraph
+            reachable = set(func_starts)
+            for addr in func_starts:
+                if addr in callgraph:
+                    reachable |= networkx.descendants(callgraph, addr)
+            ccc_kwargs = {"prioritize_func_addrs": sorted(reachable), "skip_other_funcs": True}
         with _stderr_progress(err, "Recovering calling conventions", show=show_status) as progress_cb:
             proj.analyses.CompleteCallingConventions(
                 analyze_callsites=args.cca_callsites,
                 progress_callback=progress_cb,  # pyright: ignore[reportCallIssue]
+                **ccc_kwargs,
             )
 
     if rust_mode:
@@ -353,7 +427,9 @@ def decompile(args):
     success_count = 0
     error_count = 0
 
-    decompiler_kwargs = {"flavor": "rust"} if rust_mode else {}
+    decompiler_kwargs = (
+        {"flavor": Flavors.RUST_FLAVOR} if rust_mode else {"flavor": Flavors.GO_FLAVOR} if go_mode else {}
+    )
 
     with _multi_progress(err, total, "Decompiling", show=show_status) as tracker:
         for func in funcs:
@@ -405,7 +481,7 @@ def decompile(args):
                 assert dec is not None and dec.codegen is not None
                 text = dec.codegen.text
                 if should_highlight:
-                    lexer = "rust" if rust_mode else "c"
+                    lexer = "rust" if rust_mode else "go" if go_mode else "c"
                     syntax = Syntax(text + "\n", lexer, theme=args.theme, line_numbers=False)  # type: ignore[operator]
                     out.print(syntax)
                 else:
@@ -523,6 +599,14 @@ def main():
         default=True,
     )
     decompile_cmd_parser.add_argument(
+        "--scope-to-functions",
+        help="Recover the control flow graph by recursive descent from the functions given by --functions instead of "
+        "scanning the whole binary, and limit calling-convention recovery to their callees. Much faster on large "
+        "binaries when you only want a few functions, at the cost of analyses that need whole-binary context.",
+        action="store_true",
+        default=False,
+    )
+    decompile_cmd_parser.add_argument(
         "--llm",
         help="Use an LLM to refine the decompilation output. The LLM must be configured separately using environment "
         "variables. You may only need to set ANGR_LLM_MODEL (see pydantic-ai model list) and ANGR_LLM_API_KEY. See "
@@ -534,6 +618,13 @@ def main():
         "--rust",
         help="Decompile to Rust pseudocode (Oxidizer). Implies full-binary calling-convention recovery and runs the "
         "Rust symbol-recovery and type-database analyses before decompilation. Intended for binaries built from Rust "
+        "source.",
+        action="store_true",
+        default=False,
+    )
+    decompile_cmd_parser.add_argument(
+        "--go",
+        help="Decompile to Go. Implies full-binary calling-convention recovery. Intended for binaries built from Go "
         "source.",
         action="store_true",
         default=False,

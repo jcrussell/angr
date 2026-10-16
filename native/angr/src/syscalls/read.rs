@@ -143,7 +143,11 @@ impl NativeSyscall for NativeReadSyscall {
 /// exported found state solved it as unconstrained (ekopartyctf2016_rev250's
 /// team name came back rejected). The libc `read` procedure already went
 /// through `stdin_common::mint_stdin_bytes`; this is the same binding.
-fn read_stdin(state: &mut RustSimState, buf: u64, count: u64) -> Result<SyscallOutcome, SyscallError> {
+fn read_stdin(
+    state: &mut RustSimState,
+    buf: u64,
+    count: u64,
+) -> Result<SyscallOutcome, SyscallError> {
     let names = crate::syscalls::fresh_byte_names("sys_read", &SYS_READ_COUNTER, count);
     let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
     write_bv_bytes(state, buf, sym_bytes)?;

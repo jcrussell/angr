@@ -11,29 +11,44 @@ from angr.ailment import Address, Block, Expression
 from angr.ailment.block_walker import AILBlockViewer
 from angr.ailment.expression import (
     ITE,
+    BinaryOp,
     Call,
     Const,
     Convert,
     DirtyExpression,
     Extract,
-    FunctionLikeMacro,
     Insert,
     Load,
+    MultiStatementExpression,
     Phi,
-    Register,
+    Reinterpret,
     StackBaseOffset,
     Tmp,
     UnaryOp,
-    VEXCCallExpression,
     VirtualVariable,
+    VirtualVariableCategory,
 )
 from angr.ailment.statement import CAS, Assignment, SideEffectStatement, Statement, Store
 from angr.code_location import AILCodeLocation
 from angr.knowledge_plugins.key_definitions import atoms
+from angr.rustylib.ailment import ExpressionKind as _EK  # pylint:disable=import-error
+from angr.rustylib.ailment import Statement as _RustStatement  # pylint:disable=import-error,no-name-in-module
+from angr.rustylib.ailment import StatementKind as _SK  # pylint:disable=import-error
 
+from .combined_uses_collector import VVarAndTmpUsesCollector
 from .tmp_uses_collector import TmpUsesCollector
 from .vvar_extra_defs_collector import FindExtraDefs
 from .vvar_uses_collector import VVarUsesCollector
+
+# Module-level kind constants -- bound once at import so the hot SSA
+# loops do an int compare against a local instead of an attribute
+# lookup on the pyclass per iteration.
+_SK_ASSIGNMENT = _SK.Assignment
+_SK_SIDE_EFFECT_STATEMENT = _SK.SideEffectStatement
+_SK_CAS = _SK.CAS
+_EK_VIRTUAL_VARIABLE = _EK.VirtualVariable
+_EK_TMP = _EK.Tmp
+_EK_PHI = _EK.Phi
 
 DEPHI_VVAR_REG_OFFSET = 4096
 
@@ -99,53 +114,82 @@ def get_reg_offset_base(reg_offset, arch, size=None, resilient=True):
     return base_reg_and_size[0]
 
 
+def clobber_def_ids(stmt) -> list[int]:
+    """
+    vvar IDs of the registers that a call statement clobbers and thereby defines. The ``clobber_defs`` tag holds
+    ``(varid, reg_offset, bits)`` triples, flattened so that it survives serialization.
+    """
+    raw = stmt.tags.get("clobber_defs")
+    return raw[0::3] if raw else []
+
+
+def clobber_def_vvars(stmt) -> list[VirtualVariable]:
+    """
+    The register virtual variables that a call statement defines by clobbering them (see ``clobber_def_ids``).
+    """
+    raw = stmt.tags.get("clobber_defs")
+    if not raw:
+        return []
+    return [
+        VirtualVariable(None, raw[i], raw[i + 2], VirtualVariableCategory.REGISTER, oident=raw[i + 1])
+        for i in range(0, len(raw), 3)
+    ]
+
+
 def get_vvar_deflocs(
-    blocks, phi_vvars: dict[int, set[int | None]] | None = None
+    blocks, phi_vvars: dict[int, set[int | None]] | None = None, check_extra_defs: bool = True
 ) -> dict[int, tuple[VirtualVariable, AILCodeLocation]]:
     vvar_to_loc: dict[int, tuple[VirtualVariable, AILCodeLocation]] = {}
     walker = FindExtraDefs()
     walker.found = vvar_to_loc
     for block in blocks:
         for stmt_idx, stmt in enumerate(block.statements):
-            if isinstance(stmt, Assignment) and isinstance(stmt.dst, VirtualVariable):
-                vvar_to_loc[stmt.dst.varid] = (
-                    stmt.dst,
-                    AILCodeLocation(block.addr, block.idx, stmt_idx, stmt.tags.get("ins_addr")),
-                )
-                if phi_vvars is not None and isinstance(stmt.src, Phi):
-                    phi_vvars[stmt.dst.varid] = {
-                        vvar_.varid if vvar_ is not None else None for src, vvar_ in stmt.src.src_and_vvars
-                    }
-            elif isinstance(stmt, SideEffectStatement):
-                if isinstance(stmt.ret_expr, VirtualVariable):
-                    vvar_to_loc[stmt.ret_expr.varid] = (
-                        stmt.ret_expr,
+            kind = stmt.kind
+            if kind == _SK_ASSIGNMENT:
+                dst = stmt.dst
+                if dst.kind == _EK_VIRTUAL_VARIABLE:
+                    vvar_to_loc[dst.varid] = (
+                        dst,
                         AILCodeLocation(block.addr, block.idx, stmt_idx, stmt.tags.get("ins_addr")),
                     )
-                if isinstance(stmt.fp_ret_expr, VirtualVariable):
-                    vvar_to_loc[stmt.fp_ret_expr.varid] = (
-                        stmt.fp_ret_expr,
+                    if phi_vvars is not None and stmt.src.kind == _EK_PHI:
+                        phi_vvars[dst.varid] = {
+                            vvar_.varid if vvar_ is not None else None for src, vvar_ in stmt.src.src_and_vvars
+                        }
+            elif kind == _SK_SIDE_EFFECT_STATEMENT:
+                ret = stmt.ret_expr
+                if ret is not None and ret.kind == _EK_VIRTUAL_VARIABLE:
+                    vvar_to_loc[ret.varid] = (
+                        ret,
+                        AILCodeLocation(block.addr, block.idx, stmt_idx, stmt.tags.get("ins_addr")),
+                    )
+                fp_ret = stmt.fp_ret_expr
+                if fp_ret is not None and fp_ret.kind == _EK_VIRTUAL_VARIABLE:
+                    vvar_to_loc[fp_ret.varid] = (
+                        fp_ret,
                         AILCodeLocation(block.addr, block.idx, stmt_idx, stmt.tags.get("ins_addr")),
                     )
 
             if extra_defs := stmt.tags.get("extra_defs", None):
                 walker.walk_statement(stmt, block, stmt_idx)
-                assert all(varid in vvar_to_loc for varid in extra_defs), "extra_def tag was dropped"
+                # When scanning only a subset of blocks (e.g. incremental updates), an extra-def varid may be defined
+                # in a block that is not part of the subset, so this consistency check is skipped there.
+                assert not check_extra_defs or all(varid in vvar_to_loc for varid in extra_defs), (
+                    "extra_def tag was dropped"
+                )
+            if "clobber_defs" in stmt.tags:
+                loc = AILCodeLocation(block.addr, block.idx, stmt_idx, stmt.tags.get("ins_addr"))
+                for cvvar in clobber_def_vvars(stmt):
+                    vvar_to_loc[cvvar.varid] = (cvvar, loc)
 
     return vvar_to_loc
 
 
 def get_vvar_uselocs(blocks) -> dict[int, list[tuple[VirtualVariable, AILCodeLocation]]]:
-    vvar_to_loc: dict[int, list[tuple[VirtualVariable, AILCodeLocation]]] = defaultdict(list)
+    collector = VVarUsesCollector()
     for block in blocks:
-        collector = VVarUsesCollector()
         collector.walk(block)
-        for vvar_idx, vvar_and_uselocs in collector.vvar_and_uselocs.items():
-            if vvar_idx not in vvar_to_loc:
-                vvar_to_loc[vvar_idx] = list(vvar_and_uselocs)
-            else:
-                vvar_to_loc[vvar_idx] += vvar_and_uselocs
-    return vvar_to_loc
+    return collector.vvar_and_uselocs
 
 
 def get_tmp_deflocs(blocks: Iterable[Block]) -> dict[Address, dict[atoms.Tmp, int]]:
@@ -154,22 +198,27 @@ def get_tmp_deflocs(blocks: Iterable[Block]) -> dict[Address, dict[atoms.Tmp, in
     for block in blocks:
         codeloc = (block.addr, block.idx)
         for stmt_idx, stmt in enumerate(block.statements):
-            if isinstance(stmt, Assignment) and isinstance(stmt.dst, Tmp):
-                tmp_to_loc[codeloc][atoms.Tmp(stmt.dst.tmp_idx, stmt.dst.bits)] = stmt_idx
-            if isinstance(stmt, CAS):
-                if isinstance(stmt.old_lo, Tmp):
-                    tmp_to_loc[codeloc][atoms.Tmp(stmt.old_lo.tmp_idx, stmt.old_lo.bits)] = stmt_idx
-                if stmt.old_hi is not None and isinstance(stmt.old_hi, Tmp):
-                    tmp_to_loc[codeloc][atoms.Tmp(stmt.old_hi.tmp_idx, stmt.old_hi.bits)] = stmt_idx
+            kind = stmt.kind
+            if kind == _SK_ASSIGNMENT:
+                dst = stmt.dst
+                if dst.kind == _EK_TMP:
+                    tmp_to_loc[codeloc][atoms.Tmp(dst.tmp_idx, dst.bits)] = stmt_idx
+            elif kind == _SK_CAS:
+                old_lo = stmt.old_lo
+                if old_lo.kind == _EK_TMP:
+                    tmp_to_loc[codeloc][atoms.Tmp(old_lo.tmp_idx, old_lo.bits)] = stmt_idx
+                old_hi = stmt.old_hi
+                if old_hi is not None and old_hi.kind == _EK_TMP:
+                    tmp_to_loc[codeloc][atoms.Tmp(old_hi.tmp_idx, old_hi.bits)] = stmt_idx
 
     return tmp_to_loc
 
 
 def get_tmp_uselocs(blocks: Iterable[Block]) -> dict[Address, dict[atoms.Tmp, set[tuple[Tmp, int]]]]:
     tmp_to_loc: dict[Address, dict[atoms.Tmp, set[tuple[Tmp, int]]]] = defaultdict(dict)
-
+    collector = TmpUsesCollector()
     for block in blocks:
-        collector = TmpUsesCollector()
+        collector.reset()
         collector.walk(block)
         block_loc = (block.addr, block.idx)
         for (tmp_idx, tmp_bits), tmp_and_stmtids in collector.tmp_and_uselocs.items():
@@ -179,6 +228,94 @@ def get_tmp_uselocs(blocks: Iterable[Block]) -> dict[Address, dict[atoms.Tmp, se
                 tmp_to_loc[block_loc][atoms.Tmp(tmp_idx, tmp_bits)] |= tmp_and_stmtids
 
     return tmp_to_loc
+
+
+def get_uses_defs(
+    blocks,
+    phi_vvars: dict[int, set[int | None]] | None = None,
+    check_extra_defs: bool = True,
+) -> tuple[
+    dict[int, tuple[VirtualVariable, AILCodeLocation]],
+    dict[int, list[tuple[VirtualVariable, AILCodeLocation]]],
+    dict[Address, dict[atoms.Tmp, int]],
+    dict[Address, dict[atoms.Tmp, set[tuple[Tmp, int]]]],
+]:
+    """Combined ``get_{vvar,tmp}_{def,use}locs``.
+
+    Return: ``(vvar_deflocs, vvar_uselocs, tmp_deflocs, tmp_uselocs)`` matching the original four-function shapes.
+    """
+    vvar_deflocs: dict[int, tuple[VirtualVariable, AILCodeLocation]] = {}
+    tmp_deflocs: dict[Address, dict[atoms.Tmp, int]] = defaultdict(dict)
+    tmp_uselocs: dict[Address, dict[atoms.Tmp, set[tuple[Tmp, int]]]] = defaultdict(dict)
+
+    extra_defs_walker = FindExtraDefs()
+    extra_defs_walker.found = vvar_deflocs
+
+    collector = VVarAndTmpUsesCollector()
+
+    for block in blocks:
+        block_loc = (block.addr, block.idx)
+        block_addr = block.addr
+        block_idx = block.idx
+
+        # tmp uses are per-block; vvar uses accumulate across blocks.
+        collector.reset_tmp_uses_only()
+
+        for stmt_idx, stmt in enumerate(block.statements):
+            stmt_ins_addr = stmt.tags.get("ins_addr")
+            if isinstance(stmt, Assignment):
+                dst = stmt.dst
+                if isinstance(dst, VirtualVariable):
+                    vvar_deflocs[dst.varid] = (
+                        dst,
+                        AILCodeLocation(block_addr, block_idx, stmt_idx, stmt_ins_addr),
+                    )
+                    if phi_vvars is not None and isinstance(stmt.src, Phi):
+                        phi_vvars[dst.varid] = {
+                            vvar_.varid if vvar_ is not None else None for src, vvar_ in stmt.src.src_and_vvars
+                        }
+                elif isinstance(dst, Tmp):
+                    tmp_deflocs[block_loc][atoms.Tmp(dst.tmp_idx, dst.bits)] = stmt_idx
+            elif isinstance(stmt, SideEffectStatement):
+                if isinstance(stmt.ret_expr, VirtualVariable):
+                    vvar_deflocs[stmt.ret_expr.varid] = (
+                        stmt.ret_expr,
+                        AILCodeLocation(block_addr, block_idx, stmt_idx, stmt_ins_addr),
+                    )
+                if isinstance(stmt.fp_ret_expr, VirtualVariable):
+                    vvar_deflocs[stmt.fp_ret_expr.varid] = (
+                        stmt.fp_ret_expr,
+                        AILCodeLocation(block_addr, block_idx, stmt_idx, stmt_ins_addr),
+                    )
+            elif isinstance(stmt, CAS):
+                if isinstance(stmt.old_lo, Tmp):
+                    tmp_deflocs[block_loc][atoms.Tmp(stmt.old_lo.tmp_idx, stmt.old_lo.bits)] = stmt_idx
+                if stmt.old_hi is not None and isinstance(stmt.old_hi, Tmp):
+                    tmp_deflocs[block_loc][atoms.Tmp(stmt.old_hi.tmp_idx, stmt.old_hi.bits)] = stmt_idx
+
+            if extra_defs := stmt.tags.get("extra_defs", None):
+                extra_defs_walker.walk_statement(stmt, block, stmt_idx)
+                assert not check_extra_defs or all(varid in vvar_deflocs for varid in extra_defs), (
+                    "extra_def tag was dropped"
+                )
+            if "clobber_defs" in stmt.tags:
+                loc = AILCodeLocation(block_addr, block_idx, stmt_idx, stmt_ins_addr)
+                for cvvar in clobber_def_vvars(stmt):
+                    vvar_deflocs[cvvar.varid] = (cvvar, loc)
+
+        collector.walk(block)
+
+        # Extract this block's tmp uses into the block-keyed map.
+        block_tmp_map = tmp_uselocs[block_loc]
+        for (tmp_idx, tmp_bits), tmp_and_stmtids in collector.tmp_and_uselocs.items():
+            key = atoms.Tmp(tmp_idx, tmp_bits)
+            existing = block_tmp_map.get(key)
+            if existing is None:
+                block_tmp_map[key] = tmp_and_stmtids
+            else:
+                existing |= tmp_and_stmtids
+
+    return vvar_deflocs, collector.vvar_and_uselocs, tmp_deflocs, tmp_uselocs
 
 
 def is_const_assignment(stmt: Statement, only_consts: bool = False) -> tuple[bool, Const | StackBaseOffset | None]:
@@ -230,46 +367,107 @@ class AILBlacklistExprTypeWalker(AILBlockViewer):
         return super()._handle_VirtualVariable(expr_idx, expr, stmt_idx, stmt, block)
 
 
-def is_const_and_vvar_assignment(stmt: Statement) -> bool:
+class AILWhitelistExprTypeWalker(AILBlockViewer):
+    """
+    Walks an AIL expression or statement and determines if it is built *only* out of a whitelisted set of expression
+    types. ``has_nonwhitelisted_exprs`` is set to True as soon as any expression whose type is not in the whitelist is
+    encountered.
+
+    Note that the whitelist must include the operator/container types that the walker recurses through (e.g. BinaryOp,
+    UnaryOp), otherwise those nodes would be flagged as non-whitelisted.
+    """
+
+    def __init__(self, whitelist_expr_types: tuple[type, ...]):
+        super().__init__()
+        self.whitelist_expr_types = whitelist_expr_types
+        self.has_nonwhitelisted_exprs = False
+
+    def reset(self) -> None:
+        self.has_nonwhitelisted_exprs = False
+
+    def _handle_expr(
+        self, expr_idx: int, expr: Expression, stmt_idx: int, stmt: Statement | None, block: Block | None
+    ) -> Any:
+        if not isinstance(expr, self.whitelist_expr_types):
+            self.has_nonwhitelisted_exprs = True
+            # the result is already determined; no need to recurse into this subtree
+            return None
+        return super()._handle_expr(expr_idx, expr, stmt_idx, stmt, block)
+
+
+_CONST_VVAR_OPERATORS: tuple[type, ...] = (
+    BinaryOp,
+    UnaryOp,
+    ITE,
+    Extract,
+    Insert,
+    MultiStatementExpression,
+    StackBaseOffset,
+    Convert,
+    Reinterpret,
+)
+CONST_VVAR_WHITELIST = (Const, VirtualVariable, *_CONST_VVAR_OPERATORS)
+CONST_VVAR_TMP_WHITELIST = (*CONST_VVAR_WHITELIST, Tmp)
+CONST_VVAR_LOAD_WHITELIST = (*CONST_VVAR_WHITELIST, Load)
+CONST_VVAR_LOAD_DIRTY_WHITELIST = (*CONST_VVAR_WHITELIST, Load, DirtyExpression)
+
+
+def _check_whitelisted_assignment_src(
+    stmt: Statement, whitelist: tuple[type, ...], walker_cached: AILWhitelistExprTypeWalker | None
+) -> bool:
     if isinstance(stmt, Assignment):
-        walker = AILBlacklistExprTypeWalker(
-            (Tmp, Load, Register, Phi, Call, DirtyExpression, VEXCCallExpression, FunctionLikeMacro)
-        )
+        if walker_cached is None:
+            walker = AILWhitelistExprTypeWalker(whitelist)
+        else:
+            walker = walker_cached
+            walker.reset()
         walker.walk_expression(stmt.src)
-        return not walker.has_blacklisted_exprs
+        return not walker.has_nonwhitelisted_exprs
     return False
 
 
-def is_const_vvar_tmp_assignment(stmt: Statement) -> bool:
-    if isinstance(stmt, Assignment):
-        walker = AILBlacklistExprTypeWalker(
-            (Load, Register, Phi, Call, DirtyExpression, VEXCCallExpression, FunctionLikeMacro)
-        )
-        walker.walk_expression(stmt.src)
-        return not walker.has_blacklisted_exprs
-    return False
+def is_const_and_vvar_assignment(stmt: Statement, walker_cached: AILWhitelistExprTypeWalker | None = None) -> bool:
+    return _check_whitelisted_assignment_src(stmt, CONST_VVAR_WHITELIST, walker_cached)
 
 
-def is_const_vvar_load_assignment(stmt: Statement) -> bool:
-    if isinstance(stmt, Assignment):
-        walker = AILBlacklistExprTypeWalker(
-            (Tmp, Register, Phi, Call, DirtyExpression, VEXCCallExpression, FunctionLikeMacro)
-        )
-        walker.walk_expression(stmt.src)
-        return not walker.has_blacklisted_exprs
-    return False
+def is_const_vvar_tmp_assignment(stmt: Statement, walker_cached: AILWhitelistExprTypeWalker | None = None) -> bool:
+    return _check_whitelisted_assignment_src(stmt, CONST_VVAR_TMP_WHITELIST, walker_cached)
 
 
-def is_const_vvar_load_dirty_assignment(stmt: Statement) -> bool:
-    if isinstance(stmt, Assignment):
-        walker = AILBlacklistExprTypeWalker((Tmp, Register, Phi, Call, VEXCCallExpression, FunctionLikeMacro))
-        walker.walk_expression(stmt.src)
-        return not walker.has_blacklisted_exprs
-    return False
+def is_const_vvar_load_assignment(stmt: Statement, walker_cached: AILWhitelistExprTypeWalker | None = None) -> bool:
+    return _check_whitelisted_assignment_src(stmt, CONST_VVAR_LOAD_WHITELIST, walker_cached)
+
+
+def is_const_vvar_load_dirty_assignment(
+    stmt: Statement, walker_cached: AILWhitelistExprTypeWalker | None = None
+) -> bool:
+    return _check_whitelisted_assignment_src(stmt, CONST_VVAR_LOAD_DIRTY_WHITELIST, walker_cached)
 
 
 def is_phi_assignment(stmt: Statement) -> bool:
-    return isinstance(stmt, Assignment) and isinstance(stmt.src, Phi)
+    return isinstance(stmt, _RustStatement) and stmt.is_phi_assignment
+
+
+class _DirtyExprCollector(AILBlockViewer):
+    """
+    Collects all DirtyExpressions in a statement.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.dirty_exprs: list[DirtyExpression] = []
+
+    def _handle_DirtyExpression(
+        self, expr_idx: int, expr: DirtyExpression, stmt_idx: int, stmt: Statement | None, block: Block | None
+    ):
+        self.dirty_exprs.append(expr)
+        return super()._handle_DirtyExpression(expr_idx, expr, stmt_idx, stmt, block)
+
+
+def get_dirty_exprs(stmt: Statement) -> list[DirtyExpression]:
+    collector = _DirtyExprCollector()
+    collector.walk_statement(stmt)
+    return collector.dirty_exprs
 
 
 def has_load_expr(stmt: Statement, skip_if_contains_vvar: int | None = None) -> bool:
@@ -496,8 +694,15 @@ def is_vvar_eliminatable(vvar: VirtualVariable, def_stmt: Statement | None) -> b
 
 
 __all__ = (
+    "CONST_VVAR_LOAD_DIRTY_WHITELIST",
+    "CONST_VVAR_LOAD_WHITELIST",
+    "CONST_VVAR_TMP_WHITELIST",
+    "CONST_VVAR_WHITELIST",
+    "AILWhitelistExprTypeWalker",
     "VVarUsesCollector",
     "check_in_between_stmts",
+    "clobber_def_ids",
+    "clobber_def_vvars",
     "get_tmp_deflocs",
     "get_tmp_uselocs",
     "get_vvar_deflocs",

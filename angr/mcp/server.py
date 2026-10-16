@@ -2,19 +2,34 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
+import inspect
 import logging
 import re
+import sys
 from typing import Any
 
+import archinfo
+import cle
 import networkx as nx
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
+from angr.analyses.decompiler.decompilation_options import DEFAULT_MAX_FUNCTION_BLOCKS
+from angr.analyses.decompiler.edits import DecompilationEditError, parse_address, resolve_function
+from angr.errors import AngrDecompilationComplexityError
 from angr.knowledge_plugins.cfg.memory_data import MemoryDataSort
+from angr.knowledge_plugins.functions import Function
+from angr.utils.mp import protect_stdio_from_forked_children
 
 from .errors import (
     CFGNotBuiltError,
+    DecompilationComplexityError,
     DecompilationError,
     FunctionNotFoundError,
+    InvalidArgumentError,
     ProjectNotFoundError,
 )
 from .serializers import (
@@ -25,12 +40,30 @@ from .serializers import (
     serialize_symbol,
     serialize_xref,
 )
-from .session import ProjectSession, get_session_manager
+from .session import AVAILABLE_FLAVORS, ProjectSession, build_main_opts, get_session_manager, parse_flavor
 
 l = logging.getLogger(__name__)
 
+
+class StdoutGuardMiddleware(Middleware):
+    """
+    Keep analysis output off of stdout.
+
+    Under the stdio transport, stdout is the JSON-RPC channel. This middleware redirects stdout to
+    stderr to avoid messing with the stdio transport.
+    """
+
+    async def on_message(self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]) -> Any:
+        with contextlib.redirect_stdout(sys.stderr):
+            return await call_next(context)
+
+
+# Worker processes should not inherit stdio.
+protect_stdio_from_forked_children()
+
 # Create the FastMCP server instance
 mcp = FastMCP("angr-mcp", instructions="Binary analysis server powered by angr")
+mcp.add_middleware(StdoutGuardMiddleware())
 
 
 def _get_session(project_id: str) -> ProjectSession:
@@ -48,10 +81,76 @@ def _require_cfg(session: ProjectSession) -> None:
 
 
 def _parse_address(address: str | int) -> int:
-    """Parse an address from hex string or int."""
-    if isinstance(address, int):
-        return address
-    return int(address, 16)
+    """Parse an address given as an int or a string. Accepts 0x-prefixed hex and decimal."""
+    return parse_address(address)
+
+
+def _find_function(session: ProjectSession, address: str | int | None = None, name: str | None = None) -> Function:
+    """Find a function by address or name. Any address inside the function resolves to it."""
+    if address is None and name is None:
+        raise InvalidArgumentError("Must specify either 'address' or 'name'")
+    try:
+        return resolve_function(session.project.kb, address=address, name=name)
+    except DecompilationEditError as e:
+        raise FunctionNotFoundError(str(e)) from e
+
+
+def _as_tool_error(func):
+    """
+    Convert this layer's exceptions into fastmcp ToolErrors.
+
+    FastMCP masks the message of any exception that is not a ToolError, so without this a caller
+    sees a generic failure instead of "no function named 'foo'" or the list of valid variable names.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except DecompilationEditError as ex:
+            raise ToolError(str(ex)) from ex
+
+    return wrapper
+
+
+def _complexity_tool_error(ex: AngrDecompilationComplexityError) -> DecompilationComplexityError:
+    """Turn a decompiler complexity-limit violation into a tool error an agent can act on."""
+    return DecompilationComplexityError(
+        f"{ex} Pass a larger {ex.limit_name} to decompile_function (or 0 to disable the check), or skip this function.",
+        limit_name=ex.limit_name,
+        limit=ex.limit,
+        actual=ex.actual,
+    )
+
+
+def _serialized(func):
+    """
+    Hold the project's lock for the duration of a tool call.
+
+    FastMCP dispatches synchronous tools onto worker threads, so two calls can reach one Project at
+    the same time. Applied to every tool, including read-only ones: the decompilation and variable
+    caches spill to LMDB, and a read racing an eviction is the same hazard as a concurrent write.
+    """
+    signature = inspect.signature(func)
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return func(*args, **kwargs)
+        project_id = bound.arguments.get("project_id")
+        if project_id is None:
+            return func(*args, **kwargs)
+        try:
+            session = get_session_manager().get_session(project_id)
+        except KeyError:
+            # let the tool itself raise the project-not-found error
+            return func(*args, **kwargs)
+        with session.exclusive():
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 # ============================================================================
@@ -60,9 +159,15 @@ def _parse_address(address: str | int) -> int:
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def load_binary(
     binary_path: str,
     auto_load_libs: bool = False,
+    arch: str | None = None,
+    backend: str | None = None,
+    base_address: str | None = None,
+    entry_point: str | None = None,
 ) -> dict[str, Any]:
     """
     Load a binary file as an angr Project for analysis.
@@ -70,34 +175,60 @@ def load_binary(
     This is typically the first tool to call. It creates a new analysis
     session and returns a project_id that must be used for subsequent operations.
 
+    Headered ELF, PE, and Mach-O files need no loader options. A universal (fat) Mach-O loads every
+    supported slice unless arch selects one. A headerless raw image needs backend "blob" plus arch,
+    and usually base_address and entry_point. 16-bit DOS executables are not supported.
+
     Args:
         binary_path: Absolute path to the binary file to analyze
         auto_load_libs: Whether to automatically load shared libraries (default: False)
+        arch: Architecture identifier (e.g. "x86_64", "aarch64", "armel", "mips32"). Selects the
+            matching slice of a universal Mach-O, or overrides the architecture of a headered file.
+        backend: Loader backend override; "blob" loads a headerless raw image (requires arch)
+        base_address: Load address for a raw image, as a hex string (e.g. "0x8000000")
+        entry_point: Entry point for a raw image, as a hex string
 
     Returns:
-        Project information including project_id, architecture, and entry point
+        Project information including project_id, the file's SHA-256, architecture, entry point, and,
+        for a universal Mach-O, the architectures its container offers
     """
     manager = get_session_manager()
+    main_opts = build_main_opts(arch=arch, backend=backend, base_address=base_address, entry_point=entry_point)
 
     session = manager.create_session(
         binary_path,
         auto_load_libs=auto_load_libs,
+        **({"main_opts": main_opts} if main_opts else {}),
     )
 
     proj = session.project
+    main_object = proj.loader.main_object
 
-    return {
+    result = {
         "project_id": session.project_id,
         "binary_path": session.binary_path,
+        "sha256": session.sha256,
         "arch": proj.arch.name,
         "bits": proj.arch.bits,
         "endianness": "little" if proj.arch.memory_endness == "Iend_LE" else "big",
         "entry_point": hex(proj.entry),
         "filename": proj.filename,
+        "backend": type(main_object).__name__.lower(),
+        "load_options": {
+            key: (value.name if isinstance(value, archinfo.Arch) else hex(value) if isinstance(value, int) else value)
+            for key, value in main_opts.items()
+        },
+        "flavor": session.flavor,
     }
+    if isinstance(main_object, cle.backends.Universal2):
+        result["available_arches"] = main_object.available_arches
+        result["loaded_slices"] = [child.arch.name for child in main_object.child_objects]
+    return result
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_cfg(
     project_id: str,
     normalize: bool = True,
@@ -139,6 +270,54 @@ def get_cfg(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
+def recover_calling_conventions(
+    project_id: str,
+    workers: int = 0,
+    force: bool = False,
+) -> dict[str, Any]:
+    """
+    Recover calling conventions and prototypes for every function in the binary.
+
+    Requires CFG to be built first via get_cfg. This improves the quality of decompilation output, especially the
+    arguments shown at call sites.
+
+    Args:
+        project_id: The project ID
+        workers: Number of worker processes to use (0 = run in-process, the default)
+        force: Re-analyze functions that already have a calling convention or prototype
+
+    Returns:
+        Number of functions for which a calling convention was recovered
+    """
+    session = _get_session(project_id)
+    _require_cfg(session)
+    proj = session.project
+
+    if workers < 0:
+        raise InvalidArgumentError("workers must be >= 0")
+
+    analysis = proj.analyses.CompleteCallingConventions(
+        cfg=session.cfg,
+        analyze_callsites=True,
+        workers=workers,
+        force=force,
+    )
+
+    recovered = sum(1 for func in proj.kb.functions.values() if func.calling_convention is not None)
+    return {
+        "project_id": project_id,
+        "workers": workers,
+        "functions_analyzed": len(proj.kb.functions),
+        "functions_with_calling_convention": recovered,
+        "prototype_libnames": sorted(analysis.prototype_libnames),
+    }
+
+
+@mcp.tool()
+@_as_tool_error
+@_serialized
 def list_functions(
     project_id: str,
     filter_plt: bool | None = None,
@@ -195,6 +374,8 @@ def list_functions(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_function_info(
     project_id: str,
     address: str | None = None,
@@ -213,94 +394,145 @@ def get_function_info(
         include_blocks: Whether to include list of basic block addresses
 
     Returns:
-        Detailed function information including size, complexity, etc.
+        Detailed function information including size, complexity, etc. "num_blocks" against
+        "decompilation_block_limit" tells you up front whether decompile_function will refuse this
+        function as too complex.
     """
     session = _get_session(project_id)
     _require_cfg(session)
 
-    if address is None and name is None:
-        raise ValueError("Must specify either 'address' or 'name'")
-
-    func = None
-    if address:
-        addr = _parse_address(address)
-        func = session.project.kb.functions.get(addr)
-    elif name:
-        # Search by name
-        for f in session.project.kb.functions.values():
-            if f.name == name:
-                func = f
-                break
-
-    if func is None:
-        raise FunctionNotFoundError(f"Function not found: address={address}, name={name}")
+    func = _find_function(session, address=address, name=name)
 
     return {
         "project_id": project_id,
         **serialize_function(func, include_blocks=include_blocks),
+        "decompilation_block_limit": DEFAULT_MAX_FUNCTION_BLOCKS,
     }
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
+def get_decompilation_flavor(project_id: str) -> dict[str, Any]:
+    """
+    Report the project-wide decompilation flavor and the language angr detected in the binary.
+
+    The flavor selects how decompile_function renders code: "pseudocode" (C-like, the default), "rust",
+    or "go". Decompilation caches, prototypes, and edits are kept per flavor. The detected language is a
+    hint for choosing a flavor; it does not change the setting.
+
+    Args:
+        project_id: The project ID
+
+    Returns:
+        The current flavor, the valid flavors, and the language detection result
+    """
+    session = _get_session(project_id)
+    detection = session.project.analyses.LanguageDetector()
+    return {
+        "project_id": project_id,
+        "flavor": session.flavor,
+        "available_flavors": list(AVAILABLE_FLAVORS),
+        "detected_language": detection.language,
+        "detected_compiler": detection.compiler,
+        "detection_confidence": detection.confidence.value,
+    }
+
+
+@mcp.tool()
+@_as_tool_error
+@_serialized
+def set_decompilation_flavor(project_id: str, flavor: str) -> dict[str, Any]:
+    """
+    Set the project-wide decompilation flavor used by decompile_function and the edit tools.
+
+    Args:
+        project_id: The project ID
+        flavor: "pseudocode", "rust", or "go"
+
+    Returns:
+        The previous and current flavor
+    """
+    session = _get_session(project_id)
+    previous = session.set_flavor(flavor)
+    return {"project_id": project_id, "previous_flavor": previous, "flavor": session.flavor}
+
+
+@mcp.tool()
+@_as_tool_error
+@_serialized
 def decompile_function(
     project_id: str,
     address: str | None = None,
     name: str | None = None,
+    max_function_blocks: int | None = None,
+    max_ail_statements: int | None = None,
+    flavor: str | None = None,
 ) -> dict[str, Any]:
     """
-    Decompile a function to C-like pseudocode.
+    Decompile a function to C-like pseudocode, or to Rust- or Go-flavored code.
 
     Specify either address (hex string) or function name.
+
+    Pathologically large functions (e.g. packer filler that linear disassembly turns into thousands of
+    blocks) can keep the decompiler busy indefinitely, so two size limits are checked before the
+    expensive work starts. Exceeding either one fails with an error naming the limit and the measured
+    size, so you can retry with a larger limit or move on to another function.
 
     Args:
         project_id: The project ID
         address: Function address as hex string (e.g., "0x401000")
         name: Function name to decompile
+        max_function_blocks: Refuse to decompile a function whose CFG has more basic blocks than this
+            (default: 50000; 0 disables the check). get_function_info reports a function's block
+            count as "num_blocks" and this default as "decompilation_block_limit".
+        max_ail_statements: Refuse to decompile a function whose AIL graph has more statements than
+            this (default: 1000000; 0 disables the check)
+        flavor: Decompilation flavor for this call only: "pseudocode", "rust", or "go". Defaults to the
+            project-wide flavor (see get_decompilation_flavor / set_decompilation_flavor).
 
     Returns:
-        Decompiled pseudocode and function metadata
+        Decompiled code, the flavor it was rendered in, and function metadata
     """
     session = _get_session(project_id)
     _require_cfg(session)
     proj = session.project
 
-    if address is None and name is None:
-        raise ValueError("Must specify either 'address' or 'name'")
+    func = _find_function(session, address=address, name=name)
+    flavor = session.flavor if flavor is None else parse_flavor(flavor)
 
-    # Find the function
-    func = None
-    if address:
-        addr = _parse_address(address)
-        func = proj.kb.functions.get(addr)
-    elif name:
-        for f in proj.kb.functions.values():
-            if f.name == name:
-                func = f
-                break
-
-    if func is None:
-        raise FunctionNotFoundError(f"Function not found: address={address}, name={name}")
+    options = []
+    if max_function_blocks is not None:
+        options.append(("max_function_blocks", max_function_blocks))
+    if max_ail_statements is not None:
+        options.append(("max_ail_statements", max_ail_statements))
 
     # Decompile
     try:
-        dec = proj.analyses.Decompiler(func)
-
-        if dec.codegen is None:
-            raise DecompilationError(f"Decompilation failed for {func.name}: no code generated")
-
-        return {
-            "project_id": project_id,
-            "function_address": hex(func.addr),
-            "function_name": func.name,
-            "code": dec.codegen.text,
-        }
-    except DecompilationError:
-        raise
+        dec = proj.analyses.Decompiler(func, options=options or None, flavor=flavor)
+    except AngrDecompilationComplexityError as e:
+        raise _complexity_tool_error(e) from e
     except Exception as e:
         raise DecompilationError(f"Decompilation failed: {e}") from e
 
+    if dec.complexity_error is not None:
+        raise _complexity_tool_error(dec.complexity_error)
+
+    if dec.codegen is None:
+        raise DecompilationError(f"Decompilation failed for {func.name}: no code generated")
+
+    return {
+        "project_id": project_id,
+        "function_address": hex(func.addr),
+        "function_name": func.name,
+        "flavor": flavor,
+        "code": dec.codegen.text,
+    }
+
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_xrefs(
     project_id: str,
     address: str,
@@ -328,7 +560,7 @@ def get_xrefs(
     elif direction == "from":
         xrefs = list(xref_manager.xrefs_by_ins_addr.get(addr, set()))
     else:
-        raise ValueError(f"Invalid direction: {direction}. Use 'to' or 'from'.")
+        raise InvalidArgumentError(f"Invalid direction: {direction}. Use 'to' or 'from'.")
 
     return {
         "project_id": project_id,
@@ -345,6 +577,8 @@ def get_xrefs(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_strings(
     project_id: str,
     min_length: int = 4,
@@ -404,6 +638,8 @@ def get_strings(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_imports(project_id: str) -> dict[str, Any]:
     """
     List imported symbols (external functions/variables the binary depends on).
@@ -440,6 +676,8 @@ def get_imports(project_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_exports(project_id: str) -> dict[str, Any]:
     """
     List exported symbols (functions/variables this binary provides).
@@ -469,6 +707,8 @@ def get_exports(project_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_basic_blocks(
     project_id: str,
     function_address: str,
@@ -508,6 +748,8 @@ def get_basic_blocks(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def get_callgraph(
     project_id: str,
     max_depth: int | None = None,
@@ -587,6 +829,8 @@ def get_callgraph(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def find_functions_by_pattern(
     project_id: str,
     pattern: str,
@@ -623,9 +867,9 @@ def find_functions_by_pattern(
             try:
                 match = bool(re.search(pattern, func.name, re.IGNORECASE))
             except re.error as e:
-                raise ValueError(f"Invalid regex pattern: {pattern}") from e
+                raise InvalidArgumentError(f"Invalid regex pattern: {pattern}") from e
         else:
-            raise ValueError(f"Invalid search_type: {search_type}")
+            raise InvalidArgumentError(f"Invalid search_type: {search_type}")
 
         if match:
             matches.append(serialize_function_summary(func))
@@ -640,6 +884,8 @@ def find_functions_by_pattern(
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def list_projects() -> dict[str, Any]:
     """
     List all currently loaded projects/sessions.
@@ -657,6 +903,8 @@ def list_projects() -> dict[str, Any]:
 
 
 @mcp.tool()
+@_as_tool_error
+@_serialized
 def close_project(project_id: str) -> dict[str, Any]:
     """
     Close a project and free its resources.
@@ -684,3 +932,8 @@ def close_project(project_id: str) -> dict[str, Any]:
 def create_server() -> FastMCP:
     """Create and return the configured MCP server instance."""
     return mcp
+
+
+# Imported last: edit_tools registers its tools on ``mcp`` and imports the helpers defined above,
+# so it has to come after them.
+from . import edit_tools  # noqa: F401  pylint:disable=wrong-import-position,unused-import

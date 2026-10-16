@@ -190,36 +190,11 @@ impl From<RustExecError> for PyErr {
 pub(crate) trait MapPyErr<T> {
     /// Map the error to `ValueError` — bad argument / unconvertible value.
     fn py_value_err(self) -> PyResult<T>;
-    /// Map the error to `RuntimeError` — an operation failed at runtime.
-    ///
-    /// Gated on `fuzzer` (angr-aygsg): the only callers live under
-    /// `src/fuzzer.rs` / `src/fuzzer/corpus.rs`, and the feature is
-    /// default-off, so an ungated declaration is `dead_code` in the
-    /// default-feature build that CI's `--all-features` clippy never sees.
-    /// Drop the gate as soon as a non-`fuzzer` caller appears.
-    #[cfg(feature = "fuzzer")]
-    fn py_runtime_err(self) -> PyResult<T>;
-    /// Map the error to `TypeError` — wrong Python type supplied.
-    ///
-    /// Gated on `fuzzer` for the same reason as
-    /// [`MapPyErr::py_runtime_err`].
-    #[cfg(feature = "fuzzer")]
-    fn py_type_err(self) -> PyResult<T>;
 }
 
 impl<T, E: std::fmt::Display> MapPyErr<T> for Result<T, E> {
     fn py_value_err(self) -> PyResult<T> {
         self.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-    }
-
-    #[cfg(feature = "fuzzer")]
-    fn py_runtime_err(self) -> PyResult<T> {
-        self.map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
-    }
-
-    #[cfg(feature = "fuzzer")]
-    fn py_type_err(self) -> PyResult<T> {
-        self.map_err(|e| pyo3::exceptions::PyTypeError::new_err(e.to_string()))
     }
 }
 

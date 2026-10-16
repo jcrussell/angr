@@ -5,9 +5,7 @@ import logging
 from collections.abc import Iterator
 from typing import Any, Self
 
-import claripy
-
-from angr import errors
+from angr import claripy, errors
 from angr.errors import AngrError, SimEmptyCallStackError, SimSolverError
 from angr.sim_state import SimState
 from angr.state_plugins.inspect import BP_AFTER, BP_BEFORE
@@ -96,9 +94,6 @@ class CallStack(SimStatePlugin):
         for o in others:
             if o != self:
                 l.error("Trying to merge states with disparate callstacks!")
-
-    def widen(self, others):  # pylint: disable=unused-argument
-        l.warning("Widening not implemented for callstacks")
 
     def __iter__(self) -> Iterator[CallStack]:
         """

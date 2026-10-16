@@ -4,14 +4,13 @@ import itertools
 import logging
 from typing import TYPE_CHECKING
 
-import claripy
-
 import angr
-from angr import ailment, errors
+from angr import ailment, claripy, errors
 from angr.engines.ail.callstack import AILCallStack
 from angr.engines.light.engine import SimEngineLightAIL
 from angr.engines.successors import SimSuccessors
 from angr.engines.vex.claripy import ccall
+from angr.rustylib.ailment import RoundingMode  # pylint:disable=import-error
 from angr.sim_state import SimState
 from angr.storage.memory_mixins.memory_mixin import MemoryMixin
 from angr.utils.constants import DEFAULT_STATEMENT
@@ -21,6 +20,30 @@ if TYPE_CHECKING:
     from angr.project import Project
 
 log = logging.getLogger(__name__)
+
+# Map the AIL ``RoundingMode`` enum to claripy's ``fp.RM`` enum. The
+# integer ordering already matches VEX (0=NearestTiesEven, ...) but
+# claripy doesn't accept the AIL pyclass directly, so we translate at
+# the engine boundary.
+_AIL_RM_TO_CLARIPY = {
+    RoundingMode.RM_NearestTiesEven: claripy.fp.RM.RM_NearestTiesEven,
+    RoundingMode.RM_TowardsNegativeInf: claripy.fp.RM.RM_TowardsNegativeInf,
+    RoundingMode.RM_TowardsPositiveInf: claripy.fp.RM.RM_TowardsPositiveInf,
+    RoundingMode.RM_TowardsZero: claripy.fp.RM.RM_TowardsZero,
+}
+
+
+def _claripy_rm(rm: object) -> object:
+    """Resolve an AIL ``RoundingMode`` to a ``claripy.fp.RM`` value.
+
+    Falls back to claripy's default when ``rm`` is ``None`` or is still an
+    unresolved ``Expression`` (VEX sometimes carries the rounding mode in a
+    tmp that only becomes a constant later in the decompilation pipeline).
+    """
+    if not isinstance(rm, RoundingMode):
+        return claripy.fp.RM.default()
+    return _AIL_RM_TO_CLARIPY[rm]
+
 
 type StateType = SimState[int, claripy.ast.BV]
 type DataType = claripy.ast.Bits | claripy.ast.Bool
@@ -496,53 +519,95 @@ class SimEngineAILSimState(SimEngineLightAIL[StateType, DataType, bool, None]):
         return self._top(expr.bits)
 
     def _handle_expr_Convert(self, expr: ailment.expression.Convert) -> DataType:
+        if expr.vector_count is not None:
+            return self._handle_expr_ConvertV(expr)
         child = self._expr(expr.operand)
         assert len(child) == expr.from_bits
-        if expr.from_type == expr.TYPE_INT:
+        if expr.from_type == ailment.expression.Convert.TYPE_INT:
             if isinstance(child, claripy.ast.Bool):
                 assert expr.from_bits == 1
-                assert expr.to_type == expr.TYPE_INT
+                assert expr.to_type == ailment.expression.Convert.TYPE_INT
                 return claripy.If(child, claripy.BVV(1, expr.to_bits), claripy.BVV(0, expr.to_bits))
             assert isinstance(child, claripy.ast.BV)
-            if expr.to_type == expr.TYPE_INT:
+            if expr.to_type == ailment.expression.Convert.TYPE_INT:
                 if expr.to_bits > expr.from_bits:
                     if expr.is_signed:
                         return child.sign_extend(expr.to_bits - expr.from_bits)
                     return child.zero_extend(expr.to_bits - expr.from_bits)
                 return child[expr.to_bits - 1 : 0]
-            if expr.to_type == expr.TYPE_FP:
+            if expr.to_type == ailment.expression.Convert.TYPE_FP:
                 to_sort = claripy.FSORT_DOUBLE if expr.to_bits == 64 else claripy.FSORT_FLOAT
-                return child.val_to_fp(to_sort, expr.is_signed, expr.rounding_mode)
+                return child.val_to_fp(to_sort, expr.is_signed, _claripy_rm(expr.rounding_mode))
             assert False
-        elif expr.from_type == expr.TYPE_FP:
+        elif expr.from_type == ailment.expression.Convert.TYPE_FP:
             assert isinstance(child, claripy.ast.FP)
-            if expr.to_type == expr.TYPE_INT:
+            if expr.to_type == ailment.expression.Convert.TYPE_INT:
                 return child.val_to_bv(expr.to_bits, expr.is_signed)
-            if expr.to_type == expr.TYPE_FP:
+            if expr.to_type == ailment.expression.Convert.TYPE_FP:
                 to_sort = claripy.FSORT_DOUBLE if expr.to_bits == 64 else claripy.FSORT_FLOAT
-                return child.to_fp(to_sort, expr.rounding_mode)
+                return child.to_fp(to_sort, _claripy_rm(expr.rounding_mode))
             assert False
         else:
             assert False
 
+    def _handle_expr_ConvertV(self, expr: ailment.expression.Convert) -> DataType:
+        """
+        Lane-wise conversion (e.g. Iop_F32toI32Sx4): the scalar conversion applied to every lane.
+        """
+        assert expr.vector_count is not None
+        from_lane = expr.from_bits // expr.vector_count
+        to_lane = expr.to_bits // expr.vector_count
+        fp_lanes = [
+            lane
+            for lane, ty in ((from_lane, expr.from_type), (to_lane, expr.to_type))
+            if ty == ailment.expression.Convert.TYPE_FP
+        ]
+        if any(lane not in (32, 64) for lane in fp_lanes):
+            # claripy has no half-precision floats
+            return self._top(expr.to_bits)
+        rm = _claripy_rm(expr.rounding_mode)
+        assert isinstance(rm, claripy.fp.RM)
+        lanes = []
+        for lane in self._expr_bv(expr.operand).chop(from_lane):
+            if expr.from_type == ailment.expression.Convert.TYPE_INT:
+                if expr.to_type == ailment.expression.Convert.TYPE_INT:
+                    if to_lane > from_lane:
+                        r = (
+                            lane.sign_extend(to_lane - from_lane)
+                            if expr.is_signed
+                            else lane.zero_extend(to_lane - from_lane)
+                        )
+                    else:
+                        r = lane[to_lane - 1 : 0]
+                else:
+                    r = lane.val_to_fp(claripy.fp.FSort.from_size(to_lane), expr.is_signed, rm).raw_to_bv()
+            else:
+                fp_lane = lane.raw_to_fp()
+                if expr.to_type == ailment.expression.Convert.TYPE_INT:
+                    r = fp_lane.val_to_bv(to_lane, expr.is_signed, rm)
+                else:
+                    r = fp_lane.to_fp(claripy.fp.FSort.from_size(to_lane), rm).raw_to_bv()
+            lanes.append(r)
+        return claripy.Concat(*lanes)
+
     def _handle_expr_Reinterpret(self, expr: ailment.expression.Reinterpret) -> DataType:
         child = self._expr_bits(expr.operand)
         assert len(child) == expr.from_bits
-        if expr.from_type == expr.TYPE_INT:
+        if expr.from_type == ailment.expression.Convert.TYPE_INT:
             assert isinstance(child, claripy.ast.BV)
-            if expr.to_type == expr.TYPE_INT:
+            if expr.to_type == ailment.expression.Convert.TYPE_INT:
                 assert False, "I think this is unreachable"
-            elif expr.to_type == expr.TYPE_FP:
+            elif expr.to_type == ailment.expression.Convert.TYPE_FP:
                 assert expr.from_size == expr.to_size
                 return child.raw_to_fp()
             else:
                 assert False
-        elif expr.from_type == expr.TYPE_FP:
+        elif expr.from_type == ailment.expression.Convert.TYPE_FP:
             assert isinstance(child, claripy.ast.FP)
-            if expr.to_type == expr.TYPE_INT:
+            if expr.to_type == ailment.expression.Convert.TYPE_INT:
                 assert expr.from_size == expr.to_size
                 return child.raw_to_bv()
-            if expr.to_type == expr.TYPE_FP:
+            if expr.to_type == ailment.expression.Convert.TYPE_FP:
                 assert False, "I think this is unreachable"
             else:
                 assert False
@@ -616,6 +681,12 @@ class SimEngineAILSimState(SimEngineLightAIL[StateType, DataType, bool, None]):
     def _handle_unop_BitwiseNeg(self, expr: ailment.UnaryOp):
         v = self._expr_bv(expr.operand)
         return ~v
+
+    def _handle_unop_Abs(self, expr: ailment.UnaryOp) -> DataType:
+        value = self._expr(expr.operand)
+        if isinstance(value, claripy.ast.FP):
+            return claripy.fpAbs(value)
+        return self._top(expr.bits)
 
     def _handle_unop_Reference(self, expr: ailment.expression.UnaryOp) -> DataType:
         match expr.operand:
@@ -695,22 +766,22 @@ class SimEngineAILSimState(SimEngineLightAIL[StateType, DataType, bool, None]):
 
     def _handle_binop_AddF(self, expr: ailment.expression.BinaryOp) -> DataType:
         return claripy.ast.fp.fpAdd(
-            expr.rounding_mode, self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
+            _claripy_rm(expr.rounding_mode), self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
         )
 
     def _handle_binop_SubF(self, expr: ailment.expression.BinaryOp) -> DataType:
         return claripy.ast.fp.fpSub(
-            expr.rounding_mode, self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
+            _claripy_rm(expr.rounding_mode), self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
         )
 
     def _handle_binop_MulF(self, expr: ailment.expression.BinaryOp) -> DataType:
         return claripy.ast.fp.fpMul(
-            expr.rounding_mode, self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
+            _claripy_rm(expr.rounding_mode), self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
         )
 
     def _handle_binop_DivF(self, expr: ailment.expression.BinaryOp) -> DataType:
         return claripy.ast.fp.fpDiv(
-            expr.rounding_mode, self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
+            _claripy_rm(expr.rounding_mode), self._expr_fp(expr.operands[0]), self._expr_fp(expr.operands[1])
         )
 
     def _handle_binop_AddV(self, expr: ailment.expression.BinaryOp) -> DataType:
@@ -932,7 +1003,23 @@ class SimEngineAILSimState(SimEngineLightAIL[StateType, DataType, bool, None]):
     def _handle_binop_MaxV(self, expr: ailment.expression.BinaryOp) -> DataType:
         raise NotImplementedError("Not sure of the semantics of this op")
 
+    def _handle_binop_HAddV(self, expr: ailment.expression.BinaryOp) -> DataType:
+        assert expr.vector_size is not None
+        extend = claripy.SignExt if expr.signed else claripy.ZeroExt
+        return claripy.Concat(
+            *(
+                (extend(expr.vector_size, a) + extend(expr.vector_size, b))[expr.vector_size : 1]
+                for a, b in zip(
+                    self._expr_bv(expr.operands[0]).chop(expr.vector_size),
+                    self._expr_bv(expr.operands[1]).chop(expr.vector_size),
+                )
+            )
+        )
+
     def _handle_binop_QAddV(self, expr: ailment.expression.BinaryOp) -> DataType:
+        raise NotImplementedError("Not sure of the semantics of this op")
+
+    def _handle_binop_QSubV(self, expr: ailment.expression.BinaryOp) -> DataType:
         raise NotImplementedError("Not sure of the semantics of this op")
 
     def _handle_binop_QNarrowBin(self, expr: ailment.expression.BinaryOp) -> DataType:

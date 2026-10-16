@@ -235,9 +235,6 @@ class ForwardAnalysis[AnalysisState, NodeType, JobType, JobKey, SuccessorType]:
         _, has_no_changes = self._merge_states(node, old_state, new_state)
         return has_no_changes
 
-    def _widen_states(self, *states: AnalysisState) -> AnalysisState:
-        raise NotImplementedError("_widen_states() is not implemented.")
-
     # Special interfaces for non-graph-traversal mode
 
     def _merge_jobs(self, *jobs: JobType):
@@ -530,12 +527,19 @@ class ForwardAnalysis[AnalysisState, NodeType, JobType, JobKey, SuccessorType]:
         """
 
         to_remove = []
+        kept: deque[JobInfo[JobType, JobKey]] = deque()
         for job_info in self._job_info_queue:
             if predicate(job_info.job):
                 to_remove.append(job_info)
+            else:
+                kept.append(job_info)
+
+        if not to_remove:
+            return
+
+        self._job_info_queue = kept
 
         for job_info in to_remove:
-            self._job_info_queue.remove(job_info)
             key = self._job_key(job_info.job)
             if key in self._job_map:
                 del self._job_map[key]

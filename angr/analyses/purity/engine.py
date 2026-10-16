@@ -115,7 +115,7 @@ class ResultType:
                 pure_functions is None or loc.callee_return_name not in pure_functions
             ):
                 return False
-        for (_, _, _, func, _), _ in self.call_args.items():
+        for _, _, _, func, _ in self.call_args:
             if pure_functions is None:
                 return False
             if isinstance(func, Function) and func.name not in pure_functions:
@@ -201,10 +201,33 @@ class PurityEngineAIL(SimEngineLightAIL[StateType, DataType_co, StmtDataType, Re
         self._do_assign(stmt.dst, val)
 
     def _handle_stmt_CAS(self, stmt: ailment.statement.CAS) -> StmtDataType:
-        raise NotImplementedError
+        # A compare-and-swap reads the location and conditionally writes it, so the pointer gets both uses, and the
+        # old values it hands back are what reading it produced.
+        ptr = self._expr(stmt.addr)
+        data = self._expr(stmt.data_lo)
+        if stmt.data_hi is not None:
+            data |= self._expr(stmt.data_hi)
+        self._expr(stmt.expd_lo)
+        if stmt.expd_hi is not None:
+            self._expr(stmt.expd_hi)
+        old = self._do_load(ptr)
+        self._do_store(ptr, data)
+        for dst in (stmt.old_lo, stmt.old_hi):
+            # _do_assign refuses anything else, which is right for a statement whose destination the analysis has to
+            # model and wrong for a result it only has to record where it can.
+            if isinstance(dst, (ailment.expression.VirtualVariable, ailment.expression.Tmp)):
+                self._do_assign(dst, old)
 
     def _handle_stmt_WeakAssignment(self, stmt: ailment.statement.WeakAssignment) -> StmtDataType:
-        raise NotImplementedError
+        # The destination may or may not take the source's value, so it ends up with either provenance.
+        val = self._expr(stmt.src)
+        match stmt.dst:
+            case ailment.expression.VirtualVariable():
+                self._do_assign(stmt.dst, self.state.vars[stmt.dst.varid] | val)
+            case ailment.expression.Tmp():
+                self._do_assign(stmt.dst, self.tmps.get(stmt.dst.tmp_idx, self._top(stmt.dst.bits)) | val)
+            case _:
+                self._expr(stmt.dst)
 
     def _do_store(self, ptr: DataType_co, val: DataType_co):
         for src in ptr:
@@ -330,6 +353,8 @@ class PurityEngineAIL(SimEngineLightAIL[StateType, DataType_co, StmtDataType, Re
 
             def subst(v: DataSource) -> DataType_co:
                 if v.function_arg is not None:
+                    if v.function_arg >= len(args):
+                        return frozenset()
                     return args[v.function_arg]
                 if v.reference_to is not None:
                     return frozenset()
@@ -420,6 +445,7 @@ class PurityEngineAIL(SimEngineLightAIL[StateType, DataType_co, StmtDataType, Re
     def _handle_unop_default(self, expr: ailment.Expression) -> DataType_co:
         return self._expr_noconst(expr.operand)
 
+    _handle_unop_Abs = _handle_unop_default
     _handle_unop_Clz = _handle_unop_default
     _handle_unop_Ctz = _handle_unop_default
     _handle_unop_GetMSBs = _handle_unop_default
@@ -589,7 +615,9 @@ class PurityEngineAIL(SimEngineLightAIL[StateType, DataType_co, StmtDataType, Re
     _handle_binop_CmpLTV = _handle_binop_default
     _handle_binop_MinV = _handle_binop_default
     _handle_binop_MaxV = _handle_binop_default
+    _handle_binop_HAddV = _handle_binop_default
     _handle_binop_QAddV = _handle_binop_default
+    _handle_binop_QSubV = _handle_binop_default
     _handle_binop_QNarrowBinV = _handle_binop_default
     _handle_binop_PermV = _handle_binop_default
     _handle_binop_Set = _handle_binop_default

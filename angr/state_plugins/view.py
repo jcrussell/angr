@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
-import claripy
 from archinfo.arch_arm import is_arm_arch
 from archinfo.arch_soot import ArchSoot, SootAddressDescriptor
 
+from angr import claripy
 from angr.sim_state import SimState
 from angr.sim_type import ALL_TYPES, SimTypeFixedSizeArray, SimTypePointer
 
@@ -74,8 +74,7 @@ class SimRegNameView(SimStatePlugin):
         # This flag will then toggle between the native and the java view of the
         # state.
         if (
-            self.state.project
-            and isinstance(self.state.project.arch, ArchSoot)
+            isinstance(self.state.project.arch, ArchSoot)
             and k == "ip"
             and self.state.project.simos.is_javavm_with_jni_support
         ):
@@ -88,7 +87,7 @@ class SimRegNameView(SimStatePlugin):
             if isinstance(self.state.arch, ArchSoot):
                 pass
             else:
-                raise AttributeError(k) from err
+                raise TypeError(k) from err
 
     def __dir__(self):
         if self.state.arch.name in ("X86", "AMD64"):
@@ -107,9 +106,6 @@ class SimRegNameView(SimStatePlugin):
         return SimRegNameView()
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint: disable=unused-argument
-        return False
-
-    def widen(self, others):  # pylint: disable=unused-argument
         return False
 
     def get(self, reg_name):
@@ -259,9 +255,6 @@ class SimMemView(SimStatePlugin):
         return SimMemView()
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint: disable=unused-argument
-        return False
-
-    def widen(self, others):  # pylint: disable=unused-argument
         return False
 
     @property

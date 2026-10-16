@@ -894,13 +894,12 @@ fn wide_sdiv_srem_degenerate_to_unsigned() {
                 // (angr-nknv1). `x % 0 == x` is representable and still folds.
                 let want_rem = if b == 0 { a } else { a % b };
                 let got_div = x.sdiv(&y, &ctx);
-                if b == 0 {
-                    assert!(
+                match a.checked_div(b) {
+                    Some(q) => assert_eq!(val(&got_div), q, "sdiv w={w} a={a:#x} b={b:#x}"),
+                    None => assert!(
                         got_div.as_u128().is_none(),
                         "sdiv by zero must not fold w={w} a={a:#x}"
-                    );
-                } else {
-                    assert_eq!(val(&got_div), a / b, "sdiv w={w} a={a:#x} b={b:#x}");
+                    ),
                 }
                 assert_eq!(
                     val(&x.srem(&y, &ctx)),

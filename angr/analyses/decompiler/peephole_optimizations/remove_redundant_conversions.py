@@ -1,9 +1,17 @@
 # pylint: disable=missing-class-docstring,too-many-boolean-expressions
 from __future__ import annotations
 
-from angr.ailment.expression import BinaryOp, Const, Convert, Insert
+import math
+import struct
+
+from angr.ailment.expression import BinaryOp, Call, Const, Convert, Insert, Reinterpret, UnaryOp
+from angr.ailment.utils import is_lsb_overwrite
+from angr.analyses.decompiler.variable_map import variable_map_of
+from angr.sim_type import SimTypeFloat
 
 from .base import PeepholeOptimizationExprBase
+
+_FP_WIDTHS = frozenset((32, 64, 80))
 
 
 class RemoveRedundantConversions(PeepholeOptimizationExprBase):
@@ -19,6 +27,23 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
             return self._optimize_Convert(expr)
         return None
 
+    def _narrowed_fp_const(self, const: Const, from_bits: int, to_bits: int) -> Const | None:
+        """The double constant *const* as a float constant, when it is exactly representable."""
+        if (from_bits, to_bits) != (32, 64):
+            return None
+        value = const.value
+        if isinstance(value, int):
+            value = struct.unpack("<d", struct.pack("<Q", value & 0xFFFF_FFFF_FFFF_FFFF))[0]
+        if not isinstance(value, float):
+            return None
+        try:
+            packed = struct.pack("<f", value)
+        except OverflowError:
+            return None
+        if struct.unpack("<f", packed)[0] != value and not math.isnan(value):
+            return None
+        return Const(self.manager.next_atom(), struct.unpack("<I", packed)[0], from_bits, **const.tags)
+
     def _optimize_BinaryOp(self, expr: BinaryOp):
         # TODO make this lhs/rhs agnostic
         if isinstance(expr.operands[0], Convert):  # noqa: SIM102
@@ -31,7 +56,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                         1 << to_bits
                     ) - (1 << (from_bits - 1)):
                         con = Const(
-                            self.manager.next_atom(), None, expr.operands[1].value, from_bits, **expr.operands[1].tags
+                            self.manager.next_atom(), expr.operands[1].value, from_bits, **expr.operands[1].tags
                         )
                         new_expr = BinaryOp(
                             expr.idx, "And", (expr.operands[0].operand, con), expr.signed, bits=from_bits, **expr.tags
@@ -57,20 +82,41 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                     "CmpLTs",
                     "CmpLEs",
                 }:
+                    if expr.operands[0].from_type == Convert.TYPE_FP or expr.operands[0].to_type == Convert.TYPE_FP:
+                        # Conv(32F->64F, x) == c compares as a float iff c is a float
+                        con = self._narrowed_fp_const(expr.operands[1], from_bits, to_bits)
+                        if con is None:
+                            return None
+                        return BinaryOp(
+                            expr.idx,
+                            expr.op,
+                            (expr.operands[0].operand, con),
+                            expr.signed,
+                            bits=1,
+                            floating_point=True,
+                            **expr.tags,
+                        )
                     if 0 <= expr.operands[1].value <= ((1 << from_bits) - 1) or (
                         expr.operands[0].is_signed and expr.operands[1].value >= (1 << to_bits) - (1 << (from_bits - 1))
                     ):
                         con = Const(
-                            self.manager.next_atom(), None, expr.operands[1].value, from_bits, **expr.operands[1].tags
+                            self.manager.next_atom(), expr.operands[1].value, from_bits, **expr.operands[1].tags
                         )
                         return BinaryOp(
-                            expr.idx, expr.op, (expr.operands[0].operand, con), expr.signed, bits=1, **expr.tags
+                            expr.idx,
+                            expr.op,
+                            (expr.operands[0].operand, con),
+                            expr.signed,
+                            bits=1,
+                            floating_point=expr.floating_point,
+                            **expr.tags,
                         )
 
-                elif expr.op in {"Add", "Sub"}:
+                elif expr.op in {"Add", "Sub"} and from_bits >= 8:
                     # Add(Conv(32->64, expr), A) ==> Conv(32->64, Add(expr, A))
+                    # sub-byte operands (booleans) have no C type of that width; keep the wider add
                     op0, op1 = expr.operands
-                    con = Const(op1.idx, op1.variable, op1.value, op0.from_bits)
+                    con = Const(op1.idx, op1.value, op0.from_bits)
                     return Convert(
                         op0.idx,
                         op0.from_bits,
@@ -117,7 +163,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                             r0 = BinaryOp(
                                 left.idx,
                                 left.op,
-                                [shift_lhs.operand, Const(a.idx, a.variable, a.value, from_bits)],
+                                [shift_lhs.operand, Const(a.idx, a.value, from_bits)],
                                 left.signed,
                                 bits=from_bits,
                                 **left.tags,
@@ -125,7 +171,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                             r1 = BinaryOp(
                                 op0.idx,
                                 op0.op,
-                                [r0, Const(b.idx, b.variable, b.value, from_bits)],
+                                [r0, Const(b.idx, b.value, from_bits)],
                                 op0.signed,
                                 bits=from_bits,
                                 **op0.tags,
@@ -133,7 +179,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                             return BinaryOp(
                                 expr.idx,
                                 expr.op,
-                                [r1, Const(c.idx, c.variable, c.value, from_bits)],
+                                [r1, Const(c.idx, c.value, from_bits)],
                                 expr.signed,
                                 bits=1,
                                 **expr.tags,
@@ -157,11 +203,39 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
 
     def _optimize_Convert(self, expr: Convert):
         operand_expr = expr.operand
+        # Conv(big->small, Conv(small->big, x)) => x  (round-trip widening then narrowing)
+        if (
+            isinstance(operand_expr, Convert)
+            and expr.to_bits == operand_expr.from_bits
+            and expr.from_bits == operand_expr.to_bits
+            and operand_expr.from_bits < operand_expr.to_bits
+        ):
+            if operand_expr.from_type == Convert.TYPE_INT and operand_expr.to_type == Convert.TYPE_FP:
+                if expr.from_type == expr.to_type == Convert.TYPE_FP and operand_expr.to_bits == 64:
+                    # int32 -> double -> float (VEX I32StoF64 + F64toF32): int32 is exact in double, so this is the
+                    # single rounding of int32 -> float
+                    return Convert(
+                        expr.idx,
+                        operand_expr.from_bits,
+                        expr.to_bits,
+                        operand_expr.is_signed,
+                        operand_expr.operand,
+                        from_type=Convert.TYPE_INT,
+                        to_type=Convert.TYPE_FP,
+                        **expr.tags,
+                    )
+            elif (
+                # Same-type round-trip (e.g. Conv(64I->32I, Conv(32I->64I, x)))
+                (expr.from_type == expr.to_type and operand_expr.from_type == operand_expr.to_type)
+                # FP-narrowing of integer-widened value (e.g. Conv(64F->32F, Conv(32I->64I, x)))
+                or (expr.to_type == Convert.TYPE_FP and operand_expr.from_type == Convert.TYPE_INT)
+            ):
+                return operand_expr.operand
         if (
             expr.from_type == expr.to_type == Convert.TYPE_INT
             and isinstance(operand_expr, Insert)
             and self.project is not None
-            and operand_expr.is_lsb_overwrite()
+            and is_lsb_overwrite(operand_expr)
             and expr.bits <= operand_expr.value.bits
         ):
             if expr.bits == operand_expr.value.bits:
@@ -169,7 +243,30 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
             return Convert(
                 expr.idx, operand_expr.value.bits, expr.bits, expr.is_signed, operand_expr.value, **expr.tags
             )
-        if isinstance(operand_expr, BinaryOp):
+        # Conv(big->small, UnaryOp(Conv(small->big, x))) => UnaryOp(x)
+        if (
+            isinstance(operand_expr, UnaryOp)
+            and not isinstance(operand_expr, Reinterpret)
+            and isinstance(operand_expr.operand, Convert)
+        ):
+            inner_conv = operand_expr.operand
+            if (
+                inner_conv.from_bits == expr.to_bits
+                and inner_conv.to_bits == expr.from_bits
+                and inner_conv.from_bits < inner_conv.to_bits
+            ):
+                return UnaryOp(
+                    operand_expr.idx,
+                    operand_expr.op,
+                    inner_conv.operand,
+                    bits=expr.to_bits,
+                    floating_point=operand_expr.floating_point,
+                    ins_addr=operand_expr.tags.get("ins_addr"),
+                )
+        if isinstance(operand_expr, BinaryOp) and not (
+            operand_expr.floating_point and expr.from_type == Convert.TYPE_INT
+        ):
+            # (an integer truncation of an FP result extracts bits; none of the integer identities below apply)
             if operand_expr.op in {
                 "Mul",
                 "Shl",
@@ -240,7 +337,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                     # ignore the high bits of each operand
                     op0, op1 = operand_expr.operands
                     new_op0 = Convert(
-                        expr.idx,
+                        self.manager.next_atom(),
                         expr.from_bits,
                         expr.to_bits,
                         False,
@@ -248,7 +345,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                         **expr.tags,
                     )
                     new_op1 = Convert(
-                        expr.idx,
+                        self.manager.next_atom(),
                         expr.from_bits,
                         expr.to_bits,
                         False,
@@ -257,7 +354,7 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                     )
 
                     return BinaryOp(
-                        expr.idx,
+                        self.manager.next_atom(),
                         operand_expr.op,
                         [new_op0, new_op1],
                         operand_expr.signed,
@@ -267,9 +364,14 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                 if operand_expr.op in {"Shr", "Sar"} and isinstance(operand_expr.operands[0], Convert):
                     op0, op1 = operand_expr.operands
                     assert isinstance(op0, Convert)
-                    if op0.to_bits > op0.from_bits and op0.to_bits == expr.from_bits:
+                    if (
+                        op0.to_bits > op0.from_bits
+                        and op0.to_bits == expr.from_bits
+                        and op0.from_type == Convert.TYPE_INT
+                        and op0.to_type == Convert.TYPE_INT
+                    ):
                         new_operand = BinaryOp(
-                            expr.idx,
+                            self.manager.next_atom(),
                             operand_expr.op,
                             [op0.operand, op1],
                             operand_expr.signed,
@@ -277,11 +379,34 @@ class RemoveRedundantConversions(PeepholeOptimizationExprBase):
                             **operand_expr.tags,
                         )
                         return Convert(
-                            expr.idx,
+                            self.manager.next_atom(),
                             new_operand.bits,
                             expr.to_bits,
                             expr.is_signed,
                             new_operand,
                             **expr.tags,
                         )
+        # Conv(NI->MI, Call<returns_float>) => Conv(NF->MF, Call)
+        # SSA may insert integer Convs to reconcile Call result width with the
+        # x87 fpreg register; retype to FP when the prototype says float.
+        # Only when both widths are FP widths: a 16-bit read of the result (cmp ax, ...) is an integer narrowing.
+        if (
+            expr.from_type == Convert.TYPE_INT
+            and expr.to_type == Convert.TYPE_INT
+            and expr.from_bits in _FP_WIDTHS
+            and expr.to_bits in _FP_WIDTHS
+            and isinstance(operand_expr, Call)
+        ):
+            call_proto = variable_map_of(self.manager).prototype(operand_expr)
+            if call_proto is not None and isinstance(call_proto.returnty, SimTypeFloat):
+                return Convert(
+                    expr.idx,
+                    expr.from_bits,
+                    expr.to_bits,
+                    expr.is_signed,
+                    operand_expr,
+                    from_type=Convert.TYPE_FP,
+                    to_type=Convert.TYPE_FP,
+                    **expr.tags,
+                )
         return None

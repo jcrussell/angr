@@ -3,12 +3,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import claripy
 import cle
 from capstone import CS_GRP_CALL, CS_GRP_IRET, CS_GRP_JUMP, CS_GRP_RET
 
 import angr
-from angr import sim_options
+from angr import claripy, sim_options
 from angr.errors import AngrTracerError, SimIRSBNoDecodeError
 from angr.state_plugins.inspect import BP_AFTER, BP_BEFORE
 
@@ -161,7 +160,7 @@ class Tracer(ExplorationTechnique):
 
     def __init__(
         self,
-        trace=None,
+        trace: list[int],
         resiliency=False,
         keep_predecessors=1,
         crash_addr=None,
@@ -679,7 +678,7 @@ class Tracer(ExplorationTechnique):
 
     def _translate_trace_addr(self, trace_addr, obj=None):
         if obj is None:
-            for obj, slide in self._aslr_slides.items():  # pylint: disable=redefined-argument-from-local
+            for obj, slide in self._aslr_slides.items():  # noqa: PLR1704  # pylint: disable=redefined-argument-from-local
                 if obj.contains_addr(trace_addr - slide):
                     break
             else:

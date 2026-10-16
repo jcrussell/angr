@@ -16,7 +16,7 @@ from .keyvalue_memory_mixin import KeyValueMemoryMixin
 from .label_merger_mixin import LabelMergerMixin
 from .multi_value_merger_mixin import MultiValueMergerMixin
 from .name_resolution_mixin import NameResolutionMixin
-from .paged_memory.page_backer_mixins import ClemoryBackerMixin, ConcreteBackerMixin, DictBackerMixin
+from .paged_memory.page_backer_mixins import ClemoryBackerMixin, DictBackerMixin
 from .paged_memory.paged_memory_mixin import (
     ListPagesMixin,
     ListPagesWithLabelsMixin,
@@ -81,7 +81,6 @@ class DefaultMemory(
     DirtyAddrsMixin,
     # -----
     StackAllocationMixin,
-    ConcreteBackerMixin,
     ClemoryBackerMixin,
     DictBackerMixin,
     PrivilegedPagingMixin,
@@ -91,6 +90,35 @@ class DefaultMemory(
     PagedMemoryMixin,
 ):
     pass
+
+
+class AbstractRegistersMemory(
+    HexDumperMixin,
+    SmartFindMixin,
+    UnwrapperMixin,
+    NameResolutionMixin,
+    DataNormalizationMixin,
+    SimplificationMixin,
+    InspectMixin,
+    ActionsMixinHigh,
+    UnderconstrainedMixin,
+    SizeConcretizationMixin,
+    SizeNormalizationMixin,
+    AddressConcretizationMixin,
+    ActionsMixinLow,
+    ConditionalMixin,
+    ConvenientMappingsMixin,
+    DirtyAddrsMixin,
+    # -----
+    UltraPagesMixin,
+    DefaultFillerMixin,
+    AbstractMergerMixin,
+    PagedMemoryMixin,
+):
+    """
+    Register file for VSA (static mode) states: DefaultMemory with values joined by VSA union/widening instead of
+    If-expressions, so state merging can report a fix-point.
+    """
 
 
 class DefaultListPagesMemory(
@@ -240,6 +268,7 @@ class JavaVmMemory(
 SimState.register_default("sym_memory", DefaultMemory)
 SimState.register_default("fast_memory", FastMemory)
 SimState.register_default("abs_memory", AbstractMemory)
+SimState.register_default("abs_registers", AbstractRegistersMemory)
 SimState.register_default("keyvalue_memory", KeyValueMemory)
 SimState.register_default("javavm_memory", JavaVmMemory)
 
@@ -251,7 +280,6 @@ __all__ = (
     "ActionsMixinLow",
     "AddressConcretizationMixin",
     "ClemoryBackerMixin",
-    "ConcreteBackerMixin",
     "ConditionalMixin",
     "ConvenientMappingsMixin",
     "CooperationBase",

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from unittest import TestCase, main
 
-import claripy
-
+from angr import claripy
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 
 
 class TestMultiValues(TestCase):
     def test_multivalues_one_slot_has_multiple_sized_bvs(self):
-        mv = MultiValues(offset_to_values={0: {claripy.BVV(0, 32)}, 4: {claripy.BVV(1, 32)}, 8: {claripy.BVV(2, 32)}})
+        mv = MultiValues({0: {claripy.BVV(0, 32)}, 4: {claripy.BVV(1, 32)}, 8: {claripy.BVV(2, 32)}})
         mv.add_value(4, claripy.BVV(0x1338133813371337, 64))
 
         assert len(mv._values) == 3
@@ -41,6 +40,46 @@ class TestMultiValues(TestCase):
         assert mv2._single_value is not None
         assert v.concrete_value == mv2._single_value.concrete_value
         assert len(mv2) == 64
+
+    def test_copy_construction_does_not_alias_the_source(self):
+        src = MultiValues({0: {claripy.BVV(0x11, 8)}, 1: {claripy.BVV(0x22, 8)}})
+        copied = MultiValues(src)
+
+        assert copied._values is not src._values
+        assert copied._values[0] is not src._values[0]
+
+        copied.add_value(2, claripy.BVV(0x33, 8))
+        assert src.keys() == {0, 1}
+
+    def test_concat_does_not_mutate_the_receiver(self):
+        lhs = MultiValues({0: {claripy.BVV(0x11, 8)}, 1: {claripy.BVV(0x22, 8)}})
+        rhs = MultiValues(claripy.BVV(0x33, 8))
+
+        result = lhs.concat(rhs)
+
+        assert lhs.keys() == {0, 1}
+        assert result.keys() == {0, 1, 2}
+        assert result._values[2] == {claripy.BVV(0x33, 8)}
+
+    def test_concat_with_an_aliasing_operand(self):
+        # RDA hands the same MultiValues object to both operands of e.g. Iop_16HLto32(t, t), so concat must
+        # tolerate self is other. It used to raise "dictionary changed size during iteration".
+        mv = MultiValues({0: {claripy.BVV(0x11, 8)}, 1: {claripy.BVV(0x22, 8)}})
+
+        result = mv.concat(mv)
+
+        assert mv.keys() == {0, 1}
+        assert result.keys() == {0, 1, 2, 3}
+
+    def test_concat_with_a_copy_constructed_operand(self):
+        lhs = MultiValues({0: {claripy.BVV(0x11, 8)}, 1: {claripy.BVV(0x22, 8)}})
+        rhs = MultiValues(lhs)
+
+        result = lhs.concat(rhs)
+
+        assert lhs.keys() == {0, 1}
+        assert rhs.keys() == {0, 1}
+        assert result.keys() == {0, 1, 2, 3}
 
 
 if __name__ == "__main__":

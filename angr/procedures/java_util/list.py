@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 
-import claripy
-
+from angr import claripy
 from angr.engines.soot.expressions import SimSootExpr_NewArray
 from angr.engines.soot.values import SimSootValue_ThisRef
 from angr.procedures.java import JavaSimProcedure
@@ -22,8 +21,6 @@ class ListInit(JavaSimProcedure):
         array_ref = SimSootExpr_NewArray.new_array(self.state, "java.lang.Object", claripy.BVV(1000, 32))
         this_ref.store_field(self.state, ELEMS, "java.lang.Object[]", array_ref)
         this_ref.store_field(self.state, SIZE, "int", claripy.BVV(0, 32))
-
-        return
 
 
 class ListAdd(JavaSimProcedure):

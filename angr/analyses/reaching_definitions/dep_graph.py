@@ -2,16 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
     overload,
 )
 
-import claripy
 import networkx
 from cle.loader import Loader
 
+from angr import claripy
 from angr.code_location import CodeLocation, ExternalCodeLocation
 from angr.knowledge_plugins.cfg import CFGModel
 from angr.knowledge_plugins.key_definitions.atoms import (
@@ -25,9 +24,6 @@ from angr.knowledge_plugins.key_definitions.atoms import (
 )
 from angr.knowledge_plugins.key_definitions.definition import A, Definition, DefinitionMatchPredicate
 from angr.knowledge_plugins.key_definitions.undefined import UNDEFINED
-
-if TYPE_CHECKING:
-    pass
 
 
 def _is_definition(node):

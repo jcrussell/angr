@@ -3,7 +3,7 @@
 //! A work-stealing scheduler (angr-1ilq.3) moves a [`RustSimState`] from the
 //! worker that owns it to a stealing worker on another thread. `RustSimState`
 //! is irreducibly `!Send`: its register/memory/solver graph is built from
-//! [`RustBV`](crate::symbolic::RustBV), which carries thread-local-context-bound
+//! [`RustBV`], which carries thread-local-context-bound
 //! Z3 ASTs (`z3::ast::BV`), and the solver holds a `z3::Solver`/`z3::Model`.
 //! None of those may cross a thread.
 //!

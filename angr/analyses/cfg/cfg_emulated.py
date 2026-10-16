@@ -8,13 +8,12 @@ from collections import defaultdict
 from functools import reduce
 from typing import TYPE_CHECKING
 
-import claripy
 import networkx
 import pyvex
 from archinfo import ArchARM
 
 import angr
-from angr import procedures
+from angr import claripy, procedures
 from angr import sim_options as o
 from angr.analyses.analysis import AnalysesHub
 from angr.analyses.backward_slice import BackwardSlice
@@ -49,6 +48,7 @@ from angr.state_plugins.inspect import BP, BP_AFTER, BP_BEFORE
 from angr.state_plugins.sim_action import SimActionData
 from angr.utils.constants import DEFAULT_STATEMENT
 from angr.utils.graph import GraphUtils
+from angr.utils.vex import block_branch_ins_addr
 
 from .cfg_base import CFGBase
 from .cfg_job_base import CFGJobBase
@@ -269,8 +269,10 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
         else:
             if isinstance(starts, (list, set)):
                 self._starts = tuple(starts)
-            elif isinstance(starts, tuple) or starts is None:
+            elif isinstance(starts, tuple):
                 self._starts = starts
+            elif starts is None:
+                self._starts = ((self.project.entry, None),)
             else:
                 raise AngrCFGError("Unsupported type of the `starts` argument.")
 
@@ -302,7 +304,6 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
         # more initialization
 
         self._symbolic_function_initial_state = {}
-        self._function_input_states = None
         self._unresolvable_runs = set()
 
         # Stores the index for each CFGNode in this CFG after a quasi-topological sort (currently a DFS)
@@ -404,11 +405,8 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
 
         self._should_abort = False
 
-        self._starts = starts
+        self._starts = starts if starts is not None else []
         self._max_steps = max_steps
-
-        if self._starts is None:
-            self._starts = []
 
         if self._starts:
             self._sanitize_starts()
@@ -1139,7 +1137,7 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
         self._update_function_callsites(funcaddrs_do_not_return)
 
         # Create all pending edges
-        for _, edges in self._pending_edges.items():
+        for edges in self._pending_edges.values():
             for src_node, dst_node, data in edges:
                 self._graph_add_edge(src_node, dst_node, **data)
 
@@ -1457,17 +1455,9 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
                         new_call_stack.stack_suffix(self.context_sensitivity_level), return_target, False
                     )  # You can never return to a syscall
 
-                    if not cfg_node.instruction_addrs:
-                        ret_ins_addr = None
-                    else:
-                        if self.project.arch.branch_delay_slot:
-                            if len(cfg_node.instruction_addrs) > 1:
-                                ret_ins_addr = cfg_node.instruction_addrs[-2]
-                            else:
-                                l.error("At %s: expecting more than one instruction. Only got one.", cfg_node)
-                                ret_ins_addr = None
-                        else:
-                            ret_ins_addr = cfg_node.instruction_addrs[-1]
+                    ret_ins_addr = block_branch_ins_addr(
+                        cfg_node.instruction_addrs, cfg_node.addr, cfg_node.size, self.project.arch
+                    )
 
                     # Things might be a bit difficult here. _graph_add_edge() requires both nodes to exist, but here
                     # the return target node may not exist yet. If that's the case, we will put it into a "delayed edge
@@ -1700,7 +1690,7 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
                         current_function = self.kb.functions.function(current_function_addr)
                         if current_function is not None:
                             call_site_addr = self._block_id_addr(pe.src_block_id)
-                            current_function._call_sites[call_site_addr] = (func.addr, None)
+                            current_function.add_call_site(call_site_addr, func.addr, None)
                         else:
                             l.warning(
                                 "An expected function at %#x is not found. Please report it to Fish.",
@@ -2107,7 +2097,7 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
         if src_node_key is None:
             if dst_node is None:
                 raise ValueError("Either src_node_key or dst_node_key must be specified.")
-            self.kb.functions.function(dst_node.function_address, create=True)._register_node(True, dst_codenode)
+            self.kb.functions.function(dst_node.function_address, create=True).register_node(True, dst_codenode)
             return
 
         src_node = self._graph_get_node(src_node_key, terminator_for_nonexistent_node=True)
@@ -2166,7 +2156,7 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
                 confirmed=confirmed,
             )
 
-        elif jumpkind in ("Ijk_Boring", "Ijk_InvalICache"):
+        elif jumpkind in ("Ijk_Boring", "Ijk_InvalICache", "Ijk_Privileged"):
             src_obj = self.project.loader.find_object_containing(src_node.addr)
             dest_obj = self.project.loader.find_object_containing(dst_node.addr) if dst_node is not None else None
 
@@ -2214,7 +2204,7 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
                     continue
                 callsites = caller.transition_graph.predecessors(callee_funcnode)
                 for callsite in callsites:
-                    caller._add_call_site(callsite.addr, callee_func_addr, None)
+                    caller.add_call_site(callsite.addr, callee_func_addr, None)
 
     def _add_additional_edges(self, input_state, sim_successors, cfg_node, successors):
         """
@@ -2300,7 +2290,7 @@ class CFGEmulated(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
 
                 if call_func.returning is False:
                     # Remove that edge!
-                    graph.remove_edge(call_func_addr, return_to_addr)
+                    func.remove_edge(callsite_block_addr, return_to_addr)
                     # Remove the edge in CFG
                     nodes = self.model.get_all_nodes(callsite_block_addr)
                     for n in nodes:

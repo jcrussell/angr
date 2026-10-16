@@ -16,7 +16,7 @@ from tests.common import WORKER, bin_location, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
 
-l = logging.Logger(__name__)
+l = logging.getLogger(__name__)
 
 
 class TestPartialRegReads(unittest.TestCase):
@@ -60,6 +60,41 @@ class TestPartialRegReads(unittest.TestCase):
         assert len(simple_paths) == 2, (
             f"Expect two assignments to {var_name} from {unicode_var_name}.Length; found {len(simple_paths)}"
         )
+
+
+class TestSubRegReadAfterCallClobber(unittest.TestCase):
+    """
+    A call clobbers caller-saved registers. Reading a high sub-register (e.g. dh, ch) of a clobbered register
+    afterwards -- without a wider write that would redefine it -- must be treated as a fresh post-call value, not as a
+    value coming from before the function. Otherwise SSA rewriting cannot find a virtual variable for the read and
+    raises a KeyError under fail_fast. See ssailification traversal_engine.register_get / register_set / call handling.
+    """
+
+    @staticmethod
+    def _decompile_shellcode(code: bytes):
+        proj = angr.load_shellcode(code, "AMD64", load_address=0x400000, start_offset=0)
+        cfg = proj.analyses.CFGFast(
+            normalize=True, function_starts=[0x400000], fail_fast=True, show_progressbar=not WORKER
+        )
+        proj.analyses.CompleteCallingConventions(recover_variables=False)
+        func = cfg.functions[0x400000]
+        dec = proj.analyses.Decompiler(func, cfg=cfg, fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        return dec
+
+    def test_high_subreg_read_after_call(self):
+        # _start:  call helper; mov al, dh; ret       helper: xor edx, edx; ret
+        # dh (reg offset 33) is read after the call clobbers rdx (base offset 32) and is never otherwise written.
+        code = bytes.fromhex("e80300000088f0c331d2c3")
+        self._decompile_shellcode(code)
+
+    def test_high_subreg_read_after_partial_low_write(self):
+        # _start:  call helper; mov cl, 1; mov al, ch; ret       helper: xor ecx, ecx; ret
+        # The call clobbers rcx; the partial write to cl (offset 24) must not un-blackout ch (offset 25), which is
+        # still clobbered when it is read.
+        code = bytes.fromhex("e805000000b10188e8c331c9c3")
+        self._decompile_shellcode(code)
 
 
 if __name__ == "__main__":

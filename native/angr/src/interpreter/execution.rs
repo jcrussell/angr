@@ -275,8 +275,10 @@ impl<'a> VEXInterpreter<'a> {
                                 // address (unwinding frames a hooked procedure
                                 // left behind, since its return pops nothing),
                                 // or nothing when no frame expects it.
-                                if let Some(i) =
-                                    self.call_stack.iter().rposition(|f| f.return_addr == next_addr)
+                                if let Some(i) = self
+                                    .call_stack
+                                    .iter()
+                                    .rposition(|f| f.return_addr == next_addr)
                                 {
                                     self.call_stack.truncate(i);
                                 }

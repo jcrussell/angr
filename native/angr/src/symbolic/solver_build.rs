@@ -293,13 +293,12 @@ fn parse_extra_params(s: &str) -> Vec<(String, ParamValue)> {
                 ParamValue::Bool(false)
             } else if let Ok(n) = v.parse::<u32>() {
                 ParamValue::U32(n)
-            } else if let Some(sym) = v.strip_prefix("sym:") {
+            } else {
+                let sym = v.strip_prefix("sym:")?;
                 if sym.is_empty() {
                     return None;
                 }
                 ParamValue::Symbol(sym.to_string())
-            } else {
-                return None;
             };
             Some((k.to_string(), val))
         })

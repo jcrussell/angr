@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-import struct
+import archinfo
 
 from angr import ailment
-
-try:
-    from claripy.ast import Bits
-except ImportError:
-    from typing import Never as Bits
-
-try:
-    import _md5 as md5lib
-except ImportError:
-    import hashlib as md5lib
+from angr.claripy import Bits
 
 type GetBitsTypeParams = "ailment.expression.Expression"
 
@@ -23,62 +14,6 @@ def get_bits(expr: GetBitsTypeParams) -> int:
     if isinstance(expr, Bits):
         return expr.size()
     raise TypeError(type(expr))
-
-
-md5_unpacker = struct.Struct("4I")
-
-
-def stable_hash(t: tuple) -> int:
-    cnt = _dump_tuple(t)
-    hd = md5lib.md5(cnt).digest()
-    return md5_unpacker.unpack(hd)[0]  # 32 bits
-
-
-def _dump_tuple(t: tuple) -> bytes:
-    cnt = b""
-    for item in t:
-        if item is not None:
-            type_ = type(item)
-            if type_ in _DUMP_BY_TYPE:
-                cnt += _DUMP_BY_TYPE[type_](item)
-            else:
-                # for TaggedObjects, hash(item) is stable
-                # other types of items may show up, such as pyvex.expr.CCall and Dirty. they will be removed some day.
-                cnt += struct.pack("<Q", hash(item) & 0xFFFF_FFFF_FFFF_FFFF)
-        cnt += b"\xf0"
-    return cnt
-
-
-def _dump_str(t: str) -> bytes:
-    return t.encode("utf-8")
-
-
-def _dump_int(t: int) -> bytes:
-    prefix = b"" if t >= 0 else b"-"
-    t = abs(t)
-    if t <= 0xFFFF:
-        return prefix + struct.pack("<H", t)
-    if t <= 0xFFFF_FFFF:
-        return prefix + struct.pack("<I", t)
-    if t <= 0xFFFF_FFFF_FFFF_FFFF:
-        return prefix + struct.pack("<Q", t)
-    cnt = b""
-    while t > 0:
-        cnt += _dump_int(t & 0xFFFF_FFFF_FFFF_FFFF)
-        t >>= 64
-    return prefix + cnt
-
-
-def _dump_type(t: type) -> bytes:
-    return t.__name__.encode("ascii")
-
-
-_DUMP_BY_TYPE = {
-    tuple: _dump_tuple,
-    str: _dump_str,
-    int: _dump_int,
-    type: _dump_type,
-}
 
 
 def is_none_or_likeable(arg1, arg2, is_list=False):
@@ -109,3 +44,33 @@ def is_none_or_matchable(arg1, arg2, is_list=False):
     if isinstance(arg1, ailment.expression.Expression):
         return arg1.matches(arg2)
     return arg1 == arg2
+
+
+def is_lsb_extract(expr: ailment.expression.Expression) -> bool:
+    """
+    Return ``True`` if ``expr`` is an ``Extract`` that takes the least-significant ``expr.bits`` bits of its base,
+    considering endianness.
+    """
+    if not isinstance(expr, ailment.expression.Extract):
+        return False
+    if not isinstance(expr.offset, ailment.expression.Const):
+        return False
+    if expr.endness == archinfo.Endness.LE:
+        return expr.offset.value == 0
+    return expr.offset.value * 8 + expr.bits == expr.base.bits
+
+
+def is_lsb_overwrite(expr: ailment.expression.Expression) -> bool:
+    """
+    Return ``True`` if ``expr`` is an ``Insert`` that overwrites the least-significant ``expr.value.bits`` bits of its
+    base, considering endianness.
+
+    ``Insert`` counterpart of ``is_lsb_extract``.
+    """
+    if not isinstance(expr, ailment.expression.Insert):
+        return False
+    if not (isinstance(expr.offset, ailment.expression.Const) and isinstance(expr.offset.value, int)):
+        return False
+    if expr.endness == archinfo.Endness.LE:
+        return expr.offset.value == 0
+    return expr.offset.value * 8 + expr.value.bits == expr.bits

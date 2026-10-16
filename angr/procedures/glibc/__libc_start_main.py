@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 
-import claripy
 from cle import AT
 
 import angr
+from angr import claripy
 
 l = logging.getLogger(name=__name__)
 
@@ -185,6 +185,8 @@ class __libc_start_main(angr.SimProcedure):
         self.exit(0)
 
     def static_exits(self, blocks, cfg=None, **kwargs):
+        # the caller (CFG recovery) sets self.project before calling this method
+        assert self.project is not None
         # Execute those blocks with a blank state, and then dump the arguments
         blank_state = angr.SimState(
             project=self.project,

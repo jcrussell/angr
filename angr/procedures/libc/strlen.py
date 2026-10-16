@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import logging
-from functools import reduce
-
-import claripy
 
 import angr
+from angr import claripy
 from angr.sim_options import MEMORY_CHUNK_INDIVIDUAL_READS
 from angr.storage.memory_mixins.regioned_memory.abstract_address_descriptor import AbstractAddressDescriptor
 
@@ -74,7 +72,7 @@ class strlen(angr.SimProcedure):
                 case 1:
                     return lengths[0]
                 case _:
-                    return reduce(claripy.union, lengths)
+                    return claripy.union(*lengths)
 
         search_len = max_str_len
         r, c, i = self.state.memory.find(

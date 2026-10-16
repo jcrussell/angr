@@ -4,12 +4,12 @@ from __future__ import annotations
 import logging
 from typing import cast
 
-import claripy
 import pyvex
 
+from angr import claripy
 from angr.analyses.propagator.propagator import PropagatorVEXState
 from angr.block import Block
-from angr.calling_conventions import DEFAULT_CC, SYSCALL_CC, SimRegArg, default_cc
+from angr.calling_conventions import DEFAULT_CC, SYSCALL_CC, SimRegArg, default_cc_for_project
 from angr.engines.light import SimEngineNostmtVEX
 from angr.engines.vex.claripy.datalayer import value
 from angr.knowledge_plugins.propagations.states import RegisterAnnotation, RegisterComparisonAnnotation
@@ -38,6 +38,12 @@ class SimEnginePropagatorVEX(
     _handle_dirty_riscv_dirtyhelper_CSR_s = _handle_dirty_noop
     _handle_dirty_riscv_dirtyhelper_CSR_c = _handle_dirty_noop
     _handle_dirty_riscv_dirtyhelper_mret = _handle_dirty_noop
+
+    # x87 dirty helpers -- propagator doesn't track float values, so top is correct.
+    _handle_dirty_x86g_dirtyhelper_loadF80le = _handle_dirty_noop
+    _handle_dirty_x86g_dirtyhelper_storeF80le = _handle_dirty_noop
+    _handle_dirty_amd64g_dirtyhelper_loadF80le = _handle_dirty_noop
+    _handle_dirty_amd64g_dirtyhelper_storeF80le = _handle_dirty_noop
 
     #
     # Private methods
@@ -112,11 +118,7 @@ class SimEnginePropagatorVEX(
         syscall = self.block.vex.jumpkind.startswith("Ijk_Sys")
         cc_map = SYSCALL_CC if syscall else DEFAULT_CC
         if self.arch.name in cc_map:
-            cc = default_cc(
-                self.arch.name,
-                platform=self.project.simos.name if self.project.simos is not None else None,
-                syscall=syscall,
-            )  # don't instantiate the class for speed
+            cc = default_cc_for_project(self.project, syscall=syscall)  # don't instantiate the class for speed
             assert cc is not None
             if isinstance(cc.RETURN_VAL, SimRegArg):
                 offset, size = self.arch.registers[cc.RETURN_VAL.reg_name]
@@ -125,10 +127,6 @@ class SimEnginePropagatorVEX(
                 for reg_name in cc.CALLER_SAVED_REGS:
                     offset, size = self.arch.registers[reg_name]
                     self.state.store_register(offset, size, self.state.top(size * self.arch.byte_width))
-
-    #
-    # VEX statement handlers
-    #
 
     def _handle_stmt_WrTmp(self, stmt):
         self.tmps[stmt.tmp] = self._expr(stmt.data)

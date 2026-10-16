@@ -1,85 +1,13 @@
 from __future__ import annotations
 
-from angr import sim_type
-from angr.ailment.expression import Call, Const, DirtyExpression, Expression
-from angr.ailment.statement import DirtyStatement, SideEffectStatement, Statement
-
-from .rewriter_base import DirtyRewriterBase
+from .x86_dirty import X86DirtyRewriter
 
 
-class AMD64DirtyRewriter(DirtyRewriterBase):
+class AMD64DirtyRewriter(X86DirtyRewriter):
     """
-    Rewrites AMD64 DirtyStatement and DirtyExpression.
+    Rewrites AMD64 DirtyStatement and DirtyExpression. The helpers mirror the X86 ones under a different prefix.
     """
 
     __slots__ = ()
 
-    def _rewrite_stmt(self, dirty: DirtyStatement) -> Statement | None:
-        # TODO: Rewrite more dirty statements
-        call_expr = self._rewrite_expr_to_call(dirty.dirty)
-        if call_expr is None:
-            return None
-        return SideEffectStatement(dirty.idx, call_expr, **dirty.tags)
-
-    def _rewrite_expr(self, dirty: DirtyExpression) -> Expression | None:
-        return self._rewrite_expr_to_call(dirty)
-
-    def _rewrite_expr_to_call(self, dirty: DirtyExpression) -> Call | None:
-        match dirty.callee:
-            case "amd64g_dirtyhelper_IN":
-                if len(dirty.operands) != 2:
-                    return None
-                portno, size = dirty.operands
-                if not isinstance(size, Const):
-                    return None
-                bits = size.value_int * self.arch.byte_width
-                return Call(
-                    idx=dirty.idx,
-                    target=f"__in{self._inout_intrinsic_suffix(bits)}",
-                    calling_convention=None,
-                    prototype=sim_type.SimTypeFunction(
-                        [self._inout_intrinsic_type(16)], self._inout_intrinsic_type(bits)
-                    ).with_arch(self.arch),
-                    args=(portno,),
-                    bits=dirty.bits,
-                    **dirty.tags,
-                )
-            case "amd64g_dirtyhelper_OUT":
-                if len(dirty.operands) != 3:
-                    return None
-                portno, data, size = dirty.operands
-                if not isinstance(size, Const):
-                    return None
-                bits = size.value_int * self.arch.byte_width
-                return Call(
-                    dirty.idx,
-                    target=f"__out{self._inout_intrinsic_suffix(bits)}",
-                    calling_convention=None,
-                    prototype=sim_type.SimTypeFunction(
-                        [self._inout_intrinsic_type(16), self._inout_intrinsic_type(bits)], sim_type.SimTypeBottom()
-                    ).with_arch(self.arch),
-                    args=(portno, data),
-                    bits=None,
-                    **dirty.tags,
-                )
-        return None
-
-    #
-    # in, out
-    #
-
-    @staticmethod
-    def _inout_intrinsic_suffix(bits: int) -> str:
-        match bits:
-            case 8:
-                return "byte"
-            case 16:
-                return "word"
-            case 32:
-                return "dword"
-            case _:
-                return f"_{bits}"
-
-    @staticmethod
-    def _inout_intrinsic_type(bits: int) -> sim_type.SimType:
-        return sim_type.SimTypeNum(bits, signed=False)
+    HELPER_PREFIX = "amd64g_dirtyhelper_"

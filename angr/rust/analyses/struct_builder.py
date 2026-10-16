@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-import claripy
 from archinfo import Endness
 
+from angr import claripy
 from angr.ailment.expression import Array, BinaryOp, Const, Load, Struct, UnaryOp
 from angr.analyses.analysis import AnalysesHub, Analysis
 from angr.rust.sim_type import RustSimStruct, RustSimTypeReference, RustSimTypeSlice
@@ -51,7 +51,7 @@ class StructBuilder(Analysis):
             if isinstance(data, Load) and isinstance(data.addr, UnaryOp) and data.addr.op == "Reference":
                 size = bits // self.project.arch.byte_width
                 leftover_size = (data.bits - bits) // self.project.arch.byte_width
-                size_expr = Const(self.context.manager.next_atom(), None, size, data.addr.bits)
+                size_expr = Const(self.context.manager.next_atom(), size, data.addr.bits)
                 leftover_addr = BinaryOp(
                     self.context.manager.next_atom(),
                     "Add",

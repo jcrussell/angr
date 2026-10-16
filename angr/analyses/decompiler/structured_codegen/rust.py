@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,7 @@ import archinfo
 
 from angr import ailment
 from angr.ailment import Block, Expr, Stmt, Tmp
+from angr.ailment.block_walker import _dispatch_key
 from angr.ailment.expression import (
     Array,
     BinaryOp,
@@ -23,6 +25,7 @@ from angr.ailment.expression import (
     RustEnum as AilRustEnum,
 )
 from angr.analyses.analysis import Analysis, register_analysis
+from angr.analyses.decompiler.peephole_optimizations.cas_intrinsics import cas_intrinsic_name
 from angr.analyses.decompiler.region_identifier import MultiNode
 from angr.analyses.decompiler.structurer_nodes import (
     BreakNode,
@@ -31,11 +34,15 @@ from angr.analyses.decompiler.structurer_nodes import (
     ConditionalBreakNode,
     ConditionNode,
     ContinueNode,
+    IncompleteSwitchCaseHeadStatement,
+    IncompleteSwitchCaseNode,
     LoopNode,
     SequenceNode,
     SwitchCaseNode,
 )
 from angr.analyses.decompiler.utils import structured_node_is_simple_return
+from angr.analyses.decompiler.variable_map import VariableMap
+from angr.enums import Flavors
 from angr.errors import UnsupportedNodeTypeError
 from angr.knowledge_plugins.cfg.memory_data import MemoryData, MemoryDataSort
 from angr.knowledge_plugins.functions import Function
@@ -65,19 +72,43 @@ from angr.sim_type import (
     SimTypeLength,
     SimTypeLongLong,
     SimTypeNum,
+    SimTypePointer,
     SimTypeReg,
     SimTypeWideChar,
     TypeRef,
 )
-from angr.sim_variable import SimMemoryVariable, SimStackVariable, SimTemporaryVariable, SimVariable
-from angr.utils.constants import is_alignment_mask
+from angr.sim_variable import (
+    SimMemoryVariable,
+    SimStackVariable,
+    SimTemporaryVariable,
+    SimVariable,
+)
+from angr.utils.constants import should_use_hex
 from angr.utils.loader import is_in_readonly_section, is_in_readonly_segment
 
-from .base import BaseStructuredCodeGenerator, InstructionMapping, PositionMapping, PositionMappingElement
+from .base import (
+    BaseStructuredCodeGenerator,
+    BinaryOpNode,
+    ClosingObjectNode,
+    ConstantNode,
+    ExpressionNode,
+    FunctionCallNode,
+    FunctionNode,
+    IndexedVariableNode,
+    InstructionMapping,
+    LabelNode,
+    PositionMapping,
+    PositionMappingElement,
+    StructFieldNode,
+    UnaryOpNode,
+    VariableFieldNode,
+    VariableNode,
+    register_display_name,
+    variable_display_name,
+    vector_convert_name,
+)
 
 if TYPE_CHECKING:
-    import archinfo
-
     import angr
     from angr.knowledge_plugins.variables.variable_manager import VariableManagerInternal
 
@@ -127,6 +158,14 @@ def qualifies_for_simple_cast(ty1, ty2):
         and isinstance(ty1, (RustSimTypeInt, RustSimTypeReference))
         and isinstance(ty2, (RustSimTypeInt, RustSimTypeReference))
     )
+
+
+def qualifies_for_width_cast(ty):
+    # converting ty to a different width - can a scalar cast do it?
+    # floats are excluded because a float cast converts the value, not the representation
+    # the Rust scalar types are subclasses of these: RustSimTypeInt of SimTypeInt,
+    # RustSimTypeReference of SimTypePointer, RustSimTypeBottom of SimTypeBottom
+    return isinstance(ty, (SimTypeInt, SimTypeChar, SimTypeNum, SimTypePointer, SimTypeBottom))
 
 
 def qualifies_for_implicit_cast(ty1, ty2):
@@ -188,7 +227,7 @@ def is_machine_word_size_type(type_: SimType, arch: archinfo.Arch) -> bool:
     return isinstance(type_, SimTypeReg) and type_.size == arch.bits
 
 
-def guess_value_type(value: int | float, project: angr.Project) -> SimType | None:
+def guess_value_type(value: float, project: angr.Project) -> SimType | None:
     if not isinstance(value, int):
         return None
     if project.kb.functions.contains_addr(value):
@@ -210,7 +249,7 @@ def _with_arch(ty, arch):
     return ty
 
 
-def type_to_rust_repr_chunks(ty: SimType | RustSimType, name=None, name_type=None, full=False, indent_str=""):
+def type_to_rust_repr_chunks(ty: SimType, name=None, name_type=None, full=False, indent_str=""):
     """
     Helper generator function to turn a SimType into generated tuples of (C-string, AST node).
     """
@@ -398,7 +437,7 @@ class RustConstruct:
         return " " * indent
 
 
-class RustFunction(RustConstruct):  # pylint:disable=abstract-method
+class RustFunction(RustConstruct, FunctionNode):  # pylint:disable=abstract-method
     """
     Represents a function in Rust.
     """
@@ -439,11 +478,11 @@ class RustFunction(RustConstruct):  # pylint:disable=abstract-method
         self.variables_in_use = variables_in_use
         self.variable_manager: VariableManagerInternal = variable_manager
         self.demangled_name = demangled_name
-        self.unified_local_vars: dict[SimVariable, set[tuple[RustVariable, SimType]]] = self.get_unified_local_vars()
+        self.unified_local_vars: dict[SimVariable, list[tuple[RustVariable, SimType]]] = self.get_unified_local_vars()
         self.show_demangled_name = show_demangled_name
 
-    def get_unified_local_vars(self) -> dict[SimVariable, set[tuple[RustVariable, SimType]]]:
-        unified_to_var_and_types: dict[SimVariable, set[tuple[RustVariable, SimType]]] = defaultdict(set)
+    def get_unified_local_vars(self) -> dict[SimVariable, list[tuple[RustVariable, SimType]]]:
+        unified_to_var_and_types: dict[SimVariable, list[tuple[RustVariable, SimType]]] = defaultdict(list)
 
         arg_set: set[SimVariable] = set()
         for arg in self.arg_list:
@@ -475,7 +514,9 @@ class RustFunction(RustConstruct):  # pylint:disable=abstract-method
                 # This should be good
                 var_type = RustSimTypeInt(self.codegen.project.arch.bits)
 
-            unified_to_var_and_types[key].add((cvar, var_type))
+            entry = (cvar, var_type)
+            if entry not in unified_to_var_and_types[key]:  # keeps the set's de-duplication
+                unified_to_var_and_types[key].append(entry)
 
         return unified_to_var_and_types
 
@@ -504,12 +545,7 @@ class RustFunction(RustConstruct):  # pylint:disable=abstract-method
                 # this should never happen, but pylint complains
                 continue
 
-            if variable.name:
-                name = variable.name
-            elif isinstance(variable, SimTemporaryVariable):
-                name = f"tmp_{variable.tmp_id}"
-            else:
-                name = str(variable)
+            name = variable_display_name(variable)
 
             # sort by the following:
             #   * if it's a a non-basic type
@@ -609,8 +645,8 @@ class RustFunction(RustConstruct):  # pylint:disable=abstract-method
             yield " ", None
         yield "{", brace
         yield "\n", None
-        yield from self.variable_list_repr_chunks(indent=indent + INDENT_DELTA)
-        yield from self.statements.c_repr_chunks(indent=indent + INDENT_DELTA)
+        yield from self.variable_list_repr_chunks(indent=indent + self.codegen.indent_delta)
+        yield from self.statements.c_repr_chunks(indent=indent + self.codegen.indent_delta)
         yield indent_str, None
         yield "}", brace
         yield "\n", None
@@ -635,6 +671,10 @@ class RustFunction(RustConstruct):  # pylint:disable=abstract-method
         return "".join([f"// {line}\n" for line in wrapped_cmt.splitlines()])
 
 
+#: emitted for a construct the backend cannot render; never an AIL or Python repr
+UNSUPPORTED_PLACEHOLDER = "/* unsupported instruction */"
+
+
 class RustStatement(RustConstruct):  # pylint:disable=abstract-method
     """
     Represents a statement in C.
@@ -643,7 +683,7 @@ class RustStatement(RustConstruct):  # pylint:disable=abstract-method
     __slots__ = ()
 
 
-class RustExpression(RustConstruct):
+class RustExpression(RustConstruct, ExpressionNode):
     """
     Base class for C expressions.
     """
@@ -667,10 +707,12 @@ class RustExpression(RustConstruct):
 
     @staticmethod
     def _try_c_repr_chunks(expr, indent=0):
-        if hasattr(expr, "c_repr_chunks"):
+        if isinstance(expr, RustConstruct):
             yield from expr.c_repr_chunks(indent=indent, asexpr=True)
+        elif isinstance(expr, str):
+            yield expr, None
         else:
-            yield str(expr), expr
+            yield UNSUPPORTED_PLACEHOLDER, None
 
 
 class RustStatements(RustStatement):
@@ -754,7 +796,7 @@ class RustInfiniteLoop(RustLoop):
         else:
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
             yield "\n", None
@@ -802,7 +844,7 @@ class RustWhileLoop(RustLoop):
         else:
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
             yield "\n", None
@@ -841,7 +883,7 @@ class RustDoWhileLoop(RustLoop):
         if self.body is not None:
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
         else:
@@ -903,7 +945,7 @@ class RustForLoop(RustStatement):
 
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
         else:
@@ -974,7 +1016,7 @@ class RustIfElse(RustStatement):
             yield "\n", None
 
             if node is not None:
-                yield from node.c_repr_chunks(indent=INDENT_DELTA + indent)
+                yield from node.c_repr_chunks(indent=self.codegen.indent_delta + indent)
 
             yield indent_str, None
             yield "}", brace
@@ -1000,7 +1042,7 @@ class RustIfElse(RustStatement):
 
                 yield "{", brace
                 yield "\n", None
-                yield from self.else_node.c_repr_chunks(indent=indent + INDENT_DELTA)
+                yield from self.else_node.c_repr_chunks(indent=indent + self.codegen.indent_delta)
                 yield indent_str, None
                 yield "}", brace
 
@@ -1042,12 +1084,12 @@ class RustIfBreak(RustStatement):
         else:
             yield " ", None
         if self.cstyle_ifs:
-            yield self.indent_str(indent=INDENT_DELTA), self
+            yield self.indent_str(indent=self.codegen.indent_delta), self
             yield "break;\n", self
         else:
             yield "{", brace
             yield "\n", None
-            yield self.indent_str(indent=indent + INDENT_DELTA), self
+            yield self.indent_str(indent=indent + self.codegen.indent_delta), self
             yield "break;\n", self
             yield indent_str, None
             yield "}", brace
@@ -1125,7 +1167,7 @@ class RustSwitchCase(RustStatement):
         yield "\n", None
 
         # cases
-        indent_str = self.indent_str(indent=indent + INDENT_DELTA)
+        indent_str = self.indent_str(indent=indent + self.codegen.indent_delta)
         for id_or_ids, case in self.cases:
             yield indent_str, None
             if isinstance(id_or_ids, int):
@@ -1153,14 +1195,14 @@ class RustSwitchCase(RustStatement):
                     if i != len(ranges) - 1:
                         yield "| ", None
                 yield "=> {\n", None
-            yield from case.c_repr_chunks(indent=indent + INDENT_DELTA * 2)
+            yield from case.c_repr_chunks(indent=indent + self.codegen.indent_delta * 2)
             yield indent_str, None
             yield "}\n", None
 
         if self.default is not None:
             yield indent_str, None
             yield "_ => {\n", self
-            yield from self.default.c_repr_chunks(indent=indent + INDENT_DELTA * 2)
+            yield from self.default.c_repr_chunks(indent=indent + self.codegen.indent_delta * 2)
             yield indent_str, None
             yield "}\n", None
 
@@ -1197,7 +1239,7 @@ class RustPatternMatch(RustStatement):
         yield "{", brace
         yield "\n", None
 
-        arm_indent_str = self.indent_str(indent=indent + INDENT_DELTA)
+        arm_indent_str = self.indent_str(indent=indent + self.codegen.indent_delta)
 
         # arms
         for (variant, bound_vars), arm in self.arms:
@@ -1214,14 +1256,14 @@ class RustPatternMatch(RustStatement):
                         yield "_", None
                 yield ")", paren
             yield " => {\n", self
-            yield from arm.c_repr_chunks(indent=indent + 2 * INDENT_DELTA)
+            yield from arm.c_repr_chunks(indent=indent + 2 * self.codegen.indent_delta)
             yield arm_indent_str, None
             yield "},\n", self
 
         if self.default is not None:
             yield arm_indent_str, None
             yield "_ => {\n", self
-            yield from self.default.c_repr_chunks(indent=indent + 2 * INDENT_DELTA)
+            yield from self.default.c_repr_chunks(indent=indent + 2 * self.codegen.indent_delta)
             yield arm_indent_str, None
             yield "}\n", self
 
@@ -1272,7 +1314,7 @@ class RustIfLet(RustStatement):
         yield " ", None
         yield "{", brace
         yield "\n", None
-        yield from self.true_node.c_repr_chunks(indent=indent + INDENT_DELTA)
+        yield from self.true_node.c_repr_chunks(indent=indent + self.codegen.indent_delta)
         yield indent_str, None
         yield "}", brace
 
@@ -1280,7 +1322,7 @@ class RustIfLet(RustStatement):
             yield " else ", self
             yield "{", brace
             yield "\n", None
-            yield from self.false_node.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.false_node.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
 
@@ -1388,7 +1430,7 @@ class RustFunctionLikeMacro(RustStatement, RustExpression):
         )
 
 
-class RustFunctionCall(RustStatement, RustExpression):
+class RustFunctionCall(RustStatement, RustExpression, FunctionCallNode):
     """
     func(arg0, arg1)
 
@@ -1442,8 +1484,11 @@ class RustFunctionCall(RustStatement, RustExpression):
     def prototype(self) -> SimTypeFunction | None:  # TODO there should be a prototype for each callsite!
         if self.callsite_prototype:
             return self.callsite_prototype
-        if self.callee_func is not None and self.callee_func.prototype is not None:
-            return self.callee_func.prototype
+        if (
+            self.callee_func is not None
+            and (callee_proto := self.callee_func.get_prototype(Flavors.RUST_FLAVOR)) is not None
+        ):
+            return callee_proto
         returnty = RustSimTypeInt(signed=False)
         return SimTypeFunction([arg.type for arg in self.args], returnty).with_arch(self.codegen.project.arch)
 
@@ -1602,11 +1647,75 @@ class RustUnsupportedStatement(RustStatement):
         indent_str = self.indent_str(indent=indent)
 
         yield indent_str, None
-        yield str(self.stmt), None
+        yield UNSUPPORTED_PLACEHOLDER, None
         yield "\n", None
 
 
-class RustLabel(RustStatement):
+class RustIncompleteSwitchCase(RustStatement):
+    """
+    An incomplete switch-case construct; only appears in the output when switch-case structuring failed.
+    """
+
+    __slots__ = ("cases", "head", "tags")
+
+    def __init__(self, head, cases, tags=None, **kwargs):
+        super().__init__(**kwargs)
+
+        self.head = head
+        self.cases: list[tuple[int, RustStatements]] = cases
+        self.tags = tags
+
+    def c_repr_chunks(self, indent=0, asexpr=False):
+        indent_str = self.indent_str(indent=indent)
+        paren = RustClosingObject("(")
+        brace = RustClosingObject("{")
+
+        yield from self.head.c_repr_chunks(indent=indent)
+        yield "\n", None
+        yield indent_str, None
+        yield "match ", self
+        yield "(", paren
+        yield "/* incomplete */", None
+        yield ")", paren
+        if self.codegen.braces_on_own_lines:
+            yield "\n", None
+            yield indent_str, None
+        else:
+            yield " ", None
+        yield "{", brace
+        yield "\n", None
+
+        for case_addr, case in self.cases:
+            yield indent_str, None
+            yield f"{case_addr:#x} =>", self
+            yield "\n", None
+            yield from case.c_repr_chunks(indent=indent + self.codegen.indent_delta)
+
+        yield indent_str, None
+        yield "}", brace
+        yield "\n", None
+
+
+class RustDirtyStatement(RustStatement):
+    """
+    A dirty expression used as a statement, i.e. only for its side effects.
+    """
+
+    __slots__ = ("dirty",)
+
+    def __init__(self, dirty, **kwargs):
+        super().__init__(**kwargs)
+        self.dirty = dirty
+
+    def c_repr_chunks(self, indent=0, asexpr=False):
+        yield self.indent_str(indent=indent), None
+        yield from RustExpression._try_c_repr_chunks(self.dirty)
+        if not asexpr:
+            yield ";", None
+            yield "\n", None
+
+
+class RustLabel(RustStatement, LabelNode):
     """
     Represents a label in C code.
     """
@@ -1655,7 +1764,7 @@ class RustStruct(RustExpression):
             yield "...", self
             return
         indent_str = self.indent_str(indent=indent)
-        field_indent_str = self.indent_str(indent=indent + INDENT_DELTA)
+        field_indent_str = self.indent_str(indent=indent + self.codegen.indent_delta)
         yield str(self.name), self
         if not self.field_names:
             yield " {", brace
@@ -1667,7 +1776,9 @@ class RustStruct(RustExpression):
                 yield name, self
                 yield ": ", self
                 if offset in self.fields:
-                    yield from RustExpression._try_c_repr_chunks(self.fields[offset], indent + INDENT_DELTA)
+                    yield from RustExpression._try_c_repr_chunks(
+                        self.fields[offset], indent + self.codegen.indent_delta
+                    )
                 else:
                     yield "<UNKNOWN>", None
                 yield "\n", None
@@ -1706,7 +1817,7 @@ class RustEnum(RustExpression):
         yield ")", paren
 
 
-class RustStructField(RustExpression):
+class RustStructField(RustExpression, StructFieldNode):
     __slots__ = (
         "field",
         "offset",
@@ -1761,15 +1872,20 @@ class RustLet(RustExpression):
         self.let_expr = let_expr
 
     @property
+    def variant(self):
+        # The bound enum variant lives in the VariableMap, keyed by the Let's .idx.
+        return self.codegen._variable_map.variant(self.let_expr)
+
+    @property
     def type(self):
-        return self.let_expr.variant.type
+        return self.variant.type
 
     def _get_rust_variable(self, def_):
         expr = None
         var = None
         if isinstance(def_, ailment.Stmt.Store):
             expr = def_.addr
-            var = def_.variable
+            var = self.codegen._variable_map.variable(def_)
         if expr and var is not None:
             var_thing = self.codegen._variable(var, expr.size)
             var_thing.tags = dict(expr.tags)
@@ -1780,10 +1896,11 @@ class RustLet(RustExpression):
         return None
 
     def c_repr_chunks(self, indent=0, asexpr=False):
+        variant = self.variant
         yield "let ", self
-        yield self.let_expr.variant.name, self
+        yield variant.name, self
         paren = RustClosingObject("(")
-        if self.let_expr.variant.has_associated_data:
+        if variant.has_fields():
             yield "(", paren
             for idx, def_ in enumerate(self.let_expr.defs):
                 if var := self._get_rust_variable(def_):
@@ -1837,7 +1954,7 @@ class RustFakeVariable(RustExpression):
         yield self.name, self
 
 
-class RustVariable(RustExpression):
+class RustVariable(RustExpression, VariableNode):
     """
     CVariable represents access to a variable with the specified type (`variable_type`).
 
@@ -1869,16 +1986,10 @@ class RustVariable(RustExpression):
 
     def c_repr_chunks(self, indent=0, asexpr=False):
         v = self.variable if self.unified_variable is None else self.unified_variable
-
-        if v.name:
-            yield v.name, self
-        elif isinstance(v, SimTemporaryVariable):
-            yield f"tmp_{v.tmp_id}", self
-        else:
-            yield str(v), self
+        yield variable_display_name(v), self
 
 
-class RustIndexedVariable(RustExpression):
+class RustIndexedVariable(RustExpression, IndexedVariableNode):
     """
     Represent a variable (an array) that is indexed.
     """
@@ -1926,7 +2037,7 @@ class RustIndexedVariable(RustExpression):
         yield "]", bracket
 
 
-class RustVariableField(RustExpression):
+class RustVariableField(RustExpression, VariableFieldNode):
     """
     Represent a field of a variable.
     """
@@ -1954,7 +2065,7 @@ class RustVariableField(RustExpression):
         yield from self.field.c_repr_chunks()
 
 
-class RustUnaryOp(RustExpression):
+class RustUnaryOp(RustExpression, UnaryOpNode):
     """
     Unary operations.
     """
@@ -2005,11 +2116,18 @@ class RustUnaryOp(RustExpression):
         if handler is not None:
             yield from handler()
         else:
-            yield f"UnaryOp {self.op}", self
+            yield from self._c_repr_chunks_opfirst(self.op)
 
     #
     # Handlers
     #
+
+    def _c_repr_chunks_opfirst(self, op):
+        yield op, self
+        paren = RustClosingObject("(")
+        yield "(", paren
+        yield from RustExpression._try_c_repr_chunks(self.operand)
+        yield ")", paren
 
     def _c_repr_chunks_not(self):
         paren = RustClosingObject("(")
@@ -2044,7 +2162,7 @@ class RustUnaryOp(RustExpression):
         yield ")", paren
 
 
-class RustBinaryOp(RustExpression):
+class RustBinaryOp(RustExpression, BinaryOpNode):
     """
     Binary operations.
     """
@@ -2122,7 +2240,6 @@ class RustBinaryOp(RustExpression):
     def op_precedence(self):
         precedence_list = [
             # lowest precedence
-            ["Concat"],
             ["LogicalOr"],
             ["LogicalAnd"],
             ["Or"],
@@ -2182,7 +2299,7 @@ class RustBinaryOp(RustExpression):
         if handler is not None:
             yield from handler()
         else:
-            yield f"BinaryOp {self.op}", self
+            yield from self._c_repr_chunks_opfirst(self.op)
 
     def _has_const_null_rhs(self) -> bool:
         return isinstance(self.rhs, RustConstant) and self.rhs.value == 0
@@ -2190,6 +2307,15 @@ class RustBinaryOp(RustExpression):
     #
     # Handlers
     #
+
+    def _c_repr_chunks_opfirst(self, op):
+        yield op, self
+        paren = RustClosingObject("(")
+        yield "(", paren
+        yield from RustExpression._try_c_repr_chunks(self.lhs)
+        yield ", ", None
+        yield from RustExpression._try_c_repr_chunks(self.rhs)
+        yield ")", paren
 
     def _c_repr_chunks(self, op):
         skip_op_and_rhs = False
@@ -2301,7 +2427,7 @@ class RustBinaryOp(RustExpression):
         yield from self._c_repr_chunks(" != ")
 
     def _c_repr_chunks_concat(self):
-        yield from self._c_repr_chunks(" CONCAT ")
+        yield from self._c_repr_chunks_opfirst("CONCAT")
 
     def _c_repr_chunks_rol(self):
         yield "__ROL__", self
@@ -2332,8 +2458,8 @@ class RustTypeCast(RustExpression):
 
     def __init__(
         self,
-        src_type: RustSimType | SimType | None,
-        dst_type: RustSimType | SimType,
+        src_type: SimType | None,
+        dst_type: SimType,
         expr: RustExpression,
         tags=None,
         **kwargs,
@@ -2372,7 +2498,7 @@ class RustTypeCast(RustExpression):
             yield f"{self.dst_type.c_repr(name=None)}", self.dst_type
 
 
-class RustConstant(RustExpression):
+class RustConstant(RustExpression, ConstantNode):
     __slots__ = (
         "reference_values",
         "tags",
@@ -2413,7 +2539,8 @@ class RustConstant(RustExpression):
         if result is None:
             result = False
             if isinstance(self.value, int):
-                result = hex(self.value).endswith("00") or is_alignment_mask(self.value)
+                bits = self._type.size if self._type is not None else None
+                result = should_use_hex(self.value, bits)
         return result
 
     @fmt_hex.setter
@@ -2469,7 +2596,7 @@ class RustConstant(RustExpression):
 
         # default priority: string references -> variables -> other reference values
         if self.reference_values is not None:
-            for _ty, v in self.reference_values.items():  # pylint:disable=unused-variable
+            for v in self.reference_values.values():  # pylint:disable=unused-variable
                 if isinstance(v, MemoryData) and v.sort == MemoryDataSort.String and v.content is not None:
                     yield RustConstant.str_to_rust_str(v.content.decode("utf-8")), self
                     return
@@ -2547,7 +2674,7 @@ class RustRegister(RustExpression):
         "tags",
     )
 
-    def __init__(self, reg, tags=None, **kwargs):
+    def __init__(self, reg: str, tags=None, **kwargs):
         super().__init__(**kwargs)
 
         self.reg = reg
@@ -2559,7 +2686,7 @@ class RustRegister(RustExpression):
         return RustSimTypeInt().with_arch(self.codegen.project.arch)
 
     def c_repr_chunks(self, indent=0, asexpr=False):
-        yield str(self.reg), None
+        yield self.reg, self
 
 
 class RustITE(RustExpression):
@@ -2652,17 +2779,47 @@ class RustVEXCCallExpression(RustExpression):
         yield ")", paren
 
 
+class RustVectorConvert(RustExpression):
+    """
+    A lane-wise conversion (an AIL Convert with vector_count), rendered as an intrinsic-style call.
+    """
+
+    __slots__ = ("expr", "operand")
+
+    def __init__(self, expr: Expr.Convert, operand: RustExpression, **kwargs):
+        super().__init__(**kwargs)
+        self.expr = expr
+        self.operand = operand
+
+    @property
+    def type(self):
+        return RustSimTypeInt(self.expr.to_bits, signed=self.expr.is_signed).with_arch(self.codegen.project.arch)
+
+    def c_repr_chunks(self, indent=0, asexpr=False):
+        if self.collapsed:
+            yield "...", self
+            return
+        yield vector_convert_name(self.expr), self
+        paren = RustClosingObject("(")
+        yield "(", paren
+        yield from RustExpression._try_c_repr_chunks(self.operand)
+        yield ")", paren
+
+
 class RustDirtyExpression(RustExpression):
     """
     Ideally all dirty expressions should be handled and converted to proper conversions during conversion from VEX to
     AIL. Eventually this class should not be used at all.
     """
 
-    __slots__ = ("dirty",)
+    __slots__ = ("dirty", "operands")
 
-    def __init__(self, dirty, **kwargs):
+    _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+    def __init__(self, dirty, operands: list[RustExpression] | None = None, **kwargs):
         super().__init__(**kwargs)
         self.dirty = dirty
+        self.operands = operands if operands is not None else []
 
     @property
     def type(self):
@@ -2672,10 +2829,24 @@ class RustDirtyExpression(RustExpression):
         if self.collapsed:
             yield "...", self
             return
-        yield str(self.dirty), None
+        # an opaque intrinsic call with rendered operands; never the AIL repr
+        if not isinstance(self.dirty, Expr.DirtyExpression) or not self._IDENT_RE.fullmatch(self.dirty.callee):
+            yield UNSUPPORTED_PLACEHOLDER, None
+            return
+        name = self.dirty.callee
+        if not name.startswith("__"):
+            name = f"__dirty_{name}"
+        yield name, self
+        paren = RustClosingObject("(")
+        yield "(", paren
+        for i, operand in enumerate(self.operands):
+            if i:
+                yield ", ", None
+            yield from RustExpression._try_c_repr_chunks(operand)
+        yield ")", paren
 
 
-class RustClosingObject:
+class RustClosingObject(ClosingObjectNode):
     """
     A class to represent all objects that can be closed by it's correspodning character.
     Examples: (), {}, []
@@ -2719,7 +2890,6 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         sequence,
         indent=0,
         cfg=None,
-        variable_kb=None,
         func_args: list[SimVariable] | None = None,
         binop_depth_cutoff: int = 16,
         show_casts=True,
@@ -2745,8 +2915,19 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         min_data_addr: int = 0x400_000,
         notes=None,
         display_notes: bool = True,
+        max_str_len: int | None = None,
+        prettify_thiscall: bool = False,
+        cstyle_void_param: bool = True,
+        indent_size: int = INDENT_DELTA,
+        variable_map: VariableMap | None = None,
+        # accepted so that the "codegen" decompilation options apply uniformly to both flavors; the Rust renderer has
+        # no C++ STL field accesses to name
+        stl_accessor_calls: bool = False,  # pylint:disable=unused-argument
     ):
-        super().__init__(flavor=flavor, notes=notes)
+        super().__init__(
+            flavor=flavor,
+            notes=notes,
+        )
 
         self._handlers = {
             CodeNode: self._handle_Code,
@@ -2759,6 +2940,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             Block: self._handle_AILBlock,
             BreakNode: self._handle_Break,
             SwitchCaseNode: self._handle_SwitchCase,
+            IncompleteSwitchCaseNode: self._handle_IncompleteSwitchCase,
             ContinueNode: self._handle_Continue,
             PatternMatchNode: self._handle_PatternMatch,
             IfLetNode: self._handle_IfLet,
@@ -2770,8 +2952,13 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             Stmt.ConditionalJump: self._handle_Stmt_ConditionalJump,
             Stmt.Return: self._handle_Stmt_Return,
             Stmt.Label: self._handle_Stmt_Label,
+            Stmt.WeakAssignment: self._handle_Stmt_Assignment,
+            Stmt.DirtyStatement: self._handle_Stmt_Dirty,
+            Stmt.CAS: self._handle_Stmt_CAS,
+            IncompleteSwitchCaseHeadStatement: self._handle_Stmt_IncompleteSwitchCaseHead,
             # AIL expressions
             Expr.Register: self._handle_Expr_Register,
+            Expr.IRegister: self._handle_Expr_IRegister,
             Expr.Load: self._handle_Expr_Load,
             Expr.Tmp: self._handle_Expr_Tmp,
             Expr.Const: self._handle_Expr_Const,
@@ -2783,6 +2970,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             Expr.DirtyExpression: self._handle_Expr_Dirty,
             Expr.ITE: self._handle_Expr_ITE,
             Expr.Extract: self._handle_Expr_Extract,
+            Expr.Insert: self._handle_Expr_Insert,
             Expr.Reinterpret: self._handle_Reinterpret,
             Expr.MultiStatementExpression: self._handle_MultiStatementExpression,
             Expr.VirtualVariable: self._handle_VirtualVariable,
@@ -2799,7 +2987,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self._func_args = func_args
         self._cfg = cfg
         self._sequence = sequence
-        self._variable_kb = variable_kb if variable_kb is not None else self.kb
+        self._variable_map: VariableMap = variable_map if variable_map is not None else VariableMap()
         self.binop_depth_cutoff = binop_depth_cutoff
 
         self._variables_in_use: dict | None = None
@@ -2820,9 +3008,14 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self.externs = externs or set()
         self.show_externs = show_externs
         self.show_demangled_name = show_demangled_name
+        self.show_disambiguated_name = show_disambiguated_name
         self.ail_graph = ail_graph
         self.simplify_else_scope = simplify_else_scope
         self.cstyle_ifs = cstyle_ifs
+        self.omit_func_header = omit_func_header
+        self.display_block_addrs = display_block_addrs
+        self.display_vvar_ids = display_vvar_ids
+        self.min_data_addr = min_data_addr
         self.text = None
         self.map_pos_to_node = None
         self.map_pos_to_addr = None
@@ -2832,6 +3025,10 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self.rust_func: RustFunction | None = None
         self.cexterns: set[RustVariable] | None = None
         self.display_notes = display_notes
+        self.max_str_len = max_str_len
+        self.prettify_thiscall = prettify_thiscall
+        self.cstyle_void_param = cstyle_void_param
+        self.indent_delta = indent_size
 
         self._analyze()
 
@@ -2857,6 +3054,10 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 self.simplify_else_scope = value
             elif option.param == "cstyle_ifs":
                 self.cstyle_ifs = value
+            elif option.param == "cstyle_void_param":
+                self.cstyle_void_param = value
+            elif option.param == "indent_size":
+                self.indent_delta = value
 
     def _translate_prototype_to_rust(self, prototype: SimTypeFunction):
         translator = RustTypeTranslator(self.project.arch)
@@ -2874,7 +3075,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         # memo
         self.ailexpr2cnode = {}
 
-        prototype = self._func.prototype
+        prototype = self._func.get_prototype(Flavors.RUST_FLAVOR)
 
         if self._func_args:
             arg_list = [self._variable(arg, None) for arg in self._func_args]
@@ -2894,7 +3095,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             arg_list,
             obj,
             self._variables_in_use,
-            self._variable_kb.variables[self._func.addr],
+            self.kb.dec_variables[self._func.addr],
             demangled_name=self._func.demangled_name,
             show_demangled_name=self.show_demangled_name,
             codegen=self,
@@ -2996,8 +3197,8 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
 
     def _get_variable_type(self, var, is_global=False):
         if is_global:
-            return self._variable_kb.variables["global"].get_variable_type(var)
-        return self._variable_kb.variables[self._func.addr].get_variable_type(var)
+            return self.kb.dec_variables.get_global_manager(self.flavor).get_variable_type(var)
+        return self.kb.dec_variables[self._func.addr].get_variable_type(var)
 
     def _get_derefed_type(self, ty: SimType) -> SimType | None:
         if ty is None:
@@ -3042,7 +3243,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         #     import ipdb
         #
         #     ipdb.set_trace()
-        unified = self._variable_kb.variables[self._func.addr].unified_variable(variable)
+        unified = self.kb.dec_variables[self._func.addr].unified_variable(variable)
         variable_type = self._get_variable_type(
             variable, is_global=isinstance(variable, SimMemoryVariable) and not isinstance(variable, SimStackVariable)
         )
@@ -3429,7 +3630,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         # if (node, is_expr) in self.ailexpr2cnode:
         #     return self.ailexpr2cnode[(node, is_expr)]
 
-        handler: Callable | None = self._handlers.get(node.__class__, None)
+        handler: Callable | None = self._handlers.get(_dispatch_key(node), None)
         if handler is not None:
             if isinstance(node, (Expr.Call, FunctionLikeMacro)):
                 # special case for Call
@@ -3439,7 +3640,9 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             if self.ailexpr2cnode is not None:
                 self.ailexpr2cnode[(node, is_expr)] = converted
             return converted
-        raise UnsupportedNodeTypeError(f"Node type {type(node)} is not supported yet.")
+        raise UnsupportedNodeTypeError(
+            f"Node type {getattr(node, 'kind', None) or type(node).__name__} is not supported yet."
+        )
 
     def _handle_Code(self, node, **kwargs):
         return self._handle(node.node, is_expr=False)
@@ -3564,15 +3767,20 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         tags = {"ins_addr": node.addr}
         return RustSwitchCase(switch_expr, cases, default=default, tags=tags, codegen=self)
 
+    def _handle_IncompleteSwitchCase(self, node: IncompleteSwitchCaseNode, **kwargs):
+        head = self._handle(node.head, is_expr=False)
+        cases = [(case.addr, self._handle(case, is_expr=False)) for case in node.cases]
+        return RustIncompleteSwitchCase(head, cases, tags={"ins_addr": node.addr}, codegen=self)
+
     def _get_bound_variable(self, move):
         expr = None
         var = None
         if isinstance(move, ailment.Stmt.Store):
             expr = move.addr
-            var = move.variable
+            var = self._variable_map.variable(move)
         elif isinstance(move, ailment.Stmt.Assignment):
             expr = move.dst
-            var = move.dst.variable
+            var = self._variable_map.variable(move.dst)
         if expr and var is not None:
             var_thing = self._variable(var, expr.size)
             var_thing.tags = dict(expr.tags)
@@ -3622,7 +3830,11 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             try:
                 cstmt = self._handle(stmt, is_expr=False)
             except UnsupportedNodeTypeError:
-                l.warning("Unsupported AIL statement or expression %s.", type(stmt), exc_info=True)
+                l.warning(
+                    "Unsupported AIL statement or expression %s.",
+                    getattr(stmt, "kind", None) or type(stmt).__name__,
+                    exc_info=True,
+                )
                 cstmt = RustUnsupportedStatement(stmt, codegen=self)
             cstmts.append(cstmt)
 
@@ -3635,8 +3847,25 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
     def _handle_Stmt_Store(self, stmt: Stmt.Store, **kwargs):
         cdata = self._handle(stmt.data)
 
-        if cdata.type.size != stmt.size * self.project.arch.byte_width:
-            l.error("Store data lifted to a C type with a different size. Decompilation output will be wrong.")
+        store_bits = stmt.size * self.project.arch.byte_width
+        if cdata.type is None or cdata.type.size != store_bits:
+            if cdata.type is not None and cdata.type.size is not None:
+                l.error(
+                    "Store data lifted to a type of a different size: %s is %d bits, the store is %d bits. "
+                    "Using the store width.",
+                    cdata.type,
+                    cdata.type.size,
+                    store_bits,
+                )
+            if cdata.type is None or qualifies_for_width_cast(unpack_typeref(cdata.type)):
+                # an untyped or mis-sized scalar must still write stmt.size bytes: retype the value at the
+                # store width so _access renders the access at that width instead of the inferred one.
+                cdata = RustTypeCast(
+                    cdata.type,
+                    self.default_simtype_from_size(stmt.size, signed=getattr(cdata.type, "signed", False)),
+                    cdata,
+                    codegen=self,
+                )
 
         def negotiate(old_ty, proposed_ty):
             # transfer casts from the dst to the src if possible
@@ -3647,9 +3876,10 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 return proposed_ty
             return old_ty
 
-        if stmt.variable is not None:
-            cvar = self._variable(stmt.variable, stmt.size)
-            offset = stmt.offset or 0
+        stmt_var = self._variable_map.variable(stmt)
+        if stmt_var is not None:
+            cvar = self._variable(stmt_var, stmt.size)
+            offset = self._variable_map.variable_offset(stmt) or 0
             assert type(offset) is int  # I refuse to deal with the alternative
             cdst = self._access_constant_offset(self._get_variable_reference(cvar), offset, cdata.type, True, negotiate)
         else:
@@ -3688,10 +3918,10 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 type_ = None
                 if (
                     target_func is not None
-                    and target_func.prototype is not None
-                    and i < len(target_func.prototype.args)
+                    and (target_proto := target_func.get_prototype(Flavors.RUST_FLAVOR)) is not None
+                    and i < len(target_proto.args)
                 ):
-                    type_ = target_func.prototype.args[i].with_arch(self.project.arch)
+                    type_ = target_proto.args[i].with_arch(self.project.arch)
 
                 if isinstance(arg, Expr.Const):
                     if type_ is None or is_machine_word_size_type(type_, self.project.arch):
@@ -3718,7 +3948,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             tags=stmt.tags,
             is_expr=is_expr,
             show_demangled_name=self.show_demangled_name,
-            callsite_prototype=stmt.expr.prototype,  # pyright: ignore[reportArgumentType]
+            callsite_prototype=self._variable_map.prototype(stmt.expr),  # pyright: ignore[reportArgumentType]
             codegen=self,
         )
 
@@ -3772,6 +4002,49 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self.map_addr_to_label[(ins_addr, block_idx)] = clabel
         return clabel
 
+    def _handle_Stmt_Dirty(self, stmt: Stmt.DirtyStatement, **kwargs):
+        return RustDirtyStatement(self._handle(stmt.dirty), codegen=self)
+
+    def _handle_Stmt_IncompleteSwitchCaseHead(self, stmt: IncompleteSwitchCaseHeadStatement, **kwargs):
+        # render the dispatch as a cascade of if-gotos rather than dropping every target
+        switch_var = self._handle(stmt.switch_variable)
+        bits = getattr(stmt.switch_variable, "bits", None) or self.project.arch.bits
+        const_type = RustSimTypeInt(size=bits, signed=False).with_arch(self.project.arch)
+        condition_and_nodes = []
+        default_goto = None
+        for _, case_value, target_addr, target_idx, _ in stmt.case_addrs:
+            goto = RustGoto(target_addr, target_idx, tags=stmt.tags, codegen=self)
+            if isinstance(case_value, str):
+                if case_value == "default":
+                    default_goto = goto
+                continue
+            cond = RustBinaryOp(
+                "CmpEQ",
+                switch_var,
+                RustConstant(case_value, const_type, tags=stmt.tags, codegen=self),
+                codegen=self,
+                tags=stmt.tags,
+            )
+            condition_and_nodes.append((cond, goto))
+        if not condition_and_nodes:
+            return default_goto if default_goto is not None else RustUnsupportedStatement(stmt, codegen=self)
+        return RustIfElse(condition_and_nodes, else_node=default_goto, tags=stmt.tags, codegen=self)
+
+    def _handle_Stmt_CAS(self, stmt: Stmt.CAS, **kwargs):
+        # render whatever CASIntrinsics did not rewrite as the same intrinsic call
+        if stmt.old_hi is None:
+            os_name = self.project.simos.name if self.project.simos is not None else None
+            call = Expr.Call(
+                stmt.idx,
+                cas_intrinsic_name(f"cmpxchg{stmt.bits}", os_name),
+                args=[stmt.addr, stmt.data_lo, stmt.expd_lo],
+                bits=stmt.bits,
+                **stmt.tags,
+            )
+            return self._handle(Stmt.Assignment(stmt.idx, stmt.old_lo, call, **stmt.tags), is_expr=False)
+        # a double-width CAS writes two destinations, which no single expression captures
+        return RustUnsupportedStatement(stmt, codegen=self)
+
     #
     # AIL expression handlers
     #
@@ -3784,15 +4057,29 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     return proposed_ty
             return old_ty
 
-        if expr.variable:
-            cvar = self._variable(expr.variable, None)
-            if expr.variable.size == expr.size:
+        expr_var = self._variable_map.variable(expr)
+        if expr_var:
+            cvar = self._variable(expr_var, None)
+            if expr_var.size == expr.size:
                 return cvar
-            offset = 0 if expr.variable_offset is None else expr.variable_offset
+            expr_var_offset = self._variable_map.variable_offset(expr)
+            offset = 0 if expr_var_offset is None else expr_var_offset
             # FIXME: The type should be associated to the register expression itself
             type_ = self.default_simtype_from_size(expr.size, signed=False)
             return self._access_constant_offset(self._get_variable_reference(cvar), offset, type_, lvalue, negotiate)
-        return RustRegister(expr, tags=expr.tags, codegen=self)
+        return RustRegister(self._register_name(expr.reg_offset, expr.size), tags=expr.tags, codegen=self)
+
+    def _register_name(self, reg_offset: int, size: int) -> str:
+        return register_display_name(self.project.arch, reg_offset, size)
+
+    def _handle_Expr_IRegister(self, expr: Expr.IRegister, **kwargs):
+        # an indexed register-array access whose index could not be resolved (x87 fpreg[ftop])
+        base = self.project.arch.translate_register_name(expr.array_base)
+        index = self._handle(expr.reg_offset).c_repr()
+        if expr.array_bias:
+            index = f"{index} + {expr.array_bias}"
+        type_ = SimTypeDouble() if base == "fpreg" else self.default_simtype_from_size(expr.size, signed=False)
+        return RustFakeVariable(f"{base}[{index}]", type_, tags=expr.tags, codegen=self)
 
     def _handle_Expr_Load(self, expr: Expr.Load, **kwargs):
         ty = self.default_simtype_from_size(expr.size)
@@ -3804,9 +4091,10 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     return proposed_ty
             return old_ty
 
-        if expr.variable is not None:
-            cvar = self._variable(expr.variable, expr.size)
-            offset = expr.variable_offset or 0
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            cvar = self._variable(expr_var, expr.size)
+            offset = self._variable_map.variable_offset(expr) or 0
             assert type(offset) is int  # I refuse to deal with the alternative
             return self._access_constant_offset(
                 RustUnaryOp("Reference", cvar, codegen=self), offset, ty, False, negotiate
@@ -3910,16 +4198,17 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             # default to int
             type_ = self.default_simtype_from_size(expr.size)
 
-        if variable is None and hasattr(expr, "reference_variable") and expr.reference_variable is not None:
-            variable = expr.reference_variable
+        expr_reference_variable = self._variable_map.reference_variable(expr)
+        if variable is None and expr_reference_variable is not None:
+            variable = expr_reference_variable
             if inline_string:
-                self._inlined_strings.add(expr.reference_variable)
+                self._inlined_strings.add(expr_reference_variable)
             elif function_pointer:
-                self._function_pointers.add(expr.reference_variable)
+                self._function_pointers.add(expr_reference_variable)
 
         if variable is not None and not reference_values:
             cvar = self._variable(variable, None)
-            offset = getattr(expr, "reference_variable_offset", 0)
+            offset = self._variable_map.reference_variable_offset(expr)
             return self._access_constant_offset_reference(self._get_variable_reference(cvar), offset, None)
 
         return RustConstant(expr.value, type_, reference_values=reference_values, tags=expr.tags, codegen=self)
@@ -3930,7 +4219,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             expr.args,
             expr.delimiter,
             is_expr=is_expr,
-            returnty=expr.returnty,
+            returnty=self._variable_map.returnty(expr),
             tags=expr.tags,
             codegen=self,
         )
@@ -3952,10 +4241,10 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 type_ = None
                 if (
                     target_func is not None
-                    and target_func.prototype is not None
-                    and i < len(target_func.prototype.args)
+                    and (target_proto := target_func.get_prototype(Flavors.RUST_FLAVOR)) is not None
+                    and i < len(target_proto.args)
                 ):
-                    type_ = target_func.prototype.args[i].with_arch(self.project.arch)
+                    type_ = target_proto.args[i].with_arch(self.project.arch)
 
                 if isinstance(arg, Expr.Const):
                     if type_ is None or is_machine_word_size_type(type_, self.project.arch):
@@ -3978,7 +4267,7 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             tags=expr.tags,
             is_expr=is_expr,
             show_demangled_name=self.show_demangled_name,
-            callsite_prototype=expr.prototype,  # pyright: ignore[reportArgumentType]
+            callsite_prototype=self._variable_map.prototype(expr),  # pyright: ignore[reportArgumentType]
             codegen=self,
         )
 
@@ -4091,10 +4380,11 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         )
 
     def _handle_Expr_BinaryOp(self, expr: BinaryOp, **kwargs):
-        if expr.variable is not None:
-            cvar = self._variable(expr.variable, None)
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            cvar = self._variable(expr_var, None)
             return self._access_constant_offset_reference(
-                self._get_variable_reference(cvar), expr.variable_offset or 0, None
+                self._get_variable_reference(cvar), self._variable_map.variable_offset(expr) or 0, None
             )
 
         lhs = self._handle(expr.operands[0])
@@ -4110,6 +4400,9 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         )
 
     def _handle_Expr_Convert(self, expr: Expr.Convert, **kwargs):
+        if expr.vector_count is not None:
+            return RustVectorConvert(expr, self._handle(expr.operand), codegen=self)
+
         # width of converted type is easy
         if 64 >= expr.to_bits > 32:
             dst_type: RustSimTypeInt | SimTypeChar = RustSimTypeInt(64)
@@ -4149,8 +4442,20 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         operands = [self._handle(arg) for arg in expr.operands]
         return RustVEXCCallExpression(expr.callee, operands, tags=expr.tags, codegen=self)
 
-    def _handle_Expr_Dirty(self, expr, **kwargs):
-        return RustDirtyExpression(expr, codegen=self)
+    def _handle_Expr_Dirty(self, expr: Expr.DirtyExpression, **kwargs):
+        operands = [self._handle(operand) for operand in expr.operands]
+        return RustDirtyExpression(expr, operands, codegen=self)
+
+    def _handle_Expr_Insert(self, expr: Expr.Insert, **kwargs):
+        # should never really be used - should be handled by Assignment
+        return RustFunctionCall(
+            "_INSERT",
+            None,
+            [self._handle(expr.base), self._handle(expr.offset), self._handle(expr.value)],
+            is_expr=True,
+            tags=expr.tags,
+            codegen=self,
+        )
 
     def _handle_Expr_ITE(self, expr: Expr.ITE, **kwargs):
         return RustITE(
@@ -4187,13 +4492,14 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         return RustMultiStatementExpression(cstmts, cexpr, tags=expr.tags, codegen=self)
 
     def _handle_VirtualVariable(self, expr: Expr.VirtualVariable, **kwargs):
-        if expr.variable:
-            cvar = self._variable(expr.variable, None)
-            if expr.variable.size != expr.size:
+        expr_var = self._variable_map.variable(expr)
+        if expr_var:
+            cvar = self._variable(expr_var, None)
+            if expr_var.size != expr.size:
                 l.warning(
                     "VirtualVariable size (%d) and variable size (%d) do not match. Force a type cast.",
                     expr.size,
-                    expr.variable.size,
+                    expr_var.size,
                 )
                 src_type = cvar.type
                 dst_type = RustSimTypeInt(expr.bits, signed=False)
@@ -4201,11 +4507,17 @@ class RustStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     dst_type = dst_type.with_arch(self.project.arch)
                     return RustTypeCast(src_type, dst_type, cvar, tags=expr.tags, codegen=self)
             return cvar
-        return RustDirtyExpression(expr, codegen=self)
+        if expr.was_reg:
+            # variable recovery creates no variable for sp/ip/lr; a surviving write to one is still that register
+            return RustRegister(self._register_name(expr.oident, expr.size), tags=expr.tags, codegen=self)
+        return RustFakeVariable(
+            f"vvar_{expr.varid}", self.default_simtype_from_size(expr.size, signed=False), tags=expr.tags, codegen=self
+        )
 
     def _handle_Expr_StackBaseOffset(self, expr: StackBaseOffset, **kwargs):
-        if expr.variable is not None:
-            var_thing = self._variable(expr.variable, expr.size)
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            var_thing = self._variable(expr_var, expr.size)
             var_thing.tags = dict(expr.tags)
             if "def_at" in var_thing.tags and "ins_addr" not in var_thing.tags:
                 def_at = var_thing.tags["def_at"]
@@ -4339,10 +4651,20 @@ class RustStructuredCodeWalker:
         obj.iffalse = cls.handle(obj.iffalse)
         return obj
 
+    @classmethod
+    def handle_RustVectorConvert(cls, obj):
+        obj.operand = cls.handle(obj.operand)
+        return obj
+
+    @classmethod
+    def handle_RustVEXCCallExpression(cls, obj):
+        obj.operands = [cls.handle(operand) for operand in obj.operands]
+        return obj
+
 
 class MakeTypecastsImplicit(RustStructuredCodeWalker):
     @classmethod
-    def collapse(cls, dst_ty: SimType | RustSimType | None, child: RustExpression) -> RustExpression:
+    def collapse(cls, dst_ty: SimType | None, child: RustExpression) -> RustExpression:
         result = child
         if isinstance(child, RustTypeCast):
             intermediate_ty = child.dst_type
@@ -4387,7 +4709,7 @@ class MakeTypecastsImplicit(RustStructuredCodeWalker):
 
     @classmethod
     def handle_RustReturn(cls, obj: RustReturn):
-        prototype = obj.codegen._func.prototype
+        prototype = obj.codegen._func.get_prototype(Flavors.RUST_FLAVOR)
         if isinstance(prototype, RustSimTypeFunction):
             prototype = prototype.normalize()
         obj.retval = cls.collapse(prototype.returnty, obj.retval)

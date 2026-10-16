@@ -2,7 +2,9 @@
 # pylint: disable=missing-class-docstring,no-self-use,line-too-long
 from __future__ import annotations
 
+import json
 import unittest
+from typing import cast
 
 import archinfo
 import pydemumble
@@ -11,6 +13,7 @@ from archinfo import Endness
 import angr
 from angr import AngrMissingTypeError
 from angr.sim_type import (
+    SimCppClass,
     SimStruct,
     SimType,
     SimTypeArray,
@@ -18,6 +21,7 @@ from angr.sim_type import (
     SimTypeChar,
     SimTypeCppFunction,
     SimTypeDouble,
+    SimTypeFixedSizeArray,
     SimTypeFloat,
     SimTypeFunction,
     SimTypeInt,
@@ -31,9 +35,10 @@ from angr.sim_type import (
     SimTypeTop,
     SimTypeWideChar,
     SimUnion,
+    TypeRef,
 )
 from angr.utils.library import convert_cppproto_to_py, convert_cproto_to_py
-from angr.utils.types import dereference_simtype
+from angr.utils.types import dereference_simtype, replace_pointer_pts_to
 
 
 class TestTypes(unittest.TestCase):
@@ -132,6 +137,25 @@ class TestTypes(unittest.TestCase):
         _, proto, _ = convert_cppproto_to_py(proto)
         assert proto is not None
         assert len(proto.args) == 1
+
+    def test_cppproto_parse_msvc_fixed_width_integer(self):
+        # A demangled MSVC signature carries no parameter names, so a fixed-width integer ends at a
+        # comma or a closing parenthesis. Both of these are demangled symbols of
+        # binaries/tests/x86_64/windows/msvcr120.dll.
+        _, proto, _ = convert_cppproto_to_py(
+            "void Concurrency::set_task_execution_resources(unsigned __int64)", with_param_names=False
+        )
+        assert proto is not None
+        assert isinstance(proto.args[1], SimTypeLongLong)
+
+        _, proto, _ = convert_cppproto_to_py(
+            "unsigned __int64 Concurrency::event::wait_for_multiple("
+            "class Concurrency::event **, unsigned __int64, bool, unsigned int)",
+            with_param_names=False,
+        )
+        assert proto is not None
+        assert isinstance(proto.args[2], SimTypeLongLong)
+        assert isinstance(proto.returnty, SimTypeLongLong)
 
     def test_cppproto_parse_operator_shl(self):
         proto = "std::ostream::operator<<(std::ostream& (*)(std::ostream&))"
@@ -354,6 +378,30 @@ class TestTypes(unittest.TestCase):
             (1, 7),
         ]
 
+    def test_sub_byte_types_align_to_one_byte(self):
+        # SimTypeNum is sized in bits, so a type narrower than a byte used to report an
+        # alignment of zero -- the truncated quotient -- and every struct laying such a
+        # field out divided by zero while rounding the running bit offset up.
+        arch = archinfo.ArchX86()
+
+        assert [SimTypeNum(bits).with_arch(arch).alignment for bits in range(1, 9)] == [1] * 8
+        assert SimTypeInt().with_arch(arch).alignment == 4  # wider types are unchanged
+
+        # Aggregates take a max() over their members, so they propagated the zero outwards.
+        assert SimTypeFixedSizeArray(SimTypeNum(4), 3).with_arch(arch).alignment == 1
+        assert SimUnion({"m": SimTypeNum(4)}, name="nibble_union").with_arch(arch).alignment == 1
+
+        nibble = cast(SimStruct, SimStruct({"b": SimTypeNum(4)}, name="nibble").with_arch(arch))
+        assert nibble.offsets == {"b": 0}
+        holds_union = cast(
+            SimStruct,
+            SimStruct(
+                {"a": SimTypeInt(), "u": SimUnion({"m": SimTypeNum(4)}, name="nibble_union2")},
+                name="holds_nibble_union",
+            ).with_arch(arch),
+        )
+        assert holds_union.offsets == {"a": 0, "u": 4}
+
     def test_dereference_type_anonymous_struct(self):
         angr.procedures.definitions.load_win32_type_collections()
         variant_type = angr.SIM_TYPE_COLLECTIONS["win32"].get("VARIANT")
@@ -394,13 +442,14 @@ class TestTypes(unittest.TestCase):
             assert False, "The expected AngrMissingTypeError was not raised"
 
     def test_simunion_size_bottom_types(self):
+        arch = archinfo.ArchAMD64()
         union_type = SimUnion(
             {"filterType": SimTypeBottom(label="Guid"), "calloutKey": SimTypeBottom(label="Guid")},
             name="<anon>",
             label="None",
         )
-        union_type = union_type.with_arch(archinfo.ArchAMD64())
-        assert union_type.size == 8  # fall back to architecture word size
+        union_type = union_type.with_arch(arch)
+        assert union_type.size == arch.bits  # fall back to architecture word size
 
     def test_widechar_extraction(self):
         proj = angr.load_shellcode(b"\x90\x90\x90\x90", arch="AMD64")
@@ -424,6 +473,49 @@ class TestTypes(unittest.TestCase):
         deref_new_t = dereference_simtype(new_t, [angr.SIM_TYPE_COLLECTIONS["win32"]])
         assert deref_t == deref_new_t
 
+    def test_from_json_resolves_repeated_and_recursive_structs(self):
+        # to_json() emits a reference for every repeated occurrence of a named struct; from_json() must resolve those
+        # references (including references back to a struct that is still being decoded) to the same object
+        s0 = SimStruct({"a": SimTypeInt()}, name="struct_0")
+        s0.fields["self"] = SimTypePointer(s0)
+        s1 = SimStruct({"p": SimTypePointer(s0)}, name="struct_1")
+        s0.fields["other"] = SimTypePointer(s1)
+        proto = SimTypeFunction([SimTypePointer(s0), SimTypePointer(s1)], SimTypePointer(s0))
+
+        back = SimType.from_json(json.loads(json.dumps(proto.to_json())))
+        assert isinstance(back, SimTypeFunction)
+        b0 = cast(SimTypePointer, back.args[0]).pts_to
+        b1 = cast(SimTypePointer, back.args[1]).pts_to
+        assert isinstance(b0, SimStruct) and isinstance(b1, SimStruct)
+        assert cast(SimTypePointer, b0.fields["self"]).pts_to is b0
+        assert cast(SimTypePointer, b0.fields["other"]).pts_to is b1
+        assert cast(SimTypePointer, b1.fields["p"]).pts_to is b0
+        assert cast(SimTypePointer, back.returnty).pts_to is b0
+        assert back == proto
+
+    def test_cppclass_json_roundtrip(self):
+        # SimCppClass.to_json() used to emit a bare SimTypeRef for the first occurrence of a class, so a class
+        # returned by value came back from any JSON round trip (function spilling, angrdb) as a TypeRef around an
+        # unresolvable SimTypeRef with no size
+        arch = archinfo.ArchAMD64()
+        cls = SimCppClass(members={"x": SimTypeInt()}, name="class Base::Type").with_arch(arch)
+        proto = SimTypeFunction([SimTypePointer(cls)], TypeRef("class Base::Type", cls)).with_arch(arch)
+
+        back = SimType.from_json(json.loads(json.dumps(proto.to_json())))
+        assert isinstance(back, SimTypeFunction)
+        ret = back.returnty
+        assert isinstance(ret, TypeRef)
+        assert isinstance(ret.type, SimCppClass)
+        assert list(ret.type.fields) == ["x"]
+        assert ret.size == 32
+        # the repeated occurrence is a reference resolved to the same decoded class
+        assert cast(SimTypePointer, back.args[0]).pts_to is ret.type
+
+        empty = SimCppClass(name="class Empty").with_arch(arch)
+        back_empty = SimType.from_json(json.loads(json.dumps(empty.to_json())))
+        assert isinstance(back_empty, SimCppClass)
+        assert back_empty.size == 0
+
     def test_simstruct_cmp_recursion_error(self):
         t0 = SimStruct(fields={"a": SimTypeBottom()})
         t0.fields["a"] = t0
@@ -431,6 +523,169 @@ class TestTypes(unittest.TestCase):
         t1.fields["a"] = t0
 
         assert t0 == t1  # should not raise RecursionError
+
+    def test_simstruct_arch_memo_cache_leak(self):
+        # regression test: this bug is causing angr management to fail to display complex win32 types during
+        # decompilation.
+        #
+        # during dereference_simtype(), SimStruct._arch_memo may leak to the parent SimStruct, causing with_arch() to
+        # return an incomplete archified SimStruct.
+
+        angr.procedures.definitions.load_win32_type_collections()
+        st = SimStruct({}, name="foobar")
+        # the leak from _arch_memo happens when dereference_simtype() processes st.fields["a"].pts_to, which pollutes
+        # st._arch_memo
+        st.fields["a"] = SimTypePointer(st)
+        st.fields["b"] = SimTypeRef("UNICODE_STRING", SimStruct)
+
+        st = st.with_arch(archinfo.ArchAMD64())
+
+        st_deref = cast(SimStruct, dereference_simtype(st, [angr.SIM_TYPE_COLLECTIONS["win32"]]))
+        assert "a" in st_deref.fields
+        assert "b" in st_deref.fields
+        assert "a" in st_deref.offsets
+        assert "b" in st_deref.offsets  # this assertion fails because st_deref.fields["b"] is a SimTypeRef
+
+    def test_dereference_simtype_keeps_recursive_types_cyclic(self):
+        # dereference_simtype() used to call with_arch() on every level, which deep-copies the members and so
+        # discards the object sharing that the memo establishes. Recursive types were unrolled into ever deeper
+        # trees of struct copies with a dangling SimTypeRef at the bottom, and every extra call grew the tree.
+        angr.procedures.definitions.load_win32_type_collections()
+        arch = archinfo.ArchX86()
+        collections = [angr.SIM_TYPE_COLLECTIONS["win32"]]
+
+        def struct_count(t: SimType) -> tuple[int, int]:
+            structs: set[int] = set()
+            refs = 0
+            queue = [t]
+            while queue:
+                ty = queue.pop()
+                while isinstance(ty, (SimTypePointer, SimTypeArray, SimTypeFixedSizeArray)):
+                    ty = ty.pts_to if isinstance(ty, SimTypePointer) else ty.elem_type
+                if isinstance(ty, SimTypeRef):
+                    refs += 1
+                elif isinstance(ty, SimStruct):
+                    if id(ty) in structs:
+                        continue
+                    structs.add(id(ty))
+                    queue.extend(ty.fields.values())
+                elif isinstance(ty, SimUnion):
+                    queue.extend(ty.members.values())
+            return len(structs), refs
+
+        # CRITICAL_SECTION <-> CRITICAL_SECTION_DEBUG is a two-struct cycle; LIST_ENTRY points at itself
+        t = SimTypePointer(SimTypeRef("CRITICAL_SECTION", SimStruct)).with_arch(arch)
+        deref = dereference_simtype(t, collections)
+        assert struct_count(deref) == (3, 0)
+
+        # ... and dereferencing again changes nothing: the operation is idempotent
+        for _ in range(3):
+            deref = dereference_simtype(deref, collections)
+            assert struct_count(deref) == (3, 0)
+
+        # the cycle is a real cycle, not a copy
+        cs = cast(SimTypePointer, deref).pts_to
+        assert isinstance(cs, SimStruct)
+        debug = cs.fields["DebugInfo"]
+        assert isinstance(debug, SimTypePointer)
+        assert isinstance(debug.pts_to, SimStruct)
+        assert cast(SimTypePointer, debug.pts_to.fields["CriticalSection"]).pts_to is cs
+        assert cs._arch is arch
+        assert debug.pts_to._arch is arch
+
+    def test_dereference_simtype_keeps_anonymous_types_distinct(self):
+        # every unnamed struct and union is called "<anon>", so the memo must key them by identity: keying by name
+        # merged unrelated anonymous types into one, which could even make a type contain itself
+        angr.procedures.definitions.load_win32_type_collections()
+        arch = archinfo.ArchX86()
+        collections = [angr.SIM_TYPE_COLLECTIONS["win32"]]
+        u1 = SimUnion({"a": SimTypeInt()})
+        u2 = SimUnion({"b": SimTypeChar()})
+        outer = SimStruct({"u1": u1, "u2": u2}, name="holder").with_arch(arch)
+
+        deref = cast(SimStruct, dereference_simtype(outer, collections))
+        d1, d2 = deref.fields["u1"], deref.fields["u2"]
+        assert isinstance(d1, SimUnion)
+        assert isinstance(d2, SimUnion)
+        assert d1 is not d2
+        assert set(d1.members) == {"a"}
+        assert set(d2.members) == {"b"}
+
+    def test_serialize_keeps_anonymous_unions_distinct(self):
+        # unnamed unions are all called "<anon>", so serializing the second one as a reference to that name made
+        # both of them load back as the first one
+        u1 = SimUnion({"a": SimTypeInt()})
+        u2 = SimUnion({"b": SimTypeChar()})
+        outer = SimStruct({"u1": u1, "u2": u2}, name="holder").with_arch(archinfo.ArchAMD64())
+
+        back = SimType.from_json(outer.to_json())
+        assert isinstance(back, SimStruct)
+        m1, m2 = back.fields["u1"], back.fields["u2"]
+        assert isinstance(m1, SimUnion)
+        assert isinstance(m2, SimUnion)
+        assert set(m1.members) == {"a"}
+        assert set(m2.members) == {"b"}
+
+    def test_serialize_recursive_union(self):
+        # a union that (transitively) contains itself must serialize like a recursive struct does
+        u = SimUnion({"i": SimTypeInt()}, name="recursive_union")
+        u.members["self"] = SimTypePointer(u)
+        u = cast(SimUnion, u.with_arch(archinfo.ArchAMD64()))
+
+        d = u.to_json()  # shall not raise
+        new_u = SimType.from_json(d)
+        assert isinstance(new_u, SimUnion)
+        assert set(new_u.members) == {"i", "self"}
+        assert cast(SimTypePointer, new_u.members["self"]).pts_to is new_u
+
+    def test_with_arch_keeps_anonymous_structs_distinct(self):
+        # anonymous structs may share a name, so with_arch() must memoize them by identity: keying by name made the
+        # first one answer for the second, which turned the first one into its own descendant
+        s1 = SimStruct({"a": SimTypeInt()}, name="same_name", anonymous=True)
+        s2 = SimStruct({"b": SimTypeChar()}, name="same_name", anonymous=True)
+        outer = SimStruct({"s1": s1, "s2": SimUnion({"inner": s2})}, name="holder")
+
+        archified = cast(SimStruct, outer.with_arch(archinfo.ArchAMD64()))
+        a1 = archified.fields["s1"]
+        a2 = cast(SimUnion, archified.fields["s2"]).members["inner"]
+        assert isinstance(a1, SimStruct)
+        assert isinstance(a2, SimStruct)
+        assert a1 is not a2
+        assert a1.anonymous and a2.anonymous
+        assert set(a1.fields) == {"a"}
+        assert set(a2.fields) == {"b"}
+
+    def test_serialize_win32_variant_with_arch(self):
+        # issue #7270: VARIANT holds three distinct structs named "_Anonymous_e__Struct". with_arch() used to merge
+        # them into one, creating a cycle through no pointer that made to_json() recurse forever
+        angr.procedures.definitions.load_win32_type_collections()
+        variant = angr.SIM_TYPE_COLLECTIONS["win32"].get("VARIANT").with_arch(archinfo.ArchAMD64())
+        assert isinstance(variant, SimStruct)
+
+        d = variant.to_json()  # shall not raise
+        back = SimType.from_json(d).with_arch(archinfo.ArchAMD64())
+        assert isinstance(back, SimStruct)
+        assert back.size == variant.size
+
+    def test_parse_cpp_member_pointer_param(self):
+        # a pointer-to-member-function parameter used to raise NotImplementedError
+        decls, _ = angr.sim_type.parse_cpp_file(
+            "std::__exception_ptr::exception_ptr::exception_ptr(void (std::__exception_ptr::exception_ptr::*)())"
+        )
+        assert decls is not None and len(decls) == 1
+        proto = next(iter(decls.values()))
+        assert isinstance(proto, SimTypeCppFunction)
+        assert isinstance(proto.args[-1], SimTypePointer)
+        assert isinstance(proto.args[-1].pts_to, SimTypeFunction)
+
+    def test_replace_pointer_pts_to(self):
+        struct = SimStruct({"a": SimTypeInt()}, name="s")
+        new = SimTypeChar()
+        replaced = replace_pointer_pts_to(SimTypePointer(SimTypePointer(struct)), struct, new)
+        assert isinstance(replaced, SimTypePointer) and isinstance(replaced.pts_to, SimTypePointer)
+        assert replaced.pts_to.pts_to is new
+        # no match anywhere in the pointer chain: None, not a pointer whose pts_to is None
+        assert replace_pointer_pts_to(SimTypePointer(SimTypePointer(SimTypeInt())), struct, new) is None
 
 
 if __name__ == "__main__":

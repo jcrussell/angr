@@ -6,8 +6,17 @@ __package__ = __package__ or "tests.analyses"  # pylint:disable=redefined-builti
 import logging
 import os
 import unittest
+from typing import Any
+
+import pyvex
 
 import angr
+from angr import ailment, claripy
+from angr.analyses.typehoon.typevars import AddN, DerivedTypeVariable, SubN, TypeVariable, TypeVariableManager
+from angr.analyses.variable_recovery.engine_ail import SimEngineVRAIL
+from angr.analyses.variable_recovery.engine_base import RichR
+from angr.analyses.variable_recovery.engine_vex import SimEngineVRVEX
+from angr.analyses.variable_recovery.variable_recovery_base import VariableRecoveryStateBase
 from angr.knowledge_plugins.variables import VariableType
 from angr.sim_variable import SimRegisterVariable, SimStackVariable
 from tests.common import bin_location, print_decompilation_result
@@ -479,6 +488,126 @@ class TestVariableRecovery(unittest.TestCase):
         assert "int *" in code or "int*" in code, f"Expected a1 to be typed as an int pointer, but got:\n{code}"
         # It should NOT be char* - the format string should override that
         assert "char *a1" not in code and "char* a1" not in code, f"a1 should not be typed as char*, but got:\n{code}"
+
+
+class TestPointerOffsetLabels(unittest.TestCase):
+    """
+    Constant displacements added to (or subtracted from) a pointer must be interpreted as signed. An unsigned
+    0xffff_ffff_ffff_ffe8 ends up as a struct field at offset 2 ** 64 - 24, which yields a garbage type and makes the
+    decompilation cache unserializable (the protobuf field is an int64).
+    """
+
+    WRAPPED_NEG_24 = 0xFFFF_FFFF_FFFF_FFE8
+
+    def _ail_labels(self, op: str, value: int, bits: int = 64):
+        engine: Any = object.__new__(SimEngineVRAIL)
+        engine.tv_manager = TypeVariableManager(0x400000)
+        ptr_typevar = TypeVariable(name="ptr")
+        engine._expr_pair = lambda arg0, arg1, non_pointer=False: (
+            RichR(claripy.BVS("ptr", bits), typevar=ptr_typevar),
+            RichR(claripy.BVV(value, bits)),
+        )
+        expr = ailment.Expr.BinaryOp(0, op, [ailment.Expr.Const(0, 0, bits), ailment.Expr.Const(1, value, bits)], False)
+
+        result = engine._handle_binop_Add(expr) if op == "Add" else engine._handle_binop_Sub(expr)
+        assert isinstance(result.typevar, DerivedTypeVariable)
+        assert result.typevar.type_var is ptr_typevar
+        return result.typevar.labels
+
+    def _vex_labels(self, op: str, value: int, bits: int = 64):
+        engine: Any = object.__new__(SimEngineVRVEX)
+        engine.tv_manager = TypeVariableManager(0x400000)
+        engine.tyenv = None
+        ptr_typevar = TypeVariable(name="ptr")
+        engine._expr_pair = lambda arg0, arg1: (
+            RichR(claripy.BVS("ptr", bits), typevar=ptr_typevar),
+            RichR(claripy.BVV(value, bits)),
+        )
+        const = pyvex.expr.Const(pyvex.const.U64(value) if bits == 64 else pyvex.const.U32(value))
+        expr = pyvex.expr.Binop(f"Iop_{op}{bits}", [const, const])
+
+        result = engine._handle_binop_Add(expr) if op == "Add" else engine._handle_binop_Sub(expr)
+        assert isinstance(result.typevar, DerivedTypeVariable)
+        assert result.typevar.type_var is ptr_typevar
+        return result.typevar.labels
+
+    def test_ail_add_of_a_wrapped_negative_constant_becomes_subn(self):
+        (label,) = self._ail_labels("Add", self.WRAPPED_NEG_24)
+        assert isinstance(label, SubN)
+        assert label.n == 24
+
+    def test_ail_sub_of_a_wrapped_negative_constant_becomes_addn(self):
+        (label,) = self._ail_labels("Sub", self.WRAPPED_NEG_24)
+        assert isinstance(label, AddN)
+        assert label.n == 24
+
+    def test_ail_add_of_a_positive_constant_is_unchanged(self):
+        (label,) = self._ail_labels("Add", 24)
+        assert isinstance(label, AddN)
+        assert label.n == 24
+
+    def test_ail_add_of_a_wrapped_negative_32bit_constant_becomes_subn(self):
+        (label,) = self._ail_labels("Add", 0xFFFF_FFF8, bits=32)
+        assert isinstance(label, SubN)
+        assert label.n == 8
+
+    def test_vex_add_of_a_wrapped_negative_constant_becomes_subn(self):
+        (label,) = self._vex_labels("Add", self.WRAPPED_NEG_24)
+        assert isinstance(label, SubN)
+        assert label.n == 24
+
+    def test_vex_sub_of_a_wrapped_negative_constant_becomes_addn(self):
+        (label,) = self._vex_labels("Sub", self.WRAPPED_NEG_24)
+        assert isinstance(label, AddN)
+        assert label.n == 24
+
+
+class TestStackAddressesOnA16BitArchitecture(unittest.TestCase):
+    """
+    `stack_addr_from_offset` turns a frame offset into the key the analysis stores that slot
+    under in its own `stack_region`. It carried arms for 32 and 64 bits only, so on a 16-bit
+    architecture it raised `AngrRuntimeError` the first time a function touched its frame,
+    and every function that did so was lost.
+    """
+
+    @staticmethod
+    def _state_for(*path_parts: str):
+        """A `VariableRecoveryStateBase` for the first function of a tracked binary.
+
+        The architecture, function, project and owning analysis are the real ones; the
+        analysis is a `VariableRecoveryFast` over that same function. `VariableRecoveryFast`
+        builds a `VariableRecoveryFastState` and hands it several further keyword arguments,
+        none of which reach `stack_addr_from_offset` -- it reads only `self.arch.bits`.
+        """
+        project = angr.Project(os.path.join(test_location, *path_parts), auto_load_libs=False)
+        cfg = project.analyses.CFGFast(normalize=True)
+        func = min(cfg.functions.values(), key=lambda f: f.addr)
+        analysis = project.analyses.VariableRecoveryFast(func)
+        state = VariableRecoveryStateBase(
+            func.addr,
+            analysis,
+            project.arch,
+            func,
+            project,
+            tv_manager=TypeVariableManager(func.addr),
+        )
+        return state, project.arch
+
+    def test_16bit_offsets_become_addresses_instead_of_raising(self):
+        # hello.exe is a real-mode MS-DOS .EXE, so cle's MZ backend gives it a 16-bit p-code
+        # architecture. On master this test raises AngrRuntimeError("Unsupported bits 16").
+        state, arch = self._state_for("i386", "dos", "hello.exe")
+        assert arch.bits == 16
+
+        # 0x7F00 is the 16-bit stack base angr already uses, as
+        # LiveDefinitions.INITIAL_SP_16BIT.
+        assert state.stack_addr_from_offset(0) == 0x7F00
+        assert state.stack_addr_from_offset(-2) == 0x7EFE
+        assert state.stack_addr_from_offset(0x100) == 0x8000
+
+        # Distinct offsets have to stay distinct, or two stack slots share one key.
+        addresses = {state.stack_addr_from_offset(offset) for offset in range(-0x400, 0x400)}
+        assert len(addresses) == 0x800
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ def check_ast_passthrough() -> None:
     sharing one ``libz3.so`` — which is exactly the failure the wheel's
     ``--exclude libz3.so`` repair step is designed to prevent.
     """
-    import claripy
+    from angr import claripy
 
     # Initialise the shared Z3 context before touching RustSolverContext —
     # mirrors tests/engines/rust/test_solver_ops.py::setup_class.

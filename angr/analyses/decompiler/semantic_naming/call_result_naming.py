@@ -9,7 +9,6 @@ based on the called function (e.g., malloc result -> ptr, strlen result -> len).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from angr import ailment
 from angr.ailment.expression import Call
@@ -17,9 +16,6 @@ from angr.ailment.statement import Assignment, SideEffectStatement
 from angr.sim_variable import SimVariable
 
 from .naming_base import ClinicNamingBase
-
-if TYPE_CHECKING:
-    pass
 
 l = logging.getLogger(name=__name__)
 
@@ -207,10 +203,14 @@ class CallResultNaming(ClinicNamingBase):
         if normalized in FUNCTION_RESULT_NAMES:
             return FUNCTION_RESULT_NAMES[normalized]
 
-        # Check for partial matches (e.g., __malloc -> malloc)
+        # Check for partial matches (e.g., xmalloc -> malloc), but not inside a longer word (_mm_getcsr is not getc)
         for pattern, name in FUNCTION_RESULT_NAMES.items():
-            if pattern in normalized:
-                return name
+            pos = normalized.find(pattern)
+            while pos != -1:
+                end = pos + len(pattern)
+                if end == len(normalized) or not normalized[end].isalpha():
+                    return name
+                pos = normalized.find(pattern, pos + 1)
 
         return None
 

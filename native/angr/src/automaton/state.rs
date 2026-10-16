@@ -2,39 +2,14 @@
 
 use fixedbitset::FixedBitSet;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
 /// A state identifier represented as a u32.
 pub type StateId = u32;
 
 /// A set of states implemented using a fixed-size bit set for efficiency.
-///
-/// `PartialEq`/`Eq`/`Hash` are implemented by hand over the *logical* contents
-/// (the set bits), never over the backing `FixedBitSet`. The derived impls
-/// would fold in the bitset's capacity, so `StateSet::with_capacity(16)` with
-/// bit 3 set would compare unequal to `StateSet::singleton(3, 100)` — making
-/// the type unsafe as a `HashMap`/`HashSet` key.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct StateSet {
     bits: FixedBitSet,
-}
-
-impl PartialEq for StateSet {
-    fn eq(&self, other: &Self) -> bool {
-        self.bits.ones().eq(other.bits.ones())
-    }
-}
-
-impl Eq for StateSet {}
-
-impl Hash for StateSet {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Length first so that hashing the element sequence is prefix-free.
-        self.len().hash(state);
-        for member in self.iter() {
-            member.hash(state);
-        }
-    }
 }
 
 impl StateSet {
@@ -123,6 +98,11 @@ impl StateSet {
         }
     }
 
+    /// Clear all states from the set.
+    pub fn clear(&mut self) {
+        self.bits.clear();
+    }
+
     /// Get a canonical representation for hashing (as a sorted vec).
     pub fn to_vec(&self) -> Vec<StateId> {
         self.iter().collect()
@@ -147,4 +127,63 @@ impl FromIterator<StateId> for StateSet {
     }
 }
 
-test_submod!("state_tests.rs" => tests);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_state_set_basic() {
+        let mut set = StateSet::with_capacity(10);
+        assert!(set.is_empty());
+
+        set.insert(3);
+        set.insert(7);
+        assert!(!set.is_empty());
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(3));
+        assert!(set.contains(7));
+        assert!(!set.contains(5));
+    }
+
+    #[test]
+    fn test_state_set_union() {
+        let mut set1 = StateSet::with_capacity(10);
+        set1.insert(1);
+        set1.insert(3);
+
+        let mut set2 = StateSet::with_capacity(10);
+        set2.insert(2);
+        set2.insert(3);
+
+        set1.union_with(&set2);
+        assert_eq!(set1.len(), 3);
+        assert!(set1.contains(1));
+        assert!(set1.contains(2));
+        assert!(set1.contains(3));
+    }
+
+    #[test]
+    fn test_state_set_intersection() {
+        let mut set1 = StateSet::with_capacity(10);
+        set1.insert(1);
+        set1.insert(3);
+        set1.insert(5);
+
+        let mut set2 = StateSet::with_capacity(10);
+        set2.insert(2);
+        set2.insert(3);
+        set2.insert(5);
+
+        let inter = set1.intersection(&set2);
+        assert_eq!(inter.len(), 2);
+        assert!(inter.contains(3));
+        assert!(inter.contains(5));
+    }
+
+    #[test]
+    fn test_state_set_singleton() {
+        let set = StateSet::singleton(5, 10);
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(5));
+    }
+}

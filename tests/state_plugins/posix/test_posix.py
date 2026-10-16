@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-import claripy
-
-from angr import SimFile, SimState
+from angr import SimFile, SimState, claripy
+from tests.common import minimal_project
 
 
 class TestPosix(unittest.TestCase):
     def test_file_create(self):
         # Create a state first
-        state = SimState(arch="AMD64", mode="symbolic")
+        state = SimState(project=minimal_project("AMD64"), mode="symbolic")
 
         # Create a file
         fd = state.posix.open(b"test", 1)
@@ -20,7 +19,7 @@ class TestPosix(unittest.TestCase):
         assert fd == 3
 
     def test_file_read(self):
-        state = SimState(arch="AMD64", mode="symbolic")
+        state = SimState(project=minimal_project("AMD64"), mode="symbolic")
 
         content = claripy.BVV(0xBADF00D, 32)
         content_size = content.size() // 8
@@ -38,7 +37,7 @@ class TestPosix(unittest.TestCase):
     def test_file_seek(self):
         # TODO: Make this test more complete
 
-        state = SimState(arch="AMD64", mode="symbolic")
+        state = SimState(project=minimal_project("AMD64"), mode="symbolic")
 
         # Normal seeking
         fd = state.posix.open(b"test1", 1)

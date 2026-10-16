@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 import archinfo
 from archinfo.arch_arm import ArchARMCortexM, ArchARMHF, is_arm_arch
 
-from angr.calling_conventions import SimCC
+from angr.calling_conventions import SimCC, SimRegArg
+from angr.utils.ssa import get_reg_offset_base_and_size
 
 l = logging.getLogger(__name__)
 
@@ -24,6 +26,10 @@ def is_sane_register_variable(
     :rtype:             bool
     """
 
+    if def_cc is not None and def_cc.ARG_REG_SANITY_FILTER:
+        # this convention does not use the platform-default argument registers; go by its own set
+        return reg_offset in def_cc.arg_reg_offsets(arch)
+
     arch_name = arch.name
     if ":" in arch_name:
         # for pcode architectures, we only leave registers that are known to be used as input arguments
@@ -33,12 +39,15 @@ def is_sane_register_variable(
 
     # VEX
     if arch_name == "AARCH64":
-        return 16 <= reg_offset < 80  # x0-x7
+        if 16 <= reg_offset < 80:  # x0-x7
+            return True
+        return def_cc is not None and _in_fp_arg_regs(arch, reg_offset, def_cc)  # d0-d7
 
     if arch_name == "AMD64":
-        # TODO is rbx ever a register?
-        return 24 <= reg_offset < 40 or 64 <= reg_offset < 104  # rcx, rdx  # rsi, rdi, r8, r9, r10
-        # 224 <= reg_offset < 480)  # xmm0-xmm7
+        if 24 <= reg_offset < 40 or 64 <= reg_offset < 104:  # rcx, rdx  # rsi, rdi, r8, r9, r10
+            return True
+        # XMM registers: only accept those that belong to the CC's FP arg registers
+        return def_cc is not None and _in_fp_arg_regs(arch, reg_offset, def_cc)
 
     if is_arm_arch(arch):
         if isinstance(arch, (ArchARMHF, ArchARMCortexM)):
@@ -52,7 +61,14 @@ def is_sane_register_variable(
         return 48 <= reg_offset < 80 or 112 <= reg_offset < 208  # a0-a3 or t4-t7
 
     if arch_name == "PPC32":
-        return 28 <= reg_offset < 60  # r3-r10
+        if 28 <= reg_offset < 60:  # r3-r10
+            return True
+        return def_cc is not None and _in_fp_arg_regs(arch, reg_offset, def_cc)
+
+    if arch_name == "PPC64":
+        if 40 <= reg_offset < 104:  # r3-r10
+            return True
+        return def_cc is not None and _in_fp_arg_regs(arch, reg_offset, def_cc)
 
     if arch_name == "X86":
         return 8 <= reg_offset < 24 or 160 <= reg_offset < 288  # eax, ebx, ecx, edx  # xmm0-xmm7
@@ -60,5 +76,106 @@ def is_sane_register_variable(
     if arch_name == "RISCV64":
         return 96 <= reg_offset < 160  # a0-a7
 
+    if arch_name == "S390X":
+        if 592 <= reg_offset < 632:  # r2-r6
+            return True
+        return def_cc is not None and _in_fp_arg_regs(arch, reg_offset, def_cc)
+
     l.critical("Unsupported architecture %s.", arch.name)
     return True
+
+
+def _in_fp_arg_regs(arch: archinfo.Arch, reg_offset: int, def_cc: SimCC | type[SimCC]) -> bool:
+    """
+    Whether ``reg_offset`` falls inside one of ``def_cc``'s FP argument registers. The register layout comes from
+    ``arch.registers`` (the libVEX guest stride between xmm registers changed with AVX-512), never from literals.
+    """
+
+    for reg_name in def_cc.FP_ARG_REGS:
+        if reg_name in arch.registers:
+            off, size = arch.registers[reg_name]
+            if off <= reg_offset < off + size:
+                return True
+    return False
+
+
+def reg_arg_from_span(arch: archinfo.Arch, offset: int, size: int) -> SimRegArg:
+    """
+    Build a register argument for a read of ``size`` bytes at ``offset``.
+
+    SimRegArg is keyed by register name. A read that starts at an unnamed offset (e.g., movmskpd's GET:I32 at xmm0+4)
+    widens to the smallest named register covering it instead of taking archinfo's stringified-offset fallback name.
+    """
+
+    name = arch.translate_register_name(offset, size=size)
+    if name in arch.registers:
+        return SimRegArg(name, size)
+    covering = [(sz, off, n) for n, (off, sz) in arch.registers.items() if off <= offset and offset + size <= off + sz]
+    if not covering:
+        return SimRegArg(name, size)
+    sz, off, n = min(covering)
+    canonical = arch.translate_register_name(off, size=sz)
+    return SimRegArg(canonical if arch.registers.get(canonical) == (off, sz) else n, sz)
+
+
+def fold_fp_lane_reads(
+    arch: archinfo.Arch, reg_reads: dict[int, int], def_cc: SimCC | type[SimCC] | None
+) -> dict[int, int]:
+    """
+    On AMD64, fold reads of upper lanes of an FP argument register (movmskps reads xmm0+4/+8/+12) into the register
+    itself: one xmm register holds one argument. When the low lane is read, its width is the argument width;
+    otherwise the folded read covers the lanes up to the scalar width (8 bytes).
+    """
+
+    if arch.name != "AMD64" or def_cc is None:
+        return reg_reads
+    folded = dict(reg_reads)
+    for reg_name in def_cc.FP_ARG_REGS:
+        base, reg_size = arch.registers[reg_name]
+        lane_reads = [(off, sz) for off, sz in reg_reads.items() if base < off < base + reg_size]
+        if not lane_reads:
+            continue
+        for off, _ in lane_reads:
+            del folded[off]
+        if base not in folded:
+            folded[base] = min(max(off + sz for off, sz in lane_reads) - base, 8)
+    return folded
+
+
+def merge_overlapping_register_spans(arch: archinfo.Arch, spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """
+    Merge register reads that belong to the same base register into one span per base register.
+
+    The merged span is the smallest named register starting at the base register that covers every read (e.g., reads
+    of ``ch`` and ``cx`` become ``cx``). When no register of the covering size exists, the widest read is kept.
+    Floating-point and vector registers are left alone: their sub-registers hold separate arguments (e.g., ``s0`` and
+    ``s1`` in ``d0`` on ARM hard-float).
+
+    :param arch:    The architecture.
+    :param spans:   Register reads as (offset, size) tuples.
+    :return:        Merged (offset, size) tuples, sorted by offset.
+    """
+
+    groups: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for offset, size in spans:
+        base_offset, base_size = get_reg_offset_base_and_size(offset, arch, size=size)
+        groups.setdefault((base_offset, base_size), []).append((offset, size))
+
+    fp_or_vector_offsets = {r.vex_offset for r in arch.register_list if r.floating_point or r.vector}
+    merged = []
+    for (base_offset, base_size), group in sorted(groups.items()):
+        if len(group) == 1 or base_offset in fp_or_vector_offsets:
+            merged.extend(sorted(group))
+            continue
+        end = max(offset + size for offset, size in group) - base_offset
+        cover_size = 1
+        while cover_size < end:
+            cover_size *= 2
+        cover_size = min(cover_size, base_size)
+        name = arch.translate_register_name(base_offset, size=cover_size)
+        if name in arch.registers and arch.registers[name] == (base_offset, cover_size):
+            merged.append((base_offset, cover_size))
+        else:
+            # no register covers the reads; keep the widest read
+            merged.append(max(group, key=lambda s: (s[1], -s[0])))
+    return merged

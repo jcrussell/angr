@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-import struct
 
-import claripy
 from archinfo import ArchAArch64, ArchAMD64, ArchARM, ArchMIPS32, ArchMIPS64, ArchPPC32, ArchPPC64, ArchX86
 from cle import MetaELF
 from cle.address_translator import AT
@@ -12,6 +10,7 @@ from cle.backends.elf.elfcore import ELFCore
 from cle.backends.elf.relocation.arm64 import R_AARCH64_TLSDESC
 from cle.backends.elf.symbol import ELFSymbolType
 
+from angr import claripy
 from angr.errors import AngrSyscallError
 from angr.procedures import SIM_LIBRARIES as L
 from angr.procedures import SIM_PROCEDURES as P
@@ -140,6 +139,8 @@ class SimLinux(SimUserland):
         # https://www.linux-mips.org/wiki/WhatsWrongWithO32N32N64
         elif self.arch.name == "MIPS32":
             syscall_abis = ["mips-o32"]
+        elif self.arch.name == "MIPSN32":
+            syscall_abis = ["mips-n32"]
         elif self.arch.name == "MIPS64":
             syscall_abis = ["mips-n32", "mips-n64"]
         elif self.arch.name == "PPC32":
@@ -216,7 +217,9 @@ class SimLinux(SimUserland):
 
         # pre-grow the stack by 0x20 pages. unsure if this is strictly required or just a hack around a compiler bug
         if not self._is_core and hasattr(state.memory, "allocate_stack_pages"):
-            state.memory.allocate_stack_pages(state.solver.eval(state.regs.sp) - 1, 0x20 * 0x1000)
+            sp = state.solver.eval(state.regs.sp)
+            if sp >= 0x20 * 0x1000:  # ...but only when the stack has that much room beneath it
+                state.memory.allocate_stack_pages(sp - 1, 0x20 * 0x1000)
 
         if self.project.loader.tls.threads:
             tls_obj = self.project.loader.tls.threads[thread_idx if thread_idx is not None else 0]
@@ -394,8 +397,13 @@ class SimLinux(SimUserland):
                     # a pointer to the dynamic linker's destructor routine, to be called at exit
                     state.registers.store(reg, self._loader_destructor)
                 elif val == "toc":
-                    if self.project.loader.main_object.is_ppc64_abiv1:
-                        state.registers.store(reg, self.project.loader.main_object.ppc64_initial_rtoc)
+                    main_object = self.project.loader.main_object
+                    if (
+                        isinstance(main_object, MetaELF)
+                        and main_object.is_ppc64_abiv1
+                        and main_object.ppc64_initial_rtoc is not None
+                    ):
+                        state.registers.store(reg, main_object.ppc64_initial_rtoc)
                 elif val == "entry":
                     state.registers.store(reg, state.registers.load("pc"))
                 elif val == "thread_pointer" and self.project.loader.tls.threads:
@@ -438,67 +446,6 @@ class SimLinux(SimUserland):
         if basic_addr is None:
             basic_addr = self.project.loader.extern_object.get_pseudo_addr(symbol_name)
         return basic_addr, basic_addr
-
-    def initialize_segment_register_x64(self, state, concrete_target):
-        """
-        Set the fs register in the angr to the value of the fs register in the concrete process
-
-        :param state:               state which will be modified
-        :param concrete_target:     concrete target that will be used to read the fs register
-        :return: None
-        """
-        _l.debug("Synchronizing fs segment register")
-        state.regs.fs = self._read_fs_register_x64(concrete_target)
-
-    def initialize_gdt_x86(self, state, concrete_target):
-        """
-        Create a GDT in the state memory and populate the segment registers.
-        Rehook the vsyscall address using the real value in the concrete process memory
-
-        :param state:               state which will be modified
-        :param concrete_target:     concrete target that will be used to read the fs register
-        :return:
-        """
-        _l.debug("Creating fake Global Descriptor Table and synchronizing gs segment register")
-        gs = self._read_gs_register_x86(concrete_target)
-        gdt = self.generate_gdt(0x0, gs)
-        self.setup_gdt(state, gdt)
-
-        # Synchronize the address of vsyscall in simprocedures dictionary with the concrete value
-        _vsyscall_address = concrete_target.read_memory(gs + 0x10, state.project.arch.bits / 8)
-        _vsyscall_address = struct.unpack(state.project.arch.struct_fmt(), _vsyscall_address)[0]
-        state.project.rehook_symbol(_vsyscall_address, "_vsyscall", True)
-
-        return gdt
-
-    @staticmethod
-    def _read_fs_register_x64(concrete_target):
-        """
-        Injects a small shellcode to leak the fs segment register address. In Linux x64 this address is pointed by fs[0]
-        :param concrete_target: ConcreteTarget which will be used to get the fs register address
-        :return: fs register address
-        :rtype string
-        """
-        # register used to read the value of the segment register
-        exfiltration_reg = "rax"
-        # instruction to inject for reading the value at segment value = offset
-        read_fs0_x64 = b"\x64\x48\x8b\x04\x25\x00\x00\x00\x00\x90\x90\x90\x90"  # mov rax, fs:[0]
-
-        return concrete_target.execute_shellcode(read_fs0_x64, exfiltration_reg)
-
-    @staticmethod
-    def _read_gs_register_x86(concrete_target):
-        """
-        Injects a small shellcode to leak the gs segment register address. In Linux x86 this address is pointed by gs[0]
-        :param concrete_target: ConcreteTarget which will be used to get the gs register address
-        :return: gs register address
-        :rtype :str
-        """
-        # register used to read the value of the segment register
-        exfiltration_reg = "eax"
-        # instruction to inject for reading the value at segment value = offset
-        read_gs0_x64 = b"\x65\xa1\x00\x00\x00\x00\x90\x90\x90\x90"  # mov eax, gs:[0]
-        return concrete_target.execute_shellcode(read_gs0_x64, exfiltration_reg)
 
     def get_segment_register_name(self):
         if isinstance(self.arch, ArchAMD64):

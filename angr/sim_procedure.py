@@ -6,11 +6,11 @@ import itertools
 import logging
 from typing import TYPE_CHECKING, Any
 
-import claripy
 from archinfo.arch_soot import SootAddressDescriptor
 from cle import SymbolType
 
 import angr
+from angr import claripy
 from angr import sim_options as o
 from angr.calling_conventions import (
     DEFAULT_CC,
@@ -179,7 +179,7 @@ class SimProcedure:
         self.ret_expr = None
         self.call_ret_expr = None
         self.inhibit_autoret = None
-        self.arg_session: None | ArgSession | int = None
+        self.arg_session: ArgSession | int | None = None
 
     def __repr__(self):
         return "<SimProcedure {}{}{}{}{}>".format(*self._describe_me())

@@ -3,8 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Generator
 
-import claripy
-
+from angr import claripy
 from angr.storage.memory_object import SimLabeledMemoryObject, SimMemoryObject
 
 from .multi_values import MultiValues
@@ -131,13 +130,14 @@ class MemoryObjectMixin(CooperationBase[SimMemoryObject]):
 
         next_elem_size_left = 0
         next_elem_index = 0
-        if data.symbolic and data.op == "Concat":
-            next_elem_size_left = data.args[0].size() // 8
+        concat_args = data.args if data.symbolic and data.op == "Concat" else None
+        if concat_args is not None:
+            next_elem_size_left = concat_args[0].size() // 8
 
         size = yield NotImplemented, NotImplemented, NotImplemented
         max_size = kwargs.get("max_size", size)
         while True:
-            if data.symbolic and data.op == "Concat" and data.size() > max_size:
+            if concat_args is not None and data.size() > max_size:
                 # Generate new memory object with only size bytes to speed up extracting bytes
                 cur_data_size_bits = 0
                 requested_size_bits = size * 8
@@ -146,7 +146,7 @@ class MemoryObjectMixin(CooperationBase[SimMemoryObject]):
                     if next_elem_size_left == 0:
                         next_elem_index += 1
 
-                    next_elem = data.args[next_elem_index]
+                    next_elem = concat_args[next_elem_index]
                     cur_data.append(next_elem)
                     next_elem_size_left = next_elem.size()
                     added_size = min(requested_size_bits - cur_data_size_bits, next_elem.size())
@@ -212,7 +212,7 @@ class MemoryObjectSetMixin(CooperationBase):
         if len(elements) == 1:
             if len(elements[0]) == 1:
                 return MultiValues(next(iter(elements[0])))
-            return MultiValues(offset_to_values={0: elements[0]})
+            return MultiValues({0: elements[0]})
 
         if endness == "Iend_LE":
             elements.reverse()

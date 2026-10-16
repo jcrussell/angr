@@ -1,5 +1,6 @@
 # stub file for angr.rustylib.icicle
 
+from collections.abc import Buffer
 from typing import override
 
 class VmExit:
@@ -79,8 +80,6 @@ class Icicle:
     isa_mode: int
     # Instruction count limit for the next run
     icount_limit: int
-    # Number of instructions executed on the cpu
-    cpu_icount: int
 
     def __init__(
         self, architecture: str, processors_path: str, enable_tracing: bool, enable_edge_hitmap: bool
@@ -88,6 +87,10 @@ class Icicle:
     @property
     def architecture(self) -> str:
         """The architecture of the VM, e.g., 'x86_64', 'armv7', etc."""
+
+    @property
+    def cpu_icount(self) -> int:
+        """Number of instructions executed on the cpu."""
 
     def reg_read(self, name: str) -> int:
         """Read a register value.
@@ -134,11 +137,11 @@ class Icicle:
         :returns: The data read from memory as bytes.
         """
 
-    def mem_write(self, addr: int, data: bytes) -> None:
+    def mem_write(self, addr: int, data: Buffer) -> None:
         """Write data to memory.
 
         :arg addr: The starting address to write to.
-        :arg data: The data to write to memory as bytes.
+        :arg data: The data to write to memory.
         """
 
     def add_breakpoint(self, addr: int) -> bool:
@@ -177,8 +180,12 @@ class Icicle:
         """The edge hitmap from the most recent run, if edge hitmap is enabled."""
 
     @edge_hitmap.setter
-    def edge_hitmap(self, value: bytes | None) -> None:
-        """Set the edge hitmap for the current run."""
+    def edge_hitmap(self, value: bytes) -> None:
+        """Set the edge hitmap for the current run.
+
+        :raises RuntimeError: If the edge hitmap is disabled, or ``value`` is
+            not the same length as the existing hitmap.
+        """
 
     def save_snapshot(self) -> None:
         """Save a snapshot of the current VM state for later restoration."""

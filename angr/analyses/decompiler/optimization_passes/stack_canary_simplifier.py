@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.analyses.decompiler.stack_item import StackItem, StackItemType
 from angr.utils.bits import s2u
 
@@ -25,7 +25,7 @@ class StackCanarySimplifier(OptimizationPass):
     PLATFORMS = ["cgc", "linux"]
     STAGE = OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION
     NAME = "Simplify stack canaries"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -78,9 +78,7 @@ class StackCanarySimplifier(OptimizationPass):
                 pred_addr_to_endpoint_addrs[pred.addr].add(node_addr)
 
         found_endpoints = False
-        for pred_addr in pred_addr_to_endpoint_addrs:
-            endpoint_addrs = pred_addr_to_endpoint_addrs[pred_addr]
-
+        for endpoint_addrs in pred_addr_to_endpoint_addrs.values():
             if len(endpoint_addrs) != 2:
                 # we expect there to be only two nodes: one for canary-check-success, and the other for
                 # canary-check-failure. if not, we check the next predecessor
@@ -150,7 +148,7 @@ class StackCanarySimplifier(OptimizationPass):
                 pred_copy = pred.copy()
                 pred_copy.statements[-1] = ailment.Stmt.Jump(
                     len(pred_copy.statements) - 1,
-                    ailment.Expr.Const(self.manager.next_atom(), None, ret_node.addr, self.project.arch.bits),
+                    ailment.Expr.Const(self.manager.next_atom(), ret_node.addr, self.project.arch.bits),
                     ins_addr=pred_copy.statements[-1].tags["ins_addr"],
                 )
 

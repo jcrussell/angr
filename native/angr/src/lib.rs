@@ -326,13 +326,97 @@ pub mod fuzz_api {
     };
 }
 
-// Conditional compilation for fuzzer module (requires optional deps)
-#[cfg(feature = "fuzzer")]
-pub(crate) mod fuzzer;
-
-#[cfg(feature = "automaton")]
+// Modules shared with upstream angr (always built). They are kept
+// byte-identical to upstream, which enables neither the fork's stricter
+// clippy lints nor its rustdoc gate, so both are relaxed for them here.
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod ailment;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
 pub mod automaton;
-pub(crate) mod segmentlist;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod cfg_graph;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod claripy;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod function_graph;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod fuzzer;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod icicle;
+#[allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+pub mod segmentlist;
 
 // VEX Engine modules (requires vex-engine feature, enabled by default)
 #[cfg(feature = "vex-engine")]
@@ -456,17 +540,23 @@ fn import_submodule(
 // letting two Python threads race into one Z3 context.
 #[pymodule(gil_used = true)]
 fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Fuzzer modules (optional)
-    #[cfg(feature = "fuzzer")]
-    {
-        import_submodule(m, "fuzzer", fuzzer::fuzzer)?;
-        import_submodule(m, "icicle", fuzzer::icicle::icicle)?;
-    }
-
-    // Segmentlist (always available)
+    import_submodule(m, "fuzzer", fuzzer::fuzzer)?;
+    import_submodule(m, "icicle", icicle::icicle)?;
     import_submodule(m, "segmentlist", segmentlist::segmentlist)?;
-    #[cfg(feature = "automaton")]
     import_submodule(m, "automaton", automaton::automaton)?;
+    import_submodule(m, "ailment", ailment::ailment)?;
+    import_submodule(m, "cfg_graph", cfg_graph::cfg_graph)?;
+    import_submodule(m, "function_graph", function_graph::function_graph)?;
+
+    // claripy registers its own `angr.rustylib.claripy.*` submodule tree.
+    let py = m.py();
+    let claripy_module = PyModule::new(py, "angr.rustylib.claripy")?;
+    claripy::claripy(py, &claripy_module)?;
+    PyModule::import(py, "sys")?
+        .getattr("modules")?
+        .set_item("angr.rustylib.claripy", claripy_module.clone())?;
+    m.add("claripy", claripy_module)?;
+
     m.add_class::<segmentlist::Segment>()?;
     m.add_class::<segmentlist::SegmentList>()?;
 

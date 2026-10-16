@@ -1,19 +1,30 @@
-# pylint:disable=missing-class-docstring,too-many-boolean-expressions,unused-argument,no-self-use
+# pylint:disable=missing-class-docstring,too-many-boolean-expressions,unused-argument,no-self-use,protected-access
 from __future__ import annotations
 
+import decimal
+import fractions
+import hashlib
 import logging
+import math
 import re
 import struct
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
+
+from archinfo import Endness
 
 from angr.ailment import Block, Expr, Stmt, Tmp
+from angr.ailment.block_walker import _dispatch_key
 from angr.ailment.constant import UNDETERMINED_SIZE
 from angr.ailment.expression import BinaryOp, StackBaseOffset
+from angr.ailment.utils import is_lsb_extract
 from angr.analyses.analysis import Analysis, register_analysis
 from angr.analyses.decompiler.notes.deobfuscated_strings import DeobfuscatedStringsNote
+from angr.analyses.decompiler.peephole_optimizations.cas_intrinsics import cas_intrinsic_name
 from angr.analyses.decompiler.region_identifier import MultiNode
+from angr.analyses.decompiler.sequence_walker import SequenceWalker
+from angr.analyses.decompiler.stl_field_accessors import stl_accessor_name
 from angr.analyses.decompiler.structurer_nodes import (
     BreakNode,
     CascadingConditionNode,
@@ -21,42 +32,51 @@ from angr.analyses.decompiler.structurer_nodes import (
     ConditionalBreakNode,
     ConditionNode,
     ContinueNode,
+    IncompleteSwitchCaseHeadStatement,
     IncompleteSwitchCaseNode,
     LoopNode,
     SequenceNode,
     SwitchCaseNode,
 )
 from angr.analyses.decompiler.utils import structured_node_is_simple_return
+from angr.analyses.decompiler.variable_map import VariableMap
 from angr.errors import UnsupportedNodeTypeError
 from angr.knowledge_plugins.cfg.memory_data import MemoryData, MemoryDataSort
 from angr.knowledge_plugins.functions import Function
+from angr.serializable import Serializable
 from angr.sim_type import (
     SimCppClass,
     SimStruct,
     SimType,
     SimTypeArray,
     SimTypeBitfield,
+    SimTypeBool,
     SimTypeBottom,
     SimTypeChar,
     SimTypeDouble,
     SimTypeEnum,
     SimTypeFixedSizeArray,
     SimTypeFloat,
+    SimTypeFloat128,
     SimTypeFunction,
     SimTypeInt,
     SimTypeInt128,
     SimTypeInt256,
     SimTypeInt512,
     SimTypeLength,
+    SimTypeLongDouble,
     SimTypeLongLong,
+    SimTypeM128,
     SimTypeNum,
     SimTypePointer,
     SimTypeReg,
     SimTypeShort,
     SimTypeWideChar,
+    SimUnion,
     TypeRef,
 )
 from angr.sim_variable import (
+    SimComboRegisterVariable,
     SimMemoryVariable,
     SimRegisterVariable,
     SimStackVariable,
@@ -64,20 +84,48 @@ from angr.sim_variable import (
     SimVariable,
 )
 from angr.utils.bits import u2s
-from angr.utils.constants import is_alignment_mask
+from angr.utils.constants import should_use_hex
 from angr.utils.library import get_cpp_function_name
 from angr.utils.loader import is_in_readonly_section, is_in_readonly_segment
 from angr.utils.strings import decode_utf16_string
-from angr.utils.types import dereference_simtype_by_lib, unpack_pointer_and_array, unpack_typeref
+from angr.utils.types import unpack_pointer_and_array, unpack_typeref
 
 from .base import (
     BaseStructuredCodeGenerator,
+    BinaryOpNode,
     CConstantType,
+    ClosingObjectNode,
+    ConstantNode,
+    ExpressionNode,
+    FunctionCallNode,
+    FunctionNode,
     IdentType,
+    IndexedVariableNode,
     InstructionMapping,
+    LabelNode,
     PositionMapping,
     PositionMappingElement,
+    StructFieldNode,
+    UnaryOpNode,
+    VariableFieldNode,
+    VariableNode,
+    register_display_name,
+    variable_display_name,
+    vector_convert_name,
 )
+from .sse_intrinsics import (
+    BITWISE_SUFFIX,
+    VECTOR_BITS,
+    LaneKind,
+    SSEVectorTyping,
+    concat_constant,
+    is_vector_op,
+    lane_of,
+    match_shuffle_epi32,
+    vector_op_intrinsic,
+    vector_op_kind,
+)
+from .utils import first_stmt_addr
 
 if TYPE_CHECKING:
     import archinfo
@@ -94,29 +142,138 @@ type RenderResult = tuple[str, PositionMapping, PositionMapping, InstructionMapp
 
 INDENT_DELTA = 4
 
+_ORDER_CMP_OPS = frozenset({"CmpLT", "CmpLE", "CmpGT", "CmpGE"})
+_INT_TYPES = (SimTypeInt, SimTypeChar, SimTypeNum)
+_FP_TYPES_BY_BITS: dict[int, type[SimTypeFloat]] = {
+    32: SimTypeFloat,
+    64: SimTypeDouble,
+    80: SimTypeLongDouble,
+    128: SimTypeFloat128,
+}
+
+
+def _reinterpretation_cancels(var_type: SimType | None, wanted: SimType | None, bits: int) -> bool:
+    """A full-width int<->float reinterpretation of a variable whose declared type the consumer already wants."""
+    if var_type is None or wanted is None:
+        return False
+    var_type = unpack_typeref(var_type)
+    wanted = unpack_typeref(wanted)
+    if var_type.size != bits or wanted.size != bits:
+        return False
+    if isinstance(var_type, (SimTypeFloat, SimTypeDouble)):
+        return isinstance(wanted, (SimTypeFloat, SimTypeDouble))
+    if isinstance(var_type, _INT_TYPES):
+        return isinstance(wanted, _INT_TYPES)
+    return False
+
+
+_CAST_TYPES_BY_BITS: dict[int, type[SimTypeInt | SimTypeChar]] = {
+    8: SimTypeChar,
+    16: SimTypeShort,
+    32: SimTypeInt,
+    64: SimTypeLongLong,
+    128: SimTypeInt128,
+    256: SimTypeInt256,
+    512: SimTypeInt512,
+}
+
+
+def _is_m128_reinterpretation(vec_ty: SimType | None, other_ty: SimType | None) -> bool:
+    """Whether *vec_ty* is an SSE vector type and *other_ty* the 128-bit integer (or vector) it stands for."""
+    if not isinstance(vec_ty, SimTypeM128) or other_ty is None:
+        return False
+    other_ty = unpack_typeref(other_ty)
+    return isinstance(other_ty, (SimTypeM128, SimTypeNum, SimTypeInt)) and other_ty.size == VECTOR_BITS
+
 
 def qualifies_for_simple_cast(ty1, ty2):
     # converting ty1 to ty2 - can this happen precisely?
     # used to decide whether to add explicit typecasts instead of doing *(int*)&v1
-    return (
-        ty1.size == ty2.size
-        and isinstance(ty1, (SimTypeInt, SimTypeChar, SimTypeNum, SimTypePointer))
-        and isinstance(ty2, (SimTypeInt, SimTypeChar, SimTypeNum, SimTypePointer))
-    )
+    if not isinstance(ty1, (SimTypeInt, SimTypeChar, SimTypeNum, SimTypePointer)) or not isinstance(
+        ty2, (SimTypeInt, SimTypeChar, SimTypeNum, SimTypePointer)
+    ):
+        return False
+    # a SimTypeNum without a size cannot be cast precisely (its size property asserts); the register-sized types
+    # take theirs from the architecture
+    if (isinstance(ty1, SimTypeNum) and ty1._size is None) or (isinstance(ty2, SimTypeNum) and ty2._size is None):
+        return False
+    return ty1.size == ty2.size
+
+
+def qualifies_for_width_cast(ty):
+    # converting ty to a different width - can a scalar cast do it?
+    # floats are excluded because a float cast converts the value, not the representation
+    return isinstance(ty, (SimTypeInt, SimTypeChar, SimTypeNum, SimTypePointer, SimTypeBottom))
+
+
+def int_width_and_signedness(ty: SimType | None) -> tuple[int, bool] | None:
+    """The (bits, signed) of an integer-like C type, or None when the type is not an integer or has no size."""
+    if isinstance(ty, TypeRef):
+        ty = ty.type
+    if not isinstance(ty, (SimTypeInt, SimTypeChar, SimTypeNum)):
+        return None
+    if isinstance(ty, SimTypeNum) and ty._size is None:
+        return None
+    size = ty.size
+    assert size is not None
+    return size, ty.signed
+
+
+def int_operand_signedness(expr: CExpression) -> bool | None:
+    """
+    The signedness of an integer expression as C reads it. Constants are neutral (None): an int literal does not make
+    (int)a - 1 unsigned, even though the common type the codegen computes for it is.
+    """
+    if isinstance(expr, CConstant):
+        return None
+    if isinstance(expr, CBinaryOp) and expr.op in {"Add", "Sub", "Mul", "And", "Or", "Xor", "Shl"}:
+        lhs = int_operand_signedness(expr.lhs)
+        rhs = int_operand_signedness(expr.rhs)
+        if lhs is None:
+            return rhs
+        if rhs is None:
+            return lhs
+        return lhs and rhs
+    ws = int_width_and_signedness(unpack_typeref(expr.type))
+    return None if ws is None else ws[1]
+
+
+def is_sign_fixing_cast(cast: CTypeCast) -> bool:
+    """A same-width integer cast whose operand C reads with the other signedness, e.g. (long long)x for unsigned x."""
+    s = int_width_and_signedness(cast.src_type)
+    d = int_width_and_signedness(cast.dst_type)
+    if s is None or d is None or s[0] != d[0]:
+        return False
+    sign = int_operand_signedness(cast.expr)
+    return sign is not None and sign != d[1]
 
 
 def qualifies_for_implicit_cast(ty1, ty2):
     # converting ty1 to ty2 - can this happen without a cast?
     # used to decide whether to omit typecasts from output during promotion
-    # this function need to answer the question:
-    # when does having a cast vs having an implicit promotion affect the result?
-    # the answer: I DON'T KNOW
-    if not isinstance(ty1, (SimTypeInt, SimTypeChar, SimTypeNum)) or not isinstance(
+    if isinstance(ty1, (SimTypeInt, SimTypeChar, SimTypeNum)) and isinstance(
         ty2, (SimTypeInt, SimTypeChar, SimTypeNum)
     ):
-        return False
+        return ty1.size <= ty2.size if ty1.size is not None and ty2.size is not None else False
 
-    return ty1.size <= ty2.size if ty1.size is not None and ty2.size is not None else False
+    # FP widening promotions are implicit in C (float->double, float->long double, double->long double)
+    if isinstance(ty1, SimTypeFloat) and isinstance(ty2, SimTypeFloat):
+        return ty1.size is not None and ty2.size is not None and ty1.size <= ty2.size
+
+    return False
+
+
+def c_return_type(returnty: SimType) -> SimType:
+    """
+    Convert a return type to a C-compatible type.
+    - Arrays are converted to pointers to their element type.
+    """
+    if not isinstance(returnty, SimTypeArray):
+        return returnty
+    elem_type = returnty.elem_type
+    while isinstance(elem_type, SimTypeArray):
+        elem_type = elem_type.elem_type
+    return SimTypePointer(elem_type).with_arch(returnty._arch)
 
 
 def extract_terms(expr: CExpression) -> tuple[int, list[tuple[int, CExpression]]]:
@@ -190,34 +347,255 @@ def type_equals(t0: SimType, t1: SimType) -> bool:
     return t0 == t1
 
 
-def type_to_c_repr_chunks(ty: SimType, name=None, name_type=None, full=False, indent_str=""):
+def _decode_x87_extended(value: int) -> str:
+    """Decode an 80-bit x87 extended-precision bit pattern into a C long double literal."""
+    significand = value & ((1 << 64) - 1)
+    exp_sign = (value >> 64) & 0xFFFF
+    exponent = exp_sign & 0x7FFF
+    sign = "-" if exp_sign >> 15 else ""
+    if exponent == 0x7FFF:
+        return f"{sign}HUGE_VALL" if significand & ((1 << 63) - 1) == 0 else "NAN"
+    if significand == 0:
+        return f"{sign}0.0L"
+    # denormals use the minimum exponent; the explicit integer bit sits at bit 63
+    exp2 = max(exponent, 1) - 16383 - 63
+    try:
+        fval = math.ldexp(significand, exp2)
+    except OverflowError:
+        fval = 0.0
+    if fval != 0.0:
+        return f"{sign}{fval}L"
+    # outside the double range: 21 significant digits round-trip an x87 long double
+    with decimal.localcontext(decimal.Context(prec=21)):
+        dval = decimal.Decimal(significand) * decimal.Decimal(2) ** exp2
+    return f"{sign}{dval:e}L"
+
+
+def _decode_binary128(value: int) -> str:
+    """Decode an IEEE754 binary128 bit pattern into a C long double literal."""
+    fraction = value & ((1 << 112) - 1)
+    exponent = (value >> 112) & 0x7FFF
+    sign = "-" if value >> 127 & 1 else ""
+    if exponent == 0x7FFF:
+        return f"{sign}HUGE_VALL" if fraction == 0 else "NAN"
+    if exponent == 0 and fraction == 0:
+        return f"{sign}0.0L"
+    significand = fraction | (1 << 112) if exponent else fraction
+    exp2 = max(exponent, 1) - 16383 - 112
+    exact = fractions.Fraction(significand) * fractions.Fraction(2) ** exp2
+    try:
+        fval = float(exact)
+    except OverflowError:
+        fval = math.inf
+    if math.isfinite(fval) and fractions.Fraction(fval) == exact:
+        return f"{sign}{fval!r}L"
+    # 36 significant digits round-trip a binary128 value; one correctly rounded operation on exact integers
+    with decimal.localcontext(decimal.Context(prec=36)):
+        dval = decimal.Decimal(exact.numerator) / decimal.Decimal(exact.denominator)
+    return f"{sign}{dval:e}L"
+
+
+def _safe_type_size(ty) -> int:
+    sz = getattr(ty, "size", -1)
+    return sz if isinstance(sz, int) else -1
+
+
+_SIGNED_TYPES = SimTypeNum, SimTypeInt, SimTypeChar, SimTypeWideChar, SimTypeBool
+
+# Levels of struct nesting that a layout key considers.
+TYPE_LAYOUT_KEY_DEPTH = 4
+
+
+class _LayoutKeyMemo:
     """
-    Helper generator function to turn a SimType into generated tuples of (C-string, AST node).
+    Scratch space shared by the layout keys computed for one sort: keys and field offsets already computed, plus
+    strong references to the types they were computed for so that their ids cannot be reused while in use.
+    """
+
+    __slots__ = ("keys", "offsets", "types")
+
+    def __init__(self):
+        self.keys: dict[tuple[int, int], str] = {}
+        self.offsets: dict[int, dict[str, int]] = {}
+        self.types: list[SimType] = []
+
+
+def type_layout_key(ty, memo: _LayoutKeyMemo | None = None) -> str:
+    """
+    A structural sort key for a type, derived purely from its memory layout (sizes, field offsets, and the
+    layouts of field/element/pointee types) and not from any user-renamable struct or field name. This lets
+    the code generator order type definitions stably without their order changing when the user renames a struct
+    or a field.
+
+    The key covers the type down to TYPE_LAYOUT_KEY_DEPTH levels of struct nesting. The key summarizes the member of
+    each struct level in a hash.
+    """
+    if memo is None:
+        memo = _LayoutKeyMemo()
+    return _type_layout_key(ty, TYPE_LAYOUT_KEY_DEPTH, memo)
+
+
+def _type_layout_key(ty, depth: int, memo: _LayoutKeyMemo) -> str:
+    ty = unpack_typeref(ty)
+    if isinstance(ty, SimStruct):
+        if depth <= 0:
+            return "@"
+        cache_key = (id(ty), depth)
+        cached = memo.keys.get(cache_key)
+        if cached is not None:
+            return cached
+        memo.types.append(ty)
+        offsets = memo.offsets.get(id(ty))
+        if offsets is None:
+            offsets = ty.offsets
+            memo.offsets[id(ty)] = offsets
+        fields = sorted(
+            f"{offsets.get(fname, -1)}:{_type_layout_key(fty, depth - 1, memo)}" for fname, fty in ty.fields.items()
+        )
+        digest = hashlib.blake2b(";".join(fields).encode(), digest_size=8).hexdigest()
+        key = f"S[{_safe_type_size(ty)};{int(ty.packed)};{len(fields)};{digest}]"
+        memo.keys[cache_key] = key
+        return key
+    if isinstance(ty, SimTypePointer):
+        return f"P({_type_layout_key(ty.pts_to, depth, memo)})"
+    if isinstance(ty, (SimTypeArray, SimTypeFixedSizeArray)):
+        return f"A{ty.length}({_type_layout_key(ty.elem_type, depth, memo)})"
+    signed = ty.signed if isinstance(ty, _SIGNED_TYPES) else None
+    return f"T:{type(ty).__name__}:{_safe_type_size(ty)}:{signed}"
+
+
+def cextern_sort_key(cextern) -> tuple:
+    """
+    A stable sort key for extern variables, based on the variable's address. Unlike the variable name, the
+    address does not change when the user renames the variable, so the ordering of extern definitions stays put
+    across renames.
+    """
+    addr = getattr(cextern.variable, "addr", None)
+    if isinstance(addr, int):
+        return (0, addr)
+    return (1, str(addr) if addr is not None else "")
+
+
+def _iter_struct_union_member_types(ty):
+    """
+    Yield the member types of a struct or a union, flattening nested unions.
+    """
+    members = ty.members if isinstance(ty, SimUnion) else ty.fields
+    for member in members.values():
+        member = unpack_typeref(member)
+        if isinstance(member, SimUnion):
+            yield from _iter_struct_union_member_types(member)
+        else:
+            yield member
+
+
+def _is_anonymous_struct_or_union(ty) -> bool:
+    """
+    Returns True if ``ty`` is an anonymous struct or union.
     """
     if isinstance(ty, SimStruct):
+        return bool(ty.anonymous) or ty.name == "<anon>"
+    return isinstance(ty, SimUnion) and ty.name == "<anon>"
+
+
+def _anonymous_struct_union_to_c_repr_chunks(ty, name, name_type, indent_str: str, indent_delta: int, memo: set[int]):
+    """
+    Render an anonymous struct or union inline, as ``struct { ... } name``.
+    """
+    yield indent_str, None
+    yield ("union {\n" if isinstance(ty, SimUnion) else "struct {\n"), None
+
+    new_indent_str = (" " * indent_delta) + indent_str
+    memo.add(id(ty))
+    members = ty.members if isinstance(ty, SimUnion) else ty.fields
+    for k, v in members.items():
+        yield from type_to_c_repr_chunks(
+            v,
+            name=k,
+            name_type=CStructFieldNameDef(k),
+            full=False,
+            indent_str=new_indent_str,
+            indent_delta=indent_delta,
+            memo=memo,
+        )
+        yield ";\n", None
+    memo.discard(id(ty))
+
+    yield indent_str, None
+    yield "} ", None
+    yield name, name_type
+
+
+def type_to_c_repr_chunks(
+    ty: SimType,
+    name=None,
+    name_type=None,
+    full=False,
+    indent_str="",
+    indent_delta: int = INDENT_DELTA,
+    memo: set[int] | None = None,
+):
+    """
+    Helper generator function to turn a SimType into generated tuples of (C-string, AST node).
+
+    :param indent_delta:    Number of space characters used to indent each struct field one level deeper.
+    :param memo:            IDs of the aggregates currently being rendered further up the stack, so that a
+                            self-referential type is elided instead of recursed into. An aggregate is added
+                            before its members are rendered and removed once they are done.
+    """
+    if memo is None:
+        memo = set()
+
+    if not full and name is not None and _is_anonymous_struct_or_union(ty):
+        if id(ty) in memo:
+            # A recovered type can contain itself. An anonymous aggregate has no name to refer back to,
+            # so the cycle is elided rather than named.
+            yield indent_str, None
+            yield ("union { /* recursive */ } " if isinstance(ty, SimUnion) else "struct { /* recursive */ } "), None
+            yield name, name_type
+            return
+        # anonymous structs and unions must be output inline
+        yield from _anonymous_struct_union_to_c_repr_chunks(
+            ty, name, name_type, indent_str=indent_str, indent_delta=indent_delta, memo=memo
+        )
+    elif isinstance(ty, SimStruct):
         if full:
             # struct def preamble
             yield indent_str, None
             if isinstance(ty, SimCppClass):
+                # A class name reaches codegen spelled either way: angr's C++ parser keeps the
+                # elaborated form on the class branch of _cpp_decl_to_type, while the STL
+                # definitions keep the plain one. SimCppClass.__repr__ already accounts for
+                # that; emitting the class-key unconditionally beside the name did not, so an
+                # elaborated name came out as "class class Ns::Type".
+                type_name = ty.name.removeprefix("class ")
                 yield "class ", None
             else:
+                type_name = ty.name
                 yield "typedef struct ", None
-            yield ty.name, ty
+            yield type_name, ty
             yield " {\n", None
 
             # each of the fields
             # fields should be indented
-            new_indent_str = (
-                " " * 4
-            ) + indent_str  # TODO: hardcoded as 4 character space indents, which is same as SimStruct.c_repr
+            new_indent_str = (" " * indent_delta) + indent_str
+            memo.add(id(ty))
             for k, v in ty.fields.items():
-                yield new_indent_str, None
-                yield from type_to_c_repr_chunks(v, name=k, name_type=CStructFieldNameDef(k), full=False, indent_str="")
+                yield from type_to_c_repr_chunks(
+                    v,
+                    name=k,
+                    name_type=CStructFieldNameDef(k),
+                    full=False,
+                    indent_str=new_indent_str,
+                    indent_delta=indent_delta,
+                    memo=memo,
+                )
                 yield ";\n", None
+            memo.discard(id(ty))
 
             # struct def postamble
             yield "} ", None
-            yield ty.name, ty
+            yield type_name, ty
             yield ";\n\n", None
 
         else:
@@ -258,6 +636,35 @@ def type_to_c_repr_chunks(ty: SimType, name=None, name_type=None, full=False, in
         assert False
 
 
+def _recursively_collect_referenced_structs(ty, out: dict[int, SimStruct], _seen: set[int] | None = None) -> None:
+    """
+    Walk ``ty`` transitively and record every ``SimStruct`` reachable from it into ``out`` (keyed
+    by object id). Used by the C backend to determine which structs are actually referenced by
+    rendered declarations/expressions, so that unreferenced typedefs can be dropped.
+    """
+    if _seen is None:
+        _seen = set()
+    ty = unpack_typeref(ty)
+    if ty is None or id(ty) in _seen:
+        return
+    _seen.add(id(ty))
+    if isinstance(ty, SimStruct):
+        out[id(ty)] = ty
+        for ftype in ty.fields.values():
+            _recursively_collect_referenced_structs(ftype, out, _seen=_seen)
+    elif isinstance(ty, SimUnion):
+        for mtype in ty.members.values():
+            _recursively_collect_referenced_structs(mtype, out, _seen=_seen)
+    elif isinstance(ty, SimTypePointer):
+        _recursively_collect_referenced_structs(ty.pts_to, out, _seen=_seen)
+    elif isinstance(ty, (SimTypeArray, SimTypeFixedSizeArray)):
+        _recursively_collect_referenced_structs(ty.elem_type, out, _seen=_seen)
+    elif isinstance(ty, SimTypeFunction):
+        for arg in ty.args or ():
+            _recursively_collect_referenced_structs(arg, out, _seen=_seen)
+        _recursively_collect_referenced_structs(ty.returnty, out, _seen=_seen)
+
+
 #
 #   C Representation Classes
 #
@@ -269,12 +676,16 @@ class CConstruct:
     Acts as the base class for all other representation constructions.
     """
 
-    __slots__ = ("codegen", "idx", "tags")
+    __slots__ = ("codegen", "ident", "idx", "tags")
 
     def __init__(self, codegen, tags=None):
+        # a CConstruct cannot exist without its owning codegen: ``idx`` (the per-codegen unique node identity) and
+        # ``ident`` (a per-class-name display label; NOT unique) are both allocated from it
+        assert codegen is not None
         self.tags = tags or {}
-        self.codegen: CStructuredCodeGenerator = codegen  # type: ignore[assignment]
-        self.idx = codegen.next_idx(self.__class__.__name__)
+        self.codegen: CStructuredCodeGenerator = codegen
+        self.ident: str = codegen.next_ident(self.__class__.__name__)
+        self.idx: int = codegen.next_node_idx()
 
     def c_repr(self, initial_pos=0, indent=0, pos_to_node=None, pos_to_addr=None, addr_to_pos=None):
         """
@@ -393,7 +804,7 @@ class CConstruct:
         return " " * indent
 
 
-class CFunction(CConstruct):  # pylint:disable=abstract-method
+class CFunction(CConstruct, FunctionNode):  # pylint:disable=abstract-method
     """
     Represents a function in C.
     """
@@ -436,7 +847,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         self.variables_in_use = variables_in_use
         self.variable_manager: VariableManagerInternal = variable_manager
         self.demangled_name = demangled_name
-        self.unified_local_vars: dict[SimVariable, set[tuple[CVariable, SimType]]] = {}
+        self.unified_local_vars: dict[SimVariable, list[tuple[CVariable, SimType]]] = {}
         self.show_demangled_name = show_demangled_name
         self.omit_header = omit_header
 
@@ -445,8 +856,8 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
     def refresh(self):
         self.unified_local_vars = self.get_unified_local_vars()
 
-    def get_unified_local_vars(self) -> dict[SimVariable, set[tuple[CVariable, SimType]]]:
-        unified_to_var_and_types: dict[SimVariable, set[tuple[CVariable, SimType]]] = defaultdict(set)
+    def get_unified_local_vars(self) -> dict[SimVariable, list[tuple[CVariable, SimType]]]:
+        unified_to_var_and_types: dict[SimVariable, list[tuple[CVariable, SimType]]] = defaultdict(list)
 
         arg_set: set[SimVariable] = set()
         for arg in self.arg_list:
@@ -476,8 +887,13 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
 
             if var_type is None:
                 var_type = SimTypeBottom().with_arch(self.codegen.project.arch)
+            elif _is_m128_reinterpretation(cvar.variable_type, var_type):
+                # codegen retyped the 128-bit integer by the vector ops that use it
+                var_type = cvar.variable_type
 
-            unified_to_var_and_types[key].add((cvar, var_type))
+            entry = (cvar, var_type)
+            if entry not in unified_to_var_and_types[key]:  # keeps the set's de-duplication
+                unified_to_var_and_types[key].append(entry)
 
         return unified_to_var_and_types
 
@@ -497,12 +913,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
                 # this should never happen, but pylint complains
                 continue
 
-            if variable.name:
-                name = variable.name
-            elif isinstance(variable, SimTemporaryVariable):
-                name = f"tmp_{variable.tmp_id}"
-            else:
-                name = str(variable)
+            name = variable_display_name(variable)
 
             # sort by the following:
             #   * if it's a a non-basic type
@@ -516,11 +927,24 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
                 key=lambda x, ct=count: (isinstance(x, (SimTypeChar, SimTypeInt, SimTypeFloat)), ct[x], repr(x)),
             )
 
+            vla_dim = self.codegen._array_length_cexprs.get(variable)
+
             for i, var_type in enumerate(vartypes):
                 if i == 0:
-                    yield from type_to_c_repr_chunks(var_type, name=name, name_type=cvariable)
+                    if vla_dim is not None and isinstance(var_type, SimTypeArray) and var_type.length is None:
+                        # variable-length array: render ``elem_type name[dim]`` with the runtime dimension
+                        yield from type_to_c_repr_chunks(var_type.elem_type, name=name, name_type=cvariable)
+                        yield "[", None
+                        yield from vla_dim.c_repr_chunks()
+                        yield "]", None
+                    else:
+                        yield from type_to_c_repr_chunks(var_type, name=name, name_type=cvariable)
                     yield ";  // ", None
-                    yield variable.loc_repr(self.codegen.project.arch), None
+                    if vla_dim is not None:
+                        # the buffer lives at a synthesized register slot; show its origin instead
+                        yield "alloca", None
+                    else:
+                        yield variable.loc_repr(self.codegen.project.arch), None
                 # multiple types
                 else:
                     if i == 1:
@@ -546,15 +970,54 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         yield from self.statements.c_repr_chunks(indent=indent)
         yield "\n", None
 
+    def _collect_referenced_struct_types(self) -> dict[int, SimStruct]:
+        """
+        Collect every ``SimStruct`` that is referenced by the rendered output of this function. This inclues:
+        - the function prototype (argument/return types)
+        - the types of all in-use variables
+        - extern declarations
+        We use the result to filter out struct typedefs that is not referenced.
+        """
+        referenced: dict[int, SimStruct] = {}
+
+        # Function signature
+        if self.functy is not None:
+            for arg_type in self.functy.args or ():
+                _recursively_collect_referenced_structs(arg_type, referenced)
+            _recursively_collect_referenced_structs(self.functy.returnty, referenced)
+
+        # Declared variables (locals, args, globals) that are actually used in the body. This
+        # covers variable declarations and, transitively, the struct types dereferenced by field
+        # accesses on those variables.
+        for var in self.variables_in_use:
+            _recursively_collect_referenced_structs(self.variable_manager.get_variable_type(var), referenced)
+        for cvar_and_types in self.unified_local_vars.values():
+            for _cvar, vartype in cvar_and_types:
+                _recursively_collect_referenced_structs(vartype, referenced)
+
+        # Extern declarations
+        if self.codegen.show_externs and self.codegen.cexterns:
+            for v in self.codegen.cexterns:
+                if v.variable in self.variables_in_use and v.type is not None:
+                    _recursively_collect_referenced_structs(v.type, referenced)
+
+        return referenced
+
     def full_c_repr_chunks(self, indent=0, asexpr=False):
         indent_str = self.indent_str(indent)
+
+        referenced_structs = self._collect_referenced_struct_types()
+        referenced_struct_names = {s.name for s in referenced_structs.values() if s.name}
+
+        name_to_structtypes = {}
         if self.codegen.show_local_types:
-            name_to_structtypes = {}
             local_types = [unpack_typeref(ty) for ty in self.variable_manager.types.iter_own()]
+            # First, discover all (possibly nested) struct types. This must run to completion before emitting,
+            # so that emission can be reordered without disturbing discovery.
             for ty in local_types:
                 if isinstance(ty, SimStruct):
                     name_to_structtypes[ty.name] = ty
-                    for field in ty.fields.values():
+                    for field in _iter_struct_union_member_types(ty):
                         if isinstance(field, SimTypePointer):
                             if isinstance(field.pts_to, (SimTypeArray, SimTypeFixedSizeArray)):
                                 field = field.pts_to.elem_type
@@ -569,7 +1032,45 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
                                 name_to_structtypes[field.name] = field
                             local_types.append(field)
 
-                yield from type_to_c_repr_chunks(ty, full=True, indent_str=indent_str)
+            # Emit in a stable order. variable_manager.types iterates in the (run-dependent) order variables were
+            # typed, so emitting in iteration order makes the output non-deterministic. Sort by the type's
+            # structural layout so the ordering is deterministic AND does not change when the user renames a
+            # struct or a field. Structurally identical structs (e.g. isomorphic recursive types) are broken by
+            # the translator's name-independent definition order, also rename-proof; the name is only a final
+            # fallback for types with no such order (e.g. library structs not produced by type inference).
+            layout_key_memo = _LayoutKeyMemo()  # shared so that types referenced by several locals are keyed once
+
+            def _local_type_sort_key(ty) -> tuple:
+                order = ty._def_order if isinstance(ty, SimStruct) else None
+                tiebreak = (
+                    (0, order) if order is not None else (1, ty.name if isinstance(ty, SimStruct) and ty.name else "")
+                )
+                return (type_layout_key(ty, layout_key_memo), tiebreak)
+
+            emitted_struct_names: set[str] = set()
+            for ty in sorted(local_types, key=_local_type_sort_key):
+                # drop unreferenced structs and anonymous ones
+                if (
+                    not isinstance(ty, SimStruct)
+                    or _is_anonymous_struct_or_union(ty)
+                    or ty.name not in referenced_struct_names
+                ):
+                    continue
+                if ty.name in emitted_struct_names:
+                    # multiple definitions share a name, which is probably because:
+                    # - we incorrectly inferred types of fields of a struct with a library definition;
+                    # - multiple types exist under the same name (from different libraries).
+                    # we will fix them when encountering these cases.
+                    l.warning(
+                        "Multiple definitions of struct %s in function %s. Only the first one is emitted.",
+                        ty.name,
+                        self.name,
+                    )
+                    continue
+                emitted_struct_names.add(ty.name)
+                yield from type_to_c_repr_chunks(
+                    ty, full=True, indent_str=indent_str, indent_delta=self.codegen.indent_delta
+                )
 
         if self.codegen.show_externs and self.codegen.cexterns:
             # Emit struct definitions for types used by externs
@@ -579,7 +1080,9 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
                 if self.codegen.show_local_types
                 else set()
             )
-            for v in self.codegen.cexterns:
+            # iterate externs in a stable, rename-independent order (by variable address) so the emission order of the
+            # discovered struct types are deterministic
+            for v in sorted(self.codegen.cexterns, key=cextern_sort_key):
                 if v.variable not in self.variables_in_use or v.type is None:
                     continue
                 ty = unpack_typeref(v.type)
@@ -602,17 +1105,19 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
                     if isinstance(field, SimStruct) and field not in extern_types:
                         if field.name and not field.fields and field.name in defined_struct_names:
                             continue
-                        extern_types.append(field)
+                        extern_types.append(field)  # pylint:disable=modified-iterating-list
 
             # Emit in reverse order: nested structs first
             for ty in reversed(extern_types):
                 if ty.name in defined_struct_names:
                     continue
                 defined_struct_names.add(ty.name)
-                yield from type_to_c_repr_chunks(ty, full=True, indent_str=indent_str)
+                yield from type_to_c_repr_chunks(
+                    ty, full=True, indent_str=indent_str, indent_delta=self.codegen.indent_delta
+                )
 
-            # Emit extern declarations
-            for v in sorted(self.codegen.cexterns, key=lambda v: str(v.variable.name)):
+            # Emit extern declarations (ordered by variable address so renames do not reshuffle them)
+            for v in sorted(self.codegen.cexterns, key=cextern_sort_key):
                 if v.variable not in self.variables_in_use:
                     continue
                 varname = v.c_repr() if v.type is None else v.variable.name
@@ -638,7 +1143,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
 
         # return type
         assert self.functy.returnty is not None
-        yield self.functy.returnty.c_repr(name="").strip(" "), self.functy.returnty
+        yield c_return_type(self.functy.returnty).c_repr(name="").strip(" "), self.functy.returnty
         yield " ", None
         # function name
         if self.demangled_name and self.show_demangled_name:
@@ -650,7 +1155,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         paren = CClosingObject("(")
         brace = CClosingObject("{")
         yield "(", paren
-        if not self.functy.args and self.codegen.cstyle_void_param:
+        if not self.functy.args and not self.functy.variadic and self.codegen.cstyle_void_param:
             yield "void", None
         for i, (arg_type, cvariable) in enumerate(zip(self.functy.args, self.arg_list)):
             if i:
@@ -658,6 +1163,8 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
 
             variable = cvariable.unified_variable or cvariable.variable
             yield from type_to_c_repr_chunks(arg_type, name=variable.name, name_type=cvariable, full=False)
+        if self.functy.variadic:
+            yield ", ..." if self.functy.args else "...", None
 
         yield ")", paren
         # function body
@@ -668,8 +1175,8 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
             yield " ", None
         yield "{", brace
         yield "\n", None
-        yield from self.variable_list_repr_chunks(indent=indent + INDENT_DELTA)
-        yield from self.statements.c_repr_chunks(indent=indent + INDENT_DELTA)
+        yield from self.variable_list_repr_chunks(indent=indent + self.codegen.indent_delta)
+        yield from self.statements.c_repr_chunks(indent=indent + self.codegen.indent_delta)
         yield indent_str, None
         yield "}", brace
         yield "\n", None
@@ -702,7 +1209,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         reg_vars, stack_vars, mem_vars = [], [], []
         for var in local_vars:
             match var:
-                case SimRegisterVariable():
+                case SimRegisterVariable() | SimComboRegisterVariable():
                     reg_vars.append(var)
                 case SimStackVariable():
                     stack_vars.append(var)
@@ -722,18 +1229,18 @@ class CStatement(CConstruct):  # pylint:disable=abstract-method
     Represents a statement in C.
     """
 
-    def __init__(self, tags=None, codegen=None):
+    def __init__(self, tags=None, *, codegen):
         super().__init__(codegen=codegen, tags=tags)
 
 
-class CExpression(CConstruct):
+class CExpression(CConstruct, ExpressionNode):
     """
     Base class for C expressions.
     """
 
     __slots__ = ("_type", "collapsed")
 
-    def __init__(self, collapsed=False, tags=None, codegen=None):
+    def __init__(self, collapsed=False, tags=None, *, codegen):
         super().__init__(codegen=codegen, tags=tags)
         self._type = None
         self.collapsed = collapsed
@@ -767,7 +1274,8 @@ class CStatements(CStatement):
         super().__init__(**kwargs)
 
         self.statements = statements
-        self.addr = addr
+        # a list built by codegen passes (not from a structurer node) takes its first statement's address
+        self.addr = addr if addr is not None else first_stmt_addr(statements)
 
     def c_repr_chunks(self, indent=0, asexpr=False):
         indent_str = self.indent_str(indent)
@@ -850,7 +1358,7 @@ class CWhileLoop(CLoop):
         else:
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
             yield "\n", None
@@ -887,7 +1395,7 @@ class CDoWhileLoop(CLoop):
         if self.body is not None:
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
         else:
@@ -952,7 +1460,7 @@ class CForLoop(CStatement):
 
             yield "{", brace
             yield "\n", None
-            yield from self.body.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.body.c_repr_chunks(indent=indent + self.codegen.indent_delta)
             yield indent_str, None
             yield "}", brace
         else:
@@ -1045,7 +1553,7 @@ class CIfElse(CStatement):
                 yield "\n", None
 
             if node is not None:
-                yield from node.c_repr_chunks(indent=INDENT_DELTA + indent)
+                yield from node.c_repr_chunks(indent=self.codegen.indent_delta + indent)
 
             if not omit_braces:
                 yield indent_str, None
@@ -1075,11 +1583,11 @@ class CIfElse(CStatement):
                     yield " ", None
 
                 if single_stmt_else:
-                    yield from self.else_node.c_repr_chunks(indent=INDENT_DELTA)
+                    yield from self.else_node.c_repr_chunks(indent=self.codegen.indent_delta)
                 else:
                     yield "{", brace
                     yield "\n", None
-                    yield from self.else_node.c_repr_chunks(indent=indent + INDENT_DELTA)
+                    yield from self.else_node.c_repr_chunks(indent=indent + self.codegen.indent_delta)
                     yield indent_str, None
                     yield "}", brace
 
@@ -1119,12 +1627,12 @@ class CIfBreak(CStatement):
         else:
             yield " ", None
         if self.cstyle_ifs:
-            yield self.indent_str(indent=INDENT_DELTA), self
+            yield self.indent_str(indent=self.codegen.indent_delta), self
             yield "break;\n", self
         else:
             yield "{", brace
             yield "\n", None
-            yield self.indent_str(indent=indent + INDENT_DELTA), self
+            yield self.indent_str(indent=indent + self.codegen.indent_delta), self
             yield "break;\n", self
             yield indent_str, None
             yield "}", brace
@@ -1211,12 +1719,12 @@ class CSwitchCase(CStatement):
                     if i != len(id_or_ids) - 1:
                         yield " ", None
                 yield "\n", None
-            yield from case.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from case.c_repr_chunks(indent=indent + self.codegen.indent_delta)
 
         if self.default is not None:
             yield indent_str, None
             yield "default:\n", self
-            yield from self.default.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from self.default.c_repr_chunks(indent=indent + self.codegen.indent_delta)
 
         yield indent_str, None
         yield "}", brace
@@ -1262,7 +1770,7 @@ class CIncompleteSwitchCase(CStatement):
             yield indent_str, None
             yield f"case {case_addr:#x}", self
             yield ":\n", None
-            yield from case.c_repr_chunks(indent=indent + INDENT_DELTA)
+            yield from case.c_repr_chunks(indent=indent + self.codegen.indent_delta)
 
         yield indent_str, None
         yield "}", brace
@@ -1310,12 +1818,12 @@ class CAssignment(CStatement):
             and self.rhs.op in compound_assignment_ops
             and self.lhs.unified_variable is not None
         ):
-            if isinstance(self.rhs.lhs, CVariable) and self.lhs.unified_variable is self.rhs.lhs.unified_variable:
+            if isinstance(self.rhs.lhs, CVariable) and self.lhs.unified_variable == self.rhs.lhs.unified_variable:
                 compound_expr_rhs = self.rhs.rhs
             elif (
                 self.rhs.op in commutative_ops
                 and isinstance(self.rhs.rhs, CVariable)
-                and self.lhs.unified_variable is self.rhs.rhs.unified_variable
+                and self.lhs.unified_variable == self.rhs.rhs.unified_variable
             ):
                 compound_expr_rhs = self.rhs.lhs
 
@@ -1357,7 +1865,7 @@ class CExpressionStatement(CStatement):
             yield "\n", None
 
 
-class CFunctionCall(CExpression):
+class CFunctionCall(CExpression, FunctionCallNode):
     """
     func(arg0, arg1)
 
@@ -1368,6 +1876,7 @@ class CFunctionCall(CExpression):
         "args",
         "callee_func",
         "callee_target",
+        "callsite_prototype",
         "show_demangled_name",
         "show_disambiguated_name",
     )
@@ -1380,13 +1889,17 @@ class CFunctionCall(CExpression):
         show_demangled_name=True,
         show_disambiguated_name: bool = True,
         tags=None,
-        codegen=None,
+        *,
+        codegen,
+        callsite_prototype: SimTypeFunction | None = None,
         **kwargs,
     ):
         super().__init__(tags=tags, codegen=codegen, **kwargs)
 
         self.callee_target = callee_target
         self.callee_func: Function | None = callee_func
+        # declared prototype of a call with no callee function (e.g. a known-pattern call)
+        self.callsite_prototype = callsite_prototype
         self.args = args if args is not None else []
         self.show_demangled_name = show_demangled_name
         self.show_disambiguated_name = show_disambiguated_name
@@ -1400,11 +1913,9 @@ class CFunctionCall(CExpression):
     @property
     def prototype(self) -> SimTypeFunction | None:  # TODO there should be a prototype for each callsite!
         if self.callee_func is not None and self.callee_func.prototype is not None:
-            proto = self.callee_func.prototype
-            if self.callee_func.prototype_libname is not None:
-                # we need to deref the prototype in case it uses SimTypeRef internally
-                proto = cast(SimTypeFunction, dereference_simtype_by_lib(proto, self.callee_func.prototype_libname))
-            return proto
+            return self.callee_func.prototype
+        if self.callsite_prototype is not None:
+            return self.callsite_prototype
         returnty = SimTypeInt(signed=False)
         return SimTypeFunction([arg.type for arg in self.args], returnty).with_arch(self.codegen.project.arch)
 
@@ -1416,6 +1927,8 @@ class CFunctionCall(CExpression):
         """
         if self.callee_func is not None and self.callee_func.prototype is not None:
             return self.prototype.returnty  # type: ignore
+        if self.callsite_prototype is not None and self.callsite_prototype.returnty is not None:
+            return self.callsite_prototype.returnty
         return SimTypeInt(signed=False).with_arch(self.codegen.project.arch)
 
     @property
@@ -1475,6 +1988,12 @@ class CFunctionCall(CExpression):
             yield func_name, self
         elif isinstance(self.callee_target, str):
             yield self.callee_target, self
+        elif isinstance(self.callee_target, CDirtyExpression):
+            # The call target is an opaque intrinsic/syscall placeholder (e.g. __debugbreak,
+            # syscall). Render just its name; the parentheses + args are emitted below. This
+            # also guarantees the internal "[D] ..." marker never reaches the output.
+            name = self.callee_target.intrinsic_name()
+            yield (name if name is not None else "/* unsupported call */"), self
         else:
             chunks = list(CExpression._try_c_repr_chunks(self.callee_target))
             if isinstance(self.callee_target, (CUnaryOp, CBinaryOp)):
@@ -1571,7 +2090,9 @@ class CGoto(CStatement):
             if isinstance(self.target, int):
                 yield f"LABEL_{self.target:#x}", None
             else:
+                yield "*((void *)(", None
                 yield from self.target.c_repr_chunks()
+                yield "))", None
         else:
             yield lbl.name, lbl
         yield ";", self
@@ -1616,10 +2137,12 @@ class CDirtyStatement(CExpression):
 
         yield indent_str, None
         yield from self.dirty.c_repr_chunks()
-        yield "\n", None
+        if not asexpr:
+            yield ";", None
+            yield "\n", None
 
 
-class CLabel(CStatement):
+class CLabel(CStatement, LabelNode):
     """
     Represents a label in C code.
     """
@@ -1636,7 +2159,7 @@ class CLabel(CStatement):
         yield "\n", None
 
 
-class CStructField(CExpression):
+class CStructField(CExpression, StructFieldNode):
     __slots__ = (
         "field",
         "offset",
@@ -1681,7 +2204,7 @@ class CFakeVariable(CExpression):
         yield self.name, self
 
 
-class CVariable(CExpression):
+class CVariable(CExpression, VariableNode):
     """
     CVariable represents access to a variable with the specified type (`variable_type`).
 
@@ -1711,13 +2234,7 @@ class CVariable(CExpression):
 
     @property
     def name(self):
-        v = self.variable if self.unified_variable is None else self.unified_variable
-
-        if v.name:
-            return v.name
-        if isinstance(v, SimTemporaryVariable):
-            return f"tmp_{v.tmp_id}"
-        return str(v)
+        return variable_display_name(self.variable if self.unified_variable is None else self.unified_variable)
 
     def c_repr_chunks(self, indent=0, asexpr=False):
         yield self.name, self
@@ -1725,7 +2242,7 @@ class CVariable(CExpression):
             yield f"<vvar_{self.vvar_id}>", self
 
 
-class CIndexedVariable(CExpression):
+class CIndexedVariable(CExpression, IndexedVariableNode):
     """
     Represent a variable (an array) that is indexed.
     """
@@ -1769,10 +2286,18 @@ class CIndexedVariable(CExpression):
         yield "]", bracket
 
 
-class CVariableField(CExpression):
+class CVariableField(CExpression, VariableFieldNode):
     """
     Represent a field of a variable.
     """
+
+    # When this field read is a recognized accessor of a C++ STL container whose type was recovered by type
+    # inference (e.g. "m_data" of a std::string), the fully qualified accessor name to display it under, e.g.
+    # "std::string::c_str". Set by CStructuredCodeGenerator._access_constant_offset, and only for reads: writing to
+    # (or taking the address of) the field must keep rendering as a field. Declared at class level so that instances
+    # built without __init__ (deserialization) always have the attribute. See
+    # angr.analyses.decompiler.stl_field_accessors.
+    stl_accessor: str | None = None
 
     def __init__(self, variable: CExpression, field: CStructField, var_is_ptr: bool = False, **kwargs):
         super().__init__(**kwargs)
@@ -1788,6 +2313,9 @@ class CVariableField(CExpression):
         if self.collapsed:
             yield "...", self
             return
+        if self.stl_accessor is not None and self.codegen.stl_accessor_calls:
+            yield from self._c_repr_chunks_accessor()
+            return
         yield from self.variable.c_repr_chunks()
         if self.var_is_ptr:
             yield "->", self
@@ -1795,8 +2323,19 @@ class CVariableField(CExpression):
             yield ".", self
         yield from self.field.c_repr_chunks()
 
+    def _c_repr_chunks_accessor(self):
+        """Render the field read as ``std::string::c_str(s)`` rather than ``s->m_data``."""
+        yield self.stl_accessor, self
+        paren = CClosingObject("(")
+        yield "(", paren
+        if not self.var_is_ptr:
+            # ``self.variable`` is the container object itself; the accessor takes a pointer to it
+            yield "&", self
+        yield from CExpression._try_c_repr_chunks(self.variable)
+        yield ")", paren
 
-class CUnaryOp(CExpression):
+
+class CUnaryOp(CExpression, UnaryOpNode):
     """
     Unary operations.
     """
@@ -1812,7 +2351,10 @@ class CUnaryOp(CExpression):
         self.op = op
         self.operand = operand
 
-        if operand.type is not None:
+        if op in {"IsNaN", "IsInf", "IsFinite", "IsNormal", "SignBit"}:
+            # the classification macros return int whatever the operand type
+            self._type = SimTypeInt().with_arch(self.codegen.project.arch)
+        elif operand.type is not None:
             var_type = unpack_typeref(operand.type)
             if op == "Reference":
                 self._type = SimTypePointer(var_type).with_arch(self.codegen.project.arch)
@@ -1840,49 +2382,105 @@ class CUnaryOp(CExpression):
             "Reference": self._c_repr_chunks_reference,
             "Dereference": self._c_repr_chunks_dereference,
             "Clz": self._c_repr_chunks_clz,
+            "ClzNat": self._c_repr_chunks_clz,  # libVEX 3.27+ name for the zero-defined scalar Clz
+            "Abs": self._c_repr_chunks_libm,
+            "Sqrt": self._c_repr_chunks_libm,
+            "Sin": self._c_repr_chunks_libm,
+            "Cos": self._c_repr_chunks_libm,
+            "Tan": self._c_repr_chunks_libm,
+            "Exp2": self._c_repr_chunks_libm,
+            "Log2": self._c_repr_chunks_libm,
+            "IsNaN": self._c_repr_chunks_fp_class,
+            "IsInf": self._c_repr_chunks_fp_class,
+            "IsFinite": self._c_repr_chunks_fp_class,
+            "IsNormal": self._c_repr_chunks_fp_class,
+            "SignBit": self._c_repr_chunks_fp_class,
+            "Rint": self._c_repr_chunks_libm,
+            "RoundEven": self._c_repr_chunks_libm,
+            "RoundAway": self._c_repr_chunks_libm,
+            "Floor": self._c_repr_chunks_libm,
+            "Ceil": self._c_repr_chunks_libm,
+            "Trunc": self._c_repr_chunks_libm,
         }
 
         handler = OP_MAP.get(self.op)
         if handler is not None:
             yield from handler()
         else:
-            yield f"UnaryOp {self.op}", self
+            yield from self._c_repr_chunks_opfirst(self.op)
+
+    # libm function per AIL op; the "f" variant is picked for float-typed operands
+    _LIBM_FUNCS = {
+        "Abs": "fabs",
+        "Sqrt": "sqrt",
+        "Sin": "sin",
+        "Cos": "cos",
+        "Tan": "tan",
+        "Exp2": "exp2",
+        "Log2": "log2",
+        # AIL `Round(rm, x)`, picked by the rounding mode in CStructuredCodeGenerator._round_unop
+        "Rint": "rint",
+        "RoundEven": "roundeven",
+        "RoundAway": "round",
+        "Floor": "floor",
+        "Ceil": "ceil",
+        "Trunc": "trunc",
+    }
+
+    def _is_single_precision(self) -> bool:
+        ty = self.type
+        return isinstance(ty, SimTypeFloat) and not isinstance(ty, SimTypeDouble)
+
+    def _c_repr_chunks_libm(self):
+        fn = self._LIBM_FUNCS[self.op]
+        if isinstance(self.type, SimTypeFloat128):
+            fn += "l"
+        elif self._is_single_precision():
+            fn += "f"
+        yield from self._c_repr_chunks_opfirst(fn)
+
+    def _c_repr_chunks_opfirst(self, fn: str):
+        paren = CClosingObject("(")
+        yield fn, self
+        yield "(", paren
+        yield from CExpression._try_c_repr_chunks(self.operand)
+        yield ")", paren
 
     #
     # Handlers
     #
 
+    def _c_repr_chunks_prefix(self, sign: str):
+        yield sign, self
+        if prefix_unary_operand_needs_parens(self.operand, self.op):
+            paren = CClosingObject("(")
+            yield "(", paren
+            yield from CExpression._try_c_repr_chunks(self.operand)
+            yield ")", paren
+        else:
+            yield from CExpression._try_c_repr_chunks(self.operand)
+
     def _c_repr_chunks_not(self):
-        paren = CClosingObject("(")
-        yield "!", self
-        yield "(", paren
-        yield from CExpression._try_c_repr_chunks(self.operand)
-        yield ")", paren
+        yield from self._c_repr_chunks_prefix("!")
 
     def _c_repr_chunks_bitwiseneg(self):
-        paren = CClosingObject("(")
-        yield "~", self
-        yield "(", paren
-        yield from CExpression._try_c_repr_chunks(self.operand)
-        yield ")", paren
+        yield from self._c_repr_chunks_prefix("~")
 
     def _c_repr_chunks_neg(self):
-        paren = CClosingObject("(")
-        yield "-", self
-        yield "(", paren
-        yield from CExpression._try_c_repr_chunks(self.operand)
-        yield ")", paren
+        yield from self._c_repr_chunks_prefix("-")
 
     def _c_repr_chunks_reference(self):
+        # C array-to-pointer decay: an array-typed lvalue already decays to a pointer to its first
+        # element, so "&array" is redundant.
+        operand_type = self.operand.type if self.operand is not None else None
+        if operand_type is not None and isinstance(unpack_typeref(operand_type), SimTypeArray):
+            yield from CExpression._try_c_repr_chunks(self.operand)
+            return
         yield "&", self
         yield from CExpression._try_c_repr_chunks(self.operand)
 
     def _c_repr_chunks_dereference(self):
-        paren = CClosingObject("(")
-        yield "*", self
-        yield "(", paren
-        yield from CExpression._try_c_repr_chunks(self.operand)
-        yield ")", paren
+        yield from self._c_repr_chunks_prefix("*")
 
     def _c_repr_chunks_clz(self):
         paren = CClosingObject("(")
@@ -1891,25 +2489,51 @@ class CUnaryOp(CExpression):
         yield from CExpression._try_c_repr_chunks(self.operand)
         yield ")", paren
 
+    _FP_CLASS_FUNCS = {
+        "IsNaN": "isnan",
+        "IsInf": "isinf",
+        "IsFinite": "isfinite",
+        "IsNormal": "isnormal",
+        "SignBit": "signbit",
+    }
 
-class CBinaryOp(CExpression):
+    def _c_repr_chunks_fp_class(self):
+        paren = CClosingObject("(")
+        yield self._FP_CLASS_FUNCS[self.op], self
+        yield "(", paren
+        yield from CExpression._try_c_repr_chunks(self.operand)
+        yield ")", paren
+
+
+_NON_ASSOCIATIVE_OPS = frozenset(
+    {"Sub", "Div", "Shl", "Shr", "Sar", "CmpEQ", "CmpNE", "CmpLE", "CmpLT", "CmpGT", "CmpGE"}
+)
+
+
+class CBinaryOp(CExpression, BinaryOpNode):
     """
     Binary operations.
     """
 
-    __slots__ = ("_cstyle_null_cmp", "common_type", "lhs", "op", "rhs")
+    __slots__ = ("_cstyle_null_cmp", "common_type", "lhs", "op", "rhs", "signed")
 
-    def __init__(self, op, lhs, rhs, **kwargs):
+    def __init__(self, op, lhs, rhs, signed: bool | None = None, **kwargs):
         super().__init__(**kwargs)
 
         self.op = op
         self.lhs = lhs
         self.rhs = rhs
+        # signedness of an integer ordering compare; None when unknown
+        self.signed = signed
         self._cstyle_null_cmp = self.codegen.cstyle_null_cmp
 
         self.common_type = self.compute_common_type(self.op, self.lhs.type, self.rhs.type)
-        if self.op.startswith("Cmp"):
+        if self.op.startswith("Cmp") and not self.op.endswith("V"):
+            # a lane-wise compare (CmpEQV, ...) yields a vector mask
             self._type = SimTypeChar().with_arch(self.codegen.project.arch)
+        elif self.op == "Scale":
+            # ldexp(x, n): the integer exponent does not take part in the result type
+            self._type = self.lhs.type
         else:
             self._type = self.common_type
 
@@ -1976,7 +2600,6 @@ class CBinaryOp(CExpression):
     def op_precedence(self):
         precedence_list = [
             # lowest precedence
-            ["Concat"],
             ["LogicalOr"],
             ["LogicalXor"],
             ["LogicalAnd"],
@@ -2030,6 +2653,13 @@ class CBinaryOp(CExpression):
             "Concat": self._c_repr_chunks_concat,
             "Rol": self._c_repr_chunks_rol,
             "Ror": self._c_repr_chunks_ror,
+            "MaxF": self._c_repr_chunks_maxf,
+            "MinF": self._c_repr_chunks_minf,
+            "Atan2": self._c_repr_chunks_libm,
+            "PRem": self._c_repr_chunks_libm,
+            "PRem1": self._c_repr_chunks_libm,
+            "Scale": self._c_repr_chunks_libm,
+            "CmpUN": self._c_repr_chunks_cmpun,
         }
 
         handler = OP_MAP.get(self.op)
@@ -2039,20 +2669,14 @@ class CBinaryOp(CExpression):
             yield from self._c_repr_chunks_opfirst(self.op)
 
     def _has_const_null_rhs(self) -> bool:
-        return isinstance(self.rhs, CConstant) and self.rhs.value == 0
+        # a comparison against 0.0 is spelled out; `!x` reads as an integer or pointer test
+        return isinstance(self.rhs, CConstant) and self.rhs.value == 0 and not isinstance(self.rhs.value, float)
 
     #
     # Handlers
     #
 
     def _c_repr_chunks(self, op):
-        skip_op_and_rhs = False
-        if self._cstyle_null_cmp and self._has_const_null_rhs():
-            if self.op == "CmpEQ":
-                skip_op_and_rhs = True
-                yield "!", None
-            elif self.op == "CmpNE":
-                skip_op_and_rhs = True
         # lhs
         if isinstance(self.lhs, CBinaryOp) and self.op_precedence > self.lhs.op_precedence:
             paren = CClosingObject("(")
@@ -2062,19 +2686,20 @@ class CBinaryOp(CExpression):
         else:
             yield from self._try_c_repr_chunks(self.lhs)
 
-        if not skip_op_and_rhs:
-            # operator
-            yield op, self
-            # rhs
-            if isinstance(self.rhs, CBinaryOp) and self.op_precedence > self.rhs.op_precedence - (
-                1 if self.op in ["Sub", "Div"] else 0
-            ):
-                paren = CClosingObject("(")
-                yield "(", paren
-                yield from self._try_c_repr_chunks(self.rhs)
-                yield ")", paren
-            else:
-                yield from self._try_c_repr_chunks(self.rhs)
+        # operator
+        yield op, self
+
+        # rhs
+        # a same-precedence rhs needs parentheses when the operator is not associative: a - (b - c), a < (b < c)
+        if isinstance(self.rhs, CBinaryOp) and self.op_precedence > self.rhs.op_precedence - (
+            1 if self.op in _NON_ASSOCIATIVE_OPS else 0
+        ):
+            paren = CClosingObject("(")
+            yield "(", paren
+            yield from self._try_c_repr_chunks(self.rhs)
+            yield ")", paren
+        else:
+            yield from self._try_c_repr_chunks(self.rhs)
 
     def _c_repr_chunks_opfirst(self, op):
         yield op, self
@@ -2116,12 +2741,40 @@ class CBinaryOp(CExpression):
         yield from self._c_repr_chunks(" | ")
 
     def _c_repr_chunks_shr(self):
-        yield from self._c_repr_chunks(" >> ")
+        yield from self._c_repr_chunks_right_shift(signed=False)
 
     def _c_repr_chunks_shl(self):
         yield from self._c_repr_chunks(" << ")
 
     def _c_repr_chunks_sar(self):
+        yield from self._c_repr_chunks_right_shift(signed=True)
+
+    def _c_repr_chunks_right_shift(self, signed: bool):
+        # C's >> uses the left operand's signedness. Cast at render time so same-width cast collapsing cannot
+        # erase the distinction between AIL's logical Shr and arithmetic Sar.
+        lhs_ty = unpack_typeref(self.lhs.type)
+        if (
+            isinstance(lhs_ty, (SimTypeInt, SimTypeChar, SimTypeNum))
+            and getattr(lhs_ty, "signed", None) is (not signed)
+            and lhs_ty.size is not None
+        ):
+            cast_ty = self.codegen.default_simtype_from_bits(lhs_ty.size, signed=signed)
+            paren = CClosingObject("(")
+            yield "(", paren
+            yield f"{cast_ty.c_repr(name=None)}", cast_ty
+            yield ")", paren
+            yield "(", paren
+            yield from self._try_c_repr_chunks(self.lhs)
+            yield ")", paren
+            yield " >> ", self
+            if isinstance(self.rhs, CBinaryOp) and self.op_precedence > self.rhs.op_precedence:
+                paren2 = CClosingObject("(")
+                yield "(", paren2
+                yield from self._try_c_repr_chunks(self.rhs)
+                yield ")", paren2
+            else:
+                yield from self._try_c_repr_chunks(self.rhs)
+            return
         yield from self._c_repr_chunks(" >> ")
 
     def _c_repr_chunks_logicaland(self):
@@ -2146,13 +2799,19 @@ class CBinaryOp(CExpression):
         yield from self._c_repr_chunks(" >= ")
 
     def _c_repr_chunks_cmpeq(self):
-        yield from self._c_repr_chunks(" == ")
+        if self._cstyle_null_cmp and self._has_const_null_rhs():
+            yield from CUnaryOp("Not", self.lhs, codegen=self.codegen).c_repr_chunks()
+        else:
+            yield from self._c_repr_chunks(" == ")
 
     def _c_repr_chunks_cmpne(self):
-        yield from self._c_repr_chunks(" != ")
+        if self._cstyle_null_cmp and self._has_const_null_rhs():
+            yield from self._try_c_repr_chunks(self.lhs)
+        else:
+            yield from self._c_repr_chunks(" != ")
 
     def _c_repr_chunks_concat(self):
-        yield from self._c_repr_chunks(" CONCAT ")
+        yield from self._c_repr_chunks_opfirst("CONCAT")
 
     def _c_repr_chunks_rol(self):
         yield "__ROL__", self
@@ -2171,6 +2830,40 @@ class CBinaryOp(CExpression):
         yield ", ", None
         yield from self._try_c_repr_chunks(self.rhs)
         yield ")", paren
+
+    def _c_repr_chunks_maxf(self):
+        fn = "fmaxf" if isinstance(self.type, SimTypeFloat) and not isinstance(self.type, SimTypeDouble) else "fmax"
+        yield from self._c_repr_chunks_opfirst(fn)
+
+    def _c_repr_chunks_minf(self):
+        fn = "fminf" if isinstance(self.type, SimTypeFloat) and not isinstance(self.type, SimTypeDouble) else "fmin"
+        yield from self._c_repr_chunks_opfirst(fn)
+
+    # libm function per AIL op (x87 fpatan / fprem / fprem1 / fscale)
+    _LIBM_FUNCS = {
+        "Atan2": "atan2",
+        "PRem": "fmod",
+        "PRem1": "remainder",
+        "Scale": "ldexp",
+    }
+
+    def _c_repr_chunks_libm(self):
+        fn = self._LIBM_FUNCS[self.op]
+        if isinstance(self.type, SimTypeFloat) and not isinstance(self.type, SimTypeDouble):
+            fn += "f"
+        yield from self._c_repr_chunks_opfirst(fn)
+
+    def _c_repr_chunks_cmpun(self):
+        # a constant operand (inlined after the peepholes ran) can never be NaN
+        for const, other in ((self.lhs, self.rhs), (self.rhs, self.lhs)):
+            if isinstance(const, CConstant) and not (isinstance(const.value, float) and math.isnan(const.value)):
+                paren = CClosingObject("(")
+                yield "isnan", self
+                yield "(", paren
+                yield from self._try_c_repr_chunks(other)
+                yield ")", paren
+                return
+        yield from self._c_repr_chunks_opfirst("isunordered")
 
 
 class CTypeCast(CExpression):
@@ -2215,18 +2908,179 @@ class CTypeCast(CExpression):
             yield ")", paren
 
 
-class CConstant(CExpression):
+def prefix_unary_operand_needs_parens(operand: CExpression, op: str) -> bool:
+    """
+    Whether the operand of the prefix unary operator op must be parenthesized.
+
+    Skip operand parentheses after * in the following cases:
+    - **p
+    - *p->q
+    - *a[i]
+    - *(char *)p
+    - !!x
+
+    -(-x) and ~(~x) keep their parentheses.
+    Everything else (binops or an expression class with no known precedence) keeps parentheses.
+    """
+    if isinstance(operand, CUnaryOp) and operand.op == op and op in {"Neg", "BitwiseNeg"}:
+        return True
+    if op == "Neg" and isinstance(operand, CConstant):
+        return True
+    return not isinstance(
+        operand,
+        (
+            CConstant,
+            CVariable,
+            CFakeVariable,
+            CRegister,
+            CStructField,
+            CIndexedVariable,
+            CVariableField,
+            CFunctionCall,
+            CUnaryOp,
+            CTypeCast,
+            CReinterpret,
+            CVEXCCallExpression,
+            CVectorConvert,
+            CDirtyExpression,
+            CITE,
+            CMultiStatementExpression,
+        ),
+    )
+
+
+def is_addressable_lvalue(cexpr: CExpression) -> bool:
+    """
+    Whether the expression names memory: a stack or global variable, an array element, a dereference, or a field of
+    one of those. Register variables and register-held parameters are not.
+    """
+    if isinstance(cexpr, CUnaryOp):
+        return cexpr.op == "Dereference"
+    if isinstance(cexpr, CIndexedVariable):
+        return True
+    if isinstance(cexpr, CVariableField):
+        return cexpr.var_is_ptr or is_addressable_lvalue(cexpr.variable)
+    if isinstance(cexpr, CVariable):
+        return isinstance(cexpr.variable, SimMemoryVariable)
+    return False
+
+
+class CReinterpret(CExpression):
+    """
+    A bit-pattern view of an expression as another type of the same width: ``*(T *)&x`` for a memory-backed
+    lvalue, ``__double_as_longlong(x)`` (the CUDA intrinsic names) for register variables and other values.
+    """
+
+    __slots__ = (
+        "dst_type",
+        "expr",
+        "src_type",
+    )
+
+    INTRINSICS: dict[tuple[str, int | None, str, int | None], str] = {
+        ("I", 32, "F", 32): "__int_as_float",
+        ("F", 32, "I", 32): "__float_as_int",
+        ("I", 64, "F", 64): "__longlong_as_double",
+        ("F", 64, "I", 64): "__double_as_longlong",
+    }
+
+    def __init__(self, src_type: SimType, dst_type: SimType, expr: CExpression, **kwargs):
+        super().__init__(**kwargs)
+
+        self.src_type = src_type.with_arch(self.codegen.project.arch)
+        self.dst_type = dst_type.with_arch(self.codegen.project.arch)
+        self.expr = expr
+
+    @property
+    def type(self):
+        return self.dst_type
+
+    @staticmethod
+    def _type_key(ty: SimType) -> tuple[str, int | None]:
+        return ("F" if isinstance(ty, SimTypeFloat) else "I"), ty.size
+
+    def c_repr_chunks(self, indent=0, asexpr=False):
+        if self.collapsed:
+            yield "...", self
+            return
+        if isinstance(self.expr, (CFunctionCall, CTypeCast)):
+            # an explicitly typed operand that already has the target type (e.g. an outlined call returning double)
+            operand_type = self.expr.type
+            if operand_type is not None and self._type_key(unpack_typeref(operand_type)) == self._type_key(
+                self.dst_type
+            ):
+                yield from CExpression._try_c_repr_chunks(self.expr)
+                return
+        paren = CClosingObject("(")
+        name = self.INTRINSICS.get(self._type_key(self.src_type) + self._type_key(self.dst_type))
+        if is_addressable_lvalue(self.expr) or (
+            # no helper for this width (e.g. long double): a named variable still has an address in C
+            name is None and isinstance(self.expr, (CVariable, CVariableField))
+        ):
+            ptr_type = SimTypePointer(self.dst_type).with_arch(self.codegen.project.arch)
+            yield "*", self
+            yield "(", paren
+            yield f"{ptr_type.c_repr(name=None)}", ptr_type
+            yield ")", paren
+            yield "&", self
+            yield from CExpression._try_c_repr_chunks(self.expr)
+            return
+
+        if name is None:
+            yield "(", paren
+            yield f"{self.dst_type.c_repr(name=None)}", self.dst_type
+            yield ")", paren
+            yield from CExpression._try_c_repr_chunks(self.expr)
+            return
+        yield name, self
+        yield "(", paren
+        yield from CExpression._try_c_repr_chunks(self.expr)
+        yield ")", paren
+
+
+def _float32_repr(v: float) -> str:
+    """The shortest decimal literal that round-trips through a 32-bit float (0.72 rather than 0.7200000286102295)."""
+    if not math.isfinite(v):
+        return repr(v)
+    if v == int(v) and abs(v) < 1e15:
+        return f"{int(v)}.0"
+    for precision in range(1, 10):
+        s = f"{v:.{precision}g}"
+        try:
+            packed = struct.pack("f", float(s))
+        except OverflowError:
+            continue  # the rounded literal overshoots FLT_MAX
+        if struct.unpack("f", packed)[0] == v:
+            break
+    else:
+        s = repr(v)
+    if "." not in s and "e" not in s and "n" not in s:
+        s += ".0"
+    return s
+
+
+class CConstant(CExpression, ConstantNode):
     __slots__ = (
         "reference_values",
         "value",
     )
 
-    def __init__(self, value, type_: SimType, reference_values=None, **kwargs):
+    def __init__(
+        self,
+        value,
+        type_: SimType,
+        reference_values: dict[SimType, str | bytes | int | float | Function | MemoryData] | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
 
         self.value: int | float | str = value
         self._type = type_.with_arch(self.codegen.project.arch)
         self.reference_values = reference_values
+
+        display_hint = self.tags.get("display_hint", None)
+        if display_hint is not None and display_hint == "double":
+            self.fmt_double = True
 
     @property
     def _ident(self) -> IdentType:
@@ -2257,7 +3111,8 @@ class CConstant(CExpression):
         if result is None:
             result = False
             if isinstance(self.value, int):
-                result = hex(self.value).endswith("00") or is_alignment_mask(self.value)
+                bits = self._type.size if self._type is not None else None
+                result = should_use_hex(self.value, bits)
         return result
 
     @fmt_hex.setter
@@ -2282,7 +3137,15 @@ class CConstant(CExpression):
 
     @property
     def fmt_float(self):
-        return self.fmt.get("float", False)
+        result = self.fmt.get("float", None)
+        if result is None:
+            # an integer bit pattern assigned to a float-typed variable is a float literal
+            result = (
+                isinstance(self.value, int)
+                and isinstance(self._type, SimTypeFloat)
+                and not isinstance(self._type, SimTypeDouble)
+            )
+        return result
 
     @fmt_float.setter
     def fmt_float(self, v: bool):
@@ -2290,7 +3153,10 @@ class CConstant(CExpression):
 
     @property
     def fmt_double(self):
-        return self.fmt.get("double", False)
+        result = self.fmt.get("double", None)
+        if result is None:
+            result = isinstance(self.value, int) and isinstance(self._type, SimTypeDouble)
+        return result
 
     @fmt_double.setter
     def fmt_double(self, v: bool):
@@ -2345,12 +3211,14 @@ class CConstant(CExpression):
         if self.reference_values is not None:
             if self._type is not None and self._type in self.reference_values:
                 if isinstance(self._type, SimTypeInt):
-                    if isinstance(self.reference_values[self._type], int):
-                        yield self.fmt_int(self.reference_values[self._type]), self
+                    refval = self.reference_values[self._type]
+                    if isinstance(refval, int):
+                        yield self.fmt_int(refval), self
                         return
                     yield hex(self.reference_values[self._type]), self
                     return
-                elif isinstance(self._type, SimTypePointer) and isinstance(self._type.pts_to, SimTypeChar):
+
+                if isinstance(self._type, SimTypePointer) and isinstance(self._type.pts_to, SimTypeChar):
                     refval = self.reference_values[self._type]
                     if isinstance(refval, MemoryData):
                         v = refval.content.decode("utf-8") if refval.content else f"<unknown@{refval.addr:#x}>"
@@ -2362,7 +3230,8 @@ class CConstant(CExpression):
                         assert isinstance(v, str)
                     yield CConstant.str_to_c_str(v, maxlen=self.codegen.max_str_len), self
                     return
-                elif isinstance(self._type, SimTypePointer) and isinstance(self._type.pts_to, SimTypeWideChar):
+
+                if isinstance(self._type, SimTypePointer) and isinstance(self._type.pts_to, SimTypeWideChar):
                     refval = self.reference_values[self._type]
                     if isinstance(refval, MemoryData):
                         v = decode_utf16_string(refval.content) if refval.content else f"<unknown@{refval.addr:#x}>"
@@ -2372,17 +3241,18 @@ class CConstant(CExpression):
                         assert False, f"Unexpected reference value type {type(refval)} for wide char pointer"
                     yield CConstant.str_to_c_str(v, prefix="L", maxlen=self.codegen.max_str_len), self
                     return
-                else:
-                    if isinstance(self.reference_values[self._type], int):
-                        yield self.fmt_int(self.reference_values[self._type]), self
-                        return
-                    o = _default_output(self.reference_values[self.type])
-                    if o is not None:
-                        yield o, self
-                        return
+
+                refval = self.reference_values[self._type]
+                if isinstance(refval, int):
+                    yield self.fmt_int(refval), self
+                    return
+                o = _default_output(self.reference_values[self.type])
+                if o is not None:
+                    yield o, self
+                    return
 
             # default priority: string references -> variables -> other reference values
-            for _ty, v in self.reference_values.items():  # pylint:disable=unused-variable
+            for v in self.reference_values.values():  # pylint:disable=unused-variable
                 o = _default_output(v)
                 if o is not None:
                     yield o, self
@@ -2400,11 +3270,19 @@ class CConstant(CExpression):
             # C doesn't have true or false, but whatever...
             yield "true" if self.value else "false", self
 
+        elif isinstance(self.value, int) and isinstance(self._type, SimTypeFloat128):
+            yield _decode_binary128(self.value), self
+
         elif isinstance(self.value, int):
             str_value = self.fmt_int(self.value)
             yield str_value, self
         else:
-            yield str(self.value), self
+            s = str(self.value)
+            if isinstance(self._type, (SimTypeLongDouble, SimTypeFloat128)):
+                s += "L"
+            elif isinstance(self._type, SimTypeFloat) and not isinstance(self._type, SimTypeDouble):
+                s += "f"
+            yield s, self
 
     def fmt_int(self, value: int) -> str:
         """
@@ -2415,7 +3293,7 @@ class CConstant(CExpression):
         """
 
         if self.fmt_float and 0 < value <= 0xFFFF_FFFF:
-            return str(struct.unpack("f", struct.pack("I", value))[0])
+            return _float32_repr(struct.unpack("f", struct.pack("I", value))[0])
 
         if self.fmt_char:
             if value < 0:
@@ -2426,6 +3304,8 @@ class CConstant(CExpression):
 
         if self.fmt_double and 0 < value <= 0xFFFF_FFFF_FFFF_FFFF:
             return str(struct.unpack("d", struct.pack("Q", value))[0])
+        if self.fmt_double and 0 < value <= 0xFFFF_FFFF_FFFF_FFFF_FFFF:
+            return _decode_x87_extended(value)
 
         if self.fmt_neg:
             if value > 0:
@@ -2444,7 +3324,7 @@ class CConstant(CExpression):
 class CRegister(CExpression):
     __slots__ = ("reg",)
 
-    def __init__(self, reg, **kwargs):
+    def __init__(self, reg: str, **kwargs):
         super().__init__(**kwargs)
 
         self.reg = reg
@@ -2455,7 +3335,7 @@ class CRegister(CExpression):
         return SimTypeInt().with_arch(self.codegen.project.arch)
 
     def c_repr_chunks(self, indent=0, asexpr=False):
-        yield str(self.reg), None
+        yield self.reg, None
 
 
 class CITE(CExpression):
@@ -2481,12 +3361,19 @@ class CITE(CExpression):
             return
         paren = CClosingObject("(")
         yield "(", paren
+        yield from self._c_repr_chunks_chain()
+        yield ")", paren
+
+    def _c_repr_chunks_chain(self):
         yield from self.cond.c_repr_chunks()
         yield " ? ", self
         yield from self.iftrue.c_repr_chunks()
         yield " : ", self
-        yield from self.iffalse.c_repr_chunks()
-        yield ")", paren
+        if isinstance(self.iffalse, CITE) and not self.iffalse.collapsed:
+            # ?: is right-associative: a ? x : b ? y : z
+            yield from self.iffalse._c_repr_chunks_chain()
+        else:
+            yield from self.iffalse.c_repr_chunks()
 
 
 class CMultiStatementExpression(CExpression):
@@ -2546,30 +3433,89 @@ class CVEXCCallExpression(CExpression):
         yield ")", paren
 
 
+class CVectorConvert(CExpression):
+    """
+    A lane-wise conversion (an AIL Convert with vector_count), rendered as an intrinsic-style call because C has no
+    vector cast syntax.
+    """
+
+    __slots__ = ("expr", "operand")
+
+    def __init__(self, expr: Expr.Convert, operand: CExpression, **kwargs):
+        super().__init__(**kwargs)
+        self.expr = expr
+        self.operand = operand
+
+    @property
+    def type(self):
+        return self.codegen.default_simtype_from_bits(self.expr.to_bits, self.expr.is_signed)
+
+    def c_repr_chunks(self, indent=0, asexpr=False):
+        if self.collapsed:
+            yield "...", self
+            return
+        yield vector_convert_name(self.expr), self
+        paren = CClosingObject("(")
+        yield "(", paren
+        yield from CExpression._try_c_repr_chunks(self.operand)
+        yield ")", paren
+
+
 class CDirtyExpression(CExpression):
     """
     Ideally all dirty expressions should be handled and converted to proper conversions during conversion from VEX to
     AIL. Eventually this class should not be used at all.
     """
 
-    __slots__ = ("dirty",)
+    __slots__ = ("dirty", "operands")
 
-    def __init__(self, dirty, **kwargs):
+    _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+    def __init__(self, dirty, operands: list[CExpression] | None = None, **kwargs):
         super().__init__(**kwargs)
         self.dirty = dirty
+        self.operands = operands if operands is not None else []
 
     @property
     def type(self):
+        # an opaque value of the expression's width
+        if isinstance(self.dirty, Expr.Expression) and self.dirty.bits:
+            return self.codegen.default_simtype_from_bits(self.dirty.bits, signed=False)
         return SimTypeInt().with_arch(self.codegen.project.arch)
+
+    def intrinsic_name(self) -> str | None:
+        """Return the dirty callee if it is a clean C identifier, else None."""
+        if not isinstance(self.dirty, Expr.DirtyExpression):
+            return None
+        callee = self.dirty.callee
+        if self._IDENT_RE.fullmatch(callee):
+            return callee
+        return None
 
     def c_repr_chunks(self, indent=0, asexpr=False):
         if self.collapsed:
             yield "...", self
             return
-        yield str(self.dirty), None
+        # Never leak the internal "[D] ..." diagnostic repr into emitted C. Render a pseudo-intrinsic call
+        # (__dirty_<callee>, or the callee itself when it is already an intrinsic name) with C operands when the
+        # callee is a valid C identifier, otherwise a safe placeholder comment.
+        name = self.intrinsic_name()
+        if name is None:
+            yield "/* unsupported instruction */", None
+            return
+        if not name.startswith("__"):
+            name = f"__dirty_{name}"
+        yield name, self
+        paren = CClosingObject("(")
+        yield "(", paren
+        for i, operand in enumerate(self.operands):
+            if i:
+                yield ", ", None
+            yield from CExpression._try_c_repr_chunks(operand)
+        yield ")", paren
 
 
-class CClosingObject:
+class CClosingObject(ClosingObjectNode):
     """
     A class to represent all objects that can be closed by it's correspodning character.
     Examples: (), {}, []
@@ -2606,14 +3552,13 @@ class CStructFieldNameDef:
         self.name = name
 
 
-class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
+class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis, Serializable):
     def __init__(
         self,
         func,
         sequence,
         indent=0,
         cfg=None,
-        variable_kb=None,
         func_args: list[SimVariable] | None = None,
         binop_depth_cutoff: int = 16,
         show_casts=True,
@@ -2642,6 +3587,9 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         max_str_len: int | None = None,
         prettify_thiscall: bool = False,
         cstyle_void_param: bool = True,
+        indent_size: int = 4,
+        variable_map: VariableMap | None = None,
+        stl_accessor_calls: bool = False,
     ):
         super().__init__(
             flavor=flavor,
@@ -2671,11 +3619,14 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             Stmt.SideEffectStatement: self._handle_Stmt_SideEffectStatement,
             Stmt.Jump: self._handle_Stmt_Jump,
             Stmt.ConditionalJump: self._handle_Stmt_ConditionalJump,
+            IncompleteSwitchCaseHeadStatement: self._handle_Stmt_IncompleteSwitchCaseHead,
             Stmt.Return: self._handle_Stmt_Return,
             Stmt.Label: self._handle_Stmt_Label,
             Stmt.DirtyStatement: self._handle_Stmt_Dirty,
+            Stmt.CAS: self._handle_Stmt_CAS,
             # AIL expressions
             Expr.Register: self._handle_Expr_Register,
+            Expr.IRegister: self._handle_Expr_IRegister,
             Expr.Load: self._handle_Expr_Load,
             Expr.Tmp: self._handle_Expr_Tmp,
             Expr.Const: self._handle_Expr_Const,
@@ -2698,7 +3649,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self._func_args = func_args
         self._cfg = cfg
         self._sequence = sequence
-        self._variable_kb = variable_kb if variable_kb is not None else self.kb
+        self._variable_map: VariableMap = variable_map if variable_map is not None else VariableMap()
         self.binop_depth_cutoff = binop_depth_cutoff
 
         self._variables_in_use: dict | None = None
@@ -2718,6 +3669,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self.show_demangled_name = show_demangled_name
         self.show_disambiguated_name = show_disambiguated_name
         self.ail_graph = ail_graph
+        self._errno_vvars: frozenset[int] | None = None
         self.simplify_else_scope = simplify_else_scope
         self.cstyle_ifs = cstyle_ifs
         self.omit_func_header = omit_func_header
@@ -2732,10 +3684,15 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self.map_addr_to_label: dict[tuple[int, int | None], CLabel] = {}
         self.cfunc: CFunction | None = None
         self.cexterns: set[CVariable] | None = None
+        self._array_length_cexprs: dict[SimVariable, CExpression] = {}
+        self._sse_typing: SSEVectorTyping | None = None
         self.display_notes = display_notes
         self.max_str_len = max_str_len
         self.prettify_thiscall = prettify_thiscall
         self.cstyle_void_param = cstyle_void_param
+        self.stl_accessor_calls = stl_accessor_calls
+        # Number of space characters per indentation level in the emitted pseudocode.
+        self.indent_delta = indent_size
 
         self._analyze()
 
@@ -2763,6 +3720,10 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 self.cstyle_ifs = value
             elif option.param == "cstyle_void_param":
                 self.cstyle_void_param = value
+            elif option.param == "stl_accessor_calls":
+                self.stl_accessor_calls = value
+            elif option.param == "indent_size":
+                self.indent_delta = value
 
     def _analyze(self):
         self._variables_in_use = {}
@@ -2772,8 +3733,16 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
 
         arg_list = [self._variable(arg, None) for arg in self._func_args] if self._func_args else []
 
-        self.reset_idx_counters()
+        self.reset_ident_counters()
+        self._sse_typing = self._collect_sse_vector_kinds()
         obj = self._handle(self._sequence)
+
+        # render the runtime dimension of every variable-length array (e.g. ``blk[e->bs]``) through the
+        # regular expression handler, so the field name/type match the rest of the output
+        self._array_length_cexprs = {
+            var: self._handle(dim_expr)
+            for var, dim_expr in self.kb.dec_variables[self._func.addr].array_length_exprs.items()
+        }
 
         self.cnode2ailexpr = {v: k[0] for k, v in self.ailexpr2cnode.items()}
 
@@ -2784,7 +3753,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             arg_list,
             obj,
             self._variables_in_use,
-            self._variable_kb.variables[self._func.addr],
+            self.kb.dec_variables[self._func.addr],
             demangled_name=self._func.demangled_name,
             show_demangled_name=self.show_demangled_name,
             codegen=self,
@@ -2819,6 +3788,9 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         """
         if self.cfunc is None:
             return
+        # recompute the unified local variables and their types from the (possibly updated or freshly deserialized)
+        # variable manager, so re-rendering reflects the current variable types
+        self.cfunc.refresh()
         self.cleanup()
         (
             self.text,
@@ -2887,10 +3859,233 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             lines += [f"// {line}" for line in note_lines]
         return "\n".join(lines) + "\n\n"
 
+    #
+    # SSE vectors
+    #
+
+    def _collect_sse_vector_kinds(self) -> SSEVectorTyping | None:
+        if self._sequence is None:
+            return None
+        blocks: list[Block] = []
+        SequenceWalker(handlers={Block: lambda node, **kw: blocks.append(node)}).walk(self._sequence)
+        vmi = self.kb.dec_variables[self._func.addr]
+
+        def variable_key(expr) -> SimVariable | None:
+            var = self._variable_map.variable(expr)
+            if var is None:
+                return None
+            return vmi.unified_variable(var) or var
+
+        def eligible(var: SimVariable) -> bool:
+            ty = unpack_typeref(vmi.get_variable_type(var))
+            return isinstance(ty, (SimTypeNum, SimTypeInt)) and ty.size == VECTOR_BITS
+
+        typing = SSEVectorTyping(variable_key, eligible)
+        typing.collect(blocks)
+        return typing
+
+    def _sse_vector_kind(self, expr) -> LaneKind | None:
+        return self._sse_typing.kind(expr) if self._sse_typing is not None else None
+
+    def _sse_variable_kind(self, variable: SimVariable) -> LaneKind | None:
+        if self._sse_typing is None:
+            return None
+        unified = self.kb.dec_variables[self._func.addr].unified_variable(variable)
+        return self._sse_typing.kinds.get(unified or variable)
+
+    def _m128_type(self, kind: LaneKind) -> SimTypeM128:
+        return SimTypeM128(kind).with_arch(self.project.arch)  # type: ignore[return-value]
+
+    def _sse_call(self, name: str, args: list[CExpression], ret_ty: SimType, tags=None) -> CFunctionCall:
+        arg_types = [a.type if a.type is not None else SimTypeBottom() for a in args]
+        proto = SimTypeFunction(arg_types, ret_ty).with_arch(self.project.arch)
+        assert isinstance(proto, SimTypeFunction)
+        return CFunctionCall(name, None, args, tags=tags, codegen=self, callsite_prototype=proto)
+
+    def _sse_const(self, value: int, kind: LaneKind, lane: int | None, tags=None) -> CExpression:
+        """A 128-bit vector constant as _mm_set*: set1 when every lane is equal."""
+        if value == 0:
+            return self._sse_call(f"_mm_setzero_{BITWISE_SUFFIX[kind]}", [], self._m128_type(kind), tags)
+
+        def split(n: int) -> list[int]:  # low to high
+            return [(value >> (i * n)) & ((1 << n) - 1) for i in range(VECTOR_BITS // n)]
+
+        if lane not in (8, 16, 32, 64):
+            lane = 32 if len(set(split(32))) == 1 else 64
+        lanes = split(lane)
+        sfx = "epi64x" if lane == 64 else f"epi{lane}"
+        if len(set(lanes)) == 1:
+            name, values = f"_mm_set1_{sfx}", lanes[:1]
+        else:
+            name, values = f"_mm_set_{sfx}", lanes[::-1]
+
+        def lane_const(v: int) -> CConstant:
+            sv = u2s(v, lane)
+            if -0x10000 <= sv < 0:  # small negative lanes (e.g. a psubq by -8) read best as signed
+                return CConstant(sv, self.default_simtype_from_bits(lane, signed=True), tags=tags, codegen=self)
+            return CConstant(v, self.default_simtype_from_bits(lane, signed=False), tags=tags, codegen=self)
+
+        args: list[CExpression] = [lane_const(v) for v in values]
+        call: CExpression = self._sse_call(name, args, self._m128_type("int"), tags)
+        if kind != "int":
+            call = self._sse_call(f"_mm_castsi128_{BITWISE_SUFFIX[kind]}", [call], self._m128_type(kind), tags)
+        return call
+
+    def _sse_operand(self, expr, kind: LaneKind, lane: int | None = None) -> CExpression:
+        """A 128-bit operand used as a vector of *kind*."""
+        if isinstance(expr, Expr.Const) and isinstance(expr.value, int) and expr.bits == VECTOR_BITS:
+            return self._sse_const(expr.value, kind, lane, expr.tags)
+        if isinstance(expr, BinaryOp) and expr.op == "Concat" and expr.bits == VECTOR_BITS:
+            value = concat_constant(expr)
+            if value is not None:
+                return self._sse_const(value, kind, lane, expr.tags)
+        if isinstance(expr, BinaryOp) and expr.op in {"And", "Or", "Xor"} and expr.bits == VECTOR_BITS:
+            return self._sse_bitwise(expr, kind)
+        return self._handle(expr)
+
+    def _sse_bitwise(self, expr: BinaryOp, kind: LaneKind) -> CExpression:
+        lhs, rhs = expr.operands
+        op = expr.op.lower()
+        if expr.op == "And":
+            if isinstance(lhs, Expr.UnaryOp) and lhs.op == "Not":
+                op, lhs = "andnot", lhs.operand
+            elif isinstance(rhs, Expr.UnaryOp) and rhs.op == "Not":
+                op, lhs, rhs = "andnot", rhs.operand, lhs
+        args = [self._sse_operand(lhs, kind), self._sse_operand(rhs, kind)]
+        return self._sse_call(f"_mm_{op}_{BITWISE_SUFFIX[kind]}", args, self._m128_type(kind), expr.tags)
+
+    def _handle_sse_binop(self, expr: BinaryOp) -> CExpression | None:
+        """Render a 128-bit vector BinaryOp as an Intel intrinsic, or None."""
+        if is_vector_op(expr):
+            kind = vector_op_kind(expr)
+            info = vector_op_intrinsic(expr)
+            assert expr.vector_size is not None
+            # no exact intrinsic: keep the AIL op name, e.g. CmpGTV(a, b) for an unsigned compare
+            name, swap, lane = info if info is not None else (expr.op, False, expr.vector_size)
+            operands = expr.operands[::-1] if swap else expr.operands
+            args = [
+                self._sse_operand(op, kind, lane) if op.bits == VECTOR_BITS else self._handle(op) for op in operands
+            ]
+            return self._sse_call(name, args, self._m128_type(kind), expr.tags)
+
+        if expr.bits != VECTOR_BITS or self._sse_typing is None:
+            return None
+
+        if expr.op in {"And", "Or", "Xor"}:
+            kind = self._sse_vector_kind(expr)
+            return self._sse_bitwise(expr, kind) if kind is not None else None
+
+        if (
+            expr.op in {"Shl", "Shr"}
+            and isinstance(expr.operands[1], Expr.Const)
+            and isinstance(expr.operands[1].value, int)
+            and expr.operands[1].value % 8 == 0
+            and 0 < expr.operands[1].value < VECTOR_BITS
+            and self._sse_vector_kind(expr.operands[0]) == "int"
+        ):
+            # whole-register byte shift (pslldq / psrldq)
+            name = "_mm_slli_si128" if expr.op == "Shl" else "_mm_srli_si128"
+            nbytes = CConstant(expr.operands[1].value // 8, SimTypeInt(), tags=expr.tags, codegen=self)
+            return self._sse_call(name, [self._handle(expr.operands[0]), nbytes], self._m128_type("int"), expr.tags)
+
+        if expr.op == "Concat":
+            shuffle = match_shuffle_epi32(expr)
+            if shuffle is None:
+                return None
+            base, imm = shuffle
+            kind = self._sse_vector_kind(base)
+            if kind not in ("int", "float"):
+                return None
+            cimm = CConstant(imm, SimTypeInt(), tags=expr.tags, codegen=self)
+            cimm.fmt_hex = True
+            cbase = self._handle(base)
+            if kind == "int":
+                return self._sse_call("_mm_shuffle_epi32", [cbase, cimm], self._m128_type(kind), expr.tags)
+            return self._sse_call("_mm_shuffle_ps", [cbase, cbase, cimm], self._m128_type(kind), expr.tags)
+
+        return None
+
+    def _sse_lane_call(self, base, off: int, bits: int, tags, narrow: bool = True) -> CExpression:
+        """Read the *bits*-wide lane at bit offset *off* (a multiple of *bits*) of an integer vector."""
+        cbase = self._handle(base)
+        if off == 0 and bits >= 32:
+            name, args = f"_mm_cvtsi128_si{bits}", [cbase]
+        else:
+            name, args = (
+                f"_mm_extract_epi{bits}",
+                [cbase, CConstant(off // bits, SimTypeInt(), tags=tags, codegen=self)],
+            )
+        call: CExpression = self._sse_call(
+            name, args, self.default_simtype_from_bits(64 if bits == 64 else 32, signed=True), tags
+        )
+        if bits < 32 and narrow:
+            call = CTypeCast(None, self.default_simtype_from_bits(bits, signed=False), call, codegen=self)
+        return call
+
+    def _handle_sse_lane_read(self, expr: Expr.Convert) -> CExpression | None:
+        """A truncation of an integer vector: the lane extract / movd intrinsic."""
+        if (
+            self._sse_typing is None
+            or expr.vector_count is not None
+            or not (expr.from_type == expr.to_type == Expr.ConvertType.TYPE_INT)
+            or expr.from_bits != VECTOR_BITS
+        ):
+            return None
+        to_bits = expr.to_bits
+        if to_bits == 1:
+            # a bit test: read the widest lane holding the bit
+            lane = lane_of(expr.operand, VECTOR_BITS, any_offset=True)
+            if lane is None or self._sse_vector_kind(lane[0]) != "int":
+                return None
+            base, off = lane
+            bits = next(b for b in (32, 16, 8, 1) if off % b == 0)
+            if bits == 1:
+                return None
+            one = CConstant(1, SimTypeInt(), tags=expr.tags, codegen=self)
+            lane_read = self._sse_lane_call(base, off, bits, expr.tags, narrow=False)
+            return CBinaryOp("And", lane_read, one, tags=expr.tags, codegen=self)
+        if to_bits not in (8, 16, 32, 64):
+            return None
+        lane = lane_of(expr, to_bits)
+        if lane is not None and self._sse_vector_kind(lane[0]) == "int":
+            return self._sse_lane_call(lane[0], lane[1], to_bits, expr.tags)
+        if self._sse_vector_kind(expr.operand) == "int":
+            name = "_mm_cvtsi128_si64" if to_bits == 64 else "_mm_cvtsi128_si32"
+            call: CExpression = self._sse_call(
+                name,
+                [self._handle(expr.operand)],
+                self.default_simtype_from_bits(64 if to_bits == 64 else 32, signed=True),
+                expr.tags,
+            )
+            if to_bits < 32:
+                call = CTypeCast(None, self.default_simtype_from_bits(to_bits, signed=False), call, codegen=self)
+            return call
+        return None
+
+    @staticmethod
+    def _is_lvalue(expr: CExpression) -> bool:
+        if isinstance(expr, (CVariable, CVariableField, CIndexedVariable, CRegister, CFakeVariable)):
+            return True
+        return isinstance(expr, CUnaryOp) and expr.op == "Dereference"
+
+    def _handle_sse_extract(self, expr: Expr.Extract) -> CExpression | None:
+        """A lane-aligned Extract of an integer vector."""
+        if (
+            self._sse_typing is None
+            or expr.base.bits != VECTOR_BITS
+            or expr.bits not in (8, 16, 32, 64)
+            or not isinstance(expr.offset, Expr.Const)
+            or not isinstance(expr.offset.value, int)
+            or (expr.offset.value * 8) % expr.bits
+            or self._sse_vector_kind(expr.base) != "int"
+        ):
+            return None
+        return self._sse_lane_call(expr.base, expr.offset.value * 8, expr.bits, expr.tags)
+
     def _get_variable_type(self, var, is_global=False):
         if is_global:
-            return self._variable_kb.variables["global"].get_variable_type(var)
-        return self._variable_kb.variables[self._func.addr].get_variable_type(var)
+            return self.kb.dec_variables.get_global_manager(self.flavor).get_variable_type(var)
+        return self.kb.dec_variables[self._func.addr].get_variable_type(var)
 
     def _get_derefed_type(self, ty: SimType) -> SimType | None:
         if ty is None:
@@ -2906,11 +4101,13 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         if self._variables_in_use is not None:
             for var in self._variables_in_use.values():
                 if isinstance(var, CVariable):
-                    var.variable_type = self._get_variable_type(
+                    new_type = self._get_variable_type(
                         var.variable,
                         is_global=isinstance(var.variable, SimMemoryVariable)
                         and not isinstance(var.variable, SimStackVariable),
                     )
+                    if not _is_m128_reinterpretation(var.variable_type, new_type):
+                        var.variable_type = new_type
 
         if self.cexterns is not None:
             for var in self.cexterns:
@@ -2939,15 +4136,145 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             8: SimTypeChar,
         }
         if n in _mapping:
-            return _mapping.get(n)(signed=signed).with_arch(self.project.arch)
+            return _mapping[n](signed=signed).with_arch(self.project.arch)
         return SimTypeNum(n, signed=signed).with_arch(self.project.arch)
+
+    def _bit_pattern_constant_for_dst(self, csrc: CExpression, dst_type: SimType | None) -> CExpression:
+        """
+        A constant written to a location of the same width but the other FP/integer class is a bit pattern (e.g., mov
+        dword [x], 0; mov dword [x+4], 0x3ff00000 into a double). Retype the constant to the destination type so it
+        renders as an FP literal or as the integer bits, instead of being value-converted by a cast.
+        """
+        dst_type = unpack_typeref(dst_type)
+        if not isinstance(csrc, CConstant) or csrc.type is None or dst_type is None or csrc.type.size != dst_type.size:
+            return csrc
+        if (
+            type(csrc.value) is int
+            and not csrc.reference_values
+            and isinstance(dst_type, SimTypeFloat)
+            and not isinstance(dst_type, SimTypeLongDouble)
+            and dst_type.size in {32, 64}
+        ):
+            # a nonzero pattern with a zero exponent (a denormal) is far more likely an address or a small integer
+            exp_mask = 0x7F80_0000 if dst_type.size == 32 else 0x7FF0_0000_0000_0000
+            if csrc.value == 0 or csrc.value & exp_mask:
+                return CConstant(csrc.value, dst_type, tags=csrc.tags, codegen=self)
+        if (
+            isinstance(csrc.value, float)
+            and isinstance(dst_type, (SimTypeInt, SimTypeNum))
+            and dst_type.size in {32, 64}
+        ):
+            fmt = ("<f", "<I") if dst_type.size == 32 else ("<d", "<Q")
+            bits = struct.unpack(fmt[1], struct.pack(fmt[0], csrc.value))[0]
+            return CConstant(bits, dst_type, tags=csrc.tags, codegen=self)
+        return csrc
+
+    def _fp_operand_type(self, operand: Expr.Expression) -> SimType | None:
+        if isinstance(operand, Expr.Const):
+            return None
+        fp_cls = _FP_TYPES_BY_BITS.get(operand.bits)
+        return fp_cls().with_arch(self.project.arch) if fp_cls is not None else None
+
+    def _fp_view_of_int_lvalue(self, cexpr: CExpression, bits: int) -> CExpression:
+        """
+        An FP operation reads or writes its operand as a floating-point value. When variable typing left that operand
+        an integer variable, view its bits as the FP type of the same width (see CReinterpret) instead of letting C
+        convert the integer value.
+        """
+        if not isinstance(cexpr, (CVariable, CIndexedVariable, CVariableField)):
+            return cexpr
+        ty = unpack_typeref(cexpr.type)
+        if not isinstance(ty, (SimTypeInt, SimTypeChar, SimTypeNum)) or ty.size != bits:
+            return cexpr
+        fp_cls = _FP_TYPES_BY_BITS.get(bits)
+        if fp_cls is None:
+            return cexpr
+        return CReinterpret(ty, fp_cls(), cexpr, codegen=self)
+
+    def _assign_converted(self, cdst: CExpression, csrc: CExpression, cast_other: bool = True, **kwargs) -> CAssignment:
+        """
+        dst = src where the C types differ. An FP value and an integer of the same width are the same bits in a
+        punned location (a union-like field, an x87 register variable typed as an integer), so view the bits
+        instead of letting a cast convert the value. Other mismatches get a cast when cast_other is set.
+        """
+        src_ty = unpack_typeref(csrc.type) if csrc.type is not None else None
+        dst_ty = unpack_typeref(cdst.type) if cdst.type is not None else None
+        int_types = (SimTypeInt, SimTypeChar, SimTypeNum)
+        if (
+            src_ty is not None
+            and dst_ty is not None
+            and (
+                (isinstance(src_ty, SimTypeFloat) and isinstance(dst_ty, int_types))
+                or (isinstance(dst_ty, SimTypeFloat) and isinstance(src_ty, int_types))
+            )
+            and src_ty.size == dst_ty.size
+        ):
+            if is_addressable_lvalue(cdst):
+                return CAssignment(CReinterpret(dst_ty, src_ty, cdst, codegen=self), csrc, codegen=self, **kwargs)
+            if (
+                isinstance(csrc, CUnaryOp)
+                and csrc.op == "Dereference"
+                and isinstance(csrc.operand, CTypeCast)
+                and isinstance(csrc.operand.expr, CUnaryOp)
+                and csrc.operand.expr.op == "Reference"
+            ):
+                # *((double *)&x) viewed as an integer: *((long long *)&x)
+                ref = csrc.operand.expr
+                ptr_ty = SimTypePointer(dst_ty).with_arch(self.project.arch)
+                csrc = CUnaryOp("Dereference", CTypeCast(None, ptr_ty, ref, codegen=self), codegen=self)
+                return CAssignment(cdst, csrc, codegen=self, **kwargs)
+            return CAssignment(cdst, CReinterpret(src_ty, dst_ty, csrc, codegen=self), codegen=self, **kwargs)
+        cdst_type = cdst.type
+        if (
+            cast_other
+            and src_ty is not None
+            and dst_ty is not None
+            and cdst_type is not None
+            and cdst_type != csrc.type
+        ):
+            csrc = CTypeCast(csrc.type, cdst_type, csrc, codegen=self)
+        return CAssignment(cdst, csrc, codegen=self, **kwargs)
+
+    def _int_to_fp_operand(self, child: CExpression, from_bits: int, signed: bool) -> CExpression:
+        """
+        cvtsi2sd and friends read the integer with the signedness of the conversion. When the operand's C type says
+        otherwise (a pointer, an unsigned field, ...), (double)x in C would convert the other way, so cast through the
+        integer type of the conversion first.
+        """
+        ty = unpack_typeref(child.type)
+        if isinstance(ty, (SimTypeBool, SimTypeFloat, SimTypeBottom)):
+            return child
+        ws = int_width_and_signedness(ty)
+        if ws is not None and ws[0] <= from_bits:
+            width = ws[0]
+            is_signed = int_operand_signedness(child)
+            if is_signed is None or is_signed == signed:
+                return child
+            if not is_signed:
+                # a zero-extended narrower value never has the sign bit set
+                if width < from_bits:
+                    return child
+                if isinstance(child, CTypeCast):
+                    inner = int_width_and_signedness(child.expr.type)
+                    if inner is not None and inner[0] < from_bits:
+                        return child
+        return CTypeCast(None, self.default_simtype_from_bits(from_bits, signed), child, codegen=self)
+
+    def _fp_operand_bits(self, child: CExpression, bits: int) -> CExpression:
+        """
+        An integer-domain AIL operation on an FP-typed C operand reads the operand's bit pattern, not its value.
+        """
+        ty = unpack_typeref(child.type)
+        if isinstance(ty, SimTypeFloat) and bits in {32, 64} and ty.size == bits and not isinstance(child, CConstant):
+            return CReinterpret(ty, self.default_simtype_from_bits(bits, False), child, codegen=self)
+        return child
 
     def _variable(
         self, variable: SimVariable, fallback_type_size: int | None, vvar_id: int | None = None, mark_used: bool = True
     ) -> CVariable:
         # TODO: we need to fucking make sure that variable recovery and type inference actually generates a size
         # TODO: for each variable it links into the fucking ail. then we can remove fallback_type_size.
-        unified = self._variable_kb.variables[self._func.addr].unified_variable(variable)
+        unified = self.kb.dec_variables[self._func.addr].unified_variable(variable)
         variable_type = self._get_variable_type(
             variable, is_global=isinstance(variable, SimMemoryVariable) and not isinstance(variable, SimStackVariable)
         )
@@ -2955,6 +4282,10 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             variable_type = self.default_simtype_from_bits(
                 (fallback_type_size or self.project.arch.bytes) * self.project.arch.byte_width
             )
+        else:
+            sse_kind = self._sse_variable_kind(variable)
+            if sse_kind is not None:
+                variable_type = self._m128_type(sse_kind)
         cvar = CVariable(variable, unified_variable=unified, variable_type=variable_type, codegen=self, vvar_id=vvar_id)
         if mark_used:
             self._variables_in_use[variable] = cvar
@@ -3041,7 +4372,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         if offset == 0:
             data_type = renegotiate_type(data_type, base_type)
             if type_equals(base_type, data_type) or (
-                base_type.size is not None and data_type.size is not None and base_type.size < data_type.size
+                base_type.size is not None and data_type.size is not None and base_type.size <= data_type.size
             ):
                 # case 1: we're done because we found it
                 # case 2: we're done because we can never find it and we might as well stop early
@@ -3051,7 +4382,14 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     return base_expr
 
                 if not type_equals(base_type, data_type):
-                    return _force_type_cast(base_type, data_type, expr)
+                    # expr is the pointer itself: cast it, do not take its address
+                    return CUnaryOp(
+                        "Dereference",
+                        CTypeCast(
+                            expr.type, SimTypePointer(data_type).with_arch(self.project.arch), expr, codegen=self
+                        ),
+                        codegen=self,
+                    )
                 return CUnaryOp("Dereference", expr, codegen=self)
 
         stride = 1 if base_type.size is None else base_type.size // self.project.arch.byte_width or 1
@@ -3080,7 +4418,10 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 result = CUnaryOp("Reference", CVariableField(base_expr, field, False, codegen=self), codegen=self)
             else:
                 result = CUnaryOp("Reference", CVariableField(expr, field, True, codegen=self), codegen=self)
-            return self._access_constant_offset(result, remainder - field_offset, data_type, lvalue, renegotiate_type)
+            result = self._access_constant_offset(result, remainder - field_offset, data_type, lvalue, renegotiate_type)
+            if not lvalue:
+                self._tag_stl_accessor(result, base_type, field_name)
+            return result
 
         if isinstance(base_type, (SimTypeFixedSizeArray, SimTypeArray)):
             result = base_expr or expr  # death to C
@@ -3137,6 +4478,25 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         # otherwise, normal cast
         return CTypeCast(base_type, data_type, base_expr, codegen=self)
 
+    def _tag_stl_accessor(self, result: CExpression, base_type: SimStruct, field_name: str) -> None:
+        """
+        Name a read of a field of a recognized ``cpp::std`` class after the accessor it implements, so that it is
+        displayed as e.g. ``std::string::c_str(s)`` instead of ``s->m_data``.
+
+        Unlike the structural KnownPattern matchers, which have to recognize the *code shape* of an inlined accessor
+        before variable recovery, this naming is driven purely by the recovered type: it applies only where type
+        inference already proved the base is an STL container, so it cannot mislabel an unrelated pointer
+        dereference. See :mod:`angr.analyses.decompiler.stl_field_accessors`.
+
+        ``result`` is whatever the field access resolved to; the accessor name is attached only when that is exactly
+        the field access itself (optionally wrapped in a cast), not when the access continued into a sub-field of it.
+        """
+
+        field_access = result.expr if isinstance(result, CTypeCast) else result
+        if not isinstance(field_access, CVariableField) or field_access.field.field != field_name:
+            return
+        field_access.stl_accessor = stl_accessor_name(base_type, field_name)
+
     def _access(
         self,
         expr: CExpression,
@@ -3192,7 +4552,10 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     )
                 result = piece if result is None else CBinaryOp(op, result, piece, codegen=self)
             if o_constant != 0:
-                result = CBinaryOp("Add", CConstant(o_constant, SimTypeInt(), codegen=self), result, codegen=self)
+                if o_constant < 0:
+                    result = CBinaryOp("Sub", result, CConstant(-o_constant, SimTypeInt(), codegen=self), codegen=self)
+                else:
+                    result = CBinaryOp("Add", result, CConstant(o_constant, SimTypeInt(), codegen=self), codegen=self)
 
             return CUnaryOp(
                 "Dereference", CTypeCast(result.type, SimTypePointer(data_type), result, codegen=self), codegen=self
@@ -3203,7 +4566,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         # also identify the "kernel", the root of the expression
         constant, terms = o_constant, list(o_terms)
         if constant < 0:
-            constant = -constant  # TODO: This may not be correct. investigate later
+            return bail_out()
 
         i = 0
         kernel = None
@@ -3282,7 +4645,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
 
             # nothing has the ability to escape the kernel
             # go in deeper
-            if isinstance(kernel_type, SimStruct):
+            if isinstance(kernel_type, SimStruct) and kernel_type.offsets:
                 field_name, field_offset = max(
                     ((x, y) for x, y in kernel_type.offsets.items() if y <= constant), key=lambda x: x[1]
                 )
@@ -3330,7 +4693,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         if (node, is_expr) in self.ailexpr2cnode:
             return self.ailexpr2cnode[(node, is_expr)]
 
-        handler: Callable | None = self._handlers.get(node.__class__, None)
+        handler: Callable | None = self._handlers.get(_dispatch_key(node), None)
         if handler is not None:
             # special case for Call
             converted = (
@@ -3340,7 +4703,9 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             )
             self.ailexpr2cnode[(node, is_expr)] = converted
             return converted
-        raise UnsupportedNodeTypeError(f"Node type {type(node)} is not supported yet.")
+        raise UnsupportedNodeTypeError(
+            f"Node type {getattr(node, 'kind', None) or type(node).__name__} is not supported yet."
+        )
 
     def _handle_Code(self, node, **kwargs):
         return self._handle(node.node, is_expr=False)
@@ -3477,7 +4842,11 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             try:
                 cstmt = self._handle(stmt, is_expr=False)
             except UnsupportedNodeTypeError:
-                l.warning("Unsupported AIL statement or expression %s.", type(stmt), exc_info=True)
+                l.warning(
+                    "Unsupported AIL statement or expression %s.",
+                    getattr(stmt, "kind", None) or type(stmt).__name__,
+                    exc_info=True,
+                )
                 cstmt = CUnsupportedStatement(stmt, codegen=self)
             cstmts.append(cstmt)
 
@@ -3488,10 +4857,29 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
     #
 
     def _handle_Stmt_Store(self, stmt: Stmt.Store, **kwargs):
-        cdata = self._handle(stmt.data)
+        store_kind = self._sse_vector_kind(stmt.data)
+        if store_kind is None and self._sse_typing is not None:
+            store_var = self._variable_map.variable(stmt)
+            store_kind = self._sse_variable_kind(store_var) if store_var is not None else None
+        cdata = self._sse_operand(stmt.data, store_kind) if store_kind is not None else self._handle(stmt.data)
 
-        if cdata.type is not None and cdata.type.size != stmt.size * self.project.arch.byte_width:
-            l.error("Store data lifted to a C type with a different size. Decompilation output will be wrong.")
+        store_bits = stmt.size * self.project.arch.byte_width
+        if cdata.type is not None and cdata.type.size != store_bits:
+            if cdata.type.size is not None:
+                l.error(
+                    "Store data lifted to a C type of a different size: %s is %d bits, the store is %d bits. "
+                    "Using the store width.",
+                    cdata.type,
+                    cdata.type.size,
+                    store_bits,
+                )
+            if qualifies_for_width_cast(unpack_typeref(cdata.type)):
+                cdata = CTypeCast(
+                    cdata.type,
+                    self.default_simtype_from_bits(store_bits, signed=getattr(cdata.type, "signed", False)),
+                    cdata,
+                    codegen=self,
+                )
 
         def negotiate(old_ty, proposed_ty):
             # transfer casts from the dst to the src if possible
@@ -3502,29 +4890,53 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 return proposed_ty
             return old_ty
 
-        if stmt.variable is not None and cdata.type is not None:
-            cvar = self._variable(stmt.variable, stmt.size)
-            offset = stmt.offset or 0
-            assert type(offset) is int  # I refuse to deal with the alternative
+        if self._is_errno_location(stmt.addr):
+            return CAssignment(self._errno_variable(), cdata, tags=stmt.tags, codegen=self)
 
-            cdst = self._access_constant_offset(self._get_variable_reference(cvar), offset, cdata.type, True, negotiate)
+        stmt_var = self._variable_map.variable(stmt)
+        if stmt_var is not None and cdata.type is not None:
+            cvar = self._variable(stmt_var, stmt.size)
+            offset = self._variable_map.variable_offset(stmt) or 0
+            assert type(offset) is int  # I refuse to deal with the alternative
+            if offset == 0:
+                cdata = self._bit_pattern_constant_for_dst(cdata, cvar.type)
+            # still typed: _bit_pattern_constant_for_dst only retypes to a non-None type
+            stored_type = cdata.type
+            assert stored_type is not None
+
+            cdst = self._access_constant_offset(
+                self._get_variable_reference(cvar), offset, stored_type, True, negotiate
+            )
         else:
             addr_expr = self._handle(stmt.addr)
-            cdst = self._access(addr_expr, cdata.type if cdata.type is not None else SimTypeBottom(), True, negotiate)
+            data_type = cdata.type if cdata.type is not None else SimTypeBottom()
+            if isinstance(data_type, SimTypeM128) and isinstance(addr_expr.type, SimTypePointer):
+                pointee = unpack_typeref(addr_expr.type.pts_to)
+                if _is_m128_reinterpretation(data_type, pointee):
+                    # store the vector through the 128-bit integer pointer without a pointer cast
+                    data_type = pointee
+            cdst = self._access(addr_expr, data_type, True, negotiate)
 
         return CAssignment(cdst, cdata, tags=stmt.tags, codegen=self)
 
     def variables_unify(self, v1: Expr.VirtualVariable, v2: Expr.VirtualVariable) -> bool:
-        vmi = self._variable_kb.variables[self._func.addr]
-        v1v = vmi.unified_variable(v1.variable) if v1.variable is not None else None
-        v2v = vmi.unified_variable(v2.variable) if v2.variable is not None else None
+        vmi = self.kb.dec_variables[self._func.addr]
+        v1_var = self._variable_map.variable(v1)
+        v2_var = self._variable_map.variable(v2)
+        v1v = vmi.unified_variable(v1_var) if v1_var is not None else None
+        v2v = vmi.unified_variable(v2_var) if v2_var is not None else None
         return v1v == v2v
 
     def _handle_Stmt_Assignment(self, stmt, **kwargs):
+        if stmt.tags.get("fp_exception_probe", False):
+            # the result is dead; the op only raises an FPU exception
+            csrc = self._handle(stmt.src, lvalue=False)
+            void = CTypeCast(csrc.type, SimTypeBottom(label="void"), csrc, codegen=self)
+            return CExpressionStatement(void, tags=stmt.tags, codegen=self)
         if (
             isinstance(stmt.dst, Expr.VirtualVariable)
             and stmt.dst.was_stack
-            and stmt.dst.variable is not None
+            and self._variable_map.variable(stmt.dst) is not None
             and isinstance(stmt.src, Expr.Insert)
             and isinstance(stmt.src.offset, Expr.Const)
             and isinstance(stmt.src.offset.value, int)
@@ -3534,7 +4946,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             )
         ):
             offset = stmt.src.offset.value
-            var = stmt.dst.variable
+            var = self._variable_map.variable(stmt.dst)
             cvar = self._variable(var, stmt.dst.size, vvar_id=stmt.dst.varid)
             csrc = self._handle(stmt.src.value)
             src_type = csrc.type
@@ -3555,10 +4967,35 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             assert dst_type is not None
             cdst = self._access_constant_offset(self._get_variable_reference(cvar), offset, dst_type, True, negotiate)
         else:
-            csrc = self._handle(stmt.src, lvalue=False)
+            dst_kind = self._sse_vector_kind(stmt.dst)
+            if dst_kind is not None:
+                csrc = self._sse_operand(stmt.src, dst_kind)
+            else:
+                csrc = self._handle(stmt.src, lvalue=False)
             cdst = self._handle(stmt.dst, lvalue=True)
+            if (
+                isinstance(stmt.src, Expr.Convert)
+                and stmt.src.to_type == Expr.ConvertType.TYPE_FP
+                and stmt.src.vector_count is None
+            ):
+                cdst = self._fp_view_of_int_lvalue(cdst, stmt.dst.bits)
+                if (
+                    isinstance(cdst, CReinterpret)
+                    and not is_addressable_lvalue(cdst.expr)
+                    and (CReinterpret._type_key(cdst.dst_type) + CReinterpret._type_key(cdst.src_type))
+                    in CReinterpret.INTRINSICS
+                ):
+                    # a register variable has no address: reinterpret the FP value into it instead
+                    csrc = CReinterpret(cdst.dst_type, cdst.src_type, csrc, codegen=self)
+                    return CAssignment(cdst.expr, csrc, tags=stmt.tags, codegen=self)
+                if isinstance(cdst.type, SimTypeFloat) and isinstance(csrc.type, SimTypeFloat):
+                    # FP->FP assignment converts implicitly
+                    return CAssignment(cdst, csrc, tags=stmt.tags, codegen=self)
             if csrc.type is not None and cdst.type is not None and cdst.type != csrc.type:
-                csrc = CTypeCast(csrc.type, cdst.type, csrc, codegen=self)
+                if _is_m128_reinterpretation(cdst.type, csrc.type) or _is_m128_reinterpretation(csrc.type, cdst.type):
+                    return CAssignment(cdst, csrc, tags=stmt.tags, codegen=self)
+                csrc = self._bit_pattern_constant_for_dst(csrc, cdst.type)
+            return self._assign_converted(cdst, csrc, tags=stmt.tags)
 
         return CAssignment(cdst, csrc, tags=stmt.tags, codegen=self)
 
@@ -3596,8 +5033,6 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     and i < len(target_func.prototype.args)
                 ):
                     type_ = target_func.prototype.args[i].with_arch(self.project.arch)
-                    if target_func.prototype_libname is not None:
-                        type_ = dereference_simtype_by_lib(type_, target_func.prototype_libname)
 
                 if isinstance(arg, Expr.Const):
                     if isinstance(arg.value, int) and (
@@ -3622,6 +5057,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             show_demangled_name=self.show_demangled_name,
             show_disambiguated_name=self.show_disambiguated_name,
             codegen=self,
+            callsite_prototype=self._variable_map.prototype(stmt.expr) if isinstance(target, str) else None,
         )
 
         if is_expr:
@@ -3641,7 +5077,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
 
         if ret_expr is not None:
             # ret_expr = call()  =>  CAssignment(ret_expr, call_expr)
-            return CAssignment(ret_expr, call_expr, tags=stmt.tags, codegen=self)
+            return self._assign_converted(ret_expr, call_expr, cast_other=False, tags=stmt.tags)
 
         # Standalone call statement
         return CExpressionStatement(call_expr, returning=returning, tags=stmt.tags, codegen=self)
@@ -3675,8 +5111,6 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     and i < len(target_func.prototype.args)
                 ):
                     type_ = target_func.prototype.args[i].with_arch(self.project.arch)
-                    if target_func.prototype_libname is not None:
-                        type_ = dereference_simtype_by_lib(type_, target_func.prototype_libname)
 
                 if isinstance(arg, Expr.Const):
                     if isinstance(arg.value, int) and (
@@ -3696,9 +5130,21 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             show_demangled_name=self.show_demangled_name,
             show_disambiguated_name=self.show_disambiguated_name,
             codegen=self,
+            callsite_prototype=self._variable_map.prototype(expr) if isinstance(target, str) else None,
         )
 
-        if expr.bits and call_expr.type is not None and call_expr.type.size != expr.size * self.project.arch.byte_width:
+        # a call narrower than a byte is a predicate (a known-pattern call standing in for a 1-bit comparison);
+        # its declared return type is the right type, and a cast to a zero-byte integer is not a type at all
+        if (
+            expr.bits
+            and expr.bits >= self.project.arch.byte_width
+            and call_expr.type is not None
+            and call_expr.type.size != expr.size * self.project.arch.byte_width
+            # Don't insert an integer widening cast when the prototype return type is
+            # FP.  On x87, the fpreg register is 64-bit but the return type may be
+            # float (32-bit); the size mismatch is a VEX implementation detail.
+            and not isinstance(call_expr.type, (SimTypeFloat, SimTypeDouble))
+        ):
             call_expr = CTypeCast(
                 call_expr.type,
                 self.default_simtype_from_bits(
@@ -3726,16 +5172,76 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             codegen=self,
         )
 
+    def _handle_Stmt_IncompleteSwitchCaseHead(self, stmt: IncompleteSwitchCaseHeadStatement, **kwargs):
+        # an IncompleteSwitchCaseHeadStatement only reaches the code generator when structuring failed to turn it
+        # into a proper switch-case construct. degrade gracefully: render the dispatch semantics that the statement
+        # describes as a cascade of if-gotos instead of an unsupported-statement placeholder.
+        switch_var = self._handle(stmt.switch_variable)
+        bits = getattr(stmt.switch_variable, "bits", None) or self.project.arch.bits
+        const_type = self.default_simtype_from_bits(bits, signed=False)
+        condition_and_nodes = []
+        default_goto = None
+        for _, case_value, target_addr, target_idx, _ in stmt.case_addrs:
+            goto = CGoto(target_addr, target_idx, tags=stmt.tags, codegen=self)
+            if isinstance(case_value, str):
+                if case_value == "default":
+                    default_goto = goto
+                continue
+            cond = CBinaryOp(
+                "CmpEQ",
+                switch_var,
+                CConstant(case_value, const_type, codegen=self, tags=stmt.tags),
+                codegen=self,
+                tags=stmt.tags,
+            )
+            condition_and_nodes.append((cond, goto))
+        if not condition_and_nodes:
+            return default_goto if default_goto is not None else CUnsupportedStatement(stmt, codegen=self)
+        return CIfElse(
+            condition_and_nodes,
+            else_node=default_goto,
+            cstyle_ifs=self.cstyle_ifs,
+            tags=stmt.tags,
+            codegen=self,
+        )
+
     def _handle_Stmt_Return(self, stmt: Stmt.Return, **kwargs):
         if not stmt.ret_exprs:
             return CReturn(None, tags=stmt.tags, codegen=self)
         if len(stmt.ret_exprs) == 1:
             ret_expr = stmt.ret_exprs[0]
             return CReturn(self._handle(ret_expr), tags=stmt.tags, codegen=self)
-        # TODO: Multiple return expressions
-        l.warning("StructuredCodeGen does not support multiple return expressions yet. Only picking the first one.")
-        ret_expr = stmt.ret_exprs[0]
-        return CReturn(self._handle(ret_expr), tags=stmt.tags, codegen=self)
+        if not self._returnty_holds_every_ret_expr(stmt.ret_exprs):
+            l.warning("StructuredCodeGen does not support multiple return expressions yet. Only picking the first one.")
+            return CReturn(self._handle(stmt.ret_exprs[0]), tags=stmt.tags, codegen=self)
+        # SimComboArg lists its locations least significant first, so build the Concat up from the first
+        # expression: every piece joins on the left of what is already there, as the high half.
+        retval = self._handle(stmt.ret_exprs[0])
+        for ret_expr in stmt.ret_exprs[1:]:
+            retval = CBinaryOp("Concat", self._handle(ret_expr), retval, tags=stmt.tags, codegen=self)
+        return CReturn(retval, tags=stmt.tags, codegen=self)
+
+    def _returnty_holds_every_ret_expr(self, ret_exprs: list[Expr.Expression]) -> bool:
+        """
+        Whether the recovered return type accounts for every one of a return statement's expressions.
+
+        ``SimCC.return_val()`` answers with a :class:`SimComboArg` whenever the return type is wider than one
+        register -- a ``long long`` in ``edx:eax`` on x86, an ``__int128`` in ``rax:rdx`` on amd64, the two-word
+        values Go returns in ``rax:rbx`` -- and ``ReturnMaker`` expands that into one return expression per
+        location. Two things can put the expressions and the return type out of step afterwards, and in both the
+        pieces must not be rendered as one value:
+
+        - The return type is an aggregate or a floating-point value spread over several registers, which is not a
+          scalar with a high and a low half. angr/angr#6851 tracks carrying those through as one typed value.
+        - ``Clinic._make_function_prototype`` rewrote the prototype after ``ReturnMaker`` ran, leaving a return
+          type that is not as wide as the expressions it left behind.
+        """
+        if self._func.prototype is None or self._func.prototype.returnty is None:
+            return False
+        returnty = unpack_typeref(self._func.prototype.returnty).with_arch(self.project.arch)
+        if not qualifies_for_width_cast(returnty):
+            return False
+        return returnty.size == sum(ret_expr.bits for ret_expr in ret_exprs)
 
     def _handle_Stmt_Label(self, stmt: Stmt.Label, **kwargs):
         clabel = CLabel(stmt.name, tags=stmt.tags, codegen=self)
@@ -3746,6 +5252,23 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
     def _handle_Stmt_Dirty(self, stmt: Stmt.DirtyStatement, **kwargs):
         dirty = self._handle(stmt.dirty)
         return CDirtyStatement(dirty, codegen=self)
+
+    def _handle_Stmt_CAS(self, stmt: Stmt.CAS, **kwargs):
+        # CASIntrinsics normally rewrites compare-and-swap statements into intrinsic calls before we get here, but it
+        # only recognizes a handful of statement shapes. Render whatever it left behind as the same intrinsic call
+        # instead of failing the whole function.
+        if stmt.old_hi is None:
+            os_name = self.project.simos.name if self.project.simos is not None else None
+            call = Expr.Call(
+                stmt.idx,
+                cas_intrinsic_name(f"cmpxchg{stmt.bits}", os_name),
+                args=[stmt.addr, stmt.data_lo, stmt.expd_lo],
+                bits=stmt.bits,
+                **stmt.tags,
+            )
+            return self._handle(Stmt.Assignment(stmt.idx, stmt.old_lo, call, **stmt.tags), is_expr=False)
+        # a double-width CAS writes two destinations, which no single C expression captures
+        return CUnsupportedStatement(stmt, codegen=self)
 
     #
     # AIL expression handlers
@@ -3760,15 +5283,94 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 return proposed_ty
             return old_ty
 
-        if expr.variable:
-            cvar = self._variable(expr.variable, None)
-            if expr.variable.size == expr.size:
+        expr_var = self._variable_map.variable(expr)
+        if expr_var:
+            cvar = self._variable(expr_var, None)
+            if expr_var.size == expr.size:
                 return cvar
-            offset = 0 if expr.variable_offset is None else expr.variable_offset
+            expr_var_offset = self._variable_map.variable_offset(expr)
+            offset = 0 if expr_var_offset is None else expr_var_offset
             # FIXME: The type should be associated to the register expression itself
             type_ = self.default_simtype_from_bits(expr.bits, signed=False)
             return self._access_constant_offset(self._get_variable_reference(cvar), offset, type_, lvalue, negotiate)
-        return CRegister(expr, tags=expr.tags, codegen=self)
+        return CRegister(
+            register_display_name(self.project.arch, expr.reg_offset, expr.size), tags=expr.tags, codegen=self
+        )
+
+    def _handle_Expr_IRegister(self, expr: Expr.IRegister, **kwargs):
+        # an indexed register-array access whose index could not be resolved (x87 fpreg[ftop]); render it as a
+        # pseudo register rather than failing
+        base = self.project.arch.translate_register_name(expr.array_base)
+        index = self._handle(expr.reg_offset).c_repr()
+        if expr.array_bias:
+            index = f"{index} + {expr.array_bias}"
+        type_ = SimTypeDouble() if base == "fpreg" else self.default_simtype_from_bits(expr.bits, signed=False)
+        return CFakeVariable(f"{base}[{index}]", type_, codegen=self)
+
+    #: The libc functions that return ``&errno``. ``errno`` is a macro that
+    #: dereferences one of them, so it never survives into a binary as a symbol;
+    #: what reaches decompilation is ``*(__errno_location())``, which is both
+    #: correct and unreadable.
+    ERRNO_LOCATION_FUNCS = frozenset(
+        {
+            "__errno_location",  # glibc
+            "__error",  # BSD, macOS
+            "__errno",  # musl, bionic
+            "_errno",  # MSVC
+        }
+    )
+
+    def _is_errno_call(self, expr) -> bool:
+        """Whether ``expr`` is a call to one of :attr:`ERRNO_LOCATION_FUNCS`."""
+        if not isinstance(expr, Expr.Call):
+            return False
+        target = expr.target
+        if isinstance(target, str):
+            return target in self.ERRNO_LOCATION_FUNCS
+        if not isinstance(target, Expr.Const) or not isinstance(target.value, int):
+            return False
+        func = self.kb.functions.function(addr=target.value)
+        return func is not None and func.name in self.ERRNO_LOCATION_FUNCS
+
+    def _errno_vvar_ids(self) -> frozenset[int]:
+        """Virtual variables that hold ``&errno``.
+
+        ``errno`` expands per use, but the compiler calls the location function
+        once and keeps the pointer in a register, so most uses reach codegen as
+        a read through a variable rather than as the call itself. Copies of that
+        variable count too, hence the fixpoint.
+        """
+        if self._errno_vvars is not None:
+            return self._errno_vvars
+        found: set[int] = set()
+        if self.ail_graph is not None:
+            changed = True
+            while changed:
+                changed = False
+                for block in self.ail_graph.nodes():
+                    for stmt in block.statements:
+                        if not isinstance(stmt, Stmt.Assignment) or not isinstance(stmt.dst, Expr.VirtualVariable):
+                            continue
+                        if stmt.dst.varid in found:
+                            continue
+                        src = stmt.src
+                        if self._is_errno_call(src) or (isinstance(src, Expr.VirtualVariable) and src.varid in found):
+                            found.add(stmt.dst.varid)
+                            changed = True
+        self._errno_vvars = frozenset(found)
+        return self._errno_vvars
+
+    def _is_errno_location(self, expr) -> bool:
+        """Whether ``expr`` evaluates to ``&errno``."""
+        if self._is_errno_call(expr):
+            return True
+        return isinstance(expr, Expr.VirtualVariable) and expr.varid in self._errno_vvar_ids()
+
+    def _errno_variable(self):
+        """``errno`` as a plain name. A CFakeVariable rather than a CVariable
+        because there is no address to point at: the thread-local slot is
+        wherever the libc function said it was."""
+        return CFakeVariable("errno", SimTypeInt().with_arch(self.project.arch), codegen=self)
 
     def _handle_Expr_Load(self, expr: Expr.Load, **kwargs):
         if expr.size == UNDETERMINED_SIZE:
@@ -3779,12 +5381,35 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             expr_size = expr.size
             expr_bits = expr.bits
 
-        if expr.size > 100 and isinstance(expr.addr, Expr.Const):
+        if expr_size > 100 and isinstance(expr.addr, Expr.Const):
             return self._handle_Expr_Const(expr.addr, type_=SimTypePointer(SimTypeChar()).with_arch(self.project.arch))
 
         ty = self.default_simtype_from_bits(expr_bits)
 
+        if expr.tags.get("long_double_load"):
+            ty = SimTypeLongDouble().with_arch(self.project.arch)
+        load_data_type = expr.tags.get("data_type", None)
+        if load_data_type is not None:
+            _mapping = {
+                "Ity_F32": SimTypeFloat,
+                "Ity_F64": SimTypeDouble,
+                "Ity_F128": SimTypeFloat128,
+            }
+            if load_data_type in _mapping:
+                ty = _mapping[load_data_type]().with_arch(self.project.arch)
+
         def negotiate(old_ty: SimType, proposed_ty: SimType) -> SimType:
+            old_is_fp = isinstance(old_ty, (SimTypeFloat, SimTypeDouble))
+            proposed_is_fp = isinstance(proposed_ty, (SimTypeFloat, SimTypeDouble))
+            if old_is_fp != proposed_is_fp:
+                # When the proposed type is FP (from the pointer's basetype)
+                # and the old type is a same-sized integer default, accept the
+                # FP type -- the pointer is more informative than the Load's
+                # default integer sizing.
+                if proposed_is_fp and old_ty.size == proposed_ty.size:
+                    return proposed_ty
+                return old_ty
+
             # we do not allow returning a struct for a primitive type
             if (
                 old_ty.size == proposed_ty.size
@@ -3794,9 +5419,13 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 return proposed_ty
             return old_ty
 
-        if expr.variable is not None:
-            cvar = self._variable(expr.variable, expr_size)
-            offset = expr.variable_offset or 0
+        if self._is_errno_location(expr.addr):
+            return self._errno_variable()
+
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            cvar = self._variable(expr_var, expr_size)
+            offset = self._variable_map.variable_offset(expr) or 0
 
             assert type(offset) is int  # I refuse to deal with the alternative
             return self._access_constant_offset(CUnaryOp("Reference", cvar, codegen=self), offset, ty, False, negotiate)
@@ -3812,7 +5441,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self,
         expr: Expr.Const,
         type_=None,
-        reference_values: dict[SimType | str, str | bytes | int | float | Function | CExpression] | None = None,
+        reference_values: dict[SimType, str | bytes | int | float | Function | MemoryData] | None = None,
         variable=None,
         likely_signed=True,
         **kwargs,
@@ -3823,13 +5452,19 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         if type_ is None and "type" in expr.tags:
             type_ = expr.tags["type"]
 
-        if type_ is None and expr.variable is not None:
-            type_ = self._get_variable_type(expr.variable)
+        expr_var = self._variable_map.variable(expr)
+        if type_ is None and expr_var is not None:
+            type_ = self._get_variable_type(expr_var)
 
-        if reference_values is None and "reference_values" in expr.tags:
-            reference_values = expr.tags["reference_values"].copy()
+        expr_reference_values = self._variable_map.reference_values(expr)
+        if reference_values is None and expr_reference_values is not None:
+            reference_values = expr_reference_values.copy()
         if type_ is None and reference_values is not None and len(reference_values) == 1:  # type: ignore
             type_ = next(iter(reference_values))  # type: ignore
+
+        if isinstance(expr.value, float) and not isinstance(unpack_typeref(type_), SimTypeFloat):
+            # a float-valued constant cannot be rendered through an integer type; use the FP type of its width
+            type_ = (SimTypeFloat() if expr.bits == 32 else SimTypeDouble()).with_arch(self.project.arch)
 
         if reference_values is None:
             reference_values = {}
@@ -3902,26 +5537,29 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                             inline_string = True
 
         if type_ is None:
-            # default to int or unsigned int, determined by likely_signed
-            type_ = self.default_simtype_from_bits(expr.bits, signed=likely_signed)
+            if isinstance(expr.value, float):
+                if expr.bits == 32:
+                    type_ = SimTypeFloat().with_arch(self.project.arch)
+                else:
+                    type_ = SimTypeDouble().with_arch(self.project.arch)
+            else:
+                # default to int or unsigned int, determined by likely_signed
+                type_ = self.default_simtype_from_bits(expr.bits, signed=likely_signed)
 
-        if variable is None and "reference_variable" in expr.tags and expr.tags["reference_variable"] is not None:
-            variable = expr.tags["reference_variable"]
+        expr_reference_variable = self._variable_map.reference_variable(expr)
+        if variable is None and expr_reference_variable is not None:
+            variable = expr_reference_variable
             if inline_string:
-                self._inlined_strings.add(expr.tags["reference_variable"])
+                self._inlined_strings.add(expr_reference_variable)
             elif function_pointer:
-                self._function_pointers.add(expr.tags["reference_variable"])
+                self._function_pointers.add(expr_reference_variable)
 
-        var_access = None
-        if variable is not None and not reference_values:
+        if variable is not None and not reference_values and expr.value >= self.min_data_addr:
+            # small integers are rendered as-is; only values above min_data_addr are shown as variable references
             cvar = self._variable(variable, None)
-            offset = expr.tags.get("reference_variable_offset", 0)
-            var_access = self._access_constant_offset_reference(self._get_variable_reference(cvar), offset, None)
+            offset = self._variable_map.reference_variable_offset(expr)
+            return self._access_constant_offset_reference(self._get_variable_reference(cvar), offset, None)
 
-        if var_access is not None:
-            if expr.value >= self.min_data_addr:
-                return var_access
-            reference_values["offset"] = var_access
         return CConstant(expr.value, type_, reference_values=reference_values, tags=expr.tags, codegen=self)
 
     def _handle_Expr_UnaryOp(self, expr, type_: SimType | None = None, **kwargs):
@@ -3932,11 +5570,16 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             if isinstance(type_, SimTypePointer) and not isinstance(type_.pts_to, SimTypeBottom):
                 data_type = type_.pts_to
 
+        if expr.op in {"SignBit", "MovMskPD", "MovMskPS"}:
+            return self._handle_sign_mask(expr)
+
         operand = self._handle(expr.operand, lvalue=expr.op == "Reference", type_=data_type, ref=ref)
 
         if expr.op == "Reference" and isinstance(operand, CUnaryOp) and operand.op == "Dereference":
             # cancel out
             return operand.operand
+        if expr.op in {"Neg", "Not"} and not expr.floating_point:
+            operand = self._fp_operand_bits(operand, expr.operand.bits)
         return CUnaryOp(
             expr.op,
             operand,
@@ -3944,68 +5587,235 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             codegen=self,
         )
 
+    def _handle_sign_mask(self, expr: Expr.UnaryOp) -> CExpression:
+        """SignBit(x) -> signbit(x); MovMskPD/PS(v) -> _mm[256]_movemask_pd/ps(v), or signbit(v) when v is a scalar
+        float variable (its upper lanes carry nothing in a scalar context)."""
+        name = "signbit"
+        if expr.op != "SignBit":
+            operand = self._handle(expr.operand)
+            if not isinstance(operand.type, SimTypeFloat):
+                prefix = "_mm256" if expr.operand.bits == 256 else "_mm"
+                name = f"{prefix}_movemask_{expr.op[-2:].lower()}"
+        call = Expr.Call(expr.idx, name, args=[expr.operand], bits=max(expr.bits, 32), **expr.tags)
+        return self._handle(call)
+
+    def _fp_constant(self, operand: CExpression, ail_operand: Expr.Expression, scalar: bool = True) -> CExpression:
+        """An integer constant operand of an FP operation carries the bit pattern of a float or double; render it as
+        that value. Formatting flags would not do: they are shared by every constant of the same value and
+        instruction address, including the integer ones."""
+        if not (isinstance(operand, CConstant) and isinstance(operand.value, int)) or ail_operand.bits not in (
+            32,
+            64,
+            128,
+        ):
+            return operand
+        if ail_operand.bits == 128:
+            if not scalar:
+                return operand
+            return CConstant(
+                operand.value, SimTypeFloat128().with_arch(self.project.arch), tags=operand.tags, codegen=self
+            )
+        if ail_operand.bits == 32:
+            value = struct.unpack("<f", struct.pack("<I", operand.value & 0xFFFF_FFFF))[0]
+            type_ = SimTypeFloat()
+        else:
+            value = struct.unpack("<d", struct.pack("<Q", operand.value & 0xFFFF_FFFF_FFFF_FFFF))[0]
+            type_ = SimTypeDouble()
+        return CConstant(value, type_, tags=operand.tags, codegen=self)
+
+    # VEX IRRoundingMode constants
+    _ROUND_UNOPS = {0: "RoundEven", 1: "Floor", 2: "Ceil", 3: "Trunc", 4: "RoundAway"}
+
+    @classmethod
+    def _round_unop(cls, rm: Expr.Expression) -> str | None:
+        """The libm-shaped CUnaryOp op for `Round(rm, x)`: rint() for the dynamic (current) mode, a fixed-mode
+        function for a constant one; None for a constant mode with no C counterpart."""
+        if isinstance(rm, Expr.Const):
+            return cls._ROUND_UNOPS.get(rm.value) if isinstance(rm.value, int) else None
+        return "Rint"
+
     def _handle_Expr_BinaryOp(self, expr: BinaryOp, **kwargs):
-        if expr.variable is not None:
-            cvar = self._variable(expr.variable, None)
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            cvar = self._variable(expr_var, None)
             return self._access_constant_offset_reference(
-                self._get_variable_reference(cvar), expr.variable_offset or 0, None
+                self._get_variable_reference(cvar), self._variable_map.variable_offset(expr) or 0, None
             )
 
-        lhs = self._handle(expr.operands[0])
-        rhs = self._handle(expr.operands[1], likely_signed=expr.op not in {"And", "Or"})
+        sse = self._handle_sse_binop(expr)
+        if sse is not None:
+            return sse
+
+        if expr.floating_point and expr.op in {"CmpEQ", "CmpNE"} and expr.operands[0].likes(expr.operands[1]):
+            # the self-compare is the NaN test
+            isnan = self._handle(Expr.Call(expr.idx, "isnan", args=[expr.operands[0]], bits=expr.bits, **expr.tags))
+            if expr.op == "CmpNE":
+                return isnan
+            return CUnaryOp("Not", isnan, tags=expr.tags, codegen=self)
+
+        if expr.op == "Round":
+            round_op = self._round_unop(expr.operands[0])
+            if round_op is not None:
+                return CUnaryOp(round_op, self._handle(expr.operands[1]), tags=expr.tags, codegen=self)
+
+        if expr.floating_point and expr.vector_count is None:
+            # an FP operation reads its operands as FP values of their own width; constants keep _fp_constant
+            lhs = self._handle(expr.operands[0], type_=self._fp_operand_type(expr.operands[0]))
+            rhs_type = None if expr.op == "Scale" else self._fp_operand_type(expr.operands[1])
+            rhs = self._handle(expr.operands[1], type_=rhs_type)
+        else:
+            lhs = self._handle(expr.operands[0])
+            rhs = self._handle(expr.operands[1], likely_signed=expr.op not in {"And", "Or"})
+
+        if expr.floating_point:
+            scalar = expr.vector_count is None
+            lhs = self._fp_view_of_int_lvalue(self._fp_constant(lhs, expr.operands[0], scalar), expr.operands[0].bits)
+            if expr.op != "Scale":  # ldexp's exponent operand is an integer
+                rhs = self._fp_view_of_int_lvalue(
+                    self._fp_constant(rhs, expr.operands[1], scalar), expr.operands[1].bits
+                )
+        else:
+            # an integer operation on an FP-typed operand works on its bit pattern
+            lhs = self._fp_operand_bits(lhs, expr.operands[0].bits)
+            rhs = self._fp_operand_bits(rhs, expr.operands[1].bits)
+
+        cmp_signed = None
+        if expr.op in _ORDER_CMP_OPS and not expr.floating_point:
+            cmp_signed = expr.signed
+            bits = expr.operands[0].bits
+            lhs = self._compare_operand(lhs, bits, cmp_signed)
+            rhs = self._compare_operand(rhs, bits, cmp_signed)
 
         return CBinaryOp(
             expr.op,
             lhs,
             rhs,
+            signed=cmp_signed,
             tags=expr.tags,
             codegen=self,
             collapsed=expr.depth > self.binop_depth_cutoff,
         )
 
-    def _handle_Expr_Convert(self, expr: Expr.Convert, **kwargs):
-        # width of converted type is easy
-        dst_type: SimTypeInt | SimTypeChar
-        if 512 >= expr.to_bits > 256:
-            dst_type = SimTypeInt512()
-        elif 256 >= expr.to_bits > 128:
-            dst_type = SimTypeInt256()
-        elif 128 >= expr.to_bits > 64:
-            dst_type = SimTypeInt128()
-        elif 64 >= expr.to_bits > 32:
-            dst_type = SimTypeLongLong()
-        elif 32 >= expr.to_bits > 16:
-            dst_type = SimTypeInt()
-        elif 16 >= expr.to_bits > 8:
-            dst_type = SimTypeShort()
-        elif 8 >= expr.to_bits > 1:
-            dst_type = SimTypeChar()
-        elif expr.to_bits == 1:
-            dst_type = SimTypeChar()  # FIXME: Add a SimTypeBit?
-        else:
-            raise UnsupportedNodeTypeError(f"Unsupported conversion bits {expr.to_bits}.")
+    def _compare_operand(self, operand: CExpression, bits: int, signed: bool) -> CExpression:
+        """
+        Make an operand of an integer ordering compare read with the compare's signedness: retype constants (so
+        0x80000058 prints as -2147483560 under a signed compare) and cast same-width variables of the other signedness.
+        """
+        ws = int_width_and_signedness(unpack_typeref(operand.type))
+        if ws is None or ws[0] != bits:
+            return operand
+        if isinstance(operand, CConstant):
+            if not isinstance(operand.value, int) or isinstance(operand.value, bool) or ws[1] == signed:
+                return operand
+            if operand.reference_values is not None and any(
+                not isinstance(v, int) for v in operand.reference_values.values()
+            ):
+                return operand
+            uval = operand.value & ((1 << bits) - 1)
+            if uval < 1 << (bits - 1):
+                # prints the same either way
+                return operand
+            ty = self.default_simtype_from_bits(bits, signed=signed)
+            value = u2s(uval, bits) if signed else uval
+            return CConstant(operand.value, ty, reference_values={ty: value}, tags=operand.tags, codegen=self)
+        if int_operand_signedness(operand) in (None, signed):
+            return operand
+        if isinstance(operand, CTypeCast):
+            inner_ws = int_width_and_signedness(unpack_typeref(operand.src_type))
+            if inner_ws is not None and inner_ws[0] == bits and int_operand_signedness(operand.expr) == signed:
+                # (unsigned int)x with int x under a signed compare: drop the cast
+                return operand.expr
+        return CTypeCast(None, self.default_simtype_from_bits(bits, signed=signed), operand, codegen=self)
 
-        # convert child
+    def _handle_Expr_Convert(self, expr: Expr.Convert, **kwargs):
+        sse = self._handle_sse_lane_read(expr)
+        if sse is not None:
+            return sse
+        if expr.vector_count is not None:
+            child = self._handle(expr.operand)
+            return CVectorConvert(expr, child, tags=expr.tags, codegen=self)
+
         child = self._handle(expr.operand)
+        if expr.from_type == Expr.ConvertType.TYPE_FP:
+            child = self._fp_view_of_int_lvalue(child, expr.operand.bits)
+        if expr.from_bits == 1 and expr.to_bits > 1 and isinstance(child, CBinaryOp) and child.op == "CmpNE":
+            # a bool used as an integer value: `x != 0` must not be shortened to `x`
+            child._cstyle_null_cmp = False
+
+        is_fp = expr.to_type == Expr.ConvertType.TYPE_FP
+        if is_fp:
+            # FP->FP or INT->FP
+            fp_dst_type: SimTypeFloat | None = None
+            if expr.to_bits == 32:
+                fp_dst_type = SimTypeFloat()
+            elif expr.to_bits == 64:
+                fp_dst_type = SimTypeDouble()
+            elif expr.to_bits == 80:
+                # VEX models x87 as F64; the widening to 80 bits is implicit in C
+                return child
+            elif expr.to_bits == 128:
+                fp_dst_type = SimTypeFloat128()
+            else:
+                # no C float type of this width: fall back to an integer cast of the same width
+                is_fp = False
+            if fp_dst_type is not None:
+                if expr.from_type == Expr.ConvertType.TYPE_INT:
+                    child = self._int_to_fp_operand(child, expr.from_bits, expr.is_signed)
+                return CTypeCast(None, fp_dst_type.with_arch(self.project.arch), child, tags=expr.tags, codegen=self)
+
+        if expr.from_type == Expr.ConvertType.TYPE_INT:
+            child = self._fp_operand_bits(child, expr.from_bits)
+
+        # Use a mask to represent non-standard size conversions
+        if (
+            expr.from_type != Expr.ConvertType.TYPE_FP
+            and expr.to_bits < expr.from_bits
+            and expr.to_bits not in _CAST_TYPES_BY_BITS
+        ):
+            const_type = child.type if child.type is not None else self.default_simtype_from_bits(expr.from_bits, False)
+            mask = CConstant((1 << expr.to_bits) - 1, const_type, codegen=self, tags=expr.tags)
+            return CBinaryOp("And", child, mask, codegen=self, tags=expr.tags)
+
+        # Cast to the smallest size that can hold the new value
+        dst_type_cls = next((cls for bits, cls in _CAST_TYPES_BY_BITS.items() if bits >= expr.to_bits), None)
+        if dst_type_cls is None or expr.to_bits < 1:
+            raise UnsupportedNodeTypeError(f"Unsupported conversion bits {expr.to_bits}.")
+        dst_type: SimTypeInt | SimTypeChar = dst_type_cls()
+
         orig_child_signed = getattr(child.type, "signed", False)
 
-        # signedness of converted type is hard
-        if expr.to_bits < expr.from_bits:
-            # very sketchy. basically a guess
-            # can we even generate signed downcasts?
-            dst_type.signed = orig_child_signed | expr.is_signed
-        else:
+        # signedness of converted type is hard (only relevant for integer destination types)
+        if not is_fp and expr.from_type != Expr.ConvertType.TYPE_FP:
+            if expr.to_bits < expr.from_bits:
+                # very sketchy. basically a guess
+                # can we even generate signed downcasts?
+                dst_type.signed = orig_child_signed | expr.is_signed
+            else:
+                dst_type.signed = expr.is_signed
+        elif not is_fp:
+            # FP->INT: signedness from the expression
             dst_type.signed = expr.is_signed
 
         # do we need an intermediate cast?
-        if orig_child_signed != expr.is_signed and expr.to_bits > expr.from_bits and child.type is not None:
+        if (
+            not is_fp
+            and expr.from_type != Expr.ConvertType.TYPE_FP
+            and orig_child_signed != expr.is_signed
+            and expr.to_bits > expr.from_bits
+            and child.type is not None
+        ):
             # this is a problem. sign-extension only happens when the SOURCE of the cast is signed
-            child_ty = self.default_simtype_from_bits(child.type.size, expr.is_signed)
+            # a child whose type has no size (e.g., a function or a bottom type) is as wide as the conversion says
+            child_bits = child.type.size if child.type.size is not None else expr.from_bits
+            child_ty = self.default_simtype_from_bits(child_bits, expr.is_signed)
             child = CTypeCast(None, child_ty, child, codegen=self)
 
         return CTypeCast(None, dst_type.with_arch(self.project.arch), child, tags=expr.tags, codegen=self)
 
     def _handle_Expr_Extract(self, expr: Expr.Extract, **kwargs):
+        sse = self._handle_sse_extract(expr)
+        if sse is not None:
+            return sse
         child = self._handle(expr.base)
         target_type = self.default_simtype_from_bits(expr.bits, False)
         offset = (
@@ -4015,12 +5825,72 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         assert child_type is not None
         if isinstance(child_type, TypeRef):
             child_type = child_type.type
+        wanted = kwargs.get("type_")
+        if (
+            offset == 0
+            and isinstance(child, CVariable)
+            and isinstance(wanted, SimType)
+            and _reinterpretation_cancels(child_type, wanted, expr.bits)
+        ):
+            # the consumer takes the variable's own type: the bit-pattern view is a no-op
+            return child
         if isinstance(child_type, SimStruct) and offset is not None:
             field = next((name for name, off in child_type.offsets.items() if off == offset), None)
             if field is not None and expr.bits == child_type.fields[field].size:
                 return CVariableField(child, CStructField(child_type, offset, field, codegen=self), codegen=self)
-        if isinstance(child_type, SimTypeInt) and offset == 0:  # TODO not big-endian safe
+        if isinstance(child_type, (SimTypeInt, SimTypePointer)) and is_lsb_extract(expr):
             return CTypeCast(child_type, target_type, child, codegen=self)
+        uncast = child
+        while isinstance(uncast, CTypeCast):
+            uncast = uncast.expr
+        if (
+            isinstance(child_type, (SimTypeInt, SimTypeChar, SimTypeNum))
+            and offset is not None
+            and not isinstance(uncast, (CVariable, CVariableField, CIndexedVariable))
+            and not is_addressable_lvalue(uncast)
+        ):
+            # a computed scalar (a conversion, a call) has no address to offset: read the bits by shifting
+            shifted = CBinaryOp(
+                "Shr",
+                child,
+                CConstant(offset * self.project.arch.byte_width, SimTypeInt(), codegen=self),
+                codegen=self,
+            )
+            return CTypeCast(child_type, target_type, shifted, codegen=self)
+
+        if (
+            isinstance(child, CTypeCast)
+            and self._is_lvalue(child.expr)
+            and offset is not None
+            and expr.endness == Endness.LE
+            and child.expr.type is not None
+            and isinstance(unpack_typeref(child.expr.type), (SimTypeInt, SimTypeChar, SimTypeNum))
+            and child.expr.type.size is not None
+            and child.expr.type.size >= offset * 8 + expr.bits
+        ):
+            # a widened lvalue: the bytes live in the variable itself
+            child = child.expr
+            assert child.type is not None
+            child_type = unpack_typeref(child.type)
+
+        if not self._is_lvalue(child):
+            # a non-lvalue has no address: (T)(expr >> 8*k)
+            if offset is not None:
+                shift = offset * 8 if expr.endness == Endness.LE else expr.base.bits - offset * 8 - expr.bits
+                shift_expr: CExpression = CConstant(shift, SimTypeInt(), codegen=self)
+            else:
+                shift_expr = CBinaryOp(
+                    "Mul", self._handle(expr.offset), CConstant(8, SimTypeInt(), codegen=self), codegen=self
+                )
+                if expr.endness != Endness.LE:
+                    shift_expr = CBinaryOp(
+                        "Sub",
+                        CConstant(expr.base.bits - expr.bits, SimTypeInt(), codegen=self),
+                        shift_expr,
+                        codegen=self,
+                    )
+            shifted = CBinaryOp("Shr", child, shift_expr, codegen=self)
+            return CTypeCast(shifted.type, target_type, shifted, codegen=self)
 
         voidp = SimTypePointer(SimTypeBottom()).with_arch(self.project.arch)
         inner_expr = CTypeCast(
@@ -4061,20 +5931,29 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         return CVEXCCallExpression(expr.callee, operands, tags=expr.tags, codegen=self)
 
     def _handle_Expr_Dirty(self, expr: Expr.DirtyExpression, **kwargs):
-        return CDirtyExpression(expr, codegen=self)
+        operands = [self._handle(operand) for operand in expr.operands]
+        return CDirtyExpression(expr, operands, codegen=self)
 
     def _handle_Expr_ITE(self, expr: Expr.ITE, **kwargs):
-        return CITE(
-            self._handle(expr.cond), self._handle(expr.iftrue), self._handle(expr.iffalse), tags=expr.tags, codegen=self
-        )
+        iftrue = self._handle(expr.iftrue)
+        iffalse = self._handle(expr.iffalse)
+        # an ITE selects bits: an FP-typed arm next to an integer-typed one is read as its bit pattern
+        true_fp = isinstance(unpack_typeref(iftrue.type), SimTypeFloat) if iftrue.type is not None else False
+        false_fp = isinstance(unpack_typeref(iffalse.type), SimTypeFloat) if iffalse.type is not None else False
+        if true_fp != false_fp:
+            if true_fp and iffalse.type is not None and isinstance(unpack_typeref(iffalse.type), _INT_TYPES):
+                iftrue = self._fp_operand_bits(iftrue, expr.iftrue.bits)
+            elif false_fp and iftrue.type is not None and isinstance(unpack_typeref(iftrue.type), _INT_TYPES):
+                iffalse = self._fp_operand_bits(iffalse, expr.iffalse.bits)
+        return CITE(self._handle(expr.cond), iftrue, iffalse, tags=expr.tags, codegen=self)
 
     def _handle_Reinterpret(self, expr: Expr.Reinterpret, **kwargs):
         def _to_type(bits, typestr):
             if typestr == "I":
                 if bits == 32:
-                    r = SimTypeInt()
+                    r = SimTypeInt(signed=False)
                 elif bits == 64:
-                    r = SimTypeLongLong()
+                    r = SimTypeLongLong(signed=False)
                 else:
                     raise TypeError(f"Unsupported integer type with bits {bits} in Reinterpret")
             elif typestr == "F":
@@ -4090,7 +5969,26 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
 
         src_type = _to_type(expr.from_bits, expr.from_type)
         dst_type = _to_type(expr.to_bits, expr.to_type)
-        return CTypeCast(src_type, dst_type, self._handle(expr.operand), tags=expr.tags, codegen=self)
+        operand = self._handle(expr.operand)
+        wanted = kwargs.get("type_")
+        if (
+            isinstance(operand, CVariable)
+            and isinstance(wanted, SimType)
+            and expr.from_bits == expr.to_bits
+            and _reinterpretation_cancels(operand.type, wanted, expr.from_bits)
+        ):
+            return operand
+        if (
+            expr.to_type == "I"
+            and isinstance(operand, CFunctionCall)
+            and isinstance(operand.callee_target, str)
+            and operand.callee_target.startswith("_mm_")
+            and isinstance(operand.type, SimTypeInt)
+            and operand.type.size == expr.to_bits
+        ):
+            # an SSE lane read already yields the integer bits; keep its own C type
+            return operand
+        return CReinterpret(src_type, dst_type, operand, tags=expr.tags, codegen=self)
 
     def _handle_MultiStatementExpression(self, expr: Expr.MultiStatementExpression, **kwargs):
         cstmts = CStatements([self._handle(stmt, is_expr=False) for stmt in expr.stmts], codegen=self)
@@ -4105,14 +6003,15 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         ref: bool = False,
         **kwargs,
     ):
-        if expr.variable is not None:
-            cvar = self._variable(expr.variable, None, vvar_id=expr.varid)
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            cvar = self._variable(expr_var, None, vvar_id=expr.varid)
 
-            if not lvalue and expr.variable.size != expr.size:
+            if not lvalue and expr_var.size != expr.size:
                 l.warning(
                     "VirtualVariable size (%d) and variable size (%d) do not match. Force a type cast.",
                     expr.size,
-                    expr.variable.size,
+                    expr_var.size,
                 )
                 src_type = cvar.type
                 dst_type = {
@@ -4125,11 +6024,21 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     dst_type = dst_type.with_arch(self.project.arch)
                     return CTypeCast(src_type, dst_type, cvar, tags=expr.tags, codegen=self)
             return cvar
+
+        if expr.was_reg:
+            # Variable recovery does not create variables for the stack pointer, the instruction
+            # pointer or the link register, so a surviving write to one of them arrives here with
+            # nothing mapped. A register we could not name as a variable is still a register.
+            return CRegister(
+                register_display_name(self.project.arch, expr.oident, expr.size), tags=expr.tags, codegen=self
+            )
+
         return CDirtyExpression(expr, codegen=self)
 
     def _handle_Expr_StackBaseOffset(self, expr: StackBaseOffset, **kwargs):
-        if expr.variable is not None:
-            var_thing = self._variable(expr.variable, expr.size)
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            var_thing = self._variable(expr_var, expr.size)
             var_thing.tags = dict(expr.tags)
             if "def_at" in var_thing.tags and "ins_addr" not in var_thing.tags:
                 var_thing.tags["ins_addr"] = var_thing.tags["def_at"].tags["ins_addr"]
@@ -4138,6 +6047,27 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         # FIXME
         stack_base = CFakeVariable("stack_base", SimTypePointer(SimTypeBottom()), codegen=self)
         return CBinaryOp("Add", stack_base, CConstant(expr.offset, SimTypeInt(), codegen=self), codegen=self)
+
+    #
+    # Serialization
+    #
+
+    @classmethod
+    def _get_cmsg(cls):
+        from angr.protos import codegen_pb2  # pylint:disable=import-outside-toplevel
+
+        return codegen_pb2.Codegen()  # pylint:disable=no-member
+
+    def serialize_to_cmessage(self):
+        from . import c_serialize  # pylint:disable=import-outside-toplevel
+
+        return c_serialize.serialize_codegen(self)
+
+    @classmethod
+    def parse_from_cmessage(cls, cmsg, *, project=None, kb=None, func=None, **kwargs):
+        from . import c_serialize  # pylint:disable=import-outside-toplevel
+
+        return c_serialize.parse_codegen(cmsg, project=project, kb=kb, func=func)
 
 
 class CStructuredCodeWalker:
@@ -4240,6 +6170,23 @@ class CStructuredCodeWalker:
         obj.iffalse = self.handle(obj.iffalse)
         return obj
 
+    def handle_CMultiStatementExpression(self, obj):
+        obj.stmts = self.handle(obj.stmts)
+        obj.expr = self.handle(obj.expr)
+        return obj
+
+    def handle_CVectorConvert(self, obj):
+        obj.operand = self.handle(obj.operand)
+        return obj
+
+    def handle_CVEXCCallExpression(self, obj):
+        obj.operands = [self.handle(operand) for operand in obj.operands]
+        return obj
+
+    def handle_CDirtyExpression(self, obj):
+        obj.operands = [self.handle(operand) for operand in obj.operands]
+        return obj
+
 
 class MakeTypecastsImplicit(CStructuredCodeWalker):
     @classmethod
@@ -4287,13 +6234,37 @@ class MakeTypecastsImplicit(CStructuredCodeWalker):
         obj.retval = self.collapse(obj.codegen._func.prototype.returnty, obj.retval)
         return super().handle_CReturn(obj)
 
+    @staticmethod
+    def _is_compare_sign_cast(obj: CBinaryOp, operand: CExpression) -> bool:
+        # a cast that makes an ordering-compare operand read with the compare's signedness
+        if obj.signed is None or not isinstance(operand, CTypeCast) or not is_sign_fixing_cast(operand):
+            return False
+        d = int_width_and_signedness(operand.dst_type)
+        return d is not None and d[1] == obj.signed
+
+    def _handle_compare_operand(self, obj: CBinaryOp, operand: CExpression) -> CExpression:
+        if self._is_compare_sign_cast(obj, operand):
+            assert isinstance(operand, CTypeCast)
+            operand.expr = self.collapse(operand.dst_type, self.handle(operand.expr))
+            if operand.expr.type is not None:
+                operand.src_type = operand.expr.type
+            if self._is_compare_sign_cast(obj, operand):
+                return operand
+            return self._collapse_cast(operand, under_fp_cast=False)
+        return self.handle(operand)
+
     def handle_CBinaryOp(self, obj: CBinaryOp):
-        obj = super().handle_CBinaryOp(obj)
+        if obj.signed is not None:
+            obj.lhs = self._handle_compare_operand(obj, obj.lhs)
+            obj.rhs = self._handle_compare_operand(obj, obj.rhs)
+        else:
+            obj = super().handle_CBinaryOp(obj)
         while True:
             new_lhs = self.collapse(obj.common_type, obj.lhs)
             assert obj.rhs.type is not None and new_lhs.type is not None
             if (
                 new_lhs is not obj.lhs
+                and not self._is_compare_sign_cast(obj, obj.lhs)
                 and CBinaryOp.compute_common_type(obj.op, new_lhs.type, obj.rhs.type) == obj.common_type
             ):
                 obj.lhs = new_lhs
@@ -4302,6 +6273,7 @@ class MakeTypecastsImplicit(CStructuredCodeWalker):
                 assert new_rhs.type is not None and obj.lhs.type is not None
                 if (
                     new_rhs is not obj.rhs
+                    and not self._is_compare_sign_cast(obj, obj.rhs)
                     and CBinaryOp.compute_common_type(obj.op, obj.lhs.type, new_rhs.type) == obj.common_type
                 ):
                     obj.rhs = new_rhs
@@ -4311,12 +6283,21 @@ class MakeTypecastsImplicit(CStructuredCodeWalker):
 
     def handle_CTypeCast(self, obj: CTypeCast):
         # note that the expression that this method returns may no longer be a CTypeCast
-        obj = super().handle_CTypeCast(obj)
+        return self._collapse_cast(obj, under_fp_cast=False)
+
+    def _collapse_cast(self, obj: CTypeCast, under_fp_cast: bool) -> CExpression:
+        if isinstance(obj.dst_type, SimTypeFloat) and isinstance(obj.expr, CTypeCast):
+            obj.expr = self._collapse_cast(obj.expr, under_fp_cast=True)
+        else:
+            obj.expr = self.handle(obj.expr)
         inner = self.collapse(obj.dst_type, obj.expr)
         assert inner.type is not None
         if inner is not obj.expr:
             obj.src_type = inner.type
             obj.expr = inner
+        if under_fp_cast and is_sign_fixing_cast(obj):
+            # the int->FP conversion reads its operand with this signedness; the cast is not implicit
+            return obj
         if obj.src_type == obj.dst_type or qualifies_for_implicit_cast(obj.src_type, obj.dst_type):
             return obj.expr
         return obj
@@ -4386,3 +6367,10 @@ class PointerArithmeticFixer(CStructuredCodeWalker):
 
 # StructuredCodeGenerator = CStructuredCodeGenerator
 register_analysis(CStructuredCodeGenerator, "CStructuredCodeGenerator")
+
+
+# Register protobuf serializer/parser pairs for every concrete CConstruct subclass. Imported after all classes are
+# defined so that ``c_serialize.register_all`` can reference them by name.
+from . import c_serialize as _c_serialize  # pylint: disable=wrong-import-position
+
+_c_serialize.register_all()

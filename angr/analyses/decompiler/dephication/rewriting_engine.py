@@ -27,6 +27,9 @@ from angr.ailment.statement import (
     Assignment,
     ConditionalJump,
     DirtyStatement,
+    Jump,
+    Label,
+    NoOp,
     Return,
     SideEffectStatement,
     Statement,
@@ -37,6 +40,7 @@ from angr.engines.light import SimEngineNostmtAIL
 
 if TYPE_CHECKING:
     from angr import KnowledgeBase
+    from angr.analyses.decompiler.variable_map import VariableMap
 
 
 _l = logging.getLogger(__name__)
@@ -55,14 +59,16 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
         project,
         vvar_to_vvar: dict[int, int],
         func_addr: int | None = None,
-        variable_kb: KnowledgeBase | None = None,
+        kb: KnowledgeBase | None = None,
+        variable_map: VariableMap | None = None,
     ):
         super().__init__(project)
 
         self.vvar_to_vvar = vvar_to_vvar
         self.out_block = None
         self.func_addr = func_addr
-        self.variable_kb = variable_kb
+        self._dvars_kb = kb
+        self.variable_map = variable_map
 
         self._stmt_handlers["IncompleteSwitchCaseHeadStatement"] = self._handle_stmt_IncompleteSwitchCaseHeadStatement
 
@@ -83,15 +89,64 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
 
     def _process_block_end(self, block, stmt_data, whitelist):
         assert whitelist is None
+        stmts: list[Statement] = []
         for stmt_idx, new_stmt in enumerate(stmt_data):
             if new_stmt is not None:
                 if isinstance(new_stmt, tuple):
-                    for stmt_ in new_stmt:
-                        self.append_statement(stmt_)
+                    stmts.extend(new_stmt)
                 else:
-                    self.append_statement(new_stmt)
+                    stmts.append(new_stmt)
             else:
-                self.append_statement(block.statements[stmt_idx])
+                stmts.append(block.statements[stmt_idx])
+        for stmt in self._remove_redundant_copies(stmts):
+            self.append_statement(stmt)
+
+    def _storage_key(self, vvar: VirtualVariable) -> object:
+        # the storage a (rewritten) vvar denotes: its unified variable when known, otherwise the vvar itself
+        if self.func_addr is not None and self._dvars_kb is not None and self.variable_map is not None:
+            var = self.variable_map.variable(vvar)
+            if var is not None and self.func_addr in self._dvars_kb.dec_variables:
+                unified = self._dvars_kb.dec_variables[self.func_addr].unified_variable(var)
+                if unified is not None:
+                    return unified
+        return vvar.varid
+
+    def _remove_redundant_copies(self, stmts: list[Statement]) -> list[Statement]:
+        """
+        Drop vvar-to-vvar copies that assign a storage the value it already holds, e.g. the second statement of
+        `a = b; b = a`. SSA destruction emits such pairs when a phi destination and a later phi source both needed a
+        copy on the same edge. Values are tracked per block; every definition the tracker does not model clears it.
+        """
+        if not any(
+            isinstance(stmt, Assignment)
+            and isinstance(stmt.dst, VirtualVariable)
+            and isinstance(stmt.src, VirtualVariable)
+            for stmt in stmts
+        ):
+            return stmts
+
+        # a storage holds either its block-entry value (its own key) or the value of a definition seen in this block
+        values: dict[object, object] = {}
+        out: list[Statement] = []
+        for stmt_idx, stmt in enumerate(stmts):
+            if isinstance(stmt, (Label, Jump, NoOp)):
+                out.append(stmt)
+                continue
+            if isinstance(stmt, Assignment) and isinstance(stmt.dst, VirtualVariable) and "extra_defs" not in stmt.tags:
+                dst_key = self._storage_key(stmt.dst)
+                if isinstance(stmt.src, VirtualVariable):
+                    src_key = self._storage_key(stmt.src)
+                    src_value = values.get(src_key, src_key)
+                    if values.get(dst_key, dst_key) == src_value:
+                        continue
+                    values[dst_key] = src_value
+                else:
+                    values[dst_key] = ("def", stmt_idx)
+                out.append(stmt)
+                continue
+            values.clear()
+            out.append(stmt)
+        return out
 
     def _handle_stmt_Assignment(self, stmt):
         new_src = self._expr(stmt.src)
@@ -105,8 +160,7 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 stmt.dst.bits,
                 stmt.dst.category,
                 oident=stmt.dst.oident,
-                variable=stmt.dst.variable,
-                variable_offset=stmt.dst.variable_offset,
+                reg_vvars=stmt.dst.reg_vvars,
                 **stmt.dst.tags,
             )
 
@@ -120,12 +174,13 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 return ()
             if (
                 self.func_addr is not None
-                and self.variable_kb is not None
-                and self.func_addr in self.variable_kb.variables
+                and self._dvars_kb is not None
+                and self.func_addr in self._dvars_kb.dec_variables
+                and self.variable_map is not None
             ):
-                dst_var = getattr(dst, "variable", None)
-                src_var = getattr(src, "variable", None)
-                var_manager = self.variable_kb.variables[self.func_addr]
+                dst_var = self.variable_map.variable(dst)
+                src_var = self.variable_map.variable(src)
+                var_manager = self._dvars_kb.dec_variables[self.func_addr]
                 if (
                     dst_var is not None
                     and src_var is not None
@@ -134,6 +189,7 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                     # skip it
                     return ()
 
+        if new_dst is not None or new_src is not None:
             return Assignment(stmt.idx, dst, src, **stmt.tags)
         return None
 
@@ -195,7 +251,6 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 stmt.data if new_data is None else new_data,
                 stmt.size,
                 stmt.endness,
-                variable=stmt.variable,
                 guard=stmt.guard,
                 **stmt.tags,
             )
@@ -220,26 +275,14 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
         return None
 
     def _handle_stmt_SideEffectStatement(self, stmt: SideEffectStatement):
-        new_target = (
-            self._expr(stmt.expr.target)
-            if stmt.expr.target is not None and not isinstance(stmt.expr.target, str)
-            else None
-        )
+        new_expr = self._expr(stmt.expr)
         new_ret_expr = self._expr(stmt.ret_expr) if stmt.ret_expr is not None else None
         new_fp_ret_expr = self._expr(stmt.fp_ret_expr) if stmt.fp_ret_expr is not None else None
 
-        if new_target is not None or new_ret_expr is not None or new_fp_ret_expr is not None:
+        if new_expr is not None or new_ret_expr is not None or new_fp_ret_expr is not None:
             return SideEffectStatement(
                 stmt.idx,
-                Call(
-                    stmt.idx,
-                    stmt.expr.target if new_target is None else new_target,
-                    calling_convention=stmt.expr.calling_convention,
-                    prototype=stmt.expr.prototype,
-                    args=stmt.expr.args,
-                    bits=stmt.bits,
-                    **stmt.tags,
-                ),
+                new_expr if new_expr is not None else stmt.expr,
                 ret_expr=stmt.ret_expr if new_ret_expr is None else new_ret_expr,
                 fp_ret_expr=stmt.fp_ret_expr if new_fp_ret_expr is None else new_fp_ret_expr,
                 **stmt.tags,
@@ -247,8 +290,9 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
         return None
 
     def _handle_stmt_DirtyStatement(self, stmt: DirtyStatement) -> DirtyStatement | None:
-        dirty = self._expr(stmt.dirty)
-        if dirty is None or dirty is stmt.dirty:
+        dirty_in = stmt.dirty
+        dirty = self._expr(dirty_in)
+        if dirty is None or dirty == dirty_in:
             return None
         assert isinstance(dirty, DirtyExpression)
         return DirtyStatement(stmt.idx, dirty, **stmt.tags)
@@ -271,6 +315,7 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 from_type=expr.from_type,
                 to_type=expr.to_type,
                 rounding_mode=expr.rounding_mode,
+                vector_count=expr.vector_count,
                 **expr.tags,
             )
         return None
@@ -303,8 +348,7 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 expr.bits,
                 expr.category,
                 oident=expr.oident,
-                variable=expr.variable,
-                variable_offset=expr.variable_offset,
+                reg_vvars=expr.reg_vvars,
                 **expr.tags,
             )
         return None
@@ -374,6 +418,8 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 bits=expr.bits,
                 floating_point=expr.floating_point,
                 rounding_mode=expr.rounding_mode,
+                vector_count=expr.vector_count,
+                vector_size=expr.vector_size,
                 **expr.tags,
             )
         return None
@@ -387,6 +433,7 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
                 expr.op,
                 expr.operands[0] if new_op0 is None else new_op0,
                 bits=expr.bits,
+                floating_point=expr.floating_point,
                 **expr.tags,
             )
         return None
@@ -407,19 +454,24 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
         return None
 
     def _handle_expr_Extract(self, expr):
-        base = self._expr(expr.base) or expr.base
-        offset = self._expr(expr.offset) or expr.offset
+        base_in = expr.base
+        offset_in = expr.offset
+        base = self._expr(base_in) or base_in
+        offset = self._expr(offset_in) or offset_in
 
-        if base is not expr.base or offset is not expr.offset:
+        if base != base_in or offset != offset_in:
             return Extract(expr.idx, expr.bits, base, offset, expr.endness, **expr.tags)
         return None
 
     def _handle_expr_Insert(self, expr):
-        base = self._expr(expr.base) or expr.base
-        offset = self._expr(expr.offset) or expr.offset
-        value = self._expr(expr.value) or expr.value
+        base_in = expr.base
+        offset_in = expr.offset
+        value_in = expr.value
+        base = self._expr(base_in) or base_in
+        offset = self._expr(offset_in) or offset_in
+        value = self._expr(value_in) or value_in
 
-        if base is not expr.base or offset is not expr.offset or value is not expr.value:
+        if base != base_in or offset != offset_in or value != value_in:
             return Insert(expr.idx, base, offset, value, expr.endness, **expr.tags)
         return None
 
@@ -488,8 +540,6 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
             return Call(
                 expr.idx,
                 new_target,
-                calling_convention=expr.calling_convention,
-                prototype=expr.prototype,
                 args=expr.args,
                 bits=expr.bits,
                 **expr.tags,
@@ -564,7 +614,9 @@ class SimEngineDephiRewriting(SimEngineNostmtAIL[None, Expression | None, Statem
     _handle_binop_CmpLTV = _unreachable
     _handle_binop_MinV = _unreachable
     _handle_binop_MaxV = _unreachable
+    _handle_binop_HAddV = _unreachable
     _handle_binop_QAddV = _unreachable
+    _handle_binop_QSubV = _unreachable
     _handle_binop_QNarrowBinV = _unreachable
     _handle_binop_PermV = _unreachable
     _handle_binop_Set = _unreachable

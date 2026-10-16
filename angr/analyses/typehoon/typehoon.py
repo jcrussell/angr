@@ -11,10 +11,11 @@ from angr.sim_variable import SimRegisterVariable, SimStackVariable, SimVariable
 
 from .simple_solver import SimpleSolver
 from .translator import TypeTranslator
-from .typeconsts import Array, Pointer, Struct, TopType, TypeConstant
-from .typevars import DerivedTypeVariable, Equivalence, Subtype, TypeVariable, TypeVariableManager
+from .typeconsts import Array, BottomType, Float, Int, Pointer, Struct, TopType, TypeConstant
+from .typevars import Add, DerivedTypeVariable, Equivalence, Sub, Subtype, TypeVariable, TypeVariableManager
 
 if TYPE_CHECKING:
+    from angr.knowledge_plugins.variables.variable_manager import VariableManagerInternal
     from angr.sim_type import SimType
 
     from .typevars import TypeConstraint
@@ -91,11 +92,20 @@ class Typehoon(Analysis):
         func_addr: int | str,
         var_to_typevars: dict[SimVariable, set[TypeVariable]],
         stack_offset_tvs: dict[int, TypeVariable] | None = None,
+        flavor: str | None = None,
     ) -> None:
+        """
+        :param flavor:  The decompilation flavor whose global manager receives the types when func_addr is "global".
+        """
         if not self.simtypes_solution:
             return
 
+        manager = self._variable_manager_for(func_addr, flavor)
+        manual = manager.variables_with_manual_types
         for var, typevars in var_to_typevars.items():
+            if var in manual:
+                # a type an analysis or the user set is ground truth; the solution never replaces it
+                continue
             # if the variable is a stack variable, does the stack offset have any corresponding type variable?
             typevars_list = sorted(typevars, key=lambda tv: tv.idx)
             if stack_offset_tvs and isinstance(var, SimStackVariable) and var.offset in stack_offset_tvs:
@@ -132,9 +142,29 @@ class Typehoon(Analysis):
             else:
                 the_type = type_candidates[0]
 
-            self.kb.variables[func_addr].set_variable_type(
-                var, the_type, name=the_type.name if isinstance(the_type, SimStruct) else None
-            )
+            if func_addr != "global":
+                the_type = self._flatten_pointer_to_array(the_type, self.project.arch)
+
+            manager.set_variable_type(var, the_type, name=the_type.name if isinstance(the_type, SimStruct) else None)
+
+    def _variable_manager_for(self, func_addr: int | str, flavor: str | None) -> VariableManagerInternal:
+        if func_addr == "global":
+            return self.kb.variables.get_global_manager(flavor)
+        return self.kb.variables[func_addr]
+
+    @staticmethod
+    def _flatten_pointer_to_array(ty: SimType, arch) -> SimType:
+        """
+        Flatten a pointer-to-array type (``T(*)[N]``) into a pointer to the array's element type (``T*``).
+
+        Function-scope variables hold pointer *values*; a pointer-to-array solution would be declared in C
+        with the pointer level dropped (see ``SimTypePointer.c_repr``), yielding an array declaration that is
+        not assignable. Only global variables, which denote the array objects themselves, may keep the
+        pointer-to-array form.
+        """
+        while isinstance(ty, SimTypePointer) and isinstance(ty.pts_to, SimTypeArray):
+            ty = SimTypePointer(ty.pts_to.elem_type).with_arch(arch)
+        return ty
 
     def pp_constraints(self) -> None:
         """
@@ -194,7 +224,10 @@ class Typehoon(Analysis):
 
         # self.pp_constraints()
 
+        # the solver rewrites constraints in place; collect the FP bounds first
+        fp_bounds = self._sole_fp_bounds()
         self._solve()
+        self._prefer_fp_for_conflicts(fp_bounds)
         self._specialize()
         self._translate_to_simtypes()
 
@@ -234,6 +267,53 @@ class Typehoon(Analysis):
         self.solution = solver.solution
         self.processed_constraints_count = solver.processed_constraints_count
         self.eqclass_constraints_count = solver.eqclass_constraints_count
+
+    def _sole_fp_bounds(self) -> dict[TypeVariable, Float]:
+        """
+        Type variables whose only type-constant bound is a single sized FP type and that are never used as an address
+        (the base of a load, store or field, or an operand of an addition or subtraction).
+        """
+        const_bounds: dict[TypeVariable, set[TypeConstant]] = defaultdict(set)
+        address_tvs: set[TypeVariable] = set()
+        for constraints in self._constraints.values():
+            for c in constraints:
+                if isinstance(c, (Add, Sub)):
+                    address_tvs |= {t for t in (c.type_0, c.type_1, c.type_r) if type(t) is TypeVariable}
+                    continue
+                if not isinstance(c, Subtype):
+                    continue
+                for t in (c.sub_type, c.super_type):
+                    if isinstance(t, DerivedTypeVariable) and isinstance(t.type_var, TypeVariable):
+                        address_tvs.add(t.type_var)
+                if isinstance(c.sub_type, TypeConstant) and type(c.super_type) is TypeVariable:
+                    const_bounds[c.super_type].add(c.sub_type)
+                elif isinstance(c.super_type, TypeConstant) and type(c.sub_type) is TypeVariable:
+                    const_bounds[c.sub_type].add(c.super_type)
+        result = {}
+        for tv, bounds in const_bounds.items():
+            if tv in address_tvs:
+                continue
+            bounds = {b for b in bounds if not isinstance(b, (TopType, BottomType))}
+            if len(bounds) == 1 and isinstance(fp := next(iter(bounds)), Float) and fp.SIZE is not None:
+                result[tv] = fp
+        return result
+
+    def _prefer_fp_for_conflicts(self, fp_bounds: dict[TypeVariable, Float]) -> None:
+        """
+        A variable whose only type-constant bound is one FP type, but whose solution is TOP or an integer of another
+        width, holds FP values: the conflict came in through other variables (e.g. a struct field punned as a pointer,
+        an integer and a double). Keep the FP type instead of an integer type, which would convert every value stored
+        in it.
+        """
+        assert self.solution is not None
+        for tv, fp in fp_bounds.items():
+            sol = self.solution.get(tv)
+            if sol is None or isinstance(sol, Float):
+                continue
+            if isinstance(sol, TopType) or (
+                isinstance(sol, (Int, Pointer)) and sol.SIZE is not None and sol.SIZE != fp.SIZE
+            ):
+                self.solution[tv] = fp
 
     def _specialize(self):
         """
@@ -280,6 +360,10 @@ class Typehoon(Analysis):
                 return None
             return tc.new(specialized)
 
+        if isinstance(tc, Struct) and tc.is_cppclass:
+            # C++ classes have known layouts and identities; never specialize them away
+            return None
+
         if isinstance(tc, Struct) and tc.fields and min(tc.fields) >= 0:
             offsets: list[int] = sorted(tc.fields.keys())  # get a sorted list of offsets
             offset0 = offsets[0]
@@ -288,9 +372,11 @@ class Typehoon(Analysis):
             if len(tc.fields) == 1 and 0 in tc.fields:
                 return field0
 
-            # are all fields the same?
+            # are all fields the same? (a named struct keeps its shape: an interface value is two pointers, not an
+            # array of two)
             if (
                 len(tc.fields) > 1
+                and not tc.name
                 and not self._is_pointer_to(field0, tc)
                 and all(tc.fields[off] == field0 for off in offsets)
             ):
@@ -299,6 +385,8 @@ class Typehoon(Analysis):
                     alignment = field0.size
                 except NotImplementedError:
                     alignment = 1
+                if alignment <= 0:
+                    return None
                 if all(off % alignment == 0 for off in offsets):
                     # yeah!
                     max_offset = offsets[-1]

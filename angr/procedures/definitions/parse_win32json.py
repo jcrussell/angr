@@ -9,10 +9,14 @@ from argparse import ArgumentParser
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
+import angr_data
+
 import angr
 from angr.errors import AngrMissingTypeError
 from angr.procedures.definitions import SimTypeCollection
 from angr.sim_type import PointerDisposition, SimTypeBottom, SimTypeFunction, SimTypeInt, SimTypeLong, SimTypePointer
+
+log = logging.getLogger(__name__)
 
 # The win32json marks some outparams as inout. fix this
 OVERRIDE_OUTPARAMS = {
@@ -21,8 +25,11 @@ OVERRIDE_OUTPARAMS = {
 
 api_namespaces = {}
 altnames = set()
-dump_root = Path(__file__).parent
+# The migrated JSON definitions now live in the separately-released angr_data package; write the
+# regenerated win32/wdk JSON back there.
+dump_root = Path(angr_data.get_path("procedures", "definitions"))
 
+# note that this typelib *does not hold* anonymous structs or unions!
 typelib = SimTypeCollection()
 typelib.names = ["win32"]
 
@@ -39,7 +46,7 @@ known_struct_names: set[str] = set()
 
 
 def is_anonymous_struct(s_name: str) -> bool:
-    return "anonymous" in s_name.lower()
+    return "_anonymous_e__" in s_name.lower() or "<anon>" in s_name.lower()
 
 
 def get_angr_type_from_name(name):
@@ -82,7 +89,11 @@ def get_angr_type_from_name(name):
 def get_typeref_if_available(t: angr.types.SimType) -> angr.types.SimType:
     if isinstance(t, angr.types.SimTypeRef):
         return t
-    if isinstance(t, (angr.types.SimStruct, angr.types.SimTypeEnum)) and t.name and not is_anonymous_struct(t.name):
+    if (
+        isinstance(t, (angr.types.SimStruct, angr.types.SimTypeEnum, angr.types.SimUnion))
+        and t.name
+        and not is_anonymous_struct(t.name)
+    ):
         # replace it with a SimTypeRef to avoid duplicate definition
         t = angr.types.SimTypeRef(t.name, t.__class__)
     elif t.label is not None and t.label in typelib:
@@ -90,46 +101,68 @@ def get_typeref_if_available(t: angr.types.SimType) -> angr.types.SimType:
     return t
 
 
-def handle_json_type(t, create_missing: bool = False):
+def handle_json_type(t, anon_typelib: SimTypeCollection | None, create_missing: bool = False):
     if t["Kind"] == "NativeTypedef":
-        ty = handle_json_type(t["Def"], create_missing=create_missing)
+        ty = handle_json_type(t["Def"], anon_typelib, create_missing=create_missing)
         ty.label = t["Name"]
         return ty
     if t["Kind"] == "Native":
         return get_angr_type_from_name(t["Name"])
     if t["Kind"] == "PointerTo":
-        pts_to = get_typeref_if_available(handle_json_type(t["Child"], create_missing=create_missing))
+        pts_to = get_typeref_if_available(handle_json_type(t["Child"], anon_typelib, create_missing=create_missing))
         return angr.types.SimTypePointer(pts_to)
     if t["Kind"] == "Array":
-        elem = get_typeref_if_available(handle_json_type(t["Child"], create_missing=create_missing))
+        elem = get_typeref_if_available(handle_json_type(t["Child"], anon_typelib, create_missing=create_missing))
         if t["Shape"]:
             return angr.types.SimTypeFixedSizeArray(elem, length=int(t["Shape"]["Size"]))
         return angr.types.SimTypePointer(elem)
     if t["Kind"] == "ApiRef":
         try:
-            named_type = typelib.get(t["Name"], bottom_on_missing=create_missing)
+            anonymous = is_anonymous_struct(t["Name"])
+            if anonymous:
+                named_type = anon_typelib.get(t["Name"], bottom_on_missing=create_missing)
+            else:
+                named_type = typelib.get(t["Name"], bottom_on_missing=create_missing)
         except AngrMissingTypeError:
             if t["Name"] in known_struct_names:
                 return angr.types.SimTypeRef(t["Name"], angr.types.SimStruct)
             raise
         return get_typeref_if_available(named_type)
     if t["Kind"] == "Struct":
+        local_anon_typelib = SimTypeCollection()
         for nested_type in t["NestedTypes"]:
-            typelib.add(nested_type["Name"], handle_json_type(nested_type, create_missing=create_missing))
+            anonymous = is_anonymous_struct(nested_type["Name"])
+            if anonymous:
+                local_anon_typelib.add(
+                    nested_type["Name"], handle_json_type(nested_type, None, create_missing=create_missing)
+                )
+            else:
+                typelib.add(nested_type["Name"], handle_json_type(nested_type, None, create_missing=create_missing))
         fields = OrderedDict()
         for field in t["Fields"]:
-            child_type = get_typeref_if_available(handle_json_type(field["Type"], create_missing=create_missing))
+            child_type = get_typeref_if_available(
+                handle_json_type(field["Type"], local_anon_typelib, create_missing=create_missing)
+            )
             fields[field["Name"]] = child_type
         return angr.types.SimStruct(fields, name=t["Name"])
     if t["Kind"] == "LPArray":
-        pts_to = get_typeref_if_available(handle_json_type(t["Child"], create_missing=create_missing))
+        pts_to = get_typeref_if_available(handle_json_type(t["Child"], anon_typelib, create_missing=create_missing))
         return angr.types.SimTypePointer(pts_to, label="LPArray")
     if t["Kind"] == "Union":
+        local_anon_typelib = SimTypeCollection()
         for nested_type in t["NestedTypes"]:
-            typelib.add(nested_type["Name"], handle_json_type(nested_type, create_missing=create_missing))
+            anonymous = is_anonymous_struct(nested_type["Name"])
+            if anonymous:
+                local_anon_typelib.add(
+                    nested_type["Name"], handle_json_type(nested_type, None, create_missing=create_missing)
+                )
+            else:
+                typelib.add(nested_type["Name"], handle_json_type(nested_type, None, create_missing=create_missing))
         members = {}
         for field in t["Fields"]:
-            child_type = get_typeref_if_available(handle_json_type(field["Type"], create_missing=create_missing))
+            child_type = get_typeref_if_available(
+                handle_json_type(field["Type"], local_anon_typelib, create_missing=create_missing)
+            )
             members[field["Name"]] = child_type
         return angr.types.SimUnion(members)
     if t["Kind"] == "MissingClrType":
@@ -144,7 +177,8 @@ def create_angr_type_from_json(t):
         if t["Name"] == "PWSTR":
             new_typedef = angr.types.SimTypePointer(angr.types.SimTypeWideChar(label="WCHAR"), label="PWSTR")
         else:
-            new_typedef = handle_json_type(t)
+            anon_typelib = SimTypeCollection()
+            new_typedef = handle_json_type(t, anon_typelib)
         typelib.add(t["Name"], new_typedef)
     elif t["Kind"] == "Enum":
         match t["IntegerBase"]:
@@ -188,14 +222,17 @@ def create_angr_type_from_json(t):
         typelib.add(t["Name"], ty)
     elif t["Kind"] == "Struct":
         known_struct_names.add(t["Name"])
-        real_new_type = handle_json_type(t)
+        anon_typelib = SimTypeCollection()
+        real_new_type = handle_json_type(t, anon_typelib)
         typelib.add(t["Name"], real_new_type)
     elif t["Kind"] == "FunctionPointer":
-        ret_type = handle_json_type(t["ReturnType"])
+        anon_typelib = SimTypeCollection()
+        ret_type = handle_json_type(t["ReturnType"], anon_typelib)
         args = []
         arg_names = []
         for param in t["Params"]:
-            new_param = handle_json_type(param["Type"])
+            anon_typelib = SimTypeCollection()
+            new_param = handle_json_type(param["Type"], anon_typelib)
             args.append(new_param)
             arg_names.append(param["Name"])
 
@@ -208,7 +245,8 @@ def create_angr_type_from_json(t):
     elif t["Kind"] == "ComClassID":
         return
     elif t["Kind"] == "Union":
-        real_new_type = handle_json_type(t)
+        anon_typelib = SimTypeCollection()
+        real_new_type = handle_json_type(t, anon_typelib)
         typelib.add(t["Name"], real_new_type)
         return
     else:
@@ -220,12 +258,14 @@ def do_it(in_dir):
 
     files = p.glob("*.json")
 
+    log.info("Dump root: %s", dump_root)
+
     for file in files:
-        logging.info("Found file %s", file)
+        log.info("Found file %s", file)
         with open(file, encoding="utf-8-sig") as f:
             api_namespaces[file.stem] = json.load(f)
 
-    logging.info("Making a bunch of types...")
+    log.info("Making a bunch of types...")
     missing_types_last_round = set()
     while True:
         nosuchtype = 0
@@ -239,22 +279,22 @@ def do_it(in_dir):
                     # skip this type for now
                     nosuchtype += 1
                     missing_types.add(t["Name"])
-        logging.info("... missing %d types", nosuchtype)
+        log.info("... missing %d types", nosuchtype)
         if nosuchtype == 0 or missing_types == missing_types_last_round:
             break
         missing_types_last_round = missing_types
 
     if missing_types_last_round:
-        logging.info("Missing types: %s", missing_types_last_round)
+        log.info("Missing types: %s", missing_types_last_round)
     else:
-        logging.info("All referenced types have been created")
-    logging.info("Alright, now let's do some functions")
+        log.info("All referenced types have been created")
+    log.info("Alright, now let's do some functions")
 
     i = 1
     func_count = 0
     parsed_cprotos = defaultdict(list)
     for namespace, metadata in api_namespaces.items():
-        logging.debug("+++ %d/%d: Processing namespace %s", i, len(api_namespaces), namespace)
+        log.debug("+++ %d/%d: Processing namespace %s", i, len(api_namespaces), namespace)
         i += 1
         funcs = metadata["Functions"]
         if namespace.startswith("Windows.Win32"):
@@ -273,12 +313,14 @@ def do_it(in_dir):
             if prefix == "wdk" and libname == "ntdll" and suffix == "dll":
                 libname = "ntoskrnl"
                 suffix = "exe"
-            ret_type = handle_json_type(f["ReturnType"], create_missing=True)
+            anon_typelib = SimTypeCollection()
+            ret_type = handle_json_type(f["ReturnType"], anon_typelib, create_missing=True)
             variadic = f["CallingConvention"] == "VarArgs"
             args = []
             arg_names = []
             for idx, param in enumerate(f["Params"]):
-                new_param = handle_json_type(param["Type"], create_missing=True)
+                anon_typelib = SimTypeCollection()
+                new_param = handle_json_type(param["Type"], anon_typelib, create_missing=True)
                 assert new_param is not None, "This should not happen, please report this."
                 args.append(new_param)
                 arg_names.append(param["Name"])
@@ -2515,7 +2557,7 @@ def do_it(in_dir):
                     exists = True
                     break
             if exists:
-                logging.warning("Declaration for function %s in %s.%s already exists. Skipping...", func, lib, suffix)
+                log.warning("Declaration for function %s in %s.%s already exists. Skipping...", func, lib, suffix)
                 continue
 
             parsed_cprotos[(prefix, lib, suffix)].append((func, proto, ""))
@@ -2530,7 +2572,7 @@ def do_it(in_dir):
         full_prefix = dump_root / prefix
         filename = libname.replace(".", "_") + ".json"
         os.makedirs(full_prefix, exist_ok=True)
-        logging.debug("Writing to file %s...", filename)
+        log.debug("Writing to file %s...", filename)
         non_returning = []
         d = {
             "_t": "lib",
@@ -2553,7 +2595,7 @@ def do_it(in_dir):
 
     # Dump the type collection to a JSON file
     with open(dump_root / "win32/_types_win32.json", "w", encoding="utf-8") as f:
-        logging.debug("Writing to file win32/win32_types.json...")
+        log.debug("Writing to file win32/win32_types.json...")
         f.write(json.dumps(typelib.to_json(types_as_string=True), indent="\t"))
 
 
@@ -2563,10 +2605,9 @@ def main():
     _args.add_argument("-v", action="count", help="Increase logging verbosity. Can specify multiple times.")
     args = _args.parse_args()
     if args.v is not None:
-        logging.root.setLevel(level=max(30 - (args.v * 10), 0))
+        log.root.setLevel(level=max(30 - (args.v * 10), 0))
     do_it(args.win32json_api_directory)
 
 
 if __name__ == "__main__":
-    logging.root.setLevel("DEBUG")
     main()

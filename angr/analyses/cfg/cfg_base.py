@@ -49,6 +49,7 @@ from angr.procedures.procedure_dict import SIM_PROCEDURES
 from angr.procedures.stubs.UnresolvableJumpTarget import UnresolvableJumpTarget
 from angr.utils.constants import DEFAULT_STATEMENT
 from angr.utils.orderedset import OrderedSet
+from angr.utils.vex import block_branch_ins_addr, block_is_single_instruction
 
 from .indirect_jump_resolvers.default_resolvers import default_indirect_jump_resolvers
 
@@ -68,6 +69,12 @@ class CFGBase(Analysis):
     """
     The base class for control flow graphs.
     """
+
+    if TYPE_CHECKING:
+        # provided by ForwardAnalysis, which every concrete CFG analysis also derives from
+
+        @property
+        def should_abort(self) -> bool: ...
 
     tag: str = None  # type:ignore
     addr_type: Literal["int", "block_id", "soot"] = None  # type: ignore
@@ -155,7 +162,7 @@ class CFGBase(Analysis):
 
         # Initialization
         self._edge_map = None
-        self._loop_back_edges = None
+        self._loop_back_edges = []
         self._overlapped_loop_headers = None
         self._thumb_addrs = set()
         self._tail_calls = set()
@@ -173,6 +180,11 @@ class CFGBase(Analysis):
         # stores as a map between addresses and IndirectJump objects
         self.indirect_jumps: dict[int, IndirectJump] = {}
         self._indirect_jumps_to_resolve = set()
+        # indirect jumps whose resolution was postponed because the data references that bound an unbounded jump
+        # table were not collected yet. only used when _defer_unbounded_jumptables is enabled (CFGFast).
+        self._deferred_indirect_jumps: set[IndirectJump] = set()
+        self._defer_unbounded_jumptables = False
+        self._unbounded_jumptable_final_pass = False
 
         # Indirect jump resolvers
         self._indirect_jump_target_limit = indirect_jump_target_limit
@@ -221,7 +233,10 @@ class CFGBase(Analysis):
 
         # a dict of mapping between function addresses and sets of jobs (include both future jobs and pending jobs)
         # a set is used to speed up the job removal procedure
-        self._jobs_to_analyze_per_function = defaultdict(set)
+        self._jobs_to_analyze_per_function: defaultdict[int | SootMethodDescriptor, set] = defaultdict(set)
+        # functions whose job set is currently empty.
+        # incrementally updated.
+        self._functions_without_jobs: dict[int | SootMethodDescriptor, None] = {}
         # addresses of functions that have been completely recovered (i.e. all of its blocks are identified) so far
         self._completed_functions = set()
 
@@ -255,6 +270,7 @@ class CFGBase(Analysis):
                 '"auto_load_libs" disabled, or specify "regions" to limit the scope of CFG recovery.'
             )
 
+        regions_derived_from_objects = regions is None
         if regions is None:
             regions = self._exec_mem_regions
             if not self._skip_unmapped_addrs and not regions:
@@ -283,6 +299,14 @@ class CFGBase(Analysis):
         l.debug("CFG recovery covers %d regions:", len(self._regions))
         for start, end in self._regions.items():
             l.debug("... %#x - %#x", start, end)
+
+        if regions_derived_from_objects and not self._regions_size:
+            l.warning(
+                "CFG recovery has nothing to scan: the regions to analyze cover 0 bytes. If %s does contain code, "
+                'pass the address ranges that hold it in "regions", or set "force_segment" to derive regions from '
+                "segments instead of sections.",
+                self._binary,
+            )
 
     def __contains__(self, cfg_node):
         return cfg_node in self.graph
@@ -325,6 +349,15 @@ class CFGBase(Analysis):
         """
         return self.kb.functions
 
+    @property
+    def regions(self) -> list[tuple[int, int]]:
+        """
+        The memory regions that this analysis covers. An empty list means it had nothing to scan.
+
+        :return: A sorted list of (start address, end address) tuples.
+        """
+        return list(self._regions.items())
+
     #
     # Methods
     #
@@ -335,6 +368,7 @@ class CFGBase(Analysis):
         """
 
         self._jobs_to_analyze_per_function = defaultdict(set)
+        self._functions_without_jobs = {}
         self._completed_functions = set()
 
     def _function_completed(self, func_addr: int):
@@ -436,14 +470,7 @@ class CFGBase(Analysis):
         self._model.add_node(new_node.block_id, new_node)
 
     def _to_snippet(
-        self,
-        cfg_node=None,
-        addr=None,
-        size=None,
-        thumb=False,
-        jumpkind=None,
-        base_state=None,
-        byte_string: bytes | None = None,
+        self, cfg_node: CFGNode | None = None, addr=None, size=None, thumb=False, jumpkind=None, base_state=None
     ):
         """
         Convert a CFGNode instance to a CodeNode object.
@@ -470,31 +497,16 @@ class CFGBase(Analysis):
             size = hooker.kwargs.get("length", 0)
             return HookNode(addr, size, hooker)
 
-        if cfg_node is not None and byte_string is None:
-            byte_string = cfg_node.byte_string
-
-        if byte_string is not None:
-            return BlockNode(addr, size, thumb=thumb, bytestr=byte_string)  # pylint: disable=no-member
+        if cfg_node is not None and not cfg_node.is_simprocedure and not cfg_node.is_syscall:
+            return BlockNode(addr, size, thumb=thumb)
+        # fall back to using the factory to create a snippet
         return self.project.factory.snippet(addr, size=size, jumpkind=jumpkind, thumb=thumb, backup_state=base_state)
 
     def _node_key_to_snippet(self, node_key: K, jumpkind: str | None = None, base_state=None) -> BlockNode:
         addr = block_key_to_addr(node_key)
         size = block_key_to_size(node_key)
         thumb = is_arm_arch(self.project.arch) and addr % 2 == 1
-        if not isinstance(addr, int):
-            byte_string = None
-        else:
-            byte_string = (
-                self._fast_memory_load_bytes(addr, size) if not thumb else self._fast_memory_load_bytes(addr - 1, size)
-            )
-        return self._to_snippet(
-            addr=addr,
-            size=size,
-            thumb=thumb,
-            jumpkind=jumpkind,
-            base_state=base_state,
-            byte_string=byte_string,
-        )
+        return self._to_snippet(addr=addr, size=size, thumb=thumb, jumpkind=jumpkind, base_state=base_state)
 
     def is_thumb_addr(self, addr):
         return addr in self._thumb_addrs
@@ -771,14 +783,14 @@ class CFGBase(Analysis):
         binaries = self.project.loader.all_objects if objects is None else objects
 
         memory_regions = []
-        has_executable = False
+        examined_any_object = False
 
         for b in binaries:
             if not b.has_memory:
                 continue
+            examined_any_object = True
 
             if isinstance(b, ELF):
-                has_executable = True
                 # If we have sections, we get result from sections
                 sections = []
                 if not force_segment and b.sections:
@@ -811,7 +823,6 @@ class CFGBase(Analysis):
                             memory_regions.append(segment)
 
             elif isinstance(b, (Coff, PE)):
-                has_executable = True
                 for section in b.sections:
                     if section.is_executable:
                         max_mapped_addr = section.min_addr + min(section.memsize, section.filesize)
@@ -819,7 +830,6 @@ class CFGBase(Analysis):
                         memory_regions.append(tpl)
 
             elif isinstance(b, XBE):
-                has_executable = True
                 # some XBE files will mark the data sections as executable
                 for section in b.sections:
                     if (
@@ -831,16 +841,17 @@ class CFGBase(Analysis):
                         memory_regions.append(tpl)
 
             elif isinstance(b, MachO):
-                has_executable = True
                 if b.segments:
                     # Get all executable segments
                     for seg in b.segments:
                         if seg.is_executable:
-                            # Take all sections from this segment (MachO style)
+                            # The whole of __TEXT is r-x, so this segment covers its constant pools and string
+                            # literals as well as its code.
                             for section in seg.sections:
-                                max_mapped_addr = section.min_addr + min(section.memsize, section.filesize)
-                                tpl = (section.min_addr, max_mapped_addr)
-                                memory_regions.append(tpl)
+                                if section.is_executable:
+                                    max_mapped_addr = section.min_addr + min(section.memsize, section.filesize)
+                                    tpl = (section.min_addr, max_mapped_addr)
+                                    memory_regions.append(tpl)
 
             elif isinstance(b, (Hex, SRec)):
                 if b.regions:
@@ -888,8 +899,11 @@ class CFGBase(Analysis):
                 tpl = (b.min_addr, b.max_addr + 1)
                 memory_regions.append(tpl)
 
-        if not memory_regions and not has_executable:
+        if not memory_regions and not examined_any_object:
             memory_regions = [(start, start + len(backer)) for start, backer in self.project.loader.memory.backers()]
+
+        # A section or segment that maps no bytes, such as the empty .text of a data-only relocatable, is not a region.
+        memory_regions = [(start, end) for start, end in memory_regions if end > start]
 
         return sorted(memory_regions, key=lambda x: x[0])
 
@@ -1227,11 +1241,13 @@ class CFGBase(Analysis):
             func = functions.get_by_addr(func_addr)
             returning = self._determine_function_returning(func, all_funcs_completed=all_funcs_completed)
 
+            if returning is not None:
+                # _determine_function_returning() may have evicted func from a SpillingFunctionDict; write to a
+                # fresh instance
+                functions.get_by_addr(func_addr).returning = returning
             if returning:
-                func.returning = True
                 changes["functions_return"].append(func.addr)
             elif returning is False:
-                func.returning = False
                 changes["functions_do_not_return"].append(func.addr)
 
             if returning is not None and func.addr in functions.callgraph:
@@ -1318,6 +1334,22 @@ class CFGBase(Analysis):
                 all_nodes = sorted(all_nodes, key=lambda node: node.addr, reverse=True)
                 smallest_node = all_nodes[0]  # take the one that has the highest address
                 other_nodes = all_nodes[1:]
+
+                # sanity check: there are cases where a node starts in the middle of an instruction of another node.
+                # in such cases, we do not want to break the other node by limiting its size to cut into the middle of
+                # a legitimate instruction. so we further drop any nodes from other_nodes whose last instruction
+                # address does not exist in the smallest_node's instruction_addrs list.
+                # example: 1817a5bf9c01035bcf8a975c9f1d94b0ce7f6a200339485d8f93859f8f6d730c, 0x21514B6908 and
+                # 0x21514B690C (the source of this jump is at 0x21514B3A67)
+                if smallest_node.instruction_addrs:
+                    other_nodes = [
+                        n
+                        for n in other_nodes
+                        if n.instruction_addrs and n.instruction_addrs[-1] in smallest_node.instruction_addrs
+                    ]
+                if not other_nodes:
+                    del end_addr_to_nodes[key_to_find]
+                    continue
 
                 self._normalize_core(
                     graph, callstack_key, smallest_node, other_nodes, smallest_nodes, end_addr_to_nodes
@@ -1554,7 +1586,10 @@ class CFGBase(Analysis):
         :return:              None
         """
 
-        self._jobs_to_analyze_per_function[func_addr].add(job)
+        jobs = self._jobs_to_analyze_per_function[func_addr]
+        if not jobs:
+            self._functions_without_jobs.pop(func_addr, None)
+        jobs.add(job)
 
     def _deregister_analysis_job(self, func_addr, job):
         """
@@ -1565,25 +1600,21 @@ class CFGBase(Analysis):
         :return:              None
         """
 
-        self._jobs_to_analyze_per_function[func_addr].discard(job)
+        jobs = self._jobs_to_analyze_per_function[func_addr]
+        jobs.discard(job)
+        if not jobs:
+            self._functions_without_jobs[func_addr] = None
 
-    def _get_finished_functions(self):
+    def _get_finished_functions(self) -> list[int | SootMethodDescriptor]:
         """
         Obtain all functions of which we have finished analyzing. As _jobs_to_analyze_per_function is a defaultdict(),
         if a function address shows up in it with an empty job list, we consider we have exhausted all jobs of this
         function (both current jobs and pending jobs), thus the analysis of this function is done.
 
         :return: a list of function addresses of that we have finished analysis.
-        :rtype:  list
         """
 
-        finished_func_addrs = []
-        for func_addr, all_jobs in self._jobs_to_analyze_per_function.items():
-            if not all_jobs:
-                # great! we have finished analyzing this function!
-                finished_func_addrs.append(func_addr)
-
-        return finished_func_addrs
+        return list(self._functions_without_jobs)
 
     def _cleanup_analysis_jobs(self, finished_func_addrs=None):
         """
@@ -1599,8 +1630,8 @@ class CFGBase(Analysis):
             finished_func_addrs = self._get_finished_functions()
 
         for func_addr in finished_func_addrs:
-            if func_addr in self._jobs_to_analyze_per_function:
-                del self._jobs_to_analyze_per_function[func_addr]
+            self._jobs_to_analyze_per_function.pop(func_addr, None)
+            self._functions_without_jobs.pop(func_addr, None)
 
     def _make_completed_functions(self):
         """
@@ -1885,13 +1916,21 @@ class CFGBase(Analysis):
                 # alignments
                 return False
 
+            # note that the size of block may change after calling _is_noop_block, because _is_noop_block attempts to
+            # lift the block at the end of the method!
+
             # TODO: We may want to add support for filtering dummy PLT stubs for other architectures, but I haven't
             # TODO: seen any need for those.
-            return not (
-                arch_.name in {"X86", "AMD64"}
-                and len(block.vex.instruction_addresses) == 2
-                and block.vex.jumpkind == "Ijk_Boring"
-            )
+            try:
+                return not (
+                    arch_.name in {"X86", "AMD64"}
+                    and block.size > 0
+                    and len(block.instruction_addrs) == 2
+                    and block.vex.jumpkind == "Ijk_Boring"
+                )
+            except SimError:
+                # catch any exceptions that may raise during VEX block lifting
+                return False
 
         to_remove = set()
 
@@ -1991,6 +2030,7 @@ class CFGBase(Analysis):
             endpoint_addr = max(a.addr for a in function.endpoints)
             the_endpoint = next(a for a in function.endpoints if a.addr == endpoint_addr)
             endpoint_addr += the_endpoint.size
+            endpoint_addr = self._function_tail_end(function, endpoint_addr)
 
             # sanity check: startpoint of the function should not be greater than its endpoint
             if startpoint_addr >= endpoint_addr:
@@ -2087,6 +2127,14 @@ class CFGBase(Analysis):
             del functions[to_remove]
 
         return set(functions_to_remove.keys())
+
+    def _function_tail_end(self, function, end: int) -> int:  # pylint:disable=unused-argument,no-self-use
+        """
+        The end of the code that belongs to ``function``, given ``end``, the end of its last endpoint: larger when a
+        toolchain-specific rule knows of code past that endpoint. It delimits the function when the targets of its
+        unresolved indirect jumps are merged into it.
+        """
+        return end
 
     def _process_irrational_function_starts(
         self, functions, predetermined_function_addrs, blockaddr_to_funcaddr: dict[AddressType, MethodType]
@@ -2656,7 +2704,7 @@ class CFGBase(Analysis):
                     src_function.addr, src_snippet, returning_snippet, confirmed=True, to_outside=return_to_outside
                 )
 
-        elif jumpkind in ("Ijk_Boring", "Ijk_InvalICache", "Ijk_Exception"):
+        elif jumpkind in ("Ijk_Boring", "Ijk_InvalICache", "Ijk_Privileged", "Ijk_Exception"):
             # convert src_addr and dst_addr to CodeNodes
             src_node = src_addr if not self.model.has_node_addr(src_addr) else self._node_key_to_snippet(src_node_key)
             dst_node = dst_addr if not self.model.has_node_addr(dst_addr) else self._node_key_to_snippet(dst_node_key)
@@ -3080,15 +3128,15 @@ class CFGBase(Analysis):
         # Add it to our set. Will process it later if user allows.
         # Create an IndirectJump instance
         if addr not in self.indirect_jumps:
-            if self.project.arch.branch_delay_slot:
-                if len(cfg_node.instruction_addrs) < 2:
-                    # sanity check
-                    # decoding failed when decoding the second instruction (or even the first instruction)
-                    return False, set(), None
-                ins_addr = cfg_node.instruction_addrs[-2]
-            elif cfg_node.instruction_addrs:
-                ins_addr = cfg_node.instruction_addrs[-1]
-            else:
+            if self.project.arch.branch_delay_slot and block_is_single_instruction(
+                cfg_node.instruction_addrs, cfg_node.addr, cfg_node.size, self.project.arch
+            ):
+                # the block cannot hold both a branch and its delay slot; the indirect exit is a decode artifact
+                return False, set(), None
+            ins_addr = block_branch_ins_addr(
+                cfg_node.instruction_addrs, cfg_node.addr, cfg_node.size, self.project.arch
+            )
+            if ins_addr is None:
                 # fallback
                 ins_addr = addr
             assert jumpkind is not None
@@ -3120,6 +3168,8 @@ class CFGBase(Analysis):
         idx: int
         jump: IndirectJump
         for idx, jump in enumerate(self._indirect_jumps_to_resolve):
+            if self.should_abort:
+                break
             if self._low_priority:
                 self._release_gil(idx, 50, 0.000001)
             all_targets |= self._process_one_indirect_jump(jump)
@@ -3142,6 +3192,7 @@ class CFGBase(Analysis):
         """
 
         resolved = False
+        deferred = False
         resolved_by = None
         targets = None
 
@@ -3159,9 +3210,14 @@ class CFGBase(Analysis):
             if resolved:
                 resolved_by = resolver
                 break
+            if getattr(resolver, "deferred", False):
+                deferred = True
 
         if resolved:
             self._indirect_jump_resolved(jump, jump.addr, resolved_by, targets)
+        elif deferred:
+            # come back to it once the rest of the analysis is exhausted; do not mark it unresolvable yet
+            self._deferred_indirect_jumps.add(jump)
         else:
             self._indirect_jump_unresolved(jump)
 

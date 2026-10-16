@@ -1,6 +1,10 @@
+# pylint:disable=protected-access
 from __future__ import annotations
 
+import json
 import logging
+import re
+from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Iterator
 from itertools import chain, count
@@ -12,6 +16,7 @@ from cle.backends.elf.compilation_unit import CompilationUnit
 from cle.backends.elf.variable import Variable
 
 from angr import ailment
+from angr.enums import Flavors
 from angr.keyed_region import KeyedRegion
 from angr.knowledge_plugins.plugin import KnowledgeBasePlugin
 from angr.knowledge_plugins.types import TypesStore
@@ -24,6 +29,8 @@ from angr.sim_type import (
     SimTypeChar,
     SimTypeInt,
     SimTypeLong,
+    SimTypeLongLong,
+    SimTypeNum,
     SimTypeShort,
     TypeRef,
 )
@@ -37,8 +44,9 @@ from angr.sim_variable import (
 )
 from angr.utils.ail import is_phi_assignment
 from angr.utils.orderedset import OrderedSet
-from angr.utils.types import replace_pointer_pts_to, unpack_pointer
+from angr.utils.types import relink_typerefs, replace_pointer_pts_to, unpack_pointer
 
+from .spilling_vardict import USE_SPILLING_DVARS, SpillingVariableInternalDict
 from .variable_access import VariableAccess, VariableAccessSort
 
 if TYPE_CHECKING:
@@ -95,6 +103,10 @@ class VariableManagerInternal(Serializable):
         self.manager: VariableManager = manager
 
         self.func_addr = func_addr
+        # decompiler flavor (e.g., "pseudocode" or "rust") that populated this manager. None means unknown (created
+        # outside decompilation or loaded from older data); the first decompilation that uses it adopts its flavor.
+        # Global managers always know their flavor: it is the key they are stored under.
+        self.flavor: str | None = None
 
         self._variables: OrderedSet[SimVariable] = OrderedSet()  # all variables that are added to any region
         self._global_region = KeyedRegion()
@@ -134,6 +146,10 @@ class VariableManagerInternal(Serializable):
         self.variable_to_types: dict[SimVariable, SimType] = {}
         self.variables_with_manual_types = set()
 
+        # dimension expressions for variable-length arrays (VLAs). Maps a (unified) variable typed as a
+        # length-less SimTypeArray to the ailment expression giving its runtime length, e.g. ``e->bs``.
+        self.array_length_exprs: dict[SimVariable, ailment.Expression] = {}
+
         # optimization
         self._variables_without_writes = set()
 
@@ -144,11 +160,13 @@ class VariableManagerInternal(Serializable):
     #
 
     def __setstate__(self, state):
+        self.flavor = None
         self.__dict__.update(state)
 
     def __getstate__(self):
         attributes = [
             "func_addr",
+            "flavor",
             "_variables",
             "_global_region",
             "_stack_region",
@@ -195,6 +213,7 @@ class VariableManagerInternal(Serializable):
 
         # variables
         register_variables = []
+        combo_register_variables = []
         stack_variables = []
         memory_variables = []
         const_variables = []
@@ -203,6 +222,8 @@ class VariableManagerInternal(Serializable):
             vc = variable.serialize_to_cmessage()
             if isinstance(variable, SimRegisterVariable):
                 register_variables.append(vc)
+            elif isinstance(variable, SimComboRegisterVariable):
+                combo_register_variables.append(vc)
             elif isinstance(variable, SimStackVariable):
                 stack_variables.append(vc)
             elif isinstance(variable, SimMemoryVariable):
@@ -210,20 +231,23 @@ class VariableManagerInternal(Serializable):
             elif isinstance(variable, SimConstantVariable):
                 const_variables.append(vc)
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"Unsupported variable type {type(variable)}")
         for variable in self._phi_variables:
             vc = variable.serialize_to_cmessage()
             vc.base.is_phi = True
             if isinstance(variable, SimRegisterVariable):
                 register_variables.append(vc)
+            elif isinstance(variable, SimComboRegisterVariable):
+                combo_register_variables.append(vc)
             elif isinstance(variable, SimStackVariable):
                 stack_variables.append(vc)
             elif isinstance(variable, SimMemoryVariable):
                 memory_variables.append(vc)
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"Unsupported phi variable type {type(variable)}")
 
         cmsg.regvars.extend(register_variables)
+        cmsg.comboregvars.extend(combo_register_variables)
         cmsg.stackvars.extend(stack_variables)
         cmsg.memvars.extend(memory_variables)
         cmsg.constvars.extend(const_variables)
@@ -237,6 +261,7 @@ class VariableManagerInternal(Serializable):
 
         # unified variables
         unified_register_variables = []
+        unified_combo_register_variables = []
         unified_stack_variables = []
         unified_memory_variables = []
 
@@ -246,14 +271,17 @@ class VariableManagerInternal(Serializable):
             unified_variable_idents.add(variable.ident)
             if isinstance(variable, SimRegisterVariable):
                 unified_register_variables.append(variable.serialize_to_cmessage())
+            elif isinstance(variable, SimComboRegisterVariable):
+                unified_combo_register_variables.append(variable.serialize_to_cmessage())
             elif isinstance(variable, SimStackVariable):
                 unified_stack_variables.append(variable.serialize_to_cmessage())
             elif isinstance(variable, SimMemoryVariable):
                 unified_memory_variables.append(variable.serialize_to_cmessage())
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"Unsupported unified variable type {type(variable)}")
 
         cmsg.unified_regvars.extend(unified_register_variables)
+        cmsg.unified_comboregvars.extend(unified_combo_register_variables)
         cmsg.unified_stackvars.extend(unified_stack_variables)
         cmsg.unified_memvars.extend(unified_memory_variables)
 
@@ -286,7 +314,44 @@ class VariableManagerInternal(Serializable):
                 phi_relations.append(relation)
         cmsg.phi2var.extend(phi_relations)
 
-        # TODO: Types
+        # Types: variable_to_types (SimVariable ident -> SimType), with the manual-type flag. SimType JSON strings
+        # are interned into a shared type pool since many variables share the same type.
+        type_pool: list[str] = []
+        type_ref_by_json: dict[str, int] = {}
+        type_entries = []
+        for var, var_type in self.variable_to_types.items():
+            if var.ident is None:
+                continue
+            type_json = json.dumps(var_type.to_json())
+            ref = type_ref_by_json.get(type_json)
+            if ref is None:
+                type_pool.append(type_json)
+                ref = len(type_pool)  # index+1
+                type_ref_by_json[type_json] = ref
+            entry = variables_pb2.VariableType()  # type: ignore[reportAttributeAccessIssue]
+            entry.ident = var.ident
+            entry.type_ref = ref
+            entry.manual = var in self.variables_with_manual_types
+            type_entries.append(entry)
+        cmsg.types.extend(type_entries)
+
+        # Named local types (self.types): the TypeRef targets, interned into the same pool
+        local_type_entries = []
+        for name in self.types.iter_own_keys():
+            type_json = json.dumps(self.types.get_own(name).type.to_json())
+            ref = type_ref_by_json.get(type_json)
+            if ref is None:
+                type_pool.append(type_json)
+                ref = len(type_pool)
+                type_ref_by_json[type_json] = ref
+            entry = variables_pb2.LocalType()  # type: ignore[reportAttributeAccessIssue]
+            entry.name = name
+            entry.type_ref = ref
+            local_type_entries.append(entry)
+        cmsg.local_types.extend(local_type_entries)
+        cmsg.type_pool.extend(type_pool)
+        if self.flavor is not None:
+            cmsg.flavor = self.flavor
 
         # TODO: vvarid_to_varialbes & variable_to_vvarids
 
@@ -295,6 +360,7 @@ class VariableManagerInternal(Serializable):
     @classmethod
     def parse_from_cmessage(cls, cmsg, variable_manager=None, func_addr=None, **kwargs) -> VariableManagerInternal:  # pylint:disable=arguments-differ
         model = VariableManagerInternal(variable_manager, func_addr=func_addr)
+        model.flavor = cmsg.flavor if cmsg.HasField("flavor") else None
 
         variable_by_ident = {}
 
@@ -306,6 +372,13 @@ class VariableManagerInternal(Serializable):
                 (
                     regvar_pb2.base.is_phi,  # type: ignore[reportAttributeAccessIssue]
                     SimRegisterVariable.parse_from_cmessage(regvar_pb2),
+                )
+            )
+        for comboregvar_pb2 in cmsg.comboregvars:
+            all_vars.append(
+                (
+                    comboregvar_pb2.base.is_phi,  # type: ignore[reportAttributeAccessIssue]
+                    SimComboRegisterVariable.parse_from_cmessage(comboregvar_pb2),
                 )
             )
         for stackvar_pb2 in cmsg.stackvars:
@@ -330,6 +403,11 @@ class VariableManagerInternal(Serializable):
                 )
             )
         for is_phi, var in all_vars:
+            # a variable that is both a regular variable and a phi variable is stored twice; keep one object for it,
+            # as in memory, so that every table refers to the same variable
+            existing = variable_by_ident.get(var.ident) if var.ident is not None else None
+            if existing is not None and existing == var:
+                var = existing
             variable_by_ident[var.ident] = var
             if is_phi:
                 model._phi_variables[var] = set()
@@ -370,6 +448,10 @@ class VariableManagerInternal(Serializable):
             regvar = SimRegisterVariable.parse_from_cmessage(regvar_pb2)
             unified_variable_by_ident[regvar.ident] = regvar
             model._unified_variables.add(regvar)
+        for comboregvar_pb2 in cmsg.unified_comboregvars:
+            comboregvar = SimComboRegisterVariable.parse_from_cmessage(comboregvar_pb2)
+            unified_variable_by_ident[comboregvar.ident] = comboregvar
+            model._unified_variables.add(comboregvar)
         for stackvar_pb2 in cmsg.unified_stackvars:
             stackvar = SimStackVariable.parse_from_cmessage(stackvar_pb2)
             unified_variable_by_ident[stackvar.ident] = stackvar
@@ -403,7 +485,39 @@ class VariableManagerInternal(Serializable):
             model._phi_variables[phi].add(var)
             model._variables_to_phivars[var].add(phi)
 
-        # TODO: Types
+        # Types: variable_to_types (keyed by both regular and unified variables) + variables_with_manual_types.
+        # Each pooled type JSON is parsed once and shared across the variables that reference it.
+        arch = model.manager._kb._project.arch if model.manager is not None else None
+        type_by_ref: dict[int, SimType] = {}
+        for ref, type_json in enumerate(cmsg.type_pool, start=1):
+            var_type = SimType.from_json(json.loads(type_json))
+            type_by_ref[ref] = var_type.with_arch(arch) if arch is not None else var_type
+
+        # Named local types come back as fresh TypeRefs owned by model.types; TypeRefs of the same name inside the
+        # decoded types are relinked to them so that the store stays the single owner of each named type.
+        typerefs: dict[str, TypeRef] = {}
+        if model.manager is not None:
+            for local_type_pb2 in cmsg.local_types:
+                ty = type_by_ref.get(local_type_pb2.type_ref)
+                if ty is None:
+                    continue
+                if isinstance(ty, TypeRef):
+                    ty = ty.type
+                typerefs[local_type_pb2.name] = TypeRef(local_type_pb2.name, ty)
+            for name, typeref in typerefs.items():
+                relink_typerefs(typeref.type, typerefs)
+                model.types[name] = typeref
+            for ref, ty in type_by_ref.items():
+                type_by_ref[ref] = relink_typerefs(ty, typerefs)
+
+        for type_pb2 in cmsg.types:
+            var = variable_by_ident.get(type_pb2.ident) or unified_variable_by_ident.get(type_pb2.ident)
+            var_type = type_by_ref.get(type_pb2.type_ref)
+            if var is None or var_type is None:
+                continue
+            model.variable_to_types[var] = var_type
+            if type_pb2.manual:
+                model.variables_with_manual_types.add(var)
 
         for var in model._variables:
             if isinstance(var, SimStackVariable):
@@ -415,14 +529,26 @@ class VariableManagerInternal(Serializable):
             elif isinstance(var, SimMemoryVariable):
                 region = model._global_region
                 offset = var.addr
-            elif isinstance(var, SimConstantVariable):
+            elif isinstance(var, (SimConstantVariable, SimComboRegisterVariable)):
+                # combo-register variables are never keyed into a region
                 continue
             else:
-                raise ValueError(f"Unsupported sort {type(var)} in parse_from_cmessage().")
+                raise TypeError(f"Unsupported sort {type(var)} in parse_from_cmessage().")
 
             region.add_variable(offset, var)
 
         model._variables_without_writes = set(model.get_variables_without_writes())
+
+        # restore the ident counters so that new variables never reuse the ident of a loaded one
+        prefix_to_sort = {"r": "register", "s": "stack", "arg": "argument", "g": "global", "c": "constant", "m": "phi"}
+        for var in chain(model._variables, model._phi_variables, model._unified_variables):
+            if var.ident is None:
+                continue
+            m = re.fullmatch(r"i([a-z]+)_(\d+)", var.ident)
+            if m is None or m.group(1) not in prefix_to_sort:
+                continue
+            sort = prefix_to_sort[m.group(1)]
+            model._variable_counters[sort] = max(model._variable_counters[sort], int(m.group(2)) + 1)
 
         return model
 
@@ -464,18 +590,57 @@ class VariableManagerInternal(Serializable):
             raise ValueError(f"Unsupported sort {sort} in add_variable().")
 
         if variable.ident is not None:
-            # find if there is already an existing variable with the same identifier
-            if variable.ident in self._ident_to_variable:
-                existing_var = self._ident_to_variable[variable.ident]
-                if existing_var.name is not None and not variable.renamed:
-                    variable.name = existing_var.name
-                    variable.renamed = existing_var.renamed
+            self._supersede_variable(variable)
             self._ident_to_variable[variable.ident] = variable
 
         if region is not None:
             region.add_variable(start, variable)
         self._variables.add(variable)
         self._variables_without_writes.add(variable)
+
+    def _supersede_variable(self, variable: SimVariable) -> None:
+        """
+        Remove the existing variable with the same identifier as `variable` from the variable manager, and transfer its
+        name to `variable`.
+        """
+
+        assert variable.ident is not None
+        existing = self._ident_to_variable.get(variable.ident)
+        if existing is None or existing is variable:
+            return
+        if existing.name is not None and not variable.renamed:
+            variable.name = existing.name
+            variable.renamed = existing.renamed
+            variable.auto_renamed = existing.auto_renamed
+        if existing == variable:
+            return
+
+        self._variables.discard(existing)
+        self._variables_without_writes.discard(existing)
+        if isinstance(existing, SimStackVariable):
+            self._stack_region.remove_variable(existing.offset, existing)
+        elif isinstance(existing, SimRegisterVariable):
+            self._register_region.remove_variable(existing.reg, existing)
+        elif isinstance(existing, SimComboRegisterVariable):
+            self._register_region.remove_variable(existing.reg_offsets[0], existing)
+        elif isinstance(existing, SimMemoryVariable):
+            self._global_region.remove_variable(existing.addr, existing)
+
+        # drop it from the phi bookkeeping: a variable defined by a phi statement is also a phi variable, and a stale
+        # one left here would be unified again next to its replacement
+        if self._phi_variables.pop(existing, None) is not None:
+            for phis in self._phi_variables_by_block.values():
+                phis.discard(existing)
+        for phi in self._variables_to_phivars.pop(existing, ()):
+            if phi in self._phi_variables:
+                self._phi_variables[phi].discard(existing)
+
+        # re-key the stale unified variable to the new variable so that set_unified_variable() carries its name over
+        old_unified = self._variables_to_unified_variables.pop(existing, None)
+        if old_unified is not None:
+            if all(u is not old_unified for u in self._variables_to_unified_variables.values()):
+                self._unified_variables.discard(old_unified)
+            self._variables_to_unified_variables[variable] = old_unified
 
     def set_variable(self, sort, start, variable: SimVariable):
         if sort == "stack":
@@ -492,6 +657,7 @@ class VariableManagerInternal(Serializable):
             if existing_var.name is not None and not variable.renamed:
                 variable.name = existing_var.name
                 variable.renamed = existing_var.renamed
+                variable.auto_renamed = existing_var.auto_renamed
         region.set_variable(start, variable)
         self._variables.add(variable)
         self._variables_without_writes.add(variable)
@@ -537,7 +703,10 @@ class VariableManagerInternal(Serializable):
         overwrite=False,
         atom: ailment.expression.Atom | None = None,
     ):
-        if variable.ident not in self._ident_to_variable:
+        existing = self._ident_to_variable.get(variable.ident)
+        if existing is None or existing != variable:
+            if existing is not None:
+                self._supersede_variable(variable)
             self._ident_to_variable[variable.ident] = variable
             self._variables.add(variable)
         var_and_offset = variable, offset
@@ -599,6 +768,23 @@ class VariableManagerInternal(Serializable):
             if not self._atom_to_variable[key]:
                 del self._atom_to_variable[key]
 
+    def rebind_variable_records(self, old: SimVariable, new: SimVariable) -> None:
+        """
+        Re-point every instruction, statement and atom record of `old` to `new`.
+        """
+        for key in self._variable_to_stmt.pop(old, set()):
+            self._stmt_to_variable[key] = {(new if v is old else v, off) for v, off in self._stmt_to_variable[key]}
+            self._variable_to_stmt[new].add(key)
+            if key in self._atom_to_variable:
+                for atom_hash, entries in self._atom_to_variable[key].items():
+                    self._atom_to_variable[key][atom_hash] = {(new if v is old else v, off) for v, off in entries}
+        for ins_addr, entries in self._insn_to_variable.items():
+            if any(v is old for v, _ in entries):
+                self._insn_to_variable[ins_addr] = {(new if v is old else v, off) for v, off in entries}
+        for vvar_id in self._variable_to_vvarids.pop(old, set()):
+            self._vvarid_to_variable[vvar_id] = new
+            self._variable_to_vvarids[new].add(vvar_id)
+
     def make_phi_node(self, block_addr, *variables):
         """
         Create a phi variable for variables at block `block_addr`.
@@ -630,7 +816,7 @@ class VariableManagerInternal(Serializable):
                     return phi
 
         # allocate a new phi variable
-        repre = sorted(variables, key=lambda val: val.key)[0]
+        repre = min(variables, key=lambda val: val.key)
         repre_type = type(repre)
         repre_size = max(var.size for var in variables)
         if repre_type is SimRegisterVariable:
@@ -733,6 +919,10 @@ class VariableManagerInternal(Serializable):
             return variables[0]
         return None
 
+    def variable_by_vvar_id(self, varid: int) -> SimVariable | None:
+        """The variable that was assigned to the virtual variable with the given id, if any."""
+        return self._vvarid_to_variable.get(varid)
+
     def find_variables_by_atom(
         self, block_addr, stmt_idx, atom: ailment.expression.Expression, block_idx: int | None = None
     ) -> set[tuple[SimVariable, int | None]]:
@@ -784,9 +974,7 @@ class VariableManagerInternal(Serializable):
     @overload
     def get_variables(self, sort: Literal["reg"], collapse_same_ident: bool = False) -> list[SimRegisterVariable]: ...
     @overload
-    def get_variables(
-        self, sort: None = None, collapse_same_ident: bool = False
-    ) -> list[SimRegisterVariable | SimRegisterVariable]: ...
+    def get_variables(self, sort: None = None, collapse_same_ident: bool = False) -> list[SimRegisterVariable]: ...
 
     def get_variables(self, sort=None, collapse_same_ident=False):
         """
@@ -816,7 +1004,7 @@ class VariableManagerInternal(Serializable):
     @overload
     def get_unified_variables(self, sort: Literal["reg"]) -> list[SimRegisterVariable]: ...
     @overload
-    def get_unified_variables(self, sort: None) -> list[SimRegisterVariable | SimRegisterVariable]: ...
+    def get_unified_variables(self, sort: None) -> list[SimRegisterVariable]: ...
 
     def get_unified_variables(self, sort=None):
         """
@@ -1019,7 +1207,9 @@ class VariableManagerInternal(Serializable):
                     sorted_combo_reg_variables.append(var)
 
             elif isinstance(var, SimMemoryVariable):
-                if not reset and var.name is not None:
+                if var.auto_renamed and not var.renamed:
+                    var.auto_renamed = False
+                elif not reset and var.name is not None:
                     continue
                 # assign names directly
                 if labels is not None and var.addr in labels:
@@ -1052,7 +1242,10 @@ class VariableManagerInternal(Serializable):
 
         for var in chain(sorted_stack_variables, sorted_reg_variables, sorted_combo_reg_variables, phi_only_vars):
             idx = next(var_ctr)
-            if var.name is not None and var.name != var.ident and not reset:
+            if var.auto_renamed and not var.renamed:
+                # a semantic name from an earlier run: drop it so this run can name the variable afresh
+                var.auto_renamed = False
+            elif var.name is not None and var.name != var.ident and not reset:
                 continue
             if isinstance(var, (SimStackVariable, SimRegisterVariable, SimComboRegisterVariable)):
                 var.name = f"v{idx}"
@@ -1064,9 +1257,12 @@ class VariableManagerInternal(Serializable):
         arg_vars = sorted(arg_vars, key=lambda v: _id_from_varident(v.ident))
         for var in arg_vars:
             idx = next(arg_ctr)
-            if var.name is not None and var.name != var.ident and not reset:
+            if var.auto_renamed and not var.renamed:
+                var.auto_renamed = False
+            elif var.name is not None and var.name != var.ident and not reset:
                 continue
-            var.name = arg_names[idx] if arg_names else f"a{idx}"
+            # a re-decompilation may see more argument variables than the (since narrowed) prototype names
+            var.name = arg_names[idx] if arg_names and idx < len(arg_names) else f"a{idx}"
             var._hash = None
 
     def _register_struct_type(self, ty: SimStruct, name: str | None = None) -> TypeRef:
@@ -1091,14 +1287,19 @@ class VariableManagerInternal(Serializable):
     ) -> None:
         # we fall back to assigning a default unsigned integer type for the variable
         if isinstance(ty, SimTypeBottom) and override_bot and var.size is not None:
+            arch = self.manager._kb._project.arch
             size_to_type = {
                 1: SimTypeChar,
                 2: SimTypeShort,
                 4: SimTypeInt,
-                8: SimTypeLong,
+                # long is 32 bits on 32-bit architectures (and on Windows x64)
+                8: SimTypeLong if arch.sizeof["long"] == 64 else SimTypeLongLong,
             }
             if var.size in size_to_type:
-                ty = size_to_type[var.size](signed=False, label=ty.label).with_arch(self.manager._kb._project.arch)
+                ty = size_to_type[var.size](signed=False, label=ty.label).with_arch(arch)
+            elif var.size > 0:
+                # e.g. a 16-byte xmm register variable: keep its width instead of the "int" that BOT renders as
+                ty = SimTypeNum(var.size * arch.byte_width, signed=False, label=ty.label).with_arch(arch)
 
         if name:
             if name not in self.types:
@@ -1132,6 +1333,22 @@ class VariableManagerInternal(Serializable):
         self.types.clear()
         self.variable_to_types.clear()
 
+    def same_offset_stack_vvarids(self) -> set[int]:
+        """
+        Return the IDs of vvars backing stack variables that share their offset with another stack variable. These are
+        the only vvars whose interference unify_variables() consults.
+        """
+        vars_by_offset: dict[int, list[SimStackVariable]] = defaultdict(list)
+        for v in chain(self.get_variables(), self._phi_variables):
+            if isinstance(v, SimStackVariable):
+                vars_by_offset[v.offset].append(v)
+        vvar_ids: set[int] = set()
+        for vs in vars_by_offset.values():
+            if len(vs) > 1:
+                for v in vs:
+                    vvar_ids |= self._variable_to_vvarids[v]
+        return vvar_ids
+
     def _variables_interfere(self, interference: networkx.Graph[int], v0: SimVariable, v1: SimVariable) -> bool:
         vvar_ids_0 = self._variable_to_vvarids[v0]
         vvar_ids_1 = self._variable_to_vvarids[v1]
@@ -1139,6 +1356,39 @@ class VariableManagerInternal(Serializable):
             for vvar_id_1 in vvar_ids_1:
                 if interference.has_edge(vvar_id_0, vvar_id_1):
                     return True
+        return False
+
+    def _classes_interfere(
+        self,
+        interference: networkx.Graph[int],
+        class1: set[SimVariable],
+        class2: set[SimVariable],
+    ) -> bool:
+        """Check whether any variable in *class1* interferes with any in *class2*."""
+        return any(self._variables_interfere(interference, m1, m2) for m1 in class1 for m2 in class2)
+
+    def _stack_vars_are_slot_reuse(self, v1: SimVariable, v2: SimVariable) -> bool:
+        """Detect stack slot reuse: two variables at the same offset that
+        represent different values rather than partial accesses to the same value.
+
+        The compiler may reuse a stack slot for unrelated values at different
+        program points (e.g. ``fistp dword`` writes a 4-byte int over an 8-byte
+        double, or a 4-byte float slot is reused for a 4-byte int).
+
+        We detect slot reuse by checking type domain incompatibility (FP vs
+        integer).  Size differences alone are NOT sufficient -- a 1-byte read
+        from a 4-byte int is a legitimate partial access, not slot reuse.
+        """
+        from angr.sim_type import SimTypeDouble, SimTypeFloat, SimTypeLongDouble
+
+        t1 = self.get_variable_type(v1)
+        t2 = self.get_variable_type(v2)
+        if t1 is not None and t2 is not None:
+            fp_types = (SimTypeFloat, SimTypeDouble, SimTypeLongDouble)
+            t1_fp = isinstance(t1, fp_types)
+            t2_fp = isinstance(t2, fp_types)
+            if t1_fp != t2_fp:
+                return True
         return False
 
     @staticmethod
@@ -1189,8 +1439,21 @@ class VariableManagerInternal(Serializable):
                     for v2 in sorted(
                         vs - cast(set[SimStackVariable], congruence_classes[v1]), key=lambda v: v.ident or ""
                     ):
-                        if not self._variables_interfere(interference, v1, v2):
-                            unify(v1, v2)
+                        if v1.size != v2.size and (
+                            v1 in self.variables_with_manual_types or v2 in self.variables_with_manual_types
+                        ):
+                            # a variable an analysis sized and typed (a multi-word value spilled to the stack) keeps
+                            # its shape; a narrower use of the same slot is another variable
+                            continue
+                        if self._stack_vars_are_slot_reuse(v1, v2):
+                            continue
+                        # Check that merging v1's class with v2's class
+                        # doesn't put interfering variables together.
+                        class1 = congruence_classes[v1]
+                        class2 = congruence_classes[v2]
+                        if class1 is not class2 and self._classes_interfere(interference, class1, class2):
+                            continue
+                        unify(v1, v2)
 
         classes_dedup = {
             min(p, key=VariableManagerInternal._unify_variables_varkey): p for p in congruence_classes.values()
@@ -1216,6 +1479,7 @@ class VariableManagerInternal(Serializable):
             if old_unified.name is not None and not unified.renamed:
                 unified.name = old_unified.name
                 unified.renamed = old_unified.renamed
+                unified.auto_renamed = old_unified.auto_renamed
 
         self._unified_variables.add(unified)
         self._variables_to_unified_variables[variable] = unified
@@ -1267,11 +1531,13 @@ class VariableManagerInternal(Serializable):
         max_sizes = {}
         offsets = sorted(list(stackvars_by_offset) + list(stack_items))
         for i, offset in enumerate(offsets):
-            if i + 1 < len(offsets):
-                next_off = offsets[i + 1]
-                sz = next_off - offset
-                if offset in stackvars_by_offset:
-                    for v in stackvars_by_offset[offset]:
+            if i + 1 < len(offsets) and offset in stackvars_by_offset:
+                for v in stackvars_by_offset[offset]:
+                    # find the next offset after the end of this variable
+                    next_off_idx_after_variable_end = bisect_left(offsets, offset + v.size)
+                    if next_off_idx_after_variable_end < len(offsets):
+                        next_off = offsets[next_off_idx_after_variable_end]
+                        sz = next_off - offset
                         max_sizes[v] = max(v.size, sz)
 
         return max_sizes
@@ -1282,10 +1548,55 @@ class VariableManager(KnowledgeBasePlugin):
     Manage variables.
     """
 
+    function_managers: dict[int, VariableManagerInternal] | SpillingVariableInternalDict
+    # global variables per decompilation flavor ("pseudocode", "rust", ...): names of globals come from
+    # labels and are flavor-independent, but their types are not. Created lazily by get_global_manager().
+    global_managers: dict[str, VariableManagerInternal]
+
     def __init__(self, kb):
         super().__init__(kb=kb)
-        self.global_manager = VariableManagerInternal(self)
-        self.function_managers: dict[int, VariableManagerInternal] = {}
+        self.global_managers = {}
+        self.function_managers = {}
+
+    def __setstate__(self, state: dict) -> None:
+        # data pickled before global managers were per flavor holds a single global_manager: the default flavor's
+        legacy = state.pop("global_manager", None)
+        self.__dict__.update(state)
+        if "global_managers" not in state:
+            self.global_managers = {}
+        if isinstance(legacy, VariableManagerInternal):
+            self.global_managers[Flavors.DEFAULT_FLAVOR] = legacy
+            legacy.flavor = Flavors.DEFAULT_FLAVOR
+
+    @property
+    def global_manager(self) -> VariableManagerInternal:
+        """
+        The global manager of the default flavor. Code with no decompilation flavor (CFG, DWARF, SimProcedures)
+        uses it.
+        """
+        return self.get_global_manager(None)
+
+    @global_manager.setter
+    def global_manager(self, manager: VariableManagerInternal) -> None:
+        self.set_global_manager(None, manager)
+
+    def get_global_manager(self, flavor: str | None) -> VariableManagerInternal:
+        """
+        The global manager that a decompilation of the given flavor (None means the default flavor) reads and
+        writes. A new flavor starts empty: global names are re-derived from labels, types are re-inferred.
+        """
+        key = Flavors.DEFAULT_FLAVOR if flavor is None else flavor
+        manager = self.global_managers.get(key)
+        if manager is None:
+            manager = VariableManagerInternal(self)
+            manager.flavor = key
+            self.global_managers[key] = manager
+        return manager
+
+    def set_global_manager(self, flavor: str | None, manager: VariableManagerInternal) -> None:
+        key = Flavors.DEFAULT_FLAVOR if flavor is None else flavor
+        manager.flavor = key
+        self.global_managers[key] = manager
 
     def __contains__(self, key) -> bool:
         if key == "global":
@@ -1317,12 +1628,22 @@ class VariableManager(KnowledgeBasePlugin):
         """
 
         if key == "global":
-            self.global_manager = VariableManagerInternal(self)
+            self.global_managers.pop(Flavors.DEFAULT_FLAVOR, None)
         else:
             del self.function_managers[key]
 
     def has_function_manager(self, key: int) -> bool:
         return key in self.function_managers
+
+    def has_function_manager_for_flavor(self, key: int, flavor: str) -> bool:
+        """
+        Whether a function manager exists and can be reused by a decompilation of the given flavor. A manager of
+        unknown flavor (None) is compatible with any flavor.
+        """
+        if key not in self.function_managers:
+            return False
+        stored = self.function_managers[key].flavor
+        return stored is None or stored == flavor
 
     def get_function_manager(self, func_addr) -> VariableManagerInternal:
         if isinstance(func_addr, str):
@@ -1336,7 +1657,8 @@ class VariableManager(KnowledgeBasePlugin):
         return self.function_managers[func_addr]
 
     def initialize_variable_names(self) -> None:
-        self.global_manager.assign_variable_names()
+        for manager in self.global_managers.values():
+            manager.assign_variable_names()
         for manager in self.function_managers.values():
             manager.assign_variable_names()
 
@@ -1351,6 +1673,9 @@ class VariableManager(KnowledgeBasePlugin):
         """
 
         if variable.region == "global":
+            for manager in self.global_managers.values():
+                if variable in manager._variables:
+                    return manager.get_variable_accesses(variable, same_name=same_name)
             return self.global_manager.get_variable_accesses(variable, same_name=same_name)
 
         if variable.region in self.function_managers:
@@ -1394,4 +1719,32 @@ class VariableManager(KnowledgeBasePlugin):
                 self.convert_variable_list(subp.local_variables, manager)
 
 
+class DecompilationVariableManager(VariableManager):
+    """
+    Holds variables discovered during decompilation, kept separate from the disassembly-level ``kb.variables``.
+    Exposed as ``kb.dec_variables``. Per-function managers are held in a :class:`SpillingVariableInternalDict`, which
+    spills least-recently-used entries to the RuntimeDb LMDB store (disable via ``USE_SPILLING_DVARS``).
+    """
+
+    def __init__(self, kb):
+        super().__init__(kb)
+        if USE_SPILLING_DVARS:
+            self.function_managers = SpillingVariableInternalDict(self)
+
+    def copy(self) -> DecompilationVariableManager:
+        new = DecompilationVariableManager(self._kb)
+        for key, vmi in self.global_managers.items():
+            new.global_managers[key] = self._copy_internal(vmi, new)
+        for addr, vmi in self.function_managers.items():
+            new.function_managers[addr] = self._copy_internal(vmi, new)
+        return new
+
+    @staticmethod
+    def _copy_internal(vmi: VariableManagerInternal, manager: VariableManager) -> VariableManagerInternal:
+        clone = VariableManagerInternal.parse(vmi.serialize(), variable_manager=manager, func_addr=vmi.func_addr)
+        clone.set_manager(manager)
+        return clone
+
+
 KnowledgeBasePlugin.register_default("variables", VariableManager)
+KnowledgeBasePlugin.register_default("dec_variables", DecompilationVariableManager)

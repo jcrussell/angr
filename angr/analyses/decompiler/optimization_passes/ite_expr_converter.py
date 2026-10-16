@@ -30,7 +30,7 @@ class NodeFoundNotification(Exception):
 
 class BlockLocator(RegionWalker):
     """
-    Recursively locate block in a GraphRegion instance.
+    Recursively locate block in a RegionOverlay instance.
 
     It might be reasonable to move this class into its own file.
     """
@@ -78,7 +78,7 @@ class ITEExprConverter(OptimizationPass):
     NAME = (
         "Transform single-use expressions that were assigned to in different If-Else branches into ternary expressions"
     )
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, ite_exprs=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -202,8 +202,8 @@ class ITEExprConverter(OptimizationPass):
         new_expr = ITE(
             self.manager.next_atom(),
             cond,
-            expr_1,
             expr_0,
+            expr_1,
             ins_addr=expr_0.tags["ins_addr"],
             vex_block_addr=expr_0.tags["vex_block_addr"],
             vex_stmt_idx=expr_0.tags["vex_stmt_idx"],

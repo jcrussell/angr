@@ -120,7 +120,7 @@ pub(crate) fn setup_native_subcall_with_abi(
         saved_args,
         caller_return_addr,
     });
-    for (reg, val) in arg_regs.iter().zip(sub_args.into_iter()) {
+    for (reg, val) in arg_regs.iter().zip(sub_args) {
         state.set_register_by_offset(*reg, val);
     }
     state.set_pc(target);

@@ -1211,12 +1211,12 @@ class SimStateLibc(SimStatePlugin):
 
         self.errno_location = None
 
-        # getopt() cross-call cursor (see angr/procedures/libc/getopt.py).
-        # getopt_optind mirrors the guest `optind` global (1-based, glibc
-        # default 1); getopt_optchar is the libc-internal within-argument
-        # offset for grouped short options ("-abc"), not visible to the guest.
+        # getopt state kept between calls (see angr/procedures/libc/getopt.py): optind as last written, the offset of
+        # the next character in a group of short options, and the operands argv[first_nonopt:last_nonopt] skipped
         self.getopt_optind = 1
-        self.getopt_optchar = 0
+        self.getopt_nextchar = 0
+        self.getopt_first_nonopt = 1
+        self.getopt_last_nonopt = 1
 
     @SimStatePlugin.memo
     def copy(self, memo):  # pylint: disable=unused-argument
@@ -1242,14 +1242,13 @@ class SimStateLibc(SimStatePlugin):
         o.ctype_toupper_loc_table_ptr = self.ctype_toupper_loc_table_ptr
         o.errno_location = self.errno_location
         o.getopt_optind = self.getopt_optind
-        o.getopt_optchar = self.getopt_optchar
+        o.getopt_nextchar = self.getopt_nextchar
+        o.getopt_first_nonopt = self.getopt_first_nonopt
+        o.getopt_last_nonopt = self.getopt_last_nonopt
 
         return o
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint: disable=unused-argument
-        return False
-
-    def widen(self, others):
         return False
 
     @property

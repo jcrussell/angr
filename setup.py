@@ -3,55 +3,109 @@ from __future__ import annotations
 
 import glob
 import importlib
-import importlib.metadata
 import importlib.resources
 import importlib.util
 import os
 import shutil
 import subprocess
 import sys
-from distutils.command.build import build as st_build
 
+import setuptools_rust
 from setuptools import Command, setup
+from setuptools.command.build import build as st_build
 from setuptools.command.develop import develop as st_develop
 from setuptools.errors import LibError
 
-# Import setuptools_rust to ensure an error is raised if not installed
-try:
-    _ = importlib.import_module("setuptools_rust")
-except ImportError as err:
-    raise Exception("angr requires setuptools-rust to build") from err
+if sys.platform == "darwin":
+    library_file = "unicornlib.dylib"
+elif sys.platform in ("win32", "cygwin"):
+    library_file = "unicornlib.dll"
+else:
+    library_file = "unicornlib.so"
 
 
-def _configure_z3() -> None:
-    """Point z3-sys at the libz3 that ships in the ``z3-solver`` wheel.
+def build_unicornlib():
+    try:
+        importlib.import_module("pyvex")
+    except ImportError as e:
+        raise LibError("You must install pyvex before building angr") from e
 
-    z3-sys 0.13 ships pregenerated bindings, so no C header is needed. It
-    still has to know (a) where libz3 lives and (b) which Z3 version it is,
-    because it probes pkg-config first (which would pick a system Z3 of some
-    other version -- the bindings are tied to one release) and, failing that,
-    assumes its minimum-supported version and hides newer API. Python and
-    Rust must load one libz3 (docs/advanced-topics/rust_z3_sharing.rst), so
-    the wheel's copy is the only acceptable answer.
+    env = os.environ.copy()
+    env_data = (
+        ("PYVEX_INCLUDE_PATH", "pyvex", "include"),
+        ("PYVEX_LIB_PATH", "pyvex", "lib"),
+        ("PYVEX_LIB_FILE", "pyvex", "lib\\pyvex.lib"),
+    )
+    for var, pkg, fnm in env_data:
+        # importlib.resources.files() returns a MultiplexedPath for editable
+        # installs, whose str() is not a filesystem path; resolve via the
+        # imported package's location instead.
+        pkg_file = importlib.import_module(pkg).__file__
+        if pkg_file is None:
+            raise LibError(f"Cannot locate {pkg} on disk; is it installed as a namespace package?")
+        env[var] = os.path.join(os.path.dirname(pkg_file), *fnm.split("\\"))
+
+    if sys.platform == "win32":
+        cmd = ["nmake", "/f", "Makefile-win"]
+    elif shutil.which("gmake") is not None:
+        cmd = ["gmake"]
+    else:
+        cmd = ["make"]
+    try:
+        subprocess.run(cmd, cwd="native/unicornlib", env=env, check=True)
+    except FileNotFoundError as err:
+        raise LibError("Couldn't find " + cmd[0] + " in PATH") from err
+    except subprocess.CalledProcessError as err:
+        raise LibError("Error while building unicornlib: " + str(err)) from err
+
+    shutil.rmtree("angr/lib", ignore_errors=True)
+    os.mkdir("angr/lib")
+    shutil.copy(os.path.join("native/unicornlib", library_file), "angr")
+
+
+def z3_loader():
+    """angr/_z3.py, loaded out of the source tree: importing angr needs the extension we are building."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "angr", "_z3.py")
+    spec = importlib.util.spec_from_file_location("angr_z3_loader", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def configure_z3():
+    """Point the Rust build at the libz3 that ships in the z3-solver wheel.
+
+    z3-sys probes pkg-config before honoring the override, and its search path would win, so a
+    machine with a system-wide Z3 of another version would link that instead -- the bindings are
+    tied to one Z3 release. Windows takes its import library from Z3's own release (see
+    native/angr/Cargo.toml) and ignores both of these.
     """
-    spec = importlib.util.find_spec("z3")
-    if spec is None or spec.origin is None:
-        sys.stderr.write(
-            "warning: z3-solver is not installed; z3-sys will fall back to pkg-config.\n"
-            "Install z3-solver (see pyproject.toml for the pinned version) before building.\n"
-        )
-        return
-    lib_dir = os.path.join(os.path.dirname(spec.origin), "lib")
+    try:
+        library_dir = z3_loader().library_dir()
+    except ImportError as err:
+        raise LibError("You must install z3-solver before building angr") from err
+
     os.environ.setdefault("Z3_NO_PKG_CONFIG", "1")
-    if os.path.isdir(lib_dir):
-        os.environ.setdefault("Z3_LIBRARY_PATH_OVERRIDE", lib_dir)
-    if not os.environ.get("Z3_SYS_Z3_VERSION"):
-        version = importlib.metadata.version("z3-solver")
-        # The wheel version carries a trailing build component ("5.1.0.0").
-        os.environ["Z3_SYS_Z3_VERSION"] = ".".join(version.split(".")[:3])
+    os.environ.setdefault("Z3_LIBRARY_PATH_OVERRIDE", str(library_dir))
 
 
-_configure_z3()
+def build_protos():
+    proto_files = sorted(glob.glob("angr/protos/*.proto"))
+    cmd = [sys.executable, "-m", "grpc_tools.protoc", "-I.", "--python_out=.", "--pyi_out=.", *proto_files]
+    try:
+        subprocess.run(cmd, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as err:
+        raise LibError("Error while generating protobuf modules: " + str(err)) from err
+
+
+def clean_unicornlib():
+    oglob = glob.glob("native/*.o")
+    oglob += glob.glob("native/*.obj")
+    oglob += glob.glob("native/*.so")
+    oglob += glob.glob("native/*.dll")
+    oglob += glob.glob("native/*.dylib")
+    for fname in oglob:
+        os.unlink(fname)
 
 
 def _resolve_pyvex_libdir() -> None:
@@ -104,62 +158,21 @@ def _rust_features() -> list[str]:
     return ["libvex-ffi"]
 
 
-if sys.platform == "darwin":
-    library_file = "unicornlib.dylib"
-elif sys.platform in ("win32", "cygwin"):
-    library_file = "unicornlib.dll"
-else:
-    library_file = "unicornlib.so"
-
-
-def build_unicornlib():
-    try:
-        importlib.import_module("pyvex")
-    except ImportError as e:
-        raise LibError("You must install pyvex before building angr") from e
-
-    env = os.environ.copy()
-    env_data = (
-        ("PYVEX_INCLUDE_PATH", "pyvex", "include"),
-        ("PYVEX_LIB_PATH", "pyvex", "lib"),
-        ("PYVEX_LIB_FILE", "pyvex", "lib\\pyvex.lib"),
-    )
-    for var, pkg, fnm in env_data:
-        base = importlib.resources.files(pkg)
-        for child in fnm.split("\\"):
-            base = base.joinpath(child)
-        env[var] = str(base)
-
-    if sys.platform == "win32":
-        cmd = ["nmake", "/f", "Makefile-win"]
-    elif shutil.which("gmake") is not None:
-        cmd = ["gmake"]
-    else:
-        cmd = ["make"]
-    try:
-        subprocess.run(cmd, cwd="native/unicornlib", env=env, check=True)
-    except FileNotFoundError as err:
-        raise LibError("Couldn't find " + cmd[0] + " in PATH") from err
-    except subprocess.CalledProcessError as err:
-        raise LibError("Error while building unicornlib: " + str(err)) from err
-
-    shutil.rmtree("angr/lib", ignore_errors=True)
-    os.mkdir("angr/lib")
-    shutil.copy(os.path.join("native/unicornlib", library_file), "angr")
-
-
-def clean_unicornlib():
-    oglob = glob.glob("native/*.o")
-    oglob += glob.glob("native/*.obj")
-    oglob += glob.glob("native/*.so")
-    oglob += glob.glob("native/*.dll")
-    oglob += glob.glob("native/*.dylib")
-    for fname in oglob:
-        os.unlink(fname)
+class build_rust(setuptools_rust.build_rust):
+    def run(self):
+        configure_z3()
+        # The extension is declared by the [[tool.setuptools-rust.ext-modules]] table in
+        # pyproject.toml, which cannot express a conditional cargo feature; append it here.
+        features = _rust_features()
+        if features:
+            for ext in getattr(self.distribution, "rust_extensions", None) or []:
+                ext.features = [*ext.features, *features]
+        super().run()
 
 
 class build(st_build):
     def run(self, *args):
+        self.execute(build_protos, (), msg="Generating protobuf modules")
         self.execute(build_unicornlib, (), msg="Building unicornlib")
         super().run(*args)
 
@@ -185,29 +198,10 @@ class develop(st_develop):
 
 cmdclass = {
     "build": build,
+    "build_rust": build_rust,
     "clean_unicornlib": clean,
     "develop": develop,
 }
-
-
-try:
-    from setuptools_rust.build import build_rust as st_build_rust
-
-    class build_rust(st_build_rust):
-        # The extension itself is declared by the [[tool.setuptools-rust.ext-modules]]
-        # table in pyproject.toml, which has no way to express a conditional cargo
-        # feature. Append the opt-in ones here instead, leaving the default build
-        # byte-identical to the table.
-        def run(self):
-            features = _rust_features()
-            if features:
-                for ext in getattr(self.distribution, "rust_extensions", None) or []:
-                    ext.features = [*ext.features, *features]
-            super().run()
-
-    cmdclass["build_rust"] = build_rust
-except ModuleNotFoundError:
-    pass
 
 
 try:

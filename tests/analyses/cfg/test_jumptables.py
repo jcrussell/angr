@@ -5,6 +5,7 @@ __package__ = __package__ or "tests.analyses.cfg"  # pylint:disable=redefined-bu
 
 import logging
 import os
+import struct
 import unittest
 from typing import TYPE_CHECKING
 
@@ -3050,6 +3051,81 @@ class TestJumpTableResolver(unittest.TestCase):
         assert len(cfg.model.jump_tables[0x40BD1B].jumptable_entries) == 4
         assert cfg.model.jump_tables[0x40BD1B].jumptable_entries == [0x40BD38, 0x40C5D1, 0x40C59E, 0x40C5AE]
 
+    def test_amd64_rust_unbounded_jumptables(self):
+        # rustc/LLVM omits the bounds check when it can prove the switch index is in range, so these jump tables have
+        # no comparison to derive their size from. Their size comes from the data instead: the next address that is
+        # referenced by an instruction ends the table.
+        p = angr.Project(os.path.join(test_location, "x86_64", "printenv-rust"), auto_load_libs=False)
+        cfg = p.analyses[CFGFast].prep()()
+
+        self._compare(
+            cfg.model.jump_tables,
+            [
+                J(0x4DE3C0, 0x42FB90, [0x4DE3D3, 0x4DE3F0, 0x4DE3D8, 0x4DE3DD]),
+                J(
+                    0x4F5770,
+                    0x432AF4,
+                    [
+                        0x4F5C67,
+                        0x4F5D6A,
+                        0x4F5A42,
+                        0x4F5AA0,
+                        0x4F57D2,
+                        0x4F5E0C,
+                        0x4F5F06,
+                        0x4F5AFF,
+                        0x4F617A,
+                        0x4F5933,
+                        0x4F60B1,
+                        0x4F57BC,
+                        0x4F57BC,
+                        0x4F57BC,
+                        0x4F57BC,
+                        0x4F57BC,
+                        0x4F57BC,
+                    ],
+                ),
+            ],
+        )
+
+        # 0x4340c0 and 0x4340e0 are adjacent unbounded jump tables. 0x4340c0 can only be sized correctly once the
+        # reference to 0x4340e0 has been collected, which happens after the block at 0x502470 is first analyzed;
+        # sizing it too early swallows the whole table at 0x4340e0. Checked on the same CFG: it takes minutes to build.
+        self._compare(
+            cfg.model.jump_tables,
+            [
+                J(0x502470, 0x4340C0, [0x502484, 0x5024CB, 0x5024A1, 0x5024B0, 0x50248E, 0x5024DA, 0x5024E9, 0x5024BC]),
+                J(
+                    0x502518,
+                    0x4340E0,
+                    [
+                        0x502528,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502530,
+                        0x502538,
+                        0x502538,
+                        0x50252B,
+                        0x502538,
+                        0x502538,
+                        0x502538,
+                        0x502533,
+                    ],
+                ),
+                J(0x502570, 0x434134, [0x502583, 0x502589, 0x502583, 0x50259D, 0x502591, 0x5025B5, 0x5025C1, 0x5025A9]),
+            ],
+        )
+
     def test_arm_thumb_jumptable_multi_variable_ranges(self):
         # Correctly resolving this indirect jump requires Balancer (in claripy) to handle the range of the addition of
         # two symbolic variables.
@@ -3231,6 +3307,21 @@ class TestJumpTableResolver(unittest.TestCase):
             0x51C6E,
         ]
 
+    def test_amd64_guessed_jumptables(self):
+        bin_path = os.path.join(
+            test_location, "x86_64", "windows", "50e5f670700243535f8ff558831dbbc314b215092f523355aa7a1c26205ece37"
+        )
+        proj = angr.Project(bin_path)
+        cfg = proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
+        # the first jump table; we happen to resolve it because its shape is the same as a regular, cmp-based one
+        jt0 = cfg.model.jump_tables[0x415530]
+        assert len(jt0.jumptables) == 1
+        assert jt0.jumptables[0].addr == 0x441BB0
+        assert jt0.jumptables[0].entry_size == 4
+        assert jt0.jumptables[0].size == 4 * 5
+        assert jt0.jumptables[0].entries_guessed is True
+        assert jt0.jumptables[0].entries == [0x4154DA, 0x4154F0, 0x4154F0, 0x4154F0, 0x4154F0]
+
 
 class TestJumpTableResolverCallTables(unittest.TestCase):
     """
@@ -3314,6 +3405,67 @@ class TestJumpTableResolverCallTables(unittest.TestCase):
 
     def test_calltable_resolver_with_check_tailcall(self):
         self._run_common_test_matrix("resolver_with_check_tailcall")
+
+
+class TestJumpTableResolverUnmappedTargets(unittest.TestCase):
+    """
+    A jump table whose entries all point outside mapped memory must be reported as unresolved.
+    """
+
+    def test_arm_jumptable_with_all_unmapped_targets_is_unresolved(self):
+        # cmp r3, #3 ; ldrls pc, [pc, r3, lsl #2] ; bx lr ; four table entries outside mapped memory
+        code = bytes.fromhex("030053e303f19f971eff2fe1")
+        code += b"".join(struct.pack("<I", 0xC1000000 + 0x10 * (i + 1)) for i in range(4))
+        proj = angr.load_shellcode(code, "ARMEL", load_address=0x400000)
+        cfg = proj.analyses.CFGFast(normalize=True)
+
+        ij = cfg.indirect_jumps[0x400000]
+        assert ij.resolved_targets == set()
+        assert ij.jumptable_entries is None
+        assert 0x400000 not in cfg.model.jump_tables
+        assert 0x400000 in cfg.kb.indirect_jumps.unresolved
+        assert 0x400000 not in cfg.kb.indirect_jumps.resolved
+
+        node = cfg.model.get_any_node(0x400000)
+        assert node is not None
+        succs = {(succ.addr, succ.simprocedure_name) for succ in cfg.graph.successors(node)}
+        # conditional dispatch: the fall-through stays, and the unresolved marker is present
+        assert (0x400008, None) in succs
+        assert any(name == "UnresolvableJumpTarget" for _, name in succs)
+
+
+class TestJumpTableResolverArmComputedJumps(unittest.TestCase):
+    """
+    ARM Duff's-device dispatch: ADDNE PC, PC, IP with IP = 32 - (R2 & 28), then an unconditional ADD PC, PC, IP.
+    """
+
+    def test_arm_add_pc_pc_reg_duffs_device(self):
+        # 0x400000: ands ip, r2, #28 ; rsb ip, ip, #32 ; addne pc, pc, ip ; b 0x400058 ; nop
+        code = bytes.fromhex("1cc012e220c06ce20cf08f10110000ea00f020e3")
+        # 0x400014: ldr r3..r8, lr, [r1], #4 (7 insns)
+        code += b"".join(bytes.fromhex(f"04{r:x}091e4") for r in (3, 4, 5, 6, 7, 8, 0xE))
+        # 0x400030: add pc, pc, ip ; nop ; nop
+        code += bytes.fromhex("0cf08fe000f020e300f020e3")
+        # 0x40003c: str r3..r8, lr, [r0], #4 (7 insns) ; 0x400058: bx lr
+        code += b"".join(bytes.fromhex(f"04{r:x}080e4") for r in (3, 4, 5, 6, 7, 8, 0xE))
+        code += bytes.fromhex("1eff2fe1")
+        proj = angr.load_shellcode(code, "ARMEL", load_address=0x400000)
+        cfg = proj.analyses.CFGFast(normalize=True)
+
+        # pc reads 0x400010 at the addne; the abstract solver ignores the NE guard, so ip = 32 is included
+        ij = cfg.indirect_jumps[0x400000]
+        assert set(ij.resolved_targets) == {0x400014 + 4 * i for i in range(8)}
+        assert ij.type == IndirectJumpType.Jumptable_AddressComputed
+        # pc reads 0x400038 at the unconditional add
+        ij = cfg.indirect_jumps[0x400030]
+        assert set(ij.resolved_targets) == {0x40003C + 4 * i for i in range(8)}
+        assert ij.type == IndirectJumpType.Jumptable_AddressComputed
+        assert 0x400000 in cfg.kb.indirect_jumps.resolved
+        assert 0x400030 in cfg.kb.indirect_jumps.resolved
+
+        for addr in (0x400014, 0x400030, 0x40003C, 0x400058):
+            node = cfg.model.get_any_node(addr)
+            assert node is not None and node.function_address == 0x400000
 
 
 if __name__ == "__main__":

@@ -1,0 +1,867 @@
+#!/usr/bin/env python3
+# pylint: disable=missing-class-docstring,no-self-use,line-too-long,no-member,protected-access
+from __future__ import annotations
+
+__package__ = __package__ or "tests.serialization"  # pylint:disable=redefined-builtin
+
+import inspect
+import os
+import pickle
+import unittest
+
+import networkx
+
+import angr
+from angr.ailment import Block as AilBlock
+from angr.ailment import Expr
+from angr.ailment.expression import Const
+from angr.ailment.expression import Tmp as AilTmp
+from angr.ailment.expression import VirtualVariable as AilVirtualVariable
+from angr.ailment.statement import Assignment, Return
+from angr.analyses.decompiler import optimization_pass_registry
+from angr.analyses.decompiler.decompilation_cache import DecompilationCache
+from angr.analyses.decompiler.notes.decompilation_note import (
+    DecompilationNote,
+    DecompilationNoteLevel,
+)
+from angr.analyses.decompiler.notes.deobfuscated_strings import DeobfuscatedStringsNote
+from angr.analyses.decompiler.optimization_passes.expr_op_swapper import OpDescriptor
+from angr.analyses.decompiler.optimization_passes.static_vvar_rewriter import FixedBuffer, FixedBufferPtr
+from angr.analyses.decompiler.peephole_optimizations import EXPR_OPTS
+from angr.analyses.decompiler.structured_codegen import DummyStructuredCodeGenerator, c_serialize
+from angr.analyses.decompiler.structured_codegen import c as c_codegen
+from angr.analyses.decompiler.structured_codegen.c import (
+    CConstruct,
+    CExpression,
+    CLoop,
+    CStatement,
+    cextern_sort_key,
+)
+from angr.analyses.decompiler.structured_codegen.c_serialize import (
+    _DISPLAY_OPTION_ATTRS,
+    _DISPLAY_OPTION_FIELD_FIRST,
+    _SERIALIZE_KIND_BY_CLASS,
+    SerializeContext,
+    _parse_tags,
+    _sanitize_tags,
+)
+from angr.knowledge_plugins.structured_code import SpillingDecompilationDict
+from angr.protos import codegen_pb2
+from angr.sim_variable import SimRegisterVariable, SimStackVariable, SimTemporaryVariable
+from angr.utils.ail_serialization import (
+    pack_arg_vvars,
+    pack_graph,
+    pack_ite_exprs,
+    pack_static_buffers,
+    pack_static_vvars,
+    parse_arg_vvars,
+    parse_graph,
+    parse_ite_exprs,
+    parse_static_buffers,
+    parse_static_vvars,
+)
+from tests.common import bin_location, load_project_with_scoped_cfg
+
+test_location = os.path.join(bin_location, "tests")
+
+
+class TestSubObjectSerialization(unittest.TestCase):
+    def test_decompilation_note(self):
+        n = DecompilationNote(
+            key="warn1", name="Warning One", content={"foo": [1, 2]}, level=DecompilationNoteLevel.WARNING
+        )
+        back = DecompilationNote.from_json(n.to_json())
+        assert type(back) is DecompilationNote
+        assert back.key == n.key
+        assert back.name == n.name
+        assert back.level == n.level
+        assert back.content == n.content
+
+    def test_decompilation_note_non_jsonable_content(self):
+        n = DecompilationNote(key="k", name="n", content=object())
+        back = DecompilationNote.from_json(n.to_json())
+        assert back.content is None
+
+    def test_deobfuscated_strings_note_roundtrip(self):
+        n = DeobfuscatedStringsNote()
+        n.add_string("1", b"\x00binary\xffdata", ref_addr=0x400100)
+        n.add_string("2", b"hello", ref_addr=0x400200)
+
+        back = DecompilationNote.from_json(n.to_json())
+        assert isinstance(back, DeobfuscatedStringsNote)
+        assert back.key == n.key
+        assert back.name == n.name
+        assert set(back.strings) == {0x400100, 0x400200}
+        assert back.strings[0x400100].value == b"\x00binary\xffdata"
+        assert back.strings[0x400100].type == "1"
+        assert back.strings[0x400200].value == b"hello"
+        assert str(back) == str(n)
+
+    def test_op_descriptor(self):
+        op = OpDescriptor(block_addr=0x400500, stmt_idx=3, ins_addr=0x400502, op="Sub")
+        back = OpDescriptor.from_json(op.to_json())
+        assert back == op
+        assert hash(back) == hash(op)
+
+
+class TestAilSerializationHelpers(unittest.TestCase):
+    def test_display_option_attrs_derived_from_proto(self):
+        # _DISPLAY_OPTION_ATTRS is generated from the Codegen descriptor's trailing display-option block; every entry
+        # must be an optional scalar (the serialize loop uses plain setattr, which cannot handle message fields).
+        assert {"indent", "show_casts", "max_str_len"} <= set(_DISPLAY_OPTION_ATTRS)
+        assert len(set(_DISPLAY_OPTION_ATTRS)) == len(_DISPLAY_OPTION_ATTRS)
+        for name in _DISPLAY_OPTION_ATTRS:
+            field = codegen_pb2.Codegen.DESCRIPTOR.fields_by_name[name]
+            assert field.number >= _DISPLAY_OPTION_FIELD_FIRST
+            # not a message and not repeated. Use the modern FieldDescriptor API: protobuf 7.x (the upb backend)
+            # removed the ``label``/``type`` attributes and the LABEL_*/TYPE_* constants.
+            assert field.message_type is None
+            assert not field.is_repeated
+
+    def test_tags_roundtrip_with_ins_offset(self):
+        # both addresses known: ins_addr rides as a delta but round-trips to the absolute value
+        tags = {"ins_addr": 0x4010F0, "vex_block_addr": 0x401000, "vex_stmt_idx": 7, "custom": [1, 2]}
+        key, msg = _sanitize_tags(tags)
+        assert msg is not None and not msg.HasField("ins_addr") and msg.ins_offset == 0xF0
+        assert _parse_tags(msg) == tags
+        # ins_addr alone stays absolute
+        key2, msg2 = _sanitize_tags({"ins_addr": 0x400123})
+        assert msg2 is not None and msg2.HasField("ins_addr") and not msg2.HasField("ins_offset")
+        assert _parse_tags(msg2) == {"ins_addr": 0x400123}
+        assert key != key2
+
+    def _blocks(self):
+        b0 = AilBlock(0x1000, 4, statements=[Assignment(0, AilTmp(1, 2, 64), Const(2, 1, 64), ins_addr=0x1000)])
+        b1 = AilBlock(0x1004, 4, statements=[Return(3, [], ins_addr=0x1004)])
+        b2 = AilBlock(0x1008, 4, statements=[], idx=1)
+        return b0, b1, b2
+
+    def test_graph_roundtrip_with_edge_data(self):
+        b0, b1, b2 = self._blocks()
+        g = networkx.DiGraph()
+        g.add_edge(b0, b1, type="fake_return", outside=False, confirmed=True)
+        # ins_addr=None packs as unset and comes back as an absent key
+        g.add_edge(b0, b2, type="transition", ins_addr=None, stmt_idx=-2)
+        g.add_edge(b1, b2)  # no edge data at all
+
+        back = parse_graph(pack_graph(g))
+        assert set(back.nodes) == set(g.nodes)
+        assert back[b0][b1] == {"type": "fake_return", "outside": False, "confirmed": True}
+        assert back[b0][b2] == {"type": "transition", "stmt_idx": -2}
+        assert back[b1][b2] == {}
+
+    def test_graph_rejects_unknown_edge_attr(self):
+        b0, b1, _ = self._blocks()
+        g = networkx.DiGraph()
+        g.add_edge(b0, b1, color="red")
+        with self.assertRaises(TypeError):
+            pack_graph(g)
+
+    def test_graph_rejects_unknown_edge_type_string(self):
+        b0, b1, _ = self._blocks()
+        g = networkx.DiGraph()
+        g.add_edge(b0, b1, type="teleport")
+        with self.assertRaises(TypeError):
+            pack_graph(g)
+
+    def test_graph_rejects_non_block_node(self):
+        g = networkx.DiGraph()
+        g.add_node("not a block")
+        with self.assertRaises(TypeError):
+            pack_graph(g)
+
+    def test_arg_vvars_roundtrip(self):
+        vvc = Expr.VirtualVariableCategory
+        d = {
+            0: (AilVirtualVariable(0, 1, 64, vvc.REGISTER), SimRegisterVariable(16, 8, ident="arg_0")),
+            1: (AilVirtualVariable(1, 2, 64, vvc.STACK), SimStackVariable(-8, 8, ident="arg_1")),
+        }
+        back = parse_arg_vvars(pack_arg_vvars(d))
+        assert back == d
+
+    def test_ite_exprs_roundtrip(self):
+        s = {(0x400123, Const(0, 5, 64)), (0x400456, Const(1, 7, 32))}
+        assert parse_ite_exprs(pack_ite_exprs(s)) == s
+
+    def test_static_vvars_roundtrip_both_arms(self):
+        d = {3: FixedBufferPtr("buf0", offset=8), 4: Const(0, 0xDEAD, 64)}
+        back = parse_static_vvars(pack_static_vvars(d))
+        assert set(back) == {3, 4}
+        assert isinstance(back[3], FixedBufferPtr)
+        assert back[3].buffer_ident == "buf0" and back[3].offset == 8
+        assert back[4] == d[4]
+
+    def test_static_buffers_roundtrip(self):
+        d = {"buf0": FixedBuffer("buf0", 16, b"\x00" * 16), "anon": FixedBuffer(None, 4, b"abcd")}
+        back = parse_static_buffers(pack_static_buffers(d))
+        assert set(back) == {"buf0", "anon"}
+        assert back["buf0"].ident == "buf0" and back["buf0"].size == 16 and back["buf0"].content == b"\x00" * 16
+        assert back["anon"].ident == "<unnamed>"  # FixedBuffer normalizes a None ident at construction time
+
+
+class TestDecompilationCacheEndToEnd(unittest.TestCase):
+    """End-to-end tests using a real fauxware decompilation."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proj = angr.Project(os.path.join(test_location, "x86_64", "fauxware"), auto_load_libs=False)
+        cls.cfg = cls.proj.analyses.CFGFast(normalize=True)
+        cls.func = cls.proj.kb.functions.function(name="authenticate")
+        cls.decompiler = cls.proj.analyses.Decompiler(cls.func, cfg=cls.cfg.model, generate_code=True)
+
+    def test_codegen_roundtrip(self):
+        codegen = self.decompiler.codegen
+        blob = codegen.serialize()
+        back = type(codegen).parse(blob, project=self.proj, kb=self.proj.kb)
+        assert back.text == codegen.text
+        assert back.cfunc is not None
+        assert back.cfunc.name == codegen.cfunc.name
+        assert back.cfunc.addr == codegen.cfunc.addr
+        assert back.flavor == codegen.flavor
+        # idx is the per-codegen unique node identity and doubles as the serialization node id
+        assert back.cfunc.idx == codegen.cfunc.idx
+        assert back.cfunc.ident == codegen.cfunc.ident
+
+        live_nodes = {
+            id(elem.obj): elem.obj for _, elem in codegen.map_pos_to_node.items() if isinstance(elem.obj, CConstruct)
+        }
+        assert live_nodes
+        assert len({node.idx for node in live_nodes.values()}) == len(live_nodes)
+
+        msg = codegen_pb2.Codegen()
+        msg.ParseFromString(blob)
+        node_ids = [n.node_id for n in msg.nodes]
+        assert len(set(node_ids)) == len(node_ids)
+        assert 0 not in node_ids
+        # nodes created after deserialization must not collide with deserialized ones
+        assert back._next_node_idx > max(node_ids)
+
+    def test_codegen_roundtrip_skips_invalid_statements_addr(self):
+        codegen = self.decompiler.codegen
+        root = codegen.cfunc.statements
+        assert isinstance(root, c_codegen.CStatements)
+        saved = root.addr
+        try:
+            for bad in (-1, None):
+                c_serialize._WARNED_ADDRS.clear()
+                root.addr = bad
+                with self.assertLogs(c_serialize._l, "WARNING") as cm:
+                    blob = codegen.serialize()
+                assert len(cm.output) == 1 and "CStatements" in cm.output[0]
+                back = type(codegen).parse(blob, project=self.proj, kb=self.proj.kb)
+                assert back.cfunc.statements.addr is None
+                assert back.text == codegen.text
+                # one warning per node type and kind of bad address
+                with self.assertNoLogs(c_serialize._l, "WARNING"):
+                    codegen.serialize()
+        finally:
+            root.addr = saved
+
+    def test_clinic_roundtrip(self):
+        clinic = self.decompiler.clinic
+        back = type(clinic).parse(
+            clinic.serialize(),
+            project=self.proj,
+            kb=self.proj.kb,
+            function=clinic.function,
+            cfg=clinic._cfg,
+        )
+        # the fields the decompiler's cache-reuse path consumes round-trip
+        assert back.cc_graph.number_of_nodes() == clinic.cc_graph.number_of_nodes()
+        assert back.graph.number_of_nodes() == clinic.graph.number_of_nodes()
+        assert back.graph.number_of_edges() == clinic.graph.number_of_edges()
+        # unoptimized_graph is only built (and serialized) with Decompiler(save_unoptimized_graph=True); this
+        # decompiler used the default, so it is absent on both the live and the deserialized clinic
+        assert clinic.unoptimized_graph is None and back.unoptimized_graph is None
+        assert back._save_unoptimized_graph is False
+        assert back.arg_vvars == clinic.arg_vvars
+        assert len(back.externs) == len(clinic.externs)
+        assert (back.arg_list is None) == (clinic.arg_list is None)
+        assert back.vvar_id_start == clinic.vvar_id_start
+        assert back.copied_var_ids == clinic.copied_var_ids
+        assert back.edges_to_remove == clinic.edges_to_remove
+        assert back.entry_node_addr == clinic.entry_node_addr
+        assert back._mode == clinic._mode
+        assert back._start_stage == clinic._start_stage
+        assert back._end_stage == clinic._end_stage
+        assert back._skip_stages == clinic._skip_stages
+        assert back.flavor == clinic.flavor
+        # regenerable / runtime-only state is not serialized, so the deserialized clinic comes back with the
+        # default (the caller's fast-path reuse regenerates whatever it needs)
+        for attr in (
+            "_ail_graph",
+            "_init_ail_graph",
+            "_init_arg_vvars",
+            "func_args",
+            "func_ret_var",
+            "reaching_definitions",
+            "_blocks_by_addr_and_size",
+            "typehoon",
+        ):
+            assert getattr(back, attr) is None, attr
+        for attr in ("data_refs", "notes"):
+            assert getattr(back, attr) == {}, attr
+        # stack_items is primitive result data and is kept through downsize and serialization
+        assert {k: (v.offset, v.size, v.name, v.item_type) for k, v in back.stack_items.items()} == {
+            k: (v.offset, v.size, v.name, v.item_type) for k, v in clinic.stack_items.items()
+        }
+        assert clinic._inline_functions == set() and back._inline_functions == set()
+
+    def test_clinic_roundtrip_with_save_unoptimized_graph(self):
+        # Decompiler(save_unoptimized_graph=True) opts the unoptimized graph into serialization.
+        dec = self.proj.analyses.Decompiler(
+            self.func, cfg=self.cfg.model, save_unoptimized_graph=True, regen_clinic=True
+        )
+        clinic = dec.clinic
+        assert clinic is not None and clinic.unoptimized_graph is not None
+        back = type(clinic).parse(
+            clinic.serialize(),
+            project=self.proj,
+            kb=self.proj.kb,
+            function=clinic.function,
+            cfg=clinic._cfg,
+        )
+        assert back._save_unoptimized_graph is True
+        assert back.unoptimized_graph is not None
+        assert back.unoptimized_graph.number_of_nodes() == clinic.unoptimized_graph.number_of_nodes()
+        assert back.unoptimized_graph.number_of_edges() == clinic.unoptimized_graph.number_of_edges()
+
+    def test_clinic_unresolvable_peephole_optimizations_roundtrip(self):
+        # name_to_pass returns None (not raising) for names that are not registered
+        assert optimization_pass_registry.name_to_pass("NotARegisteredPass") is None
+
+        dec = self.proj.analyses.Decompiler(
+            self.func, cfg=self.cfg.model, peephole_optimizations=list(EXPR_OPTS[:2]), regen_clinic=True
+        )
+        clinic = dec.clinic
+        # simulate a peephole pass defined by an analysis/plugin that is not imported
+        clinic.unresolvable_peephole_optimizations = ["PluginOnlyPeephole"]
+
+        back = type(clinic).parse(
+            clinic.serialize(), project=self.proj, kb=self.proj.kb, function=clinic.function, cfg=clinic._cfg
+        )
+        # the resolvable ones come back as classes; the unknown name is preserved, not dropped or crashed on
+        assert len(back.peephole_optimizations) == 2
+        assert back.unresolvable_peephole_optimizations == ["PluginOnlyPeephole"]
+
+        # once the defining module is imported (mocked here), a retry resolves it
+        class PluginOnlyPeephole:
+            __qualname__ = "PluginOnlyPeephole"
+
+        original = optimization_pass_registry._known_passes
+        optimization_pass_registry._known_passes = lambda: {**original(), "PluginOnlyPeephole": PluginOnlyPeephole}
+        try:
+            back.resolve_peephole_optimizations()
+        finally:
+            optimization_pass_registry._known_passes = original
+        assert back.unresolvable_peephole_optimizations == []
+        assert PluginOnlyPeephole in back.peephole_optimizations
+
+    def test_decompilation_cache_roundtrip(self):
+        cache = self.decompiler.cache
+        blob = cache.serialize()
+        back = DecompilationCache.parse(
+            blob,
+            project=self.proj,
+            kb=self.proj.kb,
+            function=self.func,
+            cfg=self.cfg.model,
+        )
+        assert back.addr == cache.addr
+        assert back.errors == cache.errors
+        assert back.function_summary == cache.function_summary
+        assert back.codegen.text == cache.codegen.text
+        # version and timestamp are set at decompile time and round-trip verbatim
+        assert cache.version == angr.__version__
+        assert cache.timestamp > 0
+        assert back.version == cache.version
+        assert back.timestamp == cache.timestamp
+        # parameters preserves the 15 keys
+        assert set(back.parameters.keys()) == set(cache.parameters.keys())
+        assert len(back.parameters) == 15
+
+    def test_stackvar_max_sizes_roundtrip_beyond_int32(self):
+        # max_size is the distance to the next stack offset and can exceed 2**31 on bogus stack accesses; the proto
+        # field used to be int32 and made the whole cache unspillable
+        cache = self.decompiler.cache
+        saved = dict(cache.stackvar_max_sizes)
+        big = SimStackVariable(-0x40, 8, ident="huge")
+        cache.stackvar_max_sizes = {**saved, big: 5419868274}
+        try:
+            back = DecompilationCache.parse(
+                cache.serialize(), project=self.proj, kb=self.proj.kb, function=self.func, cfg=self.cfg.model
+            )
+        finally:
+            cache.stackvar_max_sizes = saved
+        assert back.stackvar_max_sizes[big] == 5419868274
+        assert len(back.stackvar_max_sizes) == len(saved) + 1
+
+    def test_cache_hit_on_deserialized_cache(self):
+        cache = self.decompiler.cache
+        blob = cache.serialize()
+        parsed_cache = DecompilationCache.parse(
+            blob,
+            project=self.proj,
+            kb=self.proj.kb,
+            function=self.func,
+            cfg=self.cfg.model,
+        )
+
+        # Replace the live cache with the parsed one.
+        flavor = parsed_cache.parameters.get("flavor", "pseudocode")
+        self.proj.kb.decompilations[(self.func.addr, flavor)] = parsed_cache
+
+        # Second decompile run with the same inputs should consume the deserialized cache.
+        d2 = self.proj.analyses.Decompiler(self.func, cfg=self.cfg.model, generate_code=True)
+        assert d2.codegen.text == self.decompiler.codegen.text
+
+    def test_full_reuse_fast_path(self):
+        # With use_cache=True and regen_clinic=False (both defaults), a valid cache short-circuits the pipeline and
+        # returns the cached clinic + codegen objects, re-rendered.
+        proj = angr.Project(os.path.join(test_location, "x86_64", "fauxware"), auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(normalize=True)
+        func = proj.kb.functions.function(name="authenticate")
+        d1 = proj.analyses.Decompiler(func, cfg=cfg.model)
+        cache = proj.kb.decompilations[(func.addr, "pseudocode")]
+
+        d2 = proj.analyses.Decompiler(func, cfg=cfg.model)
+        assert d2.codegen is d1.codegen
+        assert d2.clinic is d1.clinic
+        assert d2.codegen.text == d1.codegen.text
+        assert d2.codegen.version == cache.version == angr.__version__
+        assert d2.codegen.timestamp == cache.timestamp > 0
+
+    def test_regen_clinic_forces_fresh_decompilation(self):
+        proj = angr.Project(os.path.join(test_location, "x86_64", "fauxware"), auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(normalize=True)
+        func = proj.kb.functions.function(name="authenticate")
+        d1 = proj.analyses.Decompiler(func, cfg=cfg.model)
+        d2 = proj.analyses.Decompiler(func, cfg=cfg.model, regen_clinic=True)
+        assert d2.codegen is not d1.codegen
+        assert d2.codegen.text == d1.codegen.text
+
+
+class TestSpillingDecompilationDict(unittest.TestCase):
+    """Tests for the LRU + RtDb-spilling backing store of StructuredCodeManager."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proj = angr.Project(os.path.join(test_location, "x86_64", "fauxware"), auto_load_libs=False)
+        cls.cfg = cls.proj.analyses.CFGFast(normalize=True)
+        cls.auth_func = cls.proj.kb.functions.function(name="authenticate")
+        cls.main_func = cls.proj.kb.functions.function(name="main")
+        cls.auth_dec = cls.proj.analyses.Decompiler(cls.auth_func, cfg=cls.cfg.model, generate_code=True)
+        cls.main_dec = cls.proj.analyses.Decompiler(cls.main_func, cfg=cls.cfg.model, generate_code=True)
+
+    def test_default_backing_store_is_spilling(self):
+        assert isinstance(self.proj.kb.decompilations.cached, SpillingDecompilationDict)
+
+    def test_eviction_and_reload(self):
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        auth_key = (self.auth_func.addr, "pseudocode")
+        main_key = (self.main_func.addr, "pseudocode")
+        d[auth_key] = self.auth_dec.cache
+        d[main_key] = self.main_dec.cache
+
+        # the LRU (authenticate) entry must have been spilled
+        assert auth_key in d._spilled
+        assert len(d) == 2
+        assert auth_key in d
+        assert main_key in d
+        assert set(d) == {auth_key, main_key}
+
+        # reloading the spilled entry deserializes it with full codegen and version/timestamp
+        back = d[auth_key]
+        assert back is not self.auth_dec.cache
+        assert back.codegen.text == self.auth_dec.cache.codegen.text
+        assert back.version == self.auth_dec.cache.version
+        assert back.timestamp == self.auth_dec.cache.timestamp
+        # ... and the reload evicted the other entry in turn
+        assert main_key in d._spilled
+
+    def test_mutations_survive_respill(self):
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        auth_key = (self.auth_func.addr, "pseudocode")
+        main_key = (self.main_func.addr, "pseudocode")
+        d[auth_key] = self.auth_dec.cache
+        d[main_key] = self.main_dec.cache
+
+        # reload authenticate (spills main), mutate it in place, then spill it again by touching main
+        d[auth_key].errors.append("synthetic error")
+        _ = d[main_key]
+        assert auth_key in d._spilled
+        assert "synthetic error" in d[auth_key].errors
+
+    def test_unserializable_cache_is_kept_in_memory(self):
+        class _UnserializableCodegen(DummyStructuredCodeGenerator):
+            def serialize_to_cmessage(self):
+                raise TypeError("not serializable")
+
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        bad_key = (0xDEAD, "pseudocode")
+        bad_cache = DecompilationCache(0xDEAD)
+        bad_cache.codegen = _UnserializableCodegen("pseudocode")
+        d[bad_key] = bad_cache
+
+        # inserting another entry evicts the cache, which cannot be serialized and must be parked in memory
+        main_key = (self.main_func.addr, "pseudocode")
+        d[main_key] = self.main_dec.cache
+        assert bad_key in d._unspillable
+        assert d[bad_key] is bad_cache
+        assert len(d) == 2
+
+    def test_export_serialized_warns_about_unserializable_caches(self):
+        # a cache that cannot be serialized is dropped from the angrdb (only its codegen metadata is stored), so the
+        # failure must at least be logged instead of being swallowed silently
+        class _UnserializableCodegen(DummyStructuredCodeGenerator):
+            def serialize_to_cmessage(self):
+                raise TypeError("not serializable")
+
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=10)
+        bad_key = (0xDEAD, "pseudocode")
+        bad_cache = DecompilationCache(0xDEAD)
+        bad_cache.codegen = _UnserializableCodegen("pseudocode")
+        d[bad_key] = bad_cache
+
+        with self.assertLogs("angr.knowledge_plugins.structured_code", level="WARNING") as logs:
+            serialized, unserializable = d.export_serialized()
+
+        assert bad_key in unserializable
+        assert all(key != bad_key for key, _ in serialized)
+        assert any("cannot be serialized" in message for message in logs.output)
+
+    def test_dummy_codegen_cache_spills_and_reloads(self):
+        # a DummyStructuredCodeGenerator (user comments/formats only, e.g. loaded from a legacy angrdb) must spill to
+        # LMDB and come back as a dummy with its user data intact instead of being parked in memory
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        dummy_key = (0xDEAD, "pseudocode")
+        dummy_cache = DecompilationCache(0xDEAD)
+        dummy_cache.codegen = DummyStructuredCodeGenerator(
+            "pseudocode",
+            expr_comments={0x1004: "expr"},
+            stmt_comments={0x1000: "stmt"},
+            const_formats={(0x1000, 0, "5"): {"hex": True}},
+        )
+        dummy_cache.errors = ["boom"]
+        d[dummy_key] = dummy_cache
+
+        main_key = (self.main_func.addr, "pseudocode")
+        d[main_key] = self.main_dec.cache
+        assert dummy_key in d._spilled
+        assert dummy_key not in d._unspillable
+
+        back = d[dummy_key]
+        assert back is not dummy_cache
+        assert isinstance(back.codegen, DummyStructuredCodeGenerator)
+        assert back.codegen.flavor == "pseudocode"
+        assert back.codegen.expr_comments == {0x1004: "expr"}
+        assert back.codegen.stmt_comments == {0x1000: "stmt"}
+        assert back.codegen.const_formats == {(0x1000, 0, "5"): {"hex": True}}
+        assert back.errors == ["boom"]
+
+    def test_delete_and_discard(self):
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        auth_key = (self.auth_func.addr, "pseudocode")
+        main_key = (self.main_func.addr, "pseudocode")
+        d[auth_key] = self.auth_dec.cache
+        d[main_key] = self.main_dec.cache
+
+        del d[auth_key]  # spilled entry
+        del d[main_key]  # in-memory entry
+        assert len(d) == 0
+        assert auth_key not in d
+        with self.assertRaises(KeyError):
+            _ = d[auth_key]
+
+    def test_export_and_bulk_import_serialized(self):
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        auth_key = (self.auth_func.addr, "pseudocode")
+        main_key = (self.main_func.addr, "pseudocode")
+        d[auth_key] = self.auth_dec.cache
+        d[main_key] = self.main_dec.cache
+
+        serialized, unserializable = d.export_serialized()
+        assert not unserializable
+        assert {key for key, _ in serialized} == {auth_key, main_key}
+
+        d2 = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        d2.bulk_import_serialized(serialized)
+        assert set(d2) == {auth_key, main_key}
+        assert d2._spilled == {auth_key, main_key}
+        assert d2[auth_key].codegen.text == self.auth_dec.cache.codegen.text
+
+    def test_pickle_roundtrip(self):
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+        auth_key = (self.auth_func.addr, "pseudocode")
+        main_key = (self.main_func.addr, "pseudocode")
+        d[auth_key] = self.auth_dec.cache
+        d[main_key] = self.main_dec.cache
+        assert auth_key in d._spilled
+
+        # serializable entries pickle as protobuf bytes: live caches hold unpicklable analysis internals
+        back = pickle.loads(pickle.dumps(d, -1))
+        assert set(back) == {auth_key, main_key}
+        assert back._spilled == {auth_key, main_key}
+        assert back[auth_key].codegen.text == self.auth_dec.cache.codegen.text
+
+    def test_cache_hit_after_spill(self):
+        manager = self.proj.kb.decompilations
+        old_cached = manager.cached
+        try:
+            d = SpillingDecompilationDict(self.proj.kb, cache_limit=1)
+            manager.cached = d
+            manager[(self.auth_func.addr, "pseudocode")] = self.auth_dec.cache
+            manager[(self.main_func.addr, "pseudocode")] = self.main_dec.cache
+            assert (self.auth_func.addr, "pseudocode") in d._spilled
+
+            d2 = self.proj.analyses.Decompiler(self.auth_func, cfg=self.cfg.model, generate_code=True)
+            assert d2.codegen.text == self.auth_dec.codegen.text
+        finally:
+            manager.cached = old_cached
+
+
+class TestClinicSerializationAboveFourGigabytes(unittest.TestCase):
+    """Clinic._new_block_addrs holds real code addresses, which do not fit in 32 bits on a
+    64-bit PE at its usual image base."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proj = angr.Project(
+            os.path.join(test_location, "x86_64", "decompiler", "vcruntime_test.exe"), auto_load_libs=False
+        )
+        cls.cfg = cls.proj.analyses.CFGFast(normalize=True)
+        # a tail jump to a known function makes Clinic mint a new block address for this one
+        cls.func = cls.proj.kb.functions[0x140001068]
+        dec = cls.proj.analyses.Decompiler(cls.func, cfg=cls.cfg.model, generate_code=True)
+        assert dec.clinic is not None and dec.cache is not None and dec.cache.codegen is not None
+        cls.clinic = dec.clinic
+        cls.cache = dec.cache
+        cls.text = dec.cache.codegen.text
+
+    def test_new_block_addrs_do_not_fit_in_32_bits(self):
+        assert self.proj.loader.main_object.mapped_base == 0x140000000
+        addrs = self.clinic._new_block_addrs
+        assert addrs
+        assert all(addr > 0xFFFFFFFF for addr in addrs)
+
+    def test_clinic_roundtrip_preserves_new_block_addrs(self):
+        back = type(self.clinic).parse(
+            self.clinic.serialize(),
+            project=self.proj,
+            kb=self.proj.kb,
+            function=self.clinic.function,
+            cfg=self.clinic._cfg,
+        )
+        assert back._new_block_addrs == self.clinic._new_block_addrs
+
+    def test_eviction_spills_instead_of_parking_in_memory(self):
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=0)
+        key = (self.func.addr, "pseudocode")
+        d[key] = self.cache
+
+        assert key in d._spilled
+        assert not d._unspillable
+        back = d[key]
+        assert back.codegen is not None
+        assert back.codegen.text == self.text
+
+
+class TestSwitchCaseLabelSerialization(unittest.TestCase):
+    """A case label carries the unsigned value of the constant the switch was lowered from, so a 64-bit switch
+    can label a case 0xfffffffffffffffe where the source wrote -2, and that does not fit in an int64."""
+
+    FIXTURE = os.path.join("riscv", "borgbackup2-chunker.cpython-312-riscv64-linux-gnu.so")
+    FUNC = 0x40AE4E
+    UNSIGNED_LABEL = 0xFFFFFFFFFFFFFFFE
+
+    codegen: c_codegen.CStructuredCodeGenerator
+    text: str
+
+    @classmethod
+    def setUpClass(cls):
+        # sub_40ae4e tests a 64-bit value against 2 and against -2; LoweredSwitchSimplifier turns that
+        # comparison chain into a switch and records the second label as the constant's unsigned value
+        cls.proj, cls.cfg = load_project_with_scoped_cfg(os.path.join(test_location, cls.FIXTURE), cls.FUNC)
+        codegen = cls.proj.analyses.Decompiler(cls.cfg.functions[cls.FUNC], cfg=cls.cfg).codegen
+        assert isinstance(codegen, c_codegen.CStructuredCodeGenerator)
+        assert codegen.text
+        cls.codegen = codegen
+        cls.text = codegen.text
+
+    @staticmethod
+    def _switches(codegen):
+        class Collector(c_codegen.CStructuredCodeWalker):
+            def __init__(self):
+                self.found = []
+
+            def handle_CSwitchCase(self, obj):
+                self.found.append(obj)
+                return super().handle_CSwitchCase(obj)
+
+        collector = Collector()
+        collector.handle(codegen.cfunc)
+        assert collector.found, "this function no longer decompiles to a switch"
+        return collector.found
+
+    @classmethod
+    def _labels(cls, codegen):
+        return [ids for switch in cls._switches(codegen) for ids, _ in switch.cases]
+
+    @classmethod
+    def _entry_storing(cls, blob, case_ids):
+        """The one serialized case entry whose stored labels are exactly ``case_ids``."""
+        msg = codegen_pb2.Codegen()
+        msg.ParseFromString(blob)
+        entries = [e for n in msg.nodes if n.kind == codegen_pb2.CCK_SWITCH_CASE for e in n.cswitch.cases]
+        matching = [e for e in entries if list(e.case_ids) == list(case_ids)]
+        assert len(matching) == 1, f"expected one entry storing {list(case_ids)}, found {len(matching)}"
+        return matching[0]
+
+    def _relabel(self, labels):
+        """Serialize with the switch's first case relabelled; give back the blob and the label parsed out."""
+        switch = self._switches(self.codegen)[0]
+        saved = switch.cases
+        switch.cases = [(labels, saved[0][1]), *saved[1:]]
+        try:
+            blob = self.codegen.serialize()
+        finally:
+            switch.cases = saved
+        back = type(self.codegen).parse(blob, project=self.proj, kb=self.proj.kb)
+        return blob, self._switches(back)[0].cases[0][0]
+
+    def test_the_decompiled_switch_labels_a_case_above_int64_max(self):
+        assert self.UNSIGNED_LABEL in self._labels(self.codegen)
+        assert f"case {self.UNSIGNED_LABEL}:" in self.text
+
+    def test_codegen_roundtrips_the_unsigned_label(self):
+        blob = self.codegen.serialize()  # an int64 case_ids field raised ValueError here
+        assert not self._entry_storing(blob, [self.UNSIGNED_LABEL]).case_ids_signed
+
+        back = type(self.codegen).parse(blob, project=self.proj, kb=self.proj.kb)
+        assert self._labels(back) == self._labels(self.codegen)
+        assert back.text == self.text
+
+    def test_negative_label_roundtrips(self):
+        # other producers record a small signed label, which a uint64 field cannot hold as it stands
+        blob, parsed = self._relabel(-9)
+        assert parsed == -9
+        assert list(self._entry_storing(blob, [0xFFFFFFFFFFFFFFF7]).case_ids_signed) == [True]  # -9 raw
+
+    def test_grouped_labels_keep_their_order_and_signedness(self):
+        labels = (-9, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
+        blob, parsed = self._relabel(labels)
+        assert parsed == labels
+        entry = self._entry_storing(blob, [0xFFFFFFFFFFFFFFF7, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF])
+        assert list(entry.case_ids_signed) == [True, False, False, False]
+
+    def test_labels_that_are_not_negative_are_written_without_the_parallel_field(self):
+        blob, parsed = self._relabel((2, 4))
+        assert parsed == (2, 4)
+        assert not self._entry_storing(blob, [2, 4]).case_ids_signed
+
+
+class TestSerializerRegistration(unittest.TestCase):
+    """Every concrete CConstruct subclass must have a serializer/parser pair registered."""
+
+    # Bases that are never instantiated directly and therefore need no serializer.
+    ABSTRACT = (CConstruct, CStatement, CExpression, CLoop)
+
+    def test_every_concrete_cconstruct_is_registered(self):
+        unregistered = [
+            obj.__name__
+            for obj in vars(c_codegen).values()
+            if inspect.isclass(obj)
+            and issubclass(obj, CConstruct)
+            and obj not in self.ABSTRACT
+            and obj not in _SERIALIZE_KIND_BY_CLASS
+        ]
+        assert not unregistered, f"CConstruct subclasses missing from the serializer dispatch table: {unregistered}"
+
+
+class TestVectorConvertSerialization(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.proj = angr.Project(os.path.join(test_location, "x86_64", "vector_conversions"), auto_load_libs=False)
+        cls.cfg = cls.proj.analyses.CFGFast(normalize=True)
+        cls.func = cls.proj.kb.functions.function(name="truncate_to_ints")
+        cls.decompiler = cls.proj.analyses.Decompiler(cls.func, cfg=cls.cfg.model, generate_code=True)
+
+    def test_codegen_roundtrip_preserves_vector_converts(self):
+        codegen = self.decompiler.codegen
+        assert "ConvF32toI32Sx4(" in codegen.text, "the binary no longer decompiles to a lane-wise conversion"
+
+        blob = codegen.serialize()
+        msg = codegen_pb2.Codegen()
+        msg.ParseFromString(blob)
+        vector_converts = [n for n in msg.nodes if n.kind == codegen_pb2.CCK_VECTOR_CONVERT]
+        assert vector_converts
+        for node in vector_converts:
+            assert node.cvector_convert.operand_id != 0
+
+        back = type(codegen).parse(blob, project=self.proj, kb=self.proj.kb)
+        assert back.text == codegen.text
+
+    def test_cache_spills_instead_of_parking_in_memory(self):
+        cache = self.decompiler.cache
+        d = SpillingDecompilationDict(self.proj.kb, cache_limit=0)
+        key = (self.func.addr, "pseudocode")
+        d[key] = cache
+
+        assert key in d._spilled
+        assert not d._unspillable
+        assert d[key].codegen.text == cache.codegen.text
+
+
+class TestExternSerializationOrder(unittest.TestCase):
+    """cexterns is a set, so serializing it in iteration order made the blob differ run to run."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.proj = angr.Project(os.path.join(test_location, "x86_64", "fauxware"), auto_load_libs=False)
+        cls.cfg = cls.proj.analyses.CFGFast(normalize=True)
+        cls.proj.analyses.CompleteCallingConventions()
+        cls.func = cls.proj.kb.functions.function(name="__do_global_dtors_aux")
+        cls.codegen = cls.proj.analyses.Decompiler(cls.func, cfg=cls.cfg.model).codegen
+
+    def test_externs_are_emitted_in_address_order(self):
+        assert len(self.codegen.cexterns) > 1, "this function no longer has several externs"
+        msg = codegen_pb2.Codegen()
+        msg.ParseFromString(self.codegen.serialize())
+        expected = [v.idx for v in sorted(self.codegen.cexterns, key=cextern_sort_key)]
+        assert list(msg.cexterns_ids) == expected
+
+    def test_externs_survive_the_roundtrip(self):
+        blob = self.codegen.serialize()
+        back = type(self.codegen).parse(blob, project=self.proj, kb=self.proj.kb, func=self.func)
+        assert {v.idx for v in back.cexterns} == {v.idx for v in self.codegen.cexterns}
+        assert back.serialize() == blob
+
+
+class TestIdentlessVariableSerialization(unittest.TestCase):
+    def test_identless_temporary_variable_round_trips(self):
+        var = SimTemporaryVariable(3, 4)
+        assert var.ident is None
+        back = SimTemporaryVariable.parse(var.serialize())
+        assert back.ident is None
+        assert (back.tmp_id, back.size) == (3, 4)
+
+    def test_identless_register_variable_round_trips(self):
+        var = SimRegisterVariable(8, 4)
+        assert var.ident is None
+        back = SimRegisterVariable.parse(var.serialize())
+        assert back.ident is None
+        assert (back.reg, back.size) == (8, 4)
+
+        var = SimRegisterVariable(8, 4, ident="r_1")
+        assert var.name is None
+        assert SimRegisterVariable.parse(var.serialize()).name is None
+
+    def test_codegen_cache_interns_an_identless_variable(self):
+        # The path the corpus hit: _ser_cvar -> intern_simvar -> _simvar_to_bytes -> serialize.
+        ctx = SerializeContext()
+        assert ctx.intern_simvar(SimTemporaryVariable(3, 4)) == 1
+        assert len(ctx.simvar_pool) == 1
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -32,19 +32,20 @@ class CFGManager(KnowledgeBasePlugin):
     def __getitem__(self, ident) -> CFGModel:
         if ident not in self.cfgs:
             if self._kb is not None and self._kb._project is not None:
-                is_arm = is_arm_arch(self._kb._project.arch)
-                cache_limit = self._kb._project.get_cfg_node_cache_limit()
-                edge_cache_limit = self._kb._project.get_cfg_edge_cache_limit()
+                project = self._kb._project
+                is_arm = is_arm_arch(project.arch)
+                cache_limit = project.get_cfg_node_cache_limit()
+                segment_budget = project.get_cfg_segment_budget()
             else:
                 is_arm = False
                 cache_limit = None
-                edge_cache_limit = None
+                segment_budget = None
             self.cfgs[ident] = CFGModel(
                 ident,
                 cfg_manager=self,
                 is_arm=is_arm,
                 cache_limit=cache_limit,
-                edge_cache_limit=edge_cache_limit,
+                segment_budget=segment_budget,
             )
         return self.cfgs[ident]
 
@@ -112,6 +113,15 @@ class CFGManager(KnowledgeBasePlugin):
         self.cfgs = state["cfgs"]
         for cfg_model in self.cfgs.values():
             cfg_model._cfg_manager = self
+
+    def set_kb(self, kb):
+        super().set_kb(kb)
+        # re-attach the RuntimeDb to all CFG models so that node/edge spilling works again after unpickling
+        rtdb = kb.rtdb
+        for cfg_model in self.cfgs.values():
+            cfg_model._cfg_manager = self  # pylint:disable=protected-access
+            if cfg_model.graph is not None:
+                cfg_model.graph.set_rtdb(rtdb)
 
 
 KnowledgeBasePlugin.register_default("cfgs", CFGManager)

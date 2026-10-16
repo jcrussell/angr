@@ -11,6 +11,7 @@ from angr.analyses.decompiler.jump_target_collector import JumpTargetCollector
 from angr.analyses.decompiler.redundant_label_remover import RedundantLabelRemover
 from angr.analyses.decompiler.semantic_naming.region_loop_counter_naming import RegionLoopCounterNaming
 from angr.analyses.decompiler.structurer_nodes import LoopNode
+from angr.analyses.decompiler.variable_map import variable_map_of
 
 from .cascading_cond_transformer import CascadingConditionTransformer
 from .cascading_ifs import CascadingIfsRemover
@@ -100,9 +101,7 @@ class RegionSimplifier(Analysis):
         # Remove unnecessary else branches if the if branch will always return
         if self._should_simplify_ifelses:
             r = self._simplify_ifelses(r)
-        #
         r = self._simplify_cascading_ifs(r)
-        #
         r = self._simplify_loops(r)
         # Apply loop counter naming after loop simplification (when iterators are identified)
         if self._apply_loop_counter_naming and self._variable_manager is not None:
@@ -120,15 +119,18 @@ class RegionSimplifier(Analysis):
 
     def _fold_oneuse_expressions(self, region):
         loop_nodes = LoopNodeFinder(region).loop_nodes
+        # a variable defined in a loop body may also be used in the loop condition or after the loop, which the
+        # loop-body counter cannot see
+        region_uses = ExpressionCounter(region).all_uses if loop_nodes else None
         for sub_region in [*loop_nodes, region]:
             # fold one-use expressions in each sub-region
             if isinstance(sub_region, LoopNode):
-                self._fold_oneuse_expressions_in_region(sub_region.sequence_node)
+                self._fold_oneuse_expressions_in_region(sub_region.sequence_node, region_uses=region_uses)
             else:
                 self._fold_oneuse_expressions_in_region(sub_region)
         return region
 
-    def _fold_oneuse_expressions_in_region(self, region):
+    def _fold_oneuse_expressions_in_region(self, region, region_uses: dict[int, set] | None = None):
         # pylint:disable=unreachable
         expr_counter = ExpressionCounter(region)
 
@@ -148,6 +150,7 @@ class RegionSimplifier(Analysis):
                 and len(all_uses) == 1
                 and var in expr_counter.assignments
                 and len(expr_counter.assignments[var]) == 1
+                and (region_uses is None or len(region_uses.get(var, ())) <= 1)
             ):
                 definition, deps, loc, has_loads = next(iter(expr_counter.assignments[var]))
                 _, use_expr_loc = next(iter(outerscope_uses))
@@ -185,11 +188,21 @@ class RegionSimplifier(Analysis):
                 continue
 
             if isinstance(definition, ailment.Stmt.SideEffectStatement):
-                # clear the existing variable since we no longer write to this variable after expression folding
-                definition = definition.copy()
+                # clear the existing variable since we no longer write to this variable after expression folding.
+                # deep_copy the ret_expr so it gets a fresh .idx; otherwise clearing its VariableMap entry (which is
+                # idx-keyed) would also clear the variable of the original ret_expr, which shares the same .idx.
                 if definition.ret_expr is not None:
-                    definition.ret_expr = definition.ret_expr.copy()
-                    definition.ret_expr.variable = None  # type: ignore
+                    new_ret_expr = definition.ret_expr.deep_copy(self.ail_manager)
+                    definition = ailment.Stmt.SideEffectStatement(
+                        definition.idx,
+                        definition.expr,
+                        ret_expr=new_ret_expr,
+                        fp_ret_expr=definition.fp_ret_expr,
+                        **definition.tags,
+                    )
+                    variable_map_of(self.ail_manager).set_variable(new_ret_expr, None)
+                else:
+                    definition = definition.copy()
             variable_assignments[var] = definition, loc
             variable_uses[var] = next(iter(expr_counter.outerscope_uses[var]))
             variable_assignment_dependencies[var] = deps
@@ -202,13 +215,13 @@ class RegionSimplifier(Analysis):
                 del variable_uses[var]
 
         # ensure there is no interference between the call site and the use site
-        checker = InterferenceChecker(variable_assignments, variable_uses, region)
+        checker = InterferenceChecker(variable_assignments, variable_uses, region, variable_map_of(self.ail_manager))
         for varid in checker.interfered_assignments:
             if varid in variable_assignments:
                 del variable_assignments[varid]
                 del variable_uses[varid]
         # fold these expressions if possible
-        ExpressionFolder(variable_assignments, variable_uses, region)
+        ExpressionFolder(variable_assignments, variable_uses, region, variable_map_of(self.ail_manager))
         return region
 
     def _simplify_switch_expressions(self, region):
@@ -216,7 +229,7 @@ class RegionSimplifier(Analysis):
         return region
 
     def _simplify_switch_clusters(self, region):
-        finder = SwitchClusterFinder(region)
+        finder = SwitchClusterFinder(region, variable_map_of(self.ail_manager))
         simplify_switch_clusters(region, finder.var2condnodes, finder.var2switches)
         simplify_lowered_switches(
             region,
@@ -263,7 +276,9 @@ class RegionSimplifier(Analysis):
 
     def _apply_region_loop_counter_naming(self, region) -> None:
         assert self._variable_manager is not None
-        namer = RegionLoopCounterNaming(region, self._variable_manager, self.kb.functions)
+        namer = RegionLoopCounterNaming(
+            region, self._variable_manager, self.kb.functions, variable_map_of(self.ail_manager)
+        )
         namer.analyze()
         namer.apply_names()
 

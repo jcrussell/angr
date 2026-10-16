@@ -3,13 +3,12 @@
 //! This module provides epsilon-NFA and DFA implementations with:
 //! - Epsilon closure computation
 //! - Subset construction (NFA to DFA conversion)
-//! - Hopcroft-style DFA minimization by partition refinement (see `DFA::minimize`)
+//! - Hopcroft's DFA minimization algorithm
 //! - PyO3 bindings for Python interoperability
 
 mod dfa;
 mod epsilon_nfa;
 mod python_bindings;
-mod reachability;
 mod state;
 mod subset_construction;
 mod symbol;

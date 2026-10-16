@@ -6,6 +6,7 @@ from angr.ailment import AILBlockViewer
 from angr.ailment.block import Block
 from angr.ailment.expression import BinaryOp, Call, Const, Tmp, VirtualVariable
 from angr.ailment.statement import Return, Statement, Store
+from angr.analyses.decompiler.variable_map import variable_map_of
 from angr.rust.mixins import CFAMixin, DFAMixin, SRDAMixin
 from angr.rust.utils.ail import CallVisitor, unwrap_stack_vvar_reference
 
@@ -37,7 +38,9 @@ class MemoryWriteCollector(AILBlockViewer):
 
     def _walk_path(self, path):
         self._path = path
-        self._path_srda = SRDAMixin(self._fc.func, Pathfinder.path_to_graph(path), self._fc.project)
+        self._path_srda = SRDAMixin(
+            self._fc.func, Pathfinder.path_to_graph(path), self._fc.project, variable_map_of(self._fc.ail_manager)
+        )
         for block in path:
             self.walk(block)
 
@@ -90,7 +93,7 @@ class CalleeWriteCollector:
             return
         func = self._fc.project.kb.functions[call.target.value]
         if func.name == "memcpy" and args is not None and len(args) == 3 and isinstance(args[2], Const):
-            tmp = Tmp(self._fc.ail_manager.next_atom(), None, 0, args[2].value * self._fc.project.arch.byte_width)
+            tmp = Tmp(self._fc.ail_manager.next_atom(), 0, args[2].value * self._fc.project.arch.byte_width)
             self._fc.has_write_to_arg0 = True
             # Use a single-block path as the key, consistent with memory_writes keying.
             path = (block,)
@@ -257,7 +260,7 @@ class FactCollector(CFAMixin, SRDAMixin, DFAMixin):
         self.ail_manager = analysis.ail_manager
 
         CFAMixin.__init__(self, self.graph, self.project)
-        SRDAMixin.__init__(self, self.func, self.graph, self.project)
+        SRDAMixin.__init__(self, self.func, self.graph, self.project, variable_map_of(self.ail_manager))
         DFAMixin.__init__(self, self.graph)
 
         # Accumulated facts — sub-collectors write directly to these.

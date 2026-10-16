@@ -4,10 +4,9 @@ import functools
 import logging
 import os
 import time
-from typing import TypeVar, overload
+from typing import Any, TypeVar, overload
 
-import claripy
-
+from angr import claripy
 from angr import sim_options as o
 from angr.errors import SimSolverModeError, SimSolverOptionError, SimUnsatError, SimValueError
 from angr.sim_state import SimState
@@ -81,12 +80,12 @@ def disable_timing():
     _timing_enabled = False
 
 
-if os.environ.get("SOLVER_TIMING", False):
+if os.environ.get("SOLVER_TIMING", None):
     enable_timing()
 else:
     disable_timing()
 
-break_time = float(os.environ.get("SOLVER_BREAK_TIME", -1))
+break_time = float(os.environ.get("SOLVER_BREAK_TIME", "-1"))
 
 #
 # Various over-engineered crap
@@ -119,9 +118,13 @@ def _concrete_bool(e):
     return None
 
 
-def _concrete_value(e):
+def _concrete_value(e) -> Any:
+    """
+    The Python value behind a concrete claripy leaf, or None if there isn't one. Returns ``Any`` because
+    the value's type follows the AST's sort (int for a BVV, bool for a BoolV, float for an FPV, ...).
+    """
     # shortcuts for speed improvement
-    if isinstance(e, (int, float, bool)):
+    if isinstance(e, (int, float, bool, str)):
         return e
     if isinstance(e, claripy.ast.Base | SimActionObject) and e.is_leaf() and not e.symbolic:
         return e.args[0]
@@ -186,6 +189,9 @@ def concrete_path_list(f):
 #
 # The main event
 #
+
+
+type _EvalArg = claripy.ast.Base | SimActionObject | int | float | bool | str
 
 
 class SimSolver(SimStatePlugin):
@@ -424,7 +430,12 @@ class SimSolver(SimStatePlugin):
                 **kwargs,
             )
             if any(x is not None for x in (min, max, stride)):
-                r = r.annotate(claripy.annotation.StridedIntervalAnnotation(stride, min, max))
+                # Strided-interval bounds are stored unsigned; wrap any signed
+                # bound to its two's-complement representation at this width.
+                mask = (1 << size) - 1
+                si_min = None if min is None else min & mask
+                si_max = None if max is None else max & mask
+                r = r.annotate(claripy.annotation.StridedIntervalAnnotation(stride, si_min, si_max))
             if uninitialized:
                 r = r.annotate(claripy.annotation.UninitializedAnnotation())
             if key is not None:
@@ -469,12 +480,6 @@ class SimSolver(SimStatePlugin):
         )
         return merging_occurred
 
-    @error_converter
-    def widen(self, others):
-        c = claripy.BVS("random_widen_condition", 32)
-        merge_conditions = [[c == i] for i in range(len(others) + 1)]
-        return self.merge(others, merge_conditions)
-
     #
     # Frontend passthroughs
     #
@@ -493,21 +498,6 @@ class SimSolver(SimStatePlugin):
         """
         return self._solver.constraints
 
-    def _adjust_constraint(self, c):
-        if self.state._global_condition is None:
-            return c
-        if c is None:  # this should never happen
-            l.critical("PLEASE REPORT THIS MESSAGE, AND WHAT YOU WERE DOING, TO YAN")
-            return self.state._global_condition
-        return claripy.Or(claripy.Not(self.state._global_condition), c)
-
-    def _adjust_constraint_list(self, constraints):
-        if self.state._global_condition is None:
-            return constraints
-        if len(constraints) == 0:
-            return constraints.__class__((self.state._global_condition,))
-        return constraints.__class__((self._adjust_constraint(claripy.And(*constraints)),))
-
     @timed_function
     @ast_stripping_decorator
     @error_converter
@@ -522,9 +512,7 @@ class SimSolver(SimStatePlugin):
         :return: a tuple of the solutions, in the form of claripy AST nodes
         :rtype: tuple
         """
-        return self._solver.eval_to_ast(
-            e, n, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact
-        )
+        return self._solver.eval_to_ast(e, n, extra_constraints=extra_constraints, exact=exact)
 
     @concrete_path_tuple
     @timed_function
@@ -541,7 +529,7 @@ class SimSolver(SimStatePlugin):
         :return: a tuple of the solutions, in the form of Python primitives
         :rtype: tuple
         """
-        return self._solver.eval(e, n, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact)
+        return self._solver.eval(e, n, extra_constraints=extra_constraints, exact=exact)
 
     @concrete_path_scalar
     @timed_function
@@ -558,15 +546,11 @@ class SimSolver(SimStatePlugin):
         :return: the maximum possible value of e (backend object)
         """
         if exact is False and o.VALIDATE_APPROXIMATIONS in self.state.options:
-            ar = self._solver.max(
-                e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=False, signed=signed
-            )
-            er = self._solver.max(e, extra_constraints=self._adjust_constraint_list(extra_constraints), signed=signed)
+            ar = self._solver.max(e, extra_constraints=extra_constraints, exact=False, signed=signed)
+            er = self._solver.max(e, extra_constraints=extra_constraints, signed=signed)
             assert er <= ar
             return ar
-        return self._solver.max(
-            e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact, signed=signed
-        )
+        return self._solver.max(e, extra_constraints=extra_constraints, exact=exact, signed=signed)
 
     @concrete_path_scalar
     @timed_function
@@ -583,15 +567,11 @@ class SimSolver(SimStatePlugin):
         :return: the minimum possible value of e (backend object)
         """
         if exact is False and o.VALIDATE_APPROXIMATIONS in self.state.options:
-            ar = self._solver.min(
-                e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=False, signed=signed
-            )
-            er = self._solver.min(e, extra_constraints=self._adjust_constraint_list(extra_constraints), signed=signed)
+            ar = self._solver.min(e, extra_constraints=extra_constraints, exact=False, signed=signed)
+            er = self._solver.min(e, extra_constraints=extra_constraints, signed=signed)
             assert ar <= er
             return ar
-        return self._solver.min(
-            e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact, signed=signed
-        )
+        return self._solver.min(e, extra_constraints=extra_constraints, exact=exact, signed=signed)
 
     @timed_function
     @ast_stripping_decorator
@@ -607,16 +587,12 @@ class SimSolver(SimStatePlugin):
         :return:                    True if `v` is a solution of `expr`, False otherwise
         """
         if exact is False and o.VALIDATE_APPROXIMATIONS in self.state.options:
-            ar = self._solver.solution(
-                e, v, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=False
-            )
-            er = self._solver.solution(e, v, extra_constraints=self._adjust_constraint_list(extra_constraints))
+            ar = self._solver.solution(e, v, extra_constraints=extra_constraints, exact=False)
+            er = self._solver.solution(e, v, extra_constraints=extra_constraints)
             if er is True:
                 assert ar is True
             return ar
-        return self._solver.solution(
-            e, v, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact
-        )
+        return self._solver.solution(e, v, extra_constraints=extra_constraints, exact=exact)
 
     @concrete_path_bool
     @timed_function
@@ -634,12 +610,12 @@ class SimSolver(SimStatePlugin):
         :return:                    True if `v` is definitely true, False otherwise
         """
         if exact is False and o.VALIDATE_APPROXIMATIONS in self.state.options:
-            ar = self._solver.is_true(e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=False)
-            er = self._solver.is_true(e, extra_constraints=self._adjust_constraint_list(extra_constraints))
+            ar = self._solver.is_true(e, extra_constraints=extra_constraints, exact=False)
+            er = self._solver.is_true(e, extra_constraints=extra_constraints)
             if er is False:
                 assert ar is False
             return ar
-        return self._solver.is_true(e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact)
+        return self._solver.is_true(e, extra_constraints=extra_constraints, exact=exact)
 
     @concrete_path_not_bool
     @timed_function
@@ -657,14 +633,12 @@ class SimSolver(SimStatePlugin):
         :return:                    True if `v` is definitely false, False otherwise
         """
         if exact is False and o.VALIDATE_APPROXIMATIONS in self.state.options:
-            ar = self._solver.is_false(
-                e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=False
-            )
-            er = self._solver.is_false(e, extra_constraints=self._adjust_constraint_list(extra_constraints))
+            ar = self._solver.is_false(e, extra_constraints=extra_constraints, exact=False)
+            er = self._solver.is_false(e, extra_constraints=extra_constraints)
             if er is False:
                 assert ar is False
             return ar
-        return self._solver.is_false(e, extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact)
+        return self._solver.is_false(e, extra_constraints=extra_constraints, exact=exact)
 
     @timed_function
     @ast_stripping_decorator
@@ -693,17 +667,15 @@ class SimSolver(SimStatePlugin):
         :return:                    True if sat, otherwise false
         """
         if o.ABSTRACT_SOLVER in self.state.options or o.SYMBOLIC not in self.state.options:
-            return all(not self.is_false(e) for e in extra_constraints)
+            return self.state._satisfiable and all(not self.is_false(e) for e in extra_constraints)
 
         if exact is False and o.VALIDATE_APPROXIMATIONS in self.state.options:
-            er = self._solver.satisfiable(extra_constraints=self._adjust_constraint_list(extra_constraints))
-            ar = self._solver.satisfiable(
-                extra_constraints=self._adjust_constraint_list(extra_constraints), exact=False
-            )
+            er = self._solver.satisfiable(extra_constraints=extra_constraints)
+            ar = self._solver.satisfiable(extra_constraints=extra_constraints, exact=False)
             if er is True:
                 assert ar is True
             return ar
-        return self._solver.satisfiable(extra_constraints=self._adjust_constraint_list(extra_constraints), exact=exact)
+        return self._solver.satisfiable(extra_constraints=extra_constraints, exact=exact)
 
     @timed_function
     @ast_stripping_decorator
@@ -724,8 +696,7 @@ class SimSolver(SimStatePlugin):
 
             self.state._inspect("constraints", BP_BEFORE, added_constraints=constraints)
             constraints = self.state._inspect_getattr("added_constraints", constraints)
-            cc = self._adjust_constraint_list(constraints)
-            added = self._solver.add(cc)
+            added = self._solver.add(constraints)
             self.state._inspect("constraints", BP_AFTER)
 
             # add actions for the added constraints
@@ -737,6 +708,8 @@ class SimSolver(SimStatePlugin):
         if o.ABSTRACT_SOLVER in self.state.options and len(constraints) > 0:
             for arg in constraints:
                 if self.is_false(arg):
+                    # VSA has no constraint set to become unsat; remember it on the state instead
+                    self.state._satisfiable = False
                     return
 
                 if self.is_true(arg):
@@ -751,12 +724,9 @@ class SimSolver(SimStatePlugin):
                 _, converted = constraint_to_si(arg)
 
                 for original_expr, constrained_si in converted:
-                    if not original_expr.variables:
-                        l.error(
-                            "Incorrect original_expression to replace in add(). "
-                            "This is due to defects in VSA logics inside claripy. "
-                            "Please report to Fish and he will fix it if he's free."
-                        )
+                    if original_expr.cardinality <= 1 or not original_expr.variables:
+                        # single-valued expressions have nothing to constrain; unnamed ones cannot be located in
+                        # memory by replace_all()
                         continue
 
                     new_expr = constrained_si
@@ -787,7 +757,7 @@ class SimSolver(SimStatePlugin):
     @staticmethod
     def _cast_to(
         e: claripy.ast.Bool | claripy.ast.BV | claripy.ast.FP,
-        solution: bool | float | int,
+        solution: bool | float,
         cast_to: type[CastType] | None,
     ) -> CastType:
         """
@@ -842,6 +812,15 @@ class SimSolver(SimStatePlugin):
     @overload
     def eval_upto(self, e: claripy.ast.FP, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
 
+    @overload
+    def eval_upto(self, e: claripy.ast.String | str, n: int, cast_to: None = ..., **kwargs) -> list[str]: ...
+
+    @overload
+    def eval_upto(self, e: _EvalArg, n: int, cast_to: None = ..., **kwargs) -> list[Any]: ...
+
+    @overload
+    def eval_upto(self, e: _EvalArg, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
+
     def eval_upto(self, e, n, cast_to=None, **kwargs):
         """
         Evaluate an expression, using the solver if necessary. Returns primitives as specified by the `cast_to`
@@ -882,6 +861,15 @@ class SimSolver(SimStatePlugin):
     @overload
     def eval(self, e: claripy.ast.FP, cast_to: type[CastType], **kwargs) -> CastType: ...
 
+    @overload
+    def eval(self, e: claripy.ast.String | str, cast_to: None = ..., **kwargs) -> str: ...
+
+    @overload
+    def eval(self, e: _EvalArg, cast_to: None = ..., **kwargs) -> Any: ...
+
+    @overload
+    def eval(self, e: _EvalArg, cast_to: type[CastType], **kwargs) -> CastType: ...
+
     def eval(self, e, cast_to=None, **kwargs):
         """
         Evaluate an expression to get any possible solution. The desired output types can be specified using the
@@ -918,6 +906,15 @@ class SimSolver(SimStatePlugin):
 
     @overload
     def eval_one(self, e: claripy.ast.FP, cast_to: type[CastType], **kwargs) -> CastType: ...
+
+    @overload
+    def eval_one(self, e: claripy.ast.String | str, cast_to: None = ..., **kwargs) -> str: ...
+
+    @overload
+    def eval_one(self, e: _EvalArg, cast_to: None = ..., **kwargs) -> Any: ...
+
+    @overload
+    def eval_one(self, e: _EvalArg, cast_to: type[CastType], **kwargs) -> CastType: ...
 
     def eval_one(self, e, cast_to=None, **kwargs):
         """
@@ -957,6 +954,15 @@ class SimSolver(SimStatePlugin):
     @overload
     def eval_atmost(self, e: claripy.ast.FP, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
 
+    @overload
+    def eval_atmost(self, e: claripy.ast.String | str, n: int, cast_to: None = ..., **kwargs) -> list[str]: ...
+
+    @overload
+    def eval_atmost(self, e: _EvalArg, n: int, cast_to: None = ..., **kwargs) -> list[Any]: ...
+
+    @overload
+    def eval_atmost(self, e: _EvalArg, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
+
     def eval_atmost(self, e, n, cast_to=None, **kwargs):
         """
         Evaluate an expression to get at most `n` possible solutions. Errors if either none or more than `n` solutions
@@ -993,6 +999,15 @@ class SimSolver(SimStatePlugin):
     @overload
     def eval_atleast(self, e: claripy.ast.FP, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
 
+    @overload
+    def eval_atleast(self, e: claripy.ast.String | str, n: int, cast_to: None = ..., **kwargs) -> list[str]: ...
+
+    @overload
+    def eval_atleast(self, e: _EvalArg, n: int, cast_to: None = ..., **kwargs) -> list[Any]: ...
+
+    @overload
+    def eval_atleast(self, e: _EvalArg, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
+
     def eval_atleast(self, e, n, cast_to=None, **kwargs):
         """
         Evaluate an expression to get at least `n` possible solutions. Errors if less than `n` solutions were found.
@@ -1027,6 +1042,15 @@ class SimSolver(SimStatePlugin):
 
     @overload
     def eval_exact(self, e: claripy.ast.FP, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
+
+    @overload
+    def eval_exact(self, e: claripy.ast.String | str, n: int, cast_to: None = ..., **kwargs) -> list[str]: ...
+
+    @overload
+    def eval_exact(self, e: _EvalArg, n: int, cast_to: None = ..., **kwargs) -> list[Any]: ...
+
+    @overload
+    def eval_exact(self, e: _EvalArg, n: int, cast_to: type[CastType], **kwargs) -> list[CastType]: ...
 
     def eval_exact(self, e, n, cast_to=None, **kwargs):
         """

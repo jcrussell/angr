@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import logging
-from functools import reduce
-
-import claripy
 
 import angr
+from angr import claripy
 
 l = logging.getLogger(name=__name__)
 
@@ -158,7 +156,7 @@ class strncmp(angr.SimProcedure):
                 case 1:
                     ret_expr = return_values[0]
                 case _:
-                    ret_expr = reduce(claripy.union, return_values)
+                    ret_expr = claripy.union(*return_values)
             ret_expr = ret_expr.sign_extend(24)
 
         else:

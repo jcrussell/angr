@@ -13,7 +13,7 @@ from tests.common import WORKER, bin_location, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
 
-l = logging.Logger(__name__)
+l = logging.getLogger(__name__)
 
 
 class TestUnifyLocalVariables(unittest.TestCase):
@@ -33,7 +33,7 @@ class TestUnifyLocalVariables(unittest.TestCase):
 
         assert "a0[1]" in dec.codegen.text
         assert "a0[2]" in dec.codegen.text
-        assert "a0[0]" in dec.codegen.text or "*(a0)" in dec.codegen.text
+        assert "a0[0]" in dec.codegen.text or "*a0" in dec.codegen.text
 
 
 if __name__ == "__main__":

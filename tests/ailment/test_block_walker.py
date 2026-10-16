@@ -27,11 +27,13 @@ class RecordingWalker(AILBlockWalker[None, None, list[str]]):
 
     def _top(self, expr_idx: int, expr: Expression, stmt_idx: int, stmt: Statement | None, block: Block | None):
         del expr_idx, stmt_idx, stmt, block
-        self.seen.append(type(expr).__name__)
+        kind = getattr(expr, "kind", None)
+        self.seen.append(kind.name if kind is not None else type(expr).__name__)
 
     def _stmt_top(self, stmt_idx: int, stmt: Statement, block: Block | None):
         del stmt_idx, block
-        self.seen.append(type(stmt).__name__)
+        kind = getattr(stmt, "kind", None)
+        self.seen.append(kind.name if kind is not None else type(stmt).__name__)
 
     def _handle_block_end(self, stmt_results: list[None], block: Block):
         del stmt_results, block
@@ -43,14 +45,14 @@ class ConstIncrementingRewriter(AILBlockRewriter):
 
     def _handle_Const(self, expr_idx: int, expr: Const, stmt_idx: int, stmt: Statement | None, block: Block | None):
         if expr.value == 1:
-            return Const(expr.idx, expr.variable, 2, expr.bits, **expr.tags)
+            return Const(expr.idx, 2, expr.bits, **expr.tags)
         return super()._handle_Const(expr_idx, expr, stmt_idx, stmt, block)
 
 
 def test_block_walker_visits_rust_ail_expression_children():
-    reg0 = Register(0, None, 16, 64)
-    reg1 = Register(1, None, 24, 64)
-    combo = ComboRegister(2, None, [reg0, reg1])
+    reg0 = Register(0, 16, 64)
+    reg1 = Register(1, 24, 64)
+    combo = ComboRegister(2, [reg0, reg1])
     struct = Struct(3, "Pair", OrderedDict([(0, combo)]), OrderedDict([("value", 0)]), 128)
     enum = RustEnum(4, "Ok", [struct], 128)
     array = Array(5, [enum], 128)
@@ -69,7 +71,7 @@ def test_block_walker_visits_rust_ail_expression_children():
 
 
 def test_block_rewriter_rebuilds_rust_ail_expression_containers():
-    old_const = Const(0, None, 1, 32)
+    old_const = Const(0, 1, 32)
     struct = Struct(1, "One", OrderedDict([(0, old_const)]), OrderedDict([("value", 0)]), 32)
     enum = RustEnum(2, "Some", [struct], 32)
     array = Array(3, [enum], 32)
@@ -92,9 +94,9 @@ def test_block_rewriter_rebuilds_rust_ail_expression_containers():
     new_struct = new_enum.fields[0]
     assert isinstance(new_struct, Struct)
 
-    assert old_stmt.src is macro
-    assert new_macro is not macro
-    assert new_array is not array
-    assert new_enum is not enum
-    assert new_struct is not struct
+    assert old_stmt.src.likes(macro)
+    assert not new_macro.likes(macro)
+    assert not new_array.likes(array)
+    assert not new_enum.likes(enum)
+    assert not new_struct.likes(struct)
     assert new_struct.fields[0].value == 2

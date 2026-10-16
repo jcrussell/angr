@@ -24,7 +24,7 @@ class ITERegionConverter(OptimizationPass):
     PLATFORMS = ["windows", "linux", "cgc"]
     STAGE = OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION
     NAME = "Transform ITE-assignment regions into ternary expression assignments"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, max_updates=10, **kwargs):
         super().__init__(*args, **kwargs)
@@ -90,9 +90,9 @@ class ITERegionConverter(OptimizationPass):
 
             true_child, false_child = None, None
             for child in children:
-                if if_stmt.true_target is not None and child.addr == if_stmt.true_target.value:
+                if isinstance(if_stmt.true_target, Const) and child.addr == if_stmt.true_target.value:
                     true_child = child
-                elif if_stmt.false_target is not None and child.addr == if_stmt.false_target.value:
+                elif isinstance(if_stmt.false_target, Const) and child.addr == if_stmt.false_target.value:
                     false_child = child
 
             if (
@@ -218,8 +218,8 @@ class ITERegionConverter(OptimizationPass):
         ternary_expr = ITE(
             self.manager.next_atom(),
             conditional_jump.condition,
-            false_stmt_src,
             true_stmt_src,
+            false_stmt_src,
             **addr_obj.tags,
         )
         dst = VirtualVariable(
@@ -228,6 +228,7 @@ class ITERegionConverter(OptimizationPass):
             true_stmt_dst.bits,
             true_stmt_dst.category,
             oident=true_stmt_dst.oident,
+            reg_vvars=true_stmt_dst.reg_vvars,
             **true_stmt_dst.tags,
         )
         self.vvar_id_start += 1
@@ -239,7 +240,7 @@ class ITERegionConverter(OptimizationPass):
         # transitioning statement in the future
         goto_stmt = Jump(
             self.manager.next_atom(),
-            Const(self.manager.next_atom(), None, region_tail.addr, self.project.arch.bits),
+            Const(self.manager.next_atom(), region_tail.addr, self.project.arch.bits),
             region_tail.idx,
             **conditional_jump.tags,
         )

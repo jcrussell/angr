@@ -405,10 +405,9 @@ impl RustBV {
             // keeps the UDiv symbolic — Z3's bvudiv is total the same way
             // (angr-nknv1).
             (Some(a), Some(b)) if b != 0 || !bits_beyond_storage(lhs.width()) => {
-                if b == 0 {
-                    Self::ones(lhs.width())
-                } else {
-                    Self::concrete(a / b, lhs.width())
+                match a.checked_div(b) {
+                    Some(q) => Self::concrete(q, lhs.width()),
+                    None => Self::ones(lhs.width()),
                 }
             }
             _ => {

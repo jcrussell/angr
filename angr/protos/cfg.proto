@@ -59,6 +59,8 @@ message CFG {
     bool                    normalized = 5; // Whether the control flow graph has been normalized or not
     repeated IndirectJump   jump_tables = 6; // Jump tables / indirect jumps
     repeated uint64         block_addrs_with_return = 7; // Addresses of blocks that have return statements
+    bytes                   graph_header = 8; // CfgGraph header (segment layout, node order, jumpkinds); edges are empty when set
+    repeated bytes          graph_segments = 9; // One CfgGraph segment blob per address window
 }
 
 message MemoryData {
@@ -96,6 +98,7 @@ message JumptableInfo {
     int32           size = 2; // Size of the jump table
     int32           entry_size = 3; // Size of each entry
     repeated uint64 entries = 4; // Target addresses
+    bool            entries_guessed = 5; // Are entries of this jump table guessed
 }
 
 message IndirectJump {

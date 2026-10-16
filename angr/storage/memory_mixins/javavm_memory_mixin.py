@@ -4,10 +4,8 @@ import binascii
 import logging
 import os
 
-import claripy
-
 import angr
-from angr import concretization_strategies
+from angr import claripy, concretization_strategies
 from angr.engines.soot.values import (
     SimSootValue_ArrayBaseRef,
     SimSootValue_ArrayRef,
@@ -381,9 +379,6 @@ class JavaVmMemoryMixin(MemoryMixin):
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint: disable=unused-argument
         l.warning("Merging is not implemented for JavaVM memory!")
-
-    def widen(self, others):  # pylint: disable=no-self-use,unused-argument
-        l.warning("Widening is not implemented for JavaVM memory!")
 
     # pylint: disable=no-self-use,unused-argument
     def _find(self, addr, what, max_search=None, max_symbolic_bytes=None, default=None):

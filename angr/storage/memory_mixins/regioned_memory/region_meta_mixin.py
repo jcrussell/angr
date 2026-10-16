@@ -217,19 +217,14 @@ class MemoryRegionMetaMixin(MemoryMixin):
                 merging_occurred |= self.alocs[aloc_id].merge(aloc)
         return merging_occurred
 
-    def merge(self, others, merge_conditions, common_ancestor=None) -> bool:
+    def merge(self, others, merge_conditions, common_ancestor=None, is_widening=False) -> bool:
         r = False
         for other_region in others:
             self._merge_alocs(other_region)
-            r |= super().merge([other_region], merge_conditions, common_ancestor=common_ancestor)
+            r |= super().merge(
+                [other_region], merge_conditions, common_ancestor=common_ancestor, is_widening=is_widening
+            )
         return r
-
-    def widen(self, others):
-        result = False
-        for other_region in others:
-            self._merge_alocs(other_region)
-            result |= super().widen([other_region.memory])
-        return result
 
     def dbg_print(self, indent=0):
         """

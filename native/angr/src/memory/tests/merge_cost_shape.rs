@@ -200,7 +200,7 @@ fn test_merge_ite_cells_equal_divergent_bytes() {
     // Every emitted ITE cell lands on the divergent page — the shared pages
     // contribute nothing, which is precisely what the cow-skip elides.
     let dpage = (BASE >> 12) + DIVERGENT_PAGE_IDX;
-    for (&addr, _) in a.symbolic_objects.iter() {
+    for &addr in a.symbolic_objects.keys() {
         assert_eq!(
             addr.page_num(),
             dpage,

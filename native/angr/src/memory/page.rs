@@ -491,7 +491,6 @@ impl MemoryPage {
         self.symbolic_bitmap.set_range(offset, loop_end);
     }
 
-
     /// Check if a byte is symbolic.
     #[inline]
     pub fn is_symbolic(&self, offset: u16) -> bool {

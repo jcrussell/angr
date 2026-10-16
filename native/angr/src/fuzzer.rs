@@ -1,19 +1,17 @@
-pub(crate) mod corpus;
-pub(crate) mod delegate;
-pub(crate) mod executor;
-pub(crate) mod icicle;
-pub(crate) mod monitor;
-pub(crate) mod mutator;
+pub mod corpus;
+pub mod engine;
+pub mod executor;
+pub mod monitor;
+pub mod mutator;
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use crate::errors::MapPyErr;
 use libafl::{
     NopInputFilter, StdFuzzer,
     events::SimpleEventManager,
     feedbacks::{CrashFeedback, MaxMapFeedback},
-    inputs::{BytesInput, NopBytesConverter},
+    inputs::{BytesInput, BytesInputConverter},
     observers::OwnedMapObserver,
     schedulers::QueueScheduler,
     stages::StdMutationalStage,
@@ -24,10 +22,11 @@ use libafl_bolts::{
     tuples::{tuple_list, tuple_list_type},
 };
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::{Py, exceptions::PyTypeError, prelude::*};
+use pyo3::{exceptions::PyTypeError, prelude::*};
 
 use crate::fuzzer::{
     corpus::{DynCorpus, PyInMemoryCorpus, PyOnDiskCorpus},
+    engine::PyEngine,
     executor::PyExecutorInner,
     monitor::CallbackMonitor,
     mutator::DynMutator,
@@ -42,16 +41,10 @@ pub(crate) type MT = CallbackMonitor;
 pub(crate) type EM = SimpleEventManager<I, MT, S>;
 pub(crate) type O = OwnedMapObserver<u8>;
 pub(crate) type OT = tuple_list_type!(O);
-
-/// Size in bytes of the edge-coverage hitmap shared with the LibAFL observer.
-///
-/// 64 KiB matches AFL's default `MAP_SIZE` (1 << 16). Each byte tracks hit
-/// frequency for one edge (Python plugin `SimStateEdgeHitmap`).
-const EDGE_HITMAP_SIZE: usize = 65536;
 pub(crate) type Z = StdFuzzer<
     QueueScheduler,
     MaxMapFeedback<O, O>,
-    NopBytesConverter,
+    BytesInputConverter,
     NopInputFilter,
     CrashFeedback,
 >;
@@ -69,9 +62,7 @@ struct Fuzzer {
 #[pymethods]
 impl Fuzzer {
     #[new]
-    #[pyo3(signature = (base_state, corpus, solutions, apply_fn, timeout=None, seed=0, max_mutations=None, mutator=None))]
-    // PyO3 constructor: each arg is a distinct Python kwarg, so they cannot be
-    // bundled into a params struct without breaking the Python API.
+    #[pyo3(signature = (base_state, corpus, solutions, apply_fn, timeout=None, seed=0, max_mutations=None, mutator=None, engine=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(
         base_state: Bound<PyAny>,
@@ -82,6 +73,7 @@ impl Fuzzer {
         seed: u64,
         max_mutations: Option<u64>,
         mutator: Option<Bound<PyAny>>,
+        engine: Option<PyEngine>,
     ) -> PyResult<Self> {
         if !apply_fn.is_callable() {
             return Err(PyTypeError::new_err("Expected a callable harness function"));
@@ -100,13 +92,13 @@ impl Fuzzer {
             base_state.call_method1("register_plugin", ("edge_hitmap", edge_hitmap_plugin))?;
         }
 
-        let observer = OwnedMapObserver::new("", vec![0u8; EDGE_HITMAP_SIZE]);
+        let observer = OwnedMapObserver::new("", vec![0u8; 65536]);
         let mut feedback = MaxMapFeedback::with_name("edges", &observer);
         let mut objective = CrashFeedback::default();
 
         // Convert Python corpus wrappers into dynamic corpus variants
         let corpus: C = if let Ok(py_ondisk) = corpus.extract::<PyOnDiskCorpus>() {
-            DynCorpus::OnDisk(py_ondisk.inner)
+            DynCorpus::OnDisk(py_ondisk.inner.clone())
         } else if let Ok(py_inmem) = corpus.extract::<PyInMemoryCorpus>() {
             DynCorpus::try_from(&py_inmem)?
         } else {
@@ -116,7 +108,7 @@ impl Fuzzer {
         };
 
         let solutions: C = if let Ok(py_ondisk) = solutions.extract::<PyOnDiskCorpus>() {
-            DynCorpus::OnDisk(py_ondisk.inner)
+            DynCorpus::OnDisk(py_ondisk.inner.clone())
         } else if let Ok(py_inmem) = solutions.extract::<PyInMemoryCorpus>() {
             DynCorpus::try_from(&py_inmem)?
         } else {
@@ -132,12 +124,12 @@ impl Fuzzer {
             &mut feedback,
             &mut objective,
         )
-        .py_runtime_err()?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         let fuzzer: StdFuzzer<
             QueueScheduler,
             MaxMapFeedback<OwnedMapObserver<u8>, OwnedMapObserver<u8>>,
-            NopBytesConverter,
+            BytesInputConverter,
             NopInputFilter,
             CrashFeedback,
         > = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
@@ -156,12 +148,10 @@ impl Fuzzer {
             base_state,
             apply_fn,
             tuple_list!(observer),
-            // None -> no timeout; Some(n) -> an n-millisecond wall-clock budget
-            // enforced in PyExecutorInner::run_target. (Previously coerced to
-            // Some(0ms) and never read — angr-ph300.69.)
-            timeout.map(Duration::from_millis),
+            Some(Duration::from_millis(timeout.unwrap_or(0))),
+            engine,
         )
-        .py_runtime_err()?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         Ok(Fuzzer {
             fuzzer_state,
@@ -171,12 +161,12 @@ impl Fuzzer {
         })
     }
 
-    fn corpus(&self) -> PyResult<Py<PyAny>> {
-        Python::attach(|py| self.fuzzer_state.corpus().to_py(py))
+    fn corpus(&self) -> &C {
+        self.fuzzer_state.corpus()
     }
 
-    fn solutions(&self) -> PyResult<Py<PyAny>> {
-        Python::attach(|py| self.fuzzer_state.solutions().to_py(py))
+    fn solutions(&self) -> &C {
+        self.fuzzer_state.solutions()
     }
 
     #[getter]
@@ -194,7 +184,7 @@ impl Fuzzer {
             &mut SimpleEventManager::new(progress_callback.unwrap_or_default()),
         )
         .map(|corpus_id| corpus_id.0)
-        .py_runtime_err()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     #[pyo3(signature = (progress_callback = None, iterations = None))]
@@ -222,12 +212,12 @@ impl Fuzzer {
                 &mut SimpleEventManager::new(progress_callback.unwrap_or_default()),
             )
         }
-        .py_runtime_err()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 
 #[pymodule]
-pub(crate) fn fuzzer(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn fuzzer(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Fuzzer>()?;
     m.add_class::<corpus::PyInMemoryCorpus>()?;
     m.add_class::<corpus::PyOnDiskCorpus>()?;

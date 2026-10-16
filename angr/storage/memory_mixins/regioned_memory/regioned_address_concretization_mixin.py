@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-import claripy
-
-from angr import concretization_strategies
+from angr import claripy, concretization_strategies
 from angr.errors import SimMemoryAddressError, SimMergeError
 from angr.sim_options import APPROXIMATE_FIRST, HYBRID_SOLVER
 from angr.storage.memory_mixins.memory_mixin import MemoryMixin
@@ -36,8 +34,8 @@ class RegionedAddressConcretizationMixin(MemoryMixin):
         o.write_strategies = list(self.write_strategies)
         return o
 
-    def merge(self, others, merge_conditions, common_ancestor=None) -> bool:
-        r = super().merge(others, merge_conditions, common_ancestor=common_ancestor)
+    def merge(self, others, merge_conditions, common_ancestor=None, is_widening=False) -> bool:
+        r = super().merge(others, merge_conditions, common_ancestor=common_ancestor, is_widening=is_widening)
         self.read_strategies = self._merge_strategies(self.read_strategies, *[o.read_strategies for o in others])
         self.write_strategies = self._merge_strategies(self.write_strategies, *[o.write_strategies for o in others])
         return r

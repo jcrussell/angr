@@ -4,8 +4,9 @@ import logging
 from collections.abc import Generator
 from mmap import mmap
 
-import claripy
 import cle
+
+from angr import claripy
 
 from .paged_memory_mixin import PagedMemoryMixin
 
@@ -30,7 +31,7 @@ class NotMemoryview:
 
 
 class ClemoryBackerMixin(PagedMemoryMixin):
-    def __init__(self, cle_memory_backer: None | cle.Loader | cle.Clemory = None, **kwargs):
+    def __init__(self, cle_memory_backer: cle.Loader | cle.Clemory | None = None, **kwargs):
         super().__init__(**kwargs)
 
         if isinstance(cle_memory_backer, cle.Loader):
@@ -181,50 +182,6 @@ class ClemoryBackerMixin(PagedMemoryMixin):
             out |= 4
 
         return out
-
-
-class ConcreteBackerMixin(ClemoryBackerMixin):
-    def _initialize_page(self, pageno, permissions=None, *, force_default=False, **kwargs):
-        if self._clemory_backer is None or force_default:
-            return super()._initialize_page(pageno, permissions=permissions, **kwargs)
-
-        addr = pageno * self.page_size
-
-        try:
-            backer_iter = self._clemory_backer.backers(addr)
-            backer_start, _backer = next(backer_iter)
-        except StopIteration:
-            return super()._initialize_page(pageno, permissions=permissions, **kwargs)
-
-        if backer_start >= addr + self.page_size:
-            return super()._initialize_page(pageno, permissions=permissions, **kwargs)
-
-        if self.state.project.concrete_target:
-            l.debug("Fetching data from concrete target")
-            data = claripy.BVV(
-                bytearray(self.state.project.concrete_target.read_memory(pageno * self.page_size, self.page_size)),
-                self.page_size * 8,
-            )
-        else:
-            # the concrete backer only is here to support concrete loading, defer back to the CleMemoryBacker
-            return super()._initialize_page(pageno, permissions=permissions, **kwargs)
-
-        permissions = self._cle_permissions_lookup(addr)
-
-        # see if this page supports creating without copying
-        if type(data) is NotMemoryview:
-            try:
-                new_from_shared = self.PAGE_TYPE.new_from_shared
-            except AttributeError:
-                data = claripy.BVV(bytes(data[:]))
-            else:
-                return new_from_shared(data, **self._page_kwargs(pageno, permissions))
-
-        new_page = PagedMemoryMixin._initialize_default_page(self, pageno, permissions=permissions, **kwargs)
-        new_page.store(
-            0, data, size=self.page_size, page_addr=pageno * self.page_size, endness="Iend_BE", memory=self, **kwargs
-        )
-        return new_page
 
 
 class DictBackerMixin(PagedMemoryMixin):

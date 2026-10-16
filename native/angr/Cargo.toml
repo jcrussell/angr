@@ -9,25 +9,49 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[lints]
-workspace = true
+[lints.clippy]
+# Group entries need a lower priority than the individual lints below so the
+# specific settings win; cargo errors out when they tie.
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Panics on caller-supplied/untrusted input are a recurring audit-bug class
+# (angr-9ke6b .126/.191/.63/.75). New code and files without a grandfather
+# #![allow(...)] must handle the None/Err case explicitly instead of
+# unwrap()/expect(). See angr-9ke6b follow-up bead for burning down the
+# existing grandfathered sites.
+unwrap_used = "warn"
+expect_used = "warn"
+# `Result`/`Option` are already `#[must_use]`, but every silently-discarded-error
+# finding across all three audit rounds (angr-sqfj8 .87/.82/.38, angr-c7xno
+# .60/.84, plus round 1's dead-code cluster) opted OUT of that via
+# `let _ = <fallible expr>;` — so plain must_use never caught them. This lint
+# flags exactly that shape. A discard that really is expected control flow
+# stays legal by spelling itself `drop(expr)` with a `SILENT(cat-a)` rationale
+# comment; a lossy one uses `silent_default!` (see its doc in
+# native/angr/src/lib.rs). When the
+# discarded value is `Copy` (e.g. `compare_exchange`'s `Result<u64, u64>`),
+# `drop` is a no-op that clippy rejects in turn — those keep `let _ =` under an
+# `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): ...")]`.
+let_underscore_must_use = "deny"
 
 [lib]
 name = "rustylib"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# VEX engine with Z3 enabled by default; fuzzer is optional
+# VEX engine with Z3 enabled by default. `fuzzer` and `automaton` are
+# always built (their deps are unconditional, as upstream); the features stay
+# as empty names so existing `#[cfg(feature = ...)]` gates keep resolving.
 default = ["vex-engine", "vex-engine-z3", "automaton"]
 vex-engine = ["im", "lru"]
 vex-engine-z3 = ["vex-engine", "z3", "z3-sys", "crossbeam-deque"]
-fuzzer = ["icicle-fuzzing", "icicle-vm", "libafl", "libafl_bolts", "pcode"]
+fuzzer = []
 # Dev-only: widen the pure hostile-input parsers (format-string width/length,
 # Z3 numeral-string decoders) to a crate-`pub` surface so the cargo-fuzz targets
 # under `fuzz/` can reach them. NOT in `default`; adds no runtime code to a
 # stock build. See fuzz/README.md (angr-qwyti.9).
 fuzzing = []
-automaton = ["indexmap", "fixedbitset"]
+automaton = []
 # Default-ON since 807bfd74d (human GO 2026-07-15, bd angr-3trr7): native
 # cold-block lifting via direct libVEX FFI against the venv's
 # pyvex/lib/libpyvex.so (bd angr-3s5js / angr-z087y Stage-1). Not in the
@@ -42,32 +66,47 @@ libvex-ffi = ["dep:bindgen"]
 [dependencies]
 angr-macros = { path = "../angr-macros" }
 backtrace = "0.3.76"
-parking_lot = "0.12"
-postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
-# `multiple-pymethods` lets the ~228-method `RustExplorationManager` surface be
-# split across several `#[pymethods]` blocks in sibling files (angr-9ke6b.50)
-# instead of one 2.5k-line module. It pulls in `inventory`, which registers the
-# blocks via linker sections at startup — supported on every platform we build
-# for (Linux/macOS/Windows), and compatible with `abi3-py312`.
-pyo3 = { version = "0.29.3", features = [
-    "py-clone",
-    "abi3-py312",
-    "multiple-pymethods",
-] }
-rangemap = "1.7.1"
-rustc-hash = "2.1"
-send_wrapper = "0.6.0"
-smallvec = "1.15"
-# Automaton module dependencies (optional, needs network to resolve)
-indexmap = { version = "2.13", optional = true }
-fixedbitset = { version = "0.5", optional = true }
-serde = { version = "1.0.228", features = ["derive", "rc"] }
-serde_json = { version = "1.0", features = ["unbounded_depth"] }
-log = "0.4"
+clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
+clarirs-num = { path = "../clarirs-num" }
+clarirs-vsa = { path = "../clarirs-vsa" }
+clarirs-z3 = { path = "../clarirs-z3" }
+dashmap = "6.2.1"
+log = "0.4.32"
 # env_logger gives us `Filter` (RUST_LOG-style per-module log filters).
 # We only use the `filter` module — no formatter / atty / color / humantime.
 env_logger = { version = "0.8", default-features = false }
-target-lexicon = "0.12.16"
+thiserror = { workspace = true }
+icicle-fuzzing = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "638508b72f480f9be6fe2e267ef09de8f1541f9a" }
+icicle-vm = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "638508b72f480f9be6fe2e267ef09de8f1541f9a" }
+libafl = { version = "=0.16.1" }
+libafl_bolts = { version = "=0.16.1" }
+pcode = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "638508b72f480f9be6fe2e267ef09de8f1541f9a" }
+num-bigint = { version = "0.4", features = ["serde"] }
+petgraph = { version = "0.8.3", default-features = false, features = ["stable_graph"] }
+num-traits = "0.2"
+parking_lot = "0.12"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+# `multiple-pymethods` lets the `RustExplorationManager` surface be split
+# across several `#[pymethods]` blocks in sibling files. It pulls in
+# `inventory`, which registers the blocks via linker sections at startup —
+# supported on Linux/macOS/Windows and compatible with `abi3-py312`.
+pyo3 = { version = "0.29.0", features = [
+    "abi3-py312",
+    "py-clone",
+    "num-bigint",
+    "indexmap",
+    "multiple-pymethods",
+] }
+rangemap = "1.7.1"
+regex = "1.11"
+send_wrapper = "0.6.0"
+smallvec = "1.15"
+indexmap = { version = "2.14", features = ["serde"] }
+fixedbitset = "0.5"
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["unbounded_depth"] }
+rustc-hash = "2"
+target-lexicon = "0.13.5"
 
 # VEX Engine dependencies (optional, enabled by default)
 z3 = { version = "0.21", optional = true }
@@ -76,22 +115,17 @@ z3 = { version = "0.21", optional = true }
 z3-sys = { version = "0.13", optional = true }
 im = { version = "15.1", optional = true }
 lru = { version = "0.12", optional = true }
-# Unconditional: subsystem error enums (e.g. ConstraintSyncError in
-# symbolic/context.rs) derive thiserror::Error even in the no-default-features
-# mock build, so it cannot be gated behind vex-engine (angr-ph300.79).
-thiserror = "1.0"
 # Work-stealing deque for the parallel exploration scheduler (angr-1ilq.3).
 # Gated under vex-engine-z3 (the scheduler only exists alongside the Z3-backed
-# StateMigrationPayload transport). Already present in Cargo.lock transitively
-# (via rayon), so promoting it to a direct dep adds zero new crates.
+# StateMigrationPayload transport).
 crossbeam-deque = { version = "0.8", optional = true }
 
-# Fuzzer dependencies (optional)
-icicle-fuzzing = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed93254a20b7e5c16bd7b0c6b46db49e1c72e", optional = true }
-icicle-vm = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed93254a20b7e5c16bd7b0c6b46db49e1c72e", optional = true }
-libafl = { version = "=0.15.3", optional = true }
-libafl_bolts = { version = "=0.15.3", optional = true }
-pcode = { git = "https://github.com/icicle-emu/icicle-emu.git", rev = "4d7ed93254a20b7e5c16bd7b0c6b46db49e1c72e", optional = true }
+# Not used from Rust: this is how the extension configures the Z3 that clarirs-z3 links against.
+# Windows links against an import library — only a name-to-DLL mapping — and the z3-solver wheel
+# ships none, so take the one from Z3's own release of the same version. setup.py points the other
+# platforms at the wheel, and angr/_z3.py loads the wheel's libz3 at runtime everywhere.
+[target.'cfg(windows)'.dependencies]
+z3-sys = { version = "0.13", features = ["gh-release"] }
 
 # Optional build-dep: only pulled in by the `libvex-ffi` feature (default-ON
 # via setup.py; see the [features] comment above).

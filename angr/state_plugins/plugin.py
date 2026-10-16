@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -30,8 +30,6 @@ class SimStatePlugin:
     storage and persistence for SimProcedures.
     """
 
-    STRONGREF_STATE = False
-
     def __init__(self) -> None:
         self.state: SimState[Any, Any] = cast("SimState[Any, Any]", None)
 
@@ -40,9 +38,6 @@ class SimStatePlugin:
         Sets a new state (for example, if the state has been branched)
         """
         self.state = state._get_weakref()
-
-    def set_strongref_state(self, state) -> None:
-        pass
 
     def __getstate__(self) -> dict[str, Any]:
         d = dict(self.__dict__)
@@ -124,19 +119,6 @@ class SimStatePlugin:
         :rtype: bool
         """
         raise NotImplementedError(f"merge() not implement for {self.__class__.__name__}")
-
-    def widen(self, others: Iterable[SimStatePlugin]) -> bool:  # pylint:disable=unused-argument
-        """
-        The widening operation for plugins. Widening is a special kind of merging that produces a more general state
-        from several more specific states. It is used only during intensive static analysis. The same behavior
-        regarding copying and mutation from ``merge`` should be followed.
-
-        :param others: the other state plugins to widen with
-
-        :returns: True if the state plugin is actually widened.
-        :rtype: bool
-        """
-        raise NotImplementedError(f"widen() not implemented for {self.__class__.__name__}")
 
     @classmethod
     def register_default(cls, name: str, xtr: type[SimStatePlugin] | str | None = None) -> None:

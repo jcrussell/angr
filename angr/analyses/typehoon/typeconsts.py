@@ -8,23 +8,63 @@ from __future__ import annotations
 import functools
 import itertools
 
+from ._typehash import type_tag
+
+
+class _ReprMemo(set):
+    """
+    The ids of the type constants on the current repr path, plus the number of expansions this top-level repr may
+    still make. The path set alone only bounds the depth: a DAG with shared subtrees (a known struct type reaching
+    hundreds of other named structs) is re-expanded once per path, which is exponential.
+    """
+
+    __slots__ = ("budget",)
+
+    def __init__(self):
+        super().__init__()
+        self.budget = 256
+
 
 def memoize(f):
     @functools.wraps(f)
     def wrapped_repr(self, *args, **kwargs):
-        memo = set() if not kwargs or "memo" not in kwargs else kwargs.pop("memo")
-        if self in memo:
+        memo = kwargs.pop("memo", None)
+        if memo is None:
+            memo = _ReprMemo()
+        # cycle detection by identity: equality of type constants hashes their whole structure. Recursive types
+        # rebuilt during solving can nest hundreds of distinct objects deep; the label does not need all of them.
+        if id(self) in memo or len(memo) > 48 or memo.budget <= 0:
             return "..."
-        memo.add(self)
+        memo.budget -= 1
+        memo.add(id(self))
         r = f(self, *args, memo=memo, **kwargs)
-        memo.remove(self)
+        memo.discard(id(self))
         return r
 
     return wrapped_repr
 
 
+class _HashMemo(set):
+    """
+    The set of object ids on the current hashing path, plus the hashes already computed for structs during this
+    top-level hash so shared subtrees are hashed once instead of once per path (which is exponential).
+    """
+
+    __slots__ = ("results",)
+
+    def __init__(self):
+        super().__init__()
+        self.results: dict[int, int] = {}
+
+
 class TypeConstant:
     SIZE = None
+
+    TYPE_HASH: int = 0
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.TYPE_HASH = type_tag(cls)
 
     def __init__(self, name: str | None = None):
         self.name = name
@@ -33,13 +73,15 @@ class TypeConstant:
         return repr(self)
 
     def _hash(self, visited: set[int]):  # pylint:disable=unused-argument
-        return hash(type(self))
+        return self.TYPE_HASH
 
     def __eq__(self, other):
         return type(self) is type(other)
 
     def __hash__(self):
-        return self._hash(set())
+        # the hash of a plain type constant is fully determined by its class, so there is nothing to
+        # recompute here -- see TYPE_HASH above
+        return self.TYPE_HASH
 
     @property
     def size(self) -> int:
@@ -52,10 +94,13 @@ class TypeConstant:
 
     def replace(
         self,
-        mapping: dict[TypeConstant, TypeConstant],
+        mapping: dict[int, TypeConstant],
         memo: set[TypeConstant] | None = None,  # pylint:disable=unused-argument
     ) -> TypeConstant:
-        return mapping.get(self, self)
+        return mapping.get(id(self), self)
+
+
+TypeConstant.TYPE_HASH = type_tag(TypeConstant)
 
 
 class TopType(TypeConstant):
@@ -209,6 +254,20 @@ class Float64(Float):
         return "float64"
 
 
+class Float80(Float):
+    SIZE = 10
+
+    def __repr__(self, memo=None):
+        return "float80"
+
+
+class Float128(Float):
+    SIZE = 16
+
+    def __repr__(self, memo=None):
+        return "float128"
+
+
 class Pointer(TypeConstant):
     def __init__(self, basetype: TypeConstant | None, name: str | None = None):
         super().__init__(name=name)
@@ -219,24 +278,24 @@ class Pointer(TypeConstant):
 
     def _hash(self, visited: set[int]):
         if self.basetype is None:
-            return hash(type(self))
-        return hash((type(self), self.basetype._hash(visited)))
+            return self.TYPE_HASH
+        return hash((self.TYPE_HASH, self.basetype._hash(visited)))
 
     def new(self, basetype, name: str | None = None):
         return self.__class__(basetype, name=name)
 
     def __hash__(self):
-        return self._hash(set())
+        return self._hash(_HashMemo())
 
-    def replace(self, mapping: dict[TypeConstant, TypeConstant], memo: set | None = None) -> TypeConstant:
-        if self in mapping:
-            return mapping[self]
+    def replace(self, mapping: dict[int, TypeConstant], memo: set | None = None) -> TypeConstant:
+        if id(self) in mapping:
+            return mapping[id(self)]
         if memo is None:
             memo = set()
         else:
-            if self in memo:
+            if id(self) in memo:
                 return self
-        memo.add(self)
+        memo.add(id(self))
         new_basetype = self.basetype.replace(mapping, memo=memo) if self.basetype else None
         if new_basetype is self.basetype:
             return self
@@ -289,9 +348,10 @@ class Array(TypeConstant):
 
     @memoize
     def __repr__(self, memo=None):
+        elem = self.element.__repr__(memo=memo) if isinstance(self.element, TypeConstant) else repr(self.element)
         if self.count is None:
-            return f"{self.element!r}[?]"
-        return f"{self.element!r}[{self.count}]"
+            return f"{elem}[?]"
+        return f"{elem}[{self.count}]"
 
     def __eq__(self, other):
         return type(other) is type(self) and self.element == other.element and self.count == other.count
@@ -300,16 +360,17 @@ class Array(TypeConstant):
         if id(self) in visited:
             return 0
         visited.add(id(self))
-        return hash((type(self), self.element, self.count))
+        elem_hash = self.element._hash(visited) if self.element is not None else None
+        return hash((self.TYPE_HASH, elem_hash, self.count))
 
     def __hash__(self):
-        return self._hash(set())
+        return self._hash(_HashMemo())
 
-    def replace(self, mapping: dict[TypeConstant, TypeConstant], memo: set | None = None) -> TypeConstant:
-        if self in mapping:
-            return mapping[self]
+    def replace(self, mapping: dict[int, TypeConstant], memo: set | None = None) -> TypeConstant:
+        if id(self) in mapping:
+            return mapping[id(self)]
         if memo is None:
-            memo = {self}
+            memo = {id(self)}
         new_element = self.element.replace(mapping, memo=memo) if self.element else None
         if new_element is self.element:
             return self
@@ -320,18 +381,49 @@ _STRUCT_ID = itertools.count()
 
 
 class Struct(TypeConstant):
-    def __init__(self, fields=None, name=None, field_names=None, is_cppclass: bool = False, idx: int = -1):
+    def __init__(
+        self,
+        fields=None,
+        name=None,
+        field_names=None,
+        is_cppclass: bool = False,
+        idx: int = -1,
+        size: int | None = None,
+    ):
         super().__init__(name=name)
-        self.fields = {} if fields is None else fields  # offset to type
+        self._cached_hash: int | None = None
+        self._fields: dict[int, TypeConstant] = {} if fields is None else fields  # offset to type
         self.field_names = field_names
         self.is_cppclass = is_cppclass
         self.idx = idx if idx != -1 else next(_STRUCT_ID)
+        # a pinned size (bytes) for structs whose fields are not spelled out (opaque known types)
+        self._size = size
+
+    @property
+    def fields(self) -> dict[int, TypeConstant]:
+        return self._fields
+
+    @fields.setter
+    def fields(self, v: dict[int, TypeConstant]) -> None:
+        # the hash covers the whole reachable structure; a struct whose fields are replaced must be re-hashed.
+        # mutating the dict in place bypasses this, so callers replace the dict instead (see _convert_arrays)
+        self._fields = v
+        self._cached_hash = None
 
     def _hash(self, visited: set[int]):
         if id(self) in visited:
-            return 0
+            results = visited.results if isinstance(visited, _HashMemo) else None
+            return results.get(id(self), 0) if results is not None else 0
         visited.add(id(self))
-        return hash((type(self), self.idx, self._hash_fields(visited)))
+        if len(visited) > 128:
+            # a chain of distinct structs this deep is pathological (recursive types rebuilt during solving);
+            # the identity part of the hash is enough to stay consistent with __eq__
+            return hash((self.TYPE_HASH, self.idx))
+        h = hash((self.TYPE_HASH, self.idx, self._hash_fields(visited)))
+        results = visited.results if isinstance(visited, _HashMemo) else None
+        if results is not None:
+            results[id(self)] = h
+        return h
 
     def _hash_fields(self, visited: set[int]):
         keys = sorted(self.fields.keys())
@@ -340,6 +432,8 @@ class Struct(TypeConstant):
 
     @property
     def size(self) -> int:
+        if self._size is not None:
+            return self._size
         if not self.fields:
             return 0
         max_field_off = max(self.fields.keys())
@@ -353,6 +447,10 @@ class Struct(TypeConstant):
         prefix += f"#{self.idx}"
         if self.name:
             prefix = f"{prefix} {self.name}"
+            if memo is not None and len(memo) > 1:
+                # a named struct nested in another type constant is identified by its name; its fields belong to
+                # its own definition
+                return prefix
         return (
             prefix
             + "{"
@@ -364,7 +462,11 @@ class Struct(TypeConstant):
         return type(other) is type(self) and hash(self) == hash(other) and self.idx == other.idx
 
     def __hash__(self):
-        return self._hash(set())
+        # cached per object: the walk over the reachable structure is O(graph) and every comparison needs it. only
+        # the top-level value is cached; nested values (_hash with a path) stay path-dependent for recursive types
+        if self._cached_hash is None:
+            self._cached_hash = self._hash(_HashMemo())
+        return self._cached_hash
 
 
 class EnumVariant:
@@ -386,7 +488,9 @@ class EnumVariant:
         )
 
     def __hash__(self):
-        return hash((type(self), self.name, tuple(self.fields), self.discriminant, self.discriminant_size, self.size))
+        return hash(
+            (type_tag(type(self)), self.name, tuple(self.fields), self.discriminant, self.discriminant_size, self.size)
+        )
 
 
 class RustEnum(TypeConstant):
@@ -398,7 +502,7 @@ class RustEnum(TypeConstant):
         if id(self) in visited:
             return 0
         visited.add(id(self))
-        return hash((type(self), self._hash_fields(visited)))
+        return hash((self.TYPE_HASH, self._hash_fields(visited)))
 
     def _hash_fields(self, visited: set[int]):  # pylint:disable=unused-argument
         tpl = tuple(hash(variant) for variant in self.variants)
@@ -425,17 +529,17 @@ class RustEnum(TypeConstant):
         return type(other) is type(self) and hash(self) == hash(other)
 
     def __hash__(self):
-        return self._hash(set())
+        return self._hash(_HashMemo())
 
-    def replace(self, mapping: dict[TypeConstant, TypeConstant], memo: set | None = None) -> TypeConstant:
-        if self in mapping:
-            return mapping[self]
+    def replace(self, mapping: dict[int, TypeConstant], memo: set | None = None) -> TypeConstant:
+        if id(self) in mapping:
+            return mapping[id(self)]
         if memo is None:
             memo = set()
         else:
-            if self in memo:
+            if id(self) in memo:
                 return self
-        memo.add(self)
+        memo.add(id(self))
         return self
 
 
@@ -462,6 +566,7 @@ class Enum(TypeConstant):
         self.members: dict[str, int] = members if members is not None else {}
         self.base_type = base_type
         self.idx = idx if idx != -1 else next(_ENUM_ID)
+        self._cached_hash = hash((self.TYPE_HASH, self.idx, tuple(sorted(self.members.items()))))
 
     @property
     def size(self) -> int:
@@ -483,18 +588,18 @@ class Enum(TypeConstant):
         if id(self) in visited:
             return 0
         visited.add(id(self))
-        return hash((type(self), self.idx, tuple(sorted(self.members.items()))))
+        return self._cached_hash
 
     def __hash__(self):
-        return self._hash(set())
+        return self._cached_hash
 
     def replace(
         self,
-        mapping: dict[TypeConstant, TypeConstant],
+        mapping: dict[int, TypeConstant],
         memo: set | None = None,
     ) -> TypeConstant:
-        if self in mapping:
-            return mapping[self]
+        if id(self) in mapping:
+            return mapping[id(self)]
         # Enums don't contain nested types that need recursive replacement
         return self
 
@@ -523,20 +628,20 @@ class Function(TypeConstant):
 
         params_hash = tuple(param._hash(visited) for param in self.params)
         outputs_hash = tuple(out._hash(visited) for out in self.outputs)
-        return hash((Function, params_hash, outputs_hash))
+        return hash((self.TYPE_HASH, params_hash, outputs_hash))
 
     def __hash__(self):
-        return self._hash(set())
+        return self._hash(_HashMemo())
 
-    def replace(self, mapping: dict[TypeConstant, TypeConstant], memo: set | None = None) -> TypeConstant:
-        if self in mapping:
-            return mapping[self]
+    def replace(self, mapping: dict[int, TypeConstant], memo: set | None = None) -> TypeConstant:
+        if id(self) in mapping:
+            return mapping[id(self)]
         if memo is None:
             memo = set()
         else:
-            if self in memo:
+            if id(self) in memo:
                 return self
-        memo.add(self)
+        memo.add(id(self))
         new_params = []
         new_outputs = []
         changed = False
@@ -567,7 +672,7 @@ class TypeVariableReference(TypeConstant):
         return type(other) is type(self) and self.typevar == other.typevar
 
     def __hash__(self):
-        return hash((type(self), self.typevar))
+        return hash((self.TYPE_HASH, self.typevar))
 
 
 #
@@ -604,4 +709,8 @@ def float_type(bits: int) -> Float | None:
         return Float32()
     if bits == 64:
         return Float64()
+    if bits == 80:
+        return Float80()
+    if bits == 128:
+        return Float128()
     return None

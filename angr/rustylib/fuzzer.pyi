@@ -1,93 +1,52 @@
 from collections.abc import Callable
 from datetime import timedelta
+from typing import Self
 
+from angr.engines.successors import SuccessorsEngine
 from angr.sim_state import SimState
 
 class InMemoryCorpus:
-    def __new__(cls) -> InMemoryCorpus:
-        pass
-
+    def __new__(cls) -> Self: ...
     @staticmethod
-    def from_list(inputs: list[bytes]) -> InMemoryCorpus:
-        pass
-
-    def to_bytes_list(self) -> list[bytes]:
-        pass
-
-    def __getitem__(self, idx: int) -> bytes:
-        pass
-
-    def __len__(self) -> int:
-        pass
+    def from_list(inputs: list[bytes]) -> InMemoryCorpus: ...
+    def to_bytes_list(self) -> list[bytes]: ...
+    def __getitem__(self, idx: int) -> bytes: ...
+    def __len__(self) -> int: ...
 
 class OnDiskCorpus:
-    def __new__(cls, dir_path: str) -> OnDiskCorpus:
-        pass
-
-    def add(self, input: bytes) -> int:
-        pass
-
-    def to_bytes_list(self) -> list[bytes]:
-        pass
-
-    def __getitem__(self, idx: int) -> bytes:
-        pass
-
-    def __len__(self) -> int:
-        pass
+    def __new__(cls, dir_path: str) -> Self: ...
+    def add(self, input: bytes) -> int: ...
+    def to_bytes_list(self) -> list[bytes]: ...
+    def __getitem__(self, idx: int) -> bytes: ...
+    def __len__(self) -> int: ...
 
 class ClientStats:
     @property
-    def enabled(self) -> bool:
-        pass
-
+    def enabled(self) -> bool: ...
     @property
-    def corpus_size(self) -> int:
-        pass
-
+    def corpus_size(self) -> int: ...
     @property
-    def last_corpus_time(self) -> timedelta:
-        pass
-
+    def last_corpus_time(self) -> timedelta: ...
     @property
-    def executions(self) -> int:
-        pass
-
+    def executions(self) -> int: ...
     @property
-    def prev_state_executions(self) -> int:
-        pass
-
+    def prev_state_executions(self) -> int: ...
     @property
-    def objective_size(self) -> int:
-        pass
-
+    def objective_size(self) -> int: ...
     @property
-    def last_objective_time(self) -> timedelta:
-        pass
-
+    def last_objective_time(self) -> timedelta: ...
     @property
-    def last_window_time(self) -> timedelta:
-        pass
-
+    def last_window_time(self) -> timedelta: ...
     @property
-    def start_time(self) -> timedelta:
-        pass
-
+    def start_time(self) -> timedelta: ...
     @property
-    def execs_per_sec(self) -> float:
-        pass
-
+    def execs_per_sec(self) -> float: ...
     @property
-    def execs_per_sec_pretty(self) -> str:
-        pass
-
+    def execs_per_sec_pretty(self) -> str: ...
     @property
-    def edges_hit(self) -> int | None:
-        pass
-
+    def edges_hit(self) -> int | None: ...
     @property
-    def edges_total(self) -> int | None:
-        pass
+    def edges_total(self) -> int | None: ...
 
 class HavocMutator:
     def __init__(self, max_stack_pow: int | None = None):
@@ -118,9 +77,14 @@ class Fuzzer:
         seed: int | None = None,
         max_mutations: int | None = None,
         mutator: HavocMutator | DeterministicMutator | None = None,
+        engine: SuccessorsEngine | None = None,
     ):
         """
         Initialize the fuzzer with the given parameters.
+
+        :param engine: The engine used to execute each input. It is reused across executions and
+            maintains the state's ``edge_hitmap`` plugin, which the fuzzer reads as coverage
+            feedback. Defaults to :class:`angr.engines.icicle.UberIcicleEngine`.
         """
 
     def corpus(self) -> InMemoryCorpus | OnDiskCorpus: ...
@@ -128,6 +92,8 @@ class Fuzzer:
     def run_once(self, progress_callback: Callable[[ClientStats, str, int], None] | None = None) -> int:
         """
         Run the fuzzer for one iteration.
+
+        :raises RuntimeError: If ``progress_callback`` raises.
         """
 
     def run(
@@ -135,4 +101,6 @@ class Fuzzer:
     ) -> None:
         """
         Run the fuzzer in a loop or for a set number of iterations.
+
+        :raises RuntimeError: If ``progress_callback`` raises.
         """

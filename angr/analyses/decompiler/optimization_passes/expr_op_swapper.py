@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -90,7 +91,7 @@ class ExpressionReplacer(AILBlockRewriter):
 
 class OpDescriptor:
     """
-    Describes a specific operator.
+    Describes a specific operator. Serializes to JSON.
     """
 
     def __init__(self, block_addr: int, stmt_idx: int, ins_addr: int, op: str):
@@ -111,6 +112,29 @@ class OpDescriptor:
             and self.op == other.op
         )
 
+    #
+    # JSON serialization
+    #
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return {
+            "block_addr": self.block_addr,
+            "stmt_idx": self.stmt_idx,
+            "ins_addr": self.ins_addr,
+            "op": self.op,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_jsonable())
+
+    @classmethod
+    def from_jsonable(cls, d: dict[str, Any]) -> OpDescriptor:
+        return cls(d["block_addr"], d["stmt_idx"], d["ins_addr"], d["op"])
+
+    @classmethod
+    def from_json(cls, s: str) -> OpDescriptor:
+        return cls.from_jsonable(json.loads(s))
+
 
 class ExprOpSwapper(SequenceOptimizationPass):
     """
@@ -121,7 +145,7 @@ class ExprOpSwapper(SequenceOptimizationPass):
     PLATFORMS = ["windows", "linux", "cgc"]
     STAGE = OptimizationPassStage.AFTER_STRUCTURING
     NAME = "Swap operands of expressions as requested"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, binop_operators: dict[OpDescriptor, str] | None = None, **kwargs):
         super().__init__(*args, **kwargs)

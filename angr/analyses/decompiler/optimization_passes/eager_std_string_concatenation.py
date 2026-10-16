@@ -9,6 +9,7 @@ from archinfo import Endness
 from angr.ailment import Block
 from angr.ailment.expression import BinaryOp, Const, Load, VirtualVariable
 from angr.ailment.statement import WeakAssignment
+from angr.analyses.decompiler.variable_map import variable_map_of
 from angr.sim_type import SimType, SimTypeChar, SimTypePointer
 
 from .optimization_pass import OptimizationPass, OptimizationPassStage
@@ -25,7 +26,7 @@ class EagerStdStringConcatenationPass(OptimizationPass):
     PLATFORMS = None
     STAGE = OptimizationPassStage.BEFORE_VARIABLE_RECOVERY
     NAME = "Condense multiple constant std::string creation calls into one when possible"
-    DESCRIPTION = __doc__.strip()  # type: ignore
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -146,12 +147,14 @@ class EagerStdStringConcatenationPass(OptimizationPass):
             assert old_block is not None
             block = old_block.copy()
             old_stmt = block.statements[last_stmt_idx]
+            str_const = Const(self.manager.next_atom(), str_id, self.project.arch.bits)
+            variable_map_of(self.manager).set_custom_string(str_const)
             block.statements[last_stmt_idx] = WeakAssignment(
                 old_stmt.idx,
                 old_stmt.dst,
                 Load(
                     self.manager.next_atom(),
-                    Const(self.manager.next_atom(), None, str_id, self.project.arch.bits, custom_string=True),
+                    str_const,
                     len(final_str),
                     Endness.BE,
                 ),

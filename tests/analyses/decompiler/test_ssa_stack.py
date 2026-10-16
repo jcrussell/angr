@@ -7,7 +7,7 @@ import os.path
 import unittest
 
 import angr
-from tests.common import WORKER, bin_location, print_decompilation_result
+from tests.common import WORKER, bin_location, load_project_with_scoped_cfg, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
 
@@ -21,8 +21,7 @@ class TestSSAStack(unittest.TestCase):
             "windows",
             "22322afab6d7b2b21e715ff2568b02454ac39fb6a5fe305537bb529e106e407b",
         )
-        proj = angr.Project(bin_path)
-        cfg = proj.analyses.CFG(data_references=True, normalize=True, show_progressbar=not WORKER)
+        proj, cfg = load_project_with_scoped_cfg(bin_path, 0x4720B2, run_ccc=False)
 
         func = cfg.functions[0x4720B2]
         dec = proj.analyses.Decompiler(func, fail_fast=True)
@@ -50,6 +49,22 @@ class TestSSAStack(unittest.TestCase):
         # basic sanity check
         lines = dec.codegen.text.splitlines()
         assert len(lines) >= 100
+
+    def test_removing_arm_stack_pointer_alignments(self):
+        bin_path = os.path.join(
+            test_location,
+            "armel",
+            "chall.bin",
+        )
+        proj = angr.Project(bin_path, main_opts={"backend": "blob", "arch": "ARMEL", "base_addr": 0x0})
+        cfg = proj.analyses.CFG(normalize=True, show_progressbar=not WORKER)
+
+        func = cfg.functions[0x35D]
+        dec = proj.analyses.Decompiler(func, fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+
+        assert "0xfffffffc" not in dec.codegen.text  # the stack pointer alignment mask should be simplified away
 
 
 if __name__ == "__main__":

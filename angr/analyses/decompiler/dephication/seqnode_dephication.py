@@ -19,6 +19,7 @@ from .rewriting_engine import SimEngineDephiRewriting
 
 if TYPE_CHECKING:
     from angr import KnowledgeBase
+    from angr.analyses.decompiler.variable_map import VariableMap
 
 
 l = logging.getLogger(__name__)
@@ -62,8 +63,9 @@ class SeqNodeRewriter(SequenceWalker):
         seq_node: SequenceNode,
         vvar_to_vvar: dict[int, int],
         project: angr.Project,
-        variable_kb: KnowledgeBase | None = None,
         func_addr: int | None = None,
+        kb: KnowledgeBase | None = None,
+        variable_map: VariableMap | None = None,
     ):
         super().__init__(
             handlers={
@@ -77,7 +79,10 @@ class SeqNodeRewriter(SequenceWalker):
         )
 
         self.vvar_to_vvar = vvar_to_vvar
-        self.engine = SimEngineDephiRewriting(project, self.vvar_to_vvar, func_addr=func_addr, variable_kb=variable_kb)
+        self.variable_map = variable_map
+        self.engine = SimEngineDephiRewriting(
+            project, self.vvar_to_vvar, func_addr=func_addr, kb=kb, variable_map=self.variable_map
+        )
 
         self.output = self.walk(seq_node)
         if self.output is None:
@@ -129,9 +134,14 @@ class SeqNodeDephication(DephicationBase):
         seq_node,
         vvar_to_vvar_mapping: dict[int, int] | None = None,
         rewrite: bool = False,
-        variable_kb: KnowledgeBase | None = None,
+        variable_map: VariableMap | None = None,
     ):
-        super().__init__(func, vvar_to_vvar_mapping=vvar_to_vvar_mapping, rewrite=rewrite, variable_kb=variable_kb)
+        super().__init__(
+            func,
+            vvar_to_vvar_mapping=vvar_to_vvar_mapping,
+            rewrite=rewrite,
+            variable_map=variable_map,
+        )
 
         self._seq_node = seq_node
 
@@ -148,7 +158,8 @@ class SeqNodeDephication(DephicationBase):
             self.vvar_to_vvar_mapping,
             self.project,
             func_addr=self._function.addr,
-            variable_kb=self.variable_kb,
+            kb=self.kb,
+            variable_map=self.variable_map,
         )
         return rewriter.output
 

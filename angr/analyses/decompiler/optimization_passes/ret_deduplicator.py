@@ -4,9 +4,15 @@ from __future__ import annotations
 import logging
 
 from angr.ailment import Block
+from angr.ailment.expression import Const
 from angr.ailment.statement import ConditionalJump, Return
 from angr.analyses.decompiler.structuring import DreamStructurer, SAILRStructurer
-from angr.analyses.decompiler.utils import remove_labels, to_ail_supergraph, update_labels
+from angr.analyses.decompiler.utils import (
+    remove_labels,
+    set_conditional_jump_targets,
+    to_ail_supergraph,
+    update_labels,
+)
 from angr.utils.graph import subgraph_between_nodes
 
 from .optimization_pass import OptimizationPass, OptimizationPassStage
@@ -29,7 +35,7 @@ class ReturnDeduplicator(OptimizationPass):
     PLATFORMS = ["windows", "linux", "cgc"]
     STAGE = OptimizationPassStage.DURING_REGION_IDENTIFICATION
     NAME = "Deduplicates return statements that may have been duplicated"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
     STRUCTURING = [SAILRStructurer.NAME, DreamStructurer.NAME]
 
     def __init__(self, *args, **kwargs):
@@ -80,8 +86,8 @@ class ReturnDeduplicator(OptimizationPass):
 
         # replace the head with a new if-stmt corrected block
         if_stmt = region_head.statements[-1]
-        if_stmt.true_target.value = super_true.addr
-        if_stmt.false_target.value = super_false.addr
+        assert isinstance(if_stmt, ConditionalJump)
+        set_conditional_jump_targets(if_stmt, super_true.addr, super_false.addr)
         new_head = region_head.copy()
         new_head.statements[-1] = if_stmt
         # assures that preds still point to this block
@@ -136,9 +142,9 @@ class ReturnDeduplicator(OptimizationPass):
             # find the true and false child of the if-stmt
             true_child, false_child = None, None
             for child in children:
-                if child.addr == if_stmt.true_target.value:
+                if isinstance(if_stmt.true_target, Const) and child.addr == if_stmt.true_target.value:
                     true_child = child
-                elif child.addr == if_stmt.false_target.value:
+                elif isinstance(if_stmt.false_target, Const) and child.addr == if_stmt.false_target.value:
                     false_child = child
             # children must exist
             if (
@@ -189,7 +195,7 @@ class ReturnDeduplicator(OptimizationPass):
                     continue
 
                 last_stmt = block.statements[-1]
-                ids[(last_stmt.tags["ins_addr"], hash(last_stmt))] = block
+                ids[(last_stmt.tags.get("ins_addr"), hash(last_stmt))] = block
 
         super_block_map = {}
         for block in self._graph.nodes():
@@ -197,7 +203,7 @@ class ReturnDeduplicator(OptimizationPass):
                 continue
 
             last_stmt = block.statements[-1]
-            stmt_id = (last_stmt.tags["ins_addr"], hash(last_stmt))
+            stmt_id = (last_stmt.tags.get("ins_addr"), hash(last_stmt))
             if stmt_id in ids:
                 super_block = ids[stmt_id]
                 super_block_map[super_block] = block

@@ -47,13 +47,13 @@ def _ref(operand) -> UnaryOp:
 
 
 def _const(value: int, bits: int = 64) -> Const:
-    return Const(0, None, value, bits)
+    return Const(0, value, bits)
 
 
 def test_unwrap_stack_vvar_reference_returns_underlying_vvar():
     vvar = _stack_vvar(offset=8)
     expr = _ref(vvar)
-    assert unwrap_stack_vvar_reference(expr) is vvar
+    assert unwrap_stack_vvar_reference(expr) == vvar
 
 
 def test_unwrap_stack_vvar_reference_rejects_register_vvar():
@@ -68,7 +68,7 @@ def test_unwrap_stack_vvar_reference_rejects_non_reference_unary_op():
 
 def test_unwrap_combo_reg_vvar_reference_returns_underlying_vvar_only_for_combo():
     combo = _combo_vvar()
-    assert unwrap_combo_reg_vvar_reference(_ref(combo)) is combo
+    assert unwrap_combo_reg_vvar_reference(_ref(combo)) == combo
     assert unwrap_combo_reg_vvar_reference(_ref(_reg_vvar())) is None
 
 
@@ -117,7 +117,7 @@ def test_find_call_finds_call_inside_block_statement_assignment():
     )
 
     found = find_call(block)
-    assert found is target_call
+    assert found == target_call
     assert has_call(block) is True
 
 
@@ -141,7 +141,7 @@ def test_get_terminal_call_descends_into_assignment_with_call_rhs():
         0,
         statements=[Assignment(0, _stack_vvar(0), inner_call)],
     )
-    assert get_terminal_call(block) is inner_call
+    assert get_terminal_call(block) == inner_call
 
 
 def test_get_terminal_call_returns_none_for_empty_block():
@@ -195,27 +195,27 @@ def _project_with_synthetic_function(addr: int, name: str):
 
 def test_extract_callee_returns_function_for_call_with_const_target():
     project = _project_with_synthetic_function(0x0, "callee")
-    call = Call(0, Const(0, None, 0x0, 64), args=[])
+    call = Call(0, Const(0, 0x0, 64), args=[])
     result = extract_callee(call, project.kb)
     assert result is project.kb.functions[0x0]
 
 
 def test_extract_callee_walks_block_to_terminal_call():
     project = _project_with_synthetic_function(0x0, "callee")
-    call = Call(0, Const(0, None, 0x0, 64), args=[])
+    call = Call(0, Const(0, 0x0, 64), args=[])
     block = Block(0x100, 0, statements=[call])  # pyright: ignore[reportArgumentType]
     assert extract_callee(block, project.kb) is project.kb.functions[0x0]
 
 
 def test_extract_callee_returns_none_for_unknown_target():
     project = _project_with_synthetic_function(0x0, "callee")
-    unknown = Call(0, Const(0, None, 0xDEADBEEF, 64), args=[])
+    unknown = Call(0, Const(0, 0xDEADBEEF, 64), args=[])
     assert extract_callee(unknown, project.kb) is None
 
 
 def test_extract_callee_returns_none_for_non_block_non_call():
     project = _project_with_synthetic_function(0x0, "callee")
-    assert extract_callee(Const(0, None, 0, 64), project.kb) is None
+    assert extract_callee(Const(0, 0, 64), project.kb) is None
 
 
 def test_extract_str_short_circuits_for_zero_length():
@@ -262,6 +262,23 @@ def test_demangle_falls_back_to_original_string_when_unrecognized():
     assert demangle(raw) == raw
 
 
+def test_demangle_survives_malformed_rust_v0_symbol():
+    # Regression for angr#6598: a garbage name that merely *looks* like a Rust v0 symbol
+    # ("_R" prefix). pydemumble rejects it (returns an empty string) and demangle() must
+    # fall back to the original string.
+    raw = "_RBOJyX"
+    assert demangle(raw) == raw
+
+
+def test_demangle_survives_assorted_malformed_v0_symbols():
+    # Various truncated/garbage "_R..." names that crashed the previously-used third-party
+    # demangler. Every one must fall through to a non-empty string without raising.
+    for raw in ("_R", "_RNvC", "_RNvNtCs", "_RINvNtCs", "_RNvMC0", "_RNCNvC0"):
+        result = demangle(raw)
+        assert isinstance(result, str)
+        assert result
+
+
 def test_normalize_strips_generic_type_arguments_when_monopolizing():
     assert normalize("alloc::vec::Vec<u8>::push") == "alloc::vec::Vec::push"
 
@@ -300,18 +317,45 @@ def test_demangle_returns_input_for_legacy_symbol_with_no_hash_suffix():
     # the demangler still parses it, but our hash-stripping branch must not fire.
     mangled = "_ZN4core3fmt9Formatter9write_strE"
     out = demangle(mangled)
-    # Whatever rust_demangler returns, our wrapper must not silently truncate the tail.
+    # The wrapper must not silently truncate the tail.
     assert out.endswith("write_str")
 
 
 def test_demangle_passes_through_non_rust_input():
-    # Inputs that aren't recognized as Rust mangled names fall through unchanged.
+    # Inputs that aren't Rust mangled names must fall through unchanged. In particular,
+    # _Z3fooi (itanium C++) and MSVC names would demangle under pydemumble, but the
+    # wrapper is Rust-only and must not touch them.
     for raw in ("plain_c_symbol", "main", "?something@msvc@@", "_Z3fooi"):
-        # _Z3fooi is itanium C++ mangling; rust_demangler may or may not raise,
-        # but the wrapper must always return a non-None string for non-Rust input.
-        result = demangle(raw)
-        assert isinstance(result, str)
-        assert result  # non-empty
+        assert demangle(raw) == raw
+
+
+def test_demangle_decodes_legacy_dollar_escapes():
+    mangled = "_ZN42_$LT$$RF$T$u20$as$u20$core..fmt..Debug$GT$3fmt17h517074eb1cb2b995E"
+    assert demangle(mangled) == "<&T as core::fmt::Debug>::fmt"
+
+
+def test_demangle_decodes_legacy_closure_escapes():
+    mangled = "_ZN4core3ptr42drop_in_place$LT$alloc..string..String$GT$17h5d180b0b0e91564fE"
+    assert demangle(mangled) == "core::ptr::drop_in_place<alloc::string::String>"
+
+
+def test_demangle_drops_llvm_suffix():
+    # Compiler-generated ".llvm.<id>" suffixes are dropped, matching rustc-demangle.
+    mangled = (
+        "_ZN3std2rt19lang_start_internal28_$u7b$$u7b$closure$u7d$$u7d$17hf421b6f6b8a4a2f4E.llvm.9325873435131735662"
+    )
+    assert demangle(mangled) == "std::rt::lang_start_internal::{{closure}}"
+
+
+def test_demangle_keeps_numeric_instantiation_suffix_attached():
+    # A trailing ".<n>" (e.g. from symbol versioning/instantiation) stays attached to the
+    # demangled name, not rendered in demumble's " (.n)" style.
+    mangled = "_RNvNtNtCsjrHSEGnQ3l9_3std2io5stdio19OUTPUT_CAPTURE_USED.0"
+    assert demangle(mangled) == "std::io::stdio::OUTPUT_CAPTURE_USED.0"
+
+
+def test_demangle_v0_symbol_with_generics():
+    assert demangle("_RINvNtC3std3mem8align_ofjE") == "std::mem::align_of::<usize>"
 
 
 def test_normalize_strips_nested_generic_brackets():

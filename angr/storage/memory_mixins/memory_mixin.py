@@ -3,8 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Self
 
-import claripy
-
+from angr import claripy
 from angr.errors import SimMemoryError
 from angr.state_plugins.plugin import SimStatePlugin
 
@@ -75,12 +74,23 @@ class MemoryMixin[InData, OutData, Addr](SimStatePlugin):
     def store(self, addr: Addr, data: InData, size: InData | None = None, **kwargs) -> None: ...
 
     def merge(
-        self, others: list[Self], merge_conditions: list[claripy.ast.Bool] | None, common_ancestor: Self | None = None
+        self,
+        others: list[Self],
+        merge_conditions: list[claripy.ast.Bool] | None,
+        common_ancestor: Self | None = None,
+        is_widening: bool = False,
     ) -> bool: ...
 
-    def compare(self, other: Self) -> bool: ...
+    # merge values object-by-object instead of at the finest byte granularity (see UltraPage.merge)
+    MERGE_WHOLE_OBJECTS = False
 
-    def widen(self, others: list[Self]) -> bool: ...
+    def widen(self, others: list[Self]) -> bool:
+        """
+        Widen this memory with others. Only abstract (VSA) memories implement real widening; everything else merges.
+        """
+        return self.merge(others, None, is_widening=True)
+
+    def compare(self, other: Self) -> bool: ...
 
     def permissions(self, addr: Addr, permissions: int | claripy.ast.BV | None = None, **kwargs) -> claripy.ast.BV: ...
 
@@ -105,6 +115,15 @@ class MemoryMixin[InData, OutData, Addr](SimStatePlugin):
         :return:        A memoryview into the loaded bytes.
         """
         raise NotImplementedError
+
+    def concrete_run_length(self, addr, size, **kwargs) -> int:
+        """
+        Return the number of concrete bytes starting at ``addr``, capped at ``size``.
+        """
+        _, bitmap = self.concrete_load(addr, size, with_bitmap=True, **kwargs)
+        # the bitmap is packed: one bit per byte, least-significant bit first
+        n = min(size, len(bitmap) * 8)
+        return next((i for i in range(n) if bitmap[i >> 3] >> (i & 7) & 1), n)
 
     def erase(self, addr: Addr, size: int | None = None, **kwargs) -> None:
         """

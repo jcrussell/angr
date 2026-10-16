@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from angr.ailment import AILBlockRewriter
+from angr.ailment import AILBlockRewriter, Block
 from angr.ailment.expression import Call, VirtualVariable
-from angr.ailment.statement import Assignment
+from angr.ailment.statement import Assignment, Statement
 from angr.analyses.decompiler.optimization_passes.optimization_pass import OptimizationPass, OptimizationPassStage
+from angr.analyses.decompiler.variable_map import variable_map_of
 from angr.rust.mixins import CFAMixin, SRDAMixin
 
 DEREF_COERCION_FUNCTIONS = [
@@ -31,7 +32,7 @@ class DerefCoercionSimplifierUninlined(OptimizationPass, SRDAMixin, CFAMixin, AI
 
     def __init__(self, func, manager, **kwargs):
         super().__init__(func, manager, **kwargs)
-        SRDAMixin.__init__(self, func, self._graph, self.project)
+        SRDAMixin.__init__(self, func, self._graph, self.project, variable_map_of(manager))
         CFAMixin.__init__(self, self._graph, self.project)
         AILBlockRewriter.__init__(self)
 
@@ -43,12 +44,16 @@ class DerefCoercionSimplifierUninlined(OptimizationPass, SRDAMixin, CFAMixin, AI
     def _check(self):
         return self.project.is_rust_binary, None
 
+    def _handle_Assignment(self, stmt_idx: int, stmt: Assignment, block: Block | None) -> Statement:
+        if isinstance(stmt.dst, VirtualVariable) and stmt.dst.varid in self._vvar_replacements:
+            # this is a deref coercion call that _analyze() has scheduled for removal; leave it untouched so that the
+            # removal below can find it
+            return stmt
+        return super()._handle_Assignment(stmt_idx, stmt, block)
+
     def _handle_VirtualVariable(  # pyright: ignore[reportIncompatibleMethodOverride]
         self, expr_idx: int, expr: VirtualVariable, stmt_idx: int, stmt, block
     ):
-        if isinstance(stmt, Assignment) and stmt.dst == expr and expr.varid in self._vvar_replacements:
-            self._stmts_to_remove[block].append(stmt)
-            return None
         if expr.varid in self._vvar_replacements:
             return self._vvar_replacements[expr.varid]
         return expr

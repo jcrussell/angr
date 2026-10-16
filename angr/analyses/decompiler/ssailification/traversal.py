@@ -4,8 +4,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.analyses.decompiler.ailgraph_walker import traverse_in_order
+from angr.enums import Flavors
 from angr.utils.ssa import get_reg_offset_base_and_size
 
 from .traversal_engine import SimEngineSSATraversal
@@ -37,6 +38,10 @@ class TraversalAnalysis:
         tmps: bool,
         func_args: set[ailment.Expr.VirtualVariable],
         functions: Callable[[int | str], Function | None] | None,
+        variable_map=None,
+        ail_manager=None,
+        start_state_blocks: set[tuple[int, int | None]] | None = None,
+        flavor: str = Flavors.DEFAULT_FLAVOR,
     ):
         self.project = project
         self._stackvars = stackvars
@@ -46,6 +51,7 @@ class TraversalAnalysis:
         self._func_args = func_args
         self.input_states: dict[ailment.Block, dict[ailment.Block | None, TraversalState]] = {}
         self.start_states: dict[ailment.Block, TraversalState] = {}
+        self._start_state_blocks = start_state_blocks
         self._pending: set[ailment.Block] = set()
 
         self._engine_ail = SimEngineSSATraversal(
@@ -56,11 +62,16 @@ class TraversalAnalysis:
             stackvars=self._stackvars,
             use_tmps=self._tmps,
             functions=functions,
+            variable_map=variable_map,
+            ail_manager=ail_manager,
+            flavor=flavor,
         )
 
         self._analyze()
 
         self.def_info = self._engine_ail.def_info
+        self.clobber_defs_by_loc = self._engine_ail.clobber_defs_by_loc
+        self.clobber_def_for = self._engine_ail.clobber_def_for
 
     #
     # Main analysis routines
@@ -100,6 +111,10 @@ class TraversalAnalysis:
                     state.stackvar_unify(offset, func_arg.size)
         return state
 
+    def _record_start_state(self, node: ailment.Block, state: TraversalState) -> None:
+        if self._start_state_blocks is None or (node.addr, node.idx) in self._start_state_blocks:
+            self.start_states[node] = state
+
     def _run_on_node(self, node: ailment.Block):
         """
 
@@ -112,7 +127,7 @@ class TraversalAnalysis:
         if input_states is None:
             state = self._initial_abstract_state()
             self.input_states[node] = {None: state}
-            self.start_states[node] = state
+            self._record_start_state(node, state)
         else:
             if node not in self._pending:
                 return
@@ -120,13 +135,13 @@ class TraversalAnalysis:
 
             if len(input_states) == 1:
                 state = next(iter(input_states.values()))
-                self.start_states[node] = state
+                self._record_start_state(node, state)
             else:
                 all_states = list(input_states.values())
                 state = all_states[0].copy()
                 for other_state in all_states[1:]:
                     state.merge(other_state)
-                self.start_states[node] = state
+                self._record_start_state(node, state)
         state = state.copy()
         self._engine_ail.process(state, block=node)
 

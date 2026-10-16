@@ -5,38 +5,12 @@ use libafl::{
     corpus::{Corpus, CorpusId, InMemoryCorpus, OnDiskCorpus, Testcase},
     inputs::BytesInput,
 };
-use pyo3::{exceptions::PyRuntimeError, prelude::*};
+use pyo3::{
+    IntoPyObjectExt,
+    exceptions::{PyRuntimeError, PyTypeError},
+    prelude::*,
+};
 use serde::{Deserialize, Serialize};
-
-use crate::errors::MapPyErr;
-use crate::fuzzer::delegate::delegate_two_variant;
-
-/// Generate the postcard-backed `__getstate__` / `__setstate__` pickle pair.
-///
-/// `PyInMemoryCorpus` and `PyOnDiskCorpus` both pickle by round-tripping their
-/// single `inner` field through postcard, so hand-written the two copies are
-/// byte-identical and a change to the encoding (a version byte, a different
-/// error type) is easy to land in one and forget in the other (angr-12jjk.27).
-///
-/// The pair is emitted as its own `#[pymethods]` block — a `macro_rules!`
-/// invocation *inside* an existing block would be invisible to pyo3, which
-/// parses the impl before declarative macros expand. That relies on the
-/// `multiple-pymethods` feature (see `Cargo.toml`).
-macro_rules! postcard_pickle_methods {
-    ($ty:ty, $field:ident) => {
-        #[pymethods]
-        impl $ty {
-            fn __getstate__(&self) -> PyResult<Vec<u8>> {
-                postcard::to_stdvec(&self.$field).py_runtime_err()
-            }
-
-            fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
-                self.$field = postcard::from_bytes(&state).py_runtime_err()?;
-                Ok(())
-            }
-        }
-    };
-}
 
 // A Send+Sync wrapper of InMemoryCorpus for use in PyInMemoryCorpus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +61,8 @@ impl TryFrom<&PyInMemoryCorpus> for InMemoryCorpus<BytesInput> {
     type Error = PyErr;
 
     fn try_from(value: &PyInMemoryCorpus) -> Result<Self, Self::Error> {
-        InMemoryCorpus::<BytesInput>::try_from(&value.inner).py_runtime_err()
+        InMemoryCorpus::<BytesInput>::try_from(&value.inner)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 
@@ -95,7 +70,8 @@ impl TryFrom<&InMemoryCorpus<BytesInput>> for PyInMemoryCorpus {
     type Error = PyErr;
 
     fn try_from(value: &InMemoryCorpus<BytesInput>) -> Result<Self, Self::Error> {
-        let serialized = SerializedCorpus::try_from(value).py_runtime_err()?;
+        let serialized = SerializedCorpus::try_from(value)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(PyInMemoryCorpus { inner: serialized })
     }
 }
@@ -113,7 +89,7 @@ impl PyInMemoryCorpus {
         for item in list {
             corpus
                 .add(Testcase::new(BytesInput::from(item)))
-                .py_type_err()?;
+                .map_err(|e| PyTypeError::new_err(e.to_string()))?;
         }
         PyInMemoryCorpus::try_from(&corpus)
     }
@@ -135,7 +111,9 @@ impl PyInMemoryCorpus {
     fn __getitem__(&self, id: usize) -> PyResult<Vec<u8>> {
         let deserialized = InMemoryCorpus::<BytesInput>::try_from(self)?;
         let corpus_id = CorpusId::from(id);
-        let testcase_ref = deserialized.get(corpus_id).py_runtime_err()?;
+        let testcase_ref = deserialized
+            .get(corpus_id)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let testcase = testcase_ref.borrow();
         match testcase.input().clone() {
             Some(input) => Ok(input.into_inner()),
@@ -146,9 +124,17 @@ impl PyInMemoryCorpus {
     fn __len__(&self) -> PyResult<usize> {
         Ok(InMemoryCorpus::<BytesInput>::try_from(self)?.count())
     }
-}
 
-postcard_pickle_methods!(PyInMemoryCorpus, inner);
+    fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        postcard::to_stdvec(&self.inner).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
+        self.inner =
+            postcard::from_bytes(&state).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(())
+    }
+}
 
 // On DiskCorpus wrapper
 #[pyclass(
@@ -158,10 +144,6 @@ postcard_pickle_methods!(PyInMemoryCorpus, inner);
     from_py_object
 )]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct PyOnDiskCorpus {
     pub(crate) inner: OnDiskCorpus<BytesInput>,
 }
@@ -170,19 +152,27 @@ pub struct PyOnDiskCorpus {
 impl PyOnDiskCorpus {
     #[new]
     fn py_new(dir_path: String) -> PyResult<Self> {
-        let corpus = OnDiskCorpus::new(&dir_path).py_runtime_err()?;
+        let corpus =
+            OnDiskCorpus::new(&dir_path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(PyOnDiskCorpus { inner: corpus })
     }
 
     fn add(&mut self, input: Vec<u8>) -> PyResult<usize> {
         let testcase = Testcase::new(BytesInput::from(input));
-        let corpus_id = self.inner.add(testcase).py_runtime_err()?;
+        let corpus_id = self
+            .inner
+            .add(testcase)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(corpus_id.into())
     }
 
     fn __getitem__(&self, id: usize) -> PyResult<Vec<u8>> {
         let corpus_id = CorpusId::from(id);
-        let mut testcase = self.inner.get(corpus_id).py_runtime_err()?.borrow_mut();
+        let mut testcase = self
+            .inner
+            .get(corpus_id)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .borrow_mut();
         let input = testcase.input().clone().unwrap_or({
             testcase
                 .load_input(&self.inner)
@@ -217,44 +207,161 @@ impl PyOnDiskCorpus {
         }
         Ok(result)
     }
-}
 
-postcard_pickle_methods!(PyOnDiskCorpus, inner);
+    fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        postcard::to_stdvec(&self.inner).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
+        self.inner =
+            postcard::from_bytes(&state).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(())
+    }
+}
 
 // Dynamic Corpus that can encapsulate InMemoryCorpus and OnDiskCorpus at runtime
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum DynCorpus<I> {
+pub enum DynCorpus<I> {
     InMem(InMemoryCorpus<I>),
     OnDisk(OnDiskCorpus<I>),
 }
 
-// Have Dynamic Corpus implement Corpus<I> trait. Every method is a plain
-// forward to the active variant, so the bodies are generated (angr-12jjk.25).
+// Have Dynamic Corpus implement Corpus<I> trait
 impl<I> Corpus<I> for DynCorpus<I>
 where
     I: libafl::inputs::Input,
 {
-    delegate_two_variant! {
-        DynCorpus { InMem, OnDisk }
-        fn count(&self) -> usize;
-        fn count_disabled(&self) -> usize;
-        fn count_all(&self) -> usize;
-        fn add(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error>;
-        fn add_disabled(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error>;
-        fn replace(&mut self, id: CorpusId, testcase: Testcase<I>) -> Result<Testcase<I>, Error>;
-        fn remove(&mut self, id: CorpusId) -> Result<Testcase<I>, Error>;
-        fn get(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error>;
-        fn get_from_all(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error>;
-        fn current(&self) -> &Option<CorpusId>;
-        fn current_mut(&mut self) -> &mut Option<CorpusId>;
-        fn next(&self, id: CorpusId) -> Option<CorpusId>;
-        fn peek_free_id(&self) -> CorpusId;
-        fn prev(&self, id: CorpusId) -> Option<CorpusId>;
-        fn first(&self) -> Option<CorpusId>;
-        fn last(&self) -> Option<CorpusId>;
-        fn nth_from_all(&self, nth: usize) -> CorpusId;
-        fn load_input_into(&self, testcase: &mut Testcase<I>) -> Result<(), Error>;
-        fn store_input_from(&self, testcase: &Testcase<I>) -> Result<(), Error>;
+    fn count(&self) -> usize {
+        match self {
+            DynCorpus::InMem(c) => c.count(),
+            DynCorpus::OnDisk(c) => c.count(),
+        }
+    }
+
+    fn count_disabled(&self) -> usize {
+        match self {
+            DynCorpus::InMem(c) => c.count_disabled(),
+            DynCorpus::OnDisk(c) => c.count_disabled(),
+        }
+    }
+
+    fn count_all(&self) -> usize {
+        match self {
+            DynCorpus::InMem(c) => c.count_all(),
+            DynCorpus::OnDisk(c) => c.count_all(),
+        }
+    }
+
+    fn add(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error> {
+        match self {
+            DynCorpus::InMem(c) => c.add(testcase),
+            DynCorpus::OnDisk(c) => c.add(testcase),
+        }
+    }
+
+    fn add_disabled(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error> {
+        match self {
+            DynCorpus::InMem(c) => c.add_disabled(testcase),
+            DynCorpus::OnDisk(c) => c.add_disabled(testcase),
+        }
+    }
+
+    fn replace(&mut self, id: CorpusId, testcase: Testcase<I>) -> Result<Testcase<I>, Error> {
+        match self {
+            DynCorpus::InMem(c) => c.replace(id, testcase),
+            DynCorpus::OnDisk(c) => c.replace(id, testcase),
+        }
+    }
+
+    fn remove(&mut self, id: CorpusId) -> Result<Testcase<I>, Error> {
+        match self {
+            DynCorpus::InMem(c) => c.remove(id),
+            DynCorpus::OnDisk(c) => c.remove(id),
+        }
+    }
+
+    fn get(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error> {
+        match self {
+            DynCorpus::InMem(c) => c.get(id),
+            DynCorpus::OnDisk(c) => c.get(id),
+        }
+    }
+
+    fn get_from_all(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error> {
+        match self {
+            DynCorpus::InMem(c) => c.get_from_all(id),
+            DynCorpus::OnDisk(c) => c.get_from_all(id),
+        }
+    }
+
+    fn current(&self) -> &Option<CorpusId> {
+        match self {
+            DynCorpus::InMem(c) => c.current(),
+            DynCorpus::OnDisk(c) => c.current(),
+        }
+    }
+
+    fn current_mut(&mut self) -> &mut Option<CorpusId> {
+        match self {
+            DynCorpus::InMem(c) => c.current_mut(),
+            DynCorpus::OnDisk(c) => c.current_mut(),
+        }
+    }
+
+    fn next(&self, id: CorpusId) -> Option<CorpusId> {
+        match self {
+            DynCorpus::InMem(c) => c.next(id),
+            DynCorpus::OnDisk(c) => c.next(id),
+        }
+    }
+
+    fn peek_free_id(&self) -> CorpusId {
+        match self {
+            DynCorpus::InMem(c) => c.peek_free_id(),
+            DynCorpus::OnDisk(c) => c.peek_free_id(),
+        }
+    }
+
+    fn prev(&self, id: CorpusId) -> Option<CorpusId> {
+        match self {
+            DynCorpus::InMem(c) => c.prev(id),
+            DynCorpus::OnDisk(c) => c.prev(id),
+        }
+    }
+
+    fn first(&self) -> Option<CorpusId> {
+        match self {
+            DynCorpus::InMem(c) => c.first(),
+            DynCorpus::OnDisk(c) => c.first(),
+        }
+    }
+
+    fn last(&self) -> Option<CorpusId> {
+        match self {
+            DynCorpus::InMem(c) => c.last(),
+            DynCorpus::OnDisk(c) => c.last(),
+        }
+    }
+
+    fn nth_from_all(&self, nth: usize) -> CorpusId {
+        match self {
+            DynCorpus::InMem(c) => c.nth_from_all(nth),
+            DynCorpus::OnDisk(c) => c.nth_from_all(nth),
+        }
+    }
+
+    fn load_input_into(&self, testcase: &mut Testcase<I>) -> Result<(), Error> {
+        match self {
+            DynCorpus::InMem(c) => c.load_input_into(testcase),
+            DynCorpus::OnDisk(c) => c.load_input_into(testcase),
+        }
+    }
+
+    fn store_input_from(&self, testcase: &Testcase<I>) -> Result<(), Error> {
+        match self {
+            DynCorpus::InMem(c) => c.store_input_from(testcase),
+            DynCorpus::OnDisk(c) => c.store_input_from(testcase),
+        }
     }
 }
 
@@ -263,8 +370,8 @@ impl TryFrom<&PyInMemoryCorpus> for DynCorpus<BytesInput> {
     type Error = PyErr;
 
     fn try_from(value: &PyInMemoryCorpus) -> Result<Self, Self::Error> {
-        let inner: InMemoryCorpus<BytesInput> =
-            InMemoryCorpus::<BytesInput>::try_from(value).py_runtime_err()?;
+        let inner: InMemoryCorpus<BytesInput> = InMemoryCorpus::<BytesInput>::try_from(value)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(DynCorpus::InMem(inner))
     }
 }
@@ -278,23 +385,61 @@ impl TryFrom<&PyOnDiskCorpus> for DynCorpus<BytesInput> {
 }
 
 // Converts Rust enum back into python object
-impl DynCorpus<BytesInput> {
-    pub(crate) fn to_py<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+impl<'py> IntoPyObject<'py> for &DynCorpus<BytesInput> {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            DynCorpus::InMem(inner) => {
-                let py_inmem = PyInMemoryCorpus::try_from(inner).py_runtime_err()?;
-                let obj = Py::new(py, py_inmem)?; // Py<PyInMemoryCorpus>
-                Ok(obj.into_bound(py).into_any().unbind())
+            DynCorpus::InMem(inner) => PyInMemoryCorpus::try_from(inner)?.into_bound_py_any(py),
+            DynCorpus::OnDisk(inner) => PyOnDiskCorpus {
+                inner: inner.clone(),
             }
-            DynCorpus::OnDisk(inner) => {
-                let py_ondisk = PyOnDiskCorpus {
-                    inner: inner.clone(),
-                };
-                let obj = Py::new(py, py_ondisk)?; // Py<PyOnDiskCorpus>
-                Ok(obj.into_bound(py).into_any().unbind())
-            }
+            .into_bound_py_any(py),
         }
     }
 }
 
-test_submod!("corpus_tests.rs" => tests);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inmem_corpus_serialization() {
+        let corpus =
+            PyInMemoryCorpus::from_list(vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]]).unwrap();
+
+        let serialied_state = corpus.__getstate__().unwrap();
+        let mut deserialized_corpus = PyInMemoryCorpus::py_new().unwrap();
+        deserialized_corpus.__setstate__(serialied_state).unwrap();
+
+        let bytes_list = deserialized_corpus.to_bytes_list().unwrap();
+        assert_eq!(bytes_list.len(), 3);
+        assert_eq!(bytes_list[0], vec![1, 2, 3]);
+        assert_eq!(bytes_list[1], vec![4, 5, 6]);
+        assert_eq!(bytes_list[2], vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn test_ondisk_corpus_serialization() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut corpus = PyOnDiskCorpus::py_new(tempdir.path().to_string_lossy().into()).unwrap();
+        corpus.add(vec![1, 2, 3]).unwrap();
+        corpus.add(vec![4, 5, 6]).unwrap();
+        corpus.add(vec![7, 8, 9]).unwrap();
+
+        let serialied_state = corpus.__getstate__().unwrap();
+        let tempdir2 = tempfile::tempdir().unwrap();
+        let mut deserialized_corpus =
+            PyOnDiskCorpus::py_new(tempdir2.path().to_string_lossy().into()).unwrap();
+        deserialized_corpus.__setstate__(serialied_state).unwrap();
+
+        let bytes_list = deserialized_corpus.to_bytes_list().unwrap();
+
+        assert_eq!(bytes_list.len(), 3);
+        assert_eq!(bytes_list[0], vec![1, 2, 3]);
+        assert_eq!(bytes_list[1], vec![4, 5, 6]);
+        assert_eq!(bytes_list[2], vec![7, 8, 9]);
+    }
+}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BLOB, TEXT, Boolean, Column, ForeignKey, Integer, String
+from sqlalchemy import BLOB, TEXT, Boolean, Column, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -45,11 +45,17 @@ class DbKnowledgeBase(Base):
 
     cfgs = relationship("DbCFGModel", back_populates="kb")
     funcs = relationship("DbFunction", back_populates="kb")
+    callgraphs = relationship("DbCallGraph", back_populates="kb")
     xrefs = relationship("DbXRefs", uselist=False, back_populates="kb")
     comments = relationship("DbComment", back_populates="kb")
+    bookmarks = relationship("DbBookmark", back_populates="kb")
+    patterns = relationship("DbPattern", back_populates="kb")
     labels = relationship("DbLabel", back_populates="kb")
+    callsite_prototypes = relationship("DbCallsitePrototype", back_populates="kb")
     var_collections = relationship("DbVariableCollection", back_populates="kb")
+    dec_var_collections = relationship("DbDecVariableCollection", back_populates="kb")
     structured_code = relationship("DbStructuredCode", back_populates="kb")
+    decompilation_caches = relationship("DbDecompilationCache", back_populates="kb")
 
 
 class DbCFGModel(Base):
@@ -88,6 +94,23 @@ class DbFunction(Base):
     blob = Column(BLOB)
 
 
+class DbCallGraph(Base):
+    """
+    Models the callgraph of a function manager.
+    """
+
+    __tablename__ = "callgraphs"
+
+    id = Column(Integer, primary_key=True)
+    kb_id = Column(
+        Integer,
+        ForeignKey("knowledgebases.id"),
+        nullable=False,
+    )
+    kb = relationship("DbKnowledgeBase", uselist=False, back_populates="callgraphs")
+    blob = Column(BLOB, nullable=True)
+
+
 class DbVariableCollection(Base):
     """
     Models a VariableManagerInternal instance.
@@ -102,6 +125,27 @@ class DbVariableCollection(Base):
         nullable=False,
     )
     kb = relationship("DbKnowledgeBase", uselist=False, back_populates="var_collections")
+    func_addr = Column(Integer)
+    ident = Column(String, nullable=True)
+    blob = Column(BLOB)
+
+
+class DbDecVariableCollection(Base):
+    """
+    Models a VariableManagerInternal instance of the decompilation variable manager (kb.dec_variables). A separate
+    table from ``variables`` (the disassembly-level kb.variables) so databases created before it existed remain
+    loadable: ``create_all`` adds missing tables.
+    """
+
+    __tablename__ = "dec_variables"
+
+    id = Column(Integer, primary_key=True)
+    kb_id = Column(
+        Integer,
+        ForeignKey("knowledgebases.id"),
+        nullable=False,
+    )
+    kb = relationship("DbKnowledgeBase", uselist=False, back_populates="dec_var_collections")
     func_addr = Column(Integer)
     ident = Column(String, nullable=True)
     blob = Column(BLOB)
@@ -129,6 +173,27 @@ class DbStructuredCode(Base):
     const_formats = Column(BLOB, nullable=True)
     ite_exprs = Column(BLOB, nullable=True)
     errors = Column(TEXT, nullable=True)
+
+
+class DbDecompilationCache(Base):
+    """
+    Models a fully serialized DecompilationCache instance (a protobuf DecompilationCache message). A separate table
+    from ``structured_code`` (which stores only codegen metadata) so databases created before it existed remain
+    loadable: ``create_all`` adds missing tables.
+    """
+
+    __tablename__ = "decompilation_caches"
+
+    id = Column(Integer, primary_key=True)
+    kb_id = Column(
+        Integer,
+        ForeignKey("knowledgebases.id"),
+        nullable=False,
+    )
+    kb = relationship("DbKnowledgeBase", uselist=False, back_populates="decompilation_caches")
+    func_addr = Column(Integer)
+    flavor = Column(String)
+    blob = Column(BLOB, nullable=True)
 
 
 class DbXRefs(Base):
@@ -164,7 +229,50 @@ class DbComment(Base):
     kb = relationship("DbKnowledgeBase", uselist=False, back_populates="comments")
     addr = Column(Integer, index=True)
     comment = Column(String)
-    type = Column(Integer)  # not really used for now, but we'd better get it prepared
+    # 0 = no explicit kind (defaults apply); otherwise CommentKind + 1
+    type = Column(Integer)
+
+
+class DbBookmark(Base):
+    """
+    Models a bookmark.
+    """
+
+    __tablename__ = "bookmarks"
+
+    id = Column(Integer, primary_key=True)
+    kb_id = Column(
+        Integer,
+        ForeignKey("knowledgebases.id"),
+        nullable=False,
+    )
+    kb = relationship("DbKnowledgeBase", uselist=False, back_populates="bookmarks")
+    addr = Column(Integer, index=True)
+    label = Column(String)
+    created_at = Column(Float)
+
+
+class DbPattern(Base):
+    """
+    Models a user-authored fuzzy pattern; the pattern itself is stored as JSON.
+    """
+
+    __tablename__ = "patterns"
+
+    id = Column(Integer, primary_key=True)
+    kb_id = Column(
+        Integer,
+        ForeignKey("knowledgebases.id"),
+        nullable=False,
+    )
+    kb = relationship("DbKnowledgeBase", uselist=False, back_populates="patterns")
+    name = Column(String, index=True)
+    enabled = Column(Boolean)
+    min_similarity = Column(Float)
+    origin_func = Column(Integer)
+    require_verified = Column(Boolean, default=True)
+    created_at = Column(Float)
+    pattern = Column(TEXT)
 
 
 class DbLabel(Base):
@@ -183,3 +291,25 @@ class DbLabel(Base):
     kb = relationship("DbKnowledgeBase", uselist=False, back_populates="labels")
     addr = Column(Integer, index=True)
     name = Column(String)
+
+
+class DbCallsitePrototype(Base):
+    """
+    Models one call-site prototype: the calling convention and prototype of a callee at a call site, per flavor and
+    kind.
+    """
+
+    __tablename__ = "callsite_prototypes"
+
+    id = Column(Integer, primary_key=True)
+    kb_id = Column(
+        Integer,
+        ForeignKey("knowledgebases.id"),
+        nullable=False,
+    )
+    kb = relationship("DbKnowledgeBase", uselist=False, back_populates="callsite_prototypes")
+    flavor = Column(String, nullable=False)  # decompilation flavor
+    addr = Column(Integer, index=True)
+    kind = Column(Integer)  # CallsitePrototypeKind value
+    cc = Column(TEXT)  # JSON, as in function.proto
+    prototype = Column(TEXT)  # JSON, as in function.proto

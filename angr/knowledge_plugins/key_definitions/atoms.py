@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
-import claripy
 from archinfo import Arch, Endness, RegisterOffset
 
-import angr.ailment as ailment
+from angr import ailment, claripy
 from angr.calling_conventions import SimFunctionArgument, SimRegArg, SimStackArg
 from angr.engines.light import SpOffset
 
@@ -40,6 +39,27 @@ class Atom:
         self.size = size
         self._hash = None
 
+    def __getstate__(self):
+        # Exclude the cached hash from the pickle: it folds in per-process-salted
+        # string hashes (e.g. register names), so a persisted value is stale when
+        # unpickled in another process. It is recomputed lazily instead.
+        slotstate = {
+            slot: getattr(self, slot)
+            for klass in type(self).__mro__
+            for slot in getattr(klass, "__slots__", ())
+            if slot != "_hash" and hasattr(self, slot)
+        }
+        return getattr(self, "__dict__", None), slotstate
+
+    def __setstate__(self, state):
+        dictstate, slotstate = state if isinstance(state, tuple) else (None, state)
+        if dictstate:
+            self.__dict__.update(dictstate)
+        for slot, value in (slotstate or {}).items():
+            if slot != "_hash":
+                setattr(self, slot, value)
+        self._hash = None
+
     def __repr__(self):
         raise NotImplementedError
 
@@ -60,8 +80,8 @@ class Atom:
         if isinstance(expr, ailment.Expr.Register):
             if full_reg:
                 reg_name = arch.translate_register_name(expr.reg_offset)
-                return Register(arch.registers[reg_name][0], arch.registers[reg_name][1], arch)
-            return Register(expr.reg_offset, expr.size, arch)
+                return Register(arch.registers[reg_name][0], arch.registers[reg_name][1])
+            return Register(expr.reg_offset, expr.size)
         raise TypeError(f"Expression type {type(expr)} is not yet supported")
 
     @staticmethod
@@ -78,9 +98,12 @@ class Atom:
         :param sp:      The current stack offset. Optional. Only used when argument is a SimStackArg.
         """
         if isinstance(argument, SimRegArg):
+            if argument.reg_name not in arch.registers:
+                # e.g., the x87 st0 an X86 calling convention returns floats in
+                raise ValueError(f"Register {argument.reg_name} is unknown to {arch.name}")
             if full_reg:
-                return Register(arch.registers[argument.reg_name][0], arch.registers[argument.reg_name][1], arch)
-            return Register(arch.registers[argument.reg_name][0] + argument.reg_offset, argument.size, arch)
+                return Register(arch.registers[argument.reg_name][0], arch.registers[argument.reg_name][1])
+            return Register(arch.registers[argument.reg_name][0] + argument.reg_offset, argument.size)
         if isinstance(argument, SimStackArg):
             if sp is None:
                 raise ValueError("You must provide a stack pointer to translate a SimStackArg")
@@ -119,7 +142,7 @@ class Atom:
             raise TypeError(
                 "Unsupported type of register. It must be a string (for register name) or an int (for register offset)"
             )
-        return Register(reg_offset, size, arch=arch)
+        return Register(reg_offset, size)
 
     register = reg
 
@@ -148,6 +171,9 @@ class Atom:
 
     def __eq__(self, other):
         return type(self) is type(other) and self._identity() == other._identity()
+
+    # The atom is serialized as a wrapping ``Atom`` cmessage carrying the per-kind inner cmessage in a oneof field;
+    # ``parse_from_cmessage`` dispatches on ``WhichOneof("kind")`` to the right subclass.
 
 
 class GuardUse(Atom):
@@ -216,28 +242,21 @@ class Register(Atom):
     :ivar int size:          The size, in number of bytes.
     """
 
-    __slots__ = (
-        "arch",
-        "reg_offset",
-    )
+    __slots__ = ("reg_offset",)
 
-    def __init__(self, reg_offset: RegisterOffset | int, size: int, arch: Arch | None = None):
+    def __init__(self, reg_offset: RegisterOffset | int, size: int):
         super().__init__(size)
 
         self.reg_offset = RegisterOffset(reg_offset)
-        self.arch = arch
 
     def __repr__(self):
-        return f"<Reg {self.name}<{self.size}>>"
+        return f"<Reg {self.reg_offset}<{self.size}>>"
 
     def _identity(self):
         return (self.reg_offset, self.size)
 
-    @property
-    def name(self) -> str:
-        return (
-            str(self.reg_offset) if self.arch is None else self.arch.translate_register_name(self.reg_offset, self.size)
-        )
+    def name(self, arch: Arch) -> str:
+        return arch.translate_register_name(self.reg_offset, self.size)
 
 
 class VirtualVariable(Atom):

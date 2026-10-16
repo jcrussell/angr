@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import angr.ailment as ailment
-from angr.calling_conventions import DEFAULT_CC, SimRegArg, default_cc
+from angr import ailment
+from angr.calling_conventions import DEFAULT_CC, SimRegArg, default_cc_for_project
 
 from .optimization_pass import OptimizationPass, OptimizationPassStage
 
@@ -21,7 +21,7 @@ class RetAddrSaveSimplifier(OptimizationPass):
     PLATFORMS = ["linux"]
     STAGE = OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION
     NAME = "Simplify return address storage"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -31,9 +31,7 @@ class RetAddrSaveSimplifier(OptimizationPass):
         if self.project.arch.name not in DEFAULT_CC:
             return False, {}
 
-        cc = default_cc(
-            self.project.arch.name, platform=self.project.simos.name if self.project.simos is not None else None
-        )(self.project.arch)
+        cc = default_cc_for_project(self.project)(self.project.arch)
         if not isinstance(cc.return_addr, SimRegArg):
             return False, {}
 
@@ -100,9 +98,7 @@ class RetAddrSaveSimplifier(OptimizationPass):
         if first_block is None:
             return None
 
-        cc = default_cc(
-            self.project.arch.name, platform=self.project.simos.name if self.project.simos is not None else None
-        )(self.project.arch)
+        cc = default_cc_for_project(self.project)(self.project.arch)
         retaddr = cc.return_addr
         assert isinstance(retaddr, SimRegArg)
         retaddr_reg = self.project.arch.registers[retaddr.reg_name][0]
@@ -141,9 +137,7 @@ class RetAddrSaveSimplifier(OptimizationPass):
 
         retaddr_restore_stmts = []
 
-        cc = default_cc(
-            self.project.arch.name, platform=self.project.simos.name if self.project.simos is not None else None
-        )(self.project.arch)
+        cc = default_cc_for_project(self.project)(self.project.arch)
         retaddr = cc.return_addr
         assert isinstance(retaddr, SimRegArg)
         retaddr_reg = self.project.arch.registers[retaddr.reg_name][0]

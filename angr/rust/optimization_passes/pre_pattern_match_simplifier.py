@@ -20,8 +20,8 @@ _l = logging.getLogger(name=__name__)
 class PrePatternMatchSimplifier(OptimizationPass, ReturnDuplicatorBase, DFAMixin):
     """
     Duplicate return blocks for identified pattern matches to form if-else structures.
-    For example the following code,
-        ```
+    For example the following code::
+
         if (...){
             ...
         } else {
@@ -33,9 +33,9 @@ class PrePatternMatchSimplifier(OptimizationPass, ReturnDuplicatorBase, DFAMixin
         return Err(struct8 {
             field_0: v11
         });
-        ```
-    should be converted to
-        ```
+
+    should be converted to::
+
         v6 = std::fs::File::open(a1, a2);
         if v6 as i32 {
             return Err(struct8 {
@@ -44,7 +44,7 @@ class PrePatternMatchSimplifier(OptimizationPass, ReturnDuplicatorBase, DFAMixin
         } else {
             ...
         }
-        ```
+
     for recovering pattern match constructs in later stage
     """
 
@@ -52,7 +52,7 @@ class PrePatternMatchSimplifier(OptimizationPass, ReturnDuplicatorBase, DFAMixin
     PLATFORMS = None
     STAGE = OptimizationPassStage.BEFORE_VARIABLE_RECOVERY
     NAME = "Duplicate return blocks to prepare for pattern match simplification"
-    DESCRIPTION = __doc__
+    DESCRIPTION = __doc__ or ""
     STRUCTURING = [SAILRStructurer.NAME, DreamStructurer.NAME]
 
     def __init__(
@@ -218,6 +218,21 @@ class PrePatternMatchSimplifier(OptimizationPass, ReturnDuplicatorBase, DFAMixin
             discriminant = PrePatternMatchSimplifier._const_value(op1)
         if scrutinee is not None and discriminant is not None and cmp_op:
             return scrutinee, discriminant, cmp_op, leftover
+
+        # Truthiness-style discriminant check. A boolean-truncating conversion
+        # `Conv(N->1, x)` means "x != 0"; wrapped in `Not(...)` it means "x == 0".
+        # Compilers emit these for enum discriminant tests rendered as
+        # `if result as i8 { ... }` / `if !(result as i8) { ... }`.
+        truth_cond = condition
+        truth_cmp = "CmpNE"
+        if isinstance(truth_cond, UnaryOp) and truth_cond.op == "Not":
+            truth_cond = truth_cond.operand
+            truth_cmp = "CmpEQ"
+        if isinstance(truth_cond, Convert) and truth_cond.to_bits == 1:
+            truth_scrutinee = PrePatternMatchSimplifier._match_scrutinee(truth_cond)
+            if truth_scrutinee is not None:
+                return truth_scrutinee, 0, truth_cmp, leftover
+
         return None, None, None, None
 
     @staticmethod

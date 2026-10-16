@@ -27,10 +27,7 @@ class fprintf(FormatParser):
 
 
 class __fprintf_chk(fprintf):
-    # _FORTIFY_SOURCE redirect: __fprintf_chk(fp, flag, fmt, ...). The compiler
-    # injects `flag`; angr ignores it and forwards to the base fprintf (matching
-    # __printf_chk/__sprintf_chk and the native fortify_printf.rs wrappers). The
-    # 3-arg run() signature keeps the variadic args aligned — see the glibc.json
-    # __fprintf_chk prototype.
-    def run(self, file_ptr, flag, fmt):  # pylint:disable=arguments-differ,unused-argument
+    # _FORTIFY_SOURCE redirect: __fprintf_chk(fp, flag, fmt, ...). The flag is
+    # ignored, as in __printf_chk.
+    def run(self, file_ptr, flag, fmt):  # type:ignore[reportIncompatibleMethodOverride] # pylint:disable=unused-argument
         return super().run(file_ptr, fmt)

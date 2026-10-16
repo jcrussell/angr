@@ -7,381 +7,312 @@ from angr import claripy
 
 l = logging.getLogger(name=__name__)
 
-# struct option { const char *name; int has_arg; int *flag; int val; };
+# struct option { const char *name; int has_arg; int *flag; int val; }
 _NO_ARGUMENT = 0
 _REQUIRED_ARGUMENT = 1
-_OPTIONAL_ARGUMENT = 2
+
+# argv ordering, selected by a leading '+' or '-' in optstring
+_REQUIRE_ORDER = 0
+_PERMUTE = 1
+_RETURN_IN_ORDER = 2
 
 _DASH = ord("-")
 _COLON = ord(":")
+_QUESTION = ord("?")
+_DONE = 0xFFFFFFFF  # -1
 
 
-def _eval_ptr(state, addr):
-    """Load a pointer-sized word at ``addr``; return a concrete int or None if symbolic."""
-    word = state.memory.load(addr, state.arch.bytes, endness=state.arch.memory_endness)
-    if state.solver.symbolic(word):
-        return None
-    return state.solver.eval(word)
-
-
-def _concrete_cstr(state, ptr, cap=4096):
-    """Read a NUL-terminated string at ``ptr``. Returns bytes (no NUL) or None if any byte is symbolic."""
-    out = bytearray()
-    for i in range(cap):
-        b = state.memory.load(ptr + i, 1)
-        if state.solver.symbolic(b):
-            return None
-        v = state.solver.eval(b)
-        if v == 0:
-            return bytes(out)
-        out.append(v)
-    return bytes(out)
-
-
-def _parse_optstring(s):
-    """Return ({char: has_arg}, leading_colon) for an optstring (POSIX/glibc syntax)."""
-    opts = {}
-    i = 0
-    # leading mode chars ('+'/'-' affect ordering, which we do not model)
-    while i < len(s) and s[i] in (ord("+"), _DASH):
-        i += 1
-    leading_colon = i < len(s) and s[i] == _COLON
-    if leading_colon:
-        i += 1
-    while i < len(s):
-        c = s[i]
-        i += 1
-        nargs = _NO_ARGUMENT
-        if i < len(s) and s[i] == _COLON:
-            nargs = _REQUIRED_ARGUMENT
-            i += 1
-            if i < len(s) and s[i] == _COLON:
-                nargs = _OPTIONAL_ARGUMENT
-                i += 1
-        opts[c] = nargs
-    return opts, leading_colon
+class _Unsupported(Exception):
+    """A value the parser needs is symbolic or unterminated."""
 
 
 class _GetOptBase(angr.SimProcedure):
-    """Shared concrete-argv getopt engine.
+    """
+    glibc's getopt (posix/getopt.c: _getopt_internal_r and process_long_option) for concrete argv, optstring and
+    longopts, including argv permutation. POSIXLY_CORRECT and the "W;" extension are not supported, and error
+    messages are logged instead of printed. If anything the parser reads is symbolic, the call returns an
+    unconstrained value and changes nothing; so does an unterminated string.
 
-    Faithful for the common case where ``argv``, the option strings, and the
-    relevant bytes are concrete. When anything required is symbolic we fall
-    back to an unconstrained return (preserving the pre-SimProc behaviour) so
-    we never branch on a symbolic option scan. POSIX non-permuting semantics:
-    option scanning stops at the first non-option operand (glibc's '+' /
-    POSIXLY_CORRECT mode); argv is never reordered.
+    The guest's optind, optarg and optopt are written through their loader symbols. glibc's private state, the
+    position inside a group of short options and the operands skipped so far, is kept in SimStateLibc.
     """
 
-    # ---- global-variable plumbing (optind / optarg / optopt / opterr) ----
+    # pylint:disable=attribute-defined-outside-init
+
+    def _getopt(self, argc, argv, optstring, longopts=None, longindex=None, long_only=False):
+        try:
+            return claripy.BVV(self._parse(argc, argv, optstring, longopts, longindex, long_only), 32)
+        except _Unsupported:
+            return claripy.BVS("getopt", 32)
+
+    # ---- memory ----
+
+    def _concrete(self, value):
+        if self.state.solver.symbolic(value):
+            raise _Unsupported
+        return self.state.solver.eval(value)
+
+    def _load(self, addr, size):
+        return self._concrete(self.state.memory.load(addr, size, endness=self.state.arch.memory_endness))
+
+    def _cstr(self, ptr, cap=4096):
+        out = bytearray()
+        for i in range(cap):
+            b = self._concrete(self.state.memory.load(ptr + i, 1))
+            if b == 0:
+                return bytes(out)
+            out.append(b)
+        raise _Unsupported
+
+    def _argp(self, i):
+        if i not in self.argv_ptrs:
+            self.argv_ptrs[i] = self._load(self.argv + i * self.state.arch.bytes, self.state.arch.bytes)
+        return self.argv_ptrs[i]
+
+    def _arg(self, i):
+        return self._cstr(self._argp(i))
+
+    def _nonoption(self, i):
+        arg = self._arg(i)
+        return len(arg) < 2 or arg[0] != _DASH
 
     def _global_addr(self, name):
         proj = self.project if self.project is not None else self.state.project
-        if proj is None:
-            return None
-        sym = proj.loader.find_symbol(name)
+        sym = proj.loader.find_symbol(name) if proj is not None else None
         return sym.rebased_addr if sym is not None else None
 
-    def _store_int(self, name, value):
+    def _store(self, addr, value, bits):
+        self.state.memory.store(
+            addr,
+            claripy.BVV(value, bits),
+            endness=self.state.arch.memory_endness,
+            inspect=False,
+            disable_actions=True,
+        )
+
+    def _store_global(self, name, value, bits):
         addr = self._global_addr(name)
         if addr is not None:
-            self.state.memory.store(
-                addr,
-                claripy.BVV(value, 32),
-                endness=self.state.arch.memory_endness,
-                inspect=False,
-                disable_actions=True,
-            )
+            self._store(addr, value, bits)
 
-    def _store_ptr(self, name, value):
-        addr = self._global_addr(name)
-        if addr is not None:
-            self.state.memory.store(
-                addr,
-                claripy.BVV(value, self.state.arch.bits),
-                endness=self.state.arch.memory_endness,
-                inspect=False,
-                disable_actions=True,
-            )
+    # ---- driver ----
 
-    def _load_cursor(self):
-        """Resolve (optind, optchar) honouring a guest reset of ``optind``."""
-        plugin_optind = self.state.libc.getopt_optind
-        plugin_optchar = self.state.libc.getopt_optchar
-        addr = self._global_addr("optind")
-        if addr is not None:
-            word = self.state.memory.load(addr, 4, endness=self.state.arch.memory_endness)
-            if not self.state.solver.symbolic(word):
-                guest = self.state.solver.eval(word)
-                if guest == 0:
-                    return 1, 0  # glibc: optind==0 requests a full reset
-                if guest >= 1:
-                    # honour a guest rescan (optind reset to a smaller index)
-                    return guest, (plugin_optchar if guest == plugin_optind else 0)
-        return plugin_optind, plugin_optchar
+    def _parse(self, argc, argv, optstring, longopts, longindex, long_only):
+        self.argc = self._concrete(argc)
+        self.argv = self._concrete(argv)
+        optstring = self._cstr(self._concrete(optstring))
+        self.longopts = self._concrete(longopts) if longopts is not None else 0
+        self.longindex = self._concrete(longindex) if longindex is not None else 0
+        self.long_only = long_only
+        if self.argc < 1:
+            return _DONE
 
-    def _save_cursor(self, optind, optchar):
-        self.state.libc.getopt_optind = optind
-        self.state.libc.getopt_optchar = optchar
-        self._store_int("optind", optind)
+        self.argv_ptrs = {}
+        self.dirty = set()
+        self.optarg = 0
+        self.optopt = None
 
-    @staticmethod
-    def _unconstrained():
-        return claripy.BVS("getopt", 32)
+        libc = self.state.libc
+        self.optind, self.nextchar = libc.getopt_optind, libc.getopt_nextchar
+        self.first, self.last = libc.getopt_first_nonopt, libc.getopt_last_nonopt
+        optind_addr = self._global_addr("optind")
+        if optind_addr is not None:
+            guest = self._load(optind_addr, 4)
+            if guest == 0:
+                # optind = 0 requests a full reset
+                self.optind, self.nextchar, self.first, self.last = 1, 0, 1, 1
+            elif guest != self.optind:
+                self.optind, self.nextchar = guest, 0
 
-    @staticmethod
-    def _ret_char(c):
-        return claripy.BVV(c, 32)
+        ordering = _PERMUTE
+        if optstring[:1] == b"-":
+            ordering = _RETURN_IN_ORDER
+            optstring = optstring[1:]
+        elif optstring[:1] == b"+":
+            ordering = _REQUIRE_ORDER
+            optstring = optstring[1:]
+        self.optstring = optstring
 
-    @staticmethod
-    def _ret_done():
-        return claripy.BVV(0xFFFFFFFF, 32)  # -1
+        ret = self._next(ordering)
 
-    # ---- long-option support ----
+        for i in self.dirty:
+            self._store(self.argv + i * self.state.arch.bytes, self.argv_ptrs[i], self.state.arch.bits)
+        libc.getopt_optind, libc.getopt_nextchar = self.optind, self.nextchar
+        libc.getopt_first_nonopt, libc.getopt_last_nonopt = self.first, self.last
+        self._store_global("optind", self.optind, 32)
+        self._store_global("optarg", self.optarg, self.state.arch.bits)
+        if self.optopt is not None:
+            self._store_global("optopt", self.optopt, 32)
+        return ret
 
-    def _handle_long(
-        self,
-        name_part,
-        prefix_len,
-        longopts_addr,
-        has_longindex,
-        longindex_addr,
-        optind,
-        argc,
-        argv_ptr,
-        leading_colon,
-    ):
-        """Match a long option (name, possibly ``name=value``). Returns a BV
-        result, or None when there is no match (so getopt_long_only can fall
-        back to short-option parsing)."""
-        state = self.state
-        ps = state.arch.bytes
-        stride = 4 * ps  # name(ps) has_arg(int,aligned) flag(ptr) val(int) -> 4*ps with padding
+    def _error(self, optopt, ret=_QUESTION):
+        l.debug("getopt: invalid option or missing argument (optopt %d)", optopt)
+        self.optopt = optopt
+        return ret
 
-        eq = name_part.find(b"=")
-        if eq >= 0:
-            name = name_part[:eq]
-            inline_val = name_part[eq + 1 :]
-        else:
-            name = name_part
-            inline_val = None
+    def _missing_argument(self, optopt):
+        return self._error(optopt, _COLON if self.optstring[:1] == b":" else _QUESTION)
 
-        # scan the option table for an exact match, then a unique prefix match
-        ptr = longopts_addr
-        exact = None
-        prefixes = []
-        idx = 0
+    # ---- argv permutation ----
+
+    def _exchange(self):
+        """Move the skipped operands argv[first:last] behind the options argv[last:optind]."""
+        ptrs = [self._argp(i) for i in range(self.first, self.optind)]
+        split = self.last - self.first
+        for i, ptr in enumerate(ptrs[split:] + ptrs[:split]):
+            self.argv_ptrs[self.first + i] = ptr
+            self.dirty.add(self.first + i)
+        self.first += self.optind - self.last
+        self.last = self.optind
+
+    def _next(self, ordering):
+        if self.nextchar == 0:
+            # starting a new argv element
+            self.last = min(self.last, self.optind)
+            self.first = min(self.first, self.optind)
+
+            if ordering == _PERMUTE:
+                if self.first != self.last and self.last != self.optind:
+                    self._exchange()
+                elif self.last != self.optind:
+                    self.first = self.optind
+                while self.optind < self.argc and self._nonoption(self.optind):
+                    self.optind += 1
+                self.last = self.optind
+
+            if self.optind < self.argc and self._arg(self.optind) == b"--":
+                self.optind += 1
+                if self.first != self.last and self.last != self.optind:
+                    self._exchange()
+                elif self.first == self.last:
+                    self.first = self.optind
+                self.last = self.argc
+                self.optind = self.argc
+
+            if self.optind >= self.argc:
+                # leave optind on the first operand
+                if self.first != self.last:
+                    self.optind = self.first
+                return _DONE
+
+            if self._nonoption(self.optind):
+                if ordering == _REQUIRE_ORDER:
+                    return _DONE
+                # RETURN_IN_ORDER: report the operand as the argument of option 1
+                self.optarg = self._argp(self.optind)
+                self.optind += 1
+                return 1
+
+            arg = self._arg(self.optind)
+            if self.longopts:
+                if arg[1] == _DASH:
+                    return self._long(arg, 2)
+                if self.long_only and (len(arg) > 2 or arg[1] not in self.optstring):
+                    ret = self._long(arg, 1)
+                    if ret is not None:
+                        return ret
+            self.nextchar = 1
+
+        return self._short()
+
+    # ---- options ----
+
+    def _short(self):
+        arg = self._arg(self.optind)
+        c = arg[self.nextchar]
+        self.nextchar += 1
+        at_end = self.nextchar >= len(arg)
+        if at_end:
+            self.optind += 1
+
+        idx = self.optstring.find(bytes([c]))
+        if idx < 0 or c in (_COLON, ord(";")):
+            if at_end:
+                self.nextchar = 0
+            return self._error(c)
+
+        if self.optstring[idx + 1 : idx + 2] == b":":
+            optional = self.optstring[idx + 2 : idx + 3] == b":"
+            if not at_end:
+                # the argument is the rest of this element
+                self.optarg = self._argp(self.optind) + self.nextchar
+                self.optind += 1
+            elif not optional:
+                if self.optind >= self.argc:
+                    c = self._missing_argument(c)
+                else:
+                    self.optarg = self._argp(self.optind)
+                    self.optind += 1
+            self.nextchar = 0
+        elif at_end:
+            self.nextchar = 0
+        return c
+
+    def _longopts(self):
+        """The longopts table as a list of (name, has_arg, flag, val)."""
+        ps = self.state.arch.bytes
+        options = []
+        entry = self.longopts
         while True:
-            name_ptr = _eval_ptr(state, ptr)
-            if name_ptr is None:
-                return self._unconstrained()
+            name_ptr = self._load(entry, ps)
             if name_ptr == 0:
-                break
-            optname = _concrete_cstr(state, name_ptr)
-            if optname is None:
-                return self._unconstrained()
-            if optname == name:
-                exact = (idx, ptr)
-                break
-            if name and optname.startswith(name):
-                prefixes.append((idx, ptr))
-            idx += 1
-            ptr += stride
-
-        if exact is not None:
-            match = exact
-        elif len(prefixes) == 1:
-            match = prefixes[0]
-        elif len(prefixes) > 1:
-            # ambiguous abbreviation
-            self._store_int("optopt", 0)
-            self._store_ptr("optarg", 0)
-            self._save_cursor(optind + 1, 0)
-            return self._ret_char(ord("?"))
-        else:
-            return None  # no match
-
-        match_idx, match_ptr = match
-        has_arg = state.memory.load(match_ptr + ps, 4, endness=state.arch.memory_endness)
-        has_arg = state.solver.eval(has_arg) if not state.solver.symbolic(has_arg) else _NO_ARGUMENT
-        flag_ptr = _eval_ptr(state, match_ptr + 2 * ps)
-        val_word = state.memory.load(match_ptr + 3 * ps, 4, endness=state.arch.memory_endness)
-        val = state.solver.eval(val_word) if not state.solver.symbolic(val_word) else 0
-
-        if has_longindex and longindex_addr:
-            state.memory.store(
-                longindex_addr,
-                claripy.BVV(match_idx, 32),
-                endness=state.arch.memory_endness,
-                inspect=False,
-                disable_actions=True,
+                return options
+            options.append(
+                (
+                    self._cstr(name_ptr),
+                    self._load(entry + ps, 4),
+                    self._load(entry + 2 * ps, ps),
+                    self._load(entry + 3 * ps, 4),
+                )
             )
+            entry += 4 * ps
 
-        # resolve the option-argument
-        new_optind = optind + 1
-        optarg = 0
-        if has_arg == _REQUIRED_ARGUMENT:
-            if inline_val is not None:
-                # optarg points just past the '=' in the original argv element
-                elem_ptr = _eval_ptr(state, argv_ptr + optind * ps)
-                optarg = (elem_ptr + prefix_len + (len(name_part) - len(inline_val))) if elem_ptr is not None else 0
-            elif optind + 1 < argc:
-                optarg = _eval_ptr(state, argv_ptr + (optind + 1) * ps) or 0
-                new_optind = optind + 2
-            else:
-                # missing required argument
-                self._store_int("optopt", val if flag_ptr == 0 else 0)
-                self._store_ptr("optarg", 0)
-                self._save_cursor(new_optind, 0)
-                return self._ret_char(_COLON if leading_colon else ord("?"))
-        elif has_arg == _OPTIONAL_ARGUMENT and inline_val is not None:
-            elem_ptr = _eval_ptr(state, argv_ptr + optind * ps)
-            optarg = (elem_ptr + (len(name_part) - len(inline_val))) if elem_ptr is not None else 0
+    def _long(self, arg, prefix_len):
+        """
+        Match "--name[=value]" (or "-name" for getopt_long_only). Returns None when getopt_long_only should fall
+        back to a short option.
+        """
+        name, eq, _ = arg[prefix_len:].partition(b"=")
+        options = self._longopts()
 
-        self._store_ptr("optarg", optarg)
-        self._save_cursor(new_optind, 0)
+        found = next((i for i, o in enumerate(options) if o[0] == name), None)
+        if found is None:
+            ambiguous = False
+            for i, o in enumerate(options):
+                if o[0].startswith(name):
+                    if found is None:
+                        found = i
+                    elif self.long_only or o[1:] != options[found][1:]:
+                        # prefixes of options that behave the same, such as aliases, are not ambiguous
+                        ambiguous = True
+            if ambiguous:
+                self.optind += 1
+                return self._error(0)
 
-        if flag_ptr:
-            state.memory.store(
-                flag_ptr,
-                claripy.BVV(val, 32),
-                endness=state.arch.memory_endness,
-                inspect=False,
-                disable_actions=True,
-            )
-            return self._ret_char(0)
-        return self._ret_char(val)
+        if found is None:
+            if not self.long_only or arg[1] == _DASH or arg[1] not in self.optstring:
+                self.optind += 1
+                return self._error(0)
+            return None
 
-    # ---- main engine ----
+        _, has_arg, flag, val = options[found]
+        self.optind += 1
+        if eq:
+            if has_arg == _NO_ARGUMENT:
+                return self._error(val)
+            self.optarg = self._argp(self.optind - 1) + prefix_len + len(name) + 1
+        elif has_arg == _REQUIRED_ARGUMENT:
+            if self.optind >= self.argc:
+                return self._missing_argument(val)
+            self.optarg = self._argp(self.optind)
+            self.optind += 1
 
-    def _getopt(self, argc, argv, optstring, longopts=None, longindex=None, long_only=False):
-        state = self.state
-        ps = state.arch.bytes
-
-        if state.solver.symbolic(argc):
-            return self._unconstrained()
-        argc = state.solver.eval(argc)
-        if state.solver.symbolic(argv):
-            return self._unconstrained()
-        argv_ptr = state.solver.eval(argv)
-        if state.solver.symbolic(optstring):
-            return self._unconstrained()
-        optstring_bytes = _concrete_cstr(state, state.solver.eval(optstring))
-        if optstring_bytes is None:
-            return self._unconstrained()
-
-        longopts_addr = None
-        if longopts is not None and not state.solver.symbolic(longopts):
-            longopts_addr = state.solver.eval(longopts)
-            if longopts_addr == 0:
-                longopts_addr = None
-        longindex_addr = None
-        has_longindex = longindex is not None and not state.solver.symbolic(longindex)
-        if has_longindex:
-            longindex_addr = state.solver.eval(longindex)
-            has_longindex = longindex_addr != 0
-
-        opts, leading_colon = _parse_optstring(optstring_bytes)
-        optind, optchar = self._load_cursor()
-
-        if optind >= argc:
-            self._save_cursor(optind, 0)
-            self._store_ptr("optarg", 0)
-            return self._ret_done()
-
-        elem_ptr = _eval_ptr(state, argv_ptr + optind * ps)
-        if elem_ptr is None:
-            return self._unconstrained()
-        if elem_ptr == 0:
-            self._save_cursor(optind, 0)
-            return self._ret_done()
-        arg = _concrete_cstr(state, elem_ptr)
-        if arg is None:
-            return self._unconstrained()
-
-        if optchar == 0:
-            if not arg or arg[0] != _DASH or arg == b"-":
-                # non-option operand -> stop (non-permuting)
-                self._save_cursor(optind, 0)
-                return self._ret_done()
-            if arg == b"--":
-                self._save_cursor(optind + 1, 0)
-                return self._ret_done()
-            if longopts_addr is not None:
-                long_attempt = None
-                prefix_len = 0
-                if arg.startswith(b"--"):
-                    long_attempt = arg[2:]
-                    prefix_len = 2
-                elif long_only:
-                    long_attempt = arg[1:]
-                    prefix_len = 1
-                if long_attempt is not None:
-                    res = self._handle_long(
-                        long_attempt,
-                        prefix_len,
-                        longopts_addr,
-                        has_longindex,
-                        longindex_addr,
-                        optind,
-                        argc,
-                        argv_ptr,
-                        leading_colon,
-                    )
-                    if res is not None:
-                        return res
-                    if arg.startswith(b"--"):
-                        # unknown "--long" never falls back to short parsing
-                        self._store_int("optopt", 0)
-                        self._store_ptr("optarg", 0)
-                        self._save_cursor(optind + 1, 0)
-                        return self._ret_char(ord("?"))
-                    # long_only single-dash with no match -> try short below
-            optchar = 1
-
-        c = arg[optchar]
-        spec = opts.get(c)
-        if spec is None or c == _COLON:
-            self._store_int("optopt", c)
-            self._store_ptr("optarg", 0)
-            optchar += 1
-            if optchar >= len(arg):
-                optind += 1
-                optchar = 0
-            self._save_cursor(optind, optchar)
-            return self._ret_char(ord("?"))
-
-        if spec == _NO_ARGUMENT:
-            self._store_ptr("optarg", 0)
-            optchar += 1
-            if optchar >= len(arg):
-                optind += 1
-                optchar = 0
-            self._save_cursor(optind, optchar)
-            return self._ret_char(c)
-
-        # option takes an argument (required or optional)
-        if optchar + 1 < len(arg):
-            self._store_ptr("optarg", elem_ptr + optchar + 1)
-            self._save_cursor(optind + 1, 0)
-            return self._ret_char(c)
-        if spec == _OPTIONAL_ARGUMENT:
-            self._store_ptr("optarg", 0)
-            self._save_cursor(optind + 1, 0)
-            return self._ret_char(c)
-        # required argument from the next argv element
-        if optind + 1 < argc:
-            next_ptr = _eval_ptr(state, argv_ptr + (optind + 1) * ps)
-            if next_ptr is None:
-                return self._unconstrained()
-            self._store_ptr("optarg", next_ptr)
-            self._save_cursor(optind + 2, 0)
-            return self._ret_char(c)
-        # missing required argument
-        self._store_int("optopt", c)
-        self._store_ptr("optarg", 0)
-        self._save_cursor(optind + 1, 0)
-        return self._ret_char(_COLON if leading_colon else ord("?"))
+        if self.longindex:
+            self._store(self.longindex, found, 32)
+        if flag:
+            self._store(flag, val, 32)
+            return 0
+        return val
 
 
 class getopt(_GetOptBase):

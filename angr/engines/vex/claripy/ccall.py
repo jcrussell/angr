@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Literal, TypedDict
 
-import claripy
 from archinfo.arch_arm import is_arm_arch
 
-from angr import errors
+from angr import claripy, errors
 from angr.errors import SimCCallError, SimError
 from angr.sim_options import USE_SIMPLIFIED_CCALLS
 from angr.state_plugins.sim_action_object import SimActionObject, _raw_ast
@@ -102,14 +103,30 @@ class CCallMultivaluedException(Exception):
 ### x86* data ###
 ##################
 
-data: dict[str, dict[str, dict[str, int | None]]] = {
+type Platform = Literal["AMD64", "X86"]
+
+
+class CCallTables(TypedDict):
+    """The condition-code lookup tables VEX's x86/amd64 ccall helpers are defined against."""
+
+    size: int
+    CondTypes: dict[str, int]
+    CondBitOffsets: dict[str, int]
+    CondBitMasks: dict[str, int]
+    # An op that does not exist on this platform maps to None (e.g. the 64-bit-only ops on X86).
+    OpTypes: dict[str, int | None]
+
+
+data: dict[Platform, CCallTables] = {
     "AMD64": {
+        "size": 64,
         "CondTypes": {},
         "CondBitOffsets": {},
         "CondBitMasks": {},
         "OpTypes": {},
     },
     "X86": {
+        "size": 32,
         "CondTypes": {},
         "CondBitOffsets": {},
         "CondBitMasks": {},
@@ -308,13 +325,21 @@ data["X86"]["OpTypes"]["G_CC_OP_ADCQ"] = None
 data["X86"]["OpTypes"]["G_CC_OP_SUBQ"] = None
 data["X86"]["OpTypes"]["G_CC_OP_ADDQ"] = None
 
-data_inverted = {
-    k_arch: {k_data_class: {y: x for (x, y) in d_data_class.items()} for k_data_class, d_data_class in d_arch.items()}
-    for k_arch, d_arch in data.items()
-}
 
-data["AMD64"]["size"] = 64
-data["X86"]["size"] = 32
+def _invert(table: Mapping[str, int | None]) -> dict[int | None, str]:
+    return {value: name for name, value in table.items()}
+
+
+# Named tables only; "size" is a scalar, not something to invert.
+data_inverted: dict[Platform, dict[str, dict[int | None, str]]] = {
+    platform: {
+        "CondTypes": _invert(tables["CondTypes"]),
+        "CondBitOffsets": _invert(tables["CondBitOffsets"]),
+        "CondBitMasks": _invert(tables["CondBitMasks"]),
+        "OpTypes": _invert(tables["OpTypes"]),
+    }
+    for platform, tables in data.items()
+}
 
 
 #
@@ -326,11 +351,11 @@ def pc_preamble(nbits):
     return data_mask, sign_mask
 
 
-def pc_make_rdata(nbits, cf, pf, af, zf, sf, of, platform=None):
+def pc_make_rdata(nbits, cf, pf, af, zf, sf, of, platform: Platform):
     return cf, pf, af, zf, sf, of
 
 
-def pc_make_rdata_if_necessary(nbits, cf, pf, af, zf, sf, of, platform=None):
+def pc_make_rdata_if_necessary(nbits, cf, pf, af, zf, sf, of, platform: Platform):
     vec = [
         (data[platform]["CondBitOffsets"]["G_CC_SHIFT_C"], cf),
         (data[platform]["CondBitOffsets"]["G_CC_SHIFT_P"], pf),
@@ -343,7 +368,7 @@ def pc_make_rdata_if_necessary(nbits, cf, pf, af, zf, sf, of, platform=None):
     return _concat_flags(nbits, vec)
 
 
-def pc_actions_ADD(state, nbits, arg_l, arg_r, cc_ndep, platform=None):
+def pc_actions_ADD(state, nbits, arg_l, arg_r, cc_ndep, platform: Platform):
     data_mask, _sign_mask = pc_preamble(nbits)
     res = arg_l + arg_r
 
@@ -357,7 +382,7 @@ def pc_actions_ADD(state, nbits, arg_l, arg_r, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_SUB(state, nbits, arg_l, arg_r, cc_ndep, platform=None):
+def pc_actions_SUB(state, nbits, arg_l, arg_r, cc_ndep, platform: Platform):
     res = arg_l - arg_r
 
     cf = claripy.If(claripy.ULT(arg_l, arg_r), claripy.BVV(1, 1), claripy.BVV(0, 1))
@@ -370,7 +395,7 @@ def pc_actions_SUB(state, nbits, arg_l, arg_r, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_LOGIC(state, nbits, arg_l, arg_r, cc_ndep, platform=None):
+def pc_actions_LOGIC(state, nbits, arg_l, arg_r, cc_ndep, platform: Platform):
     cf = claripy.BVV(0, 1)
     pf = calc_paritybit(arg_l)
     af = claripy.BVV(0, 1)
@@ -381,7 +406,7 @@ def pc_actions_LOGIC(state, nbits, arg_l, arg_r, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_DEC(state, nbits, res, _, cc_ndep, platform=None):
+def pc_actions_DEC(state, nbits, res, _, cc_ndep, platform: Platform):
     arg_l = res + 1
 
     cf = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_C"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_C"]]
@@ -393,7 +418,7 @@ def pc_actions_DEC(state, nbits, res, _, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_ADC(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_ADC(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     old_c = cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_C"]
     arg_l = cc_dep1
     arg_r = cc_dep2 ^ old_c
@@ -413,7 +438,7 @@ def pc_actions_ADC(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_ADCX(state, nbits, cc_dep1, cc_dep2, cc_ndep, is_adc, platform=None):
+def pc_actions_ADCX(state, nbits, cc_dep1, cc_dep2, cc_ndep, is_adc, platform: Platform):
     pf = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_P"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_P"]]
     af = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_A"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_A"]]
     zf = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_Z"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_Z"]]
@@ -441,7 +466,7 @@ def pc_actions_ADCX(state, nbits, cc_dep1, cc_dep2, cc_ndep, is_adc, platform=No
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_ANDN(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_ANDN(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     cf = claripy.BVV(0, 1)
     pf = claripy.BVV(0, 1)
     af = claripy.BVV(0, 1)
@@ -451,7 +476,7 @@ def pc_actions_ANDN(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_BLSI(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_BLSI(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     pf = claripy.BVV(0, 1)
     af = claripy.BVV(0, 1)
     of = claripy.BVV(0, 1)
@@ -461,7 +486,7 @@ def pc_actions_BLSI(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_BLSMSK(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_BLSMSK(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     pf = claripy.BVV(0, 1)
     af = claripy.BVV(0, 1)
     of = claripy.BVV(0, 1)
@@ -471,7 +496,7 @@ def pc_actions_BLSMSK(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_BLSR(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_BLSR(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     pf = claripy.BVV(0, 1)
     af = claripy.BVV(0, 1)
     of = claripy.BVV(0, 1)
@@ -481,7 +506,7 @@ def pc_actions_BLSR(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_SBB(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_SBB(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     old_c = cc_ndep[data[platform]["CondBitOffsets"]["G_CC_SHIFT_C"]].zero_extend(nbits - 1)
     arg_l = cc_dep1
     arg_r = cc_dep2 ^ old_c
@@ -498,7 +523,7 @@ def pc_actions_SBB(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_INC(state, nbits, res, _, cc_ndep, platform=None):
+def pc_actions_INC(state, nbits, res, _, cc_ndep, platform: Platform):
     arg_l = res - 1
 
     cf = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_C"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_C"]]
@@ -510,7 +535,7 @@ def pc_actions_INC(state, nbits, res, _, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_SHL(state, nbits, remaining, shifted, cc_ndep, platform=None):
+def pc_actions_SHL(state, nbits, remaining, shifted, cc_ndep, platform: Platform):
     cf = shifted[nbits - 1]
     pf = calc_paritybit(remaining[7:0])
     af = claripy.BVV(0, 1)
@@ -520,7 +545,7 @@ def pc_actions_SHL(state, nbits, remaining, shifted, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_SHR(state, nbits, remaining, shifted, cc_ndep, platform=None):
+def pc_actions_SHR(state, nbits, remaining, shifted, cc_ndep, platform: Platform):
     cf = claripy.If(shifted & 1 != 0, claripy.BVV(1, 1), claripy.BVV(0, 1))
     pf = calc_paritybit(remaining[7:0])
     af = claripy.BVV(0, 1)
@@ -530,7 +555,7 @@ def pc_actions_SHR(state, nbits, remaining, shifted, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_ROL(state, nbits, res, _, cc_ndep, platform=None):
+def pc_actions_ROL(state, nbits, res, _, cc_ndep, platform: Platform):
     cf = res[0]
     pf = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_P"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_P"]]
     af = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_A"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_A"]]
@@ -540,7 +565,7 @@ def pc_actions_ROL(state, nbits, res, _, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_ROR(state, nbits, res, _, cc_ndep, platform=None):
+def pc_actions_ROR(state, nbits, res, _, cc_ndep, platform: Platform):
     cf = res[nbits - 1]
     pf = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_P"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_P"]]
     af = (cc_ndep & data[platform]["CondBitMasks"]["G_CC_MASK_A"])[data[platform]["CondBitOffsets"]["G_CC_SHIFT_A"]]
@@ -550,10 +575,10 @@ def pc_actions_ROR(state, nbits, res, _, cc_ndep, platform=None):
     return pc_make_rdata(data[platform]["size"], cf, pf, af, zf, sf, of, platform=platform)
 
 
-def pc_actions_UMUL(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
-    lo = (cc_dep1 * cc_dep2)[nbits - 1 : 0]
-    rr = lo
-    hi = (rr >> nbits)[nbits - 1 : 0]
+def pc_actions_UMUL(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
+    rr = cc_dep1.zero_extend(nbits) * cc_dep2.zero_extend(nbits)
+    hi = rr[2 * nbits - 1 : nbits]
+    lo = rr[nbits - 1 : 0]
     cf = claripy.If(hi != 0, claripy.BVV(1, 1), claripy.BVV(0, 1))
     zf = calc_zerobit(lo)
     pf = calc_paritybit(lo)
@@ -568,7 +593,7 @@ def pc_actions_UMULQ(*args, **kwargs):
     raise SimCCallError("Unsupported flag action. Please implement or bug Yan.")
 
 
-def pc_actions_SMUL(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_actions_SMUL(state, nbits, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     ir = cc_dep1.sign_extend(nbits) * cc_dep2.sign_extend(nbits)
     hi = ir[2 * nbits - 1 : nbits]
     lo = ir[nbits - 1 : 0]
@@ -586,7 +611,7 @@ def pc_actions_SMULQ(*args, **kwargs):
     raise SimCCallError("Unsupported flag action. Please implement or bug Yan.")
 
 
-def pc_calculate_rdata_all_WRK(state, cc_op, cc_dep1_formal, cc_dep2_formal, cc_ndep_formal, platform=None):
+def pc_calculate_rdata_all_WRK(state, cc_op, cc_dep1_formal, cc_dep2_formal, cc_ndep_formal, platform: Platform):
     # sanity check
     cc_op = op_concretize(cc_op)
 
@@ -690,7 +715,7 @@ def pc_calculate_rdata_all_WRK(state, cc_op, cc_dep1_formal, cc_dep2_formal, cc_
 
 
 # This function returns all the data
-def pc_calculate_rdata_all(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_calculate_rdata_all(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     rdata_all = pc_calculate_rdata_all_WRK(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=platform)
     if isinstance(rdata_all, tuple):
         return pc_make_rdata_if_necessary(data[platform]["size"], *rdata_all, platform=platform)
@@ -699,7 +724,7 @@ def pc_calculate_rdata_all(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=Non
 
 # This function takes a condition that is being checked (ie, zero bit), and basically
 # returns that bit
-def pc_calculate_condition(state, cond, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_calculate_condition(state, cond, cc_op, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     rdata_all = pc_calculate_rdata_all_WRK(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=platform)
     if isinstance(rdata_all, tuple):
         cf, pf, _af, zf, sf, of = rdata_all
@@ -923,7 +948,7 @@ def pc_actions_SUB_CondNLE(state, arg_l, arg_r, cc_ndep):
     return _cond_flag(claripy.SGT(arg_l, arg_r))
 
 
-def pc_calculate_condition_simple(state, cond, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_calculate_condition_simple(state, cond, cc_op, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     """
     A simplified version of pc_calculate_condition(). Please refer to the documentation of Simplified CCalls above.
 
@@ -978,7 +1003,7 @@ def pc_calculate_condition_simple(state, cond, cc_op, cc_dep1, cc_dep2, cc_ndep,
     return claripy.Concat(claripy.BVV(0, data[platform]["size"] - 1), r)
 
 
-def pc_calculate_rdata_c(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform=None):
+def pc_calculate_rdata_c(state, cc_op, cc_dep1, cc_dep2, cc_ndep, platform: Platform):
     cc_op = op_concretize(cc_op)
 
     if cc_op == data[platform]["OpTypes"]["G_CC_OP_COPY"]:
@@ -1409,24 +1434,10 @@ def x86g_use_seg_selector(state, ldt, gdt, seg_selector, virtual_addr):
         virtual_addr = virtual_addr.zero_extend(16)
 
     # are we in real mode?
-    if state.arch.vex_archinfo["x86_cr0"] & 1 == 0:
+    if state.globals.get("x86_cr0", state.arch.vex_archinfo["x86_cr0"]) & 1 == 0:
         return ((seg_selector << 4) + virtual_addr).zero_extend(32)
 
     seg_selector &= 0x0000FFFF
-
-    segment_selector_val = seg_selector >> 3
-
-    if (
-        state.project.simos.name == "Win32"
-        and (segment_selector_val == 0x6).is_true()
-        and state.project.concrete_target is not None
-    ):
-        return bad(
-            "angr doesn't support Windows Heaven's gate calls "
-            "https://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/ \n"
-            "Please use the native 32 bit libs (not WoW64) or implement a simprocedure to avoid executing these "
-            "instructions"
-        )
 
     # RPL=11 check
     # if state.solver.is_true((seg_selector & 3) != 3):
@@ -1474,11 +1485,6 @@ def x86g_use_seg_selector(state, ldt, gdt, seg_selector, virtual_addr):
 
     base = get_segdescr_base(state, descriptor)
     get_segdescr_limit(state, descriptor)
-
-    # When a concrete target is set and memory is read directly from the process sometimes a negative offset
-    # from a segment register is used
-    # if state.solver.is_true(virtual_addr >= limit) and state.project.concrete_target is None:
-    #     return bad("virtual_addr >= limit")
 
     r = (base + virtual_addr).zero_extend(32)
     l.debug("x86g_use_seg_selector: addr=%s", str(r))
@@ -1765,7 +1771,7 @@ ARM64G_CC_OP_SBC32 = 7  # /* DEP1 = argL (Rn), DEP2 = arg2 (shifter_op), DEP3 = 
 ARM64G_CC_OP_SBC64 = 8  # /* DEP1 = argL (Rn), DEP2 = arg2 (shifter_op), DEP3 = oldC (in LSB) */
 ARM64G_CC_OP_LOGIC32 = 9  # /* DEP1 = result, DEP2 = 0, DEP3 = 0 */
 ARM64G_CC_OP_LOGIC64 = 10  # /* DEP1 = result, DEP2 = 0, DEP3 = 0 */
-ARM64G_CC_OP_NUMBER = 11  #
+ARM64G_CC_OP_NUMBER = 11
 
 ARM64CondEQ = 0  # /* equal                         : Z=1 */
 ARM64CondNE = 1  # /* not equal                     : Z=0 */
@@ -1902,11 +1908,11 @@ def arm64g_calculate_flag_c(state, cc_op, cc_dep1, cc_dep2, cc_dep3):
     elif concrete_op in (ARM64G_CC_OP_ADC32, ARM64G_CC_OP_ADC64):
         res = cc_dep1 + cc_dep2 + cc_dep3
         flag = claripy.If(
-            cc_dep2 != 0, boolean_extend(claripy.ULE, res, cc_dep1, 64), boolean_extend(claripy.ULT, res, cc_dep1, 64)
+            cc_dep3 != 0, boolean_extend(claripy.ULE, res, cc_dep1, 64), boolean_extend(claripy.ULT, res, cc_dep1, 64)
         )
     elif concrete_op in (ARM64G_CC_OP_SBC32, ARM64G_CC_OP_SBC64):
         flag = claripy.If(
-            cc_dep2 != 0,
+            cc_dep3 != 0,
             boolean_extend(claripy.UGE, cc_dep1, cc_dep2, 64),
             boolean_extend(claripy.UGT, cc_dep1, cc_dep2, 64),
         )
@@ -2037,6 +2043,108 @@ def arm64g_calculate_condition(state, cond_n_op, cc_dep1, cc_dep2, cc_dep3):
 
     l.error("Unrecognized condition %d in arm64g_calculate_condition", concrete_cond)
     raise SimCCallError(f"Unrecognized condition {concrete_cond} in arm64g_calculate_condition")
+
+
+#####################
+### RISCV64 Flags ###
+#####################
+
+RISCV64G_FFLAG_NV = 0x10  # invalid operation
+
+
+def _riscv64g_fflags_fcmp(a1, a2, quiet):
+    # NV is raised for any NaN operand on signaling compares (flt/fle), and only for sNaN operands on feq
+    a1 = a1.raw_to_bv()
+    a2 = a2.raw_to_bv()
+    frac_bits = 52 if len(a1) == 64 else 23
+    exp_msb = len(a1) - 2
+
+    def is_bad(x):
+        nan = claripy.And(x[exp_msb:frac_bits] == -1, x[frac_bits - 1 : 0] != 0)
+        return claripy.And(nan, x[frac_bits - 1] == 0) if quiet else nan
+
+    return claripy.If(claripy.Or(is_bad(a1), is_bad(a2)), claripy.BVV(RISCV64G_FFLAG_NV, 32), claripy.BVV(0, 32))
+
+
+def riscv64g_calculate_fflags_feq_s(state, a1, a2):  # pylint:disable=unused-argument
+    return _riscv64g_fflags_fcmp(a1, a2, True)
+
+
+def riscv64g_calculate_fflags_flt_s(state, a1, a2):  # pylint:disable=unused-argument
+    return _riscv64g_fflags_fcmp(a1, a2, False)
+
+
+def riscv64g_calculate_fflags_fle_s(state, a1, a2):  # pylint:disable=unused-argument
+    return _riscv64g_fflags_fcmp(a1, a2, False)
+
+
+def riscv64g_calculate_fflags_feq_d(state, a1, a2):  # pylint:disable=unused-argument
+    return _riscv64g_fflags_fcmp(a1, a2, True)
+
+
+def riscv64g_calculate_fflags_flt_d(state, a1, a2):  # pylint:disable=unused-argument
+    return _riscv64g_fflags_fcmp(a1, a2, False)
+
+
+def riscv64g_calculate_fflags_fle_d(state, a1, a2):  # pylint:disable=unused-argument
+    return _riscv64g_fflags_fcmp(a1, a2, False)
+
+
+def _riscv64g_calculate_fclass(a1) -> claripy.ast.bv.BV:
+    """RISC-V F/D FCLASS: one class bit in bits 9:0; no FP exception flags.
+
+    Classify raw IEEE-754 fields without floating-point arithmetic so signaling
+    NaNs retain their quiet bit. VEX checks FCLASS.S NaN boxing before this call.
+    """
+    if a1.op == "If":
+        condition, if_true, if_false = a1.args
+        return claripy.If(condition, _riscv64g_calculate_fclass(if_true), _riscv64g_calculate_fclass(if_false))
+    # SMT floating-point NaNs do not retain their IEEE payload or quiet bit.
+    # Recover the original register bits instead of round-tripping via FP.
+    a1 = a1.args[0] if a1.op == "bvToFP" else a1.raw_to_bv()
+    frac_bits = 52 if len(a1) == 64 else 23
+    exp_msb = len(a1) - 2
+
+    sign = a1[len(a1) - 1]
+    exponent = a1[exp_msb:frac_bits]
+    fraction = a1[frac_bits - 1 : 0]
+    exp_zero = exponent == 0
+    exp_ones = exponent == -1
+    frac_zero = fraction == 0
+    negative = sign == 1
+
+    is_zero = claripy.And(exp_zero, frac_zero)
+    is_subnormal = claripy.And(exp_zero, claripy.Not(frac_zero))
+    is_normal = claripy.And(claripy.Not(exp_zero), claripy.Not(exp_ones))
+    is_infinity = claripy.And(exp_ones, frac_zero)
+    is_nan = claripy.And(exp_ones, claripy.Not(frac_zero))
+    is_quiet_nan = claripy.And(is_nan, fraction[frac_bits - 1] == 1)
+    is_signaling_nan = claripy.And(is_nan, fraction[frac_bits - 1] == 0)
+
+    classes = (
+        claripy.And(negative, is_infinity),
+        claripy.And(negative, is_normal),
+        claripy.And(negative, is_subnormal),
+        claripy.And(negative, is_zero),
+        claripy.And(claripy.Not(negative), is_zero),
+        claripy.And(claripy.Not(negative), is_subnormal),
+        claripy.And(claripy.Not(negative), is_normal),
+        claripy.And(claripy.Not(negative), is_infinity),
+        is_signaling_nan,
+        is_quiet_nan,
+    )
+    result = claripy.BVV(0, 64)
+    for bit, condition in enumerate(classes):
+        result |= claripy.If(condition, claripy.BVV(1 << bit, 64), claripy.BVV(0, 64))
+    return result
+
+
+def riscv64g_calculate_fclass_s(state, a1):  # pylint:disable=unused-argument
+    return _riscv64g_calculate_fclass(a1)
+
+
+def riscv64g_calculate_fclass_d(state, a1):  # pylint:disable=unused-argument
+    return _riscv64g_calculate_fclass(a1)
 
 
 #

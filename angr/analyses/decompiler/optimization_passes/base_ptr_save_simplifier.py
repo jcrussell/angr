@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.analyses.decompiler.stack_item import StackItem, StackItemType
 
 from .optimization_pass import OptimizationPass, OptimizationPassStage
@@ -20,7 +20,7 @@ class BasePointerSaveSimplifier(OptimizationPass):
     PLATFORMS = None
     STAGE = OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION
     NAME = "Simplify base pointer saving"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

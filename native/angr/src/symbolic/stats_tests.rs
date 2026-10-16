@@ -48,10 +48,10 @@ fn marker_guard() -> std::sync::MutexGuard<'static, ()> {
 fn undo_bump(counter: &AtomicU64) {
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "SILENT(cat-a): the closure always returns Some, so fetch_update cannot \
+        reason = "SILENT(cat-a): the closure always returns Some, so try_update cannot \
                   fail; `drop(..)` is rejected here because Result<u64, u64> is Copy"
     )]
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_sub(MARK))
     });
 }
@@ -326,10 +326,10 @@ fn test_watermark_counters_reach_their_stats_key() {
         // `reset_solver_stats()` inside the window must not wrap us to ~u32::MAX.
         #[expect(
             clippy::let_underscore_must_use,
-            reason = "SILENT(cat-a): the closure always returns Some, so fetch_update cannot \
+            reason = "SILENT(cat-a): the closure always returns Some, so try_update cannot \
                       fail; `drop(..)` is rejected here because Result<u32, u32> is Copy"
         )]
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
             Some(v.saturating_sub(MARK32))
         });
         assert!(

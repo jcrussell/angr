@@ -49,10 +49,13 @@ class RustTypehoon(Typehoon):
         func_addr: int | str,
         var_to_typevars: dict[SimVariable, set[TypeVariable]],
         stack_offset_tvs: dict[int, TypeVariable] | None = None,
+        flavor: str | None = None,
     ) -> None:
 
         if not self.simtypes_solution:
             return
+
+        manager = self._variable_manager_for(func_addr, flavor)
 
         for var, typevars in var_to_typevars.items():
             # if the variable is a stack variable, does the stack offset have any corresponding type variable?
@@ -78,10 +81,10 @@ class RustTypehoon(Typehoon):
             # determine the best type - this logic can be made better!
             if not type_candidates:
                 continue
+            type_candidates = [t.with_arch(self.project.arch) for t in type_candidates]
             if len(type_candidates) > 1:
                 types_by_size: dict[int, list[SimType]] = defaultdict(list)
                 for t in type_candidates:
-                    t = t.with_arch(self.project.arch)
                     if t.size is not None:
                         types_by_size[t.size].append(t)
                 if not types_by_size:
@@ -94,11 +97,14 @@ class RustTypehoon(Typehoon):
                 the_type = type_candidates[0]
 
             if isinstance(the_type, SimTypeBottom) and var.size is not None:
-                the_type = RustSimTypeInt(signed=False, size=var.size * self.project.arch.byte_width)
+                the_type = RustSimTypeInt(signed=False, size=var.size * self.project.arch.byte_width).with_arch(
+                    self.project.arch
+                )
 
-            self.kb.variables[func_addr].set_variable_type(
-                var, the_type, name=the_type.name if isinstance(the_type, SimStruct) else None
-            )
+            if func_addr != "global":
+                the_type = self._flatten_pointer_to_array(the_type, self.project.arch)
+
+            manager.set_variable_type(var, the_type, name=the_type.name if isinstance(the_type, SimStruct) else None)
 
     def _translate_to_simtypes(self):
         """

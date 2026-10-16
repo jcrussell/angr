@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from functools import wraps
 from typing import TYPE_CHECKING, Literal, cast
 
-import claripy
 from cle import Symbol
 from cle.backends import ELF
 
-from angr.calling_conventions import SimCC
+from angr import claripy
+from angr.calling_conventions import SimCC, SimReferenceArgument
 from angr.code_location import CodeLocation, ExternalCodeLocation
 from angr.knowledge_plugins.functions import Function
 from angr.knowledge_plugins.key_definitions.atoms import Atom, MemoryLocation, Register, SpOffset
@@ -85,7 +85,7 @@ class FunctionCallData:
 
     callsite_codeloc: CodeLocation
     function_codeloc: CodeLocation
-    address_multi: MultiValues[claripy.ast.BV | claripy.ast.FP] | None
+    address_multi: MultiValues | None
     address: int | None = None
     symbol: Symbol | None = None
     function: Function | None = None
@@ -93,12 +93,12 @@ class FunctionCallData:
     cc: SimCC | None = None
     prototype: SimTypeFunction | None = None
     args_atoms: list[set[Atom]] | None = None
-    args_values: list[MultiValues[claripy.ast.BV | claripy.ast.FP]] | None = None
+    args_values: list[MultiValues] | None = None
     ret_atoms: set[Atom] | None = None
     redefine_locals: bool = True
     visited_blocks: set[int] | None = None
     effects: list[FunctionEffect] = field(default_factory=list)
-    ret_values: MultiValues[claripy.ast.BV | claripy.ast.FP] | None = None
+    ret_values: MultiValues | None = None
     ret_values_deps: set[Definition] | None = None
     caller_will_handle_single_ret: bool = False
     guessed_cc: bool = False
@@ -282,13 +282,24 @@ class FunctionHandler:
     A mechanism for summarizing a function call's effect on a program for ReachingDefinitionsAnalysis.
     """
 
-    def __init__(self, interfunction_level: int = 0, extra_impls: Iterable[type[FunctionHandler]] | None = None):
+    # a class attribute too, for subclasses that do not call __init__()
+    flavor: str | None = None
+
+    def __init__(
+        self,
+        interfunction_level: int = 0,
+        extra_impls: Iterable[type[FunctionHandler]] | None = None,
+        flavor: str | None = None,
+    ):
         """
         :param interfunction_level: Maximum depth in to continue local function exploration
         :param extra_impls: FunctionHandler classes to implement beyond what's implemented in function_handler_library
+        :param flavor: The decompilation flavor whose callee prototypes are used (None: the analysis's flavor, or the
+                       default flavor)
         """
 
         self.interfunction_level: int = interfunction_level
+        self.flavor: str | None = flavor
 
         if extra_impls is None:
             return
@@ -306,7 +317,7 @@ class FunctionHandler:
         return self
 
     def make_function_codeloc(
-        self, target: None | int | MultiValues, callsite: CodeLocation, callsite_func_addr: int | None
+        self, target: int | MultiValues | None, callsite: CodeLocation, callsite_func_addr: int | None
     ):
         """
         The RDA engine will call this function to transform a callsite CodeLocation into a callee CodeLocation.
@@ -359,8 +370,9 @@ class FunctionHandler:
             data.name = data.symbol.name
         if data.cc is None and data.function is not None:
             data.cc = data.function.calling_convention
+        flavor = self.flavor if self.flavor is not None else getattr(state.analysis, "flavor", None)
         if data.prototype is None and data.function is not None:
-            data.prototype = data.function.prototype
+            data.prototype = data.function.get_prototype(flavor)
         hook_libname = None
         if data.address is not None and (data.cc is None or data.prototype is None):
             hook = (
@@ -394,11 +406,13 @@ class FunctionHandler:
         if data.prototype is not None:
             # make sure the function prototype is resolved.
             # TODO: Cache resolved function prototypes globally
-            prototype_libname = (
-                data.function.prototype_libname
-                if data.function is not None and data.function.prototype_libname
-                else hook_libname
-            )
+            if data.function is not None and data.function.prototype_libname:
+                # only the C prototype comes from a C library
+                prototype_libname = (
+                    data.function.prototype_libname if data.function.uses_default_prototype_for(flavor) else None
+                )
+            else:
+                prototype_libname = hook_libname
             if prototype_libname is not None:
                 prototype = dereference_simtype_by_lib(data.prototype, prototype_libname)
                 data.prototype = cast(SimTypeFunction, prototype)
@@ -524,7 +538,7 @@ class FunctionHandler:
                 for ret_atom in data.ret_atoms:
                     data.depends(
                         ret_atom,
-                        *(Register(*state.arch.registers[reg_name], arch=state.arch) for reg_name in data.cc.ARG_REGS),
+                        *(Register(*state.arch.registers[reg_name]) for reg_name in data.cc.ARG_REGS),
                         apply_at_callsite=True,
                     )
         else:
@@ -613,27 +627,35 @@ class FunctionHandler:
                     atoms_set.add(atom)
                 atoms.append(atoms_set)
             return atoms
-        return [{Register(*state.arch.registers[arg_name], arch=state.arch)} for arg_name in cc.ARG_REGS]
+        return [{Register(*state.arch.registers[arg_name])} for arg_name in cc.ARG_REGS]
 
     @staticmethod
     def c_return_as_atoms(state: ReachingDefinitionsState, cc: SimCC, prototype: SimTypeFunction) -> set[Atom]:
         if prototype.returnty is not None and not isinstance(prototype.returnty, SimTypeBottom):
-            retval = cc.return_val(prototype.returnty)
+            retval = cc.return_val(prototype.returnty, perspective_returned=True)
             if retval is not None:
-                return {
-                    Atom.from_argument(footprint_arg, state.arch, full_reg=True)
-                    for footprint_arg in retval.get_footprint()
-                }
+                if isinstance(retval, SimReferenceArgument):
+                    # the value is returned through an implicit out-parameter; its footprint is relative to the
+                    # returned pointer, not the stack pointer, so it cannot be translated into atoms statically.
+                    # the caller instead receives the pointer in retval.ptr_loc (e.g., rax).
+                    retval = retval.ptr_loc
+                atoms = set()
+                for footprint_arg in retval.get_footprint():
+                    try:
+                        atoms.add(Atom.from_argument(footprint_arg, state.arch, full_reg=True))
+                    except ValueError:
+                        continue
+                return atoms
         return set()
 
     @staticmethod
     def caller_saved_regs_as_atoms(state: ReachingDefinitionsState, cc: SimCC) -> set[Register]:
         return (
-            {Register(*state.arch.registers[reg], arch=state.arch) for reg in cc.CALLER_SAVED_REGS}
+            {Register(*state.arch.registers[reg]) for reg in cc.CALLER_SAVED_REGS}
             if cc.CALLER_SAVED_REGS is not None
             else set()
         )
 
     @staticmethod
     def stack_pointer_as_atom(state) -> Register:
-        return Register(state.arch.sp_offset, state.arch.bytes, state.arch)
+        return Register(state.arch.sp_offset, state.arch.bytes)

@@ -1,36 +1,49 @@
 # pylint:disable=too-many-boolean-expressions
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import networkx
 
 from angr.ailment.block import Block
 from angr.ailment.expression import Call, VirtualVariable
 from angr.ailment.statement import Assignment, Return, SideEffectStatement
 from angr.analyses.analysis import Analysis, register_analysis
-from angr.calling_conventions import SimRegArg, default_cc
+from angr.calling_conventions import SimRegArg, default_cc_for_project, project_language
 from angr.code_location import AILCodeLocation
 from angr.knowledge_plugins.functions import Function
 from angr.knowledge_plugins.key_definitions.constants import ObservationPointType
-from angr.utils.ssa import get_tmp_deflocs, get_tmp_uselocs, get_vvar_deflocs, get_vvar_uselocs
 
-from .s_rda_model import SRDAModel
+from .s_rda_model import SRDAModel, populate_model
 from .s_rda_view import SRDAView
 
+if TYPE_CHECKING:
+    from angr.project import Project
 
-class SReachingDefinitionsAnalysis(Analysis):
+
+class SReachingDefinitions:
     """
     Constant and expression propagation that only supports SSA AIL graphs.
+
+    Deliberately not an :class:`Analysis`: it is instantiated hundreds of times per decompilation (often once per
+    block), so it skips the analysis-factory ceremony. Instantiate it directly with the project as the first
+    argument; exceptions always propagate.
     """
 
     def __init__(  # pylint: disable=too-many-positional-arguments
         self,
+        project: Project,
         subject,
         func_addr: int | None = None,
         func_graph: networkx.DiGraph[Block] | None = None,
         func_args: set[VirtualVariable] | None = None,
         use_callee_saved_regs_at_return: bool = False,
         track_tmps: bool = False,
+        variable_map=None,
     ):
+        self.project = project
+        self.kb = project.kb
+
         if isinstance(subject, Block):
             self.block = subject
             self.func = None
@@ -52,7 +65,16 @@ class SReachingDefinitionsAnalysis(Analysis):
         if self.func is not None:
             self._bp_as_gpr = self.func.info.get("bp_as_gpr", False)
 
-        self.model = SRDAModel(func_graph, func_args, self.project.arch)
+        self.model = SRDAModel(
+            func_graph,
+            func_args,
+            self.project.arch,
+            platform=self.project.simos.name if self.project.simos is not None else None,
+            language=project_language(self.project),
+            variable_map=variable_map,
+            functions=self.project.kb.functions if self.project.kb is not None else None,
+            default_cc=default_cc_for_project(self.project),
+        )
 
         self._analyze()
 
@@ -67,50 +89,21 @@ class SReachingDefinitionsAnalysis(Analysis):
             case _:
                 raise NotImplementedError
 
-        phi_vvars: dict[int, set[int | None]] = {}
-        # find all vvar definitions
-        vvar_deflocs = get_vvar_deflocs(blocks.values(), phi_vvars=phi_vvars)
-        # find all explicit vvar uses
-        vvar_uselocs = get_vvar_uselocs(blocks.values())
-
-        # update vvar definitions using function arguments
-        if self.func_args:
-            for vvar in self.func_args:
-                if vvar.varid not in vvar_deflocs:
-                    vvar_deflocs[vvar.varid] = vvar, AILCodeLocation.make_extern(vvar.varid)
-            self.model.func_args = self.func_args
-
-        # update model
-        for vvar_id, (vvar, defloc) in vvar_deflocs.items():
-            self.model.varid_to_vvar[vvar_id] = vvar
-            self.model.all_vvar_definitions[vvar_id] = defloc
-            if vvar_id in vvar_uselocs:
-                for useloc in vvar_uselocs[vvar_id]:
-                    self.model.add_vvar_use(vvar_id, *useloc)
-
-        self.model.phi_vvar_ids = set(phi_vvars)
-        self.model.phivarid_to_varids = {}
-        for vvar_id, src_vvars in phi_vvars.items():
-            self.model.phivarid_to_varids_with_unknown[vvar_id] = src_vvars
-            self.model.phivarid_to_varids[vvar_id] = (  # type: ignore
-                {vvar_id for vvar_id in src_vvars if vvar_id is not None} if None in src_vvars else src_vvars
-            )
+        populate_model(
+            self.model,
+            blocks,
+            self.func_args,
+            fix_undefined_vvars=self.mode == "function",
+            track_tmps=self._track_tmps,
+        )
 
         if self.mode == "function":
             assert self.func is not None
 
-            # fix register definitions for arguments
-            defined_vvarids = set(vvar_deflocs)
-            undefined_vvarids = set(vvar_uselocs.keys()).difference(defined_vvarids)
-            for vvar_id in undefined_vvarids:
-                used_vvar = next(iter(vvar_uselocs[vvar_id]))[0]
-                self.model.varid_to_vvar[vvar_id] = used_vvar
-                self.model.all_vvar_definitions[vvar_id] = AILCodeLocation.make_extern(vvar_id)
-                if vvar_id in vvar_uselocs:
-                    for vvar_useloc in vvar_uselocs[vvar_id]:
-                        self.model.add_vvar_use(vvar_id, *vvar_useloc)
-
             srda_view = SRDAView(self.model)
+            # the function entry block, used by observe()'s dominance-based fast path to build the dominator tree
+            assert self.func_addr is not None
+            entry_block = blocks.get((self.func_addr, None))
 
             # fix register uses at call sites
 
@@ -119,14 +112,24 @@ class SReachingDefinitionsAnalysis(Analysis):
             for block in blocks.values():
                 for stmt_idx, stmt in enumerate(block.statements):
                     if (  # pylint:disable=too-many-boolean-expressions
-                        (isinstance(stmt, SideEffectStatement) and stmt.expr.args is None)
+                        (
+                            isinstance(stmt, SideEffectStatement)
+                            and isinstance(stmt.expr, Call)
+                            and stmt.expr.args is None
+                        )
                         or (isinstance(stmt, Assignment) and isinstance(stmt.src, Call) and stmt.src.args is None)
-                        or (isinstance(stmt, Return) and stmt.ret_exprs and isinstance(stmt.ret_exprs[0], Call))
+                        or (
+                            isinstance(stmt, Return)
+                            and stmt.ret_exprs
+                            and isinstance(stmt.ret_exprs[0], Call)
+                            and stmt.ret_exprs[0].args is None
+                        )
                     ):
                         call_stmt_ids.append(((block.addr, block.idx), stmt_idx))
 
             observations = srda_view.observe(
-                [("stmt", insn_stmt_id, ObservationPointType.OP_BEFORE) for insn_stmt_id in call_stmt_ids]
+                [("stmt", insn_stmt_id, ObservationPointType.OP_BEFORE) for insn_stmt_id in call_stmt_ids],
+                entry=entry_block,
             )
             for key, reg_to_vvarids in observations.items():
                 _, ((block_addr, block_idx), stmt_idx), _ = key
@@ -145,12 +148,15 @@ class SReachingDefinitionsAnalysis(Analysis):
                 assert isinstance(call, Call)
 
                 # conservatively add uses to all registers that are potentially used here
-                if call.calling_convention is not None:
-                    cc = call.calling_convention
+                call_cc = (
+                    self.model.variable_map.calling_convention(call) if self.model.variable_map is not None else None
+                )
+                if call_cc is not None:
+                    cc = call_cc
                 else:
                     # just use all registers in the default calling convention because we don't know anything about
                     # the calling convention yet
-                    cc_cls = default_cc(self.project.arch.name)
+                    cc_cls = default_cc_for_project(self.project)
                     assert cc_cls is not None
                     cc = cc_cls(self.project.arch)
 
@@ -172,10 +178,7 @@ class SReachingDefinitionsAnalysis(Analysis):
                 # considered dead assignments.
                 cc = self.func.calling_convention
                 if cc is None:
-                    cc_cls = default_cc(
-                        self.project.arch.name,
-                        platform=self.project.simos.name if self.project.simos is not None else None,
-                    )
+                    cc_cls = default_cc_for_project(self.project)
                     assert cc_cls is not None
                     cc = cc_cls(self.project.arch)
 
@@ -185,7 +188,7 @@ class SReachingDefinitionsAnalysis(Analysis):
                 for block in blocks.values():
                     if block.addr in endpoint_addrs:
                         ob_points.append(("node", (block.addr, block.idx), ObservationPointType.OP_AFTER))
-                func_end_observations = srda_view.observe(ob_points)
+                func_end_observations = srda_view.observe(ob_points, entry=entry_block)
                 ignore_reg_offsets = {arch.sp_offset, arch.ip_offset}
                 if not self._bp_as_gpr:
                     ignore_reg_offsets.add(arch.bp_offset)
@@ -213,22 +216,33 @@ class SReachingDefinitionsAnalysis(Analysis):
                                 vvarid = reg_to_vvarids[reg_offset][max_vvar_size]
                                 self.model.add_vvar_use(vvarid, None, codeloc)
 
-        if self._track_tmps:
-            # track tmps
-            tmp_deflocs = get_tmp_deflocs(blocks.values())
-            # find all vvar uses
-            tmp_uselocs = get_tmp_uselocs(blocks.values())
 
-            # update model
-            for block_loc, d in tmp_deflocs.items():
-                for tmp_atom, stmt_idx in d.items():
-                    self.model.all_tmp_definitions[block_loc][tmp_atom] = stmt_idx
+class SReachingDefinitionsAnalysis(Analysis, SReachingDefinitions):
+    """
+    A wrapper around SReachingDefinitions to make it usable as an :class:`Analysis` and registered in the
+    analysis hub.
+    """
 
-                    if tmp_atom in tmp_uselocs[block_loc]:
-                        for tmp_at_use, use_stmt_idx in tmp_uselocs[block_loc][tmp_atom]:
-                            if tmp_atom not in self.model.all_tmp_uses[block_loc]:
-                                self.model.all_tmp_uses[block_loc][tmp_atom] = set()
-                            self.model.all_tmp_uses[block_loc][tmp_atom].add((tmp_at_use, use_stmt_idx))
+    def __init__(  # pylint: disable=too-many-arguments,too-many-locals
+        self,
+        subject,
+        func_addr: int | None = None,
+        func_graph: networkx.DiGraph[Block] | None = None,
+        func_args: set[VirtualVariable] | None = None,
+        use_callee_saved_regs_at_return: bool = False,
+        track_tmps: bool = False,
+        variable_map=None,
+    ):
+        super().__init__(
+            self.project,
+            subject,
+            func_addr=func_addr,
+            func_graph=func_graph,
+            func_args=func_args,
+            use_callee_saved_regs_at_return=use_callee_saved_regs_at_return,
+            track_tmps=track_tmps,
+            variable_map=variable_map,
+        )
 
 
 register_analysis(SReachingDefinitionsAnalysis, "SReachingDefinitions")

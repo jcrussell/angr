@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from angr.ailment import Block
     from angr.analyses.decompiler.structurer_nodes import BaseNode
+    from angr.analyses.decompiler.variable_map import VariableMap
     from angr.knowledge_plugins.functions.function_manager import FunctionManager
     from angr.knowledge_plugins.variables.variable_manager import VariableManagerInternal
 
@@ -43,10 +44,15 @@ class SemanticNamingBase(ABC):
         self,
         variable_manager: VariableManagerInternal,
         functions: FunctionManager,
+        variable_map: VariableMap,
     ):
         self._variable_manager = variable_manager
         self._functions = functions
+        self._variable_map = variable_map
         self._var_to_new_name: dict[SimVariable, str] = {}
+        # Original (pre-rename) name of every variable this pattern renames, so the
+        # orchestrator can restore it when reverting an over-shared name.
+        self.original_names: dict[SimVariable, str | None] = {}
 
     @abstractmethod
     def analyze(self) -> dict[SimVariable, str]:
@@ -72,8 +78,8 @@ class SemanticNamingBase(ABC):
             if var in exclude_vars:
                 continue
 
-            # Check if variable already has a meaningful name (not auto-generated)
-            if var.renamed:
+            # Check if variable already has a meaningful name (user-given, or from an earlier pattern)
+            if var.renamed or var.auto_renamed:
                 continue
 
             # Find the unified variable and rename it
@@ -87,12 +93,13 @@ class SemanticNamingBase(ABC):
             if unified_var in renamed_vars:
                 continue
 
-            if target_var.renamed:
+            if target_var.renamed or target_var.auto_renamed:
                 continue
 
             l.debug("Renaming %s -> %s (pattern: %s)", target_var.name, new_name, self.__class__.__name__)
+            self.original_names.setdefault(target_var, target_var.name)
             target_var.name = new_name
-            target_var.renamed = True
+            target_var.auto_renamed = True
             target_var.clear_hash()
             renamed_vars.add(var)
             if unified_var:
@@ -106,8 +113,9 @@ class SemanticNamingBase(ABC):
         """
         Get the SimVariable linked to an expression, if any.
         """
-        if hasattr(expr, "variable") and expr.variable is not None:
-            return self._variable_manager.unified_variable(expr.variable)
+        expr_var = self._variable_map.variable(expr)
+        if expr_var is not None:
+            return self._variable_manager.unified_variable(expr_var)
         return None
 
     def _get_function_name(self, call: Call) -> str | None:
@@ -144,8 +152,9 @@ class ClinicNamingBase(SemanticNamingBase):
         variable_manager: VariableManagerInternal,
         functions: FunctionManager,
         entry_node: Block,
+        variable_map: VariableMap,
     ):
-        super().__init__(variable_manager, functions)
+        super().__init__(variable_manager, functions, variable_map)
         self._graph = ail_graph
         self._entry_node = entry_node
 
@@ -164,6 +173,7 @@ class RegionNamingBase(SemanticNamingBase):
         region: BaseNode,
         variable_manager: VariableManagerInternal,
         functions: FunctionManager,
+        variable_map,
     ):
-        super().__init__(variable_manager, functions)
+        super().__init__(variable_manager, functions, variable_map)
         self._region = region

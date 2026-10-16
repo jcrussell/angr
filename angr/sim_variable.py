@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Self
 
-import claripy
+from angr import claripy
+from angr.utils.hashing import stable_hash
 
 from .protos import variables_pb2 as pb2
 from .serializable import Serializable
@@ -22,6 +23,7 @@ class SimVariable(Serializable):
 
     __slots__ = [
         "_hash",
+        "auto_renamed",
         "candidate_names",
         "category",
         "ident",
@@ -45,6 +47,8 @@ class SimVariable(Serializable):
         self.region: int | None = region
         self.category: str | None = category
         self.renamed = False
+        # named by a semantic naming pass rather than by the user; reset at the start of each run
+        self.auto_renamed = False
         self.candidate_names = None
         self.size = size
         self._hash = None
@@ -59,7 +63,8 @@ class SimVariable(Serializable):
         raise NotImplementedError
 
     def _set_base(self, obj):
-        obj.base.ident = self.ident
+        if self.ident is not None:
+            obj.base.ident = self.ident
         if self.category is not None:
             obj.base.category = self.category
         if self.region is not None:
@@ -67,17 +72,19 @@ class SimVariable(Serializable):
         if self.name is not None:
             obj.base.name = self.name
         obj.base.renamed = self.renamed
+        obj.base.auto_renamed = self.auto_renamed
 
     def _from_base(self, obj):
-        self.ident = obj.base.ident
+        self.ident = obj.base.ident if obj.base.HasField("ident") else None
         if obj.base.HasField("category"):
             self.category = obj.base.category
         else:
             self.category = None
         if obj.base.HasField("region"):
             self.region = obj.base.region
-        self.name = obj.base.name
+        self.name = obj.base.name if obj.base.HasField("name") else None
         self.renamed = obj.base.renamed
+        self.auto_renamed = obj.base.auto_renamed
 
     @property
     def is_function_argument(self):
@@ -116,9 +123,12 @@ class SimConstantVariable(SimVariable):
 
     __slots__ = ["value"]
 
-    def __init__(self, size: int, ident=None, value=None, region=None):
+    def __init__(self, size: int, *, value: float, region: int | None = None, ident=None):
         super().__init__(ident=ident, region=region, size=size)
-        self.value = value
+        is_negative = value < 0
+        abs_value = -value if is_negative else value
+        abs_value = abs_value & ((1 << (size * 8)) - 1) if isinstance(abs_value, int) else abs_value
+        self.value = -abs_value if is_negative else abs_value
 
     def __repr__(self):
         return f"<{self.region}|const {self.value}>"
@@ -138,7 +148,7 @@ class SimConstantVariable(SimVariable):
 
     def __hash__(self):
         if self._hash is None:
-            self._hash = hash(("const", self.value, self.ident, self.region, self.ident))
+            self._hash = stable_hash(("const", self.value, self.ident, self.region, self.ident))
         return self._hash
 
     def copy(self) -> SimConstantVariable:
@@ -148,27 +158,31 @@ class SimConstantVariable(SimVariable):
 
     @property
     def key(self) -> tuple[str | int | None, ...]:
-        return ("const", self.value, self.size, self.ident)
+        return "const", self.value, self.size, self.ident
 
     @classmethod
     def _get_cmsg(cls):
-        return pb2.ConstantVariable()  # pyright: ignore[reportAttributeAccessIssue]  # pylint:disable=no-member
+        return pb2.ConstantVariable()  # pylint:disable=no-member
 
     def serialize_to_cmessage(self):
         obj = self._get_cmsg()
         self._set_base(obj)
         obj.size = self.size
+        abs_value = self.value if self.value >= 0 else -self.value
         if self.bits > 64:
             assert isinstance(self.value, int)
             # TODO: Handle float
-            obj.long_value = int.to_bytes(self.value, byteorder="little")
+            num_bytes = (self.bits + 7) // 8
+            obj.long_value = self.value.to_bytes(num_bytes, byteorder="little")
         else:
-            obj.value = self.value
+            obj.value = abs_value
+        obj.is_negative = self.value is not None and self.value < 0
         return obj
 
     @classmethod
     def parse_from_cmessage(cls, cmsg, **kwargs):
         value = int.from_bytes(cmsg.long_value, byteorder="little") if cmsg.size > 64 else cmsg.value
+        value = -value if cmsg.is_negative else value
         obj = cls(cmsg.size, value=value)
         obj._from_base(cmsg)
         return obj
@@ -194,7 +208,7 @@ class SimTemporaryVariable(SimVariable):
 
     def __hash__(self):
         if self._hash is None:
-            self._hash = hash(f"tmp_{self.tmp_id}")
+            self._hash = stable_hash(("tmp", self.tmp_id))
         return self._hash
 
     def __eq__(self, other):
@@ -214,7 +228,7 @@ class SimTemporaryVariable(SimVariable):
 
     @classmethod
     def _get_cmsg(cls):
-        return pb2.TemporaryVariable()  # pyright: ignore[reportAttributeAccessIssue]  # pylint:disable=no-member
+        return pb2.TemporaryVariable()  # pylint:disable=no-member
 
     def serialize_to_cmessage(self):
         obj = self._get_cmsg()
@@ -254,7 +268,7 @@ class SimRegisterVariable(SimVariable):
 
     def __hash__(self):
         if self._hash is None:
-            self._hash = hash(("reg", self.region, self.reg, self.size, self.ident))
+            self._hash = stable_hash(("reg", self.region, self.reg, self.size, self.ident))
         return self._hash
 
     def __eq__(self, other):
@@ -281,7 +295,7 @@ class SimRegisterVariable(SimVariable):
 
     @classmethod
     def _get_cmsg(cls):
-        return pb2.RegisterVariable()  # pyright: ignore[reportAttributeAccessIssue]  # pylint:disable=no-member
+        return pb2.RegisterVariable()  # pylint:disable=no-member
 
     def serialize_to_cmessage(self):
         obj = self._get_cmsg()
@@ -325,9 +339,13 @@ class SimComboRegisterVariable(SimVariable):
     def loc_repr(self, arch):
         return ":".join(arch.translate_register_name(reg_offset, self.size) for reg_offset in self.reg_offsets)
 
+    @property
+    def key(self) -> tuple[str | int | None, ...]:
+        return ("combo_reg", *self.reg_offsets, self.size, self.ident)
+
     def __hash__(self):
         if self._hash is None:
-            self._hash = hash(("combo_reg", self.region, tuple(self.reg_offsets), self.size, self.ident))
+            self._hash = stable_hash(("combo_reg", self.region, tuple(self.reg_offsets), self.size, self.ident))
         return self._hash
 
     def __eq__(self, other):
@@ -350,22 +368,19 @@ class SimComboRegisterVariable(SimVariable):
 
     @classmethod
     def _get_cmsg(cls):
-        # TODO: Support serialization for SimComboRegisterVariable
-        return pb2.RegisterVariable()  # pyright: ignore[reportAttributeAccessIssue]  # pylint:disable=no-member
+        return pb2.ComboRegisterVariable()  # pylint:disable=no-member
 
     def serialize_to_cmessage(self):
-        # TODO: Support serialization for SimComboRegisterVariable
         obj = self._get_cmsg()
         self._set_base(obj)
-        obj.reg = self.reg_offsets[0]
+        obj.reg_offsets.extend(self.reg_offsets)
         obj.size = self.size
         return obj
 
     @classmethod
     def parse_from_cmessage(cls, cmsg, **kwargs):
-        # TODO: Support serialization for SimComboRegisterVariable
         obj = cls(
-            cmsg.reg,
+            tuple(cmsg.reg_offsets),
             cmsg.size,
         )
         obj._from_base(cmsg)
@@ -406,7 +421,7 @@ class SimMemoryVariable(SimVariable):
         if self._hash is not None:
             return self._hash
 
-        self._hash = hash((hash(self.addr), hash(self.size), self.ident))
+        self._hash = stable_hash((self.addr, self.size, self.ident))
         return self._hash
 
     def __eq__(self, other):
@@ -428,7 +443,7 @@ class SimMemoryVariable(SimVariable):
 
     @classmethod
     def _get_cmsg(cls):
-        return pb2.MemoryVariable()  # pyright: ignore[reportAttributeAccessIssue]  # pylint:disable=no-member
+        return pb2.MemoryVariable()  # pylint:disable=no-member
 
     def serialize_to_cmessage(self):
         obj = self._get_cmsg()
@@ -510,7 +525,7 @@ class SimStackVariable(SimMemoryVariable):
 
     def __hash__(self):
         if self._hash is None:
-            self._hash = hash((self.ident, self.base, self.offset, self.size))
+            self._hash = stable_hash((self.ident, self.base, self.offset, self.size))
         return self._hash
 
     def copy(self) -> SimStackVariable:
@@ -540,7 +555,7 @@ class SimStackVariable(SimMemoryVariable):
 
     @classmethod
     def _get_cmsg(cls):
-        return pb2.StackVariable()  # pyright: ignore[reportAttributeAccessIssue]  # pylint:disable=no-member
+        return pb2.StackVariable()  # pylint:disable=no-member
 
     def serialize_to_cmessage(self):
         obj = self._get_cmsg()

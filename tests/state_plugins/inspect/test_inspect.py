@@ -8,14 +8,13 @@ import os
 import unittest
 
 import archinfo
-import claripy
 import pyvex
 
 import angr
-from angr import BP_AFTER, BP_BEFORE, SIM_PROCEDURES, SimState, concretization_strategies
+from angr import BP_AFTER, BP_BEFORE, SIM_PROCEDURES, SimState, claripy, concretization_strategies
 from angr.engines import HeavyVEXMixin, ProcedureEngine, SimInspectMixin
 from angr.project import load_shellcode
-from tests.common import bin_location
+from tests.common import bin_location, minimal_project
 
 test_location = os.path.join(bin_location, "tests")
 
@@ -113,11 +112,13 @@ class TestInspect(unittest.TestCase):
         irsb.pp()
         InspectEngine(p).process(s, irsb=irsb)
         assert counts.reg_write == 7
-        assert counts.reg_read == 2
-        assert counts.tmp_write == 1
-        assert counts.tmp_read == 1
-        assert counts.expr == 3
-        assert counts.statement == 11
+        # A direct jmp rel8 no longer reads rip into a temp: libVEX emits a
+        # constant PUT(rip) for the block's default exit.
+        assert counts.reg_read == 1
+        assert counts.tmp_write == 0
+        assert counts.tmp_read == 0
+        assert counts.expr == 2
+        assert counts.statement == 10
         assert counts.instruction == 2
         assert counts.constraints == 0
         assert counts.mem_write == 1
@@ -207,7 +208,7 @@ class TestInspect(unittest.TestCase):
             if state.inspect.attrs.address_concretization_action == "store":
                 state.inspect.attrs.address_concretization_expr = claripy.BVV(0x1000, state.arch.bits)
 
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         s.inspect.b("address_concretization", BP_BEFORE, action=change_symbolic_target)
         s.memory.store(x, "A")
         assert list(s.solver.eval_upto(x, 10)) == [0x1000]
@@ -220,7 +221,7 @@ class TestInspect(unittest.TestCase):
         def dont_add_constraints(state):
             state.inspect.attrs.address_concretization_add_constraints = False
 
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         s.inspect.b("address_concretization", BP_BEFORE, action=dont_add_constraints)
         s.memory.store(x, "A")
         assert len(s.solver.eval_upto(x, 10)) == 10
@@ -248,7 +249,7 @@ class TestInspect(unittest.TestCase):
             ):
                 raise UnconstrainedAbort("uh oh", state)
 
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         s.memory.write_strategies.insert(0, concretization_strategies.SimConcretizationStrategyRange(128))
         s.memory._write_address_range = 1
         s.memory._write_address_range_approx = 1

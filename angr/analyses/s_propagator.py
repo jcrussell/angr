@@ -1,34 +1,44 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from collections import defaultdict
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import networkx
 
 from angr.ailment.block import Block
 from angr.ailment.expression import (
+    BinaryOp,
+    Call,
     Const,
     Convert,
     Expression,
     Insert,
     Load,
     Phi,
+    Reinterpret,
     StackBaseOffset,
     Tmp,
+    UnaryOp,
     VirtualVariable,
     VirtualVariableCategory,
 )
 from angr.ailment.manager import Manager
-from angr.ailment.statement import Assignment, ConditionalJump, Jump, Return, Store
+from angr.ailment.statement import Assignment, ConditionalJump, Jump, Return, Statement, Store
 from angr.analyses.analysis import Analysis, register_analysis
 from angr.code_location import AILCodeLocation
 from angr.knowledge_plugins.functions import Function
+from angr.utils.ail import dirty_has_side_effects
 from angr.utils.ssa import (
-    get_tmp_deflocs,
-    get_tmp_uselocs,
-    get_vvar_deflocs,
-    get_vvar_uselocs,
+    CONST_VVAR_LOAD_DIRTY_WHITELIST,
+    CONST_VVAR_LOAD_WHITELIST,
+    CONST_VVAR_TMP_WHITELIST,
+    CONST_VVAR_WHITELIST,
+    AILWhitelistExprTypeWalker,
+    get_dirty_exprs,
+    get_uses_defs,
     has_ite_expr,
     has_ite_stmt,
     has_store_stmt_in_between_stmts,
@@ -42,6 +52,41 @@ from angr.utils.ssa import (
     is_vvar_propagatable,
 )
 
+if TYPE_CHECKING:
+    from angr.project import Project
+
+# The cache of reusable AILBlockWalker instances, which are used by is_const_*(). The cache dict itself is
+# owned by the corresponding Decompiler instance (so it is released when the Decompiler is gone). This thread-local
+# points at the active Decompiler's walker cache for the duration of its run, which allows all SPropagator instances
+# created during the same decompilation run share walkers.
+# Make sure all walkers added to this cache are properly reset before using.
+_tls = threading.local()
+
+
+@contextlib.contextmanager
+def sprop_cache_scope(cache: dict[tuple[type, ...], AILWhitelistExprTypeWalker]):
+    """
+    Install ``cache`` as the active AILBlockWalker cache for the current thread.
+    """
+    prev = getattr(_tls, "walker_cache", None)
+    _tls.walker_cache = cache
+    try:
+        yield
+    finally:
+        _tls.walker_cache = prev
+
+
+def _whitelist_walker(whitelist: tuple[type, ...]) -> AILWhitelistExprTypeWalker:
+    cache = getattr(_tls, "walker_cache", None)
+    if cache is None:
+        # no active Decompiler scope (e.g. standalone SPropagator use); fall back to a throwaway walker
+        return AILWhitelistExprTypeWalker(whitelist)
+    walker = cache.get(whitelist)
+    if walker is None:
+        walker = AILWhitelistExprTypeWalker(whitelist)
+        cache[whitelist] = walker
+    return walker
+
 
 class SPropagatorModel:
     """
@@ -54,13 +99,16 @@ class SPropagatorModel:
         self.dead_vvar_ids: set[int] = set()
 
 
-class SPropagatorAnalysis(Analysis):
+class SPropagator:
     """
     Constant and expression propagation that only supports SSA AIL graphs.
+
+    Deliberately not an :class:`Analysis` for better speed.
     """
 
     def __init__(  # pylint: disable=too-many-positional-arguments
         self,
+        project: Project,
         subject: Block | Function,
         *,
         ail_manager: Manager,
@@ -71,6 +119,9 @@ class SPropagatorAnalysis(Analysis):
         func_addr: int | None = None,
         stack_arg_offsets: set[int] | None = None,
     ):
+        self.project = project
+        self.kb = project.kb
+
         if isinstance(subject, Block):
             self.block = subject
             self.func = None
@@ -115,6 +166,73 @@ class SPropagatorAnalysis(Analysis):
     def dead_vvar_ids(self):
         return self.model.dead_vvar_ids
 
+    def _stack_base_offset_at_use(
+        self,
+        vvar_id: int,
+        useloc: AILCodeLocation,
+        reg_offset: int,
+        vvar_deflocs: Mapping[int, tuple[VirtualVariable, AILCodeLocation]],
+        blocks: Mapping[tuple[int, int | None], Block],
+    ) -> int | None:
+        """
+        Stack offset held by an sp/bp vvar at one of its uses. An SSA vvar holds what its definition wrote, which is
+        not necessarily the offset before the use's instruction: the use may have been propagated past a later sp
+        update (`test byte [esp+1], 0x41; lea esp, [esp+4]; jne`). So take the offset after the defining instruction,
+        or at the entry of the use's block (or function) when the vvar is defined outside the analyzed blocks.
+        Phi sources and definitions that do not end their instruction's writes of the register (`leave` writes esp
+        twice) fall back to the offset before the use's instruction.
+        """
+        assert self._sp_tracker is not None
+        use_ins = useloc.ins_addr
+        use_block = blocks.get((useloc.block_addr, useloc.block_idx))
+        if use_block is None or is_phi_assignment(use_block.statements[useloc.stmt_idx]):
+            return self._sp_tracker.offset_before(use_ins, reg_offset)
+
+        sb_offset = None
+        def_entry = vvar_deflocs.get(vvar_id)
+        if def_entry is None or def_entry[1].is_extern:
+            if self.mode == "function" and self.func_addr is not None:
+                # live-in at function entry
+                sb_offset = self._sp_tracker.offset_before(self.func_addr, reg_offset)
+            else:
+                # defined in another block: live-in at the entry of the use's block
+                entry_ins = next(
+                    (stmt.tags["ins_addr"] for stmt in use_block.statements if "ins_addr" in stmt.tags), None
+                )
+                if entry_ins is not None:
+                    sb_offset = self._sp_tracker.offset_before(entry_ins, reg_offset)
+        else:
+            defloc = def_entry[1]
+            def_ins = defloc.ins_addr
+            def_block = blocks.get((defloc.block_addr, defloc.block_idx))
+            if (
+                def_block is not None
+                and def_ins is not None
+                and def_ins != use_ins
+                and self._is_last_reg_write_in_insn(def_block, defloc.stmt_idx, def_ins, reg_offset)
+            ):
+                sb_offset = self._sp_tracker.offset_after(def_ins, reg_offset)
+        if sb_offset is not None:
+            return sb_offset
+        return self._sp_tracker.offset_before(use_ins, reg_offset)
+
+    @staticmethod
+    def _is_last_reg_write_in_insn(block: Block, stmt_idx: int, ins_addr: int, reg_offset: int) -> bool:
+        stmt = block.statements[stmt_idx]
+        if not isinstance(stmt, Assignment) or isinstance(stmt.src, Phi):
+            return False
+        for later in block.statements[stmt_idx + 1 :]:
+            if later.tags.get("ins_addr") != ins_addr:
+                break
+            if (
+                isinstance(later, Assignment)
+                and isinstance(later.dst, VirtualVariable)
+                and later.dst.was_reg
+                and later.dst.reg_offset == reg_offset
+            ):
+                return False
+        return True
+
     def _analyze(self):
         blocks: dict[tuple[int, int | None], Block]
         match self.mode:
@@ -127,10 +245,11 @@ class SPropagatorAnalysis(Analysis):
             case _:
                 raise NotImplementedError
 
-        # find all vvar definitions
-        vvar_deflocs = get_vvar_deflocs(blocks.values())
-        # find all vvar uses
-        vvar_uselocs = get_vvar_uselocs(blocks.values())
+        # Combined pass: vvar deflocs + vvar uselocs + tmp deflocs +
+        # tmp uselocs in a single walker traversal per block (vs the
+        # legacy 4 separate helper calls, two of which spun their own
+        # AILBlockViewer to walk the same blocks).
+        vvar_deflocs, vvar_uselocs, _tmp_deflocs_cached, _tmp_uselocs_cached = get_uses_defs(blocks.values())
 
         # update vvar_deflocs using function arguments
         if self.func_args:
@@ -154,6 +273,11 @@ class SPropagatorAnalysis(Analysis):
         const_vvars: dict[int, Const | StackBaseOffset] = {}
         phi_varids: dict[int, set[int | None]] = {}  # mapping from phi_varid to source var IDs
         for vvar_id, (vvar, defloc) in vvar_deflocs.items():
+            if not vvar.was_reg and not vvar.was_parameter and not vvar.was_tmp:
+                continue
+
+            vvarid_to_vvar[vvar_id] = vvar
+
             if defloc.is_extern:
                 continue
 
@@ -172,6 +296,7 @@ class SPropagatorAnalysis(Analysis):
                 # if this is not acceptable, just make sure we don't proagate inserts into the base of other inserts...
                 continue
             if is_phi_assignment(stmt):
+                assert isinstance(stmt, Assignment) and isinstance(stmt.src, Phi)
                 phi_varids[vvar_id] = {
                     src_vvar.varid if src_vvar is not None else None for _, src_vvar in stmt.src.src_and_vvars
                 }
@@ -186,9 +311,10 @@ class SPropagatorAnalysis(Analysis):
                 and isinstance(stmt.dst, VirtualVariable)
                 and stmt.dst.was_stack
                 and stmt.dst.stack_offset in self.stack_arg_offsets
-                and not isinstance(stmt.src, Phi)
+                and not isinstance(stmt.src, (Phi, Call))
             ):
                 # force propagation of stack variables to callsites; we set v to stmt.src, but const_value stays None
+                # (never a call: a result slot in the argument area must not re-issue the call at every use)
                 r = True
                 v = stmt.src
             elif not vvar.was_reg and not vvar.was_parameter:
@@ -207,7 +333,6 @@ class SPropagatorAnalysis(Analysis):
         # function mode only
         if self.mode == "function":
             assert self.func_graph is not None
-
             # find phi assignments whose source vvars are all constants/stackptrs
             # iterate until it reaches a fixed point
             changed = True
@@ -270,6 +395,7 @@ class SPropagatorAnalysis(Analysis):
                     (vvar.was_reg or vvar.was_parameter)
                     and sum(vvar_useloc_to_count.values()) <= 2
                     and isinstance(stmt.src, Load)
+                    and not has_tmp_expr(stmt.src)
                 ):
                     # do we want to propagate this Load expression if it's used for less than twice?
                     # it's often seen in the following pattern, where propagation will be beneficial:
@@ -300,11 +426,29 @@ class SPropagatorAnalysis(Analysis):
                         self.model.dead_vvar_ids.add(vvar.varid)
                         continue
 
+                if vvar.was_reg and self._is_cmpf_status_word(stmt.src):
+                    # each use tests the status word on its own (e.g., ZF in one block and PF in another); copy it to
+                    # every use so that the peephole optimizer sees the comparison it tests
+                    use_stmts = [
+                        blocks[(loc.block_addr, loc.block_idx)].statements[loc.stmt_idx] for _, loc in vvar_uselocs_set
+                    ]
+                    if not any(is_phi_assignment(use_stmt) for use_stmt in use_stmts):
+                        for vvar_used, vvar_useloc in vvar_uselocs_set:
+                            self.replace(replacements, vvar_useloc, vvar_used, stmt.src)
+                        continue
+
                 if is_vvar_propagatable(vvar, stmt, self.stack_arg_offsets):
                     if len(vvar_uselocs_set) == 1:
                         vvar_used, vvar_useloc = next(iter(vvar_uselocs_set))
+                        assert vvar_useloc.block_addr is not None and vvar_useloc.stmt_idx is not None
+                        use_stmt = blocks[(vvar_useloc.block_addr, vvar_useloc.block_idx)].statements[
+                            vvar_useloc.stmt_idx
+                        ]
                         if (
-                            is_const_vvar_load_assignment(stmt)
+                            not self._is_phi_source_mismatch(stmt, use_stmt, vvar_deflocs, blocks)
+                            and is_const_vvar_load_assignment(
+                                stmt, walker_cached=_whitelist_walker(CONST_VVAR_LOAD_WHITELIST)
+                            )
                             and not has_store_stmt_in_between_stmts(self.func_graph, blocks, defloc, vvar_useloc)
                             and not has_tmp_expr(stmt.src)
                         ):
@@ -312,19 +456,21 @@ class SPropagatorAnalysis(Analysis):
                             self.replace(replacements, vvar_useloc, vvar_used, stmt.src)
                             continue
 
-                        if is_const_and_vvar_assignment(stmt) and not has_tmp_expr(stmt.src):
+                        if is_const_and_vvar_assignment(
+                            stmt, walker_cached=_whitelist_walker(CONST_VVAR_WHITELIST)
+                        ) and not has_tmp_expr(stmt.src):
                             # if the useloc is a phi assignment statement, ensure that stmt.src is the same as the phi
                             # variable
-                            assert vvar_useloc.block_addr is not None
-                            assert vvar_useloc.stmt_idx is not None
-                            useloc_stmt = blocks[(vvar_useloc.block_addr, vvar_useloc.block_idx)].statements[
-                                vvar_useloc.stmt_idx
-                            ]
-                            if is_phi_assignment(useloc_stmt):
+                            if is_phi_assignment(use_stmt):
+                                assert (
+                                    isinstance(use_stmt, Assignment)
+                                    and isinstance(use_stmt.dst, VirtualVariable)
+                                    and isinstance(use_stmt.src, Phi)
+                                )
                                 if (
                                     isinstance(stmt.src, VirtualVariable)
-                                    and stmt.src.oident == useloc_stmt.dst.oident
-                                    and stmt.src.category == useloc_stmt.dst.category
+                                    and stmt.src.oident == use_stmt.dst.oident
+                                    and stmt.src.category == use_stmt.dst.category
                                 ):
                                     self.replace(replacements, vvar_useloc, vvar_used, stmt.src)
                             else:
@@ -332,7 +478,7 @@ class SPropagatorAnalysis(Analysis):
                             continue
 
                     else:
-                        if is_const_and_vvar_assignment(stmt):
+                        if is_const_and_vvar_assignment(stmt, walker_cached=_whitelist_walker(CONST_VVAR_WHITELIST)):
                             non_exitsite_uselocs = []
                             exitsite_uselocs_to_count = defaultdict(int)
                             for _, loc in vvar_uselocs[vvar_id]:
@@ -406,8 +552,10 @@ class SPropagatorAnalysis(Analysis):
                         if "sp" in self.project.arch.registers
                         else None
                     )
+                    sp_offset = self.project.arch.sp_offset
+                    assert sp_offset is not None
                     for vvar_at_use, useloc in vvar_uselocs_set:
-                        sb_offset = self._sp_tracker.offset_before(useloc.ins_addr, self.project.arch.sp_offset)
+                        sb_offset = self._stack_base_offset_at_use(vvar_id, useloc, sp_offset, vvar_deflocs, blocks)
                         if sb_offset is not None:
                             v = StackBaseOffset(self._ail_manager.next_atom(), self.project.arch.bits, sb_offset)
                             if sp_bits is not None and vvar.bits < sp_bits:
@@ -421,8 +569,10 @@ class SPropagatorAnalysis(Analysis):
                         if "bp" in self.project.arch.registers
                         else None
                     )
+                    bp_offset = self.project.arch.bp_offset
+                    assert bp_offset is not None
                     for vvar_at_use, useloc in vvar_uselocs_set:
-                        sb_offset = self._sp_tracker.offset_before(useloc.ins_addr, self.project.arch.bp_offset)
+                        sb_offset = self._stack_base_offset_at_use(vvar_id, useloc, bp_offset, vvar_deflocs, blocks)
                         if sb_offset is not None:
                             v = StackBaseOffset(self._ail_manager.next_atom(), self.project.arch.bits, sb_offset)
                             if bp_bits is not None and vvar.bits < bp_bits:
@@ -431,15 +581,16 @@ class SPropagatorAnalysis(Analysis):
                             self.replace(replacements, useloc, vvar_at_use, v)
                     continue
 
-        # find all tmp definitions
-        tmp_deflocs = get_tmp_deflocs(blocks.values())
-        # find all tmp uses
-        tmp_uselocs = get_tmp_uselocs(blocks.values())
+        # tmp def/use locs were collected by the combined pass above.
+        tmp_deflocs = _tmp_deflocs_cached
+        tmp_uselocs = _tmp_uselocs_cached
 
         for block_loc, tmp_and_uses in tmp_uselocs.items():
             for tmp_atom, tmp_uses in tmp_and_uses.items():
                 # take a look at the definition and propagate the definition if supported
                 block = blocks[block_loc]
+                if tmp_atom not in tmp_deflocs.get(block_loc, {}):
+                    continue
                 tmp_def_stmtidx = tmp_deflocs[block_loc][tmp_atom]
 
                 stmt = block.statements[tmp_def_stmtidx]
@@ -452,8 +603,12 @@ class SPropagatorAnalysis(Analysis):
                             self.replace(replacements, loc, tmp_used, stmt.src)
                         continue
 
-                    r = is_const_vvar_tmp_assignment(stmt)
+                    r = is_const_vvar_tmp_assignment(stmt, walker_cached=_whitelist_walker(CONST_VVAR_TMP_WHITELIST))
                     if r:
+                        if len(tmp_uses) > 1 and stmt.src.depth > 4:
+                            # duplicating a deep expression into every use overfolds (e.g., a rewritten adc carry
+                            # feeding the result, DEP2, and NDEP of the next adc); keep it as a variable instead
+                            continue
                         # we can propagate it!
                         if isinstance(stmt.src, VirtualVariable):
                             v = const_vvars.get(stmt.src.varid, stmt.src)
@@ -465,7 +620,14 @@ class SPropagatorAnalysis(Analysis):
                             self.replace(replacements, loc, tmp_used, v)
                         continue
 
-                    if len(tmp_uses) <= 2 and is_const_vvar_load_dirty_assignment(stmt):
+                    if len(tmp_uses) <= 2 and is_const_vvar_load_dirty_assignment(
+                        stmt, walker_cached=_whitelist_walker(CONST_VVAR_LOAD_DIRTY_WHITELIST)
+                    ):
+                        dirty_exprs = get_dirty_exprs(stmt)
+                        if dirty_exprs and (len(tmp_uses) > 1 or any(map(dirty_has_side_effects, dirty_exprs))):
+                            # a dirty helper is never duplicated (rdtsc), and one with side effects (fldenv) stays
+                            # where it is
+                            continue
                         for tmp_used, tmp_use_stmtidx in tmp_uses:
                             same_inst = (
                                 block.statements[tmp_def_stmtidx].tags["ins_addr"]
@@ -532,6 +694,22 @@ class SPropagatorAnalysis(Analysis):
         return False
 
     @staticmethod
+    def _is_cmpf_status_word(expr: Expression) -> bool:
+        """CmpF(a, b) over constants and vvars, possibly masked and width-converted."""
+        while True:
+            if isinstance(expr, Convert) and expr.from_type == Convert.TYPE_INT and expr.to_type == Convert.TYPE_INT:
+                expr = expr.operand
+            elif isinstance(expr, BinaryOp) and expr.op == "And" and isinstance(expr.operands[1], Const):
+                expr = expr.operands[0]
+            else:
+                break
+        return (
+            isinstance(expr, BinaryOp)
+            and expr.op == "CmpF"
+            and all(isinstance(op, (Const, VirtualVariable)) for op in expr.operands)
+        )
+
+    @staticmethod
     def is_vvar_used_for_addr_loading_switch_case(uselocs: set[AILCodeLocation], blocks) -> bool:
         """
         Check if a virtual variable is used for loading an address in a switch-case construct.
@@ -565,6 +743,45 @@ class SPropagatorAnalysis(Analysis):
             (stmt_0.false_target.value, stmt_0.false_target_idx),
         }
         return (block_1.addr, block_1.idx) in stmt_0_targets
+
+    @staticmethod
+    def _is_phi_source_mismatch(
+        def_stmt: Assignment,
+        use_stmt: Statement,
+        vvar_deflocs: Mapping[int, tuple[VirtualVariable, AILCodeLocation]],
+        blocks: Mapping[tuple[int, int | None], Block],
+    ) -> bool:
+        """
+        Whether propagating def_stmt.src into use_stmt, a phi, would give the phi a source it cannot have: a non-vvar
+        expression, or a stack vvar holding a floating-point value in a register phi (dephication would coalesce the
+        register with the stack slot, which an integer reload of a float slot must not share a variable with).
+        """
+        if not is_phi_assignment(use_stmt):
+            return False
+        assert isinstance(use_stmt, Assignment) and isinstance(use_stmt.dst, VirtualVariable)
+        if not isinstance(def_stmt.src, VirtualVariable):
+            return True
+        if not (def_stmt.src.was_stack and not use_stmt.dst.was_stack):
+            return False
+        # other slots (spills of integer registers, call results, loads) are reloaded as what they hold
+        entry = vvar_deflocs.get(def_stmt.src.varid)
+        if entry is None or entry[1].is_extern or entry[1].stmt_idx is None:
+            return True
+        block = blocks.get((entry[1].block_addr, entry[1].block_idx))
+        if block is None:
+            return True
+        slot_def = block.statements[entry[1].stmt_idx]
+        return not isinstance(slot_def, Assignment) or SPropagator._is_fp_valued(slot_def.src)
+
+    @staticmethod
+    def _is_fp_valued(expr: Expression) -> bool:
+        if isinstance(expr, Convert):
+            return expr.to_type == Convert.TYPE_FP
+        if isinstance(expr, Reinterpret):
+            return expr.to_type == "F"
+        if isinstance(expr, (BinaryOp, UnaryOp)):
+            return bool(expr.floating_point)
+        return False
 
     @staticmethod
     def replace(
@@ -607,6 +824,15 @@ class SPropagatorAnalysis(Analysis):
             seen.add(varid)
             queue.extend(vid for vid in phivar_to_srcvarids[varid] if vid is not None and vid not in seen)
         return result
+
+
+class SPropagatorAnalysis(Analysis, SPropagator):
+    """
+    A wrapper around SPropagator to make it an Analysis.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 register_analysis(SPropagatorAnalysis, "SPropagator")

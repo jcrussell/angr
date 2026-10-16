@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterable
-from typing import Any
-
-import claripy
+from typing import TYPE_CHECKING, Any
 
 import angr
-import angr.ailment as ailment
+import angr.ailment.utils
+from angr import ailment, claripy
 from angr.ailment.block import Block
+from angr.utils.hashing import stable_hash
 
 INDENT_DELTA = 2
 
@@ -20,6 +20,7 @@ class EmptyBlockNotice(Exception):
 
 class MultiNode:
     __slots__ = (
+        "_hash",
         "addr",
         "idx",
         "nodes",
@@ -30,13 +31,14 @@ class MultiNode:
         self.nodes: list[Block] = []
 
         for node in nodes:
-            if isinstance(node, (MultiNode, angr.analyses.decompiler.GraphRegion)):
+            if isinstance(node, (MultiNode, angr.analyses.decompiler.RegionOverlay)):
                 self.nodes += node.nodes
             else:
                 self.nodes.append(node)
 
         self.addr = addr if addr is not None else self.nodes[0].addr
         self.idx = idx if idx is not None else self.nodes[0].idx if isinstance(self.nodes[0], ailment.Block) else None
+        self._hash = None
 
     def copy(self) -> MultiNode:
         return MultiNode(self.nodes, addr=self.addr, idx=self.idx)
@@ -52,8 +54,12 @@ class MultiNode:
         return f"<MultiNode {self.addr:#x} of {len(self.nodes)} nodes{s}>"
 
     def __hash__(self):
-        # changing self.nodes does not change the hash, which enables in-place editing
-        return hash((MultiNode, self.addr, self.idx))
+        # changing self.nodes does not change the hash, which enables in-place editing. hash(MultiNode) is derived from
+        # id(), so stable_hash() is used instead to keep the hash (and with it the iteration order of any set of
+        # MultiNodes) identical across runs.
+        if self._hash is None:
+            self._hash = stable_hash((MultiNode, self.addr, self.idx))
+        return self._hash
 
     def __eq__(self, other):
         return isinstance(other, MultiNode) and self.nodes == other.nodes
@@ -68,7 +74,19 @@ class MultiNode:
 
 
 class BaseNode:
-    __slots__ = ()
+    __slots__ = ("_hash", "addr")
+
+    def __init__(self, addr: int):
+        self._hash: int | None = None
+        self.addr = addr
+
+    def __hash__(self):
+        # object.__hash__ is derived from id(), which makes the iteration order of any set or dict of structurer nodes
+        # differ between runs. stable_hash() is both address- and seed-independent. the result is cached so that
+        # editing a node in place (or replacing its children) cannot move it inside a set.
+        if self._hash is None:
+            self._hash = stable_hash((type(self), self.addr, getattr(self, "idx", None)))
+        return self._hash
 
     @staticmethod
     def test_empty_node(node):
@@ -93,20 +111,15 @@ class BaseNode:
 
         return True
 
-    addr: int | None
-
     def dbg_repr(self, indent=0):
         return " " * indent + f"## dbg_repr not implemented for {type(self).__name__}"
 
 
 class SequenceNode(BaseNode):
-    __slots__ = (
-        "addr",
-        "nodes",
-    )
+    __slots__ = ("nodes",)
 
-    def __init__(self, addr: int | None, nodes=None):
-        self.addr = addr
+    def __init__(self, addr: int, nodes=None):
+        super().__init__(addr)
         self.nodes = nodes if nodes is not None else []
 
     def __repr__(self):
@@ -140,13 +153,17 @@ class SequenceNode(BaseNode):
 
 class CodeNode(BaseNode):
     __slots__ = (
+        "idx",
         "node",
         "reaching_condition",
     )
 
-    def __init__(self, node, reaching_condition):
+    def __init__(self, node: BaseNode | Block, reaching_condition, addr: int | None = None, idx: int | None = None):
+        super().__init__(addr if addr is not None else node.addr)
         self.node = node
         self.reaching_condition = reaching_condition
+        # addr and idx are captured at construction time so that they do not change when self.node is replaced
+        self.idx = idx if idx is not None else getattr(node, "idx", None)
 
     def __repr__(self):
         if self.addr is not None:
@@ -154,18 +171,6 @@ class CodeNode(BaseNode):
                 return f"<CodeNode {self.addr:#x}.{self.idx}>"
             return f"<CodeNode {self.addr:#x}>"
         return f"<CodeNode {self.node!r}>"
-
-    @property
-    def addr(self):
-        if hasattr(self.node, "addr"):
-            return self.node.addr
-        return None
-
-    @property
-    def idx(self):
-        if hasattr(self.node, "idx"):
-            return self.node.idx
-        return None
 
     def dbg_repr(self, indent=0):
         indent_str = indent * " "
@@ -187,12 +192,11 @@ class CodeNode(BaseNode):
         return s
 
     def copy(self):
-        return CodeNode(self.node, self.reaching_condition)
+        return CodeNode(self.node, self.reaching_condition, addr=self.addr, idx=self.idx)
 
 
 class ConditionNode(BaseNode):
     __slots__ = (
-        "addr",
         "condition",
         "false_node",
         "node",
@@ -201,7 +205,7 @@ class ConditionNode(BaseNode):
     )
 
     def __init__(self, addr, reaching_condition, condition, true_node, false_node=None):
-        self.addr = addr
+        super().__init__(addr)
         self.reaching_condition = reaching_condition
         self.condition = condition
         self.true_node = true_node
@@ -226,7 +230,6 @@ class ConditionNode(BaseNode):
 
 class CascadingConditionNode(BaseNode):
     __slots__ = (
-        "addr",
         "condition_and_nodes",
         "else_node",
     )
@@ -237,7 +240,7 @@ class CascadingConditionNode(BaseNode):
         condition_and_nodes: list[tuple[Any, BaseNode | ailment.Block | MultiNode]],
         else_node: BaseNode | None = None,
     ):
-        self.addr = addr
+        super().__init__(addr)
         self.condition_and_nodes = condition_and_nodes
         self.else_node = else_node
 
@@ -259,7 +262,6 @@ class CascadingConditionNode(BaseNode):
 
 class LoopNode(BaseNode):
     __slots__ = (
-        "_addr",
         "_continue_addr",
         "condition",
         "initializer",
@@ -278,12 +280,13 @@ class LoopNode(BaseNode):
         initializer: ailment.Stmt.Assignment | None = None,
         iterator: ailment.Stmt.Assignment | None = None,
     ):
+        super().__init__(addr if addr is not None else sequence_node.addr)
         self.sort: str = sort
         self.condition: ailment.Expr.Expression | None = condition
         self.sequence_node: SequenceNode = sequence_node
         self.initializer: ailment.Stmt.Assignment | None = initializer
         self.iterator: ailment.Stmt.Assignment | None = iterator
-        self._addr: int | None = addr
+        # addr is captured at construction time so that it does not change when self.sequence_node is replaced
         self._continue_addr: int | None = continue_addr
 
     def copy(self):
@@ -291,16 +294,11 @@ class LoopNode(BaseNode):
             self.sort,
             self.condition,
             self.sequence_node,
-            addr=self._addr,
+            addr=self.addr,
+            continue_addr=self._continue_addr,
             initializer=self.initializer,
             iterator=self.iterator,
         )
-
-    @property
-    def addr(self):
-        if self._addr is None:
-            return self.sequence_node.addr
-        return self._addr
 
     @property
     def continue_addr(self):
@@ -329,13 +327,10 @@ class LoopNode(BaseNode):
 
 
 class BreakNode(BaseNode):
-    __slots__ = (
-        "addr",
-        "target",
-    )
+    __slots__ = ("target",)
 
     def __init__(self, addr, target):
-        self.addr = addr
+        super().__init__(addr)
         self.target = target
 
     def dbg_repr(self, indent=0):
@@ -343,13 +338,10 @@ class BreakNode(BaseNode):
 
 
 class ContinueNode(BaseNode):
-    __slots__ = (
-        "addr",
-        "target",
-    )
+    __slots__ = ("target",)
 
     def __init__(self, addr, target):
-        self.addr = addr
+        super().__init__(addr)
         self.target = target
 
     def dbg_repr(self, indent=0):
@@ -372,17 +364,22 @@ class ConditionalBreakNode(BreakNode):
 
 class SwitchCaseNode(BaseNode):
     __slots__ = (
-        "addr",
         "cases",
         "default_node",
         "switch_expr",
     )
 
-    def __init__(self, switch_expr, cases: OrderedDict[int | tuple[int, ...], SequenceNode], default_node, addr=None):
+    def __init__(
+        self,
+        switch_expr: ailment.Expression,
+        cases: OrderedDict[int | tuple[int, ...], SequenceNode],
+        default_node,
+        addr: int | None = None,
+    ):
+        super().__init__(addr if addr is not None else switch_expr.tags["ins_addr"])
         self.switch_expr = switch_expr
         self.cases: OrderedDict[int | tuple[int, ...], SequenceNode] = cases
         self.default_node = default_node
-        self.addr = addr
 
     def dbg_repr(self, indent=0) -> str:
         return (
@@ -402,10 +399,10 @@ class IncompleteSwitchCaseNode(BaseNode):
     into a SwitchCaseNode by the end of structuring. Only used in Phoenix structurer.
     """
 
-    __slots__ = ("addr", "cases", "head")
+    __slots__ = ("cases", "head")
 
     def __init__(self, addr, head, cases: list):
-        self.addr = addr
+        super().__init__(addr)
         self.head = head
         self.cases: list = cases
 
@@ -417,15 +414,28 @@ class IncompleteSwitchCaseNode(BaseNode):
 # The following classes are custom AIL statements (not nodes, unfortunately)
 #
 
+if TYPE_CHECKING:
+    from angr.ailment.tagged_object import TaggedObject as _IncompleteSwitchCaseHeadStatementBase
+else:
+    _IncompleteSwitchCaseHeadStatementBase = ailment.statement.Statement
 
-class IncompleteSwitchCaseHeadStatement(ailment.statement.Statement):
+
+class IncompleteSwitchCaseHeadStatement(_IncompleteSwitchCaseHeadStatementBase):
     """
     Describes a switch-case head. This is only created by LoweredSwitchSimplifier.
     """
 
-    __slots__ = ("_case_addrs_str", "addr", "case_addrs", "switch_variable")
+    __slots__ = ("_case_addrs_str", "addr", "case_addrs", "peephole_optimized", "switch_variable")
 
-    def __init__(self, idx, switch_variable, case_addrs, **kwargs):
+    # Mirror the rustlib ``Statement.kind`` slot so downstream code that
+    # dispatches on ``stmt.kind`` doesn't have to fall back to
+    # ``getattr(stmt, "kind", None)``. The chosen tag is distinct from
+    # every rustlib variant so the kind-keyed dispatch sites land in
+    # their default branch.
+    kind = "IncompleteSwitchCaseHead"
+    pykind = "IncompleteSwitchCaseHead"
+
+    def __init__(self, idx, switch_variable, case_addrs, peephole_optimized: bool = False, **kwargs):
         super().__init__(idx, **kwargs)
         self.switch_variable = switch_variable
         # original cmp node, case value | "default", address of the case node, idx of the case node,
@@ -433,6 +443,7 @@ class IncompleteSwitchCaseHeadStatement(ailment.statement.Statement):
         self.case_addrs: list[tuple[ailment.Block, int | str, int, int | None, int]] = case_addrs
         # a string representation of the addresses of all cases, used for hashing
         self._case_addrs_str = str(sorted([c[0].addr for c in self.case_addrs if c[0] is not None]))
+        self.peephole_optimized = peephole_optimized
 
     def __repr__(self):
         return f"SwitchCaseHead: switch {self.switch_variable} with {len(self.case_addrs)} cases"
@@ -443,11 +454,9 @@ class IncompleteSwitchCaseHeadStatement(ailment.statement.Statement):
     __hash__ = ailment.statement.TaggedObject.__hash__
 
     def _hash_core(self):
-        return ailment.utils.stable_hash(
-            (IncompleteSwitchCaseHeadStatement, self.idx, self.switch_variable, self._case_addrs_str)
-        )
+        return stable_hash((IncompleteSwitchCaseHeadStatement, self.idx, self.switch_variable, self._case_addrs_str))
 
-    def replace(self, old_expr, new_expr):
+    def replace(self, old_expr, new_expr):  # pylint:disable=unused-argument
         return self
 
     @property

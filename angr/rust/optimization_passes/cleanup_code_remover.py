@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from angr.ailment.expression import Call, VirtualVariable
 from angr.ailment.statement import Label, Return, SideEffectStatement
 from angr.analyses.decompiler.optimization_passes.optimization_pass import OptimizationPass, OptimizationPassStage
+from angr.analyses.decompiler.variable_map import variable_map_of
+from angr.enums import Flavors
 from angr.rust.mixins import CFAMixin, CFGTransformationMixin, SRDAMixin
 from angr.rust.utils.ail import find_call, get_terminal_call
 from angr.rust.utils.demangler import demangle
+
+if TYPE_CHECKING:
+    from angr.ailment import Manager
 
 CLEANUP_FUNCTIONS = (
     "free",
@@ -33,12 +39,12 @@ class CleanupCodeRemover(OptimizationPass, CFGTransformationMixin, CFAMixin, SRD
     STAGE = OptimizationPassStage.BEFORE_VARIABLE_RECOVERY
     NAME = "Remove cleanup code"
 
-    def __init__(self, func, manager, **kwargs):
+    def __init__(self, func, manager: Manager, **kwargs):
         super().__init__(func, manager, **kwargs)
 
         CFGTransformationMixin.__init__(self, self._graph)
         CFAMixin.__init__(self, self._graph, self.project)
-        SRDAMixin.__init__(self, self._func, self._graph, self.project)
+        SRDAMixin.__init__(self, self._func, self._graph, self.project, variable_map_of(manager))
 
         self.analyze()
 
@@ -94,11 +100,11 @@ class CleanupCodeRemover(OptimizationPass, CFGTransformationMixin, CFAMixin, SRD
                     new_stmts[-1] = SideEffectStatement(self.manager.next_atom(), call, **call.tags)
                     new_stmts.append(last_stmt)
                     block.statements = new_stmts
-        prototype = self._func.prototype
+        prototype = self._func.get_prototype(Flavors.RUST_FLAVOR)
         if prototype:
             prototype = prototype.copy()
             prototype.returnty = None
-            self._func.prototype = prototype
+            self._func.set_prototype(Flavors.RUST_FLAVOR, prototype)
 
     def _adjust_returns_and_prototype(self):
         for block in self._graph.nodes:

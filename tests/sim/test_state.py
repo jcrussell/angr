@@ -8,19 +8,18 @@ import os
 import pickle
 import unittest
 
-import claripy
 import cle
 
 import angr
-from angr import SimState
-from tests.common import bin_location
+from angr import SimState, claripy
+from tests.common import bin_location, minimal_project
 
 test_location = os.path.join(bin_location, "tests")
 
 
 class TestState(unittest.TestCase):
     def test_state(self):
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         s.registers.store("sp", 0x7FFFFFFFFFF0000)
         assert s.solver.eval(s.registers.load("sp")) == 0x7FFFFFFFFFF0000
 
@@ -38,7 +37,7 @@ class TestState(unittest.TestCase):
         assert s.solver.eval(b, cast_to=bytes) == b"ABCDEFGH"
 
     def test_state_merge(self):
-        a = SimState(arch="AMD64", mode="symbolic")
+        a = SimState(project=minimal_project("AMD64"), mode="symbolic")
         a.memory.store(1, claripy.BVV(42, 8))
 
         b = a.copy()
@@ -96,7 +95,7 @@ class TestState(unittest.TestCase):
         assert a_c.solver.eval(a_c.memory.load(2, 1)) == 21
 
         # test different sets of plugins
-        a = SimState(arch="AMD64", mode="symbolic")
+        a = SimState(project=minimal_project("AMD64"), mode="symbolic")
         assert a.has_plugin("memory")
         assert a.has_plugin("registers")
         assert not a.has_plugin("libc")
@@ -111,7 +110,7 @@ class TestState(unittest.TestCase):
         assert d.has_plugin("libc")
 
         # test merging posix with different open files (illegal!)
-        a = SimState(arch="AMD64", mode="symbolic")
+        a = SimState(project=minimal_project("AMD64"), mode="symbolic")
         b = a.copy()
         a.posix.open(b"/tmp/idk", 1)
         self.assertRaises(angr.errors.SimMergeError, lambda: a.copy().merge(b.copy()))
@@ -119,7 +118,7 @@ class TestState(unittest.TestCase):
     def test_state_merge_static(self):
         # With abstract memory
         # Aligned memory merging
-        a = SimState(arch="AMD64", mode="static")
+        a = SimState(project=minimal_project("AMD64"), mode="static")
 
         addr = claripy.VS(32, "global", 0, 8)
         a.memory.store(addr, claripy.BVV(42, 32))
@@ -135,10 +134,34 @@ class TestState(unittest.TestCase):
         merged, _, _ = a.merge(b, c)
         actual = merged.memory.load(addr, 4, endness="Iend_LE")
         expected = claripy.SI(bits=32, stride=10, lower_bound=50, upper_bound=70)
-        assert actual.identical(expected)
+        assert claripy.vsa.identical(actual, expected)
+
+    def test_state_merge_static_registers_fixpoint(self):
+        # static-mode registers must join into intervals (not If-expressions) so that a re-merge can report no change
+        a = SimState(project=minimal_project("AMD64"), mode="static")
+        b = a.copy()
+        a.regs.rax = claripy.BVV(1, 64)
+        b.regs.rax = claripy.BVV(2, 64)
+
+        merged, _, occurred = a.merge(b, plugin_whitelist=("memory", "registers"))
+        assert occurred
+        assert merged.regs.rax.op != "If"
+        assert (claripy.vsa.min(merged.regs.rax), claripy.vsa.max(merged.regs.rax)) == (1, 2)
+
+        _, _, occurred = merged.merge(b, plugin_whitelist=("memory", "registers"))
+        assert not occurred
+
+    def test_state_static_false_guard_is_unsat(self):
+        s = SimState(project=minimal_project("AMD64"), mode="static")
+        x = claripy.SI(bits=32, stride=1, lower_bound=0, upper_bound=8)
+        s.solver.add(x < 100)
+        assert s.satisfiable()
+        s.solver.add(x > 63)
+        assert not s.satisfiable()
+        assert not s.copy().satisfiable()
 
     def test_state_merge_3way(self):
-        a = SimState(arch="AMD64", mode="symbolic")
+        a = SimState(project=minimal_project("AMD64"), mode="symbolic")
         b = a.copy()
         c = a.copy()
         conds = [claripy.BoolS("cond_0"), claripy.BoolS("cond_1")]
@@ -156,6 +179,23 @@ class TestState(unittest.TestCase):
         assert m.satisfiable(extra_constraints=(m.memory.load(0x400000, 4) == 8,))
         assert m.satisfiable(extra_constraints=(m.memory.load(0x400000, 4) == 9,))
         assert m.satisfiable(extra_constraints=(m.memory.load(0x400000, 4) == 10,))
+
+    def test_state_merge_with_merge_conditions(self):
+        x = claripy.BVS("x", 32)
+        a = SimState(project=minimal_project("AMD64"), mode="symbolic")
+        a.memory.store(0x400000, x)
+        b = a.copy()
+        a.add_constraints(x == 1)
+        b.add_constraints(x == 2)
+
+        m, conditions, merging_occurred = a.merge(b, merge_conditions=[s.solver.constraints for s in (a, b)])
+
+        assert merging_occurred
+        self.assertSequenceEqual(sorted(m.solver.eval_upto(m.memory.load(0x400000, 4), 5)), (1, 2))
+        for condition, expected in zip(conditions, (1, 2)):
+            branch = m.copy()
+            branch.add_constraints(condition)
+            assert branch.solver.eval(branch.memory.load(0x400000, 4)) == expected
 
     def test_state_merge_optimal_nostrongrefstate(self):
         # We do not specify the state option EFFICIENT_STATE_MERGING, and as a result, state histories do not store
@@ -201,7 +241,7 @@ class TestState(unittest.TestCase):
         assert not s.solver.satisfiable(extra_constraints=(culprit == 12,))
 
     def test_state_pickle(self):
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         s.memory.store(100, claripy.BVV(0x4141414241414241424300, 88), endness="Iend_BE")
         s.regs.rax = 100
 
@@ -210,40 +250,6 @@ class TestState(unittest.TestCase):
         gc.collect()
         s = pickle.loads(sp)
         assert s.solver.eval(s.memory.load(100, 10), cast_to=bytes) == b"AAABAABABC"
-
-    def test_global_condition(self):
-        s = SimState(arch="AMD64")
-
-        s.regs.rax = 10
-        old_rax = s.regs.rax
-        with s.with_condition(False):
-            assert not s.solver.satisfiable()
-            s.regs.rax = 20
-        assert s._global_condition is None
-        assert old_rax is s.regs.rax
-
-        with s.with_condition(True):
-            s.regs.rax = 20
-        assert s._global_condition is None
-        assert old_rax is not s.regs.rax
-        assert claripy.BVV(20, s.arch.bits) is s.regs.rax
-
-        with s.with_condition(s.regs.rbx != 0):
-            s.regs.rax = 25
-        assert s._global_condition is None
-        assert claripy.BVV(25, s.arch.bits) is not s.regs.rax
-
-        with s.with_condition(s.regs.rbx != 1):
-            s.regs.rax = 30
-        assert s._global_condition is None
-        assert claripy.BVV(30, s.arch.bits) is not s.regs.rax
-
-        with s.with_condition(s.regs.rbx == 0):
-            assert s.solver.eval_upto(s.regs.rbx, 10) == [0]
-            assert s.solver.eval_upto(s.regs.rax, 10) == [30]
-        with s.with_condition(s.regs.rbx == 1):
-            assert s.solver.eval_upto(s.regs.rbx, 10) == [1]
-            assert s.solver.eval_upto(s.regs.rax, 10) == [25]
 
     def test_successors_catch_arbitrary_interrupts(self):
         # int 0xd2 should fail on x86/amd64 since it's an unsupported interrupt

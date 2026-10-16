@@ -1,85 +1,33 @@
-//! Sorted, non-overlapping address-range bookkeeping.
-//!
-//! A [`SegmentList`] tracks which byte ranges of an address space are occupied
-//! and, optionally, what *sort* of thing occupies each one. It is backed by a
-//! `RangeMap<u64, Option<String>>`, so adjacent ranges carrying the same sort
-//! coalesce automatically and lookups are logarithmic rather than a linear
-//! walk. [`Segment`] is the `[start, end)` + sort value type handed back to
-//! Python, and [`SegmentListIter`] iterates a *snapshot* of the segments so
-//! Python can mutate the list while iterating.
-//!
-//! Two consumers drive the design, both on the Python side:
-//!
-//! * `CFGFast` (`angr/analyses/cfg/cfg_fast.py`) keeps a `SegmentList` of the
-//!   binary regions it has already recovered, tagged with sorts like `"code"`
-//!   / `"data"`, and asks it for the next unscanned address. This is the hot
-//!   path: a CFG recovery performs many thousands of occupy/query calls, which
-//!   is why the structure lives in Rust at all.
-//! * `HistoryTrackingMixin`
-//!   (`angr/storage/memory_mixins/paged_memory/pages/history_tracking_mixin.py`)
-//!   uses sort-less lists to record which offsets of a page changed.
-//!
-//! It is a pure value type (no Z3 or Python handles), which is what lets it
-//! ride inside an `ExplorationStateSnapshot`; see
-//! `docs/advanced-topics/rust_engine.rst` "Scope and threading model".
-
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::ops::Range;
 
-use pyo3::{exceptions::PyStopIteration, prelude::*, types::PyTuple};
+use pyo3::{
+    exceptions::{PyStopIteration, PyValueError},
+    prelude::*,
+    types::PyTuple,
+};
 use rangemap::RangeMap;
 
-#[pyclass(module = "angr.rustylib.segmentlist", from_py_object)]
+#[pyclass(module = "angr.rustylib.segmentlist", from_py_object, get_all)]
 #[derive(Clone, Debug)]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct Segment {
-    #[pyo3(get)]
     start: u64,
-    #[pyo3(get)]
     end: u64,
-    #[pyo3(get)]
     sort: Option<String>,
 }
 
-impl Segment {
-    /// Infallible constructor for a range that already comes from the backing
-    /// `RangeMap`, where `start <= end` is a structural guarantee. Python-facing
-    /// construction goes through `Segment::new`, which validates.
-    fn from_range(start: u64, end: u64, sort: Option<String>) -> Self {
-        Segment { start, end, sort }
-    }
-}
-
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 #[pymethods]
 impl Segment {
-    /// Builds a segment from an explicit `[start, end)` pair.
-    ///
-    /// This is the `#[new]` constructor, so Python can call it with arbitrary
-    /// arguments — including `end < start`, which would make `size()` wrap to a
-    /// huge `u64` because the crate builds with `overflow-checks` off in
-    /// release. Reject that here so `size()` needs no guard of its own, in the
-    /// same spirit as the wrap-around guards in `SegmentList::occupy` /
-    /// `SegmentList::release` (angr-sqfj8.134).
-    ///
-    /// # Errors
-    ///
-    /// Returns `ValueError` when `start > end`.
     #[new]
+    #[pyo3(signature = (start, end, sort=None))]
     pub fn new(start: u64, end: u64, sort: Option<String>) -> PyResult<Self> {
-        if start > end {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Segment start {start:#x} must not exceed end {end:#x}"
+        if end < start {
+            return Err(PyValueError::new_err(format!(
+                "Segment end {end:#x} precedes start {start:#x}"
             )));
         }
-        Ok(Segment::from_range(start, end, sort))
+        Ok(Segment { start, end, sort })
     }
 
     pub fn __getnewargs__(&self) -> (u64, u64, Option<String>) {
@@ -90,8 +38,6 @@ impl Segment {
         self.clone()
     }
 
-    /// Cannot wrap: the fields are read-only from Python and every constructor
-    /// (`Segment::new`, `Segment::from_range`) establishes `start <= end`.
     #[getter]
     pub fn size(&self) -> u64 {
         self.end - self.start
@@ -102,67 +48,67 @@ impl Segment {
             "[{:#x}-{:#x}, {}]",
             self.start,
             self.end,
-            self.sort.as_deref().unwrap_or("None")
+            self.sort.clone().unwrap_or("None".to_string())
         )
     }
 }
 
-/// A sorted, non-overlapping set of occupied address ranges, each optionally
-/// tagged with a *sort* string.
-///
-/// The name is historical and list-flavored: `SegmentList` is the public name
-/// Python imports (`from angr.rustylib import SegmentList`, used by `CFGFast`
-/// and declared in `angr/rustylib/__init__.pyi`), and the surface it exposes is
-/// list-shaped — `__len__`, `__iter__`, and positional `__getitem__`. Internally
-/// it is a *map*: a `RangeMap<u64, Option<String>>` that coalesces adjacent
-/// same-sort ranges and answers containment queries in logarithmic time. The
-/// two shapes only diverge where the list API forces a positional scan
-/// (`__getitem__`, `search`), which is why `CFGFast` avoids indexing in a loop.
-/// Renaming to something map-flavored would break every Python importer for no
-/// behavioral gain, so the list name stays; see the module doc for the two
-/// Python consumers that drive the design.
+/// Should be called a SegmentMap!
 #[derive(Clone, Default)]
 #[pyclass(module = "angr.rustylib.segmentlist", from_py_object)]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct SegmentList {
     map: RangeMap<u64, Option<String>>,
     bytes_occupied: u64,
 }
 
 impl SegmentList {
-    /// Test-only: the `#[pymethods]` surface below exposes `occupied_size` /
-    /// `__len__` to Python; nothing in Rust asks whether the map is empty
-    /// outside `segmentlist_tests` (angr-9ke6b.214).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
-    /// Total number of bytes of `range` that are already occupied.
-    ///
-    /// `bytes_occupied` is maintained incrementally, so both `occupy` and
-    /// `release` need this same clipped-intersection sum before mutating the
-    /// map — `occupy` to avoid double-counting bytes it already owns,
-    /// `release` to subtract only what was actually there (angr-03vl4.81).
-    fn overlap_bytes(&self, range: &Range<u64>) -> u64 {
+    pub fn get_segment(&self, address: u64) -> Option<(u64, u64, Option<String>)> {
         self.map
-            .overlapping(range.clone())
-            .map(|(r, _)| {
-                let s = max(r.start, range.start);
-                let e = min(r.end, range.end);
-                e.saturating_sub(s)
-            })
-            .sum()
+            .get_key_value(&address)
+            .map(|(range, sort)| (range.start, range.end - range.start, sort.clone()))
+    }
+
+    /// The last segment that starts before `before`.
+    ///
+    /// `rangemap` offers no predecessor query, and its `Overlapping` iterator is unbounded above,
+    /// which makes iterating it backwards linear in the number of segments above `before`. Instead,
+    /// grow a search window exponentially until it reaches a segment, then bisect it down to the
+    /// smallest window that still does: that window can only contain the segment we are after.
+    /// Every step is a point query, so this is O(log n * log gap).
+    fn prev_segment(&self, before: u64) -> Option<(&Range<u64>, &Option<String>)> {
+        if before == 0 {
+            return None;
+        }
+        let mut hi = 1u64;
+        while !self.map.overlaps(&(before.saturating_sub(hi)..before)) {
+            if before.saturating_sub(hi) == 0 {
+                return None;
+            }
+            hi = hi.saturating_mul(2);
+        }
+        let mut lo = hi / 2; // does not reach a segment (0 when hi == 1)
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if self.map.overlaps(&(before.saturating_sub(mid)..before)) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        self.map
+            .overlapping(before.saturating_sub(hi)..before)
+            .next()
     }
 }
 
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 #[pymethods]
 impl SegmentList {
     #[new]
@@ -184,19 +130,8 @@ impl SegmentList {
             .collect()
     }
 
-    /// Replaces the whole list with `state`, the `(start, size, sort)` triples
-    /// `__getstate__` produced.
-    ///
-    /// Resets **both** halves of the representation, not just the map:
-    /// `occupy` only ever adds to `bytes_occupied`, so replaying the saved
-    /// segments onto a stale total would report the old total plus the restored
-    /// one. The pickle path never hits that (`__getnewargs__` returns an empty
-    /// tuple, so `__reduce_ex__` always builds a fresh instance first), but this
-    /// is a plain `#[pymethods]` fn any Python caller can invoke on a populated
-    /// list (angr-fs8kb.83).
     pub fn __setstate__(&mut self, state: Vec<(u64, u64, Option<String>)>) {
         self.map.clear();
-        self.bytes_occupied = 0;
         for (start, size, sort) in state {
             self.occupy(start, size, sort);
         }
@@ -206,51 +141,22 @@ impl SegmentList {
         self.map.len()
     }
 
-    /// Ordinal lookup. This is an O(idx) walk from the start of the map — the
-    /// backing `RangeMap` is keyed by address, not by position — so it must not
-    /// be called in a loop over consecutive indices. Callers that want to walk
-    /// backwards from a `search` hit want `iter_backward_from` instead, which
-    /// pays that cost once rather than once per step (angr-9ke6b.200).
     pub fn __getitem__(&self, idx: usize) -> PyResult<Segment> {
         self.map
             .iter()
             .nth(idx)
-            .map(|(r, sort)| Segment::from_range(r.start, r.end, sort.clone()))
+            .map(|(r, sort)| Segment {
+                start: r.start,
+                end: r.end,
+                sort: sort.clone(),
+            })
             .ok_or_else(|| {
                 PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!("Index {idx} out of range"))
             })
     }
 
-    pub fn __iter__(slf: PyRef<'_, Self>) -> SegmentListIter {
-        SegmentListIter::snapshot(&slf)
-    }
-
-    /// Iterates the segment `search(addr)` names and every segment before it,
-    /// in descending address order.
-    ///
-    /// This is the walk `search` + repeated `__getitem__` used to express; done
-    /// that way it is quadratic, because `__getitem__` re-walks the map from
-    /// index 0 every step. Here the whole prefix is snapshotted in one pass, so
-    /// the walk costs what a single `search` already did (angr-9ke6b.200).
-    ///
-    /// Yields nothing when `addr` is past the last segment, mirroring `search`
-    /// returning `None` there.
-    pub fn iter_backward_from(&self, addr: u64) -> SegmentListIter {
-        let mut segments = Vec::new();
-        let mut found = false;
-        for (range, sort) in self.map.iter() {
-            segments.push((range.start, range.end, sort.clone()));
-            // Same predicate `search` uses to pick the segment `addr` lands in.
-            if range.end > addr {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            segments.clear();
-        }
-        segments.reverse();
-        SegmentListIter::new(segments)
+    pub fn __iter__(&self) -> SegmentListIter {
+        SegmentListIter::new(self)
     }
 
     #[getter]
@@ -263,28 +169,57 @@ impl SegmentList {
         !self.map.is_empty()
     }
 
-    /// Checks which segment the address `addr` should belong to, and returns
-    /// that segment's **index** — its ordinal position in the segment list, to
-    /// be fed back to `__getitem__`. It is *not* a byte offset.
+    /// Checks which segment that the address `addr` should belong to,
+    /// and returns the offset of that segment.
+    /// Note that the address may not actually belong to the block.
     ///
-    /// Concretely: the index of the first segment whose `end` exceeds `addr`,
-    /// or `None` when `addr` is past every segment. Note that `addr` may not
-    /// actually fall inside the segment at that index — it can land in the gap
-    /// before it.
-    ///
-    /// Retained as public Python API for API compatibility with the historical
-    /// pure-Python `SegmentList` this class replaced: nothing inside angr calls
-    /// it any more (`cfg_fast.py::_nodecode_bytes_ratio` switched to
-    /// `iter_backward_from` because per-step `__getitem__` indexing is
-    /// quadratic), but out-of-tree analyses may. Its behaviour is pinned by
-    /// `tests/utils/test_segment_list.py` and `segmentlist_tests.rs`. Do not
-    /// treat it as dead code — `dead_code` cannot see `#[pymethods]` callers.
+    /// This is O(n): an index into the map cannot be computed any faster. Prefer the point-query
+    /// methods (`occupied_by`, `occupied_by_sort`, ...) wherever an index is not strictly needed.
     pub fn search(&self, addr: u64) -> Option<usize> {
         self.map
             .iter()
             .enumerate()
-            .find(|(_, (range, _))| range.end > addr)
+            .find(|(_, (range, _))| range.end >= addr)
             .map(|(index, _)| index)
+    }
+
+    /// The fraction of bytes belonging to segments of sort `sort`, among the last `window_size`
+    /// occupied bytes at or before `addr`.
+    ///
+    /// The walk starts at the segment `search()` would return for `addr` and moves backwards,
+    /// skipping over gaps, until `window_size` bytes have been covered. Returns 0.0 when the
+    /// starting segment has a different sort, or when fewer than `window_size` occupied bytes
+    /// are available.
+    #[pyo3(signature = (addr, window_size, sort))]
+    pub fn sort_ratio_backwards(&self, addr: u64, window_size: u64, sort: Option<String>) -> f64 {
+        // the first segment whose end is >= addr, i.e. what search(addr) points at
+        let Some((mut range, mut seg_sort)) = self
+            .map
+            .overlapping(addr.saturating_sub(1)..u64::MAX)
+            .next()
+        else {
+            return 0.0;
+        };
+        if *seg_sort != sort {
+            return 0.0;
+        }
+
+        let mut total: u64 = 0;
+        let mut matching: u64 = 0;
+        loop {
+            let size = range.end - range.start;
+            if *seg_sort == sort {
+                matching = matching.saturating_add(size);
+            }
+            total = total.saturating_add(size);
+            if total >= window_size {
+                return matching as f64 / total as f64;
+            }
+            match self.prev_segment(range.start) {
+                Some((r, s)) => (range, seg_sort) = (r, s),
+                None => return 0.0,
+            }
+        }
     }
 
     pub fn next_free_pos(&self, address: u64) -> Option<u64> {
@@ -307,7 +242,7 @@ impl SegmentList {
         let search_range = address..end;
         // Find the lowest position among the occupied ranges
         self.map
-            .overlapping(search_range)
+            .overlapping(search_range.clone())
             .filter(|(_, sort)| !sorts.contains(sort))
             .map(|(range, _)| std::cmp::max(range.start, address))
             .next()
@@ -331,15 +266,21 @@ impl SegmentList {
         if size == 0 {
             return;
         }
-        // SILENT(cat-a): an address+size that wraps u64 describes no real region, so
-        // there is nothing to occupy. Bailing keeps `rangemap` from seeing an inverted
-        // range, whose `assert!(range.start < range.end)` would abort the process under
-        // this crate's panic="abort" release profile.
-        let Some(end) = address.checked_add(size) else {
+        // ensure address + size does not overflow
+        if address.checked_add(size).is_none() {
             return;
-        };
-        let new_range = address..end;
-        let added = size.saturating_sub(self.overlap_bytes(&new_range));
+        }
+        let new_range = address..address + size;
+        let overlapped: u64 = self
+            .map
+            .overlapping(new_range.clone())
+            .map(|(r, _)| {
+                let s = max(r.start, new_range.start);
+                let e = min(r.end, new_range.end);
+                e.saturating_sub(s)
+            })
+            .sum();
+        let added = size.saturating_sub(overlapped);
         self.map.insert(new_range, sort);
         self.bytes_occupied = self.bytes_occupied.saturating_add(added);
     }
@@ -355,13 +296,20 @@ impl SegmentList {
         if size == 0 {
             return;
         }
-        // SILENT(cat-a): same wrap-around guard as `occupy` — nothing to release, and
-        // `RangeMap::remove` would abort on the inverted range.
-        let Some(end) = address.checked_add(size) else {
+        // ensure address + size does not overflow
+        if address.checked_add(size).is_none() {
             return;
-        };
-        let rem = address..end;
-        let removed = self.overlap_bytes(&rem);
+        }
+        let rem = address..address + size;
+        let removed: u64 = self
+            .map
+            .overlapping(rem.clone())
+            .map(|(r, _)| {
+                let s = max(r.start, rem.start);
+                let e = min(r.end, rem.end);
+                e.saturating_sub(s)
+            })
+            .sum();
         self.map.remove(rem);
         self.bytes_occupied = self.bytes_occupied.saturating_sub(removed);
     }
@@ -372,58 +320,297 @@ impl SegmentList {
 }
 
 #[pyclass]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct SegmentListIter {
-    segments: Vec<(u64, u64, Option<String>)>,
-    idx: usize,
+    // snapshot taken up front: walking the map by index would be quadratic over a full iteration
+    segments: std::vec::IntoIter<Segment>,
 }
 
-impl SegmentListIter {
-    fn new(segments: Vec<(u64, u64, Option<String>)>) -> Self {
-        Self { segments, idx: 0 }
-    }
-
-    fn snapshot(list: &SegmentList) -> Self {
-        Self::new(
-            list.map
-                .iter()
-                .map(|(range, sort)| (range.start, range.end, sort.clone()))
-                .collect(),
-        )
-    }
-}
-
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 #[pymethods]
 impl SegmentListIter {
+    #[new]
+    fn new(segmentlist: &SegmentList) -> Self {
+        Self {
+            segments: segmentlist
+                .map
+                .iter()
+                .map(|(range, sort)| Segment {
+                    start: range.start,
+                    end: range.end,
+                    sort: sort.clone(),
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+        }
+    }
+
     fn __iter__(self_: Bound<'_, Self>) -> Bound<'_, Self> {
         self_
     }
 
     fn __next__(&mut self) -> PyResult<Segment> {
-        match self.segments.get(self.idx) {
-            Some((start, end, sort)) => {
-                let segment = Segment::from_range(*start, *end, sort.clone());
-                self.idx += 1;
-                Ok(segment)
-            }
-            None => Err(PyErr::new::<PyStopIteration, _>("")),
-        }
+        self.segments
+            .next()
+            .ok_or_else(|| PyErr::new::<PyStopIteration, _>(""))
     }
 }
 
 #[pymodule]
-pub(crate) fn segmentlist(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn segmentlist(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Segment>()?;
     m.add_class::<SegmentList>()?;
     m.add_class::<SegmentListIter>()?;
     Ok(())
 }
 
-test_submod!("segmentlist_tests.rs" => tests);
+#[cfg(test)]
+mod tests {
+    use super::SegmentList;
+
+    /// The pre-existing O(n) algorithm: search() for the starting index, then walk backwards
+    /// through the map by index. Used to pin sort_ratio_backwards() to the old behavior.
+    fn ratio_reference(sl: &SegmentList, addr: u64, window_size: u64, sort: Option<&str>) -> f64 {
+        let sort = sort.map(str::to_string);
+        let segments: Vec<_> = sl
+            .map
+            .iter()
+            .map(|(r, s)| (r.end - r.start, s.clone()))
+            .collect();
+        let Some(mut idx) = sl.search(addr) else {
+            return 0.0;
+        };
+        if segments[idx].1 != sort {
+            return 0.0;
+        }
+        let (mut total, mut matching) = (0u64, 0u64);
+        loop {
+            let (size, seg_sort) = &segments[idx];
+            if *seg_sort == sort {
+                matching += size;
+            }
+            total += size;
+            if total >= window_size {
+                break;
+            }
+            if idx == 0 {
+                return 0.0;
+            }
+            idx -= 1;
+        }
+        matching as f64 / total as f64
+    }
+
+    /// A deterministic xorshift, so the randomized cases stay reproducible.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self, bound: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % bound
+        }
+    }
+
+    #[test]
+    fn prev_segment_walks_backwards() {
+        let mut sl = SegmentList::new();
+        sl.occupy(10, 5, Some("a".to_string()));
+        sl.occupy(1000, 5, Some("b".to_string()));
+        sl.occupy(1005, 5, Some("c".to_string()));
+
+        assert_eq!(sl.prev_segment(0), None);
+        assert_eq!(sl.prev_segment(10), None);
+        assert_eq!(sl.prev_segment(1005).unwrap().0, &(1000..1005));
+        assert_eq!(sl.prev_segment(1000).unwrap().0, &(10..15));
+        // an address in the middle of a gap
+        assert_eq!(sl.prev_segment(500).unwrap().0, &(10..15));
+        // past the end of every segment
+        assert_eq!(sl.prev_segment(u64::MAX).unwrap().0, &(1005..1010));
+    }
+
+    #[test]
+    fn prev_segment_matches_brute_force() {
+        let mut rng = Rng(0x2545F4914F6CDD1D);
+        for _ in 0..50 {
+            let mut sl = SegmentList::new();
+            let mut addr = 0;
+            for i in 0..40 {
+                addr += rng.next(64);
+                let size = 1 + rng.next(16);
+                sl.occupy(addr, size, Some(format!("s{}", i % 3)));
+                addr += size;
+            }
+            let starts: Vec<u64> = sl.map.iter().map(|(r, _)| r.start).collect();
+            for probe in 0..addr + 8 {
+                let expected = starts.iter().rev().find(|&&s| s < probe);
+                assert_eq!(
+                    sl.prev_segment(probe).map(|(r, _)| r.start).as_ref(),
+                    expected,
+                    "probe {probe:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sort_ratio_backwards_basics() {
+        let mut sl = SegmentList::new();
+        sl.occupy(0, 100, Some("code".to_string()));
+        sl.occupy(100, 100, Some("nodecode".to_string()));
+        sl.occupy(200, 100, Some("code".to_string()));
+        sl.occupy(300, 100, Some("nodecode".to_string()));
+
+        // the walk starts inside the last segment and covers the whole map
+        assert_eq!(
+            sl.sort_ratio_backwards(399, 400, Some("nodecode".into())),
+            0.5
+        );
+        // ... and only the last two segments with a smaller window
+        assert_eq!(
+            sl.sort_ratio_backwards(399, 200, Some("nodecode".into())),
+            0.5
+        );
+        assert_eq!(
+            sl.sort_ratio_backwards(399, 100, Some("nodecode".into())),
+            1.0
+        );
+        // the starting segment has the wrong sort
+        assert_eq!(
+            sl.sort_ratio_backwards(250, 100, Some("nodecode".into())),
+            0.0
+        );
+        // not enough occupied bytes
+        assert_eq!(
+            sl.sort_ratio_backwards(399, 500, Some("nodecode".into())),
+            0.0
+        );
+        // beyond every segment
+        assert_eq!(
+            sl.sort_ratio_backwards(500, 100, Some("nodecode".into())),
+            0.0
+        );
+        // empty list
+        assert_eq!(
+            SegmentList::new().sort_ratio_backwards(0, 100, Some("nodecode".into())),
+            0.0
+        );
+    }
+
+    #[test]
+    fn sort_ratio_backwards_skips_gaps() {
+        let mut sl = SegmentList::new();
+        sl.occupy(0, 40, Some("nodecode".to_string()));
+        sl.occupy(60, 40, Some("code".to_string()));
+        // a 900-byte gap, which the walk steps over without counting it
+        sl.occupy(1000, 40, Some("nodecode".to_string()));
+
+        assert_eq!(
+            sl.sort_ratio_backwards(1039, 40, Some("nodecode".into())),
+            1.0
+        );
+        assert_eq!(
+            sl.sort_ratio_backwards(1039, 80, Some("nodecode".into())),
+            0.5
+        );
+        // the gap contributes nothing, so all three segments fit in a 120-byte window
+        assert_eq!(
+            sl.sort_ratio_backwards(1039, 120, Some("nodecode".into())),
+            2.0 / 3.0
+        );
+        // ... and there is nothing left to cover a larger one
+        assert_eq!(
+            sl.sort_ratio_backwards(1039, 121, Some("nodecode".into())),
+            0.0
+        );
+    }
+
+    #[test]
+    fn sort_ratio_backwards_matches_reference() {
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        for _ in 0..50 {
+            let mut sl = SegmentList::new();
+            let mut addr = 0;
+            for _ in 0..60 {
+                // gaps and single-byte segments are both common in CFGFast's segment list
+                addr += rng.next(4);
+                let size = 1 + rng.next(8);
+                let sort = if rng.next(2) == 0 { "nodecode" } else { "code" };
+                sl.occupy(addr, size, Some(sort.to_string()));
+                addr += size;
+            }
+            for probe in 0..addr + 4 {
+                for window in [1u64, 7, 32, 4096] {
+                    assert_eq!(
+                        sl.sort_ratio_backwards(probe, window, Some("nodecode".into())),
+                        ratio_reference(&sl, probe, window, Some("nodecode")),
+                        "probe {probe:#x} window {window}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_list() {
+        let mut sl = SegmentList::new();
+        assert_eq!(sl.occupied_size(), 0);
+        sl.release(0, 10);
+        assert_eq!(sl.occupied_size(), 0);
+    }
+
+    #[test]
+    fn single_range() {
+        let mut sl = SegmentList::new();
+        sl.occupy(10, 5, None);
+        assert_eq!(sl.occupied_size(), 5);
+        assert!(sl.is_occupied(10));
+        assert!(!sl.is_occupied(9));
+    }
+
+    #[test]
+    fn multi_non_overlapping() {
+        let mut sl = SegmentList::new();
+        sl.occupy(0, 10, None);
+        sl.occupy(20, 5, Some("X".to_string()));
+        assert_eq!(sl.occupied_size(), 15);
+        sl.release(100, 5);
+        assert_eq!(sl.occupied_size(), 15);
+    }
+
+    #[test]
+    fn overlapping_inserts() {
+        let mut sl = SegmentList::new();
+        sl.occupy(0, 10, None);
+        sl.occupy(5, 10, None);
+        assert_eq!(sl.occupied_size(), 15);
+    }
+
+    #[test]
+    fn release_past_the_end_of_the_address_space() {
+        let mut sl = SegmentList::new();
+        sl.occupy(u64::MAX - 4, 4, None);
+        sl.release(u64::MAX, 1);
+        sl.release(u64::MAX - 1, 2);
+        sl.release(1, u64::MAX);
+        assert_eq!(sl.occupied_size(), 4);
+        // the non-overflowing range that ends exactly at u64::MAX still releases
+        sl.release(u64::MAX - 4, 4);
+        assert_eq!(sl.occupied_size(), 0);
+    }
+
+    #[test]
+    fn full_and_partial_release() {
+        let mut sl = SegmentList::new();
+        sl.occupy(0, 10, None);
+        // partial release [3..8)
+        sl.release(3, 5);
+        assert_eq!(sl.occupied_size(), 5);
+        assert!(sl.is_occupied(2));
+        assert!(!sl.is_occupied(4));
+        assert!(sl.is_occupied(8));
+        // full release
+        sl.release(0, 10);
+        assert_eq!(sl.occupied_size(), 0);
+        assert!(sl.is_empty());
+    }
+}

@@ -1,7 +1,4 @@
-from collections.abc import Iterator
-from typing import override
-
-from . import automaton, fuzzer, icicle
+from . import ailment, automaton, claripy, function_graph, fuzzer, icicle
 
 class Segment:
     """
@@ -19,6 +16,7 @@ class Segment:
         :arg start: Start address.
         :arg end: End address.
         :arg sort: Type of the segment, can be code, data, etc.
+        :raises ValueError: If ``end`` precedes ``start``.
         """
 
     def copy(self) -> Segment:
@@ -35,9 +33,6 @@ class Segment:
 
         :returns: Size of the Segment
         """
-
-    @override
-    def __repr__(self) -> str: ...
 
 class SegmentList:
     """
@@ -87,18 +82,26 @@ class SegmentList:
         Checks which segment that the address `addr` should belong to, and, returns the offset of that segment.
         Note that the address may not actually belong to the block.
 
+        This is O(n): an index into the segment list cannot be computed any faster. Prefer the point-query methods
+        (:meth:`occupied_by`, :meth:`occupied_by_sort`, ...) wherever an index is not strictly needed.
+
         :arg addr: The address to search.
         :returns: The offset of the segment.
         """
 
-    def iter_backward_from(self, addr: int) -> Iterator[Segment]:
+    def sort_ratio_backwards(self, addr: int, window_size: int, sort: str | None) -> float:
         """
-        Iterate the segment that :meth:`search` would name for `addr`, then every segment before it, in
-        descending address order. Prefer this over ``search`` plus repeated indexing: ``__getitem__`` walks
-        the list from index 0 on every call, so the indexed form is quadratic.
+        The fraction of bytes belonging to segments of sort `sort`, among the last `window_size` occupied bytes at or
+        before `addr`.
+
+        The walk starts at the segment :meth:`search` would return for `addr` and moves backwards, skipping over gaps,
+        until `window_size` bytes have been covered.
 
         :arg addr: The address to start the backwards walk at.
-        :returns: An iterator of segments, empty if `addr` is past the last segment.
+        :arg window_size: The number of occupied bytes to cover.
+        :arg sort: The sort to measure.
+        :returns: The ratio, or 0.0 if the starting segment has a different sort or fewer than `window_size` occupied
+                  bytes are available.
         """
 
     def next_free_pos(self, address: int) -> int:
@@ -180,4 +183,4 @@ class SegmentList:
         :returns: A copy of the SegmentList instance.
         """
 
-__all__ = ["Segment", "SegmentList", "automaton", "fuzzer", "icicle"]
+__all__ = ["Segment", "SegmentList", "ailment", "automaton", "claripy", "function_graph", "fuzzer", "icicle"]

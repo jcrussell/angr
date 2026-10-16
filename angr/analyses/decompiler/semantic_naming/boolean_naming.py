@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import TYPE_CHECKING
 
 from angr import ailment
 from angr.ailment.expression import BinaryOp, Const, UnaryOp
@@ -19,13 +18,13 @@ from angr.sim_variable import SimVariable
 
 from .naming_base import ClinicNamingBase
 
-if TYPE_CHECKING:
-    pass
-
 l = logging.getLogger(name=__name__)
 
-# Names for boolean flag variables
-BOOLEAN_FLAG_NAMES = ["flag", "choice"]
+# Names for boolean flag variables.
+# Note: "flag" was removed because it is uninformative and tended to dominate the
+# output (flag, flag1, flag2, ...). This pattern is also disabled by default in the
+# orchestrator; the list is retained for when it is explicitly re-enabled.
+BOOLEAN_FLAG_NAMES = ["choice"]
 
 
 class BooleanNaming(ClinicNamingBase):
@@ -243,7 +242,7 @@ class BooleanNaming(ClinicNamingBase):
             if self._name_counter < len(BOOLEAN_FLAG_NAMES):
                 new_name = BOOLEAN_FLAG_NAMES[self._name_counter]
             else:
-                new_name = f"flag{self._name_counter}"
+                new_name = f"choice{self._name_counter}"
 
             self._var_to_new_name[var] = new_name
             self._name_counter += 1

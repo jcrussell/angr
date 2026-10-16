@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import claripy
 from archinfo.arch_soot import SootAddressDescriptor
 
 import angr
+from angr import claripy
 from angr import sim_options as o
 from angr.calling_conventions import SYSCALL_CC
 from angr.engines.engine import SimEngine
@@ -93,7 +93,7 @@ class SimSuccessors:
                     addendum = f".{idx}"
         else:
             return f"<{self.description} from {self.addr}: {result}>"
-        if self.initial_state is not None and self.initial_state.project is not None:
+        if self.initial_state is not None:
             whatsup = self.initial_state.project.loader.describe_addr(int_addr)
             hex_addr = hex(int_addr)
             if hex_addr in whatsup:
@@ -294,7 +294,7 @@ class SimSuccessors:
                     skip_max_targets_warning = True  # don't warn
                 elif o.KEEP_IP_SYMBOLIC in state.options:
                     s = claripy.Solver()
-                    addrs = s.eval(target, _max_targets + 1, extra_constraints=tuple(state.ip_constraints))
+                    addrs = s.eval(target, _max_targets + 1)
                     if len(addrs) > _max_targets:
                         # It is not a library
                         l.debug("It is not a Library")
@@ -563,7 +563,6 @@ class SuccessorsEngine(SimEngine[HeavyState, SimSuccessors]):
         except SimException as e:
             if o.EXCEPTION_HANDLING not in old_state.options:
                 raise
-            assert old_state.project is not None
             old_state.project.simos.handle_exception(self.successors, self, e)
 
         new_state._inspect("engine_process", when=BP_AFTER, sim_successors=self.successors, address=addr)

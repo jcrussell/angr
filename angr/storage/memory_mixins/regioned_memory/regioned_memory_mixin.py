@@ -3,13 +3,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 from itertools import count
-from typing import TYPE_CHECKING, Optional
-
-import claripy
-from claripy.annotation import RegionAnnotation
-from claripy.ast import BV, Bits, Bool
+from typing import TYPE_CHECKING
 
 import angr
+from angr import claripy
+from angr.claripy.annotation import RegionAnnotation
+from angr.claripy.ast import BV, Bits, Bool
 from angr.errors import SimAbstractMemoryError, SimMemoryError
 from angr.sim_options import AVOID_MULTIVALUED_READS, CONSERVATIVE_READ_STRATEGY, CONSERVATIVE_WRITE_STRATEGY
 from angr.state_plugins.sim_action_object import _raw_ast
@@ -49,7 +48,7 @@ class RegionedMemoryMixin(MemoryMixin):
         stack_region_map: RegionMap | None = None,
         generic_region_map: RegionMap | None = None,
         stack_size: int = 65536,
-        cle_memory_backer: Optional | None = None,
+        cle_memory_backer: None = None,
         dict_memory_backer: dict | None = None,
         regioned_memory_cls: type | None = None,
         **kwargs,
@@ -145,12 +144,14 @@ class RegionedMemoryMixin(MemoryMixin):
         for aw in gen:
             self._region_store(aw.address, data, aw.region, endness, related_function_addr=aw.function_address)
 
-    def merge(self, others, merge_conditions, common_ancestor=None) -> bool:
+    def merge(self, others, merge_conditions, common_ancestor=None, is_widening=False) -> bool:
         r = False
         for o in others:
             for region_id, region in o._regions.items():
                 if region_id in self._regions:
-                    r |= self._regions[region_id].merge([region], merge_conditions, common_ancestor=common_ancestor)
+                    r |= self._regions[region_id].merge(
+                        [region], merge_conditions, common_ancestor=common_ancestor, is_widening=is_widening
+                    )
                 else:
                     self._regions[region_id] = region
                     r = True
@@ -240,7 +241,7 @@ class RegionedMemoryMixin(MemoryMixin):
         state: SimState,
         related_function_addr: int,
         endness,
-        cle_memory_backer: Optional | None = None,
+        cle_memory_backer: None = None,
         dict_memory_backer: dict | None = None,
     ):
         """

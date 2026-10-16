@@ -7,16 +7,15 @@ from collections.abc import Generator, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 import archinfo
-import claripy
 import networkx
 from archinfo import Arch
-from claripy.annotation import Annotation
 
-from angr import ailment
+from angr import ailment, claripy
 from angr.ailment.expression import BinaryOp, StackBaseOffset
 from angr.analyses.analysis import Analysis
 from angr.analyses.dominance_frontier import DominanceFrontier
 from angr.analyses.typehoon.typevars import TypeVariable, TypeVariableManager, TypeVariables
+from angr.claripy.annotation import Annotation
 from angr.codenode import CodeNode
 from angr.errors import AngrRuntimeError
 from angr.knowledge_plugins.functions.function import Function
@@ -25,6 +24,7 @@ from angr.storage.memory_mixins import MultiValuedMemory
 from angr.utils.cowdict import DefaultChainMapCOW
 
 if TYPE_CHECKING:
+    from angr.knowledge_plugins.variables.variable_manager import VariableManagerInternal
     from angr.project import Project
     from angr.storage import SimMemoryObject
 
@@ -61,16 +61,11 @@ def parse_stack_pointer(sp):
 class VariableAnnotation(Annotation):
     __slots__ = ("addr_and_variables",)
 
+    relocatable = True
+    eliminatable = False
+
     def __init__(self, addr_and_variables: list[tuple[int, SimVariable]]):
         self.addr_and_variables = addr_and_variables
-
-    @property
-    def relocatable(self):
-        return True
-
-    @property
-    def eliminatable(self):
-        return False
 
     def __eq__(self, other):
         if type(other) is VariableAnnotation:
@@ -97,11 +92,14 @@ class VariableRecoveryBase(Analysis):
         vvar_to_vvar: dict[int, int] | None = None,
         func_graph: networkx.DiGraph[CodeNode] | networkx.DiGraph[ailment.Block] | None = None,
         entry_node_addr: int | ailment.Address | None = None,
+        flavor: str | None = None,
     ):
         self.function = func
         self.func_graph = func_graph
         self.entry_node_addr = entry_node_addr
         self.variable_manager = self.kb.variables
+        # decompilation flavor on whose behalf variables are recovered; None (no decompilation) uses the C globals
+        self.flavor = flavor
 
         self._max_iterations = max_iterations
         self._store_live_variables = store_live_variables
@@ -114,6 +112,10 @@ class VariableRecoveryBase(Analysis):
     #
     # Public methods
     #
+
+    @property
+    def global_variable_manager(self) -> VariableManagerInternal:
+        return self.variable_manager.get_global_manager(self.flavor)
 
     def get_variable_definitions(self, block_addr):
         """
@@ -175,7 +177,7 @@ class VariableRecoveryBase(Analysis):
         stack_vars_by_offset = defaultdict(list)
         for sv in stack_vars:
             stack_vars_by_offset[sv.offset].append(sv)
-        for _offset, var_list in stack_vars_by_offset.items():
+        for var_list in stack_vars_by_offset.values():
             if len(var_list) < 2:
                 continue
             single_byte_vars = [v for v in var_list if v.size == 1]
@@ -184,7 +186,9 @@ class VariableRecoveryBase(Analysis):
             single_byte_var = single_byte_vars[0]
 
             if not varman.get_variable_accesses(single_byte_var):
-                # remove this variable
+                # remove this variable; atoms linked to it (e.g. an earlier &var) now refer to an overlapping one
+                replacement = min((v for v in var_list if v is not single_byte_var), key=lambda v: v.ident or "")
+                varman.rebind_variable_records(single_byte_var, replacement)
                 varman._variables.discard(single_byte_var)
 
 
@@ -366,7 +370,12 @@ class VariableRecoveryStateBase:
         return None
 
     def stack_addr_from_offset(self, offset: int) -> int:
-        if self.arch.bits == 32:
+        if self.arch.bits == 16:
+            # 0x7F00 is the 16-bit stack base angr already uses, in
+            # LiveDefinitions.INITIAL_SP_16BIT.
+            base = 0x7F00
+            mask = 0xFFFF
+        elif self.arch.bits == 32:
             base = 0x7FFF_FE00
             mask = 0xFFFF_FFFF
         elif self.arch.bits == 64:
@@ -387,6 +396,10 @@ class VariableRecoveryStateBase:
     @property
     def variable_manager(self):
         return self._analysis.variable_manager
+
+    @property
+    def global_variable_manager(self) -> VariableManagerInternal:
+        return self._analysis.global_variable_manager
 
     @property
     def variables(self):

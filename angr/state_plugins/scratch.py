@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 
-import claripy
-
+from angr import claripy
 from angr import sim_options as o
 from angr.errors import SimMissingTempError, SimValueError
 from angr.sim_state import SimState
@@ -178,9 +177,6 @@ class SimStateScratch(SimStatePlugin):
         return SimStateScratch(scratch=self)
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint: disable=unused-argument
-        return False
-
-    def widen(self, others):  # pylint: disable=unused-argument
         return False
 
     def clear(self):

@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypeVar
 
-from angr.code_location import ExternalCodeLocation
+from angr.code_location import AILCodeLocation, ExternalCodeLocation
 from angr.engines.light import SpOffset
 from angr.knowledge_plugins.variables.variable_manager import VariableManagerInternal
 from angr.misc.ux import once
@@ -20,7 +20,9 @@ from .atoms import Atom, AtomKind, MemoryLocation, Register, Tmp, VirtualVariabl
 from .tag import Tag
 
 if TYPE_CHECKING:
-    from angr.code_location import AILCodeLocation, CodeLocation
+    from archinfo import Arch
+
+    from angr.code_location import CodeLocation
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ class DefinitionMatchPredicate:
     bbl_addr: int | None = None
     ins_addr: int | None = None
     variable: SimVariable | None = None
-    variable_manager: VariableManagerInternal | None | Literal[False] = None
+    variable_manager: VariableManagerInternal | Literal[False] | None = None
     stack_offset: int | None = None
     reg_name: str | int | None = None
     heap_offset: int | None = None
@@ -47,6 +49,7 @@ class DefinitionMatchPredicate:
     tmp_idx: int | None = None
     const_val: int | None = None
     extern: bool | None = None
+    arch: Arch | None = None
 
     @staticmethod
     def construct(predicate: DefinitionMatchPredicate | None = None, **kwargs) -> DefinitionMatchPredicate:
@@ -122,13 +125,16 @@ class DefinitionMatchPredicate:
                     if not defn.atom.reg_offset <= self.reg_name < defn.atom.reg_offset + defn.atom.size:
                         return False
                 elif isinstance(self.reg_name, str):
-                    if defn.atom.arch is not None:
-                        if self.reg_name != defn.atom.name:
-                            return False
-                    else:
-                        log.warning(
-                            "Attempting to match by register name against a definition which does not have an arch"
-                        )
+                    if self.arch is None:
+                        log.warning("Attempting to match by register name without an arch")
+                        return False
+                    if self.reg_name not in self.arch.registers:
+                        return False
+                    reg_offset, reg_size = self.arch.registers[self.reg_name]
+                    if (
+                        defn.atom.reg_offset >= reg_offset + reg_size
+                        or reg_offset >= defn.atom.reg_offset + defn.atom.size
+                    ):
                         return False
                 else:
                     raise TypeError(self.reg_name)
@@ -167,6 +173,27 @@ class Definition[A: Atom, CodeLoc: CodeLocation | AILCodeLocation]:
         self.codeloc = codeloc
         self.dummy = dummy
         self.tags = tags or set()
+        self._hash = None
+
+    def __getstate__(self):
+        # Exclude the cached hash from the pickle: it derives from the atom's hash,
+        # which folds in per-process-salted string hashes, so a persisted value is
+        # stale when unpickled in another process. It is recomputed lazily instead.
+        slotstate = {
+            slot: getattr(self, slot)
+            for klass in type(self).__mro__
+            for slot in getattr(klass, "__slots__", ())
+            if slot != "_hash" and hasattr(self, slot)
+        }
+        return getattr(self, "__dict__", None), slotstate
+
+    def __setstate__(self, state):
+        dictstate, slotstate = state if isinstance(state, tuple) else (None, state)
+        if dictstate:
+            self.__dict__.update(dictstate)
+        for slot, value in (slotstate or {}).items():
+            if slot != "_hash":
+                setattr(self, slot, value)
         self._hash = None
 
     def __eq__(self, other):

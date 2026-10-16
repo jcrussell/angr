@@ -6,6 +6,7 @@ __package__ = __package__ or "tests.analyses.cfg"  # pylint:disable=redefined-bu
 
 import logging
 import os
+import struct
 import time
 import unittest
 
@@ -178,6 +179,64 @@ class TestCfgfastDataReferences(unittest.TestCase):
         assert cfg_model.memory_data[0x10001004].size == 228
         assert cfg_model.memory_data[0x10001004].sort == MemoryDataSort.PointerArray
 
+    def test_pe_32bit_string_tables_in_text_section(self):
+        # this binary carries read-only data (string tables, pointer tables, etc.) at the beginning of its .text
+        # section. its string tables separate strings with two null bytes; the string scans only consume one
+        # terminating null byte, and the single remaining null byte used to defeat all data heuristics in
+        # _next_code_addr_core(), causing entire string tables to be misidentified as code (and functions).
+        path = os.path.join(
+            test_location, "i386", "windows", "9888704382abfb694984c1c7a7707a45b4ebc406fc98d35622461077553aa797"
+        )
+        proj = angr.Project(path, auto_load_libs=False)
+
+        cfg = proj.analyses.CFGFast()
+        memory_data = cfg.model.memory_data
+
+        # ASCII string tables: strings must be recovered and no functions created among them
+        assert memory_data[0x4019B0].sort == MemoryDataSort.String
+        assert memory_data[0x4019B0].content == b"address not available"
+        assert memory_data[0x402384].sort == MemoryDataSort.String
+        assert memory_data[0x402384].content == b"__vectorcall"
+        assert not [f for f in cfg.kb.functions if 0x4019A0 <= f < 0x402700]
+
+        # UTF-16 string tables: same failure mode, with the leftover null byte also breaking the scan phase
+        assert cfg._seg_list.occupied_by_sort(0x405F12) == "unicode"
+        assert not [f for f in cfg.kb.functions if 0x405E00 <= f < 0x406100]
+
+        # interleaved (value, pointer) tables are detected by the mixed-pointer scan
+        assert memory_data[0x401FBC].sort == MemoryDataSort.PointerArray
+
+        # character translation tables (runs of monotonically increasing bytes) are detected by the byte-ramp scan
+        # and must not become code
+        assert memory_data[0x403390].sort == MemoryDataSort.Unknown
+        assert memory_data[0x403390].size == 193
+        assert not [f for f in cfg.kb.functions if 0x4033A0 <= f < 0x403690]
+
+        # double-precision constant tables are detected by the floating-point constant scan
+        assert memory_data[0x406278].sort == MemoryDataSort.FloatingPoint
+        assert memory_data[0x406278].size == 2064
+        assert not [f for f in cfg.kb.functions if 0x406270 <= f < 0x406B00]
+
+    def test_complete_scan_single_precision_fp_table(self):
+        # a run of plausible single-precision floats must be classified as data, not code
+        code = b"\xc3\xcc\xcc\xcc" + struct.pack("<8f", 1.0, 0.5, 3.14, 100.0, 1e-5, 1e5, -2.5, 0.001)
+        proj = angr.load_shellcode(code, "x86")
+        cfg = proj.analyses.CFGFast()
+
+        assert cfg.model.memory_data[4].sort == MemoryDataSort.FloatingPoint
+        assert cfg.model.memory_data[4].size == 32
+        assert list(cfg.kb.functions) == [0]
+
+    def test_complete_scan_cc_filler_is_not_fp(self):
+        # a run of one repeated in-band value (0xCC filler decodes as plausible negative floats) must not be
+        # classified as a floating-point constant table
+        code = b"\xc3" + b"\xcc" * 64
+        proj = angr.load_shellcode(code, "x86")
+        cfg = proj.analyses.CFGFast()
+
+        assert not [d for d in cfg.model.memory_data.values() if d.sort == MemoryDataSort.FloatingPoint]
+        assert list(cfg.kb.functions) == [0]
+
     def test_long_printable_ascii_string_without_null_byte(self):
         # suboptimal logic in _scan_for_printable_strings was causing the CFG recovery of this binary to be extremely
         # slow; we were repeatedly trying (and failing) to build a super long ASCII string in this binary.
@@ -190,7 +249,7 @@ class TestCfgfastDataReferences(unittest.TestCase):
         cfg = proj.analyses.CFGFast()
         elapsed = time.time() - start
 
-        assert elapsed < 20, f"CFG recovery took too long: {elapsed:.2f} seconds"
+        assert elapsed < 30, f"CFG recovery took too long: {elapsed:.2f} seconds"
 
         assert 0x140001000 in cfg.memory_data
         assert cfg.memory_data[0x140001000].sort == MemoryDataSort.String

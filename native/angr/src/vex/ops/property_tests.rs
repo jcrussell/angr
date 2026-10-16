@@ -333,16 +333,15 @@ fn divmod_reference(a: u128, b: u128, w: u32) -> (u128, u128, u128, u128) {
     let m = mask(w);
     let (au, bu) = (a & m, b & m);
     let (ai, bi) = (to_signed(a, w), to_signed(b, w));
-    if bu == 0 {
-        (m, if ai < 0 { 1 } else { m }, au, au)
-    } else {
-        (
-            au / bu,
+    match au.checked_div(bu) {
+        None => (m, if ai < 0 { 1 } else { m }, au, au),
+        Some(q) => (
+            q,
             // `wrapping_*` for the MIN / -1 overflow, matching bvsdiv/bvsrem.
             (ai.wrapping_div(bi) as u128) & m,
             au % bu,
             (ai.wrapping_rem(bi) as u128) & m,
-        )
+        ),
     }
 }
 

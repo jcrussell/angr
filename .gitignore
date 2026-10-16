@@ -41,12 +41,9 @@ tests/benchmarks/debug_*.py
 .DS_Store
 *_angr_rtdb
 *_angr_rtdb_*
-
-# Pre-ralph autonomous-loop runtime artifacts (logs, pid, stdout/stderr
-# captures). The ralph loop keeps its state under .ralph/state/.
-.claude/loop-logs-v2/
-.claude/loop-stderr.log
-.claude/loop-stdout.log
-.claude/loop.pid
-.claude/scheduled_tasks.lock
+.claude
+angr/protos/*_pb2.py
+angr/protos/*_pb2.pyi
+.z3-trace
 tests/benchmarks/synthetic_examples/fork_solve_pbounce_W6_S8_M12_B2/__pycache__/
+.venv-up/

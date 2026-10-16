@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 
-import claripy
-
 import angr
+from angr import claripy
 
 l = logging.getLogger(name=__name__)
 
@@ -24,6 +23,5 @@ class strncpy(angr.SimProcedure):
 
 
 class __strncpy_chk(strncpy):
-    # _FORTIFY_SOURCE redirect; the trailing destlen is ignored (matches __memcpy_chk).
     def run(self, dst_addr, src_addr, limit, _destlen):  # type:ignore[reportIncompatibleMethodOverride]
         return super().run(dst_addr, src_addr, limit)

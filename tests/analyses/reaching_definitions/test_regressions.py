@@ -1,22 +1,50 @@
 # pylint: disable=R0201,C0111,line-too-long,bad-builtin,expression-not-assigned,no-member
 from __future__ import annotations
 
+import os
 import struct
-from unittest import TestCase
+from unittest import TestCase, main
 
 from archinfo import ArchAArch64
 
 import angr
 from angr.analyses import CFGFast, ReachingDefinitionsAnalysis
 from angr.knowledge_plugins import Function
-from angr.knowledge_plugins.key_definitions.atoms import Atom
-from angr.knowledge_plugins.key_definitions.constants import OP_BEFORE
+from angr.knowledge_plugins.key_definitions.atoms import Atom, Register
+from angr.knowledge_plugins.key_definitions.constants import OP_AFTER, OP_BEFORE
+from tests.common import bin_location
 
 
 class TestRDARegressions(TestCase):
     """
     Test misc regressions for the ReachingDefinitionsAnalysis.
     """
+
+    def test_concat_of_a_multivalues_with_itself(self):
+        """
+        Iop_16HLto32(t, t) reads the same VEX temporary for both operands, and _expr_bv() returns the live
+        object stored in self.tmps, so MultiValues.concat() used to receive one object as both self and
+        other. It copy-constructed MultiValues(self), which aliased the offset map rather than copying it,
+        and the add_value() that followed inserted into the dict its own items() iteration was walking.
+        """
+        binary = os.path.join(
+            bin_location,
+            "tests",
+            "x86_64",
+            "windows",
+            "dd56403d14ffe220a645a964a19f8b488e200b84ae5a414b0c020b561ae40880.sys",
+        )
+        func_addr = 0x1400DF7BF
+
+        proj = angr.Project(binary, auto_load_libs=False)
+        # Scope the scan to the one function that carries the pattern: the whole binary is 18k functions.
+        cfg = proj.analyses[CFGFast].prep()(
+            regions=[(func_addr, func_addr + 0x200)], function_starts=[func_addr], normalize=True
+        )
+        assert func_addr in cfg.functions, "fixture no longer contains the function under test"
+
+        # Used to raise RuntimeError("dictionary changed size during iteration").
+        proj.analyses[ReachingDefinitionsAnalysis].prep()(subject=cfg.functions[func_addr], observe_all=False)
 
     def test_load_multiple_concrete_addresses(self):
         """
@@ -205,3 +233,18 @@ class TestRDARegressions(TestCase):
         }, (
             f"Expected selector to contain the pointers to 'startAnimating' and 'stopAnimating' i.e. 0x100191A4C, 0x100191A3D, but got: {selector}"
         )
+
+    def test_wide_register_read_uses_narrow_definition(self):
+        # mov dl, [0xc00001e0] ; test dl, dl. In libVEX 3.27.1, the byte read is lifted as GET:I64(rdx) + 64to8, and
+        # that read must count as a use of the 1-byte PUT(dl) definition.
+        project = angr.load_shellcode(bytes.fromhex("8a1425e00100c084d2"), arch="AMD64")
+        block = project.factory.block(0)
+        rda = project.analyses.ReachingDefinitions(block, track_tmps=True, observation_points=[("node", 0, OP_AFTER)])
+        dl_defs = [d for d in rda.all_definitions if isinstance(d.atom, Register) and d.atom.size == 1]
+        assert len(dl_defs) == 1
+        read_insns = {u.ins_addr for u in rda.all_uses.get_uses(dl_defs[0])}
+        assert 0x7 in read_insns, f"PUT(dl) is not used by the `test dl, dl` at 0x7; uses at {read_insns}"
+
+
+if __name__ == "__main__":
+    main()

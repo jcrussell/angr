@@ -11,21 +11,21 @@ use libafl::{
 use libafl_bolts::Named;
 use pyo3::{exceptions::PyTypeError, prelude::*};
 
-use crate::fuzzer::{S, delegate::delegate_two_variant};
+use crate::fuzzer::S;
 
 /// A deterministic mutator that cycles through a predefined sequence of byte values.
 ///
 /// On each call to `mutate`, replaces the input with the next value in the sequence,
 /// wrapping around when the end is reached. Useful for writing tests with predictable
 /// mutation outputs.
-pub(crate) struct DeterministicMutator {
+pub struct DeterministicMutator {
     values: Vec<Vec<u8>>,
     index: usize,
     name: Cow<'static, str>,
 }
 
 impl DeterministicMutator {
-    pub(crate) fn new(values: Vec<Vec<u8>>) -> Self {
+    pub fn new(values: Vec<Vec<u8>>) -> Self {
         Self {
             values,
             index: 0,
@@ -57,34 +57,39 @@ impl Mutator<BytesInput, S> for DeterministicMutator {
 }
 
 /// A dynamic mutator enum that can hold either a Havoc mutator or a Deterministic mutator.
-pub(crate) enum DynMutator {
+pub enum DynMutator {
     Havoc(HavocScheduledMutator<HavocMutationsType>),
     Deterministic(DeterministicMutator),
 }
 
-// Both impls are plain forwards to the active variant (angr-12jjk.25).
 impl Named for DynMutator {
-    delegate_two_variant! {
-        DynMutator { Havoc, Deterministic }
-        fn name(&self) -> &Cow<'static, str>;
+    fn name(&self) -> &Cow<'static, str> {
+        match self {
+            DynMutator::Havoc(m) => m.name(),
+            DynMutator::Deterministic(m) => m.name(),
+        }
     }
 }
 
 impl Mutator<BytesInput, S> for DynMutator {
-    delegate_two_variant! {
-        DynMutator { Havoc, Deterministic }
-        fn mutate(&mut self, state: &mut S, input: &mut BytesInput) -> Result<MutationResult, Error>;
-        fn post_exec(&mut self, state: &mut S, new_corpus_id: Option<CorpusId>) -> Result<(), Error>;
+    fn mutate(&mut self, state: &mut S, input: &mut BytesInput) -> Result<MutationResult, Error> {
+        match self {
+            DynMutator::Havoc(m) => m.mutate(state, input),
+            DynMutator::Deterministic(m) => m.mutate(state, input),
+        }
+    }
+
+    fn post_exec(&mut self, state: &mut S, new_corpus_id: Option<CorpusId>) -> Result<(), Error> {
+        match self {
+            DynMutator::Havoc(m) => m.post_exec(state, new_corpus_id),
+            DynMutator::Deterministic(m) => m.post_exec(state, new_corpus_id),
+        }
     }
 }
 
 /// Python-exposed configuration for the standard Havoc mutator.
 #[pyclass(module = "angr.rustylib.fuzzer", name = "HavocMutator", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct PyHavocMutator {
     pub max_stack_pow: Option<usize>,
 }
@@ -99,7 +104,7 @@ impl PyHavocMutator {
 }
 
 impl PyHavocMutator {
-    pub(crate) fn build(&self) -> HavocScheduledMutator<HavocMutationsType> {
+    pub fn build(&self) -> HavocScheduledMutator<HavocMutationsType> {
         match self.max_stack_pow {
             Some(pow) => HavocScheduledMutator::with_max_stack_pow(havoc_mutations(), pow),
             None => HavocScheduledMutator::new(havoc_mutations()),
@@ -114,10 +119,6 @@ impl PyHavocMutator {
     from_py_object
 )]
 #[derive(Clone, Debug)]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
 pub struct PyDeterministicMutator {
     pub values: Vec<Vec<u8>>,
 }
@@ -136,14 +137,14 @@ impl PyDeterministicMutator {
 }
 
 impl PyDeterministicMutator {
-    pub(crate) fn build(&self) -> DeterministicMutator {
+    pub fn build(&self) -> DeterministicMutator {
         DeterministicMutator::new(self.values.clone())
     }
 }
 
 /// Build a DynMutator from an optional Python mutator object.
 /// If None, uses the default Havoc mutator.
-pub(crate) fn build_mutator(py_mutator: Option<&Bound<PyAny>>) -> PyResult<DynMutator> {
+pub fn build_mutator(py_mutator: Option<&Bound<PyAny>>) -> PyResult<DynMutator> {
     match py_mutator {
         None => Ok(DynMutator::Havoc(HavocScheduledMutator::new(
             havoc_mutations(),

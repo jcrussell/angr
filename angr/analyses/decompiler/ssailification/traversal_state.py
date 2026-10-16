@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from typing import TYPE_CHECKING
 
 from angr.ailment.expression import StackBaseOffset
 from angr.code_location import AILCodeLocation
-from angr.utils.cowdict import ChainMapCOW, DefaultChainMapCOW
+from angr.utils.cow_interval_map import IntervalMapCOW
+from angr.utils.cowdict import DefaultChainMapCOW, merge_candidate_keys
 
 if TYPE_CHECKING:
     from angr.analyses.decompiler.ssailification.ssailification import Def
@@ -45,18 +46,22 @@ class TraversalState:
         func,
         live_registers: MutableMapping[int, Value] | None = None,
         live_stackvars: DefaultChainMapCOW[int, Value] | None = None,
-        register_blackout: set[int] | None = None,
+        register_blackout: Mapping[int, frozenset[AILCodeLocation]] | None = None,
         live_vvars: DefaultChainMapCOW[int, Value] | None = None,
-        stackvar_bases: ChainMapCOW[int, tuple[int, int]] | None = None,
+        stackvar_bases: IntervalMapCOW[tuple[int, int]] | None = None,
         register_bases: MutableMapping[int, tuple[int, int]] | None = None,
-        stackvar_defs: DefaultChainMapCOW[int, set[Def]] | None = None,
+        stackvar_defs: IntervalMapCOW[set[Def]] | None = None,
         register_defs: MutableMapping[int, set[Def]] | None = None,
         pending_ptr_defines_nonlocal_live: set[int] | None = None,
     ):
         self.arch = arch
         self.func = func
 
-        self.register_blackout = set(register_blackout or ())
+        # register byte offset -> code locations of the calls that clobbered it. The values are immutable so that
+        # copying a state (which happens for every block visit) is a shallow dict copy.
+        self.register_blackout: dict[int, frozenset[AILCodeLocation]] = (
+            dict(register_blackout) if register_blackout else {}
+        )
         self.live_registers = defaultdict(set, {} if live_registers is None else live_registers)
         self.live_stackvars: DefaultChainMapCOW[int, Value] = (
             DefaultChainMapCOW(default_factory=set, collapse_threshold=50)
@@ -70,43 +75,39 @@ class TraversalState:
             set
         )  # tmps are internal to a block only and never propagated from another state
 
-        self.stackvar_bases: ChainMapCOW[int, tuple[int, int]] = (
-            stackvar_bases.copy() if stackvar_bases is not None else ChainMapCOW(collapse_threshold=50)
+        # stack byte offset -> (offset, size) of the variable covering it
+        self.stackvar_bases: IntervalMapCOW[tuple[int, int]] = (
+            stackvar_bases.copy() if stackvar_bases is not None else IntervalMapCOW(coalesce_equal=True)
         )
         self.register_bases: MutableMapping[int, tuple[int, int]] = register_bases if register_bases is not None else {}
         self.pending_ptr_defines: dict[int, list[tuple[AILCodeLocation, StackBaseOffset]]] = {}
         self.pending_ptr_defines_nonlocal_live = pending_ptr_defines_nonlocal_live or set()
-        self.stackvar_defs = (
-            DefaultChainMapCOW(default_factory=set, collapse_threshold=50)
-            if stackvar_defs is None
-            else stackvar_defs.copy()
+        # stack byte offset -> reaching defs. bytes of one variable share a set object, which merge() updates in place
+        self.stackvar_defs: IntervalMapCOW[set[Def]] = (
+            IntervalMapCOW() if stackvar_defs is None else stackvar_defs.copy()
         )
         self.register_defs = defaultdict(set, {} if register_defs is None else register_defs)
 
     def stackvar_unify(self, offset: int, size: int) -> tuple[int, int, set[int]]:
-        seen = (offset, offset + size)
-        queue = [(offset, offset + size)]
+        lo, hi = offset, offset + size
+        queue = [(lo, hi)]
         popped: set[int] = set()
+        bases = self.stackvar_bases
         while queue:
-            offset, eoffset = queue.pop()
-            for suboffset in range(offset, eoffset):
-                noffset, nsize = self.stackvar_bases.get(suboffset, (suboffset, 0))
+            qlo, qhi = queue.pop()
+            for _, _, (noffset, nsize) in bases.overlapping(qlo, qhi):
                 neoffset = noffset + nsize
-                if noffset < seen[0]:
-                    queue.append((noffset, seen[0]))
-                    seen = (noffset, seen[1])
-                if neoffset > seen[1]:
-                    queue.append((seen[1], neoffset))
-                    seen = (seen[0], neoffset)
+                if noffset < lo:
+                    queue.append((noffset, lo))
+                    lo = noffset
+                if neoffset > hi:
+                    queue.append((hi, neoffset))
+                    hi = neoffset
                 if nsize != 0:
                     popped.add(noffset)
 
-        final_offset, final_size = (seen[0], seen[1] - seen[0])
-        self.stackvar_bases = self.stackvar_bases.clean()
-        for suboffset in range(*seen):
-            self.stackvar_bases[suboffset] = (final_offset, final_size)
-
-        return (final_offset, final_size, popped)
+        bases.assign(lo, hi, (lo, hi - lo))
+        return lo, hi - lo, popped
 
     def register_unify(self, offset: int, size: int) -> tuple[int, int, set[int]]:
         seen = (offset, offset + size)
@@ -152,31 +153,56 @@ class TraversalState:
         merge_occurred = False
 
         for o in others:
+            # live_registers (and other dict-like data structures) is a ChainMapCOW, which means each lookup is
+            # N-times more expensive than a single dict lookup (where N is the chain map depth). Caching the
+            # lookups is important.
             for k, v in o.live_registers.items():
-                old_len = len(self.live_registers[k])
-                self.live_registers[k].update(v)
-                merge_occurred |= len(self.live_registers[k]) > old_len
+                dst = self.live_registers[k]
+                old_len = len(dst)
+                dst.update(v)
+                merge_occurred |= len(dst) > old_len
 
+            # merge_candidate_keys() returns the keys after the shared suffix of two COW chain maps, so we avoid
+            # iterating the shared histories of two COW chain maps.
             self.live_stackvars = self.live_stackvars.clean()
-            for k, v in o.live_stackvars.items():
-                old_len = len(self.live_stackvars[k])
-                self.live_stackvars[k].update(v)
-                merge_occurred |= len(self.live_stackvars[k]) > old_len
+            for k in merge_candidate_keys(self.live_stackvars, o.live_stackvars):
+                v = o.live_stackvars.get(k)
+                if v is None:
+                    continue
+                dst = self.live_stackvars[k]
+                old_len = len(dst)
+                dst.update(v)
+                merge_occurred |= len(dst) > old_len
 
             self.live_vvars = self.live_vvars.clean()
-            for k, v in o.live_vvars.items():
-                old_len = len(self.live_vvars[k])
-                self.live_vvars[k].update(v)
-                merge_occurred |= len(self.live_vvars[k]) > old_len
+            for k in merge_candidate_keys(self.live_vvars, o.live_vvars):
+                v = o.live_vvars.get(k)
+                if v is None:
+                    continue
+                dst = self.live_vvars[k]
+                old_len = len(dst)
+                dst.update(v)
+                merge_occurred |= len(dst) > old_len
 
-            self.stackvar_bases = self.stackvar_bases.clean()
-            for k0, (k1, s1) in o.stackvar_bases.items():
-                k2, s2 = self.stackvar_bases.get(k0, (k0, 0))
-                k3 = min(k1, k2)
-                s3 = max(k1 + s1, k2 + s2) - k3
-                if (k2, s2) != (k3, s3):
+            bases = self.stackvar_bases
+            for lo, hi, (k1, s1) in list(bases.unshared_segments(o.stackvar_bases)):
+                pieces = []
+                cur = lo
+                for slo, shi, (k2, s2) in bases.overlapping(lo, hi):
+                    slo, shi = max(slo, lo), min(shi, hi)
+                    if cur < slo:
+                        pieces.append((cur, slo, (k1, s1)))
+                    k3 = min(k1, k2)
+                    s3 = max(k1 + s1, k2 + s2) - k3
+                    if (k2, s2) != (k3, s3):
+                        pieces.append((slo, shi, (k3, s3)))
+                    cur = shi
+                if cur < hi:
+                    pieces.append((cur, hi, (k1, s1)))
+                if pieces:
                     merge_occurred = True
-                    self.stackvar_bases[k0] = (k3, s3)
+                    for plo, phi, v in pieces:
+                        bases.assign(plo, phi, v)
 
             for k0, (k1, s1) in o.register_bases.items():
                 k2, s2 = self.register_bases.get(k0, (k0, 0))
@@ -186,23 +212,40 @@ class TraversalState:
                     merge_occurred = True
                     self.register_bases[k0] = (k3, s3)
 
-            self.stackvar_defs = self.stackvar_defs.clean()
-            for k, d in o.stackvar_defs.items():
-                old_len = len(self.stackvar_defs[k])
-                self.stackvar_defs[k].update(d)
-                merge_occurred |= len(self.stackvar_defs[k]) > old_len
+            # intended: sets are updated in place
+            for lo, hi, d in list(self.stackvar_defs.unshared_segments(o.stackvar_defs)):
+                gaps = []
+                cur = lo
+                for slo, shi, dst in self.stackvar_defs.overlapping(lo, hi):
+                    if cur < slo:
+                        gaps.append((cur, slo))
+                    old_len = len(dst)
+                    dst.update(d)
+                    merge_occurred |= len(dst) > old_len
+                    cur = shi
+                if cur < hi:
+                    gaps.append((cur, hi))
+                for glo, ghi in gaps:
+                    self.stackvar_defs.assign(glo, ghi, set(d))
+                    merge_occurred |= bool(d)
 
             for k, d in o.register_defs.items():
-                old_len = len(self.register_defs[k])
-                self.register_defs[k].update(d)
-                merge_occurred |= len(self.register_defs[k]) > old_len
+                dst = self.register_defs[k]
+                old_len = len(dst)
+                dst.update(d)
+                merge_occurred |= len(dst) > old_len
 
             old_len = len(self.pending_ptr_defines_nonlocal_live)
             self.pending_ptr_defines_nonlocal_live.update(o.pending_ptr_defines_nonlocal_live)
             merge_occurred |= len(self.pending_ptr_defines_nonlocal_live) > old_len
 
-            old_len = len(self.register_blackout)
-            self.register_blackout.update(o.register_blackout)
-            merge_occurred |= len(self.register_blackout) > old_len
+            for suboff, locs in o.register_blackout.items():
+                dst_locs = self.register_blackout.get(suboff)
+                if dst_locs is None:
+                    self.register_blackout[suboff] = locs
+                    merge_occurred = True
+                elif not locs <= dst_locs:
+                    self.register_blackout[suboff] = dst_locs | locs
+                    merge_occurred = True
 
         return merge_occurred

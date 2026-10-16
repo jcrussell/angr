@@ -9,14 +9,53 @@ import os
 import unittest
 
 import angr
+from angr.ailment.expression import BinaryOp, Const, Convert, Extract, Insert, VirtualVariable, VirtualVariableCategory
+from angr.ailment.statement import Assignment
+from angr.analyses.decompiler.expression_narrower import EffectiveSizeExtractor
 from tests.common import WORKER, bin_location, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
 
-l = logging.Logger(__name__)
+l = logging.getLogger(__name__)
 
 
 class TestNarrowingExpressions(unittest.TestCase):
+    def test_insert_base_is_a_full_width_use(self):
+        # the base of an Insert is consumed at full width: every byte outside the inserted range is
+        # preserved into the result. EffectiveSizeExtractor used to skip the base entirely, so a vvar
+        # whose only other uses were narrow (e.g. an ah-style Extract) was narrowed below the width
+        # of the Insert base and zero-extended back, destroying the preserved bytes:
+        #     v1 = a0->field_10; a0->field_10 = _INSERT(v1, 1, v1 & 239);   // v1 narrowed to char
+        # instead of the full-width read-modify-write of field_10.
+        base = VirtualVariable(1, 44, 64, VirtualVariableCategory.REGISTER, oident=16)
+        ah_vvar = VirtualVariable(4, 44, 64, VirtualVariableCategory.REGISTER, oident=16)
+        ah_read = Extract(3, 8, ah_vvar, Const(5, 1, 64), "Iend_LE")
+        value = BinaryOp(2, "And", [ah_read, Const(6, 239, 8)], False, bits=8)
+        dst = VirtualVariable(7, 48, 64, VirtualVariableCategory.REGISTER, oident=16)
+        stmt = Assignment(9, dst, Insert(8, base, Const(10, 1, 64), value, "Iend_LE"))
+
+        walker = EffectiveSizeExtractor()
+        walker.walk_statement(stmt)
+
+        occurrences = walker.vvar_effective_bits[44]
+        # the Insert-base occurrence must be recorded as a full-width use...
+        assert occurrences[base.idx] == (0, 64)
+        # ...while the byte-1 Extract occurrence stays narrow
+        assert occurrences[ah_vvar.idx] == (8, 16)
+        assert 44 in walker.vvars_used_as_insert_base
+
+    def test_shared_node_keeps_widest_use(self):
+        # v + Conv(8->32, Conv(32->8, v)) where both occurrences of v are the same AIL node (same idx): the
+        # narrow use must not hide the full-width one
+        v = VirtualVariable(1, 44, 32, VirtualVariableCategory.REGISTER, oident=16)
+        low_byte = Convert(3, 8, 32, False, Convert(2, 32, 8, False, v))
+        dst = VirtualVariable(5, 48, 32, VirtualVariableCategory.REGISTER, oident=16)
+        stmt = Assignment(6, dst, BinaryOp(4, "Add", [low_byte, v], False, bits=32))
+
+        walker = EffectiveSizeExtractor()
+        walker.walk_statement(stmt)
+        assert walker.vvar_effective_bits[44] == {v.idx: (0, 32)}
+
     def test_narrowing_expressions_after_making_callsite_only(self):
         # narrowing expressions before making callsites may incorrectly remove some definitions that the calls use
         # in this test case, the definition of ecx at block 0x4066E5 will be replaced by cl, but ecx is actually used

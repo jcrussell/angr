@@ -8,12 +8,11 @@ import logging
 import os
 import unittest
 
-import angr
-from tests.common import WORKER, bin_location, print_decompilation_result
+from tests.common import bin_location, load_project_with_scoped_cfg, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
 
-l = logging.Logger(__name__)
+l = logging.getLogger(__name__)
 
 
 class TestCASRewriting(unittest.TestCase):
@@ -21,9 +20,12 @@ class TestCASRewriting(unittest.TestCase):
         bin_path = os.path.join(
             test_location, "x86_64", "windows", "9c75d43ec531c76caa65de86dcac0269d6727ba4ec74fe1cac1fda0e176fd2ab"
         )
-        proj = angr.Project(bin_path, auto_load_libs=False)
-
-        cfg = proj.analyses.CFGFast(show_progressbar=not WORKER, fail_fast=True, normalize=True)
+        proj, cfg = load_project_with_scoped_cfg(
+            bin_path,
+            0x140002F50,
+            extra_func_addrs=(0x1400036C0,),
+            run_ccc=False,
+        )
         func = cfg.functions[0x140002F50]
         assert func is not None
         dec = proj.analyses.Decompiler(func, cfg=cfg)
@@ -46,6 +48,22 @@ class TestCASRewriting(unittest.TestCase):
         assert dec.codegen.text.count("InterlockedExchange64") == 3
         assert dec.codegen.text.count("InterlockedExchangeAdd") == 1
         assert dec.codegen.text.count("InterlockedDecrement") == 1
+
+    def test_static_io_list_lock_cas_result_gets_a_variable(self):
+        # _IO_list_lock takes the lock with a lock cmpxchg. Variable recovery skipped the CAS
+        # statement's destinations, so its result had no variable and the C backend rendered the
+        # assignment's left-hand side as "/* unsupported instruction */".
+        bin_path = os.path.join(test_location, "x86_64", "static")
+        proj, cfg = load_project_with_scoped_cfg(bin_path, 0x4167E0, run_ccc=False)
+        func = cfg.functions[0x4167E0]
+        assert func is not None
+        dec = proj.analyses.Decompiler(func, cfg=cfg)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+
+        text = dec.codegen.text
+        assert "atomic_compare_exchange(" in text
+        assert "/* unsupported instruction */" not in text
 
 
 if __name__ == "__main__":

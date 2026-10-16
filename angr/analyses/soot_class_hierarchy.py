@@ -38,14 +38,14 @@ class SootClassHierarchy(Analysis):
         self.init_hierarchy()
 
     def init_hierarchy(self):
-        for _class_name, cls in self.project.loader.main_object.classes.items():
+        for cls in self.project.loader.main_object.classes.values():
             if "INTERFACE" in cls.attrs:
                 self.interface_implementers[cls] = []
                 self.dir_sub_interfaces[cls] = []
             else:
                 self.dir_sub_classes[cls] = []
 
-        for _class_name, cls in self.project.loader.main_object.classes.items():
+        for cls in self.project.loader.main_object.classes.values():
             if self.has_super_class(cls):
                 if "INTERFACE" in cls.attrs:
                     # TODO
@@ -64,7 +64,7 @@ class SootClassHierarchy(Analysis):
                         self.interface_implementers[i].append(cls)
 
         # fill direct implementers with subclasses
-        for _class_name, cls in self.project.loader.main_object.classes.items():
+        for cls in self.project.loader.main_object.classes.values():
             if "INTERFACE" in cls.attrs:
                 implementers = self.interface_implementers[cls]
                 s = set()
@@ -85,11 +85,21 @@ class SootClassHierarchy(Analysis):
         return False
 
     def is_subclass_including(self, cls_child, cls_parent):
+        # An interface has no chain of super classes to walk, so the only class it stands in this
+        # relation to is itself. Asking is a legitimate question; get_super_classes_including cannot
+        # answer it and raises, so answer it here rather than let a predicate throw.
+        if "INTERFACE" in cls_child.attrs:
+            return cls_parent is cls_child
+
         parent_classes = self.get_super_classes_including(cls_child)
 
         return cls_parent in parent_classes
 
     def is_subclass(self, cls_child, cls_parent):
+        # See above. An interface extends interfaces, never a class, so it is a subclass of none.
+        if "INTERFACE" in cls_child.attrs:
+            return False
+
         parent_classes = self.get_super_classes(cls_child)
 
         return cls_parent in parent_classes

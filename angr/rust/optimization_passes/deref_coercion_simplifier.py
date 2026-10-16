@@ -7,11 +7,12 @@ from angr.ailment.block_walker import AILBlockRewriter
 from angr.ailment.expression import Call, FunctionLikeMacro, StringLiteral, VirtualVariable
 from angr.ailment.statement import Statement
 from angr.analyses.decompiler.optimization_passes.optimization_pass import OptimizationPass, OptimizationPassStage
+from angr.analyses.decompiler.variable_map import variable_map_of
 from angr.rust.mixins import CFAMixin, SRDAMixin
 from angr.rust.optimization_passes.utils import CallRewriter
 from angr.rust.sim_type import RustSimStruct
 
-l = logging.getLogger(__file__)
+l = logging.getLogger(__name__)
 
 STR_CMP_NE_FUNCTION = "<alloc::string::String as core::cmp::PartialEq<&str>>::ne"
 STR_CMP_EQ_FUNCTION = "<alloc::string::String as core::cmp::PartialEq<&str>>::eq"
@@ -60,7 +61,7 @@ class DerefCoercionSimplifier(OptimizationPass, SRDAMixin, CFAMixin):
 
     def __init__(self, func, manager, **kwargs):
         super().__init__(func, manager, **kwargs)
-        SRDAMixin.__init__(self, func, self._graph, self.project)
+        SRDAMixin.__init__(self, func, self._graph, self.project, variable_map_of(manager))
         CFAMixin.__init__(self, self._graph, self.project)
 
         self.analyze()
@@ -90,8 +91,11 @@ class DerefCoercionSimplifier(OptimizationPass, SRDAMixin, CFAMixin):
                         value = self.get_terminal_vvar_value(vvar)
                         if isinstance(value, FunctionLikeMacro):
                             returnty = value.returnty
-                        elif isinstance(value, Call) and value.prototype is not None:
-                            returnty = value.prototype.returnty
+                        elif (
+                            isinstance(value, Call)
+                            and (_proto := variable_map_of(self.manager).prototype(value)) is not None
+                        ):
+                            returnty = _proto.returnty
                         if isinstance(returnty, RustSimStruct) and returnty.name == string_ty.name:
                             arg1 = args.pop(0)
                             if (

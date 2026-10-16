@@ -9,12 +9,14 @@ from .decompilation_cache import DecompilationCache
 from .decompilation_options import options, options_by_category
 from .decompiler import Decompiler
 from .dephication import GraphDephication, SeqNodeDephication
-from .graph_region import GraphRegion
+from .known_patterns import KnownPattern, KnownPatternFinder, KnownPatternMatch
 from .presets import DECOMPILATION_PRESETS
 from .region_identifier import RegionIdentifier
+from .region_overlay import RegionOverlay
 from .region_simplifiers import RegionSimplifier
 from .ssailification import Ssailification
 from .structured_codegen import BaseStructuredCodeGenerator, CStructuredCodeGenerator, ImportSourceCode
+from .variable_map import VariableMap
 
 StructuredCodeGenerator = CStructuredCodeGenerator
 
@@ -31,13 +33,17 @@ __all__ = (
     "DecompilationCache",
     "Decompiler",
     "GraphDephication",
-    "GraphRegion",
     "ImportSourceCode",
+    "KnownPattern",
+    "KnownPatternFinder",
+    "KnownPatternMatch",
     "RegionIdentifier",
+    "RegionOverlay",
     "RegionSimplifier",
     "SeqNodeDephication",
     "Ssailification",
     "StructuredCodeGenerator",
+    "VariableMap",
     "optimization_passes",
     "options",
     "options_by_category",

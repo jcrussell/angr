@@ -9,6 +9,7 @@ import os
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+import angr_data
 import archinfo
 import pydemumble
 
@@ -19,7 +20,14 @@ from angr.misc import autoimport
 from angr.misc.ux import once
 from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 from angr.procedures.stubs.syscall_stub import syscall as stub_syscall
-from angr.sim_type import SimType, SimTypeBottom, SimTypeFunction, parse_cpp_file, parse_file
+from angr.sim_type import (
+    SimType,
+    SimTypeBottom,
+    SimTypeFunction,
+    mangled_long_double_as_double,
+    parse_cpp_file,
+    parse_file,
+)
 from angr.utils.json_utils import json_decode
 
 if TYPE_CHECKING:
@@ -426,12 +434,16 @@ class SimLibrary:
         """
         Check if a function has a prototype associated with it.
 
+        A prototype that is explicitly registered as ``None`` (i.e. the function is known but its signature is not) does
+        not count: this keeps ``has_prototype()`` consistent with ``get_prototype()``, which returns ``None`` for such
+        entries.
+
         :param str func_name: The name of the function.
         :return:              A bool indicating if a prototype of the function is available.
         :rtype:               bool
         """
 
-        return func_name in self.prototypes or func_name in self.prototypes_json
+        return self.prototypes.get(func_name) is not None or func_name in self.prototypes_json
 
     def is_returning(self, name: str) -> bool:
         """
@@ -504,7 +516,7 @@ class SimCppLibrary(SimLibrary):
             # mangled function name
             stub.prototype = self._proto_from_demangled_name(demangled_name)
             if stub.prototype is not None:
-                stub.prototype = stub.prototype.with_arch(arch)
+                stub.prototype = mangled_long_double_as_double(stub.prototype, arch).with_arch(arch)
                 stub.guessed_prototype = False
                 if not stub.ARGS_MISMATCH:
                     stub.num_args = len(stub.prototype.args)
@@ -685,10 +697,13 @@ class SimSyscallLibrary(SimLibrary):
         # a bit of a hack.
         name = proc.display_name
         if self.has_prototype(abi, name):
-            proc.guessed_prototype = False
+            # The prototype tables store None for syscalls whose prototype was never parsed
+            # (e.g. rt_sigtimedwait), so has_prototype() can be True while get_prototype()
+            # returns None. Only record a prototype when one is actually available.
             proto = self.get_prototype(abi, name, deref=True)
-            assert proto is not None
-            proc.prototype = proto.with_arch(arch)
+            if proto is not None:
+                proc.guessed_prototype = False
+                proc.prototype = proto.with_arch(arch)
 
     def add_alias(self, name, *alt_names):
         """
@@ -807,13 +822,17 @@ class SimSyscallLibrary(SimLibrary):
         """
         Check if a function has a prototype associated with it. Demangle the function name if it is a mangled C++ name.
 
+        Syscalls whose signature is unknown are registered with a ``None`` prototype (see, e.g., ``capset`` in
+        ``linux_kernel.py``). Those do not count as having a prototype: this keeps ``has_prototype()`` consistent with
+        ``get_prototype()``, which returns ``None`` for such entries.
+
         :param abi:         Name of the ABI.
         :param name:        The syscall name.
         :return:            bool
         """
         if abi not in self.syscall_prototypes:
             return False
-        return name in self.syscall_prototypes[abi]
+        return self.syscall_prototypes[abi].get(name) is not None
 
 
 #
@@ -826,7 +845,12 @@ class SimSyscallLibrary(SimLibrary):
 #   called.
 # - We will load all APIs when load_all_definitions() is called.
 
+# Directory containing the legacy Python definition modules (cgc.py, gnulib.py, types_*.py, ...).
+# These still live inside the angr package.
 _DEFINITIONS_BASEDIR = os.path.dirname(os.path.realpath(__file__))
+# Directory containing the migrated JSON definitions (win32/, wdk/, common/). These now live in
+# the separately-released angr_data package.
+_DATA_DEFINITIONS_DIR = angr_data.get_path("procedures", "definitions")
 _EXTERNAL_DEFINITIONS_DIRS: list[str] | None = None
 
 
@@ -836,7 +860,7 @@ def load_type_collections(only=None, skip=None) -> None:
 
     # recursively list and load all _types.json files
     types_json_files = []
-    for root, _, files in os.walk(_DEFINITIONS_BASEDIR):
+    for root, _, files in os.walk(_DATA_DEFINITIONS_DIR):
         for filename in files:
             if filename.endswith(".json") and filename.startswith("_types_"):
                 module_name = filename[7:-5]
@@ -883,31 +907,48 @@ def load_win32_type_collections() -> None:
         load_type_collections(only={"win32"})
 
 
-def _load_definitions(base_dir: str, only: set[str] | None = None, skip: set[str] | None = None):
+def _load_definitions(
+    json_dir: str,
+    py_base_dir: str | None = None,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+):
+    """
+    Load SimLibrary definitions.
+
+    JSON definitions are loaded from ``json_dir`` (which for angr's own definitions lives in the
+    angr_data package). Legacy Python definition modules are autoimported from ``py_base_dir``
+    (which for angr's own definitions is the ``angr.procedures.definitions`` package directory).
+    When ``py_base_dir`` is not given (e.g. for user-supplied external definition directories)
+    it defaults to ``json_dir``, preserving the previous single-directory behavior.
+    """
     if skip is None:
         skip = set()
+    if py_base_dir is None:
+        py_base_dir = json_dir
 
-    for f in os.listdir(base_dir):
-        if f.endswith(".json") and not f.startswith("_types_"):
-            module_name = f[:-5]
-            if only is not None and module_name not in only:
-                continue
-            if module_name in skip:
-                continue
-            with open(os.path.join(base_dir, f), "rb") as f:
-                d = json_decode(f.read())
-                if not (isinstance(d, dict) and d.get("_t", "") == "lib"):
-                    l.warning("Invalid SimLibrary JSON file: %s", f)
+    if os.path.isdir(json_dir):
+        for f in os.listdir(json_dir):
+            if f.endswith(".json") and not f.startswith("_types_"):
+                module_name = f[:-5]
+                if only is not None and module_name not in only:
                     continue
-                try:
-                    SimLibrary.from_json(d)
-                except (TypeError, KeyError):
-                    l.warning("Failed to load SimLibrary from %s", f, exc_info=True)
+                if module_name in skip:
+                    continue
+                with open(os.path.join(json_dir, f), "rb") as f:
+                    d = json_decode(f.read())
+                    if not (isinstance(d, dict) and d.get("_t", "") == "lib"):
+                        l.warning("Invalid SimLibrary JSON file: %s", f)
+                        continue
+                    try:
+                        SimLibrary.from_json(d)
+                    except (TypeError, KeyError):
+                        l.warning("Failed to load SimLibrary from %s", f, exc_info=True)
 
     # support for loading legacy prototype definitions defined as Python modules
     for _ in autoimport.auto_import_modules(
         "angr.procedures.definitions",
-        base_dir,
+        py_base_dir,
         filter_func=lambda module_name: (
             (only is None or (only is not None and module_name in only))
             and not module_name.startswith("parse_")
@@ -999,6 +1040,7 @@ def _update_glibc(libc: SimLibrary):
     libc.add_alias("exit", "_exit", "_Exit")
     libc.add_alias("sprintf", "siprintf")
     libc.add_alias("snprintf", "sniprintf")
+    libc.add_alias("getdelim", "__getdelim")
 
 
 def load_win32api_definitions():
@@ -1006,7 +1048,7 @@ def load_win32api_definitions():
     if once("load_win32api_definitions"):
         api_base_dirs = ["win32", "wdk"]
         for api_base_dir in api_base_dirs:
-            base_dir = os.path.join(_DEFINITIONS_BASEDIR, api_base_dir)
+            base_dir = os.path.join(_DATA_DEFINITIONS_DIR, api_base_dir)
             if not os.path.isdir(base_dir):
                 continue
             _load_definitions(base_dir)
@@ -1024,12 +1066,14 @@ def load_win32api_definitions():
 def load_all_definitions():
     load_type_collections(skip=set())
     if once("load_all_definitions"):
-        _load_definitions(_DEFINITIONS_BASEDIR)
+        _load_definitions(_DATA_DEFINITIONS_DIR, py_base_dir=_DEFINITIONS_BASEDIR)
 
 
 COMMON_LIBRARIES = {
     # CGC
     "cgc",
+    # FreeBSD
+    "freebsd_kernel",
     # (mostly) Linux
     "glibc",
     "gnulib",  # really just for .o files in coreutils
@@ -1048,6 +1092,6 @@ load_type_collections(skip={"win32"})
 
 
 # Load common definitions
-_load_definitions(os.path.join(_DEFINITIONS_BASEDIR, "common"), only=COMMON_LIBRARIES)
-_load_definitions(_DEFINITIONS_BASEDIR, only=COMMON_LIBRARIES)
+_load_definitions(os.path.join(_DATA_DEFINITIONS_DIR, "common"), only=COMMON_LIBRARIES)
+_load_definitions(_DATA_DEFINITIONS_DIR, py_base_dir=_DEFINITIONS_BASEDIR, only=COMMON_LIBRARIES)
 _update_glibc(SIM_LIBRARIES["libc.so"][0])

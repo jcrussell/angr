@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from angr.analyses.decompiler.optimization_passes.optimization_pass import OptimizationPass, OptimizationPassStage
+from angr.enums import Flavors
 from angr.knowledge_plugins.functions.function import PrototypeSource
 
 
@@ -21,6 +22,7 @@ class RustCallingConvention(OptimizationPass):
 
     def _analyze(self, cache=None):
         rcc = self.project.analyses.RustCallingConvention(self._func, ail_manager=self.manager)
-        self._func.prototype = rcc.prototype
+        # derived from the Rust ABI and type database, not from our own inference: Clinic must not re-derive it
+        # later in the same run. Only the Rust flavor's entry changes; the C prototype stays as it is.
+        self._func.set_prototype(Flavors.RUST_FLAVOR, rcc.prototype, source=PrototypeSource.SIGNATURES)
         self._func.calling_convention = rcc.calling_convention
-        self._func.prototype_source = PrototypeSource.CCA_DECOMPILER

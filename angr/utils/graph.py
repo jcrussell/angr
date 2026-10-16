@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict, defaultdict
-from collections.abc import Iterable, Iterator
-from typing import Any
+import sys
+from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, cast
 
 import networkx
 import networkx.algorithms
+
+from angr.utils.hashing import stable_hash
+
+if TYPE_CHECKING:
+    from angr.analyses.decompiler.region_overlay import RegionOverlayGraph
+
+l = logging.getLogger(__name__)
+
+# nodes without an idx sort after every idx-carrying node at the same address
+_NO_IDX = sys.maxsize
 
 
 def shallow_reverse[T](g: networkx.DiGraph[T]) -> networkx.DiGraph[T]:
@@ -105,7 +116,7 @@ def dfs_back_edges[T](
 
     visited = set() if visited is None else visited  # Tracks visited nodes
     finished = set()  # Tracks nodes whose descendants are fully explored
-    stack = [(start_node, iter(sorted(graph[start_node], key=GraphUtils._sort_node)))]
+    stack = [(start_node, iter(sorted(graph[start_node], key=GraphUtils.sort_node)))]
 
     while stack:
         node, children = stack[-1]
@@ -117,7 +128,7 @@ def dfs_back_edges[T](
                 if child not in finished:
                     yield node, child  # Found a back edge
             elif child not in finished:  # Check if the child has not been finished
-                stack.append((child, iter(sorted(graph[child], key=GraphUtils._sort_node))))
+                stack.append((child, iter(sorted(graph[child], key=GraphUtils.sort_node))))
         except StopIteration:
             stack.pop()  # Done with this node's children
             finished.add(node)  # Mark this node as finished
@@ -125,7 +136,7 @@ def dfs_back_edges[T](
     if visit_all_nodes:
         while len(visited) < len(graph):
             # If we need to visit all nodes, we can start from unvisited nodes
-            node = sorted(set(graph) - visited, key=GraphUtils._sort_node)[0]
+            node = min(set(graph) - visited, key=GraphUtils.sort_node)
             yield from dfs_back_edges(graph, node, visited=visited)
 
 
@@ -143,51 +154,63 @@ def subgraph_between_nodes[T](
     :rtype:                         networkx.DiGraph
     """
 
-    graph = networkx.DiGraph(graph)  # make a copy
-    for pred in list(graph.predecessors(source)):
-        # make sure we cannot go from any other node to the source node
-        graph.remove_edge(pred, source)
-
-    g0 = networkx.DiGraph()
+    frontier = set(frontier)
 
     if source not in graph or any(node not in graph for node in frontier):
         raise KeyError("Source node or frontier nodes are not in the source graph.")
 
+    # Precompute, with a single reverse multi-source traversal, the set of nodes that can reach any frontier node.
+    # Not expanding the predecessors of the source is exactly equivalent to removing every incoming edge of the
+    # source before the search, which is what this function used to do on a full copy of the graph.
+    reaches_frontier = set(frontier)
+    reverse_queue = deque(frontier)
+    while reverse_queue:
+        node = reverse_queue.popleft()
+        if node == source:
+            continue
+        for pred in graph.predecessors(node):
+            if pred not in reaches_frontier:
+                reaches_frontier.add(pred)
+                reverse_queue.append(pred)
+
+    g0 = networkx.DiGraph()
+
     # BFS on graph and add new nodes to g0
-    queue = [source]
+    queue = deque([source])
     traversed = set()
 
-    frontier = set(frontier)
-
     while queue:
-        node = queue.pop(0)
+        node = queue.popleft()
         traversed.add(node)
 
         for _, succ, data in graph.out_edges(node, data=True):
-            if g0.has_edge(node, succ):
+            if succ == source or g0.has_edge(node, succ):
                 continue
 
             g0.add_edge(node, succ, **data)
             if succ in traversed or succ in frontier:
                 continue
-            for frontier_node in frontier:
-                if networkx.has_path(graph, succ, frontier_node):
-                    queue.append(succ)
-                    break
+            if succ in reaches_frontier:
+                queue.append(succ)
 
-    # recursively remove all nodes that have less than two neighbors
-    to_remove = [
-        n
-        for n in g0.nodes()
-        if n not in frontier and n is not source and (g0.out_degree[n] == 0 or g0.in_degree[n] == 0)
-    ]
+    # recursively remove all nodes that have less than two neighbors, using a degree worklist instead of rescanning
+    # the whole graph after every removal
+    def _removable(n) -> bool:
+        return n not in frontier and n is not source and (g0.out_degree[n] == 0 or g0.in_degree[n] == 0)
+
+    to_remove = deque(n for n in g0 if _removable(n))
+    queued = set(to_remove)
     while to_remove:
-        g0.remove_nodes_from(to_remove)
-        to_remove = [
-            n
-            for n in g0.nodes()
-            if n not in frontier and n is not source and (g0.out_degree[n] == 0 or g0.in_degree[n] == 0)
-        ]
+        node = to_remove.popleft()
+        queued.discard(node)
+        if node not in g0 or not _removable(node):
+            continue
+        neighbors = [*g0.predecessors(node), *g0.successors(node)]
+        g0.remove_node(node)
+        for neighbor in neighbors:
+            if neighbor in g0 and neighbor not in queued and _removable(neighbor):
+                queued.add(neighbor)
+                to_remove.append(neighbor)
 
     if not include_frontier:
         # remove the frontier nodes
@@ -203,6 +226,50 @@ def dominates[T](idom: dict[T, T], dominator_node: T, node: T) -> bool:
             return True
         n = idom[n] if n in idom and n != idom[n] else None
     return False
+
+
+def compute_dominance_intervals[T](idom: dict[T, T], head: T) -> dict[T, tuple[int, int]]:
+    """
+    Compute entry/exit (Euler tour) intervals over the dominator tree described by ``idom``, so that dominance
+    queries answer in O(1) via dominates_by_intervals() instead of dominates()'s O(tree depth) chain walk.
+    Only nodes present in ``idom`` (i.e., reachable from the head) get an interval.
+    """
+    children: dict[T, list[T]] = {}
+    for n, d in idom.items():
+        if n != d:
+            children.setdefault(d, []).append(n)
+    intervals: dict[T, tuple[int, int]] = {}
+    entry: dict[T, int] = {}
+    time = 0
+    stack: list[tuple[T, bool]] = [(head, False)]
+    while stack:
+        node, exiting = stack.pop()
+        if exiting:
+            intervals[node] = (entry[node], time)
+            time += 1
+            continue
+        if node in entry:
+            continue
+        entry[node] = time
+        time += 1
+        stack.append((node, True))
+        for child in children.get(node, ()):
+            stack.append((child, False))
+    return intervals
+
+
+def dominates_by_intervals[T](intervals: dict[T, tuple[int, int]], dominator_node: T, node: T) -> bool:
+    """
+    O(1) equivalent of dominates() over intervals from compute_dominance_intervals(). Node objects must be
+    truthy (all AIL and structurer nodes are), which is the only case where dominates() behaves differently.
+    """
+    if dominator_node == node:
+        return True
+    a = intervals.get(dominator_node)
+    b = intervals.get(node)
+    if a is None or b is None:
+        return False
+    return a[0] <= b[0] and b[1] <= a[1]
 
 
 #
@@ -277,7 +344,7 @@ class TemporaryNode:
         return bool(isinstance(other, TemporaryNode) and other._label == self._label)
 
     def __hash__(self):
-        return hash(("TemporaryNode", self._label))
+        return stable_hash(("TemporaryNode", self._label))
 
 
 class ContainerNode[T]:
@@ -298,13 +365,16 @@ class ContainerNode[T]:
     def obj(self) -> T:
         return self._obj
 
-    def __eq__(self, other: Any):
+    def __eq__(self, other: object):
         if isinstance(other, ContainerNode):
             return self._obj is other._obj
         return False
 
     def __hash__(self):
-        return hash(("CN", self._obj))
+        # __eq__ compares the wrapped object by identity, so collisions are harmless; what matters is that the
+        # value is the same in every process. builtin hash() over a str is PYTHONHASHSEED-randomised, which made
+        # dominator-tree node order -- and through it Phoenix's refinement decisions -- depend on the seed.
+        return stable_hash(("CN", hash(self._obj)))
 
     def __repr__(self):
         return f"CN[{self._obj!r}]"
@@ -370,7 +440,7 @@ class Dominators[T]:
         assert self._semi is not None
 
         bucket: dict[int, set[ContainerNode]] = defaultdict(set)
-        dom: list[None | ContainerNode] = [None] * (len(vertices))
+        dom: list[ContainerNode | None] = [None] * (len(vertices))
         self._ancestor = [None] * (len(vertices) + 1)  # type: ignore
 
         for i in range(len(vertices) - 1, 0, -1):
@@ -622,7 +692,7 @@ class SCCPlaceholder:
         return isinstance(other, SCCPlaceholder) and other.scc_id == self.scc_id and other.addr == self.addr
 
     def __hash__(self):
-        return hash(f"scc_placeholder_{self.scc_id}")
+        return stable_hash(("scc_placeholder", self.scc_id))
 
     def __repr__(self):
         return f"SCCPlaceholder({self.scc_id}, addr={self.addr:#x})"
@@ -704,7 +774,30 @@ class GraphUtils:
             if pre_visit and node not in visited:
                 visited.add(node)
                 stack.append((node, False))
-                for succ in sorted(graph.successors(node), key=GraphUtils._sort_node):
+                for succ in sorted(graph.successors(node), key=GraphUtils.sort_node):
+                    if succ not in visited:
+                        stack.append((succ, True))
+            elif not pre_visit:
+                yield node
+
+    @staticmethod
+    def dfs_postorder_nodes_deterministic_multi[T](graph: networkx.DiGraph[T], sources: Iterable[T]) -> Iterator[T]:
+        """
+        Deterministic post-order DFS covering multiple source nodes with a single shared ``visited`` set. Equivalent to
+        ``dfs_postorder_nodes_deterministic`` over a synthetic super-source connected to every node in ``sources``
+        (sources are traversed in ``_sort_node`` order), but without mutating the graph -- so it works directly on a
+        zero-copy overlay view. Use it for multi-entry acyclic graphs.
+        """
+        visited: set = set()
+        # seeding the stack with the sources in ascending _sort_node order makes the LIFO stack pop them largest-first,
+        # exactly as a synthetic super-source's sorted successors would have been expanded.
+        stack: list[tuple[Any, bool]] = [(s, True) for s in sorted(sources, key=GraphUtils.sort_node)]
+        while stack:
+            node, pre_visit = stack.pop()
+            if pre_visit and node not in visited:
+                visited.add(node)
+                stack.append((node, False))
+                for succ in sorted(graph.successors(node), key=GraphUtils.sort_node):
                     if succ not in visited:
                         stack.append((succ, True))
             elif not pre_visit:
@@ -721,25 +814,40 @@ class GraphUtils:
         :rtype: list
         """
 
-        post_order = networkx.dfs_postorder_nodes(graph)
+        # keying on the node instead of node.addr keeps address-tied nodes (duplicated blocks) apart
+        post_order = list(GraphUtils.dfs_postorder_nodes_deterministic_multi(graph, graph.nodes()))
 
         if nodes is None:
-            return reversed(list(post_order))
+            return reversed(post_order)
 
-        addrs_to_index = {n.addr: i for (i, n) in enumerate(post_order)}
-        return sorted(nodes, key=lambda n: addrs_to_index[n.addr], reverse=True)
-
-    @staticmethod
-    def _sort_node(node):
-        """
-        A sorter to make a deterministic order of nodes.
-        """
-        if hasattr(node, "addr"):
-            return node.addr
-        return node
+        node_to_index = {n: i for (i, n) in enumerate(post_order)}
+        return sorted(nodes, key=lambda n: node_to_index[n], reverse=True)
 
     @staticmethod
-    def _sort_edge(edge):
+    def sort_node(node) -> tuple[int, int, int, str]:
+        """
+        A sorter to make a deterministic order of nodes. The key is a total order: nodes sharing an address (duplicated
+        blocks) are separated by their idx instead of falling back on insertion order.
+        """
+        try:
+            addr = node.addr
+        except (AttributeError, TypeError):
+            # no addr at all, or a RegionOverlay with no head
+            addr = None
+        if isinstance(addr, int):
+            idx = getattr(node, "idx", None)
+            # the type name separates an AIL block from the structured node that replaced it: they share an address
+            # and, both being idx-less, would otherwise tie
+            return 0, addr, idx if isinstance(idx, int) else _NO_IDX, type(node).__name__
+        if isinstance(node, int):
+            return 0, node, _NO_IDX, ""
+        if isinstance(node, str):
+            return 1, 0, 0, node
+        # nothing to order on; sorting is stable, so these keep their existing relative order
+        return 2, 0, 0, type(node).__name__
+
+    @staticmethod
+    def sort_edge(edge):
         """
         A sorter to make a deterministic order of edges.
         """
@@ -758,12 +866,12 @@ class GraphUtils:
         return src_addr + dst_addr
 
     @staticmethod
-    def quasi_topological_sort_nodes(
-        graph: networkx.DiGraph,
-        nodes: list | None = None,
-        loop_heads: list | None = None,
+    def quasi_topological_sort_nodes[T](
+        graph: networkx.DiGraph[T],
+        nodes: list[T] | None = None,
+        loop_heads: list[T] | None = None,
         panic_mode_threshold: int = 3000,
-    ) -> list:
+    ) -> list[T]:
         """
         Sort a given set of nodes from a graph based on the following rules:
 
@@ -805,7 +913,7 @@ class GraphUtils:
                     comp_indices[node] = (i, scc_addr)
 
         # collapse all strongly connected components
-        for src, dst in sorted(graph.edges(), key=GraphUtils._sort_edge):
+        for src, dst in sorted(graph.edges(), key=GraphUtils.sort_edge):
             scc_index, scc_addr = comp_indices.get(src, (None, None))
             if scc_index is not None:
                 src = SCCPlaceholder(scc_index, scc_addr)
@@ -906,7 +1014,7 @@ class GraphUtils:
                 if len(scc_succs) > 1:
                     # calculate the distance between each pair of nodes within scc_succs, pick the one with the
                     # shortest total distance
-                    sorted_scc_succs = sorted(scc_succs, key=GraphUtils._sort_node)
+                    sorted_scc_succs = sorted(scc_succs, key=GraphUtils.sort_node)
                     scc_node_distance = defaultdict(int)
                     for scc_succ in sorted_scc_succs:
                         for other_node in sorted_scc_succs:
@@ -922,7 +1030,7 @@ class GraphUtils:
 
         if loop_head is None:
             # pick the first one
-            loop_head = sorted(scc, key=GraphUtils._sort_node)[0]
+            loop_head = min(scc, key=GraphUtils.sort_node)
 
         subgraph: networkx.DiGraph = graph.subgraph(scc).copy()  # type: ignore
         for src, _ in list(subgraph.in_edges(loop_head)):
@@ -933,7 +1041,7 @@ class GraphUtils:
         # panic mode that will aggressively remove edges
 
         if len(subgraph) > panic_mode_threshold and len(subgraph.edges) > len(subgraph) * 1.4:
-            for n0, n1 in sorted(dfs_back_edges(subgraph, loop_head), key=GraphUtils._sort_edge):
+            for n0, n1 in sorted(dfs_back_edges(subgraph, loop_head), key=GraphUtils.sort_edge):
                 subgraph.remove_edge(n0, n1)
                 if len(subgraph.edges) <= len(subgraph) * 1.4:
                     break
@@ -978,3 +1086,316 @@ class GraphUtils:
             graph_copy.remove_edge(*loop_backedge)
 
         return loop_head_to_loop_nodes
+
+
+class LinkedListNode[T]:
+    """
+    A node in a linked list.
+    """
+
+    __slots__ = ("next", "prev", "v")
+
+    def __init__(self, v: T):
+        self.v: T = v
+        self.next: LinkedListNode[T] | None = None
+        self.prev: LinkedListNode[T] | None = None
+
+    def __repr__(self):
+        return f"LLNode({self.v!r})"
+
+
+class DirectedGraphHelper[T]:
+    """
+    A helper class for accelerating some graph algorithms on directed graphs.
+
+    _node_order keeps a dictionary of nodes and their order in a quasi-topological sort of the region full graph
+    (graph_with_successors). _generate_node_order() initializes this dictionary. we then update this dictionary when
+    new nodes are created.
+
+    We do not populate _node_order when working on acyclic graphs because it's not used for acyclic graphs.
+
+    With graph_version, _node_order is tagged with the graph version it is valid for, and readers regenerate it once
+    the graph has changed.
+    """
+
+    def __init__(
+        self,
+        graph: networkx.DiGraph[T],
+        cyclic_graph: bool,
+        head: T,
+        graph_version: Callable[[], int] | None = None,
+    ):
+        self._graph: networkx.DiGraph[T] = graph
+        self._cyclic_graph = cyclic_graph
+        self._head: T | None = head
+        self._node_order: dict[T, int] | None = None
+        self._graph_version = graph_version
+        self._node_order_version: int | None = None
+        self._postorder_node_to_llnode: dict[T, LinkedListNode[T]] | None = None
+        self._postorder_node_ll: LinkedListNode[T] | None = None
+        self._postorder_node_head: LinkedListNode[T] | None = None
+
+    def _generate_postorder_cache(self):
+        self._postorder_node_to_llnode = {}
+
+        if self._node_order is None and self._cyclic_graph:
+            self._generate_node_order()
+            acyclic_graph = cast("RegionOverlayGraph[T]", self._graph).to_acyclic_by_order(self._node_order)
+        else:
+            acyclic_graph = self._graph
+
+        assert self._head is not None
+        sorted_nodes = list(GraphUtils.dfs_postorder_nodes_deterministic(acyclic_graph, self._head))
+        if len(sorted_nodes) < len(acyclic_graph):
+            # some nodes are unreachable from the head (e.g., when edge marks hide the head's out-edges from this
+            # view). they must still be present in the cache because node-replacement updates may reference them;
+            # append them after the head so iteration from the head is unaffected.
+            seen = set(sorted_nodes)
+            rest = sorted((n for n in acyclic_graph if n not in seen), key=GraphUtils.sort_node)
+            for node in GraphUtils.dfs_postorder_nodes_deterministic_multi(acyclic_graph, rest):
+                if node not in seen:
+                    seen.add(node)
+                    sorted_nodes.append(node)
+        for i, node in enumerate(sorted_nodes):
+            llnode = LinkedListNode(node)
+            self._postorder_node_to_llnode[node] = llnode
+            if i == 0:
+                self._postorder_node_head = llnode
+            else:
+                prev_node = sorted_nodes[i - 1]
+                assert self._postorder_node_to_llnode is not None
+                prev_llnode = self._postorder_node_to_llnode[prev_node]
+                prev_llnode.next = llnode
+                llnode.prev = prev_llnode
+
+    def _generate_node_order(self):
+        ordered_nodes = GraphUtils.quasi_topological_sort_nodes(
+            self._graph,
+            loop_heads=[self._head],
+        )
+        self._node_order = {n: i for i, n in enumerate(ordered_nodes)}
+        self._node_order_version = self._graph_version() if self._graph_version is not None else None
+
+    def node_order_is_current(self) -> bool:
+        if self._node_order is None:
+            return False
+        return self._graph_version is None or self._node_order_version == self._graph_version()
+
+    def resync_node_order(self, was_current: bool) -> None:
+        """
+        Call after mirroring a node merge through replace_node(s): an order that was current before the merge still is.
+        """
+        if was_current and self._node_order is not None and self._graph_version is not None:
+            self._node_order_version = self._graph_version()
+
+    def _current_node_order(self) -> dict[T, int]:
+        if not self.node_order_is_current():
+            self._generate_node_order()
+        assert self._node_order is not None
+        return self._node_order
+
+    def reset(self):
+        self._node_order = None
+        self._postorder_node_to_llnode = None
+        self._postorder_node_ll = None
+        self._postorder_node_head = None
+
+    def _invalidate_postorder_cache(self) -> None:
+        self._postorder_node_to_llnode = None
+        self._postorder_node_ll = None
+        self._postorder_node_head = None
+
+    def dfs_postorder_nodes_deterministic(self, source: T) -> Iterator[T]:
+        """
+        Post-order DFS traversal of the directed graph using cache. Avoids acyclic-graph conversion or full-graph
+        traversal when cache is available.
+        """
+
+        if self._postorder_node_to_llnode is None:
+            self._generate_postorder_cache()
+
+        assert self._postorder_node_to_llnode is not None
+        llnode = self._postorder_node_head
+        while llnode is not None:
+            yield llnode.v
+            if llnode.v == source:
+                break
+            llnode = llnode.next
+
+    def replace_node(self, old_node: T, new_node: T):
+        """
+        Update cache when a node is replaced in the graph.
+        """
+
+        if self._postorder_node_to_llnode is not None:
+            if old_node not in self._postorder_node_to_llnode:
+                # last resort: the cache is stale; invalidate it so that it gets regenerated on demand. this should
+                # not happen - fix the offending graph updater if it does.
+                l.warning("replace_node: Node %r is not in the postorder cache.", old_node)
+                self._invalidate_postorder_cache()
+            else:
+                llnode = self._postorder_node_to_llnode.pop(old_node)
+                self._postorder_node_to_llnode[new_node] = llnode
+                llnode.v = new_node
+
+        if self._node_order is not None:
+            if old_node not in self._node_order:
+                # last resort: the cache is stale; invalidate it so that it gets regenerated on demand. this should
+                # not happen - fix the offending graph updater if it does.
+                l.warning("replace_node: Node %r is not in the node order cache.", old_node)
+                self._node_order = None
+            else:
+                self._node_order[new_node] = self._node_order.pop(old_node)
+
+        if old_node == self._head:
+            self._head = new_node
+
+    def replace_nodes(self, old_node_0: T, old_node_1: T, new_node: T) -> None:
+        """
+        Update cache when multiple nodes are replaced by a single node in the graph.
+        """
+
+        if self._postorder_node_to_llnode is not None and (
+            old_node_0 not in self._postorder_node_to_llnode or old_node_1 not in self._postorder_node_to_llnode
+        ):
+            # last resort: a node was added to the graph without updating the cache; invalidate the cache so that
+            # it gets regenerated on demand. this should not happen - fix the offending graph updater if it does.
+            l.warning("replace_nodes: Node %r or %r is not in the postorder cache.", old_node_0, old_node_1)
+            self._invalidate_postorder_cache()
+
+        if self._postorder_node_to_llnode is not None:
+            old_nodes_succs: set[T | None] = set()
+            for old_node in [old_node_0, old_node_1]:
+                llnode = self._postorder_node_to_llnode[old_node]
+                if llnode.next is None:
+                    old_nodes_succs.add(None)
+                if llnode.next is not None and llnode.next.v not in [old_node_0, old_node_1]:
+                    old_nodes_succs.add(llnode.next.v)
+
+            if len(old_nodes_succs) == 1:
+                # old nodes have the same parent or they are consecutive
+                succ = old_nodes_succs.pop()
+                # pop the old nodes before inserting the new node: new_node may be the same object as old_node_0 or
+                # old_node_1 (e.g., when a node is absorbed into its successor in place), in which case popping the
+                # old nodes last would remove the newly inserted entry.
+                llnode_0 = self._postorder_node_to_llnode.pop(old_node_0)
+                llnode_1 = self._postorder_node_to_llnode.pop(old_node_1)
+                llnode_0.v = new_node
+                llnode_0.next = self._postorder_node_to_llnode[succ] if succ is not None else None
+                if llnode_0.next is not None:
+                    llnode_0.next.prev = llnode_0
+                self._postorder_node_to_llnode[new_node] = llnode_0
+                # unlink llnode_1
+                if llnode_0.prev == llnode_1:
+                    llnode_0.prev = llnode_1.prev
+                    if llnode_1.prev is not None:
+                        llnode_1.prev.next = llnode_0
+                if self._postorder_node_head is llnode_1:
+                    self._postorder_node_head = llnode_0
+            elif not old_nodes_succs:
+                raise ValueError("Cannot replace nodes with no parent in postorder cache")
+            else:
+                # two parents; nothing we can do here, we have to invalidate the postorder cache
+                self._invalidate_postorder_cache()
+
+        if self._node_order is not None:
+            if old_node_0 not in self._node_order or old_node_1 not in self._node_order:
+                # last resort: the cache is stale; invalidate it so that it gets regenerated on demand. this should
+                # not happen - fix the offending graph updater if it does.
+                l.warning("replace_nodes: Node %r or %r is not in the node order cache.", old_node_0, old_node_1)
+                self._node_order = None
+            else:
+                order_0 = self._node_order.pop(old_node_0)
+                order_1 = self._node_order.pop(old_node_1)
+                self._node_order[new_node] = min(order_0, order_1)
+
+        if self._head in [old_node_0, old_node_1]:
+            self._head = new_node
+
+    def remove_node(self, node: T):
+        """
+        Update cache when a node is removed from the graph.
+        """
+
+        if self._postorder_node_to_llnode is not None and node in self._postorder_node_to_llnode:
+            llnode = self._postorder_node_to_llnode.pop(node)
+            if llnode.prev is not None:
+                llnode.prev.next = llnode.next
+            if llnode.next is not None:
+                llnode.next.prev = llnode.prev
+            if self._postorder_node_head is llnode:
+                self._postorder_node_head = llnode.next
+
+        if self._node_order is not None:
+            self._node_order.pop(node, None)
+
+        if node == self._head:
+            self._head = None  # type: ignore
+
+    def add_node_successor(self, node: T, successor: T) -> None:
+        if self._postorder_node_to_llnode is not None and successor not in self._postorder_node_to_llnode:
+            if node not in self._postorder_node_to_llnode:
+                # last resort: the cache is stale; invalidate it so that it gets regenerated on demand. this should
+                # not happen - fix the offending graph updater if it does.
+                l.warning("add_node_successor: Node %r is not in the postorder cache.", node)
+                self._invalidate_postorder_cache()
+            else:
+                llnode = self._postorder_node_to_llnode[node]
+                succ_node = LinkedListNode(successor)
+                succ_node.next = llnode.next
+                succ_node.prev = llnode
+                if llnode.next is not None:
+                    llnode.next.prev = succ_node
+                llnode.next = succ_node
+                self._postorder_node_to_llnode[successor] = succ_node
+
+        if self._node_order is not None and successor not in self._node_order:
+            if node not in self._node_order:
+                # last resort: the cache is stale; invalidate it so that it gets regenerated on demand. this should
+                # not happen - fix the offending graph updater if it does.
+                l.warning("add_node_successor: Node %r is not in the node order cache.", node)
+                self._node_order = None
+            else:
+                for nn, o in list(self._node_order.items()):
+                    if o > self._node_order[node]:
+                        self._node_order[nn] = o + 1
+                order = self._node_order[node]
+                self._node_order[successor] = order + 1
+
+    def get_node_order(self) -> dict[T, int]:
+        return self._current_node_order()
+
+    def to_acyclic_by_order(self, graph: RegionOverlayGraph[T]) -> networkx.DiGraph[T]:
+        return graph.to_acyclic_by_order(self.get_node_order())
+
+    def sort_nodes_by_order(self, nodes: list[T]) -> list[T]:
+        self._current_node_order()
+        assert self._node_order is not None
+        if any(n not in self._node_order for n in nodes):
+            # last resort: the cache is stale; regenerate it. this should not happen - fix the offending graph
+            # updater if it does.
+            l.warning("sort_nodes_by_order: Some nodes are not in the node order cache.")
+            self._generate_node_order()
+
+        assert self._node_order is not None
+        return sorted(nodes, key=lambda n: self._node_order[n])  # type: ignore
+
+    def loop_heads(self) -> set[T]:
+        loop_heads = set()
+
+        if not self._cyclic_graph:
+            return loop_heads
+
+        self._current_node_order()
+        assert self._node_order is not None
+        if any(src not in self._node_order or dst not in self._node_order for src, dst in self._graph.edges()):
+            # last resort: the cache is stale; regenerate it. this should not happen - fix the offending graph
+            # updater if it does.
+            l.warning("loop_heads: Some nodes are not in the node order cache.")
+            self._generate_node_order()
+        assert self._node_order is not None
+
+        for src, dst in self._graph.edges():
+            if self._node_order[src] >= self._node_order[dst]:
+                loop_heads.add(dst)
+        return loop_heads

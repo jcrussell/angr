@@ -25,7 +25,7 @@ the state:
 
 .. code-block:: python
 
-   >>> import angr, claripy
+   >>> import angr
    >>> proj = angr.Project('/bin/true')
    >>> state = proj.factory.entry_state()
 
@@ -180,8 +180,8 @@ You can customize the state through several arguments to these constructors:
 
 * To specify the calling convention used for a function with ``call_state``, you
   can pass a :py:class:`~angr.calling_conventions.SimCC` instance as the ``cc``
-  argument.:raw-html-m2r:`<br>` We try to pick a sane default, but for special
-  cases you will need to help angr out.
+  argument. We try to pick a sane default, but for special cases you will need
+  to help angr out.
 
 There are several more options that can be used in any of these constructors!
 See the docs on the ``project.factory`` object (an
@@ -201,7 +201,7 @@ val)`` methods:
 .. code-block:: python
 
    >>> s = proj.factory.blank_state()
-   >>> s.memory.store(0x4000, claripy.BVV(0x0123456789abcdef0123456789abcdef, 128))
+   >>> s.memory.store(0x4000, angr.claripy.BVV(0x0123456789abcdef0123456789abcdef, 128))
    >>> s.memory.load(0x4004, 6) # load-size is in bytes
    <BV48 0x89abcdef0123>
 

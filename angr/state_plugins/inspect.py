@@ -41,7 +41,6 @@ class EventType(enum.StrEnum):
     SYSCALL = "syscall"
     CFG_HANDLE_JOB = "cfg_handle_job"
     VFG_HANDLE_SUCCESSOR = "vfg_handle_successor"
-    VFG_WIDEN_STATE = "vfg_widen_state"
     ENGINE_PROCESS = "engine_process"
     MEMORY_PAGE_MAP = "memory_page_map"
 
@@ -167,7 +166,7 @@ def BP_IPDB(state: SimState) -> None:  # pylint: disable=unused-argument
 def BP_IPYTHON(state: SimState) -> None:  # pylint: disable=unused-argument
     import IPython
 
-    shell = IPython.terminal.embed.InteractiveShellEmbed()
+    shell = IPython.terminal.embed.InteractiveShellEmbed()  # noqa: T100
     shell.mainloop(
         display_banner="This is an ipython shell for you to happily debug your state!\n"
         + "The state can be accessed through the variable 'state'. You can\n"
@@ -414,9 +413,6 @@ class SimInspector(SimStatePlugin):
         return False
 
     def merge(self, others, merge_conditions, common_ancestor=None):  # pylint: disable=unused-argument
-        return self._combine(others)
-
-    def widen(self, others):
         return self._combine(others)
 
     def set_state(self, state):

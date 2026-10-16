@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any, cast
+from typing import Any, Generic, TypeVar, cast
 
-import claripy
-
-import angr.ailment as ailment
+from angr import ailment, claripy
 from angr.analyses.typehoon import typeconsts, typevars
 from angr.analyses.typehoon.typevars import AddN, DerivedTypeVariable, Load, Store, SubN, TypeVariable
 from angr.analyses.variable_recovery.variable_recovery_base import VariableRecoveryStateBase
@@ -23,7 +21,7 @@ from angr.sim_variable import (
     SimVariable,
 )
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
-from angr.utils.constants import MAX_POINTSTO_BITS
+from angr.utils.constants import MAX_ACCESS_SIZE, MAX_FIELD_OFFSET, MAX_POINTSTO_BITS
 
 #
 # The base engine used in VariableRecoveryFast
@@ -31,8 +29,11 @@ from angr.utils.constants import MAX_POINTSTO_BITS
 
 l = logging.getLogger(name=__name__)
 
+# declared covariant so RichR[BV] is a RichR[BV | FP]; PEP 695 inference would make it invariant since data is mutable
+RichRT_co = TypeVar("RichRT_co", bound=claripy.ast.Bits, covariant=True)
 
-class RichR[RichRT_co: claripy.ast.Bits]:
+
+class RichR(Generic[RichRT_co]):  # noqa: UP046
     """
     A rich representation of calculation results. The variable recovery data domain.
     """
@@ -78,11 +79,16 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         kb,
         vvar_type_hints: dict[int, typeconsts.TypeConstant] | None = None,
         tv_manager: typevars.TypeVariableManager | None = None,
+        stack_region_vars: dict[int, tuple[SimStackVariable, int]] | None = None,
     ):
         super().__init__(project)
 
         self.vvar_type_hints: dict[int, typeconsts.TypeConstant] = (
             vvar_type_hints if vvar_type_hints is not None else {}
+        )
+        # stack vvars that are words of a wider value: vvar id -> (its variable, byte offset into it)
+        self.stack_region_vars: dict[int, tuple[SimStackVariable, int]] = (
+            stack_region_vars if stack_region_vars is not None else {}
         )
         self.kb = kb
         self.vvar_region: dict[int, Any] = {}
@@ -93,6 +99,11 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         if self.state is None:
             return None
         return self.state.function.addr
+
+    @property
+    def block_idx(self) -> int | None:
+        # variable accesses are keyed on (block addr, block idx, stmt idx); non-AIL blocks have no idx
+        return cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None
 
     def _top(self, bits):
         return RichR(self.state.top(bits))
@@ -160,7 +171,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
 
             variable_manager = self.state.variable_manager[self.func_addr]
             var_candidates: list[tuple[SimVariable, int | None]] = variable_manager.find_variables_by_stmt(
-                self.block.addr, self.stmt_idx, "memory"
+                self.block.addr, self.stmt_idx, "memory", block_idx=self.block_idx
             )
 
             # find the correct variable
@@ -220,10 +231,12 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
             # this is probably an address for a global variable
             global_var_addr = data.concrete_value
 
-            variable_manager = self.state.variable_manager["global"]
+            variable_manager = self.state.global_variable_manager
 
             # special case for global variables: find existing variable by base address
-            existing_vars = [(var, 0) for var in variable_manager.get_global_variables(global_var_addr)]
+            existing_vars = [
+                (var, global_var_addr - var.addr) for var in variable_manager.get_global_variables(global_var_addr)
+            ]
 
             if not existing_vars:
                 sym = self.project.loader.find_symbol(global_var_addr)
@@ -264,7 +277,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                 self.block.addr,
                 self.stmt_idx,
                 "memory",
-                block_idx=cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None,
+                block_idx=self.block_idx,
             )
 
             # find the correct variable
@@ -275,9 +288,11 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         elif self.state.is_global_variable_address(data):
             # this is probably an address for a global variable
             global_var_addr = data.concrete_value
-            variable_manager = self.state.variable_manager["global"]
+            variable_manager = self.state.global_variable_manager
             # special case for global variables: find existing variable by base address
-            existing_vars = [(var, 0) for var in variable_manager.get_global_variables(global_var_addr)]
+            existing_vars = [
+                (var, global_var_addr - var.addr) for var in variable_manager.get_global_variables(global_var_addr)
+            ]
         else:
             return
 
@@ -297,7 +312,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         # accessed or not
 
         # invoke variable_manager.reference_at for every variable
-        for var, offset in existing_vars:
+        for var, offset in list(existing_vars):
             if offset == 0:
                 offset = None
             variable_manager.reference_at(var, offset, codeloc, atom=src)
@@ -333,7 +348,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         if dst is not None:
             existing_vars: set[tuple[SimVariable, int | None]] = self.state.variable_manager[
                 self.func_addr
-            ].find_variables_by_atom(self.block.addr, self.stmt_idx, dst)
+            ].find_variables_by_atom(self.block.addr, self.stmt_idx, dst, block_idx=self.block_idx)
         else:
             existing_vars = set()
         if not existing_vars:
@@ -384,6 +399,17 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
             if int_type is not None:
                 self.state.add_type_constraint(typevars.Subtype(typevar, int_type))
 
+    @staticmethod
+    def _float_of_constraint(tc, value_tv) -> typeconsts.Float | None:
+        """The float type a value constraint pins: ``float <: x``, or ``value_tv <: float`` (a call's FP return)."""
+        if not isinstance(tc, typevars.Subtype):
+            return None
+        if isinstance(tc.sub_type, typeconsts.Float):
+            return tc.sub_type
+        if isinstance(tc.super_type, typeconsts.Float) and tc.sub_type is value_tv:
+            return tc.super_type
+        return None
+
     def _assign_to_vvar(
         self,
         vvar: ailment.expression.VirtualVariable,
@@ -415,7 +441,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         if dst is not None:
             existing_vars: set[tuple[SimVariable, int | None]] = self.state.variable_manager[
                 self.func_addr
-            ].find_variables_by_atom(self.block.addr, self.stmt_idx, dst)
+            ].find_variables_by_atom(self.block.addr, self.stmt_idx, dst, block_idx=self.block_idx)
         else:
             existing_vars = set()
         if not existing_vars:
@@ -428,6 +454,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                 pass
             existing_vars = {(av[1], av[0]) for av in addr_and_variables}
 
+        var_offset = 0
         if not existing_vars:
             if vvar.was_reg:
                 variable = SimRegisterVariable(
@@ -438,23 +465,35 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                 )
                 self.state.variable_manager[self.func_addr].add_variable("register", vvar.reg_offset, variable)
             elif vvar.was_stack:
-                variable = SimStackVariable(
-                    vvar.stack_offset,
-                    vvar.size,
-                    ident=self.state.variable_manager[self.func_addr].next_variable_ident("stack"),
-                    region=self.func_addr,
-                    base="bp",
-                )
-                self.state.variable_manager[self.func_addr].add_variable("stack", vvar.stack_offset, variable)
+                covering = self._covering_stack_variable(vvar)
+                if covering is not None:
+                    variable, var_offset = covering
+                else:
+                    variable = SimStackVariable(
+                        vvar.stack_offset,
+                        vvar.size,
+                        ident=self.state.variable_manager[self.func_addr].next_variable_ident("stack"),
+                        region=self.func_addr,
+                        base="bp",
+                    )
+                    self.state.variable_manager[self.func_addr].add_variable("stack", vvar.stack_offset, variable)
             elif vvar.was_parameter:
-                # FIXME: we assume all parameter vvars were registers
-                variable = SimRegisterVariable(
-                    vvar.reg_offset,
-                    vvar.size,
-                    ident=self.state.variable_manager[self.func_addr].next_variable_ident("register"),
-                    region=self.func_addr,
-                )
-                self.state.variable_manager[self.func_addr].add_variable("register", vvar.reg_offset, variable)
+                if vvar.parameter_category == ailment.expression.VirtualVariableCategory.COMBO_REGISTER:
+                    variable = SimComboRegisterVariable(
+                        vvar.reg_offsets,
+                        vvar.size,
+                        ident=self.state.variable_manager[self.func_addr].next_variable_ident("register"),
+                        region=self.func_addr,
+                    )
+                else:
+                    # FIXME: we assume all other parameter vvars were registers
+                    variable = SimRegisterVariable(
+                        vvar.reg_offset,
+                        vvar.size,
+                        ident=self.state.variable_manager[self.func_addr].next_variable_ident("register"),
+                        region=self.func_addr,
+                    )
+                    self.state.variable_manager[self.func_addr].add_variable("register", vvar.reg_offset, variable)
             elif vvar.was_tmp:
                 # FIXME: we treat all tmp vvars as registers
                 assert vvar.tmp_idx is not None
@@ -474,19 +513,20 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
             else:
                 raise NotImplementedError
         else:
-            variable, _ = next(iter(existing_vars))
+            variable, var_offset = next(iter(existing_vars))
 
-        # FIXME: The offset does not have to be 0
-        annotated_data = self.state.annotate_with_variables(data, [(0, variable)])
+        annotated_data = self.state.annotate_with_variables(data, [(var_offset or 0, variable)])
         self.vvar_region[vvar_id] = annotated_data
-        self.state.variable_manager[self.func_addr].write_to(variable, None, codeloc, atom=dst, overwrite=False)
+        self.state.variable_manager[self.func_addr].write_to(
+            variable, var_offset or None, codeloc, atom=dst, overwrite=False
+        )
 
         if vvar.was_stack:
             # shove it on the stack so we can get it back later by reference
             stack_addr = self.state.stack_addr_from_offset(vvar.stack_offset)
             self.state.stack_region.store(stack_addr, annotated_data)
 
-        if richr.typevar is not None:
+        if richr.typevar is not None and variable.size == vvar.size:
             if not self.state.typevars.has_type_variable_for(variable):
                 # optimization: if richr.typevar is a derived typevar, we simply carry it over instead of creating a
                 # new typevar here
@@ -502,7 +542,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
 
             # create constraints accordingly
             if richr.typevar is not typevar:
-                if richr.data.concrete:
+                if richr.data.concrete and not isinstance(richr.typevar, typeconsts.Float):
                     self.state.add_type_constraint(typevars.Equivalence(richr.typevar, typevar))
                 else:
                     self.state.add_type_constraint(typevars.Subtype(richr.typevar, typevar))
@@ -514,6 +554,17 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                 else:
                     constraint = typevars.Subtype(typevar, ty_const)
                 self.state.add_type_constraint(constraint)
+            elif isinstance(richr.typevar, typeconsts.Float) or (
+                richr.type_constraints
+                and any(self._float_of_constraint(tc, richr.typevar) is not None for tc in richr.type_constraints)
+            ):
+                # The incoming value has float type constraints (an FP constant, or a value bounded by an FP type
+                # such as the result of an FP-returning call) -- propagate them to the destination typevar so the
+                # solver knows this variable holds FP data.
+                for tc in richr.type_constraints or ():
+                    float_ty = self._float_of_constraint(tc, richr.typevar)
+                    if float_ty is not None:
+                        self.state.add_type_constraint(typevars.Subtype(float_ty, typevar))
             else:
                 # the constraint below is a default constraint that may conflict with more specific ones with different
                 # sizes; we post-process at the very end of VRA to remove conflicting default constraints.
@@ -560,7 +611,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         if not stored:
             # remove existing variables linked to this statement
             existing_vars = self.state.variable_manager[self.func_addr].find_variables_by_stmt(
-                self.block.addr, self.stmt_idx, "memory"
+                self.block.addr, self.stmt_idx, "memory", block_idx=self.block_idx
             )
             codeloc = self._codeloc()
             if existing_vars:
@@ -579,11 +630,11 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
 
         if atom is None:
             existing_vars = self.state.variable_manager[self.func_addr].find_variables_by_stmt(
-                self.block.addr, self.stmt_idx, "memory"
+                self.block.addr, self.stmt_idx, "memory", block_idx=self.block_idx
             )
         else:
             existing_vars = self.state.variable_manager[self.func_addr].find_variables_by_atom(
-                self.block.addr, self.stmt_idx, atom
+                self.block.addr, self.stmt_idx, atom, block_idx=self.block_idx
             )
         if not existing_vars:
             variable = SimStackVariable(
@@ -654,11 +705,15 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         offset: claripy.ast.BV | None = None,
         elem_size: int | None = None,
     ):
-        variable_manager = self.state.variable_manager["global"]
+        variable_manager = self.state.global_variable_manager
         if stmt is None:
-            existing_vars = variable_manager.find_variables_by_stmt(self.block.addr, self.stmt_idx, "memory")
+            existing_vars = variable_manager.find_variables_by_stmt(
+                self.block.addr, self.stmt_idx, "memory", block_idx=self.block_idx
+            )
         else:
-            existing_vars = variable_manager.find_variables_by_atom(self.block.addr, self.stmt_idx, stmt)
+            existing_vars = variable_manager.find_variables_by_atom(
+                self.block.addr, self.stmt_idx, stmt, block_idx=self.block_idx
+            )
 
         if offset is None or elem_size is None:
             # trivial case
@@ -670,7 +725,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
 
         if not existing_vars:
             # special case for global variables: find existing variable by base address
-            existing_vars = {(var, (offset, elem_size)) for var in variable_manager.get_global_variables(addr)}
+            existing_vars, offset, elem_size = self._global_variables_at(variable_manager, addr, offset, elem_size)
 
         if not existing_vars:
             variable = SimMemoryVariable(
@@ -685,7 +740,10 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
             variable, _ = next(iter(existing_vars))
 
         data_expr: claripy.ast.Base = data.data
-        data_expr = self.state.annotate_with_variables(data_expr, [(0, variable)])
+        # a store inside a multi-word global is recorded at its byte offset into that variable
+        data_expr = self.state.annotate_with_variables(
+            data_expr, [(addr - cast(SimMemoryVariable, variable).addr, variable)]
+        )
 
         if abs_addr is not None:
             self.state.global_region.store(
@@ -751,9 +809,9 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         typevar = self.tv_manager.new_tv() if richr_addr.typevar is None else richr_addr.typevar
 
         if isinstance(typevar, typevars.TypeVariable):
-            if isinstance(typevar, typevars.DerivedTypeVariable) and isinstance(typevar.one_label, typevars.AddN):
+            if isinstance(typevar, typevars.DerivedTypeVariable) and isinstance(typevar.one_label(), typevars.AddN):
                 base_typevar = typevar.type_var
-                field_offset = typevar.one_label.n
+                field_offset = typevar.one_label().n
             else:
                 base_typevar = typevar
                 field_offset = 0
@@ -765,6 +823,19 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     self.state.add_type_constraint(typevars.Equivalence(store_typevar, data_typevar))
                 else:
                     self.state.add_type_constraint(typevars.Subtype(store_typevar, data_typevar))
+
+    def _covering_stack_variable(self, vvar) -> tuple[SimStackVariable, int] | None:
+        """
+        The wider variable a stack vvar is a word of (one an analysis seeded for a multi-word value), with the
+        vvar's byte offset into it.
+        """
+        hit = self.stack_region_vars.get(vvar.varid)
+        if hit is None:
+            return None
+        variable, offset = hit
+        if variable.size is None or offset < 0 or offset + vvar.size > variable.size:
+            return None
+        return variable, offset
 
     def _load(self, richr_addr: RichR[claripy.ast.BV], size: int, expr=None):
         """
@@ -925,7 +996,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
             # failed to map the address to a known variable
             # remove existing variables linked to this variable
             existing_vars = self.state.variable_manager[self.func_addr].find_variables_by_atom(
-                self.block.addr, self.stmt_idx, expr
+                self.block.addr, self.stmt_idx, expr, block_idx=self.block_idx
             )
             if existing_vars:
                 for existing_var, _ in list(existing_vars):
@@ -939,9 +1010,9 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         # parse the loading offset
         offset = 0
         if isinstance(richr_addr.typevar, typevars.DerivedTypeVariable) and isinstance(
-            richr_addr.typevar.one_label, typevars.AddN
+            richr_addr.typevar.one_label(), typevars.AddN
         ):
-            offset = richr_addr.typevar.one_label.n
+            offset = richr_addr.typevar.one_label().n
             richr_addr_typevar = richr_addr.typevar.type_var  # unpack
         else:
             richr_addr_typevar = richr_addr.typevar
@@ -961,11 +1032,15 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         offset: claripy.ast.BV | None = None,
         elem_size: int | None = None,
     ) -> RichR[claripy.ast.BV]:
-        variable_manager = self.state.variable_manager["global"]
+        variable_manager = self.state.global_variable_manager
         if expr is None:
-            existing_vars = variable_manager.find_variables_by_stmt(self.block.addr, self.stmt_idx, "memory")
+            existing_vars = variable_manager.find_variables_by_stmt(
+                self.block.addr, self.stmt_idx, "memory", block_idx=self.block_idx
+            )
         else:
-            existing_vars = variable_manager.find_variables_by_atom(self.block.addr, self.stmt_idx, expr)
+            existing_vars = variable_manager.find_variables_by_atom(
+                self.block.addr, self.stmt_idx, expr, block_idx=self.block_idx
+            )
 
         # if offset is None or elem_size is None:
         #     # trivial case
@@ -977,7 +1052,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
 
         if not existing_vars:
             # special case for global variables: find existing variable by base address
-            existing_vars = {(var, (offset, elem_size)) for var in variable_manager.get_global_variables(addr)}
+            existing_vars, offset, elem_size = self._global_variables_at(variable_manager, addr, offset, elem_size)
 
         if not existing_vars:
             # is this address mapped?
@@ -995,8 +1070,15 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
         codeloc = CodeLocation(
             self.block.addr, self.stmt_idx, ins_addr=self.ins_addr, block_idx=getattr(self.block, "idx", None)
         )
-        for variable, _ in existing_vars:
-            variable_manager.read_from(variable, None, codeloc, atom=expr)
+        # the loop may register new globals into this set: iterate over a snapshot
+        snapshot = list(existing_vars)
+        for variable, var_offset in snapshot:
+            concrete = (
+                cast(int, var_offset[0].concrete_value) * cast(int, var_offset[1])
+                if isinstance(var_offset, tuple) and var_offset[0] is not None and var_offset[0].concrete
+                else None
+            )
+            variable_manager.read_from(variable, concrete or None, codeloc, atom=expr)
 
         variable, _ = next(iter(existing_vars))
         # create type constraints
@@ -1020,6 +1102,20 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     self.state.add_type_constraint(typevars.Subtype(load_typevar, typeconsts.TopType()))
 
         return RichR(self.state.top(size * self.project.arch.byte_width), typevar=typevar)
+
+    def _global_variables_at(self, variable_manager, addr: int, offset, elem_size):
+        """
+        Existing global variables covering ``addr``. An access that lands inside a multi-word global is recorded at
+        its byte offset into that variable.
+        """
+        found = variable_manager.get_global_variables(addr)
+        if found and offset is None and elem_size is None:
+            var = next(iter(found))
+            delta = addr - var.addr
+            if delta:
+                offset = claripy.BVV(delta, self.project.arch.bits)
+                elem_size = 1
+        return {(var, (offset, elem_size)) for var in found}, offset, elem_size
 
     def _read_from_register(self, offset, size, expr=None, force_variable_size=None, create_variable: bool = True):
         """
@@ -1054,7 +1150,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                 if expr is not None:
                     existing_vars: set[tuple[SimVariable, int | None]] = self.state.variable_manager[
                         self.func_addr
-                    ].find_variables_by_atom(self.block.addr, self.stmt_idx, expr)
+                    ].find_variables_by_atom(self.block.addr, self.stmt_idx, expr, block_idx=self.block_idx)
                 else:
                     existing_vars = set()
                 if not existing_vars:
@@ -1155,7 +1251,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     self.block.addr,
                     self.stmt_idx,
                     "register",
-                    block_idx=cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None,
+                    block_idx=self.block_idx,
                 )
                 existing_vars: list[tuple[SimVariable, int | None]] = []
                 for var_candidate, var_offset in var_candidates:
@@ -1171,7 +1267,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     self.block.addr,
                     self.stmt_idx,
                     "memory",
-                    block_idx=cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None,
+                    block_idx=self.block_idx,
                 )
                 existing_vars: list[tuple[SimVariable, int | None]] = []
                 for var_candidate, var_offset in var_candidates:
@@ -1193,15 +1289,20 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     value = self.state.annotate_with_variables(value, [(0, variable)])
                     self.state.variable_manager[self.func_addr].add_variable("register", vvar.reg_offset, variable)
                 elif vvar.category == ailment.Expr.VirtualVariableCategory.STACK:
-                    variable = SimStackVariable(
-                        vvar.stack_offset,
-                        vvar.size,
-                        ident=self.state.variable_manager[self.func_addr].next_variable_ident("stack"),
-                        region=self.func_addr,
-                        base="bp",
-                    )
-                    value = self.state.annotate_with_variables(value, [(0, variable)])
-                    self.state.variable_manager[self.func_addr].add_variable("stack", vvar.stack_offset, variable)
+                    covering = self._covering_stack_variable(vvar)
+                    if covering is not None:
+                        variable, var_offset = covering
+                        value = self.state.annotate_with_variables(value, [(var_offset, variable)])
+                    else:
+                        variable = SimStackVariable(
+                            vvar.stack_offset,
+                            vvar.size,
+                            ident=self.state.variable_manager[self.func_addr].next_variable_ident("stack"),
+                            region=self.func_addr,
+                            base="bp",
+                        )
+                        value = self.state.annotate_with_variables(value, [(0, variable)])
+                        self.state.variable_manager[self.func_addr].add_variable("stack", vvar.stack_offset, variable)
                 elif vvar.category == ailment.Expr.VirtualVariableCategory.PARAMETER:
                     raise KeyError(f"Missing virtual variable for parameter {vvar}")
                 elif vvar.category == ailment.Expr.VirtualVariableCategory.TMP:
@@ -1222,8 +1323,10 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
             self.vvar_region[vvar_id] = value
 
         variable_set = set()
-        for _, var in self.state.extract_variables(value):
-            self.state.variable_manager[self.func_addr].read_from(var, None, codeloc, atom=expr, overwrite=False)
+        for var_offset, var in self.state.extract_variables(value):
+            self.state.variable_manager[self.func_addr].read_from(
+                var, var_offset or None, codeloc, atom=expr, overwrite=False
+            )
             variable_set.add(var)
 
         if (
@@ -1266,14 +1369,18 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
 
         return RichR(value, variable=var, typevar=typevar)
 
-    def _get_const(self, value, bits: int, expr=None) -> RichR:
+    def _get_const(self, value, bits: int, expr=None, non_pointer: bool = False) -> RichR:
+        """
+        :param non_pointer: The constant is a plain number (a float bit pattern, a mask, a shift amount, a
+                            multiplier); it is never a global address.
+        """
         codeloc = self._codeloc()
 
         if isinstance(value, float):
             v = claripy.FPV(value, claripy.FSORT_DOUBLE if bits == 64 else claripy.FSORT_FLOAT).to_bv()
             ty = typeconsts.float_type(bits)
         else:
-            if self.project.loader.find_segment_containing(value) is not None:
+            if not non_pointer and self.project.loader.find_segment_containing(value) is not None:
                 r = self._load_from_global(value, 1, expr=expr)
                 ty = r.typevar
             else:
@@ -1284,7 +1391,7 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     self.block.addr,
                     self.stmt_idx,
                     expr,  # pyright: ignore[reportArgumentType]
-                    block_idx=cast(ailment.Block, self.block).idx if isinstance(self.block, ailment.Block) else None,
+                    block_idx=self.block_idx,
                 )
                 if not var_candidates:
                     var = SimConstantVariable(
@@ -1303,8 +1410,9 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                     self.state.add_type_constraint(typevars.Subtype(ty, ty_const))
             v = claripy.BVV(value, bits)
         r = RichR(v, typevar=ty)
-        self._ensure_variable_existence(r, codeloc)
-        self._reference(r, codeloc)
+        if not non_pointer:
+            self._ensure_variable_existence(r, codeloc)
+            self._reference(r, codeloc)
         return r
 
     def _create_access_typevar(
@@ -1323,17 +1431,25 @@ class SimEngineVRBase[VRStateType: VariableRecoveryStateBase, BlockType: BlockPr
                 offset -= tv.labels[-1].n
                 tv = tv.type_var if len(tv.labels) == 1 else self.tv_manager.new_dtv(tv.type_var, labels=tv.labels[:-1])
         lbl = Store() if is_store else Load()
-        bits = size * self.project.arch.byte_width if size is not None else MAX_POINTSTO_BITS
+        # implausible access sizes (e.g., leaked size markers) are treated as accesses of an unknown size so that type
+        # inference does not end up with a gigantic field
+        bits = (
+            size * self.project.arch.byte_width
+            if size is not None and 0 < size <= MAX_ACCESS_SIZE
+            else MAX_POINTSTO_BITS
+        )
 
-        if offset >= 4096:
-            if self._likely_pointer(offset):
-                # tv is the actual offset
+        if offset < 0:
+            if self._likely_pointer(offset + (1 << self.arch.bits)):
+                # a mapped address that we reached by wrapping around; tv is the actual offset
                 return self.tv_manager.new_tv()
-            if (self.arch.bits == 32 and offset > 0x7FFF_FFFF) or (
-                self.arch.bits == 64 and offset > 0x7FFF_FFFF_FFFF_FFFF
-            ):
-                # probably a negative offset
-                return self.tv_manager.new_tv()
+        elif offset >= 4096 and self._likely_pointer(offset):
+            # tv is the actual offset
+            return self.tv_manager.new_tv()
+
+        if not -MAX_FIELD_OFFSET <= offset <= MAX_FIELD_OFFSET:
+            # too far out to be a field of a real object; this also covers offsets that wrapped around
+            return self.tv_manager.new_tv()
 
         new_dtv = self.tv_manager.new_dtv(
             tv,

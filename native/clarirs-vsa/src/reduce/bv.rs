@@ -1,0 +1,121 @@
+use super::ReduceResult;
+use crate::strided_interval::{ComparisonResult, StridedInterval};
+use clarirs_core::prelude::*;
+
+fn child(children: &[ReduceResult], index: usize) -> Result<ComparisonResult, ClarirsError> {
+    if let Some(ReduceResult::Bool(result)) = children.get(index) {
+        Ok(result.clone())
+    } else {
+        Err(ClarirsError::InvalidArguments(format!(
+            "Expected Bool at index {}, found {:?}",
+            index,
+            children.get(index)
+        )))
+    }
+}
+
+fn child_si(children: &[ReduceResult], index: usize) -> Result<StridedInterval, ClarirsError> {
+    if let Some(ReduceResult::BitVec(result)) = children.get(index) {
+        Ok(result.clone())
+    } else {
+        Err(ClarirsError::InvalidArguments(format!(
+            "Expected BitVec at index {}, found {:?}",
+            index,
+            children.get(index)
+        )))
+    }
+}
+
+fn fold_si(
+    children: &[ReduceResult],
+    op: impl Fn(&StridedInterval, &StridedInterval) -> StridedInterval,
+) -> Result<StridedInterval, ClarirsError> {
+    let mut result = child_si(children, 0)?;
+    for i in 1..children.len() {
+        result = op(&result, &child_si(children, i)?);
+    }
+    Ok(result)
+}
+
+/// Reduce a bitvector computed from float or string operands. The operands are
+/// not tracked, so only a concrete node can be folded to a constant.
+fn from_opaque(ast: &AstRef<'_>) -> Result<StridedInterval, ClarirsError> {
+    if ast.concrete()
+        && let AstOp::BVV(bv) = ast.simplify()?.op()
+    {
+        return Ok(StridedInterval::constant(bv.len(), bv.to_biguint()));
+    }
+    Ok(StridedInterval::top(ast.size()))
+}
+
+/// Reduce a AstRef to a StridedInterval
+pub(crate) fn reduce_bv(
+    ast: &AstRef<'_>,
+    children: &[ReduceResult],
+) -> Result<StridedInterval, ClarirsError> {
+    Ok(match ast.op() {
+        AstOp::BVS(_, bits) => {
+            // If there is an SI or ESI annotation, use it. Otherwise, return top.
+            ast.annotations()
+                .iter()
+                .find_map(|ann| {
+                    if let AnnotationType::StridedInterval {
+                        stride,
+                        lower_bound,
+                        upper_bound,
+                    } = ann.type_()
+                    {
+                        Some(StridedInterval::new(
+                            *bits,
+                            stride.clone(),
+                            lower_bound.clone(),
+                            upper_bound.clone(),
+                        ))
+                    } else if let AnnotationType::EmptyStridedInterval = ann.type_() {
+                        Some(StridedInterval::empty(*bits))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| StridedInterval::top(*bits))
+        }
+        AstOp::BVV(bv) => StridedInterval::constant(bv.len(), bv.to_biguint()),
+        AstOp::Not(..) => child_si(children, 0)?.bitnot(),
+        AstOp::And(..) => fold_si(children, StridedInterval::bitand)?,
+        AstOp::Or(..) => fold_si(children, StridedInterval::bitor)?,
+        AstOp::Xor(..) => fold_si(children, StridedInterval::bitxor)?,
+        AstOp::Neg(..) => child_si(children, 0)?.neg(),
+        AstOp::Add(..) => fold_si(children, StridedInterval::add)?,
+        AstOp::Sub(..) => child_si(children, 0)?.sub(&child_si(children, 1)?),
+        AstOp::Mul(..) => fold_si(children, StridedInterval::mul)?,
+        AstOp::UDiv(..) => child_si(children, 0)?.udiv(&child_si(children, 1)?)?,
+        AstOp::SDiv(..) => child_si(children, 0)?.sdiv(&child_si(children, 1)?)?,
+        AstOp::URem(..) => child_si(children, 0)?.urem(&child_si(children, 1)?)?,
+        AstOp::SRem(..) => child_si(children, 0)?.srem(&child_si(children, 1)?)?,
+        AstOp::ShL(..) => child_si(children, 0)?.shl(&child_si(children, 1)?)?,
+        AstOp::LShR(..) => child_si(children, 0)?.lshr(&child_si(children, 1)?)?,
+        AstOp::AShR(..) => child_si(children, 0)?.ashr(&child_si(children, 1)?)?,
+        AstOp::RotateLeft(..) => child_si(children, 0)?.rotate_left(&child_si(children, 1)?)?,
+        AstOp::RotateRight(..) => child_si(children, 0)?.rotate_right(&child_si(children, 1)?)?,
+        AstOp::ZeroExt(_, amount) => child_si(children, 0)?.zero_extend(*amount),
+        AstOp::SignExt(_, amount) => child_si(children, 0)?.sign_extend(*amount),
+        AstOp::Extract(_, high, low) => child_si(children, 0)?.extract(*high, *low),
+        AstOp::Concat(..) => fold_si(children, StridedInterval::concat)?,
+        AstOp::ByteReverse(..) => child_si(children, 0)?.reverse_bytes()?,
+        AstOp::FpToIEEEBV(..)
+        | AstOp::FpToUBV(..)
+        | AstOp::FpToSBV(..)
+        | AstOp::StrLen(..)
+        | AstOp::StrIndexOf(..)
+        | AstOp::StrToBV(..) => from_opaque(ast)?,
+        AstOp::ITE(..) => match child(children, 0)? {
+            ComparisonResult::True => child_si(children, 1)?,
+            ComparisonResult::False => child_si(children, 2)?,
+            ComparisonResult::Maybe => child_si(children, 1)?.union(&child_si(children, 2)?),
+        },
+        AstOp::Union(..) => fold_si(children, StridedInterval::union)?,
+        AstOp::Intersection(..) => fold_si(children, StridedInterval::intersection)?,
+        AstOp::Widen(..) => child_si(children, 0)?.widen(&child_si(children, 1)?),
+        _ => unreachable!("non-bitvector op dispatched to reduce_bv"),
+    })
+}

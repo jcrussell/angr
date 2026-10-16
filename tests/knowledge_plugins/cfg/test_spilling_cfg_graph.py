@@ -7,6 +7,7 @@ from __future__ import annotations
 __package__ = __package__ or "tests.knowledge_plugins.cfg"  # pylint:disable=redefined-builtin
 
 import os
+import pickle
 import unittest
 
 import angr
@@ -298,6 +299,18 @@ class TestCFGModelIntegration(unittest.TestCase):
             assert node.block_id == block_id, "Block ID should match"
             break
 
+    def test_lookup_outside_u64_range(self):
+        """Addresses outside the u64 range (e.g., a negative loader entry) must miss, not raise."""
+        proj = angr.Project(self.bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast()
+        model = cfg.model
+
+        for addr in (-1, -2244608, 1 << 64):
+            assert model.get_any_node(addr, force_fastpath=True) is None
+            assert model.get_any_node(addr, anyaddr=True) is None
+            assert not model.graph.has_node_addr(addr)
+            assert list(model.graph.nodes_by_addr(addr)) == []
+
     def test_get_any_node(self):
         """Test CFGModel.get_any_node method."""
         proj = angr.Project(self.bin_path, auto_load_libs=False)
@@ -320,6 +333,41 @@ class TestCFGModelIntegration(unittest.TestCase):
         nodes_list = list(cfg.model.nodes())
         assert len(nodes_list) > 0, "Should have nodes"
         assert len(nodes_list) == len(cfg.model.graph), "Count should match"
+
+
+class TestSpillingCFGPickling(unittest.TestCase):
+    """Regression tests for pickling a CFG whose nodes/edges spill to LMDB (angr issue #6529)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bin_path = os.path.join(test_location, "x86_64", "fauxware")
+
+    def test_pickle_roundtrip_with_eviction(self):
+        """
+        Round-tripping a spilling CFG through pickle must not lose nodes or edges.
+        """
+        proj = angr.Project(self.bin_path)
+        cfg = proj.analyses.CFGFast(normalize=True)
+        model = cfg.model
+
+        total = len(model.graph)
+        if total <= 15:
+            self.skipTest("Binary too small to trigger eviction during unpickling")
+
+        # shrink the limits so that re-inserting the nodes on the unpickle side triggers LRU eviction
+        model.graph.cache_limit = 5
+        model.graph.db_batch_size = 10
+
+        nodes_before = {(n.addr, n.size) for n in model.graph.nodes()}
+        edges_before = {(s.addr, d.addr) for s, d in model.graph.edges()}
+
+        restored = pickle.loads(pickle.dumps(model))
+
+        nodes_after = {(n.addr, n.size) for n in restored.graph.nodes()}
+        edges_after = {(s.addr, d.addr) for s, d in restored.graph.edges()}
+
+        assert nodes_after == nodes_before, f"Lost nodes across pickling: {sorted(nodes_before - nodes_after)[:10]}"
+        assert edges_after == edges_before, f"Lost edges across pickling: {sorted(edges_before - edges_after)[:10]}"
 
 
 if __name__ == "__main__":

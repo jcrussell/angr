@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import claripy
-
 import angr
-from angr import concretization_strategies
+from angr import claripy, concretization_strategies
 from angr import sim_options as options
 from angr.errors import SimMemoryAddressError, SimMemoryError, SimMergeError, SimUnsatError
 from angr.sim_state_options import SimStateOptions
@@ -12,13 +10,8 @@ from angr.storage.memory_mixins.memory_mixin import MemoryMixin
 
 
 class MultiwriteAnnotation(claripy.Annotation):
-    @property
-    def eliminatable(self):
-        return False
-
-    @property
-    def relocateable(self):
-        return True
+    eliminatable = False
+    relocatable = True
 
 
 def _multiwrite_filter(mem, ast: claripy.ast.Base):  # pylint:disable=unused-argument
@@ -66,12 +59,30 @@ class AddressConcretizationMixin(MemoryMixin):
     @MemoryMixin.memo
     def copy(self, memo):
         o = super().copy(memo)
-        o.read_strategies = list(self.read_strategies)
-        o.write_strategies = list(self.write_strategies)
+
+        # Concretization strategies are usually stateless and their ``copy()`` method
+        # returns ``self``. Some strategies do carry per-state data, however (for
+        # example, the no-repeat strategies), and explicitly implement ``copy()`` so
+        # that forks do not mutate one another. Merely copying the two lists leaves the
+        # strategy instances shared and makes that API ineffective.
+        #
+        # A strategy may intentionally be installed for both reads and writes. Preserve
+        # that alias within the new memory while still separating it from the source
+        # memory by copying each distinct source strategy exactly once.
+        copied_strategies = {}
+
+        def copy_strategy(strategy):
+            key = id(strategy)
+            if key not in copied_strategies:
+                copied_strategies[key] = strategy.copy()
+            return copied_strategies[key]
+
+        o.read_strategies = [copy_strategy(s) for s in self.read_strategies]
+        o.write_strategies = [copy_strategy(s) for s in self.write_strategies]
         return o
 
-    def merge(self, others, merge_conditions, common_ancestor=None) -> bool:
-        r = super().merge(others, merge_conditions, common_ancestor=common_ancestor)
+    def merge(self, others, merge_conditions, common_ancestor=None, is_widening=False) -> bool:
+        r = super().merge(others, merge_conditions, common_ancestor=common_ancestor, is_widening=is_widening)
         self.read_strategies = self._merge_strategies(self.read_strategies, *[o.read_strategies for o in others])
         self.write_strategies = self._merge_strategies(self.write_strategies, *[o.write_strategies for o in others])
         return r

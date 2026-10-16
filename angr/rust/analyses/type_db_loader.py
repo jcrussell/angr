@@ -5,8 +5,11 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 
+import angr_data
+
 from angr.analyses.analysis import AnalysesHub, Analysis
 from angr.calling_conventions import default_cc
+from angr.enums import Flavors
 from angr.knowledge_plugins.functions.function import PrototypeSource
 from angr.rust.sim_type import (
     EnumVariant,
@@ -288,13 +291,13 @@ class TypeDBLoader(Analysis):
         rustc_version = self.project.rustc_version
         l.info("Rust version: %s", rustc_version)
         type_db_filename = f"{rustc_version}.json"
-        type_db_path = Path(__file__).parent.joinpath("type_db").joinpath(type_db_filename)
+        type_db_path = Path(angr_data.get_path("rust", "type_db")).joinpath(type_db_filename)
         if not type_db_path.exists():
             l.warning("Type database for Rust version %s not found at %s.", rustc_version, type_db_path)
             return
         type_db_json = json.loads(type_db_path.read_text(encoding="utf-8"))
         self._struct_db = {struct_data["name"]: struct_data for struct_data in type_db_json["structs"]}
-        for _, struct_data in self._struct_db.items():
+        for struct_data in self._struct_db.values():
             self._parse_type(struct_data)
         l.info("Loaded %d structs from type database.", len(self._structs))
 
@@ -303,8 +306,11 @@ class TypeDBLoader(Analysis):
         # SpillingFunctionDict's LRU eviction creating new object instances
         name_to_func_addrs = defaultdict(list)
         for addr in self.kb.functions:
-            func = self.kb.functions[addr]
-            name_to_func_addrs[demangle(func.name)].append(addr)
+            # read the name from the FunctionManager cache instead of loading every full Function
+            raw_name = self.kb.functions.get_func_name(addr)
+            if raw_name is None:
+                raw_name = self.kb.functions.get_by_addr(addr, meta_only=True).name
+            name_to_func_addrs[demangle(raw_name)].append(addr)
 
         name_to_prototypes = defaultdict(list)
         for func_data in prototype_db:
@@ -321,8 +327,9 @@ class TypeDBLoader(Analysis):
                 for func_addr in name_to_func_addrs[func_name]:
                     # Re-fetch the function each time to get the current object from the cache
                     func = self.kb.functions[func_addr]
-                    if func.prototype:
-                        old_prototype = func.prototype.with_arch(self.project.arch)
+                    rust_prototype = func.get_prototype(Flavors.RUST_FLAVOR)
+                    if rust_prototype:
+                        old_prototype = rust_prototype.with_arch(self.project.arch)
                         if len(prototypes) == 1:
                             # If there's only one prototype for this function name, we can be more confident about it
                             # and skip negotiation
@@ -330,11 +337,12 @@ class TypeDBLoader(Analysis):
                         else:
                             negotiated_prototype = self._negotiate_prototype(prototype, old_prototype)
                         if negotiated_prototype is not None:
-                            func.prototype = negotiated_prototype
+                            func.set_prototype(
+                                Flavors.RUST_FLAVOR, negotiated_prototype, source=PrototypeSource.SIGNATURES
+                            )
                             cc_cls = default_cc(self.project.arch.name)
                             if cc_cls is not None:
                                 func.calling_convention = cc_cls(self.project.arch)
-                            func.prototype_source = PrototypeSource.SIGNATURES
 
 
 AnalysesHub.register_default("TypeDBLoader", TypeDBLoader)

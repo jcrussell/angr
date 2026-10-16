@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-import claripy
-
+from angr import claripy
 from angr.utils.balancer import Balancer, constraint_to_si
 
 
@@ -54,26 +53,26 @@ class TestBalancer(unittest.TestCase):
         s, r = Balancer(guy_inc <= claripy.BVV(39, 32)).compat_ret
         assert s
         assert r[0][0] is guy_wide
-        assert claripy.backends.vsa.min(r[0][1]) == 0
-        assert set(claripy.backends.vsa.eval(r[0][1], 1000)) == {4294967295, *list(range(39))}
+        assert claripy.vsa.min(r[0][1]) == 0
+        assert set(claripy.vsa.eval(r[0][1], 1000)) == {4294967295, *list(range(39))}
 
         s, r = Balancer(guy_zx <= claripy.BVV(39, 64)).compat_ret
         assert r[0][0] is guy_wide
-        assert claripy.backends.vsa.min(r[0][1]) == 0
-        assert set(claripy.backends.vsa.eval(r[0][1], 1000)) == {4294967295, *list(range(39))}
+        assert claripy.vsa.min(r[0][1]) == 0
+        assert set(claripy.vsa.eval(r[0][1], 1000)) == {4294967295, *list(range(39))}
 
     def test_simple(self):
         x = claripy.BVS("x", 32)
         s, r = Balancer(x <= claripy.BVV(39, 32)).compat_ret
         assert s
         assert r[0][0] is x
-        assert claripy.backends.vsa.min(r[0][1]) == 0
-        assert claripy.backends.vsa.max(r[0][1]) == 39
+        assert claripy.vsa.min(r[0][1]) == 0
+        assert claripy.vsa.max(r[0][1]) == 39
 
         s, r = Balancer(x + 1 <= claripy.BVV(39, 32)).compat_ret
         assert s
         assert r[0][0] is x
-        all_vals = claripy.backends.vsa.convert(r[0][1]).eval(1000)
+        all_vals = claripy.vsa.eval(r[0][1], 1000)
         assert len(all_vals)
         assert min(all_vals) == 0
         assert max(all_vals) == 4294967295
@@ -85,14 +84,14 @@ class TestBalancer(unittest.TestCase):
         s, r = Balancer(w <= claripy.BVV(39, 32)).compat_ret
         assert s
         assert r[0][0] is w
-        assert claripy.backends.vsa.min(r[0][1]) == 0
-        assert claripy.backends.vsa.max(r[0][1]) == 1  # used to be 39, but that was a bug in the VSA widening
+        assert claripy.vsa.min(r[0][1]) == 0
+        assert claripy.vsa.max(r[0][1]) == 1  # used to be 39, but that was a bug in the VSA widening
 
         s, r = Balancer(w + 1 <= claripy.BVV(39, 32)).compat_ret
         assert s
         assert r[0][0] is w
-        assert claripy.backends.vsa.min(r[0][1]) == 0
-        all_vals = claripy.backends.vsa.convert(r[0][1]).eval(1000)
+        assert claripy.vsa.min(r[0][1]) == 0
+        all_vals = claripy.vsa.eval(r[0][1], 1000)
         assert set(all_vals) == {4294967295, 0, 1}
 
     def test_overflow(self):
@@ -100,10 +99,10 @@ class TestBalancer(unittest.TestCase):
 
         # x + 10 <= 20
         s, r = Balancer(x + 10 <= claripy.BVV(20, 32)).compat_ret
-        # mn,mx = claripy.backends.vsa.min(r[0][1]), claripy.backends.vsa.max(r[0][1])
+        # mn,mx = claripy.vsa.min(r[0][1]), claripy.vsa.max(r[0][1])
         assert s
         assert r[0][0] is x
-        assert set(claripy.backends.vsa.eval(r[0][1], 1000)) == {
+        assert set(claripy.vsa.eval(r[0][1], 1000)) == {
             4294967286,
             4294967287,
             4294967288,
@@ -131,7 +130,7 @@ class TestBalancer(unittest.TestCase):
         s, r = Balancer(x - 10 <= claripy.BVV(20, 32)).compat_ret
         assert s
         assert r[0][0] is x
-        assert set(claripy.backends.vsa.eval(r[0][1], 1000)) == set(range(10, 31))
+        assert set(claripy.vsa.eval(r[0][1], 1000)) == set(range(10, 31))
 
     def test_extract_zeroext(self):
         x = claripy.BVS("x", 8)
@@ -158,7 +157,7 @@ class TestBalancer(unittest.TestCase):
 
         assert s
         assert r[0][0] is x
-        assert set(claripy.backends.vsa.eval(r[0][1], 1000)) == set(range(0, 65 * 0x100, 0x100))
+        assert set(claripy.vsa.eval(r[0][1], 1000)) == set(range(0, 65 * 0x100, 0x100))
 
     def test_complex_case_1(self):
         """
@@ -227,7 +226,7 @@ class TestBalancer(unittest.TestCase):
         assert len(r) == 1
         print(r)
         assert r[0][0] is x0 + x1
-        assert claripy.backends.vsa.cardinality(r[0][1]) == 99
+        assert claripy.vsa.cardinality(r[0][1]) == 99
 
         expr = x0 + claripy.BVV(8, 32) + x1 < claripy.BVV(99, 32)
         s, r = Balancer(expr).compat_ret
@@ -236,7 +235,7 @@ class TestBalancer(unittest.TestCase):
         assert len(r) == 1
         print(r)
         assert r[0][0] is x0 + x1
-        assert claripy.backends.vsa.cardinality(r[0][1]) == 99
+        assert claripy.vsa.cardinality(r[0][1]) == 99
 
 
 class TestConstraintToSI(unittest.TestCase):
@@ -251,7 +250,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s1
         # True side: claripy.SI<32>0[0, 0]
-        assert claripy.backends.vsa.is_true(
+        assert claripy.vsa.is_true(
             trueside_replacement[0][1] == claripy.SI(bits=32, stride=0, lower_bound=0, upper_bound=0)
         )
 
@@ -260,7 +259,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s1
         # False side; claripy.SI<32>1[1, 2]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1], claripy.SI(bits=32, stride=1, lower_bound=1, upper_bound=2)
         )
 
@@ -289,7 +288,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s1
         # True side: SI<32>0[0, 0]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             trueside_replacement[0][1], claripy.SI(bits=32, stride=0, lower_bound=0, upper_bound=0)
         )
 
@@ -298,7 +297,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s1
         # False side; SI<32>1[1, 2]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1], claripy.SI(bits=32, stride=1, lower_bound=1, upper_bound=2)
         )
 
@@ -313,7 +312,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s1
         # True side: SI<32>0[0, 0]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             trueside_replacement[0][1], claripy.SI(bits=32, stride=0, lower_bound=0, upper_bound=0)
         )
 
@@ -322,7 +321,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s1
         # False side; SI<32>0[0,0]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1], claripy.SI(bits=32, stride=1, lower_bound=1, upper_bound=2)
         )
 
@@ -347,7 +346,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s2
         # True side: claripy.SI<32>0[0, 0]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             trueside_replacement[0][1], claripy.SI(bits=32, stride=0, lower_bound=0, upper_bound=0)
         )
 
@@ -356,7 +355,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s2
         # False side; claripy.SI<32>1[1, 2]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1], claripy.SI(bits=32, stride=1, lower_bound=1, upper_bound=2)
         )
 
@@ -375,7 +374,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s3
         # True side: claripy.SI<32>0[0, 0]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             trueside_replacement[0][1], claripy.SI(bits=32, stride=0, lower_bound=0, upper_bound=0)
         )
 
@@ -384,7 +383,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s3
         # False side; claripy.SI<32>1[1, 2]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1], claripy.SI(bits=32, stride=1, lower_bound=1, upper_bound=2)
         )
 
@@ -419,7 +418,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s4[31:0]
         # True side: claripy.SI<32>0[0, 0]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             trueside_replacement[0][1],
             claripy.SI(bits=32, stride=1, lower_bound=-0x80000000, upper_bound=-1),
         )
@@ -429,10 +428,32 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s4[31:0]
         # False side; claripy.SI<32>1[1, 2]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1],
             claripy.SI(bits=32, stride=1, lower_bound=0, upper_bound=0x7FFFFFFF),
         )
+
+    def test_lshr(self):
+        x = claripy.BVS("x", 32)
+
+        _, replacements = constraint_to_si(claripy.LShR(x, 7) == 0)
+        bound = next(new for old, new in replacements if old is x)
+        assert (claripy.vsa.min(bound), claripy.vsa.max(bound)) == (0, 127)
+
+        _, replacements = constraint_to_si(claripy.LShR(x, 7) != 0)
+        bound = next(new for old, new in replacements if old is x)
+        assert claripy.vsa.min(bound) == 128
+
+    def test_two_multivalued_sides(self):
+        # i < n with both sides multi-valued bounds i from above and n from below
+        i = claripy.SI(bits=32, stride=1, lower_bound=5, upper_bound=255)
+        n = claripy.SI(bits=32, stride=1, lower_bound=1, upper_bound=127)
+
+        _, replacements = constraint_to_si(claripy.ULT(i, n))
+        new_i = next(new for old, new in replacements if old is i)
+        new_n = next(new for old, new in replacements if old is n)
+        assert claripy.vsa.max(new_i) == 126
+        assert claripy.vsa.min(new_n) == 6
 
     def test_top_si_not_equal_neg1(self):
         # TOP_SI != -1
@@ -445,7 +466,7 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(trueside_replacement) == 1
         assert trueside_replacement[0][0] is s5
         # True side: claripy.SI<32>0xFFFFFFFF[0xFFFFFFFF, 0xFFFFFFFF]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             trueside_replacement[0][1],
             claripy.SI(bits=32, stride=1, lower_bound=0xFFFFFFFF, upper_bound=0xFFFFFFFF),
         )
@@ -455,10 +476,34 @@ class TestConstraintToSI(unittest.TestCase):
         assert len(falseside_replacement) == 1
         assert falseside_replacement[0][0] is s5
         # False side: claripy.SI<32>0xFFFFFFFF[0, 0xFFFFFFFE]
-        assert claripy.backends.vsa.identical(
+        assert claripy.vsa.identical(
             falseside_replacement[0][1],
             claripy.SI(bits=32, stride=1, lower_bound=0, upper_bound=0xFFFFFFFE),
         )
+
+    def test_replacements_outer_before_inner(self):
+        # SimSolver.add applies replacements one by one with structural replace(); if an inner expression is
+        # rewritten first, the outer one no longer matches and its bound is lost. The order must not come from set
+        # iteration over AST hashes, which differ per process.
+        x = claripy.BVS("x", 64)
+        exprs = [x]
+        for i in range(6):
+            exprs.append((exprs[-1] + (i + 1)) & 0xFFFF_FFFF)
+        bal = Balancer(claripy.true())
+        for i, e in enumerate(exprs):
+            bal._add_lower_bound(e, i)
+            bal._add_upper_bound(e, 100 + i)
+        reps = bal.replacements
+        assert len(reps) == len(exprs)
+        depths = [o.depth for o, _ in reps]
+        assert depths == sorted(depths, reverse=True)
+        assert reps[0][0] is exprs[-1]
+        assert reps[-1][0] is x
+        # applying the replacements in order keeps every bound
+        result = exprs[-1]
+        for o, n in reps:
+            result = claripy.replace(result, o, n)
+        assert sum(1 for v in result.variables if v.startswith("bound")) == len(exprs)
 
     #     # TODO: Add some more insane test cases
 

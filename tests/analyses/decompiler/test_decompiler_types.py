@@ -6,9 +6,11 @@ __package__ = __package__ or "tests.analyses.decompiler"  # pylint:disable=redef
 import os
 import re
 import unittest
+from collections import OrderedDict
 
 import angr
-from angr.sim_type import SimTypeArray, SimTypeChar, SimTypeInt
+from angr import default_cc
+from angr.sim_type import SimStruct, SimTypeArray, SimTypeChar, SimTypeFunction, SimTypeInt, SimTypePointer
 from tests.common import WORKER, bin_location, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
@@ -104,8 +106,8 @@ class TestDecompilerTypes(unittest.TestCase):
         print_decompilation_result(dec)
 
         # take the stack variable v2; it should be a char array of size 64
-        assert dec._variable_kb is not None
-        varman = dec._variable_kb.variables.get_function_manager(func.addr)
+        assert dec.func.addr in dec.kb.dec_variables
+        varman = dec.kb.dec_variables.get_function_manager(func.addr)
         var2 = next(iter(varman.find_variables_by_stack_offset(-0x58)))
         assert var2 is not None
         var2 = varman.unified_variable(var2)
@@ -117,7 +119,7 @@ class TestDecompilerTypes(unittest.TestCase):
         varman.set_variable_type(var2, SimTypeArray(SimTypeChar(), 0).with_arch(proj.arch), mark_manual=True)
 
         # decompile again; should not crash!
-        new_dec = proj.analyses.Decompiler(func, variable_kb=dec._variable_kb, fail_fast=True)
+        new_dec = proj.analyses.Decompiler(func, fail_fast=True, regen_clinic=True)
         assert dec.codegen is not None and dec.codegen.text is not None
         print_decompilation_result(new_dec)
         assert f"char {var2.name}[0];" in new_dec.codegen.text
@@ -126,10 +128,40 @@ class TestDecompilerTypes(unittest.TestCase):
         varman.set_variable_type(var2, SimTypeInt().with_arch(proj.arch), mark_manual=True)
 
         # decompile again; should not crash!
-        new_dec = proj.analyses.Decompiler(func, variable_kb=dec._variable_kb, fail_fast=True)
+        new_dec = proj.analyses.Decompiler(func, fail_fast=True, regen_clinic=True)
         assert dec.codegen is not None and dec.codegen.text is not None
         print_decompilation_result(new_dec)
         assert f"int {var2.name};" in new_dec.codegen.text
+
+    def test_mutually_recursive_known_structs_are_defined_once(self):
+        # a known struct is rendered as defined: one typedef per name, with the recursive references intact
+        bin_path = os.path.join(test_location, "x86_64", "fauxware")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(show_progressbar=not WORKER, fail_fast=True, normalize=True)
+        proj.analyses.CompleteCallingConventions()
+
+        alpha = SimStruct({}, name="Alpha")
+        beta = SimStruct({}, name="Beta")
+        alpha.fields = OrderedDict({"beta": SimTypePointer(beta), "x": SimTypeInt()})
+        beta.fields = OrderedDict({"alpha": SimTypePointer(alpha), "y": SimTypeInt()})
+
+        callee = cfg.functions["authenticate"]
+        callee.calling_convention = default_cc(proj.arch.name, platform=proj.simos.name)(proj.arch)
+        callee.prototype = SimTypeFunction([SimTypePointer(alpha), SimTypePointer(beta)], SimTypeInt()).with_arch(
+            proj.arch
+        )
+
+        dec = proj.analyses.Decompiler(cfg.functions["main"], cfg=cfg, fail_fast=True)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        print_decompilation_result(dec)
+        text = dec.codegen.text
+
+        for name in ("Alpha", "Beta"):
+            assert text.count(f"typedef struct {name} {{") == 1
+        assert "struct Beta *beta;" in text
+        assert "struct Alpha *alpha;" in text
+        assert "void* beta;" not in text
+        assert "void* alpha;" not in text
 
 
 if __name__ == "__main__":

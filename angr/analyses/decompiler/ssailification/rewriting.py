@@ -53,6 +53,7 @@ class RewritingAnalysis:
         vvar_id_start: int = 0,
         stackvars: bool = False,
         fail_fast: bool = False,
+        clobber_defs_by_loc: dict[tuple[int, int | None, int], list[Def]] | None = None,
     ):
         self.project = project
         self._fail_fast = fail_fast
@@ -72,8 +73,10 @@ class RewritingAnalysis:
             ail_manager=ail_manager,
             vvar_id_start=vvar_id_start,
             def_to_udef=def_to_udef,
+            extern_defs=extern_defs,
             stackvars=stackvars,
             fail_fast=self._fail_fast,
+            clobber_defs_by_loc=clobber_defs_by_loc,
         )
 
         self._pending_states: dict[ailment.Block, RewritingState] = {}
@@ -145,13 +148,13 @@ class RewritingAnalysis:
                     )
                     phi_dst = VirtualVariable(
                         self._ail_manager.next_atom(),
-                        self._engine_ail._current_vvar_id,
+                        self._engine_ail.current_vvar_id,
                         reg_bytes * self.project.arch.byte_width,
                         VirtualVariableCategory.REGISTER,
                         oident=reg_offset,
                         ins_addr=node.addr,
                     )
-                    self._engine_ail._current_vvar_id += 1
+                    self._engine_ail.current_vvar_id += 1
 
                 case "stack":
                     _, stack_offset, stack_size = udef
@@ -164,13 +167,13 @@ class RewritingAnalysis:
                     )
                     phi_dst = VirtualVariable(
                         self._ail_manager.next_atom(),
-                        self._engine_ail._current_vvar_id,
+                        self._engine_ail.current_vvar_id,
                         stack_size * self.project.arch.byte_width,
                         VirtualVariableCategory.STACK,
                         oident=stack_offset,
                         ins_addr=node.addr,
                     )
-                    self._engine_ail._current_vvar_id += 1
+                    self._engine_ail.current_vvar_id += 1
                 case _:
                     raise NotImplementedError
 
@@ -185,7 +188,10 @@ class RewritingAnalysis:
         return phi_stmts
 
     @staticmethod
-    def insert_phi_statements(node: Block, phi_stmts: list[Assignment]):
+    def insert_phi_statements(node: Block, phi_stmts: list[Assignment]) -> int:
+        """
+        Insert phi statements after the leading labels of the block; return the index they were inserted at.
+        """
         idx = 0
         while idx < len(node.statements):
             if not isinstance(node.statements[idx], Label):
@@ -194,8 +200,9 @@ class RewritingAnalysis:
 
         if idx >= len(node.statements):
             node.statements += phi_stmts
-        else:
-            node.statements = node.statements[:idx] + phi_stmts + node.statements[idx:]
+            return idx
+        node.statements = node.statements[:idx] + phi_stmts + node.statements[idx:]
+        return idx
 
     def _reg_predicate(self, node_: Block, *, reg_offset: int) -> tuple[bool, Any]:
         out_state: RewritingState = (
@@ -215,11 +222,12 @@ class RewritingAnalysis:
         return False, None
 
     def _stack_predicate(self, node_: Block, *, stack_offset: int) -> tuple[bool, Any]:
-        out_state: RewritingState = (
-            self.head_controlled_loop_outstates[(node_.addr, node_.idx)]
-            if is_head_controlled_loop_block(node_)
-            else self.out_states[(node_.addr, node_.idx)]
-        )
+        states = self.head_controlled_loop_outstates if is_head_controlled_loop_block(node_) else self.out_states
+        out_state: RewritingState | None = states.get((node_.addr, node_.idx))
+        if out_state is None:
+            # the node was never given an out-state (unreachable along this backward path): the stack slot is not
+            # set here, so keep walking predecessors rather than raising
+            return False, None
         if stack_offset in out_state.stackvars:
             existing_var = out_state.stackvars[stack_offset]
             if existing_var is None:
@@ -237,13 +245,28 @@ class RewritingAnalysis:
         for node in self._graph:
             phi_stmts = self.create_phi_statements(node, self._phiid_to_udef, self._block_to_phiids[node])
             if phi_stmts:
-                self.insert_phi_statements(node, phi_stmts)
+                pos = self.insert_phi_statements(node, phi_stmts)
+                # the traversal recorded statement indices of the original block; the engine maps them back
+                self._engine_ail.phi_insertions[(node.addr, node.idx)] = (pos, len(phi_stmts))
 
     def _initial_abstract_state(self, node) -> RewritingState:
         func_args_map = {}
+        # maps the varid of each constituent register vvar of a combo-register argument to the argument vvar itself
+        combo_reg_vvar_to_arg = {}
+        # maps the varid of each non-combo argument vvar to its own starting offset
+        arg_offset_by_varid: dict[int, int] = {}
         # we may identify args that are not identified by Traversal. make sure these still get used
         unused_func_args = set(self._func_args)
         for arg_vvar in self._func_args:
+            if arg_vvar.parameter_category == VirtualVariableCategory.COMBO_REGISTER:
+                # a combo-register argument spans multiple (usually non-contiguous) registers; the function body
+                # reads the constituent registers individually, so we expose each constituent register vvar in the
+                # initial state and keep the link back to the combo argument
+                for reg_vvar in arg_vvar.reg_vvars:
+                    combo_reg_vvar_to_arg[reg_vvar.varid] = arg_vvar
+                    for suboffset in range(reg_vvar.reg_offset, reg_vvar.reg_offset + reg_vvar.size):
+                        func_args_map[(VirtualVariableCategory.REGISTER, suboffset)] = reg_vvar
+                continue
             offset = (
                 arg_vvar.parameter_reg_offset
                 if arg_vvar.parameter_category == VirtualVariableCategory.REGISTER
@@ -260,8 +283,27 @@ class RewritingAnalysis:
                 )
             )
             assert offset is not None
+            arg_offset_by_varid[arg_vvar.varid] = offset
             for suboffset in range(offset, offset + arg_vvar.size):
                 func_args_map[(arg_vvar.parameter_category, suboffset)] = arg_vvar
+
+        # bytes of each (non-combo) argument that extern defs read; when the extern defs jointly read the entire
+        # argument (e.g., a wide stack argument slot accessed as two narrower slices), the argument must stay
+        # full-width, and the narrower reads extract from it
+        arg_extern_coverage: dict[int, set[int]] = {}
+        # stack arguments read as more than one slice (fields of a by-value aggregate) also stay full-width:
+        # resizing to one slice would leave every other slice an undefined stack variable
+        multi_slice_stack_args: set[int] = set()
+        arg_first_slice: dict[int, tuple[int, int]] = {}
+        for kind, offset, size in self._extern_defs:
+            category = VirtualVariableCategory.REGISTER if kind == "reg" else VirtualVariableCategory.STACK
+            arg_vvar = func_args_map.get((category, offset))
+            if arg_vvar is not None and arg_vvar.varid not in combo_reg_vvar_to_arg:
+                arg_extern_coverage.setdefault(arg_vvar.varid, set()).update(range(offset, offset + size))
+                if category == VirtualVariableCategory.STACK:
+                    first = arg_first_slice.setdefault(arg_vvar.varid, (offset, size))
+                    if first != (offset, size):
+                        multi_slice_stack_args.add(arg_vvar.varid)
 
         state = RewritingState(
             AILCodeLocation(node.addr, node.idx, 0, node.addr),
@@ -272,13 +314,39 @@ class RewritingAnalysis:
         more_args: list[VirtualVariable] = []
         for kind, offset, size in sorted(self._extern_defs):
             category = VirtualVariableCategory.REGISTER if kind == "reg" else VirtualVariableCategory.STACK
-            if (arg_vvar := func_args_map.get((category, offset))) is not None:
-                unused_func_args.discard(arg_vvar)
-                if arg_vvar.size == size:
+            vvar = None
+            arg_vvar = func_args_map.get((category, offset))
+            if (
+                arg_vvar is not None
+                and category == VirtualVariableCategory.STACK
+                and offset > (arg_offset := arg_offset_by_varid[arg_vvar.varid])
+                and offset + size > arg_offset + arg_vvar.size
+            ):
+                # the def starts inside the argument and runs past its end (an unaligned read across adjacent stack
+                # slots); neither the argument nor a resized copy of it holds all of its bytes, so it gets its own
+                # extern vvar
+                arg_vvar = None
+            if arg_vvar is not None:
+                unused_func_args.discard(combo_reg_vvar_to_arg.get(arg_vvar.varid, arg_vvar))
+                if arg_vvar.varid in combo_reg_vvar_to_arg or arg_vvar.size == size:
+                    # never resize constituent register vvars of combo-register arguments; they stay full-width, and
+                    # narrower uses are handled by extraction
                     vvar = arg_vvar
-                elif arg_vvar in self.resized_func_args:
-                    vvar = self.resized_func_args[arg_vvar]
-                else:
+                elif (
+                    (arg_offset := arg_offset_by_varid[arg_vvar.varid]) <= offset
+                    and offset + size <= arg_offset + arg_vvar.size
+                    and (
+                        arg_vvar.varid in multi_slice_stack_args
+                        or arg_extern_coverage[arg_vvar.varid] >= set(range(arg_offset, arg_offset + arg_vvar.size))
+                        # a register argument resized to a slice that does not start at the register would no longer
+                        # be the argument the prototype names (movmskpd reads only the high half of a double)
+                        or (category == VirtualVariableCategory.REGISTER and offset != arg_offset)
+                    )
+                ):
+                    # the argument contains this def, and the entirety of the argument is read, just in multiple
+                    # slices; keep the argument full-width and let the narrower reads extract from it
+                    vvar = arg_vvar
+                elif (resized := self.resized_func_args.get(arg_vvar)) is None:
                     # rewriting the size the arg
                     vvar = VirtualVariable(
                         arg_vvar.idx,
@@ -289,9 +357,21 @@ class RewritingAnalysis:
                         **arg_vvar.tags,
                     )
                     self.resized_func_args[arg_vvar] = vvar
-            else:
-                varid = self._engine_ail._current_vvar_id
-                self._engine_ail._current_vvar_id += 1
+                else:
+                    resized_offset = (
+                        resized.parameter_reg_offset
+                        if category == VirtualVariableCategory.REGISTER
+                        else resized.parameter_stack_offset
+                    )
+                    if resized_offset == offset and resized.size == size:
+                        vvar = resized
+                    # otherwise, the argument has already been resized for a different sub-range of the same
+                    # argument (e.g., a wide stack argument slot that the function accesses as two narrower
+                    # slices). reusing the resized vvar would seed the resized sub-range again and leave this
+                    # def's bytes out of the initial state, so this slice gets its own extern vvar below.
+            if vvar is None:
+                varid = self._engine_ail.current_vvar_id
+                self._engine_ail.current_vvar_id += 1
                 vvar = VirtualVariable(self._engine_ail.ail_manager.next_atom(), varid, size * 8, category, offset)
             more_args.append(vvar)
 
@@ -303,8 +383,7 @@ class RewritingAnalysis:
                     state.registers[suboff] = func_arg
             elif func_arg.category == VirtualVariableCategory.STACK:
                 stack_offset = func_arg.stack_offset
-                for suboff in range(stack_offset, stack_offset + func_arg.size):
-                    state.stackvars[suboff] = func_arg
+                state.stackvars.assign(stack_offset, stack_offset + func_arg.size, func_arg)
             elif func_arg.parameter_category == VirtualVariableCategory.REGISTER:
                 reg_offset = func_arg.parameter_reg_offset
                 assert reg_offset is not None
@@ -313,8 +392,11 @@ class RewritingAnalysis:
             elif func_arg.parameter_category == VirtualVariableCategory.STACK:
                 stack_offset = func_arg.parameter_stack_offset
                 assert stack_offset is not None
-                for suboff in range(stack_offset, stack_offset + func_arg.size):
-                    state.stackvars[suboff] = func_arg
+                state.stackvars.assign(stack_offset, stack_offset + func_arg.size, func_arg)
+            elif func_arg.parameter_category == VirtualVariableCategory.COMBO_REGISTER:
+                for reg_vvar in func_arg.reg_vvars:
+                    for suboff in range(reg_vvar.reg_offset, reg_vvar.reg_offset + reg_vvar.size):
+                        state.registers[suboff] = reg_vvar
 
         return state
 

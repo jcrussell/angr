@@ -5,12 +5,13 @@ package angr.protos;
 
 
 message VariableBase {
-    string      ident = 1;
-    string      name = 2;
+    optional string ident = 1;
+    optional string name = 2;
     optional uint64 region = 3;
     optional string category = 4;
     bool        renamed = 5;
     bool        is_phi = 6;
+    bool        auto_renamed = 7;
 }
 
 
@@ -23,14 +24,22 @@ message TemporaryVariable {
 message ConstantVariable {
     VariableBase    base = 1;
     uint32          size = 2;
-    uint64          value = 3;
+    uint64          value = 3;  // the absolute value
     optional bytes  long_value = 4;  // for large constants over 64 bits
+    bool            is_negative = 5;
 }
 
 
 message RegisterVariable {
     VariableBase    base = 1;
     uint32          reg = 2;
+    uint32          size = 3;
+}
+
+
+message ComboRegisterVariable {
+    VariableBase    base = 1;
+    repeated uint32 reg_offsets = 2;  // SimComboRegisterVariable.reg_offsets, in order
     uint32          size = 3;
 }
 
@@ -70,7 +79,8 @@ message VariableAccess {
 
 message VariableType {
     string          ident = 1;
-    string          var_type = 2;  // FIXME: Use a better solution than a string!
+    uint32          type_ref = 2;  // index+1 into VariableManagerInternal.type_pool
+    bool            manual = 3;    // whether the type was set manually (variables_with_manual_types)
 }
 
 message Var2Unified {
@@ -83,6 +93,11 @@ message Phi2Var {
     string          var_ident = 2;
 }
 
+message LocalType {
+    string          name = 1;
+    uint32          type_ref = 2;  // index+1 into VariableManagerInternal.type_pool
+}
+
 
 message VariableManagerInternal {
     // Variables of each type
@@ -91,6 +106,7 @@ message VariableManagerInternal {
     repeated MemoryVariable memvars = 3;
     repeated StackVariable stackvars = 4;
     repeated ConstantVariable constvars = 13;
+    repeated ComboRegisterVariable comboregvars = 16;
     // Variable accesses
     repeated VariableAccess accesses = 5;
     // Unified variables
@@ -98,9 +114,16 @@ message VariableManagerInternal {
     repeated RegisterVariable unified_regvars = 7;
     repeated MemoryVariable unified_memvars = 8;
     repeated StackVariable unified_stackvars = 9;
+    repeated ComboRegisterVariable unified_comboregvars = 17;
     repeated Var2Unified var2unified = 10;
     // Types
     repeated VariableType types = 11;
+    // Interned SimType JSON strings (json.dumps(SimType.to_json())); VariableType.type_ref is index+1 into this pool
+    repeated string type_pool = 14;
     // Phi variables
     repeated Phi2Var phi2var = 12;
+    // Named local types (VariableManagerInternal.types), e.g., structs recovered by type inference
+    repeated LocalType local_types = 15;
+    // Decompiler flavor (e.g., "pseudocode", "rust") that produced this manager; unset means unknown
+    optional string flavor = 18;
 }

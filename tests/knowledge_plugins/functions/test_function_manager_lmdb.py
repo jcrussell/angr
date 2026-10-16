@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# pylint:disable=missing-class-docstring
+# pylint:disable=missing-class-docstring,protected-access
 """Test cases for FunctionManager LMDB save/load and LRU cache functionality."""
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ import os
 import unittest
 
 import angr
+from angr.calling_conventions import SimCCMicrosoftAMD64
+from angr.sim_type import SimCppClass, SimTypeFunction, TypeRef
 from tests.common import bin_location
 
 test_location = os.path.join(bin_location, "tests")
@@ -88,6 +90,32 @@ class TestFunctionManagerLMDB(unittest.TestCase):
         # Verify it was loaded
         assert func is not None, "Failed to load spilled function"
         assert func.addr == spilled_addr, "Loaded function has wrong address"
+
+    def test_spilled_function_keeps_cppclass_return_type(self):
+        """A prototype returning a C++ class by value must survive the LMDB round trip (angr/angr#7135)."""
+        proj = angr.Project(self.bin_path, auto_load_libs=False)
+        proj.analyses.CFGFast()
+        fm = proj.kb.functions
+
+        func = fm["main"]
+        cls = SimCppClass(name="class Base::Type").with_arch(proj.arch)
+        func.prototype = SimTypeFunction([], TypeRef("class Base::Type", cls)).with_arch(proj.arch)
+        func.calling_convention = SimCCMicrosoftAMD64(proj.arch)
+
+        fm.cache_limit = 1
+        # touch other functions so that main is evicted, then reload it from LMDB
+        for addr in list(fm._spilled_addrs)[:3]:
+            _ = fm[addr]
+        assert func.addr in fm._spilled_addrs
+        reloaded = fm[func.addr]
+        assert reloaded is not func
+
+        assert reloaded.prototype is not None
+        returnty = reloaded.prototype.returnty
+        assert isinstance(returnty, TypeRef)
+        assert isinstance(returnty.type, SimCppClass)
+        assert returnty.type.name == "class Base::Type"
+        assert reloaded.arguments == []
 
     def test_dynamic_cache_limit_decrease(self):
         """Test decreasing cache limit dynamically."""
@@ -174,6 +202,28 @@ class TestFunctionManagerLMDB(unittest.TestCase):
 
         # Length should still return total count
         assert len(fm) == total_before, "len() should return total count"
+
+    def test_spilled_function_call_sites(self):
+        """Test that call sites survive spilling to LMDB and reloading."""
+        proj = angr.Project(self.bin_path, auto_load_libs=False)
+        proj.analyses.CFGFast()
+
+        fm = proj.kb.functions
+        main_func = fm.function(name="main")
+        assert main_func is not None
+        main_addr = main_func.addr
+        fm[main_addr].add_call_site(0x4007D3, None, None)
+        call_sites_before = dict(fm[main_addr].call_sites)
+        assert len(call_sites_before) > 1
+
+        # Evict main from the cache
+        fm.cache_limit = 1
+        other_addr = next(addr for addr in fm if addr != main_addr)
+        _ = fm[other_addr]
+        assert main_addr in fm._spilled_addrs
+
+        loaded = fm[main_addr]
+        assert dict(loaded.call_sites) == call_sites_before
 
     def test_delete_spilled_function(self):
         """Test deleting a spilled function."""

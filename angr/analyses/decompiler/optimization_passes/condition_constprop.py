@@ -9,6 +9,7 @@ from angr.ailment import AILBlockRewriter, Block, Expression
 from angr.ailment.expression import BinaryOp, Const, VirtualVariable
 from angr.ailment.statement import Assignment, ConditionalJump, Statement
 from angr.analyses.decompiler.utils import first_nonlabel_nonphi_statement
+from angr.analyses.s_reaching_definitions import SReachingDefinitions
 from angr.utils.graph import dominates
 from angr.utils.timing import timethis
 
@@ -67,7 +68,7 @@ class CCondPropBlockWalker(AILBlockRewriter):
         if expr.varid == self.vvar_id and not (
             isinstance(stmt, Assignment) and isinstance(stmt.dst, VirtualVariable) and stmt.dst.varid == self.vvar_id
         ):
-            return Const(expr.idx, None, self.const_value.value, self.const_value.bits, **expr.tags)
+            return Const(expr.idx, self.const_value.value, self.const_value.bits, **expr.tags)
         return expr
 
 
@@ -80,7 +81,7 @@ class ConditionConstantPropagation(OptimizationPass):
     PLATFORMS = None
     STAGE = OptimizationPassStage.AFTER_SINGLE_BLOCK_SIMPLIFICATION
     NAME = "Propagate constants using information deduced from conditionals."
-    DESCRIPTION = __doc__.strip()  # type: ignore
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -140,7 +141,7 @@ class ConditionConstantPropagation(OptimizationPass):
         entry_node_addr, entry_node_idx = self.entry_node_addr
         entry_node = self._get_block(entry_node_addr, idx=entry_node_idx)
         idoms = networkx.algorithms.immediate_dominators(self._graph, entry_node)
-        rda: SRDAModel = self.project.analyses.SReachingDefinitions(self._func, func_graph=self._graph).model
+        rda: SRDAModel = SReachingDefinitions(self.project, self._func, func_graph=self._graph).model
 
         for src, cconds in cconds_by_src.items():
             head_block = self._get_block(src[0], idx=src[1])

@@ -3,17 +3,19 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from itertools import chain
+from itertools import chain, count
 from typing import TYPE_CHECKING, cast
 
 from angr.ailment.expression import (
     ITE,
+    ComboRegister,
     Const,
     Convert,
     DirtyExpression,
     Expression,
     Extract,
     Insert,
+    IRegister,
     Load,
     Register,
     StackBaseOffset,
@@ -22,9 +24,11 @@ from angr.ailment.expression import (
     VirtualVariable,
 )
 from angr.ailment.statement import CAS, ConditionalJump, SideEffectStatement, Store
-from angr.calling_conventions import default_cc
+from angr.calling_conventions import call_clobbered_regs, default_cc_for_project
 from angr.code_location import AILCodeLocation
 from angr.engines.light import SimEngineLightAIL
+from angr.enums import Flavors
+from angr.go.sim_type import GoSimTypeFunction
 from angr.knowledge_plugins.functions.function import Function
 from angr.sim_type import PointerDisposition, SimTypePointer
 from angr.utils.ssa import get_reg_offset_base_and_size
@@ -33,7 +37,9 @@ from .consts import MAX_STACK_VAR_SIZE
 from .traversal_state import TraversalState, Value, has_conflicting_value_types
 
 if TYPE_CHECKING:
+    from angr.analyses.decompiler import VariableMap
     from angr.analyses.decompiler.ssailification.ssailification import Def, Kind
+    from angr.calling_conventions import SimCC
     from angr.project import Project
 
 CUTOFF = 15  # arbitrary; be mindful of performance as various parts will be O(N^2)
@@ -45,6 +51,11 @@ def offset_sort_key(v: tuple[int | None, int]) -> tuple[int, int, int, int]:
     # - it produces a total ordering, i.e. f(a) == f(b) iff a == b
     # - it never returns None values, as these cannot be sorted
     return (v[1], 0 if v[0] is not None else 1, abs(v[0] or 0), 0 if v[0] is None or v[0] < 0 else 1)
+
+
+def _has_explicit_variadic_args(proto) -> bool:
+    """Go spells its variadic parameter as a slice, so the prototype already lists every argument."""
+    return isinstance(proto, GoSimTypeFunction)
 
 
 @dataclass
@@ -85,17 +96,28 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         stackvars: bool = False,
         use_tmps: bool = False,
         functions: Callable[[int | str], Function | None] | None = None,
+        variable_map=None,
+        ail_manager=None,
+        flavor: str = Flavors.DEFAULT_FLAVOR,
     ):
         super().__init__(project)
         self.simos = simos
+        self.flavor = flavor
         self.sp_tracker = sp_tracker
         self.bp_as_gpr = bp_as_gpr
         self.stackvars = stackvars
         self.use_tmps = use_tmps
         self.functions = functions
+        self.variable_map: VariableMap | None = variable_map
+        self._next_atom = ail_manager.next_atom if ail_manager is not None else count(1 << 30).__next__
+        # a call defines every caller-saved register it clobbers. One synthetic Def per (call, base register),
+        # created lazily when a clobbered register is read, so reads on every path share the definition.
+        self._clobber_defs: dict[tuple[AILCodeLocation, int], Register] = {}
+        self.clobber_defs_by_loc: dict[tuple[int, int | None, int], list[Register]] = defaultdict(list)
         self.def_info: dict[Def, DefInfo] = {}
+        # stack offset -> code location, StackBaseOffset expr, set of (offset, size) tuples, required, no_reaching_def
         self.pending_ptr_defines_nonlocal: dict[
-            int, tuple[AILCodeLocation, StackBaseOffset, set[tuple[int, int]], bool]
+            int, tuple[AILCodeLocation, StackBaseOffset, set[tuple[int, int]], bool, bool]
         ] = {}
         # the state which skipped the last few statements; the state that breaks the loop
         self.hclb_side_exit_state: TraversalState | None = None
@@ -111,12 +133,21 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         for k, lst in self.state.pending_ptr_defines.items():
             v1, v2 = lst[0]
             if k not in self.pending_ptr_defines_nonlocal:
-                self.pending_ptr_defines_nonlocal[k] = (v1, v2, set(), k not in self.state.live_stackvars)
+                # make sure the pending pointer def has a definition of its own
+                no_reaching_def = k not in self.state.stackvar_defs
+                required = k not in self.state.live_stackvars or no_reaching_def
+                self.pending_ptr_defines_nonlocal[k] = v1, v2, set(), required, no_reaching_def
                 self.state.pending_ptr_defines_nonlocal_live.add(k)
         self.state.pending_ptr_defines.clear()  # just in case
 
     def finalize(self):
-        for stack_offset, (loc, def_, suggestions, required) in self.pending_ptr_defines_nonlocal.items():
+        for stack_offset, (
+            loc,
+            def_,
+            suggestions,
+            required,
+            no_reaching_def,
+        ) in self.pending_ptr_defines_nonlocal.items():
             if not required:
                 continue
             full_offset, full_endoffset = stack_offset, stack_offset + 1
@@ -132,45 +163,37 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
                 full_endoffset - full_offset,
                 stack_offset,
                 0,
-                loc,
+                AILCodeLocation.make_extern(0) if no_reaching_def else loc,
             )
 
         # sketchy situation. we want to make sure everything in the extern set
         # has exactly the same extents if they overlap at all. this is sorta a redo
         # of the unify code.
-        reg_mapping: defaultdict[int, set[Def]] = defaultdict(set)
-        stack_mapping: defaultdict[int, set[Def]] = defaultdict(set)
-        for def_, definfo in self.def_info.items():
+        # group overlapping extern defs per kind by sweeping them in start order
+        extern_defs: dict[str, list[DefInfo]] = {"reg": [], "stack": []}
+        for definfo in self.def_info.values():
             if not definfo.loc.is_extern:
                 continue
-            match definfo.kind:
-                case "stack":
-                    mapping = stack_mapping
-                case "reg":
-                    mapping = reg_mapping
-                case _:
-                    raise ValueError(f"Unsupported def kind {definfo.kind} in finalize")
-            for suboffset in definfo.variable_range:
-                mapping[suboffset].add(def_)
+            if definfo.kind not in extern_defs:
+                raise ValueError(f"Unsupported def kind {definfo.kind} in finalize")
+            if definfo.variable_size > 0:
+                extern_defs[definfo.kind].append(definfo)
 
-        for mapping in [reg_mapping, stack_mapping]:
+        for definfos in extern_defs.values():
+            definfos.sort(key=lambda di: di.variable_offset)
             current_extent = (0, 0)
             current_defs = set()
+            for definfo in definfos:
+                if definfo.variable_offset >= current_extent[1] or current_extent[0] == current_extent[1]:
+                    self._flush(current_defs, current_extent)
+                    current_defs.clear()
+                    current_extent = definfo.variable_offset, definfo.variable_endoffset
 
-            for offset in sorted(mapping):
-                for def_ in mapping[offset]:
-                    definfo = self.def_info[def_]
-
-                    if definfo.variable_offset >= current_extent[1] or current_extent[0] == current_extent[1]:
-                        self._flush(current_defs, current_extent)
-                        current_defs.clear()
-                        current_extent = definfo.variable_offset, definfo.variable_endoffset
-
-                    current_defs.add(def_)
-                    current_extent = (
-                        min(current_extent[0], definfo.variable_offset),
-                        max(current_extent[1], definfo.variable_endoffset),
-                    )
+                current_defs.add(definfo.def_)
+                current_extent = (
+                    min(current_extent[0], definfo.variable_offset),
+                    max(current_extent[1], definfo.variable_endoffset),
+                )
 
             self._flush(current_defs, current_extent)
 
@@ -207,7 +230,8 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             or self.def_info[def_].loc == loc
             or self.def_info[def_].loc.is_extern
         ), "claiming an expression defines at two different locs"
-        if (definfo := self.def_info.get(def_)) is None or definfo.loc.is_extern:
+        # re-traversing a block re-defines its extern defs; keep the extents widened by later reads
+        if (definfo := self.def_info.get(def_)) is None or (definfo.loc.is_extern and not loc.is_extern):
             definfo = DefInfo(
                 def_,
                 kind,
@@ -230,6 +254,11 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
     def stackvar_get(self, base_offset: int, extra_offset: int, base_size: int) -> Value:
         if extra_offset > 1 << (self.project.arch.bits - 1):
             extra_offset -= 1 << self.project.arch.bits
+        if extra_offset < 0 and base_offset == -self.project.arch.bytes:
+            # a negative offset from the saved-frame-pointer slot (rbp = sp-8 after the prologue) addresses a local,
+            # not an object that starts at the base; treat it as a plain access at the concrete address. pointers
+            # into the middle of a stack array (p = &arr[1]; p[-1]) must keep extending the array backwards.
+            return self.stackvar_get(base_offset + extra_offset, 0, base_size)
         concrete_offset = base_offset + extra_offset
         offset = min(concrete_offset, base_offset)
         end_offset = max(concrete_offset, base_offset) + base_size
@@ -237,44 +266,38 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         if size >= MAX_STACK_VAR_SIZE:
             return set()
 
-        full_offset, full_size, popped = self.state.stackvar_unify(offset, size)
+        full_offset, full_size, _ = self.state.stackvar_unify(offset, size)
 
         if base_offset in self.state.pending_ptr_defines_nonlocal_live:
             self.pending_ptr_defines_nonlocal.pop(base_offset, None)
 
         lst = self.state.pending_ptr_defines.pop(base_offset, [])
         pending_def = cast("Def", lst[-1][1]) if lst else None
-        stackvar_defs_cleaned = False
-
-        self.state.stackvar_defs = self.state.stackvar_defs.clean()
-        secret_stash: defaultdict[int, set[Def]] = defaultdict(set)
+        stackvar_defs = self.state.stackvar_defs
+        # Merging states unions stackvar_defs and stackvar_bases per byte, so a def may only be recorded on the
+        # bytes it stored, not on the (merged) base offset of its variable. Collect defs from every byte of the
+        # unified range so that all of them get widened to the full variable.
+        defs: set[Def] = set()
         while True:  # this loop should run until the UH OH is never reached
-            for popped_offset in popped:
-                secret_stash[popped_offset].update(self.state.stackvar_defs.pop(popped_offset, set()))
-                for def2 in secret_stash[popped_offset]:
-                    if not stackvar_defs_cleaned:
-                        self.state.stackvar_defs = self.state.stackvar_defs.clean()
-                        stackvar_defs_cleaned = True
-                    self.state.stackvar_defs[full_offset] = self.state.stackvar_defs.get(full_offset, set()) | {def2}
-                    definfo = self.def_info[def2]
-                    if definfo.variable_offset < full_offset or definfo.variable_endoffset > full_offset + full_size:
-                        # UH OH. We have information from a parallel timeline about how big this var actually is...
-                        newish_offset = min(definfo.variable_offset, full_offset)
-                        newish_endoffset = max(definfo.variable_endoffset, full_offset + full_size)
-                        full_offset, full_size, popped2 = self.state.stackvar_unify(
-                            newish_offset, newish_endoffset - newish_offset
-                        )
-                        popped.update(popped2)
-                        break
-                    definfo.variable_offset = full_offset
-                    definfo.variable_size = full_size
-                else:
-                    continue
-                break
+            for _, _, seg_defs in stackvar_defs.pop_range(full_offset, full_offset + full_size):
+                defs.update(seg_defs)
+            for def2 in defs:
+                definfo = self.def_info[def2]
+                if definfo.variable_offset < full_offset or definfo.variable_endoffset > full_offset + full_size:
+                    # UH OH. We have information from a parallel timeline about how big this var actually is...
+                    newish_offset = min(definfo.variable_offset, full_offset)
+                    newish_endoffset = max(definfo.variable_endoffset, full_offset + full_size)
+                    full_offset, full_size, _ = self.state.stackvar_unify(
+                        newish_offset, newish_endoffset - newish_offset
+                    )
+                    break
             else:
                 break
+        for def2 in defs:
+            definfo = self.def_info[def2]
+            definfo.variable_offset = full_offset
+            definfo.variable_size = full_size
 
-        defs: set[Def] = set().union(*secret_stash.values())
         def_as = None
         if not defs:
             if pending_def is not None:
@@ -294,11 +317,7 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             def_as = defs
 
         if def_as is not None:
-            if not stackvar_defs_cleaned:
-                self.state.stackvar_defs = self.state.stackvar_defs.clean()
-                stackvar_defs_cleaned = True
-            for suboff in range(full_offset, full_offset + full_size):
-                self.state.stackvar_defs[suboff] = def_as
+            stackvar_defs.assign(full_offset, full_offset + full_size, def_as)
 
         return (
             self.state.live_stackvars[offset]
@@ -309,6 +328,10 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
     def stackvar_set(self, base_offset: int, extra_offset: int, base_size: int, value: Value):
         if extra_offset > 1 << (self.project.arch.bits - 1):
             extra_offset -= 1 << self.project.arch.bits
+        if extra_offset < 0 and base_offset == -self.project.arch.bytes:
+            # see stackvar_get
+            self.stackvar_set(base_offset + extra_offset, 0, base_size, value)
+            return
         concrete_offset = base_offset + extra_offset
         offset = min(concrete_offset, base_offset)
         end_offset = max(concrete_offset, base_offset) + base_size
@@ -323,46 +346,36 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
 
         self.state.live_stackvars = self.state.live_stackvars.clean()
         self.state.live_stackvars[offset] = value
-        stackvar_defs_cleaned = False
-
+        store_offset = base_offset + extra_offset
+        store_end_offset = store_offset + base_size
+        stackvar_defs = self.state.stackvar_defs
         other_defs: set[Def] = set()
+        # defs of bytes this store does not overwrite; they get unified with the stored-to variable
         liveish_defs: set[Def] = set()
-        secret_stash: defaultdict[int, set[Def]] = defaultdict(set)
+        popped_lo = popped_hi = offset
         reached_fixedpoint = False
         while not reached_fixedpoint:
             reached_fixedpoint = True
-            if not stackvar_defs_cleaned:
-                self.state.stackvar_defs = self.state.stackvar_defs.clean()
-                self.state.stackvar_bases = self.state.stackvar_bases.clean()
-                stackvar_defs_cleaned = True
-            for suboff in range(offset, end_offset):
-                secret_stash[suboff].update(self.state.stackvar_defs.pop(suboff, set()))
-                old_defs = secret_stash[suboff]
-                # set up current var mapping
-                self.state.stackvar_bases[suboff] = (offset, size)
+            if popped_lo == popped_hi:
+                old_segs = stackvar_defs.pop_range(offset, end_offset)
+            else:
+                old_segs = stackvar_defs.pop_range(offset, popped_lo) + stackvar_defs.pop_range(popped_hi, end_offset)
+            popped_lo, popped_hi = offset, end_offset
+            for seg_lo, seg_hi, old_defs in old_segs:
                 other_defs.update(old_defs)
-                # additional consideration: if this def only provides values for some bytes,
-                # make sure the implicated but not overwritten defs are unified
-                if not base_offset + extra_offset <= suboff < base_offset + extra_offset + base_size:
+                if seg_lo < store_offset or seg_hi > store_end_offset:
                     liveish_defs.update(old_defs)
-                    for old_def in old_defs:
-                        definfo = self.def_info[old_def]
-                        old_offset = definfo.variable_offset
-                        old_end_offset = definfo.variable_endoffset
-
-                        new_offset = min(old_offset, offset)
-                        new_end_offset = max(old_end_offset, end_offset)
-
-                        definfo.variable_offset = new_offset
-                        definfo.variable_size = new_end_offset - new_offset
-
-                        if offset != new_offset:
-                            offset = new_offset
-                            reached_fixedpoint = False
-                        if end_offset != new_end_offset:
-                            end_offset = new_end_offset
-                            reached_fixedpoint = False
-                        size = end_offset - offset
+            for old_def in liveish_defs:
+                definfo = self.def_info[old_def]
+                new_offset = min(definfo.variable_offset, offset)
+                new_end_offset = max(definfo.variable_endoffset, end_offset)
+                definfo.variable_offset = new_offset
+                definfo.variable_size = new_end_offset - new_offset
+                if offset != new_offset or end_offset != new_end_offset:
+                    offset, end_offset = new_offset, new_end_offset
+                    reached_fixedpoint = False
+        size = end_offset - offset
+        self.state.stackvar_bases.assign(offset, end_offset, (offset, size))
 
         loc2, def2 = self.state.pending_ptr_defines.pop(base_offset, [(None, None)])[-1]
         def_as = None
@@ -372,13 +385,9 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             def_as = {def2} | liveish_defs
 
         if def_as is not None:
-            if not stackvar_defs_cleaned:
-                self.state.stackvar_defs = self.state.stackvar_defs.clean()
-                stackvar_defs_cleaned = True
-            for suboff in range(offset, end_offset):
-                self.state.stackvar_defs[suboff] = def_as
+            stackvar_defs.assign(offset, end_offset, def_as)
 
-    def register_get(self, offset: int, size: int, def_: Def) -> Value:
+    def register_get(self, offset: int, size: int, def_: Def | None) -> Value:
         full_offset, full_size, popped = self.state.register_unify(offset, size)
 
         secret_stash: defaultdict[int, set[Def]] = defaultdict(set)
@@ -406,19 +415,23 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
                 break
 
         defs: set[Def] = set().union(*secret_stash.values())
+        clobber_locs = self.state.register_blackout.get(full_offset)
         def_as = None
-        if not defs or full_offset in self.state.register_blackout:
-            self.perform_def(
-                "reg",
-                def_,
-                full_offset,
-                full_size,
-                offset,
-                size,
-                AILCodeLocation.make_extern(0) if full_offset not in self.state.register_blackout else None,
-            )
+        if clobber_locs:
+            # define the clobbered registers
+            def_as = set(defs)
+            for loc in sorted(
+                clobber_locs, key=lambda loc: (loc.addr, -1 if loc.block_idx is None else loc.block_idx, loc.stmt_idx)
+            ):
+                clobber_def = self._clobber_def(loc, full_offset, full_size)
+                self.perform_def("reg", clobber_def, full_offset, full_size, offset, size, loc)
+                def_as.add(clobber_def)
+            for suboff in range(full_offset, full_offset + full_size):
+                self.state.register_blackout.pop(suboff, None)
+        elif not defs:
+            assert def_ is not None, "register_get() requires def_, but no definition reaches this point"
+            self.perform_def("reg", def_, full_offset, full_size, offset, size, AILCodeLocation.make_extern(0))
             def_as = {def_}
-            self.state.register_blackout.discard(full_offset)
         else:
             def_as = defs
 
@@ -432,15 +445,33 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
             else set()
         )
 
+    def clobber_def_for(self, loc: AILCodeLocation, reg_offset: int) -> Register | None:
+        """
+        The definition that the call at ``loc`` created for the register containing ``reg_offset``, if a read of that
+        register ever reached back to this call.
+        """
+        base_off, _ = get_reg_offset_base_and_size(reg_offset, self.project.arch)
+        return self._clobber_defs.get((loc, base_off))
+
+    def _clobber_def(self, loc: AILCodeLocation, full_offset: int, full_size: int) -> Register:
+        base_off, _ = get_reg_offset_base_and_size(full_offset, self.project.arch)
+        key = (loc, base_off)
+        cdef = self._clobber_defs.get(key)
+        if cdef is None:
+            cdef = Register(self._next_atom(), full_offset, full_size * self.project.arch.byte_width, clobber=True)
+            self._clobber_defs[key] = cdef
+            self.clobber_defs_by_loc[(loc.addr, loc.block_idx, loc.stmt_idx)].append(cdef)
+        return cdef
+
     def register_set(self, offset: int, size: int, value: Value, def_: Def):
         self.state.live_registers[offset] = value
 
         for suboff in range(offset, offset + size):
             self.state.register_defs.pop(suboff, None)
             self.state.register_bases[suboff] = (offset, size)
+            self.state.register_blackout.pop(suboff, None)
 
         self.perform_def("reg", def_, offset, size, offset, size)
-        self.state.register_blackout.discard(offset)
 
         for suboff in range(offset, offset + size):
             self.state.register_defs[suboff] = {def_}
@@ -450,6 +481,15 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
 
         if isinstance(stmt.dst, Register):
             self.register_set(stmt.dst.reg_offset, stmt.dst.size, src, stmt.dst)
+        elif isinstance(stmt.dst, IRegister):
+            # Unresolved indexed register write -- resolve if possible, else skip
+            offset = stmt.dst.concrete_reg_offset()
+            if offset is not None:
+                self.register_set(offset, stmt.dst.size, src, stmt.dst)
+        elif isinstance(stmt.dst, ComboRegister):
+            # a multi-register value defines every constituent register
+            for reg in cast("list[Register]", stmt.dst.registers):
+                self.register_set(reg.reg_offset, reg.size, src, reg)
         elif isinstance(stmt.dst, VirtualVariable):
             self.state.live_vvars = self.state.live_vvars.clean()
             self.state.live_vvars[stmt.dst.varid] = src
@@ -501,6 +541,11 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
 
         if stmt.ret_expr is not None and isinstance(stmt.ret_expr, Register):
             self.register_set(stmt.ret_expr.reg_offset, stmt.ret_expr.size, result, stmt.ret_expr)
+        elif isinstance(stmt.ret_expr, ComboRegister):
+            # a multi-register result defines every constituent register
+            for reg in stmt.ret_expr.registers:
+                assert isinstance(reg, Register)
+                self.register_set(reg.reg_offset, reg.size, result, reg)
         if stmt.fp_ret_expr is not None and isinstance(stmt.fp_ret_expr, Register):
             self.register_set(stmt.fp_ret_expr.reg_offset, stmt.fp_ret_expr.size, result, stmt.fp_ret_expr)
 
@@ -522,10 +567,11 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
         if isinstance(target, Const) and isinstance(target.value, int):
             target = target.value
         target = self.functions(target) if self.functions is not None and isinstance(target, (str, int)) else None
-        if expr.prototype is not None:
-            proto = expr.prototype
-        elif target is not None and target.prototype is not None:
-            proto = target.prototype
+        expr_prototype = self.variable_map.prototype(expr) if self.variable_map is not None else None
+        if expr_prototype is not None:
+            proto = expr_prototype
+        elif target is not None and (target_proto := target.get_prototype(self.flavor)) is not None:
+            proto = target_proto
         else:
             proto = None
 
@@ -571,29 +617,67 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
                 self._expr(argexpr)
 
         # kill caller-saved registers
-        if expr.calling_convention is not None:
-            cc = expr.calling_convention
+
+        # determine the calling convention of the call
+        expr_cc = self.variable_map.calling_convention(expr) if self.variable_map is not None else None
+        if expr_cc is not None:
+            cc = expr_cc
         elif target is not None and target.calling_convention is not None:
             cc = target.calling_convention
         else:
-            cc = default_cc(self.arch.name, platform=self.simos.name if self.simos is not None else None)
+            cc = default_cc_for_project(self.project)
             assert cc is not None
             cc = cc(self.arch)
 
-        for reg_name in cc.CALLER_SAVED_REGS:
+        # Conservative argument-register uses.
+        # When we are not sure about the exact number of arguments that this call takes, assume every argument register
+        # is potentially used by the call.
+        if not isinstance(expr.target, str) and (
+            (proto is None and expr.args is None)
+            or (
+                proto is not None
+                and proto.variadic
+                and not _has_explicit_variadic_args(proto)
+                and (expr.args is None or len(expr.args) <= len(proto.args))
+            )
+        ):
+            self._use_potential_arg_regs(cc)
+
+        # kill caller-saved registers; the call becomes their definition
+        call_loc = self._acodeloc()
+        clobbered_by = frozenset((call_loc,))
+        for reg_name in call_clobbered_regs(cc, target, self.arch):
             reg_offset, _ = self.arch.registers[reg_name]
             base_off, base_size = get_reg_offset_base_and_size(reg_offset, self.arch)
             self.state.live_registers.pop(base_off, None)
-            self.state.register_blackout.add(base_off)
             for suboff in range(base_off, base_off + base_size):
+                self.state.register_blackout[suboff] = clobbered_by
                 self.state.register_defs.pop(suboff, None)
         for reg in cc.arch.vex_cc_regs or []:
             self.state.live_registers.pop(reg.vex_offset, None)
-            self.state.register_blackout.add(reg.vex_offset)
             for suboff in range(reg.vex_offset, reg.vex_offset + reg.size):
+                self.state.register_blackout[suboff] = clobbered_by
                 self.state.register_defs.pop(suboff, None)
 
         return set()
+
+    def _use_potential_arg_regs(self, cc: SimCC) -> None:
+        """
+        Record a conservative set of argument registers as used by the call when we are not sure about the exact
+        function prototype.
+        """
+        for reg_name in chain(cc.ARG_REGS or [], cc.FP_ARG_REGS or []):
+            if reg_name not in self.arch.registers:
+                continue
+            reg_offset, reg_size = self.arch.registers[reg_name]
+            base_off, _ = get_reg_offset_base_and_size(reg_offset, self.arch)
+            if base_off in self.state.register_blackout:
+                # the register was clobbered by a preceding call; no definition can reach here
+                continue
+            if not any(suboff in self.state.register_defs for suboff in range(reg_offset, reg_offset + reg_size)):
+                # no definition of this register reaches this call site; do not synthesize an extern definition
+                continue
+            self.register_get(reg_offset, reg_size, None)
 
     def _handle_stmt_Dummy(self, stmt):
         pass
@@ -619,6 +703,13 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
 
     def _handle_expr_Register(self, expr: Register):
         return self.register_get(expr.reg_offset, expr.size, expr)
+
+    def _handle_expr_IRegister(self, expr: IRegister):
+        offset = expr.concrete_reg_offset()
+        if offset is None:
+            self._expr(expr.reg_offset)
+            return set()
+        return self.register_get(offset, expr.size, expr)
 
     def _handle_expr_Load(self, expr: Load):
         addr = self._expr(expr.addr)
@@ -822,7 +913,9 @@ class SimEngineSSATraversal(SimEngineLightAIL[TraversalState, Value, None, None]
     _handle_binop_CmpLTV = _unreachable
     _handle_binop_MinV = _unreachable
     _handle_binop_MaxV = _unreachable
+    _handle_binop_HAddV = _unreachable
     _handle_binop_QAddV = _unreachable
+    _handle_binop_QSubV = _unreachable
     _handle_binop_QNarrowBinV = _unreachable
     _handle_binop_PermV = _unreachable
     _handle_binop_Set = _unreachable

@@ -4,10 +4,10 @@ import logging
 import struct
 from typing import TYPE_CHECKING
 
-import claripy
 from archinfo import ArchMIPS32, ArchS390X
 
 import angr
+from angr import claripy
 from angr import sim_options as o
 from angr.calling_conventions import default_cc
 from angr.errors import AngrCallableError, AngrCallableMultistateError, AngrSimOSError
@@ -270,7 +270,7 @@ class SimOS:
 
         if state.arch.name == "PPC64" and toc is not None:
             state.regs.r2 = toc
-        elif state.arch.name in ("MIPS32", "MIPS64"):
+        elif state.arch.name in ("MIPS32", "MIPS64", "MIPSN32"):
             state.regs.t9 = addr
 
         return state

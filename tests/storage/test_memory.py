@@ -5,11 +5,12 @@ from __future__ import annotations
 import time
 import unittest
 
-import claripy
-from claripy.annotation import UninitializedAnnotation
+from archinfo import ArchAMD64
 
-from angr import SIM_PROCEDURES, SimState
+from angr import SIM_PROCEDURES, SimState, claripy
 from angr import options as o
+from angr.claripy.annotation import UninitializedAnnotation
+from angr.errors import SimMemoryError
 from angr.state_plugins import SimLightRegisters, SimSystemPosix
 from angr.storage.file import SimFile
 from angr.storage.memory_mixins import (
@@ -23,6 +24,8 @@ from angr.storage.memory_mixins import (
     UltraPagesMixin,
 )
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
+from angr.storage.memory_mixins.paged_memory.pages.symbolic_bitmap import SymbolicBitmap
+from tests.common import minimal_project
 
 
 class UltraPageMemory(
@@ -55,8 +58,21 @@ class MVPageMemory(
 
 
 class TestMemory(unittest.TestCase):
+    def test_store_large_symbolic_concat(self):
+        # a 4096-arg Concat across page boundary must decompose without recreating args per byte
+        s = SimState(project=minimal_project("AMD64"), mode="symbolic")
+        chunks = [claripy.BVS(f"b{i}", 8) for i in range(0x1000)]
+        start = time.time()
+        s.memory.store(0x800, claripy.Concat(*chunks))
+        elapsed = time.time() - start
+        assert elapsed < 0.5, f"A simple memory store takes too long: {elapsed} seconds"
+
+        assert s.memory.load(0x800, 4) is claripy.Concat(*chunks[:4])
+        assert s.memory.load(0x800 + 0xFFC, 4) is claripy.Concat(*chunks[0xFFC:])
+        assert s.memory.load(0x800 + 0x7FE, 4) is claripy.Concat(*chunks[0x7FE:0x802])
+
     def test_copy(self):
-        s = SimState(arch="AMD64", mode="symbolic")
+        s = SimState(project=minimal_project("AMD64"), mode="symbolic")
         s.memory.store(0x100, b"ABCDEFGHIJKLMNOP")
         s.memory.store(0x200, b"XXXXXXXXXXXXXXXX")
         x = claripy.BVS("size", s.arch.bits)
@@ -75,7 +91,7 @@ class TestMemory(unittest.TestCase):
         ]
         assert sorted(s.solver.eval_upto(result, 100, cast_to=bytes, extra_constraints=[x == 3])) == [b"ABCXX"]
 
-        s = SimState(arch="AMD64", mode="symbolic")
+        s = SimState(project=minimal_project("AMD64"), mode="symbolic")
         s.register_plugin(
             "posix", SimSystemPosix(stdin=SimFile(name="stdin", content=b"ABCDEFGHIJKLMNOP", has_end=True))
         )
@@ -96,7 +112,7 @@ class TestMemory(unittest.TestCase):
         ]
         assert sorted(s.solver.eval_upto(result, 100, cast_to=bytes, extra_constraints=[x == 3])) == [b"ABCXX"]
 
-        s = SimState(arch="AMD64", mode="symbolic")
+        s = SimState(project=minimal_project("AMD64"), mode="symbolic")
         s.register_plugin("posix", SimSystemPosix(stdin=SimFile(name="stdin", content=b"ABCDEFGHIJKLMNOP")))
         s.memory.store(0x200, b"XXXXXXXXXXXXXXXX")
         x = claripy.BVS("size", s.arch.bits)
@@ -167,7 +183,7 @@ class TestMemory(unittest.TestCase):
     def test_memory(self):
         initial_memory = {0: b"A", 1: b"A", 2: b"A", 3: b"A", 10: b"B"}
         s = SimState(
-            arch="AMD64",
+            project=minimal_project("AMD64"),
             dict_memory_backer=initial_memory,
             add_options={o.REVERSE_MEMORY_NAME_MAP, o.REVERSE_MEMORY_HASH_MAP},
         )
@@ -313,7 +329,7 @@ class TestMemory(unittest.TestCase):
 
         s = SimState(
             mode="static",
-            arch="AMD64",
+            project=minimal_project("AMD64"),
             dict_memory_backer=initial_memory,
             add_options={o.ABSTRACT_SOLVER, o.ABSTRACT_MEMORY},
         )
@@ -348,7 +364,7 @@ class TestMemory(unittest.TestCase):
 
         # Load the two-byte StridedInterval object from global region
         expr = s.memory.load(to_vs("global", 5), 2)
-        assert expr.identical(si_1)
+        assert claripy.vsa.identical(expr, si_1)
 
         # Store a four-byte StridedInterval object to global region
         si_2 = s.solver.BVS("unnamed", 32, 8000, 9000, 2)
@@ -356,7 +372,7 @@ class TestMemory(unittest.TestCase):
 
         # Load the four-byte StridedInterval object from global region
         expr = s.memory.load(to_vs("global", 7), 4)
-        assert expr.identical(s.solver.BVS("unnamed", 32, 8000, 9000, 2))
+        assert claripy.vsa.identical(expr, s.solver.BVS("unnamed", 32, 8000, 9000, 2))
 
         # Test default values
         s.options.remove(o.SYMBOLIC_INITIAL_VALUES)
@@ -379,7 +395,7 @@ class TestMemory(unittest.TestCase):
 
         b = s.merge(a)[0]
         expr = b.memory.load(to_vs("function_merge", 0), 1)
-        assert expr.identical(s.solver.BVS("unnamed", 8, 0x10, 0x20, 0x10))
+        assert claripy.vsa.identical(expr, s.solver.BVS("unnamed", 8, 0x10, 0x20, 0x10))
 
         #  |  MO(value_0)  |
         #  |  MO(value_1)  |
@@ -395,7 +411,7 @@ class TestMemory(unittest.TestCase):
         )
         c = a.merge(b)[0]
         expr = c.memory.load(to_vs("function_merge", 0x20), 4)
-        assert expr.identical(claripy.SI(bits=32, stride=1, lower_bound=0x100000, upper_bound=0x100001))
+        assert claripy.vsa.identical(expr, claripy.SI(bits=32, stride=1, lower_bound=0x100000, upper_bound=0x100001))
         c_page = c.memory._regions["function_merge"]._pages[0]
         object_set = {
             c_page._get_object(0x20, 0),
@@ -416,7 +432,9 @@ class TestMemory(unittest.TestCase):
         )
         c = a.merge(b)[0]
         expr = c.memory.load(to_vs("function_merge", 0x20), 4)
-        assert expr.identical(claripy.SI(bits=32, stride=0x100000, lower_bound=0x100000, upper_bound=0x300000))
+        assert claripy.vsa.identical(
+            expr, claripy.SI(bits=32, stride=0x100000, lower_bound=0x100000, upper_bound=0x300000)
+        )
         object_set = {
             c_page._get_object(0x20, 0),
             c_page._get_object(0x21, 0),
@@ -446,7 +464,7 @@ class TestMemory(unittest.TestCase):
 
         s = SimState(
             mode="static",
-            arch="AMD64",
+            project=minimal_project("AMD64"),
             dict_memory_backer=initial_memory,
             add_options={o.ABSTRACT_SOLVER, o.ABSTRACT_MEMORY},
         )
@@ -464,10 +482,10 @@ class TestMemory(unittest.TestCase):
             r, _, _ = s.memory.find(claripy.VS(s.arch.bits, "global", 0, offset), what, 8)
             r_annotation = r.get_annotation(claripy.annotation.RegionAnnotation)
             assert r_annotation.region_id == "global"
-            assert r.clear_annotation_type(claripy.annotation.RegionAnnotation).identical(expected)
+            assert claripy.vsa.identical(r.clear_annotation_type(claripy.annotation.RegionAnnotation), expected)
 
     def test_registers(self):
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         expr = s.registers.load("rax")
         assert s.solver.symbolic(expr)
 
@@ -477,7 +495,7 @@ class TestMemory(unittest.TestCase):
         assert s.solver.eval(expr) == 0x00000031
 
     def test_fullpage_write(self):
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         a = claripy.BVV(b"A" * 0x2000)
         s.memory.store(0, a)
         # assert len(s.memory.mem._pages) == 2
@@ -486,7 +504,7 @@ class TestMemory(unittest.TestCase):
         assert s.memory.load(0, 0x2000) is a
         assert a.variables != s.memory.load(0x2000, 1).variables
 
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         a = claripy.BVV(b"A" * 2)
         s.memory.store(0x1000, a)
         s.memory.store(0x2000, a)
@@ -494,7 +512,7 @@ class TestMemory(unittest.TestCase):
         assert a.variables == s.memory.load(0x2001, 1).variables
         assert a.variables != s.memory.load(0x2002, 1).variables
 
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         x = claripy.BVV(b"X")
         a = claripy.BVV(b"A" * 0x1000)
         s.memory.store(1, x)
@@ -502,7 +520,7 @@ class TestMemory(unittest.TestCase):
         s2.memory.store(0, a)
         assert len(s.memory.changed_bytes(s2.memory)) == 0x1000
 
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         s.memory._maximum_symbolic_size = 0x2000000
         a = claripy.BVS("A", 0x1000000 * 8)
         s.memory.store(0, a)
@@ -510,7 +528,7 @@ class TestMemory(unittest.TestCase):
         assert b is a
 
     def test_symbolic_write(self):
-        s = SimState(arch="AMD64", add_options={o.SYMBOLIC_WRITE_ADDRESSES})
+        s = SimState(project=minimal_project("AMD64"), add_options={o.SYMBOLIC_WRITE_ADDRESSES})
         x = claripy.BVS("x", 64)
         y = claripy.BVS("y", 64)
         a = claripy.BVV(b"A" * 0x10)
@@ -557,16 +575,16 @@ class TestMemory(unittest.TestCase):
 
         # Writes many zeros
         VAL = 0
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         _individual_test(s, BASE, VAL, SIZE)
 
         # Writes many ones
         VAL = 1
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         _individual_test(s, BASE, VAL, SIZE)
 
     def test_false_condition(self):
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
 
         asdf = claripy.BVV(b"asdf")
         fdsa = claripy.BVV(b"fdsa")
@@ -578,7 +596,7 @@ class TestMemory(unittest.TestCase):
         assert 0 not in s.memory._pages
 
     def test_fast_memory(self):
-        s = SimState(arch="AMD64", add_options={o.FAST_REGISTERS, o.FAST_MEMORY})
+        s = SimState(project=minimal_project("AMD64"), add_options={o.FAST_REGISTERS, o.FAST_MEMORY})
 
         s.regs.rax = 0x4142434445464748
         s.regs.rbx = 0x5555555544444444
@@ -587,8 +605,44 @@ class TestMemory(unittest.TestCase):
 
         self._concrete_memory_tests(s)
 
+    def test_fast_memory_condition(self):
+        # conditions are Bools; singlevalued must be defined on every AST sort, not just BV
+        s = SimState(project=minimal_project("AMD64"), add_options={o.FAST_REGISTERS, o.FAST_MEMORY})
+
+        s.registers.store("rax", claripy.BVV(0x4142434445464748, 64))
+        s.registers.store("rax", claripy.BVV(0x1111111122222222, 64), condition=claripy.false())
+        assert s.solver.eval_upto(s.registers.load("rax", size=8), 2) == [0x4142434445464748]
+        s.registers.store("rax", claripy.BVV(0x1111111122222222, 64), condition=claripy.true())
+        assert s.solver.eval_upto(s.registers.load("rax", size=8, condition=claripy.true()), 2) == [0x1111111122222222]
+
+        s.memory.store(0x1000, claripy.BVV(b"asdf"), condition=claripy.true())
+        s.memory.store(0x1000, claripy.BVV(b"fdsa"), condition=claripy.false())
+        assert s.solver.eval_upto(s.memory.load(0x1000, 4, condition=claripy.true()), 2) == [0x61736466]
+
+        with self.assertRaises(SimMemoryError):
+            s.registers.store("rax", claripy.BVV(0, 64), condition=claripy.BoolS("cond"))
+        with self.assertRaises(SimMemoryError):
+            s.memory.load(0x1000, 4, condition=claripy.BoolS("cond"))
+
+    def test_fast_memory_fp_derived_parameters(self):
+        s = SimState(project=minimal_project("AMD64"), mode="fastpath")
+        s.registers.store(16, claripy.BVV(0x41, 8))
+        # concrete FP-derived parameters are single-valued
+        addr = claripy.FPV(2.2e-44, claripy.FSORT_FLOAT).to_bv()
+        assert s.solver.eval(s.registers.load(addr, 1)) == 0x41
+
+        fp = claripy.FPS("fp", claripy.FSORT_FLOAT)
+        fp_bits = fp.to_bv()
+
+        with self.assertRaisesRegex(SimMemoryError, "address not supported"):
+            s.registers.load(fp_bits, 1)
+        with self.assertRaisesRegex(SimMemoryError, "size not supported"):
+            s.registers.load(0, fp_bits)
+        with self.assertRaisesRegex(SimMemoryError, "condition not supported"):
+            s.registers.load(0, 1, condition=claripy.fpIsNaN(fp))
+
     def test_light_memory(self):
-        s = SimState(arch="AMD64", plugins={"registers": SimLightRegisters()})
+        s = SimState(project=minimal_project("AMD64"), plugins={"registers": SimLightRegisters()})
         assert type(s.registers) is SimLightRegisters
 
         assert s.regs.rax.symbolic
@@ -612,7 +666,7 @@ class TestMemory(unittest.TestCase):
             UltraPageMemory,
             ListPageMemory,
         ]:
-            state = SimState(arch="x86", mode="symbolic", plugins={"memory": memcls()})
+            state = SimState(project=minimal_project("x86"), mode="symbolic", plugins={"memory": memcls()})
 
             state.regs.sp = 0xBAAAFFFC
             state.memory.store(state.regs.sp, b"\x01\x02\x03\x04" + b"\x05\x06\x07\x08")
@@ -632,9 +686,9 @@ class TestMemory(unittest.TestCase):
         for memcls in [
             MVPageMemory,
         ]:
-            state = SimState(arch="x86", mode="symbolic", plugins={"memory": memcls()})
+            state = SimState(project=minimal_project("x86"), mode="symbolic", plugins={"memory": memcls()})
 
-            mv = MultiValues(offset_to_values={0: {claripy.BVV(1337, 32)}, 4: {claripy.BVV(13371337, 8 * 5)}})
+            mv = MultiValues({0: {claripy.BVV(1337, 32)}, 4: {claripy.BVV(13371337, 8 * 5)}})
             state.memory.store(4096 - 3, mv)
 
             first_three_bytes = state.memory.load(4096 - 3, size=3)
@@ -700,22 +754,22 @@ class TestMemory(unittest.TestCase):
                 97: {claripy.BVS("TOP", 32)},
                 101: {claripy.BVV(0x2E74727800, 40)},
             }
-            mv = MultiValues(offset_to_values=data)
+            mv = MultiValues(data)
             state.memory.store(0x7FFEFF9C, mv)  # should not crash
 
     def test_mv_crosspage_store_large_elements(self):
-        state = SimState(arch="amd64", mode="symbolic", plugins={"memory": MVPageMemory()})
+        state = SimState(project=minimal_project("amd64"), mode="symbolic", plugins={"memory": MVPageMemory()})
 
         data = {
             0: {claripy.BVS("TOP", 4095 * 8)},
             4095: {claripy.BVV(47, 8), claripy.BVV(85, 8)},
             4096: {claripy.BVS("TOP", 4096 * 8)},
         }
-        mv = MultiValues(offset_to_values=data)
+        mv = MultiValues(data)
         state.memory.store(0x7FFEE1FF, mv)  # should not crash
 
     def test_crosspage_read(self):
-        state = SimState(arch="ARM")
+        state = SimState(project=minimal_project("ARM"))
         state.regs.sp = 0x7FFF0008
         state.stack_push(0x44556677)
         state.stack_push(0x1)
@@ -738,7 +792,7 @@ class TestMemory(unittest.TestCase):
 
     def test_address_wrap(self):
         for memcls in [UltraPageMemory, ListPageMemory]:
-            state = SimState(arch="x86", mode="symbolic", plugins={"memory": memcls()})
+            state = SimState(project=minimal_project("x86"), mode="symbolic", plugins={"memory": memcls()})
             symbol = claripy.BVS("symbol", 64)
 
             state.memory.store(0xFFFFFFFF, symbol.get_byte(0))
@@ -751,8 +805,22 @@ class TestMemory(unittest.TestCase):
             state.memory.store(0xFFFFFFFF, symbol)
             assert state.memory.load(0, 1) is symbol[64 - 8 - 1 : 64 - 16]
 
+    def test_allocate_stack_pages_stops_at_address_zero(self):
+        state = SimState(project=minimal_project(ArchAMD64()), stack_end=0x1000)
+
+        # only one page exists below the top of this stack, so two of them do not fit under it
+        with self.assertRaises(SimMemoryError):
+            state.memory.allocate_stack_pages(0xFFF, 0x2000)
+        # in particular the second one is not handed out at the top of the address space
+        with self.assertRaises(SimMemoryError):
+            state.memory.permissions(0xFFFFFFFFFFFFF000)
+
+        # the one page that does fit is still handed out
+        assert len(state.memory.allocate_stack_pages(0xFFF, 0x1000)) == 1
+        assert state.memory.permissions(0) is not None
+
     def test_underconstrained(self):
-        state = SimState(arch="AMD64", add_options={o.UNDER_CONSTRAINED_SYMEXEC})
+        state = SimState(project=minimal_project("AMD64"), add_options={o.UNDER_CONSTRAINED_SYMEXEC})
 
         # test that under-constrained load is constrained
         ptr1 = state.memory.load(0x4141414141414000, size=8, endness="Iend_LE")
@@ -785,7 +853,7 @@ class TestMemory(unittest.TestCase):
         state.memory.load(ptr3, size=1)
 
     def test_concrete_load_non_adjacent_pages(self):
-        s = SimState(arch="AMD64", mode="symbolic", plugins={"memory": UltraPageMemory()})
+        s = SimState(project=minimal_project("AMD64"), mode="symbolic", plugins={"memory": UltraPageMemory()})
 
         s.memory.store(0x100000, b"\x01" * 4096)
         s.memory.store(0x100000 + 4096, b"\x02" * 4096)
@@ -794,7 +862,7 @@ class TestMemory(unittest.TestCase):
         assert mv == (b"\x01" * 6) + (b"\x02" * 394)
 
     def test_hex_dump(self):
-        s = SimState(arch="AMD64")
+        s = SimState(project=minimal_project("AMD64"))
         addr = s.heap.allocate(0x20)
         s.memory.store(addr, claripy.Concat(claripy.BVV("ABCDEFGH"), claripy.BVS("symbolic_part", 24 * s.arch.bits)))
         dump = s.memory.hex_dump(addr, 0x20)
@@ -816,25 +884,29 @@ class TestMemory(unittest.TestCase):
         )
 
     def test_concrete_load(self):
+        # concrete_load's bitmap is packed: one bit per byte, least significant bit first
+        def is_symbolic(bitmap, i):
+            return bool(bitmap[i >> 3] >> (i & 7) & 1)
+
+        def concrete_bytes(data, bitmap):
+            return bytes(0 if is_symbolic(bitmap, i) else d for i, d in enumerate(data))
+
         for memcls in [UltraPageMemory, ListPageMemory]:
-            state = SimState(arch="AMD64", mode="symbolic", plugins={"memory": memcls()})
+            state = SimState(project=minimal_project("AMD64"), mode="symbolic", plugins={"memory": memcls()})
             state.memory.store(0x20000, b"aaaabbbbccccdddd")
 
             data, bitmap = state.memory.concrete_load(0x20000, 4, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"aaaa"
-            assert bitmap.tobytes() == b"\x00\x00\x00\x00"
+            assert concrete_bytes(data, bitmap) == b"aaaa"
+            assert bitmap.tobytes() == b"\x00"
 
             data, bitmap = state.memory.concrete_load(0x20004, 8, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"bbbbcccc"
-            assert bitmap.tobytes() == b"\x00\x00\x00\x00\x00\x00\x00\x00"
+            assert concrete_bytes(data, bitmap) == b"bbbbcccc"
+            assert bitmap.tobytes() == b"\x00"
 
             state.memory.store(0x20001, claripy.BVS("flag", 8))
             data, bitmap = state.memory.concrete_load(0x20000, 4, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"a\x00aa"
-            assert bitmap.tobytes() == b"\x00\x01\x00\x00"
+            assert concrete_bytes(data, bitmap) == b"a\x00aa"
+            assert bitmap.tobytes() == b"\x02"
 
             expr = claripy.Concat(
                 claripy.BVS("flag_0", 1),
@@ -845,9 +917,8 @@ class TestMemory(unittest.TestCase):
             )
             state.memory.store(0x20001, expr)
             data, bitmap = state.memory.concrete_load(0x20000, 4, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"a\x00\x00a"
-            assert bitmap.tobytes() == b"\x00\x01\x01\x00"
+            assert concrete_bytes(data, bitmap) == b"a\x00\x00a"
+            assert bitmap.tobytes() == b"\x06"
 
             expr = claripy.Concat(
                 claripy.BVS("flag_0", 1),
@@ -858,9 +929,8 @@ class TestMemory(unittest.TestCase):
             )
             state.memory.store(0x20005, expr)
             data, bitmap = state.memory.concrete_load(0x20004, 4, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"b\x00\x00b"
-            assert bitmap.tobytes() == b"\x00\x01\x01\x00"
+            assert concrete_bytes(data, bitmap) == b"b\x00\x00b"
+            assert bitmap.tobytes() == b"\x06"
 
             expr = claripy.Concat(
                 claripy.BVV(7, 7),
@@ -869,9 +939,8 @@ class TestMemory(unittest.TestCase):
             )
             state.memory.store(0x20005, expr)
             data, bitmap = state.memory.concrete_load(0x20004, 4, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"b\x00\x00b"
-            assert bitmap.tobytes() == b"\x00\x01\x01\x00"
+            assert concrete_bytes(data, bitmap) == b"b\x00\x00b"
+            assert bitmap.tobytes() == b"\x06"
 
             expr = claripy.Concat(
                 claripy.BVV(1, 1),
@@ -880,12 +949,11 @@ class TestMemory(unittest.TestCase):
             )
             state.memory.store(0x20005, expr)
             data, bitmap = state.memory.concrete_load(0x20004, 4, with_bitmap=True)
-            data_bytes = bytes(d if b == 0 else 0 for d, b in zip(data, bitmap))
-            assert data_bytes == b"b\x00\x00b"
-            assert bitmap.tobytes() == b"\x00\x01\x01\x00"
+            assert concrete_bytes(data, bitmap) == b"b\x00\x00b"
+            assert bitmap.tobytes() == b"\x06"
 
     def test_multivalued_list_page(self):
-        state = SimState(arch="AMD64", mode="symbolic", plugins={"memory": MultiValuedMemory()})
+        state = SimState(project=minimal_project("AMD64"), mode="symbolic", plugins={"memory": MultiValuedMemory()})
 
         # strong update
         state.memory.store(0x100, claripy.BVV(0x40, 64))
@@ -906,7 +974,7 @@ class TestMemory(unittest.TestCase):
             def _default_value(self, *args, size=None, **kwargs):  # pylint:disable=unused-argument
                 return claripy.BVV(0, size)
 
-        state = SimState(arch="AMD64", mode="symbolic", plugins={"memory": ZeroFillerMemory()})
+        state = SimState(project=minimal_project("AMD64"), mode="symbolic", plugins={"memory": ZeroFillerMemory()})
         state.options.add(o.ZERO_FILL_UNCONSTRAINED_MEMORY)
 
         cond = claripy.BoolS("cond")
@@ -916,6 +984,62 @@ class TestMemory(unittest.TestCase):
         val = state.memory.load(addr, size=4, condition=cond, endness=state.arch.memory_endness)
         assert set(state.solver.eval_upto(cond, 2)) == {True, False}
         assert (val == 0x12345678).is_true()
+
+
+class TestSymbolicBitmap(unittest.TestCase):
+    def test_view_is_packed(self):
+        bm = SymbolicBitmap(64)
+        bm.set_range(1, 3)
+        bm.set(9, 1)
+        assert bm.view(0, 64).tobytes() == b"\x06\x02" + bytes(6)
+
+    def test_view_of_uniform_map(self):
+        assert SymbolicBitmap(64, 0).view(0, 64).tobytes() == bytes(8)
+        assert SymbolicBitmap(64, 1).view(0, 64).tobytes() == b"\xff" * 8
+
+    def test_unaligned_view_is_shifted_and_readonly(self):
+        bm = SymbolicBitmap(64)
+        bm.set_range(5, 8)
+        view = bm.view(4, 12)
+        assert view.readonly
+        # bytes 5..7 of the page are bits 1..3 of a view starting at byte 4
+        assert view.tobytes() == b"\x0e"
+
+    def test_aligned_view_aliases_the_map(self):
+        bm = SymbolicBitmap(64)
+        view = bm.view(0, 64)
+        assert not view.readonly
+
+        # writes through the view are visible to the map...
+        view[0] = 0x05
+        assert [bm.get(i) for i in range(4)] == [1, 0, 1, 0]
+
+        # ...and writes to the map are visible through the view
+        bm.set(3, 1)
+        assert view[0] == 0x0D
+
+    def test_whole_page_write_keeps_an_aliased_buffer(self):
+        # native unicorn holds a pointer into the map of a page it direct-mapped, so a write covering the whole page
+        # must fill the backing store in place rather than drop it for the uniform representation
+        bm = SymbolicBitmap(64)
+        view = bm.view(0, 64)
+
+        bm.set_range(0, 64)
+        assert view.tobytes() == b"\xff" * 8
+        assert all(bm.get(i) for i in range(64))
+
+        bm.clear_range(0, 64)
+        assert view.tobytes() == bytes(8)
+        assert not any(bm.get(i) for i in range(64))
+
+    def test_copy_is_not_aliased(self):
+        bm = SymbolicBitmap(64)
+        view = bm.view(0, 64)
+        other = bm.copy()
+
+        other.set_range(0, 64)
+        assert view.tobytes() == bytes(8)
+        assert not any(bm.get(i) for i in range(64))
 
 
 if __name__ == "__main__":

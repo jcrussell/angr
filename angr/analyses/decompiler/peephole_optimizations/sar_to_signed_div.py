@@ -16,13 +16,16 @@ class SarToSignedDiv(PeepholeOptimizationExprBase):
     expr_classes = (BinaryOp,)
 
     def optimize(self, expr: BinaryOp, stmt_idx: int | None = None, block=None, **kwargs):
-        if expr.op == "Sar" and isinstance(expr.operands[1], Const):
+        if expr.op == "Sar" and isinstance(expr.operands[1], Const) and isinstance(expr.operands[1].value, int):
             op0, const = expr.operands
 
-            if isinstance(op0, VirtualVariable) and op0.was_reg and stmt_idx is not None and block is not None:
-                # look back by one statement to find its definition
-                op0 = self.find_definition(op0, stmt_idx, block)
-                # TODO: Ensure the new op0 does not have any expressions that overlap with the old op0 (a register)
+            if isinstance(op0, VirtualVariable) and op0.was_reg:
+                # depends on the preceding statement, so it may start matching once the block changes
+                self.fixpoint_reached = False
+                if stmt_idx is not None and block is not None:
+                    # look back by one statement to find its definition
+                    op0 = self.find_definition(op0, stmt_idx, block)
+                    # TODO: Ensure the new op0 does not have any expressions that overlap with the old op0 (a register)
 
             const_value = const.value
             conv = None
@@ -67,7 +70,7 @@ class SarToSignedDiv(PeepholeOptimizationExprBase):
                             "Div",
                             [
                                 converted_innerexpr,
-                                Const(self.manager.next_atom(), None, 2**const_value, converted_innerexpr.bits),
+                                Const(self.manager.next_atom(), 2**const_value, converted_innerexpr.bits),
                             ],
                             True,
                             **inner_expr.tags,
@@ -75,6 +78,8 @@ class SarToSignedDiv(PeepholeOptimizationExprBase):
                         if conv is not None:
                             # wrap it up with a Convert again
                             r = Convert(conv.idx, conv.from_bits, conv.to_bits, conv.is_signed, r, **conv.tags)
+                        # rewritten: the result no longer depends on the block context
+                        self.fixpoint_reached = True
                         return r
 
         return None
@@ -125,8 +130,11 @@ class SarToSignedDiv(PeepholeOptimizationExprBase):
                     ):
                         rshift_expr = and_expr.operands[0]
                         inner, right = rshift_expr.operands
-                        if isinstance(right, Const) and right.value in {0xF, 0x1F, 0x3F}:
-                            assert isinstance(right.value, int)
+                        if (
+                            isinstance(right, Const)
+                            and isinstance(right.value, int)
+                            and right.value in {0xF, 0x1F, 0x3F}
+                        ):
                             return eq1, right.value + 1, inner
                 elif the_expr.op == "Shr":
                     rshift_expr = the_expr
@@ -138,9 +146,9 @@ class SarToSignedDiv(PeepholeOptimizationExprBase):
                     }
                     if (
                         isinstance(right, Const)
+                        and isinstance(right.value, int)
                         and inner.bits in right_shift_amounts
                         and right.value == right_shift_amounts[inner.bits]
                     ):
-                        assert isinstance(right.value, int)
                         return eq1, right.value + 1, inner
         return None

@@ -316,6 +316,8 @@ class Block(Serializable):
             self._instructions = vex_block.instructions
             self._instruction_addrs = InsAddrList.from_addr_list(vex_block.instruction_addresses)
             self.size = vex_block.size
+            if self._bytes is not None:
+                self._bytes = self._bytes[: self.size]
 
     def __repr__(self):
         return f"<Block for {self.addr:#x}, {self.size} bytes>"
@@ -427,6 +429,8 @@ class Block(Serializable):
 
     @property
     def _using_pcode_engine(self) -> bool:
+        if self._project is None:
+            return False
         return (pcode is not None) and isinstance(self._vex_engine, pcode.HeavyPcodeMixin)
 
     @property
@@ -470,8 +474,12 @@ class Block(Serializable):
         block_bytes = self.bytes
         if self.size is not None:
             block_bytes = block_bytes[: self.size]  # type: ignore
-        lifter = pcode.lifter.PcodeLifter.get_lifter(self.arch)  # type: ignore
-        for cs_insn in lifter.context.disassemble(block_bytes, self.addr).instructions:
+        block_lifter = (
+            self._project.pcode_block_lifter(self.arch)
+            if self._project is not None
+            else pcode.lifter.PcodeBasicBlockLifter(self.arch)  # type: ignore
+        )
+        for cs_insn in block_lifter.context.disassemble(block_bytes, self.addr).instructions:
             insns.append(PCodeInsn(cs_insn))
         block = PCodeBlock(self.addr, insns, self.thumb, self.arch)
 
@@ -480,7 +488,7 @@ class Block(Serializable):
 
     @property
     def codenode(self):
-        return BlockNode(self.addr, self.size, bytestr=self.bytes, thumb=self.thumb)
+        return BlockNode(self.addr, self.size, thumb=self.thumb)
 
     @property
     def bytes(self) -> bytes | None:

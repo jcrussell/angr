@@ -8,7 +8,7 @@ from itertools import chain
 
 import archinfo
 
-import angr.ailment as ailment
+from angr import ailment
 from angr.analyses.decompiler.stack_item import StackItem, StackItemType
 from angr.calling_conventions import SimRegArg
 from angr.code_location import CodeLocation
@@ -30,7 +30,7 @@ class RegisterSaveAreaSimplifier(OptimizationPass):
     PLATFORMS = None
     STAGE = OptimizationPassStage.AFTER_SINGLE_BLOCK_SIMPLIFICATION
     NAME = "Simplify register save areas"
-    DESCRIPTION = __doc__.strip()
+    DESCRIPTION = (__doc__ or "").strip()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -125,10 +125,11 @@ class RegisterSaveAreaSimplifier(OptimizationPass):
                     and isinstance(stmt.data.offset.value, int)
                     and isinstance(stmt.data.base, ailment.Expr.VirtualVariable)
                     and stmt.data.base.was_reg
-                    and stmt.data.base.bits == 256
-                    and stmt.data.bits == 128
+                    and stmt.data.base.bits in (256, 512)
+                    and stmt.data.bits in (128, 256)
+                    and stmt.data.bits < stmt.data.base.bits
                 ):
-                    # xmm registers extracted from ymm registers
+                    # xmm/ymm registers extracted from ymm/zmm registers
                     reg_offset = stmt.data.base.reg_offset + stmt.data.offset.value
 
                 if reg_offset is not None and reg_offset not in ignored_regs:
@@ -236,11 +237,14 @@ class RegisterSaveAreaSimplifier(OptimizationPass):
             lr_reg_offset = None
 
         for reg in list(result.keys()):
-            # stored link register should always be removed
-            if lr_reg_offset is not None and reg == lr_reg_offset:
-                if "restored" not in result[reg]:
-                    # add a dummy one
-                    result[reg]["restored"] = []
+            info = result[reg]
+
+            # a link register may be stored without a matching restore: such a function returns by loading the
+            # saved value into pc, which never appears as a write to the link register. one that is only restored
+            # has no save area behind it, and falls through to (b) like any other half-matched register.
+            if lr_reg_offset is not None and reg == lr_reg_offset and "stored" in info and "restored" not in info:
+                # add a dummy one
+                info["restored"] = []
                 continue
 
             if ret_val_reg_offset is not None and reg == ret_val_reg_offset:
@@ -248,7 +252,6 @@ class RegisterSaveAreaSimplifier(OptimizationPass):
                 del result[reg]
                 continue
 
-            info = result[reg]
             if len(info.keys()) != 2:
                 # (a) or (b)
                 del result[reg]

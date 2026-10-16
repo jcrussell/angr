@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import functools
 import itertools
 import logging
@@ -8,13 +7,12 @@ import weakref
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import archinfo
-import claripy
 from archinfo import Arch
 from archinfo.arch_soot import SootAddressDescriptor
 from cle import Clemory
 
 import angr
+from angr import claripy
 
 from . import sim_options as o
 from .errors import SimMergeError, SimSolverModeError, SimStateError, SimValueError
@@ -27,9 +25,12 @@ if TYPE_CHECKING:
     from angr.simos.javavm import SimJavaVM
 
     from .state_plugins.callstack import CallStack
+    from .state_plugins.filesystem import SimFilesystem
+    from .state_plugins.heap.heap_base import SimHeapBase
     from .state_plugins.history import SimStateHistory
     from .state_plugins.inspect import SimInspector
     from .state_plugins.jni_references import SimStateJNIReferences
+    from .state_plugins.libc import SimStateLibc
     from .state_plugins.posix import SimSystemPosix
     from .state_plugins.scratch import SimStateScratch
     from .state_plugins.solver import SimSolver
@@ -61,7 +62,6 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
     The SimState represents the state of a program, including its memory, registers, and so forth.
 
     :param angr.Project project:    The project instance.
-    :param archinfo.Arch|str arch:  The architecture of the state.
 
     :ivar regs:         A convenient view of the state's registers, where each register is a property
     :ivar mem:          A convenient view of the state's memory, a :class:`angr.state_plugins.view.SimMemView`
@@ -82,6 +82,8 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
     # Type Annotations for default plugins to allow type inference
     solver: SimSolver
     posix: SimSystemPosix
+    fs: SimFilesystem
+    libc: SimStateLibc
     registers: DefaultMemory
     regs: SimRegNameView
     memory: DefaultMemory
@@ -91,11 +93,11 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
     inspect: SimInspector
     jni_references: SimStateJNIReferences
     scratch: SimStateScratch
+    heap: SimHeapBase
 
     def __init__(
         self,
-        project: Project | None = None,
-        arch: Arch | None = None,
+        project: Project,
         plugins: dict[str, SimStatePlugin] | None = None,
         mode: str | None = None,
         options: set[str] | list[str] | SimStateOptions | None = None,
@@ -121,24 +123,16 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
         self._addr: IPTypeConc | None = None
 
         # Java & Java JNI
-        self._is_java_project = self.project and self.project.is_java_project
-        self._is_java_jni_project = self.project and self.project.is_java_jni_project
+        self._is_java_project = self.project.is_java_project
+        self._is_java_jni_project = self.project.is_java_jni_project
 
-        # Arch
-        if self._is_java_jni_project and project is not None:
-            if TYPE_CHECKING:
-                assert isinstance(project.simos, SimJavaVM)
-            self._arch = {"soot": project.arch, "vex": project.simos.native_simos.arch}
+        if self._is_java_jni_project:
             # This flag indicates whether the current ip is a native address or
             # a soot address descriptor.
             # Note: We cannot solely rely on the ip to make that decsision,
             #       because the registers (storing the ip) are part of the
             #       plugins that are getting toggled (=> mutual dependence).
             self.ip_is_soot_addr = False
-        else:
-            self._arch = arch if arch is not None else project.arch.copy() if project is not None else None
-            if type(self._arch) is str:
-                self._arch = archinfo.arch_from_id(self._arch)
 
         # the options
         if options is None:
@@ -165,10 +159,6 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
 
         self.uninitialized_access_handler = None
         self._special_memory_filler = special_memory_filler
-
-        # this is a global condition, applied to all added constraints, memory reads, etc
-        self._global_condition = None
-        self.ip_constraints = []
 
         # plugins. lord help us
         if plugin_preset is not None:
@@ -246,7 +236,7 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
 
             # Get register endness
             if self._is_java_jni_project:
-                register_endness = self._arch["vex"].register_endness
+                register_endness = self._native_arch.register_endness
             else:
                 register_endness = self.arch.register_endness
 
@@ -257,6 +247,10 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
 
             elif o.FAST_REGISTERS in self.options:
                 sim_registers_cls = self.plugin_preset.request_plugin("fast_memory")
+                sim_registers = sim_registers_cls(memory_id="reg", endness=register_endness)
+            elif o.ABSTRACT_MEMORY in self.options:
+                # registers must be joined with VSA unions, not If-expressions, for VFG to reach fix-points
+                sim_registers_cls = self.plugin_preset.request_plugin("abs_registers")
                 sim_registers = sim_registers_cls(memory_id="reg", endness=register_endness)
             else:
                 sim_registers_cls = self.plugin_preset.request_plugin("sym_memory")
@@ -288,8 +282,6 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
         self.__dict__.update(s)
         for p in self.plugins.values():
             p.set_state(self)
-            if p.STRONGREF_STATE:
-                p.set_strongref_state(self)
 
     def _get_weakref(self):
         return weakref.proxy(self)
@@ -302,12 +294,8 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
             addr = self.addr
             if type(addr) is int:
                 ip_str = f"{addr:#x}"
-                try:
-                    scratch = self.scratch
-                    if scratch.is_ail and scratch.ail_block_idx is not None:
-                        ip_str = f"{addr:#x}.{scratch.ail_block_idx}"
-                except Exception:
-                    pass
+                if self.scratch.is_ail and self.scratch.ail_block_idx is not None:
+                    ip_str = f"{addr:#x}.{self.scratch.ail_block_idx}"
             else:
                 ip_str = repr(addr)
         except (SimValueError, SimSolverModeError):
@@ -391,7 +379,7 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
         ip = self._ip
         if isinstance(ip, SootAddressDescriptor):
             return ip
-        return self.solver.eval_one(self.regs._ip)
+        return self.solver.eval_one(ip)
 
     @addr.setter
     def addr(self, v: int | SootAddressDescriptor | tuple[int, int | None]):
@@ -407,14 +395,24 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
             self._ip = v
 
     @property
-    def arch(self) -> Arch:
-        if self._is_java_jni_project:
-            return self._arch["soot"] if self.ip_is_soot_addr else self._arch["vex"]
-        return self._arch
+    def _native_arch(self) -> Arch:
+        """
+        The architecture of the native side of a JavaVM project with JNI support.
+        """
+        if TYPE_CHECKING:
+            assert isinstance(self.project.simos, SimJavaVM)
+        return self.project.simos.native_arch
 
-    @arch.setter
-    def arch(self, v):
-        self._arch = v
+    @property
+    def arch(self) -> Arch:
+        """
+        The architecture of the state. This is the project's architecture, except for JavaVM projects with JNI
+        support, where it is either the Soot or the native architecture, depending on whether the current ip is a
+        Soot address.
+        """
+        if self._is_java_jni_project:
+            return self.project.arch if self.ip_is_soot_addr else self._native_arch
+        return self.project.arch
 
     #
     # Plugin accessors
@@ -448,21 +446,11 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
         return super().has_plugin(name)
 
     def register_plugin(self, name, plugin, inhibit_init=False):  # pylint: disable=arguments-differ
-        # l.debug("Adding plugin %s of type %s", name, plugin.__class__.__name__)
-        self._set_plugin_state(plugin, inhibit_init=inhibit_init)
-        return super().register_plugin(name, plugin)
-
-    def _init_plugin(self, plugin_cls: type[SimStatePlugin]) -> SimStatePlugin:
-        plugin = plugin_cls()
-        self._set_plugin_state(plugin)
-        return plugin
-
-    def _set_plugin_state(self, plugin: SimStatePlugin, inhibit_init: bool = False):
+        super().register_plugin(name, plugin)
         plugin.set_state(self)
-        if plugin.STRONGREF_STATE:
-            plugin.set_strongref_state(self)
         if not inhibit_init:
             plugin.init_state()
+        return plugin
 
     #
     # Java support
@@ -566,26 +554,22 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
         Returns a copy of the state.
         """
 
-        if self._global_condition is not None:
-            raise SimStateError("global condition was not cleared before state.copy().")
-
         c_plugins = self._copy_plugins()
         state = SimState(
             project=self.project,
-            arch=self.arch,
             plugins=c_plugins,
             options=self.options.copy(),
             mode=self.mode,
             os_name=self.os_name,
         )
         state._addr = self._addr
+        state._satisfiable = self._satisfiable
 
         if self._is_java_jni_project:
             state.ip_is_soot_addr = self.ip_is_soot_addr
 
         state.uninitialized_access_handler = self.uninitialized_access_handler
         state._special_memory_filler = self._special_memory_filler
-        state.ip_constraints = self.ip_constraints
 
         return state
 
@@ -622,8 +606,13 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
             merge_values = range(len(others) + 1)
             merge_conditions = [merge_flag == b for b in merge_values]
         else:
+            sao = angr.state_plugins.SimActionObject
             merge_conditions = [
-                (claripy.true() if len(mc) == 0 else claripy.And(*[c.to_claripy() for c in mc]))
+                (
+                    claripy.true()
+                    if len(mc) == 0
+                    else claripy.And(*[c.to_claripy() if isinstance(c, sao) else c for c in mc])
+                )
                 for mc in merge_conditions
             ]
 
@@ -677,32 +666,6 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
 
         merged.add_constraints(claripy.Or(*merge_conditions))
         return merged, merge_conditions, merging_occurred
-
-    def widen(self, *others):
-        """
-        Perform a widening between self and other states
-        :param others:
-        :return:
-        """
-
-        if len({frozenset(o.plugins.keys()) for o in others}) != 1:
-            raise SimMergeError("Unable to widen due to different sets of plugins.")
-        if len({o.arch.name for o in others}) != 1:
-            raise SimMergeError("Unable to widen due to different architectures.")
-
-        widened = self.copy()
-        widening_occurred = False
-
-        # plugins
-        for p in self.plugins:
-            if p in ("solver", "unicorn"):
-                continue
-            plugin_state_widened = widened.plugins[p].widen([_.plugins[p] for _ in others])
-            if plugin_state_widened:
-                l.debug("Widening occurred in %s", p)
-                widening_occurred = True
-
-        return widened, widening_occurred
 
     #############################################
     ### Accessors for tmps, registers, memory ###
@@ -875,38 +838,6 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
 
         concrete_ip = self.solver.eval(self.regs.ip)
         return concrete_ip % 2 == 1
-
-    #
-    # Some pretty fancy global condition stuff!
-    #
-
-    @property
-    def with_condition(self):
-        @contextlib.contextmanager
-        def ctx(c):
-            old_condition = self._global_condition
-            try:
-                new_condition = c if old_condition is None else claripy.And(old_condition, c)
-                self._global_condition = new_condition
-                yield
-            finally:
-                self._global_condition = old_condition
-
-        return ctx
-
-    def _adjust_condition(self, c):
-        if self._global_condition is None:
-            return c
-        if c is None:
-            return self._global_condition
-        return claripy.And(self._global_condition, c)
-
-    def _adjust_condition_list(self, conditions):
-        if self._global_condition is None:
-            return conditions
-        if len(conditions) == 0:
-            return conditions.__class__((self._global_condition,))
-        return conditions.__class__((self._adjust_condition(claripy.And(*conditions)),))
 
 
 default_state_plugin_preset = PluginPreset()

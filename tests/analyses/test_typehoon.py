@@ -1,21 +1,47 @@
 #!/usr/bin/env python3
-# pylint:disable=missing-class-docstring,no-self-use
+# pylint:disable=missing-class-docstring,no-self-use,protected-access
 from __future__ import annotations
 
 __package__ = __package__ or "tests.analyses"  # pylint:disable=redefined-builtin
 
 import os
+import random
 import re
 import unittest
 from collections import OrderedDict
+from typing import cast
 
 import archinfo
+import networkx
+from sortedcontainers import SortedDict
 
 import angr
 from angr.analyses.decompiler.clinic import Clinic
-from angr.analyses.typehoon.simple_solver import SimpleSolver
+from angr.analyses.typehoon.dfa import DFAConstraintSolver
+from angr.analyses.typehoon.simple_solver import (
+    FORGOTTEN,
+    ConstraintGraphNode,
+    ConstraintGraphTag,
+    SimpleSolver,
+    map_offsets_to_bases,
+)
 from angr.analyses.typehoon.translator import TypeTranslator
-from angr.analyses.typehoon.typeconsts import Float32, Float64, Int32, Pointer64, Struct
+from angr.analyses.typehoon.typeconsts import (
+    Array,
+    BottomType,
+    Float32,
+    Float64,
+    Int1,
+    Int8,
+    Int32,
+    IntVar,
+    Pointer32,
+    Pointer64,
+    SInt32,
+    SInt64,
+    Struct,
+)
+from angr.analyses.typehoon.typehoon import Typehoon
 from angr.analyses.typehoon.typevars import (
     DerivedTypeVariable,
     FuncIn,
@@ -26,6 +52,7 @@ from angr.analyses.typehoon.typevars import (
     Subtype,
     TypeVariable,
 )
+from angr.analyses.typehoon.variance import Variance
 from angr.knowledge_plugins.functions.function import PrototypeSource
 from angr.sim_type import (
     SimStruct,
@@ -35,8 +62,10 @@ from angr.sim_type import (
     SimTypeFloat,
     SimTypeFunction,
     SimTypeInt,
+    SimTypeNum,
     SimTypePointer,
 )
+from angr.utils.constants import MAX_POINTSTO_BITS, MAX_TYPE_NESTING
 from tests.common import bin_location, print_decompilation_result
 
 test_location = os.path.join(bin_location, "tests")
@@ -77,7 +106,7 @@ class TestTypehoon(unittest.TestCase):
         assert dec.codegen is not None and dec.codegen.text is not None
         assert "->field_0 = 10;" in dec.codegen.text
         assert "->field_4 = 20;" in dec.codegen.text
-        assert "->field_8 = 808464432;" in dec.codegen.text
+        assert "->field_8 = 0x30303030;" in dec.codegen.text
         assert "->field_c = 0;" in dec.codegen.text
 
     def test_function_call_argument_type_propagation(self):
@@ -147,9 +176,10 @@ class TestTypehoon(unittest.TestCase):
             and func_read6numbers.prototype.args[1].pts_to.signed is True
         )
 
-        # decompile phase_2 again, and we should see an unsigned int [6] on the stack
+        # decompile phase_2 again, and we should see an unsigned int [6] on the stack. regen_clinic=True forces a
+        # fresh run so the newly-inferred read_six_numbers prototype back-propagates instead of reusing the cache.
         dec_phase2 = proj.analyses.Decompiler(
-            func_phase2, fail_fast=True, options=[("constrain_callee_prototypes", True)]
+            func_phase2, fail_fast=True, options=[("constrain_callee_prototypes", True)], regen_clinic=True
         )
         assert dec_phase2.codegen is not None and dec_phase2.codegen.text is not None
         print_decompilation_result(dec_phase2)
@@ -166,6 +196,18 @@ class TestTypehoon(unittest.TestCase):
         )
 
         assert isinstance(typehoon.solution[v0], Int32)
+
+    def test_float_lower_bound_survives_reference_of_unknown_size(self):
+        # a stack slot written with a double whose address is taken: float64 <: v <: ref.load.<MAX_POINTSTO_BITS>@0
+        func_f = TypeVariable(name="F")
+        v = TypeVariable(name="v")
+        ref = TypeVariable(name="ref")
+        ref_load = DerivedTypeVariable(ref, None, labels=[Load(), HasField(MAX_POINTSTO_BITS, 0)])
+        type_constraints = {func_f: {Subtype(Float64(), v), Subtype(v, ref_load)}}
+        proj = angr.load_shellcode(b"\x90\x90", "X86")
+        typehoon = proj.analyses.Typehoon(type_constraints, func_f)
+
+        assert isinstance(typehoon.solution[v], Float64)
 
     def test_type_inference_basic_case_1(self):
         func_f = TypeVariable(name="F")
@@ -243,6 +285,81 @@ class TestTypehoon(unittest.TestCase):
         assert isinstance(sol.basetype.fields[8], Pointer64)
         assert sol.basetype.fields[8].basetype == sol.basetype
 
+    def test_wrapped_negative_field_offset_does_not_become_a_giant_struct(self):
+        # an offset that wrapped around into the unsigned range is a negative offset in disguise; taking it at face
+        # value builds a struct spanning almost 2 ** 64 bytes, whose field offsets no longer fit in an int64
+        func_f = TypeVariable(name="F")
+        t0 = TypeVariable(name="T0")
+        type_constraints = {
+            func_f: {
+                Subtype(DerivedTypeVariable(t0, None, labels=[Store(), HasField(64, 0)]), t0),
+                Subtype(DerivedTypeVariable(t0, None, labels=[Store(), HasField(64, 8)]), t0),
+                Subtype(DerivedTypeVariable(t0, None, labels=[Load(), HasField(8, 0xFFFF_FFFF_FFFF_FFE8)]), Int32()),
+            },
+        }
+        proj = angr.load_shellcode(b"\x90\x90", "AMD64")
+        typehoon = proj.analyses.Typehoon(type_constraints, func_f)
+
+        sol = typehoon.solution[t0]
+        assert isinstance(sol, Pointer64)
+        assert isinstance(sol.basetype, BottomType)
+
+    def test_huge_field_offset_does_not_become_a_giant_struct(self):
+        # "rcl byte ptr [rax+0x1ce95fe0], 0xe4; ret", lifted verbatim from junk code that an opaque predicate
+        # guards in a stripped PE: the displacement is a leftover constant, not a struct field offset
+        proj = angr.load_shellcode(b"\xc0\x90\xe0\x5f\xe9\x1c\xe4\xc3", "AMD64", load_address=0x400000)
+        cfg = proj.analyses.CFGFast(normalize=True)
+        dec = proj.analyses.Decompiler(cfg.functions[0x400000], cfg=cfg.model, fail_fast=True)
+
+        assert dec.codegen is not None and dec.codegen.text is not None
+        assert "typedef struct" not in dec.codegen.text
+
+    @staticmethod
+    def _dereference_chain_constraints(length: int):
+        """A type variable loaded through ``length`` chained ``*p`` dereferences, with a second field at
+        offset 4 so that each link of the chain is a struct rather than a scalar."""
+        func = TypeVariable(name="F")
+        t0 = TypeVariable(name="T0")
+        labels = []
+        for _ in range(length):
+            labels += [Load(), HasField(32, 0)]
+        return (
+            func,
+            t0,
+            {
+                func: {
+                    Subtype(DerivedTypeVariable(t0, None, labels=labels), Int32()),
+                    Subtype(DerivedTypeVariable(t0, None, labels=[Load(), HasField(32, 4)]), Int32()),
+                }
+            },
+        )
+
+    def test_long_dereference_chain_is_not_inlined_without_bound(self):
+        # the solver inlines each dereferenced type variable's solution into the field of the struct the
+        # previous one points to, so without a bound the finished type is as deep as the chain is long --
+        # 2 * length + 1 levels, measured. Every traversal a type constant defines recurses once or more
+        # per level, so a long chain is a type nothing downstream can hash or print.
+        func, t0, constraints = self._dereference_chain_constraints(MAX_TYPE_NESTING * 2)
+        solver = SimpleSolver(32, constraints, {func: {t0}})
+
+        sol = solver.solution[t0]
+        assert isinstance(sol, Pointer32)
+        assert not SimpleSolver._nests_deeper_than(sol, MAX_TYPE_NESTING + 2)
+        # and what the bound is for: the finished type can be hashed and printed
+        assert isinstance(hash(sol), int)
+        assert repr(sol)
+
+    def test_dereference_chain_past_the_recursion_limit_still_solves(self):
+        # 256 links is 513 levels unbounded, and the solver does not get that far: it hashes a solution it
+        # is assembling, which costs four Python frames per level, and dies of RecursionError inside
+        # SimpleSolver itself. Clinic then drops every variable type in the function.
+        func, t0, constraints = self._dereference_chain_constraints(256)
+        solver = SimpleSolver(32, constraints, {func: {t0}})
+
+        sol = solver.solution[t0]
+        assert isinstance(sol, Pointer32)
+        assert not SimpleSolver._nests_deeper_than(sol, MAX_TYPE_NESTING + 2)
+
     def test_solving_cascading_type_constraints(self):
         p = angr.Project(os.path.join(test_location, "x86_64", "decompiler", "tiny_aes_test.elf"), auto_load_libs=False)
         cfg = p.analyses.CFG(data_references=True, normalize=True)
@@ -283,9 +400,14 @@ class TestTypehoon(unittest.TestCase):
             for tv in sols
             if not isinstance(tv, DerivedTypeVariable) and tv.name is None and isinstance(sols[tv], SimTypePointer)
         ]
-        assert len(tvs) == 3
-        assert sols[tvs[1]] == sols[tvs[2]]
-        sol = sols[tvs[1]]
+        # cgc_insert returns nothing: what sits in rax at its ret is the base register of the last store, and every
+        # caller overwrites rax right away, so the calling-convention analysis makes the prototype void and there is
+        # no return-value type variable to count
+        assert "void cgc_insert(" in dec.codegen.text
+        assert len(tvs) == 2
+        assert sols is not None
+        assert sols[tvs[0]] == sols[tvs[1]]
+        sol = sols[tvs[0]]
         assert isinstance(sol, SimTypePointer)
         assert isinstance(sol.pts_to, SimStruct)
         assert len(sol.pts_to.fields) == 2
@@ -348,8 +470,11 @@ class TestTypehoon(unittest.TestCase):
             ],
             key=lambda x: x.idx,
         )
-        assert len(tvs) == 4  # the last two tvs are for the NULL pointers
-        sol = sols[tvs[1]]
+        # cgc_remove returns nothing either (see the note in the insert test above)
+        assert "void cgc_remove(" in dec.codegen.text
+        assert len(tvs) == 3  # the last two tvs are for the NULL pointers
+        assert sols is not None
+        sol = sols[tvs[0]]
         assert isinstance(sol, SimTypePointer)
         assert isinstance(sol.pts_to, SimStruct)
         assert len(sol.pts_to.fields) == 2
@@ -427,6 +552,137 @@ class TestTypehoon(unittest.TestCase):
         assert "HANDLE" in all_sols
 
 
+class TestSimpleSolverPointerPropagation(unittest.TestCase):
+    """Unit tests for pointer type propagation through the SimpleSolver.
+
+    These test the specific solver behaviors that allow pointer types to be
+    inferred from Add constraints, Equivalence chains, and DTV unification.
+    """
+
+    def _solve(self, constraints):
+        """Run typehoon on a constraint set and return the solution."""
+        func_f = TypeVariable(name="F")
+        proj = angr.load_shellcode(b"\x90\x90", "x86")
+        typehoon = proj.analyses.Typehoon({func_f: constraints}, func_f)
+        return typehoon.solution
+
+    def test_pointer_from_load(self):
+        """tv_0.load.<32>@0 with int32 subtype -> tv_0 is a pointer."""
+        from angr.analyses.typehoon.typeconsts import Pointer32
+
+        tv_0 = TypeVariable(name="tv_0")
+        dtv_load = DerivedTypeVariable(tv_0, None, labels=[Load(), HasField(32, 0)])
+        constraints = {
+            Subtype(Int32(), dtv_load),
+            Subtype(dtv_load, Int32()),
+        }
+        sol = self._solve(constraints)
+        assert isinstance(sol[tv_0], Pointer32), f"Expected Pointer32, got {sol[tv_0]}"
+
+    def test_pointer_propagation_through_add(self):
+        """tv_r == tv_0 + int, tv_r.load -> tv_0 should be a pointer."""
+        from angr.analyses.typehoon.typeconsts import Pointer32
+        from angr.analyses.typehoon.typevars import Add
+
+        tv_0 = TypeVariable(name="tv_0")
+        tv_r = TypeVariable(name="tv_r")
+        dtv_load = DerivedTypeVariable(tv_r, None, labels=[Load(), HasField(32, 0)])
+        constraints = {
+            Add(tv_0, Int32(), tv_r),
+            Subtype(Int32(), dtv_load),
+            Subtype(dtv_load, Int32()),
+        }
+        sol = self._solve(constraints)
+        assert isinstance(sol[tv_0], Pointer32), f"Expected Pointer32, got {sol[tv_0]}"
+
+    def test_pointer_propagation_through_add_with_float_pointee(self):
+        """tv_r == tv_0 + int, float64 <: tv_r.load -> tv_0 should be ptr(float64)."""
+        from angr.analyses.typehoon.typeconsts import Pointer32
+        from angr.analyses.typehoon.typevars import Add
+
+        tv_0 = TypeVariable(name="tv_0")
+        tv_r = TypeVariable(name="tv_r")
+        dtv_load = DerivedTypeVariable(tv_r, None, labels=[Load(), HasField(64, 0)])
+        constraints = {
+            Add(tv_0, Int32(), tv_r),
+            Subtype(Float64(), dtv_load),
+            Subtype(dtv_load, Float64()),
+        }
+        sol = self._solve(constraints)
+        assert isinstance(sol[tv_0], Pointer32), f"Expected Pointer32, got {sol[tv_0]}"
+        assert isinstance(sol[tv_0].basetype, Float64), f"Expected Float64 pointee, got {sol[tv_0].basetype}"
+
+    def test_pointer_not_inferred_without_load(self):
+        """tv_0 + int == tv_r without load -> tv_0 should NOT be a pointer."""
+        from angr.analyses.typehoon.typeconsts import Pointer32
+        from angr.analyses.typehoon.typevars import Add
+
+        tv_0 = TypeVariable(name="tv_0")
+        tv_r = TypeVariable(name="tv_r")
+        constraints = {
+            Add(tv_0, Int32(), tv_r),
+            Subtype(tv_r, Int32()),
+        }
+        sol = self._solve(constraints)
+        # tv_0 may resolve to Int32 or TOP, but must NOT be a pointer
+        tv_0_type = sol.get(tv_0)
+        assert not isinstance(tv_0_type, Pointer32), f"Should not be a pointer, got {tv_0_type}"
+
+    def test_pointer_equivalence_preserves_dtv_structure(self):
+        """When tv_X == tv_Y and tv_X.load.@0 == tv_Z, unification should
+        produce tv_Y.load.@0 constraints, not lose the load field."""
+        from angr.analyses.typehoon.typeconsts import Pointer32
+        from angr.analyses.typehoon.typevars import Equivalence
+
+        tv_x = TypeVariable(name="tv_X")
+        tv_y = TypeVariable(name="tv_Y")
+        tv_z = TypeVariable(name="tv_Z")
+        dtv_load = DerivedTypeVariable(tv_x, None, labels=[Load(), HasField(32, 0)])
+        constraints = {
+            Equivalence(tv_x, tv_y),
+            Equivalence(dtv_load, tv_z),
+            Subtype(Float32(), tv_z),
+        }
+        sol = self._solve(constraints)
+        # Both tv_x and tv_y should be pointers since they're equivalent
+        # and tv_x has a load field
+        for tv in (tv_x, tv_y):
+            if tv in sol:
+                assert isinstance(sol[tv], Pointer32), f"Expected Pointer32 for {tv}, got {sol[tv]}"
+
+    def test_spurious_float_constraint_removed_for_pointer(self):
+        """ptr_tv <: float64 should be removed when ptr_tv is a known pointer."""
+        from angr.analyses.typehoon.typeconsts import Pointer32
+        from angr.analyses.typehoon.typevars import Add
+
+        tv_0 = TypeVariable(name="tv_0")
+        tv_r = TypeVariable(name="tv_r")
+        dtv_load = DerivedTypeVariable(tv_r, None, labels=[Load(), HasField(64, 0)])
+        constraints = {
+            Add(tv_0, Int32(), tv_r),
+            Subtype(Float64(), dtv_load),
+            Subtype(dtv_load, Float64()),
+            # Spurious constraint from FP address computation
+            Subtype(tv_0, Float64()),
+        }
+        sol = self._solve(constraints)
+        # tv_0 should still be a pointer despite the spurious float constraint
+        assert isinstance(sol[tv_0], Pointer32), f"Expected Pointer32, got {sol[tv_0]}"
+
+    def test_fp_variable_survives_degradation_merge(self):
+        """Degrading a large constraint set merges a double-holding variable into a pointer it flows into; the
+        variable's only own bound is float64, so it stays a double."""
+        func_f = TypeVariable(name="F")
+        x = TypeVariable(name="x")
+        y = TypeVariable(name="y")
+        constraints = {Subtype(Float64(), x), Subtype(x, y)}
+        for off in range(0, 24, 4):
+            constraints.add(Subtype(DerivedTypeVariable(y, None, labels=[Load(), HasField(32, off)]), Int32()))
+        proj = angr.load_shellcode(b"\x90\x90", "x86")
+        typehoon = proj.analyses.Typehoon({func_f: constraints}, func_f, constraint_set_degradation_threshold=1)
+        assert isinstance(typehoon.solution[x], Float64), typehoon.solution[x]
+
+
 class TestTypeTranslator(unittest.TestCase):
     def test_tc2simtype(self):
         tx = TypeTranslator(archinfo.arch_from_id("x86"))
@@ -439,6 +695,88 @@ class TestTypeTranslator(unittest.TestCase):
         st = SimTypeFloat()
         tc = tx.simtype2tc(st)
         assert isinstance(tc, Float32)
+
+    def test_simtypenum_struct_round_trip(self):
+        arch = archinfo.arch_from_id("amd64")
+        st = SimTypePointer(
+            SimStruct(
+                OrderedDict(
+                    {
+                        "ut_addr_v6": SimTypeArray(SimTypeNum(32, signed=True, label="int32_t"), 4),
+                        "tv_usec": SimTypeNum(64, signed=True, label="int64_t"),
+                    }
+                ),
+                name="utmp",
+            )
+        ).with_arch(arch)
+        tx = TypeTranslator(arch)
+
+        tc = tx.simtype2tc(st)
+        assert isinstance(tc, Pointer64)
+        assert isinstance(tc.basetype, Struct)
+        assert isinstance(tc.basetype.fields[0], Array)
+        assert isinstance(tc.basetype.fields[0].element, SInt32)
+        assert tc.basetype.fields[0].element.name == "int32_t"
+        assert isinstance(tc.basetype.fields[16], SInt64)
+        assert tc.basetype.fields[16].name == "int64_t"
+
+        restored, has_nonexistent_ref = tx.tc2simtype(tc)
+        assert not has_nonexistent_ref
+        assert isinstance(restored, SimTypePointer)
+        assert isinstance(restored.pts_to, SimStruct)
+        assert restored.pts_to.offsets == {"ut_addr_v6": 0, "tv_usec": 16}
+        assert restored.pts_to.size == 192
+        restored_array = restored.pts_to.fields["ut_addr_v6"]
+        assert isinstance(restored_array, SimTypeArray)
+        assert restored_array.size == 128
+        assert restored_array.elem_type.size == 32
+        assert restored_array.elem_type.signed is True
+
+    def test_unsupported_width_simtypenum(self):
+        arch = archinfo.arch_from_id("amd64")
+        tx = TypeTranslator(arch)
+
+        for bits in (1, 9, 24, 128):
+            for signed in (False, True):
+                with self.subTest(bits=bits, signed=signed):
+                    tc = tx.simtype2tc(SimTypeNum(bits, signed=signed, label=f"int{bits}_t").with_arch(arch))
+                    assert isinstance(tc, BottomType)
+
+        # Int1 and IntVar cannot be converted to equally-sized SimTypes: their sizes use incompatible units. They must
+        # remain unsupported rather than creating zero-alignment or incorrectly laid-out fields in a SimStruct.
+        struct = Struct(fields={0: Int1(), 1: IntVar(9), 2: Int8()})
+        restored, has_nonexistent_ref = tx.tc2simtype(struct)
+        assert not has_nonexistent_ref
+        assert isinstance(restored, SimStruct)
+        assert restored.offsets == {"field_0": 0, "field_1": 1, "field_2": 2}
+
+    def test_zero_sized_homogeneous_struct_is_not_specialized(self):
+        typehoon = Typehoon.__new__(Typehoon)
+
+        empty_cpp_struct = Struct(fields={}, name="Empty", is_cppclass=True)
+        for field in (empty_cpp_struct, Array(Int8(), count=0)):
+            with self.subTest(field=field):
+                struct = Struct(fields={0: field, 4: field})
+                assert typehoon._specialize_struct(struct) is None
+
+    def test_standard_width_simtypenum_round_trip(self):
+        arch = archinfo.arch_from_id("amd64")
+        tx = TypeTranslator(arch)
+
+        for bits in (8, 16, 32, 64):
+            for signed in (False, True):
+                with self.subTest(bits=bits, signed=signed):
+                    label = f"{'u' if not signed else ''}int{bits}_t"
+                    tc = tx.simtype2tc(SimTypeNum(bits, signed=signed, label=label).with_arch(arch))
+                    assert not isinstance(tc, IntVar)
+                    assert tc.size * arch.byte_width == bits
+                    assert tc.name == label
+
+                    restored, has_nonexistent_ref = tx.tc2simtype(tc)
+                    assert not has_nonexistent_ref
+                    assert restored.size == bits
+                    assert restored.signed is signed
+                    assert restored.label == label
 
     def test_lift_recursive_struct(self):
         arch = archinfo.arch_from_id("amd64")
@@ -454,6 +792,83 @@ class TestTypeTranslator(unittest.TestCase):
         assert isinstance(tc.fields[0], Pointer64)
         assert 0 in tc.field_names
         assert tc.field_names[0] == "ptr"
+        # the recursive reference points back at the struct being lifted instead of degrading into BOT
+        assert tc.fields[0].basetype is tc
+
+    @staticmethod
+    def _mutually_recursive_structs(arch):
+        """
+        struct Alpha { struct Beta *beta; int x; }; struct Beta { struct Alpha *alpha; int y; };
+        The shape ``dereference_simtype`` produces for library types such as DRIVER_OBJECT/DEVICE_OBJECT.
+        """
+        alpha = cast(SimStruct, SimStruct({}, name="Alpha").with_arch(arch))
+        beta = cast(SimStruct, SimStruct({}, name="Beta").with_arch(arch))
+        alpha.fields = OrderedDict({"beta": SimTypePointer(beta).with_arch(arch), "x": SimTypeInt().with_arch(arch)})
+        beta.fields = OrderedDict({"alpha": SimTypePointer(alpha).with_arch(arch), "y": SimTypeInt().with_arch(arch)})
+        return alpha, beta
+
+    def test_mutually_recursive_structs_keep_their_references(self):
+        arch = archinfo.arch_from_id("amd64")
+        alpha, _ = self._mutually_recursive_structs(arch)
+        tx = TypeTranslator(arch)
+
+        tc = tx.simtype2tc(alpha)
+        assert isinstance(tc, Struct)
+        beta_tc = tc.fields[0].basetype
+        assert isinstance(beta_tc, Struct)
+        assert beta_tc.name == "Beta"
+        # ... and Beta points back at the same Alpha
+        assert beta_tc.fields[0].basetype is tc
+
+    def test_known_struct_fields_are_not_re_inferred(self):
+        arch = archinfo.arch_from_id("amd64")
+        alpha, beta = self._mutually_recursive_structs(arch)
+        tx = TypeTranslator(arch)
+
+        # translating back returns the known definition itself, whichever type is lifted first
+        for lifted in (alpha, beta):
+            restored, _ = tx.tc2simtype(tx.simtype2tc(lifted))
+            assert restored is lifted
+
+        # reaching Beta through Alpha yields the same Beta, not a re-derived copy
+        restored_alpha, _ = tx.tc2simtype(tx.simtype2tc(alpha))
+        assert restored_alpha.fields["beta"].pts_to is beta
+
+
+class TestMapOffsetsToBases(unittest.TestCase):
+    """Tests for simple_solver.map_offsets_to_bases, which resolves overlapping field accesses to their bases."""
+
+    @staticmethod
+    def _naive(candidate_bases: SortedDict) -> dict[int, int]:
+        # the original implementation: expand every field one byte at a time
+        offset_to_base = {}
+        for start_offset, sizes in candidate_bases.items():
+            for size in sizes:
+                for i in range(size):
+                    if start_offset + i not in offset_to_base:
+                        offset_to_base[start_offset + i] = start_offset
+        return {offset: offset_to_base[offset] for offset in candidate_bases}
+
+    def test_matches_byte_by_byte_expansion(self):
+        rand = random.Random(0x1337)
+        for _ in range(200):
+            candidate_bases = SortedDict()
+            for _ in range(rand.randint(1, 12)):
+                offset = rand.randrange(0, 64)
+                if offset not in candidate_bases:
+                    candidate_bases[offset] = set()
+                candidate_bases[offset].add(rand.choice([1, 2, 4, 8, 16]))
+            assert dict(map_offsets_to_bases(candidate_bases)) == self._naive(candidate_bases), candidate_bases
+
+    def test_overlapping_fields(self):
+        # 0 covers [0, 8), so the access at 4 belongs to it; 4 covers [4, 12), so the access at 8 belongs to 4
+        candidate_bases = SortedDict({0: {8}, 4: {8}, 8: {1}, 100: {4}})
+        assert dict(map_offsets_to_bases(candidate_bases)) == {0: 0, 4: 0, 8: 4, 100: 100}
+
+    def test_huge_field_is_not_expanded(self):
+        # a bogus field size must not cost time or memory proportional to its size
+        candidate_bases = SortedDict({0: {536821538}, 8: {8}, 0x1000_0000: {4}, 0x2000_0000: {4}})
+        assert dict(map_offsets_to_bases(candidate_bases)) == {0: 0, 8: 0, 0x1000_0000: 0, 0x2000_0000: 0x2000_0000}
 
 
 class TestSimpleSolverLatticeOps(unittest.TestCase):
@@ -561,6 +976,92 @@ class TestFunctionArgTypeNormalization(unittest.TestCase):
         joined = SimpleSolver.join_simtypes(t1, t2, self.arch)
         assert isinstance(joined, SimTypePointer)
         assert isinstance(joined.pts_to, SimTypeInt)
+
+
+class TestLocalVariableTypeFlattening(unittest.TestCase):
+    """
+    Tests for Typehoon._flatten_pointer_to_array, which flattens pointer-to-array solutions for function-scope
+    variables. A local variable (register or pointer-sized stack slot) holds a pointer value; keeping the
+    pointer-to-array type would make the C backend declare it as an array (``SimTypePointer.c_repr`` drops
+    the pointer level when the pointee is an array), and any later assignment to it would be illegal C
+    ("assignment to expression with array type").
+    """
+
+    arch = archinfo.arch_from_id("amd64")
+
+    def test_pointer_to_array_flattens_to_element_pointer(self):
+        # int[8] * -> int *
+        ty = SimTypePointer(SimTypeArray(SimTypeInt(), 8)).with_arch(self.arch)
+        flattened = Typehoon._flatten_pointer_to_array(ty, self.arch)
+        assert isinstance(flattened, SimTypePointer)
+        assert isinstance(flattened.pts_to, SimTypeInt)
+        # the resulting declaration must be a pointer, not an array
+        assert flattened.c_repr(name="v").endswith("*v")
+
+    def test_pointer_to_nested_array_flattens_fully(self):
+        # int[4][8] * -> int *; single-level flattening would still be declared as an array
+        ty = SimTypePointer(SimTypeArray(SimTypeArray(SimTypeInt(), 4), 8)).with_arch(self.arch)
+        flattened = Typehoon._flatten_pointer_to_array(ty, self.arch)
+        assert isinstance(flattened, SimTypePointer)
+        assert isinstance(flattened.pts_to, SimTypeInt)
+
+    def test_plain_array_unchanged(self):
+        # a genuine in-place local array (char v[22]) is typed as a plain array and must keep its type
+        ty = SimTypeArray(SimTypeChar(), 22).with_arch(self.arch)
+        flattened = Typehoon._flatten_pointer_to_array(ty, self.arch)
+        assert flattened is ty
+
+    def test_plain_pointer_unchanged(self):
+        ty = SimTypePointer(SimTypeChar()).with_arch(self.arch)
+        flattened = Typehoon._flatten_pointer_to_array(ty, self.arch)
+        assert flattened is ty
+
+
+class TestDFAConstraintSolver(unittest.TestCase):
+    @staticmethod
+    def _reference_constraints(dfa_graph, start, finals) -> set:
+        # one constraint per simple path, as the solver used to enumerate them
+        constraints = set()
+        for final in finals:
+            for path in networkx.all_simple_edge_paths(dfa_graph, start, final):
+                labels = [dfa_graph.edges[edge]["label"] for edge in path]
+                recalls = [lbl for lbl, kind in labels[1:-1] if kind == "recall"]
+                forgets = [lbl for lbl, kind in labels[1:-1] if kind == "forget"]
+                lhs = labels[0].recall_many(recalls)
+                rhs = labels[-1].recall_many(forgets[::-1])
+                if (
+                    lhs.variance == Variance.COVARIANT
+                    and rhs.variance == Variance.COVARIANT
+                    and lhs.typevar != rhs.typevar
+                ):
+                    constraints.add(Subtype(lhs.typevar, rhs.typevar))
+        return constraints
+
+    def test_constraints_from_simple_paths_match_path_enumeration(self):
+        rng = random.Random(7)
+        tvs = [TypeVariable(idx=(0, i)) for i in range(4)]
+        variances = [Variance.COVARIANT, Variance.CONTRAVARIANT]
+        mid_labels = [Load(), Store(), HasField(32, 0), HasField(64, 8)]
+        for _ in range(150):
+            # 0 is the start state, 1 the only final state
+            n = rng.randint(3, 9)
+            g = networkx.MultiDiGraph()
+            g.add_nodes_from(range(n))
+            for _ in range(rng.randint(1, 3)):
+                node = ConstraintGraphNode(
+                    rng.choice(tvs), rng.choice(variances), ConstraintGraphTag.LEFT, FORGOTTEN.PRE_FORGOTTEN
+                )
+                g.add_edge(0, rng.randint(1, n - 1), label=node)
+            for _ in range(rng.randint(n, 3 * n)):
+                src, dst = rng.randint(2, n - 1), rng.randint(2, n - 1)
+                g.add_edge(src, dst, label=(rng.choice(mid_labels), rng.choice(["recall", "forget"])))
+            for _ in range(rng.randint(1, n)):
+                node = ConstraintGraphNode(
+                    rng.choice(tvs), rng.choice(variances), ConstraintGraphTag.RIGHT, FORGOTTEN.PRE_FORGOTTEN
+                )
+                g.add_edge(rng.randint(2, n - 1), 1, label=node)
+            expected = self._reference_constraints(g, 0, {1})
+            assert DFAConstraintSolver._constraints_from_simple_paths(g, 0, {1}) == expected
 
 
 if __name__ == "__main__":

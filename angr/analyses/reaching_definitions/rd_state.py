@@ -5,8 +5,8 @@ from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any, Self, overload
 
 import archinfo
-import claripy
 
+from angr import claripy
 from angr.code_location import CodeLocation
 from angr.engines.light import SpOffset
 from angr.knowledge_plugins.key_definitions import Definition, DerefSize, LiveDefinitions
@@ -16,7 +16,7 @@ from angr.knowledge_plugins.key_definitions.environment import Environment
 from angr.knowledge_plugins.key_definitions.heap_address import HeapAddress
 from angr.knowledge_plugins.key_definitions.tag import Tag
 from angr.storage.memory_mixins import MultiValuedMemory
-from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues, MVType
+from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 
 from .heap_allocator import HeapAllocator
 from .rd_initializer import RDAStateInitializer
@@ -183,7 +183,7 @@ class ReachingDefinitionsState:
             return n - 2**self.arch.bits
         return n
 
-    def annotate_with_def(self, symvar: MVType, definition: Definition[Any, Any]) -> MVType:
+    def annotate_with_def(self, symvar: claripy.ast.BV, definition: Definition[Any, Any]) -> claripy.ast.BV:
         """
 
         :param symvar:
@@ -192,11 +192,9 @@ class ReachingDefinitionsState:
         """
         return self.live_definitions.annotate_with_def(symvar, definition)
 
-    def annotate_mv_with_def(self, mv: MultiValues[MVType], definition: Definition[A, CodeLoc]) -> MultiValues[MVType]:
+    def annotate_mv_with_def(self, mv: MultiValues, definition: Definition[A, CodeLoc]) -> MultiValues:
         return MultiValues(
-            offset_to_values={
-                offset: {self.annotate_with_def(value, definition) for value in values} for offset, values in mv.items()
-            }
+            {offset: {self.annotate_with_def(value, definition) for value in values} for offset, values in mv.items()}
         )
 
     def extract_defs(self, symvar: claripy.ast.Base) -> Iterator[Definition[Any, Any]]:
@@ -286,18 +284,18 @@ class ReachingDefinitionsState:
         if initializer is None:
             initializer = RDAStateInitializer(self.arch, project=project)
 
-        if subject.type == SubjectType.Function:
-            if isinstance(self.arch, archinfo.arch_ppc64.ArchPPC64) and not rtoc_value:
-                raise ValueError("The architecture being ppc64, the parameter `rtoc_value` should be provided.")
-
-            initializer.initialize_function_state(self, subject.cc, subject.content.addr, rtoc_value)
-        elif subject.type == SubjectType.CallTrace:
-            if isinstance(self.arch, archinfo.arch_ppc64.ArchPPC64) and not rtoc_value:
-                raise ValueError("The architecture being ppc64, the parameter `rtoc_value` should be provided.")
-
-            initializer.initialize_function_state(
-                self, subject.cc, subject.content.current_function_address(), rtoc_value
+        if subject.type in (SubjectType.Function, SubjectType.CallTrace):
+            func_addr = (
+                subject.content.addr
+                if subject.type == SubjectType.Function
+                else subject.content.current_function_address()
             )
+            if isinstance(self.arch, archinfo.arch_ppc64.ArchPPC64) and not rtoc_value:
+                rtoc_value = initializer.default_rtoc_value(func_addr)
+                if not rtoc_value:
+                    raise ValueError("The architecture being ppc64, the parameter `rtoc_value` should be provided.")
+
+            initializer.initialize_function_state(self, subject.cc, func_addr, rtoc_value)
         elif subject.type == SubjectType.Block:
             pass
 
@@ -520,7 +518,7 @@ class ReachingDefinitionsState:
     ) -> bytes | None: ...
 
     def get_concrete_value(
-        self, spec: Atom | Definition[Atom, CodeLoc] | Iterable[Atom], cast_to: type[int] | type[bytes] = int
+        self, spec: Atom | Definition[Atom, CodeLoc] | Iterable[Atom], cast_to: type[int | bytes] = int
     ) -> int | bytes | None:
         return self.live_definitions.get_concrete_value(spec, cast_to)
 
@@ -565,7 +563,7 @@ class ReachingDefinitionsState:
     def deref(
         self,
         pointer: (
-            MultiValues[claripy.ast.BV]
+            MultiValues
             | Atom
             | Definition[Atom, CodeLoc]
             | Iterable[Atom]

@@ -10,7 +10,9 @@ from angr.ailment.expression import Call, Const, VirtualVariable, VirtualVariabl
 from angr.analyses.analysis import AnalysesHub, Analysis
 from angr.analyses.decompiler.clinic import ClinicStage
 from angr.analyses.decompiler.optimization_passes import CallStatementRewriter
+from angr.analyses.decompiler.variable_map import variable_map_of
 from angr.calling_conventions import default_cc
+from angr.enums import Flavors
 from angr.knowledge_plugins.functions import Function
 from angr.rust.optimization_passes.cleanup_code_remover import CleanupCodeRemover
 from angr.rust.optimization_passes.utils import extract_str, extract_str_from_addr
@@ -126,12 +128,13 @@ class RustCallingConventionAnalysis(Analysis):
     # -- core ----------------------------------------------------------------
 
     def _analyze(self):
-        if self.func.prototype is None:
+        prototype = self.func.get_prototype(Flavors.RUST_FLAVOR)
+        if prototype is None:
             if self._cached_model is not None:
                 self.model = self._cached_model
             return
         self._fact_collector.collect()
-        inferred_prototype = self._infer_prototype(self.func.prototype)
+        inferred_prototype = self._infer_prototype(prototype)
         if self._cached_model is not None and not self._is_more_precise_prototype(
             inferred_prototype, self._cached_model.inferred_prototype
         ):
@@ -341,7 +344,7 @@ class RustCallingConventionAnalysis(Analysis):
                 ).with_arch(self.project.arch)
             candidates.append(struct_ty)
 
-        final_ty = sorted(candidates, key=lambda candidate: candidate.size, reverse=True)[0] if candidates else None
+        final_ty = max(candidates, key=lambda candidate: candidate.size) if candidates else None
 
         # Filter out register-size structs
         if final_ty and final_ty.size <= self.project.arch.bits:
@@ -398,15 +401,16 @@ class RustCallingConventionAnalysis(Analysis):
 
         return new_arg_types
 
-    @staticmethod
-    def _arg_idx_to_arg_ty(arg_idx, call: Call):
-        if call.prototype and call.calling_convention and call.args:
+    def _arg_idx_to_arg_ty(self, arg_idx, call: Call):
+        vm = variable_map_of(self.ail_manager)
+        call_prototype = vm.prototype(call)
+        if call_prototype and vm.calling_convention(call) and call.args:
             arg_offset = 0
             for i in range(arg_idx):
                 arg = call.args[i]
                 arg_offset += arg.bits
             cur_offset = 0
-            for arg_ty in call.prototype.args:
+            for arg_ty in call_prototype.args:
                 if cur_offset == arg_offset:
                     return arg_ty
                 cur_offset += arg_ty.size or 0
@@ -490,14 +494,14 @@ class RustCallingConventionAnalysis(Analysis):
                             some_type,
                             some_discriminant,
                             some_discriminant_size,
-                        )
+                        ).with_arch(self.project.arch)
                     return RustSimTypeOption(
                         none_discriminant,
                         none_discriminant_size,
                         some_type,
                         some_discriminant,
                         some_discriminant_size,
-                    )
+                    ).with_arch(self.project.arch)
                 if None not in discriminants:
                     # Result<T, E> with both discriminants known
                     # Default: sort by discriminant value (smaller = Ok, larger = Err)
@@ -524,7 +528,7 @@ class RustCallingConventionAnalysis(Analysis):
                         err_type,
                         err_discriminant.value,
                         discriminant_size,
-                    )
+                    ).with_arch(self.project.arch)
                 if candidates_and_discriminants[1][1] is None:
                     # Result<T, E> with one discriminant missing (T is larger, discriminant omitted)
                     (err_type, err_discriminant), (ok_type, _) = candidates_and_discriminants
@@ -536,7 +540,7 @@ class RustCallingConventionAnalysis(Analysis):
                         err_type,
                         err_discriminant.value,
                         discriminant_size,
-                    )
+                    ).with_arch(self.project.arch)
 
         if len(candidates_and_discriminants) >= 2:
             structs_by_size = {}
@@ -552,7 +556,7 @@ class RustCallingConventionAnalysis(Analysis):
                     err_type=small_type,
                     err_discriminant=None,
                     err_discriminant_size=0,
-                )
+                ).with_arch(self.project.arch)
             if (
                 len(structs_by_size) > 2
                 and min(structs_by_size) > 16 * self.project.arch.byte_width

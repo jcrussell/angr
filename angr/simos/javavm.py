@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 
 from archinfo.arch_soot import ArchSoot, SootAddressDescriptor, SootAddressTerminator, SootArgument, SootNullConstant
-from claripy import BVS, BVV, FPS, FPV, FSORT_DOUBLE, FSORT_FLOAT, StringS, StringV, fpToIEEEBV
-from claripy.ast import BV, FP
 
 import angr
 from angr import sim_options as options
 from angr.calling_conventions import SimCCSoot, default_cc
+from angr.claripy import BVS, BVV, FPS, FPV, FSORT_DOUBLE, FSORT_FLOAT, StringS, StringV, fpToIEEEBV
+from angr.claripy.ast import BV, FP
 from angr.engines.soot import SootMixin
 from angr.engines.soot.expressions import SimSootExpr_NewArray
 from angr.engines.soot.values import (
@@ -104,8 +104,6 @@ class SimJavaVM(SimOS):
     def state_blank(self, addr=None, **kwargs):  # pylint: disable=arguments-differ
         if not kwargs.get("mode"):
             kwargs["mode"] = self.project._default_analysis_mode
-        if not kwargs.get("arch"):
-            kwargs["arch"] = self.arch
         if not kwargs.get("os_name"):
             kwargs["os_name"] = self.name
 

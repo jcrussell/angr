@@ -1,4 +1,4 @@
-# pylint:disable=unused-import
+# pylint:disable=unused-import,protected-access
 from __future__ import annotations
 
 import logging
@@ -12,33 +12,49 @@ from cle import SymbolType
 from angr import ailment
 from angr.analyses.analysis import AnalysesHub, Analysis
 from angr.analyses.cfg import CFGFast
+from angr.analyses.s_propagator import sprop_cache_scope
 from angr.analyses.typehoon.typehoon import Typehoon
 from angr.analyses.typehoon.typevars import TypeVariableManager
-from angr.errors import AngrAIError
-from angr.knowledge_base import KnowledgeBase
+from angr.enums import Flavors
+from angr.errors import AngrAIError, AngrDecompilationComplexityError
+from angr.go.optimization_passes import get_go_optimization_passes
+from angr.go.typehoon.typehoon import GoTypehoon
 from angr.knowledge_plugins.functions.function import Function
 from angr.rust.optimization_passes import get_rust_optimization_passes
 from angr.rust.typehoon.typehoon import RustTypehoon
-from angr.sim_type import parse_type
 from angr.sim_variable import SimMemoryVariable, SimRegisterVariable, SimStackVariable
 from angr.utils import timethis
+from angr.utils.loader import is_in_readonly_section, is_in_readonly_segment
 
 from .ailgraph_walker import AILGraphWalker
-from .clinic import ClinicStage
+from .clinic import Clinic, ClinicStage
 from .condition_processor import ConditionProcessor
 from .decompilation_cache import DecompilationCache
-from .decompilation_options import PARAM_TO_OPTION, DecompilationOption
+from .decompilation_options import DEFAULT_MAX_FUNCTION_BLOCKS, PARAM_TO_OPTION, DecompilationOption
+from .edits import (
+    DecompilationEditError,
+    list_variable_names,
+    reflow_types,
+    rename_function,
+    rename_variable,
+    resolve_variable,
+    set_variable_type,
+)
+from .known_patterns import resolve_pattern_selection
 from .notes import DecompilationNote
 from .optimization_passes.optimization_pass import OptimizationPassStage
 from .presets import DECOMPILATION_PRESETS, DecompilationPreset
 from .region_identifier import RegionIdentifier
 from .sequence_walker import SequenceWalker
+from .structured_codegen import DummyStructuredCodeGenerator
 from .structured_codegen.c import CStructuredCodeGenerator
+from .structured_codegen.go import GoStructuredCodeGenerator
 from .structured_codegen.rust import RustStructuredCodeGenerator
 from .structurer_nodes import SequenceNode
 from .structuring import DEFAULT_STRUCTURER, PhoenixStructurer, RecursiveStructurer
 from .structuring.phoenix import MultiStmtExprMode
 from .utils import remove_edges_in_ailgraph
+from .variable_map import VariableMap
 
 if TYPE_CHECKING:
     from angr.analyses.typehoon.typevars import TypeConstraint, TypeVariable
@@ -54,12 +70,84 @@ _PEEPHOLE_OPTIMIZATIONS_TYPE = (
 )
 
 
+class ConstantCollector(SequenceWalker):
+    """
+    Collect the values of all integer constants in a structured sequence, including the constants inside expressions
+    and statements that structuring lifts out of blocks and onto the nodes themselves.
+    """
+
+    # pylint:disable=unused-argument
+
+    def __init__(self):
+        self.const_values: set[int] = set()
+        self._block_viewer = ailment.AILBlockViewer()
+        # updating the default handler table keeps the handlers that descend into subexpressions; passing
+        # expr_handlers to the constructor would replace them, and no constant below the top level would be reached
+        self._block_viewer.expr_handlers[ailment.Expr.Const] = self._handle_Const
+        super().__init__(handlers={ailment.Block: self._handle_Block}, update_seqnode_in_place=False)
+
+    def _handle(self, node, **kwargs):
+        # a node's condition, switch expression, loop initializer and loop iterator are AIL expressions and
+        # statements rather than nodes, and the base walker has no handler for them
+        if isinstance(node, ailment.Expr.Expression):
+            self._block_viewer.walk_expression(node)
+            return None
+        if isinstance(node, ailment.Stmt.Statement):
+            self._block_viewer.walk_statement(node)
+            return None
+        return super()._handle(node, **kwargs)
+
+    #
+    # Handlers
+    #
+
+    def _handle_Const(self, expr_idx: int, expr: ailment.Expr.Const, *args, **kwargs):
+        if isinstance(expr.value, int):
+            self.const_values.add(expr.value)
+
+    def _handle_Block(self, block: ailment.Block, **kwargs):
+        self._block_viewer.walk(block)
+
+    def _handle_CascadingCondition(self, node, **kwargs):
+        for condition, _ in node.condition_and_nodes:
+            self._block_viewer.walk_expression(condition)
+        return super()._handle_CascadingCondition(node, **kwargs)
+
+    def _handle_ConditionalBreak(self, node, **kwargs):
+        self._block_viewer.walk_expression(node.condition)
+        return super()._handle_ConditionalBreak(node, **kwargs)
+
+
 class Decompiler(Analysis):
     """
     The decompiler analysis.
 
     Run this on a Function object for which a normalized CFG has been constructed.
     The fully processed output can be found in result.codegen.text
+
+    AIL graphs exposed on the result (both on a fresh run and on a cache hit, including caches reloaded from
+    angrdb or the runtime-db spill):
+
+    - ``ail_graph`` (= ``clinic.cc_graph``): the simplified graph before region identification.
+    - ``clinic.graph``: the final graph after region identification and region simplification.
+    - ``unoptimized_ail_graph`` (= ``clinic.unoptimized_graph``): a snapshot before the first structure-altering
+      optimization pass; use it for an exact instruction-to-AIL mapping. Only built when
+      ``save_unoptimized_graph=True`` is passed; otherwise this attribute is None on both fresh runs and cache hits.
+
+    Complexity guard: pathologically large functions (e.g. packer filler that linear disassembly turns into thousands
+    of blocks) can keep the pipeline busy indefinitely, so two size limits are checked before the expensive work
+    starts. ``max_function_blocks`` (default 50000, ``DEFAULT_MAX_FUNCTION_BLOCKS``) bounds the number of CFG basic
+    blocks and is checked before any AIL is built; ``max_ail_statements`` (default 1000000,
+    ``DEFAULT_MAX_AIL_STATEMENTS``) bounds the number of AIL statements and is checked right after the AIL graph is
+    built. Both are ~10x the largest function in angr's test binary corpus. Either limit can be changed through the
+    decompilation option of the same name, and setting one to 0 disables it. When a limit is exceeded, decompilation
+    stops with an :class:`AngrDecompilationComplexityError` naming the limit and the actual size: with
+    ``fail_fast=True`` it is raised, otherwise it is recorded in ``self.errors`` (and in
+    ``kb.decompilations[...].errors``) and exposed as :attr:`complexity_error`, and ``codegen`` stays None.
+
+    The optimization passes come from ``preset`` (a name or a DecompilationPreset), or from an explicit
+    ``optimization_passes`` list when no preset is given. ``disable_opts`` drops individual passes from the
+    preset's list, which is how a caller asks for "this preset, minus that one pass" without restating it.
     """
 
     def __init__(
@@ -69,17 +157,17 @@ class Decompiler(Analysis):
         options=None,
         preset: str | DecompilationPreset | None = None,
         optimization_passes=None,
+        disable_opts=None,
         sp_tracker_track_memory=True,
-        variable_kb=None,
         peephole_optimizations: _PEEPHOLE_OPTIMIZATIONS_TYPE = None,
         vars_must_struct: set[str] | None = None,
-        flavor="pseudocode",
+        flavor: str = Flavors.DEFAULT_FLAVOR,
         expr_comments=None,
         stmt_comments=None,
         ite_exprs=None,
         binop_operators=None,
         decompile=True,
-        regen_clinic=True,
+        regen_clinic=False,
         inline_functions=None,
         desired_variables=None,
         update_memory_data: bool = True,
@@ -96,6 +184,8 @@ class Decompiler(Analysis):
         static_vvars: dict | None = None,
         static_buffers: dict | None = None,
         codegen_cls=CStructuredCodeGenerator,
+        save_unoptimized_graph: bool = False,
+        go_sigs_rerun: bool = True,
     ):
         if not isinstance(func, Function):
             func = self.kb.functions[func]
@@ -114,6 +204,10 @@ class Decompiler(Analysis):
             cfg = self.func._function_manager._kb.cfgs.get_most_accurate()
         self._cfg = cfg.model if isinstance(cfg, CFGFast) else cfg
         self._options = self._parse_options(options) if options else []
+        self.options_by_class: defaultdict[str, list[tuple[DecompilationOption, Any]]] = defaultdict(list)
+        for o, v in self._options:
+            self.options_by_class[o.cls].append((o, v))
+        self._validate_options()
 
         if preset is None and optimization_passes:
             self._optimization_passes = optimization_passes
@@ -127,16 +221,19 @@ class Decompiler(Analysis):
                 preset = DECOMPILATION_PRESETS["default"]
             if not isinstance(preset, DecompilationPreset):
                 raise TypeError('"preset" must be a DecompilationPreset instance')
-            self._optimization_passes = preset.get_optimization_passes(self.project.arch, self.project.simos.name)
+            self._optimization_passes = preset.get_optimization_passes(
+                self.project.arch, self.project.simos.name, disable_opts=disable_opts
+            )
 
-        if self._flavor == "rust":
+        if self._flavor == Flavors.RUST_FLAVOR:
             self._optimization_passes.extend(get_rust_optimization_passes())
+        elif self._flavor == Flavors.GO_FLAVOR:
+            self._optimization_passes.extend(get_go_optimization_passes())
 
         l.debug("Get %d optimization passes for the current binary.", len(self._optimization_passes))
         self._sp_tracker_track_memory = sp_tracker_track_memory
         self._peephole_optimizations = peephole_optimizations
         self._vars_must_struct = vars_must_struct
-        self._variable_kb = variable_kb
         self._expr_comments = expr_comments
         self._stmt_comments = stmt_comments
         self._ite_exprs = ite_exprs
@@ -149,24 +246,36 @@ class Decompiler(Analysis):
         self._desired_variables = frozenset(desired_variables) if desired_variables else set()
         self._static_vvars = static_vvars if static_vvars is not None else {}
         self._static_buffers = static_buffers if static_buffers is not None else {}
+        self._save_unoptimized_graph = save_unoptimized_graph
+        # Go flavor: run the Clinic again when it learned a signature it had already built on (see _decompile)
+        self._go_sigs_rerun = go_sigs_rerun
+        # whether a Clinic run changed kb.go_signatures, whether the Clinic ran twice for it, and the version the
+        # last run started from
+        self.go_sigs_updated: bool = False
+        self.go_sigs_reran: bool = False
+        self.go_sigs_version: int | None = None
+        # ``cfg`` is not in this dict: it is an input, not part of the decompilation result. Its identity is
+        # checked separately in :meth:`_can_use_decompilation_cache`.
+        # Collection-typed values are normalized to empty collections (never None) so the serialized cache does not
+        # need to distinguish None from empty. The exception is peephole_optimizations, where None means "use the
+        # default peephole set" and is distinct from an explicitly empty list.
         self._cache_parameters = (
             {
-                "cfg": self._cfg,
-                "variable_kb": self._variable_kb,
                 "options": {(o, v) for o, v in self._options if o.category != "Display" and v != o.default_value},
                 "optimization_passes": self._optimization_passes,
                 "sp_tracker_track_memory": self._sp_tracker_track_memory,
                 "peephole_optimizations": self._peephole_optimizations,
-                "vars_must_struct": self._vars_must_struct,
+                "vars_must_struct": self._vars_must_struct or set(),
                 "flavor": self._flavor,
-                "expr_comments": self._expr_comments,
-                "stmt_comments": self._stmt_comments,
-                "ite_exprs": self._ite_exprs,
-                "binop_operators": self._binop_operators,
+                "expr_comments": self._expr_comments or {},
+                "stmt_comments": self._stmt_comments or {},
+                "ite_exprs": self._ite_exprs or set(),
+                "binop_operators": self._binop_operators or {},
                 "inline_functions": self._inline_functions,
                 "desired_variables": self._desired_variables,
                 "static_vvars": self._static_vvars,
                 "static_buffers": self._static_buffers,
+                "save_unoptimized_graph": self._save_unoptimized_graph,
             }
             if use_cache
             else None
@@ -181,9 +290,9 @@ class Decompiler(Analysis):
         self.codegen: BaseStructuredCodeGenerator | None = None
         self.codegen_cls = codegen_cls
         self.cache: DecompilationCache | None = None
-        self.cache: DecompilationCache | None = None
-        self.options_by_class = None
         self.seq_node: SequenceNode | None = None
+        # addresses of the regions whose final structuring failed (see RecursiveStructurer.structuring_failures)
+        self.structuring_failures: list[int] = []
         self.unoptimized_ail_graph: networkx.DiGraph | None = None
         self.ail_graph: networkx.DiGraph | None = None
         self.vvar_id_start = None
@@ -195,38 +304,87 @@ class Decompiler(Analysis):
         self.use_cache = use_cache
         self.update_cache = update_cache
 
+        self._variable_map = None
+        # structuring-specific parameters - will be reset in _decompile()
+        self._force_loop_single_exit = True
+        self._refine_loops_with_single_successor = False
+        self._expose_loop_head_backedges = False
+        self._recursive_structurer_params = {}
+
+        # cache of reusable AILBlockWalker instances that are shared by all SPropagator instances created during
+        # decompilation. Owned here so all walkers are released when this Decompiler instance is garbage-collected.
+        # SPropagator picks up this cache (see walker_cache_scope).
+        self._sprop_walker_cache: dict = {}
+
         self._codegen_cls = CStructuredCodeGenerator
         self._typehoon_cls = Typehoon
-        if self._flavor == "rust":
+        if self._flavor == Flavors.RUST_FLAVOR:
             self._codegen_cls = RustStructuredCodeGenerator
             self._typehoon_cls = RustTypehoon
+        elif self._flavor == Flavors.GO_FLAVOR:
+            self._codegen_cls = GoStructuredCodeGenerator
+            self._typehoon_cls = GoTypehoon
 
         if decompile:
             with self._resilience():
-                self._decompile()
+                self._decompile_with_cache()
             if self.errors:
                 if self.update_cache:
                     if (self.func.addr, self._flavor) not in self.kb.decompilations:
                         self.kb.decompilations[(self.func.addr, self._flavor)] = DecompilationCache(self.func.addr)
                     for error in self.errors:
                         self.kb.decompilations[(self.func.addr, self._flavor)].errors.append(error.format())
-                with self._resilience():
-                    l.info("Decompilation failed for %s. Switching to basic preset and trying again.", self.func)
-                    if preset != DECOMPILATION_PRESETS["basic"]:
-                        self._optimization_passes = DECOMPILATION_PRESETS["basic"].get_optimization_passes(
-                            self.project.arch, self.project.simos.name
-                        )
-                        self._decompile()
-                        if self.update_cache:
-                            for error in self.errors:
-                                self.kb.decompilations[(self.func.addr, self._flavor)].errors.append(error.format())
+                # a complexity limit is a property of the function, not of the preset: retrying would only pay for the
+                # same oversized graph a second time
+                if self.complexity_error is None:
+                    with self._resilience():
+                        l.info("Decompilation failed for %s. Switching to basic preset and trying again.", self.func)
+                        if preset != DECOMPILATION_PRESETS["basic"]:
+                            self._optimization_passes = DECOMPILATION_PRESETS["basic"].get_optimization_passes(
+                                self.project.arch, self.project.simos.name
+                            )
+                            self._decompile_with_cache()
+                            if self.update_cache:
+                                for error in self.errors:
+                                    self.kb.decompilations[(self.func.addr, self._flavor)].errors.append(error.format())
+
+    @property
+    def complexity_error(self) -> AngrDecompilationComplexityError | None:
+        """
+        The complexity-limit violation that aborted this decompilation, or None if no limit was exceeded. Inspect
+        ``limit_name``, ``limit``, and ``actual`` on it to decide whether to raise the limit or skip the function.
+        """
+        for error in self.errors:
+            if isinstance(error.exc_value, AngrDecompilationComplexityError):
+                return error.exc_value
+        return None
+
+    def _check_block_limit(self) -> None:
+        """
+        Abort before any AIL is built if the function has too many basic blocks.
+        """
+        limit = self.options_to_params(self.options_by_class["decompiler"]).get(
+            "max_function_blocks", DEFAULT_MAX_FUNCTION_BLOCKS
+        )
+        if not limit:
+            return
+        block_count = len(self.func.block_addrs_set)
+        if block_count > limit:
+            raise AngrDecompilationComplexityError(
+                "max_function_blocks", limit, block_count, self.func.addr, unit="basic blocks"
+            )
 
     def _can_use_decompilation_cache(self, cache: DecompilationCache) -> bool:
         if self._cache_parameters is None or cache.parameters is None:
             return False
+        # deserialized caches come back with cfg unset until the caller re-attaches it; unset is not a mismatch
+        if cache.cfg is not None and cache.cfg is not self._cfg:
+            return False
         a, b = self._cache_parameters, cache.parameters
-        id_checks = {"cfg", "variable_kb"}
-        return all(a[k] is b[k] if k in id_checks else a[k] == b[k] for k in self._cache_parameters)
+        if not b:
+            # AngrDB-loaded caches carry no recorded parameters; there is nothing to validate against
+            return True
+        return all(k in b and a[k] == b[k] for k in a)
 
     @staticmethod
     def _parse_options(options: list[tuple[DecompilationOption | str, Any]]) -> list[tuple[DecompilationOption, Any]]:
@@ -239,13 +397,56 @@ class Decompiler(Analysis):
             if isinstance(o, str):
                 # convert to DecompilationOption
                 o = PARAM_TO_OPTION[o]
+            if isinstance(v, list):
+                # option values end up in the hashable _cache_parameters set; normalize sequences to tuples
+                v = tuple(v)
             converted_options.append((o, v))
         return converted_options
+
+    def _validate_options(self) -> None:
+        """Reject bad option values up front.
+
+        The decompilation itself runs under ``_resilience()`` and falls back to the basic preset on any error, so a
+        mistyped pattern name would otherwise be swallowed and silently produce output with no patterns applied at
+        all. Validating here means ``proj.analyses.Decompiler(...)`` raises for the caller instead."""
+        for o, v in self._options:
+            if o.param == "known_patterns":
+                resolve_pattern_selection(o.convert(v) if o.convert is not None else v)
+
+    def _decompile_with_cache(self):
+        with sprop_cache_scope(self._sprop_walker_cache):
+            self._decompile()
+
+    def _reuse_cached_decompilation(self, cache, clinic, codegen) -> None:
+        """Full-reuse fast path: expose the cached clinic and codegen as this run's results without re-running the
+        pipeline. A live codegen's text is re-rendered to pick up in-place display edits; a freshly-deserialized
+        codegen (``_handlers is None``) keeps its stored text. The codegen inherits the cache's version and
+        timestamp."""
+        codegen.version = cache.version
+        codegen.timestamp = cache.timestamp
+        if codegen._handlers is not None:
+            codegen.regenerate_text()
+
+        self.cache = cache
+        self.clinic = clinic
+        self.codegen = codegen
+        self.seq_node = None
+        self.ail_graph = clinic.cc_graph
+        self.unoptimized_ail_graph = clinic.unoptimized_graph
+        self._variable_map = clinic.variable_map
+        self.vvar_id_start = clinic.vvar_id_start
+        self._copied_var_ids = clinic.copied_var_ids
+
+        if self.update_cache:
+            self.kb.decompilations[(self.func.addr, self._flavor)] = cache
+        self._finish_progress()
 
     @timethis
     def _decompile(self):
         if self.func.is_simprocedure:
             return
+
+        self._check_block_limit()
 
         cache = None
 
@@ -266,64 +467,77 @@ class Decompiler(Analysis):
         else:
             old_codegen = None
             old_clinic = None
-            ite_exprs = self._ite_exprs
-            binop_operators = self._binop_operators
+            # normalize to empty collections so the cache never stores None (passes treat None and empty the same)
+            ite_exprs = self._ite_exprs or set()
+            binop_operators = self._binop_operators or {}
             l.debug("Decompilation cache miss")
 
-        self.options_by_class = defaultdict(list)
-
-        if self._options:
-            for o, v in self._options:
-                self.options_by_class[o.cls].append((o, v))
+        # Full-reuse fast path: with use_cache and without regen_clinic (the default), a valid cache short-circuits
+        # the entire pipeline and hands back the cached clinic and codegen. Requires an AST-carrying codegen (not
+        # DummyStructuredCodeGenerator) and this function's variables of the same flavor in kb.dec_variables; anything
+        # else falls through to a fresh decompilation.
+        if (
+            self.use_cache
+            and not self._regen_clinic
+            and cache is not None
+            and old_clinic is not None
+            and old_codegen is not None
+            and not isinstance(old_codegen, DummyStructuredCodeGenerator)
+            and self.kb.dec_variables.has_function_manager_for_flavor(self.func.addr, self._flavor)
+            and self.func.get_prototype(self._flavor) is not None
+        ):
+            self._reuse_cached_decompilation(cache, old_clinic, old_codegen)
+            return
 
         # set global variables
         self._set_global_variables()
         self._update_progress(5.0, text="Converting to AIL")
 
-        variable_kb = self._variable_kb
-        # fall back to old codegen
-        if variable_kb is None and old_codegen is not None and isinstance(old_codegen, CStructuredCodeGenerator):
-            variable_kb = old_codegen._variable_kb
-
-        if variable_kb is None:
-            reset_variable_names = True
-        else:
-            reset_variable_names = self.func.addr not in variable_kb.variables.function_managers
+        reset_variable_names = not self.kb.dec_variables.has_function_manager_for_flavor(self.func.addr, self._flavor)
 
         # determine a few arguments according to the structuring algorithm
         fold_callexprs_into_conditions = False
         self._force_loop_single_exit = True
         self._refine_loops_with_single_successor = False
-        self._complete_successors = False
+        self._expose_loop_head_backedges = False
         self._recursive_structurer_params = self.options_to_params(self.options_by_class["recursive_structurer"])
         if "structurer_cls" not in self._recursive_structurer_params:
             self._recursive_structurer_params["structurer_cls"] = DEFAULT_STRUCTURER
-        # The Rust flavor disables multi-statement-expression generation regardless of user options.
-        if self._flavor == "rust":
+        # The Rust and Go flavors disable multi-statement-expression generation regardless of user options.
+        if self._flavor in (Flavors.RUST_FLAVOR, Flavors.GO_FLAVOR):
             self._recursive_structurer_params["use_multistmtexprs"] = MultiStmtExprMode.NEVER
         # is the algorithm based on Phoenix (a schema-based algorithm)?
         if issubclass(self._recursive_structurer_params["structurer_cls"], PhoenixStructurer):
             self._force_loop_single_exit = False
             # self._refine_loops_with_single_successor = True
-            self._complete_successors = True
+            self._expose_loop_head_backedges = True
             fold_callexprs_into_conditions = True
 
-        cache = DecompilationCache(self.func.addr)
-        if self._cache_parameters is not None:
-            cache.parameters = self._cache_parameters
-        cache.ite_exprs = ite_exprs
-        cache.binop_operators = binop_operators
+        def new_cache() -> DecompilationCache:
+            cache = DecompilationCache(self.func.addr)
+            cache.cfg = self._cfg
+            if self._cache_parameters is not None:
+                cache.parameters = self._cache_parameters
+            cache.ite_exprs = ite_exprs
+            cache.binop_operators = binop_operators
+            return cache
+
+        cache = new_cache()
+
+        # The Decompiler owns the VariableMap. A fresh map is created before launching a new Clinic (re-linking
+        # populates it from scratch over freshly-allocated atom idx values). When a cached Clinic is reused without
+        # re-linking, its existing map is carried over below.
+        variable_map = VariableMap()
 
         # convert function blocks to AIL blocks
         def progress_callback(p, **kwargs):
             return self._update_progress(p * (70 - 5) / 100.0 + 5, **kwargs)
 
-        if self._regen_clinic or old_clinic is None or self.func.prototype is None:
-            clinic = self.project.analyses.Clinic(
+        def run_clinic(cache: DecompilationCache, variable_map: VariableMap) -> Clinic:
+            return self.project.analyses.Clinic(
                 self.func,
                 kb=self.kb,
                 fail_fast=self._fail_fast,
-                variable_kb=variable_kb,
                 reset_variable_names=reset_variable_names,
                 optimization_passes=self._optimization_passes,
                 sp_tracker_track_memory=self._sp_tracker_track_memory,
@@ -338,7 +552,7 @@ class Decompiler(Analysis):
                 optimization_scratch=self._optimization_scratch,
                 force_loop_single_exit=self._force_loop_single_exit,
                 refine_loops_with_single_successor=self._refine_loops_with_single_successor,
-                complete_successors=self._complete_successors,
+                expose_loop_head_backedges=self._expose_loop_head_backedges,
                 typehoon_cls=self._typehoon_cls,
                 ail_graph=self._clinic_graph,
                 arg_vvars=self._clinic_arg_vvars,
@@ -348,18 +562,60 @@ class Decompiler(Analysis):
                 notes=self.notes,
                 static_vvars=self._static_vvars,
                 static_buffers=self._static_buffers,
+                save_unoptimized_graph=self._save_unoptimized_graph,
                 flavor=self._flavor,
+                variable_map=variable_map,
                 **self.options_to_params(self.options_by_class["clinic"]),
             )
+
+        # a deserialized clinic whose function has no dec_variables cannot drive codegen; re-run Clinic instead
+        if (
+            self._regen_clinic
+            or old_clinic is None
+            or self.func.get_prototype(self._flavor) is None
+            or not self.kb.dec_variables.has_function_manager_for_flavor(self.func.addr, self._flavor)
+        ):
+            clinic = run_clinic(cache, variable_map)
+            if self._flavor == Flavors.GO_FLAVOR and self._go_sigs_rerun and clinic.go_sigs_stale:
+                # the Go passes inferred a signature this run had already built its arguments, returns or call sites
+                # on; run again from scratch so the output reflects it (once: the second run may learn more about
+                # callees, which is their callers' business)
+                self.go_sigs_updated = True
+                self.go_sigs_reran = True
+                l.debug("Go signatures changed during the Clinic run of %s; running it again.", self.func.name)
+                self._optimization_scratch = {}
+                self.notes.clear()
+                if reset_variable_names and self.func.addr in self.kb.dec_variables:
+                    # the first run created this function's variable manager; its variables would take the names
+                    # (a0 ...) the second run's ones need. A manager from an earlier decompilation is kept: it may
+                    # carry user names, and the first run already built on it
+                    del self.kb.dec_variables[self.func.addr]
+                cache = new_cache()
+                variable_map = VariableMap()
+                clinic = run_clinic(cache, variable_map)
         else:
             clinic = old_clinic
+            # the deserialized clinic may carry peephole-optimization names that were unresolvable at parse time
+            # (their defining module was not imported then); retry resolving before its passes run again
+            clinic.resolve_peephole_optimizations()
             # reuse the old, unaltered graph
             clinic.graph = clinic.cc_graph
             clinic.cc_graph = clinic.copy_graph()
+            # the SRDA model is tied to the previous run's graph; drop it so the simplification passes below
+            # regenerate it fresh for the reused graph
+            clinic.reaching_definitions = None
 
         self.clinic = clinic
         self.cache = cache
-        self._variable_kb = clinic.variable_kb
+        self.go_sigs_updated |= clinic.go_sigs_updated
+        self.go_sigs_version = clinic.go_sigs_version
+        if self._flavor == Flavors.GO_FLAVOR:
+            cache.go_sigs_version = clinic.go_sigs_version
+            cache.go_sigs_deps = clinic.go_sigs_deps
+        # Make the VariableMap available on the cache regardless of whether Clinic re-linked variables (a partial
+        # Clinic run, or the reuse-cached-Clinic path, may not repopulate cache.variable_map during linking).
+        cache.variable_map = clinic.variable_map
+        self._variable_map = clinic.variable_map
         self._update_progress(70.0, text="Identifying regions")
         self.vvar_id_start = clinic.vvar_id_start
         self._copied_var_ids = clinic.copied_var_ids
@@ -368,11 +624,13 @@ class Decompiler(Analysis):
             # the function is empty
             return
 
-        # expose a copy of the graph before any optimizations that may change the graph occur;
-        # use this graph if you need a reference of exact mapping of instructions to AIL statements
-        self.unoptimized_ail_graph = (
-            clinic.unoptimized_graph if clinic.unoptimized_graph is not None else clinic.copy_graph()
-        )
+        # expose a copy of the graph before any optimizations that may change the graph occur; use this graph if you
+        # need an exact instruction-to-AIL mapping. Only built when save_unoptimized_graph is set. clinic captured
+        # the snapshot iff a structure-altering pass ran; if none did, the current graph is itself unoptimized.
+        if self._save_unoptimized_graph:
+            self.unoptimized_ail_graph = (
+                clinic.unoptimized_graph if clinic.unoptimized_graph is not None else clinic.copy_graph()
+            )
         cond_proc = ConditionProcessor(self.project.arch, clinic._ail_manager)
 
         clinic.graph = self._run_graph_simplification_passes(
@@ -425,37 +683,42 @@ class Decompiler(Analysis):
                 ail_manager=clinic._ail_manager,
                 **self._recursive_structurer_params,
             )
+            self.structuring_failures = rs.structuring_failures
             self._update_progress(80.0, text="Simplifying regions")
 
-            # simplify it
-            # Get variable manager for loop counter naming in RegionSimplifier
-            variable_manager = None
-            if clinic.variable_kb is not None and self.func.addr in clinic.variable_kb.variables:
-                variable_manager = clinic.variable_kb.variables[self.func.addr]
-            region_simplifier_params = self.options_to_params(self.options_by_class["region_simplifier"])
-            # The Rust flavor forces if-else simplification off regardless of user options.
-            region_simplifier_params.pop("simplify_ifelse", None)
-            s = self.project.analyses.RegionSimplifier(
-                self.func,
-                rs.result,
-                self.clinic._ail_manager,
-                arg_vvars=set(self.clinic.arg_vvars)
-                if self.clinic is not None and self.clinic.arg_vvars is not None
-                else set(),
-                kb=self.kb,
-                fail_fast=self._fail_fast,
-                variable_manager=variable_manager,
-                simplify_ifelse=self._flavor != "rust",
-                **region_simplifier_params,
-            )
-            seq_node = s.result
-            seq_node = self._run_post_structuring_simplification_passes(
-                seq_node,
-                binop_operators=cache.binop_operators,
-                goto_manager=s.goto_manager,
-                graph=clinic.graph,
-                variable_kb=self._variable_kb,
-            )
+            if rs.result is None:
+                l.warning("Structuring failed for function %s. No output is available.", self.func)
+                seq_node = SequenceNode(self.func.addr)
+            else:
+                # simplify it
+                # Get variable manager for loop counter naming in RegionSimplifier
+                variable_manager = None
+                if self.func.addr in self.kb.dec_variables:
+                    variable_manager = self.kb.dec_variables[self.func.addr]
+                region_simplifier_params = self.options_to_params(self.options_by_class["region_simplifier"])
+                # The Rust flavor forces if-else simplification off regardless of user options.
+                region_simplifier_params.pop("simplify_ifelse", None)
+                s = self.project.analyses.RegionSimplifier(
+                    self.func,
+                    rs.result,
+                    self.clinic._ail_manager,
+                    arg_vvars=set(self.clinic.arg_vvars)
+                    if self.clinic is not None and self.clinic.arg_vvars is not None
+                    else set(),
+                    kb=self.kb,
+                    fail_fast=self._fail_fast,
+                    variable_manager=variable_manager,
+                    simplify_ifelse=self._flavor != Flavors.RUST_FLAVOR,
+                    **region_simplifier_params,
+                )
+                seq_node = s.result
+                seq_node = self._run_post_structuring_simplification_passes(
+                    seq_node,
+                    binop_operators=cache.binop_operators,
+                    goto_manager=s.goto_manager,
+                    graph=clinic.graph,
+                    kb=self.kb,
+                )
 
             # rewrite the sequence node to remove phi expressions
             seq_node = self.transform_seqnode_from_ssa(seq_node)
@@ -473,7 +736,7 @@ class Decompiler(Analysis):
                     ail_graph=clinic.graph,
                     flavor=self._flavor,
                     func_args=clinic.arg_list,
-                    variable_kb=clinic.variable_kb,
+                    variable_map=clinic.variable_map,
                     expr_comments=old_codegen.expr_comments if old_codegen is not None else None,
                     stmt_comments=old_codegen.stmt_comments if old_codegen is not None else None,
                     const_formats=old_codegen.const_formats if old_codegen is not None else None,
@@ -488,11 +751,15 @@ class Decompiler(Analysis):
         # save a copy of the AIL graph that is optimized but not modified by region identification
         self.ail_graph = clinic.cc_graph
         self.cache.codegen = codegen
+        if codegen is not None:
+            # copy the cache's version and timestamp onto the codegen
+            codegen.version = self.cache.version
+            codegen.timestamp = self.cache.timestamp
         self.cache.clinic = self.clinic
 
         # LLM refinement pass
-        if self.codegen is not None and self.options_by_class is not None:
-            llm_opts = self.options_to_params(self.options_by_class.get("decompiler", []))
+        if self.codegen is not None:
+            llm_opts = self.options_to_params(self.options_by_class["decompiler"])
             if llm_opts.get("llm_refine", False):
                 self._update_progress(90.0, text="LLM refinement")
                 try:
@@ -507,7 +774,6 @@ class Decompiler(Analysis):
 
     def _recover_regions(self, graph: networkx.DiGraph, condition_processor, update_graph: bool = True):
         assert self.clinic is not None
-        assert self.options_by_class is not None
 
         return self.project.analyses[RegionIdentifier].prep(kb=self.kb, fail_fast=self._fail_fast)(
             self.func,
@@ -517,7 +783,7 @@ class Decompiler(Analysis):
             update_graph=update_graph,
             force_loop_single_exit=self._force_loop_single_exit,
             refine_loops_with_single_successor=self._refine_loops_with_single_successor,
-            complete_successors=self._complete_successors,
+            expose_loop_head_backedges=self._expose_loop_head_backedges,
             entry_node_addr=self.clinic.entry_node_addr,
             **self.options_to_params(self.options_by_class["region_identifier"]),
         )
@@ -562,13 +828,13 @@ class Decompiler(Analysis):
                 blocks_by_addr=addr_to_blocks,
                 blocks_by_addr_and_idx=addr_and_idx_to_blocks,
                 graph=ail_graph,
-                variable_kb=self._variable_kb,
+                kb=self.kb,
                 reaching_definitions=reaching_definitions,
                 entry_node_addr=self.clinic.entry_node_addr,
                 scratch=self._optimization_scratch,
                 force_loop_single_exit=self._force_loop_single_exit,
                 refine_loops_with_single_successor=self._refine_loops_with_single_successor,
-                complete_successors=self._complete_successors,
+                expose_loop_head_backedges=self._expose_loop_head_backedges,
                 **kwargs,
             )
 
@@ -627,7 +893,7 @@ class Decompiler(Analysis):
                 blocks_by_addr=addr_to_blocks,
                 blocks_by_addr_and_idx=addr_and_idx_to_blocks,
                 graph=ail_graph,
-                variable_kb=self._variable_kb,
+                kb=self.kb,
                 arg_vvars=arg_vvars,
                 region_identifier=ri,
                 reaching_definitions=reaching_definitions,
@@ -636,7 +902,7 @@ class Decompiler(Analysis):
                 scratch=self._optimization_scratch,
                 force_loop_single_exit=self._force_loop_single_exit,
                 refine_loops_with_single_successor=self._refine_loops_with_single_successor,
-                complete_successors=self._complete_successors,
+                expose_loop_head_backedges=self._expose_loop_head_backedges,
                 peephole_optimizations=self._peephole_optimizations,
                 avoid_vvar_ids=self._copied_var_ids,
                 **kwargs,
@@ -718,13 +984,13 @@ class Decompiler(Analysis):
             # nothing to reflow; but this should not happen
             return None
 
-        var_kb = self._variable_kb if self._variable_kb is not None else KnowledgeBase(self.project)
+        var_kb = self.kb
 
-        if self.func.addr not in var_kb.variables:
+        if self.func.addr not in var_kb.dec_variables:
             # for some reason variables for the current function don't really exist...
             groundtruth = {}
         else:
-            var_manager = var_kb.variables[self.func.addr]
+            var_manager = var_kb.dec_variables[self.func.addr]
             # ground-truth types
             groundtruth = {}
             for variable in var_manager.variables_with_manual_types:
@@ -733,11 +999,13 @@ class Decompiler(Analysis):
                     for typevar in var_to_typevar[variable]:
                         groundtruth[typevar] = vartype
 
-        if self.func.prototype is not None and not self.func.is_prototype_guessed:
+        if self.func.is_prototype_groundtruth_for(self._flavor):
+            func_proto = self.func.get_prototype(self._flavor)
+            assert func_proto is not None
             for arg_i, (_, variable) in arg_vvars.items():
-                if arg_i < len(self.func.prototype.args):
+                if arg_i < len(func_proto.args):
                     for tv in var_to_typevar[variable]:
-                        groundtruth[tv] = self.func.prototype.args[arg_i]
+                        groundtruth[tv] = func_proto.args[arg_i]
 
         # variables that must be interpreted as structs
         if self._vars_must_struct:
@@ -778,27 +1046,31 @@ class Decompiler(Analysis):
             tp.update_variable_types(
                 "global",
                 {v: t for v, t in var_to_typevar.items() if isinstance(v, (SimRegisterVariable, SimStackVariable))},
+                flavor=self._flavor,
             )
             # update the function prototype if needed
+            func_proto = self.func.get_prototype(self._flavor)
             if (
-                self.func.is_prototype_guessed
-                and self.func.prototype is not None
-                and self.func.prototype.args
+                not self.func.is_prototype_groundtruth_for(self._flavor)
+                and func_proto is not None
+                and func_proto.args
                 and isinstance(codegen, CStructuredCodeGenerator)
                 and codegen.cfunc is not None
             ):
-                var_manager = var_kb.variables[self.func.addr]
+                var_manager = var_kb.dec_variables[self.func.addr]
+                # func_proto may be the C prototype a flavor falls back to, so never mutate it in place
+                new_args = list(func_proto.args)
                 for i, arg in enumerate(codegen.cfunc.arg_list):
-                    if i >= len(self.func.prototype.args):
+                    if i >= len(new_args):
                         break
                     var = arg.variable
                     new_type = var_manager.get_variable_type(var)
                     if new_type is not None:
-                        self.func.prototype.args = (
-                            *self.func.prototype.args[:i],
-                            new_type,
-                            *self.func.prototype.args[i + 1 :],
-                        )
+                        new_args[i] = new_type
+                if new_args != list(func_proto.args):
+                    func_proto = func_proto.copy()
+                    func_proto.args = tuple(new_args)
+                    self.func.set_prototype(self._flavor, func_proto)
         except Exception:  # pylint:disable=broad-except
             if self._fail_fast:
                 raise
@@ -813,33 +1085,18 @@ class Decompiler(Analysis):
     def find_data_references_and_update_memory_data(self, seq_node: SequenceNode):
         assert self._cfg is not None
 
-        const_values: set[int] = set()
-
-        def _handle_Const(expr_idx: int, expr: ailment.Expr.Const, *args, **kwargs):  # pylint:disable=unused-argument
-            if isinstance(expr.value, int):
-                const_values.add(expr.value)
-
-        def _handle_block(block: ailment.Block, **kwargs):  # pylint:disable=unused-argument
-            block_walker = ailment.AILBlockViewer(
-                expr_handlers={
-                    ailment.Expr.Const: _handle_Const,
-                }
-            )
-            block_walker.walk(block)
-
-        seq_walker = SequenceWalker(
-            handlers={
-                ailment.Block: _handle_block,
-            },
-            update_seqnode_in_place=False,
-        )
-        seq_walker.walk(seq_node)
+        collector = ConstantCollector()
+        collector.walk(seq_node)
 
         added_memory_data_addrs = []
-        for data_addr in const_values:
+        for data_addr in collector.const_values:
             if data_addr in self._cfg.memory_data:
                 continue
             if not self.project.loader.find_loadable_containing(data_addr):
+                continue
+            if not is_in_readonly_section(self.project, data_addr) and not is_in_readonly_segment(
+                self.project, data_addr
+            ):
                 continue
             if self._cfg.add_memory_data(data_addr, None):
                 added_memory_data_addrs.append(data_addr)
@@ -856,16 +1113,24 @@ class Decompiler(Analysis):
         :param ail_graph:   The AIL graph to transform out of SSA form.
         :return:            The translated AIL graph.
         """
-        variable_kb = self._variable_kb
         dephication = self.project.analyses.GraphDephication(
-            self.func, ail_graph, rewrite=True, variable_kb=variable_kb, kb=self.kb, fail_fast=self._fail_fast
+            self.func,
+            ail_graph,
+            rewrite=True,
+            variable_map=self._variable_map,
+            kb=self.kb,
+            fail_fast=self._fail_fast,
         )
         return dephication.output
 
     def transform_seqnode_from_ssa(self, seq_node: SequenceNode) -> SequenceNode:
-        variable_kb = self._variable_kb
         dephication = self.project.analyses.SeqNodeDephication(
-            self.func, seq_node, rewrite=True, variable_kb=variable_kb, kb=self.kb, fail_fast=self._fail_fast
+            self.func,
+            seq_node,
+            rewrite=True,
+            variable_map=self._variable_map,
+            kb=self.kb,
+            fail_fast=self._fail_fast,
         )
         return dephication.output
 
@@ -922,28 +1187,9 @@ class Decompiler(Analysis):
         if not code_text:
             return False
 
-        # collect unified variables
-        varman = self._variable_kb.variables[self.func.addr]
-        unified_vars = varman.get_unified_variables(sort=None)
-
-        # also collect argument variables
-        arg_vars = []
-        if (
-            self.codegen
-            and isinstance(self.codegen, CStructuredCodeGenerator)
-            and self.codegen.cfunc
-            and self.codegen.cfunc.arg_list
-        ):
-            for cvar in self.codegen.cfunc.arg_list:
-                v = cvar.unified_variable if cvar.unified_variable is not None else cvar.variable
-                if v not in unified_vars:
-                    arg_vars.append(v)
-
-        all_vars = unified_vars + arg_vars
-        if not all_vars:
+        var_names = list_variable_names(self.codegen, self.kb, self.func.addr)
+        if not var_names:
             return False
-
-        var_names = [v.name or str(v) for v in all_vars]
 
         prompt = (
             "You are a reverse engineering assistant. Given the following decompiled C code, suggest better, "
@@ -959,27 +1205,27 @@ class Decompiler(Analysis):
         if not result:
             return False
 
-        # build name-to-variable lookup
-        name_to_var = {}
-        for v in all_vars:
-            key = v.name or str(v)
-            name_to_var[key] = v
-
         changed = False
         for rename in result.renames:
-            old_name = rename.old_name
-            new_name = rename.new_name
-            if not new_name:
+            old_name, new_name = rename.old_name, rename.new_name
+            if not new_name or old_name == new_name:
                 continue
-            var = name_to_var.get(old_name)
-            if var is None:
+            try:
+                edit = rename_variable(
+                    self.project,
+                    self.func,
+                    old_name,
+                    new_name,
+                    kb=self.kb,
+                    flavor=self._flavor,
+                    rerender=False,
+                )
+            except DecompilationEditError as ex:
+                l.debug("LLM rename %s -> %s rejected: %s", old_name, new_name, ex)
                 continue
-            if old_name == new_name:
-                continue
-            var.name = new_name
-            var.renamed = True
-            changed = True
-            l.info("LLM renamed variable %s -> %s", old_name, new_name)
+            if edit.changed:
+                changed = True
+                l.info("LLM renamed variable %s -> %s", old_name, new_name)
 
         return changed
 
@@ -1023,13 +1269,15 @@ class Decompiler(Analysis):
         if not new_name or new_name == current_name:
             return False
 
-        l.info("LLM renamed function %s -> %s", current_name, new_name)
-        self.func.name = new_name
-        self.func.is_default_name = False
-        if self.codegen and isinstance(self.codegen, CStructuredCodeGenerator) and self.codegen.cfunc:
-            self.codegen.cfunc.name = new_name
+        try:
+            edit = rename_function(self.project, self.func, new_name, kb=self.kb, flavor=self._flavor, rerender=False)
+        except DecompilationEditError as ex:
+            l.debug("LLM function rename %s -> %s rejected: %s", current_name, new_name, ex)
+            return False
 
-        return True
+        if edit.changed:
+            l.info("LLM renamed function %s -> %s", current_name, new_name)
+        return edit.changed
 
     def llm_suggest_variable_types(
         self, llm_client=None, code_text: str | None = None, raise_exc: bool = False
@@ -1052,18 +1300,19 @@ class Decompiler(Analysis):
         if not code_text:
             return False
 
-        varman = self._variable_kb.variables[self.func.addr]
-        unified_vars = varman.get_unified_variables(sort=None)
+        varman = self.kb.dec_variables[self.func.addr]
 
-        if not unified_vars:
-            return False
-
-        # build current type info
         var_type_info = {}
-        for v in unified_vars:
-            name = v.name or str(v)
-            current_type = varman.get_variable_type(v)
+        for name in list_variable_names(self.codegen, self.kb, self.func.addr):
+            try:
+                rv = resolve_variable(self.kb, self.func.addr, name, codegen=self.codegen, flavor=self._flavor)
+            except DecompilationEditError:
+                continue
+            current_type = varman.get_variable_type(rv.variable)
             var_type_info[name] = str(current_type) if current_type else "unknown"
+
+        if not var_type_info:
+            return False
 
         prompt = (
             "You are a reverse engineering assistant. Given the following decompiled C code and the current "
@@ -1079,33 +1328,33 @@ class Decompiler(Analysis):
         if not result:
             return False
 
-        # build name-to-variable lookup
-        name_to_var = {}
-        for v in unified_vars:
-            key = v.name or str(v)
-            name_to_var[key] = v
-
         changed = False
         for type_change in result.type_changes:
-            var_name = type_change.variable_name
-            type_str = type_change.new_type
+            var_name, type_str = type_change.variable_name, type_change.new_type
             if not type_str:
                 continue
-            var = name_to_var.get(var_name)
-            if var is None:
-                continue
             try:
-                new_type = parse_type(type_str, arch=self.project.arch)
-            except Exception:  # pylint:disable=broad-exception-caught
-                l.debug("LLM suggested unparseable type '%s' for %s", type_str, var_name)
+                # reflow once at the end rather than per variable: Typehoon is expensive
+                edit = set_variable_type(
+                    self.project,
+                    self.func,
+                    var_name,
+                    type_str,
+                    kb=self.kb,
+                    flavor=self._flavor,
+                    reflow=False,
+                )
+            except DecompilationEditError as ex:
+                l.debug("LLM retype of %s to '%s' rejected: %s", var_name, type_str, ex)
                 continue
+            if edit.changed:
+                changed = True
+                l.info("LLM changed type of %s to %s", var_name, type_str)
 
-            varman.set_variable_type(var, new_type, mark_manual=True, all_unified=True)
-            changed = True
-            l.info("LLM changed type of %s to %s", var_name, type_str)
-
-        if changed and self.codegen:
-            self.codegen.reload_variable_types()
+        if changed:
+            new_codegen = reflow_types(self.project, self.func, kb=self.kb, flavor=self._flavor, rerender=False)
+            if new_codegen is not None:
+                self.codegen = new_codegen
 
         return changed
 

@@ -78,7 +78,9 @@ pub(super) fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     // Decode each hex pair to a byte (big-endian output). Every byte is a
     // validated hex digit, so both nibble conversions succeed.
     let hex_bytes: Vec<u8> = digits
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter_map(|pair| {
             let hi = (pair[0] as char).to_digit(16)?;
             let lo = (pair[1] as char).to_digit(16)?;

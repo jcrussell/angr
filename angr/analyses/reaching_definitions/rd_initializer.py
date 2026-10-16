@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import claripy
 from archinfo import Arch
+from cle import MetaELF
 
+from angr import claripy
 from angr.analyses.reaching_definitions.call_trace import CallTrace
 from angr.analyses.reaching_definitions.subject import Subject
-from angr.calling_conventions import SimCC, SimFunctionArgument, SimRegArg, SimStackArg
+from angr.calling_conventions import SimCC, SimFunctionArgument, SimRegArg, SimStackArg, is_x87_stack_arg
 from angr.code_location import ExternalCodeLocation
 from angr.engines.light import SpOffset
 from angr.knowledge_plugins import Function
@@ -40,6 +41,19 @@ class RDAStateInitializer:
         self.arch: Arch = arch
         self.project = project
 
+    def default_rtoc_value(self, func_addr: int) -> int | None:
+        """
+        Derive the initial TOC pointer of the object containing func_addr on PPC64. Returns None if unavailable.
+        """
+        if self.project is None:
+            return None
+        obj = self.project.loader.find_object_containing(func_addr)
+        if obj is None:
+            obj = self.project.loader.main_object
+        if isinstance(obj, MetaELF):
+            return obj.ppc64_initial_rtoc
+        return None
+
     def initialize_function_state(
         self, state: ReachingDefinitionsState, cc: SimCC | None, func_addr: int, rtoc_value: int | None = None
     ) -> None:
@@ -58,7 +72,7 @@ class RDAStateInitializer:
 
         # initialize function arguments, based on the calling convention and signature
         if state.analysis is not None and cc is not None:
-            prototype = state.analysis.kb.functions[func_addr].prototype
+            prototype = state.analysis.kb.functions[func_addr].get_prototype(getattr(state.analysis, "flavor", None))
         else:
             prototype = None
         self.initialize_all_function_arguments(state, func_addr, ex_loc, cc, prototype)
@@ -115,6 +129,8 @@ class RDAStateInitializer:
         is being pointed to, and then put the actual pointer to this inside the register
         """
         _ = argument_type
+        if is_x87_stack_arg(argument_location):
+            return
         if isinstance(argument_location, SimRegArg):
             self._initialize_function_argument_register(state, func_addr, ex_loc, argument_location)
         elif isinstance(argument_location, SimStackArg):

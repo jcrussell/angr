@@ -8,15 +8,15 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import archinfo
-import claripy
-from claripy.annotation import Annotation
 
+from angr import claripy
+from angr.claripy.annotation import Annotation
 from angr.code_location import CodeLocation, ExternalCodeLocation
 from angr.engines.light import SpOffset
 from angr.errors import SimMemoryError, SimMemoryMissingError
 from angr.knowledge_plugins.key_definitions.definition import A
 from angr.storage.memory_mixins import MultiValuedMemory
-from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues, MVType
+from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 from angr.utils.constants import is_alignment_mask
 
 from .atoms import Atom, ConstantSrc, MemoryLocation, Register, Tmp
@@ -56,18 +56,13 @@ class DefinitionAnnotation(Annotation):
 
     __slots__ = ("_hash", "definition")
 
+    relocatable = True
+    eliminatable = False
+
     def __init__(self, definition):
         super().__init__()
         self.definition = definition
         self._hash = hash((DefinitionAnnotation, self.definition))
-
-    @property
-    def relocatable(self):
-        return True
-
-    @property
-    def eliminatable(self):
-        return False
 
     def __hash__(self):
         return self._hash
@@ -318,6 +313,17 @@ class LiveDefinitions:
         return "stack_base" in addr.variables
 
     @staticmethod
+    def _as_signed_offset(offset: int, bits: int) -> int:
+        """
+        Stack offsets are signed, but the concrete addends inside an address AST are unsigned bitvector values, and
+        simplifiers are free to rewrite `stack_base - 0xc` into `stack_base + 0xfffffff4`. Adding that raw value
+        gives a huge positive offset instead of -0xc, so reinterpret the wrapped-around sum as signed.
+        """
+        mask = (1 << bits) - 1
+        offset &= mask
+        return offset - (1 << bits) if offset > mask >> 1 else offset
+
+    @staticmethod
     def get_stack_offset(addr: claripy.ast.Base, had_stack_base=False) -> int | None:
         if had_stack_base and addr.op == "BVV":
             assert isinstance(addr, claripy.ast.BV)
@@ -332,14 +338,14 @@ class LiveDefinitions:
                     off0 = LiveDefinitions.get_stack_offset(cast(claripy.ast.BV, addr.args[0]), had_stack_base=True)
                     off1 = LiveDefinitions.get_stack_offset(cast(claripy.ast.BV, addr.args[1]), had_stack_base=True)
                     if off0 is not None and off1 is not None:
-                        return off0 + off1
+                        return LiveDefinitions._as_signed_offset(off0 + off1, addr.size())
                 elif len(addr.args) == 1:
                     return 0
             elif addr.op == "__sub__" and len(addr.args) == 2:
                 off0 = LiveDefinitions.get_stack_offset(cast(claripy.ast.BV, addr.args[0]), had_stack_base=True)
                 off1 = LiveDefinitions.get_stack_offset(cast(claripy.ast.BV, addr.args[1]), had_stack_base=True)
                 if off0 is not None and off1 is not None:
-                    return off0 - off1
+                    return LiveDefinitions._as_signed_offset(off0 - off1, addr.size())
         return None
 
     @staticmethod
@@ -356,7 +362,7 @@ class LiveDefinitions:
         return data
 
     @staticmethod
-    def annotate_with_def(symvar: MVType, definition: Definition) -> MVType:
+    def annotate_with_def(symvar: claripy.ast.BV, definition: Definition) -> claripy.ast.BV:
         """
 
         :param symvar:
@@ -834,7 +840,7 @@ class LiveDefinitions:
     def get_concrete_value(
         self,
         spec: A | Definition[A] | Iterable[A] | Iterable[Definition[A]],
-        cast_to: type[int] | type[bytes] = int,
+        cast_to: type[int | bytes] = int,
     ) -> int | bytes | None:
         r = self.get_one_value(spec, strip_annotations=True)
         if r is None:
@@ -920,7 +926,7 @@ class LiveDefinitions:
     @overload
     def deref(
         self,
-        pointer: MultiValues[claripy.ast.BV] | Atom | Definition[Atom] | Iterable[Atom] | Iterable[Definition[Atom]],
+        pointer: MultiValues | Atom | Definition[Atom] | Iterable[Atom] | Iterable[Definition[Atom]],
         size: int | DerefSize,
         endness: archinfo.Endness = ...,
     ) -> set[MemoryLocation]: ...

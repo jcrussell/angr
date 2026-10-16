@@ -5,8 +5,10 @@ from collections.abc import Iterable, Sequence
 from itertools import count
 from typing import TYPE_CHECKING, Any, Union
 
+from angr.utils.bits import u2s
 from angr.utils.constants import MAX_POINTSTO_BITS
 
+from ._typehash import type_tag
 from .variance import Variance
 
 if TYPE_CHECKING:
@@ -37,7 +39,7 @@ class Equivalence(TypeConstraint):
     def __init__(self, type_a, type_b):
         self.type_a = type_a
         self.type_b = type_b
-        self._cached_hash = hash((Equivalence, self.type_a, self.type_b))
+        self._cached_hash = hash((type_tag(Equivalence), self.type_a, self.type_b))
 
     def pp_str(self, mapping: dict[TypeVariable, Any]) -> str:
         return f"{self.type_a.pp_str(mapping)} == {self.type_b.pp_str(mapping)}"
@@ -60,7 +62,7 @@ class Existence(TypeConstraint):
 
     def __init__(self, type_):
         self.type_ = type_
-        self._cached_hash = hash((Existence, self.type_))
+        self._cached_hash = hash((type_tag(Existence), self.type_))
 
     def pp_str(self, mapping: dict[TypeVariable, Any]) -> str:
         return f"V {self.type_.pp_str(mapping)}"
@@ -94,7 +96,7 @@ class Subtype(TypeConstraint):
     def __init__(self, sub_type: TypeType, super_type: TypeType):
         self.super_type = super_type
         self.sub_type = sub_type
-        self._cached_hash = hash((Subtype, self.sub_type, self.super_type))
+        self._cached_hash = hash((type_tag(Subtype), self.sub_type, self.super_type))
 
     def pp_str(self, mapping: dict[TypeVariable, Any]) -> str:
         return f"{self.sub_type.pp_str(mapping)} <: {self.super_type.pp_str(mapping)}"
@@ -152,7 +154,7 @@ class Add(TypeConstraint):
         self.type_0 = type_0
         self.type_1 = type_1
         self.type_r = type_r
-        self._cached_hash = hash((Add, self.type_0, self.type_1, self.type_r))
+        self._cached_hash = hash((type_tag(Add), self.type_0, self.type_1, self.type_r))
 
     def pp_str(self, mapping: dict[TypeVariable, Any]) -> str:
         return f"{self.type_r.pp_str(mapping)} == {self.type_0.pp_str(mapping)} + {self.type_1.pp_str(mapping)}"
@@ -221,7 +223,7 @@ class Sub(TypeConstraint):
         self.type_0 = type_0
         self.type_1 = type_1
         self.type_r = type_r
-        self._cached_hash = hash((Sub, self.type_0, self.type_1, self.type_r))
+        self._cached_hash = hash((type_tag(Sub), self.type_0, self.type_1, self.type_r))
 
     def pp_str(self, mapping: dict[TypeVariable, Any]) -> str:
         return f"{self.type_r.pp_str(mapping)} == {self.type_0.pp_str(mapping)} - {self.type_1.pp_str(mapping)}"
@@ -371,7 +373,7 @@ class TypeVariable:
             self.idx: tuple[int, int] = idx
         self.name = name
 
-        self._cached_hash = hash((TypeVariable, self.name or self.idx))
+        self._cached_hash = hash((type_tag(TypeVariable), self.name or self.idx))
 
     def pp_str(self, mapping: dict[TypeVariable, Any]) -> str:
         varname = mapping.get(self, self.name)
@@ -433,7 +435,7 @@ class DerivedTypeVariable(TypeVariable):
         if not self.labels:
             raise ValueError("A DerivedTypeVariable must have at least one label")
 
-        self._cached_hash = hash((DerivedTypeVariable, self.type_var, self.labels))
+        self._cached_hash = hash((type_tag(DerivedTypeVariable), self.type_var, self.labels))
 
     def one_label(self) -> BaseLabel | None:
         return self.labels[0] if len(self.labels) == 1 else None
@@ -547,7 +549,9 @@ class BaseLabel:
     __slots__ = ("_cached_hash",)
 
     def __init__(self):
-        self._cached_hash = hash((type(self), *tuple(getattr(self, k) for k in self.__slots__ if k != "_cached_hash")))
+        self._cached_hash = hash(
+            (type_tag(type(self)), *tuple(getattr(self, k) for k in self.__slots__ if k != "_cached_hash"))
+        )
 
     def __eq__(self, other):
         return type(self) is type(other) and self._cached_hash == other._cached_hash
@@ -620,6 +624,23 @@ class SubN(BaseLabel):
 
     def __repr__(self):
         return f"-{self.n}"
+
+
+def add_label(value: int, bits: int) -> AddN | SubN:
+    """
+    Build the label for ``ptr + value``, where ``value`` is a ``bits``-wide constant. The constant is interpreted as
+    signed, so that ``ptr + 0xffff_ffff_ffff_ffe8`` yields ``SubN(24)`` instead of ``AddN(2 ** 64 - 24)``.
+    """
+    n = u2s(value, bits)
+    return AddN(n) if n >= 0 else SubN(-n)
+
+
+def sub_label(value: int, bits: int) -> AddN | SubN:
+    """
+    Build the label for ``ptr - value``. See :func:`add_label`.
+    """
+    n = u2s(value, bits)
+    return SubN(n) if n >= 0 else AddN(-n)
 
 
 class ConvertTo(BaseLabel):
