@@ -23,7 +23,7 @@ _ZERO_PAGE_BYTES = bytes(PAGE_SIZE)
 
 
 def _ultrapage_bytes(page, *, writing: bool = False):
-    """An UltraPage's page-sized concrete backing store, or ``None`` for any other page type.
+    """An UltraPage's own page-sized concrete backing store, or ``None`` when it has none the fast paths can use.
 
     UltraPage allocates ``concrete_data`` on first use, and until then every byte reads as zero. A read-only caller
     gets the shared immutable all-zero buffer for such a page; ``writing=True`` allocates the real store so the caller
@@ -31,9 +31,14 @@ def _ultrapage_bytes(page, *, writing: bool = False):
     """
     if not isinstance(page, UltraPage) or page.symbolic_bitmap.size != PAGE_SIZE:
         return None
-    if page.concrete_data is None:
+    data = page.concrete_data
+    if data is None:
         return page._concrete() if writing else _ZERO_PAGE_BYTES  # pylint:disable=protected-access
-    return page.concrete_data if len(page.concrete_data) == PAGE_SIZE else None
+    # A page still backed by the loader holds a (Not)memoryview into the shared backer: not ours to read as a plain
+    # buffer, nor to write through. Those take the generic path.
+    if not isinstance(data, bytearray) or len(data) != PAGE_SIZE:
+        return None
+    return data
 
 if TYPE_CHECKING:
     import angr

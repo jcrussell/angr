@@ -338,3 +338,43 @@ fn test_reverse_bytes_width_zero_expression_is_identity() {
     let reversed = reverse_bytes(&empty, &ctx).expect("width 0 is byte-aligned");
     assert_eq!(reversed.width(), 0, "the empty bitvector reverses to itself");
 }
+
+/// clarirs flattens `x + y + z` into one 3-argument `__add__` (and likewise
+/// `__mul__`, `__and__`, `__or__`, `__xor__`, Bool `Xor`). The importer used to
+/// require exactly two operands, so a longer chain failed to import and a
+/// register synced from Python silently became its default instead.
+#[test]
+fn test_nary_assoc_ops_import_every_operand() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = SymContext::new_mock();
+        let bvv = |v: u64| GLOBAL_CONTEXT.bvv(BitVec::from((v, 32))).expect("BVV");
+        // Concrete operands so the folded result can be checked exactly.
+        // `make_ast_exact` keeps the n-ary node rather than letting the
+        // simplifier constant-fold it before the import ever sees it.
+        let nary = |op: AstOp<'static>| {
+            GLOBAL_CONTEXT
+                .make_ast_exact(op, Default::default())
+                .expect("n-ary node")
+        };
+        let cases = [
+            (AstOp::Add(vec![bvv(1), bvv(2), bvv(3)]), 6u128),
+            (AstOp::Mul(vec![bvv(2), bvv(3), bvv(4)]), 24),
+            (AstOp::And(vec![bvv(0xff), bvv(0x0f), bvv(0x3c)]), 0x0c),
+            (AstOp::Or(vec![bvv(1), bvv(2), bvv(4)]), 7),
+            (AstOp::Xor(vec![bvv(1), bvv(3), bvv(4)]), 6),
+        ];
+        for (op, expected) in cases {
+            let ast = nary(op);
+            assert_eq!(ast.op().child_iter().count(), 3, "fixture must stay 3-ary: {ast:?}");
+            let obj = claripy_object(py, ast.clone());
+            let bv = claripy_to_rustbv(py, &obj, &ctx).expect("n-ary import");
+            assert_eq!(bv.as_u128(), Some(expected), "{ast:?}");
+        }
+    });
+}

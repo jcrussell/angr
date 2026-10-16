@@ -325,9 +325,9 @@ fn claripy_to_rustbv_depth(
         }
 
         // Arithmetic operations
-        "__add__" => import_binary_op(py, &args, ctx, depth, "__add__", RustBV::add),
+        "__add__" => import_assoc_op(py, &args, ctx, depth, "__add__", RustBV::add),
         "__sub__" => import_binary_op(py, &args, ctx, depth, "__sub__", RustBV::sub),
-        "__mul__" => import_binary_op(py, &args, ctx, depth, "__mul__", RustBV::mul),
+        "__mul__" => import_assoc_op(py, &args, ctx, depth, "__mul__", RustBV::mul),
         "SDiv" => import_binary_op(py, &args, ctx, depth, "div", RustBV::sdiv),
 
         // claripy BV.__floordiv__ is UNSIGNED division (verified: BVV(0xFFFFFFFE,32)//3
@@ -343,9 +343,9 @@ fn claripy_to_rustbv_depth(
         "__neg__" => import_unary_op(py, &args, ctx, depth, "__neg__", RustBV::neg),
 
         // Bitwise operations
-        "__and__" => import_binary_op(py, &args, ctx, depth, "__and__", RustBV::and),
-        "__or__" => import_binary_op(py, &args, ctx, depth, "__or__", RustBV::or),
-        "__xor__" => import_binary_op(py, &args, ctx, depth, "__xor__", RustBV::xor),
+        "__and__" => import_assoc_op(py, &args, ctx, depth, "__and__", RustBV::and),
+        "__or__" => import_assoc_op(py, &args, ctx, depth, "__or__", RustBV::or),
+        "__xor__" => import_assoc_op(py, &args, ctx, depth, "__xor__", RustBV::xor),
 
         "__invert__" => import_unary_op(py, &args, ctx, depth, "__invert__", RustBV::not),
 
@@ -487,6 +487,9 @@ fn claripy_to_rustbv_depth(
 
         "Or" => import_nary_op(py, &args, ctx, depth, "Or", RustBV::or, 0),
 
+        // Bool Xor, n-ary like And/Or (the BV form is `__xor__`).
+        "Xor" => import_assoc_op(py, &args, ctx, depth, "Xor", RustBV::xor),
+
         // Boolean Not: invert 1-bit value — same `RustBV::not` as `__invert__`.
         "Not" => import_unary_op(py, &args, ctx, depth, "Not", RustBV::not),
 
@@ -563,6 +566,38 @@ fn import_binary_op(
     let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
     check_same_width(op_name, &left, &right)?;
     Ok(apply(&left, &right, ctx))
+}
+
+/// N-ary counterpart of [`import_binary_op`] for the associative bitvector
+/// ops (`__add__`, `__mul__`, `__and__`, `__or__`, `__xor__`).
+///
+/// clarirs flattens a chain of these into one node whose `args` holds every
+/// operand — `x + y + z` is a single 3-argument `__add__` — so a strict
+/// two-argument import refused any longer chain. A refused register or memory
+/// import is only logged, so the value silently reached Rust as its default
+/// instead. Folds left, width-checking each operand against the accumulator
+/// as [`import_nary_op`] does; at least one operand is required.
+fn import_assoc_op(
+    py: Python<'_>,
+    args: &Bound<'_, PyAny>,
+    ctx: &SymContext,
+    depth: u32,
+    op_name: &str,
+    apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+) -> Result<RustBV, BridgeError> {
+    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+    let Some((first, rest)) = args_list.split_first() else {
+        return Err(BridgeError::InvalidArgs(format!(
+            "{op_name} requires at least 1 arg"
+        )));
+    };
+    let mut result = claripy_to_rustbv_depth(py, first, ctx, depth + 1)?;
+    for arg in rest {
+        let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
+        check_same_width(op_name, &result, &next)?;
+        result = apply(&result, &next, ctx);
+    }
+    Ok(result)
 }
 
 /// Arity-1 counterpart of [`import_binary_op`] (angr-12jjk.15).
