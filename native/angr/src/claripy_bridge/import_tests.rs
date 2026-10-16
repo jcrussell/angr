@@ -37,7 +37,7 @@ fn test_import_symbolic_leaf_hash_hit_rebinds_under_canonical_name() {
         // Same hash, but the AST carries claripy's renamed string.
         let ast = py.None().into_bound(py);
         let bv = import_symbolic_leaf(
-            &ast,
+            &|| Some(ast.clone().unbind()),
             AST_HASH,
             "sqfj8_18_canonical_42_64",
             64,
@@ -88,7 +88,14 @@ fn test_import_symbolic_leaf_falls_through_when_id_has_no_canonical_name() {
         );
 
         let ast = py.None().into_bound(py);
-        let bv = import_symbolic_leaf(&ast, AST_HASH, NAME, 64, SymbolKind::BitVector, &ctx);
+        let bv = import_symbolic_leaf(
+            &|| Some(ast.clone().unbind()),
+            AST_HASH,
+            NAME,
+            64,
+            SymbolKind::BitVector,
+            &ctx,
+        );
 
         let RustBV::Symbolic { id, name, .. } = &bv else {
             panic!("expected a Symbolic leaf, got {bv:?}");
@@ -375,6 +382,67 @@ fn test_nary_assoc_ops_import_every_operand() {
             let obj = claripy_object(py, ast.clone());
             let bv = claripy_to_rustbv(py, &obj, &ctx).expect("n-ary import");
             assert_eq!(bv.as_u128(), Some(expected), "{ast:?}");
+        }
+    });
+}
+
+/// The native clarirs walk (`import_clarirs`) and the attribute walk must
+/// build equivalent values. A Python shim exposing only `op` / `args` /
+/// `length` forces the attribute walk all the way down; Z3 then checks the two
+/// results cannot differ.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_native_and_attribute_walks_agree() {
+    use clarirs_core::prelude::*;
+    use pyo3::types::PyDict;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::{claripy_object, clear_ast_cache};
+
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = PyDict::new(py);
+        py.run(
+            c"class Duck:
+    def __init__(self, ast):
+        self._ast = ast
+        self.op = ast.op
+        self.args = tuple(Duck(a) if hasattr(a, 'op') else a for a in ast.args)
+        self.length = getattr(ast, 'length', None)
+    def __hash__(self):
+        return hash(self._ast)
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define Duck");
+        let duck = globals.get_item("Duck").expect("lookup").expect("Duck");
+
+        let g = &*GLOBAL_CONTEXT;
+        let x = g.bvs("walks_x", 32).expect("x");
+        let y = g.bvs("walks_y", 32).expect("y");
+        let k = |v: u64| g.bvv(BitVec::from((v, 32))).expect("k");
+        let exprs = [
+            g.add(g.mul(x.clone(), k(3)).expect("mul"), y.clone()).expect("add"),
+            g.concat([g.extract(x.clone(), 15, 0).expect("ex"), g.extract(y.clone(), 31, 16).expect("ex")])
+                .expect("concat"),
+            g.ite(g.ult(x.clone(), y.clone()).expect("ult"), g.lshr(x.clone(), k(2)).expect("lshr"), g.sub(y.clone(), x.clone()).expect("sub"))
+                .expect("ite"),
+            g.zero_ext(g.extract(x.clone(), 7, 0).expect("ex"), 24).expect("zext"),
+            g.byte_reverse(g.xor([x.clone(), y.clone(), k(0xff)]).expect("xor")).expect("rev"),
+        ];
+        for expr in exprs {
+            let native_obj = claripy_object(py, expr.clone());
+            let duck_obj = duck.call1((native_obj.clone(),)).expect("Duck(ast)");
+
+            let ctx = SymContext::new();
+            clear_ast_cache();
+            let native = claripy_to_rustbv(py, &native_obj, &ctx).expect("native walk");
+            clear_ast_cache();
+            let walked = claripy_to_rustbv(py, &duck_obj, &ctx).expect("attribute walk");
+            assert_eq!(native.width(), walked.width(), "{expr:?}");
+            ctx.assume_true(&native.ne(&walked, &ctx));
+            assert!(!ctx.is_sat(), "the two walks disagree on {expr:?}");
         }
     });
 }

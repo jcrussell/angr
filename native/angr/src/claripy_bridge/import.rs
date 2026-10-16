@@ -4,11 +4,23 @@
 //! the equivalent `RustBV`, with a `RustBVHandle` fast path
 //! (`try_handle_to_rustbv`) and thread-local caching via the `super::cache`
 //! helpers.
+//!
+//! claripy is clarirs, so an AST of this extension's own claripy type is
+//! walked natively ([`import_clarirs`]): the `AstRef` behind it is read
+//! directly instead of through `op` / `args` attribute calls. The attribute
+//! walk remains for any other object (`cargo test`'s embedded interpreter
+//! imports the installed extension, whose claripy classes are different type
+//! objects; some tests hand in duck-typed ASTs). Both walks share the caches
+//! and the symbol-identity registry, keyed by the same Python hash.
 
 use std::sync::Arc;
 
+use clarirs_core::prelude::{AstOp, AstRef};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+
+use crate::claripy::ast::base::Base;
+use crate::claripy::ast::opstring::ToOpString;
 
 use crate::symbolic::{
     RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind, check_bv_width,
@@ -224,6 +236,10 @@ fn claripy_to_rustbv_depth(
     let _gil =
         crate::gil_profile::GilWorkGuard::enter_as(crate::gil_profile::GilClass::ClaripyImport);
 
+    if let Ok(base) = ast.cast::<Base>() {
+        return import_clarirs(py, &base.get().ast(), Some(ast), ctx, depth);
+    }
+
     // Get the operation name first to determine caching strategy
     let op: String = ast.getattr("op")?.extract()?;
     let op_str = op.as_str();
@@ -315,7 +331,7 @@ fn claripy_to_rustbv_depth(
             check_bv_width("BVS", width).map_err(BridgeError::InvalidArgs)?;
 
             Ok(import_symbolic_leaf(
-                ast,
+                &|| Some(ast.clone().unbind()),
                 ast_hash,
                 &name,
                 width,
@@ -459,7 +475,7 @@ fn claripy_to_rustbv_depth(
             // Symbolics here, and aliasing them would make export hand back
             // the other one's claripy AST — a BV where a Bool was expected.
             Ok(import_symbolic_leaf(
-                ast,
+                &|| Some(ast.clone().unbind()),
                 ast_hash,
                 &name,
                 1,
@@ -526,6 +542,219 @@ fn claripy_to_rustbv_depth(
         }
     }
 
+    result
+}
+
+/// The signed `Py_hash_t` Python's `hash()` returns for the claripy object
+/// wrapping `node`: clarirs' structural hash reinterpreted, with -1 (reserved
+/// by CPython for errors) mapped to -2. Keys the caches exactly as the
+/// attribute walk's `ast.hash()` does.
+fn py_hash(node: &AstRef<'static>) -> i64 {
+    match node.hash() as i64 {
+        -1 => -2,
+        h => h,
+    }
+}
+
+/// [`claripy_to_rustbv_depth`] over a clarirs `AstRef`, without the Python
+/// attribute walk. `obj` is the claripy object wrapping `node` when the caller
+/// has one (the top of the walk); inner nodes are wrapped only when a Python
+/// object is genuinely needed — a newly registered symbol, or an annotated
+/// expression whose annotations the export path must hand back verbatim.
+/// Unannotated nodes need no reverse-cache entry: rebuilding one on export
+/// interns to the same clarirs node.
+///
+/// Op semantics and every width / bounds check mirror the attribute walk's
+/// arms one for one.
+#[allow(clippy::too_many_lines, reason = "one arm per supported AstOp")]
+fn import_clarirs(
+    py: Python<'_>,
+    node: &AstRef<'static>,
+    obj: Option<&Bound<'_, PyAny>>,
+    ctx: &SymContext,
+    depth: u32,
+) -> Result<RustBV, BridgeError> {
+    if depth > MAX_IMPORT_RECURSION_DEPTH {
+        return Err(BridgeError::RecursionLimit(format!(
+            "claripy_to_rustbv: exceeded max recursion depth {MAX_IMPORT_RECURSION_DEPTH} \
+             while importing a claripy AST"
+        )));
+    }
+
+    let use_cache = !matches!(node.op(), AstOp::BVV(_));
+    let hash = py_hash(node);
+    if use_cache {
+        match get_bv_by_ast_hash(hash) {
+            Some(cached) if cached.width() == node.size() => {
+                crate::symbolic::record_claripy_ast_cache(true);
+                return Ok(cached);
+            }
+            Some(_) => {
+                evict_bv_by_ast_hash(hash);
+                crate::symbolic::record_claripy_ast_cache(false);
+            }
+            None => crate::symbolic::record_claripy_ast_cache(false),
+        }
+    }
+
+    let wrap = || -> Option<Py<PyAny>> {
+        match obj {
+            Some(o) => Some(o.clone().unbind()),
+            None => Base::from_ast(py, node.clone())
+                .ok()
+                .map(|b| b.into_any().unbind()),
+        }
+    };
+    let op_name = || node.to_opstring();
+    let children = || node.op().child_iter();
+    let import = |child: &AstRef<'static>| import_clarirs(py, child, None, ctx, depth + 1);
+    let child = |i: usize| -> Result<RustBV, BridgeError> {
+        let c = node.op().get_child(i).ok_or_else(|| {
+            BridgeError::InvalidArgs(format!("{} is missing operand {i}", node.to_opstring()))
+        })?;
+        import(&c)
+    };
+    let binary = |apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV| {
+        let (l, r) = (child(0)?, child(1)?);
+        check_same_width(&op_name(), &l, &r)?;
+        Ok(apply(&l, &r, ctx))
+    };
+    // Left fold over every operand; `empty` is the identity for an operand-less
+    // Bool And/Or, and `None` makes an empty list an error.
+    let fold = |apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV, empty: Option<u128>| {
+        let mut it = children();
+        let Some(first) = it.next() else {
+            return empty.map(|v| RustBV::concrete(v, 1)).ok_or_else(|| {
+                BridgeError::InvalidArgs(format!("{} requires at least 1 arg", op_name()))
+            });
+        };
+        let mut acc = import(&first)?;
+        for c in it {
+            let next = import(&c)?;
+            check_same_width(&op_name(), &acc, &next)?;
+            acc = apply(&acc, &next, ctx);
+        }
+        Ok(acc)
+    };
+    let is_bool = node.ast_type().is_bool();
+
+    let result: Result<RustBV, BridgeError> = match node.op() {
+        AstOp::BVV(value) => {
+            let width = value.len();
+            check_bv_width("BVV", width).map_err(BridgeError::InvalidArgs)?;
+            let big = value.to_biguint();
+            // RustBV::Concrete holds a u128; refuse rather than truncate a
+            // wider literal, as the attribute walk's extract_int_value does
+            // (angr-cxw7).
+            let v = u128::try_from(&big).map_err(|_| {
+                BridgeError::InvalidArgs(format!(
+                    "concrete integer needs {} bits but RustBV::Concrete is capped at 128; \
+                     wide concrete BVV import is unsupported",
+                    big.bits()
+                ))
+            })?;
+            Ok(RustBV::concrete(v, width))
+        }
+        AstOp::BVS(name, width) => {
+            check_bv_width("BVS", *width).map_err(BridgeError::InvalidArgs)?;
+            Ok(import_symbolic_leaf(
+                &wrap,
+                hash,
+                name.as_str(),
+                *width,
+                SymbolKind::BitVector,
+                ctx,
+            ))
+        }
+        AstOp::BoolS(name) => Ok(import_symbolic_leaf(
+            &wrap,
+            hash,
+            name.as_str(),
+            1,
+            SymbolKind::Bool,
+            ctx,
+        )),
+        AstOp::BoolV(b) => Ok(RustBV::concrete(u128::from(*b), 1)),
+
+        AstOp::Add(_) => fold(RustBV::add, None),
+        AstOp::Mul(_) => fold(RustBV::mul, None),
+        AstOp::And(_) if is_bool => fold(RustBV::and, Some(1)),
+        AstOp::Or(_) if is_bool => fold(RustBV::or, Some(0)),
+        AstOp::And(_) => fold(RustBV::and, None),
+        AstOp::Or(_) => fold(RustBV::or, None),
+        AstOp::Xor(_) => fold(RustBV::xor, None),
+        AstOp::Sub(..) => binary(RustBV::sub),
+        AstOp::UDiv(..) => binary(RustBV::udiv),
+        AstOp::SDiv(..) => binary(RustBV::sdiv),
+        AstOp::URem(..) => binary(RustBV::urem),
+        AstOp::SRem(..) => binary(RustBV::srem),
+        AstOp::ShL(..) => binary(RustBV::shl),
+        AstOp::LShR(..) => binary(RustBV::lshr),
+        AstOp::AShR(..) => binary(RustBV::ashr),
+        AstOp::RotateLeft(..) => binary(RustBV::rotl),
+        AstOp::RotateRight(..) => binary(RustBV::rotr),
+        AstOp::Eq(..) => binary(RustBV::eq),
+        AstOp::Neq(..) => binary(RustBV::ne),
+        AstOp::ULT(..) => binary(RustBV::ult),
+        AstOp::ULE(..) => binary(RustBV::ule),
+        AstOp::UGT(..) => binary(RustBV::ugt),
+        AstOp::UGE(..) => binary(RustBV::uge),
+        AstOp::SLT(..) => binary(RustBV::slt),
+        AstOp::SLE(..) => binary(RustBV::sle),
+        AstOp::SGT(..) => binary(RustBV::sgt),
+        AstOp::SGE(..) => binary(RustBV::sge),
+        AstOp::Neg(_) => child(0).map(|v| v.neg(ctx)),
+        AstOp::Not(_) => child(0).map(|v| v.not(ctx)),
+        AstOp::ITE(..) => {
+            let (cond, then_val, else_val) = (child(0)?, child(1)?, child(2)?);
+            check_same_width("If", &then_val, &else_val)?;
+            Ok(cond.ite(&then_val, &else_val, ctx))
+        }
+        AstOp::ZeroExt(_, bits) => {
+            let val = child(0)?;
+            let new_width = extended_width("ZeroExt", val.width(), *bits)?;
+            Ok(val.zero_extend(new_width, ctx))
+        }
+        AstOp::SignExt(_, bits) => {
+            let val = child(0)?;
+            let new_width = extended_width("SignExt", val.width(), *bits)?;
+            Ok(val.sign_extend(new_width, ctx))
+        }
+        AstOp::Extract(_, high, low) => {
+            let val = child(0)?;
+            check_extract_bounds("Extract", *high, *low, val.width())
+                .map_err(BridgeError::InvalidArgs)?;
+            Ok(val.extract(*high, *low, ctx))
+        }
+        AstOp::Concat(_) => {
+            let mut it = children();
+            let Some(first) = it.next() else {
+                return Err(BridgeError::InvalidArgs(
+                    "Concat requires at least 1 arg".into(),
+                ));
+            };
+            let mut result = import(&first)?;
+            for c in it {
+                let next = import(&c)?;
+                extended_width("Concat", result.width(), next.width())?;
+                result = result.concat(&next, ctx);
+            }
+            Ok(result)
+        }
+        AstOp::ByteReverse(_) => reverse_bytes(&child(0)?, ctx),
+        _ => Err(BridgeError::UnsupportedOp(op_name())),
+    };
+
+    if use_cache && let Ok(bv) = &result {
+        store_bv_by_ast_hash(hash, bv.clone());
+        if let RustBV::Expression { operands, .. } = bv
+            && (obj.is_some() || !node.annotations().is_empty())
+            && let Some(o) = wrap()
+        {
+            let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
+            store_expression_ast_by_operands(operands_ptr, bv.clone(), o);
+        }
+    }
     result
 }
 
@@ -704,7 +933,7 @@ fn import_nary_op(
 /// `rust_id_to_name`, the `RustBV` name and the Z3 term in agreement, which is
 /// the precondition step 1 relies on.
 fn import_symbolic_leaf(
-    ast: &Bound<'_, PyAny>,
+    leaf_object: &dyn Fn() -> Option<Py<PyAny>>,
     ast_hash: i64,
     name: &str,
     width: u32,
@@ -752,7 +981,13 @@ fn import_symbolic_leaf(
 
     let bv = RustBV::symbolic(ctx, &rust_name, width);
     if let RustBV::Symbolic { id, .. } = &bv {
-        store_claripy_ast_with_info(ast_hash, *id, &rust_name, width, kind, ast.clone().unbind());
+        match leaf_object() {
+            Some(obj) => store_claripy_ast_with_info(ast_hash, *id, &rust_name, width, kind, obj),
+            // SILENT(cat-b): only reachable if wrapping a clarirs leaf as a
+            // claripy object fails; the leaf still imports, but export mints
+            // a fresh claripy object for it instead of returning this one.
+            None => log::debug!("symbol {rust_name:?}: no claripy object to register"),
+        }
     }
     bv
 }
