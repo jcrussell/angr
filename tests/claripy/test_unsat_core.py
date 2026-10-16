@@ -133,3 +133,15 @@ class TestUnsatCore(unittest.TestCase):
         s.add(y < 10)
         self.assertTrue(s.satisfiable())
         self.assertEqual(s.unsat_core(), [])
+
+    def test_unsat_core_composite_indexes_its_own_constraints(self):
+        """A composite solver splits independent constraints into child solvers.
+        Its core must index the composite's own ``constraints``, not the
+        conflicting child's."""
+        x = claripy.BVS("x", 32)
+        y = claripy.BVS("y", 32)
+        s = claripy.SolverComposite(track=True)
+        s.add([x > 10, y == 3, x < 5])
+        assert not s.satisfiable()
+        core = {str(s.constraints[i]) for i in s.unsat_core()}
+        assert core == {str(x > 10), str(x < 5)}

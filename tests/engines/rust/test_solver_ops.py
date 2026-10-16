@@ -1762,11 +1762,9 @@ class TestProxyUnsatCore:
     def _python_core(constraints):
         """claripy's own core for the same constraints, as a set of constraint strings.
 
-        A plain tracking ``claripy.Solver`` rather than a ``SimState``: claripy
-        reports a core as indices into its solver's ``constraints``, and the
-        ``SolverComposite`` a tracking ``SimSolver`` uses returns indices local to
-        the child solver holding the conflict, which do not index its own
-        ``constraints`` (angr-mx00p.8).
+        claripy reports a core as indices into the solver's ``constraints``;
+        they are mapped back to the constraints so the oracle compares like with
+        like against the Rust core, which returns constraints (angr-mx00p.7).
         """
         from angr import claripy
 

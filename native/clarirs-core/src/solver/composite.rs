@@ -165,9 +165,14 @@ impl<'c, S: Solver<'c>> Solver<'c> for CompositeSolver<'c, S> {
     }
 
     fn constraints(&self) -> Result<Vec<AstRef<'c>>, ClarirsError> {
+        // Children in id (creation) order: `children` is a HashMap, whose
+        // iteration order changes from process to process, and an unsat core
+        // is reported as indices into this list.
+        let mut ids: Vec<&usize> = self.children.keys().collect();
+        ids.sort_unstable();
         let mut all = Vec::new();
-        for child in self.children.values() {
-            all.extend(child.constraints()?);
+        for id in ids {
+            all.extend(self.children[id].constraints()?);
         }
         Ok(all)
     }
