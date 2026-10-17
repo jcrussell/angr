@@ -343,6 +343,9 @@ impl RustBV {
                     }
                 }
             }
+            // A clarirs term: the Bool its bit stands for, lowered natively,
+            // so `ite(cmp, 1, 0)` reaches Z3 as `cmp`.
+            RustBV::Ast { ast, .. } => Self::lower_clarirs_bool(ast),
             // Symbolic BV — use _eq(1)
             _ => {
                 let ast = self.to_z3_ast_cached(cache);
@@ -350,6 +353,18 @@ impl RustBV {
                 ast.eq(&one)
             }
         }
+    }
+
+    /// Lower the Bool a 1-bit [`RustBV::Ast`] term stands for: the `c` of the
+    /// `ite(c, 1, 0)` encoding, or `bit != 0`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[expect(
+        clippy::expect_used,
+        reason = "closed-world invariant: the Bool is a subterm of a lowered `Ast` (or `bit != 0` over one), and building `0` or `!=` over a 1-bit term cannot fail"
+    )]
+    fn lower_clarirs_bool(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::Bool {
+        let cond = super::value_clarirs::bool_of(ast).expect("a 1-bit term has a Bool view");
+        crate::claripy_bridge::lower_bool(&cond).expect("a subterm of a lowered term lowers")
     }
 
     /// Emit a Z3 AST for `Extract(high, low, inner)` while re-applying the

@@ -138,6 +138,21 @@ pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, BridgeError
     Ok(unsafe { z3::ast::BV::wrap(lowered.context(), lowered.as_z3_ast()) })
 }
 
+/// Lower a Bool-sorted clarirs AST to a z3-rs `Bool`.
+pub(crate) fn lower_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, BridgeError> {
+    let lowered = lower(ast)?;
+    if !lowered.is_bool() {
+        return Err(conversion(format!(
+            "expected a Bool lowering, got {:?}",
+            lowered.sort_kind()
+        )));
+    }
+    use z3::ast::Ast;
+    // SAFETY: `lowered` holds a reference to a live term of the thread-local
+    // context whose sort was just checked to be Bool; `wrap` takes its own.
+    Ok(unsafe { z3::ast::Bool::wrap(lowered.context(), lowered.as_z3_ast()) })
+}
+
 struct Lowerer<'a> {
     ctx: &'a z3::Context,
     /// An `AstRef` is interned, so equal subtrees are one node and share one

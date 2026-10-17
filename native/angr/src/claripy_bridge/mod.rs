@@ -139,7 +139,7 @@ pub(crate) use cache::*;
 pub(crate) use export::*;
 pub(crate) use import::*;
 #[cfg(feature = "vex-engine-z3")]
-pub(crate) use z3_lower::{lower_bv, lower_claripy_ast};
+pub(crate) use z3_lower::{lower_bool, lower_bv, lower_claripy_ast};
 
 /// The claripy Python module (clarirs, built into this extension).
 ///

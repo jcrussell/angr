@@ -130,3 +130,18 @@ fn translate_keeps_the_node_and_drops_the_memo() {
         other => panic!("expected RustBV::Ast, got {other:?}"),
     }
 }
+
+#[test]
+fn a_comparison_bit_lowers_to_the_native_comparison() {
+    // `ite(x < y, 1, 0)` must reach Z3 as `x < y` itself, not as a bitvector
+    // ite compared with 1: the same Z3 term the engine builds by hand.
+    use z3::ast::BV;
+    let x = ctx().bvs("ast_cmp_x", 32).unwrap();
+    let y = ctx().bvs("ast_cmp_y", 32).unwrap();
+    let bit = RustBV::from_clarirs(ctx().ult(x, y).unwrap()).unwrap();
+    let native = BV::new_const("ast_cmp_x", 32).bvult(BV::new_const("ast_cmp_y", 32));
+    assert_eq!(bit.to_z3_bool(), native);
+    // A bit with no comparison under it is `bit != 0`, which still decides.
+    let flag = RustBV::from_clarirs(ctx().bools("ast_cmp_flag").unwrap()).unwrap();
+    assert_eq!(flag.to_z3_bool(), z3::ast::Bool::new_const("ast_cmp_flag"));
+}
