@@ -7,7 +7,7 @@ use super::loads_match;
 use crate::symbolic::{RustBV, SymContext};
 
 fn as_ast(value: &RustBV) -> RustBV {
-    RustBV::from_clarirs_subterm(value.to_clarirs().unwrap())
+    RustBV::from_clarirs_lowerable(value.to_clarirs().unwrap())
 }
 
 #[test]

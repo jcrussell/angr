@@ -136,13 +136,6 @@ mod stats;
 mod table;
 mod transaction_ops;
 mod value;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the constructors call it from the writer slices of angr-mx00p.12"
-    )
-)]
 mod value_clarirs;
 mod value_ops;
 mod value_shape;
@@ -186,6 +179,9 @@ pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 // (angr-9hkr6).
 #[cfg(feature = "vex-engine")]
 pub(crate) use value_ops::{concrete_clz, concrete_ctz};
+// Used by the claripy export, which is built with vex-engine.
+#[cfg(feature = "vex-engine")]
+pub(crate) use value_clarirs::bool_inside;
 #[cfg(feature = "vex-engine")]
 pub(crate) use value_shape::Node;
 pub use width_guards::{MAX_BV_WIDTH, check_bv_width, check_extract_bounds};

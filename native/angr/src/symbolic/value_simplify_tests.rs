@@ -92,7 +92,7 @@ fn test_not_double_negation() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     // not(not(x)) → x
     let r = x.not(&ctx).not(&ctx);
-    assert!(matches!(r, RustBV::Symbolic { .. }));
+    assert_eq!(r.leaf_var(), x.leaf_var(), "expected x back, got {r:?}");
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn test_neg_double_negation() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     // neg(neg(x)) → x
     let r = x.neg(&ctx).neg(&ctx);
-    assert!(matches!(r, RustBV::Symbolic { .. }));
+    assert_eq!(r.leaf_var(), x.leaf_var(), "expected x back, got {r:?}");
 }
 
 #[test]
@@ -335,10 +335,7 @@ fn test_mul_by_non_power_of_two_stays_as_mul() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     // sym * 3 → still Mul (no rewrite for non-pow2 constants)
     let r = x.mul(&RustBV::concrete(3, 32), &ctx);
-    match r {
-        RustBV::Expression { op: BVOp::Mul, .. } => {}
-        other => panic!("expected Mul, got {other:?}"),
-    }
+    assert_eq!(r.node().map(|n| n.op), Some(BVOp::Mul), "expected Mul, got {r:?}");
 }
 
 #[test]

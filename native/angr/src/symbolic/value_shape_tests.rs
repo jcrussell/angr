@@ -24,7 +24,7 @@ fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
 
 /// The same value held as a clarirs term.
 fn ast(value: &RustBV) -> RustBV {
-    RustBV::from_clarirs_subterm(value.to_clarirs().unwrap())
+    RustBV::from_clarirs_lowerable(value.to_clarirs().unwrap())
 }
 
 /// Two values denote the same clarirs term.

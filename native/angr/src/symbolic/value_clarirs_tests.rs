@@ -149,3 +149,25 @@ fn an_expression_converts_once_while_it_lives() {
     acc.clone().to_clarirs().unwrap();
     assert_eq!(EXPRESSIONS_CONVERTED.get(), before);
 }
+
+#[test]
+fn one_bit_logic_denotes_its_z3_lowering_and_stays_a_bool() {
+    // 1-bit And/Or/Xor/Not are built on the Bools their operands stand for,
+    // so the term is `ite(c, 1, 0)` with `c` a Bool connective.
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "tc_l_x", 32);
+    let y = RustBV::symbolic(&ctx, "tc_l_y", 32);
+    let lt = raw(BVOp::Ult, 1, vec![x.clone(), y.clone()]);
+    let eq = raw(BVOp::Eq, 1, vec![x.clone(), y]);
+    let flag = RustBV::symbolic(&ctx, "tc_l_flag", 1);
+    for (a, b) in [(&lt, &eq), (&lt, &flag), (&flag, &flag)] {
+        for op in [BVOp::And, BVOp::Or, BVOp::Xor] {
+            let v = raw(op, 1, vec![a.clone(), b.clone()]);
+            assert_equivalent(&v);
+            assert!(super::bool_inside(&v.to_clarirs().unwrap()).is_some(), "{v:?}");
+        }
+        let not = raw(BVOp::Not, 1, vec![a.clone()]);
+        assert_equivalent(&not);
+        assert!(super::bool_inside(&not.to_clarirs().unwrap()).is_some(), "{not:?}");
+    }
+}

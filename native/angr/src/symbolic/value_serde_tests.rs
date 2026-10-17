@@ -157,31 +157,23 @@ fn serde_roundtrip_expression_tree() {
     let x = RustBV::symbolic(&ctx, "x_expr_serde", 32);
     let c = RustBV::concrete(7, 32);
     let expr = x.add(&c, &ctx);
-    // expr is Expression(Add, [Symbolic(x), Concrete(7)]) after
-    // commutative canonicalization (concrete sorts to the right).
+    // expr is Add(x, 7) after commutative canonicalization (concrete sorts
+    // to the right).
     let json = serde_json::to_string(&expr).expect("serialize");
     let back: RustBV = serde_json::from_str(&json).expect("deserialize");
-    match &back {
-        RustBV::Expression {
-            op,
-            operands,
-            width,
-            ..
-        } => {
-            assert_eq!(*op, BVOp::Add);
-            assert_eq!(*width, 32);
-            assert_eq!(operands.len(), 2);
-            assert!(matches!(operands[0], RustBV::Symbolic { .. }));
-            assert!(matches!(
-                operands[1],
-                RustBV::Concrete {
-                    value: 7,
-                    width: 32
-                }
-            ));
+    assert_eq!(back, expr, "the decoded term is the same interned node");
+    assert_eq!(back.width(), 32);
+    let node = back.node().expect("a compound value");
+    assert_eq!(node.op, BVOp::Add);
+    assert_eq!(node.operands.len(), 2);
+    assert_eq!(node.operands[0].leaf_var(), x.leaf_var());
+    assert!(matches!(
+        node.operands[1],
+        RustBV::Concrete {
+            value: 7,
+            width: 32
         }
-        _ => panic!("variant changed across round-trip"),
-    }
+    ));
 }
 
 #[cfg(feature = "vex-engine-z3")]

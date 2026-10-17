@@ -300,9 +300,9 @@ fn bv_cache_key_distinguishes_nested_leaf_symbols() {
     let addr_x = x.and(&mask, &ctx).add(&off, &ctx);
     let addr_y = y.and(&mask, &ctx).add(&off, &ctx);
 
-    // Sanity: these are genuinely nested Expression trees, not simplified leaves.
-    assert!(matches!(addr_x, RustBV::Expression { .. }));
-    assert!(matches!(addr_y, RustBV::Expression { .. }));
+    // Sanity: these are genuinely nested trees, not simplified leaves.
+    assert!(addr_x.node().is_some());
+    assert!(addr_y.node().is_some());
 
     assert_ne!(
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_x),
@@ -382,22 +382,20 @@ fn bv_cache_key_distinguishes_nested_constrained_values() {
     };
     let (id, width) = (*id, *width);
 
-    let addr_lo = sym.add(
-        &RustBV::Constrained {
-            id,
-            value: 10,
-            width,
-        },
-        &ctx,
-    );
-    let addr_hi = sym.add(
-        &RustBV::Constrained {
-            id,
-            value: 20,
-            width,
-        },
-        &ctx,
-    );
+    // Built as `Expression` nodes directly: `add` now builds a clarirs term,
+    // which holds a `Constrained` operand as its literal value, and this pins
+    // `hash_bv`'s nested-`Constrained` arm.
+    let add_of = |value| RustBV::Expression {
+        id: RustBV::EXPRESSION_ID,
+        width,
+        op: BVOp::Add,
+        operands: std::sync::Arc::from(vec![
+            sym.clone(),
+            RustBV::Constrained { id, value, width },
+        ]),
+        memo: Default::default(),
+    };
+    let (addr_lo, addr_hi) = (add_of(10), add_of(20));
 
     // Sanity: the Constrained leaf must survive as a nested operand rather than
     // being constant-folded away, or the test would prove nothing.

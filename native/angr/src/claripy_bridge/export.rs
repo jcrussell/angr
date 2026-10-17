@@ -310,10 +310,15 @@ fn rustbv_to_claripy_memo(
             //    back here rather than as a silent behaviour change.
             concrete_value_to_bvv(py, claripy_mod, *value, *width)
         }
-        // Already a claripy AST: wrap the node, annotations and all.
-        RustBV::Ast { ast, .. } => crate::claripy::ast::base::Base::from_ast(py, ast.clone())
-            .map(|b| b.into_any().unbind())
-            .map_err(PyErr::from),
+        // Already a claripy AST: wrap the node, annotations and all. A Bool
+        // held in the 1-bit encoding exports as the Bool, as a comparison
+        // `Expression` does (its claripy dunder returns a Bool).
+        RustBV::Ast { ast, .. } => {
+            let node = crate::symbolic::bool_inside(ast).unwrap_or_else(|| ast.clone());
+            crate::claripy::ast::base::Base::from_ast(py, node)
+                .map(|b| b.into_any().unbind())
+                .map_err(PyErr::from)
+        }
         RustBV::Expression { op, operands, .. } => {
             // Recursively convert operands to claripy ASTs
             let raw_args: Vec<Py<PyAny>> = operands

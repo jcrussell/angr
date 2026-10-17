@@ -276,15 +276,11 @@ fn commutative_ops_canonicalize_operand_order() {
         "add(x,c) and add(c,x) should canonicalize to the same Z3 AST"
     );
     // Verify concrete is in operand[1] after canonicalization.
-    match &r3 {
-        RustBV::Expression { operands, .. } => {
-            assert!(
-                matches!(operands[1], RustBV::Concrete { .. }),
-                "concrete should sort to the right of symbolic"
-            );
-        }
-        _ => panic!("expected Expression for add(x, c)"),
-    }
+    let node = r3.node().expect("add(x, c) is compound");
+    assert!(
+        matches!(node.operands[1], RustBV::Concrete { .. }),
+        "concrete should sort to the right of symbolic"
+    );
 
     // Same property for mul / and / or / xor / eq / ne.
     type BinOp = fn(RustBV, RustBV, &SymContext) -> RustBV;

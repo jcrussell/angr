@@ -299,13 +299,23 @@ impl RustBV {
     /// boilerplate that differs only in `op` and the operand slice. Any array
     /// (`[x]`, `[lhs, rhs]`, `[c, t, e]`) coerces through `impl Into<Arc<[_]>>`,
     /// so this one helper serves the unary/binary/ternary arities.
+    ///
+    /// The ops [`builds_clarirs`] lists are built as a clarirs node instead
+    /// (angr-mx00p.12). An operand with no clarirs term (a float op, which
+    /// clarirs cannot express yet) keeps the `Expression` form, which lowers
+    /// and exports the same way.
     #[inline]
-    fn expr_node(width: u32, op: BVOp, operands: impl Into<Arc<[RustBV]>>) -> Self {
+    fn expr_node<const N: usize>(width: u32, op: BVOp, operands: [RustBV; N]) -> Self {
+        if builds_clarirs(&op)
+            && let Ok(term) = super::value_clarirs::build_term(&op, &operands, width)
+        {
+            return Self::from_clarirs_lowerable(term);
+        }
         RustBV::Expression {
             id: Self::EXPRESSION_ID,
             width,
             op,
-            operands: operands.into(),
+            operands: Arc::from(operands),
             memo: Default::default(),
         }
     }
@@ -1380,6 +1390,26 @@ enum ZExtCmp {
 /// Fold `Cmp(ZeroExt(k, x), BVV(c, W))` (and commuted variants) using the
 /// fact that `ZeroExt(k, x)` is always in the range `[0, 2^(W-k))`.
 ///
+/// The ops [`RustBV::expr_node`] builds as clarirs nodes. Families switch
+/// over one at a time (angr-mx00p.12); the rest still build `Expression`s.
+fn builds_clarirs(op: &BVOp) -> bool {
+    matches!(
+        op,
+        BVOp::Add
+            | BVOp::Sub
+            | BVOp::Mul
+            | BVOp::UDiv
+            | BVOp::SDiv
+            | BVOp::URem
+            | BVOp::SRem
+            | BVOp::Neg
+            | BVOp::And
+            | BVOp::Or
+            | BVOp::Xor
+            | BVOp::Not
+    )
+}
+
 /// Two outcomes:
 /// * Trivial decide — the comparison is structurally `true` or `false`
 ///   regardless of `x`. Returns `Self::concrete(0|1, 1)`. Bumps

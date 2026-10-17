@@ -15,6 +15,11 @@
 //! `pub(super)` codec fns are reachable via `crate::symbolic::bv_codec`.
 
 use super::*;
+
+/// The op of a compound value, whichever arm holds it.
+fn op_of(bv: &RustBV) -> Option<BVOp> {
+    bv.node().map(|n| n.op)
+}
 use crate::symbolic::bv_codec::{extract_bv_value, extract_bv_value_wide, make_bv_const};
 use quickcheck_macros::quickcheck;
 
@@ -734,7 +739,7 @@ fn wide_shl_declines_the_fold_when_bits_escape_the_payload() {
                         got.as_u128().is_none(),
                         "shl must not fold w={w} v={v:#x} a={a}"
                     );
-                    assert_eq!(got.op(), Some(&BVOp::Shl), "shl op w={w} v={v:#x} a={a}");
+                    assert_eq!(op_of(&got), Some(BVOp::Shl), "shl op w={w} v={v:#x} a={a}");
                 } else {
                     // Whole result fits the payload. Oracle by repeated
                     // doubling, which cannot overflow here and shares no code
@@ -937,7 +942,7 @@ fn wide_rotate_declines_the_concrete_fold() {
                             got.as_u128().is_none(),
                             "{name} must not fold w={w} v={v:#x} a={a}"
                         );
-                        assert_eq!(got.op(), Some(&op), "{name} op w={w} v={v:#x} a={a}");
+                        assert_eq!(op_of(&got), Some(op.clone()), "{name} op w={w} v={v:#x} a={a}");
                     }
                 }
             }
@@ -966,7 +971,7 @@ fn wide_reverse_declines_the_concrete_fold() {
                     got.as_u128().is_none(),
                     "reverse must not fold w={w} v={v:#x}"
                 );
-                assert_eq!(got.op(), Some(&BVOp::Reverse), "reverse op w={w} v={v:#x}");
+                assert_eq!(op_of(&got), Some(BVOp::Reverse), "reverse op w={w} v={v:#x}");
             }
         }
     }
@@ -1046,8 +1051,8 @@ fn wide_arith_declines_the_fold_when_the_result_leaves_the_payload() {
                                 "{name} must not fold w={w} a={a:#x} b={b:#x}"
                             );
                             assert_eq!(
-                                got.op(),
-                                Some(&op),
+                                op_of(&got),
+                                Some(op.clone()),
                                 "{name} op w={w} a={a:#x} b={b:#x}"
                             );
                         }
@@ -1070,7 +1075,7 @@ fn wide_not_and_neg_decline_the_concrete_fold() {
             let not = bv(v, w).not(&ctx);
             assert_eq!(not.width(), w, "not width w={w} v={v:#x}");
             assert!(not.as_u128().is_none(), "not must not fold w={w} v={v:#x}");
-            assert_eq!(not.op(), Some(&BVOp::Not), "not op w={w} v={v:#x}");
+            assert_eq!(op_of(&not), Some(BVOp::Not), "not op w={w} v={v:#x}");
 
             let neg = bv(v, w).neg(&ctx);
             assert_eq!(neg.width(), w, "neg width w={w} v={v:#x}");
@@ -1079,7 +1084,7 @@ fn wide_not_and_neg_decline_the_concrete_fold() {
                 assert_eq!(val(&neg), 0, "neg of zero w={w}");
             } else {
                 assert!(neg.as_u128().is_none(), "neg must not fold w={w} v={v:#x}");
-                assert_eq!(neg.op(), Some(&BVOp::Neg), "neg op w={w} v={v:#x}");
+                assert_eq!(op_of(&neg), Some(BVOp::Neg), "neg op w={w} v={v:#x}");
             }
         }
     }
@@ -1109,8 +1114,8 @@ fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
                     "sext({from}->{to}) of negative v={neg:#x} must not fold"
                 );
                 assert_eq!(
-                    got.op(),
-                    Some(&BVOp::SignExt(to - from)),
+                    op_of(&got),
+                    Some(BVOp::SignExt(to - from)),
                     "sext({from}->{to}) op"
                 );
             }
@@ -1143,7 +1148,7 @@ fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
         ] {
             assert_eq!(got.width(), w, "{name} width w={w}");
             assert!(got.as_u128().is_none(), "{name} must not fold w={w}");
-            assert_eq!(got.op(), Some(&op), "{name} op w={w}");
+            assert_eq!(op_of(&got), Some(op.clone()), "{name} op w={w}");
         }
     }
     // At or below the ceiling `u128::MAX` masked to `w` really is all-ones, so
@@ -1156,7 +1161,7 @@ fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
             ("ones & x", ones.and(&x, &ctx)),
         ] {
             assert_eq!(got.width(), w, "{name} width w={w}");
-            assert!(got.op().is_none() && got.is_symbolic(), "{name} w={w}");
+            assert!(op_of(&got).is_none() && got.is_symbolic(), "{name} w={w}");
         }
         assert_eq!(val(&x.or(&ones, &ctx)), mask(w), "x | ones w={w}");
         assert_eq!(val(&ones.or(&x, &ctx)), mask(w), "ones | x w={w}");
@@ -1181,7 +1186,7 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
                     got.as_u128().is_none(),
                     "{name} by zero must not fold w={w} a={a:#x}"
                 );
-                assert_eq!(got.op(), Some(&op), "{name} op w={w} a={a:#x}");
+                assert_eq!(op_of(&got), Some(op.clone()), "{name} op w={w} a={a:#x}");
             }
             // A non-zero divisor still folds: both operands are logically
             // non-negative up here, so signed division degenerates to unsigned.

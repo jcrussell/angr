@@ -252,7 +252,7 @@ fn ite_targets_are_read_from_a_clarirs_term() {
     let cond = x.ult(&RustBV::concrete(10, 32), &ctx);
     let inner = cond.ite(&RustBV::concrete(0x2000, 64), &RustBV::concrete(0x3000, 64), &ctx);
     let target = cond.ite(&RustBV::concrete(0x1000, 64), &inner, &ctx);
-    let as_ast = RustBV::from_clarirs_subterm(target.to_clarirs().unwrap());
+    let as_ast = RustBV::from_clarirs_lowerable(target.to_clarirs().unwrap());
     assert!(matches!(as_ast, RustBV::Ast { .. }));
     let mut got = extract_ite_targets(&as_ast, 8).unwrap();
     got.sort_unstable();

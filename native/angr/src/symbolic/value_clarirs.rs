@@ -5,7 +5,8 @@
 //! has the semantics the value's Z3 lowering (`value_z3.rs`) has:
 //!
 //! - a 1-bit comparison result is `ite(cmp, 1, 0)`, the encoding
-//!   [`RustBV::from_clarirs`] uses for a Bool;
+//!   [`RustBV::from_clarirs`] uses for a Bool, and 1-bit `And` / `Or` /
+//!   `Xor` / `Not` are the Bool ops under the same encoding;
 //! - `Ite`'s condition is "nonzero", as `build_z3_ast_cached` reads it;
 //! - `Reverse` of a width that is not a multiple of 8, or is under 16, is the
 //!   identity;
@@ -79,13 +80,19 @@ pub(crate) fn bit_of(b: Term) -> Result<Term, ClarirsError> {
 /// The Bool a bitvector stands for as a condition: "nonzero". Peels the
 /// `ite(c, 1, 0)` encoding back to `c`.
 pub(crate) fn bool_of(bits: &Term) -> Result<Term, ClarirsError> {
-    if let AstOp::ITE(c, t, e) = bits.op()
-        && is_bvv(t, 1)
-        && is_bvv(e, 0)
-    {
-        return Ok(c.clone());
+    if let Some(c) = bool_inside(bits) {
+        return Ok(c);
     }
     GLOBAL_CONTEXT.neq(bits.clone(), bvv(0, bits.size())?)
+}
+
+/// The `c` of a 1-bit `ite(c, 1, 0)`: the Bool a value holds in the engine's
+/// encoding, or `None` for any other term.
+pub(crate) fn bool_inside(bits: &Term) -> Option<Term> {
+    match bits.op() {
+        AstOp::ITE(c, t, e) if bits.size() == 1 && is_bvv(t, 1) && is_bvv(e, 0) => Some(c.clone()),
+        _ => None,
+    }
 }
 
 fn is_bvv(term: &Term, value: u64) -> bool {
@@ -119,7 +126,7 @@ impl RustBV {
                 if let Some(done) = CONVERTED.with_borrow(|c| c.get(operands)) {
                     return Ok(done);
                 }
-                let term = expression_term(op, operands, *width)?;
+                let term = build_term(op, operands, *width)?;
                 #[cfg(test)]
                 EXPRESSIONS_CONVERTED.set(EXPRESSIONS_CONVERTED.get() + 1);
                 CONVERTED.with_borrow_mut(|c| c.insert(operands, &term));
@@ -129,7 +136,10 @@ impl RustBV {
     }
 }
 
-fn expression_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<Term, ClarirsError> {
+/// The clarirs term for `op` over `operands`, with the encodings in the
+/// module doc. Constructors call it to build a value as a clarirs node; `Err`
+/// when an operand has no term (a float op) or the op is a float op.
+pub(crate) fn build_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<Term, ClarirsError> {
     let gc = &*GLOBAL_CONTEXT;
     let arg = |i: usize| -> Result<Term, ClarirsError> {
         operands
@@ -137,6 +147,18 @@ fn expression_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<Term, C
             .ok_or_else(|| ClarirsError::InvalidArguments(format!("{op:?}: missing operand {i}")))?
             .to_clarirs()
     };
+    // 1-bit logic is built on the Bools the bits stand for, so a condition
+    // stays `ite(c, 1, 0)` and reaches Z3 and Python as a Bool.
+    if width == 1 {
+        let cond = |i: usize| bool_of(&arg(i)?);
+        match op {
+            BVOp::And => return bit_of(gc.and2(cond(0)?, cond(1)?)?),
+            BVOp::Or => return bit_of(gc.or2(cond(0)?, cond(1)?)?),
+            BVOp::Xor => return bit_of(gc.xor2(cond(0)?, cond(1)?)?),
+            BVOp::Not => return bit_of(gc.not(cond(0)?)?),
+            _ => {}
+        }
+    }
     Ok(match op {
         BVOp::Add => gc.add(arg(0)?, arg(1)?)?,
         BVOp::Sub => gc.sub(arg(0)?, arg(1)?)?,

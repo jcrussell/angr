@@ -466,15 +466,15 @@ fn test_float_predicate_imports_whole_and_exports_unchanged() {
         let x = GLOBAL_CONTEXT.fps("import_nan_x", FSort::f64()).expect("FPS");
         let eq = GLOBAL_CONTEXT.eq_(&x, &x).expect("fp.eq");
         let bv = claripy_to_rustbv(py, &claripy_object(py, eq.clone()), &ctx).expect("import");
-        let RustBV::Ast { ast, .. } = &bv else {
-            panic!("expected RustBV::Ast, got {bv:?}");
-        };
+        assert!(matches!(bv, RustBV::Ast { .. }), "expected RustBV::Ast, got {bv:?}");
         assert_eq!(bv.width(), 1);
         assert!(ctx.can_be_false(&bv), "NaN must make fp.eq(x, x) false");
 
         let claripy_mod = crate::claripy_bridge::claripy_module(py).expect("claripy");
         let exported = crate::claripy_bridge::rustbv_to_claripy(py, &bv, &claripy_mod).expect("export");
         let base = exported.bind(py).cast::<Base>().expect("a claripy AST");
-        assert!(std::sync::Arc::ptr_eq(&base.get().ast(), ast));
+        // The Bool is held in the 1-bit encoding and exported as the Bool:
+        // the very node Python handed in.
+        assert!(std::sync::Arc::ptr_eq(&base.get().ast(), &eq));
     });
 }

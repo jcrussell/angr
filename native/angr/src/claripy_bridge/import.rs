@@ -583,9 +583,15 @@ fn import_clarirs(
 
     let use_cache = !matches!(node.op(), AstOp::BVV(_));
     let hash = py_hash(node);
+    // A Bool imports as a 1-bit value; clarirs gives a Bool node size 0.
+    let width = if node.ast_type().is_bool() {
+        1
+    } else {
+        node.size()
+    };
     if use_cache {
         match get_bv_by_ast_hash(hash) {
-            Some(cached) if cached.width() == node.size() => {
+            Some(cached) if cached.width() == width => {
                 crate::symbolic::record_claripy_ast_cache(true);
                 return Ok(cached);
             }
@@ -645,7 +651,15 @@ fn import_clarirs(
         RustBV::from_clarirs(node.clone())
             .map_err(|e| BridgeError::UnsupportedOp(format!("{}: {e}", op_name())))
     };
-    let opaque = node.ast_type().is_float()
+    // A compound Bool (a comparison, or a connective over Bools) is also
+    // taken whole: Python claripy has already simplified it, `RustBV::node`
+    // reads it in the shapes an operand-wise import would build, and keeping
+    // the node keeps the term Python holds, so it exports back as the same
+    // node, annotations included (angr-mx00p.12). Bool leaves and literals
+    // still go through the arms below.
+    let compound_bool = is_bool && !matches!(node.op(), AstOp::BoolS(_) | AstOp::BoolV(_));
+    let opaque = compound_bool
+        || node.ast_type().is_float()
         || node.ast_type().is_string()
         || children().any(|c| c.ast_type().is_float() || c.ast_type().is_string());
 
@@ -690,8 +704,6 @@ fn import_clarirs(
 
         AstOp::Add(_) => fold(RustBV::add, None),
         AstOp::Mul(_) => fold(RustBV::mul, None),
-        AstOp::And(_) if is_bool => fold(RustBV::and, Some(1)),
-        AstOp::Or(_) if is_bool => fold(RustBV::or, Some(0)),
         AstOp::And(_) => fold(RustBV::and, None),
         AstOp::Or(_) => fold(RustBV::or, None),
         AstOp::Xor(_) => fold(RustBV::xor, None),
@@ -705,16 +717,6 @@ fn import_clarirs(
         AstOp::AShR(..) => binary(RustBV::ashr),
         AstOp::RotateLeft(..) => binary(RustBV::rotl),
         AstOp::RotateRight(..) => binary(RustBV::rotr),
-        AstOp::Eq(..) => binary(RustBV::eq),
-        AstOp::Neq(..) => binary(RustBV::ne),
-        AstOp::ULT(..) => binary(RustBV::ult),
-        AstOp::ULE(..) => binary(RustBV::ule),
-        AstOp::UGT(..) => binary(RustBV::ugt),
-        AstOp::UGE(..) => binary(RustBV::uge),
-        AstOp::SLT(..) => binary(RustBV::slt),
-        AstOp::SLE(..) => binary(RustBV::sle),
-        AstOp::SGT(..) => binary(RustBV::sgt),
-        AstOp::SGE(..) => binary(RustBV::sge),
         AstOp::Neg(_) => child(0).map(|v| v.neg(ctx)),
         AstOp::Not(_) => child(0).map(|v| v.not(ctx)),
         AstOp::ITE(..) => {

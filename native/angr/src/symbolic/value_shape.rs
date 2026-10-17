@@ -73,11 +73,13 @@ impl RustBV {
         }
     }
 
-    /// Wrap a bitvector-sorted subterm of a value that is already an `Ast`:
-    /// a literal that fits a `u128` as `Concrete`, anything else as an `Ast`
-    /// lowered on demand. The parent's lowering lowered every subterm, so the
-    /// lazy lowering cannot fail.
-    pub(crate) fn from_clarirs_subterm(ast: Term) -> RustBV {
+    /// Wrap a bitvector-sorted term known to lower: a literal that fits a
+    /// `u128` as `Concrete`, anything else as an `Ast` lowered on demand. A
+    /// subterm of a lowered term qualifies (lowering the parent lowered it),
+    /// and so does a term the constructors build over lowerable operands with
+    /// the ops `value_clarirs::build_term` emits, so the lazy lowering cannot
+    /// fail.
+    pub(crate) fn from_clarirs_lowerable(ast: Term) -> RustBV {
         if let AstOp::BVV(value) = ast.op()
             && let Ok(v) = u128::try_from(&value.to_biguint())
         {
@@ -92,12 +94,12 @@ impl RustBV {
 }
 
 fn wrap(ast: &Term) -> RustBV {
-    RustBV::from_clarirs_subterm(ast.clone())
+    RustBV::from_clarirs_lowerable(ast.clone())
 }
 
 /// A Bool operand as the engine's 1-bit encoding.
 fn wrap_bool(b: &Term) -> Option<RustBV> {
-    bit_of(b.clone()).ok().map(RustBV::from_clarirs_subterm)
+    bit_of(b.clone()).ok().map(RustBV::from_clarirs_lowerable)
 }
 
 fn wrap_all<'a>(children: impl IntoIterator<Item = &'a Term>) -> Vec<RustBV> {

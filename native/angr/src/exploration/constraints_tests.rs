@@ -354,14 +354,14 @@ fn import_fast_path_asserts_and_records_convertible_constraint() {
     });
 }
 
-/// Fast path, *unconvertible* arm: a literal wider than 128 bits has no
-/// `RustBV::Concrete` form, so `claripy_to_rustbv` declines the comparison and
-/// the importer asserts the lowered term with `add_constraint_raw`, adding
-/// nothing to the assumed IR. Proven by a second import: if the first
-/// constraint had merely been counted, `x == 2^201` alone would still be SAT.
+/// A literal wider than 128 bits has no `RustBV::Concrete` form, but a
+/// comparison is imported whole as a clarirs term (angr-mx00p.12), which holds
+/// the literal losslessly, so the typed tier takes it and records it in the
+/// assumed IR. Proven by a second import: if the first constraint had merely
+/// been counted, `x == 2^201` alone would still be SAT.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn import_fast_path_raw_only_for_unconvertible_constraint() {
+fn import_types_a_wide_literal_constraint() {
     use clarirs_core::prelude::*;
     use num_bigint::BigUint;
 
@@ -379,11 +379,9 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
         };
         let first = claripy_object(py, GLOBAL_CONTEXT.eq_(&x, wide(200)).expect("x == 2^200"));
 
-        // Precondition: the typed converter must genuinely decline this op,
-        // otherwise the test covers the sibling arm instead.
         assert!(
-            crate::claripy_bridge::claripy_to_rustbv(py, &first, &ctx).is_err(),
-            "a >128-bit literal must be unsupported by the typed converter for this test to mean anything"
+            crate::claripy_bridge::claripy_to_rustbv(py, &first, &ctx).is_ok(),
+            "a comparison against a >128-bit literal imports as a clarirs term"
         );
 
         let before = ctx.assumed_local_len();
@@ -392,9 +390,9 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
             1
         );
         assert_eq!(
-            ctx.assumed_local_len(),
-            before,
-            "an unconvertible constraint is asserted raw only -- no assumed-IR entry"
+            ctx.assumed_local_len() - before,
+            1,
+            "the typed constraint is recorded in the assumed IR"
         );
         assert!(ctx.is_sat(), "x == 2^200 alone is satisfiable");
 
@@ -405,7 +403,7 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
         );
         assert!(
             !ctx.is_sat(),
-            "the raw-asserted constraint must really be on the solver: \
+            "the imported constraint must really be on the solver: \
              x == 2^200 && x == 2^201 is UNSAT"
         );
     });

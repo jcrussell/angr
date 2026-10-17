@@ -713,7 +713,7 @@ mod tests {
 
     /// The same value held as a clarirs term.
     fn as_ast(value: &RustBV) -> RustBV {
-        RustBV::from_clarirs_subterm(value.to_clarirs().unwrap())
+        RustBV::from_clarirs_lowerable(value.to_clarirs().unwrap())
     }
 
     #[test]
