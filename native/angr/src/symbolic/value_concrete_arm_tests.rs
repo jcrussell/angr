@@ -168,31 +168,12 @@ fn test_rotl_rotr_symbolic_builds_rotate_node() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     let amt = RustBV::concrete(5, 32);
     // Symbolic operand → no fold, emit the dark RotL/RotR expr arms.
-    match x.rotl(&amt, &ctx) {
-        RustBV::Expression {
-            op: BVOp::RotL,
-            operands,
-            width,
-            ..
-        } => {
-            assert_eq!(width, 32);
-            assert_eq!(operands.len(), 2);
-            assert_eq!(operands[1].as_u128(), Some(5));
-        }
-        other => panic!("expected RotL node, got {other:?}"),
-    }
-    match x.rotr(&amt, &ctx) {
-        RustBV::Expression {
-            op: BVOp::RotR,
-            operands,
-            width,
-            ..
-        } => {
-            assert_eq!(width, 32);
-            assert_eq!(operands.len(), 2);
-            assert_eq!(operands[1].as_u128(), Some(5));
-        }
-        other => panic!("expected RotR node, got {other:?}"),
+    for (got, op) in [(x.rotl(&amt, &ctx), BVOp::RotL), (x.rotr(&amt, &ctx), BVOp::RotR)] {
+        assert_eq!(got.width(), 32);
+        let node = got.node().unwrap_or_else(|| panic!("expected {op:?} node, got {got:?}"));
+        assert_eq!(node.op, op);
+        assert_eq!(node.operands.len(), 2);
+        assert_eq!(node.operands[1].as_u128(), Some(5));
     }
 }
 

@@ -1407,6 +1407,11 @@ fn builds_clarirs(op: &BVOp) -> bool {
             | BVOp::Or
             | BVOp::Xor
             | BVOp::Not
+            | BVOp::Shl
+            | BVOp::Lshr
+            | BVOp::Ashr
+            | BVOp::RotL
+            | BVOp::RotR
     )
 }
 
