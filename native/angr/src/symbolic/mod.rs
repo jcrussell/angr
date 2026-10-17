@@ -24,6 +24,7 @@
 //! |------|-------|
 //! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Symbolic` / `Expression`) plus `BVOp`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
 //! | `value_ops.rs` | Slice .2: arithmetic, bitwise, shift/rotate, comparison and structural (`extract` / `concat` / `reverse` / extend) ops, and the construction-time canonicalization rules they run. |
+//! | `value_clarirs.rs` | `RustBV::to_clarirs`: the clarirs term a value denotes, with the Bool and bitcount encodings its Z3 lowering uses. |
 //! | `value_z3.rs` | Slice .2: Z3 AST construction — `to_z3_ast*` / `to_z3_bool*`, the memoized integer builder, and the FP builders. **(z3)** |
 //! | `bv_concrete.rs` | Z3-independent concrete folds over raw `u128`. Deliberately Z3-free so concrete paths still build with no z3. |
 //! | `bv_codec.rs` | Codec between concrete values and Z3 BV constants (`context.rs` slice 5). **(z3)** |
@@ -134,6 +135,14 @@ mod stats;
 mod table;
 mod transaction_ops;
 mod value;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the constructors call it from the writer slices of angr-mx00p.12"
+    )
+)]
+mod value_clarirs;
 mod value_ops;
 #[cfg(feature = "vex-engine-z3")]
 mod value_z3;
