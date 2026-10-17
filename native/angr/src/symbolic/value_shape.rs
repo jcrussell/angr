@@ -45,6 +45,34 @@ impl RustBV {
         }
     }
 
+    /// The variable a leaf value is, as `(name, width)`: a `Symbolic`, or an
+    /// `Ast` that is a `BVS` or a Bool symbol under the bit encoding. A Bool
+    /// symbol is named the way a `Symbolic` Bool leaf is, so both arms agree.
+    /// Two leaves with the same name and width are one Z3 constant
+    /// (`invariant-symbol-identity-is-by-name`).
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn leaf_var(&self) -> Option<(std::sync::Arc<str>, u32)> {
+        use super::registry::SymbolKind;
+        use std::sync::Arc;
+        match self {
+            RustBV::Symbolic { name, width, .. } => Some((name.clone(), *width)),
+            RustBV::Ast { ast, width, .. } => match ast.op() {
+                AstOp::BVS(name, w) => Some((Arc::from(name.as_str()), *w)),
+                AstOp::ITE(c, t, e) if *width == 1 && is_bvv(t, 1) && is_bvv(e, 0) => {
+                    match c.op() {
+                        AstOp::BoolS(name) => Some((
+                            Arc::from(&*SymbolKind::Bool.rust_symbol_name(name.as_str())),
+                            1,
+                        )),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Wrap a bitvector-sorted subterm of a value that is already an `Ast`:
     /// a literal that fits a `u128` as `Concrete`, anything else as an `Ast`
     /// lowered on demand. The parent's lowering lowered every subterm, so the

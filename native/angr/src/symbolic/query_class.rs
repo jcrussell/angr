@@ -41,11 +41,12 @@
 //! points do no IR walking at all.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+use super::value_shape::Node;
 use super::{BVOp, RustBV};
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// Node budget for a single classification walk. A query whose IR is bigger
 /// than this is `Hard` by definition — a "cheap static predicate" that has to
@@ -229,12 +230,17 @@ fn interval_shaped_op(op: &BVOp) -> bool {
     )
 }
 
+/// A free variable, by name and width (`RustBV::leaf_var`). An opaque clarirs
+/// term contributes its variables' names with width 0, since clarirs records
+/// names only.
+type Var = (Arc<str>, u32);
+
 /// Structural summary of one expression tree, computed in a single walk.
 #[derive(Default)]
 struct Shape {
-    /// Free symbol ids reachable from the root (`Constrained` leaves are
+    /// Free variables reachable from the root (`Constrained` leaves are
     /// pinned, so they do not count as free).
-    vars: HashSet<u64>,
+    vars: HashSet<Var>,
     /// Every op on the way is in the interval-decidable whitelist.
     interval_shaped: bool,
     /// The walk stayed inside [`NODE_BUDGET`].
@@ -254,21 +260,25 @@ fn walk(bv: &RustBV, shape: &mut Shape, budget: &mut usize) {
         return;
     }
     *budget -= 1;
-    match bv {
-        RustBV::Concrete { .. } | RustBV::Constrained { .. } => {}
-        RustBV::Symbolic { id, .. } => {
-            shape.vars.insert(*id);
+    if matches!(bv, RustBV::Concrete { .. } | RustBV::Constrained { .. }) {
+        return;
+    }
+    if let Some(var) = bv.leaf_var() {
+        shape.vars.insert(var);
+    } else if let Some(node) = bv.node() {
+        if !interval_shaped_op(&node.op) {
+            shape.interval_shaped = false;
         }
-        RustBV::Expression { op, operands, .. } => {
-            if !interval_shaped_op(op) {
-                shape.interval_shaped = false;
-            }
-            for operand in operands.iter() {
-                walk(operand, shape, budget);
-            }
+        for operand in node.operands.iter() {
+            walk(operand, shape, budget);
         }
-        // Opaque to this walk: no interval reasoning, so not single-var.
-        RustBV::Ast { .. } => shape.interval_shaped = false,
+    } else if let RustBV::Ast { ast, .. } = bv {
+        // A clarirs term with no `BVOp` view (float or string ops): opaque to
+        // interval reasoning, but its variables are still free.
+        shape.interval_shaped = false;
+        shape
+            .vars
+            .extend(ast.variables().iter().map(|n| (Arc::from(n.as_str()), 0)));
     }
 }
 
@@ -283,10 +293,10 @@ fn shape_of(bv: &RustBV) -> Shape {
     shape
 }
 
-/// Symbol ids pinned to a constant by a top-level `x == const` constraint
+/// Variables pinned to a constant by a top-level `x == const` constraint
 /// assumed true (or `x != const` assumed false is NOT a pin — only equality
 /// pins a value). `None` when the constraint list is over budget.
-fn pinned_symbols(constraints: &[(RustBV, bool)]) -> Option<HashSet<u64>> {
+fn pinned_symbols(constraints: &[(RustBV, bool)]) -> Option<HashSet<Var>> {
     if constraints.len() > CONSTRAINT_BUDGET {
         return None;
     }
@@ -295,23 +305,23 @@ fn pinned_symbols(constraints: &[(RustBV, bool)]) -> Option<HashSet<u64>> {
         if !is_true {
             continue;
         }
-        let RustBV::Expression {
+        let Some(Node {
             op: BVOp::Eq,
             operands,
-            ..
-        } = cond
+        }) = cond.node()
         else {
             continue;
         };
         if operands.len() != 2 {
             continue;
         }
-        match (&operands[0], &operands[1]) {
-            (RustBV::Symbolic { id, .. }, rhs) if rhs.as_u128().is_some() => {
-                pinned.insert(*id);
+        let (lhs, rhs) = (&operands[0], &operands[1]);
+        match (lhs.leaf_var(), rhs.leaf_var()) {
+            (Some(var), _) if rhs.as_u128().is_some() => {
+                pinned.insert(var);
             }
-            (lhs, RustBV::Symbolic { id, .. }) if lhs.as_u128().is_some() => {
-                pinned.insert(*id);
+            (_, Some(var)) if lhs.as_u128().is_some() => {
+                pinned.insert(var);
             }
             _ => {}
         }
@@ -322,13 +332,13 @@ fn pinned_symbols(constraints: &[(RustBV, bool)]) -> Option<HashSet<u64>> {
 /// True when every constraint touching `var` is itself single-symbol over
 /// `var` and interval-shaped — the precondition for deciding a query about
 /// `var` by interval arithmetic alone.
-fn constraints_interval_shaped(constraints: &[(RustBV, bool)], var: u64) -> bool {
+fn constraints_interval_shaped(constraints: &[(RustBV, bool)], var: &Var) -> bool {
     if constraints.len() > CONSTRAINT_BUDGET {
         return false;
     }
     constraints.iter().all(|(cond, _)| {
         let shape = shape_of(cond);
-        if !shape.vars.contains(&var) {
+        if !shape.vars.contains(var) {
             // Irrelevant to `var` — but only if it is a well-formed walk;
             // an over-budget constraint may well mention `var` deeper down.
             return shape.within_budget;
@@ -356,29 +366,25 @@ fn struct_eq(a: &RustBV, b: &RustBV, budget: &mut usize) -> bool {
                 width: w2,
             },
         ) => v1 == v2 && w1 == w2,
-        (RustBV::Symbolic { id: i1, .. }, RustBV::Symbolic { id: i2, .. }) => i1 == i2,
         (RustBV::Constrained { id: i1, .. }, RustBV::Constrained { id: i2, .. }) => i1 == i2,
-        (
-            RustBV::Expression {
-                op: o1,
-                operands: p1,
-                ..
-            },
-            RustBV::Expression {
-                op: o2,
-                operands: p2,
-                ..
-            },
-        ) => {
-            o1 == o2
+        // Interned: one node per term.
+        (RustBV::Ast { ast: x, .. }, RustBV::Ast { ast: y, .. }) if Arc::ptr_eq(x, y) => true,
+        _ => {
+            if let (Some(x), Some(y)) = (a.leaf_var(), b.leaf_var()) {
+                return x == y;
+            }
+            let (Some(n1), Some(n2)) = (a.node(), b.node()) else {
+                return false;
+            };
+            n1.op == n2.op
                 && a.width() == b.width()
-                && p1.len() == p2.len()
-                && p1
+                && n1.operands.len() == n2.operands.len()
+                && n1
+                    .operands
                     .iter()
-                    .zip(p2.iter())
+                    .zip(n2.operands.iter())
                     .all(|(x, y)| struct_eq(x, y, budget))
         }
-        _ => false,
     }
 }
 
@@ -390,9 +396,7 @@ fn struct_eq(a: &RustBV, b: &RustBV, budget: &mut usize) -> bool {
 /// are listed — `eq_into`/`ne_into` fold concrete-vs-concrete and the
 /// `zext`-vs-const cases, so those never reach here.
 pub(crate) fn syntactic_decide(cond: &RustBV) -> Option<bool> {
-    let RustBV::Expression { op, operands, .. } = cond else {
-        return None;
-    };
+    let Node { op, operands } = cond.node()?;
     if operands.len() != 2 {
         return None;
     }
@@ -425,11 +429,10 @@ pub(crate) fn syntactic_decide(cond: &RustBV) -> Option<bool> {
                 (Some(c), None) => (rhs, c),
                 _ => return None,
             };
-            let RustBV::Expression {
+            let Some(Node {
                 op: BVOp::And,
                 operands: mask_ops,
-                ..
-            } = masked
+            }) = masked.node()
             else {
                 return None;
             };
@@ -449,7 +452,7 @@ pub(crate) fn classify_sat(constraints: &[(RustBV, bool)]) -> QueryClass {
     if constraints.len() > CONSTRAINT_BUDGET {
         return QueryClass::Hard;
     }
-    let mut vars: HashSet<u64> = HashSet::new();
+    let mut vars: HashSet<Var> = HashSet::new();
     for (cond, _) in constraints {
         let shape = shape_of(cond);
         if !shape.within_budget || !shape.interval_shaped {
@@ -485,7 +488,7 @@ pub(crate) fn classify_bool(cond: &RustBV, constraints: &[(RustBV, bool)]) -> Qu
         return QueryClass::Hard;
     }
     if shape.vars.len() == 1 && shape.interval_shaped {
-        let var = *shape.vars.iter().next().expect("len == 1");
+        let var = shape.vars.iter().next().expect("len == 1");
         if constraints_interval_shaped(constraints, var) {
             return QueryClass::SingleVarRange;
         }
@@ -548,7 +551,7 @@ pub(crate) fn classify_extrema(target: &RustBV, constraints: &[(RustBV, bool)]) 
         return QueryClass::TrivialDecide;
     }
     if shape.single_var() {
-        let var = *shape.vars.iter().next().expect("len == 1");
+        let var = shape.vars.iter().next().expect("len == 1");
         if constraints_interval_shaped(constraints, var) {
             return QueryClass::SingleVarRange;
         }
@@ -706,5 +709,49 @@ mod tests {
         assert_eq!(CURRENT_CLASS.with(|c| c.get()), QueryClass::FreeWitness);
         drop(outer);
         assert_eq!(CURRENT_CLASS.with(|c| c.get()), QueryClass::Unclassified);
+    }
+
+    /// The same value held as a clarirs term.
+    fn as_ast(value: &RustBV) -> RustBV {
+        RustBV::from_clarirs_subterm(value.to_clarirs().unwrap())
+    }
+
+    #[test]
+    fn clarirs_terms_classify_like_the_expressions_they_came_from() {
+        let ctx = SymContext::new_mock();
+        let x = sym(1, 32);
+        let bounded = x.ult(&RustBV::concrete(10, 32), &ctx);
+        assert_eq!(classify_bool(&bounded, &[]), QueryClass::SingleVarRange);
+        assert_eq!(
+            classify_bool(&as_ast(&bounded), &[]),
+            QueryClass::SingleVarRange
+        );
+        let lhs = x.add(&RustBV::concrete(1, 32), &ctx);
+        let reflexive = lhs.eq(&lhs, &ctx);
+        assert_eq!(syntactic_decide(&as_ast(&reflexive)), Some(true));
+        let masked = x.and(&RustBV::concrete(0xf0, 32), &ctx);
+        let contradiction = masked.eq(&RustBV::concrete(0x01, 32), &ctx);
+        assert_eq!(syntactic_decide(&as_ast(&contradiction)), Some(false));
+    }
+
+    #[test]
+    fn an_opaque_clarirs_term_still_has_free_variables() {
+        // A float term has no `BVOp` view; it used to count as variable-free
+        // and so classify as trivially decided.
+        use clarirs_core::prelude::{AstFactory, FSort};
+        let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
+        let f = gc.fps("qc_float", FSort::f32()).unwrap();
+        let bits = RustBV::from_clarirs(gc.fp_to_ieeebv(f).unwrap()).unwrap();
+        assert_eq!(classify_eval(&bits, &[]), QueryClass::FreeWitness);
+    }
+
+    #[test]
+    fn a_clarirs_equality_pins_a_leaf_of_the_same_name() {
+        let ctx = SymContext::new_mock();
+        let pin = as_ast(&sym(1, 32).eq(&RustBV::concrete(5, 32), &ctx));
+        assert_eq!(
+            classify_eval(&sym(1, 32), &[(pin, true)]),
+            QueryClass::ForcedValue
+        );
     }
 }
