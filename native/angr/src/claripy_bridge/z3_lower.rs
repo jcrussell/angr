@@ -20,12 +20,20 @@
 //! Strings and the VSA ops (`Union` / `Intersection` / `Widen`) are refused
 //! with [`BridgeError::UnsupportedOp`]; callers treat that like any other
 //! failed lowering and fall back to `claripy_to_rustbv`.
+//!
+//! Lowerings persist per thread in [`LOWERED`], keyed by node, so lowering a
+//! term that extends an already-lowered one builds only the new nodes. The
+//! engine builds terms op by op and wraps each in a `RustBV::Ast`; with a
+//! memo scoped to one call, every wrap would re-lower its whole subtree,
+//! quadratic along an op chain (angr-mx00p.12).
 
 #![cfg(feature = "vex-engine-z3")]
 #![allow(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::sync::{Arc, Weak};
 
 use clarirs_core::prelude::*;
 use pyo3::prelude::*;
@@ -60,12 +68,57 @@ pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Z3AstPtr, BridgeError> {
         )));
     }
     let ctx = z3::Context::thread_local();
-    let mut memo = HashMap::new();
-    Lowerer {
-        ctx: &ctx,
-        memo: &mut memo,
+    LOWERED.with_borrow_mut(|cache| {
+        cache.enter(&ctx);
+        Lowerer { ctx: &ctx, cache }.lower(ast)
+    })
+}
+
+thread_local! {
+    /// Every node this thread has lowered, while the node lives.
+    static LOWERED: RefCell<LoweredCache> = RefCell::new(LoweredCache::default());
+}
+
+/// A node's lowering, kept for as long as the node lives.
+///
+/// Keyed by the node's structural hash and confirmed by address: the entry's
+/// `Weak` keeps the node's allocation from being reused, so an address match
+/// against a live `AstRef` is the same node, and a node that has died can
+/// never match. Dead entries are swept once the map has doubled since the last
+/// sweep, which bounds it to twice the number of live lowered nodes.
+#[derive(Default)]
+struct LoweredCache {
+    /// The `Z3_context` the terms belong to, as an address. A thread-local
+    /// context swap (`with_z3_context` in tests) invalidates every entry.
+    ctx: usize,
+    map: HashMap<u64, (Weak<AstNode<'static>>, Z3AstPtr)>,
+    sweep_at: usize,
+}
+
+impl LoweredCache {
+    const MIN_SWEEP: usize = 1024;
+
+    fn enter(&mut self, ctx: &z3::Context) {
+        let raw = ctx.get_z3_context().as_ptr() as usize;
+        if self.ctx != raw {
+            self.map.clear();
+            self.ctx = raw;
+        }
     }
-    .lower(ast)
+
+    fn get(&self, ast: &AstRef<'static>) -> Option<Z3AstPtr> {
+        let (node, term) = self.map.get(&ast.hash())?;
+        (node.as_ptr() == Arc::as_ptr(ast)).then(|| term.clone_ref())
+    }
+
+    fn insert(&mut self, ast: &AstRef<'static>, term: &Z3AstPtr) {
+        if self.map.len() >= self.sweep_at {
+            self.map.retain(|_, (node, _)| node.strong_count() > 0);
+            self.sweep_at = (self.map.len() * 2).max(Self::MIN_SWEEP);
+        }
+        self.map
+            .insert(ast.hash(), (Arc::downgrade(ast), term.clone_ref()));
+    }
 }
 
 /// Lower a bitvector-sorted clarirs AST to a z3-rs `BV`, the form a
@@ -87,9 +140,9 @@ pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, BridgeError
 
 struct Lowerer<'a> {
     ctx: &'a z3::Context,
-    /// Keyed by node address: an `AstRef` is interned, so equal subtrees are
-    /// one node, and every key's node is kept alive by the root being lowered.
-    memo: &'a mut HashMap<*const AstNode<'static>, Z3AstPtr>,
+    /// An `AstRef` is interned, so equal subtrees are one node and share one
+    /// entry, within this call and across calls.
+    cache: &'a mut LoweredCache,
 }
 
 fn conversion(msg: impl Into<String>) -> BridgeError {
@@ -179,16 +232,17 @@ impl Lowerer<'_> {
     }
 
     fn lower(&mut self, ast: &AstRef<'static>) -> Result<Z3AstPtr, BridgeError> {
-        let key = std::sync::Arc::as_ptr(ast);
-        if let Some(done) = self.memo.get(&key) {
-            return Ok(done.clone_ref());
+        if let Some(done) = self.cache.get(ast) {
+            return Ok(done);
         }
         let children = ast
             .child_iter()
             .map(|child| self.lower(&child))
             .collect::<Result<Vec<_>, _>>()?;
         let term = self.node(ast, &children)?;
-        self.memo.insert(key, term.clone_ref());
+        #[cfg(test)]
+        NODES_BUILT.set(NODES_BUILT.get() + 1);
+        self.cache.insert(ast, &term);
         Ok(term)
     }
 
@@ -393,6 +447,12 @@ impl Lowerer<'_> {
         };
         self.own(raw)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Nodes built (cache misses) on this thread, for the reuse tests.
+    static NODES_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 test_submod!("z3_lower_tests.rs" => tests);

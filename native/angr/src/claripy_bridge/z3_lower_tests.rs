@@ -116,3 +116,37 @@ fn strings_are_refused_not_mislowered() {
     let len = GLOBAL_CONTEXT.str_len(s).unwrap();
     assert!(matches!(lower(&len), Err(BridgeError::UnsupportedOp(_))));
 }
+
+#[test]
+fn extending_a_lowered_term_builds_only_the_new_node() {
+    // The engine wraps each op's result as it is built, so lowering a chain
+    // one prefix at a time must cost one node per step, not the whole prefix.
+    let one = bvv(1, 32);
+    let mut acc = GLOBAL_CONTEXT.bvs("lower_chain", 32).unwrap();
+    lower(&acc).unwrap();
+    lower(&one).unwrap();
+    for _ in 0..64 {
+        acc = GLOBAL_CONTEXT.add(acc, one.clone()).unwrap();
+        let before = super::NODES_BUILT.get();
+        lower(&acc).unwrap();
+        assert_eq!(super::NODES_BUILT.get() - before, 1);
+    }
+    // Lowering it again builds nothing.
+    let before = super::NODES_BUILT.get();
+    lower(&acc).unwrap();
+    assert_eq!(super::NODES_BUILT.get(), before);
+}
+
+#[test]
+fn a_context_swap_does_not_reuse_terms_from_the_old_context() {
+    let x = GLOBAL_CONTEXT.bvs("lower_swap", 32).unwrap();
+    let original = z3::Context::thread_local();
+    let first = lower(&x).unwrap();
+    assert_eq!(first.context().get_z3_context(), original.get_z3_context());
+
+    let fresh = z3::Context::new(&z3::Config::new());
+    z3::Context::set_thread_local(&fresh);
+    let second = lower(&x).unwrap();
+    z3::Context::set_thread_local(&original);
+    assert_eq!(second.context().get_z3_context(), fresh.get_z3_context());
+}
