@@ -1259,3 +1259,30 @@ fn test_extract_distributes_over_union() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_shared_subterms_simplify_once_per_call() -> Result<()> {
+    // Each level uses the previous node twice, and the extract on top is
+    // pushed down through every Xor/And/Or by rewrites. A rewritten node's
+    // result has to be remembered for the node it replaced, or each shared
+    // subterm is simplified once per path to it: 2^LEVELS work here.
+    const LEVELS: u64 = 14;
+    let ctx = Context::new();
+    let mut node = ctx.bvs("shared_x", 32)?;
+    for i in 0..LEVELS {
+        let mask = ctx.bvv(BitVec::from((0x0f0f_0f0f ^ i, 32)))?;
+        let bits = ctx.bvv(BitVec::from((0x3030_3030 | i, 32)))?;
+        node = ctx.xor2(ctx.and2(node.clone(), mask)?, ctx.or2(node, bits)?)?;
+    }
+    let root = ctx.extract(node, 7, 0)?;
+
+    let before = super::DISPATCHES.get();
+    let simplified = root.simplify()?;
+    let work = super::DISPATCHES.get() - before;
+    assert!(
+        work < 200 * LEVELS as usize,
+        "simplify took {work} steps for {LEVELS} levels"
+    );
+    assert_eq!(simplified.size(), 8);
+    Ok(())
+}
