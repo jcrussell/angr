@@ -1108,6 +1108,116 @@ fn bench_stash_index_ops(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// clarirs node construction (angr-mx00p.12 measure-first)
+// ---------------------------------------------------------------------------
+
+/// The per-op cost of building a clarirs node in `GLOBAL_CONTEXT` instead of a
+/// `BVOp` `Expression`, set against `rustbv_symbolic` / `rustbv_concrete`.
+///
+/// clarirs interns weakly, so a node nobody else holds is a miss on every
+/// iteration (hash, allocate, insert, then remove on drop), while a node kept
+/// alive outside the loop is a hit (hash and lookup only). Engine-built nodes
+/// are mostly fresh, so `*_miss` is the realistic figure.
+fn bench_rustbv_clarirs(c: &mut Criterion) {
+    use clarirs_core::prelude::*;
+    use rustylib::claripy::ast::GLOBAL_CONTEXT;
+    let gc = &*GLOBAL_CONTEXT;
+    let x = gc.bvs("bench_clarirs_x", 64).unwrap();
+    let y = gc.bvs("bench_clarirs_y", 64).unwrap();
+
+    let mut group = c.benchmark_group("rustbv_clarirs");
+    group.bench_function("add_miss", |b| {
+        b.iter(|| black_box(gc.add(&x, &y).unwrap()))
+    });
+    let _held = gc.add(&x, &y).unwrap();
+    group.bench_function("add_hit", |b| b.iter(|| black_box(gc.add(&x, &y).unwrap())));
+    group.bench_function("concat_miss", |b| {
+        b.iter(|| black_box(gc.concat([x.clone(), y.clone()]).unwrap()))
+    });
+    group.bench_function("extract_32_miss", |b| {
+        b.iter(|| black_box(gc.extract(&x, 31, 0).unwrap()))
+    });
+    // What a concrete add costs with no `Concrete` arm: the fold itself is a
+    // u64 add, but the result has to be interned as a BVV.
+    group.bench_function("concrete_add_as_bvv", |b| {
+        b.iter(|| {
+            let v = black_box(0xDEADBEEFu64).wrapping_add(black_box(0xCAFEBABE));
+            black_box(gc.bvv(BitVec::from((v, 64))).unwrap())
+        })
+    });
+    // `from_clarirs` lowers eagerly; a one-node term over two leaves.
+    let sum = gc.add(&x, &y).unwrap();
+    group.bench_function("from_clarirs_add", |b| {
+        b.iter(|| black_box(RustBV::from_clarirs(sum.clone()).unwrap()))
+    });
+    group.finish();
+
+    // Contention on the global intern lock: every thread builds fresh nodes
+    // over its own leaves, so all of them are misses.
+    let mut group = c.benchmark_group("rustbv_clarirs_threads");
+    for threads in [1usize, 2, 4] {
+        group.bench_function(format!("add_miss_x{threads}"), |b| {
+            b.iter_custom(|iters| {
+                let start = std::time::Instant::now();
+                std::thread::scope(|s| {
+                    for t in 0..threads {
+                        s.spawn(move || {
+                            let a = gc.bvs(format!("bench_thr_a{t}"), 64).unwrap();
+                            let b = gc.bvs(format!("bench_thr_b{t}"), 64).unwrap();
+                            for _ in 0..iters {
+                                black_box(gc.add(&a, &b).unwrap());
+                            }
+                        });
+                    }
+                });
+                start.elapsed()
+            })
+        });
+        // Same loop with the result held alive: read lock only, no insert or
+        // drop-side removal, which separates read-lock traffic from writes.
+        group.bench_function(format!("add_hit_x{threads}"), |b| {
+            b.iter_custom(|iters| {
+                let start = std::time::Instant::now();
+                std::thread::scope(|s| {
+                    for t in 0..threads {
+                        s.spawn(move || {
+                            let a = gc.bvs(format!("bench_thr_a{t}"), 64).unwrap();
+                            let b = gc.bvs(format!("bench_thr_b{t}"), 64).unwrap();
+                            let _held = gc.add(&a, &b).unwrap();
+                            for _ in 0..iters {
+                                black_box(gc.add(&a, &b).unwrap());
+                            }
+                        });
+                    }
+                });
+                start.elapsed()
+            })
+        });
+    }
+    group.finish();
+
+    // Eager lowering of a growing chain: building `n` ops one at a time and
+    // wrapping each prefix with `from_clarirs` re-lowers the whole prefix,
+    // because `z3_lower`'s memo lives for one call. Linear growth across `n`
+    // here would mean the cost is per node; quadratic means per prefix.
+    let mut group = c.benchmark_group("rustbv_clarirs_lower_chain");
+    group.sample_size(10);
+    for n in [64usize, 128, 256] {
+        group.bench_function(format!("incremental_{n}"), |b| {
+            b.iter(|| {
+                let mut acc = x.clone();
+                for i in 0..n {
+                    let k = gc.bvv(BitVec::from((i as u64 + 1, 64))).unwrap();
+                    acc = gc.add(&acc, &k).unwrap();
+                    black_box(RustBV::from_clarirs(acc.clone()).unwrap());
+                }
+            })
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Groups
 // ---------------------------------------------------------------------------
 
@@ -1117,6 +1227,7 @@ criterion_group!(
     bench_rustbv_symbolic_arithmetic,
     bench_rustbv_build_z3_ast,
     bench_rustbv_clone_overhead,
+    bench_rustbv_clarirs,
     bench_symcontext_fork,
     bench_symcontext_fork_scaling,
     bench_symcontext_check_branch,
