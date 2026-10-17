@@ -50,7 +50,7 @@ impl RustBV {
     /// symbol is named the way a `Symbolic` Bool leaf is, so both arms agree.
     /// Two leaves with the same name and width are one Z3 constant
     /// (`invariant-symbol-identity-is-by-name`).
-    #[cfg(feature = "vex-engine-z3")]
+    #[cfg(feature = "vex-engine")]
     pub(crate) fn leaf_var(&self) -> Option<(std::sync::Arc<str>, u32)> {
         use super::registry::SymbolKind;
         use std::sync::Arc;

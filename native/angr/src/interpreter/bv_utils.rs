@@ -12,18 +12,20 @@
 //! symbolic-value byte-store fallback into a loud error.
 
 use super::*;
+use crate::symbolic::Node;
 
 pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec<u64>> {
     let mut targets = Vec::new();
     let mut seen = HashSet::new();
-    let mut stack: Vec<&RustBV> = vec![bv];
+    // Owned: a clarirs `Ast`'s operands come out of `RustBV::node` by value.
+    let mut stack: Vec<RustBV> = vec![bv.clone()];
 
     while let Some(current) = stack.pop() {
         if targets.len() > max_targets {
             return None; // Too many targets
         }
 
-        match current {
+        match &current {
             RustBV::Concrete { value, .. } => {
                 let addr = *value as u64;
                 if seen.insert(addr) {
@@ -36,19 +38,18 @@ pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec
                     targets.push(addr);
                 }
             }
-            RustBV::Expression {
-                op: BVOp::Ite,
-                operands,
-                ..
-            } if operands.len() == 3 => {
+            _ => match current.node() {
                 // ITE: operands[0] = condition, operands[1] = true_val, operands[2] = false_val
-                stack.push(&operands[1]); // true branch
-                stack.push(&operands[2]); // false branch
-            }
-            _ => {
+                Some(Node {
+                    op: BVOp::Ite,
+                    operands,
+                }) if operands.len() == 3 => {
+                    stack.push(operands[1].clone()); // true branch
+                    stack.push(operands[2].clone()); // false branch
+                }
                 // Non-ITE symbolic expression — can't extract targets
-                return None;
-            }
+                _ => return None,
+            },
         }
     }
 

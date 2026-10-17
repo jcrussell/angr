@@ -186,6 +186,8 @@ pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 // (angr-9hkr6).
 #[cfg(feature = "vex-engine")]
 pub(crate) use value_ops::{concrete_clz, concrete_ctz};
+#[cfg(feature = "vex-engine")]
+pub(crate) use value_shape::Node;
 pub use width_guards::{MAX_BV_WIDTH, check_bv_width, check_extract_bounds};
 #[cfg(feature = "vex-engine-z3")]
 pub use z3_ast_ptr::Z3AstPtr;

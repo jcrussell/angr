@@ -64,7 +64,11 @@ fn loads_match(a: &RustBV, b: &RustBV) -> bool {
                 ..
             },
         ) => op1 == op2 && Arc::ptr_eq(ops1, ops2),
-        _ => false,
+        // clarirs interns, so one term is one node.
+        (Ast { ast: x, .. }, Ast { ast: y, .. }) => Arc::ptr_eq(x, y),
+        // A leaf held in different arms: same name and width is one Z3
+        // constant (`invariant-symbol-identity-is-by-name`).
+        _ => matches!((a.leaf_var(), b.leaf_var()), (Some(x), Some(y)) if x == y),
     }
 }
 
@@ -298,3 +302,5 @@ impl SymbolicMemory {
         self.build_ite_tree_generic(addr_expr, addrs, size, ctx, &mut load_leaf)
     }
 }
+
+test_submod!("ite_builder_tests.rs" => tests);

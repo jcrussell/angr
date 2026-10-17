@@ -242,3 +242,19 @@ fn splice_over_a_symbolic_base_can_cover_every_lane() {
     let spliced = splice_bytes_over_bv(&base, &[Some(0x34), Some(0x12)], &ctx);
     assert_eq!(spliced.as_u64(), Some(0x1234));
 }
+
+#[test]
+fn ite_targets_are_read_from_a_clarirs_term() {
+    // A jump target built as a clarirs ITE must yield the same concrete
+    // leaves as the Expression form.
+    let ctx = crate::symbolic::SymContext::new();
+    let x = RustBV::symbolic(&ctx, "ite_tgt_x", 32);
+    let cond = x.ult(&RustBV::concrete(10, 32), &ctx);
+    let inner = cond.ite(&RustBV::concrete(0x2000, 64), &RustBV::concrete(0x3000, 64), &ctx);
+    let target = cond.ite(&RustBV::concrete(0x1000, 64), &inner, &ctx);
+    let as_ast = RustBV::from_clarirs_subterm(target.to_clarirs().unwrap());
+    assert!(matches!(as_ast, RustBV::Ast { .. }));
+    let mut got = extract_ite_targets(&as_ast, 8).unwrap();
+    got.sort_unstable();
+    assert_eq!(got, vec![0x1000, 0x2000, 0x3000]);
+}
