@@ -436,11 +436,11 @@ fn merge_width_mismatch_ite_merges_both_paths() {
     let mut names: Vec<String> = Vec::new();
     let mut stack = vec![got.clone()];
     while let Some(node) = stack.pop() {
-        if let RustBV::Symbolic { name, .. } = &node {
+        if let Some((name, _)) = node.leaf_var() {
             names.push(name.to_string());
         }
-        if let Some(ops) = node.operands() {
-            stack.extend(ops.iter().cloned());
+        if let Some(n) = node.node() {
+            stack.extend(n.operands.iter().cloned());
         }
     }
     assert!(
@@ -481,11 +481,11 @@ fn merge_widen_keeps_adjacent_symbolic_overlay() {
         let mut names: Vec<String> = Vec::new();
         let mut stack = vec![bv.clone()];
         while let Some(node) = stack.pop() {
-            if let RustBV::Symbolic { name, .. } = &node {
+            if let Some((name, _)) = node.leaf_var() {
                 names.push(name.to_string());
             }
-            if let Some(ops) = node.operands() {
-                stack.extend(ops.iter().cloned());
+            if let Some(n) = node.node() {
+                stack.extend(n.operands.iter().cloned());
             }
         }
         names
@@ -581,13 +581,11 @@ fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
     let mentions_ah = |bv: &RustBV| {
         let mut stack = vec![bv.clone()];
         while let Some(node) = stack.pop() {
-            if let RustBV::Symbolic { name, .. } = &node
-                && &**name == "ah"
-            {
+            if node.leaf_var().is_some_and(|(name, _)| &*name == "ah") {
                 return true;
             }
-            if let Some(ops) = node.operands() {
-                stack.extend(ops.iter().cloned());
+            if let Some(n) = node.node() {
+                stack.extend(n.operands.iter().cloned());
             }
         }
         false

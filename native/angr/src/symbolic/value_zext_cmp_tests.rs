@@ -42,22 +42,14 @@ fn test_zext_eq_high_bits_zero_collapses() {
     let zx = x.zero_extend(16, &ctx);
     let r = zx.eq(&RustBV::concrete(0x42, 16), &ctx);
     // Result is a width-1 Eq expression over width-8 operands.
-    match &r {
-        RustBV::Expression {
-            op,
-            operands,
-            width,
-            ..
-        } => {
-            assert_eq!(*op, BVOp::Eq);
-            assert_eq!(*width, 1);
-            assert_eq!(operands.len(), 2);
-            assert_eq!(operands[0].width(), 8);
-            assert_eq!(operands[1].width(), 8);
-            assert_eq!(operands[1].as_u64(), Some(0x42));
-        }
-        _ => panic!("expected narrowed Eq expression, got {r:?}"),
-    }
+    let node = r.node().unwrap_or_else(|| panic!("expected narrowed Eq expression, got {r:?}"));
+    let (op, operands, width) = (&node.op, &node.operands, &r.width());
+        assert_eq!(*op, BVOp::Eq);
+        assert_eq!(*width, 1);
+        assert_eq!(operands.len(), 2);
+        assert_eq!(operands[0].width(), 8);
+        assert_eq!(operands[1].width(), 8);
+        assert_eq!(operands[1].as_u64(), Some(0x42));
 }
 
 #[test]
@@ -151,14 +143,11 @@ fn test_zext_cmp_no_fold_when_both_symbolic() {
     let zy = y.zero_extend(16, &ctx);
     let r = zx.eq(&zy, &ctx);
     // Should be a regular Eq expression at width 16 — no fold.
-    match &r {
-        RustBV::Expression { op, operands, .. } => {
-            assert_eq!(*op, BVOp::Eq);
-            assert_eq!(operands[0].width(), 16);
-            assert_eq!(operands[1].width(), 16);
-        }
-        _ => panic!("expected Eq expression, got {r:?}"),
-    }
+    let node = r.node().unwrap_or_else(|| panic!("expected Eq expression, got {r:?}"));
+    let (op, operands) = (&node.op, &node.operands);
+        assert_eq!(*op, BVOp::Eq);
+        assert_eq!(operands[0].width(), 16);
+        assert_eq!(operands[1].width(), 16);
 }
 
 #[test]
@@ -169,13 +158,10 @@ fn test_zext_cmp_no_fold_for_signed_ops() {
     let sx = x.sign_extend(16, &ctx); // SignExt, not ZeroExt
     let r = sx.eq(&RustBV::concrete(0x100, 16), &ctx);
     // Should be Eq expression (no fold).
-    match &r {
-        RustBV::Expression { op, operands, .. } => {
-            assert_eq!(*op, BVOp::Eq);
-            assert_eq!(operands[0].width(), 16);
-        }
-        _ => panic!("expected Eq expression, got {r:?}"),
-    }
+    let node = r.node().unwrap_or_else(|| panic!("expected Eq expression, got {r:?}"));
+    let (op, operands) = (&node.op, &node.operands);
+        assert_eq!(*op, BVOp::Eq);
+        assert_eq!(operands[0].width(), 16);
 }
 
 #[test]
@@ -193,21 +179,13 @@ fn test_zext_cmp_chain_collapse_to_narrowest() {
     let zx16 = x.zero_extend(16, &ctx);
     let zx32 = zx16.zero_extend(32, &ctx);
     let r = zx32.eq(&RustBV::concrete(0xFF, 32), &ctx);
-    match &r {
-        RustBV::Expression {
-            op,
-            operands,
-            width,
-            ..
-        } => {
-            assert_eq!(*op, BVOp::Eq);
-            assert_eq!(*width, 1);
-            // Should have narrowed to width-8 operands.
-            assert_eq!(operands[0].width(), 8);
-            assert_eq!(operands[1].as_u64(), Some(0xFF));
-        }
-        _ => panic!("expected narrowed Eq, got {r:?}"),
-    }
+    let node = r.node().unwrap_or_else(|| panic!("expected narrowed Eq, got {r:?}"));
+    let (op, operands, width) = (&node.op, &node.operands, &r.width());
+        assert_eq!(*op, BVOp::Eq);
+        assert_eq!(*width, 1);
+        // Should have narrowed to width-8 operands.
+        assert_eq!(operands[0].width(), 8);
+        assert_eq!(operands[1].as_u64(), Some(0xFF));
 }
 
 /// Regression guard for the angr-behq finding:

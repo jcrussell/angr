@@ -96,16 +96,14 @@ fn test_ite_builds_do_not_reuse_unconstrained_names() {
     }
 }
 
-/// Collect every `Symbolic` leaf name reachable from `bv`, walking the
-/// `Expression` children an ITE tree is built from.
+/// Collect every leaf variable name reachable from `bv`, walking the
+/// children an ITE tree is built from, whichever arm holds them.
 fn collect_symbol_names(bv: &RustBV, out: &mut Vec<String>) {
-    match bv {
-        RustBV::Symbolic { name, .. } => out.push(name.to_string()),
-        RustBV::Expression { operands, .. } => {
-            for operand in operands.iter() {
-                collect_symbol_names(operand, out);
-            }
+    if let Some((name, _)) = bv.leaf_var() {
+        out.push(name.to_string());
+    } else if let Some(node) = bv.node() {
+        for operand in node.operands.iter() {
+            collect_symbol_names(operand, out);
         }
-        _ => {}
     }
 }

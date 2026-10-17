@@ -1,9 +1,9 @@
 use super::super::*;
 
-/// Returns true if `bv` is an `Expression` whose top-level op is `Ite`.
+/// Returns true if `bv`'s top-level op is `Ite`, whichever arm holds it.
 fn is_ite(bv: &RustBV) -> bool {
     use crate::symbolic::BVOp;
-    matches!(bv, RustBV::Expression { op: BVOp::Ite, .. })
+    bv.node().is_some_and(|n| n.op == BVOp::Ite)
 }
 
 // angr-269l: de-duplicate ITE arms in concretization fan-out. When every

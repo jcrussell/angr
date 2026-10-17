@@ -206,7 +206,16 @@ fn test_foreign_envelope_rebases_symbol_ids() {
         let solver = state.solver();
         let ctx = solver.borrow();
         let leaf = RustBV::symbolic(&ctx, "euw28_leaf", 64);
-        let eq = leaf.eq(&RustBV::concrete(7, 64), &ctx);
+        // Built as an `Expression` directly, so its `Symbolic` leaf, and the
+        // id this test checks, survive the snapshot; a comparison built by
+        // `eq` is a clarirs term whose leaf carries a name only.
+        let eq = RustBV::Expression {
+            id: RustBV::EXPRESSION_ID,
+            width: 1,
+            op: crate::symbolic::BVOp::Eq,
+            operands: std::sync::Arc::from(vec![leaf.clone(), RustBV::concrete(7, 64)]),
+            memo: Default::default(),
+        };
         ctx.assume_true(&eq);
         first_leaf(&leaf).expect("minted leaf").0
     };

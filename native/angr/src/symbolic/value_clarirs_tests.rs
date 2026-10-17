@@ -133,6 +133,33 @@ fn floats_and_zero_width_values_are_refused() {
 }
 
 #[test]
+fn an_anonymous_z3_wrapper_is_refused_not_renamed() {
+    // `z3_ast_to_eval_bv` wraps an arbitrary Z3 term as a nameless Symbolic.
+    // Converting it by name would swap that term for a fresh constant, so a
+    // comparison over it must keep the Expression form and lower the real term.
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "tc_anon_x", 32);
+    let anon = RustBV::Symbolic {
+        id: 0,
+        width: 32,
+        name: Arc::from(""),
+        ast: x.to_z3_ast().bvadd(z3::ast::BV::from_u64(1, 32)),
+    };
+    assert!(anon.to_clarirs().is_err());
+    let cmp = anon.eq(&RustBV::concrete(5, 32), &ctx);
+    assert!(matches!(cmp, RustBV::Expression { .. }), "{cmp:?}");
+    assert_equivalent_to(&cmp, &x.to_z3_ast().bvadd(z3::ast::BV::from_u64(1, 32)).eq(z3::ast::BV::from_u64(5, 32)));
+}
+
+/// `value` lowers to a Bool-valued bit equal to `expected` on every model.
+fn assert_equivalent_to(value: &RustBV, expected: &z3::ast::Bool) {
+    let solver = z3::Solver::new();
+    solver.assert(value.to_z3_bool().eq(expected).not());
+    // satresult-exempt: test oracle; Unknown must fail the test, not pass it
+    assert_eq!(solver.check(), z3::SatResult::Unsat);
+}
+
+#[test]
 fn an_expression_converts_once_while_it_lives() {
     // Each op over an `Expression` operand reuses the operand's term: a chain
     // of `n` nodes converts `n` times in total, however often it is wrapped.

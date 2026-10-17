@@ -13,8 +13,9 @@
 //! - `Clz` / `Ctz` / `Popcount` expand to the same ite ladder and bit sum the
 //!   Z3 builder emits, since clarirs has no such ops.
 //!
-//! Float ops have no clarirs form yet and are refused, as is a zero-width
-//! value; callers keep the older arm for those.
+//! Float ops have no clarirs form yet and are refused, as are a zero-width
+//! value and an anonymous `Symbolic` wrapping a raw Z3 term; callers keep the
+//! older arm for those.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -109,6 +110,14 @@ impl RustBV {
             )),
             RustBV::Concrete { value, width } | RustBV::Constrained { value, width, .. } => {
                 bvv(*value, *width)
+            }
+            // An empty name marks a wrapper around an arbitrary Z3 term
+            // (`solver::z3_ast_extract::z3_ast_to_eval_bv`), not a variable:
+            // its term is the Z3 AST it holds, which has no clarirs form.
+            RustBV::Symbolic { name, .. } if name.is_empty() => {
+                Err(ClarirsError::UnsupportedOperation(
+                    "an anonymous Z3 term has no clarirs form".into(),
+                ))
             }
             RustBV::Symbolic { name, width, .. } => {
                 match super::registry::strip_bool_symbol_name(name) {
