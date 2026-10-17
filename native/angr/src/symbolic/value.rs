@@ -376,8 +376,9 @@ pub enum RustBV {
     /// A term held as the clarirs AST itself (angr-mx00p.11), for terms with no
     /// [`BVOp`] form. Always bitvector-sorted: [`RustBV::from_clarirs`] encodes a
     /// Bool as `ite(b, 1, 0)` and a float as its IEEE bits, the forms the other
-    /// variants use for those sorts. Built only by `from_clarirs` (deserializing
-    /// included), which folds a literal that fits a `u128` into
+    /// variants use for those sorts. Built by `from_clarirs` (deserializing
+    /// included), and by `from_clarirs_subterm` for the operands
+    /// [`RustBV::node`] presents; both fold a literal that fits a `u128` into
     /// [`RustBV::Concrete`].
     ///
     /// Equality is node identity: clarirs interns, so equal terms are one node.

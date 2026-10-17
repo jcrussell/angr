@@ -34,6 +34,7 @@ use super::stats::{
     record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
 };
 use super::value::{BVOp, RustBV};
+use super::value_shape::Node;
 
 /// Generate a borrow + consuming comparison pair for an unsigned ordering
 /// operator (Ult/Ule/Ugt/Uge).
@@ -530,11 +531,10 @@ impl RustBV {
             }
             _ => {
                 // neg(neg(x)) → x
-                if let RustBV::Expression {
+                if let Some(Node {
                     op: BVOp::Neg,
                     operands,
-                    ..
-                } = &self
+                }) = self.node()
                 {
                     return operands[0].clone();
                 }
@@ -628,11 +628,10 @@ impl RustBV {
             Some(v) if !bits_beyond_storage(self.width()) => Self::concrete(!v, self.width()),
             _ => {
                 // not(not(x)) → x
-                if let RustBV::Expression {
+                if let Some(Node {
                     op: BVOp::Not,
                     operands,
-                    ..
-                } = &self
+                }) = self.node()
                 {
                     return operands[0].clone();
                 }
@@ -719,11 +718,10 @@ impl RustBV {
             }
             None => {
                 // reverse(reverse(x)) → x
-                if let RustBV::Expression {
+                if let Some(Node {
                     op: BVOp::Reverse,
                     operands,
-                    ..
-                } = &self
+                }) = self.node()
                 {
                     return operands[0].clone();
                 }
@@ -1399,14 +1397,14 @@ fn try_zext_const_cmp_fold(
     op: ZExtCmp,
     ctx: &SymContext,
 ) -> Option<RustBV> {
-    let (extend_bits, inner) = match zext_side {
-        RustBV::Expression {
-            op: BVOp::ZeroExt(k),
-            operands,
-            ..
-        } => (*k, &operands[0]),
-        _ => return None,
+    let Some(Node {
+        op: BVOp::ZeroExt(extend_bits),
+        operands,
+    }) = zext_side.node()
+    else {
+        return None;
     };
+    let inner = &operands[0];
     // ZeroExt(0, x) → x; the wrapping caller hands us a normal width
     // comparison and we shouldn't bother. This is unreachable from any live
     // path: `zero_extend_into` is the sole constructor of `BVOp::ZeroExt`, and
@@ -1758,7 +1756,7 @@ pub(super) fn drive_extract<T: ExtractTarget>(
         return target.identity(inner);
     }
 
-    if let RustBV::Expression { op, operands, .. } = inner {
+    if let Some(Node { op, operands }) = inner.node() {
         match op {
             // Rule 1: Extract(h2, l2, Extract(h1, l1, x)) → Extract(l1+h2, l1+l2, x)
             BVOp::Extract(_, inner_low) => {

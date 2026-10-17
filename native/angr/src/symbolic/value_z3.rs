@@ -138,7 +138,7 @@ impl RustBV {
     #[cfg(feature = "vex-engine-z3")]
     #[expect(
         clippy::expect_used,
-        reason = "closed-world invariant: `RustBV::from_clarirs`, the only constructor of `RustBV::Ast`, already lowered this node, and lowering is a pure function of the node"
+        reason = "closed-world invariant: an `Ast` is built by `RustBV::from_clarirs`, which lowered the node, or by `from_clarirs_subterm`, whose node is a subterm of one that was lowered (or that subterm's 1-bit encoding); lowering is a pure function of the node"
     )]
     fn lower_clarirs(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::BV {
         crate::claripy_bridge::lower_bv(ast).expect("from_clarirs lowered this node once already")
