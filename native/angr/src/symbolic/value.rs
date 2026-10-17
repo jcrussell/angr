@@ -14,9 +14,12 @@
 use std::fmt;
 use std::sync::Arc;
 
+use clarirs_core::ast::wire::WireDag;
+use clarirs_core::prelude::{AstFactory, AstRef, AstType, BitVec, ClarirsError};
 use serde::{Deserialize, Serialize};
 
 use super::SymContext;
+use crate::claripy::ast::GLOBAL_CONTEXT;
 
 /// Bitvector operation type for expression tree reconstruction.
 ///
@@ -273,7 +276,7 @@ impl FloatOpKind {
 /// context). Deserialization must happen with a Z3 context active when
 /// the `vex-engine-z3` feature is enabled.
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(from = "RustBVData", into = "RustBVData")]
+#[serde(try_from = "RustBVData", into = "RustBVData")]
 pub enum RustBV {
     /// A known concrete value.
     Concrete {
@@ -370,6 +373,21 @@ pub enum RustBV {
         /// it collapses to `()` so construction sites stay cfg-free.
         memo: ExprMemo,
     },
+    /// A term held as the clarirs AST itself (angr-mx00p.11), for terms with no
+    /// [`BVOp`] form. Always bitvector-sorted: [`RustBV::from_clarirs`] encodes a
+    /// Bool as `ite(b, 1, 0)` and a float as its IEEE bits, the forms the other
+    /// variants use for those sorts. Built only by `from_clarirs` (deserializing
+    /// included), which folds a literal that fits a `u128` into
+    /// [`RustBV::Concrete`].
+    ///
+    /// Equality is node identity: clarirs interns, so equal terms are one node.
+    Ast {
+        /// Width in bits, `ast.size()`.
+        width: u32,
+        ast: AstRef<'static>,
+        /// The lowered Z3 term, as [`RustBV::Expression`]'s `memo`.
+        memo: ExprMemo,
+    },
 }
 
 /// Lazy Z3 AST memo carried by [`RustBV::Expression`] (angr-ovqja.3).
@@ -423,6 +441,11 @@ pub enum RustBVData {
         op: BVOp,
         operands: Vec<RustBVData>,
     },
+    /// The clarirs node with every subterm shared, decoded into
+    /// `GLOBAL_CONTEXT` on load.
+    Ast {
+        dag: WireDag,
+    },
 }
 
 impl From<RustBV> for RustBVData {
@@ -451,6 +474,9 @@ impl From<RustBV> for RustBVData {
                 op,
                 operands: operands.iter().cloned().map(RustBVData::from).collect(),
             },
+            RustBV::Ast { ast, .. } => RustBVData::Ast {
+                dag: WireDag::encode(std::slice::from_ref(&ast)),
+            },
         }
     }
 }
@@ -469,9 +495,13 @@ fn rebase_id(id: u64) -> u64 {
     id.saturating_add(crate::symbolic::symbol_id_rebase_offset())
 }
 
-impl From<RustBVData> for RustBV {
-    fn from(data: RustBVData) -> Self {
-        match data {
+/// Fallible because an `Ast` payload is a node list that must decode to one
+/// bitvector-sorted root; every other variant always converts.
+impl TryFrom<RustBVData> for RustBV {
+    type Error = String;
+
+    fn try_from(data: RustBVData) -> Result<Self, String> {
+        Ok(match data {
             RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
             RustBVData::Symbolic { id, width, name } => {
                 // Rebuilds the Z3 AST in the active thread-local context (z3
@@ -493,11 +523,31 @@ impl From<RustBVData> for RustBV {
                 width,
                 op,
                 operands: Arc::<[RustBV]>::from(
-                    operands.into_iter().map(RustBV::from).collect::<Vec<_>>(),
+                    operands
+                        .into_iter()
+                        .map(RustBV::try_from)
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
                 memo: Default::default(),
             },
-        }
+            RustBVData::Ast { dag } => {
+                let roots = dag
+                    .decode(&GLOBAL_CONTEXT)
+                    .map_err(|e| format!("RustBV::Ast: {e}"))?;
+                let [root] = <[_; 1]>::try_from(roots)
+                    .map_err(|r| format!("RustBV::Ast: {} roots, expected 1", r.len()))?;
+                // Encoding only ever writes the bitvector a `RustBV::Ast` holds.
+                if !root.ast_type().is_bitvec() {
+                    return Err(format!(
+                        "RustBV::Ast: root is {:?}, not a bitvector",
+                        root.ast_type()
+                    ));
+                }
+                // Through the constructor, so a decoded term is checked to
+                // lower exactly as a freshly built one is.
+                RustBV::from_clarirs(root).map_err(|e| format!("RustBV::Ast: {e}"))?
+            }
+        })
     }
 }
 
@@ -644,6 +694,49 @@ impl RustBV {
         RustBV::from_parts(id, Arc::from(name.as_ref()), width)
     }
 
+    /// Wrap a clarirs AST as a [`RustBV::Ast`], in the bitvector encoding the
+    /// other variants use: a Bool becomes `ite(b, 1, 0)` (width 1), a float its
+    /// IEEE bits (`fpToIEEEBV`). A literal that fits a `u128` folds to
+    /// [`RustBV::Concrete`]. Strings have no `RustBV` form and are refused.
+    ///
+    /// With Z3 the term is lowered here, which both warms the memo and refuses
+    /// what has no Z3 form (strings nested in a bitvector, the VSA ops), so
+    /// `to_z3_ast` on the result cannot fail.
+    pub fn from_clarirs(ast: AstRef<'static>) -> Result<Self, ClarirsError> {
+        let ctx = &*GLOBAL_CONTEXT;
+        let ast = match ast.ast_type() {
+            AstType::BitVec(_) => ast,
+            AstType::Bool => ctx.ite(
+                &ast,
+                ctx.bvv(BitVec::from((1, 1)))?,
+                ctx.bvv(BitVec::from((0, 1)))?,
+            )?,
+            AstType::Float(_) => ctx.fp_to_ieeebv(&ast)?,
+            AstType::String => {
+                return Err(ClarirsError::TypeError(
+                    "a string AST has no RustBV form".into(),
+                ));
+            }
+        };
+        if let clarirs_core::prelude::AstOp::BVV(value) = ast.op()
+            && let Ok(v) = u128::try_from(&value.to_biguint())
+        {
+            return Ok(RustBV::concrete(v, value.len()));
+        }
+        #[cfg(feature = "vex-engine-z3")]
+        let memo = std::cell::RefCell::new(Some(
+            crate::claripy_bridge::lower_bv(&ast)
+                .map_err(|e| ClarirsError::UnsupportedOperation(e.to_string()))?,
+        ));
+        #[cfg(not(feature = "vex-engine-z3"))]
+        let memo = ();
+        Ok(RustBV::Ast {
+            width: ast.size(),
+            ast,
+            memo,
+        })
+    }
+
     // =========================================================================
     // Accessors
     // =========================================================================
@@ -656,6 +749,7 @@ impl RustBV {
             RustBV::Symbolic { width, .. } => *width,
             RustBV::Constrained { width, .. } => *width,
             RustBV::Expression { width, .. } => *width,
+            RustBV::Ast { width, .. } => *width,
         }
     }
 
@@ -670,7 +764,10 @@ impl RustBV {
     pub fn is_symbolic(&self) -> bool {
         matches!(
             self,
-            RustBV::Symbolic { .. } | RustBV::Constrained { .. } | RustBV::Expression { .. }
+            RustBV::Symbolic { .. }
+                | RustBV::Constrained { .. }
+                | RustBV::Expression { .. }
+                | RustBV::Ast { .. }
         )
     }
 
@@ -682,6 +779,8 @@ impl RustBV {
             RustBV::Constrained { value, .. } => Some(*value),
             RustBV::Symbolic { .. } => None,
             RustBV::Expression { .. } => None,
+            // `from_clarirs` folds every literal that fits into `Concrete`.
+            RustBV::Ast { .. } => None,
         }
     }
 
@@ -746,6 +845,9 @@ impl fmt::Debug for RustBV {
                     operands.len()
                 )
             }
+            RustBV::Ast { width, ast, .. } => {
+                write!(f, "Ast({}, {width})", ast.to_smtlib_shallow(2))
+            }
         }
     }
 }
@@ -765,6 +867,9 @@ impl fmt::Display for RustBV {
             RustBV::Expression { width, op, .. } => {
                 write!(f, "<BV{width} {op:?}>")
             }
+            RustBV::Ast { width, ast, .. } => {
+                write!(f, "<BV{width} {}>", ast.to_smtlib_shallow(2))
+            }
         }
     }
 }
@@ -772,7 +877,7 @@ impl fmt::Display for RustBV {
 /// Equality is **value-based where a value is known, identity-based otherwise**
 /// (angr-sqfj8.96).
 ///
-/// The relation partitions `RustBV` into three classes that never compare
+/// The relation partitions `RustBV` into these classes, which never compare
 /// equal across the class boundary:
 ///
 /// 1. **Known-value** (`Concrete`, and `Constrained` — which carries a pinned
@@ -792,6 +897,8 @@ impl fmt::Display for RustBV {
 ///    two independently-built but structurally identical trees compare
 ///    unequal. Treat `Expression` equality as "same node", not "same value".
 ///    The `memo` Z3 cache is excluded (pure deterministic-function cache).
+/// 4. **clarirs terms** (`Ast`): equal iff the same node. clarirs interns, so
+///    this is structural equality, and it is cheap.
 ///
 /// Each class uses a genuine equivalence relation and the classes are
 /// disjoint, so the whole relation is reflexive, symmetric and transitive —
@@ -828,6 +935,7 @@ impl PartialEq for RustBV {
                     ..
                 },
             ) => wa == wb && opa == opb && Arc::ptr_eq(oa, ob),
+            (RustBV::Ast { ast: a, .. }, RustBV::Ast { ast: b, .. }) => Arc::ptr_eq(a, b),
             _ => match (self.as_u128(), other.as_u128()) {
                 (Some(a), Some(b)) => a == b && self.width() == other.width(),
                 _ => false,
@@ -853,5 +961,6 @@ test_submod!(z3 "value_tests.rs" => value_tests);
 test_submod!(z3 "value_simplify_tests.rs" => value_simplify_tests);
 test_submod!(z3 "value_zext_cmp_tests.rs" => value_zext_cmp_tests);
 test_submod!(z3 "value_serde_tests.rs" => value_serde_tests);
+test_submod!(z3 "value_ast_tests.rs" => value_ast_tests);
 test_submod!(z3 "value_concrete_arm_tests.rs" => value_concrete_arm_tests);
 test_submod!(z3 "value_eq_debug_tests.rs" => value_eq_debug_tests);

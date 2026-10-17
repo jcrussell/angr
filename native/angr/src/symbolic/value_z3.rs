@@ -114,9 +114,34 @@ impl RustBV {
                     built
                 }
             }
+            RustBV::Ast { ast, memo, .. } => {
+                use z3::ast::Ast;
+                let reusable = memo.borrow().as_ref().and_then(|bv| {
+                    (bv.get_ctx().get_z3_context() == z3::Context::thread_local().get_z3_context())
+                        .then(|| bv.clone())
+                });
+                if let Some(bv) = reusable {
+                    super::stats::record_z3_ast_memo_hit();
+                    bv
+                } else {
+                    let built = Self::lower_clarirs(ast);
+                    *memo.borrow_mut() = Some(built.clone());
+                    built
+                }
+            }
         };
         cache.insert(cache_key, result.clone());
         result
+    }
+
+    /// Lower a [`RustBV::Ast`] term into the thread-local context.
+    #[cfg(feature = "vex-engine-z3")]
+    #[expect(
+        clippy::expect_used,
+        reason = "closed-world invariant: `RustBV::from_clarirs`, the only constructor of `RustBV::Ast`, already lowered this node, and lowering is a pure function of the node"
+    )]
+    fn lower_clarirs(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::BV {
+        crate::claripy_bridge::lower_bv(ast).expect("from_clarirs lowered this node once already")
     }
 
     /// Translate this `RustBV` into a different Z3 [`z3::Context`].
@@ -137,6 +162,8 @@ impl RustBV {
     ///   the next [`to_z3_ast`](Self::to_z3_ast) call (the same context-swap
     ///   guard `to_z3_ast_cached` already uses), so no translation work is
     ///   spent on intermediate nodes that are never re-queried.
+    /// - `Ast` clones its context-free clarirs node and resets the `memo`, which
+    ///   re-lowers lazily the same way.
     ///
     /// # Lazy-memory safety
     ///
@@ -188,6 +215,13 @@ impl RustBV {
                     memo: Default::default(),
                 }
             }
+            // The clarirs node is context-free; only the memo is bound, and it
+            // re-lowers lazily in whatever context is active next.
+            RustBV::Ast { width, ast, .. } => RustBV::Ast {
+                width: *width,
+                ast: ast.clone(),
+                memo: Default::default(),
+            },
         }
     }
 

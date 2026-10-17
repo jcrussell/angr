@@ -446,3 +446,35 @@ fn test_native_and_attribute_walks_agree() {
         }
     });
 }
+
+/// A float predicate imports whole as a `RustBV::Ast` (angr-mx00p.11): its
+/// operands are never turned into IEEE bit patterns, so `fp.eq(x, x)` keeps
+/// IEEE semantics (false for NaN) instead of becoming a bit equality, which is
+/// always true. Exporting the value hands back the very same clarirs node.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_float_predicate_imports_whole_and_exports_unchanged() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy::ast::base::Base;
+    use crate::claripy_bridge::claripy_object;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = SymContext::new_mock();
+        let x = GLOBAL_CONTEXT.fps("import_nan_x", FSort::f64()).expect("FPS");
+        let eq = GLOBAL_CONTEXT.eq_(&x, &x).expect("fp.eq");
+        let bv = claripy_to_rustbv(py, &claripy_object(py, eq.clone()), &ctx).expect("import");
+        let RustBV::Ast { ast, .. } = &bv else {
+            panic!("expected RustBV::Ast, got {bv:?}");
+        };
+        assert_eq!(bv.width(), 1);
+        assert!(ctx.can_be_false(&bv), "NaN must make fp.eq(x, x) false");
+
+        let claripy_mod = crate::claripy_bridge::claripy_module(py).expect("claripy");
+        let exported = crate::claripy_bridge::rustbv_to_claripy(py, &bv, &claripy_mod).expect("export");
+        let base = exported.bind(py).cast::<Base>().expect("a claripy AST");
+        assert!(std::sync::Arc::ptr_eq(&base.get().ast(), ast));
+    });
+}

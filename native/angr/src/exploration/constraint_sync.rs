@@ -30,17 +30,13 @@ impl RustExplorationManager {
     /// [`import_one_constraint`](super::constraints::import_one_constraint),
     /// with [`ConstraintTier::RustBvFirst`](super::constraints::ConstraintTier::RustBvFirst)
     /// — `claripy_to_rustbv` first (which preserves the assumed_constraints
-    /// tracking Python re-import depends on), falling back to lossless Z3
-    /// pointer extraction when it hits an unsupported op (FP, etc). Both tiers
-    /// share the same Z3 context with claripy via the shared backend.
+    /// tracking Python re-import depends on), falling back to lowering the
+    /// clarirs AST into the engine's Z3 context when it declines (a literal
+    /// wider than 128 bits, say). Both tiers assert into that same context.
     ///
     /// The order is the mirror of `import_python_constraints`'s — see
     /// [`ConstraintTier`](super::constraints::ConstraintTier) for why either
-    /// order is correct. Keeping RustBV first here also keeps this method
-    /// exercisable from `cargo test` without installing claripy's `Z3_context`
-    /// process-wide: the raw-pointer tier requires that install (see the
-    /// `#[ignore]` rationale on `sync_constraints_fp_rescued_via_z3_pointer`),
-    /// so a Z3PtrFirst sync would push every tier-1 test behind `--ignored`.
+    /// order is correct.
     ///
     /// Returns:
     ///   - Ok(true): Constraints synced and state is SAT (satisfiable)

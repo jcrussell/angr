@@ -98,15 +98,16 @@ fn sync_constraints_unsat_returns_false_for_pruning() {
     });
 }
 
-/// Tier 2 (Z3-pointer rescue): an FP comparison has no arm in
-/// `claripy_to_rustbv` (`import.rs` models no `fp*` op), so it takes the
-/// lowered-Z3 path (`claripy_bridge::z3_lower`). The rescue must be lossless,
-/// which the second sync proves: if the first constraint had merely been
-/// counted and dropped, `f < 0.0` would still be SAT.
+/// Tier 2 (Z3-pointer rescue): a literal wider than 128 bits has no
+/// `RustBV::Concrete` form, so `claripy_to_rustbv` declines the comparison and
+/// it takes the lowered-Z3 path (`claripy_bridge::z3_lower`). The rescue must
+/// be lossless, which the second sync proves: if the first constraint had
+/// merely been counted and dropped, `x == 2^201` would still be SAT.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn sync_constraints_fp_rescued_via_z3_pointer() {
+fn sync_constraints_wide_literal_rescued_via_z3_pointer() {
     use clarirs_core::prelude::*;
+    use num_bigint::BigUint;
 
     use crate::claripy::ast::GLOBAL_CONTEXT;
     use crate::claripy_bridge::claripy_object;
@@ -116,35 +117,37 @@ fn sync_constraints_fp_rescued_via_z3_pointer() {
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 
-        let f = GLOBAL_CONTEXT.fps("sync_fp_f", FSort::f64()).expect("FPS");
-        let one = GLOBAL_CONTEXT.fpv(1.0f64).expect("FPV 1");
-        let zero = GLOBAL_CONTEXT.fpv(0.0f64).expect("FPV 0");
-
-        let gt = claripy_object(py, GLOBAL_CONTEXT.fp_gt(f.clone(), one).expect("f > 1.0"));
+        let x = GLOBAL_CONTEXT.bvs("sync_wide_x", 256).expect("BVS");
+        let wide = |bit: usize| {
+            GLOBAL_CONTEXT
+                .bvv(BitVec::from((BigUint::from(1u8) << bit, 256)))
+                .expect("wide BVV")
+        };
+        let first = claripy_object(py, GLOBAL_CONTEXT.eq_(&x, wide(200)).expect("x == 2^200"));
         // Precondition for the test to mean anything: the typed tier must
         // genuinely decline this op, otherwise tier 2 is never reached.
         {
             let solver = state.solver();
             let ctx = solver.borrow();
             assert!(
-                claripy_to_rustbv(py, &gt, &ctx).is_err(),
-                "fpGT must be unsupported by the typed converter for this test to cover tier 2"
+                claripy_to_rustbv(py, &first, &ctx).is_err(),
+                "a >128-bit literal must be unsupported by the typed converter for this test to cover tier 2"
             );
         }
 
-        let list = constraint_list(py, &[gt]);
+        let list = constraint_list(py, &[first]);
         assert!(
             mgr.sync_constraints_from_python(py, &state, &list)
                 .expect("sync ok"),
-            "f > 1.0 alone is satisfiable"
+            "x == 2^200 alone is satisfiable"
         );
 
-        let lt = claripy_object(py, GLOBAL_CONTEXT.fp_lt(f, zero).expect("f < 0.0"));
-        let list2 = constraint_list(py, &[lt]);
+        let second = claripy_object(py, GLOBAL_CONTEXT.eq_(&x, wide(201)).expect("x == 2^201"));
+        let list2 = constraint_list(py, &[second]);
         assert!(
             !mgr.sync_constraints_from_python(py, &state, &list2)
                 .expect("sync ok"),
-            "the rescued FP constraint must really be on the solver: f > 1.0 && f < 0.0 is UNSAT"
+            "the rescued constraint must really be on the solver: x == 2^200 && x == 2^201 is UNSAT"
         );
     });
 }

@@ -271,6 +271,12 @@ impl<'a> VEXInterpreter<'a> {
                     Self::hash_bv(operand, hasher);
                 }
             }
+            // clarirs' structural hash already covers the whole term.
+            RustBV::Ast { ast, width, .. } => {
+                4u8.hash(hasher);
+                clarirs_core::prelude::AstNode::hash(ast).hash(hasher);
+                width.hash(hasher);
+            }
         }
     }
 }

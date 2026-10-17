@@ -354,13 +354,69 @@ fn import_fast_path_asserts_and_records_convertible_constraint() {
     });
 }
 
-/// Fast path, *unconvertible* arm: an FP comparison has no `claripy_to_rustbv`
-/// arm, so the importer asserts the lowered term with `add_constraint_raw` and
-/// adds nothing to the assumed IR. Proven by a second import: if the first
-/// constraint had merely been counted, `f < 0.0` alone would still be SAT.
+/// Fast path, *unconvertible* arm: a literal wider than 128 bits has no
+/// `RustBV::Concrete` form, so `claripy_to_rustbv` declines the comparison and
+/// the importer asserts the lowered term with `add_constraint_raw`, adding
+/// nothing to the assumed IR. Proven by a second import: if the first
+/// constraint had merely been counted, `x == 2^201` alone would still be SAT.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_fast_path_raw_only_for_unconvertible_constraint() {
+    use clarirs_core::prelude::*;
+    use num_bigint::BigUint;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = crate::symbolic::SymContext::new();
+        let x = GLOBAL_CONTEXT.bvs("import_fast_wide_x", 256).expect("BVS");
+        let wide = |bit: usize| {
+            GLOBAL_CONTEXT
+                .bvv(BitVec::from((BigUint::from(1u8) << bit, 256)))
+                .expect("wide BVV")
+        };
+        let first = claripy_object(py, GLOBAL_CONTEXT.eq_(&x, wide(200)).expect("x == 2^200"));
+
+        // Precondition: the typed converter must genuinely decline this op,
+        // otherwise the test covers the sibling arm instead.
+        assert!(
+            crate::claripy_bridge::claripy_to_rustbv(py, &first, &ctx).is_err(),
+            "a >128-bit literal must be unsupported by the typed converter for this test to mean anything"
+        );
+
+        let before = ctx.assumed_local_len();
+        assert_eq!(
+            import_python_constraints(py, &ctx, &constraint_list(py, &[first]), "pending").added,
+            1
+        );
+        assert_eq!(
+            ctx.assumed_local_len(),
+            before,
+            "an unconvertible constraint is asserted raw only -- no assumed-IR entry"
+        );
+        assert!(ctx.is_sat(), "x == 2^200 alone is satisfiable");
+
+        let second = claripy_object(py, GLOBAL_CONTEXT.eq_(&x, wide(201)).expect("x == 2^201"));
+        assert_eq!(
+            import_python_constraints(py, &ctx, &constraint_list(py, &[second]), "pending").added,
+            1
+        );
+        assert!(
+            !ctx.is_sat(),
+            "the raw-asserted constraint must really be on the solver: \
+             x == 2^200 && x == 2^201 is UNSAT"
+        );
+    });
+}
+
+/// An FP comparison converts to a `RustBV::Ast` (angr-mx00p.11), so it is
+/// recorded in the assumed IR like any other converted constraint rather than
+/// asserted raw only, and it still binds: `f > 1.0 && f < 0.0` is UNSAT.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn import_fp_comparison_converts_to_the_assumed_ir() {
     use clarirs_core::prelude::*;
 
     use crate::claripy::ast::GLOBAL_CONTEXT;
@@ -369,28 +425,17 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
     Python::initialize();
     Python::attach(|py| {
         let ctx = crate::symbolic::SymContext::new();
-        let f = GLOBAL_CONTEXT.fps("import_fast_f", FSort::f64()).expect("FPS");
+        let f = GLOBAL_CONTEXT.fps("import_fp_ir_f", FSort::f64()).expect("FPS");
         let one = GLOBAL_CONTEXT.fpv(1.0f64).expect("FPV 1");
         let zero = GLOBAL_CONTEXT.fpv(0.0f64).expect("FPV 0");
         let gt = claripy_object(py, GLOBAL_CONTEXT.fp_gt(f.clone(), one).expect("f > 1.0"));
-
-        // Precondition: the typed converter must genuinely decline this op,
-        // otherwise the test covers the sibling arm instead.
-        assert!(
-            crate::claripy_bridge::claripy_to_rustbv(py, &gt, &ctx).is_err(),
-            "fpGT must be unsupported by the typed converter for this test to mean anything"
-        );
 
         let before = ctx.assumed_local_len();
         assert_eq!(
             import_python_constraints(py, &ctx, &constraint_list(py, &[gt]), "pending").added,
             1
         );
-        assert_eq!(
-            ctx.assumed_local_len(),
-            before,
-            "an unconvertible constraint is asserted raw only -- no assumed-IR entry"
-        );
+        assert_eq!(ctx.assumed_local_len() - before, 1, "recorded in the assumed IR");
         assert!(ctx.is_sat(), "f > 1.0 alone is satisfiable");
 
         let lt = claripy_object(py, GLOBAL_CONTEXT.fp_lt(f, zero).expect("f < 0.0"));
@@ -398,10 +443,6 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
             import_python_constraints(py, &ctx, &constraint_list(py, &[lt]), "pending").added,
             1
         );
-        assert!(
-            !ctx.is_sat(),
-            "the raw-asserted constraint must really be on the solver: \
-             f > 1.0 && f < 0.0 is UNSAT"
-        );
+        assert!(!ctx.is_sat(), "f > 1.0 && f < 0.0 is UNSAT");
     });
 }

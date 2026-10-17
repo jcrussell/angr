@@ -267,6 +267,8 @@ fn walk(bv: &RustBV, shape: &mut Shape, budget: &mut usize) {
                 walk(operand, shape, budget);
             }
         }
+        // Opaque to this walk: no interval reasoning, so not single-var.
+        RustBV::Ast { .. } => shape.interval_shaped = false,
     }
 }
 

@@ -5,9 +5,10 @@
 //! engine cannot see. This module is the engine's equivalent of that backend's
 //! `to_z3`, targeting the context `z3::Context::thread_local()` names instead,
 //! so the result can be asserted on, or evaluated against, a `SymContext`'s
-//! solver. It is lossless for every Bool / bitvector / float op, which is what
-//! lets `RustSolverContext` and the constraint-import tiers accept the ops
-//! `claripy_to_rustbv` has no `RustBV` form for (fp comparisons, Bool `Xor`).
+//! solver. It is lossless for every Bool / bitvector / float op. It is how a
+//! [`RustBV::Ast`](crate::symbolic::RustBV::Ast) term reaches the solver
+//! ([`lower_bv`]), and how the constraint-import tiers assert what
+//! `claripy_to_rustbv` declines.
 //!
 //! Op semantics mirror `clarirs-z3`'s `AstExtZ3::to_z3` one for one (`SRem` is
 //! `bvsrem`, `Neq` on floats is `not(fp.eq)`, a float sort has `mantissa + 1`
@@ -65,6 +66,23 @@ pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Z3AstPtr, BridgeError> {
         memo: &mut memo,
     }
     .lower(ast)
+}
+
+/// Lower a bitvector-sorted clarirs AST to a z3-rs `BV`, the form a
+/// [`RustBV::Ast`](crate::symbolic::RustBV::Ast) term takes in the solver.
+pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, BridgeError> {
+    let lowered = lower(ast)?;
+    if lowered.bv_width() != Some(ast.size()) {
+        return Err(conversion(format!(
+            "expected a {}-bit bitvector lowering, got {:?}",
+            ast.size(),
+            lowered.sort_kind()
+        )));
+    }
+    use z3::ast::Ast;
+    // SAFETY: `lowered` holds a reference to a live term of the thread-local
+    // context whose sort was just checked to be a bitvector; `wrap` takes its own.
+    Ok(unsafe { z3::ast::BV::wrap(lowered.context(), lowered.as_z3_ast()) })
 }
 
 struct Lowerer<'a> {

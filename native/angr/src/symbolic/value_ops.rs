@@ -253,7 +253,8 @@ impl RustBV {
     ///   0: Symbolic    (variables — most "primary")
     ///   1: Constrained
     ///   2: Expression  (subtrees with sub-key from operand-Arc pointer)
-    ///   3: Concrete    (constants always end up on the right)
+    ///   3: Ast         (clarirs terms, sub-key the structural hash)
+    ///   4: Concrete    (constants always end up on the right)
     ///
     /// The Expression sub-key uses the operand-Arc pointer for cheap
     /// within-run determinism. Two structurally-equal Expressions with
@@ -269,7 +270,8 @@ impl RustBV {
             RustBV::Expression { operands, .. } => {
                 (2, Arc::as_ptr(operands) as *const () as usize as u128)
             }
-            RustBV::Concrete { value, .. } => (3, *value),
+            RustBV::Ast { ast, .. } => (3, u128::from(ast.hash())),
+            RustBV::Concrete { value, .. } => (4, *value),
         }
     }
 

@@ -269,11 +269,12 @@ fn test_zero_width_symbolic_degenerates_to_concrete() {
     for bv in [
         RustBV::symbolic(&ctx, "zw", 0),
         RustBV::symbolic_with_id(7, "zw_id", 0),
-        RustBV::from(RustBVData::Symbolic {
+        RustBV::try_from(RustBVData::Symbolic {
             id: 7,
             width: 0,
             name: "zw_snapshot".to_string(),
-        }),
+        })
+        .unwrap(),
     ] {
         assert!(bv.is_concrete(), "width-0 symbolic must degenerate: {bv:?}");
         assert_eq!(bv.width(), 0);

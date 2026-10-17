@@ -52,6 +52,8 @@ enum StructuralKey {
     Constrained(u64, u128, u32),
     /// Expression node: same op, same width, structurally-equal operand list.
     Expression(super::value::BVOp, u32, Vec<u64>),
+    /// clarirs term: same structural hash (clarirs interns, so same node).
+    Ast(u64),
 }
 
 /// Accumulator for a constraint-sharing analysis pass.
@@ -135,6 +137,7 @@ impl ConstraintSharingWalk {
                 }
                 StructuralKey::Expression(op.clone(), *width, op_ids)
             }
+            RustBV::Ast { ast, .. } => StructuralKey::Ast(ast.hash()),
         };
         let id = if let Some(&existing) = self.shape_to_id.get(&key) {
             existing

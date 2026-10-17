@@ -637,8 +637,20 @@ fn import_clarirs(
         Ok(acc)
     };
     let is_bool = node.ast_type().is_bool();
+    // A float term, or a predicate or conversion over floats or strings, has
+    // no operand-wise form: importing a float child as its IEEE bits would turn
+    // `fp.eq` into bit equality. Such a node is taken whole as a
+    // `RustBV::Ast` (angr-mx00p.11), as is any op without an arm below.
+    let whole = || {
+        RustBV::from_clarirs(node.clone())
+            .map_err(|e| BridgeError::UnsupportedOp(format!("{}: {e}", op_name())))
+    };
+    let opaque = node.ast_type().is_float()
+        || node.ast_type().is_string()
+        || children().any(|c| c.ast_type().is_float() || c.ast_type().is_string());
 
     let result: Result<RustBV, BridgeError> = match node.op() {
+        _ if opaque => whole(),
         AstOp::BVV(value) => {
             let width = value.len();
             check_bv_width("BVV", width).map_err(BridgeError::InvalidArgs)?;
@@ -742,7 +754,7 @@ fn import_clarirs(
             Ok(result)
         }
         AstOp::ByteReverse(_) => reverse_bytes(&child(0)?, ctx),
-        _ => Err(BridgeError::UnsupportedOp(op_name())),
+        _ => whole(),
     };
 
     if use_cache && let Ok(bv) = &result {
