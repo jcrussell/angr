@@ -117,19 +117,6 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
             _numbered("ymm", 16) | _numbered("ymm", 16, "hx"),
             "AVX 256-bit views and their upper 128-bit halves; Rust's SIMD support stops at 128-bit xmm",
         ),
-        (
-            _numbered("zmm", 32)
-            | _numbered("zmm", 32, "hy")
-            | _numbered("ymm", 32, start=16)
-            | _numbered("ymm", 32, "hx", start=16)
-            | _numbered("xmm", 32, start=16)
-            | _numbered("xmm", 32, "lq", start=16)
-            | _numbered("xmm", 32, "hq", start=16)
-            | _numbered("k", 8),
-            "AVX-512 guest state (pyvex 10): the 512-bit zmm file, the vector registers 16-31 "
-            "and the k0-k7 opmasks are reachable by offset through the guest-state image but "
-            "not named in the Rust table",
-        ),
     ),
     "x86": (
         (
