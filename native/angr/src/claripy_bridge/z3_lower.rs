@@ -39,8 +39,9 @@ use clarirs_core::prelude::*;
 use pyo3::prelude::*;
 use z3_sys::*;
 
+use z3::ast::{Ast, Dynamic};
+
 use crate::claripy::ast::base::Base;
-use crate::symbolic::Z3AstPtr;
 
 use super::BridgeError;
 use super::import::MAX_IMPORT_RECURSION_DEPTH;
@@ -50,15 +51,27 @@ use super::import::MAX_IMPORT_RECURSION_DEPTH;
 /// `Err(TypeMismatch)` when `obj` is not a claripy AST of *this* extension's
 /// type — notably under `cargo test`, where the embedded interpreter imports
 /// the installed `angr.rustylib`, whose `Base` is a different type object.
-pub(crate) fn lower_claripy_ast(obj: &Bound<'_, PyAny>) -> Result<Z3AstPtr, BridgeError> {
+pub(crate) fn lower_claripy_ast(obj: &Bound<'_, PyAny>) -> Result<Dynamic, BridgeError> {
     let base = obj
         .cast::<Base>()
         .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
     lower(&base.get().ast())
 }
 
+/// Lower the clarirs AST behind a Python claripy object to a Z3 Bool, the
+/// form a constraint is asserted in.
+///
+/// A lowering of any other sort is `Err` rather than a mis-sorted `Bool`:
+/// asserting a non-Bool trips Z3's `CHECK_FORMULA` sort guard, which — under
+/// the engine's no-op error handler — drops the constraint silently while the
+/// caller sees success (angr-d01qu, angr-mx00p.41). A caller wanting a BV
+/// treated as a truthiness test lowers it through `claripy_to_rustbv` instead.
+pub(crate) fn lower_claripy_bool(obj: &Bound<'_, PyAny>) -> Result<z3::ast::Bool, BridgeError> {
+    expect_bool(lower_claripy_ast(obj)?)
+}
+
 /// Lower a clarirs AST, sharing the lowering of repeated subtrees.
-pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Z3AstPtr, BridgeError> {
+pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Dynamic, BridgeError> {
     // `depth` is cached on every node, so this bounds the recursion below
     // before it starts (same budget as the claripy import walk, angr-2a3i9).
     if ast.depth() > MAX_IMPORT_RECURSION_DEPTH {
@@ -91,7 +104,7 @@ struct LoweredCache {
     /// The `Z3_context` the terms belong to, as an address. A thread-local
     /// context swap (`with_z3_context` in tests) invalidates every entry.
     ctx: usize,
-    map: HashMap<u64, (Weak<AstNode<'static>>, Z3AstPtr)>,
+    map: HashMap<u64, (Weak<AstNode<'static>>, Dynamic)>,
     sweep_at: usize,
 }
 
@@ -106,18 +119,18 @@ impl LoweredCache {
         }
     }
 
-    fn get(&self, ast: &AstRef<'static>) -> Option<Z3AstPtr> {
+    fn get(&self, ast: &AstRef<'static>) -> Option<Dynamic> {
         let (node, term) = self.map.get(&ast.hash())?;
-        (node.as_ptr() == Arc::as_ptr(ast)).then(|| term.clone_ref())
+        (node.as_ptr() == Arc::as_ptr(ast)).then(|| term.clone())
     }
 
-    fn insert(&mut self, ast: &AstRef<'static>, term: &Z3AstPtr) {
+    fn insert(&mut self, ast: &AstRef<'static>, term: &Dynamic) {
         if self.map.len() >= self.sweep_at {
             self.map.retain(|_, (node, _)| node.strong_count() > 0);
             self.sweep_at = (self.map.len() * 2).max(Self::MIN_SWEEP);
         }
         self.map
-            .insert(ast.hash(), (Arc::downgrade(ast), term.clone_ref()));
+            .insert(ast.hash(), (Arc::downgrade(ast), term.clone()));
     }
 }
 
@@ -125,32 +138,31 @@ impl LoweredCache {
 /// [`RustBV::Ast`](crate::symbolic::RustBV::Ast) term takes in the solver.
 pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, BridgeError> {
     let lowered = lower(ast)?;
-    if lowered.bv_width() != Some(ast.size()) {
-        return Err(conversion(format!(
-            "expected a {}-bit bitvector lowering, got {:?}",
-            ast.size(),
-            lowered.sort_kind()
-        )));
-    }
-    use z3::ast::Ast;
-    // SAFETY: `lowered` holds a reference to a live term of the thread-local
-    // context whose sort was just checked to be a bitvector; `wrap` takes its own.
-    Ok(unsafe { z3::ast::BV::wrap(lowered.context(), lowered.as_z3_ast()) })
+    lowered
+        .as_bv()
+        .filter(|bv| bv.get_size() == ast.size())
+        .ok_or_else(|| {
+            conversion(format!(
+                "expected a {}-bit bitvector lowering, got {:?}",
+                ast.size(),
+                lowered.sort_kind()
+            ))
+        })
 }
 
 /// Lower a Bool-sorted clarirs AST to a z3-rs `Bool`.
 pub(crate) fn lower_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, BridgeError> {
-    let lowered = lower(ast)?;
-    if !lowered.is_bool() {
-        return Err(conversion(format!(
+    expect_bool(lower(ast)?)
+}
+
+/// `lowered` as a `Bool`, or `Err` naming its actual sort.
+fn expect_bool(lowered: Dynamic) -> Result<z3::ast::Bool, BridgeError> {
+    lowered.as_bool().ok_or_else(|| {
+        conversion(format!(
             "expected a Bool lowering, got {:?}",
             lowered.sort_kind()
-        )));
-    }
-    use z3::ast::Ast;
-    // SAFETY: `lowered` holds a reference to a live term of the thread-local
-    // context whose sort was just checked to be Bool; `wrap` takes its own.
-    Ok(unsafe { z3::ast::Bool::wrap(lowered.context(), lowered.as_z3_ast()) })
+        ))
+    })
 }
 
 struct Lowerer<'a> {
@@ -170,13 +182,13 @@ impl Lowerer<'_> {
     }
 
     /// Take ownership of a freshly built term: `Z3_mk_*` returns it with
-    /// refcount 0, and `from_borrowed_raw` takes the first reference before
-    /// any other Z3 call can run.
-    fn own(&self, raw: Option<Z3_ast>) -> Result<Z3AstPtr, BridgeError> {
+    /// refcount 0, and `Dynamic::wrap` takes the first reference before any
+    /// other Z3 call can run.
+    fn own(&self, raw: Option<Z3_ast>) -> Result<Dynamic, BridgeError> {
         let raw = raw.ok_or_else(|| conversion("Z3 returned a null term"))?;
-        // SAFETY: `raw` was just returned by a `Z3_mk_*` call on `self.ctx`.
-        unsafe { Z3AstPtr::from_borrowed_raw(self.ctx, raw.as_ptr() as usize) }
-            .ok_or_else(|| conversion("Z3 returned a null term"))
+        // SAFETY: `raw` is non-null and was just returned by a `Z3_mk_*` call
+        // on `self.ctx`, with no Z3 call since that could have freed it.
+        Ok(unsafe { Dynamic::wrap(self.ctx, raw) })
     }
 
     fn symbol(&self, name: &str) -> Result<Z3_symbol, BridgeError> {
@@ -186,7 +198,7 @@ impl Lowerer<'_> {
             .ok_or_else(|| conversion("Z3_mk_string_symbol returned null"))
     }
 
-    fn constant(&self, name: &str, sort: Z3_sort) -> Result<Z3AstPtr, BridgeError> {
+    fn constant(&self, name: &str, sort: Z3_sort) -> Result<Dynamic, BridgeError> {
         let sym = self.symbol(name)?;
         // SAFETY: `sym` and `sort` belong to this context.
         self.own(unsafe { Z3_mk_const(self.raw_ctx(), sym, sort) })
@@ -212,7 +224,7 @@ impl Lowerer<'_> {
             .ok_or_else(|| conversion("Z3_mk_fpa_sort returned null"))
     }
 
-    fn rounding_mode(&self, rm: FPRM) -> Result<Z3AstPtr, BridgeError> {
+    fn rounding_mode(&self, rm: FPRM) -> Result<Dynamic, BridgeError> {
         let c = self.raw_ctx();
         // SAFETY: nullary constructors on a live context.
         self.own(unsafe {
@@ -226,7 +238,7 @@ impl Lowerer<'_> {
         })
     }
 
-    fn numeral(&self, value: &str, sort: Z3_sort) -> Result<Z3AstPtr, BridgeError> {
+    fn numeral(&self, value: &str, sort: Z3_sort) -> Result<Dynamic, BridgeError> {
         let value = CString::new(value).map_err(|e| conversion(e.to_string()))?;
         // SAFETY: `value` outlives the call; `sort` belongs to this context.
         self.own(unsafe { Z3_mk_numeral(self.raw_ctx(), value.as_ptr(), sort) })
@@ -236,22 +248,22 @@ impl Lowerer<'_> {
     /// `Concat`, Bool `Xor`).
     fn fold(
         &self,
-        children: &[Z3AstPtr],
+        children: &[Dynamic],
         op: unsafe extern "C" fn(Z3_context, Z3_ast, Z3_ast) -> Option<Z3_ast>,
-    ) -> Result<Z3AstPtr, BridgeError> {
+    ) -> Result<Dynamic, BridgeError> {
         let (first, rest) = children
             .split_first()
             .ok_or_else(|| conversion("n-ary op with no operands"))?;
-        let mut acc = first.clone_ref();
+        let mut acc = first.clone();
         for next in rest {
             // SAFETY: both operands are live terms of this context, held by
             // `acc` / `children` across the call.
-            acc = self.own(unsafe { op(self.raw_ctx(), acc.as_z3_ast(), next.as_z3_ast()) })?;
+            acc = self.own(unsafe { op(self.raw_ctx(), acc.get_z3_ast(), next.get_z3_ast()) })?;
         }
         Ok(acc)
     }
 
-    fn lower(&mut self, ast: &AstRef<'static>) -> Result<Z3AstPtr, BridgeError> {
+    fn lower(&mut self, ast: &AstRef<'static>) -> Result<Dynamic, BridgeError> {
         if let Some(done) = self.cache.get(ast) {
             return Ok(done);
         }
@@ -268,11 +280,11 @@ impl Lowerer<'_> {
 
     /// Build one node from its already-lowered children.
     #[allow(clippy::too_many_lines, reason = "one arm per AstOp variant")]
-    fn node(&self, ast: &AstRef<'static>, ch: &[Z3AstPtr]) -> Result<Z3AstPtr, BridgeError> {
+    fn node(&self, ast: &AstRef<'static>, ch: &[Dynamic]) -> Result<Dynamic, BridgeError> {
         let c = self.raw_ctx();
         let arg = |i: usize| -> Result<Z3_ast, BridgeError> {
             ch.get(i)
-                .map(Z3AstPtr::as_z3_ast)
+                .map(Ast::get_z3_ast)
                 .ok_or_else(|| conversion(format!("missing operand {i}")))
         };
         let is_bool = ast.ast_type().is_bool();
@@ -312,7 +324,7 @@ impl Lowerer<'_> {
             AstOp::Not(..) if is_bool => unsafe { Z3_mk_not(c, arg(0)?) },
             AstOp::Not(..) => unsafe { Z3_mk_bvnot(c, arg(0)?) },
             AstOp::And(..) | AstOp::Or(..) if is_bool => {
-                let args: Vec<Z3_ast> = ch.iter().map(Z3AstPtr::as_z3_ast).collect();
+                let args: Vec<Z3_ast> = ch.iter().map(Ast::get_z3_ast).collect();
                 let n = u32::try_from(args.len()).map_err(|e| conversion(e.to_string()))?;
                 unsafe {
                     if matches!(ast.op(), AstOp::And(..)) {
@@ -335,7 +347,7 @@ impl Lowerer<'_> {
             AstOp::Eq(..) => unsafe { Z3_mk_eq(c, arg(0)?, arg(1)?) },
             AstOp::Neq(a, _) if a.ast_type().is_float() => {
                 let eq = self.own(unsafe { Z3_mk_fpa_eq(c, arg(0)?, arg(1)?) })?;
-                unsafe { Z3_mk_not(c, eq.as_z3_ast()) }
+                unsafe { Z3_mk_not(c, eq.get_z3_ast()) }
             }
             AstOp::Neq(..) => {
                 let pair = [arg(0)?, arg(1)?];
@@ -410,7 +422,7 @@ impl Lowerer<'_> {
             | AstOp::FpMul(_, _, rm)
             | AstOp::FpDiv(_, _, rm) => {
                 let rm = self.rounding_mode(*rm)?;
-                let (r, a, b) = (rm.as_z3_ast(), arg(0)?, arg(1)?);
+                let (r, a, b) = (rm.get_z3_ast(), arg(0)?, arg(1)?);
                 unsafe {
                     match ast.op() {
                         AstOp::FpAdd(..) => Z3_mk_fpa_add(c, r, a, b),
@@ -422,43 +434,43 @@ impl Lowerer<'_> {
             }
             AstOp::FpSqrt(_, rm) => {
                 let rm = self.rounding_mode(*rm)?;
-                unsafe { Z3_mk_fpa_sqrt(c, rm.as_z3_ast(), arg(0)?) }
+                unsafe { Z3_mk_fpa_sqrt(c, rm.get_z3_ast(), arg(0)?) }
             }
             AstOp::FpMin(..) => unsafe { Z3_mk_fpa_min(c, arg(0)?, arg(1)?) },
             AstOp::FpMax(..) => unsafe { Z3_mk_fpa_max(c, arg(0)?, arg(1)?) },
             AstOp::FpFma(.., rm) => {
                 let rm = self.rounding_mode(*rm)?;
-                unsafe { Z3_mk_fpa_fma(c, rm.as_z3_ast(), arg(0)?, arg(1)?, arg(2)?) }
+                unsafe { Z3_mk_fpa_fma(c, rm.get_z3_ast(), arg(0)?, arg(1)?, arg(2)?) }
             }
             AstOp::FpRoundToIntegral(_, rm) => {
                 let rm = self.rounding_mode(*rm)?;
-                unsafe { Z3_mk_fpa_round_to_integral(c, rm.as_z3_ast(), arg(0)?) }
+                unsafe { Z3_mk_fpa_round_to_integral(c, rm.get_z3_ast(), arg(0)?) }
             }
             AstOp::FpToUBV(_, bits, rm) => {
                 let rm = self.rounding_mode(*rm)?;
-                unsafe { Z3_mk_fpa_to_ubv(c, rm.as_z3_ast(), arg(0)?, *bits) }
+                unsafe { Z3_mk_fpa_to_ubv(c, rm.get_z3_ast(), arg(0)?, *bits) }
             }
             AstOp::FpToSBV(_, bits, rm) => {
                 let rm = self.rounding_mode(*rm)?;
-                unsafe { Z3_mk_fpa_to_sbv(c, rm.as_z3_ast(), arg(0)?, *bits) }
+                unsafe { Z3_mk_fpa_to_sbv(c, rm.get_z3_ast(), arg(0)?, *bits) }
             }
             AstOp::FpToFp(_, sort, rm) => {
                 // The rounding mode first: building it would free the sort.
                 let rm = self.rounding_mode(*rm)?;
                 let sort = self.fp_sort(*sort)?;
-                unsafe { Z3_mk_fpa_to_fp_float(c, rm.as_z3_ast(), arg(0)?, sort) }
+                unsafe { Z3_mk_fpa_to_fp_float(c, rm.get_z3_ast(), arg(0)?, sort) }
             }
             AstOp::BvToFpSigned(_, sort, rm) => {
                 // The rounding mode first: building it would free the sort.
                 let rm = self.rounding_mode(*rm)?;
                 let sort = self.fp_sort(*sort)?;
-                unsafe { Z3_mk_fpa_to_fp_signed(c, rm.as_z3_ast(), arg(0)?, sort) }
+                unsafe { Z3_mk_fpa_to_fp_signed(c, rm.get_z3_ast(), arg(0)?, sort) }
             }
             AstOp::BvToFpUnsigned(_, sort, rm) => {
                 // The rounding mode first: building it would free the sort.
                 let rm = self.rounding_mode(*rm)?;
                 let sort = self.fp_sort(*sort)?;
-                unsafe { Z3_mk_fpa_to_fp_unsigned(c, rm.as_z3_ast(), arg(0)?, sort) }
+                unsafe { Z3_mk_fpa_to_fp_unsigned(c, rm.get_z3_ast(), arg(0)?, sort) }
             }
 
             AstOp::StrContains(..)

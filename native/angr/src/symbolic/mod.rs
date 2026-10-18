@@ -55,7 +55,6 @@
 //! | File | Holds |
 //! |------|-------|
 //! | `symbol_kind.rs` | `SymbolKind` and the `!bool!` name tag that keeps a `BoolS` leaf and a same-named 1-bit `BVS` two variables. |
-//! | `z3_ast_ptr.rs` | `Z3AstPtr` — typed, refcounted wrapper over a raw `Z3_ast` at the claripy FFI boundary. **(z3)** |
 //! | `width_guards.rs` | `MAX_BV_WIDTH` / `check_bv_width` / `check_extract_bounds` — the bound checks the claripy import trust boundary (`claripy_bridge::import`) runs before an externally-chosen width reaches a `RustBV` constructor. |
 //!
 //! ## Instrumentation and analysis
@@ -109,8 +108,6 @@ mod value_shape;
 #[cfg(feature = "vex-engine-z3")]
 mod value_z3;
 mod width_guards;
-#[cfg(feature = "vex-engine-z3")]
-mod z3_ast_ptr;
 
 pub use bv_chunk::{
     MAX_CONCRETE_CHUNK, MAX_CONCRETE_LOAD_BYTES, check_concrete_load_size,
@@ -139,5 +136,3 @@ pub(crate) use value_clarirs::bool_inside;
 #[cfg(feature = "vex-engine")]
 pub(crate) use value_shape::Node;
 pub use width_guards::{MAX_BV_WIDTH, check_bv_width, check_extract_bounds};
-#[cfg(feature = "vex-engine-z3")]
-pub use z3_ast_ptr::Z3AstPtr;

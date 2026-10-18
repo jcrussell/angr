@@ -545,8 +545,9 @@ impl Default for SymContext {
 pub(crate) mod merge_instrument;
 
 // Gated on vex-engine-z3 (bd angr-cagbn): every test here drives
-// `SymContext::add_constraint` / Z3AstPtr, which only exist with z3. Keeps the
-// no-z3 nightly `cargo test` combos compiling; default build runs them all.
+// `SymContext::add_constraint` / `add_constraint_raw`, which only exist with
+// z3. Keeps the no-z3 nightly `cargo test` combos compiling; default build
+// runs them all.
 // The *file* paths below are nested under context_tests/, but the modules they
 // create are FLAT siblings of each other directly under `context` — there is no
 // `context_tests` parent module. Cite a test as

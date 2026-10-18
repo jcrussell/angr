@@ -443,8 +443,8 @@ class TestSolverOperations:
         cannot lower (an fpEQ float comparison) must return a 0/1 value,
         never BV-wrap the Bool node.
 
-        Regression for angr-58ks: extract_z3_ast_ptr returns a raw Z3_ast
-        with no sort check; the eval fast paths used to BV::wrap it
+        Regression for angr-58ks: the claripy -> Z3 lowering is not
+        sort-specific; the eval fast paths used to BV::wrap it
         unconditionally (width defaulting to 64). For a Bool-sorted node
         that is a wrong-sort Z3 call, which trips Z3's error handler
         (process abort), not a recoverable PyErr. The fix lowers a Bool to

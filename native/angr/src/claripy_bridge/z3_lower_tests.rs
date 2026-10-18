@@ -16,13 +16,12 @@ fn bvv(value: u64, width: u32) -> AstRef<'static> {
     GLOBAL_CONTEXT.bvv(BitVec::from((value, width))).unwrap()
 }
 
-/// Wrap a lowered Bool-sorted term as a z3-rs `Bool` on the same context.
+/// A lowered Bool-sorted term as a z3-rs `Bool`.
 fn as_bool(ast: &AstRef<'static>) -> Bool {
-    let lowered = lower(ast).unwrap();
-    assert!(lowered.is_bool(), "expected a Bool-sorted lowering");
-    // SAFETY: `lowered` holds a reference to a live Bool term of the
-    // thread-local context; `wrap` takes its own.
-    unsafe { Bool::wrap(lowered.context(), lowered.as_z3_ast()) }
+    lower(ast)
+        .unwrap()
+        .as_bool()
+        .expect("expected a Bool-sorted lowering")
 }
 
 fn check(constraints: &[Bool]) -> z3::SatResult {
@@ -154,7 +153,7 @@ fn shared_subtrees_lower_once() {
     for _ in 0..24 {
         node = GLOBAL_CONTEXT.add(node.clone(), node).unwrap();
     }
-    assert!(lower(&node).unwrap().bv_width() == Some(8));
+    assert_eq!(lower(&node).unwrap().as_bv().map(|bv| bv.get_size()), Some(8));
 }
 
 #[test]
@@ -189,14 +188,14 @@ fn a_context_swap_does_not_reuse_terms_from_the_old_context() {
     let x = GLOBAL_CONTEXT.bvs("lower_swap", 32).unwrap();
     let original = z3::Context::thread_local();
     let first = lower(&x).unwrap();
-    assert_eq!(first.context().get_z3_context(), original.get_z3_context());
+    assert_eq!(first.get_ctx().get_z3_context(), original.get_z3_context());
 
     // `with_z3_config` installs a fresh context as this thread's thread-local
     // for the closure; only raw pointers (as `usize`) leave it.
     let (lowered_in, fresh) = z3::with_z3_config(&z3::Config::new(), || {
         let second = lower(&x).unwrap();
         (
-            second.context().get_z3_context().as_ptr() as usize,
+            second.get_ctx().get_z3_context().as_ptr() as usize,
             z3::Context::thread_local().get_z3_context().as_ptr() as usize,
         )
     });

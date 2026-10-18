@@ -464,7 +464,7 @@ fn claripy_z3_ptr_declines_a_bv_sorted_lowering() {
         let zero = GLOBAL_CONTEXT.bvv(BitVec::from((0u64, 8))).expect("BVV");
         let bv = claripy_object(py, x.clone());
         assert!(
-            crate::claripy_bridge::lower_claripy_ast(&bv).is_ok(),
+            crate::claripy_bridge::lower_bv(&x).is_ok(),
             "the BV term itself lowers; only its sort disqualifies it"
         );
         assert!(

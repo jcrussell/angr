@@ -11,25 +11,20 @@
 //! - here: the Python-boundary error mapping, the [`RustSolverContext`]
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
-//! - [`z3_ast_extract`](crate::z3_ast_extract): raw `Z3_ast`-pointer
-//!   extraction, sort-checked wrapping (`z3_ast_to_bool` / `node_to_eval_bv`)
-//!   and evaluation, i.e. every `unsafe` in the solver surface. This module
-//!   holds none: a wrap needed here goes *there*, behind a sort check, rather
-//!   than inline (angr-5mnx3.10). It is declared as a crate-root sibling of
-//!   `solver` rather than a child of it (angr-8ucb3), so this module's
-//!   `forbid(unsafe_code)` below cannot reach it.
+//! - [`z3_ast_extract`](crate::z3_ast_extract): claripy-node evaluation
+//!   (`claripy_node` / `node_to_eval_bv` / `eval_claripy_node`), a crate-root
+//!   sibling of `solver` (angr-8ucb3);
+//! - [`claripy_bridge::lower_claripy_bool`](crate::claripy_bridge::lower_claripy_bool):
+//!   the sort-checked claripy → Z3 `Bool` lowering the raw constraint fast
+//!   paths assert.
 //!
 //! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
 //! policy in `lib.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
-// The "every `unsafe` in the solver surface lives in `z3_ast_extract`" claim
-// above was, until angr-5mnx3.10, only a doc comment — and
-// `add_constraint_tracked_ast` had quietly contradicted it since the
-// angr-9ke6b.205 split. Unlike `deny`, `forbid` cannot be silently
-// overridden by a nested `#[allow(unsafe_code)]` (angr-8ucb3) — which is exactly why `z3_ast_extract` is declared in `lib.rs` as a sibling
-// of `solver` rather than as a child module here: its own sanctioned
-// `#![allow(unsafe_code)]` is an ordinary, unopposed lint level on an
-// unrelated module, not an override this attribute would otherwise reject.
+// A raw-AST wrap needed here goes behind a sort check in z3-rs
+// (`Dynamic::as_bool` / `as_bv`), never inline (angr-5mnx3.10, angr-mx00p.32).
+// Unlike `deny`, `forbid` cannot be overridden by a nested
+// `#[allow(unsafe_code)]` (angr-8ucb3).
 #![forbid(unsafe_code)]
 
 use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
@@ -43,7 +38,9 @@ use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
 
 #[cfg(feature = "vex-engine-z3")]
-use crate::z3_ast_extract::{claripy_node, extract_z3_ast_ptr, node_to_eval_bv, z3_ast_to_bool};
+use crate::claripy_bridge::lower_claripy_bool;
+#[cfg(feature = "vex-engine-z3")]
+use crate::z3_ast_extract::{claripy_node, node_to_eval_bv};
 
 /// Convert a BridgeError to a PyErr, preserving the variant's structure at
 /// the Python boundary (angr-ghwsd.2). Mirrors the per-variant mapping in
@@ -222,9 +219,7 @@ impl RustSolverContext {
             // Bool-sorted lowering takes the raw fast path. A non-Bool (e.g.
             // a BV used as a truthiness constraint) falls through to the slow
             // path below, which lowers it to a proper `!= 0` Bool.
-            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
-                && let Some(z3_ast) = z3_ast_to_bool(&z3_ast)
-            {
+            if let Ok(z3_ast) = lower_claripy_bool(ast) {
                 // angr-sqfj8.121: a constraint with a RustBV form must land
                 // in EXACTLY ONE of the residual (`add_constraint_raw`) or
                 // assumed (`add_constraint_raw_assumed` +
@@ -290,10 +285,7 @@ impl RustSolverContext {
                 // angr-58ks: a non-Bool AST cannot go through the raw batch
                 // (`add_constraints_raw_batch` takes a `Bool`); drop to the
                 // per-constraint slow path, which lowers it correctly.
-                let Some(ptr) = extract_z3_ast_ptr(py, &ast)
-                    .ok()
-                    .and_then(|p| z3_ast_to_bool(&p))
-                else {
+                let Ok(ptr) = lower_claripy_bool(&ast) else {
                     break;
                 };
                 let bv = match claripy_to_rustbv(py, &ast, &ctx) {
@@ -349,13 +341,9 @@ impl RustSolverContext {
             // a no-op error handler -- fails *silently*: no panic, no abort,
             // just a constraint that never actually gets asserted while this
             // function still returns Ok(idx) as if tracking succeeded.
-            // `z3_ast_to_bool` fuses that sort check with the wrap it
-            // licenses and keeps the `unsafe` in `z3_ast_extract` where this
-            // module's header doc says it lives (angr-5mnx3.10); a non-Bool
-            // AST yields `None` and falls through to the slow path below.
-            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
-                && let Some(constraint) = z3_ast_to_bool(&z3_ast)
-            {
+            // `lower_claripy_bool` refuses a non-Bool lowering, which falls
+            // through to the slow path below.
+            if let Ok(constraint) = lower_claripy_bool(ast) {
                 // Cloned (a `Z3_inc_ref`) so the residual branch below still
                 // has the Bool `add_constraint_tracked_indexed` consumes.
                 let idx = ctx.add_constraint_tracked_indexed(constraint.clone());

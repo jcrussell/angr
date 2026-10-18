@@ -3075,15 +3075,11 @@ Vec<usize>)`` (``exploration/state_api.rs::_import_z3_constraint_ptrs``)
 is the one place a Python caller's input is treated as a raw *AST*
 pointer. ``SymContext::add_constraint_raw``
 (``symbolic/constraint_ops.rs``) is itself a safe fn: it takes a
-``Z3AstPtr`` (``symbolic/z3_ast_ptr.rs``), a handle that already holds a
-``Z3_inc_ref`` on a live AST in a known context. The unsafe step is
-building that handle: ``_import_z3_constraint_ptrs`` calls
-``unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, *ptr) }``, whose
-``# Safety`` contract requires each non-zero pointer to be a valid, live
-``Z3_ast`` in the given context (``from_borrowed_raw`` itself returns
-``None`` for zero). The ``Z3_ast Bool`` sort is the documented caller
-contract of ``add_constraint_raw``, whose ``z3::ast::Ast::wrap`` is UB on
-anything else.
+``z3::ast::Bool``, so the sort is carried by the type. The unsafe step is
+building that ``Bool``: ``_import_z3_constraint_ptrs`` calls
+``unsafe { Bool::wrap(&z3_ctx, raw) }``, whose contract requires each
+pointer to be a valid, live, Bool-sorted ``Z3_ast`` in the given
+context.
 
 The other raw pointer Python hands across is the Z3 *context*:
 ``set_shared_z3_context`` (``engine.rs``, body in
@@ -3101,9 +3097,9 @@ under ``unsafe``, rejecting only null. Its sole production caller is
 * **Not reachable otherwise.** ``add_constraint_raw`` on
   ``RustSolverContext`` is **not** Python-callable directly — it is
   only reachable through ``add_constraint_ast`` /
-  ``add_constraint_tracked_ast``, which extract the pointer from
-  claripy's z3 backend (``solver/z3_ast_extract.rs``) and so are safe by
-  construction.
+  ``add_constraint_tracked_ast``, which lower the claripy AST with
+  ``claripy_bridge::lower_claripy_bool`` (a checked
+  ``Dynamic::as_bool``) and so are safe by construction.
 * **Validation (angr-33t9).** ``_import_z3_constraint_ptrs`` validates
   the whole list before any ``add_constraint_raw`` call, so a failure
   leaves the state's solver unmutated

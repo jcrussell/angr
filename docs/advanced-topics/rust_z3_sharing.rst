@@ -23,9 +23,9 @@ Z3 represents every AST as a ``Z3_ast`` pointer into a parent
 AST it builds in the thread-local context of the thread that built it:
 ``RustBV`` values are clarirs terms with a lazy per-value Z3 memo, and
 claripy ASTs from Python are lowered by
-``native/angr/src/solver/z3_ast_extract.rs::extract_z3_ast_ptr`` (through
-``claripy_bridge::lower_claripy_ast``) before ``Z3_solver_assert`` sees
-them. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
+``native/angr/src/claripy_bridge/z3_lower.rs::lower_claripy_ast`` to a
+``z3::ast::Dynamic`` (and, for a constraint, through the sort-checked
+``lower_claripy_bool``) before ``Z3_solver_assert`` sees them. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
 its own; the two never exchange pointers.
 
 The solver surface is split across the files below (angr-9ke6b.205):
@@ -33,12 +33,11 @@ The solver surface is split across the files below (angr-9ke6b.205):
 * ``native/angr/src/solver.rs`` — the Python-boundary error mapping and
   the claripy-AST API (``add_constraint_ast``, ``eval*``, ``min``,
   ``max``, ``push``/``pop``, ``fork``).
-* ``native/angr/src/solver/z3_ast_extract.rs`` — raw ``Z3_ast``-pointer
-  extraction, sort-checked wrapping and evaluation; every ``unsafe`` on
-  this surface lives here. Unlike ``solver.rs`` it exports *no*
-  ``#[pymethods]``: ``Z3AstPtr`` owns a Z3 refcount and is not
-  PyO3-bridgeable, so these are internal helpers the claripy-AST API in
-  ``solver.rs`` calls.
+* ``native/angr/src/solver/z3_ast_extract.rs`` — claripy-node
+  evaluation (``claripy_node``, ``node_to_eval_bv``,
+  ``eval_claripy_node``). Unlike ``solver.rs`` it exports *no*
+  ``#[pymethods]``; these are internal helpers the claripy-AST API in
+  ``solver.rs`` calls. Both files ``forbid(unsafe_code)``.
 
 How the link is wired (build.rs + venv)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

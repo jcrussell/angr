@@ -172,7 +172,7 @@ pub(crate) enum ConstraintImport {
 /// to the proper `!= 0`.
 #[cfg(feature = "vex-engine-z3")]
 fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<z3::ast::Bool> {
-    crate::z3_ast_extract::z3_ast_to_bool(&crate::claripy_bridge::lower_claripy_ast(item).ok()?)
+    crate::claripy_bridge::lower_claripy_bool(item).ok()
 }
 
 /// Coerce a converted constraint to the width-1 form the solver's assumed log

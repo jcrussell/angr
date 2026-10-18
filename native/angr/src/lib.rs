@@ -187,7 +187,8 @@ macro_rules! test_submod {
         mod $name;
     };
     // Gated on vex-engine-z3 (bd angr-cagbn): test files that drive
-    // `SymContext::add_constraint` / Z3AstPtr, which only exist with z3.
+    // `SymContext::add_constraint` / `add_constraint_raw`, which only exist
+    // with z3.
     (z3 $file:literal => $name:ident) => {
         #[cfg(all(test, feature = "vex-engine-z3"))]
         #[path = $file]
@@ -448,11 +449,8 @@ pub mod symbolic;
 pub(crate) mod syscalls;
 #[cfg(feature = "vex-engine")]
 pub mod vex;
-// Declared here rather than as a `mod` inside `solver.rs` so that solver.rs's
-// `#![forbid(unsafe_code)]` (angr-8ucb3) does not reach it: `forbid` cannot be
-// overridden by a descendant module's own `#[allow]`, unlike `deny`, so the
-// sanctioned unsafe in this module has to sit outside `solver`'s subtree
-// rather than under it with an override.
+// Declared here rather than as a `mod` inside `solver.rs` (angr-8ucb3); it
+// carries its own `#![forbid(unsafe_code)]`.
 #[cfg(feature = "vex-engine")]
 #[path = "solver/z3_ast_extract.rs"]
 pub(crate) mod z3_ast_extract;
