@@ -32,6 +32,9 @@ Detected shapes (deliberately narrow -- the noisy ``.unwrap_or*`` /
     same line matcher also catches it as the tail of a ``let`` binding
     (``let x = f().ok();``), the bound form
 
+Test modules and the modules in ``UPSTREAM_OWNED`` (taken verbatim from
+upstream angr, so not ours to tag) are not scanned.
+
 Usage::
 
     tools/audit_silent_fallback.py                 # report new untagged sites
@@ -87,11 +90,32 @@ def _is_test_rel(rel: str) -> bool:
     return rel.endswith("_tests.rs") or "/tests/" in rel or rel.startswith("tests/")
 
 
+# Modules taken verbatim from upstream angr (angr-mx00p.16). The SILENT(cat-x)
+# convention is a fork process marker; tagging these would write it into
+# upstream-owned files, so the gate skips them. A directory entry ends in `/`.
+# Drop an entry once the fork takes ownership of that module.
+UPSTREAM_OWNED = (
+    "ailment/",
+    "automaton/",
+    "cfg_graph.rs",
+    "function_graph.rs",
+    "fuzzer.rs",
+    "fuzzer/",
+    "icicle.rs",
+    "segmentlist.rs",
+)
+
+
+def _is_upstream_owned(rel: str) -> bool:
+    """Whether ``rel`` (relative to ``SRC_ROOT``) is an upstream-owned module."""
+    return any(rel.startswith(e) if e.endswith("/") else rel == e for e in UPSTREAM_OWNED)
+
+
 def _iter_rs_files() -> list[Path]:
     files = []
     for p in sorted(SRC_ROOT.rglob("*.rs")):
         rel = p.relative_to(SRC_ROOT).as_posix()
-        if _is_test_rel(rel):
+        if _is_test_rel(rel) or _is_upstream_owned(rel):
             continue
         files.append(p)
     return files
@@ -185,12 +209,14 @@ _SELF_TEST_EXPECTED_TAGGED = [(shape, code, True) for shape, code, _ in _SELF_TE
 
 
 def self_test() -> int:
-    """Prove the detector can fail, can be silenced by a tag, and skips tests.
+    """Prove the detector can fail, can be silenced by a tag, and skips tests
+    and upstream-owned modules.
 
     A gate never seen to fail is indistinguishable from one that cannot. The
     fixtures run through :func:`scan_text` (the real per-file matcher, with its
-    comment skip and tag window) and :func:`_is_test_rel` (the real test-file
-    skip), and the untagged hits through the real baseline filter.
+    comment skip and tag window), :func:`_is_test_rel` and
+    :func:`_is_upstream_owned` (the real file skips), and the untagged hits
+    through the real baseline filter.
     """
     failures: list[str] = []
     for name, src, want in (
@@ -217,6 +243,17 @@ def self_test() -> int:
         if _is_test_rel(rel) != want_test:
             failures.append(f"test-file skip: {rel!r} expected {want_test}")
 
+    for rel, want_upstream in (
+        ("ailment/ail_expr.rs", True),
+        ("cfg_graph.rs", True),
+        ("fuzzer/mod.rs", True),
+        ("cfg_graph_extra.rs", False),
+        ("memory/cfg_graph.rs", False),
+        ("lib.rs", False),
+    ):
+        if _is_upstream_owned(rel) != want_upstream:
+            failures.append(f"upstream-owned skip: {rel!r} expected {want_upstream}")
+
     if failures:
         print("SELF-TEST FAILED")
         for f in failures:
@@ -224,7 +261,7 @@ def self_test() -> int:
         return 1
     print(
         "self-test OK: untagged return Ok(None) / .ok(); / let-tail flagged, "
-        "the same sites tagged SILENT(cat-b) pass, baseline and test-file skip honoured"
+        "the same sites tagged SILENT(cat-b) pass, baseline, test-file and upstream-owned skips honoured"
     )
     return 0
 
