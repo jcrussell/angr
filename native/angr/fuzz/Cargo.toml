@@ -29,13 +29,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "bv_numeral_parsers"
-path = "fuzz_targets/bv_numeral_parsers.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "optstring_parser"
 path = "fuzz_targets/optstring_parser.rs"
 test = false

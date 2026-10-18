@@ -73,8 +73,7 @@ fn parse_optstring(s: &[u8]) -> (std::collections::HashMap<u8, u8>, bool) {
 }
 
 /// Dev-only re-export of [`parse_optstring`] for cargo-fuzz targets
-/// (angr-qwyti.9 established the recipe; this mirrors
-/// `symbolic::fuzz_exports`). `parse_optstring` is a pure function over
+/// (angr-qwyti.9 established the recipe). `parse_optstring` is a pure function over
 /// arbitrary bytes with no debug-assert precondition, so it fuzzes
 /// hermetically. Gated behind `fuzzing` so the normal build keeps the parser
 /// `fn`-private (its only real caller is `getopt` in this same module).
