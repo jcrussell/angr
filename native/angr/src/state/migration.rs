@@ -26,8 +26,7 @@
 //!   its Python-side symbolic overlays on callback-heavy workloads.
 //!
 //! `last_time` is intentionally NOT carried: it resets to `None`, identical to
-//! [`RustSimState::fork`] and [`RustSimState::from_snapshot`]. (Only the
-//! rejected `translate_state` path preserved it.)
+//! [`RustSimState::fork`] and [`RustSimState::from_snapshot`].
 
 use super::*;
 
@@ -77,12 +76,12 @@ impl StateMigrationPayload {
     ///
     /// # Precondition
     ///
-    /// `target_ctx` must already be the active thread-local Z3 context
-    /// (`z3::Context::set_thread_local(target_ctx)`). Every Z3 AST is
+    /// `target_ctx` must be the active thread-local Z3 context
+    /// (`z3::Context::thread_local()` on the stealing worker). Every Z3 AST is
     /// reconstructed in the *active thread-local* context through
     /// [`RustSimState::from_serialized`] — NOT in `target_ctx` directly — so if
-    /// the caller has not swapped the thread-local first, rebuilding in the
-    /// stale context would later mix ASTs across contexts (Z3 UB). This is
+    /// `target_ctx` is some other context, rebuilding in the thread-local
+    /// context would later mix ASTs across contexts (Z3 UB). This is
     /// checked unconditionally (not a `debug_assert`, which a release build
     /// would compile out, re-opening exactly the silent cross-context footgun
     /// this `unsafe`-free design exists to remove) and returns

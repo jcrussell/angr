@@ -1,5 +1,4 @@
-//! Persistence for [`FileSystem`]: the serde shadow form ([`FileSystemData`])
-//! and the cross-Z3-context [`FileSystem::translate_into`] twin of `clone`.
+//! Persistence for [`FileSystem`]: the serde shadow form ([`FileSystemData`]).
 
 use super::*;
 
@@ -100,52 +99,5 @@ impl From<FileSystemData> for FileSystem {
             d.known_paths.iter().map(|p| fs.normalize_path(p)).collect();
         fs.known_paths = Arc::new(known_paths);
         fs
-    }
-}
-
-impl FileSystem {
-    /// Cross-context twin of `clone` for `RustSimState::translate_state`
-    /// (angr-ahypj): every context-bound `RustBV` — each fd's
-    /// `content_sym` vec and each `file_contents` registry value — is
-    /// `Z3_translate`d into `target_ctx` via [`RustBV::translate_into`];
-    /// every other field is context-independent and cloned. Like the
-    /// serde path, Arc *sharing* between an fd and the registry is not
-    /// preserved through translation (each gets a fresh translated Arc) —
-    /// acceptable, sharing is only a fork-time perf optimization.
-    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn translate_into(&self, target_ctx: &z3::Context) -> Self {
-        // Fast path: no symbolic file content anywhere → nothing is
-        // context-bound, so the O(1) Arc-sharing clone (the pre-angr-0xyq2
-        // behavior) is correct. All production states today take this.
-        if self.file_contents.is_empty() && self.fds.values().all(|d| d.content_sym.is_none()) {
-            return self.clone();
-        }
-        let translate_vec = |v: &Arc<Vec<RustBV>>| -> Arc<Vec<RustBV>> {
-            crate::arc_shared(v.iter().map(|bv| bv.translate_into(target_ctx)).collect())
-        };
-        let fds: HashMap<u32, FileDescriptor> = self
-            .fds
-            .iter()
-            .map(|(k, d)| {
-                let mut d = d.clone();
-                d.content_sym = d.content_sym.as_ref().map(translate_vec);
-                (*k, d)
-            })
-            .collect();
-        let file_contents: HashMap<String, Arc<Vec<RustBV>>> = self
-            .file_contents
-            .iter()
-            .map(|(k, v)| (k.clone(), translate_vec(v)))
-            .collect();
-        FileSystem {
-            fds: crate::arc_shared(fds),
-            next_fd: self.next_fd,
-            cwd: self.cwd.clone(),
-            known_paths: Arc::clone(&self.known_paths),
-            symlinks: Arc::clone(&self.symlinks),
-            file_contents: crate::arc_shared(file_contents),
-            demoted_paths: Arc::clone(&self.demoted_paths),
-        }
     }
 }

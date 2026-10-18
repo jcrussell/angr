@@ -129,8 +129,8 @@ fn serde_roundtrip_float_op() {
 }
 
 /// Regression (angr-ovqja.3): the persistent per-value Z3 AST memo must not
-/// leak a stale-context AST. If the thread-local Z3 context is swapped (only
-/// `with_z3_context` in tests — never production), `to_z3_ast()` must rebuild
+/// leak a stale-context AST. If the thread-local Z3 context is swapped
+/// (`with_z3_config`), `to_z3_ast()` must rebuild
 /// against the active context rather than return the cached BV from the
 /// previous context.
 #[cfg(feature = "vex-engine-z3")]
@@ -139,12 +139,24 @@ fn test_expression_memo_no_stale_context_leak() {
     use z3::ast::Ast as Z3AstTrait;
     use z3::{Config, Context};
 
-    // `with_z3_context` cannot be used here: its `Send + Sync` closure bound
-    // exists precisely to forbid smuggling a Z3-bearing value (our `RustBV`)
-    // across the boundary — yet the stale-memo path requires converting the
-    // SAME `RustBV` in two contexts. Swap the thread-local context manually
-    // and restore it on the way out (single-threaded test, so this is sound).
-    let original = Context::thread_local();
+    // The stale-memo path requires converting the SAME `RustBV` in two
+    // contexts, but `with_z3_config`'s `Send + Sync` closure bound forbids
+    // capturing a Z3-bearing value. `with_z3_config` runs the closure
+    // synchronously on the calling thread, so wrapping the borrow to satisfy
+    // the bound moves nothing across threads.
+    struct SameThread<'a>(&'a RustBV);
+    // SAFETY: only ever handed to `with_z3_config`, which calls its closure on
+    // this thread before returning; the borrow never reaches another thread.
+    unsafe impl Send for SameThread<'_> {}
+    // SAFETY: as above.
+    unsafe impl Sync for SameThread<'_> {}
+    impl<'a> SameThread<'a> {
+        // A method call makes the closure capture the whole wrapper; naming
+        // the field would capture only the inner `&RustBV`.
+        fn get(&self) -> &'a RustBV {
+            self.0
+        }
+    }
 
     let expr = raw_extract_node(RustBV::concrete(0x11223344, 32), 7, 0);
 
@@ -163,18 +175,18 @@ fn test_expression_memo_no_stale_context_leak() {
 
     // Swap to a freshly-allocated context. The memo holds a default-context BV,
     // so the guard must reject it and rebuild against the new context.
-    let cfg = Config::new();
-    let new_ctx = Context::new(&cfg);
-    let new_ctx_ptr = new_ctx.get_z3_context().as_ptr() as usize;
+    let shared = SameThread(&expr);
+    let (new_ctx_ptr, in_new_ctx) = z3::with_z3_config(&Config::new(), || {
+        let expr = shared.get();
+        (
+            Context::thread_local().get_z3_context().as_ptr() as usize,
+            expr.to_z3_ast().get_ctx().get_z3_context().as_ptr() as usize,
+        )
+    });
     assert_ne!(
         default_ctx, new_ctx_ptr,
         "test bug: new context equals default; not testing cross-context",
     );
-
-    Context::set_thread_local(&new_ctx);
-    let in_new_ctx = expr.to_z3_ast().get_ctx().get_z3_context().as_ptr() as usize;
-    // Restore before asserting so a failure does not poison sibling tests.
-    Context::set_thread_local(&original);
     assert_eq!(
         in_new_ctx, new_ctx_ptr,
         "stale-context leak: memo returned a BV from the old context",
@@ -187,137 +199,5 @@ fn test_expression_memo_no_stale_context_leak() {
         ast3.get_ctx().get_z3_context().as_ptr() as usize,
         default_ctx,
         "returning to the default context must rebuild against it",
-    );
-}
-
-// --- Cross-context AST translation (angr-panhl.2 parallel kill-gate) ---
-//
-// `translate_into` is the per-task `Z3_translate` primitive for the
-// shared-nothing parallel design (Option A). It must move a `RustBV` from
-// one thread-local Z3 context to another with every constraint re-checking
-// identical, and at a per-node cost in the spike's ballpark.
-
-#[cfg(feature = "vex-engine-z3")]
-#[test]
-fn test_translate_into_cross_context_eval() {
-    use z3::ast::Ast as Z3AstTrait;
-    use z3::{Config, Context};
-
-    // Source context = default thread-local. Build a memory-load-shaped tree.
-    let src = SymContext::new_mock();
-    let x = RustBV::symbolic(&src, "x", 32);
-    let rev = x.reverse(&src);
-    let pin = x.eq(&RustBV::concrete(0x11223344, 32), &src);
-
-    // Translate into a freshly-allocated, independent context. `Z3_translate`
-    // takes explicit source/dest contexts, so translation does NOT depend on
-    // which context is currently thread-local.
-    let original = Context::thread_local();
-    let cfg = Config::new();
-    let target = Context::new(&cfg);
-    let target_ptr = target.get_z3_context().as_ptr() as usize;
-    assert_ne!(
-        original.get_z3_context().as_ptr() as usize,
-        target_ptr,
-        "test bug: target equals source context",
-    );
-    let rev_t = rev.translate_into(&target);
-    let pin_t = pin.translate_into(&target);
-
-    // Evaluate the translated tree under the target context and restore the
-    // thread-local before asserting (a failure must not poison sibling tests).
-    Context::set_thread_local(&target);
-    let ctx_b = SymContext::new_mock();
-    ctx_b.add_constraint(pin_t.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
-    let lowered_ctx = rev_t.to_z3_ast().get_ctx().get_z3_context().as_ptr() as usize;
-    let got = ctx_b.eval(&rev_t);
-    Context::set_thread_local(&original);
-
-    assert_eq!(
-        lowered_ctx, target_ptr,
-        "the translated value must lower into the target context",
-    );
-    assert_eq!(
-        got,
-        Some(0x44332211),
-        "cross-context Reverse(x) eval must match the single-context result",
-    );
-}
-
-#[cfg(feature = "vex-engine-z3")]
-#[test]
-fn test_translate_into_roundtrips_through_fresh_context() {
-    // The bead's no-op correctness gate: round-trip A -> B -> A through a
-    // fresh independent context; every constraint must still re-check equal.
-    // (Translating into the *same* context is unsupported — `Z3_translate`
-    // returns null — so a genuine round trip must bounce through a distinct
-    // context, exactly as a worker hand-off and hand-back would.)
-    let ctx = SymContext::new_mock(); // values live in default thread-local A
-    let x = RustBV::symbolic(&ctx, "x", 64);
-    let rev = x.reverse(&ctx);
-    let pin = x.eq(&RustBV::concrete(0x0123456789ABCDEF, 64), &ctx);
-
-    let a = z3::Context::thread_local(); // handle to context A
-    let b = z3::Context::new(&z3::Config::new());
-    let rev_back = rev.translate_into(&b).translate_into(&a);
-    let pin_back = pin.translate_into(&b).translate_into(&a);
-
-    // Thread-local is still A, so the round-tripped values eval directly.
-    ctx.add_constraint(pin_back.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
-    assert_eq!(ctx.eval(&rev_back), Some(0xEFCDAB8967452301));
-}
-
-#[cfg(feature = "vex-engine-z3")]
-#[test]
-fn test_translate_into_concrete_identity() {
-    // Concrete / Constrained carry no AST: translation is a cheap value clone
-    // that stays valid in any context (it never references one).
-    let target = z3::Context::new(&z3::Config::new());
-    let c = RustBV::concrete(0xDEADBEEF, 32);
-    let t = c.translate_into(&target);
-    assert_eq!(t.as_u64(), Some(0xDEAD_BEEF));
-    assert_eq!(t.width(), 32);
-}
-
-#[cfg(feature = "vex-engine-z3")]
-#[test]
-fn test_translate_into_per_node_cost() {
-    use std::time::Instant;
-
-    // Mimic a real mid-run memory-load constraint: Reverse(Concat(64 byte
-    // BVSes)). The clarirs term is context-free, so translation only resets
-    // the lazy memo (rebuilt under whichever context is active next).
-    let ctx = SymContext::new_mock();
-    let leaves: Vec<RustBV> = (0..64u32)
-        .map(|i| RustBV::symbolic(&ctx, format!("b{i}"), 8))
-        .collect();
-    let mut acc = leaves[0].clone();
-    for b in &leaves[1..] {
-        acc = acc.concat(b, &ctx);
-    }
-    let expr = acc.reverse(&ctx);
-    let n_leaves = leaves.len();
-    let n_nodes = n_leaves + (n_leaves - 1) + 1; // leaves + concats + reverse
-
-    let target = z3::Context::new(&z3::Config::new());
-    let iters = 200u32;
-    // Warm up one translation (allocator / first-touch) before timing.
-    let _ = expr.translate_into(&target);
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = expr.translate_into(&target);
-    }
-    let elapsed = start.elapsed();
-    let per_node = elapsed.as_nanos() as f64 / (iters as f64 * n_nodes as f64);
-    let per_leaf = elapsed.as_nanos() as f64 / (iters as f64 * n_leaves as f64);
-    eprintln!(
-        "translate_into cost: {n_nodes} nodes ({n_leaves} Z3 leaves), {iters} iters in {elapsed:?} \
-         => {per_node:.0} ns/node, {per_leaf:.0} ns/leaf-translate",
-    );
-    // Loose sanity ceiling only — the precise number is the kill-gate
-    // measurement (recorded in the bd note), not a tight CI assertion.
-    assert!(
-        per_node < 50_000.0,
-        "translate cost {per_node:.0} ns/node is absurdly high — likely a regression",
     );
 }

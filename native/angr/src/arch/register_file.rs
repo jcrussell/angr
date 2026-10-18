@@ -573,24 +573,6 @@ impl RegisterFile {
         }
     }
 
-    /// Cross-context twin of [`Self::fork`] (angr-ahypj): copy this register
-    /// file, deep-translating every symbolic overlay BV into `target_ctx`.
-    /// The concrete `data` buffer and architecture are context-independent and
-    /// shared/cloned verbatim.
-    #[cfg(feature = "vex-engine-z3")]
-    pub(crate) fn translate_into(&self, target_ctx: &z3::Context) -> RegisterFile {
-        RegisterFile {
-            data: Arc::clone(&self.data),
-            symbolic: self
-                .symbolic
-                .iter()
-                .map(|(&off, bv)| (off, bv.translate_into(target_ctx)))
-                .collect(),
-            arch: self.arch.clone(),
-            containment: self.containment.clone(),
-        }
-    }
-
     /// Merge another register file into this one using a merge condition.
     ///
     /// For each register offset, if the values differ between `self` and `other`,

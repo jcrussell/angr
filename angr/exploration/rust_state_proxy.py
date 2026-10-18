@@ -1543,7 +1543,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # angr-4scu step 4: stock SimMemory.load(addr, 0) returns a 0-width
         # BV without touching memory; mirror that. Reaching the FFI with
         # size=0 panics in Z3 because zero-width BVs are invalid (see
-        # ``z3-patched/src/ast/bv.rs``). ``posix/open.py`` triggers this on
+        # the ``z3`` crate's ``ast::BV``). ``posix/open.py`` triggers this on
         # paths where ``strlen.max_null_index == 0`` (null at offset 0).
         if size == 0:
             return claripy.BVV(0, 0)

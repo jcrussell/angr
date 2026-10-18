@@ -225,33 +225,6 @@ pub struct NativeResumeFrame {
     pub caller_return_addr: u64,
 }
 
-#[cfg(feature = "vex-engine-z3")]
-impl NativeResumeFrame {
-    /// Cross-context twin of this frame (angr-1ilq.2): `Z3_translate` every
-    /// context-bound `RustBV` in `saved_args` into `target_ctx`; all other
-    /// fields are context-independent and cloned. Mirrors
-    /// [`crate::state::RustSimState::translate_state`] (state/fork.rs) — a
-    /// concrete `saved_arg` clones verbatim (see [`RustBV::translate_into`] in
-    /// symbolic/value_z3.rs), a symbolic one is re-homed so a stolen state's
-    /// resume stack is valid in the worker's context rather than a dangling
-    /// foreign-context AST.
-    ///
-    /// `target_ctx` must be a *different* context from the one these ASTs live
-    /// in (the same panic-on-same-context contract as `RustBV::translate_into`).
-    pub fn translate_into(&self, target_ctx: &z3::Context) -> NativeResumeFrame {
-        NativeResumeFrame {
-            proc_name: self.proc_name.clone(),
-            resume_tag: self.resume_tag,
-            saved_args: self
-                .saved_args
-                .iter()
-                .map(|bv| bv.translate_into(target_ctx))
-                .collect(),
-            caller_return_addr: self.caller_return_addr,
-        }
-    }
-}
-
 /// A claripy AST held in per-state metadata, shared by `Arc` rather than stored
 /// as a bare `Py<PyAny>`.
 ///
@@ -340,8 +313,7 @@ pub struct RustSimState {
     /// removed" when unioning `hooks` across merge arms — a plain set union
     /// can't tell the two apart and would silently resurrect a hook this
     /// branch removed if a sibling branch still has it. Reset to empty by
-    /// `fork_with` (a fresh divergence point); carried over unchanged by
-    /// `translate_state` (same logical state, different Z3 context).
+    /// `fork_with` (a fresh divergence point).
     #[merge_policy = "computed"]
     removed_hooks: Arc<HashSet<u64>>,
     /// Address concretization config.

@@ -10,8 +10,7 @@
 //!   listings, symlink lookup).
 //! - [`symbolic`] — bounded symbolic file content: the `file_contents`
 //!   registry, the `read_sym` serve paths, and write-demotion.
-//! - [`persist`] — the serde shadow form plus the cross-Z3-context
-//!   `translate_into`.
+//! - [`persist`] — the serde shadow form.
 //!
 //! The concrete, Z3-free unit tests for all of the above live in this
 //! directory too, as the `tests` submodule (`state/filesystem/tests.rs`) —

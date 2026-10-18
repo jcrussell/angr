@@ -188,9 +188,8 @@ impl RustSimState {
     /// clone/copy/`clone_py_metadata` logic. Extracting that logic here keeps
     /// the ~30 per-field carries in one place (DRY, angr-0mqkc.7) so a new
     /// `RustSimState` field only has to be threaded through one struct literal
-    /// on this path instead of four. `merge` and `translate_state` keep their
-    /// own literals because they merge/`Z3_translate` most fields rather than
-    /// plain-carrying them.
+    /// on this path instead of four. `merge` keeps its own literal because it
+    /// merges most fields rather than plain-carrying them.
     ///
     /// The caller supplies the already-derived divergent fields; `child_id`
     /// must come from [`next_state_id`] (the monotonic-increase invariant is
@@ -304,108 +303,14 @@ impl RustSimState {
     /// but nothing reached it with tombstones intact (angr-sqfj8.33).
     ///
     /// So: the same copy `fork` makes (fresh `state_id`, CoW everything), but
-    /// the tombstones carry over unchanged as they do in
-    /// [`Self::translate_state`] — a merge input is the same logical branch
-    /// observed one step later, not a new path.
+    /// the tombstones carry over unchanged — a merge input is the same
+    /// logical branch observed one step later, not a new path.
     pub fn clone_for_merge(&self) -> Self {
         let mut copy = self.fork();
         copy.removed_hooks = self.removed_hooks.clone();
         copy.removed_sim_options = self.removed_sim_options.clone();
         copy.removed_env_keys = self.removed_env_keys.clone();
         copy
-    }
-
-    /// Cross-context twin of [`Self::fork`] (angr-ahypj): produce a copy of
-    /// this state whose every context-bound `RustBV` — register overlays,
-    /// symbolic memory (`symbolic_objects` / `multi_objects` / pending
-    /// writes), path constraints, filesystem symbolic content (fd
-    /// `content_sym` + the `file_contents` registry, angr-0xyq2), and
-    /// `last_time` — has been `Z3_translate`d into `target_ctx`. Every
-    /// other field is context-independent and cloned exactly as `fork`
-    /// does.
-    ///
-    /// Unlike `fork`, identity is preserved: `state_id` and `parent_id` carry
-    /// over unchanged because this is the *same* state observed in a different
-    /// worker's Z3 context, not a new path.
-    ///
-    /// The `Py<PyAny>` overlay maps (`symbolic_pages`, `hook_symbolic_memory`,
-    /// `addr_to_ast`) hold Python claripy ASTs, which are context-independent;
-    /// they are `clone_ref`'d under the GIL exactly as in `fork`.
-    ///
-    /// # Preconditions
-    ///
-    /// `target_ctx` must be the **active thread-local Z3 context** and a
-    /// *different* context from this state's — see
-    /// [`SymContext::translate_into`] and [`RustBV::translate_into`]. In the
-    /// Option-A parallel model this runs on the target worker's thread after
-    /// `set_thread_local(target_ctx)`.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn translate_state(&self, target_ctx: &z3::Context) -> Self {
-        let translated_solver = Rc::new(RefCell::new(
-            self.solver.borrow().translate_into(target_ctx),
-        ));
-        let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
-
-        RustSimState {
-            arch: self.arch.clone(),
-            vex_arch: self.vex_arch,
-            registers: self.registers.translate_into(target_ctx),
-            memory: self.memory.translate_into(target_ctx),
-            solver: translated_solver,
-            pc: self.pc,
-            state_id: self.state_id,
-            parent_id: self.parent_id,
-            history: self.history.clone(),
-            detailed_history: self.detailed_history.clone(),
-            max_history: self.max_history,
-            hooks: self.hooks.clone(),
-            // Same logical state, different Z3 context — carry over unchanged.
-            removed_hooks: self.removed_hooks.clone(),
-            concretizer: self.concretizer.clone(),
-            track_history: self.track_history,
-            fs: self.fs.translate_into(target_ctx),
-            heap_brk: self.heap_brk,
-            posix_brk: self.posix_brk,
-            mmap_base: self.mmap_base,
-            tsc_counter: self.tsc_counter,
-            getopt_optind: self.getopt_optind,
-            getopt_optchar: self.getopt_optchar,
-            getopt_extern: self.getopt_extern,
-            // angr-1ilq.2: every other context-bound field above is
-            // Z3_translate'd into target_ctx; the resume stack's
-            // `saved_args` carries context-bound ASTs too and must be
-            // translated, not plain-cloned, or a symbolic saved_arg becomes a
-            // dangling foreign-context AST under threading.
-            native_resume_stack: self
-                .native_resume_stack
-                .iter()
-                .map(|frame| frame.translate_into(target_ctx))
-                .collect(),
-            ctype_loc: self.ctype_loc,
-            stdin_symbols: self.stdin_symbols.clone(),
-            call_stack: self.call_stack.clone(),
-            heap_metadata: self.heap_metadata.clone(),
-            inspection: self.inspection.clone(),
-            environment: self.environment.clone(),
-            // Same logical state, different Z3 context — carry over unchanged.
-            removed_env_keys: self.removed_env_keys.clone(),
-            symbolic_pages,
-            hook_symbolic_memory,
-            addr_to_ast,
-            last_time: self
-                .last_time
-                .as_ref()
-                .map(|bv| bv.translate_into(target_ctx)),
-            no_ip_concretization: self.no_ip_concretization,
-            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
-            keep_ip_symbolic: self.keep_ip_symbolic,
-            force_eager_forks: self.force_eager_forks,
-            cgc_allocation_base: self.cgc_allocation_base,
-            cgc_sinkholes: self.cgc_sinkholes.clone(),
-            sim_options: self.sim_options.clone(),
-            // Same logical state, different Z3 context — carry over unchanged.
-            removed_sim_options: self.removed_sim_options.clone(),
-        }
     }
 
     /// Fork with a constraint on the true branch.

@@ -322,68 +322,9 @@ fn bench_state_fork(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// translate_state cross-context cost scaling (angr-9pwjd / panhl.2c)
+// State migration serde round trip
 // ---------------------------------------------------------------------------
 
-/// Measures `RustSimState::translate_state` wall cost as a function of the
-/// number of distinct symbolic leaves carried by the state. panhl.2 measured
-/// the `translate_into` primitive at ~355ns/node / ~709ns/leaf and predicted
-/// whole-state cost is leaf-count-dominated (only Symbolic LEAVES do the
-/// Z3_translate; Expression nodes rebuild near-free via lazy memo). This bench
-/// confirms that prediction holds on whole states: plotting the per-leaf-count
-/// groups should be ~linear in leaf count. Each state spreads K symbolic
-/// leaves across a memory region, each pinned by a path constraint — the same
-/// shape as `test_translate_state_production_sized_roundtrip`.
-fn bench_translate_state_scaling(c: &mut Criterion) {
-    use z3::{Config, Context};
-
-    fn build_state(n_leaves: u64) -> rustylib::state::RustSimState {
-        const MEM_BASE: u64 = 0x10000;
-        let mut state = rustylib::state::RustSimState::new("AMD64").unwrap();
-        state.map_memory(MEM_BASE, n_leaves * 8, Permission::RWX);
-        for i in 0..n_leaves {
-            let leaf = {
-                let s = state.solver().borrow();
-                RustBV::symbolic(&s, format!("scl_mem_{i}"), 64)
-            };
-            state.memory_store(MEM_BASE + i * 8, leaf.clone()).unwrap();
-            let s = state.solver().borrow();
-            let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64), &s);
-            drop(s);
-            state.add_constraint(c);
-        }
-        state
-    }
-
-    let mut group = c.benchmark_group("translate_state_scaling");
-    for &n in &[8u64, 64, 256] {
-        let state = build_state(n);
-        let cfg = Config::new();
-        let target = Context::new(&cfg);
-        // translate_state asserts into the thread-local — switch to the target
-        // worker's context (the Option-A parallel model), as the unit test does.
-        Context::set_thread_local(&target);
-        group.bench_function(format!("leaves_{n}"), |bench| {
-            bench.iter(|| black_box(state.translate_state(&target)))
-        });
-    }
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-
-/// Measures the REAL state-migration serde round-trip used by the parallel
-/// scheduler: `to_serialized()` -> `from_serialized()`, reconstructing every
-/// Z3 AST in a FRESH (scratch) context. This mirrors
-/// `StateMigrationPayload::reattach` (src/state/migration.rs:90-102), which
-/// requires the target context to be the active thread-local and then rebuilds
-/// the state via `RustSimState::from_serialized`. Unlike
-/// `bench_translate_state_scaling` above — which benches `translate_state`, the
-/// REJECTED cross-context `Z3_translate` path — this is the serde tax the
-/// scheduler actually pays when moving a state between workers. Sweeping leaf
-/// counts (incl. a large 1024) exposes the super-linear serde cost of deep
-/// op-trees. Same state shape as `bench_translate_state_scaling`: K symbolic
-/// leaves spread across a mapped region, each pinned by a path constraint.
 /// Build a migration-bench state with two cost axes (angr-t3l5o Phase 0a):
 ///
 /// * `n_leaves` — distinct symbolic memory cells, each pinned by a shallow
@@ -445,23 +386,24 @@ fn build_migration_state(
     state
 }
 
+/// Measures the state-migration serde round-trip the parallel scheduler pays
+/// when moving a state between workers: `to_serialized()` ->
+/// `from_serialized()`, the rebuild inside `StateMigrationPayload::reattach`.
+/// Every iteration rebuilds in the bench thread's thread-local context, so
+/// this is the steady-state cost once that context has seen the terms.
+/// Sweeping leaf counts (incl. a large 1024) exposes the super-linear serde
+/// cost of deep op-trees. K symbolic leaves spread across a mapped region,
+/// each pinned by a path constraint (`build_migration_state`).
 fn bench_migration_roundtrip(c: &mut Criterion) {
     use rustylib::state::RustSimState;
-    use z3::{Config, Context};
 
     let mut group = c.benchmark_group("migration_roundtrip");
     for &n in &[8u64, 64, 256, 1024] {
         let mut state = build_migration_state(n, 0, 0.0);
-        // `from_serialized` mints ASTs in the active thread-local context, so
-        // swap to a fresh scratch context to model reattach landing the state
-        // in a different worker's context (reattach's thread-local precondition).
-        let cfg = Config::new();
-        let scratch = Context::new(&cfg);
-        Context::set_thread_local(&scratch);
-        // Sanity-check the setup: from_serialized must rebuild cleanly in the
-        // scratch context (no SnapshotError) before we start timing.
+        // Sanity-check the setup: from_serialized must rebuild cleanly (no
+        // SnapshotError) before we start timing.
         let probe = state.to_serialized();
-        RustSimState::from_serialized(&probe).expect("from_serialized in scratch context");
+        RustSimState::from_serialized(&probe).expect("from_serialized probe");
         group.bench_function(format!("leaves_{n}"), |bench| {
             bench.iter(|| {
                 let bytes = state.to_serialized();
@@ -483,13 +425,11 @@ fn bench_migration_roundtrip(c: &mut Criterion) {
 ///   (5) `leaf_rebuild`  — `from_serialized` of a NO-constraint state
 ///   (6) `memory_copy`   — `memory.to_snapshot()` / `from_snapshot()` alone
 ///
-/// Phases are measured in a fresh scratch Z3 context (mirrors the round-trip
-/// bench: detach reads the producer state's cached Bools, reattach mints fresh
-/// ASTs in the consumer context).
+/// Phases are measured in the bench thread's thread-local Z3 context, as in
+/// the round-trip bench.
 fn bench_migration_phases(c: &mut Criterion) {
     use rustylib::state::{RustSimState, RustSimStateSnapshot};
     use rustylib::symbolic::SymContext;
-    use z3::{Config, Context};
 
     const LEAVES: u64 = 256;
     let mut group = c.benchmark_group("migration_phases");
@@ -502,11 +442,6 @@ fn bench_migration_phases(c: &mut Criterion) {
             }
             let tag = format!("D{depth_d}_r{raw_fraction}");
             let mut state = build_migration_state(LEAVES, depth_d, raw_fraction);
-
-            // Switch to a scratch context for all phases.
-            let cfg = Config::new();
-            let scratch = Context::new(&cfg);
-            Context::set_thread_local(&scratch);
 
             // Pre-built artifacts (setup, not timed).
             let mut snap_no_solver = state.to_snapshot();
@@ -1237,7 +1172,6 @@ criterion_group!(
     bench_memory_symbolic_load,
     bench_memory_fork,
     bench_state_fork,
-    bench_translate_state_scaling,
     bench_migration_roundtrip,
     bench_migration_phases,
     bench_rustbv_neon_ops,

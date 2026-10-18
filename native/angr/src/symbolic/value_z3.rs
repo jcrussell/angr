@@ -1,5 +1,5 @@
 //! Z3 lowering for [`RustBV`]: `to_z3_ast` / `to_z3_ast_cached`,
-//! `to_z3_bool` / `to_z3_bool_cached` and `translate_into`. A value is a
+//! `to_z3_bool` / `to_z3_bool_cached`. A value is a
 //! `Concrete` (a Z3 numeral) or a clarirs term, lowered through
 //! `claripy_bridge::z3_lower` and memoized on the value.
 //!
@@ -66,27 +66,6 @@ impl RustBV {
     )]
     fn lower_clarirs(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::BV {
         crate::claripy_bridge::lower_bv(ast).expect("from_clarirs lowered this node once already")
-    }
-
-    /// Hand this value to a different Z3 [`z3::Context`]: the per-task step
-    /// of the shared-nothing parallel design (Option A,
-    /// `rust_parallel_design.rst`) that moves a state between worker threads.
-    ///
-    /// A clarirs node is context-free and only its `memo` is bound, so the
-    /// copy resets the memo and re-lowers lazily in whatever context is
-    /// active at the next [`to_z3_ast`](Self::to_z3_ast); a `Concrete` is a
-    /// plain clone. `self` is never mutated, so translating a state's memory
-    /// leaves the `Arc`-shared lazy-memory pages it reads untouched.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn translate_into(&self, _target_ctx: &z3::Context) -> RustBV {
-        match self {
-            RustBV::Concrete { .. } => self.clone(),
-            RustBV::Ast { width, ast, .. } => RustBV::Ast {
-                width: *width,
-                ast: ast.clone(),
-                memo: Default::default(),
-            },
-        }
     }
 
     /// Convert a 1-bit RustBV to a native Z3 Bool, avoiding ITE wrapping.

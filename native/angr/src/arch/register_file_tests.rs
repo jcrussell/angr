@@ -202,7 +202,7 @@ fn serde_roundtrip_register_file_concrete() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_register_file_symbolic() {
-    use z3::{Config, Context, with_z3_context};
+    use z3::{Config, with_z3_config};
 
     let ctx = SymContext::new();
     let mut regs = RegisterFile::new(Box::new(AMD64));
@@ -215,9 +215,7 @@ fn serde_roundtrip_register_file_symbolic() {
     // Deserialize inside a fresh Z3 context to prove the AST cache
     // rebuilds correctly across context boundaries (the production
     // snapshot/restore path).
-    let cfg = Config::new();
-    let new_ctx = Context::new(&cfg);
-    let (restored_leaf, lowered) = with_z3_context(&new_ctx, || {
+    let (restored_leaf, lowered) = with_z3_config(&Config::new(), || {
         let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
         let ctx2 = SymContext::new();
         let bv = restored.get_reg("rdi", &ctx2).unwrap();

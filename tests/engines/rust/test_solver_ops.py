@@ -221,7 +221,7 @@ class TestSolverOperations:
         claripy, unsafely wrapping a BV-sorted Z3_ast as z3::ast::Bool and
         handing it to Z3_solver_assert_and_track. Because our context
         installs a no-op Z3 error handler (see
-        native/z3-patched/src/context.rs), the resulting sort mismatch was
+        the z3 crate's Context::new), the resulting sort mismatch was
         swallowed *silently* inside Z3's CHECK_FORMULA guard: no exception,
         no abort, and the constraint was never actually asserted -- while
         add_constraint_tracked_ast still returned a tracked index as if it

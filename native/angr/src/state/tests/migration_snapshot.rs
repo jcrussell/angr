@@ -1,23 +1,36 @@
-//! Cross-context migration via snapshot: Multi-cell bytes, resume stack, Python
-//! overlays, the wrong-context reattach error, and a migration across a real
-//! OS thread.
+//! Cross-context migration via snapshot, each rebuilt on a fresh worker
+//! thread: Multi-cell bytes, resume stack, Python overlays, and the
+//! wrong-context reattach error.
 //!
 //! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69).
 
 use super::super::*;
 
-// angr-1ilq.1: the SAFE cross-worker migration twin of
-// `test_translate_state_cross_context`. Instead of `translate_state` (which
-// reads the *source* context cross-thread — unsound under work-stealing,
-// hazard C), migration serializes the state to context-free bytes on the
-// owner and rebuilds the ASTs in the stealing worker's own context. The same
-// falsifiable claim must hold: a symbolic register pinned by a path constraint
-// re-evaluates to its witness after the round-trip through a fresh context.
+/// Run `f` on a fresh OS thread and return its result. Each thread owns its
+/// own thread-local Z3 context, so this is the production worker model: the
+/// only thing that crosses is `Send` data (a migration payload, plain values).
+#[cfg(feature = "vex-engine-z3")]
+fn on_worker<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    std::thread::scope(|s| {
+        s.spawn(f)
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
+/// The calling thread's thread-local Z3 context, as a comparable address.
+#[cfg(feature = "vex-engine-z3")]
+fn thread_ctx_addr() -> usize {
+    z3::Context::thread_local().get_z3_context().as_ptr() as usize
+}
+
+// angr-1ilq.1: migration serializes the state to context-free bytes on the
+// owner and rebuilds the ASTs in the stealing worker's own context, never
+// reading the source context cross-thread. A symbolic register pinned by a
+// path constraint must re-evaluate to its witness after the round trip.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_via_snapshot_cross_context() {
-    use z3::{Config, Context};
-
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
         let s = state.solver().borrow();
@@ -30,26 +43,22 @@ fn test_migrate_via_snapshot_cross_context() {
     };
     state.add_constraint(constraint);
     let sid = state.state_id();
-
-    let original = Context::thread_local();
-    let target = Context::new(&Config::new());
-    assert_ne!(
-        original.get_z3_context().as_ptr() as usize,
-        target.get_z3_context().as_ptr() as usize,
-        "test bug: target == source context",
-    );
+    let source_ctx = thread_ctx_addr();
 
     // Owner serializes under the source context (current thread-local)...
     let payload = state.detach_for_migration();
-    // ...stealer swaps its context in, then rebuilds — every AST is minted in
-    // `target`, with no read of the source context.
-    Context::set_thread_local(&target);
-    let migrated = payload.reattach(&target).expect("reattach");
-    let rax_t = migrated.get_register("rax").expect("rax present");
-    let got = migrated.solver().borrow().eval(&rax_t);
-    let sat = migrated.solver().borrow().is_sat();
-    Context::set_thread_local(&original);
+    // ...the stealer rebuilds in its own context — every AST is minted there,
+    // with no read of the source context.
+    let (target_ctx, got, sat, migrated_id) = on_worker(move || {
+        let target = z3::Context::thread_local();
+        let migrated = payload.reattach(&target).expect("reattach");
+        let rax_t = migrated.get_register("rax").expect("rax present");
+        let got = migrated.solver().borrow().eval(&rax_t);
+        let sat = migrated.solver().borrow().is_sat();
+        (thread_ctx_addr(), got, sat, migrated.state_id())
+    });
 
+    assert_ne!(source_ctx, target_ctx, "test bug: target == source context");
     assert_eq!(
         got,
         Some(0xdead_beef),
@@ -57,8 +66,7 @@ fn test_migrate_via_snapshot_cross_context() {
     );
     assert!(sat, "migrated state's solver must remain SAT");
     assert_eq!(
-        migrated.state_id(),
-        sid,
+        migrated_id, sid,
         "migration preserves identity (same state_id)",
     );
 }
@@ -75,8 +83,6 @@ fn test_migrate_via_snapshot_cross_context() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_carries_multi_cell_bytes() {
-    use z3::{Config, Context};
-
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
 
@@ -107,34 +113,33 @@ fn test_migrate_carries_multi_cell_bytes() {
         "precondition: the store must have installed Multi cells"
     );
 
-    let target = Context::new(&Config::new());
     let payload = state.detach_for_migration();
-    Context::set_thread_local(&target);
-    let migrated = payload.reattach(&target).expect("reattach");
-
-    let loaded = migrated
-        .memory()
-        .get_symbolic_object(0x1000)
-        .expect("byte 0x1000 must be a symbolic object after migration, not silently dropped");
+    let width = on_worker(move || {
+        let migrated = payload
+            .reattach(&z3::Context::thread_local())
+            .expect("reattach");
+        migrated
+            .memory()
+            .get_symbolic_object(0x1000)
+            .map(|loaded| loaded.width())
+    })
+    .expect("byte 0x1000 must be a symbolic object after migration, not silently dropped");
     assert_eq!(
-        loaded.width(),
+        width,
         32,
         "migrated Multi-cell byte must round-trip at its stored width"
     );
 }
 
-// angr-1ilq.1: migration parity with
-// `test_translate_state_resume_stack_cross_context` over an A->B->A' round
-// trip. Proves the snapshot transport carries `native_resume_stack` (the
-// angr-1ilq.2 field) faithfully across two distinct contexts: a symbolic
-// saved_arg re-proves its witness at every hop; a concrete saved_arg clones
-// verbatim. Each hop serializes under the context that is then live, so a
-// half-rebuilt foreign-context AST would surface here.
+// angr-1ilq.1: an A->B->A' round trip. Proves the snapshot transport carries
+// `native_resume_stack` (the angr-1ilq.2 field) faithfully across two
+// distinct worker contexts: a symbolic saved_arg re-proves its witness at
+// every hop; a concrete saved_arg clones verbatim. Each hop serializes under
+// the context that is then live, so a half-rebuilt foreign-context AST would
+// surface here.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_resume_stack_roundtrip() {
-    use z3::{Config, Context};
-
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
         let s = state.solver().borrow();
@@ -152,9 +157,7 @@ fn test_migrate_resume_stack_roundtrip() {
         caller_return_addr: 0x400600,
     });
 
-    let original = Context::thread_local();
-
-    let verify = |twin: &RustSimState, label: &str| {
+    fn verify(twin: &RustSimState, label: &str) {
         assert!(
             twin.solver().borrow().is_sat(),
             "{label}: migrated solver must remain SAT",
@@ -179,28 +182,25 @@ fn test_migrate_resume_stack_roundtrip() {
             Some(0x602000),
             "{label}: concrete saved_arg clones verbatim",
         );
-    };
+    }
 
-    // A -> B: serialize under A, rebuild under a fresh B.
+    // A -> B: serialize under A, rebuild on worker B; B serializes its twin.
     let payload_b = state.detach_for_migration();
-    let ctx_b = Context::new(&Config::new());
-    assert_ne!(
-        original.get_z3_context().as_ptr() as usize,
-        ctx_b.get_z3_context().as_ptr() as usize,
-        "test bug: target == source context",
-    );
-    Context::set_thread_local(&ctx_b);
-    let twin_b = payload_b.reattach(&ctx_b).expect("reattach A->B");
-    verify(&twin_b, "A->B");
+    let payload_a2 = on_worker(move || {
+        let twin_b = payload_b
+            .reattach(&z3::Context::thread_local())
+            .expect("reattach A->B");
+        verify(&twin_b, "A->B");
+        twin_b.detach_for_migration()
+    });
 
-    // B -> A': serialize the twin under B, rebuild under another fresh context.
-    let payload_a2 = twin_b.detach_for_migration();
-    let ctx_a2 = Context::new(&Config::new());
-    Context::set_thread_local(&ctx_a2);
-    let twin_a2 = payload_a2.reattach(&ctx_a2).expect("reattach B->A'");
-    verify(&twin_a2, "B->A'");
-
-    Context::set_thread_local(&original);
+    // B -> A': rebuild B's payload on another fresh worker.
+    on_worker(move || {
+        let twin_a2 = payload_a2
+            .reattach(&z3::Context::thread_local())
+            .expect("reattach B->A'");
+        verify(&twin_a2, "B->A'");
+    });
 }
 
 // angr-1ilq.1: the fidelity gap fix. `to_serialized` drops the Bucket-D
@@ -213,7 +213,6 @@ fn test_migrate_resume_stack_roundtrip() {
 #[test]
 fn test_migrate_preserves_py_overlays() {
     use pyo3::prelude::*;
-    use z3::{Config, Context};
 
     Python::initialize();
 
@@ -238,45 +237,44 @@ fn test_migrate_preserves_py_overlays() {
         state.set_addr_to_ast(0x3000, py.None(), 4);
     });
 
-    let original = Context::thread_local();
-    let target = Context::new(&Config::new());
-
     let payload = state.detach_for_migration();
-    Context::set_thread_local(&target);
-    let migrated = payload.reattach(&target).expect("reattach");
-    // Rust-side state survived too.
-    let rax_t = migrated.get_register("rax").expect("rax present");
-    let got = migrated.solver().borrow().eval(&rax_t);
-    Context::set_thread_local(&original);
+    on_worker(move || {
+        let migrated = payload
+            .reattach(&z3::Context::thread_local())
+            .expect("reattach");
+        // Rust-side state survived too.
+        let rax_t = migrated.get_register("rax").expect("rax present");
+        let got = migrated.solver().borrow().eval(&rax_t);
 
-    assert_eq!(got, Some(0x1234_5678), "migrated rax re-proves witness");
-    assert_eq!(
-        migrated.symbolic_pages().len(),
-        1,
-        "symbolic_pages carried across migration (not dropped like a bare snapshot)",
-    );
-    assert!(
-        migrated.symbolic_pages().contains_key(&0x1000),
-        "symbolic_pages key preserved",
-    );
-    assert_eq!(
-        migrated.hook_symbolic_memory().len(),
-        1,
-        "hook_symbolic_memory carried across migration",
-    );
-    assert!(
-        migrated.hook_symbolic_memory().contains_key(&0x2000),
-        "hook_symbolic_memory key preserved",
-    );
-    assert_eq!(
-        migrated.addr_to_ast().len(),
-        1,
-        "addr_to_ast carried across migration",
-    );
-    assert!(
-        migrated.addr_to_ast().contains_key(&0x3000),
-        "addr_to_ast key preserved",
-    );
+        assert_eq!(got, Some(0x1234_5678), "migrated rax re-proves witness");
+        assert_eq!(
+            migrated.symbolic_pages().len(),
+            1,
+            "symbolic_pages carried across migration (not dropped like a bare snapshot)",
+        );
+        assert!(
+            migrated.symbolic_pages().contains_key(&0x1000),
+            "symbolic_pages key preserved",
+        );
+        assert_eq!(
+            migrated.hook_symbolic_memory().len(),
+            1,
+            "hook_symbolic_memory carried across migration",
+        );
+        assert!(
+            migrated.hook_symbolic_memory().contains_key(&0x2000),
+            "hook_symbolic_memory key preserved",
+        );
+        assert_eq!(
+            migrated.addr_to_ast().len(),
+            1,
+            "addr_to_ast carried across migration",
+        );
+        assert!(
+            migrated.addr_to_ast().contains_key(&0x3000),
+            "addr_to_ast key preserved",
+        );
+    });
 }
 
 // angr-1ilq.1: reattach must FAIL FAST (not silently rebuild in the wrong
@@ -287,14 +285,24 @@ fn test_migrate_preserves_py_overlays() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_reattach_wrong_context_errors() {
-    use z3::{Config, Context};
-
     let state = RustSimState::new("amd64").unwrap();
     let payload = state.detach_for_migration();
 
-    // `target` is a fresh context that is NOT the active thread-local (we never
-    // call set_thread_local), so reattach must reject it rather than rebuild.
-    let target = Context::new(&Config::new());
+    // `target` is a fresh context that is NOT the active thread-local (it is
+    // never installed), so reattach must reject it rather than rebuild.
+    // z3-rs exposes no safe constructor for a context it does not install, so
+    // build one the way z3's own (crate-private) `Context::new` does.
+    // SAFETY: `cfg` is a fresh config freed once the context exists; `raw` is a
+    // fresh reference-counted context nothing else manages, so `from_raw` owns
+    // it and deletes it on drop. Clearing the error handler matches z3-rs's
+    // own contexts: errors surface as error codes instead of aborting.
+    let target = unsafe {
+        let cfg = z3_sys::Z3_mk_config().expect("Z3_mk_config");
+        let raw = z3_sys::Z3_mk_context_rc(cfg).expect("Z3_mk_context_rc");
+        z3_sys::Z3_del_config(cfg);
+        z3_sys::Z3_set_error_handler(raw, None);
+        z3::Context::from_raw(raw)
+    };
     match payload.reattach(&target) {
         Err(SnapshotError::ContextMismatch) => {}
         other => panic!(
@@ -302,52 +310,4 @@ fn test_migrate_reattach_wrong_context_errors() {
             other.map(|s| s.state_id()),
         ),
     }
-}
-
-// angr-1ilq.1: the end-to-end point of the bead — the payload is genuinely
-// moved to ANOTHER OS thread and rebuilt there. Proves the `Send` transport
-// works across a real thread boundary (not just a thread-local swap on one
-// thread): the worker thread installs its own Z3 context, reattaches, and the
-// migrated state re-proves its pinned witness in that thread's context.
-#[cfg(feature = "vex-engine-z3")]
-#[test]
-fn test_migrate_across_real_thread() {
-    use z3::{Config, Context};
-
-    let mut state = RustSimState::new("amd64").unwrap();
-    let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "ilq1_thread_rax", 64)
-    };
-    state.set_register("rax", x.clone());
-    let constraint = {
-        let s = state.solver().borrow();
-        x.eq(&RustBV::concrete(0x5151_5151, 64), &s)
-    };
-    state.add_constraint(constraint);
-
-    // Serialize on this (owner) thread, then MOVE the payload to a worker.
-    let payload = state.detach_for_migration();
-    let (got, sat) = std::thread::spawn(move || {
-        // The worker installs its OWN Z3 context as the thread-local.
-        let worker_ctx = Context::new(&Config::new());
-        Context::set_thread_local(&worker_ctx);
-        let migrated = payload.reattach(&worker_ctx).expect("reattach on worker");
-        let rax_t = migrated.get_register("rax").expect("rax present");
-        let got = migrated.solver().borrow().eval(&rax_t);
-        let sat = migrated.solver().borrow().is_sat();
-        (got, sat)
-    })
-    .join()
-    .expect("worker thread panicked");
-
-    assert_eq!(
-        got,
-        Some(0x5151_5151),
-        "migrated rax must re-prove its witness in the worker thread's context",
-    );
-    assert!(
-        sat,
-        "migrated state's solver must remain SAT on the worker thread"
-    );
 }

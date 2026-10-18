@@ -233,10 +233,10 @@ pub(super) struct WaveDone;
 /// `num_workers` long-lived OS threads, each owning a private Z3 context for the
 /// pool's whole life, fed one [`WaveJob`] at a time over per-worker channels.
 ///
-/// This replaces the per-wave `std::thread::scope` + fresh `z3::Context::new()`
-/// that taxed every wave with a thread-spawn + Z3-context-creation cost (which
-/// erased any parallel speedup). Each worker installs its context ONCE at spawn;
-/// because the worker is pinned to one OS thread for the pool's life, that
+/// This replaces a per-wave `std::thread::scope` + fresh Z3 context that
+/// taxed every wave with a thread-spawn + Z3-context-creation cost (which
+/// erased any parallel speedup). Each worker takes its thread-local context
+/// (`z3::Context::thread_local()`) ONCE at spawn; because the worker is pinned to one OS thread for the pool's life, that
 /// context is stable across waves, so `reattach`'s `target_ctx ==
 /// Context::thread_local()` pointer-equality guard keeps holding every wave.
 pub(crate) struct PersistentPool {

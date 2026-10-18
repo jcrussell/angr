@@ -118,20 +118,6 @@ fn serde_rejects_a_term_without_a_z3_form() {
 }
 
 #[test]
-fn translate_keeps_the_node_and_drops_the_memo() {
-    let (_, eq) = nan_probe();
-    let bv = RustBV::from_clarirs(eq).unwrap();
-    let other = z3::Context::new(&z3::Config::new());
-    match bv.translate_into(&other) {
-        RustBV::Ast { ast, memo, .. } => {
-            assert!(Arc::ptr_eq(&ast, ast_of(&bv)));
-            assert!(memo.borrow().is_none());
-        }
-        other => panic!("expected RustBV::Ast, got {other:?}"),
-    }
-}
-
-#[test]
 fn a_comparison_bit_lowers_to_the_native_comparison() {
     // `ite(x < y, 1, 0)` must reach Z3 as `x < y` itself, not as a bitvector
     // ite compared with 1: the same Z3 term the engine builds by hand.

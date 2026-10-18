@@ -191,9 +191,15 @@ fn a_context_swap_does_not_reuse_terms_from_the_old_context() {
     let first = lower(&x).unwrap();
     assert_eq!(first.context().get_z3_context(), original.get_z3_context());
 
-    let fresh = z3::Context::new(&z3::Config::new());
-    z3::Context::set_thread_local(&fresh);
-    let second = lower(&x).unwrap();
-    z3::Context::set_thread_local(&original);
-    assert_eq!(second.context().get_z3_context(), fresh.get_z3_context());
+    // `with_z3_config` installs a fresh context as this thread's thread-local
+    // for the closure; only raw pointers (as `usize`) leave it.
+    let (lowered_in, fresh) = z3::with_z3_config(&z3::Config::new(), || {
+        let second = lower(&x).unwrap();
+        (
+            second.context().get_z3_context().as_ptr() as usize,
+            z3::Context::thread_local().get_z3_context().as_ptr() as usize,
+        )
+    });
+    assert_ne!(fresh, original.get_z3_context().as_ptr() as usize);
+    assert_eq!(lowered_in, fresh);
 }

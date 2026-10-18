@@ -27,9 +27,8 @@
 //!   undecided-query (Z3 timeout) contract.
 //! - `snapshot`: `to_snapshot`/`from_snapshot` round-trip and the serialized
 //!   envelope's error paths.
-//! - `migration_translate`: `translate_state` across two `SymContext`s.
-//! - `migration_snapshot`: cross-context migration via snapshot, including
-//!   across a real OS thread.
+//! - `migration_snapshot`: cross-context migration via snapshot onto a
+//!   worker thread.
 //! - `merge_scalars`: merge rules for the scalar/watermark fields.
 //! - `merge_heap`: merge rules for the heap and CGC allocator state.
 //! - `merge_multi_state`: merges decided by comparing more than two branches.
@@ -75,7 +74,6 @@ mod merge_property_manual;
 mod merge_property_mechanical;
 mod merge_scalars;
 mod migration_snapshot;
-mod migration_translate;
 mod registers;
 mod snapshot;
 mod solver_gate;
