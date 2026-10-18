@@ -5,26 +5,18 @@
 //!
 //! ## Identity Preservation
 //!
-//! A critical requirement is preserving symbolic identity across the FFI boundary:
-//! - When `BVS("x", 32)` is imported from Python, it should keep its identity
-//! - When exported back to Python, the original AST should be returned
-//! - This ensures constraints on the original `x` apply to the exported value
-//!
-//! Identity preservation uses two mechanisms:
-//! 1. **Global registry** (`SymbolicIdentityRegistry`): Cross-thread, persistent.
-//!    Sole store for the `rust_id → original leaf AST` mapping.
-//! 2. **Thread-local caches**: Fast access for repeated conversions
-//!    (`AST_CACHE`, `EXPRESSION_BY_OPERANDS_PTR`).
+//! Symbolic identity is structural: a claripy AST's clarirs nodes are what a
+//! `RustBV` holds (`RustBV::Ast`), and export hands Python the claripy object
+//! over that same node. A leaf is the clarirs variable of its name, so
+//! `BVS("x", 32)` imported from Python and the leaf Rust builds from `"x"` are
+//! one node. clarirs interning is the only identity table.
 //!
 //! # Cross-cache invariants
 //!
-//! Two thread-local caches sit in this module (`AST_CACHE`,
-//! `EXPRESSION_BY_OPERANDS_PTR`),
-//! plus the shared `SymbolicIdentityRegistry`. Per-cache ownership /
-//! invalidation / coherence is documented at each `thread_local!` block
-//! (see angr-a2br.3). The invariants below cut ACROSS
-//! caches and pin how the caches interact as a group. Each is referenced
-//! from the per-cache docs by number so enforcement-site comments do not
+//! One thread-local cache sits in this module (`AST_CACHE`, claripy hash →
+//! converted `RustBV`); its ownership / invalidation / coherence is documented
+//! at its `thread_local!` block (see angr-a2br.3). The invariants below are
+//! referenced from that doc by number so enforcement-site comments do not
 //! duplicate the rationale.
 //!
 //! The numbering is deliberately non-contiguous: **C1**, **C2**, **C4** and
@@ -35,13 +27,8 @@
 //! every one of those is swept in the same commit.
 //!
 //! - **C3. `clear_ast_cache` is the one invalidation.** It clears the
-//!   thread-local `AST_CACHE`. `reset_for_new_exploration` extends the clear
-//!   to the global registry; do NOT call `clear_global_registry()` in
-//!   isolation. The extended clear is `#[cfg(test)]` (angr-9ke6b.218 item 4):
-//!   production never wipes the global registry, because symbol identity is
-//!   shared across coexisting managers and across sibling workers under the
-//!   Option-A parallel model (angr-1ilq). A worker clears only its own
-//!   thread-locals via `clear_worker_local_caches`.
+//!   thread-local `AST_CACHE`; a worker clears only its own thread-locals via
+//!   `clear_worker_local_caches`.
 //!
 //! - **C5. An `AST_CACHE` hit is width-checked before it is returned.**
 //!   `AST_CACHE` is keyed by claripy's content-addressed `__hash__()`,

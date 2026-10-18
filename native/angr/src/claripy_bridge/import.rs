@@ -10,8 +10,8 @@
 //! directly instead of through `op` / `args` attribute calls. The attribute
 //! walk remains for any other object (`cargo test`'s embedded interpreter
 //! imports the installed extension, whose claripy classes are different type
-//! objects; some tests hand in duck-typed ASTs). Both walks share the caches
-//! and the symbol-identity registry, keyed by the same Python hash.
+//! objects; some tests hand in duck-typed ASTs). Both walks share the
+//! `AST_CACHE`, keyed by the same Python hash.
 
 use clarirs_core::prelude::{AstOp, AstRef};
 use pyo3::prelude::*;
@@ -26,8 +26,7 @@ use crate::symbolic::{
 };
 
 use super::cache::{
-    claripy_ast_guard_width, evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
-    lookup_symbol_by_name_and_width, lookup_symbol_name_by_id, store_bv_by_ast_hash,
+    claripy_ast_guard_width, evict_bv_by_ast_hash, get_bv_by_ast_hash, store_bv_by_ast_hash,
 };
 use super::{BridgeError, extract_int_value};
 
@@ -305,9 +304,8 @@ fn claripy_to_rustbv_depth(
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let name: String = args_tuple.get_item(0)?.extract()?;
             // Width might be in args[1] or in .length attribute. On double
-            // failure DO NOT default to 64: a wrong width poisons the
-            // name+width registry (lookup_symbol_by_name_and_width) and the Z3
-            // const sort for the process lifetime, and every downstream op
+            // failure DO NOT default to 64: a wrong width mints a different
+            // variable than the one Python holds, and every downstream op
             // silently papers over the mismatch with ZeroExt. Failing loud is
             // strictly better than minting a wrong-width symbol (angr-ph300.56).
             let width: u32 = if args_tuple.len() > 1 {
@@ -328,7 +326,6 @@ fn claripy_to_rustbv_depth(
             check_bv_width("BVS", width).map_err(BridgeError::InvalidArgs)?;
 
             Ok(import_symbolic_leaf(
-                ast_hash,
                 &name,
                 width,
                 SymbolKind::BitVector,
@@ -470,13 +467,7 @@ fn claripy_to_rustbv_depth(
             // same-named `BVS(name, 1)` (angr-9ke6b.38): both are width-1
             // Symbolics here, and aliasing them would make export hand back
             // the other one's claripy AST — a BV where a Bool was expected.
-            Ok(import_symbolic_leaf(
-                ast_hash,
-                &name,
-                1,
-                SymbolKind::Bool,
-                ctx,
-            ))
+            Ok(import_symbolic_leaf(&name, 1, SymbolKind::Bool, ctx))
         }
 
         // If-then-else
@@ -873,85 +864,13 @@ fn import_nary_op(
     Ok(result)
 }
 
-/// Import a symbolic *leaf* (`BVS` / `BoolS`) while preserving symbol identity
-/// across the Python↔Rust boundary (angr-9ke6b.37 extracted this from the two
-/// arms that had each grown their own copy).
-///
-/// Three-step resolution, in order:
-///
-/// 1. **By claripy hash** — the symbol was already imported from this exact
-///    AST, so reuse its id. Rebuild it under the CANONICAL Rust name, not the
-///    name this claripy AST carries: the Z3 constant behind a `Symbolic` is
-///    `BV::new_const(name, width)`, so reusing the id with a different string
-///    produces a variable Z3 considers unrelated to the original — the id
-///    makes the RustBV/export layer look right while every constraint quietly
-///    stops binding (angr-izov2). The names differ whenever the symbol was
-///    minted in Rust and exported: `claripy.BVS(name, w)` renames to
-///    `name_<counter>_<w>` unless `explicit_name` is set. If the canonical
-///    name is missing the id is *not* reused — see the `SILENT(cat-b)` note
-///    at the hash-hit arm — and resolution falls through to step 2.
-/// 2. **By name+width+sort** — the hash changed but the identity is stable.
-///    The key includes `kind` so a `BoolS("x")` and a `BVS("x", 1)` occupy
-///    distinct slots (angr-9ke6b.38); dropping it re-aliases them and export
-///    hands back the wrong sort's claripy AST.
-/// 3. **Mint** — first sighting: the named leaf, a clarirs variable since
-///    angr-mx00p.12, which exports as itself and so needs no registration.
-///
-/// Every step works on `kind.rust_symbol_name(name)`, never the raw claripy
-/// name. A Bool leaf is modelled as a width-1 BV, so the sort tag in the
-/// registry key separates the two symbols' *identity* but on its own leaves
-/// them sharing one Z3 constant; the tagged name is what `RustBV::from_parts`
-/// decodes to build a Bool-sorted constant instead (angr-9ke6b.223). Tagging
-/// here — before any registry call — keeps the `name_to_info` key,
-/// `rust_id_to_name`, the `RustBV` name and the Z3 term in agreement, which is
-/// the precondition step 1 relies on.
-fn import_symbolic_leaf(
-    ast_hash: i64,
-    name: &str,
-    width: u32,
-    kind: SymbolKind,
-    ctx: &SymContext,
-) -> RustBV {
-    let rust_name = kind.rust_symbol_name(name);
-
-    if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
-        // Binding `existing_id` is only safe while its canonical name is
-        // recoverable: that name is what `RustBV::from_parts` turns into the
-        // Z3 constant. Reusing the id with *this call's* `rust_name` instead
-        // is precisely the angr-izov2 failure mode — the RustBV/export layer
-        // looks right while every constraint on the original quietly stops
-        // binding.
-        //
-        // SILENT(cat-b): a name miss here means the two maps disagree, which
-        // `SymbolicIdentityRegistry::register` never produces —
-        // `update_hash_mapping` (no production callers) is the only way to add
-        // a hash mapping without a name, and `remove` drops `rust_id_to_name`
-        // a few instructions before `py_hash_to_rust_id`, so a hash hit can
-        // briefly outlive its name. That window is not reachable today (both
-        // `import_symbolic_leaf` and the sole production remover,
-        // `claripy_bridge::export`'s `evict_claripy_ast`, run under the GIL,
-        // and nothing releases it between the two lookups here) — hence
-        // `warn!` rather than a hard error. Falling through re-does what a
-        // hash miss a moment later would have done: resolve by name, else
-        // mint and re-register. The loss is object identity, not soundness —
-        // the re-minted leaf carries `rust_name`, so it denotes the *same* Z3
-        // constant the fallback would have named, just under a consistently
-        // registered id.
-        if let Some(canonical) = lookup_symbol_name_by_id(existing_id) {
-            return RustBV::symbolic_with_id(existing_id, &canonical, width);
-        }
-        log::warn!(
-            "symbol identity registry: hash {ast_hash:#x} resolves to id {existing_id} but that \
-             id has no canonical name; re-resolving {rust_name:?} by name instead of rebinding \
-             the id (symbol identity for this leaf is lost, constraints still bind)"
-        );
-    }
-
-    if let Some(info) = lookup_symbol_by_name_and_width(&rust_name, width, kind) {
-        return RustBV::symbolic_with_id(info.rust_id, &rust_name, width);
-    }
-
-    RustBV::symbolic(ctx, &rust_name, width)
+/// Import a symbol leaf from the attribute walk: the leaf of its Rust-side
+/// name, the Bool tag applied ([`SymbolKind::rust_symbol_name`]), so a `BoolS`
+/// and a same-named 1-bit `BVS` stay two variables (angr-9ke6b.38,
+/// angr-9ke6b.223). A leaf is its name, so re-importing a symbol is the same
+/// leaf (angr-mx00p.12).
+fn import_symbolic_leaf(name: &str, width: u32, kind: SymbolKind, ctx: &SymContext) -> RustBV {
+    RustBV::symbolic(ctx, kind.rust_symbol_name(name), width)
 }
 
 /// Byte-reverse a RustBV value.

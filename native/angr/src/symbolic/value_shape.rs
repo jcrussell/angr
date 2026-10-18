@@ -48,7 +48,7 @@ impl RustBV {
     /// (`invariant-symbol-identity-is-by-name`).
     #[cfg_attr(not(feature = "vex-engine"), allow(dead_code))]
     pub(crate) fn leaf_var(&self) -> Option<(std::sync::Arc<str>, u32)> {
-        use super::registry::SymbolKind;
+        use super::symbol_kind::SymbolKind;
         use std::sync::Arc;
         match self {
             RustBV::Ast { ast, width, .. } => match ast.op() {

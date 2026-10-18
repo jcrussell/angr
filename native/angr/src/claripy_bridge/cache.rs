@@ -18,7 +18,7 @@ use std::num::NonZeroUsize;
 use lru::LruCache;
 use pyo3::prelude::*;
 
-use crate::symbolic::{RustBV, SymbolKind, global_registry};
+use crate::symbolic::RustBV;
 
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
@@ -50,9 +50,8 @@ const AST_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(AST_CACHE_SIZE) 
 // invariant C5.
 //
 // Invalidation: cleared by `clear_ast_cache` (block boundary /
-// significant constraint changes) and `reset_for_new_exploration`
-// (exploration restart). Capacity-bounded LRU eviction beyond that. See cross-cache
-// invariant C3 — partial clears are never correct.
+// significant constraint changes, worker teardown). Capacity-bounded LRU
+// eviction beyond that. See cross-cache invariant C3.
 //
 thread_local! {
     static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
@@ -88,34 +87,6 @@ macro_rules! tl_cache {
 // claripy `Expression`s get distinct `Arc`s.
 //
 
-/// Look up a symbol by its Python hash.
-///
-/// This is used during import to check if we've already imported this symbol.
-pub(crate) fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
-    global_registry().lookup_by_hash(py_hash)
-}
-
-/// Look up the canonical Rust-side name of a registered symbol id.
-///
-/// A symbol's Z3 constant is named after its Rust name, so an importer that
-/// resolves a symbol by id must rebuild it with this name (angr-izov2).
-pub(crate) fn lookup_symbol_name_by_id(rust_id: u64) -> Option<String> {
-    global_registry().lookup_name_by_id(rust_id)
-}
-
-/// Look up symbol info by name, width and claripy sort.
-///
-/// The key is name+width+sort: width separates same-name symbols of different
-/// widths, and the sort keeps `BVS(name, 1)` and `BoolS(name)` from
-/// aliasing to one id (angr-9ke6b.38).
-pub(crate) fn lookup_symbol_by_name_and_width(
-    name: &str,
-    width: u32,
-    kind: SymbolKind,
-) -> Option<crate::symbolic::SymbolInfo> {
-    global_registry().lookup_by_name_and_width(name, width, kind)
-}
-
 /// Retrieve the `RustBV` previously converted from the claripy AST with this
 /// hash. Returns `None` on miss.
 ///
@@ -129,17 +100,15 @@ pub(super) fn get_bv_by_ast_hash(ast_hash: i64) -> Option<RustBV> {
 /// Width of a claripy AST as the cross-cache invariant C5 width guards read it.
 ///
 /// Reads `ast.length`; a `Bool` AST has `length is None` and is reported as
-/// width 1, matching the RustBV bool representation. Shared by both C5 guards —
-/// the `AST_CACHE`-hit arm of `import::claripy_to_rustbv_depth` and the
-/// registry-hit arm of `export::rustbv_to_claripy_memo` — so the Bool-width
-/// convention has one definition to edit rather than two kept in lockstep
+/// width 1, matching the RustBV bool representation. Used by the C5 guard,
+/// the `AST_CACHE`-hit arm of `import::claripy_to_rustbv_depth`
 /// (angr-5mnx3.12).
 ///
 /// SILENT(cat-b): a `.length` read that *raises* is conflated with the
 /// legitimate `length is None` (Bool) case and also yields 1. The loss is
-/// bounded: a caller whose true width is not 1 then takes its own eviction
-/// path and reconverts (import) or re-mints (export), paying the cached
-/// conversion but never returning a wrong-width value (angr-sqfj8.23).
+/// bounded: a caller whose true width is not 1 then evicts and reconverts,
+/// paying the cached conversion but never returning a wrong-width value
+/// (angr-sqfj8.23).
 pub(super) fn claripy_ast_guard_width(ast: &Bound<'_, PyAny>) -> u32 {
     ast.getattr("length")
         .ok()
@@ -162,26 +131,19 @@ pub(super) fn store_bv_by_ast_hash(ast_hash: i64, bv: RustBV) {
 /// Clear all AST conversion caches.
 /// Call this at block boundaries or when the constraint set changes significantly.
 ///
-/// Note: This clears thread-local caches but NOT the global registry. It is the
-/// **worker-local** clear — safe to call from any exploration worker thread
-/// because it only touches this thread's caches (see
-/// [`clear_worker_local_caches`] for the threading-intent alias). Use
-/// the `#[cfg(test)]` `reset_for_new_exploration` to also wipe the
-/// cross-thread global registry.
+/// Only this thread's cache, so it is safe to call from any exploration
+/// worker thread (see [`clear_worker_local_caches`] for the threading-intent
+/// alias).
 pub(crate) fn clear_ast_cache() {
     tl_cache!(AST_CACHE, clear());
 }
 
-/// Worker-local cache clear: drops only this thread's thread-local AST
-/// cache, never the process-wide `SymbolicIdentityRegistry`.
+/// Worker-local cache clear: drops only this thread's thread-local AST cache.
 ///
 /// angr-1ilq.2: a self-documenting entry point for the Option-A parallel
-/// scheduler (1ilq.3) to call on per-worker task-boundary / teardown. It is a
-/// thin alias for [`clear_ast_cache`] kept distinct so a worker-side call reads
-/// as worker-scoped and a future contributor does not reach for the
-/// `#[cfg(test)]` `reset_for_new_exploration` (which wipes global symbol
-/// identity that sibling workers depend on). See cross-cache invariant C3 in the parent
-/// module rustdoc.
+/// scheduler (1ilq.3) to call on per-worker task-boundary / teardown, a thin
+/// alias for [`clear_ast_cache`] kept distinct so a worker-side call reads as
+/// worker-scoped. See cross-cache invariant C3 in the parent module rustdoc.
 ///
 /// The `worker_thread` teardown call in `exploration/scheduler_pool.rs` is eager
 /// resource release, **not** a use-after-free guard: cached `RustBV` ASTs each
@@ -192,36 +154,6 @@ pub(crate) fn clear_ast_cache() {
 #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
 pub(crate) fn clear_worker_local_caches() {
     clear_ast_cache();
-}
-
-/// Reset all caches for a fresh exploration: the thread-local AST caches **and**
-/// the process-wide global registry.
-///
-/// **Main-thread / exploration-start only.** This wipes the cross-thread
-/// `SymbolicIdentityRegistry`, which holds canonical symbol identity shared by
-/// every worker. Under the Option-A parallel model (1ilq) it MUST NOT be called
-/// from a worker mid-run — doing so would invalidate live symbol IDs other
-/// workers still hold. Workers clear only their own caches via
-/// [`clear_worker_local_caches`].
-///
-/// Clears the thread-local caches first, then the global registry, so the
-/// ordering still honors cross-cache invariant C3 (no partial clear is correct).
-///
-/// **Test-only by design** (angr-9ke6b.218 item 4, resolving the .214 flag).
-/// Despite the name, no exploration start calls this and none should: the
-/// exploration-start path clears only the thread-local caches via
-/// `clear_ast_cache`, so the global registry deliberately survives across
-/// managers in one process. Wiping it when a second manager starts — managers
-/// coexist; a bench builds one per `simulation_manager()` call — would strand
-/// the rust ids that the first manager's live states and `RustBV`s still hold,
-/// and `rustbv_to_claripy` would mint a renamed BVS that no existing constraint
-/// binds (angr-izov2). Bounding registry growth is angr-9ke6b.222's GC problem,
-/// which angr-9ke6b.40 already ruled cannot be solved with an approximate
-/// active set. This exists so `cache_tests` can start from a clean registry.
-#[cfg(test)]
-pub(crate) fn reset_for_new_exploration() {
-    clear_ast_cache();
-    crate::symbolic::clear_global_registry();
 }
 
 /// Number of entries currently held in this thread's [`AST_CACHE`].

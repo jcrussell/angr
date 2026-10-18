@@ -7165,17 +7165,13 @@ class RustExplorationManager(
     def cleanup(self) -> None:
         """Release this manager's hold on per-process AST caches.
 
-        Flushes the Rust-side thread-local claripy AST translation caches
-        (``AST_CACHE`` and ``EXPRESSION_BY_OPERANDS_PTR`` in
-        ``claripy_bridge/cache.rs``). Those caches
-        outlive a single manager because they are thread-local, so without
-        a flush they accumulate O(n) across managers in Callable-heavy
-        workloads — see "Where memory accumulates" in
-        ``docs/advanced-topics/rust_engine.rst``.
+        Flushes the Rust-side thread-local claripy AST translation cache
+        (``AST_CACHE`` in ``claripy_bridge/cache.rs``). It outlives a single
+        manager because it is thread-local, so without a flush it
+        accumulates O(n) across managers in Callable-heavy workloads — see
+        "Where memory accumulates" in ``docs/advanced-topics/rust_engine.rst``.
 
-        Safe to call multiple times. Does NOT touch the global symbolic
-        identity registry (shared across managers, so a clear from one
-        manager would invalidate symbol IDs held live by another).
+        Safe to call multiple times.
         """
         try:
             from angr.rustylib.vex_engine import clear_ast_cache

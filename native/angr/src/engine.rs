@@ -315,15 +315,10 @@ fn arch_supported(arch_name: &str) -> bool {
 
 /// Clear the Rust-side thread-local claripy AST translation caches.
 ///
-/// Drops the two LRU caches in `claripy_bridge` (AST_CACHE,
-/// EXPRESSION_BY_OPERANDS_PTR).
+/// Drops the claripy bridge's thread-local `AST_CACHE`.
 /// Used by `RustExplorationManager.cleanup()` to bound per-process
 /// growth in Callable-heavy workloads where many short-lived managers
 /// share the same thread (e.g. mma_howtouse's 45 invocations).
-///
-/// Does NOT clear the global `SymbolicIdentityRegistry` because that
-/// is shared across all managers in the process; clearing it from one
-/// manager would invalidate live symbol IDs held by another.
 #[pyfunction]
 fn clear_ast_cache() {
     crate::claripy_bridge::clear_ast_cache();

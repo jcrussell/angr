@@ -536,7 +536,7 @@ impl RustBV {
             name
         };
         let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
-        let term = match super::registry::strip_bool_symbol_name(&name) {
+        let term = match super::symbol_kind::strip_bool_symbol_name(&name) {
             Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
             None => gc.bvs(&*name, width),
         };

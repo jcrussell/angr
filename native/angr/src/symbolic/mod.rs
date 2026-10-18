@@ -60,7 +60,7 @@
 //! |------|-------|
 //! | `handle.rs` | `RustBVHandle` — the opaque id Python holds instead of round-tripping a claripy AST. |
 //! | `table.rs` | `RustSymbolTable` — the handle-id to `RustBV` store behind those handles, plus `BinaryOpError`. |
-//! | `registry.rs` | `SymbolicIdentityRegistry` — maps symbols back to their originating Python objects so a claripy -> RustBV -> claripy round trip returns the same AST. |
+//! | `symbol_kind.rs` | `SymbolKind` and the `!bool!` name tag that keeps a `BoolS` leaf and a same-named 1-bit `BVS` two variables. |
 //! | `z3_ast_ptr.rs` | `Z3AstPtr` — typed, refcounted wrapper over a raw `Z3_ast` at the claripy FFI boundary. **(z3)** |
 //! | `width_guards.rs` | `MAX_BV_WIDTH` / `check_bv_width` / `check_extract_bounds` — the bound checks both external trust boundaries (`claripy_bridge::import`, `solver::handle_api`) run before an externally-chosen width reaches a `RustBV` constructor. |
 //!
@@ -128,13 +128,13 @@ pub mod fuzz_exports {
 }
 #[cfg(feature = "vex-engine-z3")]
 mod query_class;
-pub mod registry;
 mod sharing;
 mod snapshot_fork_ops;
 #[cfg(feature = "vex-engine-z3")]
 mod solver_build;
 mod solving_ops;
 mod stats;
+pub mod symbol_kind;
 mod table;
 mod transaction_ops;
 mod value;
@@ -154,9 +154,6 @@ pub use bv_chunk::{
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
 pub use context_snapshot::SymContextSnapshot;
 pub use handle::RustBVHandle;
-#[cfg(test)]
-pub use registry::clear_global_registry;
-pub use registry::{SymbolInfo, SymbolKind, SymbolicIdentityRegistry, global_registry};
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
 #[cfg(all(test, feature = "vex-engine-z3"))]
 pub(crate) use solver_build::stop_enumeration_after_for_test;
@@ -171,6 +168,7 @@ pub use stats::{
     record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop, record_zext_cmp_collapse,
     record_zext_cmp_trivial_decide, reset_solver_stats,
 };
+pub use symbol_kind::SymbolKind;
 pub use table::{BinaryOpError, RustSymbolTable};
 pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 // Used by the claripy export, which is built with vex-engine.
