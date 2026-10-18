@@ -499,3 +499,85 @@ fn test_max_num_symbolic_constraint() {
         "Expected x == 5.0, got {result_f}"
     );
 }
+
+// angr-mx00p.31: `apply_rounding` mode 0 is std `round_ties_even`. Pin the
+// edge cases the hand-rolled RNE it replaced was written around, against
+// literal expected values rather than the std function itself.
+
+/// RNE ties, the ±0.5 sign of zero, values too large to carry a fraction,
+/// and the largest ties each precision can represent.
+#[test]
+fn test_apply_rounding_nearest_edge_cases() {
+    use super::float_arith::apply_rounding;
+    let f64_cases: &[(f64, f64)] = &[
+        (0.5, 0.0),
+        (1.5, 2.0),
+        (2.5, 2.0),
+        (3.5, 4.0),
+        (-0.5, -0.0),
+        (-2.5, -2.0),
+        (-3.5, -4.0),
+        (2.4999999999999996, 2.0),
+        (-0.0, -0.0),
+        (1e300, 1e300),
+        (-1e300, -1e300),
+        // 2^52 - 0.5 is the largest f64 tie; 2^52 - 1 is odd, so it rounds up.
+        (4_503_599_627_370_495.5, 4_503_599_627_370_496.0),
+        (f64::MAX, f64::MAX),
+        (f64::INFINITY, f64::INFINITY),
+        (f64::NEG_INFINITY, f64::NEG_INFINITY),
+    ];
+    for &(input, want) in f64_cases {
+        let got = apply_rounding(input, 0);
+        assert_eq!(got.to_bits(), want.to_bits(), "f64 RNE({input:e})");
+    }
+    let f32_cases: &[(f32, f32)] = &[
+        (2.5, 2.0),
+        (3.5, 4.0),
+        (-0.5, -0.0),
+        (-3.5, -4.0),
+        // 2^23 - 0.5 is the largest f32 tie; 2^23 - 1 is odd, so it rounds up.
+        (8_388_607.5, 8_388_608.0),
+        (1e38, 1e38),
+        (f32::INFINITY, f32::INFINITY),
+        (f32::NEG_INFINITY, f32::NEG_INFINITY),
+    ];
+    for &(input, want) in f32_cases {
+        let got = apply_rounding(input, 0);
+        assert_eq!(got.to_bits(), want.to_bits(), "f32 RNE({input:e})");
+    }
+    // A quiet NaN comes back a NaN with its payload intact.
+    let qnan = f64::from_bits(0x7ff8_0000_0000_1234);
+    assert_eq!(apply_rounding(qnan, 0).to_bits(), qnan.to_bits());
+    let qnan32 = f32::from_bits(0x7fc0_1234);
+    assert_eq!(apply_rounding(qnan32, 0).to_bits(), qnan32.to_bits());
+    // A signaling NaN comes back quieted, payload kept: the hand-rolled RNE
+    // fell through to `round` for NaN, and std `f32::round_ties_even` alone
+    // would return the f32 sNaN unchanged.
+    assert_eq!(apply_rounding(f32::from_bits(0x7f80_0001), 0).to_bits(), 0x7fc0_0001);
+    assert_eq!(
+        apply_rounding(f64::from_bits(0x7ff0_0000_0000_0001), 0).to_bits(),
+        0x7ff8_0000_0000_0001
+    );
+}
+
+/// The implicit-RNE float-to-int conversions saturate out-of-range results
+/// and map NaN to 0 after rounding (Rust `as` semantics).
+#[test]
+fn test_float_to_int_rne_saturates_and_maps_nan_to_zero() {
+    let ctx = SymContext::new_mock();
+    let conv = |op: IROp, bits: u128, width: u32| {
+        VEXOps::unop(op, RustBV::concrete(bits, width), &ctx)
+            .unwrap()
+            .as_u128()
+            .unwrap()
+    };
+    let f64b = |f: f64| f.to_bits() as u128;
+    assert_eq!(conv(IROp::F64toI32S, f64b(2.5), 64), 2);
+    assert_eq!(conv(IROp::F64toI32S, f64b(-2.5), 64), (-2i32) as u32 as u128);
+    assert_eq!(conv(IROp::F64toI32S, f64b(1e300), 64), i32::MAX as u32 as u128);
+    assert_eq!(conv(IROp::F64toI32S, f64b(-1e300), 64), i32::MIN as u32 as u128);
+    assert_eq!(conv(IROp::F64toI32S, f64b(f64::NAN), 64), 0);
+    assert_eq!(conv(IROp::F64toI64U, f64b(-0.5), 64), 0);
+    assert_eq!(conv(IROp::F64toI64U, f64b(f64::INFINITY), 64), u64::MAX as u128);
+}

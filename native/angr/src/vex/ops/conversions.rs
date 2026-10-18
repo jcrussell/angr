@@ -6,7 +6,7 @@
 //! invoked here; they emit `pub(super)` stubs so the generated conversion
 //! methods stay reachable from the dispatch in `ops`.
 
-use super::float_arith::{apply_rounding, round_ties_to_even};
+use super::float_arith::apply_rounding;
 use super::{OpError, VEXOps, build_float_expr};
 use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
 
@@ -44,7 +44,7 @@ macro_rules! define_float_to_int_signed {
         $(
             pub(super) fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
                 Self::float_to_int(arg, $src_prec, $dst_width, true, |v| {
-                    (round_ties_to_even(<$src_ty>::from_bits(v as $src_uty)) as $dst_int as $dst_uint) as u128
+                    (<$src_ty>::from_bits(v as $src_uty).round_ties_even() as $dst_int as $dst_uint) as u128
                 })
             }
         )*
@@ -58,7 +58,7 @@ macro_rules! define_float_to_int_unsigned {
         $(
             pub(super) fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
                 Self::float_to_int(arg, $src_prec, $dst_width, false, |v| {
-                    round_ties_to_even(<$src_ty>::from_bits(v as $src_uty)) as $dst_uint as u128
+                    <$src_ty>::from_bits(v as $src_uty).round_ties_even() as $dst_uint as u128
                 })
             }
         )*
