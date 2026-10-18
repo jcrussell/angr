@@ -137,7 +137,7 @@ fn test_concat() {
 }
 
 /// Helper: recursive depth of an expression AST. Concrete/symbolic
-/// leaves have depth 0; every Expression node adds one.
+/// leaves have depth 0; every op node adds one.
 fn ast_depth(bv: &RustBV) -> u32 {
     match bv.node() {
         Some(node) => 1 + node.operands.iter().map(ast_depth).max().unwrap_or(0),
@@ -283,4 +283,21 @@ fn test_nonzero_width_symbolic_still_symbolic() {
     let bv = RustBV::symbolic(&ctx, "nonzero", 8);
     assert!(!bv.is_concrete());
     assert_eq!(bv.leaf_var().map(|(_, w)| w), Some(8));
+}
+
+/// `RustBV::from_op` over operands clarirs cannot build a term from (here,
+/// mismatched widths, which no constructor produces) returns a fresh
+/// variable of the result width rather than a wrong value, and two such
+/// failures are distinct variables.
+#[test]
+fn from_op_that_cannot_build_is_a_fresh_variable() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "unbuildable_x", 32);
+    let y = RustBV::symbolic(&ctx, "unbuildable_y", 8);
+    let a = RustBV::from_op(32, BVOp::Add, vec![x.clone(), y.clone()]);
+    let b = RustBV::from_op(32, BVOp::Add, vec![x, y]);
+    let (name, width) = a.leaf_var().expect("a fresh leaf");
+    assert!(name.starts_with("unbuildable_op_"), "{name}");
+    assert_eq!(width, 32);
+    assert_ne!(a, b, "each failure is its own variable");
 }

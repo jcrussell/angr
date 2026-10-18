@@ -45,8 +45,6 @@ use super::RustBV;
 enum StructuralKey {
     /// Concrete leaf: same value at the same width.
     Concrete(u128, u32),
-    /// Expression node: same op, same width, structurally-equal operand list.
-    Expression(super::value::BVOp, u32, Vec<u64>),
     /// clarirs term: same structural hash (clarirs interns, so same node).
     Ast(u64),
 }
@@ -116,18 +114,6 @@ impl ConstraintSharingWalk {
         }
         let key = match node {
             RustBV::Concrete { value, width } => StructuralKey::Concrete(*value, *width),
-            RustBV::Expression {
-                op,
-                operands,
-                width,
-                ..
-            } => {
-                let mut op_ids = Vec::with_capacity(operands.len());
-                for operand in operands.iter() {
-                    op_ids.push(self.visit(operand));
-                }
-                StructuralKey::Expression(op.clone(), *width, op_ids)
-            }
             RustBV::Ast { ast, .. } => StructuralKey::Ast(ast.hash()),
         };
         let id = if let Some(&existing) = self.shape_to_id.get(&key) {

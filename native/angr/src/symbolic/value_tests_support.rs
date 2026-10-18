@@ -8,12 +8,8 @@ use super::*;
 
 /// Recursive structural rendering of a `RustBV` tree.
 ///
-/// `RustBV::PartialEq` on an `Expression` is node identity (same `op`/width
-/// plus a pointer-identical operand slice — see the impl's doc), not a
-/// structural walk, and its `Debug` stops at the operand *count*, so shape
-/// assertions need their own walker. It reads through [`RustBV::leaf_var`]
-/// and [`RustBV::node`], so a leaf or node renders the same whether it is an
-/// `Expression`/`Symbolic` or a clarirs `Ast`.
+/// Reads through [`RustBV::leaf_var`] and [`RustBV::node`], so a shape
+/// assertion names leaves and ops rather than clarirs' SMT-LIB rendering.
 pub(super) fn bv_shape(bv: &RustBV) -> String {
     if let Some((name, width)) = bv.leaf_var() {
         return format!("Leaf({name}, {width})");
@@ -27,18 +23,10 @@ pub(super) fn bv_shape(bv: &RustBV) -> String {
     }
 }
 
-/// Helper: build a raw Extract Expression node without going through
-/// `extract_into`. This simulates Extract nodes that bypass the
-/// construction-time rewrite (e.g., via `truncate_into`), so we can verify the
-/// Z3-emission pass picks them up.
+/// Helper: build an Extract node without going through `extract_into`'s
+/// rewrites, so a test can check how such a node behaves (simulates Extract
+/// nodes that bypass the construction-time rewrite, e.g. via `truncate_into`).
 #[cfg(feature = "vex-engine-z3")]
 pub(super) fn raw_extract_node(inner: RustBV, high: u32, low: u32) -> RustBV {
-    let result_width = high - low + 1;
-    RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width: result_width,
-        op: BVOp::Extract(high, low),
-        operands: std::sync::Arc::<[RustBV]>::from([inner]),
-        memo: Default::default(),
-    }
+    RustBV::from_op(high - low + 1, BVOp::Extract(high, low), vec![inner])
 }

@@ -13,8 +13,6 @@
 //! objects; some tests hand in duck-typed ASTs). Both walks share the caches
 //! and the symbol-identity registry, keyed by the same Python hash.
 
-use std::sync::Arc;
-
 use clarirs_core::prelude::{AstOp, AstRef};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -30,7 +28,6 @@ use crate::symbolic::{
 use super::cache::{
     claripy_ast_guard_width, evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
     lookup_symbol_by_name_and_width, lookup_symbol_name_by_id, store_bv_by_ast_hash,
-    store_expression_ast_by_operands,
 };
 use super::{BridgeError, extract_int_value};
 
@@ -237,7 +234,7 @@ fn claripy_to_rustbv_depth(
         crate::gil_profile::GilWorkGuard::enter_as(crate::gil_profile::GilClass::ClaripyImport);
 
     if let Ok(base) = ast.cast::<Base>() {
-        return import_clarirs(py, &base.get().ast(), Some(ast), ctx, depth);
+        return import_clarirs(&base.get().ast(), ctx, depth);
     }
 
     // Get the operation name first to determine caching strategy
@@ -527,17 +524,6 @@ fn claripy_to_rustbv_depth(
     if use_cache && let Ok(ref bv) = result {
         // Forward cache: claripy hash → RustBV
         store_bv_by_ast_hash(ast_hash, bv.clone());
-
-        // Reverse cache: for Expression results, key the original claripy
-        // AST by the operands Arc pointer so `rustbv_to_claripy_memo` can
-        // return it verbatim (preserving annotations attached at the
-        // Expression level). This is the only Rust→claripy expression
-        // cache — the export path has no way to recompute `ast_hash` from
-        // a RustBV, so a hash-keyed cache was structurally unreadable.
-        if let RustBV::Expression { operands, .. } = bv {
-            let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
-            store_expression_ast_by_operands(operands_ptr, bv.clone(), ast.clone().unbind());
-        }
     }
 
     result
@@ -555,20 +541,14 @@ fn py_hash(node: &AstRef<'static>) -> i64 {
 }
 
 /// [`claripy_to_rustbv_depth`] over a clarirs `AstRef`, without the Python
-/// attribute walk. `obj` is the claripy object wrapping `node` when the caller
-/// has one (the top of the walk); inner nodes are wrapped only when a Python
-/// object is genuinely needed — a newly registered symbol, or an annotated
-/// expression whose annotations the export path must hand back verbatim.
-/// Unannotated nodes need no reverse-cache entry: rebuilding one on export
-/// interns to the same clarirs node.
+/// attribute walk. The value keeps the clarirs nodes it is built from, so it
+/// exports as those nodes, annotations included.
 ///
 /// Op semantics and every width / bounds check mirror the attribute walk's
 /// arms one for one.
 #[allow(clippy::too_many_lines, reason = "one arm per supported AstOp")]
 fn import_clarirs(
-    py: Python<'_>,
     node: &AstRef<'static>,
-    obj: Option<&Bound<'_, PyAny>>,
     ctx: &SymContext,
     depth: u32,
 ) -> Result<RustBV, BridgeError> {
@@ -601,17 +581,9 @@ fn import_clarirs(
         }
     }
 
-    let wrap = || -> Option<Py<PyAny>> {
-        match obj {
-            Some(o) => Some(o.clone().unbind()),
-            None => Base::from_ast(py, node.clone())
-                .ok()
-                .map(|b| b.into_any().unbind()),
-        }
-    };
     let op_name = || node.to_opstring();
     let children = || node.op().child_iter();
-    let import = |child: &AstRef<'static>| import_clarirs(py, child, None, ctx, depth + 1);
+    let import = |child: &AstRef<'static>| import_clarirs(child, ctx, depth + 1);
     let child = |i: usize| -> Result<RustBV, BridgeError> {
         let c = node.op().get_child(i).ok_or_else(|| {
             BridgeError::InvalidArgs(format!("{} is missing operand {i}", node.to_opstring()))
@@ -755,13 +727,6 @@ fn import_clarirs(
 
     if use_cache && let Ok(bv) = &result {
         store_bv_by_ast_hash(hash, bv.clone());
-        if let RustBV::Expression { operands, .. } = bv
-            && (obj.is_some() || !node.annotations().is_empty())
-            && let Some(o) = wrap()
-        {
-            let operands_ptr = Arc::as_ptr(operands) as *const () as usize;
-            store_expression_ast_by_operands(operands_ptr, bv.clone(), o);
-        }
     }
     result
 }

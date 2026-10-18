@@ -33,10 +33,6 @@ impl RustBV {
     /// The op and operands of this value, or `None` for a leaf or constant.
     pub(crate) fn node(&self) -> Option<Node<'_>> {
         match self {
-            RustBV::Expression { op, operands, .. } => Some(Node {
-                op: op.clone(),
-                operands: Cow::Borrowed(&operands[..]),
-            }),
             RustBV::Ast { ast, .. } => ast_node(ast).map(|(op, operands)| Node {
                 op,
                 operands: Cow::Owned(operands),

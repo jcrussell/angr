@@ -3,7 +3,6 @@
 //! The `RustBV` type represents a bitvector that is one of these variants:
 //! - Concrete: A known fixed value
 //! - Ast: A clarirs term — every symbolic value, named leaves included
-//! - Expression: A compound expression with operation tree for reconstruction
 
 use std::fmt;
 use std::sync::Arc;
@@ -286,88 +285,31 @@ pub enum RustBV {
         /// and `solving_ops.rs`'s `max_val_for_width`.
         width: u32,
     },
-    /// A compound expression with operation tree for claripy reconstruction.
-    ///
-    /// This variant stores the operation and operands that created this value,
-    /// enabling accurate conversion back to claripy ASTs without creating
-    /// fresh symbolic variables. Z3 ASTs are computed lazily on demand
-    /// via `to_z3_ast()` rather than eagerly at construction time.
-    Expression {
-        /// Identity discriminant — **NOT** a content hash or interner id.
-        ///
-        /// In practice this field is always set to [`RustBV::EXPRESSION_ID`]
-        /// (`u64::MAX`) by every `Expression` constructor in this module
-        /// (see the `define_*_op` macro families and direct builders such as
-        /// `add_into`, `mul_into`, `and_into`, etc.). The sentinel
-        /// distinguishes compound expressions from `Symbolic` leaves, which
-        /// carry real allocated ids.
-        ///
-        /// **Why a sentinel, not a per-node hash:** allocating a unique id
-        /// for every intermediate operation was rejected for solver
-        /// compatibility (only real leaf symbols need tracking by the
-        /// claripy-side registry) and to avoid per-construction overhead.
-        ///
-        /// **Identity for caching purposes** is keyed by *other* fields,
-        /// not this one: the structural pointer `Arc::as_ptr(operands)`
-        /// is the cache key for `EXPRESSION_BY_OPERANDS_PTR` in
-        /// `claripy_bridge` (stable across `RustBV::clone`, which just
-        /// bumps the Arc).
-        ///
-        /// **Collision potential:** none — there is no content hash here
-        /// to collide on. Two structurally distinct `Expression` values
-        /// share the same `id` sentinel.
-        id: u64,
-        /// Width in bits.
-        width: u32,
-        /// The operation that created this expression.
-        op: BVOp,
-        /// The operands to this operation. `Arc<[T]>` lets cloning the outer
-        /// Expression bump a single refcount (alloc-free; matters on the RdTmp
-        /// path). Operands are stored inline rather than wrapped in `Arc<RustBV>`
-        /// so each Expression construction is one allocation instead of N+1.
-        operands: Arc<[RustBV]>,
-        /// Persistent Z3 AST memo (angr-ovqja.3).
-        ///
-        /// Caches the built `z3::ast::BV` for this exact `Expression` value so
-        /// repeat top-level conversions of the SAME node (eval→min→max,
-        /// `range()` which calls min then max, address-concretize) become a
-        /// refcount bump instead of a full compound-tree rebuild. Mirrors the
-        /// `Symbolic { ast }` leaf-cache pattern, but lazy: populated on first
-        /// [`to_z3_ast_cached`](RustBV::to_z3_ast_cached) and guarded against
-        /// thread-local Z3 context swaps (the cached BV carries its own
-        /// `Context`, compared to the active one on read).
-        ///
-        /// Excluded from the serde shadow (`RustBVData` has no such field),
-        /// from `PartialEq`/`Debug`, and from any identity key — it is a pure
-        /// deterministic-function cache. With the `vex-engine-z3` feature off
-        /// it collapses to `()` so construction sites stay cfg-free.
-        memo: ExprMemo,
-    },
-    /// A term held as the clarirs AST itself (angr-mx00p.11), for terms with no
-    /// [`BVOp`] form. Always bitvector-sorted: [`RustBV::from_clarirs`] encodes a
-    /// Bool as `ite(b, 1, 0)` and a float as its IEEE bits, the forms the other
-    /// variants use for those sorts. Built by `from_clarirs` (deserializing
-    /// included), and by `from_clarirs_lowerable` for the operands
-    /// [`RustBV::node`] presents and for the ops the constructors build as
-    /// clarirs terms; both fold a literal that fits a `u128` into
-    /// [`RustBV::Concrete`].
+    /// Every symbolic value: a clarirs term (angr-mx00p.11, .12). Always
+    /// bitvector-sorted: [`RustBV::from_clarirs`] encodes a Bool as
+    /// `ite(b, 1, 0)` and a float as its IEEE bits. Built by `from_clarirs`
+    /// (deserializing included) and by `from_clarirs_lowerable` for the
+    /// constructors, the leaves and the operands [`RustBV::node`] presents;
+    /// both fold a literal that fits a `u128` into [`RustBV::Concrete`].
     ///
     /// Equality is node identity: clarirs interns, so equal terms are one node.
     Ast {
         /// Width in bits, `ast.size()`.
         width: u32,
         ast: AstRef<'static>,
-        /// The lowered Z3 term, as [`RustBV::Expression`]'s `memo`.
+        /// The lowered Z3 term, filled on first lowering.
         memo: ExprMemo,
     },
 }
 
-/// Lazy Z3 AST memo carried by [`RustBV::Expression`] (angr-ovqja.3).
+/// Lazy Z3 AST memo carried by [`RustBV::Ast`] (angr-ovqja.3): repeat
+/// conversions of one value (eval→min→max, address concretization) reuse the
+/// lowering instead of rebuilding it.
 ///
 /// `RefCell<Option<BV>>` under Z3 (single-threaded engine — the state graph is
 /// `Rc<RefCell<SymContext>>`, so interior mutability is sound), `()` otherwise
-/// so every `Expression` constructor can write `memo: Default::default()`
-/// without a `#[cfg]`.
+/// so constructors can write `memo: Default::default()` without a `#[cfg]`.
+/// Excluded from serde, `PartialEq`, `Debug` and every identity key.
 #[cfg(feature = "vex-engine-z3")]
 type ExprMemo = std::cell::RefCell<Option<z3::ast::BV>>;
 /// See the Z3-enabled variant above.
@@ -411,6 +353,8 @@ pub enum RustBVData {
         value: u128,
         width: u32,
     },
+    /// Legacy: the retired `Expression` arm, rebuilt as the clarirs term of
+    /// its op over its decoded operands; never written.
     Expression {
         id: u64,
         width: u32,
@@ -428,37 +372,11 @@ impl From<RustBV> for RustBVData {
     fn from(bv: RustBV) -> Self {
         match bv {
             RustBV::Concrete { value, width } => RustBVData::Concrete { value, width },
-            RustBV::Expression {
-                id,
-                width,
-                op,
-                operands,
-                ..
-            } => RustBVData::Expression {
-                id,
-                width,
-                op,
-                operands: operands.iter().cloned().map(RustBVData::from).collect(),
-            },
             RustBV::Ast { ast, .. } => RustBVData::Ast {
                 dag: WireDag::encode(std::slice::from_ref(&ast)),
             },
         }
     }
-}
-
-/// Shift a deserialized symbol id into the active rebase range (angr-euw28).
-///
-/// A no-op (offset 0) unless a [`SymbolIdRebase`](crate::symbolic::SymbolIdRebase)
-/// guard is live on this thread — i.e. unless we are restoring a snapshot minted
-/// by a foreign process. The [`RustBV::EXPRESSION_ID`] sentinel is not an
-/// allocated id and must stay `u64::MAX`.
-#[inline]
-fn rebase_id(id: u64) -> u64 {
-    if id == RustBV::EXPRESSION_ID {
-        return id;
-    }
-    id.saturating_add(crate::symbolic::symbol_id_rebase_offset())
 }
 
 /// Fallible because an `Ast` payload is a node list that must decode to one
@@ -470,28 +388,24 @@ impl TryFrom<RustBVData> for RustBV {
         Ok(match data {
             RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
             RustBVData::Symbolic { id, width, name } => {
-                RustBV::from_parts(rebase_id(id), Arc::<str>::from(name), width)
+                RustBV::from_parts(id, Arc::<str>::from(name), width)
             }
             // A legacy record of the retired `Constrained` arm: its value was
             // known, which is all a `Concrete` is (angr-mx00p.13).
             RustBVData::Constrained { value, width, .. } => RustBV::concrete(value, width),
             RustBVData::Expression {
-                id,
                 width,
                 op,
                 operands,
-            } => RustBV::Expression {
-                id: rebase_id(id),
+                ..
+            } => RustBV::from_op(
                 width,
                 op,
-                operands: Arc::<[RustBV]>::from(
-                    operands
-                        .into_iter()
-                        .map(RustBV::try_from)
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-                memo: Default::default(),
-            },
+                operands
+                    .into_iter()
+                    .map(RustBV::try_from)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
             RustBVData::Ast { dag } => {
                 let roots = dag
                     .decode(&GLOBAL_CONTEXT)
@@ -514,12 +428,6 @@ impl TryFrom<RustBVData> for RustBV {
 }
 
 impl RustBV {
-    /// Sentinel ID for expression results (not real symbolic variables).
-    /// Using u64::MAX avoids allocating new IDs for every intermediate operation.
-    /// This improves solver compatibility since only true symbolic variables
-    /// (inputs like `x`, `y`) get unique IDs that need tracking.
-    pub const EXPRESSION_ID: u64 = u64::MAX;
-
     // =========================================================================
     // Constructors
     // =========================================================================
@@ -701,7 +609,6 @@ impl RustBV {
     pub fn width(&self) -> u32 {
         match self {
             RustBV::Concrete { width, .. } => *width,
-            RustBV::Expression { width, .. } => *width,
             RustBV::Ast { width, .. } => *width,
         }
     }
@@ -715,7 +622,7 @@ impl RustBV {
     /// Check if this value is symbolic.
     #[inline]
     pub fn is_symbolic(&self) -> bool {
-        matches!(self, RustBV::Expression { .. } | RustBV::Ast { .. })
+        matches!(self, RustBV::Ast { .. })
     }
 
     /// Try to get the concrete value.
@@ -723,27 +630,8 @@ impl RustBV {
     pub fn as_u128(&self) -> Option<u128> {
         match self {
             RustBV::Concrete { value, .. } => Some(*value),
-            RustBV::Expression { .. } => None,
             // `from_clarirs` folds every literal that fits into `Concrete`.
             RustBV::Ast { .. } => None,
-        }
-    }
-
-    /// Get the operation if this is an Expression variant.
-    #[inline]
-    pub fn op(&self) -> Option<&BVOp> {
-        match self {
-            RustBV::Expression { op, .. } => Some(op),
-            _ => None,
-        }
-    }
-
-    /// Get the operands if this is an Expression variant.
-    #[inline]
-    pub fn operands(&self) -> Option<&[RustBV]> {
-        match self {
-            RustBV::Expression { operands, .. } => Some(operands),
-            _ => None,
         }
     }
 
@@ -764,20 +652,6 @@ impl fmt::Debug for RustBV {
             RustBV::Concrete { value, width } => {
                 write!(f, "Concrete(0x{value:x}, {width})")
             }
-            RustBV::Expression {
-                width,
-                op,
-                operands,
-                ..
-            } => {
-                write!(
-                    f,
-                    "Expression({:?}, {}, {} operands)",
-                    op,
-                    width,
-                    operands.len()
-                )
-            }
             RustBV::Ast { width, ast, .. } => {
                 write!(f, "Ast({}, {width})", ast.to_smtlib_shallow(2))
             }
@@ -791,9 +665,6 @@ impl fmt::Display for RustBV {
             RustBV::Concrete { value, width } => {
                 write!(f, "<BV{width} 0x{value:x}>")
             }
-            RustBV::Expression { width, op, .. } => {
-                write!(f, "<BV{width} {op:?}>")
-            }
             RustBV::Ast { width, ast, .. } => {
                 write!(f, "<BV{width} {}>", ast.to_smtlib_shallow(2))
             }
@@ -804,20 +675,11 @@ impl fmt::Display for RustBV {
 /// Equality is **value-based where a value is known, identity-based otherwise**
 /// (angr-sqfj8.96).
 ///
-/// The relation partitions `RustBV` into these classes, which never compare
+/// The relation partitions `RustBV` into two classes, which never compare
 /// equal across the class boundary:
 ///
 /// 1. **Known values** (`Concrete`): equal iff same value and same width.
-/// 2. **Compound expressions** (`Expression`): equal iff same `op`, same
-///    width, and *pointer-identical* operand slices. The `id` field is the
-///    `EXPRESSION_ID` sentinel for every `Expression` (see its doc), so it
-///    carries no identity; `Arc::ptr_eq` is what survives a `clone` (which
-///    only bumps the refcount). Deliberately **not** a deep structural walk:
-///    `==` sits on hot paths and expression trees are unbounded in depth, so
-///    two independently-built but structurally identical trees compare
-///    unequal. Treat `Expression` equality as "same node", not "same value".
-///    The `memo` Z3 cache is excluded (pure deterministic-function cache).
-/// 3. **clarirs terms** (`Ast`): equal iff the same node. clarirs interns, so
+/// 2. **clarirs terms** (`Ast`): equal iff the same node. clarirs interns, so
 ///    this is structural equality, and it is cheap. A named leaf is the
 ///    clarirs variable of its name, so two leaves are equal iff they share
 ///    name and width — the Z3 constant (`invariant-symbol-identity-is-by-name`).
@@ -828,25 +690,11 @@ impl fmt::Display for RustBV {
 /// whenever either side lacked an `as_u128()`, which broke reflexivity for
 /// symbolic values and made `==` a trap for dedup/`contains` callers.
 ///
-/// There is intentionally no `Eq`/`Hash`: `Expression`'s pointer identity
-/// would hash differently after a serde round-trip.
+/// There is intentionally no `Eq`/`Hash`: node identity is pointer identity,
+/// which a serde round-trip does not preserve outside one process.
 impl PartialEq for RustBV {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (
-                RustBV::Expression {
-                    width: wa,
-                    op: opa,
-                    operands: oa,
-                    ..
-                },
-                RustBV::Expression {
-                    width: wb,
-                    op: opb,
-                    operands: ob,
-                    ..
-                },
-            ) => wa == wb && opa == opb && Arc::ptr_eq(oa, ob),
             (RustBV::Ast { ast: a, .. }, RustBV::Ast { ast: b, .. }) => Arc::ptr_eq(a, b),
             _ => match (self.as_u128(), other.as_u128()) {
                 (Some(a), Some(b)) => a == b && self.width() == other.width(),

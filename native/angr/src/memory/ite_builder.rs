@@ -39,22 +39,6 @@ fn loads_match(a: &RustBV, b: &RustBV) -> bool {
     }
     match (a, b) {
         (Concrete { value: v1, .. }, Concrete { value: v2, .. }) => v1 == v2,
-        // Two Expression nodes are treated as identical only when they share
-        // the same operand `Arc` and op. This catches incidental sharing
-        // (e.g. when distinct addresses route to the same cached AST) without
-        // paying for a deep structural walk on every ITE construction.
-        (
-            Expression {
-                op: op1,
-                operands: ops1,
-                ..
-            },
-            Expression {
-                op: op2,
-                operands: ops2,
-                ..
-            },
-        ) => op1 == op2 && Arc::ptr_eq(ops1, ops2),
         // clarirs interns, so one term is one node.
         (Ast { ast: x, .. }, Ast { ast: y, .. }) => Arc::ptr_eq(x, y),
         // A leaf held in different arms: same name and width is one Z3

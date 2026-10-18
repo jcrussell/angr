@@ -1,10 +1,9 @@
-//! `RustBV::node` must read a clarirs `Ast` the way it reads the `Expression`
-//! it was converted from, and the construction-time rewrites that inspect
-//! operands through it must fire on `Ast` operands too.
+//! `RustBV::node` must read every op back from the clarirs term it builds,
+//! and the construction-time rewrites that inspect operands through it must
+//! fire on those terms. Nodes are built with `RustBV::from_op`, which skips the
+//! rewrites, so each is read as built.
 
 #![allow(clippy::unwrap_used, reason = "test fixtures")]
-
-use std::sync::Arc;
 
 use clarirs_core::prelude::AstFactory;
 
@@ -13,13 +12,7 @@ use crate::claripy::ast::GLOBAL_CONTEXT;
 use crate::symbolic::SymContext;
 
 fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
-    RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width,
-        op,
-        operands: Arc::from(operands),
-        memo: Default::default(),
-    }
+    RustBV::from_op(width, op, operands)
 }
 
 /// The same value held as a clarirs term.

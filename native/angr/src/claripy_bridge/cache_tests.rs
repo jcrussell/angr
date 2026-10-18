@@ -89,35 +89,3 @@ fn test_worker_local_clear_empties_ast_cache() {
     );
 }
 
-// The Rust→claripy compound-expression cache (EXPRESSION_BY_OPERANDS_PTR) is
-// thread-local and keyed by the operands Arc pointer. A store then get with the
-// same key must return the pinned AST; the RustBV held alongside pins the
-// operands Arc alive. Purely thread-local — no global registry involved.
-#[test]
-fn test_expression_by_operands_roundtrip() {
-    Python::initialize();
-    Python::attach(|py| {
-        let bv = RustBV::concrete(0xdead_beef, 64);
-        let key = 0xABCD_1234_usize;
-        store_expression_ast_by_operands(key, bv, py.None());
-
-        let hit = get_expression_ast_by_operands(py, key);
-        assert!(
-            hit.is_some(),
-            "stored operands-ptr entry must be retrievable"
-        );
-    });
-}
-
-// A miss on the expression-pointer cache must return None rather than panicking
-// or returning a stale entry.
-#[test]
-fn test_expression_by_operands_miss_returns_none() {
-    Python::initialize();
-    Python::attach(|py| {
-        // A key we never stored — reserved high value to avoid colliding with a
-        // real Arc pointer a sibling test might have inserted.
-        let miss = get_expression_ast_by_operands(py, 0xFFFF_FFFF_FFF0);
-        assert!(miss.is_none(), "unstored operands ptr must miss");
-    });
-}

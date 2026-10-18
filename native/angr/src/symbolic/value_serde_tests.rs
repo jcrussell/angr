@@ -128,15 +128,11 @@ fn serde_roundtrip_float_op() {
     assert_eq!(op, back);
 }
 
-/// Regression (angr-ovqja.3): the persistent per-`Expression` Z3 AST memo must
-/// not leak a stale-context AST. The memo caches the built `z3::ast::BV` for an
-/// `Expression`; if the thread-local Z3 context is swapped (only `with_z3_context`
-/// in tests — never production), `to_z3_ast()` must rebuild against the active
-/// context rather than return the cached BV from the previous context.
-///
-/// Uses an Extract-over-concrete node so the rebuilt AST resolves to a fresh
-/// context-local constant with NO `Symbolic` leaves (whose own `ast` cache would
-/// confound the context check — that staleness predates this memo).
+/// Regression (angr-ovqja.3): the persistent per-value Z3 AST memo must not
+/// leak a stale-context AST. If the thread-local Z3 context is swapped (only
+/// `with_z3_context` in tests — never production), `to_z3_ast()` must rebuild
+/// against the active context rather than return the cached BV from the
+/// previous context.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_expression_memo_no_stale_context_leak() {
@@ -289,10 +285,8 @@ fn test_translate_into_per_node_cost() {
     use std::time::Instant;
 
     // Mimic a real mid-run memory-load constraint: Reverse(Concat(64 byte
-    // BVSes)). Only the 64 Symbolic leaves carry context-bound ASTs that need
-    // `Z3_translate`; the Concat/Reverse Expression nodes recurse and reset
-    // their lazy memo (rebuilt under whichever context is active), so they are
-    // nearly free. This is the favorable shape the kill-gate predicted.
+    // BVSes)). The clarirs term is context-free, so translation only resets
+    // the lazy memo (rebuilt under whichever context is active next).
     let ctx = SymContext::new_mock();
     let leaves: Vec<RustBV> = (0..64u32)
         .map(|i| RustBV::symbolic(&ctx, format!("b{i}"), 8))

@@ -135,13 +135,7 @@ fn bv_to_bytes_and_bytes_to_bv_width_boundary_sweep() {
 /// condition operand (operands[0]) is a dummy concrete — `extract_ite_targets`
 /// never inspects it.
 fn ite_bv(t: RustBV, f: RustBV) -> RustBV {
-    RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width: 64,
-        op: BVOp::Ite,
-        operands: std::sync::Arc::from(vec![RustBV::concrete(0, 1), t, f]),
-        memo: Default::default(),
-    }
+    RustBV::from_op(64, BVOp::Ite, vec![RustBV::concrete(0, 1), t, f])
 }
 
 #[test]
@@ -172,13 +166,11 @@ fn test_extract_ite_targets_dedup() {
 fn test_extract_ite_targets_non_ite_symbolic_aborts() {
     // An ITE wrapping a non-ITE symbolic leaf (here an Add expression) can't be
     // resolved structurally -> None.
-    let add = RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width: 64,
-        op: BVOp::Add,
-        operands: std::sync::Arc::from(vec![RustBV::concrete(1, 64), RustBV::concrete(2, 64)]),
-        memo: Default::default(),
-    };
+    let add = RustBV::from_op(
+        64,
+        BVOp::Add,
+        vec![RustBV::concrete(1, 64), RustBV::concrete(2, 64)],
+    );
     let bv = ite_bv(RustBV::concrete(0xa, 64), add);
     assert_eq!(extract_ite_targets(&bv, 8), None);
 }

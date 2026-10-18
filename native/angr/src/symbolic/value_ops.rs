@@ -250,27 +250,14 @@ impl RustBV {
     /// time so two callers that build the same commutative op in opposite
     /// orders produce the same RustBV (and therefore the same Z3 AST).
     ///
-    /// Ordering (low → high):
-    ///   0: Symbolic    (variables — most "primary")
-    ///   1: Constrained
-    ///   2: Expression  (subtrees with sub-key from operand-Arc pointer)
-    ///   3: Ast         (clarirs terms, sub-key the structural hash)
-    ///   4: Concrete    (constants always end up on the right)
-    ///
-    /// The Expression sub-key uses the operand-Arc pointer for cheap
-    /// within-run determinism. Two structurally-equal Expressions with
-    /// distinct Arc allocations sort differently, but Z3 still merges
-    /// their ASTs via its own hash-cons at to_z3_ast time, so this does
-    /// not weaken Z3-side dedup. The key is not stable across process
-    /// runs — that is intentional: RustBVs don't survive across runs.
+    /// Ordering: clarirs terms first, keyed by their structural hash, then
+    /// constants, so a constant always ends up on the right. clarirs' hash is
+    /// deterministic across processes (seeded `ahash`), so the order is too.
     #[inline]
     fn canonical_sort_key(&self) -> (u8, u128) {
         match self {
-            RustBV::Expression { operands, .. } => {
-                (2, Arc::as_ptr(operands) as *const () as usize as u128)
-            }
-            RustBV::Ast { ast, .. } => (3, u128::from(ast.hash())),
-            RustBV::Concrete { value, .. } => (4, *value),
+            RustBV::Ast { ast, .. } => (0, u128::from(ast.hash())),
+            RustBV::Concrete { value, .. } => (1, *value),
         }
     }
 
@@ -290,55 +277,47 @@ impl RustBV {
         }
     }
 
-    /// Build a symbolic `Expression` node with the `EXPRESSION_ID` sentinel.
-    ///
-    /// Centralizes the 4-field struct literal that every consuming op writes
-    /// inline in its constant-fold fallthrough arm — the `id`/`operands.into()`
-    /// boilerplate that differs only in `op` and the operand slice. Any array
-    /// (`[x]`, `[lhs, rhs]`, `[c, t, e]`) coerces through `impl Into<Arc<[_]>>`,
-    /// so this one helper serves the unary/binary/ternary arities.
-    ///
-    /// The ops [`builds_clarirs`] lists are built as a clarirs node instead
-    /// (angr-mx00p.12). An operand with no clarirs term (a float op, which
-    /// clarirs cannot express yet) keeps the `Expression` form, which lowers
-    /// and exports the same way.
-    #[inline]
-    fn expr_node<const N: usize>(width: u32, op: BVOp, operands: [RustBV; N]) -> Self {
-        if builds_clarirs(&op)
-            && let Ok(term) = super::value_clarirs::build_term(&op, &operands, width)
-        {
-            return Self::from_clarirs_lowerable(term);
+    /// Build `op` over `operands` as its clarirs term: the one place every
+    /// constructor, the float builder and the legacy-snapshot decode turn an
+    /// op into a value (angr-mx00p.12, .13). A width-0 result is the empty
+    /// bitvector's only value (`invariant-rustbv-zero-width`).
+    pub(crate) fn from_op(width: u32, op: BVOp, operands: Vec<RustBV>) -> Self {
+        if width == 0 {
+            return RustBV::Concrete { value: 0, width: 0 };
         }
-        RustBV::Expression {
-            id: Self::EXPRESSION_ID,
-            width,
-            op,
-            operands: Arc::from(operands),
-            memo: Default::default(),
-        }
+        silent_default!(
+            cat_c,
+            super::value_clarirs::build_term(&op, &operands, width)
+                .map(Self::from_clarirs_lowerable),
+            Self::unbuildable(width),
+            |err| "{op:?} over {} operand(s) has no clarirs term ({err}); \
+                   using a fresh {width}-bit variable",
+            operands.len()
+        )
     }
 
-    /// Build a float op over IEEE bit patterns: the clarirs term
-    /// `value_clarirs::build_term` gives it (angr-mx00p.12), or an
-    /// `Expression` when it has none, which lowers the same way.
+    /// The stand-in [`Self::from_op`] returns for an op it cannot build: a
+    /// fresh variable, so the value stays unconstrained rather than
+    /// silently wrong.
+    fn unbuildable(width: u32) -> Self {
+        let id = super::names::next("unbuildable_op");
+        RustBV::from_parts(id, Arc::from(format!("unbuildable_op_{id}")), width)
+    }
+
+    /// [`Self::from_op`] for the fixed-arity call sites.
+    #[inline]
+    fn expr_node<const N: usize>(width: u32, op: BVOp, operands: [RustBV; N]) -> Self {
+        Self::from_op(width, op, Vec::from(operands))
+    }
+
+    /// Build a float op over IEEE bit patterns (see [`Self::from_op`]).
     #[cfg(feature = "vex-engine")]
     pub(crate) fn float_node(
         kind: super::value::FloatOpKind,
         prec: super::value::FloatPrec,
         operands: Vec<RustBV>,
     ) -> Self {
-        let width = kind.result_bits(prec);
-        let op = BVOp::Float { kind, prec };
-        if let Ok(term) = super::value_clarirs::build_term(&op, &operands, width) {
-            return Self::from_clarirs_lowerable(term);
-        }
-        RustBV::Expression {
-            id: Self::EXPRESSION_ID,
-            width,
-            op,
-            operands: Arc::from(operands),
-            memo: Default::default(),
-        }
+        Self::from_op(kind.result_bits(prec), BVOp::Float { kind, prec }, operands)
     }
 
     define_binop_pair! {
@@ -1191,6 +1170,14 @@ impl RustBV {
     /// anyway.
     #[inline]
     fn concat_owned(self, other: Self) -> Self {
+        // The empty bitvector is concat's identity; clarirs has no width-0
+        // term to build it with.
+        if other.width() == 0 {
+            return self;
+        }
+        if self.width() == 0 {
+            return other;
+        }
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
             // A `Concrete` value is stored in a u128, so it can hold at most
@@ -1406,50 +1393,6 @@ enum ZExtCmp {
     UltSwapped,
     Ule,
     UleSwapped,
-}
-
-/// The ops [`RustBV::expr_node`] builds as clarirs nodes. Families switch
-/// over one at a time (angr-mx00p.12); the rest still build `Expression`s.
-fn builds_clarirs(op: &BVOp) -> bool {
-    matches!(
-        op,
-        BVOp::Add
-            | BVOp::Sub
-            | BVOp::Mul
-            | BVOp::UDiv
-            | BVOp::SDiv
-            | BVOp::URem
-            | BVOp::SRem
-            | BVOp::Neg
-            | BVOp::And
-            | BVOp::Or
-            | BVOp::Xor
-            | BVOp::Not
-            | BVOp::Shl
-            | BVOp::Lshr
-            | BVOp::Ashr
-            | BVOp::RotL
-            | BVOp::RotR
-            | BVOp::Eq
-            | BVOp::Ne
-            | BVOp::Ult
-            | BVOp::Ule
-            | BVOp::Ugt
-            | BVOp::Uge
-            | BVOp::Slt
-            | BVOp::Sle
-            | BVOp::Sgt
-            | BVOp::Sge
-            | BVOp::Ite
-            | BVOp::ZeroExt(_)
-            | BVOp::SignExt(_)
-            | BVOp::Extract(..)
-            | BVOp::Concat
-            | BVOp::Reverse
-            | BVOp::Clz
-            | BVOp::Ctz
-            | BVOp::Popcount
-    )
 }
 
 /// Fold `Cmp(ZeroExt(k, x), BVV(c, W))` (and commuted variants) using the

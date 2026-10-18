@@ -228,24 +228,6 @@ impl<'a> VEXInterpreter<'a> {
                 value.hash(hasher);
                 width.hash(hasher);
             }
-            RustBV::Expression {
-                op,
-                operands,
-                width,
-                ..
-            } => {
-                3u8.hash(hasher);
-                // Hash the whole op, not just its discriminant: BVOp payloads
-                // (ZeroExt(n), Extract(hi,lo), Float{..}) distinguish otherwise
-                // structurally-identical trees — e.g. Extract(7,0,x) vs
-                // Extract(15,8,x) must not share a key (angr-owr37).
-                op.hash(hasher);
-                width.hash(hasher);
-                operands.len().hash(hasher);
-                for operand in operands.iter() {
-                    Self::hash_bv(operand, hasher);
-                }
-            }
             // clarirs' structural hash already covers the whole term.
             RustBV::Ast { ast, width, .. } => {
                 4u8.hash(hasher);

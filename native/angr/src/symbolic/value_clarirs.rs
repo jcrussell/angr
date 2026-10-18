@@ -1,25 +1,18 @@
-//! `RustBV` → clarirs: the clarirs term a value denotes (angr-mx00p.12).
-//!
-//! [`RustBV::to_clarirs`] is the bridge that lets a constructor build a
-//! [`RustBV::Ast`] over operands that are still in the older arms. The term
-//! has the semantics the value's Z3 lowering (`value_z3.rs`) has:
+//! `RustBV` → clarirs: [`build_term`], the clarirs term for an op over
+//! values, which every constructor builds through (angr-mx00p.12), and
+//! [`RustBV::to_clarirs`], the term a value is. The encodings:
 //!
 //! - a 1-bit comparison result is `ite(cmp, 1, 0)`, the encoding
 //!   [`RustBV::from_clarirs`] uses for a Bool, and 1-bit `And` / `Or` /
 //!   `Xor` / `Not` are the Bool ops under the same encoding;
-//! - `Ite`'s condition is "nonzero", as `build_z3_ast_cached` reads it;
+//! - `Ite`'s condition is "nonzero";
 //! - `Reverse` of a width that is not a multiple of 8, or is under 16, is the
 //!   identity;
-//! - `Clz` / `Ctz` / `Popcount` expand to the same ite ladder and bit sum the
-//!   Z3 builder emits, since clarirs has no such ops.
+//! - `Clz` / `Ctz` / `Popcount` expand to an ite ladder and a bit sum, since
+//!   clarirs has no such ops;
+//! - a float op reads its operands as IEEE bit patterns and returns one.
 //!
-//! Float ops have no clarirs form yet and are refused, as are a zero-width
-//! value and an anonymous `Symbolic` wrapping a raw Z3 term; callers keep the
-//! older arm for those.
-
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::{Arc, Weak};
+//! A zero-width value has no term.
 
 use clarirs_core::prelude::{AstFactory, AstOp, AstRef, BitVec, ClarirsError, FPRM, FSort};
 use num_bigint::BigUint;
@@ -28,46 +21,6 @@ use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 use crate::claripy::ast::GLOBAL_CONTEXT;
 
 type Term = AstRef<'static>;
-
-thread_local! {
-    /// The term each `Expression` converted on this thread denotes, while the
-    /// expression lives. Keyed by the operands `Arc`, which identifies an
-    /// `Expression` node and is shared by its clones; confirmed by the `Weak`,
-    /// which keeps the allocation from being reused. Without it, a chain of
-    /// ops whose operands are still `Expression`s would reconvert the whole
-    /// subtree at every op.
-    static CONVERTED: RefCell<ConvertedCache> = RefCell::new(ConvertedCache::default());
-}
-
-#[derive(Default)]
-struct ConvertedCache {
-    map: HashMap<usize, (Weak<[RustBV]>, Term)>,
-    sweep_at: usize,
-}
-
-impl ConvertedCache {
-    const MIN_SWEEP: usize = 1024;
-
-    fn key(operands: &Arc<[RustBV]>) -> usize {
-        Arc::as_ptr(operands).cast::<RustBV>() as usize
-    }
-
-    fn get(&self, operands: &Arc<[RustBV]>) -> Option<Term> {
-        let (node, term) = self.map.get(&Self::key(operands))?;
-        std::ptr::addr_eq(node.as_ptr(), Arc::as_ptr(operands)).then(|| term.clone())
-    }
-
-    fn insert(&mut self, operands: &Arc<[RustBV]>, term: &Term) {
-        if self.map.len() >= self.sweep_at {
-            self.map.retain(|_, (node, _)| node.strong_count() > 0);
-            self.sweep_at = (self.map.len() * 2).max(Self::MIN_SWEEP);
-        }
-        self.map.insert(
-            Self::key(operands),
-            (Arc::downgrade(operands), term.clone()),
-        );
-    }
-}
 
 fn bvv(value: u128, width: u32) -> Result<Term, ClarirsError> {
     GLOBAL_CONTEXT.bvv(BitVec::from((BigUint::from(value), width)))
@@ -110,21 +63,6 @@ impl RustBV {
             )),
             RustBV::Concrete { value, width } => bvv(*value, *width),
             RustBV::Ast { ast, .. } => Ok(ast.clone()),
-            RustBV::Expression {
-                op,
-                operands,
-                width,
-                ..
-            } => {
-                if let Some(done) = CONVERTED.with_borrow(|c| c.get(operands)) {
-                    return Ok(done);
-                }
-                let term = build_term(op, operands, *width)?;
-                #[cfg(test)]
-                EXPRESSIONS_CONVERTED.set(EXPRESSIONS_CONVERTED.get() + 1);
-                CONVERTED.with_borrow_mut(|c| c.insert(operands, &term));
-                Ok(term)
-            }
         }
     }
 }
@@ -389,12 +327,6 @@ fn popcount(x: &Term, width: u32) -> Result<Term, ClarirsError> {
         acc = gc.add(acc, bit(pos)?)?;
     }
     widen(acc, acc_w, width)
-}
-
-#[cfg(test)]
-thread_local! {
-    /// `Expression` nodes converted (cache misses) on this thread.
-    static EXPRESSIONS_CONVERTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 test_submod!(z3 "value_clarirs_tests.rs" => tests);

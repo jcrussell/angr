@@ -1,12 +1,11 @@
 //! `PartialEq` / `Debug` identity semantics for every `RustBV` variant
 //! (angr-sqfj8.96).
 
-use super::value_tests_support::{bv_shape, raw_extract_node};
 use super::*;
 
 /// angr-sqfj8.96: `PartialEq` used to short-circuit to `false` whenever
 /// either side had no `as_u128()`, so `x == x` was false for every
-/// `Symbolic`/`Expression` — a latent trap for any `contains`/dedup caller.
+/// symbolic value — a latent trap for any `contains`/dedup caller.
 #[test]
 fn test_partial_eq_is_reflexive_for_every_variant() {
     let ctx = SymContext::new_mock();
@@ -17,9 +16,7 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
         matches!(ast, RustBV::Ast { .. }),
         "test setup: symbolic + concrete should build a clarirs term, got {ast:?}"
     );
-    let expression = raw_extract_node(symbolic.clone(), 15, 0);
-
-    for bv in [&concrete, &symbolic, &ast, &expression] {
+    for bv in [&concrete, &symbolic, &ast] {
         assert_eq!(bv, bv, "PartialEq must be reflexive for {bv:?}");
         assert_eq!(
             bv,
@@ -30,8 +27,8 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
 }
 
 /// The equality classes from the `PartialEq for RustBV` doc: known value
-/// (Concrete), leaf identity by name, node identity
-/// (Expression, and Ast, whose nodes are interned so identity is structure).
+/// (Concrete), leaf identity by name, and node identity for clarirs terms,
+/// whose nodes are interned so identity is structure.
 /// Nothing compares equal across a class boundary.
 #[test]
 fn test_partial_eq_classes_are_disjoint_and_identity_based() {
@@ -54,23 +51,8 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     assert_ne!(s1, s2, "distinct names are distinct symbols");
     assert_ne!(s1, s1_wide, "width must be compared");
 
-    // Class 3: Expression is node identity, NOT a structural walk — two
-    // independently built but structurally identical trees compare unequal.
     let sym = RustBV::symbolic(&ctx, "classes_sym", 32);
-    let e1 = raw_extract_node(sym.clone(), 15, 0);
-    let e2 = raw_extract_node(sym.clone(), 15, 0);
-    assert_eq!(
-        bv_shape(&e1),
-        bv_shape(&e2),
-        "test setup: both expressions should be structurally identical"
-    );
-    assert_ne!(
-        e1, e2,
-        "Expression equality is node identity, not structure"
-    );
-    assert_eq!(e1, e1.clone(), "clone shares the operand Arc");
-
-    // Class 4: an Ast is node identity too, but clarirs interns, so two
+    // Class 3: an Ast is node identity, and clarirs interns, so two
     // independently built terms with the same structure are one node.
     let a1 = sym.add(&RustBV::concrete(1, 32), &ctx);
     let a2 = sym.add(&RustBV::concrete(1, 32), &ctx);
@@ -80,11 +62,8 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     // Cross-class: never equal, in either direction.
     for (a, b) in [
         (&concrete, &s1),
-        (&concrete, &e1),
-        (&s1, &e1),
         (&concrete, &a1),
         (&s1, &a1),
-        (&e1, &a1),
     ] {
         assert_ne!(a, b, "{a:?} and {b:?} are in different equality classes");
         assert_ne!(b, a, "{b:?} and {a:?} are in different equality classes");

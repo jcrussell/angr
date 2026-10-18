@@ -1,7 +1,6 @@
 //! Thread-local AST identity / conversion caches for the claripy bridge.
 //!
-//! Holds the two thread-local caches (`AST_CACHE`,
-//! `EXPRESSION_BY_OPERANDS_PTR`) and the `tl_cache!` shorthand macro, plus the
+//! Holds the thread-local `AST_CACHE` and the `tl_cache!` shorthand macro, plus the
 //! public store/get/lookup/clear helpers that wrap them. The cross-cache
 //! invariants C3-C5 are documented in the parent module rustdoc (see `super`).
 //! Both `super::import` and `super::export` depend on these helpers.
@@ -9,9 +8,8 @@
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this is a
 //! Python-boundary module, so `unwrap`/`expect` are denied here — a claripy AST
 //! handed in from Python must never be able to reach a panic. The
-//! cache-capacity conversions are `const`s ([`AST_CACHE_SIZE_NZ`],
-//! [`EXPRESSION_CACHE_SIZE_NZ`]), so their non-zero proof happens at compile
-//! time.
+//! cache-capacity conversion is a `const` ([`AST_CACHE_SIZE_NZ`]), so its
+//! non-zero proof happens at compile time.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
@@ -33,20 +31,6 @@ const AST_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(AST_CACHE_SIZE) 
     None => panic!("AST_CACHE_SIZE must be non-zero"),
 };
 
-/// Maximum number of imported `Expression` ASTs to cache by operands pointer.
-///
-/// Independently tunable from [`AST_CACHE_SIZE`] — the two caches hold
-/// different things (claripy hash → `RustBV` vs operands pointer →
-/// `(RustBV, Py<PyAny>)`) and are sized separately even though they currently
-/// agree (angr-9ke6b.42).
-const EXPRESSION_CACHE_SIZE: usize = 10000;
-
-/// [`EXPRESSION_CACHE_SIZE`] pre-validated like [`AST_CACHE_SIZE_NZ`].
-const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(EXPRESSION_CACHE_SIZE) {
-    Some(n) => n,
-    None => panic!("EXPRESSION_CACHE_SIZE must be non-zero"),
-};
-
 // Thread-local LRU mapping `claripy_ast.__hash__() → RustBV`.
 //
 // Direction: claripy→Rust. Caches the result of `claripy_to_rustbv`
@@ -57,8 +41,7 @@ const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(EXPRESSIO
 // stable across CPython garbage collection unlike `id(ast)`, which
 // can be reused after collection.
 //
-// Value: the converted `RustBV`. `RustBV::clone` is a refcount bump
-// on the operand `Arc<[RustBV]>`, so cache hits are cheap.
+// Value: the converted `RustBV`; cloning one is a refcount bump.
 //
 // Width invariant: hashes are content-addressed and include length,
 // but a stale entry from a recycled hash slot could in principle
@@ -71,10 +54,6 @@ const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(EXPRESSIO
 // (exploration restart). Capacity-bounded LRU eviction beyond that. See cross-cache
 // invariant C3 — partial clears are never correct.
 //
-// Coherence with the global registry: a `Symbolic`/`Constrained` hit
-// in this cache implies the underlying `symbol_id` was previously
-// registered via `store_claripy_ast_with_info`, so the inverse
-// mapping (rust_id → original AST) lives in the `SymbolicIdentityRegistry`.
 thread_local! {
     static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
         RefCell::new(LruCache::new(AST_CACHE_SIZE_NZ));
@@ -108,24 +87,6 @@ macro_rules! tl_cache {
 // cloned `Expression` shares its parent's cache entry. Two distinct
 // claripy `Expression`s get distinct `Arc`s.
 //
-// Value: `(RustBV, Py<PyAny>)`. The `RustBV` clone is held alongside
-// the Python AST specifically to pin the operands `Arc` alive: the
-// cache key is a raw pointer, and without holding a strong reference
-// the allocator could reuse the same address for an unrelated
-// `Expression`'s operands while the entry is still in cache —
-// surfacing as a wrong-AST return. The `Py<PyAny>` is the payload
-// returned on hit.
-//
-// Invalidation: cleared by `clear_ast_cache` and `reset_for_new_exploration`
-// (C3). Capacity-bounded LRU eviction (`EXPRESSION_CACHE_SIZE`) beyond that. On
-// eviction, the held `RustBV` drops its refcount, allowing the
-// operands `Arc` to be freed — safe because the evicted entry is no
-// longer reachable via this cache. This is the sole Rust→claripy
-// cache for compound Expression nodes (see C4).
-thread_local! {
-    static EXPRESSION_BY_OPERANDS_PTR: RefCell<LruCache<usize, (RustBV, Py<PyAny>)>> =
-        RefCell::new(LruCache::new(EXPRESSION_CACHE_SIZE_NZ));
-}
 
 /// Look up a symbol by its Python hash.
 ///
@@ -198,25 +159,6 @@ pub(super) fn store_bv_by_ast_hash(ast_hash: i64, bv: RustBV) {
     tl_cache!(AST_CACHE, put(ast_hash, bv));
 }
 
-/// Store the original claripy AST keyed by an imported Expression's
-/// operands Arc pointer. The BV clone is held alongside to pin the
-/// operands Arc alive (preventing pointer reuse on free).
-pub(crate) fn store_expression_ast_by_operands(operands_ptr: usize, bv: RustBV, ast: Py<PyAny>) {
-    tl_cache!(EXPRESSION_BY_OPERANDS_PTR, put(operands_ptr, (bv, ast)));
-}
-
-/// Retrieve a previously stored claripy AST by an Expression's operands
-/// Arc pointer. Returns None on miss.
-pub(crate) fn get_expression_ast_by_operands(
-    py: Python<'_>,
-    operands_ptr: usize,
-) -> Option<Py<PyAny>> {
-    tl_cache!(
-        EXPRESSION_BY_OPERANDS_PTR,
-        get(&operands_ptr).map(|(_, ast)| ast.clone_ref(py))
-    )
-}
-
 /// Clear all AST conversion caches.
 /// Call this at block boundaries or when the constraint set changes significantly.
 ///
@@ -228,11 +170,10 @@ pub(crate) fn get_expression_ast_by_operands(
 /// cross-thread global registry.
 pub(crate) fn clear_ast_cache() {
     tl_cache!(AST_CACHE, clear());
-    tl_cache!(EXPRESSION_BY_OPERANDS_PTR, clear());
 }
 
-/// Worker-local cache clear: drops only this thread's two thread-local AST
-/// caches, never the process-wide `SymbolicIdentityRegistry`.
+/// Worker-local cache clear: drops only this thread's thread-local AST
+/// cache, never the process-wide `SymbolicIdentityRegistry`.
 ///
 /// angr-1ilq.2: a self-documenting entry point for the Option-A parallel
 /// scheduler (1ilq.3) to call on per-worker task-boundary / teardown. It is a

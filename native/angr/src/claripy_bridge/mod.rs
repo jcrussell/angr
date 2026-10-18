@@ -27,53 +27,21 @@
 //! from the per-cache docs by number so enforcement-site comments do not
 //! duplicate the rationale.
 //!
-//! The numbering is deliberately non-contiguous: **C2** ("`CLARIPY_AST_CACHE`
-//! ⊆ global_registry") and **C6** ("`CLARIPY_AST_CACHE` uses `std::HashMap`")
-//! both described the `CLARIPY_AST_CACHE` thread-local, which was dropped as
-//! dead in angr-4xaga.2. The survivors kept their original numbers so that the
-//! existing `C3`/`C4`/`C5` citations in `cache.rs`, `export.rs` and
-//! `cache_tests.rs` stayed valid; renumber only if every one of those is
-//! swept in the same commit.
+//! The numbering is deliberately non-contiguous: **C1**, **C2**, **C4** and
+//! **C6** described caches and id conventions that no longer exist (the
+//! `CLARIPY_AST_CACHE` thread-local, angr-4xaga.2; the `Expression` arm and
+//! its operands-pointer cache, angr-mx00p.13). The survivors kept their
+//! numbers so that existing `C3`/`C5` citations stay valid; renumber only if
+//! every one of those is swept in the same commit.
 //!
-//! - **C1. EXPRESSION_ID sentinel boundary.** The `SymbolicIdentityRegistry`
-//!   leaf-AST keys are real leaf-symbol ids allocated by `SymContext::next_id`
-//!   (the registry itself mints nothing); compound `RustBV::Expression`
-//!   nodes carry `id == RustBV::EXPRESSION_ID` (the `u64::MAX` sentinel) and
-//!   route through `EXPRESSION_BY_OPERANDS_PTR`
-//!   instead. Crossing this boundary corrupts `RustBV::Expression { id: u64 }`
-//!   semantics — a leaf id stored in the Expression cache would collide
-//!   with an unrelated operands pointer, and vice versa. Enforced by an
-//!   always-on `assert_ne!(symbol_id, RustBV::EXPRESSION_ID)` in
-//!   `store_claripy_ast_with_info` (promoted from `debug_assert_ne!` in
-//!   angr-9ke6b.220). See `value.rs` `RustBV::Expression` contract.
-//!
-//! - **C3. Unified `clear_ast_cache` invalidation.** Both
-//!   thread-locals are cleared together in `clear_ast_cache`; a
-//!   partial clear is never correct. Clearing only `AST_CACHE` would leave
-//!   `EXPRESSION_BY_OPERANDS_PTR` still pinning operands `Arc`s for imports
-//!   the next conversion will rebuild. `reset_for_new_exploration`
-//!   extends the clear to the global registry; do NOT call
-//!   `clear_global_registry()` in isolation — that drops the canonical
-//!   `rust_id → AST` mapping while the thread-locals still reference those
-//!   ids. The extended clear is `#[cfg(test)]` (angr-9ke6b.218 item 4):
+//! - **C3. `clear_ast_cache` is the one invalidation.** It clears the
+//!   thread-local `AST_CACHE`. `reset_for_new_exploration` extends the clear
+//!   to the global registry; do NOT call `clear_global_registry()` in
+//!   isolation. The extended clear is `#[cfg(test)]` (angr-9ke6b.218 item 4):
 //!   production never wipes the global registry, because symbol identity is
 //!   shared across coexisting managers and across sibling workers under the
 //!   Option-A parallel model (angr-1ilq). A worker clears only its own
 //!   thread-locals via `clear_worker_local_caches`.
-//!
-//! - **C4. Expression nodes are cached by operands pointer only.**
-//!   `EXPRESSION_BY_OPERANDS_PTR` (keyed by `Arc::as_ptr(operands) as
-//!   usize`) returns the original Python `Expression` verbatim to
-//!   preserve annotations (see angr-ykdq). It is the SOLE Rust→claripy
-//!   expression cache: the export path (`rustbv_to_claripy_memo`) has
-//!   only a `RustBV` in hand and cannot recompute the import-time
-//!   claripy `ast_hash`, so a hash-keyed cache was structurally
-//!   unreadable on export and was removed (angr-fawo). A miss falls
-//!   back to rebuilding from `BVOp + operands` (losing annotations,
-//!   never correctness). The cache additionally pins the operands
-//!   `Arc` alive by storing a `RustBV` clone in the value slot —
-//!   without that, allocator reuse of the raw pointer would produce a
-//!   wrong-AST return.
 //!
 //! - **C5. An `AST_CACHE` hit is width-checked before it is returned.**
 //!   `AST_CACHE` is keyed by claripy's content-addressed `__hash__()`,
@@ -83,19 +51,8 @@
 //!   check at the use site (`import::claripy_to_rustbv_depth`, the
 //!   `AST_CACHE` hit arm) evicts and reconverts on mismatch; Bool ASTs
 //!   have `ast.length == None` and are treated as width 1 (matches
-//!   RustBV bool representation). See `invariant-ast-cache-width-check`.
-//!
-//!   `EXPRESSION_BY_OPERANDS_PTR` needs no such check: its key is an
-//!   operands `Arc` pointer whose `RustBV` value slot pins the `Arc`
-//!   alive (C4), so the key cannot be recycled under a live entry. The
-//!   `SymbolicIdentityRegistry` DOES need an analogous guard, for a
-//!   different reason — its `rust_id → AST` key can alias across symbols
-//!   (angr-owr37), not merely collide — so `export::rustbv_to_claripy_memo`
-//!   width-checks a registry hit against the requested symbol width and
-//!   evicts via `evict_claripy_ast` on mismatch. The two guards share the
-//!   Bool/unreadable-`length` fallback in `cache::claripy_ast_guard_width`;
-//!   they are deliberately separate call sites because their recovery
-//!   differs (reconvert vs re-mint).
+//!   RustBV bool representation), via `cache::claripy_ast_guard_width`.
+//!   See `invariant-ast-cache-width-check`.
 //!
 //! ## Python-side counterparts
 //!

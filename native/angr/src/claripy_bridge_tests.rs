@@ -1,7 +1,6 @@
 // Unit tests for claripy_bridge.rs (claripy AST <-> RustBV/RustFloat bridge).
 // Split from the parent module per rust-module-root-split-recipe.
 
-use std::sync::Arc;
 
 use super::*;
 use crate::symbolic::{RustBV, SymContext};
@@ -174,11 +173,11 @@ fn test_export_symbolic_bitcount_is_sound() {
 }
 
 /// angr-acoq identity: exporting the same symbolic clz/popcount or Float
-/// RustBV twice returns the identical claripy AST (stabilized via the
-/// EXPRESSION_BY_OPERANDS_PTR cache). Pre-fix each call minted a fresh BVS.
+/// RustBV twice returns the identical claripy AST. Pre-fix each call minted a
+/// fresh BVS.
 #[test]
 fn test_export_symbolic_clz_and_fp_identity_stable() {
-    use crate::symbolic::{BVOp, FloatOpKind, FloatPrec};
+    use crate::symbolic::{FloatOpKind, FloatPrec};
     pyo3::Python::initialize();
     Python::attach(|py| {
         let claripy = match py.import("angr.rustylib.claripy") {
@@ -199,16 +198,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
 
         // Float result (unconstrained-but-stable BVS path)
         let y = RustBV::symbolic(&ctx, "y", 64);
-        let fp = RustBV::Expression {
-            id: RustBV::EXPRESSION_ID,
-            width: 64,
-            op: BVOp::Float {
-                kind: FloatOpKind::Add,
-                prec: FloatPrec::F64,
-            },
-            operands: Arc::<[RustBV]>::from(vec![y.clone(), y]),
-            memo: Default::default(),
-        };
+        let fp = RustBV::float_node(FloatOpKind::Add, FloatPrec::F64, vec![y.clone(), y]);
         let f1 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
         let f2 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
         assert!(

@@ -21,7 +21,7 @@
 //! by bit pattern: `Z3_mk_fpa_to_ieee_bv` leaves the NaN payload unspecified.
 
 use super::*;
-use crate::symbolic::SymContext;
+use crate::symbolic::{FloatOpKind, FloatPrec, SymContext};
 
 // ---------------------------------------------------------------------------
 // Builders / decoders
