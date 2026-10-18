@@ -50,6 +50,7 @@ mod store;
 mod symbolic_objects;
 test_submod!(tests);
 pub use address::Address;
+pub(crate) use load::fresh_unconstrained_read_symbol;
 pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
 

@@ -138,17 +138,10 @@ impl SymbolicMemory {
     /// `interpreter/concretize_cache.rs`) pass a VEX type width, so the clamp
     /// is defense-in-depth on both (angr-0jh0j.35).
     pub(crate) fn unconstrained_read_value(&self, size: u32, ctx: &SymContext) -> RustBV {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static UNC_READ_ID: AtomicU64 = AtomicU64::new(0);
         if self.zero_fill_unconstrained {
             RustBV::concrete(0, fabricate_width_bits(size))
         } else {
-            let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
-            RustBV::symbolic(
-                ctx,
-                format!("symbolic_read_unconstrained_{id}"),
-                fabricate_width_bits(size),
-            )
+            fresh_unconstrained_read_symbol(fabricate_width_bits(size), ctx)
         }
     }
 
@@ -1136,4 +1129,18 @@ pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness, ctx: &SymCo
         }
     };
     RustBV::concrete(value, size * 8)
+}
+
+/// Mint a fresh `symbolic_read_unconstrained_N` BVS of `width_bits`.
+///
+/// The one counter behind that name for every minting path, the memory-side
+/// short-circuit and the interpreter's fallback with no memory attached:
+/// Z3 identity is by name (`invariant-symbol-identity-is-by-name`), so a
+/// counter per path would make two independent reads one variable
+/// (angr-mx00p.17).
+pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32, ctx: &SymContext) -> RustBV {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static UNC_READ_ID: AtomicU64 = AtomicU64::new(0);
+    let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
+    RustBV::symbolic(ctx, format!("symbolic_read_unconstrained_{id}"), width_bits)
 }

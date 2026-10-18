@@ -418,3 +418,31 @@ fn bv_cache_key_distinguishes_nested_constrained_values() {
          must produce distinct cache keys"
     );
 }
+
+/// angr-mx00p.17: the interpreter's no-memory fallback and
+/// `SymbolicMemory::unconstrained_read_value` draw from one counter. Each kept
+/// its own, both starting at 0, so the two paths minted the same
+/// `symbolic_read_unconstrained_N` — one Z3 variable for two independent
+/// reads. With one counter, a fallback mint between two memory mints gets a
+/// number strictly between theirs, whatever other tests mint concurrently.
+#[test]
+fn unconstrained_read_fallback_shares_the_memory_name_counter() {
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    assert!(interp.rust_memory.is_none(), "test needs the no-memory fallback");
+    let mem = crate::memory::SymbolicMemory::new(crate::vex::Endness::Little);
+
+    let number = |bv: &RustBV| -> u64 {
+        let (name, _) = bv.leaf_var().expect("an unconstrained read is a leaf");
+        name.strip_prefix("symbolic_read_unconstrained_")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("unexpected name {name}"))
+    };
+    let before = number(&mem.unconstrained_read_value(1, &ctx));
+    let fallback = number(&interp.fresh_unconstrained_read(1));
+    let after = number(&mem.unconstrained_read_value(1, &ctx));
+    assert!(
+        before < fallback && fallback < after,
+        "fallback {fallback} must come from the memory counter ({before}, {after})"
+    );
+}
