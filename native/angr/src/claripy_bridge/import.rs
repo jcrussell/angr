@@ -741,19 +741,21 @@ fn import_clarirs(
             Ok(val.extract(*high, *low, ctx))
         }
         AstOp::Concat(_) => {
-            let mut it = children();
-            let Some(first) = it.next() else {
+            let parts = children()
+                .map(|c| import(&c))
+                .collect::<Result<Vec<_>, _>>()?;
+            let Some((first, rest)) = parts.split_first() else {
                 return Err(BridgeError::InvalidArgs(
                     "Concat requires at least 1 arg".into(),
                 ));
             };
-            let mut result = import(&first)?;
-            for c in it {
-                let next = import(&c)?;
-                extended_width("Concat", result.width(), next.width())?;
-                result = result.concat(&next, ctx);
-            }
-            Ok(result)
+            rest.iter().try_fold(first.width(), |width, next| {
+                extended_width("Concat", width, next.width())
+            })?;
+            // Balanced, not a left fold: each clarirs node holds the union of
+            // its operands' variables, so a chain over n symbolic parts would
+            // build sets of every size up to n.
+            Ok(RustBV::concat_balanced(&parts, ctx))
         }
         AstOp::ByteReverse(_) => reverse_bytes(&child(0)?, ctx),
         _ => whole(),
