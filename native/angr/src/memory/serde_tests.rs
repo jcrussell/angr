@@ -72,3 +72,66 @@ fn serde_malformed_bitmap_length_drops_to_none() {
     let restored: MemoryPage = serde_json::from_str(&s).expect("deserialize");
     assert!(!restored.has_symbolic());
 }
+
+/// The wire form is `BITMAP_WORDS` u64 words with byte `i` at bit `i % 64` of
+/// word `i / 64` (angr-mx00p.30 moved the in-memory form onto `FixedBitSet`;
+/// existing snapshots must keep decoding).
+#[test]
+fn serde_bitmap_word_layout_is_stable() {
+    let mut p = MemoryPage::new(0x5000, Permission::RW);
+    for off in [0u16, 63, 64, 4095] {
+        p.mark_symbolic(off, 1);
+    }
+    let data = MemoryPageData::from(p);
+    let words = data.symbolic_bitmap.clone().expect("symbolic bitmap present");
+    assert_eq!(words.len(), BITMAP_WORDS);
+    assert_eq!(words[0], 1 | (1u64 << 63));
+    assert_eq!(words[1], 1);
+    assert_eq!(words[BITMAP_WORDS - 1], 1u64 << 63);
+    assert!(words[2..BITMAP_WORDS - 1].iter().all(|&w| w == 0));
+    assert_eq!(data.multi_bitmap, None);
+
+    let restored = MemoryPage::from(data);
+    assert_eq!(restored.symbolic_offsets(), vec![0, 63, 64, 4095]);
+}
+
+/// An all-zero word vector loads as "no bits set", keeping `has_symbolic`'s
+/// O(1) drop-when-empty invariant.
+#[test]
+fn serde_all_zero_bitmap_loads_unallocated() {
+    let zero = MemoryPageData {
+        data: vec![0u8; PAGE_SIZE as usize],
+        permissions: Permission::RW,
+        base_addr: 0x6000,
+        symbolic_bitmap: Some(vec![0u64; BITMAP_WORDS]),
+        multi_bitmap: Some(vec![0u64; BITMAP_WORDS]),
+    };
+    let restored = MemoryPage::from(zero);
+    assert!(!restored.has_symbolic());
+    assert!(!restored.has_multi());
+}
+
+/// Range set / clear across word boundaries, the empty range, and the drop
+/// once the last bit clears.
+#[test]
+fn bitmap_ranges_and_drop_when_empty() {
+    let mut p = MemoryPage::new(0x7000, Permission::RW);
+    p.mark_symbolic(10, 0);
+    assert!(!p.has_symbolic(), "an empty range must not allocate");
+
+    p.mark_symbolic(60, 10); // spans words 0 and 1
+    assert_eq!(p.symbolic_offsets(), (60..70).collect::<Vec<u16>>());
+    p.store_concrete(62, &[0; 4]);
+    assert_eq!(
+        p.symbolic_offsets(),
+        vec![60, 61, 66, 67, 68, 69],
+        "a concrete store clears exactly its bytes"
+    );
+    p.store_concrete(60, &[0; 10]);
+    assert!(!p.has_symbolic(), "the bitmap drops once the last bit clears");
+
+    p.mark_multi(4095);
+    assert!(p.has_multi() && p.is_multi(4095));
+    p.clear_multi(4095);
+    assert!(!p.has_multi());
+}

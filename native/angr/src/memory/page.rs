@@ -4,6 +4,7 @@
 //! `crate::memory` so existing call sites that use `crate::memory::MemoryPage`
 //! / `crate::memory::Permission` / `crate::memory::PAGE_SIZE` keep working.
 
+use fixedbitset::FixedBitSet;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -84,7 +85,7 @@ impl PageIndex {
     }
 }
 
-/// Number of u64 words in the per-page symbolic bitmap.
+/// Number of u64 words in a page bitmap's serde form.
 /// One bit per byte: PAGE_SIZE bytes / 64 bits per u64 = PAGE_SIZE / 64 words.
 pub const BITMAP_WORDS: usize = (PAGE_SIZE / 64) as usize;
 const _: () = assert!(
@@ -92,34 +93,22 @@ const _: () = assert!(
     "bitmap must cover one bit per page byte"
 );
 
-/// Bits per bitmap word (u64).
-const BITMAP_BITS_PER_WORD: u16 = 64;
-
 /// One page overlay bitmap: one bit per page byte, lazily allocated.
 ///
-/// `MemoryPage` holds two of these (`symbolic_bitmap`, `multi_bitmap`). Before
-/// angr-12jjk.12 each accessor pair (`has_*`, `is_*`, `mark_*`, `clear_*`)
-/// open-coded the same `Option<Box<[u64; BITMAP_WORDS]>>` word/bit math once
-/// per overlay, so a bit-math fix could land in only one of the two copies.
-/// All of it lives here now; the `MemoryPage` methods are thin named wrappers
-/// that keep the public API (and its debug asserts) unchanged.
+/// `MemoryPage` holds two of these (`symbolic_bitmap`, `multi_bitmap`); the
+/// `MemoryPage` accessor pairs (`has_*`, `is_*`, `mark_*`, `clear_*`) are thin
+/// named wrappers over it (angr-12jjk.12), and the bit storage is a
+/// `PAGE_SIZE`-bit [`FixedBitSet`] (angr-mx00p.30).
 ///
 /// `None` means "no bits set" — the allocation is dropped by
-/// [`clear_range`](Self::clear_range) once the last bit clears, which is what
+/// [`clear_range`](Self::clear_range) once the last bit clears, and neither
+/// [`set_range`](Self::set_range) on an empty range nor
+/// [`from_words`](Self::from_words) on all-zero words allocates, which is what
 /// makes [`any_set`](Self::any_set) an O(1) `is_some()` check.
 #[derive(Clone, Default, PartialEq, Eq)]
-struct PageBitmap(Option<Box<[u64; BITMAP_WORDS]>>);
+struct PageBitmap(Option<FixedBitSet>);
 
 impl PageBitmap {
-    /// Decompose a page byte offset into (word index, bit index).
-    #[inline]
-    fn word_bit(offset: u16) -> (usize, u16) {
-        (
-            (offset / BITMAP_BITS_PER_WORD) as usize,
-            offset % BITMAP_BITS_PER_WORD,
-        )
-    }
-
     /// Whether any bit is set (O(1) — see the drop-when-empty invariant).
     #[inline]
     fn any_set(&self) -> bool {
@@ -129,35 +118,29 @@ impl PageBitmap {
     /// Whether the bit for byte `offset` is set.
     #[inline]
     fn is_set(&self, offset: u16) -> bool {
-        match &self.0 {
-            None => false,
-            Some(bitmap) => {
-                let (word_idx, bit_idx) = Self::word_bit(offset);
-                bitmap[word_idx] & (1u64 << bit_idx) != 0
-            }
-        }
+        self.0
+            .as_ref()
+            .is_some_and(|bits| bits.contains(usize::from(offset)))
     }
 
     /// Set bits `[offset, end)`, allocating the bitmap if needed. Setting can
     /// never empty the bitmap, so there is no drop step (unlike
     /// [`clear_range`](Self::clear_range)).
     fn set_range(&mut self, offset: u16, end: u16) {
-        let bitmap = self.0.get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
-        for i in offset..end {
-            let (word_idx, bit_idx) = Self::word_bit(i);
-            bitmap[word_idx] |= 1u64 << bit_idx;
+        if offset >= end {
+            return;
         }
+        self.0
+            .get_or_insert_with(|| FixedBitSet::with_capacity(PAGE_SIZE as usize))
+            .insert_range(usize::from(offset)..usize::from(end));
     }
 
     /// Clear bits `[offset, end)`, dropping the allocation when it becomes
     /// all-zero (angr-24pv4.3).
     fn clear_range(&mut self, offset: u16, end: u16) {
-        if let Some(bitmap) = &mut self.0 {
-            for i in offset..end {
-                let (word_idx, bit_idx) = Self::word_bit(i);
-                bitmap[word_idx] &= !(1u64 << bit_idx);
-            }
-            if bitmap.iter().all(|&w| w == 0) {
+        if let Some(bits) = &mut self.0 {
+            bits.remove_range(usize::from(offset)..usize::from(end));
+            if bits.is_clear() {
                 self.0 = None;
             }
         }
@@ -165,44 +148,42 @@ impl PageBitmap {
 
     /// Page byte offsets whose bit is set, ascending.
     fn set_offsets(&self) -> Vec<u16> {
-        let bitmap = match &self.0 {
-            Some(b) => b,
-            None => return Vec::new(),
-        };
-        let mut offsets = Vec::new();
-        for (word_idx, &word) in bitmap.iter().enumerate() {
-            if word == 0 {
-                continue;
-            }
-            let base = (word_idx as u16) * BITMAP_BITS_PER_WORD;
-            let mut bits = word;
-            while bits != 0 {
-                let bit = bits.trailing_zeros() as u16;
-                // overflow-ok: `word_idx < BITMAP_WORDS` and `bit < 64`, so the
-                // sum is a page offset < PAGE_SIZE — far below `u16::MAX`.
-                offsets.push(base + bit);
-                bits &= bits - 1; // Clear lowest set bit
-            }
-        }
-        offsets
+        // A bit index is a page offset < PAGE_SIZE, so the cast is lossless.
+        self.0
+            .as_ref()
+            .map_or_else(Vec::new, |bits| bits.ones().map(|i| i as u16).collect())
     }
 
-    /// Serde shadow form: `None` when no bits are set.
+    /// Serde shadow form: [`BITMAP_WORDS`] little-endian-bit `u64` words,
+    /// `None` when no bits are set.
     fn to_words(&self) -> Option<Vec<u64>> {
-        self.0.as_ref().map(|b| b.to_vec())
+        let bits = self.0.as_ref()?;
+        let mut words = vec![0u64; BITMAP_WORDS];
+        for i in bits.ones() {
+            words[i / 64] |= 1u64 << (i % 64);
+        }
+        Some(words)
     }
 
     /// Rebuild from the serde shadow form. A wrong-length word vector falls
-    /// back to "no bits set" so a corrupted snapshot still loads.
+    /// back to "no bits set" so a corrupted snapshot still loads, and an
+    /// all-zero one stays unallocated (the drop-when-empty invariant).
     fn from_words(words: Option<Vec<u64>>) -> Self {
-        PageBitmap(words.and_then(|v| {
-            if v.len() != BITMAP_WORDS {
-                return None;
+        let words = match words {
+            Some(w) if w.len() == BITMAP_WORDS => w,
+            _ => return PageBitmap(None),
+        };
+        let mut bits = FixedBitSet::with_capacity(PAGE_SIZE as usize);
+        for (word_idx, &word) in words.iter().enumerate() {
+            let mut rest = word;
+            while rest != 0 {
+                // overflow-ok: `word_idx < BITMAP_WORDS` and the bit index is
+                // < 64, so the sum is a page offset < PAGE_SIZE.
+                bits.insert(word_idx * 64 + rest.trailing_zeros() as usize);
+                rest &= rest - 1; // clear the lowest set bit
             }
-            let mut arr = [0u64; BITMAP_WORDS];
-            arr.copy_from_slice(&v);
-            Some(Box::new(arr))
-        }))
+        }
+        PageBitmap((!bits.is_clear()).then_some(bits))
     }
 }
 
@@ -286,8 +267,8 @@ impl Permission {
 ///
 /// Implements `Serialize`/`Deserialize` via the `MemoryPageData` shadow
 /// type — the `Arc<Vec<u8>>` collapses to an owned `Vec` and the
-/// `Box<[u64; BITMAP_WORDS]>` bitmaps collapse to `Vec<u64>` on the wire,
-/// rebuilding the Arc / Box on load. Symbolic AST values are NOT carried
+/// `FixedBitSet` bitmaps collapse to [`BITMAP_WORDS`] `u64` words on the
+/// wire, rebuilding the Arc / bitset on load. Symbolic AST values are NOT carried
 /// on the page itself (they live in `SymbolicMemory::symbolic_objects` etc.);
 /// only the per-byte symbolic/multi bitmaps are part of the snapshot.
 #[derive(Clone, Serialize, Deserialize)]
@@ -300,8 +281,8 @@ pub struct MemoryPage {
     /// Base address of the page.
     base_addr: u64,
     /// Bitmap tracking symbolic bytes: bit i set means byte i is symbolic.
-    /// BITMAP_WORDS u64s = PAGE_SIZE bits = one bit per byte in a page.
-    /// Boxed to keep MemoryPage small when not needed (empty = fully concrete).
+    /// PAGE_SIZE bits = one bit per byte in a page; unallocated when empty
+    /// (fully concrete).
     symbolic_bitmap: PageBitmap,
     /// Bitmap tracking Multi-cell bytes: bit i set means byte i carries
     /// lazy alternatives in `SymbolicMemory::multi_objects` (Phase 1 of
@@ -393,8 +374,8 @@ impl MemoryPage {
     /// overlay bitmaps match. A merge can skip such a page entirely, making merge
     /// cost proportional to *divergent* pages instead of *all shared* pages.
     ///
-    /// Bitmap comparison is a fixed 512-byte `[u64; BITMAP_WORDS]` check (O(1) per
-    /// page), independent of PAGE_SIZE; it is only reached when `data` already
+    /// Bitmap comparison is a fixed `PAGE_SIZE`-bit `FixedBitSet` compare (O(1)
+    /// per page); it is only reached when `data` already
     /// ptr-matches, so it is off the hot path for divergent pages.
     #[cfg(test)]
     #[inline]
@@ -558,8 +539,8 @@ impl MemoryPage {
 
 /// Serde shadow form for [`MemoryPage`].
 ///
-/// Collapses `Arc<Vec<u8>>` to `Vec<u8>` and `Box<[u64; BITMAP_WORDS]>`
-/// bitmaps to `Vec<u64>` on the wire. On deserialize, malformed bitmap
+/// Collapses `Arc<Vec<u8>>` to `Vec<u8>` and the `FixedBitSet` bitmaps to
+/// [`BITMAP_WORDS`] `u64` words on the wire. On deserialize, malformed bitmap
 /// lengths fall back to `None` (treated as "no symbolic bytes on this
 /// page"); the data buffer is right-padded / truncated to `PAGE_SIZE` so
 /// a corrupted snapshot still produces a structurally-valid page.
