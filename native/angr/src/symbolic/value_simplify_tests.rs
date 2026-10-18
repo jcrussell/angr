@@ -3,6 +3,7 @@
 
 use super::value_tests_support::raw_extract_node;
 use super::*;
+use crate::symbolic::Node;
 
 // =========================================================================
 // Expression simplification tests
@@ -110,7 +111,7 @@ fn test_reverse_double() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     // reverse(reverse(x)) → x
     let r = x.reverse(&ctx).reverse(&ctx);
-    assert!(matches!(r, RustBV::Symbolic { .. }));
+    assert_eq!(r.leaf_var(), x.leaf_var(), "expected x back, got {r:?}");
 }
 
 #[test]
@@ -158,13 +159,7 @@ fn test_reverse_wide_concrete_declines_fold_instead_of_overshifting() {
         let rev = RustBV::concrete(0x1122_3344, width).reverse(&ctx);
         assert_eq!(rev.width(), width, "width {width} must be preserved");
         assert!(
-            matches!(
-                rev,
-                RustBV::Expression {
-                    op: BVOp::Reverse,
-                    ..
-                }
-            ),
+            rev.node().is_some_and(|n| n.op == BVOp::Reverse),
             "width {width}: wide reverse must stay symbolic, got {rev:?}"
         );
     }
@@ -206,18 +201,17 @@ fn test_shl_concrete_amount_rewrites_to_concat() {
     // sym << 4 → Concat(Extract(27, 0, sym), 0^4)
     let r = x.shl(&four, &ctx);
     assert_eq!(r.width(), 32);
-    match r {
-        RustBV::Expression {
+    match r.node() {
+        Some(Node {
             op: BVOp::Concat,
             operands,
-            ..
-        } => {
+        }) => {
             assert_eq!(operands.len(), 2);
             assert_eq!(operands[1].as_u128(), Some(0)); // low bits are zero
             assert_eq!(operands[1].width(), 4);
             assert_eq!(operands[0].width(), 28); // top bits extracted from x
         }
-        other => panic!("expected Concat, got {other:?}"),
+        _ => panic!("expected Concat, got {r:?}"),
     }
     // Behavior preserved when LHS happens to be concrete (still constant-folds).
     let v = RustBV::concrete(0x1234, 32);
@@ -244,18 +238,17 @@ fn test_lshr_concrete_amount_rewrites_to_concat() {
     // sym >> 8 → Concat(0^8, Extract(31, 8, sym))
     let r = x.lshr(&eight, &ctx);
     assert_eq!(r.width(), 32);
-    match r {
-        RustBV::Expression {
+    match r.node() {
+        Some(Node {
             op: BVOp::Concat,
             operands,
-            ..
-        } => {
+        }) => {
             assert_eq!(operands.len(), 2);
             assert_eq!(operands[0].as_u128(), Some(0));
             assert_eq!(operands[0].width(), 8);
             assert_eq!(operands[1].width(), 24);
         }
-        other => panic!("expected Concat, got {other:?}"),
+        _ => panic!("expected Concat, got {r:?}"),
     }
     let r = x.lshr(&RustBV::concrete(32, 32), &ctx);
     assert_eq!(r.as_u128(), Some(0));
@@ -269,28 +262,26 @@ fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
     // sym >>> 4 → SignExt(4, Extract(31, 4, sym))  [extends 28-bit slice by 4 bits]
     let r = x.ashr(&four, &ctx);
     assert_eq!(r.width(), 32);
-    match r {
-        RustBV::Expression {
+    match r.node() {
+        Some(Node {
             op: BVOp::SignExt(4),
             operands,
-            ..
-        } => {
+        }) => {
             assert_eq!(operands[0].width(), 28);
         }
-        other => panic!("expected SignExt(4), got {other:?}"),
+        _ => panic!("expected SignExt(4), got {r:?}"),
     }
     // Beyond width: SignExt of MSB (1-bit slice extended by 31 bits).
     let r = x.ashr(&RustBV::concrete(64, 32), &ctx);
     assert_eq!(r.width(), 32);
-    match r {
-        RustBV::Expression {
+    match r.node() {
+        Some(Node {
             op: BVOp::SignExt(31),
             operands,
-            ..
-        } => {
+        }) => {
             assert_eq!(operands[0].width(), 1);
         }
-        other => panic!("expected SignExt(31), got {other:?}"),
+        _ => panic!("expected SignExt(31), got {r:?}"),
     }
 }
 
@@ -302,30 +293,28 @@ fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
     // sym * 8 → sym << 3 → Concat(Extract(28, 0, sym), 0^3)
     let r = x.mul(&eight, &ctx);
     assert_eq!(r.width(), 32);
-    match r {
-        RustBV::Expression {
+    match r.node() {
+        Some(Node {
             op: BVOp::Concat,
             operands,
-            ..
-        } => {
+        }) => {
             assert_eq!(operands[1].as_u128(), Some(0));
             assert_eq!(operands[1].width(), 3);
             assert_eq!(operands[0].width(), 29);
         }
-        other => panic!("expected Concat (via Shl), got {other:?}"),
+        _ => panic!("expected Concat (via Shl), got {r:?}"),
     }
     // Commutative case: 8 * sym → same shape.
     let r = eight.mul(&x, &ctx);
-    match r {
-        RustBV::Expression {
+    match r.node() {
+        Some(Node {
             op: BVOp::Concat,
             operands,
-            ..
-        } => {
+        }) => {
             assert_eq!(operands[1].as_u128(), Some(0));
             assert_eq!(operands[1].width(), 3);
         }
-        other => panic!("expected Concat (commutative), got {other:?}"),
+        _ => panic!("expected Concat (commutative), got {r:?}"),
     }
 }
 
@@ -355,7 +344,7 @@ fn test_extract_zero_ext() {
     let ext = x.zero_extend(32, &ctx); // 8-bit → 32-bit
     // Extract low 8 bits → original x
     let lo = ext.extract(7, 0, &ctx);
-    assert!(matches!(lo, RustBV::Symbolic { .. }));
+    assert_eq!(lo.leaf_var(), x.leaf_var(), "expected x back, got {lo:?}");
     assert_eq!(lo.width(), 8);
     // Extract high 8 bits → 0
     let hi = ext.extract(31, 24, &ctx);
@@ -369,7 +358,7 @@ fn test_extract_sign_ext_low_bits() {
     let ext = x.sign_extend(32, &ctx);
     // Extract low 8 bits → original x
     let lo = ext.extract(7, 0, &ctx);
-    assert!(matches!(lo, RustBV::Symbolic { .. }));
+    assert_eq!(lo.leaf_var(), x.leaf_var(), "expected x back, got {lo:?}");
     assert_eq!(lo.width(), 8);
 }
 

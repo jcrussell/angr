@@ -276,7 +276,17 @@ fn test_translate_into_cross_context_eval() {
     // Source context = default thread-local. Build a memory-load-shaped tree.
     let src = SymContext::new_mock();
     let x = RustBV::symbolic(&src, "x", 32);
-    let rev = x.reverse(&src); // Expression { Reverse, [x] }
+    // Built as an `Expression` so the `Symbolic` leaf's translation is what
+    // the leaf-context check below sees; `reverse` itself builds a clarirs
+    // `Ast`, which translates by lowering afresh in the target context.
+    let rev = RustBV::Expression {
+        id: RustBV::EXPRESSION_ID,
+        width: 32,
+        op: BVOp::Reverse,
+        operands: std::sync::Arc::from([x.clone()]),
+        memo: Default::default(),
+    };
+    let rev_ast = x.reverse(&src);
     let pin = x.eq(&RustBV::concrete(0x11223344, 32), &src);
 
     // Translate into a freshly-allocated, independent context. `Z3_translate`
@@ -292,6 +302,7 @@ fn test_translate_into_cross_context_eval() {
         "test bug: target equals source context",
     );
     let rev_t = rev.translate_into(&target);
+    let rev_ast_t = rev_ast.translate_into(&target);
     let pin_t = pin.translate_into(&target);
 
     // Every translated leaf AST must now belong to the target context.
@@ -309,6 +320,7 @@ fn test_translate_into_cross_context_eval() {
     let ctx_b = SymContext::new_mock();
     ctx_b.add_constraint(pin_t.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
     let got = ctx_b.eval(&rev_t);
+    let got_ast = ctx_b.eval(&rev_ast_t);
     Context::set_thread_local(&original);
 
     assert_eq!(
@@ -320,6 +332,7 @@ fn test_translate_into_cross_context_eval() {
         Some(0x44332211),
         "cross-context Reverse(x) eval must match the single-context result",
     );
+    assert_eq!(got_ast, got, "the clarirs form must translate to the same value");
 }
 
 #[cfg(feature = "vex-engine-z3")]

@@ -11,19 +11,19 @@ use super::*;
 /// `RustBV::PartialEq` on an `Expression` is node identity (same `op`/width
 /// plus a pointer-identical operand slice — see the impl's doc), not a
 /// structural walk, and its `Debug` stops at the operand *count*, so shape
-/// assertions need their own walker.
+/// assertions need their own walker. It reads through [`RustBV::leaf_var`]
+/// and [`RustBV::node`], so a leaf or node renders the same whether it is an
+/// `Expression`/`Symbolic` or a clarirs `Ast`.
 pub(super) fn bv_shape(bv: &RustBV) -> String {
-    match bv {
-        RustBV::Expression {
-            op,
-            width,
-            operands,
-            ..
-        } => {
-            let inner: Vec<String> = operands.iter().map(bv_shape).collect();
-            format!("Expr({op:?}, {width}, [{}])", inner.join(", "))
+    if let Some((name, width)) = bv.leaf_var() {
+        return format!("Leaf({name}, {width})");
+    }
+    match bv.node() {
+        Some(node) => {
+            let inner: Vec<String> = node.operands.iter().map(bv_shape).collect();
+            format!("Expr({:?}, {}, [{}])", node.op, bv.width(), inner.join(", "))
         }
-        other => format!("{other:?}"),
+        None => format!("{bv:?}"),
     }
 }
 

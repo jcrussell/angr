@@ -322,8 +322,8 @@ fn bv_cache_key_distinguishes_op_payload() {
 
     let lo = x.extract(7, 0, &ctx);
     let hi = x.extract(15, 8, &ctx);
-    assert!(matches!(lo, RustBV::Expression { .. }));
-    assert!(matches!(hi, RustBV::Expression { .. }));
+    assert!(lo.node().is_some());
+    assert!(hi.node().is_some());
 
     assert_ne!(
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &lo),

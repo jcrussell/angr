@@ -529,7 +529,10 @@ fn handle_concrete_store_symbolic_data_evicts_overlapping_symbolic_shadow() {
             .symbolic_store_load(&interp.pending_symbolic_stores, 0x6006, 2)
             .expect("load overlapping the surviving store B");
         assert_eq!(loaded.width(), 16);
-        let operand_debug = format!("{:?}", loaded.operands().expect("extract operand")[0]);
+        let operand_debug = format!(
+            "{:?}",
+            loaded.node().expect("extract operand").operands[0]
+        );
         assert!(
             operand_debug.contains("store_b"),
             "load must be extracted from the most recent store B, got {operand_debug}"

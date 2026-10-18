@@ -116,16 +116,9 @@ fn test_extract_no_ctx_canonicalizes_like_extract_into() {
     let wide = RustBV::symbolic(&ctx, "w", 32);
     let folded = wide.extract_no_ctx(23, 8).extract_no_ctx(7, 0);
     assert_eq!(bv_shape(&folded), bv_shape(&wide.extract(15, 8, &ctx)));
-    // Debug for a leaf symbol carries its allocated id (angr-sqfj8.99), which
-    // is drawn from a process-global counter — build the expectation from the
-    // actual id rather than hardcoding one.
-    let wide_id = match &wide {
-        RustBV::Symbolic { id, .. } => *id,
-        other => panic!("expected a leaf symbol, got {other:?}"),
-    };
     assert_eq!(
         bv_shape(&folded),
-        format!("Expr(Extract(15, 8), 8, [Symbolic(#{wide_id}, w, 32)])")
+        "Expr(Extract(15, 8), 8, [Leaf(w, 32)])"
     );
 
     // Rule 4: Extract above a ZeroExt's original width is the zero constant.
@@ -146,11 +139,9 @@ fn test_concat() {
 /// Helper: recursive depth of an expression AST. Concrete/symbolic
 /// leaves have depth 0; every Expression node adds one.
 fn ast_depth(bv: &RustBV) -> u32 {
-    match bv {
-        RustBV::Expression { operands, .. } => {
-            1 + operands.iter().map(ast_depth).max().unwrap_or(0)
-        }
-        _ => 0,
+    match bv.node() {
+        Some(node) => 1 + node.operands.iter().map(ast_depth).max().unwrap_or(0),
+        None => 0,
     }
 }
 

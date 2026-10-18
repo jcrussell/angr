@@ -1387,9 +1387,6 @@ enum ZExtCmp {
     UleSwapped,
 }
 
-/// Fold `Cmp(ZeroExt(k, x), BVV(c, W))` (and commuted variants) using the
-/// fact that `ZeroExt(k, x)` is always in the range `[0, 2^(W-k))`.
-///
 /// The ops [`RustBV::expr_node`] builds as clarirs nodes. Families switch
 /// over one at a time (angr-mx00p.12); the rest still build `Expression`s.
 fn builds_clarirs(op: &BVOp) -> bool {
@@ -1423,9 +1420,17 @@ fn builds_clarirs(op: &BVOp) -> bool {
             | BVOp::Sgt
             | BVOp::Sge
             | BVOp::Ite
+            | BVOp::ZeroExt(_)
+            | BVOp::SignExt(_)
+            | BVOp::Extract(..)
+            | BVOp::Concat
+            | BVOp::Reverse
     )
 }
 
+/// Fold `Cmp(ZeroExt(k, x), BVV(c, W))` (and commuted variants) using the
+/// fact that `ZeroExt(k, x)` is always in the range `[0, 2^(W-k))`.
+///
 /// Two outcomes:
 /// * Trivial decide — the comparison is structurally `true` or `false`
 ///   regardless of `x`. Returns `Self::concrete(0|1, 1)`. Bumps
