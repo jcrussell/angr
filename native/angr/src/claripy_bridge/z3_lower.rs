@@ -192,6 +192,9 @@ impl Lowerer<'_> {
         self.own(unsafe { Z3_mk_const(self.raw_ctx(), sym, sort) })
     }
 
+    /// A bitvector sort. Sorts are not reference-counted here: Z3 keeps the
+    /// one returned alive only until the next API call that builds a term,
+    /// so build it after every other operand of the call that uses it.
     fn bv_sort(&self, width: u32) -> Result<Z3_sort, BridgeError> {
         if width == 0 {
             return Err(conversion("zero-width bitvector"));
@@ -201,6 +204,8 @@ impl Lowerer<'_> {
             .ok_or_else(|| conversion("Z3_mk_bv_sort returned null"))
     }
 
+    /// A float sort, alive only until the next term-building Z3 call (see
+    /// [`Self::bv_sort`]).
     fn fp_sort(&self, sort: FSort) -> Result<Z3_sort, BridgeError> {
         // SAFETY: plain sort constructor on a live context.
         unsafe { Z3_mk_fpa_sort(self.raw_ctx(), sort.exponent, sort.mantissa + 1) }
@@ -438,15 +443,21 @@ impl Lowerer<'_> {
                 unsafe { Z3_mk_fpa_to_sbv(c, rm.as_z3_ast(), arg(0)?, *bits) }
             }
             AstOp::FpToFp(_, sort, rm) => {
-                let (sort, rm) = (self.fp_sort(*sort)?, self.rounding_mode(*rm)?);
+                // The rounding mode first: building it would free the sort.
+                let rm = self.rounding_mode(*rm)?;
+                let sort = self.fp_sort(*sort)?;
                 unsafe { Z3_mk_fpa_to_fp_float(c, rm.as_z3_ast(), arg(0)?, sort) }
             }
             AstOp::BvToFpSigned(_, sort, rm) => {
-                let (sort, rm) = (self.fp_sort(*sort)?, self.rounding_mode(*rm)?);
+                // The rounding mode first: building it would free the sort.
+                let rm = self.rounding_mode(*rm)?;
+                let sort = self.fp_sort(*sort)?;
                 unsafe { Z3_mk_fpa_to_fp_signed(c, rm.as_z3_ast(), arg(0)?, sort) }
             }
             AstOp::BvToFpUnsigned(_, sort, rm) => {
-                let (sort, rm) = (self.fp_sort(*sort)?, self.rounding_mode(*rm)?);
+                // The rounding mode first: building it would free the sort.
+                let rm = self.rounding_mode(*rm)?;
+                let sort = self.fp_sort(*sort)?;
                 unsafe { Z3_mk_fpa_to_fp_unsigned(c, rm.as_z3_ast(), arg(0)?, sort) }
             }
 

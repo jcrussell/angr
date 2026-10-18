@@ -87,6 +87,26 @@ fn float_ops_lower_with_ieee_semantics() {
     assert_eq!(check(&[constraint, not_three]), z3::SatResult::Unsat);
 }
 
+/// The conversions that take a rounding mode and a sort lower to working
+/// terms. Each used to build its sort before its rounding mode, and Z3 frees
+/// an unreferenced sort at the next call, so every one came back null.
+#[test]
+fn rounded_conversions_lower() {
+    let gc = &*GLOBAL_CONTEXT;
+    let rne = FPRM::NearestTiesToEven;
+    let minus_one = bvv(0xFFFF_FFFF, 32);
+    let cases = [
+        (gc.bv_to_fp_signed(minus_one.clone(), FSort::f64(), rne).unwrap(), -1.0),
+        (gc.bv_to_fp_unsigned(minus_one, FSort::f64(), rne).unwrap(), 4_294_967_295.0),
+        (gc.fp_to_fp(gc.fpv(1.5f32).unwrap(), FSort::f64(), rne).unwrap(), 1.5),
+    ];
+    for (got, want) in cases {
+        let differs = as_bool(&gc.neq(got.clone(), gc.fpv(want).unwrap()).unwrap());
+        // satresult-exempt: test oracle comparing two decided verdicts
+        assert_eq!(check(&[differs]), z3::SatResult::Unsat, "{got:?} != {want}");
+    }
+}
+
 /// `fp.min`/`fp.max` take the number over a NaN, `fp.fma` rounds once and
 /// `fp.roundToIntegral` follows its rounding mode: each `got != want` is unsat.
 #[test]
