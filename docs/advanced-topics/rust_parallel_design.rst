@@ -4,8 +4,8 @@ Rust engine: parallel exploration threading model — design comparison
 This document compares threading models for parallel exploration in
 the Rust engine (``angr-59jk``, ``angr-59jk.1``). The empirical
 translate-cost numbers
-quoted below come from the companion spike ``angr-59jk.2``
-(``native/angr/tests/z3_translate_spike.rs``).
+quoted below come from the companion spike ``angr-59jk.2`` (its
+reproducer was deleted with the translate path, angr-mx00p.15).
 
 Audience: contributors working on the parallel stack, or judging how a
 change interacts with it. The Option A / Option B comparison is kept as
@@ -74,8 +74,7 @@ parallel SAT.
 Empirical input: Z3_translate cost
 ----------------------------------
 
-``angr-59jk.2`` measured ``Z3_translate`` per AST node
-(``native/angr/tests/z3_translate_spike.rs``, which stays runnable). The
+``angr-59jk.2`` measured ``Z3_translate`` per AST node. The
 cost is linear in node count with a small constant, so a whole exported
 state of a few thousand nodes moves between contexts in single-digit
 milliseconds. That is negligible against a task of tens of milliseconds
@@ -126,8 +125,7 @@ context via ``Z3_translate``.
 API
 ~~~
 
-The z3-patched crate already exposes the Translate trait at
-``native/z3-patched/src/translate/mod.rs`` (``trait Translate``) —
+The ``z3`` crate already exposes the ``z3::Translate`` trait —
 its blanket ``unsafe impl<T: Ast> Translate for T`` wraps ``Z3_translate`` for
 every AST type. The ``PrepareSynchronized`` submodule
 (``translate/synchronization/``) further wraps it for multi-threaded
@@ -179,7 +177,7 @@ Cons
 Implementation cost
 ~~~~~~~~~~~~~~~~~~~
 
-Medium. Reusable infrastructure exists in z3-patched. The work
+Medium. Reusable infrastructure exists in the ``z3`` crate. The work
 breaks into:
 
 #. Move ``SymContext`` ownership from ``Arc`` to per-worker
@@ -292,7 +290,7 @@ Comparison
      - Option B (single context + mutex)
    * - Implementation complexity
      - Medium. Per-worker context, per-context caches, scheduler.
-       z3-patched primitives exist.
+       ``z3`` crate primitives exist.
      - Low-medium plumbing, high audit cost. Every Z3 access path
        must go through the lock.
    * - Throughput at 2 workers
@@ -355,7 +353,7 @@ Rationale:
 #. Option B's lock-on-every-Z3-call shape pessimizes exactly the
    workloads where parallelism would help most — long ``solver.check()``
    calls become serialization points across all workers.
-#. The z3-patched ``Translate`` infrastructure is production-ready.
+#. The ``z3`` crate's ``Translate`` infrastructure is production-ready.
    The remaining work is on the angr side: per-worker ``SymContext``,
    scheduler, cache partitioning.
 #. The memory cost of Option A is real (worst case N× resident set)
@@ -381,8 +379,8 @@ names the bead that holds the measurements.
 
 * **Snapshot transport, not translate-on-steal** (``angr-1ilq``,
   ``angr-1ilq.1``). The original plan had the stealing worker call
-  ``SymContext::translate_state`` to pull a victim state into its own
-  context. Adversarial review showed that is a data race: it reads the
+  a ``translate_state`` (since deleted, angr-mx00p.15) to pull a victim
+  state into its own context. Adversarial review showed that is a data race: it reads the
   *source* Z3 context on the *stealing* thread while the victim worker
   is still using it (hazard C — Z3 is single-threaded per context). The
   shipped transport is a ``StateMigrationPayload`` built from the same
@@ -517,12 +515,10 @@ References
 
 * Provenance: ``angr-59jk`` — design of parallel exploration with
   per-thread Z3 contexts.
-* Companion spike: ``angr-59jk.2`` — Z3_translate cost per node,
-  ``native/angr/tests/z3_translate_spike.rs``.
+* Companion spike: ``angr-59jk.2`` — Z3_translate cost per node.
 * Excluded alternative: ``angr-gfay`` (closed) — ``Z3 parallel.enable=true``
   is correctness-breaking in this codebase; documented in bd memory
   ``avoid-z3-parallel-enable``.
-* z3-patched ``Translate`` trait: ``native/z3-patched/src/translate/mod.rs``.
 * User-facing engine doc: :doc:`rust_engine` (see "Benchmarks slower
   than Python" for the workloads this work targets).
 * Bimodal variance background: :doc:`rust_bimodal_variance`.

@@ -176,7 +176,7 @@ Store(mem, addr, val)``. Loads: ``Select(mem, addr)``. Let Z3 simplify
 ``Select(Store(...))``.
 
 z3-rs (the version pinned in ``native/angr/Cargo.toml``) does
-expose ``Array::store``/``select`` — see ``native/z3-patched/src/ast/array.rs``.
+expose ``Array::store``/``select`` (``z3::ast::Array``).
 No version bump needed. There is no
 existing Z3 array usage anywhere under
 ``native/angr/src/symbolic/``.

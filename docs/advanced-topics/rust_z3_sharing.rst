@@ -1,40 +1,32 @@
-Rust ↔ Python shared Z3 context
-===============================
+Z3 contexts in the Rust engine
+==============================
 
-The Rust engine and Python's ``z3-solver`` package load the **same**
-``libz3.so`` shared library and thread-local Z3 context. This is what
-lets a claripy AST built on the Python side be re-asserted by Rust as
-a raw ``Z3_ast`` pointer without rebuild, and conversely lets
-``RustSolverContext.eval(...)`` return a value Python can wrap into a
-``claripy.BVV`` directly. This page documents how the sharing is wired
-in, the lifecycle and push/pop discipline that every consumer must
-respect, and the counters exposed for inspecting the resulting solver
-state.
+The Rust engine solves with its own Z3 contexts, one per thread, through
+the upstream ``z3`` crate. Python never hands it a Z3 pointer: claripy is
+clarirs, so a claripy AST reaching the engine is a clarirs term, and
+``claripy_bridge::z3_lower`` rebuilds it in the calling thread's Z3
+context (``Context::thread_local()``), memoizing each lowered node while
+the node lives. ``RustSolverContext.eval(...)`` returns plain values that
+Python wraps into ``claripy.BVV``. This page documents the context
+lifecycle, the push/pop discipline every consumer must respect, and the
+counters exposed for inspecting solver state.
 
 This page is companion to :doc:`rust_engine` (overview, options,
 benchmarks). See :doc:`rust_engine_decisions` for why a cross-state
-shared *solver* (distinct from the shared *context* documented here)
-was investigated and ultimately landed as opt-in only.
+shared *solver* was investigated and ultimately landed as opt-in only.
 
-Why a single libz3.so is mandatory
-----------------------------------
+Where Z3 ASTs come from
+-----------------------
 
 Z3 represents every AST as a ``Z3_ast`` pointer into a parent
-``Z3_context``. AST pointers are **only** valid within their owning
-context, and the context tracks its own reference-counted heap.
-A Rust process that linked against a *different* ``libz3.so`` than the
-Python ``z3-solver`` package would see the two contexts as separate
-universes: claripy's ``z3.BoolRef.ast`` pointer would point into
-heap memory the Rust-side ``z3::Context`` knows nothing about,
-producing memory corruption or silent assertion drops the moment the
-pointer is dereferenced.
-
-The native fast paths (e.g. ``RustSolverContext::add_constraint_ast``)
-extract the raw ``Z3_ast`` out of claripy's ``z3`` backend via
-``native/angr/src/solver/z3_ast_extract.rs::extract_z3_ast_ptr`` and call
-``Z3_solver_assert`` on the Rust side. This is sound only because the
-build pipeline guarantees both sides resolve ``libz3.so`` to the same
-on-disk file at process startup.
+``Z3_context``, valid only within that context. The engine keeps every
+AST it builds in the thread-local context of the thread that built it:
+``RustBV`` values are clarirs terms with a lazy per-value Z3 memo, and
+claripy ASTs from Python are lowered by
+``native/angr/src/solver/z3_ast_extract.rs::extract_z3_ast_ptr`` (through
+``claripy_bridge::lower_claripy_ast``) before ``Z3_solver_assert`` sees
+them. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
+its own; the two never exchange pointers.
 
 The solver surface is split across the files below (angr-9ke6b.205);
 ``solver.rs`` and ``handle_api.rs`` both contribute ``#[pymethods]`` to the
@@ -86,8 +78,8 @@ Thread-local Z3 context
 
 ``z3-rs`` (from 0.19) made the Z3 context thread-local: every ``SymContext``
 constructed on the same thread shares one ``Z3_context``. This is
-both an opportunity (raw-AST passthrough, ``Z3_inc_ref``-free reuse)
-and a constraint:
+both an opportunity (ASTs reuse across states on a thread without
+translation) and a constraint:
 
 * **One context per thread, never crossed.** Crossing a Z3 AST or
   solver between OS threads is undefined. The engine does support
@@ -166,11 +158,10 @@ Z3 exposes ``Z3_solver_translate`` (``Solver::clone`` in z3-rs) which
 *looks* like it would skip the replay by copying the parent's
 assertion list directly. It is structurally unsuitable: when source
 and destination contexts are the same — the case for every fork under
-our shared-context design — ``Z3_solver_translate`` returns a solver
-with **zero** assertions, silently losing the entire constraint set.
-A standalone reproducer lives at
-``native/angr/tests/z3_translate_spike.rs``; this engine therefore never
-uses ``Z3_solver_translate`` to fork a solver.
+our one-context-per-thread design — ``Z3_solver_translate`` returns a
+solver with **zero** assertions, silently losing the entire constraint
+set (measured in ``angr-59jk.2``); this engine therefore never uses
+``Z3_solver_translate`` to fork a solver.
 
 Push/pop discipline
 -------------------
@@ -333,7 +324,7 @@ merged into ``mgr.stats`` for convenience:
    print(f"assume conc:     {stats['z3_assume_concrete']:>8d}")
    print(f"assume sym:      {stats['z3_assume_symbolic']:>8d}")
 
-Counter cheat-sheet relevant to shared-context behavior:
+Counter cheat-sheet relevant to per-context solver behavior:
 
 * ``z3_check_count`` / ``z3_check_time_ns`` — wall time the
   process spent inside ``solver.check()``.
@@ -345,10 +336,7 @@ Counter cheat-sheet relevant to shared-context behavior:
   ``to_z3_bool()`` entry calls, **not** the number of ``Z3_mk_*`` FFI
   calls: a single entry recursively builds the whole ``RustBV`` tree,
   so one increment can cover hundreds of Z3 node constructions on a
-  deep expression. Useful for spotting benchmarks that hit the raw-AST
-  passthrough path (low value) vs. benchmarks that fall through to
-  ``claripy_to_rustbv`` AST rebuild (high value) — but do not read it
-  as node-construction volume.
+  deep expression. Do not read it as node-construction volume.
 * ``z3_ast_cache_miss`` / ``z3_ast_cache_hit`` / ``z3_ast_memo_hit`` —
   per-node accounting inside ``to_z3_ast_cached``. A miss is a unique
   ``RustBV`` pointer visited in a conversion, a hit is a subtree shared
