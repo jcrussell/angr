@@ -51,7 +51,6 @@ fn pending_with_one_fork(
         pre_callback_snapshot: snapshot,
         reason,
         jumpkind: None,
-        solver_ctx: None,
         deferred_forks: vec![crate::callbacks::DeferredFork {
             branch_addr: BRANCH_ADDR,
             path_taken: false,

@@ -2974,8 +2974,8 @@ fast path documented below.
 
 The rules below cover every ``#[pyclass]`` / ``#[pymethods]`` /
 ``#[pyfunction]`` a user script is likely to drive directly:
-``RustExplorationManager``, ``RustSimState``, ``RustSolverContext``,
-``RustBVHandle`` and ``PythonCallbacks``. The fuzzer, icicle and
+``RustExplorationManager``, ``RustSimState``, ``RustSolverContext``
+and ``PythonCallbacks``. The fuzzer, icicle and
 automaton FFI are exercised only by their own integration tests and are
 outside this contract.
 
@@ -3061,23 +3061,8 @@ Equally, ``addr`` values used as map keys (``set_state_symbolic_pages``,
 ``addr_to_ast``, ``hook_symbolic_memory``) are stored verbatim — a
 malformed address just lives in the map and is ignored on lookup.
 
-BV inputs (``RustBVHandle``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``RustBVHandle`` (``symbolic/handle.rs``, ``struct RustBVHandle``) is a
-pure value type:
-``id: u64``, ``width: u32``, ``concrete: Option<u128>``. It carries
-**no raw Rust pointer** — Python only gets back a numeric handle.
-The class is ``#[derive(Clone)]``; ``__eq__`` and ``__hash__`` are
-``id``-based, so a forged handle compares equal to a real one with
-the same ID. The symbol-table lookup that resolves the handle to a
-``RustBV`` (``RustSymbolTable``) returns ``Option<…>`` on miss — no
-UB risk from forged or stale IDs. Note that ids are unique only within
-one table lineage: ``RustSymbolTable::fork`` continues the child's
-counter from the parent's rather than partitioning the id space, so two
-*sibling* tables (the tables of two states forked from the same parent)
-can bind the same id to unrelated values. Comparing or dict-keying
-handles drawn from sibling-forked states is therefore unsound.
+BV inputs
+~~~~~~~~~
 
 Claripy AST inputs (``add_constraint_ast``, ``eval``,
 ``import_symbolic_memory``, etc.) flow through ``claripy_to_rustbv``

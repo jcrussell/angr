@@ -1,9 +1,8 @@
 //! Bound checks for externally-controlled bitvector widths and Extract bounds.
 //!
 //! Every value that reaches [`RustBV`](super::RustBV)'s constructors from
-//! *outside* the engine — a claripy AST imported by `claripy_bridge::import`,
-//! a width or bit range passed to the handle-based bypass API in
-//! `solver::handle_api` — carries a width the caller chose. `RustBV::concrete`
+//! *outside* the engine — a claripy AST imported by `claripy_bridge::import`
+//! — carries a width the caller chose. `RustBV::concrete`
 //! / `RustBV::symbolic` / the structural ops validate none of it: the only
 //! guards downstream (`value_ops::truncate_into`, `value_ops::drive_extract`)
 //! are `debug_assert!`s, which are compiled out of the `release` profile the
@@ -12,9 +11,9 @@
 //! not a catchable Python exception), and an absurd width reaches Z3 as a
 //! multi-gigabit sort allocation (angr-c7xno.92/.93/.94).
 //!
-//! So the checks live here, once, and both trust boundaries call them. They
-//! return the message rather than a typed error because the two callers report
-//! through different channels (`PyValueError` vs `BridgeError`).
+//! So the checks live here, once, apart from the boundary that calls them.
+//! They return the message rather than a typed error so the caller picks the
+//! error channel (`BridgeError::InvalidArgs` at the claripy import).
 
 /// Largest bitvector width accepted from an external caller.
 ///
@@ -23,8 +22,8 @@
 /// 1024-bit BVs the solver round-trip tests use — while still refusing the
 /// `u32::MAX`-shaped widths that would have Z3 allocate a half-gigabyte sort.
 /// Width **0** is deliberately allowed: a zero-width concrete `RustBV` is a
-/// supported degenerate value (see `test_create_concrete_zero_width_round_trip`
-/// in `tests/engines/rust/test_plugins.py`).
+/// supported degenerate value, the empty bitvector's single inhabitant (see
+/// `RustBV::symbolic`'s width-0 collapse).
 pub const MAX_BV_WIDTH: u32 = 1 << 20;
 
 /// Reject a width above [`MAX_BV_WIDTH`], naming `op` in the message.

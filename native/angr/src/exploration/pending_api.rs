@@ -205,34 +205,6 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _set_pending_register_symbolic(
-        &mut self,
-        state_id: u64,
-        name: &str,
-        handle_id: u64,
-    ) -> PyResult<()> {
-        self.with_pending_mut(state_id, |pending| {
-            let bv = if let Some(ref solver) = pending.solver_ctx {
-                solver
-                    .symbol_table()
-                    .get(handle_id)
-                    .ok_or_else(|| crate::solver::invalid_handle_id(&[handle_id]))?
-            } else {
-                return Err(PyRuntimeError::new_err(
-                    "no solver context in pending state",
-                ));
-            };
-
-            if pending.state.set_register(name, bv) {
-                Ok(())
-            } else {
-                Err(PyValueError::new_err(format!(
-                    "failed to set register: {name}"
-                )))
-            }
-        })
-    }
-
     pub(crate) fn _set_pending_register_symbolic_ast(
         &mut self,
         py: Python<'_>,

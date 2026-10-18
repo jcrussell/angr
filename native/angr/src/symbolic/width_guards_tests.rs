@@ -13,10 +13,10 @@ fn test_check_bv_width_allows_zero_and_ordinary_widths() {
 #[test]
 fn test_check_bv_width_rejects_above_max() {
     for w in [MAX_BV_WIDTH + 1, 1 << 30, u32::MAX] {
-        let err = check_bv_width("create_symbolic", w)
+        let err = check_bv_width("BVS", w)
             .expect_err("width {w} should be rejected")
             .to_string();
-        assert!(err.contains("create_symbolic"), "op name missing: {err}");
+        assert!(err.contains("BVS"), "op name missing: {err}");
         assert!(err.contains(&w.to_string()), "width missing: {err}");
     }
 }

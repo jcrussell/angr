@@ -1,8 +1,7 @@
 //! claripy AST -> RustBV import (the op-dispatch conversion path).
 //!
 //! Entry point `claripy_to_rustbv` walks a claripy expression tree and builds
-//! the equivalent `RustBV`, with a `RustBVHandle` fast path
-//! (`try_handle_to_rustbv`).
+//! the equivalent `RustBV`.
 //!
 //! claripy is clarirs, so an AST of this extension's own claripy type is
 //! walked natively ([`import_clarirs`]): the `AstRef` behind it is read
@@ -18,30 +17,9 @@ use pyo3::types::PyTuple;
 use crate::claripy::ast::base::Base;
 use crate::claripy::ast::opstring::ToOpString;
 
-use crate::symbolic::{
-    RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind, check_bv_width,
-    check_extract_bounds,
-};
+use crate::symbolic::{RustBV, SymContext, SymbolKind, check_bv_width, check_extract_bounds};
 
 use super::{BridgeError, extract_int_value};
-
-/// Try to extract a RustBV from a RustBVHandle via the symbol table.
-///
-/// This is the fast path for handle-based operations. If the object is a
-/// RustBVHandle, we look up the RustBV directly from the symbol table,
-/// completely bypassing claripy AST conversion.
-///
-/// Returns None if the object is not a handle or the handle ID is not found.
-pub(crate) fn try_handle_to_rustbv(
-    obj: &Bound<'_, PyAny>,
-    symbol_table: &RustSymbolTable,
-) -> Option<RustBV> {
-    if let Ok(handle) = obj.extract::<RustBVHandle>() {
-        symbol_table.get(handle.id())
-    } else {
-        None
-    }
-}
 
 /// Try to extract a concrete BVV value directly from a claripy AST.
 /// Returns Some((value, width)) if the AST is a BVV, None otherwise.
@@ -77,10 +55,8 @@ pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
 /// that boundary, so the check has to be here or it does not exist in the
 /// shipped `release` profile. A mismatch reaching `RustBV::add`/`ult`/... in
 /// release builds a Z3 term out of two different sorts, which aborts the
-/// process under `panic = "abort"` rather than raising into Python; the same
-/// reasoning is written up at `solver::handle_api`'s
-/// `reject_ite_width_mismatch`, the mirror of this guard at the handle-based
-/// boundary.
+/// process under `panic = "abort"` rather than raising into Python, and the
+/// same holds for `Z3_mk_ite` with mismatched then/else sorts.
 ///
 /// The "claripy already validates this" assumption does not hold
 /// unconditionally: claripy's `length_same_check` is gated behind
@@ -113,9 +89,7 @@ fn check_same_width(op: &str, left: &RustBV, right: &RustBV) -> Result<(), Bridg
 /// multi-gigabit sort for. So: `checked_add` to refuse rather than saturate (an
 /// identity, not a size — see bd memory
 /// `invariant-overflow-fix-refuse-not-saturate-identities`), then
-/// [`check_bv_width`] on the sum. Mirrors `solver::handle_api`'s
-/// `reject_concat_overflow`, the same guard for the same derived-width ops at
-/// the other trust boundary.
+/// [`check_bv_width`] on the sum.
 fn extended_width(op: &str, source_width: u32, extend_bits: u32) -> Result<u32, BridgeError> {
     let new_width = source_width.checked_add(extend_bits).ok_or_else(|| {
         BridgeError::InvalidArgs(format!(

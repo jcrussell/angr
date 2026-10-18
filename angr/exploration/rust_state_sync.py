@@ -1460,8 +1460,8 @@ class RustStateSyncMixin:
     def _sync_symbolic_register_to_rust(self, reg_name: str, value):
         """Sync a symbolic register value to Rust pending state.
 
-        Tries direct AST sync first (best approach), falls back to handle-based
-        sync if the direct method is not available.
+        Syncs the claripy AST directly; if the manager lacks that method, the
+        AST is registered as a handle for later retrieval.
         """
         try:
             # Best approach: directly sync claripy AST to Rust
@@ -1471,15 +1471,7 @@ class RustStateSyncMixin:
                     l.debug(f"Synced symbolic register {reg_name} to Rust via AST")
                 return
 
-            # Fallback: use handle-based sync
-            if hasattr(self._rust_mgr, "claripy_ast_to_handle"):
-                handle = self._rust_mgr.claripy_ast_to_handle(value)
-                self._rust_mgr.set_pending_register_symbolic(self._current_callback_state_id, reg_name, handle.id())
-                if _DBG:
-                    l.debug(f"Synced symbolic register {reg_name} to Rust via handle")
-                return
-
-            # Final fallback: just register the handle for later retrieval
+            # Fallback: just register the handle for later retrieval
             handle_id = id(value)
             self._register_handle(handle_id, value)
             if _DBG:

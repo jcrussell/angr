@@ -488,9 +488,8 @@ impl RustBV {
     /// a caller-chosen width that `check_bv_width` deliberately permits to be 0
     /// (see `width_guards`, where 0 is documented as a supported *concrete*
     /// degenerate value) — so `claripy.BVS(name, 0)` imported through
-    /// `claripy_bridge::import`, a restored snapshot carrying a width-0
-    /// `Symbolic`, and `RustSolverContext::create_symbolic(name, 0)` were each a
-    /// live process abort (angr-fs8kb.28).
+    /// `claripy_bridge::import` and a restored snapshot carrying a width-0
+    /// `Symbolic` were each a live process abort (angr-fs8kb.28).
     ///
     /// The empty bitvector has exactly one inhabitant, so a width-0 *symbolic*
     /// leaf denotes the same single value a width-0 concrete does: collapsing it

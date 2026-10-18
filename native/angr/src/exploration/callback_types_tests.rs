@@ -22,7 +22,6 @@ fn jumpkind_or_boring_reports_the_recorded_jumpkind() {
         None,
         CallbackReason::FindPredicate { addr: 0x400000 },
         "Ijk_Call",
-        None,
         ForkBundle::empty(),
     );
 

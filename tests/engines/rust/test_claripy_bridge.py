@@ -140,9 +140,8 @@ class TestClaripyBridgeImport:
 class TestClaripyBridgeWidthBounds:
     """import.rs must bound caller-chosen widths (angr-0jh0j.8).
 
-    ``width_guards.rs``'s module doc names *two* trust boundaries — the handle
-    API in ``solver/handle_api.rs`` and this one — but only the ``Extract`` arm
-    here actually called into it. ``BVV``/``BVS`` took their width straight from
+    ``width_guards.rs`` holds the bound checks for this trust boundary, but
+    only the ``Extract`` arm here used to call into it. ``BVV``/``BVS`` took their width straight from
     the claripy AST, and ``ZeroExt``/``SignExt`` derived one with unchecked
     ``u32`` addition, so a Python-chosen width reached Z3 as a multi-gigabit
     sort allocation (or, once the sum wrapped, as a silently *narrowing*

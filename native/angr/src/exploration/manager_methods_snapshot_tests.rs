@@ -25,7 +25,6 @@ fn pending_for(state: RustSimState) -> PendingCallback {
             message: "pending".to_string(),
         },
         jumpkind: None,
-        solver_ctx: None,
         deferred_forks: Vec::new(),
         stored_conditions: FxHashMap::default(),
         fork_snapshots: FxHashMap::default(),

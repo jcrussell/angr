@@ -19,8 +19,8 @@
 //! this module stays `debug_assert!` and is deliberately compiled out of
 //! release. They sit on the per-op hot path (one per bitvector operation),
 //! and a width mismatch is not silent in release: the Python boundary rejects
-//! it up front in [`super::table`]'s binary-op macro (`BinaryOpError::
-//! WidthMismatch`), and anything that slipped past hits a Z3 sort error.
+//! it up front (`claripy_bridge::import`'s `check_same_width`), and anything
+//! that slipped past hits a Z3 sort error.
 //! The same reasoning covers `value_z3.rs`, `context.rs`, `constraint_ops.rs`
 //! and `solving_ops.rs`. Do NOT bulk-promote these — see the memory
 //! `invariant-assert-not-debug-assert-in-release` for the checks that *do*
@@ -160,10 +160,9 @@ macro_rules! define_rotate_pair {
             match (self.as_u128(), amount.as_u128()) {
                 (Some(v), Some(a)) => {
                     // `w == 0` is a supported degenerate value (see
-                    // `MAX_BV_WIDTH`'s doc in `symbolic::width_guards`) and is
-                    // reachable from Python via `create_concrete(0, 0)` +
-                    // `op_rotl` — the `a % w` reduction below would be an
-                    // unconditional `% 0` panic in every profile (angr-309bq).
+                    // `MAX_BV_WIDTH`'s doc in `symbolic::width_guards`), and
+                    // the `a % w` reduction below would be an unconditional
+                    // `% 0` panic in every profile (angr-309bq).
                     // Every rotate of a 0-bit value is the identity, so it
                     // takes the `amt == 0` arm.
                     let amt = if w == 0 { 0 } else { (a % w as u128) as u32 };
@@ -919,9 +918,9 @@ impl RustBV {
     #[inline]
     pub fn eq_into(self, other: Self, ctx: &SymContext) -> Self {
         // Equal width is an invariant here, matching `ne_into` and the arith/cmp
-        // siblings. The Python boundary (`RustSymbolTable::op_eq` via the
-        // `op_binary!` macro) rejects a width mismatch with a `PyValueError`
-        // before this is reached; internal callers are well-typed (angr-ph300.32).
+        // siblings. The claripy import boundary (`claripy_bridge::import`'s
+        // `check_same_width`) rejects a width mismatch before this is reached;
+        // internal callers are well-typed (angr-ph300.32).
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(u128::from(a == b), 1),

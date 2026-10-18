@@ -28,19 +28,14 @@ claripy ASTs from Python are lowered by
 them. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
 its own; the two never exchange pointers.
 
-The solver surface is split across the files below (angr-9ke6b.205);
-``solver.rs`` and ``handle_api.rs`` both contribute ``#[pymethods]`` to the
-same ``RustSolverContext``:
+The solver surface is split across the files below (angr-9ke6b.205):
 
 * ``native/angr/src/solver.rs`` — the Python-boundary error mapping and
   the claripy-AST API (``add_constraint_ast``, ``eval*``, ``min``,
   ``max``, ``push``/``pop``, ``fork``).
-* ``native/angr/src/solver/handle_api.rs`` — the handle-based
-  claripy-bypass API (symbol-table lifecycle plus the ``op_*``
-  arithmetic wrappers), which never builds a claripy AST at all.
 * ``native/angr/src/solver/z3_ast_extract.rs`` — raw ``Z3_ast``-pointer
   extraction, sort-checked wrapping and evaluation; every ``unsafe`` on
-  this surface lives here. Unlike its siblings it exports *no*
+  this surface lives here. Unlike ``solver.rs`` it exports *no*
   ``#[pymethods]``: ``Z3AstPtr`` owns a Z3 refcount and is not
   PyO3-bridgeable, so these are internal helpers the claripy-AST API in
   ``solver.rs`` calls.

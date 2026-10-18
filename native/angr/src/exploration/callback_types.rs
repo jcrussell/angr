@@ -5,7 +5,6 @@
 //! the state (and deferred-fork bookkeeping) parked while that callback runs.
 
 use crate::callbacks::DeferredFork;
-use crate::solver::RustSolverContext;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::vex::ir::JumpKind;
@@ -105,8 +104,6 @@ pub(crate) struct PendingCallback {
     pub(crate) reason: CallbackReason,
     /// Jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
     pub(crate) jumpkind: Option<String>,
-    /// Forked solver context for Python callbacks.
-    pub(crate) solver_ctx: Option<RustSolverContext>,
     /// Deferred forks accumulated before the callback.
     /// These should be processed when the callback returns.
     pub(crate) deferred_forks: Vec<DeferredFork>,
@@ -126,7 +123,6 @@ impl PendingCallback {
             pre_callback_snapshot: None,
             reason,
             jumpkind: None,
-            solver_ctx: None,
             deferred_forks: Vec::new(),
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
@@ -140,7 +136,6 @@ impl PendingCallback {
         pre_callback_snapshot: Option<RustSimState>,
         reason: CallbackReason,
         jumpkind: &str,
-        solver_ctx: Option<RustSolverContext>,
         forks: ForkBundle,
     ) -> Self {
         let ForkBundle {
@@ -153,7 +148,6 @@ impl PendingCallback {
             pre_callback_snapshot,
             reason,
             jumpkind: Some(jumpkind.to_string()),
-            solver_ctx,
             deferred_forks,
             stored_conditions,
             fork_snapshots,

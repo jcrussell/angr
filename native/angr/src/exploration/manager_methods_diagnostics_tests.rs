@@ -193,7 +193,6 @@ fn analyze_constraint_sharing_walks_parked_callback_and_bounce_states() {
             pre_callback_snapshot: Some(pre_callback_snapshot),
             reason: CallbackReason::Syscall { num: Some(60) },
             jumpkind: None,
-            solver_ctx: None,
             deferred_forks: Vec::new(),
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),

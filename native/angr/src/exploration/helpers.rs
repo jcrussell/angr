@@ -25,8 +25,8 @@
 //! - **Callback argument extraction** — `extract_procedure_args` /
 //!   `extract_syscall_args` / `get_return_addr` marshal a state's ABI registers
 //!   into the values a Python callback receives.
-//! - **Callback solver setup** — the free fn [`prepare_shared_callback_solver`],
-//!   the shared pre-callback-snapshot + shared-solver-context preamble.
+//! - **Callback snapshot setup** — the free fn [`pre_callback_snapshot_for`],
+//!   the pre-callback fork base that deferred forks need.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]` and has no
@@ -850,30 +850,6 @@ pub(crate) fn pre_callback_snapshot_for(
     } else {
         Some(state.fork())
     }
-}
-
-/// Prepare the per-callback solver context for a Python round-trip.
-///
-/// Two things every "return to Python" exit needs: (1) a pre-callback
-/// snapshot of `state`, but *only* when deferred forks need it — `state.fork()`
-/// clones the Z3 solver, so we skip it otherwise; and (2) a
-/// `RustSolverContext` wrapping the state's shared solver (an O(1) `Rc` clone,
-/// not a fork) so the callback evaluates against the live constraints.
-///
-/// Returns `(pre_callback_snapshot, shared_ctx)` ready to hand to
-/// `PendingCallback::with_context`. `dispatch_bounce`'s Hook and
-/// `PythonVEXFallback` arms (`stepping_bounce.rs`) call
-/// [`pre_callback_snapshot_for`] directly instead — the former because it
-/// interleaves fork-timing profiling around the snapshot, the latter because it
-/// deliberately hands the callback no shared solver context.
-pub(crate) fn prepare_shared_callback_solver(
-    state: &RustSimState,
-    deferred_forks: &[DeferredFork],
-) -> (Option<RustSimState>, RustSolverContext) {
-    let pre_callback_snapshot = pre_callback_snapshot_for(state, deferred_forks);
-    let solver_ref = state.solver();
-    let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-    (pre_callback_snapshot, shared_ctx)
 }
 
 /// Pop the return-address slot off the stack after a native procedure returns.

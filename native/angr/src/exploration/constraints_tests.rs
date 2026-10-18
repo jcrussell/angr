@@ -70,7 +70,6 @@ fn pending_with_all_contexts() -> PendingCallback {
         pre_callback_snapshot,
         reason: CallbackReason::Syscall { num: Some(60) },
         jumpkind: None,
-        solver_ctx: None,
         deferred_forks: Vec::new(),
         stored_conditions: FxHashMap::default(),
         fork_snapshots,

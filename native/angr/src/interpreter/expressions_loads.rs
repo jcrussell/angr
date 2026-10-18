@@ -375,12 +375,6 @@ impl<'a> VEXInterpreter<'a> {
         let converted: Option<RustBV> = Python::attach(|py| {
             let ast = ast_obj.bind(py);
 
-            if let Some(table) = self.symbol_table
-                && let Some(bv) = try_handle_to_rustbv(ast, table)
-            {
-                return Some(bv);
-            }
-
             if is_claripy_ast(ast)
                 && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
             {

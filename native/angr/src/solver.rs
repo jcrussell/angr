@@ -17,31 +17,20 @@
 //!   holds none: a wrap needed here goes *there*, behind a sort check, rather
 //!   than inline (angr-5mnx3.10). It is declared as a crate-root sibling of
 //!   `solver` rather than a child of it (angr-8ucb3), so this module's
-//!   `forbid(unsafe_code)` below cannot reach it;
-//! - [`handle_api`]: the handle-based claripy-bypass API (symbol-table
-//!   lifecycle plus the `op_*` arithmetic wrappers — most of which route
-//!   through its shared `binop` helper, the rest through `opt_op`).
-//!
-//! Both submodules add their items to *this* type, so the split is purely
-//! about where the source lives — the Python-visible surface is unchanged.
+//!   `forbid(unsafe_code)` below cannot reach it.
 //!
 //! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
-//! policy in `lib.rs`). The `deny` covers the submodules below too, since
-//! lint levels propagate into nested modules.
+//! policy in `lib.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 // The "every `unsafe` in the solver surface lives in `z3_ast_extract`" claim
 // above was, until angr-5mnx3.10, only a doc comment — and
 // `add_constraint_tracked_ast` had quietly contradicted it since the
-// angr-9ke6b.205 split. Lint levels propagate into nested modules, so
-// forbidding here covers this file plus `handle_api`. Unlike `deny`, `forbid`
-// cannot be silently overridden by a nested `#[allow(unsafe_code)]` (angr-8ucb3)
-// — which is exactly why `z3_ast_extract` is declared in `lib.rs` as a sibling
+// angr-9ke6b.205 split. Unlike `deny`, `forbid` cannot be silently
+// overridden by a nested `#[allow(unsafe_code)]` (angr-8ucb3) — which is exactly why `z3_ast_extract` is declared in `lib.rs` as a sibling
 // of `solver` rather than as a child module here: its own sanctioned
 // `#![allow(unsafe_code)]` is an ordinary, unopposed lint level on an
 // unrelated module, not an override this attribute would otherwise reject.
 #![forbid(unsafe_code)]
-
-mod handle_api;
 
 use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -51,7 +40,7 @@ use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
-use crate::symbolic::{BinaryOpError, RustBV, RustSymbolTable, SymContext};
+use crate::symbolic::{RustBV, SymContext};
 
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
@@ -82,30 +71,13 @@ impl From<BridgeError> for PyErr {
     }
 }
 
-/// Build the canonical "invalid handle id" error for a symbol-table lookup
-/// miss (`symbol_table().get(id)` / `op_*` returning `None`). Standardized on
-/// `PyValueError` (a bad argument value, mirroring `From<BridgeError>`'s
-/// `InvalidArgs` mapping) so Python callers can reliably `except ValueError`
-/// across all sites, and always names the offending id(s) — previously the
-/// `op_*` sites raised a bare `PyRuntimeError` with no id (angr-ghwsd.1).
-///
-/// Pass every handle id the operation dereferenced; the message reports them
-/// all since the table cannot say which one missed.
-pub(crate) fn invalid_handle_id(ids: &[u64]) -> PyErr {
-    match ids {
-        [id] => PyValueError::new_err(format!("invalid handle id: {id}")),
-        _ => PyValueError::new_err(format!("invalid handle id (one of {ids:?})")),
-    }
-}
-
 /// Coerce a bitvector into the boolean constraint it stands for.
 ///
 /// A 1-bit BV *is* the constraint, so it is returned borrowed; anything wider
 /// is a truthiness test and lowers to `bv != 0`. This mirrors
 /// `SymContext::assume_true`'s own symbolic path, and is shared by the three
 /// sites that used to open-code it (angr-c7xno.95): `add_constraint_ast`'s and
-/// `add_constraint_tracked_ast`'s slow paths here, plus
-/// `add_constraint_handle` in [`handle_api`]. Callers either hand the result
+/// `add_constraint_tracked_ast`'s slow paths. Callers either hand the result
 /// to `assume_true` or take `.to_z3_bool()` of it.
 ///
 /// `Cow` rather than a plain `RustBV` so the (common) 1-bit case stays
@@ -117,21 +89,6 @@ fn bool_constraint_bv<'a>(bv: &'a RustBV, ctx: &SymContext) -> std::borrow::Cow<
     } else {
         let zero = RustBV::concrete(0, bv.width());
         std::borrow::Cow::Owned(bv.ne(&zero, ctx))
-    }
-}
-
-/// Map a two-operand table failure to a `PyValueError`. Owns the pyo3
-/// conversion so `symbolic::table` stays Python-agnostic (angr-ph300.32).
-/// Reuses `invalid_handle_id` for the missing-handle case so its message
-/// stays identical to the single-operand ops.
-impl From<BinaryOpError> for PyErr {
-    fn from(err: BinaryOpError) -> Self {
-        match err {
-            BinaryOpError::MissingHandle { a_id, b_id } => invalid_handle_id(&[a_id, b_id]),
-            BinaryOpError::WidthMismatch { lhs, rhs } => PyValueError::new_err(format!(
-                "binary op width mismatch: {lhs}-bit vs {rhs}-bit operands"
-            )),
-        }
     }
 }
 
@@ -191,7 +148,7 @@ pub struct RustSolverContext {
     // Inner context (same structure whether Z3 is enabled or not).
     //
     // `Option` so `close()` can extract and drop the heavy payload
-    // (owned SymContext + cloned Z3 solver + RustSymbolTable) *on the
+    // (owned SymContext + cloned Z3 solver) *on the
     // owning thread*. Under RUST_PARALLEL_WORKERS>1 a dead context can
     // otherwise take its final dealloc on a scheduler worker thread,
     // where pyo3 refuses to drop an `unsendable` pyclass and permanently
@@ -212,8 +169,6 @@ pub struct RustSolverContext {
 /// `RustSolverContext::i()` (angr-8ucb3, same reasoning as [`SolverCtxGuard`]).
 pub(crate) struct SolverInner {
     sym_ctx: SolverCtxStorage,
-    /// Symbol table for handle-based API (claripy bypass).
-    symbol_table: RustSymbolTable,
 }
 
 impl SolverInner {
@@ -241,7 +196,6 @@ impl RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {
                 sym_ctx: SolverCtxStorage::Owned(SymContext::new()),
-                symbol_table: RustSymbolTable::new(),
             })),
         }
     }
@@ -670,18 +624,16 @@ impl RustSolverContext {
 
     /// Fork the solver context.
     ///
-    /// Returns a new RustSolverContext with the same constraints and symbol table.
+    /// Returns a new RustSolverContext with the same constraints.
     /// With z3-rs 0.19+, all solvers on the same thread share the
     /// thread-local Z3 context.
     pub fn fork(&self) -> Self {
         let ctx = self.i().ctx();
         let forked_sym_ctx = ctx.fork();
-        let forked_symbol_table = self.i().symbol_table.fork();
         RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {
                 sym_ctx: SolverCtxStorage::Owned(forked_sym_ctx),
-                symbol_table: forked_symbol_table,
             })),
         }
     }
@@ -985,7 +937,6 @@ impl RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {
                 sym_ctx: SolverCtxStorage::Owned(sym_ctx),
-                symbol_table: RustSymbolTable::new(),
             })),
         }
     }
@@ -1002,16 +953,8 @@ impl RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {
                 sym_ctx: SolverCtxStorage::Shared(shared),
-                symbol_table: RustSymbolTable::new(),
             })),
         }
-    }
-
-    /// Get a reference to the symbol table.
-    ///
-    /// This is used by the interpreter to look up handles returned from Python.
-    pub(crate) fn symbol_table(&self) -> &RustSymbolTable {
-        &self.i().symbol_table
     }
 }
 

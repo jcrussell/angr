@@ -267,24 +267,6 @@ impl RustExplorationManager {
         self._set_pending_register(state_id, name, value)
     }
 
-    /// Set register to a symbolic value from a handle ID.
-    ///
-    /// Used for syncing symbolic return values from SimProcedures.
-    /// The handle_id should reference a RustBV in the solver's symbol table.
-    /// See `pending_api::_set_pending_register_symbolic` for the body.
-    #[angr_macros::steady_guard_exempt(
-        reason = "mutates one state_id-scoped state's own register content; does not mutate \
-                  exploration config or the active stash."
-    )]
-    pub fn set_pending_register_symbolic(
-        &mut self,
-        state_id: u64,
-        name: &str,
-        handle_id: u64,
-    ) -> PyResult<()> {
-        self._set_pending_register_symbolic(state_id, name, handle_id)
-    }
-
     /// Set a symbolic register value in the pending state from claripy AST.
     ///
     /// This allows direct sync of symbolic register values from Python callbacks.

@@ -151,10 +151,11 @@ fn test_num_constraints_and_delta_track_adds() {
     let base = ctx.num_constraints();
     assert_eq!(ctx.constraint_delta(base), 0);
 
-    let x = ctx.create_symbolic("solver_delta_x", 8).unwrap().id();
-    let five = ctx.create_concrete(5, 8).unwrap().id();
-    ctx.add_constraint_handle(ctx.op_ne(x, five).unwrap().id())
-        .unwrap();
+    {
+        let sc = ctx.i().ctx();
+        let x = RustBV::symbolic(&sc, "solver_delta_x", 8);
+        sc.assume_true(&x.ne(&RustBV::concrete(5, 8), &sc));
+    }
 
     assert_eq!(ctx.num_constraints(), base + 1);
     assert_eq!(ctx.constraint_delta(base), 1);
@@ -169,10 +170,11 @@ fn test_num_constraints_and_delta_track_adds() {
 #[test]
 fn test_constraint_export_views_agree() {
     let ctx = RustSolverContext::new();
-    let x = ctx.create_symbolic("solver_export_x", 8).unwrap().id();
-    let five = ctx.create_concrete(5, 8).unwrap().id();
-    ctx.add_constraint_handle(ctx.op_eq(x, five).unwrap().id())
-        .unwrap();
+    {
+        let sc = ctx.i().ctx();
+        let x = RustBV::symbolic(&sc, "solver_export_x", 8);
+        sc.assume_true(&x.eq(&RustBV::concrete(5, 8), &sc));
+    }
 
     let strs = ctx.get_all_constraints_str();
     assert!(!strs.is_empty());

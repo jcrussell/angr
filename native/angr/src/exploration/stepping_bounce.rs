@@ -43,8 +43,6 @@ impl RustExplorationManager {
                 };
                 let pre_callback_snapshot =
                     super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
-                let solver_ref = state.solver();
-                let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
                 if let Some(start) = hook_fork_start {
                     let fork_count = u64::from(pre_callback_snapshot.is_some());
                     self.profiling.accumulated_stats.solver_fork_time_ns +=
@@ -61,7 +59,6 @@ impl RustExplorationManager {
                         return_addr: 0,
                     },
                     JumpKind::Boring.ijk_name(),
-                    Some(shared_ctx),
                     ForkBundle {
                         deferred_forks,
                         stored_conditions,
@@ -77,8 +74,8 @@ impl RustExplorationManager {
             } => {
                 state.set_pc(addr);
                 state.add_to_history(addr);
-                let (pre_callback_snapshot, shared_ctx) =
-                    super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
+                let pre_callback_snapshot =
+                    super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
                 Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
                     pre_callback_snapshot,
@@ -89,7 +86,6 @@ impl RustExplorationManager {
                         return_addr,
                     },
                     "Ijk_Call",
-                    Some(shared_ctx),
                     ForkBundle {
                         deferred_forks,
                         stored_conditions,
@@ -98,14 +94,13 @@ impl RustExplorationManager {
                 )))
             }
             BounceKind::SyscallPython { num } => {
-                let (pre_callback_snapshot, shared_ctx) =
-                    super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
+                let pre_callback_snapshot =
+                    super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
                 Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
                     pre_callback_snapshot,
                     CallbackReason::Syscall { num },
                     "Ijk_Sys_syscall",
-                    Some(shared_ctx),
                     ForkBundle {
                         deferred_forks,
                         stored_conditions,
@@ -146,7 +141,6 @@ impl RustExplorationManager {
                     pre_callback_snapshot,
                     CallbackReason::PythonVEXFallback { addr, reason },
                     JumpKind::Boring.ijk_name(),
-                    None,
                     ForkBundle {
                         deferred_forks,
                         stored_conditions,
@@ -195,8 +189,8 @@ impl RustExplorationManager {
                     self.simprocedures
                         .insert(addr, (name.clone(), num_args, no_return));
 
-                    let (pre_callback_snapshot, shared_ctx) =
-                        super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
+                    let pre_callback_snapshot =
+                        super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
 
                     // Return to Python for SimProcedure execution
                     Err(StepError::NeedCallback(PendingCallback::with_context(
@@ -209,7 +203,6 @@ impl RustExplorationManager {
                             return_addr,
                         },
                         "Ijk_Call",
-                        Some(shared_ctx),
                         ForkBundle {
                             deferred_forks,
                             stored_conditions,

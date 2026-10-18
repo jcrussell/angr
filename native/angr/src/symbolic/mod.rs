@@ -3,8 +3,6 @@
 //! This module provides:
 //! - `RustBV`: A bitvector type that can be concrete or symbolic
 //! - `SymContext`: Z3 solver context with constraint management
-//! - `RustBVHandle`: Python-facing opaque handle for bypassing claripy
-//! - `RustSymbolTable`: Registry mapping handles to RustBV values
 //!
 //! # File index
 //!
@@ -53,15 +51,13 @@
 //! | `parse.rs` | Slice 4: parsers turning Z3's hex / binary / decimal numeral strings into concrete values. **(z3)** |
 //! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — one `z3::Solver` shared by a descendant set, with push/pop scope tracking. **(z3)** |
 //!
-//! ## Python-facing handles and identity
+//! ## Identity and trust-boundary guards
 //!
 //! | File | Holds |
 //! |------|-------|
-//! | `handle.rs` | `RustBVHandle` — the opaque id Python holds instead of round-tripping a claripy AST. |
-//! | `table.rs` | `RustSymbolTable` — the handle-id to `RustBV` store behind those handles, plus `BinaryOpError`. |
 //! | `symbol_kind.rs` | `SymbolKind` and the `!bool!` name tag that keeps a `BoolS` leaf and a same-named 1-bit `BVS` two variables. |
 //! | `z3_ast_ptr.rs` | `Z3AstPtr` — typed, refcounted wrapper over a raw `Z3_ast` at the claripy FFI boundary. **(z3)** |
-//! | `width_guards.rs` | `MAX_BV_WIDTH` / `check_bv_width` / `check_extract_bounds` — the bound checks both external trust boundaries (`claripy_bridge::import`, `solver::handle_api`) run before an externally-chosen width reaches a `RustBV` constructor. |
+//! | `width_guards.rs` | `MAX_BV_WIDTH` / `check_bv_width` / `check_extract_bounds` — the bound checks the claripy import trust boundary (`claripy_bridge::import`) runs before an externally-chosen width reaches a `RustBV` constructor. |
 //!
 //! ## Instrumentation and analysis
 //!
@@ -92,7 +88,6 @@ mod context;
 #[cfg(not(feature = "vex-engine-z3"))]
 mod context_mock;
 mod context_snapshot;
-mod handle;
 #[cfg(feature = "vex-engine-z3")]
 pub mod lineage;
 mod lineage_ops;
@@ -134,7 +129,6 @@ mod solver_build;
 mod solving_ops;
 mod stats;
 pub mod symbol_kind;
-mod table;
 mod transaction_ops;
 mod value;
 mod value_clarirs;
@@ -152,7 +146,6 @@ pub use bv_chunk::{
 };
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
 pub use context_snapshot::SymContextSnapshot;
-pub use handle::RustBVHandle;
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
 #[cfg(all(test, feature = "vex-engine-z3"))]
 pub(crate) use solver_build::stop_enumeration_after_for_test;
@@ -167,7 +160,6 @@ pub use stats::{
     reset_solver_stats,
 };
 pub use symbol_kind::SymbolKind;
-pub use table::{BinaryOpError, RustSymbolTable};
 pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 // Used by the claripy export, which is built with vex-engine.
 #[cfg(feature = "vex-engine")]

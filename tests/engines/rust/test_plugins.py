@@ -554,28 +554,6 @@ class TestAdversarial:
 
     # --- PyO3 boundary: None / empty / very-wide RustBV (angr-my1w) ---
 
-    def test_eval_handle_invalid_id_returns_none(self):
-        """eval_handle for an unknown handle id maps Option::None → Python None."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
-        ctx = RustSolverContext()
-        # Pick an id that no handle was ever issued for.
-        assert ctx.eval_handle(99999) is None
-
-    def test_create_concrete_zero_width_round_trip(self):
-        """Width-0 RustBV survives the PyO3 round-trip via create_concrete.
-
-        The concrete-value mask collapses to 0 for width=0, so the value
-        is normalized to 0; the handle still reports width=0 and is_concrete.
-        """
-        from angr.rustylib.vex_engine import RustSolverContext
-
-        ctx = RustSolverContext()
-        h = ctx.create_concrete(0, 0)
-        assert h.width == 0
-        assert h.is_concrete is True
-        assert h.concrete() == 0
-
     def test_create_symbolic_zero_width_does_not_abort(self):
         """Width-0 *symbolic* construction degenerates instead of aborting.
 
@@ -584,8 +562,7 @@ class TestAdversarial:
         ``panic="abort"``, so this was a hard SIGABRT of the whole process,
         not a catchable Python exception (angr-fs8kb.28). ``check_bv_width``
         permits width 0 because a width-0 *concrete* RustBV is a supported
-        degenerate value (see the sibling round-trip test above), which left
-        every symbolic construction path exposed.
+        degenerate value, which left every symbolic construction path exposed.
 
         The empty bitvector has exactly one inhabitant, so the width-0
         symbolic leaf collapses to that value rather than erroring.
@@ -594,15 +571,9 @@ class TestAdversarial:
 
         from angr import claripy
 
-        # Entry point 1: the direct handle API (no claripy AST involved).
+        # claripy BVS import through claripy_bridge::import.
         ctx = RustSolverContext()
-        h = ctx.create_symbolic("zw", 0)
-        assert h.width == 0
-        assert ctx.eval_handle(h.id) == 0
-
-        # Entry point 2: claripy BVS import through claripy_bridge::import.
-        ctx2 = RustSolverContext()
-        assert ctx2.min(claripy.BVS("zw_import", 0), signed=True) == 0
+        assert ctx.min(claripy.BVS("zw_import", 0), signed=True) == 0
 
     def test_solver_very_wide_bitvector_round_trip(self):
         """1024-bit BV survives add_constraint + eval round-trip across PyO3.

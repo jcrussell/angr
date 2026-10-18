@@ -362,7 +362,6 @@ fn resume_after_error_records_and_moves_to_errored() {
                 message: "boom".to_string(),
             },
             jumpkind: None,
-            solver_ctx: None,
             deferred_forks: Vec::new(),
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
@@ -422,7 +421,6 @@ fn resume_after_error_deferred_fork_not_dropped() {
                 message: "hook raised".to_string(),
             },
             jumpkind: None,
-            solver_ctx: None,
             // condition_id 999 absent from stored_conditions + no condition_ast
             // -> only the conservative arm keeps this fork alive.
             deferred_forks: vec![crate::callbacks::DeferredFork {
@@ -486,7 +484,6 @@ fn find_predicate_pending_with_deferred_fork_trips_canary() {
             pre_callback_snapshot: None,
             reason: CallbackReason::FindPredicate { addr: 0x40_1000 },
             jumpkind: None,
-            solver_ctx: None,
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
@@ -521,7 +518,6 @@ fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
             pre_callback_snapshot: None,
             reason: CallbackReason::AvoidPredicate { addr: 0x40_1000 },
             jumpkind: None,
-            solver_ctx: None,
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
@@ -562,7 +558,6 @@ fn deadend_pending_callback_conservative_fork_not_dropped() {
                 message: "exit".to_string(),
             },
             jumpkind: None,
-            solver_ctx: None,
             // condition_id 999 is absent from stored_conditions and there is no
             // condition_ast -> neither the direct lookup nor reconstruction can
             // supply a condition, so the conservative arm is the only path that
@@ -651,7 +646,6 @@ fn resume_symbolic_branch_deferred_fork_uses_pre_callback_snapshot() {
                 false_target: 0x40_1200,
             },
             jumpkind: None,
-            solver_ctx: None,
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true, // unexplored side is x != 0
@@ -700,7 +694,6 @@ fn make_pending_at(pc: u64) -> (u64, PendingCallback) {
             message: "pending".to_string(),
         },
         jumpkind: None,
-        solver_ctx: None,
         deferred_forks: Vec::new(),
         stored_conditions: FxHashMap::default(),
         fork_snapshots: FxHashMap::default(),

@@ -35,12 +35,12 @@ use crate::arch::{
 use crate::callbacks::{
     DeferredFork, ExecutionConfig, InspectBit, PythonCallbacks, RunResult, note_inspect_error,
 };
-use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
+use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
 use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{
-    BVOp, RustBV, RustSymbolTable, SymContext, record_mem_load, record_mem_store, record_vex_binop,
-    record_vex_qop, record_vex_triop, record_vex_unop,
+    BVOp, RustBV, SymContext, record_mem_load, record_mem_store, record_vex_binop, record_vex_qop,
+    record_vex_triop, record_vex_unop,
 };
 use crate::vex::ccall;
 use crate::vex::dirty::{DirtyHelperDispatch, DirtyHelperState};
@@ -177,9 +177,6 @@ pub(crate) struct VEXInterpreter<'a> {
     temps: Vec<Option<RustBV>>,
     /// Solver context.
     ctx: &'a SymContext,
-    /// Symbol table for handle-based claripy bypass.
-    /// When present, Python callbacks can return RustBVHandle instead of claripy ASTs.
-    symbol_table: Option<&'a RustSymbolTable>,
     /// Current program counter.
     pub pc: u64,
     /// Current instruction address (within block).
@@ -395,7 +392,6 @@ impl<'a> VEXInterpreter<'a> {
             registers: RegisterFile::new_with_endian(arch_box, is_le),
             temps: Vec::with_capacity(64), // Pre-allocate for typical block size
             ctx,
-            symbol_table: None, // Set via set_symbol_table() when using handles
             pc: 0,
             current_insn_addr: 0,
             current_insn_len: 0,
@@ -625,22 +621,15 @@ impl<'a> VEXInterpreter<'a> {
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         if is_symbolic {
-            // Try to convert to RustBV - check handle first (fast path), then claripy (slow path).
+            // Try to convert to RustBV via the claripy bridge.
             // Self-attach for the bridge work (angr-vh834 Phase 4): no caller
             // GIL token is threaded in; re-entrant no-op when already held.
             if let Some(ast_obj) = symbolic_ast {
                 let converted: Option<RustBV> = Python::attach(|py| {
                     let ast = ast_obj.bind(py);
 
-                    // Fast path: check for RustBVHandle first
-                    if let Some(table) = self.symbol_table
-                        && let Some(bv) = try_handle_to_rustbv(ast, table)
-                    {
-                        return Some(bv);
-                    }
-
-                    // Slow path: claripy AST conversion (can fail for
-                    // complex/unsupported ops -> fall through to fresh symbolic).
+                    // claripy AST conversion (can fail for complex/unsupported
+                    // ops -> fall through to fresh symbolic).
                     if is_claripy_ast(ast)
                         && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
                     {
@@ -862,7 +851,6 @@ impl<'a> VEXInterpreter<'a> {
             registers: self.registers.fork(),
             temps: self.temps.clone(),
             ctx: self.ctx,
-            symbol_table: self.symbol_table, // Share symbol table reference
             pc: self.pc,
             current_insn_addr: self.current_insn_addr,
             current_insn_len: self.current_insn_len,

@@ -1217,8 +1217,8 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
 /// angr-309bq: `define_rotate_pair!`'s concrete arm used to compute
 /// `amt = a % (w as u128)` unconditionally, and `% 0` is a Rust panic in every
 /// profile (not one gated by overflow-checks). No VEX `IROp` has a 0-bit
-/// operand, but `RustSolverContext::create_concrete(0, 0)` + `op_rotl` reaches
-/// it from Python, so the rotate now folds to the 0-bit identity instead.
+/// operand, but a width-0 value is a supported degenerate `RustBV`, so the
+/// rotate folds to the 0-bit identity instead.
 #[test]
 fn rotate_and_reverse_boundary_widths_cross_check_shared_table() {
     let ctx = SymContext::new_mock();
