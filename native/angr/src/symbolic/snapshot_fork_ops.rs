@@ -432,27 +432,17 @@ impl SymContext {
     /// into a scratch solver and re-assert each of its assertions onto `self`
     /// via [`Self::add_constraint_raw`]. Returns the number re-asserted.
     ///
-    /// Sole home of the raw-`Z3_ast` handoff between the scratch solver and
-    /// this context — [`Self::bench_parse_smtlib2`] routes through here too, so
-    /// a safety fix to the pointer handling only has to land once
-    /// (angr-9ke6b.143).
+    /// Sole home of the handoff between the scratch solver and this context —
+    /// [`Self::bench_parse_smtlib2`] routes through here too, so a fix to it
+    /// only has to land once (angr-9ke6b.143).
     #[cfg(feature = "vex-engine-z3")]
     fn parse_smtlib2_into_solver(&self, smtlib2: &str) -> usize {
-        use z3::ast::Ast;
         let tmp = z3::Solver::new();
         tmp.from_string(smtlib2);
-        let z3_ctx = z3::Context::thread_local();
-        let mut n = 0usize;
-        for assertion in tmp.get_assertions() {
-            let ptr = assertion.get_z3_ast().as_ptr() as usize;
-            // SAFETY: `ptr` came from a Bool returned by `get_assertions()`
-            // parsed into the thread-local Z3 context (the same one
-            // `add_constraint_raw` will use). `from_borrowed_raw` takes its own
-            // ref via `Z3_inc_ref`, independent of the temp solver's reference.
-            if let Some(z3_ast) = unsafe { super::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) } {
-                self.add_constraint_raw(z3_ast);
-                n += 1;
-            }
+        let assertions = tmp.get_assertions();
+        let n = assertions.len();
+        for assertion in assertions {
+            self.add_constraint_raw(assertion);
         }
         n
     }
@@ -487,16 +477,7 @@ impl SymContext {
     #[doc(hidden)]
     #[cfg(feature = "vex-engine-z3")]
     pub fn bench_add_constraint_raw_from_bool(&self, pred: &RustBV) {
-        use z3::ast::Ast;
-        let bool_ast = pred.to_z3_bool();
-        let ctx = z3::Context::thread_local();
-        let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
-        // SAFETY: `bool_ast` keeps the AST alive across the inc_ref; the
-        // resulting Z3AstPtr holds its own ref (mirrors the `raw_entry` test
-        // helper in context_tests/constraints.rs).
-        if let Some(z3_ast) = unsafe { super::Z3AstPtr::from_borrowed_raw(&ctx, ptr) } {
-            self.add_constraint_raw(z3_ast);
-        }
+        self.add_constraint_raw(pred.to_z3_bool());
     }
 
     // =========================================================================

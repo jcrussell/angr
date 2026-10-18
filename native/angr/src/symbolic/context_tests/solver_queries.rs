@@ -23,8 +23,6 @@ use super::super::stats::{
     record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
     record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop,
 };
-#[cfg(feature = "vex-engine-z3")]
-use crate::symbolic::Z3AstPtr;
 
 #[cfg(feature = "vex-engine-z3")]
 #[test]
@@ -252,23 +250,13 @@ fn test_min_max_no_cached_model_still_correct() {
     assert_eq!(ctx.max(&x, false), Some(199));
 }
 
-/// Helper: build a `(Z3AstPtr, RustBV, bool)` tuple from a width-1 cond
-/// for use with `add_constraints_raw_batch`. Mirrors what the
+/// Helper: build a `(Bool, RustBV, bool)` tuple from a width-1 cond for use
+/// with `add_constraints_raw_batch`. Mirrors what the
 /// `RustSolverContext::add_constraints_ast` fast path does with claripy ASTs.
-/// The typed `Z3AstPtr` does proper refcounting via `Z3_inc_ref` —
-/// no `mem::forget` leak required.
 #[cfg(feature = "vex-engine-z3")]
-fn batch_entry(cond: &RustBV) -> (Z3AstPtr, RustBV, bool) {
-    use z3::ast::Ast;
+fn batch_entry(cond: &RustBV) -> (z3::ast::Bool, RustBV, bool) {
     debug_assert_eq!(cond.width(), 1);
-    let bool_ast = cond.to_z3_bool();
-    let ctx = z3::Context::thread_local();
-    let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
-    // SAFETY: `bool_ast` keeps the AST alive across the inc_ref call;
-    // the resulting Z3AstPtr holds its own ref so the AST survives
-    // `bool_ast` dropping at end of this function.
-    let ast = unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }.expect("non-null Bool AST");
-    (ast, cond.clone(), true)
+    (cond.to_z3_bool(), cond.clone(), true)
 }
 
 #[cfg(feature = "vex-engine-z3")]

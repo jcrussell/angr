@@ -1,7 +1,5 @@
 #![allow(clippy::arc_with_non_send_sync)]
 use super::*;
-#[cfg(feature = "vex-engine-z3")]
-use crate::symbolic::Z3AstPtr;
 
 /// Serializes every test that delta-asserts the process-global
 /// `ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT` — *and* every test that deliberately
@@ -260,21 +258,11 @@ fn test_add_constraint_sibling_isolation() {
 }
 
 /// angr-v5a5 slice 4c.2: helper mirrors `batch_entry` for the
-/// single-shot `add_constraint_raw` path. Lifts a width-1 RustBV's
-/// Z3 Bool AST into a typed `Z3AstPtr` handle whose own ref keeps
-/// the AST alive until consumption (no `mem::forget` leak required —
-/// the wrapper does proper refcounting via `Z3_inc_ref` / `Z3_dec_ref`).
+/// single-shot `add_constraint_raw` path: a width-1 RustBV's Z3 Bool.
 #[cfg(feature = "vex-engine-z3")]
-fn raw_entry(cond: &RustBV) -> Z3AstPtr {
-    use z3::ast::Ast;
+fn raw_entry(cond: &RustBV) -> z3::ast::Bool {
     debug_assert_eq!(cond.width(), 1);
-    let bool_ast = cond.to_z3_bool();
-    let ctx = z3::Context::thread_local();
-    let ptr = bool_ast.get_z3_ast().as_ptr() as usize;
-    // SAFETY: `bool_ast` keeps the AST alive across the inc_ref call;
-    // the resulting Z3AstPtr holds its own ref so the AST survives
-    // `bool_ast` dropping at end of this function.
-    unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }.expect("non-null Bool AST")
+    cond.to_z3_bool()
 }
 
 /// angr-v5a5 slice 4c.2: with no lineage attached, `add_constraint_raw`
@@ -395,9 +383,9 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
 
     // Three calls with the same Z3_ast — dedup must catch reps 2 and 3.
-    // `clone_ref` produces independent handles pointing at the same AST.
-    ctx.add_constraint_raw(ast.clone_ref());
-    ctx.add_constraint_raw(ast.clone_ref());
+    // `clone` produces independent handles pointing at the same AST.
+    ctx.add_constraint_raw(ast.clone());
+    ctx.add_constraint_raw(ast.clone());
     ctx.add_constraint_raw(ast);
 
     // Only one entry should land in local.z3_assertions despite three
@@ -542,7 +530,7 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
     let ast = raw_entry(&x.eq(&five, &parent));
     // Take a second ref for the child call below before the parent
     // consumes its handle.
-    let ast_for_child = ast.clone_ref();
+    let ast_for_child = ast.clone();
     parent.add_constraint_raw(ast);
     // Fork the parent; child's frozen_shared should contain the
     // assertion, and child's local.dedup_set is unseeded.
@@ -842,11 +830,8 @@ fn test_unsat_core_assumed_names_untracked_engine_constraints() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
-    use z3::ast::Ast;
-
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "test_uca_dup_x", 32);
-    let z3_ctx = z3::Context::thread_local();
 
     // Mirror the Python import path for `x > 10` and `x < 5`: raw Z3 assert
     // plus an assumed pair for the very same constraint.
@@ -858,11 +843,7 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
         } else {
             x.ult(&rhs, &ctx)
         };
-        let raw = guard.to_z3_bool();
-        let ptr =
-            unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, raw.get_z3_ast().as_ptr() as usize) }
-                .expect("Bool must yield a Z3AstPtr");
-        ctx.add_constraint_raw(ptr);
+        ctx.add_constraint_raw(guard.to_z3_bool());
         ctx.assumed_constraints_push(guard, true);
     }
 

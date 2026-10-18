@@ -443,3 +443,71 @@ fn import_fp_comparison_converts_to_the_assumed_ir() {
         assert!(!ctx.is_sat(), "f > 1.0 && f < 0.0 is UNSAT");
     });
 }
+
+/// angr-mx00p.41: the raw-pointer tier hands only a Bool to the solver. Both
+/// `import_one_constraint` sites that consume a lowering — the `Z3PtrFirst`
+/// fast path and the `RustBvFirst` rescue of an op `claripy_to_rustbv`
+/// declines — go through `claripy_z3_ptr`, so a BV-sorted lowering must come
+/// back `None` there (the rescue then reports `Failed`) rather than reach
+/// `add_constraint_raw` as a mis-sorted Bool.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn claripy_z3_ptr_declines_a_bv_sorted_lowering() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let x = GLOBAL_CONTEXT.bvs("import_bv_sorted_x", 8).expect("BVS");
+        let zero = GLOBAL_CONTEXT.bvv(BitVec::from((0u64, 8))).expect("BVV");
+        let bv = claripy_object(py, x.clone());
+        assert!(
+            crate::claripy_bridge::lower_claripy_ast(&bv).is_ok(),
+            "the BV term itself lowers; only its sort disqualifies it"
+        );
+        assert!(
+            claripy_z3_ptr(&bv).is_none(),
+            "a BV-sorted lowering must not be offered as a constraint"
+        );
+        let cond = claripy_object(py, GLOBAL_CONTEXT.eq_(x, zero).expect("eq"));
+        assert!(claripy_z3_ptr(&cond).is_some(), "a Bool lowering is");
+    });
+}
+
+/// angr-mx00p.41, end to end on the `Z3PtrFirst` tier: a BV-sorted constraint
+/// falls through to the RustBV tier and is asserted as `x != 0`. Before the
+/// Bool gate it was asserted raw as a mis-sorted Bool, which Z3's sort guard
+/// drops silently (angr-d01qu), so `x == 0` stayed satisfiable.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn import_fast_path_widens_a_bv_sorted_constraint_to_nonzero() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = crate::symbolic::SymContext::new();
+        let x = GLOBAL_CONTEXT.bvs("import_bv_truthy_x", 8).expect("BVS");
+        let zero = GLOBAL_CONTEXT.bvv(BitVec::from((0u64, 8))).expect("BVV");
+        let truthy = claripy_object(py, x.clone());
+        assert!(matches!(
+            import_one_constraint(py, &ctx, &truthy, ConstraintTier::Z3PtrFirst),
+            ConstraintImport::Assumed
+        ));
+        assert!(ctx.is_sat(), "x != 0 alone is satisfiable");
+
+        let is_zero = claripy_object(py, GLOBAL_CONTEXT.eq_(x, zero).expect("eq"));
+        assert!(matches!(
+            import_one_constraint(py, &ctx, &is_zero, ConstraintTier::Z3PtrFirst),
+            ConstraintImport::Assumed
+        ));
+        assert!(
+            !ctx.is_sat(),
+            "the BV constraint must really be on the solver as x != 0"
+        );
+    });
+}

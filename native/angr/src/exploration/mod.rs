@@ -43,8 +43,6 @@ use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcOutcome, ProcedureError};
 use crate::solver::RustSolverContext;
 use crate::state::{RustSimState, StateChanges};
-#[cfg(feature = "vex-engine-z3")]
-use crate::symbolic::Z3AstPtr;
 use crate::symbolic::{RustBV, SymContext};
 use crate::syscalls::NativeSyscallRegistry;
 

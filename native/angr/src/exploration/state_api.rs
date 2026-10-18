@@ -187,18 +187,18 @@ impl RustExplorationManager {
         ptrs: Vec<usize>,
     ) -> PyResult<Option<bool>> {
         // angr-33t9: validate every pointer is a Bool-sorted AST in the active
-        // thread-local Z3 context BEFORE handing it to `add_constraint_raw`'s
-        // unsafe wrap. This catches the realistic misuse cases — null in the
+        // thread-local Z3 context BEFORE the unsafe `Bool::wrap` below. This catches the realistic misuse cases — null in the
         // middle of a list, a BV ptr exported by mistake, a foreign-context
         // AST — and converts them to PyValueError. It does NOT defend against
         // arbitrary integers (e.g. 0xdeadbeef): `Z3_get_sort` dereferences the
         // pointer, so truly garbage values may still segfault before Z3 has a
-        // chance to signal an error. The SAFETY contract in `add_constraint_raw`
-        // is unchanged; this check just rejects the cheap-to-detect failures.
+        // chance to signal an error; this check just rejects the
+        // cheap-to-detect failures.
         // See "PyO3 API trust model" in docs/advanced-topics/rust_engine.rst.
         use z3_sys::{SortKind, Z3_get_sort, Z3_get_sort_kind};
         let z3_ctx_handle = z3::Context::thread_local();
         let raw_ctx = z3_ctx_handle.get_z3_context();
+        let mut validated = Vec::with_capacity(ptrs.len());
         for (idx, ptr) in ptrs.iter().enumerate() {
             let raw_ast =
                 std::ptr::NonNull::new(*ptr as *mut z3_sys::_Z3_ast).ok_or_else(|| {
@@ -226,19 +226,19 @@ impl RustExplorationManager {
                     "import_z3_constraint_ptrs: pointer at index {idx} has sort kind {kind:?}, expected Bool"
                 )));
             }
+            validated.push(raw_ast);
         }
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
             let z3_ctx = z3::Context::thread_local();
-            for ptr in &ptrs {
-                // SAFETY: every ptr was validated above by the
-                // Z3_get_sort/sort_kind probe to be a live Bool-sorted AST
-                // in `z3_ctx`. `Z3AstPtr::from_borrowed_raw` takes its own
-                // ref via `Z3_inc_ref`.
-                if let Some(z3_ast) = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, *ptr) } {
-                    ctx.add_constraint_raw(z3_ast);
-                }
+            for raw in &validated {
+                // SAFETY: every pointer in `validated` passed the
+                // Z3_get_sort/sort_kind probe above: non-null, a live
+                // Bool-sorted AST in `z3_ctx`. `Bool::wrap` takes its own ref
+                // via `Z3_inc_ref`.
+                let constraint: z3::ast::Bool = unsafe { z3::ast::Ast::wrap(&z3_ctx, *raw) };
+                ctx.add_constraint_raw(constraint);
             }
             log::debug!(
                 "Imported {} Z3 constraints to state {}",

@@ -4,8 +4,6 @@ use super::*;
 // `context_snapshot.rs`, so `use super::*` (which reaches `context`) no longer
 // brings it in — import it through the `symbolic` re-export instead.
 use crate::symbolic::SymContextSnapshot;
-#[cfg(feature = "vex-engine-z3")]
-use crate::symbolic::Z3AstPtr;
 
 // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /
 // Z3_solver_from_string. Drives whether SMT-LIB2 is the right format for
@@ -792,8 +790,6 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_add_constraint_raw_roundtrip() {
-    use z3::ast::Ast;
-
     let ctx = SymContext::new();
     // Mix: one assume_true (RustBV-known), one add_constraint_raw
     // (Z3-only, no RustBV form recorded).
@@ -805,16 +801,12 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
     // Raw path: build a Z3 Bool directly and feed it through
     // add_constraint_raw — mirrors `_add_constraints_to_state`'s
     // Z3-ptr fast path when claripy_to_rustbv fails to translate.
-    let z3_ctx = z3::Context::thread_local();
     let raw_bool = {
         let x_z3 = x.to_z3_ast();
         let twenty_z3 = twenty.to_z3_ast();
         x_z3.bvult(&twenty_z3)
     };
-    let raw_ptr = raw_bool.get_z3_ast().as_ptr() as usize;
-    let z3_ast_ptr = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, raw_ptr) }
-        .expect("raw Bool must yield a Z3AstPtr");
-    ctx.add_constraint_raw(z3_ast_ptr);
+    ctx.add_constraint_raw(raw_bool);
 
     // Pre-snapshot bookkeeping. `num_constraints` counts both paths;
     // `assumed_constraint_count` only the assume path.
@@ -1063,8 +1055,6 @@ fn test_snapshot_tracked_residual_roundtrip() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_mixed_assume_raw_roundtrip() {
-    use z3::ast::Ast;
-
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "t3l5o_mix_x", 32);
     let ten = RustBV::concrete(10, 32);
@@ -1072,16 +1062,12 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
     // assume: x > 10 (RustBV-known)
     ctx.assume_true(&x.ugt(&ten, &ctx));
     // raw: x < 20 (no RustBV form recorded)
-    let z3_ctx = z3::Context::thread_local();
     let raw_bool = {
         let xz = x.to_z3_ast();
         let tw = twenty.to_z3_ast();
         xz.bvult(&tw)
     };
-    let raw_ptr = raw_bool.get_z3_ast().as_ptr() as usize;
-    let z3_ast_ptr =
-        unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, raw_ptr) }.expect("raw Bool yields ptr");
-    ctx.add_constraint_raw(z3_ast_ptr);
+    ctx.add_constraint_raw(raw_bool);
 
     let pre_sat = ctx.is_sat();
     let pre_count = ctx.num_constraints();

@@ -227,16 +227,13 @@ impl SymContext {
         self.invalidate_model_if_inconsistent(constraint);
     }
 
-    /// Add a constraint from a typed Z3 AST handle (shared context fast path).
+    /// Add a constraint from an already-lowered Z3 Bool (shared context fast
+    /// path).
     ///
     /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
-    /// the original Z3 AST structure from Python's claripy/z3 backend.
-    ///
-    /// The `Z3AstPtr` handle carries its own refcount; in
-    /// `add_constraint_raw_inner` the pointer is wrapped as a
-    /// [`z3::ast::Bool`] (which takes its own ref via `Z3_inc_ref`) and the
-    /// handle's `Drop` releases the extraction-time ref before return — net
-    /// zero change to the AST's refcount across the call.
+    /// the original Z3 AST structure from Python's claripy/z3 backend. The
+    /// sort is carried by the type: a caller holding a lowered
+    /// [`z3::ast::Dynamic`] reaches here only through its checked `as_bool`.
     ///
     /// The wrapped constraint is deduped against the ptr-keyed side table and,
     /// on a miss, installed via `install_constraint`, which dispatches
@@ -246,13 +243,8 @@ impl SymContext {
     /// A non-dup constraint is also pushed to the residual log
     /// (`non_bv_assertions`) so it can be round-tripped without a RustBV form;
     /// [`Self::add_constraint_raw_assumed`] is the variant that skips that.
-    ///
-    /// **Caller contract:** the wrapped pointer must denote a Bool-sorted
-    /// AST. The constructor of `Z3AstPtr` is `unsafe` precisely so this
-    /// invariant is checked at extraction time; once a `Z3AstPtr` exists,
-    /// this method is safe to call.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn add_constraint_raw(&self, ast: super::Z3AstPtr) {
+    pub fn add_constraint_raw(&self, ast: z3::ast::Bool) {
         self.add_constraint_raw_inner(ast, true);
     }
 
@@ -267,7 +259,7 @@ impl SymContext {
     /// pinned outside its assumption literal, and an all-Python contradiction
     /// would come back Unsat with an EMPTY core (angr-op0dn.14.2).
     #[cfg(feature = "vex-engine-z3")]
-    pub fn add_constraint_raw_assumed(&self, ast: super::Z3AstPtr) {
+    pub fn add_constraint_raw_assumed(&self, ast: z3::ast::Bool) {
         self.add_constraint_raw_inner(ast, false);
     }
 
@@ -298,15 +290,7 @@ impl SymContext {
     }
 
     #[cfg(feature = "vex-engine-z3")]
-    fn add_constraint_raw_inner(&self, ast: super::Z3AstPtr, log_residual: bool) {
-        // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an active
-        // ref via `Z3_inc_ref`) belonging to `ast.context()`, the context
-        // that ref was taken under. The pointer denotes a Bool by the
-        // documented caller contract. `Ast::wrap` performs its own
-        // `Z3_inc_ref` so the wrapped `Bool` is independent of `ast`'s
-        // ref, which drops at end of function.
-        let constraint: z3::ast::Bool =
-            unsafe { z3::ast::Ast::wrap(ast.context(), ast.as_z3_ast()) };
+    fn add_constraint_raw_inner(&self, constraint: z3::ast::Bool, log_residual: bool) {
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
         // angr-sfp9: ptr-keyed dedup against the side-table. Z3 hash-cons
@@ -391,11 +375,6 @@ impl SymContext {
     /// corresponds to the per-constraint metadata that the single-shot path
     /// stores in `local_constraints.{z3_assertions, assumed}`.
     ///
-    /// Same precondition as [`Self::add_constraint_raw`]: every `Z3AstPtr`
-    /// must denote a Bool-sorted AST in the active thread-local Z3 context.
-    /// The constructor of `Z3AstPtr` is `unsafe` so this is checked at
-    /// extraction time.
-    ///
     /// Entries are deduped exactly as [`Self::add_constraint_raw`] dedupes
     /// its single constraint — via `seed_and_check_z3_dedup` (private, so no
     /// intra-doc link from this public method), which
@@ -436,24 +415,14 @@ impl SymContext {
     /// then-switch keeps every constraint inside its own fresh push that
     /// only this state holds in its `scope_path`.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn add_constraints_raw_batch(&self, entries: Vec<(super::Z3AstPtr, RustBV, bool)>) {
+    pub fn add_constraints_raw_batch(&self, entries: Vec<(z3::ast::Bool, RustBV, bool)>) {
         if entries.is_empty() {
             return;
         }
-        let mut constraints: Vec<z3::ast::Bool> = Vec::with_capacity(entries.len());
-        let mut assumed: Vec<(RustBV, bool)> = Vec::with_capacity(entries.len());
-        for (ast, bv, is_true) in entries {
-            // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an
-            // active ref via `Z3_inc_ref`) belonging to `ast.context()`, the
-            // context that ref was taken under. The pointer denotes a Bool by
-            // the documented caller contract. `Ast::wrap` performs its
-            // own `Z3_inc_ref` so the wrapped `Bool` is independent of
-            // `ast`'s ref, which drops at end of this iteration.
-            let constraint: z3::ast::Bool =
-                unsafe { z3::ast::Ast::wrap(ast.context(), ast.as_z3_ast()) };
-            constraints.push(constraint);
-            assumed.push((bv, is_true));
-        }
+        let (constraints, assumed): (Vec<z3::ast::Bool>, Vec<(RustBV, bool)>) = entries
+            .into_iter()
+            .map(|(ast, bv, is_true)| (ast, (bv, is_true)))
+            .unzip();
         // angr-sfp9's ptr-keyed dedup, retrofitted onto the batch path
         // (angr-5mnx3.43): this API predates the dedup mechanism by a week
         // and used to push/assert/count every entry unconditionally, so a

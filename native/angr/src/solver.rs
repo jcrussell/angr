@@ -43,8 +43,6 @@ use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
 
 #[cfg(feature = "vex-engine-z3")]
-use crate::symbolic::Z3AstPtr;
-#[cfg(feature = "vex-engine-z3")]
 use crate::z3_ast_extract::{claripy_node, extract_z3_ast_ptr, node_to_eval_bv, z3_ast_to_bool};
 
 /// Convert a BridgeError to a PyErr, preserving the variant's structure at
@@ -220,14 +218,12 @@ impl RustSolverContext {
         // divergence that makes Z3 solving several times slower.
         #[cfg(feature = "vex-engine-z3")]
         {
-            // angr-58ks: `add_constraint_raw` Bool-wraps its input by
-            // contract; a non-Bool AST would trip Z3's process-aborting
-            // error handler. Only take the raw fast path for Bool-sorted
-            // ASTs. A non-Bool (e.g. a BV used as a truthiness constraint)
-            // falls through to the slow path below, which lowers it to a
-            // proper `!= 0` Bool — preserving semantics without the panic.
+            // angr-58ks: `add_constraint_raw` takes a `Bool`, so only a
+            // Bool-sorted lowering takes the raw fast path. A non-Bool (e.g.
+            // a BV used as a truthiness constraint) falls through to the slow
+            // path below, which lowers it to a proper `!= 0` Bool.
             if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
-                && z3_ast.is_bool()
+                && let Some(z3_ast) = z3_ast_to_bool(&z3_ast)
             {
                 // angr-sqfj8.121: a constraint with a RustBV form must land
                 // in EXACTLY ONE of the residual (`add_constraint_raw`) or
@@ -289,15 +285,16 @@ impl RustSolverContext {
         {
             let ctx = self.i().ctx();
             let n = asts.len();
-            let mut entries: Vec<(Z3AstPtr, RustBV, bool)> = Vec::with_capacity(n);
+            let mut entries: Vec<(z3::ast::Bool, RustBV, bool)> = Vec::with_capacity(n);
             for ast in asts.iter() {
-                let ptr = match extract_z3_ast_ptr(py, &ast) {
-                    Ok(p) if p.is_bool() => p,
-                    // angr-58ks: a non-Bool AST cannot go through the raw
-                    // batch (add_constraints_raw_batch Bool-wraps by
-                    // contract); drop to the per-constraint slow path which
-                    // lowers it correctly.
-                    Ok(_) | Err(_) => break,
+                // angr-58ks: a non-Bool AST cannot go through the raw batch
+                // (`add_constraints_raw_batch` takes a `Bool`); drop to the
+                // per-constraint slow path, which lowers it correctly.
+                let Some(ptr) = extract_z3_ast_ptr(py, &ast)
+                    .ok()
+                    .and_then(|p| z3_ast_to_bool(&p))
+                else {
+                    break;
                 };
                 let bv = match claripy_to_rustbv(py, &ast, &ctx) {
                     Ok(b) => b,

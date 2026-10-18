@@ -158,16 +158,21 @@ pub(crate) enum ConstraintImport {
     Failed(crate::claripy_bridge::BridgeError),
 }
 
-/// Lower a claripy constraint to a raw Z3 term, the entry point for the
+/// Lower a claripy constraint to a Z3 Bool, the entry point for the
 /// raw-pointer tier (see `claripy_bridge::z3_lower`).
 ///
 /// SILENT(cat-a): an AST with no Z3 lowering (strings, VSA, or an object that
 /// is not one of this extension's claripy ASTs) is expected control flow — the
 /// caller falls through to the RustBV tier, which is an equally complete
 /// alternative, not a degraded one.
+///
+/// A lowering that is not Bool-sorted (a BV used as a truthiness constraint)
+/// is `None` too (angr-mx00p.41): asserting it would trip Z3's silent
+/// sort-mismatch guard (angr-d01qu), and the RustBV tier's `as_bool` lowers it
+/// to the proper `!= 0`.
 #[cfg(feature = "vex-engine-z3")]
-fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<crate::symbolic::Z3AstPtr> {
-    crate::claripy_bridge::lower_claripy_ast(item).ok()
+fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<z3::ast::Bool> {
+    crate::z3_ast_extract::z3_ast_to_bool(&crate::claripy_bridge::lower_claripy_ast(item).ok()?)
 }
 
 /// Coerce a converted constraint to the width-1 form the solver's assumed log
