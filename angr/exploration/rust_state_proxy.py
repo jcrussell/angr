@@ -314,8 +314,7 @@ class _ProxyStatePluginMixin:
     ``category``, ``copy()`` and (memory) ``SUPPORTS_CONCRETE_LOAD`` /
     ``permissions`` / ``compare``. A subclass that ever implements real
     cross-``state_id`` coordination overrides ``merge`` / ``widen``; none do
-    today. The surface is intentionally public API (angr-qj30; pinned in
-    ``angr/exploration/_public_api.py``).
+    today. The surface is intentionally public API (angr-qj30).
     """
 
     def set_state(self, state):

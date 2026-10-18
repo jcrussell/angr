@@ -400,8 +400,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Engine version, sourced from native/angr/Cargo.toml at compile time.
     // Re-exported by Python as `angr.exploration.__rust_engine_version__` so
     // user code can branch on engine API version independently of
-    // `angr.__version__`. See policy in
-    // `docs/advanced-topics/rust_engine.rst` (:ref:`rust-engine-api-stability`).
+    // `angr.__version__`.
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

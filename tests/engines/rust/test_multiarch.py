@@ -40,7 +40,7 @@ from tests.engines.conftest import (  # noqa: F401
 from tests.engines.rust.arch_specs import ARCH_SPECS, ArchSpec, EndianVariant, build_elf, spec_for
 
 # All tests in this module require the Rust extension; skip the whole module
-# when it is unavailable (matches tests/engines/test_rust_public_api.py).
+# when it is unavailable.
 pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
     reason="Rust exploration not available",

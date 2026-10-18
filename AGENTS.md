@@ -114,7 +114,7 @@ per-decision detail. Look here first, then `bd recall`.
 
 | Topic | Docs (authoritative) | bd memory (entry point) |
 |-------|----------------------|-------------------------|
-| Using the engine: options, inspect, techniques, errors, API stability | docs/advanced-topics/rust_engine.rst | core-goal-design-philosophy |
+| Using the engine: options, inspect, techniques, errors | docs/advanced-topics/rust_engine.rst | core-goal-design-philosophy |
 | Rejected alternatives | docs/advanced-topics/rust_engine_decisions.rst | — |
 | Building, tests, bench gates, profiling, logging | docs/advanced-topics/rust_build.rst | venv-rebuild-cargo-direct-copy |
 | Z3 sharing & solver counters | docs/advanced-topics/rust_z3_sharing.rst | constraint-export-no-pre-pin |
@@ -178,8 +178,7 @@ module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
   docstring holds the cross-mixin invariants), `rust_state_proxy.py`,
   `rust_state_export.py`, `rust_state_sync.py`, `rust_callback_dispatch.py`,
   `rust_disk_cache.py`, `rust_irsb_serializer.py`, `rust_techniques.py`,
-  `rust_identity.py`, `rust_perf_tracker.py`, `rust_state_cache.py`;
-  `_public_api.py` (the public-surface inventory), `_deprecation.py`,
+  `rust_identity.py`, `rust_perf_tracker.py`, `rust_state_cache.py`,
   `_constants.py`.
 - **Rust engine** (`native/angr/src/`): `exploration/` (manager
   `#[pymethods]` split across `manager_methods*.rs`, the run loops,

@@ -11,8 +11,8 @@ below).
 
 This page is the reference for *using* the engine: which
 ``angr.sim_options`` flags it honors, how ``state.inspect`` dispatches,
-which exploration techniques and analyses work, how errors surface, and
-what the API-stability contract is. Companion pages:
+which exploration techniques and analyses work, and how errors surface.
+Companion pages:
 
 * :doc:`rust_build` — building, testing, profiling and logging.
 * :doc:`rust_engine_decisions` — alternatives that were tried and
@@ -3354,50 +3354,12 @@ constraints into claripy is expensive and identity-lossy. So an empty
 ``mirror.solver.constraints`` after a load is the design, not a lost
 constraint set (angr-wuyo9).
 
-.. _rust-engine-api-stability:
-
-API stability contract
-----------------------
-
-The Rust engine's public API consists of the PyO3 ``#[pyclass]`` types
-re-exported from ``angr.exploration`` (and forwarded to the top-level
-``angr`` package per ``angr-nncz``) plus the typed exception hierarchy
-in ``native/angr/src/errors.rs``.
-
-Public vs experimental vs private
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Three tiers of stability apply to every name reachable from
-``angr.exploration``:
-
-- **Public.** No leading underscore, listed in
-  ``angr/exploration/_public_api.py`` (``MODULE_EXPORTS``,
-  ``TYPED_EXCEPTIONS``, or as a key in ``CLASS_PUBLIC_ATTRS``), and
-  not marked experimental. Public names follow the semver contract
-  below.
-- **Experimental.** A no-leading-underscore name explicitly tagged
-  ``Experimental:`` in its docstring or RST description (see the
-  ``ANGR_Z3_TACTIC`` example earlier in this document). Experimental
-  surfaces may change or be removed in any minor release without
-  going through the deprecation cycle. They exist so risky/in-flight
-  work can be reached from Python without committing to forever.
-- **Private.** Leading underscore (``_foo``, ``_BAR``) or any name
-  not in ``_public_api.py``. Internal implementation detail — may
-  change or vanish in any release without notice. Do not import,
-  patch, or rely on private names from downstream code.
-
-Snapshot test ``angr-9cps .3`` (planned) consumes
-``angr/exploration/_public_api.py`` as the canonical list of public
-names; any unintended addition, rename, or removal trips CI before it
-ships.
-
 Reading the engine version
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+--------------------------
 
 The Rust engine carries its own version, distinct from
 ``angr.__version__``. The engine API evolves on a different cadence
-than core angr (CTF-style speedup work, write-through proxy epic, Z3
-solver tuning), so consumers that gate on engine features should read
+than core angr, so consumers that gate on engine features should read
 the engine version directly:
 
 .. code-block:: python
@@ -3414,185 +3376,4 @@ since it does not require knowing the rustylib submodule name.
 
 The attribute is intentionally **not** in ``angr.exploration.__all__``
 (it follows the standard ``__version__`` convention — accessible via
-explicit name, excluded from star-import). The semver rules in the
-next section apply to the value of this attribute, not to
-``angr.__version__``.
-
-Semver rules (within 9.2.x and onwards)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The following semver contract applies once the engine reaches a
-tagged release. It governs the **public** tier only — experimental
-and private names are exempt.
-
-**Patch versions (X.Y.Z → X.Y.Z+1)**
-  - No public API changes — bug fixes only.
-  - No new exception classes, no new pyclass methods/fields, no new
-    error-enum variants, no new event-enum variants.
-
-**Minor versions (X.Y.Z → X.Y+1.0)**
-  - May add new exception subclasses under ``RustExecutionError``.
-  - May add new ``#[pyo3(get)]`` fields to event/config pyclass
-    structs (e.g. new ``ExplorationEvent`` callback fields).
-  - May add new variants to internal error/event enums on the Rust
-    side. Public Rust types involved in this surface are marked
-    ``#[non_exhaustive]`` so internal pattern matches require a
-    wildcard arm and downstream Rust consumers (currently none) can
-    add the new variant without it being a breaking change.
-  - May add new pyclass methods. Existing method signatures stay
-    stable.
-  - May mark a previously-public name as deprecated. The name keeps
-    working for the rest of the current minor series and is removed
-    no earlier than the **next** minor release (see deprecation
-    cycle below).
-
-**Major versions (X.Y.Z → X+1.0.0)**
-  - May rename or remove exception classes, pyclass methods/fields,
-    or error variants. May restructure the ``RustExecutionError``
-    hierarchy.
-  - May remove any name that has been through one full minor's worth
-    of deprecation warning.
-
-Breaking-change rule of thumb: if a change would break code written
-against ``_public_api.py``, it requires a major version bump *and*
-at least one minor release where the old name still works while
-emitting ``DeprecationWarning``.
-
-Deprecation cycle
-~~~~~~~~~~~~~~~~~
-
-Removing a public name is a two-step process:
-
-1. **Deprecate** in minor release ``X.Y.0``. The name continues to
-   work; access emits ``DeprecationWarning`` (Python side) or a
-   ``#[deprecated]`` attribute (Rust side, when applicable). The
-   ``CLASS_PUBLIC_ATTRS`` tuple in ``_public_api.py`` keeps the
-   name with a trailing ``# deprecated in X.Y, removal targeted
-   X.(Y+1)`` comment.
-2. **Remove** no earlier than ``X.(Y+1).0``. The name vanishes from
-   ``_public_api.py``; the snapshot test enforces the removal.
-
-One minor cycle is the floor, not the ceiling — popular names should
-get more. The cycle exists so downstream code has a release with both
-the new and old name working, where ``DeprecationWarning`` shows up
-in test output and surfaces the rename.
-
-Applying the ``@_deprecated`` decorator (Python side)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The ``angr.exploration._deprecation._deprecated`` decorator is the canonical
-way to mark a Python-side public name as deprecated during step 1 of the
-cycle above. It is intentionally underscore-prefixed (private) — only the
-exploration package itself should import it.
-
-Usage:
-
-.. code-block:: python
-
-    from angr.exploration._deprecation import _deprecated
-
-    class RustExplorationManager:
-        @_deprecated(version="9.3", removed_in="9.4", replacement="run")
-        def explore(self, *args, **kwargs):
-            return self.run(*args, **kwargs)
-
-Arguments:
-
-- ``version`` (required) — the minor release in which deprecation started.
-  Matches ``X.Y`` in the cycle's step 1.
-- ``removed_in`` (required) — the minor release targeted for removal.
-  Matches ``X.(Y+1)`` in the cycle's step 2.
-- ``replacement`` (optional) — the new name a caller should migrate to;
-  appears verbatim in the warning message.
-
-Behavior:
-
-- Emits ``DeprecationWarning`` from the wrapper on first call **per
-  decorated callable per process**. Subsequent calls are silent so test
-  logs and long-running sessions stay legible.
-- ``stacklevel=2`` so the warning points at the caller, not at the
-  wrapper.
-- ``functools.wraps`` preserves ``__name__``, ``__doc__``, and the
-  original signature so the snapshot test in
-  ``tests/engines/test_rust_public_api.py`` still sees the name on the
-  class.
-
-When the rest of step 1 (inventory comment, release-note entry) and step 2
-(removal in the next minor release) happen, the test in
-``tests/engines/test_rust_deprecation.py`` keeps the decorator's contract
-itself stable: the warning fires, carries both versions, and includes the
-replacement name when given.
-
-If no public name is currently being deprecated, the decorator still lives
-in the tree ready for the first cycle — the test verifies that the
-mechanism works, independent of any concrete name using it today.
-
-How to mark something experimental
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-When a new pyclass method, ``#[pyo3(get)]`` field, env-var hook, or
-similar Python-visible knob ships in a state where its shape may
-still change, mark it experimental:
-
-- **Python side.** Add ``"Experimental:"`` (literal prefix) to the
-  first line of the docstring, e.g.
-
-  .. code-block:: python
-
-      def some_new_knob(self, ...):
-          """Experimental: tune the foo strategy.
-
-          May change shape in any minor release until promoted.
-          """
-
-  Do **not** add the name to ``_public_api.py``. The snapshot test
-  treats absence from ``_public_api.py`` as "not public" — exactly
-  the contract we want for experimental.
-
-- **Rust side.** In the RST description of any new ``#[pyo3(get)]``
-  field or pyclass method, lead with ``Experimental:`` and link
-  back to this section (``:ref:`rust-engine-api-stability```).
-  Existing example: ``ANGR_Z3_TACTIC`` solver-strategy override
-  earlier in this document.
-
-Promoting an experimental name to public means: drop the
-``Experimental:`` prefix, add it to the relevant tuple in
-``_public_api.py``, and land both changes in the same minor release.
-Promotion is a *minor*-version event (additive), so it does not
-require a deprecation cycle.
-
-The Python exception hierarchy intentionally **does not** offer an
-exhaustive-match guarantee. Downstream code that uses
-``pytest.raises(angr.RustExecutionError)`` (the base class) keeps
-working when new sibling classes are added; code that catches a
-specific subclass like ``pytest.raises(angr.RustUnsupportedVexOpError)``
-is not affected by additions either. The variant added in a minor
-release surfaces as a new subclass of ``RustExecutionError``.
-
-On the Rust side, the types currently marked ``#[non_exhaustive]``
-are:
-
-- ``RustExecError`` (``native/angr/src/errors.rs``) — the canonical
-  Rust→Python error enum.
-- ``BridgeError`` (``native/angr/src/claripy_bridge/mod.rs``)
-- ``SyscallError`` (``native/angr/src/syscalls/support.rs``)
-- ``OpError`` (``native/angr/src/vex/ops/error.rs``)
-- ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
-- ``MemoryError`` (``native/angr/src/memory/mod.rs``)
-- ``CallbackReason`` (``native/angr/src/exploration/callback_types.rs``)
-- ``ExplorationEvent`` pyclass struct
-  (``native/angr/src/exploration/event.rs``) — the Python-visible event
-  envelope, expected to grow ``#[pyo3(get)]`` fields as new
-  callback reasons land.
-- ``ExecutionConfig`` pyclass struct (``native/angr/src/callbacks/config.rs``)
-  — the Python-visible config struct, expected to grow knobs over
-  time.
-
-Adding a variant or field to these is **not** a breaking change. The
-``#[non_exhaustive]`` attribute makes the rule machine-enforced rather
-than aspirational. Other internal enums (``CbExecutionError``,
-``LiftError``, ``DeserializeError``, ``NativeLiftMiss``,
-``ExtractionError``) are crate-local
-implementation detail and are intentionally left without
-``#[non_exhaustive]`` because their match sites are tightly controlled
-within the same crate.
+explicit name, excluded from star-import).
