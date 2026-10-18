@@ -267,7 +267,6 @@ impl RustBV {
     fn canonical_sort_key(&self) -> (u8, u128) {
         match self {
             RustBV::Symbolic { id, .. } => (0, *id as u128),
-            RustBV::Constrained { id, .. } => (1, *id as u128),
             RustBV::Expression { operands, .. } => {
                 (2, Arc::as_ptr(operands) as *const () as usize as u128)
             }
@@ -1806,20 +1805,6 @@ pub(super) fn drive_extract<T: ExtractTarget>(
     debug_assert!(high >= low);
     debug_assert!(high < inner.width());
     let result_width = high - low + 1;
-
-    // Identity on a `Constrained` inner, checked ahead of the concrete
-    // fast path: `RustBV::as_u128` returns `Some` for `Constrained`, so the
-    // fold below would rebuild `Extract(w-1, 0, Constrained{id, ..})` as a bare
-    // `Concrete` and silently drop the symbol `id` that `query_class`,
-    // `memory::ite_builder`, `memory::multi` and `interpreter::concretize_cache`
-    // key off for symbol tracking, structural hashing and cache keys
-    // (angr-9ke6b.128). This mirrors `zero_extend_into` / `sign_extend_into` /
-    // `truncate_into`, which all check their width identity before folding.
-    // A *partial* extract still folds — like a real extension, it produces a
-    // different value, so it is a new leaf rather than the same symbol.
-    if matches!(inner, RustBV::Constrained { .. }) && high == inner.width() - 1 && low == 0 {
-        return target.identity(inner);
-    }
 
     // Concrete fast path — fold at the Rust level (shared with every Extract
     // site, see bv_concrete::concrete_extract_u128).

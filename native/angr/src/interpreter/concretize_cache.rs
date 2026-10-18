@@ -233,20 +233,6 @@ impl<'a> VEXInterpreter<'a> {
                 id.hash(hasher);
                 width.hash(hasher);
             }
-            RustBV::Constrained { id, value, width } => {
-                2u8.hash(hasher);
-                id.hash(hasher);
-                // `value` participates even though a TOP-LEVEL Constrained can
-                // never reach here (every call site early-returns on
-                // `addr.as_u64()`, which is `Some` for this variant): the
-                // recursion below descends into nested operands, where no such
-                // filter applies. Dropping it made
-                // `Add(y, Constrained{id:5, value:10})` and
-                // `Add(y, Constrained{id:5, value:20})` hash byte-identically —
-                // a guaranteed, not probabilistic, collision (angr-fs8kb.65).
-                value.hash(hasher);
-                width.hash(hasher);
-            }
             RustBV::Expression {
                 op,
                 operands,

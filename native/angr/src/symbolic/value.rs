@@ -1,14 +1,9 @@
 //! Symbolic bitvector values for VEX execution.
 //!
-//! The `RustBV` type represents a bitvector that is one of four variants:
+//! The `RustBV` type represents a bitvector that is one of these variants:
 //! - Concrete: A known fixed value
-//! - Symbolic: Represents an unknown value (with optional Z3 backing)
-//! - Constrained: A symbolic leaf whose value is already pinned to a concrete
-//!   one. Not interchangeable with `Concrete` — it keeps the symbol's `id`, and
-//!   the identity-preservation invariant that a *no-op* fold (a width-identity
-//!   extend/truncate, a full-width extract) must not rebuild it as `Concrete`
-//!   and drop that id (angr-9ke6b.128) is cited throughout this file and
-//!   `value_ops.rs`.
+//! - Ast: A clarirs term — every symbolic value, named leaves included
+//! - Symbolic: A nameless wrapper around a raw Z3 term
 //! - Expression: A compound expression with operation tree for reconstruction
 
 use std::fmt;
@@ -306,15 +301,6 @@ pub enum RustBV {
         #[cfg(feature = "vex-engine-z3")]
         ast: z3::ast::BV,
     },
-    /// Optimization: a symbolic value with a known concrete value.
-    Constrained {
-        /// The symbolic identifier.
-        id: u64,
-        /// The known concrete value.
-        value: u128,
-        /// Width in bits.
-        width: u32,
-    },
     /// A compound expression with operation tree for claripy reconstruction.
     ///
     /// This variant stores the operation and operands that created this value,
@@ -328,9 +314,8 @@ pub enum RustBV {
         /// (`u64::MAX`) by every `Expression` constructor in this module
         /// (see the `define_*_op` macro families and direct builders such as
         /// `add_into`, `mul_into`, `and_into`, etc.). The sentinel
-        /// distinguishes compound expressions from leaf symbols (`Symbolic`
-        /// / `Constrained`), which carry real allocated ids from
-        /// [`crate::symbolic::SymbolicIdentityRegistry`].
+        /// distinguishes compound expressions from `Symbolic` leaves, which
+        /// carry real allocated ids.
         ///
         /// **Why a sentinel, not a per-node hash:** allocating a unique id
         /// for every intermediate operation was rejected for solver
@@ -432,6 +417,8 @@ pub enum RustBVData {
         width: u32,
         name: String,
     },
+    /// Legacy: the retired `Constrained` arm, decoded as the `Concrete` of
+    /// its value; never written.
     Constrained {
         id: u64,
         value: u128,
@@ -461,9 +448,6 @@ impl From<RustBV> for RustBVData {
                 width,
                 name: name.to_string(),
             },
-            RustBV::Constrained { id, value, width } => {
-                RustBVData::Constrained { id, value, width }
-            }
             RustBV::Expression {
                 id,
                 width,
@@ -510,11 +494,9 @@ impl TryFrom<RustBVData> for RustBV {
                 // feature); callers must be inside with_z3_context when this runs.
                 RustBV::from_parts(rebase_id(id), Arc::<str>::from(name), width)
             }
-            RustBVData::Constrained { id, value, width } => RustBV::Constrained {
-                id: rebase_id(id),
-                value,
-                width,
-            },
+            // A legacy record of the retired `Constrained` arm: its value was
+            // known, which is all a `Concrete` is (angr-mx00p.13).
+            RustBVData::Constrained { value, width, .. } => RustBV::concrete(value, width),
             RustBVData::Expression {
                 id,
                 width,
@@ -760,7 +742,6 @@ impl RustBV {
         match self {
             RustBV::Concrete { width, .. } => *width,
             RustBV::Symbolic { width, .. } => *width,
-            RustBV::Constrained { width, .. } => *width,
             RustBV::Expression { width, .. } => *width,
             RustBV::Ast { width, .. } => *width,
         }
@@ -777,10 +758,7 @@ impl RustBV {
     pub fn is_symbolic(&self) -> bool {
         matches!(
             self,
-            RustBV::Symbolic { .. }
-                | RustBV::Constrained { .. }
-                | RustBV::Expression { .. }
-                | RustBV::Ast { .. }
+            RustBV::Symbolic { .. } | RustBV::Expression { .. } | RustBV::Ast { .. }
         )
     }
 
@@ -789,7 +767,6 @@ impl RustBV {
     pub fn as_u128(&self) -> Option<u128> {
         match self {
             RustBV::Concrete { value, .. } => Some(*value),
-            RustBV::Constrained { value, .. } => Some(*value),
             RustBV::Symbolic { .. } => None,
             RustBV::Expression { .. } => None,
             // `from_clarirs` folds every literal that fits into `Concrete`.
@@ -841,9 +818,6 @@ impl fmt::Debug for RustBV {
             } => {
                 write!(f, "Symbolic(#{id}, {name}, {width})")
             }
-            RustBV::Constrained { id, value, width } => {
-                write!(f, "Constrained(#{id}, 0x{value:x}, {width})")
-            }
             RustBV::Expression {
                 width,
                 op,
@@ -874,9 +848,6 @@ impl fmt::Display for RustBV {
             RustBV::Symbolic { width, name, .. } => {
                 write!(f, "<BV{width} {name}>")
             }
-            RustBV::Constrained { value, width, .. } => {
-                write!(f, "<BV{width} 0x{value:x} (constrained)>")
-            }
             RustBV::Expression { width, op, .. } => {
                 write!(f, "<BV{width} {op:?}>")
             }
@@ -893,11 +864,7 @@ impl fmt::Display for RustBV {
 /// The relation partitions `RustBV` into these classes, which never compare
 /// equal across the class boundary:
 ///
-/// 1. **Known-value** (`Concrete`, and `Constrained` — which carries a pinned
-///    concrete `value`): equal iff same `as_u128()` and same width. A
-///    `Constrained` therefore equals the `Concrete` holding its value, which
-///    is the point — the two are interchangeable results of the same
-///    computation.
+/// 1. **Known values** (`Concrete`): equal iff same value and same width.
 /// 2. **Wrapped Z3 terms** (`Symbolic`): equal iff same `id` and width. A
 ///    named leaf is an `Ast` (class 4) since angr-mx00p.12, so this arm only
 ///    holds a nameless wrapper around a raw Z3 term.
@@ -921,10 +888,8 @@ impl fmt::Display for RustBV {
 /// whenever either side lacked an `as_u128()`, which broke reflexivity for
 /// `Symbolic`/`Expression` and made `==` a trap for dedup/`contains` callers.
 ///
-/// There is intentionally no `Eq`/`Hash`: two `RustBV`s that compare equal
-/// (a `Concrete` and the matching `Constrained`) have no shared cheap hash,
-/// and `Expression`'s pointer identity would hash differently after a
-/// serde round-trip.
+/// There is intentionally no `Eq`/`Hash`: `Expression`'s pointer identity
+/// would hash differently after a serde round-trip.
 impl PartialEq for RustBV {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

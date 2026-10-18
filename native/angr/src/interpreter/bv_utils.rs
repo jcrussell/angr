@@ -32,12 +32,6 @@ pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec
                     targets.push(addr);
                 }
             }
-            RustBV::Constrained { value, .. } => {
-                let addr = *value as u64;
-                if seen.insert(addr) {
-                    targets.push(addr);
-                }
-            }
             _ => match current.node() {
                 // ITE: operands[0] = condition, operands[1] = true_val, operands[2] = false_val
                 Some(Node {

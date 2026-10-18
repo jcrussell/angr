@@ -333,85 +333,21 @@ fn bv_cache_key_distinguishes_op_payload() {
 }
 
 /// angr-9ke6b.89: leaf keys must be variant-tagged. `bv_cache_key` used to
-/// shortcut `Concrete` to its raw `value` and `Symbolic`/`Constrained` to their
-/// raw `id`, so a `Concrete { value: N }` and a `Symbolic { id: N }` collided on
-/// the same key. The three production call sites all early-return on
-/// `as_u64()` and never hand a `Concrete`/`Constrained` to `bv_cache_key`, so
-/// this was latent — but a future caller that skips that filter would silently
-/// cross-wire a concrete address with an unrelated symbol.
+/// shortcut `Concrete` to its raw `value` and a leaf to its raw `id`, so a
+/// `Concrete { value: N }` and a symbol with id N collided on the same key.
+/// The production call sites all early-return on `as_u64()` and never hand a
+/// `Concrete` to `bv_cache_key`, so this was latent — but a future caller that
+/// skips that filter would silently cross-wire a concrete address with an
+/// unrelated symbol.
 #[test]
 fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
     let ctx = SymContext::new_mock();
     let sym = RustBV::symbolic(&ctx, "x", 64);
-    // Any id will do: the leaf is named, and only `Constrained` carries one.
-    let (id, width) = (7u64, sym.width());
-
-    let concrete = RustBV::concrete(id as u128, width);
-    let constrained = RustBV::Constrained {
-        id,
-        value: id as u128,
-        width,
-    };
-
-    let keys = [
+    let concrete = RustBV::concrete(7, sym.width());
+    assert_ne!(
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &sym),
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &concrete),
-        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &constrained),
-    ];
-    assert_ne!(keys[0], keys[1], "leaf vs Concrete{{value:N}}");
-    assert_ne!(keys[0], keys[2], "leaf vs Constrained{{id:N}}");
-    assert_ne!(
-        keys[1], keys[2],
-        "Concrete{{value:N}} vs Constrained{{id:N}}"
-    );
-}
-
-/// angr-fs8kb.65: the `Constrained` arm of `hash_bv` used to drop `value`,
-/// justified by all three call sites early-returning on `addr.as_u64()` — which
-/// only filters a TOP-LEVEL `Constrained`. Nested under an `Expression`, two
-/// leaves sharing a registry `id` but carrying different concrete values then
-/// hashed byte-identically: a guaranteed collision, not a probabilistic one.
-#[test]
-fn bv_cache_key_distinguishes_nested_constrained_values() {
-    let ctx = SymContext::new_mock();
-    let sym = RustBV::symbolic(&ctx, "base", 64);
-    // Any id will do: the leaf is named, and only `Constrained` carries one.
-    let (id, width) = (7u64, sym.width());
-
-    // Built as `Expression` nodes directly: `add` now builds a clarirs term,
-    // which holds a `Constrained` operand as its literal value, and this pins
-    // `hash_bv`'s nested-`Constrained` arm.
-    let add_of = |value| RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width,
-        op: BVOp::Add,
-        operands: std::sync::Arc::from(vec![
-            sym.clone(),
-            RustBV::Constrained { id, value, width },
-        ]),
-        memo: Default::default(),
-    };
-    let (addr_lo, addr_hi) = (add_of(10), add_of(20));
-
-    // Sanity: the Constrained leaf must survive as a nested operand rather than
-    // being constant-folded away, or the test would prove nothing.
-    for addr in [&addr_lo, &addr_hi] {
-        let RustBV::Expression { operands, .. } = addr else {
-            panic!("add(Symbolic, Constrained) must stay an Expression, got {addr:?}");
-        };
-        assert!(
-            operands
-                .iter()
-                .any(|op| matches!(op, RustBV::Constrained { .. })),
-            "the Constrained operand must survive unfolded, got {operands:?}"
-        );
-    }
-
-    assert_ne!(
-        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_lo),
-        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_hi),
-        "nested Constrained leaves with equal id/width but different values \
-         must produce distinct cache keys"
+        "leaf vs Concrete"
     );
 }
 

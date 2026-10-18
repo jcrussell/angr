@@ -41,7 +41,7 @@ impl RustBV {
                 op,
                 operands: Cow::Owned(operands),
             }),
-            RustBV::Concrete { .. } | RustBV::Symbolic { .. } | RustBV::Constrained { .. } => None,
+            RustBV::Concrete { .. } | RustBV::Symbolic { .. } => None,
         }
     }
 

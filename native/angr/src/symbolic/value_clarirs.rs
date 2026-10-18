@@ -108,9 +108,7 @@ impl RustBV {
             RustBV::Concrete { width: 0, .. } => Err(ClarirsError::InvalidArguments(
                 "a zero-width value has no clarirs term".into(),
             )),
-            RustBV::Concrete { value, width } | RustBV::Constrained { value, width, .. } => {
-                bvv(*value, *width)
-            }
+            RustBV::Concrete { value, width } => bvv(*value, *width),
             // An empty name marks a wrapper around an arbitrary Z3 term, not a
             // variable: its term is the Z3 AST it holds, which has no clarirs
             // form.

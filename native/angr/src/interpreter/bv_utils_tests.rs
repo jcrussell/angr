@@ -169,18 +169,6 @@ fn test_extract_ite_targets_dedup() {
 }
 
 #[test]
-fn test_extract_ite_targets_constrained_leaf() {
-    // A Constrained leaf (symbolic with a known concrete value) is treated
-    // like a concrete target.
-    let leaf = RustBV::Constrained {
-        id: 7,
-        value: 0x555,
-        width: 64,
-    };
-    assert_eq!(extract_ite_targets(&leaf, 8), Some(vec![0x555]));
-}
-
-#[test]
 fn test_extract_ite_targets_non_ite_symbolic_aborts() {
     // An ITE wrapping a non-ITE symbolic leaf (here an Add expression) can't be
     // resolved structurally -> None.

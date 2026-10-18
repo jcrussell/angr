@@ -40,14 +40,6 @@ fn loads_match(a: &RustBV, b: &RustBV) -> bool {
     match (a, b) {
         (Concrete { value: v1, .. }, Concrete { value: v2, .. }) => v1 == v2,
         (Symbolic { id: i1, .. }, Symbolic { id: i2, .. }) => i1 == i2,
-        (
-            Constrained {
-                id: i1, value: v1, ..
-            },
-            Constrained {
-                id: i2, value: v2, ..
-            },
-        ) => i1 == i2 && v1 == v2,
         // Two Expression nodes are treated as identical only when they share
         // the same operand `Arc` and op. This catches incidental sharing
         // (e.g. when distinct addresses route to the same cached AST) without

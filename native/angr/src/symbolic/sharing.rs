@@ -48,8 +48,6 @@ enum StructuralKey {
     /// Symbolic leaf: same `id` (ids are minted globally so this implies same
     /// width too, but include it explicitly for clarity).
     Symbolic(u64, u32),
-    /// Constrained leaf: symbolic id with a known concrete witness.
-    Constrained(u64, u128, u32),
     /// Expression node: same op, same width, structurally-equal operand list.
     Expression(super::value::BVOp, u32, Vec<u64>),
     /// clarirs term: same structural hash (clarirs interns, so same node).
@@ -122,9 +120,6 @@ impl ConstraintSharingWalk {
         let key = match node {
             RustBV::Concrete { value, width } => StructuralKey::Concrete(*value, *width),
             RustBV::Symbolic { id, width, .. } => StructuralKey::Symbolic(*id, *width),
-            RustBV::Constrained { id, value, width } => {
-                StructuralKey::Constrained(*id, *value, *width)
-            }
             RustBV::Expression {
                 op,
                 operands,

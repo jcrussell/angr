@@ -74,9 +74,7 @@ impl RustBV {
         }
         super::stats::record_z3_ast_cache_miss();
         let result = match self {
-            RustBV::Concrete { value, width } | RustBV::Constrained { value, width, .. } => {
-                super::bv_codec::make_bv_const(*value, *width)
-            }
+            RustBV::Concrete { value, width } => super::bv_codec::make_bv_const(*value, *width),
             RustBV::Symbolic { ast, .. } => ast.clone(),
             RustBV::Expression {
                 op,
@@ -184,7 +182,7 @@ impl RustBV {
         use std::sync::Arc;
         use z3::Translate;
         match self {
-            RustBV::Concrete { .. } | RustBV::Constrained { .. } => self.clone(),
+            RustBV::Concrete { .. } => self.clone(),
             RustBV::Symbolic {
                 id,
                 width,
@@ -325,9 +323,7 @@ impl RustBV {
             "to_z3_bool_cached expects a 1-bit RustBV; narrow with ne(0) first"
         );
         match self {
-            RustBV::Concrete { value, .. } | RustBV::Constrained { value, .. } => {
-                z3::ast::Bool::from_bool(*value != 0)
-            }
+            RustBV::Concrete { value, .. } => z3::ast::Bool::from_bool(*value != 0),
             RustBV::Expression { op, operands, .. } => {
                 if let Some(b) = Self::cmp_bool_for_cached(op, operands, cache) {
                     return b;

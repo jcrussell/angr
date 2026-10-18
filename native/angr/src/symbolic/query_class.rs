@@ -260,7 +260,7 @@ fn walk(bv: &RustBV, shape: &mut Shape, budget: &mut usize) {
         return;
     }
     *budget -= 1;
-    if matches!(bv, RustBV::Concrete { .. } | RustBV::Constrained { .. }) {
+    if matches!(bv, RustBV::Concrete { .. }) {
         return;
     }
     if let Some(var) = bv.leaf_var() {
@@ -366,7 +366,6 @@ fn struct_eq(a: &RustBV, b: &RustBV, budget: &mut usize) -> bool {
                 width: w2,
             },
         ) => v1 == v2 && w1 == w2,
-        (RustBV::Constrained { id: i1, .. }, RustBV::Constrained { id: i2, .. }) => i1 == i2,
         // Interned: one node per term.
         (RustBV::Ast { ast: x, .. }, RustBV::Ast { ast: y, .. }) if Arc::ptr_eq(x, y) => true,
         _ => {

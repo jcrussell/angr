@@ -12,11 +12,6 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
     let ctx = SymContext::new_mock();
     let concrete = RustBV::concrete(5, 32);
     let symbolic = RustBV::symbolic(&ctx, "reflexive_sym", 32);
-    let constrained = RustBV::Constrained {
-        id: 7,
-        value: 5,
-        width: 32,
-    };
     let ast = symbolic.add(&RustBV::concrete(1, 32), &ctx);
     assert!(
         matches!(ast, RustBV::Ast { .. }),
@@ -24,7 +19,7 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
     );
     let expression = raw_extract_node(symbolic.clone(), 15, 0);
 
-    for bv in [&concrete, &symbolic, &constrained, &ast, &expression] {
+    for bv in [&concrete, &symbolic, &ast, &expression] {
         assert_eq!(bv, bv, "PartialEq must be reflexive for {bv:?}");
         assert_eq!(
             bv,
@@ -34,23 +29,17 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
     }
 }
 
-/// The equality classes from the `PartialEq for RustBV` doc: known-value
-/// (Concrete/Constrained), leaf identity by name, node identity
+/// The equality classes from the `PartialEq for RustBV` doc: known value
+/// (Concrete), leaf identity by name, node identity
 /// (Expression, and Ast, whose nodes are interned so identity is structure).
 /// Nothing compares equal across a class boundary.
 #[test]
 fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     let ctx = SymContext::new_mock();
 
-    // Class 1: value-based. A Constrained equals the Concrete holding its value.
+    // Class 1: value-based.
     let concrete = RustBV::concrete(5, 32);
-    let constrained = RustBV::Constrained {
-        id: 7,
-        value: 5,
-        width: 32,
-    };
-    assert_eq!(concrete, constrained);
-    assert_eq!(constrained, concrete);
+    assert_eq!(concrete, RustBV::concrete(5, 32));
     assert_ne!(concrete, RustBV::concrete(5, 64), "width must be compared");
     assert_ne!(concrete, RustBV::concrete(6, 32));
 
@@ -92,8 +81,6 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     for (a, b) in [
         (&concrete, &s1),
         (&concrete, &e1),
-        (&constrained, &s1),
-        (&constrained, &e1),
         (&s1, &e1),
         (&concrete, &a1),
         (&s1, &a1),
@@ -105,8 +92,8 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
 }
 
 /// `Debug` must surface each value's identity — otherwise two distinct values
-/// print identically in logs and assertion failures (angr-sqfj8.99): the name
-/// for a named leaf, the `id` for a `Constrained`.
+/// print identically in logs and assertion failures (angr-sqfj8.99): for a
+/// named leaf, its name.
 #[test]
 fn test_debug_includes_symbol_id_for_leaf_variants() {
     // A named leaf prints its name: that is its identity (angr-mx00p.12).
@@ -114,23 +101,6 @@ fn test_debug_includes_symbol_id_for_leaf_variants() {
     let b = RustBV::symbolic_with_id(12, "beta", 32);
     assert_eq!(format!("{a:?}"), "Ast(alpha, 32)");
     assert_ne!(format!("{a:?}"), format!("{b:?}"));
-
-    let c = RustBV::Constrained {
-        id: 7,
-        value: 0x2a,
-        width: 32,
-    };
-    let d = RustBV::Constrained {
-        id: 8,
-        value: 0x2a,
-        width: 32,
-    };
-    assert_eq!(format!("{c:?}"), "Constrained(#7, 0x2a, 32)");
-    assert_ne!(
-        format!("{c:?}"),
-        format!("{d:?}"),
-        "distinct constrained ids must print differently"
-    );
 
     // Display is the user-facing `<BVn ...>` rendering and deliberately stays
     // id-free; only Debug carries identity.
