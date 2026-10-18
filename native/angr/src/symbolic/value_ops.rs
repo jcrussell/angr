@@ -1425,6 +1425,9 @@ fn builds_clarirs(op: &BVOp) -> bool {
             | BVOp::Extract(..)
             | BVOp::Concat
             | BVOp::Reverse
+            | BVOp::Clz
+            | BVOp::Ctz
+            | BVOp::Popcount
     )
 }
 
