@@ -41,7 +41,7 @@ impl RustBV {
                 op,
                 operands: Cow::Owned(operands),
             }),
-            RustBV::Concrete { .. } | RustBV::Symbolic { .. } => None,
+            RustBV::Concrete { .. } => None,
         }
     }
 
@@ -55,7 +55,6 @@ impl RustBV {
         use super::registry::SymbolKind;
         use std::sync::Arc;
         match self {
-            RustBV::Symbolic { name, width, .. } => Some((name.clone(), *width)),
             RustBV::Ast { ast, width, .. } => match ast.op() {
                 AstOp::BVS(name, w) => Some((Arc::from(name.as_str()), *w)),
                 AstOp::ITE(c, t, e) if *width == 1 && is_bvv(t, 1) && is_bvv(e, 0) => {

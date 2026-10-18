@@ -309,12 +309,11 @@ Implementation notes:
   Rust. This keeps load semantics aligned with the Rust engine's
   page-load behavior (a write of N bytes at ``addr`` may overlap a
   later N′-byte read at ``addr ± k``).
-* Symbolic register and memory writes round-trip the claripy AST
-  through ``claripy_to_rustbv`` so the symbol is registered in the
-  shared cache. The inverse ``get_state_register_ast`` /
-  ``memory.load`` returns the same AST identity, which is what makes
-  later ``proxy.solver.add(reg == K)`` constraints land on the live
-  symbol Rust is tracking.
+* Symbolic register and memory writes import the claripy AST through
+  ``claripy_to_rustbv``, which keeps its clarirs nodes. The inverse
+  ``get_state_register_ast`` / ``memory.load`` hands back those nodes,
+  so a later ``proxy.solver.add(reg == K)`` constraint lands on the
+  live symbol Rust is tracking.
 
 Write-through costs one PyO3 call per write; the fast-tier benchmark
 gate (see :doc:`rust_build`) catches a regression in that cost. The

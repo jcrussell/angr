@@ -266,7 +266,6 @@ impl RustBV {
     #[inline]
     fn canonical_sort_key(&self) -> (u8, u128) {
         match self {
-            RustBV::Symbolic { id, .. } => (0, *id as u128),
             RustBV::Expression { operands, .. } => {
                 (2, Arc::as_ptr(operands) as *const () as usize as u128)
             }

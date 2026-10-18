@@ -7,7 +7,6 @@
 //! would let a sibling test's registration decide the outcome.
 
 use super::*;
-use crate::claripy_bridge::cache::store_claripy_ast_with_info;
 
 use crate::symbolic::{BVOp, global_registry};
 
@@ -26,7 +25,7 @@ fn test_import_symbolic_leaf_hash_hit_rebinds_under_canonical_name() {
     Python::initialize();
     Python::attach(|py| {
         let ctx = SymContext::new_mock();
-        store_claripy_ast_with_info(
+        global_registry().register(
             AST_HASH,
             SYMBOL_ID,
             CANONICAL,

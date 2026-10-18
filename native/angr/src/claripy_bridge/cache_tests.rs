@@ -23,7 +23,7 @@ fn test_worker_local_clear_preserves_global_registry() {
 
     Python::initialize();
     Python::attach(|py| {
-        store_claripy_ast_with_info(
+        global_registry().register(
             0x7777,
             SYMBOL_ID,
             "ilq2_sym",
@@ -46,11 +46,6 @@ fn test_worker_local_clear_preserves_global_registry() {
         assert!(
             global_registry().has_original(SYMBOL_ID),
             "worker-local clear must NOT wipe the global registry",
-        );
-        assert!(
-            get_claripy_ast(SYMBOL_ID).is_some(),
-            "symbol identity must still resolve via the global registry \
-             after a worker-local clear",
         );
 
         // Contrast: the exploration-start reset DOES drop the global
@@ -125,70 +120,4 @@ fn test_expression_by_operands_miss_returns_none() {
         let miss = get_expression_ast_by_operands(py, 0xFFFF_FFFF_FFF0);
         assert!(miss.is_none(), "unstored operands ptr must miss");
     });
-}
-
-// angr-ph300.54: `evict_claripy_ast` drops a symbol-id registration from the
-// global registry (the sole rust_id → AST store). This backs the export-side
-// C5 width-mismatch guard, which evicts a stale (aliased) AST before re-minting
-// under the correct width.
-#[test]
-fn test_evict_claripy_ast_clears_registry() {
-    const SYMBOL_ID: u64 = 0x54AB_CDEF_0123;
-
-    Python::initialize();
-    Python::attach(|py| {
-        store_claripy_ast_with_info(
-            0x54AA,
-            SYMBOL_ID,
-            "evict_sym",
-            32,
-            SymbolKind::BitVector,
-            py.None(),
-        );
-        assert!(
-            global_registry().has_original(SYMBOL_ID),
-            "setup: registry must hold the symbol after store",
-        );
-        assert!(
-            get_claripy_ast(SYMBOL_ID).is_some(),
-            "setup: symbol must resolve before eviction",
-        );
-
-        evict_claripy_ast(SYMBOL_ID);
-
-        assert!(
-            !global_registry().has_original(SYMBOL_ID),
-            "evict must remove the global-registry entry",
-        );
-        assert!(
-            get_claripy_ast(SYMBOL_ID).is_none(),
-            "evict must make the symbol unresolvable via the global registry",
-        );
-    });
-}
-
-// angr-c7xno.19: `store_claripy_ast_with_info`'s sentinel guard is an
-// always-on `assert_ne!` rather than a `debug_assert_ne!` (angr-9ke6b.220)
-// precisely because a registry entry keyed by `RustBV::EXPRESSION_ID` would
-// hand back an unrelated AST on the next `get_claripy_ast`. Nothing else in
-// the crate reaches the panic arm — every production call site passes an
-// allocated leaf id — so without this test the guard could be weakened or
-// deleted with the suite still green.
-//
-// The `Py<PyAny>` is minted inside `Python::attach` and the store is called
-// *outside* it, so the unwind does not cross the GIL-guard closure.
-#[test]
-#[should_panic(expected = "must not be keyed by the EXPRESSION_ID sentinel")]
-fn test_store_claripy_ast_with_info_rejects_expression_sentinel() {
-    Python::initialize();
-    let none = Python::attach(|py| py.None());
-
-    store_claripy_ast_with_info(
-        0x19EE,
-        RustBV::EXPRESSION_ID,
-        "c7xno19_sentinel",
-        64,
-        SymbolKind::BitVector,
-        none,
-    );
 }

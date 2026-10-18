@@ -116,7 +116,7 @@ fn symbolic_jump_single_target_constrains_in_place() {
             "jump expression pinned to the target",
         );
         assert!(
-            !matches!(succ[0].0.get_ip(), crate::symbolic::RustBV::Symbolic { .. }),
+            succ[0].0.get_ip().as_u64().is_some(),
             "default mode concretizes IP"
         );
     });

@@ -127,55 +127,6 @@ thread_local! {
         RefCell::new(LruCache::new(EXPRESSION_CACHE_SIZE_NZ));
 }
 
-/// Store a claripy AST with full symbol information.
-///
-/// This is the preferred method when symbol name and width are available,
-/// as it enables name-based lookup for better identity preservation.
-///
-/// `symbol_id` MUST be a real allocated leaf-symbol id, not
-/// `RustBV::EXPRESSION_ID`.
-pub(crate) fn store_claripy_ast_with_info(
-    py_hash: i64,
-    symbol_id: u64,
-    name: &str,
-    width: u32,
-    kind: SymbolKind,
-    ast: Py<PyAny>,
-) {
-    // Always-on, NOT `debug_assert_ne!` (angr-9ke6b.220): a sentinel-keyed
-    // registry entry silently returns an unrelated AST on the next lookup,
-    // and this runs once per imported/exported leaf, not per step.
-    assert_ne!(
-        symbol_id,
-        RustBV::EXPRESSION_ID,
-        "symbol identity registry must not be keyed by the EXPRESSION_ID sentinel; \
-         use store_expression_ast_by_operands for compound nodes",
-    );
-
-    // Register in global registry with full information.
-    global_registry().register(py_hash, symbol_id, name, width, kind, ast);
-}
-
-/// Retrieve a previously stored claripy AST by symbol ID.
-/// Called when converting RustBV→claripy to return the original AST.
-///
-/// Reads from the process-global `SymbolicIdentityRegistry` (cross-thread,
-/// survives across callbacks).
-pub(crate) fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
-    global_registry().get_original_ast(symbol_id)
-}
-
-/// Evict a stale claripy AST registration for a symbol id from the global
-/// registry.
-///
-/// Mirrors the import-side C5 width-mismatch guard on the export path: if a
-/// cache hit hands back an AST whose width disagrees with the requested
-/// symbol width (an id-level aliasing bug — see angr-owr37), the caller drops
-/// the stale entry and re-mints.
-pub(crate) fn evict_claripy_ast(symbol_id: u64) {
-    global_registry().remove(symbol_id);
-}
-
 /// Look up a symbol by its Python hash.
 ///
 /// This is used during import to check if we've already imported this symbol.

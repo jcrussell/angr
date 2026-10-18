@@ -589,17 +589,12 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
         let bv_rust = claripy_to_rustbv(py, &bvs, &ctx).expect("import BVS");
         let bool_rust = claripy_to_rustbv(py, &bools, &ctx).expect("import BoolS");
 
-        let (RustBV::Symbolic { id: bv_id, .. }, RustBV::Symbolic { id: bool_id, .. }) =
-            (&bv_rust, &bool_rust)
-        else {
-            panic!("both leaves must import as Symbolic");
-        };
         assert_ne!(
-            bv_id, bool_id,
-            "BVS(name, 1) and BoolS(name) must not share a rust_id"
+            bv_rust, bool_rust,
+            "BVS(name, 1) and BoolS(name) must not import as one leaf"
         );
 
-        // Each id must round-trip to its OWN claripy leaf, not the sibling's.
+        // Each leaf must round-trip to its OWN claripy leaf, not the sibling's.
         let bv_back = rustbv_to_claripy(py, &bv_rust, claripy.as_any()).expect("export BVS");
         let bool_back = rustbv_to_claripy(py, &bool_rust, claripy.as_any()).expect("export BoolS");
         let bv_op: String = bv_back.bind(py).getattr("op").unwrap().extract().unwrap();
@@ -653,17 +648,10 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
             "export must not let claripy rename the leaf to {rust_name}_<counter>_8"
         );
 
-        // What a re-import after a registry miss would build: a fresh id, same
-        // name. Different identity, identical Z3 constant.
+        // What a re-import builds from the exported name: the same leaf, since
+        // a leaf is its name (angr-mx00p.12).
         let reminted = RustBV::symbolic(&ctx, exported_name.as_str(), 8);
-        let (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) = (&minted, &reminted)
-        else {
-            panic!("both leaves must be Symbolic");
-        };
-        assert_ne!(
-            a, b,
-            "the re-mint models a registry MISS, so the id differs"
-        );
+        assert_eq!(minted, reminted, "the re-imported name is the same leaf");
         assert_eq!(
             minted.to_z3_ast(),
             reminted.to_z3_ast(),

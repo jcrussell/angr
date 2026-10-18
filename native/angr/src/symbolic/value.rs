@@ -3,7 +3,6 @@
 //! The `RustBV` type represents a bitvector that is one of these variants:
 //! - Concrete: A known fixed value
 //! - Ast: A clarirs term — every symbolic value, named leaves included
-//! - Symbolic: A nameless wrapper around a raw Z3 term
 //! - Expression: A compound expression with operation tree for reconstruction
 
 use std::fmt;
@@ -287,20 +286,6 @@ pub enum RustBV {
         /// and `solving_ops.rs`'s `max_val_for_width`.
         width: u32,
     },
-    /// A symbolic value (backed by Z3 when available, otherwise just a name).
-    /// This represents a leaf symbolic variable (e.g., BVS("x", 32)).
-    Symbolic {
-        /// Unique identifier for this symbolic value.
-        id: u64,
-        /// Width in bits.
-        width: u32,
-        /// Name (for debugging). `Arc<str>` so cloning a Symbolic is alloc-free —
-        /// hot on the RdTmp path where a temp slot is read multiple times per block.
-        name: Arc<str>,
-        /// Z3 AST when z3 feature is enabled.
-        #[cfg(feature = "vex-engine-z3")]
-        ast: z3::ast::BV,
-    },
     /// A compound expression with operation tree for claripy reconstruction.
     ///
     /// This variant stores the operation and operands that created this value,
@@ -412,6 +397,8 @@ pub enum RustBVData {
         value: u128,
         width: u32,
     },
+    /// Legacy: the retired `Symbolic` arm, decoded as the leaf of its name;
+    /// never written.
     Symbolic {
         id: u64,
         width: u32,
@@ -441,13 +428,6 @@ impl From<RustBV> for RustBVData {
     fn from(bv: RustBV) -> Self {
         match bv {
             RustBV::Concrete { value, width } => RustBVData::Concrete { value, width },
-            RustBV::Symbolic {
-                id, width, name, ..
-            } => RustBVData::Symbolic {
-                id,
-                width,
-                name: name.to_string(),
-            },
             RustBV::Expression {
                 id,
                 width,
@@ -490,8 +470,6 @@ impl TryFrom<RustBVData> for RustBV {
         Ok(match data {
             RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
             RustBVData::Symbolic { id, width, name } => {
-                // Rebuilds the Z3 AST in the active thread-local context (z3
-                // feature); callers must be inside with_z3_context when this runs.
                 RustBV::from_parts(rebase_id(id), Arc::<str>::from(name), width)
             }
             // A legacy record of the retired `Constrained` arm: its value was
@@ -628,51 +606,33 @@ impl RustBV {
     /// `value_ops`; see bd memory `invariant-rustbv-zero-width`). Handled before
     /// the cfg split so the no-z3 build agrees with the z3 one.
     #[inline]
+    #[allow(
+        clippy::expect_used,
+        reason = "clarirs' sort check accepts every BVS and BoolS leaf (`AstOp::validate`), and `bit_of` over a BoolS builds a well-sorted ite, so the build cannot fail"
+    )]
     pub(super) fn from_parts(id: u64, name: Arc<str>, width: u32) -> Self {
         if width == 0 {
             // SILENT(cat-a): expected control flow — the empty bitvector's only
             // value, not a fallback for a failure.
             return RustBV::Concrete { value: 0, width: 0 };
         }
-        // A named leaf is the clarirs variable of that name (angr-mx00p.12):
-        // identity is the name, as it already is in Z3
-        // (`invariant-symbol-identity-is-by-name`), and `id` only survives in
-        // the `Symbolic` arm below. A Bool-tagged name is `ite(BoolS, 1, 0)`,
-        // the encoding `from_clarirs` and `leaf_var` read back.
-        if !name.is_empty() {
-            let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
-            let term = match super::registry::strip_bool_symbol_name(&name) {
-                Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
-                None => gc.bvs(&*name, width),
-            };
-            if let Ok(term) = term {
-                return RustBV::from_clarirs_lowerable(term);
-            }
-        }
-        #[cfg(feature = "vex-engine-z3")]
-        {
-            // A claripy `Bool` leaf has no `RustBV` sort of its own — it is
-            // modelled as a width-1 `Symbolic` whose NAME carries the sort tag
-            // (`SymbolKind::rust_symbol_name`). Decode it here so the Z3 term
-            // is a genuine Bool constant lowered to 1 bit, which is exactly how
-            // claripy's own z3 backend encodes `BoolS` — see
-            // `strip_bool_symbol_name` for why both halves of that matter.
-            let ast = match super::registry::strip_bool_symbol_name(&name) {
-                Some(claripy_name) => z3::ast::Bool::new_const(claripy_name)
-                    .ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1)),
-                None => z3::ast::BV::new_const(&*name, width),
-            };
-            RustBV::Symbolic {
-                id,
-                width,
-                name,
-                ast,
-            }
-        }
-        #[cfg(not(feature = "vex-engine-z3"))]
-        {
-            RustBV::Symbolic { id, width, name }
-        }
+        // A leaf is the clarirs variable of its name (angr-mx00p.12): identity
+        // is the name, as it already is in Z3
+        // (`invariant-symbol-identity-is-by-name`). A Bool-tagged name is
+        // `ite(BoolS, 1, 0)`, the encoding `from_clarirs` and `leaf_var` read
+        // back. An empty name is given one from `id`, so that leaf stays its
+        // own variable.
+        let name: Arc<str> = if name.is_empty() {
+            Arc::from(format!("unnamed_{id}"))
+        } else {
+            name
+        };
+        let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
+        let term = match super::registry::strip_bool_symbol_name(&name) {
+            Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
+            None => gc.bvs(&*name, width),
+        };
+        RustBV::from_clarirs_lowerable(term.expect("clarirs accepts every BVS / BoolS leaf"))
     }
 
     /// Create a symbolic bitvector variable: the clarirs variable `name`
@@ -741,7 +701,6 @@ impl RustBV {
     pub fn width(&self) -> u32 {
         match self {
             RustBV::Concrete { width, .. } => *width,
-            RustBV::Symbolic { width, .. } => *width,
             RustBV::Expression { width, .. } => *width,
             RustBV::Ast { width, .. } => *width,
         }
@@ -756,10 +715,7 @@ impl RustBV {
     /// Check if this value is symbolic.
     #[inline]
     pub fn is_symbolic(&self) -> bool {
-        matches!(
-            self,
-            RustBV::Symbolic { .. } | RustBV::Expression { .. } | RustBV::Ast { .. }
-        )
+        matches!(self, RustBV::Expression { .. } | RustBV::Ast { .. })
     }
 
     /// Try to get the concrete value.
@@ -767,7 +723,6 @@ impl RustBV {
     pub fn as_u128(&self) -> Option<u128> {
         match self {
             RustBV::Concrete { value, .. } => Some(*value),
-            RustBV::Symbolic { .. } => None,
             RustBV::Expression { .. } => None,
             // `from_clarirs` folds every literal that fits into `Concrete`.
             RustBV::Ast { .. } => None,
@@ -809,15 +764,6 @@ impl fmt::Debug for RustBV {
             RustBV::Concrete { value, width } => {
                 write!(f, "Concrete(0x{value:x}, {width})")
             }
-            // `id` is the identity of these two variants (a named leaf is an
-            // `Ast` and prints its name), so Debug must print it or two
-            // values that differ only by id read as identical in logs
-            // (angr-sqfj8.99).
-            RustBV::Symbolic {
-                id, width, name, ..
-            } => {
-                write!(f, "Symbolic(#{id}, {name}, {width})")
-            }
             RustBV::Expression {
                 width,
                 op,
@@ -845,9 +791,6 @@ impl fmt::Display for RustBV {
             RustBV::Concrete { value, width } => {
                 write!(f, "<BV{width} 0x{value:x}>")
             }
-            RustBV::Symbolic { width, name, .. } => {
-                write!(f, "<BV{width} {name}>")
-            }
             RustBV::Expression { width, op, .. } => {
                 write!(f, "<BV{width} {op:?}>")
             }
@@ -865,10 +808,7 @@ impl fmt::Display for RustBV {
 /// equal across the class boundary:
 ///
 /// 1. **Known values** (`Concrete`): equal iff same value and same width.
-/// 2. **Wrapped Z3 terms** (`Symbolic`): equal iff same `id` and width. A
-///    named leaf is an `Ast` (class 4) since angr-mx00p.12, so this arm only
-///    holds a nameless wrapper around a raw Z3 term.
-/// 3. **Compound expressions** (`Expression`): equal iff same `op`, same
+/// 2. **Compound expressions** (`Expression`): equal iff same `op`, same
 ///    width, and *pointer-identical* operand slices. The `id` field is the
 ///    `EXPRESSION_ID` sentinel for every `Expression` (see its doc), so it
 ///    carries no identity; `Arc::ptr_eq` is what survives a `clone` (which
@@ -877,7 +817,7 @@ impl fmt::Display for RustBV {
 ///    two independently-built but structurally identical trees compare
 ///    unequal. Treat `Expression` equality as "same node", not "same value".
 ///    The `memo` Z3 cache is excluded (pure deterministic-function cache).
-/// 4. **clarirs terms** (`Ast`): equal iff the same node. clarirs interns, so
+/// 3. **clarirs terms** (`Ast`): equal iff the same node. clarirs interns, so
 ///    this is structural equality, and it is cheap. A named leaf is the
 ///    clarirs variable of its name, so two leaves are equal iff they share
 ///    name and width — the Z3 constant (`invariant-symbol-identity-is-by-name`).
@@ -886,21 +826,13 @@ impl fmt::Display for RustBV {
 /// disjoint, so the whole relation is reflexive, symmetric and transitive —
 /// `x == x` holds for every variant. It used to short-circuit to `false`
 /// whenever either side lacked an `as_u128()`, which broke reflexivity for
-/// `Symbolic`/`Expression` and made `==` a trap for dedup/`contains` callers.
+/// symbolic values and made `==` a trap for dedup/`contains` callers.
 ///
 /// There is intentionally no `Eq`/`Hash`: `Expression`'s pointer identity
 /// would hash differently after a serde round-trip.
 impl PartialEq for RustBV {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (
-                RustBV::Symbolic {
-                    id: a, width: wa, ..
-                },
-                RustBV::Symbolic {
-                    id: b, width: wb, ..
-                },
-            ) => a == b && wa == wb,
             (
                 RustBV::Expression {
                     width: wa,

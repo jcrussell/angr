@@ -75,7 +75,6 @@ impl RustBV {
         super::stats::record_z3_ast_cache_miss();
         let result = match self {
             RustBV::Concrete { value, width } => super::bv_codec::make_bv_const(*value, *width),
-            RustBV::Symbolic { ast, .. } => ast.clone(),
             RustBV::Expression {
                 op,
                 operands,
@@ -178,22 +177,14 @@ impl RustBV {
     /// same context, which panics here. This is never a real use case (a state
     /// is only translated when handed to a *different* worker's context).
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::only_used_in_recursion,
+        reason = "only an Expression's operands need the target context; an Ast is lowered afresh wherever it is next used"
+    )]
     pub fn translate_into(&self, target_ctx: &z3::Context) -> RustBV {
         use std::sync::Arc;
-        use z3::Translate;
         match self {
             RustBV::Concrete { .. } => self.clone(),
-            RustBV::Symbolic {
-                id,
-                width,
-                name,
-                ast,
-            } => RustBV::Symbolic {
-                id: *id,
-                width: *width,
-                name: Arc::clone(name),
-                ast: ast.translate(target_ctx),
-            },
             RustBV::Expression {
                 id,
                 width,
@@ -342,12 +333,6 @@ impl RustBV {
             // A clarirs term: the Bool its bit stands for, lowered natively,
             // so `ite(cmp, 1, 0)` reaches Z3 as `cmp`.
             RustBV::Ast { ast, .. } => Self::lower_clarirs_bool(ast),
-            // Symbolic BV — use _eq(1)
-            _ => {
-                let ast = self.to_z3_ast_cached(cache);
-                let one = z3::ast::BV::from_u64(1, 1);
-                ast.eq(&one)
-            }
         }
     }
 

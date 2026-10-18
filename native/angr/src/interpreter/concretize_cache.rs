@@ -228,11 +228,6 @@ impl<'a> VEXInterpreter<'a> {
                 value.hash(hasher);
                 width.hash(hasher);
             }
-            RustBV::Symbolic { id, width, .. } => {
-                1u8.hash(hasher);
-                id.hash(hasher);
-                width.hash(hasher);
-            }
             RustBV::Expression {
                 op,
                 operands,

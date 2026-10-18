@@ -573,7 +573,6 @@ pub(super) fn cond_fingerprint(bv: &RustBV) -> u64 {
                 .wrapping_add(*width as u64)
                 ^ 0x1
         }
-        RustBV::Symbolic { id, .. } => *id ^ 0x2,
         // clarirs interns, so the structural hash identifies the node.
         RustBV::Ast { ast, .. } => clarirs_core::prelude::AstNode::hash(ast).rotate_left(29) ^ 0x4,
     }

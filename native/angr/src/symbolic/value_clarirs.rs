@@ -109,20 +109,6 @@ impl RustBV {
                 "a zero-width value has no clarirs term".into(),
             )),
             RustBV::Concrete { value, width } => bvv(*value, *width),
-            // An empty name marks a wrapper around an arbitrary Z3 term, not a
-            // variable: its term is the Z3 AST it holds, which has no clarirs
-            // form.
-            RustBV::Symbolic { name, .. } if name.is_empty() => {
-                Err(ClarirsError::UnsupportedOperation(
-                    "an anonymous Z3 term has no clarirs form".into(),
-                ))
-            }
-            RustBV::Symbolic { name, width, .. } => {
-                match super::registry::strip_bool_symbol_name(name) {
-                    Some(bool_name) => bit_of(GLOBAL_CONTEXT.bools(bool_name)?),
-                    None => GLOBAL_CONTEXT.bvs(&**name, *width),
-                }
-            }
             RustBV::Ast { ast, .. } => Ok(ast.clone()),
             RustBV::Expression {
                 op,

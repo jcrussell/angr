@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::symbolic::{RustBV, SymbolKind};
+use crate::symbolic::RustBV;
 
 use ast_helpers::{
     bool_to_bv1, build_sound_bitcount, coerce_bool_to_bv1, concrete_value_to_bvv,
@@ -34,10 +34,7 @@ use ast_helpers::{
 };
 use width_decisions::{BoolCoercion, WidthFixup};
 
-use super::cache::{
-    claripy_ast_guard_width, evict_claripy_ast, get_claripy_ast, get_expression_ast_by_operands,
-    store_claripy_ast_with_info, store_expression_ast_by_operands,
-};
+use super::cache::{get_expression_ast_by_operands, store_expression_ast_by_operands};
 
 /// Materialize one `(guard, is_assumed_true)` entry from a `SymContext`'s
 /// assumed log as a claripy **boolean** constraint (angr-op0dn.14.4.1).
@@ -168,30 +165,6 @@ fn rustbv_to_claripy_memo(
 
     use crate::symbolic::BVOp;
 
-    // Check cache first for Symbolic variants
-    // This preserves AST identity across FFI boundary
-    if let RustBV::Symbolic { id, width, .. } = bv
-        && let Some(cached) = get_claripy_ast(*id)
-    {
-        // C5's registry-side analogue (see the invariant's text in `super`):
-        // validate the cached AST's width matches the requested symbol width
-        // before returning it. An id-level aliasing bug (e.g. id:0 collisions,
-        // angr-owr37) could otherwise hand back a wrong-width AST silently.
-        // `claripy_ast_guard_width` owns the Bool/unreadable-`length` fallback
-        // shared with the import-side guard; a mismatch takes the eviction
-        // path below and re-mints, dropping only the cached AST's identity and
-        // any annotations on it, never producing a wrong-width AST.
-        let cached_width: u32 = claripy_ast_guard_width(cached.bind(py));
-        if cached_width == *width {
-            // Validate cached value is a claripy AST, not an int
-            let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;
-            return Ok(cached_valid);
-        }
-        // Width mismatch: evict the stale registration and fall through to
-        // re-mint + re-register under the correct width (mirrors C5 eviction).
-        evict_claripy_ast(*id);
-    }
-
     // For Expression variants imported via claripy_to_rustbv, look up the
     // original AST keyed by the operands Arc pointer. This returns the
     // Python-side AST verbatim, preserving any annotations attached at the
@@ -223,62 +196,6 @@ fn rustbv_to_claripy_memo(
             // Create claripy.BVV(value, width). Shared with the Constrained arm
             // via concrete_value_to_bvv so the two width guards stay in lockstep.
             concrete_value_to_bvv(py, claripy_mod, *value, *width)
-        }
-        RustBV::Symbolic {
-            id, name, width, ..
-        } => {
-            // Cache was already checked above, so this is a symbol minted purely
-            // inside Rust (e.g. a `stdin_N_i` byte from the native read proc).
-            //
-            // Register the fresh claripy BVS against THIS symbol id under the
-            // RUST name (angr-izov2). Without a registration neither the hash
-            // nor the name+width lookup in `claripy_to_rustbv` can recognise the
-            // AST on the way back: the importer mints a brand new, unconstrained
-            // Rust symbol and every constraint carried by the original leaf
-            // silently stops binding. That is exactly what a Python bounce
-            // (SimProcedure hook) does to a symbolic value it returns.
-            // Registering by hash also pins the exported AST, so repeated
-            // exports of this symbol hand Python the same claripy object.
-            //
-            // `explicit_name=True` is what makes losing that registration *safe*
-            // rather than silently wrong (angr-9ke6b.222). `claripy.BVS(name, w)`
-            // without it renames the symbol to `name_<counter>_<w>`, so a
-            // re-import after a registry miss mints a Rust leaf whose Z3
-            // constant is named `name_<counter>_<w>` — a brand-new variable no
-            // existing constraint binds. With the flag the claripy name is the
-            // Rust name verbatim, and since `RustBV::from_parts` derives a
-            // leaf's Z3 term from its NAME (`invariant-symbol-identity-is-by-name`),
-            // the re-minted leaf lands on the *same* Z3 constant: a registry
-            // miss costs object identity and annotations, not soundness.
-            // Rust-minted names are process-unique where it matters (the
-            // `symbol_counter` prefixes) and deliberately address-derived where
-            // it does not (`mem_<addr>_<size>`), which is aliasing Rust already
-            // performs in Z3; the flag only propagates it to claripy.
-            //
-            // The name used is the Rust one, tag included: a Bool leaf's
-            // `!bool!` prefix (angr-9ke6b.223) has to survive the round trip or
-            // the re-minted leaf would be a plain `BV::new_const` instead of the
-            // original `Bool::new_const(..).ite(1, 0)`. Registering under
-            // `BitVector` matches: the AST minted here *is* a `BVS`, so that is
-            // the kind a re-import computes for it.
-            let kwargs = pyo3::types::PyDict::new(py);
-            kwargs.set_item("explicit_name", true)?;
-            let ast: Py<PyAny> = claripy_mod
-                .call_method("BVS", (&**name, *width), Some(&kwargs))
-                .map(Py::<PyAny>::from)?;
-            let py_hash = ast.bind(py).hash()? as i64;
-            // The AST just minted is a `BVS`, so it registers under the
-            // BitVector sort — a `BoolS` of the same name/width keeps its own
-            // registry slot (angr-9ke6b.38).
-            store_claripy_ast_with_info(
-                py_hash,
-                *id,
-                name,
-                *width,
-                SymbolKind::BitVector,
-                ast.clone_ref(py),
-            );
-            Ok(ast)
         }
         // Already a claripy AST: wrap the node, annotations and all. A Bool
         // held in the 1-bit encoding exports as the Bool, as a comparison
@@ -668,5 +585,3 @@ fn rustbv_to_claripy_memo(
         Err(e) => Err(e),
     }
 }
-
-test_submod!("export_tests.rs" => export_tests);
