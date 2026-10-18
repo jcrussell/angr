@@ -899,9 +899,8 @@ impl fmt::Display for RustBV {
 ///    is the point — the two are interchangeable results of the same
 ///    computation.
 /// 2. **Wrapped Z3 terms** (`Symbolic`): equal iff same `id` and width. A
-///    named leaf is an `Ast` (class 4) since angr-mx00p.12, so this arm holds
-///    the anonymous wrapper `z3_ast_to_eval_bv` builds and leaves restored
-///    without a name.
+///    named leaf is an `Ast` (class 4) since angr-mx00p.12, so this arm only
+///    holds a nameless wrapper around a raw Z3 term.
 /// 3. **Compound expressions** (`Expression`): equal iff same `op`, same
 ///    width, and *pointer-identical* operand slices. The `id` field is the
 ///    `EXPRESSION_ID` sentinel for every `Expression` (see its doc), so it

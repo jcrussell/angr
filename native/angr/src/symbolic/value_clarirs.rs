@@ -111,9 +111,9 @@ impl RustBV {
             RustBV::Concrete { value, width } | RustBV::Constrained { value, width, .. } => {
                 bvv(*value, *width)
             }
-            // An empty name marks a wrapper around an arbitrary Z3 term
-            // (`solver::z3_ast_extract::z3_ast_to_eval_bv`), not a variable:
-            // its term is the Z3 AST it holds, which has no clarirs form.
+            // An empty name marks a wrapper around an arbitrary Z3 term, not a
+            // variable: its term is the Z3 AST it holds, which has no clarirs
+            // form.
             RustBV::Symbolic { name, .. } if name.is_empty() => {
                 Err(ClarirsError::UnsupportedOperation(
                     "an anonymous Z3 term has no clarirs form".into(),

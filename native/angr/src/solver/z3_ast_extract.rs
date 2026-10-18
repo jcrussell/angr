@@ -33,7 +33,10 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 #[cfg(feature = "vex-engine-z3")]
-use std::sync::Arc;
+use clarirs_core::prelude::AstRef;
+
+#[cfg(feature = "vex-engine-z3")]
+use crate::claripy::ast::base::Base;
 
 use crate::claripy_bridge::claripy_to_rustbv;
 #[cfg(feature = "vex-engine-z3")]
@@ -57,50 +60,27 @@ pub(crate) fn extract_z3_ast_ptr(_py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyR
         .map_err(|e| PyRuntimeError::new_err(format!("claripy AST has no Z3 lowering: {e}")))
 }
 
-/// Wrap a live Z3 AST as an anonymous [`RustBV::Symbolic`] for evaluation.
-///
-/// This is the one place that builds the `id: 0` / `name: ""` sentinel form of
-/// `RustBV::Symbolic`: a throwaway BV handed straight to `SymContext::eval*`
-/// that never enters the symbol table, so it needs neither a handle id nor a
-/// name. Keeping the construction — and the `wrap` `unsafe` behind it — in one
-/// function means a future change to `RustBV::Symbolic`'s invariants has a
-/// single site to update (angr-9ke6b.203).
-///
-/// A Bool-sorted AST is *lowered* to a 1-bit BV (1 when true, 0 when false)
-/// rather than BV-wrapped: operating on a mis-sorted node trips Z3's error
-/// handler, which aborts the process instead of returning an error
-/// (angr-58ks). Returns `None` for any other sort; callers that want a hard
-/// error report [`Z3AstPtr::sort_kind`] themselves.
+/// The clarirs node behind a Python claripy AST, or `None` when `ast` is not
+/// one of this extension's claripy ASTs.
 #[cfg(feature = "vex-engine-z3")]
-pub(crate) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
-    use z3::ast::Ast;
-    // SAFETY: `z3_ast` holds an active ref to a live `Z3_ast`, and each branch
-    // checks the sort before wrapping the node as that sort. `Bool::wrap` /
-    // `BV::wrap` take their own refs.
-    unsafe {
-        // Wrap under the handle's own bound context rather than re-deriving
-        // the thread-local: `Z3AstPtr` carries the `Context` its ref was taken
-        // under, so this cannot disagree with the AST's actual context.
-        let z3_ctx = z3_ast.context();
-        let (ast, width) = if z3_ast.is_bool() {
-            let z3_bool = z3::ast::Bool::wrap(z3_ctx, z3_ast.as_z3_ast());
-            let as_bv = z3_bool.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1));
-            (as_bv, 1)
-        } else {
-            // Width comes from the Z3 sort, not claripy's `.length` — the sort
-            // is what `BV::wrap` is constrained by, and `bv_width()` returning
-            // `Some` is exactly the precondition that makes the wrap sound
-            // (angr-9ke6b.202).
-            let width = z3_ast.bv_width()?;
-            (z3::ast::BV::wrap(z3_ctx, z3_ast.as_z3_ast()), width)
-        };
-        Some(RustBV::Symbolic {
-            id: 0,
-            ast,
-            width,
-            name: Arc::from(""),
-        })
+pub(crate) fn claripy_node(ast: &Bound<'_, PyAny>) -> Option<AstRef<'static>> {
+    Some(ast.cast::<Base>().ok()?.get().ast())
+}
+
+/// A claripy node as a [`RustBV`] to evaluate: a bitvector as itself, a Bool
+/// as the bit `ite(b, 1, 0)` (angr-58ks: never as a mis-sorted BV). Any other
+/// sort is `Err` with the sort, for the caller's error.
+///
+/// The value is the node itself, so it lowers to the same Z3 term as a
+/// constraint built from that node: evaluation binds the variables the
+/// solver already constrains.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn node_to_eval_bv(node: &AstRef<'static>) -> Result<RustBV, String> {
+    let sort = node.ast_type();
+    if !(sort.is_bool() || sort.is_bitvec()) {
+        return Err(format!("{sort:?}"));
     }
+    RustBV::from_clarirs(node.clone()).map_err(|e| format!("{sort:?}: {e}"))
 }
 
 /// Wrap a Bool-sorted live Z3 AST as a `z3::ast::Bool` for assertion.
@@ -147,19 +127,18 @@ impl RustSolverContext {
         }
         #[cfg(feature = "vex-engine-z3")]
         {
-            let z3_ast = extract_z3_ast_ptr(py, ast).ok()?;
+            let node = claripy_node(ast)?;
             // SILENT(cat-a): a non-BV-sorted AST is an expected miss on this
             // path — the caller (`eval_batch`) falls back to Python.
             //
             // Bool is declined here rather than lowered to a 1-bit BV the way
             // the `eval` paths do: `eval_batch`'s Python fallback yields a
             // Python bool for a Bool-sorted AST, and quietly swapping that for
-            // 0/1 would change the value `eval_batch` returns. Every other
-            // non-BV sort is declined by `z3_ast_to_eval_bv` itself.
-            if z3_ast.is_bool() {
+            // 0/1 would change the value `eval_batch` returns.
+            if !node.ast_type().is_bitvec() {
                 return None;
             }
-            z3_ast_to_eval_bv(&z3_ast)
+            node_to_eval_bv(&node).ok()
         }
         #[cfg(not(feature = "vex-engine-z3"))]
         {
@@ -167,32 +146,21 @@ impl RustSolverContext {
         }
     }
 
-    /// Evaluate a typed Z3 AST handle directly in the solver context.
-    ///
-    /// Lives outside `#[pymethods]` because [`Z3AstPtr`] is not a PyO3-
-    /// bridgeable type (it owns a Z3 refcount and cannot be reconstructed
-    /// from a Python value).
+    /// Evaluate a claripy node directly in the solver context: the path for
+    /// an AST `claripy_to_rustbv` cannot import operand-wise. Bool evaluates
+    /// as 0/1 (see [`node_to_eval_bv`]); any other non-BV sort is an error.
     #[cfg(feature = "vex-engine-z3")]
-    pub(crate) fn eval_z3_ast_ptr(
+    pub(crate) fn eval_claripy_node(
         &self,
         py: Python<'_>,
-        z3_ast: Z3AstPtr,
+        node: &AstRef<'static>,
     ) -> PyResult<Option<Py<PyAny>>> {
         let ctx = self.i().ctx();
-
-        // angr-58ks: the sort is verified before wrapping. A Bool-sorted AST
-        // (e.g. an fpEQ comparison that `claripy_to_rustbv` cannot lower and
-        // so reaches this raw path with claripy `length == None`) must NOT be
-        // BV-wrapped — operating on the mis-sorted node trips Z3's error
-        // handler, which aborts the process instead of returning a PyErr.
-        // `z3_ast_to_eval_bv` lowers a Bool to a 1-bit BV instead, and
-        // declines any sort that is neither.
-        let Some(bv) = z3_ast_to_eval_bv(&z3_ast) else {
-            return Err(PyRuntimeError::new_err(format!(
-                "eval: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
-                z3_ast.sort_kind()
-            )));
-        };
+        let bv = node_to_eval_bv(node).map_err(|sort| {
+            PyRuntimeError::new_err(format!(
+                "eval: claripy AST has unsupported sort {sort} (expected BV or Bool)"
+            ))
+        })?;
 
         // The wide/narrow split follows the width of the BV actually built
         // (Bool→1-bit lowering or the Z3 BV sort), not a separately read

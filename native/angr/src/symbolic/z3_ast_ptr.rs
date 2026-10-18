@@ -70,8 +70,8 @@ impl Z3AstPtr {
 
     /// Get the bound [`Context`] for this AST.
     ///
-    /// The wrap sites (`z3_ast_extract::z3_ast_to_bool`,
-    /// `z3_ast_to_eval_bv`, and `SymContext::add_constraint_raw_inner`) use
+    /// The wrap sites (`z3_ast_extract::z3_ast_to_bool` and
+    /// `SymContext::add_constraint_raw_inner`) use
     /// this instead of re-deriving `Context::thread_local()`: the handle
     /// records the context its `Z3_inc_ref` was taken under, so a wrap keyed
     /// off it cannot disagree with the AST's actual context.

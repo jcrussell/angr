@@ -187,8 +187,7 @@ fn every_float_op_denotes_its_z3_lowering() {
 
 #[test]
 fn an_anonymous_z3_wrapper_is_refused_not_renamed() {
-    // `z3_ast_to_eval_bv` wraps an arbitrary Z3 term as a nameless Symbolic.
-    // Converting it by name would swap that term for a fresh constant, so a
+    // A nameless Symbolic wraps an arbitrary Z3 term. Converting it by name would swap that term for a fresh constant, so a
     // comparison over it must keep the Expression form and lower the real term.
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "tc_anon_x", 32);

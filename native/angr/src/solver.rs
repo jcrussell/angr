@@ -12,7 +12,7 @@
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
 //! - [`z3_ast_extract`](crate::z3_ast_extract): raw `Z3_ast`-pointer
-//!   extraction, sort-checked wrapping (`z3_ast_to_bool` / `z3_ast_to_eval_bv`)
+//!   extraction, sort-checked wrapping (`z3_ast_to_bool` / `node_to_eval_bv`)
 //!   and evaluation, i.e. every `unsafe` in the solver surface. This module
 //!   holds none: a wrap needed here goes *there*, behind a sort check, rather
 //!   than inline (angr-5mnx3.10). It is declared as a crate-root sibling of
@@ -56,7 +56,7 @@ use crate::symbolic::{BinaryOpError, RustBV, RustSymbolTable, SymContext};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 #[cfg(feature = "vex-engine-z3")]
-use crate::z3_ast_extract::{extract_z3_ast_ptr, z3_ast_to_bool, z3_ast_to_eval_bv};
+use crate::z3_ast_extract::{claripy_node, extract_z3_ast_ptr, node_to_eval_bv, z3_ast_to_bool};
 
 /// Convert a BridgeError to a PyErr, preserving the variant's structure at
 /// the Python boundary (angr-ghwsd.2). Mirrors the per-variant mapping in
@@ -152,7 +152,7 @@ enum SolverCtxStorage {
 /// Guard for borrowing SymContext from either storage variant.
 /// Implements Deref<Target=SymContext> for transparent access.
 ///
-/// `pub(crate)`, not private: `crate::z3_ast_extract::eval_z3_ast_ptr` reaches
+/// `pub(crate)`, not private: `crate::z3_ast_extract::eval_claripy_node` reaches
 /// this through `RustSolverContext::i()` (angr-8ucb3 — that module is a
 /// crate-root sibling of `solver`, not a descendant, so private-to-`solver`
 /// is no longer visible to it).
@@ -509,8 +509,8 @@ impl RustSolverContext {
         // constraints already in the solver.
         #[cfg(feature = "vex-engine-z3")]
         {
-            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
-                return self.eval_z3_ast_ptr(py, z3_ast);
+            if let Some(node) = claripy_node(ast) {
+                return self.eval_claripy_node(py, &node);
             }
         }
         Ok(None)
@@ -890,7 +890,7 @@ impl RustSolverContext {
         clippy::expect_used,
         reason = "use-after-close is an internal-invariant violation, not an input path: the Python contract calls close() only at proxy invalidation / wave teardown, right before drop, so no method call races an emptied context"
     )]
-    // `pub(crate)`, not private: `crate::z3_ast_extract::eval_z3_ast_ptr`
+    // `pub(crate)`, not private: `crate::z3_ast_extract::eval_claripy_node`
     // calls this (angr-8ucb3 — see `SolverCtxGuard`'s doc comment for why).
     pub(crate) fn i(&self) -> &SolverInner {
         self.inner
@@ -932,15 +932,14 @@ impl RustSolverContext {
                 // Z3 fast path for complex expressions
                 #[cfg(feature = "vex-engine-z3")]
                 {
-                    let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) else {
+                    let Some(node) = claripy_node(ast) else {
                         return Ok((result_list.into(), false));
                     };
-                    match z3_ast_to_eval_bv(&z3_ast) {
-                        Some(bv) => bv,
-                        None => {
+                    match node_to_eval_bv(&node) {
+                        Ok(bv) => bv,
+                        Err(sort) => {
                             return Err(PyRuntimeError::new_err(format!(
-                                "eval_upto: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
-                                z3_ast.sort_kind()
+                                "eval_upto: claripy AST has unsupported sort {sort} (expected BV or Bool)"
                             )));
                         }
                     }
