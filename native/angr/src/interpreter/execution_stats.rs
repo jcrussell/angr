@@ -205,8 +205,8 @@ define_execution_stats! {
     /// describe is now opt-in only, behind
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (off by default since
     /// angr-oyzvj) — see `vex_bypass_fabricate_count` for that subset.
-    /// Also counts the three dispatch-fabricate families (VPerm/Pclmul*/
-    /// Crc32C, angr-s6miz), which route to Python for concrete args too
+    /// Also counts the dispatch-fabricate families (`is_dispatch_fabricate_family`,
+    /// angr-s6miz), which route to Python for concrete args too
     /// (angr-9ke6b.85).
     python_vex_op_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Unop`.
@@ -233,8 +233,8 @@ define_execution_stats! {
     /// angr-oyzvj this BYPASS is OPT-IN — it fires only when
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` is set; by default the symbolic arm
     /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless
-    /// the escape hatch is enabled. The three dispatch-fabricate families
-    /// (VPerm/Pclmul*/Crc32C, angr-s6miz) are routed to Python fallback *before*
+    /// the escape hatch is enabled. The dispatch-fabricate families
+    /// (`is_dispatch_fabricate_family`, angr-s6miz) are routed to Python fallback *before*
     /// this point, so they do NOT increment this counter. See the
     /// "Parse-succeeds / dispatch-fabricates (silent BYPASS)" section of
     /// `docs/extending-angr/rust_vex_ops.rst`.

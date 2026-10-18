@@ -924,3 +924,180 @@ fn test_vec_mulhi_16x16_avx2_256_bit() {
         }
     }
 }
+
+// =========================================================================
+// VPerm — lane permute by index (PSHUFB / TBL / VPERMD), angr-mx00p.6.
+// =========================================================================
+
+/// Python's `_op_generic_Perm` over little-endian lanes: lane `i` is
+/// `table[ctl[i] & (n - 1)]`, or zero when `ctl[i]`'s top bit is set.
+fn perm_ref(table: &[u128], ctl: &[u128], elem_bits: u32) -> Vec<u128> {
+    let n = table.len() as u128;
+    ctl.iter()
+        .map(|&c| {
+            if (c >> (elem_bits - 1)) & 1 == 1 {
+                0
+            } else {
+                table[(c & (n - 1)) as usize]
+            }
+        })
+        .collect()
+}
+
+fn pack(lanes: &[u128], elem_bits: u32) -> u128 {
+    lanes
+        .iter()
+        .enumerate()
+        .fold(0, |acc, (i, &l)| acc | (l << (i as u32 * elem_bits)))
+}
+
+/// Byte lanes chosen so every control shape occurs: in-range indices, a top
+/// bit (zeroed), and stray bits 6:4 that only the low index bits may read.
+const PSHUFB_CTL: [u128; 16] = [
+    0x0f, 0x00, 0x80, 0x07, 0x1f, 0x8f, 0x33, 0x0a, 0x01, 0xff, 0x7e, 0x02, 0x40, 0x0c, 0x90, 0x05,
+];
+
+fn pshufb_table() -> [u128; 16] {
+    std::array::from_fn(|i| 0xa0 + i as u128)
+}
+
+#[test]
+fn test_vec_perm_8x16_concrete_matches_python_ref() {
+    let ctx = SymContext::new_mock();
+    let table = pshufb_table();
+    let want = pack(&perm_ref(&table, &PSHUFB_CTL, 8), 8);
+    for name in ["Iop_PermOrZero8x16", "Iop_Perm8x16"] {
+        let op = crate::vex::opcode_map::parse_opcode(name);
+        let got = VEXOps::binop(
+            op,
+            RustBV::concrete(pack(&table, 8), 128),
+            RustBV::concrete(pack(&PSHUFB_CTL, 8), 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(got.width(), 128, "{name}");
+        assert_eq!(got.as_u128(), Some(want), "{name}");
+    }
+}
+
+#[test]
+fn test_vec_perm_8x8_concrete_matches_python_ref() {
+    let ctx = SymContext::new_mock();
+    let table: Vec<u128> = (0..8).map(|i| 0x30 + i).collect();
+    let ctl = [0x07, 0x80, 0x0b, 0x01, 0xc3, 0x06, 0x00, 0x7f];
+    let got = VEXOps::binop(
+        crate::vex::opcode_map::parse_opcode("Iop_PermOrZero8x8"),
+        RustBV::concrete(pack(&table, 8), 64),
+        RustBV::concrete(pack(&ctl, 8), 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 64);
+    assert_eq!(got.as_u128(), Some(pack(&perm_ref(&table, &ctl, 8), 8)));
+}
+
+#[test]
+fn test_vec_perm_32x4_concrete_matches_python_ref() {
+    let ctx = SymContext::new_mock();
+    let table = [0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444];
+    let ctl = [3, 0x8000_0000, 6, 1];
+    let got = VEXOps::binop(
+        IROp::VPerm {
+            elem: IRType::I32,
+            count: 4,
+        },
+        RustBV::concrete(pack(&table, 32), 128),
+        RustBV::concrete(pack(&ctl, 32), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.as_u128(), Some(pack(&perm_ref(&table, &ctl, 32), 32)));
+}
+
+#[test]
+fn test_vec_perm_rejects_mismatched_widths() {
+    let ctx = SymContext::new_mock();
+    let res = VEXOps::binop(
+        IROp::VPerm {
+            elem: IRType::I8,
+            count: 16,
+        },
+        RustBV::concrete(0, 128),
+        RustBV::concrete(0, 64),
+        &ctx,
+    );
+    assert!(matches!(res, Err(OpError::OperandWidthMismatch { .. })), "{res:?}");
+}
+
+/// A symbolic control lane builds Python's ite chain; pinned to the concrete
+/// controls it must agree with the reference.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
+    let ctx = SymContext::new_mock();
+    let table = pshufb_table();
+    let ctl = RustBV::symbolic(&ctx, "vperm_ctl", 128);
+    let got = VEXOps::binop(
+        IROp::VPerm {
+            elem: IRType::I8,
+            count: 16,
+        },
+        RustBV::concrete(pack(&table, 8), 128),
+        ctl.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 128);
+    assert!(got.as_u128().is_none(), "a symbolic control must stay symbolic");
+
+    let pinned = RustBV::concrete(pack(&PSHUFB_CTL, 8), 128);
+    let want = RustBV::concrete(pack(&perm_ref(&table, &PSHUFB_CTL, 8), 8), 128);
+    ctx.push();
+    ctx.add_constraint(ctl.to_z3_ast().eq(pinned.to_z3_ast()));
+    ctx.add_constraint(got.to_z3_ast().eq(want.to_z3_ast()).not());
+    assert!(!ctx.is_sat(), "symbolic-control VPerm disagrees with the reference");
+    ctx.pop();
+}
+
+/// A symbolic table with a concrete control (PSHUFB with a constant mask) and
+/// the 256-bit `Perm32x8`, which is past the u128 fast path.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_perm_32x8_symbolic_table_matches_python_ref() {
+    let ctx = SymContext::new_mock();
+    let t = RustBV::symbolic(&ctx, "vperm_table", 256);
+    let ctl: [u128; 8] = [7, 0, 0x8000_0005, 2, 9, 4, 0xffff_ffff, 1];
+    let ctl_bv = (0..8).rev().fold(None::<RustBV>, |acc, i| {
+        let lane = RustBV::concrete(ctl[i], 32);
+        Some(match acc {
+            None => lane,
+            Some(hi) => hi.concat(&lane, &ctx),
+        })
+    });
+    let got = VEXOps::binop(
+        IROp::VPerm {
+            elem: IRType::I32,
+            count: 8,
+        },
+        t.clone(),
+        ctl_bv.unwrap(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 256);
+
+    for (i, &c) in ctl.iter().enumerate() {
+        let i = i as u32;
+        let lane = got.extract(i * 32 + 31, i * 32, &ctx);
+        let want = if c >> 31 == 1 {
+            RustBV::concrete(0, 32)
+        } else {
+            let j = (c & 7) as u32;
+            t.extract(j * 32 + 31, j * 32, &ctx)
+        };
+        ctx.push();
+        ctx.add_constraint(lane.to_z3_ast().eq(want.to_z3_ast()).not());
+        assert!(!ctx.is_sat(), "Perm32x8 lane {i} disagrees with the reference");
+        ctx.pop();
+    }
+}

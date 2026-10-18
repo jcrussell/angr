@@ -393,11 +393,10 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
-    /// Permute/shuffle (`Iop_Perm{N}x{M}`): (table, control) -> vec.
-    /// `count` is the lane count, so the result width is `elem * count`
-    /// (64 for `Perm8x8`, 128 for `Perm8x16`/`Perm32x4`, 256 for `Perm32x8`).
-    /// No native dispatch arm — see `is_dispatch_fabricate_family`
-    /// (`interpreter/expressions_arith.rs`); the whole family routes to Python.
+    /// Permute/shuffle (`Iop_Perm{N}x{M}`, `Iop_PermOrZero8x{8,16}`):
+    /// (table, control) -> vec. `count` is the lane count, so the result width
+    /// is `elem * count` (64 for `Perm8x8`, 128 for `Perm8x16`/`Perm32x4`, 256
+    /// for `Perm32x8`). Semantics in `VEXOps::vec_perm`.
     VPerm {
         elem: IRType,
         count: u8,

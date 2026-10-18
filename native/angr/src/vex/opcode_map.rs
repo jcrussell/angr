@@ -464,16 +464,27 @@ fn parse_special(op_str: &str) -> Option<IROp> {
         // `Iop_Perm32x8` went unmapped; verified against the full
         // `Iop_Perm*` set in `vendor/pyvex_ffi.h`.
         //
+        // `PermOrZero` (what libVEX now lifts PSHUFB to) shares `VPerm`:
+        // `VEXOps::vec_perm` zeroes a top-bit lane for both, as Python's
+        // `_op_generic_Perm` does (angr-mx00p.6).
+        //
         // `Iop_Perm8x16x2` (the two-table AArch64 TBL form) is deliberately
-        // NOT mapped: it is a *triop*, and the whole `VPerm` family exists
-        // only to route to Python's VEX engine, whose `_op_generic_Perm`
-        // (`angr/engines/vex/claripy/irop.py`) is two-argument. Mapping it
-        // would move the failure, not fix it.
+        // NOT mapped: it is a *triop* and `VPerm` is a binop, and Python's
+        // `_op_generic_Perm` (`angr/engines/vex/claripy/irop.py`) is
+        // two-argument too, so it stays unmapped on both engines.
         "Iop_Perm8x8" => Some(IROp::VPerm {
             elem: IRType::I8,
             count: 8,
         }),
         "Iop_Perm8x16" => Some(IROp::VPerm {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_PermOrZero8x8" => Some(IROp::VPerm {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_PermOrZero8x16" => Some(IROp::VPerm {
             elem: IRType::I8,
             count: 16,
         }),

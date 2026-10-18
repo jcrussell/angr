@@ -13,8 +13,9 @@ use super::*;
 use crate::vex::ir::IRCallee;
 
 /// The binop families that parse to a concrete `IROp` but have no native
-/// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`):
-/// `Iop_Perm{8,32}x*` (=> `VPerm`), `Iop_Pclmul*`, and `Iop_Crc32C`. All deterministic — Python's
+/// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`): `Iop_Pclmul*`
+/// and `Iop_Crc32C` (`VPerm` left the list with `VEXOps::vec_perm`,
+/// angr-mx00p.6). All deterministic — Python's
 /// VEX engine models them exactly — so `eval_binop` routes them to Python
 /// fallback rather than fabricating a wrong fresh symbolic. Keep this in lockstep
 /// with `opcode_map.rs` if a new must-fallback family is added.
@@ -23,12 +24,7 @@ use crate::vex::ir::IRCallee;
 pub(super) fn is_dispatch_fabricate_family(op: &IROp) -> bool {
     matches!(
         op,
-        IROp::VPerm { .. }
-            | IROp::PclmulLQLQ
-            | IROp::PclmulHQHQ
-            | IROp::PclmulLQHQ
-            | IROp::PclmulHQLQ
-            | IROp::Crc32C
+        IROp::PclmulLQLQ | IROp::PclmulHQHQ | IROp::PclmulLQHQ | IROp::PclmulHQLQ | IROp::Crc32C
     )
 }
 
@@ -179,8 +175,8 @@ impl<'a> VEXInterpreter<'a> {
             // op + arch (typed RustUnsupportedVexOpError on the test
             // path; stringified into the errored stash live).
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
-            // angr-s6miz: the three dispatch-fabricate families
-            // (Iop_Perm{8,32}x* => VPerm, Iop_Pclmul*, Iop_Crc32C) parse to a
+            // angr-s6miz: the dispatch-fabricate families
+            // (`is_dispatch_fabricate_family`: Iop_Pclmul*, Iop_Crc32C) parse to a
             // concrete IROp but have no native dispatch arm, so `binop` returns
             // `NotBinary`. They are deterministic ops Python models exactly, so
             // route the block to Python's VEX engine rather than fabricating a

@@ -498,8 +498,8 @@ matrix. It covers opcodes that parse to a concrete ``IROp`` variant
 but have no dispatch arm. By default a symbolic operand routes the block
 to Python and a concrete one surfaces ``RustUnsupportedVexOpError``;
 fabricating a fresh symbolic happens only under the opt-in
-``ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`` escape hatch. The three known
-families (``Perm*`` / ``Pclmul*`` / ``Crc32C``) route to Python for
+``ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`` escape hatch. The known
+families (``Pclmul*`` / ``Crc32C``) route to Python for
 concrete and symbolic operands alike.
 
 Source of truth: ``native/angr/src/vex/opcode_map_vector.rs``
@@ -757,7 +757,7 @@ variable is set. The name is deliberately ``FABRICATE_*`` rather than
 ``BYPASS_*``: the ``BYPASS_UNSUPPORTED_IROP`` SimOption means the
 opposite (route to Python's resilience mixin).
 
-The three families below are matched before ``vex_op_fallback``:
+The families below are matched before ``vex_op_fallback``:
 ``eval_binop`` recognises them (``is_dispatch_fabricate_family``) and
 routes the block to Python's VEX engine via
 ``CbExecutionError::NeedPythonFallback`` (reason ``DISPATCH_FABRICATE_REASON``)
@@ -775,20 +775,6 @@ These opcodes parse (``opcode_map.rs``) but have no arm in dispatch
    * - Op family
      - Classification
      - Provenance / fix path
-   * - Lane permute / table-shuffle
-       (``Iop_Perm8x{8,16}`` / ``Iop_Perm32x{4,8}``)
-     - **must-fallback**
-     - Parses to ``IROp::VPerm`` at two element widths — ``elem: I8`` for
-       the ``Perm8x*`` pair (x86 ``PSHUFB``, NEON ``TBL``/``TBX``) and
-       ``elem: I32`` for the ``Perm32x*`` pair (AVX2 ``VPERMD``); search
-       ``"Iop_Perm8x8"`` in ``opcode_map.rs`` (``parse_special``) for the
-       whole block. Not in the ``binop`` vector-int routing list, so
-       ``binop_misc`` returns ``NotBinary``. Deterministic shuffle —
-       fabricating drops the data dependency. Add a ``vec_perm`` arm or
-       route to Python. ``Iop_Perm8x16x2`` (two-table AArch64 ``TBL``) is
-       deliberately **not** mapped: it is a triop, and Python's
-       ``_op_generic_Perm`` — the fallback target the whole family exists
-       to reach — is two-argument.
    * - x86 carry-less multiply
        (``Iop_PclmulLQLQ`` / ``HQHQ`` / ``LQHQ`` / ``HQLQ``)
      - **must-fallback**
@@ -806,7 +792,7 @@ These opcodes parse (``opcode_map.rs``) but have no arm in dispatch
        ``Arith``-classified-but-undispatched path as ``Pclmul*``.
        Deterministic checksum.
 
-All three are **must-fallback** (deterministic functions of their
+Both are **must-fallback** (deterministic functions of their
 inputs) — none qualify as *fabricate-ok*. The only legitimately
 *fabricate-ok* ops are the under-specified estimates already handled
 as **Stubbed-symbolic** by deliberate policy (``URECPE`` / ``URSQRTE``
@@ -814,12 +800,18 @@ as **Stubbed-symbolic** by deliberate policy (``URECPE`` / ``URSQRTE``
 angr Python does the same). Every other concrete ``IROp`` variant
 either has a dispatch arm (``Raw`` included — it routes into
 ``transcendentals.rs``) or is a sentinel (``NeonUnimplemented`` /
-``Unmapped``), so these three families are the whole
+``Unmapped``), so these families are the whole
 parse-succeeds / no-dispatch-arm surface.
 
-No tracked benchmark drives a *symbolic* path through them (x86
-crypto/shuffle code is rare in the CTF corpus and usually hooked at the
-Python layer).
+No tracked benchmark drives a *symbolic* path through them (x86 crypto
+code is rare in the CTF corpus and usually hooked at the Python layer).
+
+The lane permutes (``Iop_Perm8x{8,16}``, ``Iop_Perm32x{4,8}`` and the
+``Iop_PermOrZero8x{8,16}`` form libVEX lifts x86 ``PSHUFB`` to) left this
+list for a native arm, ``VEXOps::vec_perm``, which follows Python's
+``_op_generic_Perm`` (angr-mx00p.6). ``Iop_Perm8x16x2`` (two-table AArch64
+``TBL``) stays unmapped: it is a triop, and ``_op_generic_Perm`` is
+two-argument.
 
 Special expressions: VECRET / GSPTR
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

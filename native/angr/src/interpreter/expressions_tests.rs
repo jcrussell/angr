@@ -252,11 +252,11 @@ fn eval_binop_symbolic_unsupported_routes_to_python_not_fabricate() {
 
 #[test]
 fn eval_binop_dispatch_fabricate_family_counts_as_python_fallback() {
-    // angr-9ke6b.85: the three dispatch-fabricate families (VPerm/Pclmul*/
-    // Crc32C) route to Python even with all-concrete args, and that IS a
+    // angr-9ke6b.85: the dispatch-fabricate families (Pclmul*/Crc32C)
+    // route to Python even with all-concrete args, and that IS a
     // Python-VEX-fallback event — it must bump the same per-op + aggregate
     // counters the ordinary unsupported-binop arm does, or capacity analysis
-    // built on those counters silently undercounts exactly these three
+    // built on those counters silently undercounts exactly these
     // families. The fabricate BYPASS is a different thing and stays 0.
     use crate::callbacks::PythonCallbacks;
     Python::initialize();

@@ -1,8 +1,9 @@
-//! Vector sub-unit reversal, bit-matrix transpose and widening-multiply VEX
-//! op helpers. (The module name predates the latter two families; nothing here
-//! is a lane-shuffle-by-index permute.)
+//! Vector lane permute, sub-unit reversal, bit-matrix transpose and
+//! widening-multiply VEX op helpers.
 //!
-//! Covers the ARM REV*/RBIT sub-unit reversal family
+//! Covers the lane-shuffle-by-index permutes (Iop_Perm{8,32}x{M} and
+//! Iop_PermOrZero8x{8,16}: x86 PSHUFB, NEON TBL, AVX2 VPERMD).
+//! Also the ARM REV*/RBIT sub-unit reversal family
 //! (Iop_Reverse{n}sIn{m}_x{k}), the PPC vgbbd bit-matrix transpose
 //! (Iop_PwBitMtxXpose64x2), and the widening multiplies (Iop_Mull*/QDMull*,
 //! plus the high-half-only Iop_MulHi*).
@@ -12,6 +13,73 @@ use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ir::IRType;
 
 impl VEXOps {
+    /// Lane permute (`Iop_Perm{8,32}x{M}`, `Iop_PermOrZero8x{8,16}`): lane `i`
+    /// of the result is lane `sel` of `table`, where `sel` is the low
+    /// `log2(count)` bits of lane `i` of `control`, or zero when that control
+    /// lane's top bit is set.
+    ///
+    /// The same rule as Python's `_op_generic_Perm`
+    /// (`angr/engines/vex/claripy/irop.py`), which serves `Perm` and
+    /// `PermOrZero` alike. libVEX leaves `Perm` with an out-of-range or
+    /// top-bit control undefined, so the zeroing is a valid refinement there
+    /// and the exact semantics of `PermOrZero`.
+    pub(super) fn vec_perm(
+        table: RustBV,
+        control: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let ew = elem.bits();
+        let count = u32::from(count);
+        let total = ew * count;
+        Self::require_operand_width("vec_perm table", table.width(), total)?;
+        Self::require_operand_width("vec_perm control", control.width(), total)?;
+        let sel_bits = count.trailing_zeros();
+        let sel_mask = count - 1;
+
+        if total <= 128
+            && let (Some(t), Some(c)) = (table.as_u128(), control.as_u128())
+        {
+            let mask = Self::low_bit_mask_u128(ew);
+            let mut result: u128 = 0;
+            for i in 0..count {
+                let ctl = (c >> (i * ew)) & mask;
+                if (ctl >> (ew - 1)) & 1 == 0 {
+                    let sel = (ctl as u32) & sel_mask;
+                    result |= ((t >> (sel * ew)) & mask) << (i * ew);
+                }
+            }
+            return Ok(RustBV::concrete(result, total));
+        }
+
+        let lane = |bv: &RustBV, j: u32| bv.extract(j * ew + ew - 1, j * ew, ctx);
+        let zero = RustBV::concrete(0, ew);
+        let mut lanes = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let ctl = lane(&control, i);
+            if let Some(cv) = ctl.as_u128() {
+                // A concrete control lane (the common PSHUFB-with-a-constant-
+                // mask case) picks its lane directly.
+                lanes.push(if (cv >> (ew - 1)) & 1 == 1 {
+                    zero.clone()
+                } else {
+                    lane(&table, (cv as u32) & sel_mask)
+                });
+                continue;
+            }
+            let sel = ctl.extract(sel_bits - 1, 0, ctx);
+            let mut picked = lane(&table, count - 1);
+            for j in (0..count - 1).rev() {
+                let hit = sel.eq(&RustBV::concrete(u128::from(j), sel_bits), ctx);
+                picked = hit.ite_into(lane(&table, j), picked, ctx);
+            }
+            let kill = ctl.extract(ew - 1, ew - 1, ctx);
+            lanes.push(kill.ite_into(zero.clone(), picked, ctx));
+        }
+        Ok(Self::concat_le_elements(lanes, ctx))
+    }
+
     /// NEON byte/halfword/word/bit reversal within each lane —
     /// `Iop_Reverse{sub_width}sIn{elem.bits()}_x{count}`. Reverses the
     /// `elem.bits() / sub_width` sub-units of width `sub_width` inside each

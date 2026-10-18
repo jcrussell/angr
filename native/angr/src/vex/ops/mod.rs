@@ -482,7 +482,8 @@ impl VEXOps {
             | IROp::VShr { .. }
             | IROp::VSar { .. }
             | IROp::VMin { .. }
-            | IROp::VMax { .. } => Self::binop_vec_int(op, left, right, ctx),
+            | IROp::VMax { .. }
+            | IROp::VPerm { .. } => Self::binop_vec_int(op, left, right, ctx),
 
             // -- Vector floating point (packed FP + scalar-in-vector FP) --
             IROp::FCmpScalarLane { .. }
@@ -800,6 +801,8 @@ impl VEXOps {
             // BV being built.
             IROp::VInterleaveLO { elem, .. } => Self::vec_interleave_lo(left, right, elem, ctx),
             IROp::VInterleaveHI { elem, .. } => Self::vec_interleave_hi(left, right, elem, ctx),
+
+            IROp::VPerm { elem, count } => Self::vec_perm(left, right, elem, count, ctx),
 
             // Vector shifts by immediate.
             IROp::VShlN { elem, count } => {

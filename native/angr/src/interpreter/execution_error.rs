@@ -35,8 +35,8 @@ pub(crate) const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 /// document as a corpus-absent limitation.
 pub(crate) const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
 
-/// Reason marker for the three dispatch-fabricate binop families
-/// (`Iop_Perm{8,32}x*` => `VPerm`, `Iop_Pclmul*`, `Iop_Crc32C`). These parse to a
+/// Reason marker for the dispatch-fabricate binop families
+/// (`is_dispatch_fabricate_family`: `Iop_Pclmul*`, `Iop_Crc32C`). These parse to a
 /// concrete IROp but have no native dispatch arm, so `VEXOps::binop` returns
 /// `OpError::NotBinary`. Rather than fabricate a wrong fresh symbolic
 /// (`eval_binop`'s BYPASS arm), `eval_binop` routes them to Python's VEX engine

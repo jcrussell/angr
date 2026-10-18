@@ -822,6 +822,9 @@ fn test_parse_perm() {
         ("Iop_Perm8x16", IRType::I8, 16, IRType::V128),
         ("Iop_Perm32x4", IRType::I32, 4, IRType::V128),
         ("Iop_Perm32x8", IRType::I32, 8, IRType::V256),
+        // angr-mx00p.6: the zeroing form pyvex 10's libVEX lifts PSHUFB to.
+        ("Iop_PermOrZero8x8", IRType::I8, 8, IRType::I64),
+        ("Iop_PermOrZero8x16", IRType::I8, 16, IRType::V128),
     ];
     for &(op_str, elem, count, result) in cases {
         let op = parse_opcode(op_str);
@@ -1406,7 +1409,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     // PERM_TRIOP
     (
         &["Iop_Perm8x16x2"],
-        "the two-table AArch64 TBL form of Iop_Perm — deliberately unmapped because it is a triop and the whole VPerm family exists only to route to Python's two-argument _op_generic_Perm (see the parse_special doc comment, angr-sqfj8.117).",
+        "the two-table AArch64 TBL form of Iop_Perm — deliberately unmapped because it is a triop, while VPerm and Python's _op_generic_Perm are both two-argument (see the parse_special doc comment, angr-sqfj8.117).",
     ),
     // V256_LANE_ACCESS
     (
@@ -1488,8 +1491,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_PackOddLanes16x8",
             "Iop_PackOddLanes32x4",
             "Iop_PackOddLanes8x16",
-            "Iop_PermOrZero8x16",
-            "Iop_PermOrZero8x8",
             "Iop_PwExtUSMulQAdd8x16",
             "Iop_ReinterpF128asI128",
             "Iop_ReinterpI128asF128",
