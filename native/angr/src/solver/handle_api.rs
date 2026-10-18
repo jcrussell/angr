@@ -501,7 +501,7 @@ impl RustSolverContext {
     /// self-concatenation (`h = op_concat(h, h)`) doubles it each call, so a
     /// handful of calls reaches the multi-gigabit `Z3_mk_concat` sort
     /// `check_bv_width` exists to refuse (angr-c7xno.94) and ~32 calls wrap the
-    /// `u32` — leaving an `Expression` node whose recorded width is small and
+    /// `u32` — leaving an `Ast` term whose recorded width is small and
     /// wrong while its Z3 AST is enormous, which then mis-validates every later
     /// [`check_extract_bounds`] against the wrapped width (angr-0jh0j.73). A
     /// missing handle is left to the op's own `invalid_handle_id` path.

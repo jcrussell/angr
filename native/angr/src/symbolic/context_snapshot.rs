@@ -115,7 +115,7 @@ pub struct SymContextSnapshot {
     #[serde(default)]
     pub next_id: u64,
     /// The fresh-name counters' next indices at capture time
-    /// ([`super::names::watermarks`]). A named leaf is its name
+    /// (`names::watermarks`). A named leaf is its name
     /// (angr-mx00p.12), and a state restored in another process brings names
     /// minted by counters that also started at 0, so restore raises every
     /// counter to at least these values: no later mint can reuse a restored

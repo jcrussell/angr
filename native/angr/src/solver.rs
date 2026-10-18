@@ -109,7 +109,7 @@ pub(crate) fn invalid_handle_id(ids: &[u64]) -> PyErr {
 /// to `assume_true` or take `.to_z3_bool()` of it.
 ///
 /// `Cow` rather than a plain `RustBV` so the (common) 1-bit case stays
-/// clone-free — an `Expression` BV clones its whole operand `Arc` tree.
+/// clone-free — cloning an `Ast` also clones its Z3 memo.
 #[cfg(feature = "vex-engine-z3")]
 fn bool_constraint_bv<'a>(bv: &'a RustBV, ctx: &SymContext) -> std::borrow::Cow<'a, RustBV> {
     if bv.width() == 1 {

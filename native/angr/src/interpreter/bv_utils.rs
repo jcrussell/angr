@@ -170,9 +170,8 @@ pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
 /// replaces bits `[i*8+7 .. i*8]` of the result.
 ///
 /// Byte order matches [`bytes_to_bv`] / [`bv_to_bytes`] — index 0 is the
-/// least-significant byte. A `RustBV::Concrete` base is patched as bytes; every
-/// other variant (including `Constrained`, whose constraints a byte round-trip
-/// would drop) is rebuilt as a `Concat` of per-byte lanes, taking the
+/// least-significant byte. A `RustBV::Concrete` base is patched as bytes; an
+/// `Ast` base is rebuilt as a `Concat` of per-byte lanes, taking the
 /// un-overlaid lanes from `base` via `Extract`.
 ///
 /// The caller is `expressions_loads.rs::load_concrete_addr`, splicing

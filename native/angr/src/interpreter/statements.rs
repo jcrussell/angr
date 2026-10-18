@@ -58,8 +58,7 @@ impl GuardClass {
     /// Decide a guard without consulting the solver, or `None` when it is
     /// genuinely symbolic and only the solver can answer.
     pub(super) fn concrete(guard_val: &RustBV) -> Option<Self> {
-        // A `Constrained` value is still `is_symbolic()` even when it carries a
-        // concrete value, so test both before deciding.
+        // Only a `Concrete` guard decides here; an `Ast` is `is_symbolic()`.
         if guard_val.is_symbolic() {
             return None;
         }
@@ -358,9 +357,7 @@ impl<'a> VEXInterpreter<'a> {
         let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
         self.dispatch_exit_inspect(callbacks, dst, jk, &guard_val);
 
-        // Decide the guard without the solver where possible (note that a
-        // Constrained value has a concrete value but is still symbolic, so
-        // `GuardClass::concrete` declines it).
+        // Decide the guard without the solver where possible.
         match GuardClass::concrete(&guard_val) {
             Some(GuardClass::Always) => {
                 return Ok(StmtResult::Exit {

@@ -46,7 +46,7 @@ use super::value_shape::Node;
 /// The concrete branch evaluates `if a $cmp b { 1 } else { 0 }` on the raw
 /// `u128` representations. The symbolic branch tries the bidirectional
 /// `try_zext_const_cmp_fold` shortcut (angr-g7nq pattern (b)) before falling
-/// through to a generic `Expression` node.
+/// through to a generic clarirs comparison term.
 macro_rules! define_unsigned_cmp_pair {
     (
         $name:ident, $into_name:ident, $op:expr, $cmp:tt,
@@ -325,7 +325,7 @@ impl RustBV {
         add,
         /// Add two bitvectors, consuming both arguments.
         ///
-        /// Avoids `self.clone()`/`other.clone()` for the Expression branch and
+        /// Avoids `self.clone()`/`other.clone()` for the term branch and
         /// identity simplifications. Hot-path callers (e.g. `VEXOps::binop`)
         /// that already own the operands should prefer this.
         add_into,
@@ -1074,7 +1074,7 @@ impl RustBV {
         match self.as_u128() {
             // `sign_extend_to` returns `None` when the fill would need bits the
             // u128 payload cannot hold (negative source, `to_width > 128`);
-            // that case takes the same Expression path as a symbolic operand.
+            // that case takes the same `expr_node` path as a symbolic operand.
             Some(v) => match sign_extend_to(v, self.width(), to_width) {
                 Some(extended) => Self::concrete(extended, to_width),
                 None => Self::expr_node(to_width, BVOp::SignExt(extend_bits), [self]),
@@ -1103,12 +1103,7 @@ impl RustBV {
     #[inline]
     pub fn truncate_into(self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width <= self.width());
-        // No truncation needed. Checked *before* `as_u128()` for the same reason
-        // `zero_extend_into` / `sign_extend_into` check their width identity
-        // first: `as_u128()` is `Some` for a `RustBV::Constrained` too, so the
-        // fold below would rebuild it as a bare `Concrete` and drop the symbol
-        // `id` that `query_class`, `memory::ite_builder` and
-        // `interpreter::concretize_cache` key off (angr-9ke6b.128).
+        // No truncation needed
         if to_width == self.width() {
             return self;
         }
@@ -1159,15 +1154,14 @@ impl RustBV {
     }
 
     /// The single implementation of Concat: concrete fold plus 128-bit
-    /// overflow guard, else a `Concat` expression node.
+    /// overflow guard, else a `Concat` clarirs term.
     ///
     /// Both public entry points (`concat_into`, which takes a `SymContext`
     /// it does not need, and `concat_no_ctx`, which borrows) route through
     /// here so the overflow guard cannot be tweaked in only one copy
     /// (angr-9ke6b.138). Taking owned operands costs the borrowing caller
-    /// nothing: the only fold-eligible variants (`Concrete`, `Constrained`)
-    /// hold no `Arc`, and the expression fallthrough consumes both operands
-    /// anyway.
+    /// nothing: the only fold-eligible variant (`Concrete`) holds no `Arc`,
+    /// and the term fallthrough consumes both operands anyway.
     #[inline]
     fn concat_owned(self, other: Self) -> Self {
         // The empty bitvector is concat's identity; clarirs has no width-0
@@ -1548,7 +1542,7 @@ fn try_zext_const_cmp_fold(
 /// This is the storage ceiling every concrete fast path in this file is
 /// sensitive to: at `width > 128` the bits `[128..width)` are implicit zeros
 /// with nowhere to be written, so a fold whose true result would need one of
-/// them must decline (fall back to an `Expression`) rather than emit a
+/// them must decline (fall back to a clarirs term) rather than emit a
 /// smaller, wrong number — see `define_rotate_pair!`, `reverse_owned`,
 /// `concrete_arith_fits` and `sign_extend_to`.
 /// [`sign_bit_beyond_storage`] is the signed-semantics corollary.
@@ -1585,7 +1579,7 @@ fn exact_shl(v: u128, a: u128) -> Option<u128> {
 /// `RustBV::concrete` masks it away; above it (`width > 128`) the carried bit
 /// is a *real* bit of the result — `2^128` is an ordinary 200-bit number — that
 /// the payload cannot hold, so the caller must decline the fold and let the
-/// operation stay an `Expression` (Z3 computes it exactly at the declared
+/// operation stay a clarirs term (Z3 computes it exactly at the declared
 /// width).
 #[inline]
 fn concrete_arith_fits(width: u32, exact: Option<u128>) -> bool {
@@ -1734,10 +1728,9 @@ pub(super) trait ExtractTarget {
 ///
 /// Ordering note: the concrete fast-path is checked before the identity rule so
 /// a full-width extract of a literal folds to a fresh constant — matching the
-/// RustBV construction-time builders. The two orders diverge only for a
-/// full-width extract of a `Constrained` inner, which is handled by the
-/// explicit identity check ahead of both (see below), so the remaining
-/// `Concrete`-only ordering is behavior-preserving on both targets.
+/// RustBV construction-time builders. Only a `Concrete` inner takes the fast
+/// path, and for it the two orders agree, so the ordering is
+/// behavior-preserving on both targets.
 pub(super) fn drive_extract<T: ExtractTarget>(
     target: &mut T,
     inner: &RustBV,

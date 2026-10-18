@@ -1,17 +1,16 @@
 //! A representation-independent view of a `RustBV` node (angr-mx00p.12).
 //!
-//! [`RustBV::node`] gives the op and operands of a compound value whether it
-//! is held as a `BVOp` [`RustBV::Expression`] or as a clarirs
-//! [`RustBV::Ast`], so construction-time rewrites and the fast paths that
-//! inspect operands work on both. An `Expression`'s operands are borrowed; an
-//! `Ast`'s children are wrapped as values, a literal that fits a `u128` as
+//! [`RustBV::node`] gives the op and operands of a compound clarirs
+//! [`RustBV::Ast`] as `BVOp` and values, so construction-time rewrites and the
+//! fast paths that inspect operands need not match on clarirs ops. Children
+//! are wrapped as values: a literal that fits a `u128` as
 //! [`RustBV::Concrete`] and anything else as an `Ast`.
 //!
-//! The view reads an `Ast` in the shapes `Expression` already has for the
-//! engine's Bool encoding (see `value_clarirs.rs`): `ite(cmp, 1, 0)` is the
-//! 1-bit comparison itself, a Bool `And` / `Or` / `Xor` / `Not` under that
-//! encoding is the 1-bit bitwise op over its operands' bits, and a Bool
-//! operand anywhere else (an `ITE` condition) is presented as its bit.
+//! The view reads an `Ast` through the engine's Bool encoding (see
+//! `value_clarirs.rs`): `ite(cmp, 1, 0)` is the 1-bit comparison itself, a
+//! Bool `And` / `Or` / `Xor` / `Not` under that encoding is the 1-bit bitwise
+//! op over its operands' bits, and a Bool operand anywhere else (an `ITE`
+//! condition) is presented as its bit.
 
 use std::borrow::Cow;
 
@@ -41,9 +40,9 @@ impl RustBV {
         }
     }
 
-    /// The variable a leaf value is, as `(name, width)`: a `Symbolic`, or an
-    /// `Ast` that is a `BVS` or a Bool symbol under the bit encoding. A Bool
-    /// symbol is named the way a `Symbolic` Bool leaf is, so both arms agree.
+    /// The variable a leaf value is, as `(name, width)`: an `Ast` that is a
+    /// `BVS`, or a `BoolS` under the bit encoding, reported under its
+    /// `SymbolKind::Bool` name so it never collides with a same-named `BVS`.
     /// Two leaves with the same name and width are one Z3 constant
     /// (`invariant-symbol-identity-is-by-name`).
     #[cfg_attr(not(feature = "vex-engine"), allow(dead_code))]

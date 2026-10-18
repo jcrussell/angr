@@ -263,11 +263,9 @@ impl FloatOpKind {
 /// ## Serialization
 ///
 /// `RustBV` implements `Serialize`/`Deserialize` via the `RustBVData`
-/// shadow type — the Z3 AST cache on `Symbolic` is skipped at serialize
-/// time and rebuilt on first `to_z3_ast()` call after load
-/// (a fresh `BV::new_const(name, width)` in the active Z3 thread-local
-/// context). Deserialization must happen with a Z3 context active when
-/// the `vex-engine-z3` feature is enabled.
+/// shadow type. The lazy Z3 memo on an `Ast` is skipped at serialize time
+/// and rebuilt on the first `to_z3_ast()` call after load, in whichever
+/// Z3 thread-local context is active then.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(try_from = "RustBVData", into = "RustBVData")]
 pub enum RustBV {
@@ -289,7 +287,7 @@ pub enum RustBV {
     /// bitvector-sorted: [`RustBV::from_clarirs`] encodes a Bool as
     /// `ite(b, 1, 0)` and a float as its IEEE bits. Built by `from_clarirs`
     /// (deserializing included) and by `from_clarirs_lowerable` for the
-    /// constructors, the leaves and the operands [`RustBV::node`] presents;
+    /// constructors, the leaves and the operands `RustBV::node` presents;
     /// both fold a literal that fits a `u128` into [`RustBV::Concrete`].
     ///
     /// Equality is node identity: clarirs interns, so equal terms are one node.
@@ -318,21 +316,12 @@ type ExprMemo = ();
 
 /// Serde shadow form for [`RustBV`].
 ///
-/// The wire format mirrors `RustBV` field-for-field except:
-///
-/// - The `Symbolic` variant's `ast: z3::ast::BV` cache is dropped (Z3
-///   ASTs cannot cross process boundaries and are reconstructable from
-///   `(name, width)`). On deserialize, the AST is recreated lazily via
-///   `BV::new_const(&name, width)` inside the active thread-local Z3
-///   context — callers must run within `with_z3_context` (or equivalent)
-///   when the `vex-engine-z3` feature is enabled.
-/// - `Arc<str>` / `Arc<[RustBV]>` collapse to owned `String` / `Vec`
-///   on the wire and rebuild Arc handles on load.
+/// `Concrete` mirrors [`RustBV::Concrete`]; an `Ast` travels as a [`WireDag`]
+/// of its clarirs term, and its Z3 memo is dropped (Z3 ASTs cannot cross
+/// process boundaries) and re-lowered lazily after load. The other arms only
+/// decode legacy records.
 ///
 /// This is the snapshot/serialization format from the angr-x04s spike.
-/// Intermediate cache
-/// fields (`EXPRESSION_BY_OPERANDS_PTR`, content hashes) are not part of
-/// the wire format; they rewarm naturally as the loaded ops are touched.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RustBVData {
     Concrete {
@@ -483,17 +472,15 @@ impl RustBV {
         }
     }
 
-    /// Build a `Symbolic` node from its parts, rebuilding the cfg-gated Z3 AST.
+    /// Build a leaf from its parts: the clarirs variable named `name`.
     ///
-    /// Single source of truth for the `#[cfg(vex-engine-z3)]` ast-rebuild +
-    /// `Symbolic` construction shared by `symbolic`, `symbolic_with_id`, and the
-    /// `From<RustBVData>` deserialize arm — keeps the three in lockstep so the
-    /// deserialize path can't drift from the constructors. Callers must be inside
-    /// `with_z3_context` when the z3 feature is enabled (BV::new_const reads the
-    /// active thread-local context).
+    /// Single source of truth for leaf construction shared by `symbolic`,
+    /// `symbolic_with_id`, and the legacy `RustBVData::Symbolic` deserialize
+    /// arm — keeps the three in lockstep so the deserialize path can't drift
+    /// from the constructors.
     ///
     /// **Width 0 degenerates to `Concrete`.** Z3 has no 0-width bitvector sort,
-    /// so `BV::new_const(name, 0)` panics inside the sort constructor — and the
+    /// so lowering a width-0 leaf panics inside the sort constructor — and the
     /// extension builds with `panic="abort"`, making that a hard SIGABRT of the
     /// whole process rather than a catchable Python exception. Every symbolic
     /// construction path reaches this function (`symbolic`, `symbolic_with_id`,
@@ -544,15 +531,14 @@ impl RustBV {
     }
 
     /// Create a symbolic bitvector variable: the clarirs variable `name`
-    /// (see [`Self::from_parts`]), so every call with the same name and width
+    /// (see `Self::from_parts`), so every call with the same name and width
     /// returns the same leaf.
     pub fn symbolic(ctx: &SymContext, name: impl AsRef<str>, width: u32) -> Self {
         RustBV::from_parts(ctx.next_id(), Arc::from(name.as_ref()), width)
     }
 
-    /// Create a symbolic bitvector variable with a specific ID. A named leaf
-    /// is identified by its name (see [`Self::from_parts`]); the id is kept
-    /// only by the unnamed `Symbolic` form.
+    /// Create a symbolic bitvector variable named `name`. A leaf is
+    /// identified by its name, not by `id` (see `Self::from_parts`).
     pub fn symbolic_with_id(id: u64, name: impl AsRef<str>, width: u32) -> Self {
         RustBV::from_parts(id, Arc::from(name.as_ref()), width)
     }

@@ -3,7 +3,7 @@
 //! `RustBV` has no Bool sort: a claripy `BoolS` leaf is a width-1 value whose
 //! term is built from its *name* (`RustBV::from_parts`), so the name carries
 //! the sort. [`SymbolKind::rust_symbol_name`] tags a Bool leaf's name and
-//! [`strip_bool_symbol_name`] reads the tag back, so `BVS("x", 1)` and
+//! `strip_bool_symbol_name` reads the tag back, so `BVS("x", 1)` and
 //! `BoolS("x")` stay two variables (angr-9ke6b.38, angr-9ke6b.223).
 
 use std::borrow::Cow;

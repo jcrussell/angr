@@ -154,12 +154,13 @@ impl VEXOps {
     /// operand against the `IRType` it carries, and `RustBV`'s own guard —
     /// `define_binop_pair!` in `symbolic/value_ops.rs` — is itself a
     /// `debug_assert_eq!`, so in release a mismatched `Iop_Add64` folds a
-    /// `left.width()`-wide wrong constant on the `as_u128` path (or builds an
-    /// `Expression` whose operands disagree, which Z3 rejects at
-    /// `to_z3_ast` time). So the `width_binop!`/`width_unop!` macros above,
-    /// the hand-rolled extend/truncate/shift/concat arms that do not use them,
-    /// and the helpers in `int_arith.rs` / `conversions.rs` / `float_cmp.rs`
-    /// all route here too.
+    /// `left.width()`-wide wrong constant on the `as_u128` path (or hands
+    /// `RustBV::from_op` operands that disagree, which clarirs refuses,
+    /// leaving a fresh unconstrained variable). So the
+    /// `width_binop!`/`width_unop!` macros above, the hand-rolled
+    /// extend/truncate/shift/concat arms that do not use them, and the helpers
+    /// in `int_arith.rs` / `conversions.rs` / `float_cmp.rs` all route here
+    /// too.
     ///
     /// `what` names the caller and operand (`"vec_mull left"`,
     /// `"binop add_into right"`) so the stringified error identifies the site.

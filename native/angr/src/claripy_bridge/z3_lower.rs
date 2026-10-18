@@ -13,7 +13,7 @@
 //! Op semantics mirror `clarirs-z3`'s `AstExtZ3::to_z3` one for one (`SRem` is
 //! `bvsrem`, `Neq` on floats is `not(fp.eq)`, a float sort has `mantissa + 1`
 //! significand bits). Leaves become Z3 constants named exactly by the clarirs
-//! symbol, which is also the name `RustBV::Symbolic` uses for a BV leaf
+//! symbol, which is also the name the engine's own BV leaves carry
 //! (`SymbolKind::rust_symbol_name` is the identity on BV names) — so a lowered
 //! constraint binds the same Z3 constants as the engine's own terms.
 //!

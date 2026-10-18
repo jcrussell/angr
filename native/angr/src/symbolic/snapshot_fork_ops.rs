@@ -324,13 +324,13 @@ impl SymContext {
     pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
         self.debug_assert_no_open_scope("restore_from_snapshot");
         // angr-op0dn.13.14: raise the global id allocator past every id the
-        // restored leaves already own. The `RustBV::Symbolic` leaves
-        // deserialized into this context's registers / memory / constraints
-        // carry ids minted by the SOURCE process's allocator, which ours never
-        // issued. Without the reserve, the first symbol minted during the
-        // resume re-uses an id a restored leaf holds, and every id-keyed lookup
-        // (claripy export registry, `stored_conditions`, symbol table) aliases
-        // the two. A symbol aliased onto another collapses a downstream
+        // restored leaves already own. The ids deserialized into this
+        // context's registers / memory / constraints (an unnamed leaf is named
+        // by its id, see `RustBV::from_parts`) were minted by the SOURCE
+        // process's allocator, which ours never issued. Without the reserve,
+        // the first symbol minted during the resume re-uses an id a restored
+        // leaf holds, and every id-keyed lookup (claripy export registry,
+        // `stored_conditions`, symbol table) aliases the two. A symbol aliased onto another collapses a downstream
         // compare-and-branch to a CONCRETE guard, so `IRStmt::Exit` stops
         // forking and whole search subtrees vanish with no visible error.
         // `fetch_max`, so a legacy snapshot's 0 is a no-op.

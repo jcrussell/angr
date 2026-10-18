@@ -179,31 +179,19 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Compute a cache key for a RustBV value: the consumer's `ConcretizeNs`
-    /// tag plus a hash of the FULL op tree, variant-tagged at every node by
-    /// `hash_bv`.
+    /// tag plus a hash of the whole term, variant-tagged by `hash_bv`.
     ///
     /// The namespace tag partitions the one map so entries never cross between
     /// strategy chains with different range limits — see `ConcretizeNs`.
     ///
-    /// Every variant goes through `hash_bv` rather than shortcutting leaves to
-    /// their raw `id` / `value`. An untagged leaf key would let a
-    /// `Concrete { value: 5 }` and a `Symbolic { id: 5 }` share a cache slot —
-    /// harmless today, since every call site early-returns on
-    /// `addr.as_u64()` (`Some` for both `Concrete` and `Constrained`) and so
-    /// only ever reach here with a `Symbolic` or `Expression`, but a foot-gun
-    /// for any future caller that skips that filter. Note that the
-    /// early-return argument covers only the **top-level** value: `hash_bv`
-    /// recurses into operands, where a `Concrete` or `Constrained` leaf is
-    /// routine, so each arm must hash its full payload (angr-fs8kb.65).
-    ///
-    /// The Expression case recurses over the entire operand tree (angr-owr37):
-    /// a nested `Expression` operand carries the `RustBV::EXPRESSION_ID`
-    /// sentinel for its `id`, so hashing only `(discriminant(op), width)` at each
-    /// nested node — as the original 1-level implementation did — dropped all
-    /// leaf identity for symbols sitting >= 2 levels deep. Two distinct
-    /// addresses like `Add(And(x,0xf),c)` vs `Add(And(y,0xf),c)` then collided,
-    /// and `concretize_cached_write` returned the first store's target for the
-    /// second store — silent wrong-address memory corruption.
+    /// The variant tag keeps a `Concrete` and an `Ast` out of each other's
+    /// slots even though every call site early-returns on `addr.as_u64()`
+    /// first — a foot-gun guard for a future caller that skips that filter.
+    /// An `Ast` hashes its whole term, so leaf identity at every depth
+    /// participates: a key over only the top node's op and width collided
+    /// `Add(And(x,0xf),c)` with `Add(And(y,0xf),c)`, and
+    /// `concretize_cached_write` returned the first store's target for the
+    /// second store — silent wrong-address memory corruption (angr-owr37).
     fn bv_cache_key(ns: ConcretizeNs, bv: &RustBV) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -216,10 +204,9 @@ impl<'a> VEXInterpreter<'a> {
         hasher.finish()
     }
 
-    /// Feed the full structure of `bv` into `hasher`, recursing into nested
-    /// `Expression` operands so leaf identity at every depth participates in the
-    /// key. A per-variant tag byte plus the operand count prevent structurally
-    /// distinct trees from hashing alike.
+    /// Feed the full structure of `bv` into `hasher`: a per-variant tag byte,
+    /// then the value for a `Concrete` or clarirs' structural hash of the
+    /// whole term for an `Ast`, then the width.
     fn hash_bv(bv: &RustBV, hasher: &mut impl std::hash::Hasher) {
         use std::hash::Hash;
         match bv {

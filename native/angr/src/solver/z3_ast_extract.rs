@@ -47,7 +47,7 @@ use crate::solver::RustSolverContext;
 
 /// Lower a claripy AST to a typed [`Z3AstPtr`] in the thread-local Z3 context.
 ///
-/// claripy is clarirs, so this reads the [`AstRef`](clarirs_core::prelude::AstRef)
+/// claripy is clarirs, so this reads the [`AstRef`]
 /// behind the Python object and lowers it with
 /// [`claripy_bridge::lower_claripy_ast`](crate::claripy_bridge::lower_claripy_ast)
 /// — losslessly, for every Bool / bitvector / float op, and into the context

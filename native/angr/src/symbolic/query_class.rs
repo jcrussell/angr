@@ -130,9 +130,8 @@ query_classes! {
         /// arithmetic over that symbol (feeds angr-op0dn.9.2).
         SingleVarRange => "single_var_range",
         /// Model query whose target is syntactically pinned by the constraints
-        /// (every symbol it reads has an `x == const` constraint, or is already a
-        /// `Constrained` leaf). The value is unique — a fast path here cannot
-        /// change concretization.
+        /// (every symbol it reads has an `x == const` constraint). The value is
+        /// unique — a fast path here cannot change concretization.
         ForcedValue => "forced_value",
         /// Model query whose witness is solver-chosen. Fast-pathing this changes
         /// which value the engine concretizes to (M2 determinism interaction).
@@ -238,8 +237,8 @@ type Var = (Arc<str>, u32);
 /// Structural summary of one expression tree, computed in a single walk.
 #[derive(Default)]
 struct Shape {
-    /// Free variables reachable from the root (`Constrained` leaves are
-    /// pinned, so they do not count as free).
+    /// Free variables reachable from the root (`Concrete` values contribute
+    /// none).
     vars: HashSet<Var>,
     /// Every op on the way is in the interval-decidable whitelist.
     interval_shaped: bool,
@@ -503,7 +502,7 @@ pub(crate) fn classify_eval(target: &RustBV, constraints: &[(RustBV, bool)]) -> 
         return QueryClass::Hard;
     }
     if shape.vars.is_empty() {
-        // No free symbols: `Constrained` leaves and folds settle it.
+        // No free symbols: constant folding settles it.
         return QueryClass::TrivialDecide;
     }
     if let Some(pinned) = pinned_symbols(constraints)
