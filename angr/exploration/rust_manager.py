@@ -1166,7 +1166,6 @@ class RustExplorationManager(
         solver_timeout_ms: int = 30000,
         max_active_states: int | None = DEFAULT_MAX_ACTIVE_STATES,
         max_history: int = 1000,
-        clear_caches_on_cleanup: bool = False,
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
@@ -1206,9 +1205,6 @@ class RustExplorationManager(
                 unlimited — only safe for short runs since long explorations
                 can OOM. Applied to every state created or added via this
                 manager.
-            clear_caches_on_cleanup: If True, ``__del__`` calls
-                ``cleanup()``. Accepted for compatibility; ``cleanup()``
-                has nothing to release, so the flag has no effect.
             exploration_strategy: ``"bfs"`` (default, FIFO state selection)
                 or ``"dfs"`` (LIFO). Equivalent to constructing with the
                 default and then calling
@@ -1376,7 +1372,6 @@ class RustExplorationManager(
         self._phase_boot(
             project,
             save_unconstrained,
-            clear_caches_on_cleanup,
             solver_timeout_ms,
             max_active_states,
             max_history,
@@ -1416,7 +1411,6 @@ class RustExplorationManager(
         self,
         project,
         save_unconstrained,
-        clear_caches_on_cleanup,
         solver_timeout_ms,
         max_active_states,
         max_history,
@@ -1445,9 +1439,6 @@ class RustExplorationManager(
 
         self._project = project
         self._save_unconstrained = save_unconstrained
-        # See ``cleanup()`` — only honored when the manager has a real Rust
-        # backend (i.e. not the multi-stage-reuse early return below).
-        self._clear_caches_on_cleanup = clear_caches_on_cleanup
         is_le = project.arch.memory_endness == "Iend_LE"
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
@@ -7156,28 +7147,6 @@ class RustExplorationManager(
         mgr = cls(project, active_states=None, **kwargs)
         mgr.load_snapshot(path)
         return mgr
-
-    def cleanup(self) -> None:
-        """Release per-process caches this manager filled. Currently a no-op.
-
-        The Rust claripy bridge keeps no cache of its own: an import walks
-        the claripy AST each time, and the Z3 lowering memo
-        (``claripy_bridge/z3_lower.rs``) holds a node only while the node
-        lives. Kept for callers that already invoke it.
-
-        Safe to call multiple times.
-        """
-
-    def __del__(self):
-        # Best-effort cleanup. Skip silently when the flag was never
-        # opted into (single-long-exploration users see no behavior
-        # change). Wrap everything because interpreter shutdown can
-        # already have torn down sys.modules by the time __del__ runs.
-        try:
-            if getattr(self, "_clear_caches_on_cleanup", False):
-                self.cleanup()
-        except Exception:
-            pass
 
     def __len__(self) -> int:
         """Return total number of active states."""

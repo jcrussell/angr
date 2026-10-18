@@ -37,6 +37,15 @@ MODULE_EXPORTS: tuple[str, ...] = (
     "RustUnsupportedSyscallError",
     "RustUnsupportedVexOpError",
     "RustZ3Error",
+    "rust_auto_dispatch_enabled",
+    "rust_default_engine_env",
+    "rust_engine_eligible",
+    "rust_missing_required_options",
+    "rust_supports_arch",
+    "rust_unsupported_options",
+    "set_rust_auto_dispatch",
+    "state_requires_python_engine",
+    "unsupported_rust_manager_kwargs",
 )
 
 
@@ -66,8 +75,9 @@ CLASS_PUBLIC_ATTRS: dict[str, tuple[str, ...]] = {
         "active_proxies",
         "avoid",
         "avoid_proxies",
-        "cleanup",
         "copy",
+        "coverage_blocks",
+        "coverage_report",
         "deadended",
         "deadended_proxies",
         "disable_profiling",
@@ -102,8 +112,8 @@ CLASS_PUBLIC_ATTRS: dict[str, tuple[str, ...]] = {
         "proxy",
         "prune",
         "pruned",
-        "remove_technique",
         "register_uniqueness_filter",
+        "remove_technique",
         "reset_solver_stats",
         "run",
         "set_block_granular",
@@ -183,6 +193,7 @@ CLASS_PUBLIC_ATTRS: dict[str, tuple[str, ...]] = {
     "RustMemoryProxy": (
         # SimMemory plugin protocol (installed as state.memory under the
         # write-through gate, angr-qj30) + the proxy's own load/store API.
+        "PAGE_SIZE",
         "STRONGREF_STATE",
         "SUPPORTS_CONCRETE_LOAD",
         "category",
