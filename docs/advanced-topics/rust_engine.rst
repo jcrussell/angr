@@ -343,9 +343,9 @@ cooperate through PyO3:
   live in ``symbolic/value_ops.rs`` and read operands through
   ``RustBV::node``; terms lower to Z3 through
   ``claripy_bridge::z3_lower``, which keeps each node's lowering while
-  the node lives. Two older arms remain, built only when decoding an
-  old snapshot: ``Symbolic`` (a nameless raw Z3 term) and
-  ``Expression``.
+  the node lives. Every op is built by ``RustBV::from_op``; a snapshot
+  written with the older ``Symbolic`` / ``Constrained`` / ``Expression``
+  arms still decodes, into these two forms.
 * **Shared Z3 context:** Python and Rust load the same ``libz3.so`` and
   share the Z3 context so claripy ASTs round-trip without
   re-serialization.
