@@ -343,10 +343,8 @@ fn bv_cache_key_distinguishes_op_payload() {
 fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
     let ctx = SymContext::new_mock();
     let sym = RustBV::symbolic(&ctx, "x", 64);
-    let RustBV::Symbolic { id, width, .. } = &sym else {
-        panic!("RustBV::symbolic must produce a Symbolic leaf");
-    };
-    let (id, width) = (*id, *width);
+    // Any id will do: the leaf is named, and only `Constrained` carries one.
+    let (id, width) = (7u64, sym.width());
 
     let concrete = RustBV::concrete(id as u128, width);
     let constrained = RustBV::Constrained {
@@ -360,8 +358,8 @@ fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &concrete),
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &constrained),
     ];
-    assert_ne!(keys[0], keys[1], "Symbolic{{id:N}} vs Concrete{{value:N}}");
-    assert_ne!(keys[0], keys[2], "Symbolic{{id:N}} vs Constrained{{id:N}}");
+    assert_ne!(keys[0], keys[1], "leaf vs Concrete{{value:N}}");
+    assert_ne!(keys[0], keys[2], "leaf vs Constrained{{id:N}}");
     assert_ne!(
         keys[1], keys[2],
         "Concrete{{value:N}} vs Constrained{{id:N}}"
@@ -377,10 +375,8 @@ fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
 fn bv_cache_key_distinguishes_nested_constrained_values() {
     let ctx = SymContext::new_mock();
     let sym = RustBV::symbolic(&ctx, "base", 64);
-    let RustBV::Symbolic { id, width, .. } = &sym else {
-        panic!("RustBV::symbolic must produce a Symbolic leaf");
-    };
-    let (id, width) = (*id, *width);
+    // Any id will do: the leaf is named, and only `Constrained` carries one.
+    let (id, width) = (7u64, sym.width());
 
     // Built as `Expression` nodes directly: `add` now builds a clarirs term,
     // which holds a `Constrained` operand as its literal value, and this pins

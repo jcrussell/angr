@@ -135,7 +135,7 @@ fn symbolic_jump_single_target_keep_ip_symbolic_adds_no_constraint() {
         };
         assert_eq!(succ[0].0.pc(), TARGET, "pc still advances to the target");
         assert!(
-            matches!(succ[0].0.get_ip(), crate::symbolic::RustBV::Symbolic { .. }),
+            succ[0].0.get_ip().leaf_var().is_some(),
             "IP register must stay symbolic"
         );
         assert_eq!(

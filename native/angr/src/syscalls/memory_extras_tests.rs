@@ -56,8 +56,8 @@ fn memory_extras_return_fresh_symbolic_on_all_arches() {
                 SyscallOutcome::ContinueSymbolic { ret } => ret,
                 _ => unreachable!(),
             };
-            let (id1, id2) = match (&ret, &ret2) {
-                (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
+            let (id1, id2) = match (ret.leaf_var(), ret2.leaf_var()) {
+                (Some((a, _)), Some((b, _))) => (a, b),
                 _ => panic!("{arch} {label} returns should be Symbolic"),
             };
             assert_ne!(

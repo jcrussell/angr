@@ -85,8 +85,8 @@ fn setuid_setgid_return_fresh_symbolic() {
                 SyscallOutcome::ContinueSymbolic { ret } => ret,
                 _ => unreachable!(),
             };
-            let (id1, id2) = match (&ret, &ret2) {
-                (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
+            let (id1, id2) = match (ret.leaf_var(), ret2.leaf_var()) {
+                (Some((a, _)), Some((b, _))) => (a, b),
                 _ => panic!("{arch} {} both returns should be Symbolic", handler.name()),
             };
             assert_ne!(

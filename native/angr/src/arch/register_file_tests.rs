@@ -197,8 +197,8 @@ fn serde_roundtrip_register_file_concrete() {
 
 /// Symbolic round-trip: a register holding a `RustBV::Symbolic` is
 /// reconstructed with a fresh Z3 AST under the active thread-local
-/// context, and the rebuilt value is still recognized as symbolic
-/// with the same `id`, `width`, and `name`.
+/// context, and the rebuilt value is the same leaf (name and width), which
+/// lowers to the same Z3 constant in the new context.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_register_file_symbolic() {
@@ -207,10 +207,7 @@ fn serde_roundtrip_register_file_symbolic() {
     let ctx = SymContext::new();
     let mut regs = RegisterFile::new(Box::new(AMD64));
     let sym = RustBV::symbolic(&ctx, "rdi_sym", 64);
-    let (orig_id, orig_width) = match &sym {
-        RustBV::Symbolic { id, width, .. } => (*id, *width),
-        _ => panic!("expected symbolic"),
-    };
+    let original = sym.leaf_var();
     regs.put_reg("rdi", sym);
 
     let s = serde_json::to_string(&regs).expect("serialize");
@@ -220,23 +217,15 @@ fn serde_roundtrip_register_file_symbolic() {
     // snapshot/restore path).
     let cfg = Config::new();
     let new_ctx = Context::new(&cfg);
-    let (sym_id, sym_width, sym_name, is_symbolic) =
-        with_z3_context(&new_ctx, || -> (u64, u32, String, bool) {
-            let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
-            let ctx2 = SymContext::new();
-            let bv = restored.get_reg("rdi", &ctx2).unwrap();
-            match &bv {
-                RustBV::Symbolic {
-                    id, width, name, ..
-                } => (*id, *width, name.to_string(), true),
-                _ => (0, 0, String::new(), false),
-            }
-        });
+    let (restored_leaf, lowered) = with_z3_context(&new_ctx, || {
+        let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
+        let ctx2 = SymContext::new();
+        let bv = restored.get_reg("rdi", &ctx2).unwrap();
+        (bv.leaf_var(), bv.to_z3_ast().to_string())
+    });
 
-    assert!(is_symbolic, "restored register must still be Symbolic");
-    assert_eq!(sym_id, orig_id);
-    assert_eq!(sym_width, orig_width);
-    assert_eq!(sym_name, "rdi_sym");
+    assert_eq!(restored_leaf, original, "restored register must be the same leaf");
+    assert_eq!(lowered, "rdi_sym");
 }
 
 /// An unrecognized `arch_name` is rejected instead of silently reinterpreting
@@ -906,7 +895,7 @@ fn be_merge_reads_the_other_side_in_storage_coordinates() {
     let got = a.get(f2, 4, &ctx);
     assert_eq!(got.width(), 32);
     assert!(
-        matches!(&got, RustBV::Symbolic { name, .. } if &**name == "f2_lo"),
+        got.leaf_var().is_some_and(|(name, _)| &*name == "f2_lo"),
         "merged f2_lo must be self's own overlay, got {got:?}"
     );
 }

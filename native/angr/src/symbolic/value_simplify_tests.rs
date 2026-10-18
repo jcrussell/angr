@@ -16,10 +16,10 @@ fn test_add_identity() {
     let zero = RustBV::zero(32);
     // x + 0 → x (should return symbolic, not expression)
     let r1 = x.add(&zero, &ctx);
-    assert!(matches!(r1, RustBV::Symbolic { .. }));
+    assert!(r1.leaf_var().is_some());
     // 0 + x → x
     let r2 = zero.add(&x, &ctx);
-    assert!(matches!(r2, RustBV::Symbolic { .. }));
+    assert!(r2.leaf_var().is_some());
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn test_sub_identity() {
     let zero = RustBV::zero(32);
     // x - 0 → x
     let r = x.sub(&zero, &ctx);
-    assert!(matches!(r, RustBV::Symbolic { .. }));
+    assert!(r.leaf_var().is_some());
 }
 
 #[test]
@@ -43,9 +43,9 @@ fn test_mul_identity_and_annihilator() {
     // 0 * x → 0
     assert_eq!(zero.mul(&x, &ctx).as_u128(), Some(0));
     // x * 1 → x
-    assert!(matches!(x.mul(&one, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.mul(&one, &ctx).leaf_var().is_some());
     // 1 * x → x
-    assert!(matches!(one.mul(&x, &ctx), RustBV::Symbolic { .. }));
+    assert!(one.mul(&x, &ctx).leaf_var().is_some());
 }
 
 #[test]
@@ -57,9 +57,9 @@ fn test_and_identity_and_annihilator() {
     // x & 0 → 0
     assert_eq!(x.and(&zero, &ctx).as_u128(), Some(0));
     // x & 0xFF → x
-    assert!(matches!(x.and(&ones, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.and(&ones, &ctx).leaf_var().is_some());
     // 0xFF & x → x
-    assert!(matches!(ones.and(&x, &ctx), RustBV::Symbolic { .. }));
+    assert!(ones.and(&x, &ctx).leaf_var().is_some());
 }
 
 #[test]
@@ -69,9 +69,9 @@ fn test_or_identity_and_annihilator() {
     let zero = RustBV::zero(8);
     let ones = RustBV::ones(8);
     // x | 0 → x
-    assert!(matches!(x.or(&zero, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.or(&zero, &ctx).leaf_var().is_some());
     // 0 | x → x
-    assert!(matches!(zero.or(&x, &ctx), RustBV::Symbolic { .. }));
+    assert!(zero.or(&x, &ctx).leaf_var().is_some());
     // x | 0xFF → 0xFF
     assert_eq!(x.or(&ones, &ctx).as_u128(), Some(0xFF));
 }
@@ -82,9 +82,9 @@ fn test_xor_identity() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     let zero = RustBV::zero(32);
     // x ^ 0 → x
-    assert!(matches!(x.xor(&zero, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.xor(&zero, &ctx).leaf_var().is_some());
     // 0 ^ x → x
-    assert!(matches!(zero.xor(&x, &ctx), RustBV::Symbolic { .. }));
+    assert!(zero.xor(&x, &ctx).leaf_var().is_some());
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn test_reverse_non_byte_aligned_width_is_identity_not_truncation() {
     // built for a width whose claripy export would raise.
     let sym = RustBV::symbolic(&ctx, "misaligned", 12);
     let rev = sym.reverse(&ctx);
-    assert!(matches!(rev, RustBV::Symbolic { .. }), "{rev:?}");
+    assert!(rev.leaf_var().is_some(), "{rev:?}");
     assert_eq!(rev.width(), 12);
 
     // Byte-aligned widths still reverse normally.
@@ -175,11 +175,11 @@ fn test_shift_by_zero() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     let zero = RustBV::zero(32);
     // x << 0 → x
-    assert!(matches!(x.shl(&zero, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.shl(&zero, &ctx).leaf_var().is_some());
     // x >> 0 → x
-    assert!(matches!(x.lshr(&zero, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.lshr(&zero, &ctx).leaf_var().is_some());
     // x >>> 0 → x
-    assert!(matches!(x.ashr(&zero, &ctx), RustBV::Symbolic { .. }));
+    assert!(x.ashr(&zero, &ctx).leaf_var().is_some());
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn test_sign_extend_identity() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     // sign_extend to same width → x
     let r = x.sign_extend(32, &ctx);
-    assert!(matches!(r, RustBV::Symbolic { .. }));
+    assert!(r.leaf_var().is_some());
     assert_eq!(r.width(), 32);
 }
 

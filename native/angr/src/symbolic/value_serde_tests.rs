@@ -125,29 +125,31 @@ fn serde_roundtrip_symbolic() {
     use z3::ast::Ast as Z3AstTrait;
     let ctx = SymContext::new_mock();
     let bv = RustBV::symbolic(&ctx, "x_serde", 32);
-    let (orig_id, orig_width, orig_name) = match &bv {
-        RustBV::Symbolic {
-            id, width, name, ..
-        } => (*id, *width, name.to_string()),
-        _ => panic!("expected Symbolic"),
-    };
     let json = serde_json::to_string(&bv).expect("serialize");
     // Deserialize under the same context (thread-local is still active).
     let back: RustBV = serde_json::from_str(&json).expect("deserialize");
-    match &back {
-        RustBV::Symbolic {
-            id, width, name, ..
-        } => {
-            assert_eq!(*id, orig_id);
-            assert_eq!(*width, orig_width);
-            assert_eq!(name.as_ref(), orig_name.as_str());
-        }
-        _ => panic!("variant changed across round-trip"),
-    }
+    assert_eq!(back.leaf_var(), bv.leaf_var());
+    assert_eq!(back, bv, "the leaf round-trips to the same interned node");
     // The lazily-rebuilt AST must be usable: it should produce a Z3 AST
-    // pointer (sanity check that BV::new_const succeeded under the
-    // active thread-local context).
+    // pointer (sanity check that the lowering succeeds under the active
+    // thread-local context).
     let _ptr = back.to_z3_ast().get_z3_ast().as_ptr();
+}
+
+/// A snapshot written before leaves were clarirs variables carries a
+/// `Symbolic` record; it still restores, as the leaf of that name and width.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn serde_old_symbolic_record_restores_the_named_leaf() {
+    let ctx = SymContext::new_mock();
+    let old = RustBVData::Symbolic {
+        id: 41,
+        width: 16,
+        name: "x_old_serde".to_owned(),
+    };
+    let json = serde_json::to_string(&old).expect("serialize");
+    let back: RustBV = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, RustBV::symbolic(&ctx, "x_old_serde", 16));
 }
 
 #[cfg(feature = "vex-engine-z3")]
@@ -276,14 +278,21 @@ fn test_translate_into_cross_context_eval() {
     // Source context = default thread-local. Build a memory-load-shaped tree.
     let src = SymContext::new_mock();
     let x = RustBV::symbolic(&src, "x", 32);
-    // Built as an `Expression` so the `Symbolic` leaf's translation is what
-    // the leaf-context check below sees; `reverse` itself builds a clarirs
-    // `Ast`, which translates by lowering afresh in the target context.
+    // Built as an `Expression` over an explicit `Symbolic` leaf so that arm's
+    // translation is what the leaf-context check below sees; named leaves and
+    // `reverse` build clarirs `Ast`s, which translate by lowering afresh in
+    // the target context.
+    let x_leaf = RustBV::Symbolic {
+        id: 0,
+        width: 32,
+        name: std::sync::Arc::from("x"),
+        ast: x.to_z3_ast(),
+    };
     let rev = RustBV::Expression {
         id: RustBV::EXPRESSION_ID,
         width: 32,
         op: BVOp::Reverse,
-        operands: std::sync::Arc::from([x.clone()]),
+        operands: std::sync::Arc::from([x_leaf]),
         memo: Default::default(),
     };
     let rev_ast = x.reverse(&src);

@@ -652,6 +652,21 @@ impl RustBV {
             // value, not a fallback for a failure.
             return RustBV::Concrete { value: 0, width: 0 };
         }
+        // A named leaf is the clarirs variable of that name (angr-mx00p.12):
+        // identity is the name, as it already is in Z3
+        // (`invariant-symbol-identity-is-by-name`), and `id` only survives in
+        // the `Symbolic` arm below. A Bool-tagged name is `ite(BoolS, 1, 0)`,
+        // the encoding `from_clarirs` and `leaf_var` read back.
+        if !name.is_empty() {
+            let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
+            let term = match super::registry::strip_bool_symbol_name(&name) {
+                Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
+                None => gc.bvs(&*name, width),
+            };
+            if let Ok(term) = term {
+                return RustBV::from_clarirs_lowerable(term);
+            }
+        }
         #[cfg(feature = "vex-engine-z3")]
         {
             // A claripy `Bool` leaf has no `RustBV` sort of its own — it is
@@ -678,20 +693,16 @@ impl RustBV {
         }
     }
 
-    /// Create a symbolic bitvector variable.
-    ///
-    /// Accepts anything String-like via `AsRef<str>`. The internal name is
-    /// stored as `Arc<str>` so cloning a Symbolic is alloc-free, which matters
-    /// on the RdTmp path where a temp slot is read multiple times per block.
+    /// Create a symbolic bitvector variable: the clarirs variable `name`
+    /// (see [`Self::from_parts`]), so every call with the same name and width
+    /// returns the same leaf.
     pub fn symbolic(ctx: &SymContext, name: impl AsRef<str>, width: u32) -> Self {
         RustBV::from_parts(ctx.next_id(), Arc::from(name.as_ref()), width)
     }
 
-    /// Create a symbolic bitvector variable with a specific ID.
-    ///
-    /// This is used for identity preservation when the same symbol
-    /// was previously imported from Python. By reusing the same ID,
-    /// we ensure that constraints on the original symbol apply correctly.
+    /// Create a symbolic bitvector variable with a specific ID. A named leaf
+    /// is identified by its name (see [`Self::from_parts`]); the id is kept
+    /// only by the unnamed `Symbolic` form.
     pub fn symbolic_with_id(id: u64, name: impl AsRef<str>, width: u32) -> Self {
         RustBV::from_parts(id, Arc::from(name.as_ref()), width)
     }
@@ -887,9 +898,10 @@ impl fmt::Display for RustBV {
 ///    `Constrained` therefore equals the `Concrete` holding its value, which
 ///    is the point — the two are interchangeable results of the same
 ///    computation.
-/// 2. **Leaf symbols** (`Symbolic`): equal iff same allocated `id` (from
-///    [`crate::symbolic::SymbolicIdentityRegistry`]) and width. `name` is
-///    debug-only and ids are unique, so id equality is the identity test.
+/// 2. **Wrapped Z3 terms** (`Symbolic`): equal iff same `id` and width. A
+///    named leaf is an `Ast` (class 4) since angr-mx00p.12, so this arm holds
+///    the anonymous wrapper `z3_ast_to_eval_bv` builds and leaves restored
+///    without a name.
 /// 3. **Compound expressions** (`Expression`): equal iff same `op`, same
 ///    width, and *pointer-identical* operand slices. The `id` field is the
 ///    `EXPRESSION_ID` sentinel for every `Expression` (see its doc), so it
@@ -900,7 +912,9 @@ impl fmt::Display for RustBV {
 ///    unequal. Treat `Expression` equality as "same node", not "same value".
 ///    The `memo` Z3 cache is excluded (pure deterministic-function cache).
 /// 4. **clarirs terms** (`Ast`): equal iff the same node. clarirs interns, so
-///    this is structural equality, and it is cheap.
+///    this is structural equality, and it is cheap. A named leaf is the
+///    clarirs variable of its name, so two leaves are equal iff they share
+///    name and width — the Z3 constant (`invariant-symbol-identity-is-by-name`).
 ///
 /// Each class uses a genuine equivalence relation and the classes are
 /// disjoint, so the whole relation is reflexive, symmetric and transitive —

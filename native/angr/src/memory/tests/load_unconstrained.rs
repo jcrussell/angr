@@ -4,11 +4,11 @@
 
 use super::super::*;
 
-/// Extract the variable name from a `Symbolic` BV, panicking otherwise.
+/// The variable name of a leaf, panicking otherwise.
 fn sym_name(bv: &RustBV) -> String {
-    match bv {
-        RustBV::Symbolic { name, .. } => name.to_string(),
-        other => panic!("expected Symbolic BV, got {other:?}"),
+    match bv.leaf_var() {
+        Some((name, _)) => name.to_string(),
+        None => panic!("expected a leaf, got {bv:?}"),
     }
 }
 

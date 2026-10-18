@@ -30,7 +30,7 @@ use crate::symbolic::{
 use super::cache::{
     claripy_ast_guard_width, evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
     lookup_symbol_by_name_and_width, lookup_symbol_name_by_id, store_bv_by_ast_hash,
-    store_claripy_ast_with_info, store_expression_ast_by_operands,
+    store_expression_ast_by_operands,
 };
 use super::{BridgeError, extract_int_value};
 
@@ -331,7 +331,6 @@ fn claripy_to_rustbv_depth(
             check_bv_width("BVS", width).map_err(BridgeError::InvalidArgs)?;
 
             Ok(import_symbolic_leaf(
-                &|| Some(ast.clone().unbind()),
                 ast_hash,
                 &name,
                 width,
@@ -475,7 +474,6 @@ fn claripy_to_rustbv_depth(
             // Symbolics here, and aliasing them would make export hand back
             // the other one's claripy AST — a BV where a Bool was expected.
             Ok(import_symbolic_leaf(
-                &|| Some(ast.clone().unbind()),
                 ast_hash,
                 &name,
                 1,
@@ -681,25 +679,19 @@ fn import_clarirs(
             })?;
             Ok(RustBV::concrete(v, width))
         }
-        AstOp::BVS(name, width) => {
+        // A clarirs leaf is taken whole: interning makes it the one node with
+        // that name, the variable Z3 binds, and keeps its annotations
+        // (angr-mx00p.12). A BoolS comes back as `ite(b, 1, 0)`.
+        AstOp::BVS(_, width) => {
             check_bv_width("BVS", *width).map_err(BridgeError::InvalidArgs)?;
-            Ok(import_symbolic_leaf(
-                &wrap,
-                hash,
-                name.as_str(),
-                *width,
-                SymbolKind::BitVector,
-                ctx,
-            ))
+            if *width == 0 {
+                // The empty bitvector's only value, as `RustBV::from_parts`
+                // degenerates a width-0 leaf (angr-fs8kb.28).
+                return Ok(RustBV::concrete(0, 0));
+            }
+            whole()
         }
-        AstOp::BoolS(name) => Ok(import_symbolic_leaf(
-            &wrap,
-            hash,
-            name.as_str(),
-            1,
-            SymbolKind::Bool,
-            ctx,
-        )),
+        AstOp::BoolS(_) => whole(),
         AstOp::BoolV(b) => Ok(RustBV::concrete(u128::from(*b), 1)),
 
         AstOp::Add(_) => fold(RustBV::add, None),
@@ -937,8 +929,8 @@ fn import_nary_op(
 ///    The key includes `kind` so a `BoolS("x")` and a `BVS("x", 1)` occupy
 ///    distinct slots (angr-9ke6b.38); dropping it re-aliases them and export
 ///    hands back the wrong sort's claripy AST.
-/// 3. **Mint + register** — first sighting; store the originating claripy AST
-///    so the reverse conversion can return it verbatim.
+/// 3. **Mint** — first sighting: the named leaf, a clarirs variable since
+///    angr-mx00p.12, which exports as itself and so needs no registration.
 ///
 /// Every step works on `kind.rust_symbol_name(name)`, never the raw claripy
 /// name. A Bool leaf is modelled as a width-1 BV, so the sort tag in the
@@ -949,7 +941,6 @@ fn import_nary_op(
 /// `rust_id_to_name`, the `RustBV` name and the Z3 term in agreement, which is
 /// the precondition step 1 relies on.
 fn import_symbolic_leaf(
-    leaf_object: &dyn Fn() -> Option<Py<PyAny>>,
     ast_hash: i64,
     name: &str,
     width: u32,
@@ -995,17 +986,7 @@ fn import_symbolic_leaf(
         return RustBV::symbolic_with_id(info.rust_id, &rust_name, width);
     }
 
-    let bv = RustBV::symbolic(ctx, &rust_name, width);
-    if let RustBV::Symbolic { id, .. } = &bv {
-        match leaf_object() {
-            Some(obj) => store_claripy_ast_with_info(ast_hash, *id, &rust_name, width, kind, obj),
-            // SILENT(cat-b): only reachable if wrapping a clarirs leaf as a
-            // claripy object fails; the leaf still imports, but export mints
-            // a fresh claripy object for it instead of returning this one.
-            None => log::debug!("symbol {rust_name:?}: no claripy object to register"),
-        }
-    }
-    bv
+    RustBV::symbolic(ctx, &rust_name, width)
 }
 
 /// Byte-reverse a RustBV value.

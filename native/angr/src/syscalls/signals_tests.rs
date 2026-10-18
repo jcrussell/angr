@@ -45,8 +45,8 @@ fn stub_handlers_return_fresh_symbolic_on_all_arches() {
                 SyscallOutcome::ContinueSymbolic { ret } => ret,
                 other => panic!("{arch} {label} 2nd: expected ContinueSymbolic, got {other:?}"),
             };
-            let (id1, id2) = match (&ret, &ret2) {
-                (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) => (*a, *b),
+            let (id1, id2) = match (ret.leaf_var(), ret2.leaf_var()) {
+                (Some((a, _)), Some((b, _))) => (a, b),
                 _ => panic!("{arch} {label} returns must be Symbolic"),
             };
             assert_ne!(

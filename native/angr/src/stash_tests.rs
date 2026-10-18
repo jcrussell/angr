@@ -167,27 +167,25 @@ fn test_stash_manager_load_snapshot_errors() {
     }
 }
 
-/// angr-euw28: an envelope written by a FOREIGN process carries symbol ids
-/// minted by an allocator that also started at 0, so they alias ids this
-/// process already handed out. `load_snapshot` must rebase the whole envelope's
-/// id space above the local watermark — keeping names (and therefore Z3
-/// identity) intact — while an envelope written by THIS process keeps its ids
-/// verbatim, since those ids are still ours.
+/// angr-euw28: an envelope written by a FOREIGN process was minted by
+/// counters that also started at 0. Leaves are named clarirs variables
+/// (angr-mx00p.12), so whichever process wrote the envelope, a restored
+/// constraint must mention the very leaf of that name — the variable Z3 binds
+/// — rather than a renamed or id-shifted copy.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn test_foreign_envelope_rebases_symbol_ids() {
-    use crate::symbolic::{RustBV, symbol_id_watermark};
+fn test_foreign_envelope_keeps_symbol_names() {
+    use crate::symbolic::RustBV;
 
-    /// First `Symbolic` leaf under `bv`, as (id, name).
-    fn first_leaf(bv: &RustBV) -> Option<(u64, String)> {
-        match bv {
-            RustBV::Symbolic { id, name, .. } => Some((*id, name.to_string())),
-            RustBV::Expression { operands, .. } => operands.iter().find_map(first_leaf),
-            _ => None,
+    /// First named leaf under `bv`.
+    fn first_leaf(bv: &RustBV) -> Option<RustBV> {
+        if bv.leaf_var().is_some() {
+            return Some(bv.clone());
         }
+        bv.node()?.operands.iter().find_map(first_leaf)
     }
 
-    fn restored_leaf(bytes: &[u8]) -> (u64, String) {
+    fn restored_leaf(bytes: &[u8]) -> RustBV {
         let restored = StashManager::load_snapshot(bytes).expect("load_snapshot");
         let state = restored
             .get(STASH_ACTIVE)
@@ -202,49 +200,26 @@ fn test_foreign_envelope_rebases_symbol_ids() {
 
     let mut mgr = StashManager::new();
     let state = RustSimState::new("amd64").unwrap();
-    let source_id = {
+    let leaf = {
         let solver = state.solver();
         let ctx = solver.borrow();
         let leaf = RustBV::symbolic(&ctx, "euw28_leaf", 64);
-        // Built as an `Expression` directly, so its `Symbolic` leaf, and the
-        // id this test checks, survive the snapshot; a comparison built by
-        // `eq` is a clarirs term whose leaf carries a name only.
-        let eq = RustBV::Expression {
-            id: RustBV::EXPRESSION_ID,
-            width: 1,
-            op: crate::symbolic::BVOp::Eq,
-            operands: std::sync::Arc::from(vec![leaf.clone(), RustBV::concrete(7, 64)]),
-            memo: Default::default(),
-        };
-        ctx.assume_true(&eq);
-        first_leaf(&leaf).expect("minted leaf").0
+        ctx.assume_true(&leaf.eq(&RustBV::concrete(7, 64), &ctx));
+        leaf
     };
     mgr.push(STASH_ACTIVE, state);
     let bytes = mgr.dump_snapshot();
 
-    // (a) Same process: the ids in the envelope are still ours — keep them.
-    let (same_id, same_name) = restored_leaf(&bytes);
-    assert_eq!(same_id, source_id, "in-process load must not rebase ids");
-    assert_eq!(same_name, "euw28_leaf");
+    // (a) Same process.
+    assert_eq!(restored_leaf(&bytes), leaf, "in-process load keeps the leaf");
 
-    // (b) Foreign process: flip the origin token in the header. The leaf must
-    // land above the watermark (so it cannot alias a locally-minted symbol),
-    // under its original name.
+    // (b) Foreign process: flip the origin token in the header.
     let mut foreign = bytes.clone();
     foreign[1] ^= 0xFF;
-    let watermark = symbol_id_watermark();
-    let (foreign_id, foreign_name) = restored_leaf(&foreign);
     assert_eq!(
-        foreign_name, "euw28_leaf",
-        "rebasing must not touch the symbol NAME — Z3 identity is by name"
-    );
-    assert!(
-        foreign_id >= watermark,
-        "foreign leaf id {foreign_id} aliases a locally-minted id (watermark {watermark})"
-    );
-    assert!(
-        symbol_id_watermark() > foreign_id,
-        "the allocator must be reserved past every rebased leaf"
+        restored_leaf(&foreign),
+        leaf,
+        "a foreign load keeps the leaf — Z3 identity is by name"
     );
 }
 

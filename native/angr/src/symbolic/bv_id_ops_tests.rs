@@ -142,14 +142,15 @@ fn new_bv_name_suffix_matches_its_id() {
     let ctx = SymContext::new();
     let before = symbol_id_watermark();
     let bv = ctx.new_bv("stdin", 64);
-    let RustBV::Symbolic { id, width, name, .. } = &bv else {
-        panic!("new_bv must yield a Symbolic leaf, got {bv:?}");
-    };
-    assert_eq!(&**name, format!("stdin_{id}").as_str());
-    assert_eq!(*width, 64);
+    let (name, width) = bv.leaf_var().expect("new_bv must yield a leaf");
+    let id: u64 = name
+        .strip_prefix("stdin_")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("unexpected name {name}"));
+    assert_eq!(width, 64);
     assert!(
-        symbol_id_watermark() > before,
-        "new_bv must mint at least one id"
+        (before..symbol_id_watermark()).contains(&id),
+        "the suffix must be the id new_bv drew ({before} <= {id} < watermark)"
     );
 }
 

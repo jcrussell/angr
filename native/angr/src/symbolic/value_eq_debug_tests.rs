@@ -35,7 +35,7 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
 }
 
 /// The equality classes from the `PartialEq for RustBV` doc: known-value
-/// (Concrete/Constrained), leaf-symbol identity (Symbolic), node identity
+/// (Concrete/Constrained), leaf identity by name, node identity
 /// (Expression, and Ast, whose nodes are interned so identity is structure).
 /// Nothing compares equal across a class boundary.
 #[test]
@@ -54,13 +54,15 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     assert_ne!(concrete, RustBV::concrete(5, 64), "width must be compared");
     assert_ne!(concrete, RustBV::concrete(6, 32));
 
-    // Class 2: Symbolic is keyed by allocated id + width; `name` is debug-only.
+    // Class 2: a named leaf is its name and width (angr-mx00p.12): the id
+    // only feeds the name counter, so it no longer tells two leaves apart —
+    // as in Z3, where the name is the constant.
     let s1 = RustBV::symbolic_with_id(11, "alpha", 32);
-    let s1_other_name = RustBV::symbolic_with_id(11, "beta", 32);
-    let s2 = RustBV::symbolic_with_id(12, "alpha", 32);
+    let s1_other_id = RustBV::symbolic_with_id(12, "alpha", 32);
+    let s2 = RustBV::symbolic_with_id(11, "beta", 32);
     let s1_wide = RustBV::symbolic_with_id(11, "alpha", 64);
-    assert_eq!(s1, s1_other_name, "same id + width is the same leaf symbol");
-    assert_ne!(s1, s2, "distinct ids are distinct symbols");
+    assert_eq!(s1, s1_other_id, "same name + width is the same leaf symbol");
+    assert_ne!(s1, s2, "distinct names are distinct symbols");
     assert_ne!(s1, s1_wide, "width must be compared");
 
     // Class 3: Expression is node identity, NOT a structural walk — two
@@ -102,18 +104,16 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     }
 }
 
-/// `id` is the identity key for the two leaf variants (`query_class` matches on
-/// it, and it is what the claripy registry keys off), so `Debug` must surface
-/// it — otherwise two distinct symbols that share a name/value + width print
-/// identically in logs and assertion failures (angr-sqfj8.99).
+/// `Debug` must surface each value's identity — otherwise two distinct values
+/// print identically in logs and assertion failures (angr-sqfj8.99): the name
+/// for a named leaf, the `id` for a `Constrained`.
 #[test]
 fn test_debug_includes_symbol_id_for_leaf_variants() {
+    // A named leaf prints its name: that is its identity (angr-mx00p.12).
     let a = RustBV::symbolic_with_id(11, "alpha", 32);
-    let b = RustBV::symbolic_with_id(12, "alpha", 32);
-    let da = format!("{a:?}");
-    let db = format!("{b:?}");
-    assert_eq!(da, "Symbolic(#11, alpha, 32)");
-    assert_ne!(da, db, "distinct symbol ids must print differently");
+    let b = RustBV::symbolic_with_id(12, "beta", 32);
+    assert_eq!(format!("{a:?}"), "Ast(alpha, 32)");
+    assert_ne!(format!("{a:?}"), format!("{b:?}"));
 
     let c = RustBV::Constrained {
         id: 7,
@@ -134,5 +134,5 @@ fn test_debug_includes_symbol_id_for_leaf_variants() {
 
     // Display is the user-facing `<BVn ...>` rendering and deliberately stays
     // id-free; only Debug carries identity.
-    assert_eq!(a.to_string(), b.to_string());
+    assert_eq!(a.to_string(), RustBV::symbolic_with_id(12, "alpha", 32).to_string());
 }

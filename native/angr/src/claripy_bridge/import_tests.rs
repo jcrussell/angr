@@ -7,6 +7,7 @@
 //! would let a sibling test's registration decide the outcome.
 
 use super::*;
+use crate::claripy_bridge::cache::store_claripy_ast_with_info;
 
 use crate::symbolic::{BVOp, global_registry};
 
@@ -35,9 +36,7 @@ fn test_import_symbolic_leaf_hash_hit_rebinds_under_canonical_name() {
         );
 
         // Same hash, but the AST carries claripy's renamed string.
-        let ast = py.None().into_bound(py);
         let bv = import_symbolic_leaf(
-            &|| Some(ast.clone().unbind()),
             AST_HASH,
             "sqfj8_18_canonical_42_64",
             64,
@@ -45,12 +44,9 @@ fn test_import_symbolic_leaf_hash_hit_rebinds_under_canonical_name() {
             &ctx,
         );
 
-        let RustBV::Symbolic { id, name, .. } = &bv else {
-            panic!("expected a Symbolic leaf, got {bv:?}");
-        };
-        assert_eq!(*id, SYMBOL_ID, "hash hit must reuse the registered id");
+        let (name, _) = bv.leaf_var().expect("a leaf");
         assert_eq!(
-            &**name, CANONICAL,
+            &*name, CANONICAL,
             "hash hit must rebuild under the canonical Rust name, not the \
              claripy-renamed one (angr-izov2)",
         );
@@ -64,8 +60,7 @@ fn test_import_symbolic_leaf_hash_hit_rebinds_under_canonical_name() {
 /// today because both sides run under the GIL, but the old
 /// `unwrap_or(&rust_name)` fallback would have rebound the id under a
 /// different Z3 constant if it ever were. Resolution now falls through to the
-/// mint path, which registers a fresh id consistently — same Z3 constant,
-/// no torn registry left behind.
+/// mint path, which builds the leaf by its name — the same Z3 constant.
 #[test]
 fn test_import_symbolic_leaf_falls_through_when_id_has_no_canonical_name() {
     const ORPHAN_ID: u64 = 0x5F18_0002;
@@ -87,30 +82,10 @@ fn test_import_symbolic_leaf_falls_through_when_id_has_no_canonical_name() {
             "setup: the orphan id must have no canonical name",
         );
 
-        let ast = py.None().into_bound(py);
-        let bv = import_symbolic_leaf(
-            &|| Some(ast.clone().unbind()),
-            AST_HASH,
-            NAME,
-            64,
-            SymbolKind::BitVector,
-            &ctx,
-        );
+        let bv = import_symbolic_leaf(AST_HASH, NAME, 64, SymbolKind::BitVector, &ctx);
 
-        let RustBV::Symbolic { id, name, .. } = &bv else {
-            panic!("expected a Symbolic leaf, got {bv:?}");
-        };
-        assert_ne!(
-            *id, ORPHAN_ID,
-            "an id with no canonical name must not be rebound",
-        );
-        assert_eq!(&**name, NAME, "fallback resolution keeps the Rust name");
-        assert_eq!(
-            global_registry().lookup_name_by_id(*id).as_deref(),
-            Some(NAME),
-            "the fallback path must re-register the leaf so the two maps agree \
-             again",
-        );
+        let (name, _) = bv.leaf_var().expect("a leaf");
+        assert_eq!(&*name, NAME, "fallback resolution keeps the Rust name");
     });
 }
 

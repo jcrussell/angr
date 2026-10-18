@@ -31,21 +31,14 @@ fn test_unique_names() {
 
 #[test]
 fn test_new_bv_name_id_matches_symbol_id() {
-    // angr-sqfj8.90: new_bv must mint one id, not two — the `{base}_{id}`
-    // suffix in the display name has to be the value's real `Symbolic.id`.
+    // angr-sqfj8.90: new_bv names its leaf `{base}_{id}` from one fresh id.
     let ctx = SymContext::new_mock();
-    let bv = ctx.new_bv("mergeflag", 1);
-    let RustBV::Symbolic { id, name, .. } = &bv else {
-        panic!("new_bv must produce a Symbolic, got {bv:?}");
-    };
-    assert_eq!(&**name, format!("mergeflag_{id}"));
+    let name_of = |bv: &RustBV| bv.leaf_var().expect("new_bv must produce a leaf").0;
+    let first = name_of(&ctx.new_bv("mergeflag", 1));
+    assert!(first.starts_with("mergeflag_"), "{first}");
 
     // ...and consecutive calls must still not collide.
-    let other = ctx.new_bv("mergeflag", 1);
-    let RustBV::Symbolic { id: other_id, .. } = &other else {
-        panic!("new_bv must produce a Symbolic");
-    };
-    assert_ne!(id, other_id);
+    assert_ne!(first, name_of(&ctx.new_bv("mergeflag", 1)));
 }
 
 #[test]

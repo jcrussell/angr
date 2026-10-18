@@ -282,5 +282,5 @@ fn test_nonzero_width_symbolic_still_symbolic() {
     let ctx = SymContext::new_mock();
     let bv = RustBV::symbolic(&ctx, "nonzero", 8);
     assert!(!bv.is_concrete());
-    assert!(matches!(bv, RustBV::Symbolic { width: 8, .. }));
+    assert_eq!(bv.leaf_var().map(|(_, w)| w), Some(8));
 }

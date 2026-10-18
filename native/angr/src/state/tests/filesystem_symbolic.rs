@@ -165,12 +165,12 @@ fn test_content_sym_serde_roundtrip() {
     // Symbolic leaves rebuild by (name, width) via the RustBVData shadow.
     let content = restored.fd_content_sym(fd).expect("content_sym survives");
     assert_eq!(content.len(), 3);
-    match &content[0] {
-        RustBV::Symbolic { name, width, .. } => {
-            assert_eq!(&**name, "wire_0");
-            assert_eq!(*width, 8);
+    match content[0].leaf_var() {
+        Some((name, width)) => {
+            assert_eq!(&*name, "wire_0");
+            assert_eq!(width, 8);
         }
-        other => panic!("expected Symbolic, got {other:?}"),
+        None => panic!("expected a leaf, got {:?}", content[0]),
     }
     assert!(matches!(
         &content[2],

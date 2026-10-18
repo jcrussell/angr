@@ -336,14 +336,14 @@ fn test_load_symbolic_unified_all_unmapped_fabricate_width() {
         .load_symbolic_unified(addr, 4, &ctx, &concretizer)
         .expect("all-unmapped load fabricates rather than failing");
 
-    match &loaded {
-        RustBV::Symbolic { name, width, .. } => {
+    match loaded.leaf_var() {
+        Some((name, width)) => {
             assert!(
                 name.starts_with("mem_all_unmapped_"),
                 "expected the all-unmapped fabricate stem, got {name}"
             );
-            assert_eq!(*width, 32, "4-byte load must fabricate a 32-bit value");
+            assert_eq!(width, 32, "4-byte load must fabricate a 32-bit value");
         }
-        other => panic!("expected a fabricated Symbolic leaf, got {other:?}"),
+        None => panic!("expected a fabricated leaf, got {loaded:?}"),
     }
 }

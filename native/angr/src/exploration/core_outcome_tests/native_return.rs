@@ -102,7 +102,7 @@ fn native_return_keeps_symbolic_sp_symbolic_on_link_register_abis() {
             };
             let sp = succ[0].0.get_sp();
             assert!(
-                matches!(sp, crate::symbolic::RustBV::Symbolic { .. }),
+                sp.leaf_var().is_some(),
                 "{arch}: SP must be the untouched symbol, got {sp:?}"
             );
         }
