@@ -5,7 +5,6 @@
 //! - `SymContext`: Z3 solver context with constraint management
 //! - `RustBVHandle`: Python-facing opaque handle for bypassing claripy
 //! - `RustSymbolTable`: Registry mapping handles to RustBV values
-//! - `SymbolicIdentityRegistry`: Preserves symbolic identity across Python<->Rust
 //!
 //! # File index
 //!
@@ -22,11 +21,11 @@
 //!
 //! | File | Holds |
 //! |------|-------|
-//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Symbolic` / `Expression`) plus `BVOp`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
+//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Ast`) plus `BVOp`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
 //! | `value_ops.rs` | Slice .2: arithmetic, bitwise, shift/rotate, comparison and structural (`extract` / `concat` / `reverse` / extend) ops, and the construction-time canonicalization rules they run. |
 //! | `value_clarirs.rs` | `RustBV::to_clarirs`: the clarirs term a value denotes, with the Bool and bitcount encodings its Z3 lowering uses. |
-//! | `value_shape.rs` | `RustBV::node`: the op and operands of a compound value, read the same way from an `Expression` and from a clarirs `Ast`. |
-//! | `value_z3.rs` | Slice .2: Z3 AST construction — `to_z3_ast*` / `to_z3_bool*`, the memoized integer builder, and the FP builders. **(z3)** |
+//! | `value_shape.rs` | `RustBV::node`: the op and operands of a compound value, read off a clarirs `Ast` term in `BVOp` vocabulary, plus `leaf_var`. |
+//! | `value_z3.rs` | Z3 lowering — `to_z3_ast*` / `to_z3_bool*` / `translate_into`, through `claripy_bridge::z3_lower` with the per-value memo. **(z3)** |
 //! | `bv_concrete.rs` | Z3-independent concrete folds over raw `u128`. Deliberately Z3-free so concrete paths still build with no z3. |
 //! | `bv_codec.rs` | Codec between concrete values and Z3 BV constants (`context.rs` slice 5). **(z3)** |
 //! | `bv_chunk.rs` | The `<= 16`-byte chunking loop every memory entry point needs to move a `&[u8]` through `RustBV::Concrete`. |
@@ -160,13 +159,12 @@ pub(crate) use solver_build::stop_enumeration_after_for_test;
 pub use solving_ops::Enumeration;
 pub use stats::{
     VexOpFamily, get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
-    record_claripy_ast_cache, record_concretize_disjunction, record_concretize_read,
-    record_concretize_write, record_export_sound_clz, record_export_unconstrained_clz,
-    record_export_unconstrained_fp, record_mem_ite_depth, record_mem_lazy_page_fault,
-    record_mem_load, record_mem_load_symbolic_addr, record_mem_store,
-    record_mem_store_symbolic_addr, record_symfile_read_native, record_symfile_write_demotion,
-    record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop, record_zext_cmp_collapse,
-    record_zext_cmp_trivial_decide, reset_solver_stats,
+    record_concretize_disjunction, record_concretize_read, record_concretize_write,
+    record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_load,
+    record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
+    record_symfile_read_native, record_symfile_write_demotion, record_vex_binop, record_vex_qop,
+    record_vex_triop, record_vex_unop, record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
+    reset_solver_stats,
 };
 pub use symbol_kind::SymbolKind;
 pub use table::{BinaryOpError, RustSymbolTable};

@@ -86,23 +86,22 @@ pub(crate) static Z3_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Equals the count of distinct Arc-pointer subtrees materialized into Z3
 /// ASTs for that conversion.
 pub(crate) static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Number of persistent per-`Expression` memo hits in `to_z3_ast_cached`
+/// Number of persistent per-value memo hits in `to_z3_ast_cached`
 /// (angr-ovqja.3).
 ///
-/// A hit means the same `RustBV::Expression` value was converted to a Z3 AST
-/// in a *prior* top-level `to_z3_ast()` call (eval→min→max, `range()`, address
-/// concretize) and the whole compound tree rebuild was avoided — the cached
-/// `z3::ast::BV` was returned via a refcount bump. Distinct from
+/// A hit means a `RustBV::Ast` term's `memo` already held a `z3::ast::BV`
+/// lowered in the current thread's Z3 context by a *prior* conversion
+/// (eval→min→max, `range()`, address concretize), so the cached BV was
+/// returned via a refcount bump instead of re-lowering the clarirs term. Distinct from
 /// `z3_ast_cache_hit`, which only dedups shared subtrees *within* one call.
 pub(crate) static Z3_AST_MEMO_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of top-level `to_z3_bool()` calls — the native-Bool half of
 /// `z3_ast_build` (angr-op0dn.9.6).
 ///
-/// The `Expression` memo (`z3_ast_memo_hit`) only covers the *BV* path: a
-/// repeat `to_z3_bool()` of the same node rebuilds its top comparison node
-/// every time, because `RustBV::Expression` has nowhere to cache a
-/// `z3::ast::Bool`. These counters size what a Bool memo (angr-op0dn.9.4)
-/// could actually save.
+/// The `Ast` memo (`z3_ast_memo_hit`) only covers the *BV* path: a repeat
+/// `to_z3_bool()` of the same term does not consult it, because the memo
+/// holds a `z3::ast::BV` and has nowhere to cache a `z3::ast::Bool`. These
+/// counters size what a Bool memo (angr-op0dn.9.4) could actually save.
 pub(crate) static Z3_BOOL_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Z3 nodes genuinely *constructed* across all top-level `to_z3_bool()` calls.
 ///
@@ -219,20 +218,6 @@ pub(crate) static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ZEXT_CMP_COLLAPSE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
 
-// angr-acoq: claripy-export soundness counters for symbolic Clz/Ctz/Popcount
-// and Float results. Bumped from `claripy_bridge::rustbv_to_claripy_memo`.
-//   - SOUND_CLZ: width<=64 clz/ctz/popcount exported as a sound ITE/sum
-//     encoding tied to the operand (no constraint relationship lost).
-//   - UNCONSTRAINED_CLZ: width>64 clz/ctz/popcount fell back to a fresh BVS
-//     (sound encoding declined for width).
-//   - UNCONSTRAINED_FP: Float result exported as a fresh BVS (Z3 FP term kept
-//     in-engine; the claripy-side value is unconstrained by design).
-// The unconstrained counters surface "Python eval may see a Rust-infeasible
-// value" risk in --dump-counters.
-pub(crate) static EXPORT_SOUND_CLZ_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static EXPORT_UNCONSTRAINED_CLZ_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static EXPORT_UNCONSTRAINED_FP_COUNT: AtomicU64 = AtomicU64::new(0);
-
 // angr-1joc: constraint-dedup measurement counters. Three signals to decide
 // whether canonicalization/dedup at add_constraint_raw is worth implementing
 // (threshold: any >=10% wins a follow-up bead). See bd memory
@@ -244,15 +229,6 @@ pub(crate) static EXPORT_UNCONSTRAINED_FP_COUNT: AtomicU64 = AtomicU64::new(0);
 // Bumped from `value.rs::canonicalize_commutative`.
 pub(crate) static RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static RUSTBV_COMMUTATIVE_SWAP_COUNT: AtomicU64 = AtomicU64::new(0);
-// claripy→Rust conversion cache (AST_CACHE) hit/miss counters. Bumped from
-// `claripy_bridge::import::claripy_to_rustbv` on the `use_cache` path. A hit is
-// a hash lookup whose cached width matches; a miss is a cold lookup or a stale
-// width-mismatch that forces a reconvert. Surfaces the worker-thread cache
-// effectiveness the parallel path depends on (each worker owns a cold
-// thread-local AST_CACHE) — see bd angr-op0dn.13.4. These are process-global
-// AtomicU64 so parallel workers aggregate into one hit/miss ratio.
-pub(crate) static CLARIPY_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static CLARIPY_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 // (b) branch-condition simplify-skip: sampled across assume_true /
 // assume_false / add_constraint_raw. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
 // increments only when Z3 simplify() returns a STRUCTURALLY-DIFFERENT AST
@@ -459,22 +435,12 @@ fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], na
 /// string exists in exactly one place (angr-9ke6b.150).
 ///
 /// - angr-g7nq: trivial-constraint fast path.
-/// - angr-acoq: claripy-export soundness.
 /// - angr-1joc: constraint-dedup measurement.
-pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 13] = [
+pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 8] = [
     ("zext_cmp_collapse_count", &ZEXT_CMP_COLLAPSE_COUNT),
     (
         "zext_cmp_trivial_decide_count",
         &ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
-    ),
-    ("rust_export_sound_clz", &EXPORT_SOUND_CLZ_COUNT),
-    (
-        "rust_export_unconstrained_clz",
-        &EXPORT_UNCONSTRAINED_CLZ_COUNT,
-    ),
-    (
-        "rust_export_unconstrained_fp",
-        &EXPORT_UNCONSTRAINED_FP_COUNT,
     ),
     (
         "rustbv_commutative_canonicalize_count",
@@ -483,11 +449,6 @@ pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 13] = [
     (
         "rustbv_commutative_swap_count",
         &RUSTBV_COMMUTATIVE_SWAP_COUNT,
-    ),
-    ("claripy_ast_cache_hit_count", &CLARIPY_AST_CACHE_HIT_COUNT),
-    (
-        "claripy_ast_cache_miss_count",
-        &CLARIPY_AST_CACHE_MISS_COUNT,
     ),
     (
         "add_constraint_raw_dedup_scanned",
@@ -796,7 +757,7 @@ pub(super) fn record_z3_ast_cache_miss() {
     Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Increment the persistent per-`Expression` memo-hit counter (angr-ovqja.3).
+/// Increment the persistent `RustBV::Ast` memo-hit counter (angr-ovqja.3).
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(super) fn record_z3_ast_memo_hit() {
@@ -1002,27 +963,6 @@ pub fn record_zext_cmp_trivial_decide() {
     ZEXT_CMP_TRIVIAL_DECIDE_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// angr-acoq: record a sound clz/ctz/popcount export (width<=64, encoded as
-/// an ITE/sum tied to the operand).
-#[inline]
-pub fn record_export_sound_clz() {
-    EXPORT_SOUND_CLZ_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// angr-acoq: record an unconstrained clz/ctz/popcount export (width>64 fresh
-/// BVS fallback — constraint relationship lost).
-#[inline]
-pub fn record_export_unconstrained_clz() {
-    EXPORT_UNCONSTRAINED_CLZ_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// angr-acoq: record an unconstrained Float export (fresh BVS — Z3 FP term
-/// kept in-engine, claripy-side value unconstrained).
-#[inline]
-pub fn record_export_unconstrained_fp() {
-    EXPORT_UNCONSTRAINED_FP_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
 /// angr-1joc: record a `canonicalize_commutative` invocation. `swapped` is
 /// true when the canonical order required swapping the operand pair.
 #[inline]
@@ -1030,18 +970,6 @@ pub(super) fn record_commutative_canonicalize(swapped: bool) {
     RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
     if swapped {
         RUSTBV_COMMUTATIVE_SWAP_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// angr-op0dn.13.4: record a claripy→Rust conversion-cache (AST_CACHE) probe.
-/// `hit` is true when a hash lookup returned a width-matching cached BV, false
-/// on a cold miss or a stale width-mismatch that forces a reconvert.
-#[inline]
-pub fn record_claripy_ast_cache(hit: bool) {
-    if hit {
-        CLARIPY_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-    } else {
-        CLARIPY_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 

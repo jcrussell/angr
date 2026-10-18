@@ -1206,14 +1206,9 @@ class RustExplorationManager(
                 unlimited — only safe for short runs since long explorations
                 can OOM. Applied to every state created or added via this
                 manager.
-            clear_caches_on_cleanup: If True, the manager flushes the
-                Rust-side thread-local claripy AST translation caches
-                from ``cleanup()`` / ``__del__``. Off by default because
-                the caches are typically helpful for a single long
-                exploration; enable for Callable-heavy workloads that
-                spawn many short-lived managers on the same thread
-                (e.g. mma_howtouse runs 45 ``callable()`` invocations
-                and the cache accumulates O(n) entries across them).
+            clear_caches_on_cleanup: If True, ``__del__`` calls
+                ``cleanup()``. Accepted for compatibility; ``cleanup()``
+                has nothing to release, so the flag has no effect.
             exploration_strategy: ``"bfs"`` (default, FIFO state selection)
                 or ``"dfs"`` (LIFO). Equivalent to constructing with the
                 default and then calling
@@ -7163,24 +7158,15 @@ class RustExplorationManager(
         return mgr
 
     def cleanup(self) -> None:
-        """Release this manager's hold on per-process AST caches.
+        """Release per-process caches this manager filled. Currently a no-op.
 
-        Flushes the Rust-side thread-local claripy AST translation cache
-        (``AST_CACHE`` in ``claripy_bridge/cache.rs``). It outlives a single
-        manager because it is thread-local, so without a flush it
-        accumulates O(n) across managers in Callable-heavy workloads — see
-        "Where memory accumulates" in ``docs/advanced-topics/rust_engine.rst``.
+        The Rust claripy bridge keeps no cache of its own: an import walks
+        the claripy AST each time, and the Z3 lowering memo
+        (``claripy_bridge/z3_lower.rs``) holds a node only while the node
+        lives. Kept for callers that already invoke it.
 
         Safe to call multiple times.
         """
-        try:
-            from angr.rustylib.vex_engine import clear_ast_cache
-
-            clear_ast_cache()
-        except Exception as e:
-            # cat-(a) EXPECTED CONTROL FLOW: vex_engine module may be
-            # absent in degraded builds; cleanup is best-effort.
-            l.debug("clear_ast_cache unavailable, skipping: %s", e)
 
     def __del__(self):
         # Best-effort cleanup. Skip silently when the flag was never

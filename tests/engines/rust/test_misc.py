@@ -110,48 +110,21 @@ class TestRustConcreteMemoryStoreRoundTrip:
 
 
 class TestRustManagerCleanup:
-    """angr-518z: opt-in AST cache cleanup so Callable-heavy workloads
-    (mma_howtouse pattern: many short-lived managers on one thread)
-    don't accumulate O(n) thread-local AST cache entries.
+    """``cleanup()`` and ``clear_caches_on_cleanup`` stay callable and
+    harmless; the Rust bridge has no cache left for them to flush.
     """
-
-    def test_clear_ast_cache_ffi_exposed(self):
-        """The Rust-side cache flush helper must be callable from Python."""
-        from angr.rustylib.vex_engine import clear_ast_cache
-
-        # No-op on an empty cache; must not raise.
-        clear_ast_cache()
-        clear_ast_cache()
 
     def test_cleanup_is_idempotent_and_safe(self):
         """cleanup() can be called multiple times and on a manager that
         never ran exploration; must not raise."""
-        import angr.rustylib.vex_engine as vex_engine
-
         import angr
 
         proj = angr.load_shellcode(b"\x90\xc3", arch="AMD64", load_address=0x401000)
         state = proj.factory.blank_state(addr=0x401000)
         mgr = RustExplorationManager(proj, [state])
 
-        # Spy on clear_ast_cache: cleanup()'s whole point is flushing the
-        # Rust thread-local AST caches (angr-518z). A no-op regression must
-        # be caught, not silently swallowed by cleanup()'s try/except.
-        calls = {"n": 0}
-        orig = vex_engine.clear_ast_cache
-
-        def _spy(*a, **k):
-            calls["n"] += 1
-            return orig(*a, **k)
-
-        vex_engine.clear_ast_cache = _spy
-        try:
-            mgr.cleanup()
-            mgr.cleanup()
-        finally:
-            vex_engine.clear_ast_cache = orig
-
-        assert calls["n"] == 2, f"cleanup() must flush the AST cache each call; saw {calls['n']}"
+        mgr.cleanup()
+        mgr.cleanup()
         # Manager stays usable after repeated cleanup (not left broken).
         assert "active" in mgr.stash_counts()
 
@@ -184,7 +157,7 @@ class TestRustManagerCleanup:
 
     def test_clear_caches_on_cleanup_flag_honored(self):
         """When the constructor flag is set, __del__ wires through to
-        cleanup(); explicit drop triggers the cache flush without raising."""
+        cleanup(); explicit drop runs it without raising."""
         import gc
 
         import angr

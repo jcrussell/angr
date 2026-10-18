@@ -72,7 +72,7 @@ is possible, and the design works *with* them rather than against them:
   exactly one thread.
 * z3-rs binds every Z3 AST to the thread-local Z3 context that created
   it; crossing threads with an AST handle is undefined behavior.
-* The claripy bridge's AST caches are ``thread_local!`` by design.
+* The claripy bridge's Z3 lowering memo is ``thread_local!`` by design.
 
 Consequently the load-bearing ``#[pyclass]`` types
 (``RustExplorationManager``, ``PyRustSimState``, ``RustSolverContext``)
@@ -2580,9 +2580,9 @@ Where memory accumulates
   still grow O(paths).
 * **claripy AST caches** — Python-side, ``WeakValueDictionary`` based;
   trims with GC, no explicit knob.
-* **Rust AST translation caches** — thread-local LRUs, bounded.
-  ``RustExplorationManager(..., clear_caches_on_cleanup=True)`` flushes
-  them in ``__del__`` for Callable-heavy workflows.
+* **Rust Z3 lowering memo** — thread-local, keyed on live clarirs nodes
+  (``claripy_bridge/z3_lower.rs``); an entry goes when its node does.
+  The claripy import keeps no cache.
 
 Behavior on exhaustion
 ~~~~~~~~~~~~~~~~~~~~~~

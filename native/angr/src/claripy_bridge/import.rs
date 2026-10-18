@@ -2,16 +2,14 @@
 //!
 //! Entry point `claripy_to_rustbv` walks a claripy expression tree and builds
 //! the equivalent `RustBV`, with a `RustBVHandle` fast path
-//! (`try_handle_to_rustbv`) and thread-local caching via the `super::cache`
-//! helpers.
+//! (`try_handle_to_rustbv`).
 //!
 //! claripy is clarirs, so an AST of this extension's own claripy type is
 //! walked natively ([`import_clarirs`]): the `AstRef` behind it is read
 //! directly instead of through `op` / `args` attribute calls. The attribute
 //! walk remains for any other object (`cargo test`'s embedded interpreter
 //! imports the installed extension, whose claripy classes are different type
-//! objects; some tests hand in duck-typed ASTs). Both walks share the
-//! `AST_CACHE`, keyed by the same Python hash.
+//! objects; some tests hand in duck-typed ASTs).
 
 use clarirs_core::prelude::{AstOp, AstRef};
 use pyo3::prelude::*;
@@ -25,9 +23,6 @@ use crate::symbolic::{
     check_extract_bounds,
 };
 
-use super::cache::{
-    claripy_ast_guard_width, evict_bv_by_ast_hash, get_bv_by_ast_hash, store_bv_by_ast_hash,
-};
 use super::{BridgeError, extract_int_value};
 
 /// Try to extract a RustBV from a RustBVHandle via the symbol table.
@@ -226,7 +221,7 @@ fn claripy_to_rustbv_depth(
     }
 
     // GIL-work timing (angr-1ilq.7): bracket the whole conversion — the Python
-    // attribute reads, the hash, and the recursive descent — as one region. The
+    // attribute reads and the recursive descent — as one region. The
     // depth guard makes the self-recursion and any caller-nested callback a
     // timing no-op, so each disjoint GIL region is counted exactly once.
     let _gil =
@@ -236,53 +231,12 @@ fn claripy_to_rustbv_depth(
         return import_clarirs(&base.get().ast(), ctx, depth);
     }
 
-    // Get the operation name first to determine caching strategy
     let op: String = ast.getattr("op")?.extract()?;
     let op_str = op.as_str();
 
-    // Cache all immutable AST nodes using claripy's stable __hash__.
-    // BVV (concrete) nodes are cheap to create and don't need caching.
-    // All symbolic/compound nodes benefit from caching.
-    let use_cache = op_str != "BVV";
-
-    // Get claripy's stable hash for cache lookup.
-    // Claripy ASTs use their internal _hash attribute which is a consistent identifier.
-    // We use ast.hash() which returns Python's Py_hash_t (guaranteed to fit in i64).
-    let ast_hash: i64 = if use_cache {
-        // Use ast.hash() method from PyAny which properly handles Py_hash_t
-        ast.hash()? as i64
-    } else {
-        0 // Not used
-    };
-
-    // Check LRU cache for previously converted AST
-    if use_cache {
-        let cached = get_bv_by_ast_hash(ast_hash);
-        if let Some(cached_bv) = cached {
-            // Defensive width check — claripy hashes are content-addressed and
-            // already include length, so collisions are exceedingly rare, but
-            // returning a wrong-width BV would silently corrupt downstream ops.
-            // `claripy_ast_guard_width` owns the Bool/unreadable-`length`
-            // fallback shared with the export-side guard in
-            // `rustbv_to_claripy_memo`; a mismatch takes the eviction path
-            // below and is reconverted from scratch.
-            let expected_width: u32 = claripy_ast_guard_width(ast);
-            if cached_bv.width() == expected_width {
-                crate::symbolic::record_claripy_ast_cache(true);
-                return Ok(cached_bv);
-            }
-            // Width mismatch: evict the stale entry and fall through to
-            // reconvert. The recomputed BV will be re-cached below.
-            evict_bv_by_ast_hash(ast_hash);
-            crate::symbolic::record_claripy_ast_cache(false);
-        } else {
-            crate::symbolic::record_claripy_ast_cache(false);
-        }
-    }
-
     let args = ast.getattr("args")?;
 
-    let result = match op_str {
+    match op_str {
         // Concrete bitvector value
         "BVV" => {
             let args_tuple = args
@@ -507,27 +461,6 @@ fn claripy_to_rustbv_depth(
         }
 
         _ => Err(BridgeError::UnsupportedOp(op_str.to_string())),
-    };
-
-    // Cache all symbolic/compound AST nodes using claripy's stable hash.
-    // This dramatically reduces conversion overhead when the same expressions
-    // appear in multiple constraints.
-    if use_cache && let Ok(ref bv) = result {
-        // Forward cache: claripy hash → RustBV
-        store_bv_by_ast_hash(ast_hash, bv.clone());
-    }
-
-    result
-}
-
-/// The signed `Py_hash_t` Python's `hash()` returns for the claripy object
-/// wrapping `node`: clarirs' structural hash reinterpreted, with -1 (reserved
-/// by CPython for errors) mapped to -2. Keys the caches exactly as the
-/// attribute walk's `ast.hash()` does.
-fn py_hash(node: &AstRef<'static>) -> i64 {
-    match node.hash() as i64 {
-        -1 => -2,
-        h => h,
     }
 }
 
@@ -548,28 +481,6 @@ fn import_clarirs(
             "claripy_to_rustbv: exceeded max recursion depth {MAX_IMPORT_RECURSION_DEPTH} \
              while importing a claripy AST"
         )));
-    }
-
-    let use_cache = !matches!(node.op(), AstOp::BVV(_));
-    let hash = py_hash(node);
-    // A Bool imports as a 1-bit value; clarirs gives a Bool node size 0.
-    let width = if node.ast_type().is_bool() {
-        1
-    } else {
-        node.size()
-    };
-    if use_cache {
-        match get_bv_by_ast_hash(hash) {
-            Some(cached) if cached.width() == width => {
-                crate::symbolic::record_claripy_ast_cache(true);
-                return Ok(cached);
-            }
-            Some(_) => {
-                evict_bv_by_ast_hash(hash);
-                crate::symbolic::record_claripy_ast_cache(false);
-            }
-            None => crate::symbolic::record_claripy_ast_cache(false),
-        }
     }
 
     let op_name = || node.to_opstring();
@@ -624,7 +535,7 @@ fn import_clarirs(
         || node.ast_type().is_string()
         || children().any(|c| c.ast_type().is_float() || c.ast_type().is_string());
 
-    let result: Result<RustBV, BridgeError> = match node.op() {
+    match node.op() {
         _ if opaque => whole(),
         AstOp::BVV(value) => {
             let width = value.len();
@@ -714,12 +625,7 @@ fn import_clarirs(
         }
         AstOp::ByteReverse(_) => reverse_bytes(&child(0)?, ctx),
         _ => whole(),
-    };
-
-    if use_cache && let Ok(bv) = &result {
-        store_bv_by_ast_hash(hash, bv.clone());
     }
-    result
 }
 
 /// Shared body for the ~24 plain binary ops in [`claripy_to_rustbv_depth`]'s

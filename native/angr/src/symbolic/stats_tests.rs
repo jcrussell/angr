@@ -241,13 +241,8 @@ fn test_measurement_counter_keys_are_stable() {
         [
             "zext_cmp_collapse_count",
             "zext_cmp_trivial_decide_count",
-            "rust_export_sound_clz",
-            "rust_export_unconstrained_clz",
-            "rust_export_unconstrained_fp",
             "rustbv_commutative_canonicalize_count",
             "rustbv_commutative_swap_count",
-            "claripy_ast_cache_hit_count",
-            "claripy_ast_cache_miss_count",
             "add_constraint_raw_dedup_scanned",
             "add_constraint_raw_dedup_hit",
             "z3_assume_dedup_scanned",

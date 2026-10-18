@@ -313,17 +313,6 @@ fn arch_supported(arch_name: &str) -> bool {
     arch_from_name(arch_name).is_some()
 }
 
-/// Clear the Rust-side thread-local claripy AST translation caches.
-///
-/// Drops the claripy bridge's thread-local `AST_CACHE`.
-/// Used by `RustExplorationManager.cleanup()` to bound per-process
-/// growth in Callable-heavy workloads where many short-lived managers
-/// share the same thread (e.g. mma_howtouse's 45 invocations).
-#[pyfunction]
-fn clear_ast_cache() {
-    crate::claripy_bridge::clear_ast_cache();
-}
-
 /// Raise a typed [`RustExecError`] for unit tests.
 ///
 /// Lets the pytest.raises tests cover exception variants whose real-path
@@ -405,7 +394,6 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(clear_ast_cache, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(libvex_ffi_enabled, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).

@@ -11,35 +11,11 @@
 //! `BVS("x", 32)` imported from Python and the leaf Rust builds from `"x"` are
 //! one node. clarirs interning is the only identity table.
 //!
-//! # Cross-cache invariants
-//!
-//! One thread-local cache sits in this module (`AST_CACHE`, claripy hash →
-//! converted `RustBV`); its ownership / invalidation / coherence is documented
-//! at its `thread_local!` block (see angr-a2br.3). The invariants below are
-//! referenced from that doc by number so enforcement-site comments do not
-//! duplicate the rationale.
-//!
-//! The numbering is deliberately non-contiguous: **C1**, **C2**, **C4** and
-//! **C6** described caches and id conventions that no longer exist (the
-//! `CLARIPY_AST_CACHE` thread-local, angr-4xaga.2; the `Expression` arm and
-//! its operands-pointer cache, angr-mx00p.13). The survivors kept their
-//! numbers so that existing `C3`/`C5` citations stay valid; renumber only if
-//! every one of those is swept in the same commit.
-//!
-//! - **C3. `clear_ast_cache` is the one invalidation.** It clears the
-//!   thread-local `AST_CACHE`; a worker clears only its own thread-locals via
-//!   `clear_worker_local_caches`.
-//!
-//! - **C5. An `AST_CACHE` hit is width-checked before it is returned.**
-//!   `AST_CACHE` is keyed by claripy's content-addressed `__hash__()`,
-//!   which already encodes length, so width-mismatched hits are
-//!   extremely rare — but in the case of a recycled hash slot a
-//!   wrong-width return would silently corrupt downstream VEX ops. The
-//!   check at the use site (`import::claripy_to_rustbv_depth`, the
-//!   `AST_CACHE` hit arm) evicts and reconverts on mismatch; Bool ASTs
-//!   have `ast.length == None` and are treated as width 1 (matches
-//!   RustBV bool representation), via `cache::claripy_ast_guard_width`.
-//!   See `invariant-ast-cache-width-check`.
+//! The import keeps no cache: it walks the claripy AST's clarirs nodes, and
+//! repeated imports of a node build the same interned terms (measured as no
+//! slower than the former claripy-hash `AST_CACHE`, angr-mx00p.14). The one
+//! memo in the bridge is `z3_lower`'s, which holds a node's Z3 lowering only
+//! while the node lives.
 //!
 //! ## Python-side counterparts
 //!
@@ -72,14 +48,10 @@
 
 use pyo3::prelude::*;
 
-// `tl_cache!` is scoped to `cache` (and its `cache_tests` child) now that
-// `AST_CACHE` is private behind wrappers (angr-9ke6b.44), so no `#[macro_use]`.
-mod cache;
 mod export;
 mod import;
 mod z3_lower;
 
-pub(crate) use cache::*;
 pub(crate) use export::*;
 pub(crate) use import::*;
 #[cfg(feature = "vex-engine-z3")]

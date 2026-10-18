@@ -35,23 +35,11 @@ fn test_extended_width_refuses_overflow_and_absurd_widths() {
 
 /// Python source for the `Fake` stand-in AST class shared by the
 /// `PyModule::from_code` fixtures below.
-///
-/// `__hash__` is **content-addressed** — `(op, length, child hashes)`, the way
-/// real claripy hashes an AST — and deliberately *not* `id(self)`. That is not
-/// cosmetic: `cache.rs`'s `AST_CACHE` is keyed on `ast.__hash__()` precisely
-/// because a content hash survives collection while an `id` is handed back out
-/// once CPython frees the object. A fixture hashing by `id` therefore lets a
-/// later `Fake` inherit a freed sibling's cached `RustBV`, which is how
-/// `test_bool_fold_refuses_mismatched_operand_widths` intermittently read the
-/// empty-`And` identity (1) back for empty-`Or` (0) — angr-5o2v7.
 const FAKE_AST_CLASS: &str = "class Fake:\n\
      \x20   def __init__(self, op, args, length):\n\
      \x20       self.op = op\n\
      \x20       self.args = args\n\
      \x20       self.length = length\n\
-     \x20   def __hash__(self):\n\
-     \x20       kids = tuple(a if isinstance(a, int) else hash(a) for a in self.args)\n\
-     \x20       return hash((self.op, self.length, kids))\n\
      \n";
 
 /// angr-5mnx3.9: `Concat` derives its result width from the operand list, so —
@@ -186,20 +174,6 @@ fn test_bool_fold_refuses_mismatched_operand_widths() {
         // Empty-operand identities are unchanged by the refactor: And -> 1, Or -> 0.
         let empty = module.getattr("empty").expect("empty");
 
-        // Guard the fixture's own precondition (see `FAKE_AST_CLASS`): the
-        // `AST_CACHE` these conversions go through is keyed on `__hash__`, so
-        // two content-identical rebuilds must hash the same and two
-        // content-distinct ones must not. An `id(self)` hash fails the first
-        // half outright, and — once CPython recycles the id of a freed node —
-        // aliases unrelated ASTs onto one cache entry (angr-5o2v7).
-        let py_hash = |obj: &pyo3::Bound<'_, pyo3::PyAny>| obj.hash().expect("hash");
-        let and_a = empty.call1(("And",)).expect("empty And");
-        let and_b = empty.call1(("And",)).expect("empty And again");
-        let or_a = empty.call1(("Or",)).expect("empty Or");
-        assert_eq!(py_hash(&and_a), py_hash(&and_b), "fake AST must hash by content");
-        assert_ne!(py_hash(&and_a), py_hash(&or_a), "distinct ops must hash apart");
-        drop((and_a, and_b, or_a));
-
         for (op, want) in [("And", 1u64), ("Or", 0u64)] {
             let ast = empty.call1((op,)).expect("build empty fake AST");
             let bv = claripy_to_rustbv(py, &ast, &ctx).expect("empty bool fold is legal");
@@ -260,7 +234,7 @@ fn test_native_and_attribute_walks_agree() {
     use pyo3::types::PyDict;
 
     use crate::claripy::ast::GLOBAL_CONTEXT;
-    use crate::claripy_bridge::{claripy_object, clear_ast_cache};
+    use crate::claripy_bridge::claripy_object;
 
     Python::initialize();
     Python::attach(|py| {
@@ -272,8 +246,6 @@ fn test_native_and_attribute_walks_agree() {
         self.op = ast.op
         self.args = tuple(Duck(a) if hasattr(a, 'op') else a for a in ast.args)
         self.length = getattr(ast, 'length', None)
-    def __hash__(self):
-        return hash(self._ast)
 ",
             Some(&globals),
             None,
@@ -299,9 +271,7 @@ fn test_native_and_attribute_walks_agree() {
             let duck_obj = duck.call1((native_obj.clone(),)).expect("Duck(ast)");
 
             let ctx = SymContext::new();
-            clear_ast_cache();
             let native = claripy_to_rustbv(py, &native_obj, &ctx).expect("native walk");
-            clear_ast_cache();
             let walked = claripy_to_rustbv(py, &duck_obj, &ctx).expect("attribute walk");
             assert_eq!(native.width(), walked.width(), "{expr:?}");
             ctx.assume_true(&native.ne(&walked, &ctx));
