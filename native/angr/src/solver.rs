@@ -11,9 +11,8 @@
 //! - here: the Python-boundary error mapping, the [`RustSolverContext`]
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
-//! - [`z3_ast_extract`](crate::z3_ast_extract): claripy-node evaluation
-//!   (`claripy_node` / `node_to_eval_bv` / `eval_claripy_node`), a crate-root
-//!   sibling of `solver` (angr-8ucb3);
+//! - [`z3_ast_extract`]: claripy-node evaluation (`claripy_node` /
+//!   `node_to_eval_bv` / `eval_claripy_node`);
 //! - [`claripy_bridge::lower_claripy_bool`](crate::claripy_bridge::lower_claripy_bool):
 //!   the sort-checked claripy → Z3 `Bool` lowering the raw constraint fast
 //!   paths assert.
@@ -40,7 +39,9 @@ use crate::symbolic::{RustBV, SymContext};
 #[cfg(feature = "vex-engine-z3")]
 use crate::claripy_bridge::lower_claripy_bool;
 #[cfg(feature = "vex-engine-z3")]
-use crate::z3_ast_extract::{claripy_node, node_to_eval_bv};
+use z3_ast_extract::{claripy_node, node_to_eval_bv};
+
+pub(crate) mod z3_ast_extract;
 
 /// Convert a BridgeError to a PyErr, preserving the variant's structure at
 /// the Python boundary (angr-ghwsd.2). Mirrors the per-variant mapping in
@@ -103,12 +104,7 @@ enum SolverCtxStorage {
 
 /// Guard for borrowing SymContext from either storage variant.
 /// Implements Deref<Target=SymContext> for transparent access.
-///
-/// `pub(crate)`, not private: `crate::z3_ast_extract::eval_claripy_node` reaches
-/// this through `RustSolverContext::i()` (angr-8ucb3 — that module is a
-/// crate-root sibling of `solver`, not a descendant, so private-to-`solver`
-/// is no longer visible to it).
-pub(crate) enum SolverCtxGuard<'a> {
+enum SolverCtxGuard<'a> {
     Ref(&'a SymContext),
     Borrowed(Ref<'a, SymContext>),
 }
@@ -160,15 +156,13 @@ pub struct RustSolverContext {
     owner: std::thread::ThreadId,
 }
 
-/// `pub(crate)`, not private: reached from `crate::z3_ast_extract` via
-/// `RustSolverContext::i()` (angr-8ucb3, same reasoning as [`SolverCtxGuard`]).
-pub(crate) struct SolverInner {
+struct SolverInner {
     sym_ctx: SolverCtxStorage,
 }
 
 impl SolverInner {
     /// Get a guard for the SymContext, works for both owned and shared.
-    pub(crate) fn ctx(&self) -> SolverCtxGuard<'_> {
+    fn ctx(&self) -> SolverCtxGuard<'_> {
         match &self.sym_ctx {
             SolverCtxStorage::Owned(ctx) => SolverCtxGuard::Ref(ctx),
             SolverCtxStorage::Shared(rc) => SolverCtxGuard::Borrowed(rc.borrow()),
@@ -827,9 +821,7 @@ impl RustSolverContext {
         clippy::expect_used,
         reason = "use-after-close is an internal-invariant violation, not an input path: the Python contract calls close() only at proxy invalidation / wave teardown, right before drop, so no method call races an emptied context"
     )]
-    // `pub(crate)`, not private: `crate::z3_ast_extract::eval_claripy_node`
-    // calls this (angr-8ucb3 — see `SolverCtxGuard`'s doc comment for why).
-    pub(crate) fn i(&self) -> &SolverInner {
+    fn i(&self) -> &SolverInner {
         self.inner
             .as_ref()
             .expect("RustSolverContext used after close()")

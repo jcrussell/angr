@@ -33,8 +33,8 @@ The solver surface is split across the files below (angr-9ke6b.205):
 * ``native/angr/src/solver.rs`` — the Python-boundary error mapping and
   the claripy-AST API (``add_constraint_ast``, ``eval*``, ``min``,
   ``max``, ``push``/``pop``, ``fork``).
-* ``native/angr/src/solver/z3_ast_extract.rs`` — claripy-node
-  evaluation (``claripy_node``, ``node_to_eval_bv``,
+* ``native/angr/src/solver/z3_ast_extract.rs`` (``solver::z3_ast_extract``)
+  — claripy-node evaluation (``claripy_node``, ``node_to_eval_bv``,
   ``eval_claripy_node``). Unlike ``solver.rs`` it exports *no*
   ``#[pymethods]``; these are internal helpers the claripy-AST API in
   ``solver.rs`` calls. Both files ``forbid(unsafe_code)``.

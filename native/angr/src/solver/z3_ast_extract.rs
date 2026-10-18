@@ -7,10 +7,6 @@
 //! claripy-AST API in the parent module calls. The claripy → Z3 lowering the
 //! constraint fast paths use is `claripy_bridge::lower_claripy_bool`.
 
-// Like the sibling `solver` module, this one holds no `unsafe`
-// (angr-mx00p.32).
-#![forbid(unsafe_code)]
-
 // Consumed only by the `vex-engine-z3`-gated paths below — importing them
 // unconditionally warns in the no-z3 combos `make check-no-z3` gates
 // (angr-sqfj8.139).
@@ -27,7 +23,7 @@ use crate::claripy::ast::base::Base;
 use crate::claripy_bridge::claripy_to_rustbv;
 use crate::symbolic::{RustBV, SymContext};
 
-use crate::solver::RustSolverContext;
+use super::RustSolverContext;
 
 /// The clarirs node behind a Python claripy AST, or `None` when `ast` is not
 /// one of this extension's claripy ASTs.
