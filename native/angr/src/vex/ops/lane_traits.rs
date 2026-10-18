@@ -15,9 +15,8 @@
 // method-call macro shape: unary minus on f32/f64 is `std::ops::Neg::neg`,
 // which is not an inherent method and so needs the trait in scope.
 use std::ops::Neg;
-use std::sync::Arc;
 
-use crate::symbolic::{BVOp, FloatOpKind, FloatPrec, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
 use crate::vex::ir::IRType;
 
 use super::VEXOps;
@@ -33,21 +32,13 @@ pub(super) fn float_prec_of(ty: IRType) -> Option<FloatPrec> {
 }
 
 /// Build a symbolic float-op expression. Used by float_* helpers below
-/// when operands are not fully concrete; routes through Z3 FP theory in
-/// `build_fp_z3_ast_cached`.
+/// when operands are not fully concrete; see `RustBV::float_node`.
 pub(super) fn build_float_expr(
     kind: FloatOpKind,
     prec: FloatPrec,
     operands: Vec<RustBV>,
 ) -> RustBV {
-    let width = kind.result_bits(prec);
-    RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width,
-        op: BVOp::Float { kind, prec },
-        operands: Arc::<[RustBV]>::from(operands),
-        memo: Default::default(),
-    }
+    RustBV::float_node(kind, prec, operands)
 }
 
 /// Maximum arity supported by `FloatLaneOp`. Sized for the current set of

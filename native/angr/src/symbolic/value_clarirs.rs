@@ -21,10 +21,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
-use clarirs_core::prelude::{AstFactory, AstOp, AstRef, BitVec, ClarirsError};
+use clarirs_core::prelude::{AstFactory, AstOp, AstRef, BitVec, ClarirsError, FPRM, FSort};
 use num_bigint::BigUint;
 
-use super::value::{BVOp, RustBV};
+use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 use crate::claripy::ast::GLOBAL_CONTEXT;
 
 type Term = AstRef<'static>;
@@ -212,12 +212,143 @@ pub(crate) fn build_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<T
         }
         BVOp::Clz | BVOp::Ctz => bit_scan(op, &arg(0)?, width)?,
         BVOp::Popcount => popcount(&arg(0)?, width)?,
-        BVOp::Float { .. } => {
-            return Err(ClarirsError::UnsupportedOperation(format!(
-                "{op:?} has no clarirs form"
-            )));
-        }
+        BVOp::Float { kind, prec } => float_term(*kind, *prec, operands)?,
     })
+}
+
+/// The clarirs sort of a float precision.
+fn fsort(prec: FloatPrec) -> FSort {
+    match prec {
+        FloatPrec::F32 => FSort::f32(),
+        FloatPrec::F64 => FSort::f64(),
+    }
+}
+
+/// A VEX rounding mode (its low two bits) as a clarirs one, the mapping
+/// `value_z3::vex_rm_to_z3` uses.
+fn vex_rm(mode: u128) -> FPRM {
+    match mode & 0x3 {
+        0 => FPRM::NearestTiesToEven,
+        1 => FPRM::TowardNegative,
+        2 => FPRM::TowardPositive,
+        _ => FPRM::TowardZero,
+    }
+}
+
+/// `build` under the VEX rounding mode `rm` holds: one term for a concrete
+/// mode, otherwise an `ite` over all four on `rm`'s low two bits, nested as
+/// `value_z3::dispatch_symbolic_rm` nests them.
+fn with_vex_rm(
+    rm: &RustBV,
+    build: impl Fn(FPRM) -> Result<Term, ClarirsError>,
+) -> Result<Term, ClarirsError> {
+    if let Some(mode) = rm.as_u128() {
+        return build(vex_rm(mode));
+    }
+    let gc = &*GLOBAL_CONTEXT;
+    let low = gc.extract(rm.to_clarirs()?, 1, 0)?;
+    let is = |mode: u128| gc.eq_(low.clone(), bvv(mode, 2)?);
+    let pick23 = gc.ite(is(2)?, build(vex_rm(2))?, build(vex_rm(3))?)?;
+    let pick123 = gc.ite(is(1)?, build(vex_rm(1))?, pick23)?;
+    gc.ite(is(0)?, build(vex_rm(0))?, pick123)
+}
+
+/// A float op over IEEE bit patterns, as `value_z3::build_fp_z3_ast_cached`
+/// lowers it: each float operand is reinterpreted from its bits
+/// (`bv_to_fp`), the result is converted back to bits (`fp_to_ieeebv`), and
+/// a comparison is the 1-bit `ite(cmp, 1, 0)`. The ops without a rounding
+/// operand round to nearest, ties to even; for the `*Rm` ops operand 0 is the
+/// VEX rounding mode.
+fn float_term(
+    kind: FloatOpKind,
+    prec: FloatPrec,
+    operands: &[RustBV],
+) -> Result<Term, ClarirsError> {
+    use FloatOpKind as K;
+    let gc = &*GLOBAL_CONTEXT;
+    let sort = fsort(prec);
+    let rne = FPRM::NearestTiesToEven;
+    let arg = |i: usize| -> Result<Term, ClarirsError> {
+        operands
+            .get(i)
+            .ok_or_else(|| {
+                ClarirsError::InvalidArguments(format!("{kind:?}: missing operand {i}"))
+            })?
+            .to_clarirs()
+    };
+    let fp_in = |i: usize, sort: FSort| gc.bv_to_fp(arg(i)?, sort);
+    let fp = |i: usize| fp_in(i, sort);
+    let rm_of = || {
+        operands.first().ok_or_else(|| {
+            ClarirsError::InvalidArguments(format!("{kind:?}: missing rounding mode"))
+        })
+    };
+    let to_int = |value: Term, dst_bits: u8, signed: bool, rm: FPRM| {
+        if signed {
+            gc.fp_to_sbv(value, u32::from(dst_bits), rm)
+        } else {
+            gc.fp_to_ubv(value, u32::from(dst_bits), rm)
+        }
+    };
+    let float = match kind {
+        K::CmpEq => return bit_of(gc.fp_eq(fp(0)?, fp(1)?)?),
+        K::CmpLt => return bit_of(gc.fp_lt(fp(0)?, fp(1)?)?),
+        K::CmpLe => return bit_of(gc.fp_leq(fp(0)?, fp(1)?)?),
+        K::IsNaN => return bit_of(gc.fp_is_nan(fp(0)?)?),
+        K::ConvertFtoI { dst_bits, signed } => return to_int(fp(0)?, dst_bits, signed, rne),
+        K::ConvertFtoIRm { dst_bits, signed } => {
+            let value = fp(1)?;
+            return with_vex_rm(rm_of()?, |rm| to_int(value.clone(), dst_bits, signed, rm));
+        }
+        K::Add => gc.fp_add(fp(0)?, fp(1)?, rne)?,
+        K::Sub => gc.fp_sub(fp(0)?, fp(1)?, rne)?,
+        K::Mul => gc.fp_mul(fp(0)?, fp(1)?, rne)?,
+        K::Div => gc.fp_div(fp(0)?, fp(1)?, rne)?,
+        K::MaxNum => gc.fp_max(fp(0)?, fp(1)?)?,
+        K::MinNum => gc.fp_min(fp(0)?, fp(1)?)?,
+        K::Sqrt => gc.fp_sqrt(fp(0)?, rne)?,
+        K::Neg => gc.fp_neg(fp(0)?)?,
+        K::Abs => gc.fp_abs(fp(0)?)?,
+        K::Fma => gc.fp_fma(fp(0)?, fp(1)?, fp(2)?, rne)?,
+        K::Fms => gc.fp_fma(fp(0)?, fp(1)?, gc.fp_neg(fp(2)?)?, rne)?,
+        K::ConvertItoF { signed, .. } => {
+            if signed {
+                gc.bv_to_fp_signed(arg(0)?, sort, rne)?
+            } else {
+                gc.bv_to_fp_unsigned(arg(0)?, sort, rne)?
+            }
+        }
+        K::ConvertFtoF { src_prec } => gc.fp_to_fp(fp_in(0, fsort(src_prec))?, sort, rne)?,
+        K::ConvertFtoFRm { src_prec } => {
+            let value = fp_in(1, fsort(src_prec))?;
+            with_vex_rm(rm_of()?, |rm| gc.fp_to_fp(value.clone(), sort, rm))?
+        }
+        K::RoundToInt => {
+            let value = fp(1)?;
+            with_vex_rm(rm_of()?, |rm| gc.fp_round_to_integral(value.clone(), rm))?
+        }
+        K::AddRm | K::SubRm | K::MulRm | K::DivRm => {
+            let (a, b) = (fp(1)?, fp(2)?);
+            with_vex_rm(rm_of()?, |rm| match kind {
+                K::AddRm => gc.fp_add(a.clone(), b.clone(), rm),
+                K::SubRm => gc.fp_sub(a.clone(), b.clone(), rm),
+                K::MulRm => gc.fp_mul(a.clone(), b.clone(), rm),
+                _ => gc.fp_div(a.clone(), b.clone(), rm),
+            })?
+        }
+        K::SqrtRm => {
+            let a = fp(1)?;
+            with_vex_rm(rm_of()?, |rm| gc.fp_sqrt(a.clone(), rm))?
+        }
+        K::FmaRm | K::FmsRm => {
+            let (a, b, c) = (fp(1)?, fp(2)?, fp(3)?);
+            let c = if kind == K::FmsRm { gc.fp_neg(c)? } else { c };
+            with_vex_rm(rm_of()?, |rm| {
+                gc.fp_fma(a.clone(), b.clone(), c.clone(), rm)
+            })?
+        }
+    };
+    gc.fp_to_ieeebv(float)
 }
 
 /// Accumulator width for a bitcount over `width` bits: enough for the value

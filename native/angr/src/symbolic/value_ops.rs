@@ -320,6 +320,29 @@ impl RustBV {
         }
     }
 
+    /// Build a float op over IEEE bit patterns: the clarirs term
+    /// `value_clarirs::build_term` gives it (angr-mx00p.12), or an
+    /// `Expression` when it has none, which lowers the same way.
+    #[cfg(feature = "vex-engine")]
+    pub(crate) fn float_node(
+        kind: super::value::FloatOpKind,
+        prec: super::value::FloatPrec,
+        operands: Vec<RustBV>,
+    ) -> Self {
+        let width = kind.result_bits(prec);
+        let op = BVOp::Float { kind, prec };
+        if let Ok(term) = super::value_clarirs::build_term(&op, &operands, width) {
+            return Self::from_clarirs_lowerable(term);
+        }
+        RustBV::Expression {
+            id: Self::EXPRESSION_ID,
+            width,
+            op,
+            operands: Arc::from(operands),
+            memo: Default::default(),
+        }
+    }
+
     define_binop_pair! {
         /// Add two bitvectors.
         add,

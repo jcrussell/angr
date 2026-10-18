@@ -119,17 +119,70 @@ fn bool_leaves_and_wide_constants_convert() {
 }
 
 #[test]
-fn floats_and_zero_width_values_are_refused() {
-    use super::super::value::{FloatOpKind, FloatPrec};
-    let ctx = SymContext::new();
-    let f = RustBV::symbolic(&ctx, "tc_f", 32);
-    let float = raw(
-        BVOp::Float { kind: FloatOpKind::Add, prec: FloatPrec::F32 },
-        32,
-        vec![f.clone(), f],
-    );
-    assert!(float.to_clarirs().is_err());
+fn zero_width_values_are_refused() {
     assert!(RustBV::concrete(0, 0).to_clarirs().is_err());
+}
+
+/// Every float op, at both precisions, with the rounding mode both concrete
+/// and symbolic for the `*Rm` kinds.
+#[test]
+fn every_float_op_denotes_its_z3_lowering() {
+    use super::super::value::{FloatOpKind as K, FloatPrec};
+    let ctx = SymContext::new();
+    let rm_sym = RustBV::symbolic(&ctx, "tc_frm", 32);
+    let rm_up = RustBV::concrete(2, 32);
+    for prec in [FloatPrec::F32, FloatPrec::F64] {
+        let w = prec.bits();
+        let [a, b, c] = ["a", "b", "c"].map(|n| RustBV::symbolic(&ctx, format!("tc_f{n}{w}"), w));
+        let other = match prec {
+            FloatPrec::F32 => FloatPrec::F64,
+            FloatPrec::F64 => FloatPrec::F32,
+        };
+        let src = RustBV::symbolic(&ctx, format!("tc_fsrc{w}"), other.bits());
+        let int = RustBV::symbolic(&ctx, format!("tc_fint{w}"), 32);
+        let mut cases: Vec<(K, Vec<RustBV>)> = vec![
+            (K::Add, vec![a.clone(), b.clone()]),
+            (K::Sub, vec![a.clone(), b.clone()]),
+            (K::Mul, vec![a.clone(), b.clone()]),
+            (K::Div, vec![a.clone(), b.clone()]),
+            (K::MaxNum, vec![a.clone(), b.clone()]),
+            (K::MinNum, vec![a.clone(), b.clone()]),
+            (K::Sqrt, vec![a.clone()]),
+            (K::Neg, vec![a.clone()]),
+            (K::Abs, vec![a.clone()]),
+            (K::Fma, vec![a.clone(), b.clone(), c.clone()]),
+            (K::Fms, vec![a.clone(), b.clone(), c.clone()]),
+            (K::CmpEq, vec![a.clone(), b.clone()]),
+            (K::CmpLt, vec![a.clone(), b.clone()]),
+            (K::CmpLe, vec![a.clone(), b.clone()]),
+            (K::IsNaN, vec![a.clone()]),
+            (K::ConvertItoF { src_bits: 32, signed: true }, vec![int.clone()]),
+            (K::ConvertItoF { src_bits: 32, signed: false }, vec![int.clone()]),
+            (K::ConvertFtoI { dst_bits: 32, signed: true }, vec![a.clone()]),
+            (K::ConvertFtoI { dst_bits: 16, signed: false }, vec![a.clone()]),
+            (K::ConvertFtoF { src_prec: other }, vec![src.clone()]),
+        ];
+        for rm in [&rm_sym, &rm_up] {
+            let r = rm.clone();
+            cases.extend([
+                (K::RoundToInt, vec![r.clone(), a.clone()]),
+                (K::AddRm, vec![r.clone(), a.clone(), b.clone()]),
+                (K::SubRm, vec![r.clone(), a.clone(), b.clone()]),
+                (K::MulRm, vec![r.clone(), a.clone(), b.clone()]),
+                (K::DivRm, vec![r.clone(), a.clone(), b.clone()]),
+                (K::SqrtRm, vec![r.clone(), a.clone()]),
+                (K::FmaRm, vec![r.clone(), a.clone(), b.clone(), c.clone()]),
+                (K::FmsRm, vec![r.clone(), a.clone(), b.clone(), c.clone()]),
+                (K::ConvertFtoIRm { dst_bits: 64, signed: true }, vec![r.clone(), a.clone()]),
+                (K::ConvertFtoFRm { src_prec: other }, vec![r.clone(), src.clone()]),
+            ]);
+        }
+        for (kind, operands) in cases {
+            assert_eq!(operands.len(), kind.arity(), "{kind:?}");
+            let value = raw(BVOp::Float { kind, prec }, kind.result_bits(prec), operands);
+            assert_equivalent(&value);
+        }
+    }
 }
 
 #[test]
@@ -198,3 +251,4 @@ fn one_bit_logic_denotes_its_z3_lowering_and_stays_a_bool() {
         assert!(super::bool_inside(&not.to_clarirs().unwrap()).is_some(), "{not:?}");
     }
 }
+

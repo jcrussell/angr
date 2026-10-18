@@ -22,23 +22,16 @@
 
 use super::*;
 use crate::symbolic::SymContext;
-use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Builders / decoders
 // ---------------------------------------------------------------------------
 
-/// Build a raw `BVOp::Float` expression node. Deliberately does not go through
-/// `vex::ops::lane_traits::build_float_expr` — the point of this file is to
-/// reach `build_fp_z3_ast_cached` without the VEX layer.
+/// Build a float op the way the engine does (`RustBV::float_node`), without
+/// the VEX layer. `value_clarirs_tests::every_float_op_denotes_its_z3_lowering`
+/// checks that it lowers like the `Expression` form.
 fn fp_expr(kind: FloatOpKind, prec: FloatPrec, operands: Vec<RustBV>) -> RustBV {
-    RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width: kind.result_bits(prec),
-        op: BVOp::Float { kind, prec },
-        operands: Arc::<[RustBV]>::from(operands),
-        memo: Default::default(),
-    }
+    RustBV::float_node(kind, prec, operands)
 }
 
 /// IEEE bits of an `f32` as a 32-bit concrete `RustBV`.
