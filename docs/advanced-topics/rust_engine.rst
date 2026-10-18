@@ -334,6 +334,20 @@ cooperate through PyO3:
   dispatch for Python SimProcedures, technique support, and state
   synchronization through ``RustStateProxy``.
 * **FFI boundary:** PyO3 bindings in ``native/angr/src/lib.rs``.
+* **Symbolic values** (``RustBV``, ``symbolic/value.rs``): a value up
+  to 128 bits wide that is known is a ``Concrete``; anything else is a
+  clarirs term (``RustBV::Ast``), the same AST type Python claripy
+  wraps, so a term crosses the FFI boundary as the node itself. A named
+  leaf is the clarirs variable of that name, so two leaves with the same
+  name and width are one node and one Z3 constant
+  (``invariant-symbol-identity-is-by-name``). Construction-time rewrites
+  live in ``symbolic/value_ops.rs`` and read operands through
+  ``RustBV::node``; terms lower to Z3 through
+  ``claripy_bridge::z3_lower``, which keeps each node's lowering while
+  the node lives. Two older arms remain: ``Symbolic``, which only wraps
+  a raw Z3 term for evaluation (``solver/z3_ast_extract.rs``), and
+  ``Expression``, built only over such a wrapper or decoded from an old
+  snapshot.
 * **Shared Z3 context:** Python and Rust load the same ``libz3.so`` and
   share the Z3 context so claripy ASTs round-trip without
   re-serialization.
@@ -1052,13 +1066,13 @@ zero-cost when not read. They reset alongside the Z3 counters via
     ``Strided`` results are not hoisted (the strided abstraction is
     concretizer policy, not a tight constraint — A/B pending).
 
-* **AST construction** (bumped at the actual
-  ``RustBV::Expression { op: BVOp::X, ... }`` construction sites in
-  ``symbolic/value.rs``):
+* **AST construction** (bumped in ``symbolic/value_ops.rs`` where a
+  reverse, concat or extract node is built, after the construction-time
+  rewrites have declined):
 
   * ``bvop_reverse_count`` / ``bvop_concat_count`` /
-    ``bvop_extract_count`` — node emissions of ``BVOp::Reverse``,
-    ``BVOp::Concat``, ``BVOp::Extract``. Simplification short-circuits
+    ``bvop_extract_count`` — node emissions of a byte reverse, a concat
+    and an extract. Simplification short-circuits
     (e.g. ``reverse(reverse(x)) → x``, fully-concrete fold) do **not**
     bump the counter — these track real Z3-visible emissions.
 

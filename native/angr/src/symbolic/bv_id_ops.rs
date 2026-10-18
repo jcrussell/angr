@@ -150,11 +150,10 @@ impl SymContext {
 
     /// Create a new symbolic bitvector with a unique name.
     ///
-    /// Mints exactly **one** id and uses it for both halves of the value: the
-    /// `{base}_{id}` display name and the `Symbolic.id` identity key. Going
-    /// through [`SymContext::unique_name`] + [`RustBV::symbolic`] instead would
-    /// draw two ids per call and leave the visible name one behind the real
-    /// `.id` — confusing in debug output and state exports (angr-sqfj8.90).
+    /// Draws exactly **one** id and names the leaf `{base}_{id}` with it; the
+    /// name is the leaf's identity (`invariant-symbol-identity-is-by-name`).
+    /// Going through [`SymContext::unique_name`] + [`RustBV::symbolic`]
+    /// instead would draw two ids per call (angr-sqfj8.90).
     pub fn new_bv(&self, name: &str, width: u32) -> RustBV {
         let id = self.next_id();
         RustBV::symbolic_with_id(id, format!("{name}_{id}"), width)

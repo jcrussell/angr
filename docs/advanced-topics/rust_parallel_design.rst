@@ -277,8 +277,7 @@ Risk surface
   worst case.
 * **Lock-free fast paths still need the lock.** Even
   ``RustBV::Concrete`` operations that don't touch Z3 today may
-  need to acquire the lock the moment they cross into an
-  ``RustBV::Expression`` op. The hot path becomes lock-acquire-heavy.
+  need to acquire the lock the moment they cross into a symbolic op. The hot path becomes lock-acquire-heavy.
 
 
 Comparison
