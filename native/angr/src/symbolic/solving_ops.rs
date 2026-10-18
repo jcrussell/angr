@@ -336,7 +336,7 @@ impl SymContext {
                 if cache.is_none()
                     && let Some(m) = solver.get_model()
                 {
-                    *cache = Some(m);
+                    *cache = Some(std::rc::Rc::new(m));
                 }
             }
             // None (Unknown) propagates untouched: the caller leaves sat_cache
@@ -571,7 +571,7 @@ impl SymContext {
             let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
             let value = extract_bv_value(&result);
-            *self.model_cache.borrow_mut() = Some(model);
+            *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
             value
         })
     }
@@ -751,7 +751,7 @@ impl SymContext {
             let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
             let value = extract_bv_value_wide(&result, width);
-            *self.model_cache.borrow_mut() = Some(model);
+            *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
             value
         })
     }
@@ -834,7 +834,7 @@ impl SymContext {
 
             let model = solver.get_model()?;
             let values = eval_all_in_model(&model, bvs);
-            *self.model_cache.borrow_mut() = Some(model);
+            *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
             values
         })
     }

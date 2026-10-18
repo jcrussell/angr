@@ -95,7 +95,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use z3::{Config, Context};
+use z3::Context;
 
 /// High-water mark for a worker's local live queue. Above this the worker
 /// sheds surplus to the injector even with no idle sibling (Trigger B), bounding

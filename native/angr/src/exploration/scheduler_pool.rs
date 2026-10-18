@@ -407,7 +407,7 @@ impl Drop for PersistentPool {
     }
 }
 
-/// A persistent worker: install a private Z3 context ONCE, then loop serving
+/// A persistent worker: take this fresh thread's own Z3 context ONCE, then loop serving
 /// control messages — one wave per `WorkerCtl::Wave` (dropping its
 /// `Arc<WaveJob>` clone BEFORE sending `WaveDone` so the coordinator's
 /// `Arc::into_inner` recovers sole ownership), or one steady-state session
@@ -420,13 +420,13 @@ pub(super) fn worker_thread(
     job_rx: Receiver<WorkerCtl>,
     done_tx: Sender<WaveDone>,
 ) {
-    // Owned for the worker's whole life, installed as the thread-local. Every
-    // reattach mints ASTs into a context this thread alone touches; created and
-    // destroyed on the same thread. The `local` live queue is created below and
-    // threaded into `worker_loop` by `&mut`, so the irreducibly `!Send`
-    // `RustSimState`s in it can never escape this thread.
-    let z3ctx = Context::new(&Config::new());
-    Context::set_thread_local(&z3ctx);
+    // This thread's own Z3 context: the worker is a fresh thread, so its
+    // thread-local context is created here, used by this thread alone, and
+    // deleted at thread exit. Every reattach mints ASTs into it. The `local`
+    // live queue is created below and threaded into `worker_loop` by `&mut`,
+    // so the irreducibly `!Send` `RustSimState`s in it can never escape this
+    // thread.
+    let z3ctx = Context::thread_local();
     // Warm per-worker block cache (angr-vh834 Work Item 3), created ONCE and
     // reused across every dispatch AND every wave for this worker. `Arc<IRSB>`
     // values are AST-free and never leave this thread, so this needs no Send/Sync

@@ -127,8 +127,8 @@ fn spawn_shadow_probe_thread() -> ShadowProbeChan {
     let (tx_bytes, rx_bytes) = std::sync::mpsc::channel::<Vec<u8>>();
     let (tx_ns, rx_ns) = std::sync::mpsc::channel::<Result<u64, String>>();
     std::thread::spawn(move || {
-        let ctx = z3::Context::new(&z3::Config::new());
-        z3::Context::set_thread_local(&ctx);
+        // A fresh thread, so `from_serialized` mints into this thread's own
+        // thread-local Z3 context.
         // The loop ends (and the thread exits cleanly) when `tx_bytes` drops at
         // manager teardown.
         for bytes in rx_bytes {

@@ -207,9 +207,10 @@ pub struct SymContext {
     pub(super) sat_cache: Cell<Option<bool>>,
     /// Cached Z3 model, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
-    /// (slice 7, angr-wf6f) can read/write it.
+    /// (slice 7, angr-wf6f) can read/write it. Held in an `Rc` so a fork
+    /// shares the parent's model instead of copying it (angr-gorvf.16).
     #[cfg(feature = "vex-engine-z3")]
-    pub(super) model_cache: RefCell<Option<z3::Model>>,
+    pub(super) model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
     /// List of Z3 tracking boolean constants for unsat core mapping.
     /// Each entry is a (track_bool, constraint_ast) pair.
     /// `pub(super)` for `add_constraint_tracked_indexed` in `constraint_ops.rs`
