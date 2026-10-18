@@ -94,16 +94,15 @@ BLOCKING = "flip-blocking"
 # Explicit per-name classification. Rationale strings land in the artifact.
 NAME_SEMANTICS: dict[str, tuple[str, str]] = {
     # --- pure compute over regs/memory. Reads args from synced registers,
-    # writes its result through `state.memory.store` (which CallbackMemoryTracker
-    # wraps) and/or a return register. Both cross the resume FFI.
+    # writes its result through `state.memory.store` (the callback state's
+    # RustMemoryProxy) and/or a return register. Both reach Rust.
     "strcmp": (SILENT, "reads synced memory, returns a BV in a synced register; no plugin state touched"),
     "strncmp": (SILENT, "reads synced memory, returns a BV in a synced register; no plugin state touched"),
     "strncpy": (SILENT, "memory-only; on rust_manager._MEMORY_WRITING_PROCS so it gets a full copy+diff"),
     "memmove": (SILENT, "memory-only; on rust_manager._MEMORY_WRITING_PROCS so it gets a full copy+diff"),
     "__ctype_b_loc": (
         SILENT,
-        "writes its table through state.memory.store (tracked by CallbackMemoryTracker) and returns a "
-        "pointer in a synced register",
+        "writes its table through state.memory.store (the RustMemoryProxy) and returns a pointer in a synced register",
     ),
     # --- heap: the bump round-trips since angr-op0dn.14.1.3 (the callback path
     # now reads state.heap_brk in and pushes the bounced bump back out).

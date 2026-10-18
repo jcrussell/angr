@@ -1012,12 +1012,12 @@ def store_cb(addr, data):
 // angr-5mnx3.23: every `memory_store_symbolic_value` dispatch must buffer.
 // ---------------------------------------------------------------------------
 
-/// Callbacks in the production callback-memory-proxy configuration: the
+/// Callbacks in the production configuration: the
 /// `memory_store_symbolic_value` slot is wired to a Python function that does
 /// nothing — exactly what `rust_manager.py::_cb_memory_store_symbolic_value`
-/// is once `memory_is_rust_proxy` is on (`state.memory` *is* Rust memory, so
-/// the callback deliberately declines to re-enter it) — and the proxy flag is
-/// set. A dispatch that reaches this callback without first calling
+/// is when the callback state's memory is a `RustMemoryProxy` (`state.memory`
+/// *is* Rust memory, so the callback deliberately declines to re-enter it).
+/// A dispatch that reaches this callback without first calling
 /// `buffer_store_for_rust_memory` therefore lands nowhere at all.
 ///
 /// Marshalling a `RustBV` to the callback needs claripy; skip when it is not
@@ -1050,16 +1050,14 @@ def load_cb(addr, size):
         cb.set_memory_store_symbolic_value(store_cb.unbind());
         cb.set_memory_load_batch(load_batch.unbind());
         cb.set_memory_load(globals.get_item("load_cb").unwrap().unwrap().unbind());
-        cb.py_set_memory_is_rust_proxy(true);
         assert!(cb.has_memory_store_symbolic_value());
-        assert!(cb.memory_is_rust_proxy());
         f(&cb);
     });
 }
 
 /// Build an interpreter that owns its memory (the production configuration —
 /// `exploration/step_core.rs` installs the state's memory), so
-/// `buffer_store_for_rust_memory`'s `use_rust_memory` half of the gate holds.
+/// `buffer_store_for_rust_memory`'s `use_rust_memory` gate holds.
 fn new_interp_rust_memory(ctx: &SymContext) -> VEXInterpreter<'_> {
     let mut interp = new_interp(ctx);
     let mut mem = SymbolicMemory::new(Endness::Little);
@@ -1070,8 +1068,8 @@ fn new_interp_rust_memory(ctx: &SymContext) -> VEXInterpreter<'_> {
 
 /// angr-5mnx3.23: a `StoreG` with a *symbolic* guard at a concrete address
 /// builds `ITE(guard, new, current)` and hands it to
-/// `memory_store_symbolic_value`. Under the proxy gate that callback absorbs
-/// nothing, so the ITE must also be buffered in `pending_symbolic_stores` —
+/// `memory_store_symbolic_value`. That callback absorbs nothing in
+/// production, so the ITE must also be buffered in `pending_symbolic_stores` —
 /// otherwise the predicated store (ARM conditional stores, masked SIMD) is
 /// silently dropped.
 // Needs a real solver: `classify_guard` must return `Symbolic`, which requires
@@ -1110,8 +1108,8 @@ fn storeg_symbolic_guard_buffers_for_rust_memory() {
 
 /// angr-5mnx3.23, CAS variant: `cas_store_symbolic_data` writes back a computed
 /// `RustBV` (the success/failure ITE) that cannot be re-expressed as an
-/// `IRExpr`, so it dispatches the symbolic-value callback directly. Same proxy
-/// gate, same requirement to buffer.
+/// `IRExpr`, so it dispatches the symbolic-value callback directly. Same
+/// no-op callback, same requirement to buffer.
 #[test]
 fn cas_symbolic_writeback_buffers_for_rust_memory() {
     let ctx = SymContext::new_mock();

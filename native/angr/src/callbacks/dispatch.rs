@@ -641,13 +641,6 @@ impl PythonCallbacks {
         self.memory_store_symbolic_value.is_some()
     }
 
-    /// True when the callback-memory-proxy gate is on, i.e. the memory-store
-    /// callbacks are no-ops and Rust must keep the store itself (angr-5rjbq).
-    pub(crate) fn memory_is_rust_proxy(&self) -> bool {
-        self.memory_is_rust_proxy
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     /// Store to a **symbolic address**, with both sides crossing to Python as
     /// claripy ASTs ("full" = full expression trees for address *and* data, so
     /// the data may be symbolic or concrete). Contrast

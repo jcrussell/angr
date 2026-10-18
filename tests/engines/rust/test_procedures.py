@@ -2751,8 +2751,8 @@ class TestSimProcedureSelfCallContinuation:
     must survive the FFI boundary.
 
     ``SimProcedure.call`` runs ``cc.setup_callsite`` on a *copy* of the
-    executing state, so the continuation return address it pushes bypasses
-    ``CallbackMemoryTracker``'s wrapped store. In register-snapshot mode the
+    executing state, so the continuation return address it pushes never goes
+    through the callback state's memory. In register-snapshot mode the
     pushed word never reached Rust, so the callee's ``ret`` jumped to a stale
     value and deadended instead of re-entering ``after_call``. The fix
     (``rust_state_sync._resume_with_state``) reads the grown stack region on an

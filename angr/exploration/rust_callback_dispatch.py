@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 from angr import claripy
 from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
-from angr.exploration.rust_identity import CallbackMemoryTracker
 from angr.exploration.rust_state_export import (
     POSIX_SYNC_FDS,
     _concrete_stream_bytes,
@@ -775,9 +774,6 @@ class RustCallbackDispatchMixin:
         else:
             orig_constraints = None  # Deferred — only built if needed
 
-        # Track memory writes during callback execution
-        memory_tracker = CallbackMemoryTracker(state)
-
         # state.inspect simprocedure BEFORE (angr-xmfj). The proc may be a
         # class or instance; pass the raw object so user BPs can introspect.
         # `simprocedure_result` is `None` on BEFORE because the proc has
@@ -800,13 +796,14 @@ class RustCallbackDispatchMixin:
             # Create SimSuccessors object for the procedure
             successors = SimSuccessors(addr=addr, initial_state=state)
 
-            # Execute the procedure with memory tracking
-            with memory_tracker:
-                if hasattr(proc, "run"):
-                    proc.execute(state, successors)
-                else:
-                    # It's a class, instantiate it
-                    proc().execute(state, successors)
+            # Execute the procedure. ``state.memory`` is a ``RustMemoryProxy``
+            # (``_install_callback_memory_proxy``), so every store lands in
+            # Rust as it happens and needs no replay on return.
+            if hasattr(proc, "run"):
+                proc.execute(state, successors)
+            else:
+                # It's a class, instantiate it
+                proc().execute(state, successors)
             # state.inspect simprocedure AFTER (angr-xmfj). MVP scope:
             # `simprocedure_result` is `None` — capturing the proc's raw
             # return value would require wrapping `proc.execute()` to
@@ -829,25 +826,6 @@ class RustCallbackDispatchMixin:
             self._procedure_times[_proc_name]["count"] += 1
             self._procedure_times[_proc_name]["execute_ns"] += _sp_exec_elapsed
 
-            # Get tracked memory writes from callback execution. When the
-            # angr-4scu step-3 gate is on, ``state.memory`` is a
-            # ``RustMemoryProxy`` and every store landed in Rust during the
-            # callback; the tracker still wrapped ``state.memory.store`` and
-            # accumulated entries (so any user code introspecting it sees a
-            # stable surface), but we discard the lists to avoid a
-            # double-write through ``resume_after_simprocedure``.
-            if getattr(self, "_use_callback_memory_proxy", False):
-                tracked_writes = None
-                tracked_symbolic_writes = None
-            else:
-                tracked_writes = memory_tracker.get_writes()
-                tracked_symbolic_writes = memory_tracker.get_symbolic_writes()
-            if _DBG:
-                if tracked_writes:
-                    l.debug(f"Tracked {len(tracked_writes)} memory writes during callback")
-                if tracked_symbolic_writes:
-                    l.debug(f"Tracked {len(tracked_symbolic_writes)} symbolic memory writes during callback")
-
             # Handle successors - this includes sync back to Rust
             _sp_sync_start = time.perf_counter_ns()
             all_succs = successors.all_successors
@@ -866,8 +844,6 @@ class RustCallbackDispatchMixin:
                     state,
                     orig_state,
                     is_zero_length_hook,
-                    tracked_writes,
-                    tracked_symbolic_writes,
                     orig_constraints,
                     orig_constraint_count,
                     _sp_total_start,
@@ -883,8 +859,6 @@ class RustCallbackDispatchMixin:
                     state,
                     orig_state,
                     is_zero_length_hook,
-                    tracked_writes,
-                    tracked_symbolic_writes,
                     orig_constraints,
                     orig_constraint_count,
                 )
@@ -1120,8 +1094,6 @@ class RustCallbackDispatchMixin:
         state,
         orig_state,
         is_zero_length_hook: bool,
-        tracked_writes,
-        tracked_symbolic_writes,
         orig_constraints,
         orig_constraint_count,
         _sp_total_start: int,
@@ -1172,7 +1144,7 @@ class RustCallbackDispatchMixin:
         # ``reg_changes``, but the PUSHED BYTES are recovered separately in
         # ``_resume_with_state`` (the Ijk_Call stack-region capture) because
         # ``call()`` runs ``setup_callsite`` on a *copy* of the executing
-        # state, bypassing the CallbackMemoryTracker's wrapped ``store``. Do
+        # state, whose stores never reach Rust. Do
         # NOT manually re-push here: the former ``_push_continuation_address``
         # (removed iter35) also re-decremented sp, leaving the callee's stack
         # 8 bytes low so its ``ret`` popped garbage and deadended (angr-aca6y,
@@ -1190,8 +1162,6 @@ class RustCallbackDispatchMixin:
             orig_state,
             event,
             skip_hook_addr=skip_hook_addr,
-            tracked_writes=tracked_writes,
-            tracked_symbolic_writes=tracked_symbolic_writes,
             orig_constraints=orig_constraints,
             orig_constraint_count=orig_constraint_count,
         )
@@ -1210,8 +1180,6 @@ class RustCallbackDispatchMixin:
         state,
         orig_state,
         is_zero_length_hook: bool,
-        tracked_writes,
-        tracked_symbolic_writes,
         orig_constraints,
         orig_constraint_count,
     ) -> None:
@@ -1251,8 +1219,6 @@ class RustCallbackDispatchMixin:
                 orig_state,
                 event,
                 orig_constraints,
-                tracked_writes=tracked_writes,
-                tracked_symbolic_writes=tracked_symbolic_writes,
                 orig_constraint_count=orig_constraint_count,
             )
             return
@@ -1265,18 +1231,10 @@ class RustCallbackDispatchMixin:
             return
 
         ret_addr = event.callback_return_addr or (addr + 1)
-        for sym_addr, ast in tracked_symbolic_writes or []:
-            try:
-                self._rust_mgr.import_symbolic_memory(event.callback_state_id, sym_addr, ast)
-            except Exception:
-                # cat-(c) WRONG-ANSWER RISK: tracked symbolic write not imported
-                # to Rust; subsequent loads at sym_addr will see concrete bytes
-                # instead of the symbolic value.
-                pass
         self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
-        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, tracked_writes or None)
+        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, None)
 
     @staticmethod
     def _resolve_next_pc(state, fallback_addr=None):
@@ -1302,44 +1260,16 @@ class RustCallbackDispatchMixin:
                 raise
 
     @staticmethod
-    def _merge_tracked_writes(mem_changes, tracked_writes):
-        """Append ``tracked_writes`` whose addr isn't already in ``mem_changes``.
-
-        Mutates and returns ``mem_changes``. Tracked writes capture symbolic
-        stores that ``_extract_memory_changes`` might miss.
-        """
-        if tracked_writes:
-            existing_addrs = {addr for addr, _ in mem_changes}
-            for addr, data in tracked_writes:
-                if addr not in existing_addrs:
-                    mem_changes.append((addr, data))
-                    existing_addrs.add(addr)
-        return mem_changes
-
-    @staticmethod
-    def _filter_symbolic_addrs(mem_changes, symbolic_imports, tracked_symbolic_writes):
+    def _filter_symbolic_addrs(mem_changes, symbolic_imports):
         """Drop concrete ``mem_changes`` at any addr covered by a symbolic import.
 
-        Prevents ``apply_changes`` from overwriting symbolic imports (from
-        ``symbolic_imports`` or ``tracked_symbolic_writes``) with concrete values.
+        Prevents ``apply_changes`` from overwriting symbolic imports with
+        concrete values.
         """
         all_symbolic_addrs = {addr for addr, _ in symbolic_imports}
-        if tracked_symbolic_writes:
-            all_symbolic_addrs.update(addr for addr, _ in tracked_symbolic_writes)
         if all_symbolic_addrs:
             return [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
         return mem_changes
-
-    @staticmethod
-    def _merge_symbolic_imports(symbolic_imports, tracked_symbolic_writes):
-        """Combine ``symbolic_imports`` with ``tracked_symbolic_writes``, deduped by addr."""
-        all_sym_imports = list(symbolic_imports)
-        if tracked_symbolic_writes:
-            existing_sym_addrs = {addr for addr, _ in symbolic_imports}
-            for addr, ast in tracked_symbolic_writes:
-                if addr not in existing_sym_addrs:
-                    all_sym_imports.append((addr, ast))
-        return all_sym_imports
 
     def _resume_with_state(
         self,
@@ -1347,8 +1277,6 @@ class RustCallbackDispatchMixin:
         orig_state: angr.SimState,
         event: _ExplorationEvent,
         skip_hook_addr: int | None = None,
-        tracked_writes: list | None = None,
-        tracked_symbolic_writes: list | None = None,
         orig_constraints: set | None = None,
         orig_constraint_count: int | None = None,
     ):
@@ -1364,8 +1292,6 @@ class RustCallbackDispatchMixin:
             skip_hook_addr: If set, tells Rust to skip the hook at this address
                            for the next step (prevents infinite loops with
                            zero-length hooks).
-            tracked_writes: Memory writes tracked during callback execution.
-            tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
         # Handle symbolic IP: pick first concrete solution if symbolic
         new_pc = self._resolve_next_pc(succ_state)
@@ -1394,17 +1320,11 @@ class RustCallbackDispatchMixin:
             mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
         self._perf_stats.add_sync_back_subphase("memdiff", time.perf_counter_ns() - _sb_memdiff_start)
 
-        # Merge tracked writes with extracted memory changes
-        if tracked_writes:
-            mem_changes = self._merge_tracked_writes(mem_changes, tracked_writes)
-            if _DBG:
-                l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
-
         # Capture the stack region pushed by a self.call() continuation
         # (Ijk_Call). angr's ``SimProcedure.call()`` runs ``cc.setup_callsite``
         # on a *copy* of the executing state, so the continuation return
-        # address it pushes bypasses the CallbackMemoryTracker's wrapped
-        # ``store`` (which only sees the tracked state). In register-snapshot
+        # address it pushes never goes through the callback state's
+        # ``RustMemoryProxy``. In register-snapshot
         # mode ``_extract_memory_changes`` is skipped too, so without this the
         # pushed continuation never reaches Rust: the callee's frame keeps a
         # stale word and its ``ret`` jumps to garbage (angr-aca6y, xmllint's
@@ -1436,7 +1356,7 @@ class RustCallbackDispatchMixin:
 
         # Exclude symbolic-import addresses from concrete memory changes so
         # apply_changes can't overwrite them with concrete values.
-        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports, tracked_symbolic_writes)
+        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
 
         # Extract any new constraints added during callback.
         # Skip when using shared solver — constraints go directly to the pending
@@ -1492,7 +1412,7 @@ class RustCallbackDispatchMixin:
         # Use import_symbolic_to_state (by state_id) since pending_callback
         # was consumed by resume_after_simprocedure.
         state_id = event.callback_state_id
-        all_sym_imports = self._merge_symbolic_imports(symbolic_imports, tracked_symbolic_writes)
+        all_sym_imports = symbolic_imports
 
         for addr, ast in all_sym_imports:
             try:
@@ -1518,8 +1438,6 @@ class RustCallbackDispatchMixin:
         orig_state: angr.SimState,
         event: _ExplorationEvent,
         orig_constraints: set | None = None,
-        tracked_writes: list | None = None,
-        tracked_symbolic_writes: list | None = None,
         orig_constraint_count: int | None = None,
     ):
         """Resume Rust execution after a zero-length hook with no successors.
@@ -1533,8 +1451,6 @@ class RustCallbackDispatchMixin:
             orig_state: The original state before hook execution.
             event: The exploration event.
             orig_constraints: Original constraints before callback (for constraint sync).
-            tracked_writes: Memory writes tracked during callback execution.
-            tracked_symbolic_writes: List of (addr, ast) for symbolic memory imports.
         """
         # Tell Rust to skip the hook at this address for the next step
         # This prevents infinite loops when resuming at a zero-length hook address
@@ -1574,16 +1490,9 @@ class RustCallbackDispatchMixin:
         else:
             mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, state)
 
-        # Merge tracked writes with extracted memory changes
-        # Tracked writes capture symbolic stores that _extract_memory_changes might miss
-        if tracked_writes:
-            mem_changes = self._merge_tracked_writes(mem_changes, tracked_writes)
-            if _DBG:
-                l.debug(f"Merged {len(tracked_writes)} tracked writes with memory changes")
-
         # Exclude symbolic-import addresses from concrete memory changes so
         # apply_changes can't overwrite them with concrete values.
-        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports, tracked_symbolic_writes)
+        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
 
         # Extract new constraints added during hook execution
         new_constraints = None
@@ -1626,7 +1535,7 @@ class RustCallbackDispatchMixin:
 
         # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
         state_id = event.callback_state_id
-        all_sym_imports = self._merge_symbolic_imports(symbolic_imports, tracked_symbolic_writes)
+        all_sym_imports = symbolic_imports
 
         for sym_addr, ast in all_sym_imports:
             try:
@@ -1947,7 +1856,7 @@ class RustCallbackDispatchMixin:
                 # raised inside PyO3 and the except-swallow below then resumed
                 # at PC+1 with every change discarded (angr-89w70).
                 mem_changes, symbolic_imports = self._extract_memory_changes(state, succ_state)
-                mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports, None)
+                mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
                 new_constraints = self._extract_new_constraints(state, succ_state)
 
                 # Resume BEFORE the symbolic imports: apply_changes writes
@@ -2404,30 +2313,21 @@ class RustCallbackDispatchMixin:
 
         if cached_state is not None:
             self._stats_cache_hits += 1
-            # Copy when callable predicates need stdout history, skip otherwise
+            # Callable predicates force the symbolic-page restore below.
             has_predicates = (
                 getattr(self, "_find_predicate", None) is not None
                 or getattr(self, "_avoid_predicate", None) is not None
             )
-            # angr-4scu step 3: when the callback-memory-proxy gate is on we
-            # always copy the cached state. The gate swaps ``state.memory``
-            # to a ``RustMemoryProxy`` later in this function; mutating the
-            # cached state's memory plugin in place would leak the proxy
-            # into the cached copy and break ordinary (non-callback) reads
-            # against that cache entry. The copy ensures the swap only
-            # affects this one callback frame.
-            if (
-                has_predicates
-                or getattr(self, "_use_callback_memory_proxy", False)
-                or getattr(self, "_use_callback_register_proxy", False)
-                or getattr(self, "_use_callback_callstack_proxy", False)
-            ):
-                self._stats_state_creations += 1
-                _sc_copy_start = time.perf_counter_ns()
-                state = cached_state.copy()
-                self._perf_stats.add_state_create_subphase("copy", time.perf_counter_ns() - _sc_copy_start)
-            else:
-                state = cached_state
+            # Always copy the cached state: ``state.memory`` is swapped to a
+            # ``RustMemoryProxy`` later in this function (angr-4scu step 3), and
+            # mutating the cached state's memory plugin in place would leak the
+            # proxy into the cached copy and break ordinary (non-callback)
+            # reads against that cache entry. The copy confines the swap to
+            # this one callback frame.
+            self._stats_state_creations += 1
+            _sc_copy_start = time.perf_counter_ns()
+            state = cached_state.copy()
+            self._perf_stats.add_state_create_subphase("copy", time.perf_counter_ns() - _sc_copy_start)
 
             # Use the callback bundle API to get registers + solver + history
             # in a single FFI call instead of ~20 individual calls.
@@ -2627,14 +2527,10 @@ class RustCallbackDispatchMixin:
             # Some scripts assume posix/libc plugins exist - restore if missing
             self._ensure_critical_plugins(state, event.callback_state_id)
 
-            # angr-4scu step 3: gated install of RustMemoryProxy as
-            # ``state.memory``. When the flag is on, every load/store the
-            # SimProc issues routes directly into Rust by state_id —
-            # eliminating the cached-state shadow memory + the
-            # ``CallbackMemoryTracker`` diff-and-push at end-of-callback.
-            # The matching site in ``_handle_simprocedure_callback`` forces
-            # ``tracked_writes=None`` so the replay path is a no-op.
-            if getattr(self, "_use_callback_memory_proxy", False) and event.callback_state_id is not None:
+            # angr-4scu step 3: install RustMemoryProxy as ``state.memory``, so
+            # every load/store the SimProc issues routes directly into Rust by
+            # state_id and nothing needs replaying at end-of-callback.
+            if event.callback_state_id is not None:
                 self._install_callback_memory_proxy(state, event.callback_state_id)
 
             # angr-qj30 (write-through .2): gated install of
@@ -2726,7 +2622,7 @@ class RustCallbackDispatchMixin:
         # BEFORE the swap. Setup-time writes (e.g. flareon2015_5's ebp-relative
         # pw symbols) live in this memory but were never synced to Rust at the
         # concretized address, so a proxy load that Rust can't satisfy falls
-        # back here — matching gate-off DefaultMemory semantics.
+        # back here — matching DefaultMemory semantics.
         prev_memory = getattr(state, "memory", None)
         proxy = RustMemoryProxy(
             self._rust_mgr, state_id, self._project.arch, python_mgr=self, fallback_memory=prev_memory

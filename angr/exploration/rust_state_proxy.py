@@ -1341,8 +1341,9 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
     Implements the minimum ``SimMemory`` plugin protocol (``id``, ``endness``,
     ``category``, ``state``, ``set_state``, ``copy``) so that the proxy can be
-    installed as ``state.memory`` on a real SimState (angr-4scu step 3, under
-    the ``use_callback_memory_proxy`` gate on ``RustExplorationManager``).
+    installed as ``state.memory`` on a real SimState (angr-4scu step 3: every
+    SimProcedure callback state gets one, see
+    ``_install_callback_memory_proxy``).
     """
 
     SUPPORTS_CONCRETE_LOAD: bool = False
@@ -1383,8 +1384,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # state's DefaultMemory). Loads Rust can't satisfy (unmapped/zero
         # lazy page) fall back to this so setup-time writes — e.g. flareon's
         # ebp-relative pw symbols, stored into Python memory during harness
-        # setup and never synced to Rust at the concretized address — survive
-        # under the gate, matching gate-off DefaultMemory semantics.
+        # setup and never synced to Rust at the concretized address — survive,
+        # matching DefaultMemory semantics.
         self._fallback_memory = fallback_memory
         # angr-yodz: shared-context getter from the parent RustStateProxy so
         # symbolic-addr concretization honors constraints added via the same
@@ -1498,8 +1499,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         concretization. This is NOT export-time pre-pinning of a recovered
         model (bd constraint-export-no-pre-pin): we are committing to a write
         address we ourselves chose, on a scratch stack pointer that is not part
-        of any goal constraint. Confined to the callback-memory-proxy gate, so
-        gate-off runs are unaffected.
+        of any goal constraint. Confined to SimProcedure callback states,
+        which are the only place this proxy stands in for ``state.memory``.
         """
         pin = addr == conc
         try:
@@ -1531,7 +1532,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
         Routes through ``get_state_memory_ast`` (angr-8dop.1) so symbolic
         memory bytes survive the round-trip — strlen/strchr/memchr/etc.
-        SimProcedures running under the callback-memory-proxy gate need
+        SimProcedures running against the callback memory proxy need
         the actual symbolic AST to build their byte-by-byte ITE chains.
         Returning a solver witness here would silently miss other matches.
         """
@@ -1721,8 +1722,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # was concretized-and-pinned at setup) so the Multi path saw too
             # many or zero satisfying solutions. Rather than raise
             # NotImplementedError and let the SimProcedure callback die
-            # (dropping a corpus find under the callback-memory-proxy gate —
-            # angr-ijwp0),
+            # (dropping a corpus find — angr-ijwp0),
             # concretize the address to a single satisfiable value and store
             # there, mirroring angr's ``DefaultMemory`` write concretization.
             if self._python_mgr is not None:
@@ -1800,8 +1800,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # angr's SimMemory.store infers a bare ``int``'s width from the
             # arch word size (e.g. asprintf writes a malloc'd pointer back via
             # ``memory.store(strp, dst, endness=memory_endness)`` with no
-            # explicit size). Mirror that default so the proxy path matches the
-            # tracked-writes path under the callback-memory-proxy gate.
+            # explicit size). Mirror that default so the proxy matches
+            # angr's own store.
             if size is None:
                 size = self._arch.bytes
             byteorder = "little" if endness == "Iend_LE" else "big"
@@ -1835,7 +1835,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         """Classify a failed Rust store; True means "retry with auto-map".
 
         Rust's ``memory_store`` errors ``Unmapped`` for a page outside every
-        lazy region, which under the callback-memory-proxy gate is the *only*
+        lazy region, which for a callback state's proxy is the *only*
         memory a SimProcedure sees — so the bare ``ValueError`` escaped into
         ``proc.execute()`` and errored the state (angr-ijwp0: it timed out
         ``unmapped_analysis``, whose whole point is a strncpy through a garbage

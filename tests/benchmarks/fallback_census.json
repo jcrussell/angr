@@ -102,7 +102,7 @@
       ],
       "closability": "closable",
       "count": 4,
-      "rationale": "writes its table through state.memory.store (tracked by CallbackMemoryTracker) and returns a pointer in a synced register",
+      "rationale": "writes its table through state.memory.store (the RustMemoryProxy) and returns a pointer in a synced register",
       "semantics": "silent-equivalent"
     },
     "calloc": {
@@ -577,7 +577,7 @@
     },
     "site_classes": {
       "flip-blocking": 63,
-      "logged-degraded": 211,
+      "logged-degraded": 210,
       "silent-equivalent": 80
     },
     "unclassified": [],
@@ -1425,15 +1425,6 @@
       "file": "angr/exploration/rust_disk_cache.py",
       "function": "_load_init_from_disk_cache",
       "line": 544,
-      "logs": true,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: tracking failure means this",
-      "file": "angr/exploration/rust_identity.py",
-      "function": "tracking_store",
-      "line": 107,
       "logs": true,
       "semantics": "logged-degraded"
     },

@@ -1881,8 +1881,8 @@ class RustStateSyncMixin:
         then writes non-zero pointer-sized values to the Python state.
         This is much faster than one pending_memory_load call per slot.
 
-        angr-ryf6: skip when the callback-memory-proxy gate is on and the
-        proxy is already installed on ``state.memory`` — the writes would
+        angr-ryf6: skip when the callback memory proxy is already installed
+        on ``state.memory`` — the writes would
         round-trip Rust → Python → Rust and overwrite symbolic pointer-slot
         values with concrete witnesses (same loss as
         ``_replay_rust_dirty_pages``).
@@ -2150,8 +2150,8 @@ class RustStateSyncMixin:
         `_restore_symbolic_pages`, so without this replay a later Python
         SimProc (e.g. strcmp) reads stale concrete-zero bytes.
 
-        angr-ryf6: when the callback-memory-proxy gate is on and the
-        cached state already has the proxy installed from a prior
+        angr-ryf6: when the cached state already has the callback memory
+        proxy installed from a prior
         callback, ``state.memory`` *is* the Rust state — replaying dirty
         pages would round-trip Rust → Python → Rust through
         ``set_state_memory_concrete``, which evaluates symbolic bytes to

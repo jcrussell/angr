@@ -15,15 +15,13 @@ Rust engine: proxy-backed SimState writes — design comparison
    **Further superseded for memory (angr-grji4).** At the **SimProcedure callback boundary**
    (Python full ``SimState`` mutates → Rust syncs back on return),
    the diff-and-push path described below now governs only
-   **registers and constraints**. The **memory** half is proxy
-   write-through by default: ``_use_callback_memory_proxy`` resolves
-   to ``True`` in ``rust_manager.py``, so a Python SimProcedure's
-   ``state.memory.store(…)`` lands in Rust immediately and
-   ``rust_callback_dispatch.py`` discards the ``CallbackMemoryTracker``
-   write lists instead of replaying them on return. Set
-   ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` to opt back into the
-   legacy tracked-write diff-and-push. See :doc:`rust_engine` for the
-   shipped contract.
+   **registers and constraints**. The **memory** half is always proxy
+   write-through: every callback state's ``state.memory`` is a
+   ``RustMemoryProxy``, so a Python SimProcedure's
+   ``state.memory.store(…)`` lands in Rust immediately and nothing is
+   replayed on return (the tracked-write replay and its opt-out were
+   deleted by angr-mx00p.28). See :doc:`rust_engine` for the shipped
+   contract.
 
    The "proposed proxy-plugin design" section is now
    historical reading — the proxy uses an immediate write-through
@@ -216,10 +214,8 @@ How
 
 * Wrap ``state.regs.__setattr__`` and ``state.memory.store`` to
   push ``("reg", name, value)`` / ``("mem", addr, data)`` tuples
-  into a per-callback list (already partially in place — see the
-  ``tracked_writes`` / ``tracked_symbolic_writes`` channels that
-  ``rust_identity.py::CallbackMemoryTracker`` feeds to
-  ``rust_callback_dispatch.py::_handle_simprocedure_callback``).
+  into a per-callback list (memory had such a channel, a wrapped
+  ``state.memory.store``, until the memory proxy replaced it).
 * At the boundary, walk the list once. No
   ``changed_bytes`` scan, no register loop.
 

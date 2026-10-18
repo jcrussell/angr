@@ -443,25 +443,16 @@ impl<'a> VEXInterpreter<'a> {
     /// Buffer a store that is *also* being dispatched to a Python memory
     /// callback, for the case where that callback cannot absorb it.
     ///
-    /// Under the callback-memory-proxy gate the `memory_store` /
-    /// `memory_store_symbolic_value` callbacks are deliberate no-ops
-    /// (`state.memory` *is* Rust memory there, and re-entering `run()` would
-    /// double-borrow), so a callback-only store is dropped outright:
+    /// The callback state's `state.memory` is a `RustMemoryProxy`, so the
+    /// `memory_store` / `memory_store_symbolic_value` callbacks are deliberate
+    /// no-ops (`state.memory` *is* Rust memory, and re-entering `run()` would
+    /// double-borrow), and a callback-only store would be dropped outright:
     /// flareon2015_5's base64 encoder wrote its output through the
     /// symbolic-address path and the found state read back concrete zeros
     /// (angr-5rjbq). Buffering it here gives the value a home in
     /// `rust_memory`.
-    ///
-    /// Ungated, the Python shadow really does absorb the store, so this extra
-    /// write would be pure cost — fast-tier benches regressed measurably when
-    /// it ran unconditionally. Hence the `memory_is_rust_proxy` guard.
-    pub(super) fn buffer_store_for_rust_memory(
-        &mut self,
-        callbacks: &PythonCallbacks,
-        addr: u64,
-        data_val: &RustBV,
-    ) {
-        if !self.use_rust_memory || !callbacks.memory_is_rust_proxy() {
+    pub(super) fn buffer_store_for_rust_memory(&mut self, addr: u64, data_val: &RustBV) {
+        if !self.use_rust_memory {
             return;
         }
         if data_val.is_symbolic() {
@@ -484,8 +475,8 @@ impl<'a> VEXInterpreter<'a> {
     /// `PythonCallbacks::call_memory_store_symbolic_value`.
     ///
     /// **Every** call site of that callback must go through this helper.
-    /// Under the callback-memory-proxy gate the callback is a documented
-    /// no-op, so a raw dispatch that skips `buffer_store_for_rust_memory`
+    /// The callback is a documented no-op (the callback state's memory is a
+    /// `RustMemoryProxy`), so a raw dispatch that skips `buffer_store_for_rust_memory`
     /// lands in neither Rust's pending-store buffers nor Python's shadow
     /// memory and is lost outright (angr-5rjbq fixed the two
     /// `statements_store.rs` paths; angr-5mnx3.23 found four more siblings —
@@ -505,7 +496,7 @@ impl<'a> VEXInterpreter<'a> {
         addr: u64,
         data_val: &RustBV,
     ) -> Result<(), CbExecutionError> {
-        self.buffer_store_for_rust_memory(callbacks, addr, data_val);
+        self.buffer_store_for_rust_memory(addr, data_val);
         callbacks
             .call_memory_store_symbolic_value(addr, data_val)
             .map_err(|e| CbExecutionError::Callback(e.to_string()))
@@ -576,7 +567,7 @@ impl<'a> VEXInterpreter<'a> {
                 if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                     self.store_symbolic_value_buffered(callbacks, addr_concrete, data_val)?;
                 } else {
-                    self.buffer_store_for_rust_memory(callbacks, addr_concrete, data_val);
+                    self.buffer_store_for_rust_memory(addr_concrete, data_val);
                     reject_symbolic_byte_store(
                         data_val,
                         addr_concrete,

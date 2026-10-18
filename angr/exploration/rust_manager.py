@@ -147,7 +147,7 @@ _NATIVE_SIMOPTIONS = frozenset({"SHORT_READS", "SYMBOLIC_INITIAL_VALUES"})
 
 
 def _is_rust_memory_proxy(plugin) -> bool:
-    """True when ``plugin`` is a ``RustMemoryProxy`` (callback-memory-proxy gate).
+    """True when ``plugin`` is a ``RustMemoryProxy`` (the callback state's memory).
 
     Used by synchronous Rust→Python callbacks (``_cb_memory_load`` /
     ``_cb_memory_store`` / ``_cb_fetch_page``) to detect re-entry into the
@@ -1160,7 +1160,6 @@ class RustExplorationManager(
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
-        use_callback_memory_proxy: bool | None = None,
         use_callback_register_proxy: bool | None = None,
         use_callback_solver_proxy: bool | None = None,
         use_callback_callstack_proxy: bool | None = None,
@@ -1212,14 +1211,6 @@ class RustExplorationManager(
                 inherit it (so descendants opt in transparently). Inert
                 in this slice — slice-1c will be the first consumer of
                 the flag at fork time.
-            use_callback_memory_proxy: If True, install ``RustMemoryProxy``
-                as ``state.memory`` on SimProcedure callback states so loads
-                / stores route directly into Rust instead of going through
-                the cached state's claripy SimMemory + ``CallbackMemoryTracker``
-                diff-and-push (angr-4scu step 3). When ``None`` (default), the
-                proxy is ON (angr-grji4 human-GO flip); the env var
-                ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
-                hatch that forces the existing tracker path back on.
             use_callback_register_proxy: If True, install ``RustRegisterProxy``
                 as ``state.registers`` on SimProcedure callback states so
                 ``state.regs.<name>`` reads/writes route directly into Rust
@@ -1372,7 +1363,6 @@ class RustExplorationManager(
         )
         self._phase_config(
             use_shared_lineage_solver,
-            use_callback_memory_proxy,
             use_callback_register_proxy,
             use_callback_solver_proxy,
             use_callback_callstack_proxy,
@@ -1494,7 +1484,6 @@ class RustExplorationManager(
     def _phase_config(
         self,
         use_shared_lineage_solver,
-        use_callback_memory_proxy,
         use_callback_register_proxy,
         use_callback_solver_proxy,
         use_callback_callstack_proxy,
@@ -1510,22 +1499,6 @@ class RustExplorationManager(
         # solver context. Default off keeps slice-1c's gate inert (and
         # the v5a5-spike baby-re BFS-thrash regression out of CI).
         self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
-
-        # angr-4scu step 3: gate for installing RustMemoryProxy as
-        # ``state.memory`` on SimProcedure callback states. Default off keeps
-        # the existing CallbackMemoryTracker diff-and-push path live. When
-        # on, ``_create_state_for_callback`` swaps ``state.memory`` with a
-        # ``RustMemoryProxy``, so loads/stores during the SimProc route
-        # directly into Rust and the post-callback tracked-writes replay is
-        # skipped (writes already landed in Rust). Default ON since the
-        # angr-grji4 human-GO flip; env var
-        # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
-        # hatch that forces the legacy CallbackMemoryTracker path back on
-        # when the kwarg is left at its default ``None``. Multi-session epic
-        # (angr-4scu).
-        self._use_callback_memory_proxy = _resolve_env_flag(
-            use_callback_memory_proxy, "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", default=True
-        )
 
         # angr-qj30 (write-through .2): gate for installing
         # ``RustRegisterProxy`` as ``state.registers`` on SimProcedure
@@ -1674,7 +1647,7 @@ class RustExplorationManager(
         # angr-5rjbq: proxy loads that Rust could not satisfy (unmapped/zero
         # lazy page) and that fell back to the pre-swap Python SimMemory —
         # recovers setup-time writes (e.g. flareon2015_5 ebp-relative pw
-        # symbols) the callback-memory-proxy gate would otherwise miss.
+        # symbols) the callback memory proxy would otherwise miss.
         self._stats_proxy_mem_fallback_python_load = 0
         self._stats_proxy_reg_writes = 0
         self._stats_proxy_solver_adds = 0
@@ -2240,11 +2213,6 @@ class RustExplorationManager(
             callbacks.set_memory_store_symbolic_value(self._cb_memory_store_symbolic_value)
         if hasattr(callbacks, "set_memory_store_symbolic_full"):
             callbacks.set_memory_store_symbolic_full(self._cb_memory_store_symbolic_full)
-        # angr-5rjbq: under the memory-proxy gate the store callbacks above are
-        # no-ops (state.memory *is* Rust memory), so tell Rust to keep such
-        # stores in rust_memory itself instead of dropping them on the floor.
-        if hasattr(callbacks, "set_memory_is_rust_proxy"):
-            callbacks.set_memory_is_rust_proxy(bool(getattr(self, "_use_callback_memory_proxy", False)))
         if hasattr(callbacks, "set_memory_load_symbolic_full"):
             callbacks.set_memory_load_symbolic_full(self._cb_memory_load_symbolic_full)
         # state.inspect MVP (angr-uq4n.2, angr-d46u) — register dispatchers
@@ -2317,9 +2285,8 @@ class RustExplorationManager(
                                 )
                                 return (concrete, True, extracted)
 
-                # angr-hcok: when the callback-memory-proxy gate is on, the
-                # cached state's ``memory`` plugin is a ``RustMemoryProxy``
-                # that re-enters ``_rust_mgr.get_state_memory_ast(...)`` —
+                # angr-hcok: when the state's ``memory`` plugin is a
+                # ``RustMemoryProxy``, it re-enters ``_rust_mgr.get_state_memory_ast(...)`` —
                 # but ``_cb_memory_load`` fires from inside ``_rust_mgr.run()``
                 # which holds ``&mut self`` on the manager PyCell, so the
                 # re-entry raises "Already mutably borrowed". Synthesize a
@@ -2386,13 +2353,13 @@ class RustExplorationManager(
         state = self._get_per_fork_state()
         if state is None:
             return
-        # angr-hcok: under the callback-memory-proxy gate, ``state.memory``
-        # is a ``RustMemoryProxy`` that routes ``store(...)`` back into
+        # angr-hcok: when ``state.memory`` is a ``RustMemoryProxy``, it
+        # routes ``store(...)`` back into
         # ``_rust_mgr.set_state_memory_concrete(...)`` — but we're inside
         # ``_rust_mgr.run()`` which holds ``&mut self``, so the re-entry
         # raises "Already mutably borrowed". Rust already performed the
         # store internally before invoking this callback, so the Python
-        # shadow is redundant under the gate; just acknowledge and return.
+        # shadow is redundant then; just acknowledge and return.
         if _is_rust_memory_proxy(state.memory):
             return
         try:
@@ -2442,8 +2409,8 @@ class RustExplorationManager(
             state = self._get_default_state()
             if state is None:
                 return (bytes(4096), 0, False)
-            # angr-hcok: under the callback-memory-proxy gate, ``state.memory``
-            # is a ``RustMemoryProxy`` that calls back into ``_rust_mgr`` —
+            # angr-hcok: when ``state.memory`` is a ``RustMemoryProxy``, it
+            # calls back into ``_rust_mgr`` —
             # invalid while ``run()`` holds ``&mut self``. Decline the page;
             # Rust will fall back to its own zero-fill / static-binary page
             # source rather than asking Python for a copy.

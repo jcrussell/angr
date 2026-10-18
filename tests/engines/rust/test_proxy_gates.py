@@ -485,10 +485,6 @@ class TestProxyMemoryFind:
 # default off, kwarg on, env var on, explicit kwarg beats env var. Adding a
 # gate is a one-line entry here; per-gate behavioral tests live in the
 # matching Test*Gate class below.
-# NOTE: ``use_callback_memory_proxy`` is intentionally absent — it was flipped
-# default-ON (angr-grji4 human-GO 2026-07-15), so it no longer follows the
-# default-off contract. Its 4-way precedence (default on, ``=0`` opt-out,
-# kwarg beats env) lives in ``TestCallbackMemoryProxyGate`` below.
 _GATE_TOGGLES = [
     ("use_callback_solver_proxy", "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "_use_callback_solver_proxy"),
     ("use_callback_callstack_proxy", "ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "_use_callback_callstack_proxy"),
@@ -551,45 +547,21 @@ class TestProxyGateToggles:
         assert getattr(mgr, attr) is False
 
 
-class TestCallbackMemoryProxyGate:
-    """angr-4scu step 3: ``use_callback_memory_proxy`` gate controls whether
-    ``RustMemoryProxy`` is installed as ``state.memory`` on SimProcedure
-    callback states. Default ON as of the angr-grji4 human-GO flip
-    (2026-07-15): the proxy routes loads/stores directly to Rust; the
-    ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` env var is the opt-OUT escape
-    hatch that restores the legacy ``CallbackMemoryTracker`` diff-and-push path.
+class TestCallbackMemoryProxyInstall:
+    """angr-4scu step 3: ``RustMemoryProxy`` is installed as ``state.memory``
+    on every SimProcedure callback state, so loads/stores route directly to
+    Rust.
     """
 
-    def test_gate_default_on(self, fauxware_project, monkeypatch):
-        """Without the kwarg or env var, the gate is ON (angr-grji4 flip)."""
-        monkeypatch.delenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", raising=False)
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_memory_proxy is True
-
-    def test_gate_env_var_zero_opts_out(self, fauxware_project, monkeypatch):
-        """``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape hatch."""
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "0")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert mgr._use_callback_memory_proxy is False
-
-    def test_gate_kwarg_false_beats_env_var(self, fauxware_project, monkeypatch):
-        """An explicit ``kwarg=False`` beats the (default-on) env var."""
-        monkeypatch.setenv("ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=False)
-        assert mgr._use_callback_memory_proxy is False
-
     def test_proxy_install_swaps_state_memory(self, fauxware_project):
-        """When the gate is on, ``_install_callback_memory_proxy`` replaces
+        """``_install_callback_memory_proxy`` replaces
         ``state.memory`` with a ``RustMemoryProxy``. Drives the helper
         directly to keep the test scope at the swap mechanism (the SimProc
         callback wiring is exercised via separate fauxware tests)."""
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         # Build a throwaway SimState matching what
         # ``_create_state_for_callback`` would hand to the helper.
         # Bind the proxy to the live seed state id so concrete-store / load
@@ -608,7 +580,7 @@ class TestCallbackMemoryProxyGate:
         / concrete-load fast path the proxy already supported."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -626,7 +598,7 @@ class TestCallbackMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -648,7 +620,7 @@ class TestCallbackMemoryProxyGate:
         """
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -671,7 +643,7 @@ class TestCallbackMemoryProxyGate:
         from angr import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -707,7 +679,7 @@ class TestCallbackMemoryProxyGate:
                 angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
             },
         )
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -752,7 +724,7 @@ class TestCallbackMemoryProxyReentryGuards:
         """
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -876,7 +848,7 @@ class TestRustMemoryProxyPluginGapStubs:
     def _install_proxy(self, fauxware_project):
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_memory_proxy(cb_state, seed_id)
@@ -1430,20 +1402,14 @@ class TestExportMemoryProxyGate:
         """End-to-end: gate off keeps the eager page writeback on
         materialized states from ``found`` (no ``RustMemoryProxy``).
 
-        Passes ``use_*_memory_proxy=False`` explicitly so the off-path is
-        exercised even under a gates-on CI env (kwarg=False beats the env
-        var in the 4-way precedence contract); the callback memory proxy
-        also has to be off or ``found.memory`` would be a proxy plugin.
+        Passes ``use_export_memory_proxy=False`` explicitly so the off-path
+        is exercised even under a gates-on CI env (kwarg=False beats the env
+        var in the 4-way precedence contract).
         """
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(
-            fauxware_project,
-            [state],
-            use_export_memory_proxy=False,
-            use_callback_memory_proxy=False,
-        )
+        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=False)
         assert mgr._use_export_memory_proxy is False
         mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
@@ -1711,19 +1677,19 @@ class TestProxyWriteThrough:
 
 
 class TestCallbackMemoryProxySymbolicStore:
-    """Coverage for the interpreter's symbolic-address store path under both
-    gate states (angr-5rjbq).
+    """Coverage for the interpreter's symbolic-address store path under the
+    callback memory proxy (angr-5rjbq).
 
     Not a red-without-the-fix guard: this single-block shape survives even
     when the store reaches Rust memory only via the registered-handle /
     symbolic-page side channel, which is exactly what made the flareon2015_5
     drop so hard to catch. The real regression signal for angr-5rjbq is
-    flareon2015_5 with the gate on (a bench, not a unit test) — see the
+    flareon2015_5 (a bench, not a unit test) — see the
     MEDIUM-suite proxy differential (angr-ijwp0).
     """
 
     @staticmethod
-    def _run_sym_addr_store(use_proxy: bool):
+    def _run_sym_addr_store():
         """Execute ``mov [ecx], al`` with a symbolic (single-solution) address
         and a symbolic value, then read the byte back from the stepped state.
         """
@@ -1738,15 +1704,14 @@ class TestCallbackMemoryProxySymbolicStore:
         state.regs.ecx = addr_sym
         state.regs.eax = claripy.BVS("val", 32)
 
-        mgr = RustExplorationManager(proj, [state], use_callback_memory_proxy=use_proxy)
+        mgr = RustExplorationManager(proj, [state])
         mgr.step(n=1)
         stepped = mgr.active[0]
         return stepped, stepped.memory.load(0x2000, 1)
 
-    @pytest.mark.parametrize("use_proxy", [False, True])
-    def test_symbolic_addr_store_survives_readback(self, use_proxy):
+    def test_symbolic_addr_store_survives_readback(self):
         """The stored byte reads back as the symbolic value, not concrete 0."""
-        stepped, loaded = self._run_sym_addr_store(use_proxy)
+        stepped, loaded = self._run_sym_addr_store()
         assert loaded.symbolic, f"store dropped — read back {loaded!r}"
         assert any(v.startswith("val") for v in loaded.variables)
         # Genuinely unconstrained (the low byte of eax), not a pinned witness.
