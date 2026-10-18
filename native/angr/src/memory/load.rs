@@ -1139,8 +1139,6 @@ pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness, ctx: &SymCo
 /// counter per path would make two independent reads one variable
 /// (angr-mx00p.17).
 pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32, ctx: &SymContext) -> RustBV {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static UNC_READ_ID: AtomicU64 = AtomicU64::new(0);
-    let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
+    let id = crate::symbolic::names::next("symbolic_read_unconstrained");
     RustBV::symbolic(ctx, format!("symbolic_read_unconstrained_{id}"), width_bits)
 }

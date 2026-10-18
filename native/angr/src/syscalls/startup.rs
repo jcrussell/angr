@@ -19,8 +19,6 @@
 //!
 //! Symbolic / oversize args fall back to Python per the usual pattern.
 
-use std::sync::atomic::AtomicU64;
-
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_GETRANDOM, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
@@ -37,7 +35,7 @@ const UTSNAME_FIELD: u64 = 65;
 // to Python. Shared so it can't desync from read/write/fd_io (angr-9ke6b.157).
 
 /// Counter for unique getrandom byte names (see `read::SYS_READ_COUNTER`).
-static SYS_GETRANDOM_COUNTER: AtomicU64 = AtomicU64::new(0);
+const SYS_GETRANDOM_COUNTER: &str = "syscall:getrandom";
 
 /// Store `val` NUL-padded to `UTSNAME_FIELD` bytes at `buf + off`; returns
 /// the next offset. Mirrors `uname.py::_store`.
@@ -165,7 +163,7 @@ impl NativeSyscall for NativeGetrandomSyscall {
             buf,
             buflen,
             "sys_getrandom",
-            &SYS_GETRANDOM_COUNTER,
+            SYS_GETRANDOM_COUNTER,
         )?;
         Ok(SyscallOutcome::Continue { ret: buflen })
     }

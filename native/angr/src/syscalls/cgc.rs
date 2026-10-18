@@ -46,8 +46,6 @@
 //!   consecutive mapped pages, unmaps them, and adds the run to the
 //!   sinkhole freelist on success.
 
-use std::sync::atomic::AtomicU64;
-
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
@@ -90,8 +88,8 @@ pub(crate) use exit::NativeExitSyscall as NativeTerminateSyscall;
 /// Unique-name counters; one per name-minting syscall family. Each mints
 /// `(family)_{id}_{i}` for byte `i` of read `id`. `transmit` has no counter
 /// because it only reads concrete bytes out — it never mints symbolic names.
-static RECEIVE_COUNTER: AtomicU64 = AtomicU64::new(0);
-static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(0);
+const RECEIVE_COUNTER: &str = "syscall:cgc_receive";
+const RANDOM_COUNTER: &str = "syscall:cgc_random";
 
 /// Store a 32-bit value at `addr` in little-endian, leaving memory at
 /// `[addr, addr+4)` holding `value`. Returns Ok(()) on success.
@@ -237,7 +235,7 @@ impl NativeSyscall for NativeReceiveSyscall {
         // so a downstream `posix.dumps(0)` over the Python state can
         // recover the model — same precedent as `NativeReadSyscall` for
         // Linux stdin.
-        let names = fresh_byte_names("cgc_receive", &RECEIVE_COUNTER, count);
+        let names = fresh_byte_names("cgc_receive", RECEIVE_COUNTER, count);
         // Not `mint_symbolic_bytes`: `mint_stdin_bytes` binds each leaf to a
         // harness-seeded fd-0 byte when the harness pre-filled
         // `posix.stdin.content`, and records the unseeded ones under
@@ -381,7 +379,7 @@ impl NativeSyscall for NativeRandomSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
-        mint_symbolic_bytes(state, buf, count, "cgc_random", &RANDOM_COUNTER)?;
+        mint_symbolic_bytes(state, buf, count, "cgc_random", RANDOM_COUNTER)?;
 
         if rnd_bytes != 0 {
             store_u32_le(state, rnd_bytes, count as u32)?;

@@ -50,6 +50,7 @@
 //! | `snapshot_fork_ops.rs` | Slice 11: lifecycle — `fork`, `merge`, `to_snapshot` / `restore_from_snapshot`, and the `freeze_into_shared` helper those three share. |
 //! | `lineage_ops.rs` | Slice 6: the accessors over the shared-lineage cells (`lineage`, `scope_path`, savepoints). Not purely lineage-scoped: `fold_sharing_walk` reads the assumed-constraint log, and the savepoint push/pop pair records/truncates `local_constraints` — see the module doc. |
 //! | `solver_build.rs` | Slice 2: Z3 `Solver` construction and the per-check timing / sampling wrappers. Free functions, no `&self`. **(z3)** |
+//! | `names.rs` | The fresh-name counters, keyed by caller, and the watermarks a snapshot carries so a restore never re-mints a restored name. |
 //! | `parse.rs` | Slice 4: parsers turning Z3's hex / binary / decimal numeral strings into concrete values. **(z3)** |
 //! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — one `z3::Solver` shared by a descendant set, with push/pop scope tracking. **(z3)** |
 //!
@@ -97,6 +98,7 @@ mod handle;
 pub mod lineage;
 mod lineage_ops;
 mod local_constraints;
+pub(crate) mod names;
 #[cfg(feature = "vex-engine-z3")]
 mod parse;
 /// Dev-only re-export of the pure Z3-numeral-string decoders for cargo-fuzz

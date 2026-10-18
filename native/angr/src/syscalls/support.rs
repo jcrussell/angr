@@ -173,7 +173,8 @@ pub(crate) fn symbolic_outcome(state: &RustSimState, prefix: &'static str) -> Sy
 }
 
 /// Allocate the `<prefix>_<id>_<i>` names for a batch of `count` fresh
-/// symbolic bytes, bumping `counter` once for the whole batch.
+/// symbolic bytes, drawing one index from the `counter` key of
+/// [`crate::symbolic::names`] for the whole batch.
 ///
 /// Split out from [`mint_symbolic_bytes`] because the CGC `receive` path needs
 /// the names *before* the bytes exist: it hands them to
@@ -181,12 +182,8 @@ pub(crate) fn symbolic_outcome(state: &RustSimState, prefix: &'static str) -> Sy
 /// harness-seeded fd-0 byte instead of minting a plain constant. Every caller
 /// shares this one naming scheme so per-handler drift (see `fresh_symbolic`
 /// for why the uniquifying `id` is load-bearing) is impossible.
-pub(crate) fn fresh_byte_names(
-    prefix: &str,
-    counter: &std::sync::atomic::AtomicU64,
-    count: u64,
-) -> Vec<String> {
-    let id = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+pub(crate) fn fresh_byte_names(prefix: &str, counter: &str, count: u64) -> Vec<String> {
+    let id = crate::symbolic::names::next(counter);
     (0..count).map(|i| format!("{prefix}_{id}_{i}")).collect()
 }
 
@@ -195,7 +192,7 @@ pub(crate) fn fresh_byte_names(
 ///
 /// The single implementation of the "fill this buffer with fresh symbolic
 /// bytes" pattern shared by `read`, `readv`, `getrandom` and CGC `random`
-/// (angr-9ke6b.158). `counter` is the caller's per-handler `AtomicU64`, which
+/// (angr-9ke6b.158). `counter` is the caller's per-handler name-counter key, which
 /// keeps repeat invocations of the *same* callsite uniquely named; `prefix`
 /// disambiguates callsites (and, for the fd-keyed readers, streams).
 pub(crate) fn mint_symbolic_bytes(
@@ -203,7 +200,7 @@ pub(crate) fn mint_symbolic_bytes(
     base: u64,
     count: u64,
     prefix: &str,
-    counter: &std::sync::atomic::AtomicU64,
+    counter: &str,
 ) -> Result<(), SyscallError> {
     let names = fresh_byte_names(prefix, counter, count);
     let sym_bytes: Vec<RustBV> = {

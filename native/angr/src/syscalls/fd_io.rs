@@ -44,8 +44,6 @@
 //!     append-only `write`). Symbolic offset / symbolic data / fds not open
 //!     natively fall back to Python.
 
-use std::sync::atomic::AtomicU64;
-
 use super::errno::NEG_ONE;
 use super::require_syscall_args;
 use super::{
@@ -63,7 +61,7 @@ const MAX_IOVCNT: u64 = 1024;
 
 /// Counter for unique readv-from-stdin variable names. Independent of the
 /// `read` handler's counter (see `read::SYS_READ_COUNTER` rationale).
-static SYS_READV_COUNTER: AtomicU64 = AtomicU64::new(0);
+const SYS_READV_COUNTER: &str = "syscall:readv";
 
 /// `lseek(fd, offset, whence)` — adjust the file position.
 pub(crate) struct NativeLseekSyscall;
@@ -321,7 +319,7 @@ fn scatter_symbolic(
     for &(base, len) in segments {
         // One counter bump per segment (not per call), so two segments of the
         // same call get distinct name batches.
-        crate::syscalls::mint_symbolic_bytes(state, base, len, prefix, &SYS_READV_COUNTER)?;
+        crate::syscalls::mint_symbolic_bytes(state, base, len, prefix, SYS_READV_COUNTER)?;
         total += len;
     }
     Ok(SyscallOutcome::Continue { ret: total })

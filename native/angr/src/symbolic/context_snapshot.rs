@@ -104,20 +104,25 @@ pub struct SymContextSnapshot {
     /// The source context's `next_id` watermark at capture time
     /// (angr-op0dn.13.14).
     ///
-    /// Every `RustBV::Symbolic` / `Constrained` leaf carries an id minted from
-    /// this counter. A restored state builds a **fresh** `SymContext`, whose
-    /// counter would otherwise start at 0 — so the first symbol minted during
-    /// the resume re-uses an id a restored leaf already owns, and every
-    /// id-keyed lookup (the claripy export registry in
-    /// [`SymbolicIdentityRegistry`](super::SymbolicIdentityRegistry),
-    /// `stored_conditions`, the symbol table) silently aliases the two.
-    /// Restore seeds the counter back to this watermark.
+    /// `SymContext::new_bv` and `unique_name` suffix this counter into the
+    /// names they mint, and a named leaf is its name (angr-mx00p.12), so a
+    /// mint that reused a value a restored leaf's name holds would make the
+    /// two one variable. Restore raises the process-global counter to at
+    /// least this watermark.
     ///
-    /// `#[serde(default)]` yields `0` for legacy snapshots — restore reads that
-    /// as "not captured" and falls back to the max leaf id seen in
-    /// `assumed_constraints`.
+    /// `#[serde(default)]` yields `0` for legacy snapshots, which the
+    /// `fetch_max` on restore leaves as a no-op.
     #[serde(default)]
     pub next_id: u64,
+    /// The fresh-name counters' next indices at capture time
+    /// ([`super::names::watermarks`]). A named leaf is its name
+    /// (angr-mx00p.12), and a state restored in another process brings names
+    /// minted by counters that also started at 0, so restore raises every
+    /// counter to at least these values: no later mint can reuse a restored
+    /// name. `#[serde(default)]` yields an empty map for legacy snapshots,
+    /// which restore treats as nothing to reserve.
+    #[serde(default)]
+    pub name_counters: std::collections::BTreeMap<String, u64>,
     /// Whether the source context was in deterministic (unsigned-minimum
     /// witness) `eval` mode at capture time (angr-ph300.46).
     ///

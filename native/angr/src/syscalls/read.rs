@@ -27,8 +27,6 @@
 //!
 //! See `procedures/read.rs` for the fd-table sync invariant (angr-8j16).
 
-use std::sync::atomic::AtomicU64;
-
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
@@ -42,7 +40,7 @@ use crate::symbolic::RustBV;
 /// `procedures/read.rs` counter so name collisions only happen when the
 /// same callsite is hit twice (in which case they're already disambiguated
 /// by exploration order, like the procedure-level counter).
-static SYS_READ_COUNTER: AtomicU64 = AtomicU64::new(0);
+const SYS_READ_COUNTER: &str = "syscall:read";
 
 pub(crate) struct NativeReadSyscall;
 
@@ -148,7 +146,7 @@ fn read_stdin(
     buf: u64,
     count: u64,
 ) -> Result<SyscallOutcome, SyscallError> {
-    let names = crate::syscalls::fresh_byte_names("sys_read", &SYS_READ_COUNTER, count);
+    let names = crate::syscalls::fresh_byte_names("sys_read", SYS_READ_COUNTER, count);
     let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
     write_bv_bytes(state, buf, sym_bytes)?;
     Ok(SyscallOutcome::Continue { ret: count })
@@ -160,7 +158,7 @@ fn read_symbolic(
     count: u64,
     prefix: &str,
 ) -> Result<SyscallOutcome, SyscallError> {
-    crate::syscalls::mint_symbolic_bytes(state, buf, count, prefix, &SYS_READ_COUNTER)?;
+    crate::syscalls::mint_symbolic_bytes(state, buf, count, prefix, SYS_READ_COUNTER)?;
     Ok(SyscallOutcome::Continue { ret: count })
 }
 

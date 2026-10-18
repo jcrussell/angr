@@ -211,6 +211,7 @@ impl SymContext {
             // ids 0..watermark, so without this every symbol minted during the
             // resume aliases one of them.
             next_id: crate::symbolic::symbol_id_watermark(),
+            name_counters: super::names::watermarks(),
             // angr-ph300.46: witness-selection mode and the shared-lineage
             // opt-in are per-lineage flags that `fork` inherits, so a snapshot
             // must round-trip them or a restored deterministic state reverts to
@@ -341,6 +342,9 @@ impl SymContext {
             snap.next_id
                 .saturating_add(crate::symbolic::symbol_id_rebase_offset()),
         );
+        // angr-mx00p.12: names are identity, so the fresh-name counters are
+        // raised past every name the snapshot's process had minted.
+        super::names::reserve(&snap.name_counters);
         // angr-ph300.46: restore the per-lineage witness-selection mode and
         // shared-lineage opt-in captured by `to_snapshot`. The snapshot fields
         // always exist (legacy snapshots carry `false` via serde), but the

@@ -1186,10 +1186,10 @@ fn fresh_byte_names_uniquifies_per_batch_and_index() {
     // for why): the counter bumps once per *batch* so a batch's names are
     // `<prefix>_<id>_0..n`, and two batches from the same callsite never
     // collide (which would alias them to the same Z3 constant).
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    const COUNTER: &str = "mod_tests::fresh_byte_names_batches";
 
-    let first = fresh_byte_names("sys_probe", &COUNTER, 3);
-    let second = fresh_byte_names("sys_probe", &COUNTER, 3);
+    let first = fresh_byte_names("sys_probe", COUNTER, 3);
+    let second = fresh_byte_names("sys_probe", COUNTER, 3);
 
     assert_eq!(
         first,
@@ -1211,11 +1211,11 @@ fn fresh_byte_names_empty_batch_still_bumps_the_counter() {
     // batch the id it would have used — every handler guards count==0 before
     // calling, so this only pins that the shared helper can't silently
     // reuse an id if a future caller drops that guard.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    const COUNTER: &str = "mod_tests::fresh_byte_names_empty";
 
-    assert!(fresh_byte_names("sys_probe", &COUNTER, 0).is_empty());
+    assert!(fresh_byte_names("sys_probe", COUNTER, 0).is_empty());
     assert_eq!(
-        fresh_byte_names("sys_probe", &COUNTER, 1),
+        fresh_byte_names("sys_probe", COUNTER, 1),
         vec!["sys_probe_1_0"]
     );
 }
