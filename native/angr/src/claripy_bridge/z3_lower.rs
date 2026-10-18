@@ -419,6 +419,16 @@ impl Lowerer<'_> {
                 let rm = self.rounding_mode(*rm)?;
                 unsafe { Z3_mk_fpa_sqrt(c, rm.as_z3_ast(), arg(0)?) }
             }
+            AstOp::FpMin(..) => unsafe { Z3_mk_fpa_min(c, arg(0)?, arg(1)?) },
+            AstOp::FpMax(..) => unsafe { Z3_mk_fpa_max(c, arg(0)?, arg(1)?) },
+            AstOp::FpFma(.., rm) => {
+                let rm = self.rounding_mode(*rm)?;
+                unsafe { Z3_mk_fpa_fma(c, rm.as_z3_ast(), arg(0)?, arg(1)?, arg(2)?) }
+            }
+            AstOp::FpRoundToIntegral(_, rm) => {
+                let rm = self.rounding_mode(*rm)?;
+                unsafe { Z3_mk_fpa_round_to_integral(c, rm.as_z3_ast(), arg(0)?) }
+            }
             AstOp::FpToUBV(_, bits, rm) => {
                 let rm = self.rounding_mode(*rm)?;
                 unsafe { Z3_mk_fpa_to_ubv(c, rm.as_z3_ast(), arg(0)?, *bits) }

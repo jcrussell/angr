@@ -87,6 +87,33 @@ fn float_ops_lower_with_ieee_semantics() {
     assert_eq!(check(&[constraint, not_three]), z3::SatResult::Unsat);
 }
 
+/// `fp.min`/`fp.max` take the number over a NaN, `fp.fma` rounds once and
+/// `fp.roundToIntegral` follows its rounding mode: each `got != want` is unsat.
+#[test]
+fn min_max_fma_and_round_to_integral_lower_with_ieee_semantics() {
+    let gc = &*GLOBAL_CONTEXT;
+    let v = |x: f64| gc.fpv(x).unwrap();
+    let rne = FPRM::NearestTiesToEven;
+    let cases = [
+        (gc.fp_min(v(f64::NAN), v(1.0)).unwrap(), 1.0),
+        (gc.fp_max(v(2.0), v(f64::NAN)).unwrap(), 2.0),
+        // (1 + eps) * (1 - eps) - 1 is -2^-104 only when the product is not
+        // rounded first.
+        (
+            gc.fp_fma(v(1.0 + f64::EPSILON), v(1.0 - f64::EPSILON), v(-1.0), rne)
+                .unwrap(),
+            -(2f64.powi(-104)),
+        ),
+        (gc.fp_round_to_integral(v(2.5), rne).unwrap(), 2.0),
+        (gc.fp_round_to_integral(v(2.5), FPRM::TowardPositive).unwrap(), 3.0),
+    ];
+    for (got, want) in cases {
+        let differs = as_bool(&gc.neq(got.clone(), v(want)).unwrap());
+        // satresult-exempt: test oracle comparing two decided verdicts
+        assert_eq!(check(&[differs]), z3::SatResult::Unsat, "{got:?} != {want}");
+    }
+}
+
 #[test]
 fn bool_xor_lowers() {
     // `claripy_to_rustbv` has no arm for a Bool `Xor`; the lowering does.

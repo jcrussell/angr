@@ -57,6 +57,12 @@ macro_rules! wire_ops {
             $($un $({ $($unp: $unt),* })?,)*
             $($bin $({ $($binp: $bint),* })?,)*
             $($ter,)*
+            // Ops added after the wire format shipped, appended by hand so
+            // the postcard variant index of every earlier op stays put.
+            FpMin,
+            FpMax,
+            FpFma { rm: FPRM },
+            FpRoundToIntegral { rm: FPRM },
         }
 
         impl WireOp {
@@ -74,6 +80,10 @@ macro_rules! wire_ops {
                     $(AstOp::$un(_ $($(, $unp)*)?) => WireOp::$un $({ $($unp: *$unp),* })?,)*
                     $(AstOp::$bin(_, _ $($(, $binp)*)?) => WireOp::$bin $({ $($binp: *$binp),* })?,)*
                     $(AstOp::$ter(..) => WireOp::$ter,)*
+                    AstOp::FpMin(..) => WireOp::FpMin,
+                    AstOp::FpMax(..) => WireOp::FpMax,
+                    AstOp::FpFma(.., rm) => WireOp::FpFma { rm: *rm },
+                    AstOp::FpRoundToIntegral(_, rm) => WireOp::FpRoundToIntegral { rm: *rm },
                 }
             }
 
@@ -140,6 +150,22 @@ macro_rules! wire_ops {
                         arity(3)?;
                         AstOp::$ter(c(0), c(1), c(2))
                     })*
+                    WireOp::FpMin => {
+                        arity(2)?;
+                        AstOp::FpMin(c(0), c(1))
+                    }
+                    WireOp::FpMax => {
+                        arity(2)?;
+                        AstOp::FpMax(c(0), c(1))
+                    }
+                    WireOp::FpFma { rm } => {
+                        arity(3)?;
+                        AstOp::FpFma(c(0), c(1), c(2), rm)
+                    }
+                    WireOp::FpRoundToIntegral { rm } => {
+                        arity(1)?;
+                        AstOp::FpRoundToIntegral(c(0), rm)
+                    }
                 })
             }
         }

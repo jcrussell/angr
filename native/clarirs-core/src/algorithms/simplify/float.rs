@@ -89,6 +89,26 @@ pub(crate) fn simplify_float<'c>(
                 _ => Ok(ctx.fp_sqrt(arc, *fprm)?),
             }
         }
+        // Rebuilt over simplified operands without constant folding: the
+        // concrete Float type has no fused multiply-add or round-to-integral,
+        // and min/max of zeros of either sign is left to the solver.
+        AstOp::FpMin(..) => Ok(ctx.fp_min(
+            state.get_child_simplified(0)?,
+            state.get_child_simplified(1)?,
+        )?),
+        AstOp::FpMax(..) => Ok(ctx.fp_max(
+            state.get_child_simplified(0)?,
+            state.get_child_simplified(1)?,
+        )?),
+        AstOp::FpFma(.., fprm) => Ok(ctx.fp_fma(
+            state.get_child_simplified(0)?,
+            state.get_child_simplified(1)?,
+            state.get_child_simplified(2)?,
+            *fprm,
+        )?),
+        AstOp::FpRoundToIntegral(_, fprm) => {
+            Ok(ctx.fp_round_to_integral(state.get_child_simplified(0)?, *fprm)?)
+        }
         AstOp::FpToFp(_, fsort, fprm) => {
             let arc = state.get_child_simplified(0)?;
             match arc.op() {
