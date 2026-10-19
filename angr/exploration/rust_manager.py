@@ -1467,6 +1467,13 @@ class RustExplorationManager(
         if simos_name:
             self._rust_mgr.set_os_name(simos_name)
 
+        # A SimOS without a syscall library (plain SimOS, Windows) has no
+        # syscall procedures on the Python engine (``SimOS.syscall`` returns
+        # None), so the Rust engine must not run its Linux handlers there
+        # either (angr-mx00p.35).
+        if getattr(getattr(project, "simos", None), "syscall_library", None) is None:
+            self._rust_mgr.clear_native_syscalls()
+
         # angr-op0dn.10.3: strict-deterministic witness selection. The Z3 seed
         # pin above only stabilizes *which model Z3 builds*; this makes the
         # witness a function of the constraints alone (unsigned-minimum for

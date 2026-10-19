@@ -72,6 +72,16 @@ impl RustExplorationManager {
         self.native_procedures.has_native(name)
     }
 
+    /// Drop every native syscall handler, so each syscall takes the Python
+    /// path. The Python wrapper calls this when the project's SimOS has no
+    /// syscall library (a plain `SimOS`, or Windows): Python's engine has no
+    /// syscall procedures there either, so the Rust engine must not run Linux
+    /// handlers in their place.
+    #[angr_macros::steady_guarded]
+    pub fn clear_native_syscalls(&mut self) {
+        self.native_syscalls = Arc::new(NativeSyscallRegistry::empty());
+    }
+
     /// The native syscall dispatch table as `{angr ABI name: {number: handler name}}`.
     ///
     /// The ABI names are the keys of angr's

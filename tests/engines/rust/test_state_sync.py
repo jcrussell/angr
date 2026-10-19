@@ -146,7 +146,7 @@ class TestMmapMapFixedNative:
         and the standard amd64 syscall ABI registers set for an mmap call."""
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = 9  # mmap
         state.regs.rdi = target_addr  # addr

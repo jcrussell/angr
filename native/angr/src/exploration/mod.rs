@@ -247,8 +247,9 @@ pub struct RustExplorationManager {
     /// so that is an in-place mutation, not a deep clone); read via `Deref`.
     pub(crate) native_procedures: Arc<NativeProcedureRegistry>,
     /// Native syscall registry (skip Python `_handle_syscall_callback` round-trip).
-    /// `Arc`-wrapped for the same per-wave O(1) snapshot; never mutated after
-    /// construction, so no `Arc::make_mut` sites exist for it.
+    /// `Arc`-wrapped for the same per-wave O(1) snapshot. Never mutated in
+    /// place: the steady-guarded setters replace the whole `Arc`, so no
+    /// `Arc::make_mut` sites exist for it.
     pub(crate) native_syscalls: Arc<NativeSyscallRegistry>,
     /// VEX fallback tracking: count and unique addresses.
     pub(crate) vex_fallback_count: u64,

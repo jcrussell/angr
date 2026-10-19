@@ -29,7 +29,7 @@ BAD = LOAD + 0x1D
 
 
 def _found_stdin(make_state):
-    proj = angr.load_shellcode(SHELLCODE, arch="amd64", load_address=LOAD)
+    proj = angr.load_shellcode(SHELLCODE, arch="amd64", simos="linux", load_address=LOAD)
     state, sym = make_state(proj)
     mgr = RustExplorationManager(proj, [state])
     mgr.explore(find=GOOD, avoid=BAD)

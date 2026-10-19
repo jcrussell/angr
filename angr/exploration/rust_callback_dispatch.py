@@ -16,7 +16,7 @@ import time
 from typing import TYPE_CHECKING
 
 from angr import claripy
-from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
+from angr.errors import SimUnsatError
 from angr.exploration.rust_state_export import (
     POSIX_SYNC_FDS,
     _concrete_stream_bytes,
@@ -30,6 +30,14 @@ if TYPE_CHECKING:
 
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)
+
+# engines/syscall.py's message for a syscall on a SimOS with no syscall
+# procedures; the syscall callback errors the state with the same text.
+_UNSUPPORTED_SYSCALL_MSG = (
+    "Trying to perform a syscall on an emulated system which is not currently configured to support "
+    "syscalls. To resolve this, make sure that your SimOS is a subclass of SimUserspace, or set the "
+    "BYPASS_UNSUPPORTED_SYSCALL state option."
+)
 
 
 class _RustInjectedStdin(claripy.Annotation):
@@ -1808,7 +1816,24 @@ class RustCallbackDispatchMixin:
                 sc_name = str(syscall_num)
 
             if sc_proc is None:
-                raise AngrUnsupportedSyscallError(f"no syscall handler for {syscall_num}")
+                # Mirror engines/syscall.py: with no syscall procedure (a SimOS
+                # without a syscall library) the Python engine errors the state
+                # unless BYPASS_UNSUPPORTED_SYSCALL asks for the generic stub
+                # (angr-mx00p.35). Resuming the state instead would run on past
+                # a syscall nothing executed.
+                import angr  # pylint:disable=import-outside-toplevel
+
+                if angr.sim_options.BYPASS_UNSUPPORTED_SYSCALL not in state.options:
+                    self._rust_mgr.resume_after_error(state_id, _UNSUPPORTED_SYSCALL_MSG)
+                    return
+                try:
+                    cc = angr.SYSCALL_CC[state.arch.name][state.os_name](state.arch)
+                except KeyError:
+                    try:
+                        cc = angr.SYSCALL_CC[state.arch.name]["default"](state.arch)
+                    except KeyError:
+                        cc = None
+                sc_proc = angr.SIM_PROCEDURES["stubs"]["syscall"](cc=cc)
 
             # Linux's syscall CC returns to the ``ip_at_syscall`` register,
             # which VEX sets on the syscall exit. Rust builds the callback

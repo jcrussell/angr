@@ -54,7 +54,7 @@ class TestNativeIdentitySyscalls:
     def test_identity_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
 
@@ -88,7 +88,7 @@ class TestNativeSetuidSetgidSyscalls:
     def test_set_id_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         state.regs.rdi = 0  # concrete uid/gid arg (ignored by handler)
@@ -129,7 +129,7 @@ class TestNativeMemoryExtraSyscalls:
     def test_memory_extra_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         # Concrete args (ignored by handler).
@@ -175,7 +175,7 @@ class TestNativeSignalSyscalls:
     def test_signal_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         for reg in ("rdi", "rsi", "rdx", "r10", "r8"):
@@ -213,7 +213,7 @@ class TestNativeResourceLimitSyscalls:
     def test_rlimit_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         # Concrete args. For getrlimit pass resource != 3 so we hit the
@@ -243,7 +243,7 @@ class TestNativeResourceLimitSyscalls:
         """
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = 97  # getrlimit
         state.regs.rdi = 3  # RLIMIT_STACK
@@ -291,7 +291,7 @@ class TestNativeSimTimeSyscalls:
     def test_sim_time_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
@@ -331,7 +331,7 @@ class TestNativeDirectorySyscalls:
     def test_directory_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
@@ -355,7 +355,7 @@ class TestRustRejectsUseSystemTimes:
 
     def test_use_system_times_warns_once(self):
 
-        proj = angr.load_shellcode(b"\x0f\x05" + b"\x90" * 0x100, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(b"\x0f\x05" + b"\x90" * 0x100, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000, add_options={angr.options.USE_SYSTEM_TIMES})
 
         with pytest.warns(UserWarning, match="USE_SYSTEM_TIMES"):
@@ -377,7 +377,7 @@ class TestNativeReadlinkSyscall:
     def test_readlink_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 89  # readlink
@@ -412,7 +412,7 @@ class TestNativeReadlinkatSyscall:
     def test_readlinkat_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 267  # readlinkat
@@ -449,7 +449,7 @@ class TestSeededSymlinkReadlink:
         # state at 0x1002 so its rax (the return value) survives instead of
         # diverging into unmapped memory and getting filled.
         shellcode = b"\x0f\x05\xeb\xfe"
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         target = b"/real/target"
         state.memory.store(0x4000, b"/link\x00")
@@ -495,7 +495,7 @@ class TestNativeFaccessatSyscall:
     def test_faccessat_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 269  # faccessat
@@ -548,7 +548,7 @@ class TestNativeFdAllocatingSyscalls:
     def test_fd_alloc_syscall_dispatches_natively(self, syscall_num, label, setup_args):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/tmp/k3ol\x00")
         state.regs.rax = syscall_num
@@ -588,7 +588,7 @@ class TestNativeAccessSyscall:
     def test_access_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 21  # access
@@ -626,7 +626,7 @@ class TestNativeFstatSyscall:
     def test_fstat_unknown_fd_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         # statbuf at 0x4000 — page is mapped by blank_state setup or the
         # store would fault, but with an unknown fd the handler returns
@@ -665,7 +665,7 @@ class TestNativeStatSyscall:
     def test_stat_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 4  # stat
@@ -701,7 +701,7 @@ class TestNativeLstatSyscall:
     def test_lstat_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 6  # lstat
@@ -737,7 +737,7 @@ class TestNativeNewfstatatSyscall:
     def test_newfstatat_unknown_path_dispatches_natively(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.memory.store(0x4000, b"/no/such/path\x00")
         state.regs.rax = 262  # newfstatat
@@ -783,7 +783,7 @@ class TestNativeConcurrencySyscalls:
     def test_concurrency_syscall_dispatches_natively(self, syscall_num, label, futex_op):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         state.regs.rdi = 0
@@ -836,7 +836,7 @@ class TestNativeFileDescriptorSyscalls:
     def test_fd_control_syscall_dispatches_natively(self, syscall_num, label):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = syscall_num
         for reg in ("rdi", "rsi", "rdx", "r10", "r8"):

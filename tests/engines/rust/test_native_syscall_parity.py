@@ -111,3 +111,41 @@ def test_every_row_names_the_handlers_syscall(abi):
         if angr_name != handler and (handler, angr_name) not in HANDLER_ALIASES:
             wrong[num] = (handler, angr_name)
     assert not wrong, f"{abi}: number -> (native handler, angr's name): {wrong}"
+
+
+def _exit_shellcode_project(simos=None):
+    # mov eax, 60 ; mov edi, 7 ; syscall  (amd64 exit(7))
+    sc = bytes.fromhex("b83c000000bf070000000f05")
+    kwargs = {"simos": simos} if simos else {}
+    return angr.load_shellcode(sc, arch="AMD64", load_address=0x1000, **kwargs)
+
+
+def test_plain_simos_has_no_native_syscalls():
+    """A SimOS without a syscall library gets no native syscall handlers.
+
+    Python's engine has no syscall procedures for a plain ``SimOS``
+    (``SimOS.syscall`` returns None) and errors the state, so the Rust engine
+    must neither run its Linux handlers there nor resume past the syscall.
+    """
+    proj = _exit_shellcode_project()
+    assert getattr(proj.simos, "syscall_library", None) is None
+
+    simgr = proj.factory.simulation_manager(proj.factory.entry_state(addr=0x1000))
+    simgr.run()
+    assert len(simgr.errored) == 1 and not simgr.deadended
+    python_error = str(simgr.errored[0].error)
+
+    mgr = RustExplorationManager(proj, [proj.factory.entry_state(addr=0x1000)])
+    assert mgr._rust_mgr.native_syscall_table() == {}
+    mgr.run()
+    assert not mgr.deadended, "exit(7) must not run natively under a plain SimOS"
+    assert len(mgr.errored) == 1
+    assert python_error in str(mgr.errored[0])
+
+
+def test_linux_simos_keeps_native_syscalls():
+    proj = _exit_shellcode_project("linux")
+    mgr = RustExplorationManager(proj, [proj.factory.entry_state(addr=0x1000)])
+    assert mgr._rust_mgr.native_syscall_table()["amd64"][60] == "exit"
+    mgr.run()
+    assert len(mgr.deadended) == 1

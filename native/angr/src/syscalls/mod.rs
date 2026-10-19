@@ -844,6 +844,13 @@ impl NativeSyscallRegistry {
         r
     }
 
+    /// A registry with no handlers: every syscall goes to the Python path.
+    pub(crate) fn empty() -> Self {
+        NativeSyscallRegistry {
+            handlers: HashMap::new(),
+        }
+    }
+
     pub(crate) fn register(
         &mut self,
         arch: &'static str,

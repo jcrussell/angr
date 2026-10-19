@@ -1422,7 +1422,7 @@ class TestRustExplorationPython:
         import angr
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.rax = 60  # exit
 
@@ -1457,7 +1457,7 @@ class TestRustExplorationPython:
         # Only the syscall is mapped so the successor deadends immediately and
         # freezes $a3 (see the error-path test for why padding is avoided).
         shellcode = b"\x0c\x00\x00\x00"
-        proj = angr.load_shellcode(shellcode, arch="mipsel", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="mipsel", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.v0 = 4020  # getpid
         state.regs.a3 = 0x12345678  # sentinel: must be overwritten to 0
@@ -1494,7 +1494,7 @@ class TestRustExplorationPython:
         # nops lets the engine run past the syscall and clobber $v0 before we
         # can read it — $a3 happens to survive, but $v0 does not.)
         shellcode = b"\x0c\x00\x00\x00"
-        proj = angr.load_shellcode(shellcode, arch="mipsel", load_address=0x1000)
+        proj = angr.load_shellcode(shellcode, arch="mipsel", simos="linux", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         state.regs.v0 = 4006  # close
         state.regs.a0 = 9999  # never-opened fd -> -EBADF path
