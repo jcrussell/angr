@@ -1316,14 +1316,13 @@ class RustExplorationManager(
                 behavior of bouncing every in-object hook to Python.
             use_native_lift: If True (default), lift cold blocks in-process
                 through the native libVEX seam instead of the pyvex Python
-                callback. Only an AMD64 target uses it today; on any other
-                arch the flag is inert and lifting stays on the callback
-                path. Blocks whose bytes are
-                not fully concrete in the Rust memory sidecar (and blocks
-                with a VEX opt-level override) fall back to the callback
-                with an identical IRSB, so setting this False only costs
-                speed, never fidelity. See
-                docs/advanced-topics/rust_libvex_ffi.rst.
+                callback. It stays off when the callback would not be a
+                plain libVEX lift (``kb.patches``, a custom pyvex lifter or
+                ``lift_vex``). Blocks whose bytes are not fully concrete in
+                the Rust memory sidecar, Thumb blocks, and blocks libVEX
+                cannot fully decode fall back to the callback with an
+                identical IRSB, so setting this False only costs speed,
+                never fidelity. See docs/advanced-topics/rust_libvex_ffi.rst.
             deterministic: If True, pin ``smt.random_seed`` and
                 ``sat.random_seed`` to 0 via ``Z3_global_param_set``
                 before any new solver is constructed (angr-iaol.2).
@@ -1495,10 +1494,9 @@ class RustExplorationManager(
         # default (angr-op0dn.2.2; rationale in
         # docs/advanced-topics/rust_libvex_ffi.rst): any block the native
         # lifter cannot serve falls back to the pyvex callback with an
-        # identical IRSB. The AMD64 restriction is this Python gate's alone:
-        # the Rust lifter takes any arch libVEX has a guest for.
+        # identical IRSB.
         self._use_native_lift = bool(use_native_lift)
-        if self._use_native_lift and project.arch.name == "AMD64":
+        if self._use_native_lift:
             settings = _native_lift_settings(project)
             if settings is not None:
                 self._rust_mgr.set_native_lift(project.arch, **settings)

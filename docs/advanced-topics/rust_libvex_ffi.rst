@@ -3,7 +3,7 @@ libVEX FFI native lifting
 
 .. note::
 
-   **Status: shipped and on by default for AMD64** (feasibility
+   **Status: shipped and on by default** (feasibility
    ``angr-z087y``, default flip ``angr-3trr7``, runtime binding
    ``angr-mx00p.33``). This page keeps the argument for why binding pyvex's
    own libVEX is parity-safe, how the binding is made, where the native lifter
@@ -122,15 +122,14 @@ Open risks
   made outside the engine serialize only on pyvex's Python lock, so they can
   still overlap a native lift (``angr-mx00p.45``).
 
-Default-on on AMD64
--------------------
+Default-on
+----------
 
 ``RustExplorationManager(use_native_lift=...)`` defaults to **True**
-(``angr-op0dn.2.2``). ``RustExplorationManager.__init__`` in
-``rust_manager.py`` calls ``set_native_lift(project.arch)`` only when
-``project.arch.name == "AMD64"``; that Python check is the gate that makes
-native lift AMD64-only. The Rust lifter itself is wider:
-``NativeLibVEXLifter::from_py_arch`` builds a lifter for any guest libVEX has.
+(``angr-op0dn.2.2``) on every arch the engine runs (``angr-mx00p.33``
+lifted the earlier AMD64-only gate). ``RustExplorationManager.__init__`` in
+``rust_manager.py`` calls ``set_native_lift(project.arch, ...)`` unless
+``_native_lift_settings`` finds the callback would not be a plain libVEX lift.
 
 It is on by default because it is parity-safe and never a loss: it binds
 the same libVEX with the same configuration as pyvex (see *Why binding
