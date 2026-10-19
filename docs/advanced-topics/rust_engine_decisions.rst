@@ -160,3 +160,35 @@ libVEX itself never produces: a Python-built ``U1`` holds an int, a Spotter's
 they came through the callback. ``vex/pyvex_reader.rs`` now reads the live
 objects over PyO3 with the GIL the callback already holds, using the
 native lifter's field conventions; see :doc:`rust_libvex_ffi`.
+
+Architecture and ABI tables
+---------------------------
+
+**Register tables are not loaded from archinfo at run time**
+(``angr-mx00p.34``). Passing archinfo's register table into Rust when the
+manager is built, and deleting ``arch/*.rs``'s ``CANONICAL`` / ``ALIASES``,
+was the original plan. The engine needs the tables before any manager
+exists: the seed state is built standalone, snapshots rebuild an arch from
+its name, ``Clone for Box<dyn Arch>`` relies on the arches being zero-sized
+singletons, and the Rust unit tests build states with no Python at all. So
+the built-in tables would stay either way, and a second, runtime copy would
+add a sync problem rather than remove one. Instead the Rust tables are the
+engine's source of truth. ``tests/engines/rust/test_arch_offset_parity.py``
+checks them against archinfo's VEX guest layout in both directions, along
+with the special-purpose and calling-convention registers. The Python
+side reads them through ``arch_register_info`` instead of keeping its own
+copies, and the exported-name list is derived from ``CANONICAL`` rather
+than kept by hand.
+
+**Syscall numbers are angr's, not a Rust table** (``angr-mx00p.35``). The
+native syscall handlers used to sit in one hand-written
+``(number, handler)`` table per arch, transcribed from angr's
+``linux_kernel.py``. A transcription slip once sent i386 ``signalfd4``
+into the stat writer (``angr-sqfj8.107``), and every per-arch quirk of
+angr's numbering had to be re-learned for each new handler. The handlers are now registered by
+the name angr gives each syscall, and each manager resolves the numbers from
+its SimOS's ``syscall_number_mapping``, so no number is spelled in Rust and
+DECREE needs no special key. The cost is that an upstream renumbering changes
+dispatch without a Rust edit. That is intended: angr is the source, and
+``tests/engines/rust/test_native_syscall_parity.py`` checks every resolved
+row against angr's names.
