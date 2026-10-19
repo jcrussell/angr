@@ -1073,6 +1073,42 @@ def _install_stash_accessors(cls):
     return cls
 
 
+def _native_lift_settings(project) -> dict | None:
+    """The lifter settings for ``RustExplorationManager.set_native_lift``, or
+    None when native lifting could not match the ``lift_block`` callback.
+
+    The callback lifts through ``project.factory.block(addr)``, so a native
+    lift only stands in for it when that would be a plain libVEX lift with the
+    engine's settings: libVEX is the arch's first pyvex lifter and no
+    postprocessor rewrites its output, the engine keeps the stock
+    ``VEXLifter.lift_vex``, and no ``kb.patches`` are applied (``lift_vex``
+    lifts patched bytes from a patched state; native lift reads the loaded
+    image, angr-mx00p.46). Patches added after the manager is built are not
+    seen.
+    """
+    from pyvex.lifting import LibVEXLifter
+    from pyvex.lifting.lift_function import lifters, postprocessors
+
+    from angr.engines.vex.lifter import VEXLifter
+
+    arch_name = project.arch.name
+    arch_lifters = lifters.get(arch_name) or []
+    if not arch_lifters or arch_lifters[0] is not LibVEXLifter or postprocessors.get(arch_name):
+        return None
+    engine = project.factory.default_engine
+    if not isinstance(engine, VEXLifter) or type(engine).lift_vex is not VEXLifter.lift_vex:
+        return None
+    if project.kb.patches.items():
+        return None
+    return {
+        "default_opt_level": engine._default_opt_level,
+        "strict_block_end": bool(engine.default_strict_block_end),
+        # A stateless `factory.block` lift always has cross_insn_opt on.
+        "cross_insn_opt": True,
+        "selfmodifying_code": bool(engine.selfmodifying_code),
+    }
+
+
 @_install_stash_accessors
 class RustExplorationManager(
     RustCallbackDispatchMixin,
@@ -1463,7 +1499,9 @@ class RustExplorationManager(
         # the Rust lifter takes any arch libVEX has a guest for.
         self._use_native_lift = bool(use_native_lift)
         if self._use_native_lift and project.arch.name == "AMD64":
-            self._rust_mgr.set_native_lift(project.arch)
+            settings = _native_lift_settings(project)
+            if settings is not None:
+                self._rust_mgr.set_native_lift(project.arch, **settings)
 
         # Configure exploration strategy. Reuses the post-init setter so the
         # validation and FFI-call shape live in one place. Always invoke so a

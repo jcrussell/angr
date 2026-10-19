@@ -630,14 +630,37 @@ impl RustExplorationManager {
     /// Enable native (in-process) libVEX cold-block lifting for `arch` (a
     /// Python `archinfo.Arch`), or disable it with `None`.
     ///
-    /// Propagated to every per-step `VEXInterpreter` (z087y Stage-2). Raises
-    /// when the loaded `libpyvex` has no `vex_lift` or libVEX has no guest
-    /// for the arch.
-    #[pyo3(signature = (arch))]
+    /// The other arguments are the engine's lifter settings
+    /// (`VEXLifter._default_opt_level`, `default_strict_block_end`,
+    /// `selfmodifying_code`, and `cross_insn_opt`), so native lifts match the
+    /// Python `lift_block` callback's. Propagated to every per-step
+    /// `VEXInterpreter` (z087y Stage-2). Raises when the loaded `libpyvex` has
+    /// no `vex_lift` or libVEX has no guest for the arch.
+    #[pyo3(signature = (
+        arch,
+        default_opt_level = 1,
+        strict_block_end = false,
+        cross_insn_opt = true,
+        selfmodifying_code = false,
+    ))]
     #[angr_macros::steady_guarded]
-    pub fn set_native_lift(&mut self, arch: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    pub fn set_native_lift(
+        &mut self,
+        arch: Option<&Bound<'_, PyAny>>,
+        default_opt_level: i32,
+        strict_block_end: bool,
+        cross_insn_opt: bool,
+        selfmodifying_code: bool,
+    ) -> PyResult<()> {
+        use crate::vex::libvex_lifter::{LiftSettings, NativeLibVEXLifter};
+        let settings = LiftSettings {
+            default_opt_level,
+            strict_block_end,
+            cross_insn_opt,
+            selfmodifying_code,
+        };
         self.memory_config.native_lifter = arch
-            .map(crate::vex::libvex_lifter::NativeLibVEXLifter::from_py_arch)
+            .map(|a| NativeLibVEXLifter::from_py_arch(a).map(|l| l.with_settings(settings)))
             .transpose()?;
         Ok(())
     }

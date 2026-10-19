@@ -12,7 +12,10 @@
 //! guest tag comes from `arch.vex_arch` and the `VexArchInfo` from
 //! `arch.vex_archinfo`, the same inputs pyvex's `LibVEXLifter._lift` passes,
 //! so endianness, hwcaps and `x86_cr0` follow the project's arch instead of
-//! being guessed from the Rust [`VexArch`].
+//! being guessed from the Rust [`VexArch`]. [`LiftSettings`] carries the
+//! engine's opt level, `strict_block_end`, `cross_insn_opt` and
+//! self-modifying-code setting, so a lift matches what the Python callback's
+//! `project.factory.block(addr)` would produce.
 //!
 //! The marshalling mirrors `pyvex_bridge.rs::convert_*` node-for-node — same
 //! `vex::ir` target shape — but reads the raw C structs instead of a
@@ -24,14 +27,13 @@
 //! - `vex_lift` returns a pointer into libVEX's temporary arena; it is clobbered
 //!   on the next `vex_lift` call. We marshal the whole `IRSB` into owned Rust
 //!   types *before* releasing the lift lock, so nothing outlives the arena.
-//! - libVEX global state (`vex_control`, the arena) is not re-entrant. A single
-//!   process-wide `LIFT_LOCK` mutex serializes every lift.
+//! - libVEX global state (`vex_control`, the arena) is not re-entrant. The
+//!   process-wide lock behind `lift_lock` serializes every lift the engine
+//!   makes, native or through the Python callback.
 //!
 //! **Panic policy (angr-9ke6b.212):** the guest bytes handed to
-//! [`NativeLibVEXLifter::lift`] are untrusted and every marshalling failure
+//! [`NativeLibVEXLifter::lift_at`] are untrusted and every marshalling failure
 //! returns a [`LiftError`], which the caller turns into a Python-lift fallback.
-//! The one `expect` is the `LIFT_LOCK` poison guard, unreachable in the
-//! shipped build — see the crate-level panic policy in `lib.rs`.
 //!
 //! The `deny` below follows the crate [Panic policy](crate#panic-policy)
 //! (angr-qwyti.11).
@@ -45,7 +47,8 @@
 
 use std::ffi::{CStr, c_int};
 use std::ptr;
-use std::sync::Mutex;
+
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -70,6 +73,10 @@ const VEX_MAX_INSTRUCTIONS: u32 = 99;
 /// `VexRegisterUpdates::VexRegUpdUnwindregsAtMemAccess`, the `px_control`
 /// pyvex passes when `cross_insn_opt` is on (angr's default).
 const VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS: u32 = 0x702;
+
+/// `VexRegisterUpdates::VexRegUpdLdAllregsAtEachInsn`, the `px_control`
+/// pyvex passes when `cross_insn_opt` is off.
+const VEX_REG_UPD_LD_ALLREGS_AT_EACH_INSN: u32 = 0x705;
 
 // Enum tags `ailment::vex_ffi` does not carry, from `pyvex/pyvex/vex_ffi.py`.
 // `test_native_lift_parity.py` checks every one against pyvex's cffi library.
@@ -149,8 +156,40 @@ fn tag_name(table: &'static [&'static str], base: u32, tag: u32) -> Option<&'sta
     table.get(usize::try_from(idx).ok()?).copied()
 }
 
-/// Serializes every `vex_lift` call — libVEX global state is not re-entrant.
-static LIFT_LOCK: Mutex<()> = Mutex::new(());
+/// Serializes every libVEX lift the engine makes — libVEX global state is not
+/// re-entrant. Taken through [`lift_lock`] only.
+static LIFT_LOCK: ReentrantMutex<()> = parking_lot::const_reentrant_mutex(());
+
+/// Take the process-wide libVEX lift lock (angr-mx00p.45).
+///
+/// Both of the engine's lift paths hold it: [`NativeLibVEXLifter`]'s FFI
+/// call, and the Python `lift_block` callback in
+/// `VEXInterpreter::get_or_lift_block`, whose pyvex lift enters the same
+/// libVEX with the GIL released inside cffi. The lock order is lift lock,
+/// then GIL: this never *waits* for the lock while holding the GIL, so a
+/// thread that holds the lock may block on the GIL (the callback does)
+/// without deadlocking against a thread that holds the GIL and wants the
+/// lock. Reentrant so a callback that lifts again on the same thread does
+/// not self-deadlock. pyvex's own `pyvex.lift` callers outside the engine
+/// still serialize only on pyvex's Python lock.
+pub(crate) fn lift_lock() -> ReentrantMutexGuard<'static, ()> {
+    if let Some(guard) = LIFT_LOCK.try_lock() {
+        return guard;
+    }
+    // Contended: wait with the GIL released. `try_attach` reuses the GIL when
+    // this thread holds it (and otherwise takes it, harmless while no lift
+    // lock is held); it returns `None` when there is no interpreter at all.
+    // The guard is not `Send`, so it cannot leave `detach`'s closure: forget
+    // it there and rebuild it below.
+    let waited = Python::try_attach(|py| py.detach(|| std::mem::forget(LIFT_LOCK.lock())));
+    match waited {
+        // SAFETY: `detach` runs its closure on this thread, so the forgotten
+        // guard left this thread holding exactly one acquisition, which the
+        // rebuilt guard now owns.
+        Some(()) => unsafe { LIFT_LOCK.make_guard_unchecked() },
+        None => LIFT_LOCK.lock(),
+    }
+}
 
 /// The `VexArchInfo` fields pyvex fills from `arch.vex_archinfo`, kept as
 /// plain data so the lifter is `Send` (the C struct holds a raw cache pointer).
@@ -218,6 +257,34 @@ fn vex_arch_tag(name: &str) -> Option<u32> {
 pub struct NativeLibVEXLifter {
     guest: u32,
     info: ArchInfo,
+    settings: LiftSettings,
+}
+
+/// The lift settings angr's `VEXLifter.lift_vex` resolves for a stateless
+/// `project.factory.block(addr)` — what the Python `lift_block` callback
+/// lifts with — so a native lift passes libVEX the same configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiftSettings {
+    /// The engine's `_default_opt_level`, used when no override applies.
+    pub default_opt_level: i32,
+    /// The engine's `default_strict_block_end`.
+    pub strict_block_end: bool,
+    /// `cross_insn_opt`; on for a stateless lift.
+    pub cross_insn_opt: bool,
+    /// The engine's `selfmodifying_code`, which forces opt level 0.
+    pub selfmodifying_code: bool,
+}
+
+impl Default for LiftSettings {
+    /// angr's `VEXLifter` defaults.
+    fn default() -> Self {
+        LiftSettings {
+            default_opt_level: 1,
+            strict_block_end: false,
+            cross_insn_opt: true,
+            selfmodifying_code: false,
+        }
+    }
 }
 
 impl NativeLibVEXLifter {
@@ -264,16 +331,27 @@ impl NativeLibVEXLifter {
             arm64_requires_fallback_llsc: geti("arm64_requires_fallback_LLSC")? as u8,
             x86_cr0: geti("x86_cr0")? as u32,
         };
-        Ok(NativeLibVEXLifter { guest, info })
+        Ok(NativeLibVEXLifter {
+            guest,
+            info,
+            settings: LiftSettings::default(),
+        })
     }
-}
 
-impl VEXLifter for NativeLibVEXLifter {
-    #[allow(
-        clippy::expect_used,
-        reason = "`LIFT_LOCK` poison guard: poison requires an unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
-    )]
-    fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
+    /// This lifter with `settings` in place of angr's defaults.
+    pub fn with_settings(self, settings: LiftSettings) -> Self {
+        NativeLibVEXLifter { settings, ..self }
+    }
+
+    /// Lift at `opt_level` (`None` takes the default), forced to 0 under
+    /// self-modifying code as angr's lifter does.
+    pub fn lift_at(
+        &self,
+        bytes: &[u8],
+        addr: u64,
+        arch: VexArch,
+        opt_level: Option<i32>,
+    ) -> Result<IRSB, LiftError> {
         // `from_py_arch` refuses to build a lifter without the symbol, so a
         // miss here means it was never resolved in this process.
         let Some(vex_lift) = ffi::vex_lift_fn() else {
@@ -291,8 +369,19 @@ impl VEXLifter for NativeLibVEXLifter {
 
         // Cap max_bytes to the slice length so libVEX never reads past `bytes`.
         let max_bytes = bytes.len().min(super::VEX_MAX_BYTES) as u32;
+        let settings = self.settings;
+        let opt_level = if settings.selfmodifying_code {
+            0
+        } else {
+            opt_level.unwrap_or(settings.default_opt_level)
+        };
+        let px_control = if settings.cross_insn_opt {
+            VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS
+        } else {
+            VEX_REG_UPD_LD_ALLREGS_AT_EACH_INSN
+        };
 
-        let _guard = LIFT_LOCK.lock().expect("libVEX lift lock poisoned");
+        let _guard = lift_lock();
         // SAFETY: single-threaded through LIFT_LOCK; we marshal the whole IRSB
         // into owned Rust types before the guard drops, so nothing escapes the
         // arena. `bytes` outlives the call. vex_lift does not write through the
@@ -305,14 +394,14 @@ impl VEXLifter for NativeLibVEXLifter {
                 addr,
                 VEX_MAX_INSTRUCTIONS,
                 max_bytes,
-                1, // opt_level
+                opt_level,
                 0, // traceflags
                 1, // allow_arch_optimizations
-                0, // strict_block_end
+                c_int::from(settings.strict_block_end),
                 0, // collect_data_refs
                 0, // load_from_ro_regions
                 0, // const_prop
-                VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS,
+                px_control,
                 0, // lookback_amount
             );
             if result.is_null() {
@@ -333,6 +422,12 @@ impl VEXLifter for NativeLibVEXLifter {
             }
             Ok(marshal_irsb(irsb_ptr, addr, arch))
         }
+    }
+}
+
+impl VEXLifter for NativeLibVEXLifter {
+    fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
+        self.lift_at(bytes, addr, arch, None)
     }
 }
 
@@ -831,6 +926,11 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64, arch: VexArch) -> IRSB
     }
 }
 
+/// Whether the lift lock is free, for `engine::lift_lock_is_held_for_test`.
+pub(crate) fn lift_lock_is_free_for_test() -> bool {
+    LIFT_LOCK.try_lock().is_some()
+}
+
 /// The fork-local enum tables, as `(name, tag)` pairs, for
 /// `test_native_lift_parity.py` to check against pyvex's cffi library.
 pub(crate) fn enum_tables_for_test() -> Vec<(&'static str, u32)> {
@@ -858,6 +958,10 @@ pub(crate) fn enum_tables_for_test() -> Vec<(&'static str, u32)> {
         (
             "VexRegUpdUnwindregsAtMemAccess",
             VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS,
+        ),
+        (
+            "VexRegUpdLdAllregsAtEachInsn",
+            VEX_REG_UPD_LD_ALLREGS_AT_EACH_INSN,
         ),
         ("Ico_U1", ffi::ICO_U1),
         ("Ico_U8", ffi::ICO_U8),

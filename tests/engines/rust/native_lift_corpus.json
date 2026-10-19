@@ -79,5 +79,10 @@
  {"arch": "ARMEL", "addr": 32768, "bytes": "0100a0e31eff2fe1"},
  {"arch": "AARCH64", "addr": 32768, "bytes": "200080d2c0035fd6"},
  {"arch": "MIPS32", "addr": 32768, "bytes": "2402000103e0000800000000"},
- {"arch": "MIPS64", "addr": 32768, "bytes": "2402000103e0000800000000"}
+ {"arch": "MIPS64", "addr": 32768, "bytes": "2402000103e0000800000000"},
+ {"arch": "x86", "addr": 134512640, "bytes": "b80100000001d8c3"},
+ {"arch": "x86", "addr": 134512656, "bytes": "83f801740331c0c3"},
+ {"arch": "armeb", "addr": 32768, "bytes": "e3a00001e0800001e12fff1e"},
+ {"arch": "mipsel", "addr": 32768, "bytes": "01000224211044000800e00300000000"},
+ {"arch": "mips64el", "addr": 32768, "bytes": "010002640800e00300000000"}
 ]

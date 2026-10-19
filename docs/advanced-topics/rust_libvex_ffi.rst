@@ -50,8 +50,20 @@ Why binding pyvex's libVEX is parity-safe
    (``native/angr/src/vex/libvex_lifter.rs``) builds the guest tag and the
    ``VexArchInfo`` from the project's ``arch.vex_arch`` and
    ``arch.vex_archinfo``, which is what ``pyvex.lifting.libvex.LibVEXLifter``
-   passes, and calls ``vex_lift`` with angr's default lifter settings (opt
-   level 1, ``strict_block_end`` off, ``cross_insn_opt`` on).
+   passes. ``LiftSettings`` carries the engine's opt level,
+   ``strict_block_end``, ``cross_insn_opt`` and self-modifying-code setting,
+   as ``VEXLifter.lift_vex`` resolves them for the stateless
+   ``project.factory.block(addr)`` the callback runs, and per-address or
+   global opt-level overrides pass through.
+
+Native lift stands in for the callback only where the callback would be a
+plain libVEX lift. ``_native_lift_settings`` in ``rust_manager.py`` leaves it
+off when libVEX is not the arch's first pyvex lifter, a pyvex postprocessor is
+registered, the engine overrides ``lift_vex``, or ``kb.patches`` is non-empty
+(``angr-mx00p.46``). Per block, ``try_native_lift`` falls back to the callback
+for a Thumb address and for a block libVEX ends in ``Ijk_NoDecode``: pyvex
+hands the rest of such a block to its per-arch Python lifters, the
+"Spotters" (``angr-mx00p.43``).
 
 The shim, from pyvex's cdef:
 
@@ -102,11 +114,13 @@ Open risks
   lifter marshals it into owned Rust types *before* releasing its lift lock.
   This matches how pyvex's cffi copies out immediately.
 * **Thread-safety:** libVEX global state (``vex_control``, the arena) is not
-  re-entrant. Native lifts are serialized by the Rust ``LIFT_LOCK`` and run on
-  worker threads with the GIL released. pyvex serializes its own lifts with a
-  Python lock, and cffi releases the GIL inside ``vex_lift``, so nothing yet
-  excludes a native lift from a concurrent ``pyvex.lift`` on another thread
-  (``angr-mx00p.45``).
+  re-entrant. Native lifts run on worker threads with the GIL released, and
+  cffi releases the GIL inside pyvex's ``vex_lift``, so the engine holds one
+  lock, ``libvex_lifter::lift_lock``, across both its native lifts and its
+  Python ``lift_block`` callback. The lock order is lift lock, then GIL; the
+  helper never waits for the lock while holding the GIL. ``pyvex.lift`` calls
+  made outside the engine serialize only on pyvex's Python lock, so they can
+  still overlap a native lift (``angr-mx00p.45``).
 
 Default-on on AMD64
 -------------------

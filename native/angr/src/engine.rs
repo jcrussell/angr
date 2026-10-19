@@ -355,23 +355,24 @@ fn _raise_typed_test_error(
 }
 
 /// Lift `data` at `addr` with the native libVEX lifter for `arch` (a Python
-/// `archinfo.Arch`) and return the IRSB's `{:#?}` rendering. Test-only: the
-/// native-vs-pyvex parity check in `test_native_lift_parity.py` compares it
-/// with [`irsb_json_debug_for_test`].
+/// `archinfo.Arch`), at `opt_level` (`None`: the default), and return the
+/// IRSB's `{:#?}` rendering. Test-only: the native-vs-pyvex parity check in
+/// `test_native_lift_parity.py` compares it with [`irsb_json_debug_for_test`].
 #[pyfunction]
+#[pyo3(signature = (arch, data, addr, opt_level = None))]
 pub(crate) fn native_lift_debug_for_test(
     arch: &Bound<'_, PyAny>,
     data: &[u8],
     addr: u64,
+    opt_level: Option<i32>,
 ) -> PyResult<String> {
-    use crate::vex::VEXLifter;
     let lifter = crate::vex::libvex_lifter::NativeLibVEXLifter::from_py_arch(arch)?;
     let name: String = arch.getattr("name")?.extract()?;
     let vex_arch = arch_from_name(&name)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {name}")))?
         .vex_arch();
     let irsb = lifter
-        .lift(data, addr, vex_arch)
+        .lift_at(data, addr, vex_arch, opt_level)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(format!("{irsb:#?}"))
 }
@@ -383,6 +384,20 @@ pub(crate) fn irsb_json_debug_for_test(irsb_json: &str) -> PyResult<String> {
     let irsb = deserialize_irsb(irsb_json)
         .map_err(|e| PyValueError::new_err(format!("Failed to deserialize IRSB: {e}")))?;
     Ok(format!("{irsb:#?}"))
+}
+
+/// Whether some thread holds the engine's libVEX lift lock, probed from a
+/// fresh thread so the caller's own (reentrant) hold counts. Test-only: the
+/// lift-lock regression test in `test_native_lift_parity.py` calls it from
+/// inside the Python `lift_block` callback (angr-mx00p.45).
+#[pyfunction]
+pub(crate) fn lift_lock_is_held_for_test(py: Python<'_>) -> bool {
+    py.detach(|| {
+        std::thread::spawn(crate::vex::libvex_lifter::lift_lock_is_free_for_test)
+            .join()
+            .map(|free| !free)
+            .unwrap_or(false)
+    })
 }
 
 /// `(enum tags, struct layouts)` as returned by [`native_lift_tables_for_test`].
@@ -428,6 +443,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(native_lift_debug_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(irsb_json_debug_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(lift_lock_is_held_for_test, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;

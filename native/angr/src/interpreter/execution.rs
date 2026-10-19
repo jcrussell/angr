@@ -18,8 +18,14 @@ use super::*;
 /// counter attribution (see `native_lift_deadend_probe_count`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeLiftMiss {
-    /// The block carries a VEX opt_level override the native shim can't honor.
-    OptLevelOverride,
+    /// A Thumb block (odd ARM address). Native lift does not pass libVEX the
+    /// Thumb bit and IT-state lookback the way angr's lifter does.
+    Thumb,
+    /// libVEX ended the block in `Ijk_NoDecode`. pyvex hands the rest of such a
+    /// block to its per-arch Python lifters (`pyvex.lifting.lift_function.lift`,
+    /// the "Spotters": XGETBV, RDMSR, MRS, ...), which only the callback runs
+    /// (angr-mx00p.43).
+    NoDecode,
     /// No concrete bytes at `addr` in rust_memory (unmapped or symbolic).
     NoConcreteBytes,
     /// libVEX itself failed to decode the bytes.
@@ -568,8 +574,12 @@ impl<'a> VEXInterpreter<'a> {
             None
         };
 
-        let irsb_json = callbacks
-            .call_lift_block(addr, opt_level, dirty_bytes.as_deref())
+        // The callback's pyvex lift enters the same libVEX as a native lift on
+        // another worker; hold the shared lift lock across it (angr-mx00p.45).
+        let lift_guard = crate::vex::libvex_lifter::lift_lock();
+        let irsb_json = callbacks.call_lift_block(addr, opt_level, dirty_bytes.as_deref());
+        drop(lift_guard);
+        let irsb_json = irsb_json
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {e}")))?;
         if self.profiling_enabled {
             self.stats.python_callback_count += 1;
@@ -612,10 +622,8 @@ impl<'a> VEXInterpreter<'a> {
     /// supported by `NativeLibVEXLifter`, and libVEX lifts successfully.
     /// Returns `Err(NativeLiftMiss)` otherwise so the caller falls back to the
     /// Python `lift_block` callback (and can attribute the miss). The
-    /// per-address VEX opt_level override is honored by the pyvex path only;
-    /// the native shim uses pyvex's compiled defaults (same as
-    /// `vex_opt_level == None`), so a block carrying an explicit opt_level
-    /// override is left to the callback to preserve exact parity.
+    /// per-address and global VEX opt_level overrides are passed through, as
+    /// `_cb_lift_block` passes them to `project.factory.block`.
     ///
     /// On success this fires the `vex_lift` inspect pair (angr-op0dn.14.4.2) —
     /// the Python-lift dispatch lives in `_cb_lift_block`, which this path
@@ -631,22 +639,30 @@ impl<'a> VEXInterpreter<'a> {
         addr: u64,
         callbacks: &PythonCallbacks,
     ) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {
-        use crate::vex::VEXLifter;
-
-        // Opt-level overrides change libVEX optimization and thus IRSB shape;
-        // defer those blocks to the callback that can pass the override through.
-        if self.vex_opt_level_overrides.contains_key(&addr) || self.vex_opt_level.is_some() {
-            return Err(NativeLiftMiss::OptLevelOverride);
+        if self.arch == VexArch::ARM && addr & 1 == 1 {
+            return Err(NativeLiftMiss::Thumb);
         }
 
         let bytes = self
             .native_lift_source_bytes(addr)
             .ok_or(NativeLiftMiss::NoConcreteBytes)?;
 
-        let irsb = lifter.lift(&bytes, addr, self.arch).map_err(|e| {
-            log::debug!("native_lift: libVEX lift failed at 0x{addr:x}: {e:?}");
-            NativeLiftMiss::LiftError
-        })?;
+        // Same precedence as the callback path: per-address override, then
+        // the global level, then the engine default inside the lifter.
+        let opt_level = self
+            .vex_opt_level_overrides
+            .get(&addr)
+            .copied()
+            .or(self.vex_opt_level);
+        let irsb = lifter
+            .lift_at(&bytes, addr, self.arch, opt_level)
+            .map_err(|e| {
+                log::debug!("native_lift: libVEX lift failed at 0x{addr:x}: {e:?}");
+                NativeLiftMiss::LiftError
+            })?;
+        if irsb.jumpkind == JumpKind::NoDecode {
+            return Err(NativeLiftMiss::NoDecode);
+        }
 
         if callbacks.inspect_event_enabled(InspectBit::VexLift) {
             let size = irsb.size();

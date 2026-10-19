@@ -62,6 +62,11 @@ def _serialize_const(con):
             "tag": "Ico_V256",
             "value": [val & _MASK64, (val >> 64) & _MASK64, (val >> 128) & _MASK64, (val >> 192) & _MASK64],
         }
+    if name == "U1":
+        # C `Bool` is an unsigned char, so a Python-built U1 (a Spotter's
+        # Dirty guard, `Const(U1(1))`) carries an int; the Rust side wants a
+        # JSON bool (angr-mx00p.44).
+        return {"tag": "Ico_U1", "value": bool(con.value)}
     return {"tag": f"Ico_{name}", "value": con.value}
 
 
@@ -252,8 +257,10 @@ def _serialize_stmt(stmt):
         result["tmp"] = getattr(stmt, "tmp", None)
         result["mFx"] = str(stmt.mFx) if hasattr(stmt, "mFx") and stmt.mFx else "Ifx_None"
         result["mAddr"] = _serialize_expr(stmt.mAddr) if hasattr(stmt, "mAddr") and stmt.mAddr else None
-        result["mSize"] = getattr(stmt, "mSize", 0)
-        result["nFxState"] = getattr(stmt, "nFxState", 0)
+        # A Python-built Dirty (a Spotter's) leaves these None where libVEX
+        # writes 0 (angr-mx00p.44).
+        result["mSize"] = getattr(stmt, "mSize", 0) or 0
+        result["nFxState"] = getattr(stmt, "nFxState", 0) or 0
         return result
 
     # Fallback for unknown statements
