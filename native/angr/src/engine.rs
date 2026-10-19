@@ -299,6 +299,60 @@ fn register_names_for_arch(arch_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The engine's register table for `arch_name`, or `None` for an arch the
+/// engine does not implement.
+///
+/// Rust's `arch/*.rs` tables are the engine's source of truth for register
+/// names, offsets and sizes (checked against archinfo's VEX guest layout by
+/// `tests/engines/rust/test_arch_offset_parity.py`); Python code that
+/// describes what crosses the Rust boundary reads them here rather than
+/// keeping its own copy. Keys:
+///
+/// - `registers`: `[(name, offset, size, canonical)]`, every name
+///   `register_offset` resolves; `canonical` is false for an `ALIASES` row.
+/// - `exported`: `Arch::register_names`, the names that cross the Python
+///   boundary.
+/// - `sp`, `ip`, `bp`, `syscall_num`: register names (`bp` / `syscall_num`
+///   may be `None`).
+/// - `state_size`: the guest-state buffer size in bytes.
+/// - `cc_args`, `cc_syscall_args`, `cc_ret`, `cc_fp_ret`: the default calling
+///   convention's argument and return registers, by name.
+#[pyfunction]
+pub(crate) fn arch_register_info<'py>(
+    py: Python<'py>,
+    arch_name: &str,
+) -> PyResult<Option<Bound<'py, pyo3::types::PyDict>>> {
+    let Some(arch) = arch_from_name(arch_name) else {
+        return Ok(None);
+    };
+    let cc = crate::arch::default_cc_for_arch(arch.name());
+    let name_of = |offset: u32| arch.register_name(offset);
+    let names_of = |offsets: &[u32]| offsets.iter().map(|&o| name_of(o)).collect::<Vec<_>>();
+    let registers: Vec<(&str, u32, u32, bool)> = arch
+        .canonical_registers()
+        .iter()
+        .map(|&(name, offset, size)| (name, offset, size, true))
+        .chain(
+            arch.alias_registers()
+                .iter()
+                .map(|&(name, offset, size)| (name, offset, size, false)),
+        )
+        .collect();
+    let info = pyo3::types::PyDict::new(py);
+    info.set_item("registers", registers)?;
+    info.set_item("exported", arch.register_names().to_vec())?;
+    info.set_item("sp", name_of(arch.sp_offset()))?;
+    info.set_item("ip", name_of(arch.ip_offset()))?;
+    info.set_item("bp", arch.bp_offset().and_then(name_of))?;
+    info.set_item("syscall_num", arch.syscall_num_offset().and_then(name_of))?;
+    info.set_item("state_size", arch.state_size())?;
+    info.set_item("cc_args", names_of(cc.arg_registers()))?;
+    info.set_item("cc_syscall_args", names_of(cc.syscall_arg_registers()))?;
+    info.set_item("cc_ret", name_of(cc.return_register()))?;
+    info.set_item("cc_fp_ret", cc.fp_return_register().and_then(name_of))?;
+    Ok(Some(info))
+}
+
 /// Report whether the Rust engine implements the named architecture.
 ///
 /// Delegates to [`arch_from_name`] so the answer cannot drift from the
@@ -453,6 +507,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(arch_register_info, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(native_lift_debug_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(irsb_debug_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, m)?)?;

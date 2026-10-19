@@ -350,3 +350,173 @@ def test_register_wider_than_u128_reads_and_writes_cleanly(rust_arch):
 
     with pytest.raises(ValueError, match="cannot read register fpreg"):
         state.get_register("fpreg")
+
+
+# ---------------------------------------------------------------------------
+# The other direction, and the registers the engine treats specially.
+#
+# Rust's tables are the engine's source of truth (``arch_register_info``);
+# these tests are what make that safe. Everything above checks archinfo ->
+# Rust. The tests below check Rust -> archinfo (every Rust name is archinfo's
+# or a listed Rust-only spelling), the special-purpose registers (sp / ip / bp
+# / return value) and the default calling convention against angr's.
+# ---------------------------------------------------------------------------
+
+
+@functools.cache
+def _rust_info(rust_arch: str) -> dict:
+    from angr.rustylib import vex_engine
+
+    info = vex_engine.arch_register_info(rust_arch)
+    assert info is not None, f"arch_register_info({rust_arch!r}) returned None"
+    return info
+
+
+def _rust_offsets(rust_arch: str) -> dict[str, tuple[int, int]]:
+    return {name: (offset, size) for name, offset, size, _ in _rust_info(rust_arch)["registers"]}
+
+
+# rust_arch -> ((names, reason), ...): spellings the Rust tables accept that
+# archinfo does not define. Self-cleaning: a name archinfo starts defining, or
+# Rust stops accepting, fails test_rust_only_names_are_still_rust_only.
+RUST_ONLY: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
+    "amd64": (
+        (frozenset({"eip"}), "32-bit view of rip, kept as an alias of the instruction pointer"),
+        (frozenset({"spl"}), "low byte of rsp (the 8-bit form of the x86-64 register set)"),
+    ),
+    "arm": (
+        (_numbered("q", 16), "NEON 128-bit views over d-register pairs; archinfo's ARM32 table has no qN"),
+        (frozenset({"r15t"}), "Thumb-mode spelling of pc"),
+    ),
+    "mips32": ((_numbered("$", 32) | _numbered("$f", 32), "numeric assembler spellings of the GPRs and FPRs"),),
+    "mips64": ((_numbered("$", 32) | _numbered("$f", 32), "numeric assembler spellings of the GPRs and FPRs"),),
+}
+
+
+def _rust_only_reason(rust_arch: str, name: str) -> str | None:
+    for names, reason in RUST_ONLY.get(rust_arch, ()):
+        if name in names:
+            return reason
+    return None
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
+def test_every_rust_register_name_is_archinfos(rust_arch, arch_id):
+    """Every name the Rust table resolves is an archinfo name at the same offset.
+
+    The archinfo -> Rust test above cannot see a name only Rust defines. Such a
+    name is harmless only if it is a deliberate extra spelling; anything else is
+    a typo or a register that Python code reading ``arch_register_info`` would
+    look up in archinfo and not find.
+    """
+    registers = archinfo.arch_from_id(arch_id).registers
+    stray = sorted(
+        name
+        for name in _rust_offsets(rust_arch)
+        if name not in registers and _rust_only_reason(rust_arch, name) is None
+    )
+    assert not stray, (
+        f"{rust_arch}: Rust resolves {stray}, which archinfo {arch_id} does not define. "
+        "Rename to archinfo's spelling, or add a RUST_ONLY group stating why it exists."
+    )
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
+def test_rust_only_names_are_still_rust_only(rust_arch, arch_id):
+    registers = archinfo.arch_from_id(arch_id).registers
+    rust = _rust_offsets(rust_arch)
+    for names, reason in RUST_ONLY.get(rust_arch, ()):
+        now_archinfo = sorted(n for n in names if n in registers)
+        gone = sorted(n for n in names if n not in rust)
+        assert not now_archinfo, f"{rust_arch}: RUST_ONLY ({reason}) lists {now_archinfo}, which archinfo defines now"
+        assert not gone, f"{rust_arch}: RUST_ONLY ({reason}) lists {gone}, which Rust no longer resolves"
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
+def test_special_registers_match_archinfo(rust_arch, arch_id):
+    """sp / ip / bp / return-value registers sit at archinfo's offsets."""
+    arch = archinfo.arch_from_id(arch_id)
+    info = _rust_info(rust_arch)
+    offsets = _rust_offsets(rust_arch)
+    actual = {
+        "sp": offsets[info["sp"]][0],
+        "ip": offsets[info["ip"]][0],
+        "bp": offsets[info["bp"]][0],
+        "ret": offsets[info["cc_ret"]][0],
+    }
+    expected = {"sp": arch.sp_offset, "ip": arch.ip_offset, "bp": arch.bp_offset, "ret": arch.ret_offset}
+    assert actual == expected
+
+
+# rust_arch -> why the Rust default calling convention has no FP return
+# register where angr's has one.
+NO_FP_RETURN = {
+    "x86": "cdecl returns floats in x87 st0, a stack-relative slot the engine does not model as a register",
+}
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
+def test_calling_convention_matches_angrs(rust_arch, arch_id):
+    """The default and syscall calling conventions use angr's registers.
+
+    Compared by archinfo offset, so a different spelling of the same register
+    (AArch64 ``q0`` vs angr's ``d0``) agrees. The Rust syscall window may be a
+    prefix of angr's: a syscall needing more arguments than the window holds
+    falls back to Python rather than reading a wrong register.
+    """
+    from angr.calling_conventions import DEFAULT_CC, SYSCALL_CC
+
+    arch = archinfo.arch_from_id(arch_id)
+    info = _rust_info(rust_arch)
+    rust = _rust_offsets(rust_arch)
+
+    def rust_off(names):
+        return [rust[n][0] for n in names]
+
+    def angr_off(names):
+        return [arch.registers[n][0] for n in names]
+
+    cc = DEFAULT_CC[arch.name]["Linux"]
+    assert rust_off(info["cc_args"]) == angr_off(cc.ARG_REGS)
+    assert rust[info["cc_ret"]][0] == arch.registers[cc.RETURN_VAL.reg_name][0]
+    angr_fp_ret = getattr(cc.FP_RETURN_VAL, "reg_name", None)
+    if info["cc_fp_ret"] is None:
+        assert angr_fp_ret is None or rust_arch in NO_FP_RETURN, (
+            f"{rust_arch}: angr returns floats in {angr_fp_ret}, Rust's CC has no FP return register"
+        )
+    else:
+        assert rust[info["cc_fp_ret"]][0] == arch.registers[angr_fp_ret][0]
+
+    syscall_args = rust_off(info["cc_syscall_args"])
+    angr_syscall_args = angr_off(SYSCALL_CC[arch.name]["Linux"].ARG_REGS)
+    assert syscall_args == angr_syscall_args[: len(syscall_args)], (
+        f"{rust_arch}: syscall arg registers {info['cc_syscall_args']} are not a prefix of angr's"
+    )
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), [("mips32", "mips32"), ("mips64", "mips64")])
+def test_big_endian_tables_match_archinfo(rust_arch, arch_id):
+    """The one Rust table serves both byte orders; archinfo's BE layout agrees."""
+    be = archinfo.arch_from_id(arch_id, "Iend_BE").registers
+    le = archinfo.arch_from_id(arch_id).registers
+    shared = {n for n in _rust_offsets(rust_arch) if n in be}
+    assert {n: be[n] for n in shared} == {n: le[n] for n in shared}
+    state = RustSimState(rust_arch, little_endian=False)
+    assert len(state.get_registers_raw()) == len(RustSimState(rust_arch).get_registers_raw())
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
+def test_python_sync_register_tables_match_rust(rust_arch, arch_id):
+    """``rust_state_sync``'s register map agrees with the engine's table.
+
+    The map is what the Python side snapshots and diffs around a SimProcedure
+    callback; an offset that disagrees with Rust's reads the wrong bytes.
+    """
+    from angr.exploration.rust_state_sync import RustStateSyncMixin
+
+    arch = archinfo.arch_from_id(arch_id)
+    rust = _rust_offsets(rust_arch)
+    reg_map, return_regs = RustStateSyncMixin._get_reg_map_and_return_regs(arch)
+    assert {name: rust.get(name) for name in reg_map} == reg_map
+    assert set(RustStateSyncMixin._get_arch_register_names(None, arch)) == set(reg_map)
+    assert _rust_info(rust_arch)["cc_ret"] in return_regs

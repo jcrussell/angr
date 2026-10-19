@@ -672,6 +672,9 @@ impl Arch for ShortTailArch {
     fn canonical_registers(&self) -> &[RegEntry] {
         AMD64.canonical_registers()
     }
+    fn alias_registers(&self) -> &[RegEntry] {
+        AMD64.alias_registers()
+    }
     fn is_little_endian(&self) -> bool {
         true
     }

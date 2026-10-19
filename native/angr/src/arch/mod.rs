@@ -179,6 +179,14 @@ pub trait Arch: Send + Sync {
     /// `sseround` survived the angr-9ke6b.6 sweep (angr-sqfj8.1/.6).
     fn canonical_registers(&self) -> &[RegEntry];
 
+    /// The arch's `ALIASES` table: the overlapping spellings (sub-registers,
+    /// narrower views) that resolve name -> offset but never offset -> name.
+    /// Together with [`canonical_registers`](Self::canonical_registers) it is
+    /// everything `register_offset` can resolve; `arch_register_info` exports
+    /// both so Python reads the engine's register table instead of keeping its
+    /// own copy.
+    fn alias_registers(&self) -> &[RegEntry];
+
     /// Get the offset of the register holding the syscall number.
     ///
     /// The size always equals `bytes()` (pointer width), so callers
@@ -280,6 +288,10 @@ macro_rules! impl_arch_registers {
 
         fn canonical_registers(&self) -> &[super::RegEntry] {
             $canonical
+        }
+
+        fn alias_registers(&self) -> &[super::RegEntry] {
+            $aliases
         }
     };
 }
