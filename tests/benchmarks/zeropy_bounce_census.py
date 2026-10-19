@@ -24,8 +24,8 @@ from the same run and classifies every distinct (name, PC) into one bucket:
       stay in Python.  Such a bench can never reach ``gil == 0`` and has to
       leave the gate denominator rather than be "fixed".
 
-The bounce set does not depend on the lift path, so this runs on the *stock*
-build — no libvex-ffi ``.so`` needed (unlike ``run_zeropy_gate.py``).
+The bounce set does not depend on the lift path, so native lifting is
+irrelevant here.
 
 Usage:
     python tests/benchmarks/zeropy_bounce_census.py

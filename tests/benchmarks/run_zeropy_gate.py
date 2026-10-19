@@ -43,10 +43,9 @@ Residual-bounce attribution.  For every non-passing bench the gate prints the
 ``callback_<class>_count`` breakdown, which names the Python surface still being
 crossed.  The classes and what retires them:
 
-* ``lift_block``  — pyvex VEX lifting.  Only the ``libvex-ffi`` cargo feature
-  (native cold-block lifting, default-on in the ``setup.py`` build; see
+* ``lift_block``  — pyvex VEX lifting.  Native cold-block lifting (see
   ``docs/advanced-topics/rust_libvex_ffi.rst``) removes these, and only on
-  AMD64.  A build without it cannot reach zero on any bench that lifts.
+  AMD64.
 * ``posix``       — the Python SimPosix plugin.  Retired by RustPosixState
   ownership of fds/env/cwd (the scope-trimmed part of bd angr-6zxx).
 * ``simprocedure``— a Python SimProcedure declined by the native registry.
@@ -144,7 +143,7 @@ def attribution(stats: dict) -> dict[str, dict[str, int]]:
     The ``callback_*`` counters are process-wide: they also tick for callbacks
     made during setup, state export, and predicate evaluation *outside* the
     profiled run-loop window, none of which ``gil_work_time_ns`` sees.  fauxware
-    on a libvex-ffi build reports ``posix=5`` and still scores a hard zero — those
+    reports ``posix=5`` and still scores a hard zero — those
     five calls all land outside the loop.  Conversely a single in-loop ``posix``
     callback can cost hundreds of milliseconds.  Read the ns column to rank
     levers; the count column only says the surface was touched at all.

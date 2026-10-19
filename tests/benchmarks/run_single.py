@@ -295,7 +295,7 @@ def _run_in_child(
                 use_shared_lineage_solver=use_shared_lineage_solver,
                 deterministic=deterministic,
                 # None => inherit the manager default (on for an AMD64
-                # libvex-ffi build); True/False force the seam on/off.
+                # project); True/False force the seam on/off.
                 **({} if native_lift is None else {"use_native_lift": native_lift}),
             )
             rust_mgr_instance.enable_profiling()
@@ -1023,8 +1023,8 @@ def main():
         help="Rust engine only. Force use_native_lift on/off, so cold-block "
         "lifting does (or does not) use the in-process native libVEX seam. "
         "Default is to inherit the RustExplorationManager default, which is "
-        "on for an AMD64 project when the .so was built --features "
-        "libvex-ffi and inert otherwise (z087y Stage-3). --no-native-lift "
+        "on for an AMD64 project and inert otherwise (z087y Stage-3). "
+        "--no-native-lift "
         "is the A/B control arm.",
     )
     args = parser.parse_args()

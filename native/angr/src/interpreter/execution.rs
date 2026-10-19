@@ -16,7 +16,6 @@ use super::*;
 /// Why a native libVEX lift attempt did not produce an IRSB. Every variant
 /// falls back to the Python `lift_block` callback; the variant only drives
 /// counter attribution (see `native_lift_deadend_probe_count`).
-#[cfg(feature = "libvex-ffi")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeLiftMiss {
     /// The block carries a VEX opt_level override the native shim can't honor.
@@ -496,17 +495,15 @@ impl<'a> VEXInterpreter<'a> {
 
         self.stats.cache_miss_count += 1;
 
-        // Native (in-process) libVEX lift — feature-gated, off by default
-        // (angr-z087y Stage-2). When enabled and the block's bytes are fully
-        // concrete in rust_memory, lift via FFI: no GIL, no JSON round-trip,
+        // Native (in-process) libVEX lift, off unless Python set a lifter
+        // (angr-z087y Stage-2). When the block's bytes are fully concrete in
+        // rust_memory, lift via FFI: no GIL, no JSON round-trip,
         // byte-for-byte-identical IRSB to the pyvex callback path. Any miss
-        // (disabled, unsupported arch, missing/symbolic bytes, or a libVEX
-        // error) falls through to the Python callback below — same result,
+        // (missing/symbolic bytes, or a libVEX error) falls through to the Python callback below — same result,
         // just slower — so behavior is unchanged when the native path can't
         // serve a block.
-        #[cfg(feature = "libvex-ffi")]
-        if self.native_lift_enabled {
-            match self.try_native_lift(addr, callbacks) {
+        if let Some(lifter) = self.native_lifter {
+            match self.try_native_lift(&lifter, addr, callbacks) {
                 Ok(irsb) => {
                     self.stats.native_lift_count += 1;
                     let arc_irsb = Arc::new(irsb);
@@ -628,9 +625,9 @@ impl<'a> VEXInterpreter<'a> {
     /// fires its own pair. The cost is that BP_BEFORE mutation of
     /// `vex_lift_buff` / `vex_lift_addr` is not honored on this path (the same
     /// MVP gap the native `constraints` fire has).
-    #[cfg(feature = "libvex-ffi")]
     fn try_native_lift(
         &self,
+        lifter: &crate::vex::libvex_lifter::NativeLibVEXLifter,
         addr: u64,
         callbacks: &PythonCallbacks,
     ) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {
@@ -646,13 +643,10 @@ impl<'a> VEXInterpreter<'a> {
             .native_lift_source_bytes(addr)
             .ok_or(NativeLiftMiss::NoConcreteBytes)?;
 
-        let irsb = self
-            .native_lifter
-            .lift(&bytes, addr, self.arch)
-            .map_err(|e| {
-                log::debug!("native_lift: libVEX lift failed at 0x{addr:x}: {e:?}");
-                NativeLiftMiss::LiftError
-            })?;
+        let irsb = lifter.lift(&bytes, addr, self.arch).map_err(|e| {
+            log::debug!("native_lift: libVEX lift failed at 0x{addr:x}: {e:?}");
+            NativeLiftMiss::LiftError
+        })?;
 
         if callbacks.inspect_event_enabled(InspectBit::VexLift) {
             let size = irsb.size();
@@ -688,7 +682,6 @@ impl<'a> VEXInterpreter<'a> {
     /// makes the sidecar read fail, and answering from the pristine image there
     /// would silently lift the pre-store program. Dirtied pages are therefore
     /// left to the callback, which passes fresh bytes through `byte_string=`.
-    #[cfg(feature = "libvex-ffi")]
     fn native_lift_source_bytes(&self, addr: u64) -> Option<Vec<u8>> {
         if let Some(rust_mem) = self.rust_memory.as_ref()
             && let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, VEX_MAX_BYTES)

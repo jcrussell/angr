@@ -1,115 +1,15 @@
-//! Tests for the native libVEX lifter (feature `libvex-ffi`).
+//! Tests for the native libVEX lifter's pure marshalling helpers.
 //!
-//! These exercise the real `libpyvex.so` `vex_lift` shim, so they only build
-//! and run under `cargo test --features libvex-ffi`. The exhaustive
-//! native-vs-pyvex structural parity gate lives in the .4 corpus harness; here
-//! we just assert the marshaller produces a well-formed `IRSB` for a handful of
-//! representative AMD64 blocks.
+//! A real lift needs the `libpyvex` an imported pyvex loads, which `cargo
+//! test` does not have, so lifting, native-vs-pyvex parity, and the enum-tag
+//! and struct-layout checks against pyvex's cffi library live in
+//! `tests/engines/rust/test_native_lift_parity.py`.
 
 use super::*;
-use crate::vex::{IRExpr, IRSB, IRStmt, JumpKind, LiftError, VEXLifter, VexArch};
-
-fn lift(bytes: &[u8], addr: u64) -> IRSB {
-    let lifter = NativeLibVEXLifter::new();
-    lifter
-        .lift(bytes, addr, VexArch::AMD64)
-        .expect("native libVEX lift should succeed")
-}
-
-#[test]
-fn test_lift_add_rax_rbx() {
-    // 48 01 d8  =  add rax, rbx
-    let irsb = lift(&[0x48, 0x01, 0xd8], 0x400000);
-
-    assert_eq!(irsb.arch, VexArch::AMD64);
-    assert_eq!(irsb.addr, 0x400000);
-    assert!(!irsb.statements.is_empty(), "block has statements");
-
-    // First statement of any decoded block is an IMark at the block address.
-    match &irsb.statements[0] {
-        IRStmt::IMark { addr, len, .. } => {
-            assert_eq!(*addr, 0x400000);
-            assert_eq!(*len, 3, "add rax,rbx is 3 bytes");
-        }
-        other => panic!("expected leading IMark, got {other:?}"),
-    }
-
-    // Temporaries are typed, so tyenv must be populated.
-    assert!(!irsb.tyenv.types.is_empty(), "tyenv populated");
-
-    // The block flows through (Boring) to a constant fallthrough address.
-    assert_eq!(irsb.jumpkind, JumpKind::Boring);
-    assert!(matches!(irsb.next, IRExpr::Const(_)));
-}
-
-#[test]
-fn test_lift_ret_jumpkind() {
-    // c3  =  ret
-    let irsb = lift(&[0xc3], 0x401000);
-    assert_eq!(irsb.jumpkind, JumpKind::Ret);
-}
-
-#[test]
-fn test_lift_nop() {
-    // 90  =  nop  (decodes to a single-instruction Boring block)
-    let irsb = lift(&[0x90], 0x402000);
-    assert_eq!(irsb.jumpkind, JumpKind::Boring);
-    assert!(matches!(irsb.statements[0], IRStmt::IMark { .. }));
-}
-
-#[test]
-fn test_lift_conditional_jump_has_exit() {
-    // 48 85 c0  test rax,rax ; 74 02  jz +2 ; 90 nop ; 90 nop
-    let bytes = [0x48, 0x85, 0xc0, 0x74, 0x02, 0x90, 0x90];
-    let irsb = lift(&bytes, 0x403000);
-    let has_exit = irsb
-        .statements
-        .iter()
-        .any(|s| matches!(s, IRStmt::Exit { .. }));
-    assert!(has_exit, "conditional block should contain an Exit stmt");
-}
-
-/// The four arches `ffi_vex_arch` still has no archinfo mapping for must be
-/// refused up front so the caller falls back to the pyvex-callback path. This
-/// is deliberately *not* "everything except AMD64" — see
-/// `test_supported_arches_are_not_rejected`.
-#[test]
-fn test_unsupported_arches_rejected() {
-    let lifter = NativeLibVEXLifter::new();
-    for arch in [VexArch::X86, VexArch::PPC32, VexArch::PPC64, VexArch::S390X] {
-        let err = lifter
-            .lift(&[0x90], 0x400000, arch)
-            .expect_err("arch without an ffi_vex_arch mapping must be rejected");
-        assert!(
-            matches!(err, LiftError::InvalidArch(_)),
-            "{arch:?} should be InvalidArch, got {err:?}"
-        );
-    }
-}
-
-/// Companion to the above: since angr-qwyti.20 the native lifter accepts ARM,
-/// ARM64, MIPS32 and MIPS64 alongside AMD64 (the corpus parity gate in
-/// `libvex_corpus_tests.rs` replays real blocks for all five). Pin the arch
-/// gate itself rather than a lift, so the assertion does not depend on
-/// hand-assembling valid guest bytes per arch.
-#[test]
-fn test_supported_arches_are_not_rejected() {
-    for arch in [
-        VexArch::AMD64,
-        VexArch::ARM,
-        VexArch::ARM64,
-        VexArch::MIPS32,
-        VexArch::MIPS64,
-    ] {
-        assert!(
-            ffi_vex_arch(arch).is_some(),
-            "{arch:?} must map to an ffi::VexArch guest tag"
-        );
-    }
-}
+use crate::vex::ir::IRLoadGOp;
 
 /// libVEX stores restricted-vector consts as one bit per byte lane; pyvex
-/// expands them, so the marshaller must too. The AMD64 corpus only ever
+/// expands them, so the marshaller must too. Ordinary code only ever
 /// produces the all-zero and all-ones patterns, so cover a mixed one here.
 #[test]
 fn test_expand_v128_pattern() {
@@ -130,273 +30,119 @@ fn test_expand_v256_pattern() {
     assert_eq!(expand_v256(0x8000_0000), [0, 0, 0, 0xff << 56]);
 }
 
-/// Every `ILGop_*` tag the vendored cffi cdef defines today.
-///
-/// `loadg_op` matches these by name; anything else falls through to
-/// `IRLoadGOp::Unknown`, which makes the interpreter drop the widening and
-/// silently load the wrong value rather than fail. Keep in sync with
-/// `test_loadg_op_handles_every_vendored_variant` below.
-const VENDORED_ILGOP_TAGS: &[&str] = &[
-    "ILGop_INVALID",
-    "ILGop_IdentV128",
-    "ILGop_Ident64",
-    "ILGop_Ident32",
-    "ILGop_Ident16",
-    "ILGop_Ident8",
-    "ILGop_16Uto32",
-    "ILGop_16Sto32",
-    "ILGop_8Uto32",
-    "ILGop_8Sto32",
-];
-
-/// Scans `header` for every distinct identifier starting with `prefix`
-/// (alphanumeric/`_` run immediately following the match), sorted and
-/// deduped. Shared by the vendored-header completeness tripwires below (one
-/// per `Ixx_`-style tag family) so a new family adds a call, not a copy of
-/// the scan loop.
-fn scan_vendored_header_tags<'h>(header: &'h str, prefix: &str) -> Vec<&'h str> {
-    let mut found: Vec<&str> = Vec::new();
-    let mut rest = header;
-    while let Some(pos) = rest.find(prefix) {
-        let tail = &rest[pos..];
-        let end = tail
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(tail.len());
-        found.push(&tail[..end]);
-        rest = &tail[end..];
+/// Pins the `IRLoadGOp` mapping, so a renumbered tag or a dropped arm shows
+/// up as a failure rather than a silent `Unknown` (which makes the
+/// interpreter drop the widening and load the wrong value).
+#[test]
+fn test_loadg_op_handles_every_variant() {
+    for ident in [
+        ILGOP_IDENT_V128,
+        ILGOP_IDENT64,
+        ILGOP_IDENT32,
+        ILGOP_IDENT16,
+        ILGOP_IDENT8,
+    ] {
+        assert_eq!(loadg_op(ident), IRLoadGOp::Identity, "tag {ident:#x}");
     }
-    found.sort_unstable();
-    found.dedup();
-    found
-}
-
-/// Tripwire for a VEX pin bump that grows `IRLoadGOp`.
-///
-/// The two lifting paths diverge here on purpose: `pyvex_bridge::parse_loadg_op`
-/// (JSON path) also accepts the `ILGop_{16,32}{U,S}to64` widening forms
-/// defensively, but `loadg_op` (native FFI path) cannot — it matches bindgen
-/// constants, and bindgen only emits what the vendored header declares, which
-/// today is the tags listed above and no `*to64` form. So the native path has no
-/// way to pre-handle a variant that does not exist yet; the next best thing is
-/// to fail loudly the moment one appears. If this test breaks after
-/// `tools/regen-pyvex-ffi-header.py`, add the new tag to `loadg_op`, to
-/// `parse_loadg_op`, and to `VENDORED_ILGOP_TAGS`.
-#[test]
-fn test_vendored_header_ilgop_variant_set_is_unchanged() {
-    let header = include_str!("../../vendor/pyvex_ffi.h");
-    let found = scan_vendored_header_tags(header, "ILGop_");
-
-    let mut expected: Vec<&str> = VENDORED_ILGOP_TAGS.to_vec();
-    expected.sort_unstable();
-
-    assert_eq!(
-        found, expected,
-        "vendored pyvex_ffi.h ILGop_* set changed; teach loadg_op (and \
-         pyvex_bridge::parse_loadg_op) the new tags before updating this list"
-    );
-}
-
-/// Pins the native FFI path's `IRLoadGOp` mapping, so a reordered enum (the
-/// tags are implicitly numbered from `ILGop_INVALID=0x1D00`) or a dropped arm
-/// shows up as a failure rather than a silent `Unknown`.
-#[test]
-fn test_loadg_op_handles_every_vendored_variant() {
-    use crate::vex::ir::IRLoadGOp;
-
-    assert_eq!(
-        loadg_op(ffi::IRLoadGOp::ILGop_IdentV128),
-        IRLoadGOp::Identity
-    );
-    assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_Ident64), IRLoadGOp::Identity);
-    assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_Ident32), IRLoadGOp::Identity);
-    assert_eq!(
-        loadg_op(ffi::IRLoadGOp::ILGop_8Uto32),
-        IRLoadGOp::WidenZ { src_bits: 8 }
-    );
-    assert_eq!(
-        loadg_op(ffi::IRLoadGOp::ILGop_8Sto32),
-        IRLoadGOp::WidenS { src_bits: 8 }
-    );
-    assert_eq!(
-        loadg_op(ffi::IRLoadGOp::ILGop_16Uto32),
-        IRLoadGOp::WidenZ { src_bits: 16 }
-    );
-    assert_eq!(
-        loadg_op(ffi::IRLoadGOp::ILGop_16Sto32),
-        IRLoadGOp::WidenS { src_bits: 16 }
-    );
-    // INVALID is the one vendored tag that legitimately has no mapping.
-    assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_INVALID), IRLoadGOp::Unknown);
+    assert_eq!(loadg_op(ILGOP_8UTO32), IRLoadGOp::WidenZ { src_bits: 8 });
+    assert_eq!(loadg_op(ILGOP_8STO32), IRLoadGOp::WidenS { src_bits: 8 });
+    assert_eq!(loadg_op(ILGOP_16UTO32), IRLoadGOp::WidenZ { src_bits: 16 });
+    assert_eq!(loadg_op(ILGOP_16STO32), IRLoadGOp::WidenS { src_bits: 16 });
+    // ILGop_INVALID is the one tag that legitimately has no mapping.
+    assert_eq!(loadg_op(0x1D00), IRLoadGOp::Unknown);
 }
 
 /// Pins the drift fallbacks of `c_endness` / `c_jumpkind` / `c_type_parse` /
 /// `marshal_const` (angr-sqfj8.119). Unlike `c_op`, none of the four has a
-/// sentinel variant that can carry the raw tag, so an out-of-range
-/// discriminant collapses to a plausible-but-possibly-wrong default; the
-/// contract is that it does so *predictably* and with a `log::warn!`. A
-/// future variant that reaches these helpers as a real tag must be added to
-/// the `enum_names` table (or, for `marshal_const`, to
-/// `VENDORED_ICO_CONST_TAGS` below), not left to land here.
+/// sentinel variant that can carry the raw tag, so an out-of-range tag
+/// collapses to a plausible-but-possibly-wrong default; the contract is that
+/// it does so *predictably* and with a `log::warn!`. A real tag that lands
+/// here belongs in the name tables (or `marshal_const`) instead.
 #[test]
 fn test_unknown_discriminants_fall_back_predictably() {
     // 0 is not a valid tag for any of the four enums (libVEX bases them at
     // 0x1100 / 0x1200 / 0x1300 / 0x1A00-style offsets), so it exercises the
     // miss path.
-    assert_eq!(c_endness(ffi::IREndness(0)), Endness::Little);
-    assert_eq!(c_jumpkind(ffi::IRJumpKind(0)), JumpKind::Boring);
-    assert_eq!(c_type_parse(ffi::IRType(0)), IRType::I64);
+    assert_eq!(c_endness(0), Endness::Little);
+    assert_eq!(c_jumpkind(0), JumpKind::Boring);
+    assert_eq!(c_type_parse(0), IRType::I64);
+    // One past the end of each table misses too.
+    assert_eq!(c_jumpkind(IJK_BASE + IJK_NAMES.len() as u32), JumpKind::Boring);
+    assert_eq!(
+        c_type_parse(ffi::ITY_INVALID + ITY_NAMES.len() as u32),
+        IRType::I64
+    );
 
     let unknown_const = ffi::IRConst {
-        tag: ffi::IRConstTag(0),
-        Ico: ffi::_IRConst__bindgen_ty_1 { U64: 0 },
+        tag: 0,
+        ico: ffi::IcoUnion { u64_: 0 },
     };
-    assert_eq!(
-        unsafe { marshal_const(&unknown_const) },
-        IRConst::U64(0)
-    );
+    assert_eq!(unsafe { marshal_const(&unknown_const) }, IRConst::U64(0));
 }
 
-/// Every `Ico_*` const-tag the vendored cffi cdef defines today.
-///
-/// `marshal_const` matches these by raw discriminant value (not by name, the
-/// way `parse_opcode` matches `Iop_*`), so completeness here is checked by
-/// calling it directly rather than diffing a string dispatch table — see
-/// `test_marshal_const_handles_every_vendored_variant` below. Keep this list
-/// in sync with `test_vendored_header_ico_const_tag_set_is_unchanged`.
-const VENDORED_ICO_CONST_TAGS: &[&str] = &[
-    "Ico_U1",
-    "Ico_U8",
-    "Ico_U16",
-    "Ico_U32",
-    "Ico_U64",
-    "Ico_U128",
-    "Ico_F32",
-    "Ico_F32i",
-    "Ico_F64",
-    "Ico_F64i",
-    "Ico_V128",
-    "Ico_V256",
-    "Ico_V512",
-];
-
-/// Tripwire for a VEX pin bump that grows `IRConstTag` — mirrors
-/// `test_vendored_header_ilgop_variant_set_is_unchanged` above for the
-/// `Ico_*` family. If this breaks, teach `marshal_const` the new tag before
-/// updating `VENDORED_ICO_CONST_TAGS`.
+/// Every `Ico_*` tag decodes as pyvex's `IRConst._from_c` does.
+/// `test_native_lift_parity.py` checks this tag list is pyvex's whole set.
 #[test]
-fn test_vendored_header_ico_const_tag_set_is_unchanged() {
-    let header = include_str!("../../vendor/pyvex_ffi.h");
-    let found = scan_vendored_header_tags(header, "Ico_");
-
-    let mut expected: Vec<&str> = VENDORED_ICO_CONST_TAGS.to_vec();
-    expected.sort_unstable();
-
-    assert_eq!(
-        found, expected,
-        "vendored pyvex_ffi.h Ico_* set changed; teach marshal_const the new \
-         tag(s) before updating this list"
-    );
-}
-
-/// The completeness gate itself: every currently-vendored `Ico_*` tag must
-/// marshal to something other than `marshal_const`'s unknown-tag fallback
-/// (`IRConst::U64(0)`) — the op-coverage-gap shape `opcode_map_tests.rs`
-/// gates for `Iop_*`, applied here to const tags. Each case sets a
-/// non-default payload so a tag that silently fell through to the fallback
-/// is distinguishable from one that was genuinely (and correctly) marshalled
-/// — a tag landing on the fallback would report `U64(0)` regardless of the
-/// payload set here, so a mismatch against the expected non-default value
-/// only happens if the tag is actually unhandled.
-#[test]
-fn test_marshal_const_handles_every_vendored_variant() {
-    let cases: &[(ffi::IRConstTag, ffi::_IRConst__bindgen_ty_1, IRConst)] = &[
+fn test_marshal_const_handles_every_variant() {
+    let cases: Vec<(u32, ffi::IcoUnion, IRConst)> = vec![
+        (ffi::ICO_U1, ffi::IcoUnion { u1: 1 }, IRConst::U1(true)),
+        (ffi::ICO_U8, ffi::IcoUnion { u8_: 0x7a }, IRConst::U8(0x7a)),
         (
-            ffi::IRConstTag::Ico_U1,
-            ffi::_IRConst__bindgen_ty_1 { U1: 1 },
-            IRConst::U1(true),
-        ),
-        (
-            ffi::IRConstTag::Ico_U8,
-            ffi::_IRConst__bindgen_ty_1 { U8: 0x7a },
-            IRConst::U8(0x7a),
-        ),
-        (
-            ffi::IRConstTag::Ico_U16,
-            ffi::_IRConst__bindgen_ty_1 { U16: 0x7aab },
+            ffi::ICO_U16,
+            ffi::IcoUnion { u16_: 0x7aab },
             IRConst::U16(0x7aab),
         ),
         (
-            ffi::IRConstTag::Ico_U32,
-            ffi::_IRConst__bindgen_ty_1 { U32: 0x7aab_cdee },
+            ffi::ICO_U32,
+            ffi::IcoUnion { u32_: 0x7aab_cdee },
             IRConst::U32(0x7aab_cdee),
         ),
         (
-            ffi::IRConstTag::Ico_U64,
-            ffi::_IRConst__bindgen_ty_1 {
-                U64: 0xdead_beef_0000_0001,
+            ffi::ICO_U64,
+            ffi::IcoUnion {
+                u64_: 0x7aab_cdee_f001_1223,
             },
-            IRConst::U64(0xdead_beef_0000_0001),
+            IRConst::U64(0x7aab_cdee_f001_1223),
         ),
         (
-            ffi::IRConstTag::Ico_U128,
-            // Same one-bit-per-byte encoding as Ico_V128.
-            ffi::_IRConst__bindgen_ty_1 { U128: 0x8001 },
-            IRConst::U128(expand_v128(0x8001)),
+            // Restricted encoding, like V128.
+            ffi::ICO_U128,
+            ffi::IcoUnion { u128: 0x8001 },
+            IRConst::U128((0xff << 120) | 0xff),
         ),
+        (ffi::ICO_F32, ffi::IcoUnion { f32_: 1.5 }, IRConst::F32(1.5)),
         (
-            ffi::IRConstTag::Ico_F32,
-            ffi::_IRConst__bindgen_ty_1 { F32: 1.5 },
-            IRConst::F32(1.5),
-        ),
-        (
-            ffi::IRConstTag::Ico_F32i,
             // Bit pattern of 1.5f32.
-            ffi::_IRConst__bindgen_ty_1 { F32i: 0x3fc0_0000 },
+            ffi::ICO_F32I,
+            ffi::IcoUnion { f32i: 0x3fc0_0000 },
             IRConst::F32(1.5),
         ),
+        (ffi::ICO_F64, ffi::IcoUnion { f64_: 1.5 }, IRConst::F64(1.5)),
         (
-            ffi::IRConstTag::Ico_F64,
-            ffi::_IRConst__bindgen_ty_1 { F64: 1.5 },
-            IRConst::F64(1.5),
-        ),
-        (
-            ffi::IRConstTag::Ico_F64i,
             // Bit pattern of 1.5f64.
-            ffi::_IRConst__bindgen_ty_1 {
-                F64i: 0x3ff8_0000_0000_0000,
+            ffi::ICO_F64I,
+            ffi::IcoUnion {
+                f64i: 0x3ff8_0000_0000_0000,
             },
             IRConst::F64(1.5),
         ),
+        (ffi::ICO_V128, ffi::IcoUnion { v128: 0x0001 }, IRConst::V128(0xff)),
         (
-            ffi::IRConstTag::Ico_V128,
-            ffi::_IRConst__bindgen_ty_1 { V128: 0x0001 },
-            IRConst::V128(expand_v128(0x0001)),
-        ),
-        (
-            ffi::IRConstTag::Ico_V256,
-            ffi::_IRConst__bindgen_ty_1 { V256: 0x0000_0001 },
-            IRConst::V256(expand_v256(0x0000_0001)),
+            ffi::ICO_V256,
+            ffi::IcoUnion { v256: 0x0000_0001 },
+            IRConst::V256([0xff, 0, 0, 0]),
         ),
         (
             // No 512-bit vector type: the documented zero stand-in.
-            ffi::IRConstTag::Ico_V512,
-            ffi::_IRConst__bindgen_ty_1 { V512: 1 },
+            ffi::ICO_V512,
+            ffi::IcoUnion { v512: 1 },
             IRConst::U64(0),
         ),
     ];
 
-    assert_eq!(
-        cases.len(),
-        VENDORED_ICO_CONST_TAGS.len(),
-        "add a case for every tag in VENDORED_ICO_CONST_TAGS"
-    );
-
-    for (tag, payload, expected) in cases {
-        let c = ffi::IRConst {
-            tag: *tag,
-            Ico: *payload,
-        };
+    for (tag, ico, expected) in cases {
+        let c = ffi::IRConst { tag, ico };
         let got = unsafe { marshal_const(&c) };
-        assert_eq!(got, *expected, "tag {tag:?} did not marshal as expected");
+        assert_eq!(got, expected, "tag {tag:#x} did not marshal as expected");
     }
 }

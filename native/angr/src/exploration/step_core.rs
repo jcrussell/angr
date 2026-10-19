@@ -70,10 +70,9 @@ pub(crate) struct StepContext {
     /// `MemoryConfiguration` and handed straight to the interpreter, so the
     /// snapshot is an `Arc` bump rather than two map clones per step.
     pub(crate) vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
-    /// Enable native (in-process) libVEX cold-block lifting (z087y Stage-2).
-    /// Applied via `interp.set_native_lift_enabled`; a no-op on the default
-    /// (non-`libvex-ffi`) build.
-    pub(crate) native_lift_enabled: bool,
+    /// Native (in-process) libVEX lifter (z087y Stage-2), applied via
+    /// `interp.set_native_lifter`.
+    pub(crate) native_lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
     /// Hook addresses.
     pub(crate) hooks: HashSet<u64>,
     /// SimProcedures: address -> (name, num_args, no_return).
@@ -139,7 +138,7 @@ impl RustExplorationManager {
             concretizer_config: self.memory_config.concretizer_config.clone(),
             vex_opt_level: self.memory_config.vex_opt_level,
             vex_opt_level_overrides: Arc::clone(&self.memory_config.vex_opt_level_overrides),
-            native_lift_enabled: self.memory_config.native_lift_enabled,
+            native_lifter: self.memory_config.native_lifter,
             hooks: self.hooks.clone(),
             simprocedures: self.simprocedures.clone(),
             find_addrs: self.find_addrs.clone(),
@@ -229,7 +228,7 @@ pub(crate) fn run_interpreter_step_core(
     // Propagate VEX optimization level settings
     interp.vex_opt_level = ctx.vex_opt_level;
     // z087y Stage-2: opt-in native cold-block lifting (no-op on default build).
-    interp.set_native_lift_enabled(ctx.native_lift_enabled);
+    interp.set_native_lifter(ctx.native_lifter);
     // Share the manager's override map; the setters go through `Arc::make_mut`,
     // so a config change while this interpreter holds the Arc copies once
     // instead of mutating it underneath (none do during step execution anyway).

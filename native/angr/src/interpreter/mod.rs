@@ -188,15 +188,11 @@ pub(crate) struct VEXInterpreter<'a> {
     hook_addrs: Arc<FxHashSet<u64>>,
     /// VEX architecture.
     arch: VexArch,
-    /// Native libVEX lifter (feature `libvex-ffi`). Stateless (holds only a
-    /// process-wide lift lock); a fresh `Default` is fine per fork.
-    #[cfg(feature = "libvex-ffi")]
-    native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
-    /// When true (and the arch/bytes qualify), cold-block lifts are attempted
-    /// in-process via `native_lifter` before the Python `lift_block` callback.
-    /// Off by default — Stage-2 flag-gated engine use (angr-z087y).
-    #[cfg(feature = "libvex-ffi")]
-    native_lift_enabled: bool,
+    /// Native libVEX lifter for this arch. When set (and the bytes qualify),
+    /// cold-block lifts are attempted in-process before the Python
+    /// `lift_block` callback. `None` by default; Python enables it through
+    /// `RustExplorationManager.set_native_lift` (angr-z087y).
+    native_lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
     block_cache: LruCache<u64, Arc<IRSB>>,
     /// Deferred forks collected during execution.
@@ -397,10 +393,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_len: 0,
             hook_addrs: Arc::new(FxHashSet::default()),
             arch,
-            #[cfg(feature = "libvex-ffi")]
-            native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
-            #[cfg(feature = "libvex-ffi")]
-            native_lift_enabled: false,
+            native_lifter: None,
             // Bounded default: this is the interpreter's own cache when it runs
             // standalone (engine.rs single-block exec, tests). It MUST stay
             // bounded/clone-safe because `fork()` clones it and lru's `Clone`
@@ -856,10 +849,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_len: self.current_insn_len,
             hook_addrs: Arc::clone(&self.hook_addrs),
             arch: self.arch,
-            #[cfg(feature = "libvex-ffi")]
-            native_lifter: crate::vex::libvex_lifter::NativeLibVEXLifter,
-            #[cfg(feature = "libvex-ffi")]
-            native_lift_enabled: self.native_lift_enabled,
+            native_lifter: self.native_lifter,
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             deferred_forks: Vec::new(),            // Fresh deferred forks for fork
             deferred_fork_this_step: false,
@@ -908,21 +898,17 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Enable or disable native (in-process) libVEX cold-block lifting.
+    /// Set (or, with `None`, clear) the native in-process libVEX lifter.
     ///
-    /// When enabled, [`Self::get_or_lift_block`] attempts an FFI lift via
-    /// `NativeLibVEXLifter` before the Python `lift_block` callback, falling
-    /// back cleanly on any miss (unsupported arch, missing/symbolic bytes, or
-    /// a libVEX error). Requires the `libvex-ffi` build feature; a no-op stub
-    /// exists for the default build so Python wiring compiles unconditionally.
-    #[cfg(feature = "libvex-ffi")]
-    pub(crate) fn set_native_lift_enabled(&mut self, enabled: bool) {
-        self.native_lift_enabled = enabled;
+    /// When set, [`Self::get_or_lift_block`] attempts an FFI lift before the
+    /// Python `lift_block` callback, falling back cleanly on any miss
+    /// (missing/symbolic bytes, or a libVEX error).
+    pub(crate) fn set_native_lifter(
+        &mut self,
+        lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
+    ) {
+        self.native_lifter = lifter;
     }
-
-    /// No-op stub when the `libvex-ffi` feature is not compiled in.
-    #[cfg(not(feature = "libvex-ffi"))]
-    pub(crate) fn set_native_lift_enabled(&mut self, _enabled: bool) {}
 
     /// Set the Rust memory instance.
     pub(crate) fn set_rust_memory(&mut self, memory: SymbolicMemory) {

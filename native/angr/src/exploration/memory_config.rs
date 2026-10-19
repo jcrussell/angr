@@ -38,9 +38,8 @@ pub(crate) struct MemoryConfiguration {
     /// config change while snapshots are outstanding copies once and leaves
     /// in-flight interpreters on their original map.
     pub(crate) vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
-    /// Enable native (in-process) libVEX cold-block lifting on each
-    /// interpreter. Only meaningful on a `libvex-ffi` build — the default
-    /// build's `VEXInterpreter::set_native_lift_enabled` is a no-op stub.
-    /// Python gates this on `libvex_ffi_enabled()` + AMD64 (z087y Stage-2).
-    pub(crate) native_lift_enabled: bool,
+    /// Native (in-process) libVEX lifter handed to each interpreter, or
+    /// `None` for Python-callback lifts only. Set by
+    /// `RustExplorationManager.set_native_lift` (z087y Stage-2).
+    pub(crate) native_lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
 }

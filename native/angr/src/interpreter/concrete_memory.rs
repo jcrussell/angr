@@ -119,7 +119,6 @@ impl<'a> VEXInterpreter<'a> {
     /// the native lifter stops at the block boundary, so a prefix suffices.
     /// These are the *load-time* bytes: callers must not use them for a page a
     /// store has dirtied (see `is_code_range_dirtied`).
-    #[cfg(feature = "libvex-ffi")]
     pub(super) fn read_concrete_prefix(&self, addr: u64, max_size: usize) -> Option<&[u8]> {
         for region in self.concrete_memory.iter() {
             if region.contains(addr) {

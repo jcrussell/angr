@@ -1138,7 +1138,7 @@ class TestExplorationIntegration:
         wall-clock time.
 
         Forces `use_native_lift=False` so the pyvex lift_block callback fires:
-        with libvex-ffi default-ON (angr-3trr7) cold blocks lift natively and
+        with native lifting default-on (angr-3trr7) cold blocks lift natively and
         fauxware otherwise drives *zero* python callbacks, which would make this
         aggregate-counter assertion build-dependent.
         """

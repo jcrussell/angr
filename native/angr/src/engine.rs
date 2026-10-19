@@ -354,15 +354,48 @@ fn _raise_typed_test_error(
     Err(err.into())
 }
 
-/// Report whether the `libvex-ffi` build feature was compiled in.
-///
-/// Python wiring (`rust_manager.py`) gates the native cold-block lifting
-/// flag on this so it only calls `set_native_lift_enabled(True)` on a build
-/// that actually carries the FFI lifter (z087y Stage-2). Returns `false` for
-/// the default build, where the interpreter setter is a no-op stub anyway.
+/// Lift `data` at `addr` with the native libVEX lifter for `arch` (a Python
+/// `archinfo.Arch`) and return the IRSB's `{:#?}` rendering. Test-only: the
+/// native-vs-pyvex parity check in `test_native_lift_parity.py` compares it
+/// with [`irsb_json_debug_for_test`].
 #[pyfunction]
-fn libvex_ffi_enabled() -> bool {
-    cfg!(feature = "libvex-ffi")
+pub(crate) fn native_lift_debug_for_test(
+    arch: &Bound<'_, PyAny>,
+    data: &[u8],
+    addr: u64,
+) -> PyResult<String> {
+    use crate::vex::VEXLifter;
+    let lifter = crate::vex::libvex_lifter::NativeLibVEXLifter::from_py_arch(arch)?;
+    let name: String = arch.getattr("name")?.extract()?;
+    let vex_arch = arch_from_name(&name)
+        .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {name}")))?
+        .vex_arch();
+    let irsb = lifter
+        .lift(data, addr, vex_arch)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(format!("{irsb:#?}"))
+}
+
+/// The `{:#?}` rendering of a serialized pyvex IRSB. Test-only, the pyvex
+/// side of [`native_lift_debug_for_test`].
+#[pyfunction]
+pub(crate) fn irsb_json_debug_for_test(irsb_json: &str) -> PyResult<String> {
+    let irsb = deserialize_irsb(irsb_json)
+        .map_err(|e| PyValueError::new_err(format!("Failed to deserialize IRSB: {e}")))?;
+    Ok(format!("{irsb:#?}"))
+}
+
+/// `(enum tags, struct layouts)` as returned by [`native_lift_tables_for_test`].
+type NativeLiftTables = (Vec<(&'static str, u32)>, Vec<(&'static str, usize)>);
+
+/// The native lifter's enum tags and the `ailment::vex_ffi` struct layouts,
+/// for `test_native_lift_parity.py` to check against pyvex's cffi library.
+#[pyfunction]
+pub(crate) fn native_lift_tables_for_test() -> NativeLiftTables {
+    (
+        crate::vex::libvex_lifter::enum_tables_for_test(),
+        crate::vex::libvex_lifter::layouts_for_test(),
+    )
 }
 
 test_submod!("engine_tests.rs" => tests);
@@ -392,7 +425,9 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(register_size_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(libvex_ffi_enabled, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(native_lift_debug_for_test, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(irsb_json_debug_for_test, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;

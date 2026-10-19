@@ -190,7 +190,7 @@ if (( ${#NEW_SO[@]} == 0 )); then
     exit 1
 fi
 echo "built: ${NEW_SO[*]}"
-"$VENV/bin/python" -c "import angr; from angr.rustylib import vex_engine; print('angr at', angr.__file__); print('libvex-ffi:', vex_engine.libvex_ffi_enabled())"
+"$VENV/bin/python" -c "import angr; from angr.rustylib import vex_engine; print('angr at', angr.__file__); print('engine version:', vex_engine.__version__)"
 
 echo
 echo "rebuild complete"

@@ -143,14 +143,13 @@ Default-on on AMD64
 -------------------
 
 ``RustExplorationManager(use_native_lift=...)`` defaults to **True**
-(``angr-op0dn.2.2``) and is double-guarded: ``RustExplorationManager.__init__``
-in ``rust_manager.py`` only calls ``set_native_lift_enabled(True)`` when
-``libvex_ffi_enabled()`` is true (the ``.so`` was built with the feature)
-*and* ``project.arch.name == "AMD64"``. That Python check is the gate that
-makes native lift AMD64-only. The Rust lifter itself is wider:
-``ffi_vex_arch`` in ``vex/libvex_lifter.rs`` maps AMD64, ARM, ARM64, MIPS32
-and MIPS64 to a libVEX guest and returns ``None`` for X86, PPC32, PPC64 and
-S390X.
+(``angr-op0dn.2.2``). ``RustExplorationManager.__init__`` in
+``rust_manager.py`` calls ``set_native_lift(project.arch)`` only when
+``project.arch.name == "AMD64"``; that Python check is the gate that makes
+native lift AMD64-only. The Rust lifter itself is wider:
+``NativeLibVEXLifter::from_py_arch`` in ``vex/libvex_lifter.rs`` builds a
+lifter for any guest libVEX has, from the arch's ``vex_arch`` and
+``vex_archinfo``.
 
 It is on by default because it is parity-safe and never a loss: it binds
 the same libVEX with the same configuration as pyvex (see *Why binding

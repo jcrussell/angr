@@ -192,15 +192,3 @@ fn arch_helpers_agree_with_arch_from_name() {
         "unknown arch must yield an empty name list, not a panic"
     );
 }
-
-#[test]
-#[cfg(feature = "libvex-ffi")]
-fn libvex_ffi_enabled_reports_true_when_feature_is_on() {
-    assert!(libvex_ffi_enabled());
-}
-
-#[test]
-#[cfg(not(feature = "libvex-ffi"))]
-fn libvex_ffi_enabled_reports_false_when_feature_is_off() {
-    assert!(!libvex_ffi_enabled());
-}

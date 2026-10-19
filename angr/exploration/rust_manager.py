@@ -1280,9 +1280,9 @@ class RustExplorationManager(
                 behavior of bouncing every in-object hook to Python.
             use_native_lift: If True (default), lift cold blocks in-process
                 through the native libVEX seam instead of the pyvex Python
-                callback. Requires a ``--features libvex-ffi`` build and an
-                AMD64 target; on any other build/arch the flag is inert and
-                lifting stays on the callback path. Blocks whose bytes are
+                callback. Only an AMD64 target uses it today; on any other
+                arch the flag is inert and lifting stays on the callback
+                path. Blocks whose bytes are
                 not fully concrete in the Rust memory sidecar (and blocks
                 with a VEX opt-level override) fall back to the callback
                 with an identical IRSB, so setting this False only costs
@@ -1455,25 +1455,15 @@ class RustExplorationManager(
         if max_history != 1000:
             self._rust_mgr.set_max_history(max_history)
 
-        # Native (in-process) libVEX cold-block lifting (angr-z087y). Only
-        # flip the flag when the .so was compiled with the `libvex-ffi`
-        # feature (probed via `libvex_ffi_enabled()`) AND the target is AMD64.
-        # The AMD64 restriction is this Python gate's alone: the Rust lifter
-        # marshals more arches (`ffi_vex_arch` in vex/libvex_lifter.rs). On by
+        # Native (in-process) libVEX cold-block lifting (angr-z087y), on by
         # default (angr-op0dn.2.2; rationale in
         # docs/advanced-topics/rust_libvex_ffi.rst): any block the native
         # lifter cannot serve falls back to the pyvex callback with an
-        # identical IRSB. setup.py appends `libvex-ffi` to a stock build, so
-        # the probe is False only on a build without it (ANGR_LIBVEX_FFI=0, no
-        # libpyvex.so found, or a direct cargo build without the feature).
+        # identical IRSB. The AMD64 restriction is this Python gate's alone:
+        # the Rust lifter takes any arch libVEX has a guest for.
         self._use_native_lift = bool(use_native_lift)
-        if self._use_native_lift:
-            try:
-                from angr.rustylib.vex_engine import libvex_ffi_enabled
-            except ImportError:
-                libvex_ffi_enabled = None
-            if libvex_ffi_enabled is not None and libvex_ffi_enabled() and project.arch.name == "AMD64":
-                self._rust_mgr.set_native_lift_enabled(True)
+        if self._use_native_lift and project.arch.name == "AMD64":
+            self._rust_mgr.set_native_lift(project.arch)
 
         # Configure exploration strategy. Reuses the post-init setter so the
         # validation and FFI-call shape live in one place. Always invoke so a

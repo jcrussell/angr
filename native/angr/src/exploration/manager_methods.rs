@@ -627,16 +627,19 @@ impl RustExplorationManager {
         self.memory_config.vex_opt_level
     }
 
-    /// Enable/disable native (in-process) libVEX cold-block lifting.
+    /// Enable native (in-process) libVEX cold-block lifting for `arch` (a
+    /// Python `archinfo.Arch`), or disable it with `None`.
     ///
-    /// Propagated to every per-step `VEXInterpreter` (z087y Stage-2). Only
-    /// effective on a `libvex-ffi` build; on the default build the
-    /// interpreter setter is a no-op stub. Python gates the `True` call on
-    /// `libvex_ffi_enabled()` + AMD64, so a mistaken enable on an
-    /// unsupported build is inert either way.
+    /// Propagated to every per-step `VEXInterpreter` (z087y Stage-2). Raises
+    /// when the loaded `libpyvex` has no `vex_lift` or libVEX has no guest
+    /// for the arch.
+    #[pyo3(signature = (arch))]
     #[angr_macros::steady_guarded]
-    pub fn set_native_lift_enabled(&mut self, enabled: bool) {
-        self.memory_config.native_lift_enabled = enabled;
+    pub fn set_native_lift(&mut self, arch: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+        self.memory_config.native_lifter = arch
+            .map(crate::vex::libvex_lifter::NativeLibVEXLifter::from_py_arch)
+            .transpose()?;
+        Ok(())
     }
 
     /// Set a per-address VEX optimization level override.

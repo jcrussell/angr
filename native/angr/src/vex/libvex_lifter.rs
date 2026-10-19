@@ -1,23 +1,24 @@
-//! Native libVEX lifter (`libvex-ffi` feature).
-//!
-//! Accepted guest arches are whatever `ffi_vex_arch` maps: AMD64, ARM, ARM64,
-//! MIPS32 and MIPS64 (all covered by the corpus parity gate; angr-qwyti.20
-//! added the non-AMD64 arches). X86, PPC32, PPC64 and
-//! S390X still return [`LiftError::InvalidArch`] so the caller falls back to
-//! the pyvex-callback path.
+//! Native libVEX lifter.
 //!
 //! `NativeLibVEXLifter` implements the [`VEXLifter`] trait by calling the
-//! `vex_lift` shim exported from `libpyvex.so` (the *same* object pyvex loads
-//! via cffi) and marshalling the returned C `VEXLiftResult->irsb` into a Rust
-//! [`IRSB`]. Binding pyvex's exact-config shim is the parity guarantee: the
-//! lifted IR is byte-for-byte what the Python callback path produces today (see
-//! `docs/advanced-topics/rust_libvex_ffi.rst`).
+//! `vex_lift` shim in the `libpyvex` the running pyvex already loaded (the
+//! *same* object pyvex calls through cffi) and marshalling the returned C
+//! `VEXLiftResult->irsb` into a Rust [`IRSB`]. The symbol and the C struct
+//! layouts come from upstream's [`crate::ailment::vex_ffi`], which resolves
+//! `vex_lift` at runtime (`init_symbols`), so the extension has no link-time
+//! dependency on `libpyvex`. See `docs/advanced-topics/rust_libvex_ffi.rst`.
+//!
+//! A lifter is built from the Python `archinfo.Arch` (`from_py_arch`): the
+//! guest tag comes from `arch.vex_arch` and the `VexArchInfo` from
+//! `arch.vex_archinfo`, the same inputs pyvex's `LibVEXLifter._lift` passes,
+//! so endianness, hwcaps and `x86_cr0` follow the project's arch instead of
+//! being guessed from the Rust [`VexArch`].
 //!
 //! The marshalling mirrors `pyvex_bridge.rs::convert_*` node-for-node — same
-//! `vex::ir` target shape — but reads the raw C structs (via the bindgen
-//! `libvex_ffi` bindings) instead of a serde-JSON round-trip. Enum tags are
-//! bridged back to pyvex-style names with the generated `enum_names` tables so
-//! the existing string parsers in `opcode_map.rs` can be reused verbatim (DRY).
+//! `vex::ir` target shape — but reads the raw C structs instead of a
+//! serde-JSON round-trip. Op tags go through `vexop::op_name` and the other
+//! enum tags through the name tables below, so the existing string parsers in
+//! `opcode_map.rs` are reused verbatim (DRY).
 //!
 //! Safety invariants (see the doc's "Open risks"):
 //! - `vex_lift` returns a pointer into libVEX's temporary arena; it is clobbered
@@ -42,93 +43,229 @@
 // edition-2024 lint to this module rather than sprinkling per-op blocks.
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::CStr;
-use std::os::raw::c_uchar;
+use std::ffi::{CStr, c_int};
 use std::ptr;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
+
+use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
 
 use super::ir::{
     DirtyFx, Endness, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IRRegArray, IRSB, IRStmt,
     IRType, JumpKind, MBusEvent, TypeEnv, VexArch,
 };
-use super::libvex_ffi as ffi;
-use super::libvex_ffi::enum_names;
 use super::lifter::{LiftError, VEXLifter};
-use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type_or_log};
+use super::opcode_map::{parse_jumpkind, parse_opcode, parse_type_or_log};
+use crate::ailment::vex_ffi as ffi;
+use crate::ailment::vexop;
 
 /// VEX's `IRTemp_INVALID` sentinel (an absent temp, e.g. the `oldHi` slot of a
 /// single-width CAS or an untyped Dirty result).
 const IRTEMP_INVALID: u32 = 0xFFFF_FFFF;
 
-/// pyvex `_lift` default (disassembled from `pyvex/lifting/libvex.py`). Its
-/// `max_bytes` companion is the crate-shared `super::VEX_MAX_BYTES`.
+/// pyvex `_lift` default (`pyvex/lifting/libvex.py`). Its `max_bytes`
+/// companion is the crate-shared `super::VEX_MAX_BYTES`.
 const VEX_MAX_INSTRUCTIONS: u32 = 99;
+
+/// `VexRegisterUpdates::VexRegUpdUnwindregsAtMemAccess`, the `px_control`
+/// pyvex passes when `cross_insn_opt` is on (angr's default).
+const VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS: u32 = 0x702;
+
+// Enum tags `ailment::vex_ffi` does not carry, from `pyvex/pyvex/vex_ffi.py`.
+// `test_native_lift_parity.py` checks every one against pyvex's cffi library.
+const IJK_BASE: u32 = 0x1A00;
+const IFX_READ: u32 = 0x1B01;
+const IFX_WRITE: u32 = 0x1B02;
+const IFX_MODIFY: u32 = 0x1B03;
+const ILGOP_IDENT_V128: u32 = 0x1D01;
+const ILGOP_IDENT64: u32 = 0x1D02;
+const ILGOP_IDENT32: u32 = 0x1D03;
+const ILGOP_IDENT16: u32 = 0x1D04;
+const ILGOP_IDENT8: u32 = 0x1D05;
+const ILGOP_16UTO32: u32 = 0x1D06;
+const ILGOP_16STO32: u32 = 0x1D07;
+const ILGOP_8UTO32: u32 = 0x1D08;
+const ILGOP_8STO32: u32 = 0x1D09;
+
+/// `IRJumpKind` names, indexed by `tag - IJK_BASE` (`Ijk_INVALID` first).
+const IJK_NAMES: &[&str] = &[
+    "Ijk_INVALID",
+    "Ijk_Boring",
+    "Ijk_Call",
+    "Ijk_Ret",
+    "Ijk_ClientReq",
+    "Ijk_Yield",
+    "Ijk_EmWarn",
+    "Ijk_EmFail",
+    "Ijk_NoDecode",
+    "Ijk_MapFail",
+    "Ijk_InvalICache",
+    "Ijk_FlushDCache",
+    "Ijk_NoRedir",
+    "Ijk_SigILL",
+    "Ijk_SigTRAP",
+    "Ijk_SigSEGV",
+    "Ijk_SigBUS",
+    "Ijk_SigFPE",
+    "Ijk_SigFPE_IntDiv",
+    "Ijk_SigFPE_IntOvf",
+    "Ijk_Privileged",
+    "Ijk_Sys_syscall",
+    "Ijk_Sys_int",
+    "Ijk_Sys_int32",
+    "Ijk_Sys_int128",
+    "Ijk_Sys_int129",
+    "Ijk_Sys_int130",
+    "Ijk_Sys_int145",
+    "Ijk_Sys_int210",
+    "Ijk_Sys_sysenter",
+    "Ijk_Extension",
+];
+
+/// `IRType` names, indexed by `tag - ffi::ITY_INVALID` (`Ity_INVALID` first).
+const ITY_NAMES: &[&str] = &[
+    "Ity_INVALID",
+    "Ity_I1",
+    "Ity_I8",
+    "Ity_I16",
+    "Ity_I32",
+    "Ity_I64",
+    "Ity_I128",
+    "Ity_F16",
+    "Ity_F32",
+    "Ity_F64",
+    "Ity_D32",
+    "Ity_D64",
+    "Ity_D128",
+    "Ity_F128",
+    "Ity_V128",
+    "Ity_V256",
+    "Ity_V512",
+];
+
+/// Name of an enum tag in a table that starts at `base`.
+fn tag_name(table: &'static [&'static str], base: u32, tag: u32) -> Option<&'static str> {
+    let idx = tag.checked_sub(base)?;
+    table.get(usize::try_from(idx).ok()?).copied()
+}
 
 /// Serializes every `vex_lift` call — libVEX global state is not re-entrant.
 static LIFT_LOCK: Mutex<()> = Mutex::new(());
-static VEX_INIT: Once = Once::new();
 
-/// Native libVEX lifter backed by `libpyvex.so`'s `vex_lift` shim.
-///
-/// Handles the arches `ffi_vex_arch` maps (AMD64, ARM, ARM64, MIPS32, MIPS64);
-/// the rest return [`LiftError::InvalidArch`] so the caller falls back to the
-/// pyvex-callback path.
-#[derive(Debug, Default)]
-pub struct NativeLibVEXLifter;
+/// The `VexArchInfo` fields pyvex fills from `arch.vex_archinfo`, kept as
+/// plain data so the lifter is `Send` (the C struct holds a raw cache pointer).
+/// Mirrors upstream's `convert_vex::build_archinfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ArchInfo {
+    hwcaps: u32,
+    endness: c_int,
+    ppc_icache_line_sz_b: c_int,
+    ppc_dcbz_sz_b: u32,
+    ppc_scv_supported: u8,
+    ppc_dcbzl_sz_b: u32,
+    arm64_d_min_line_lg2_sz_b: u32,
+    arm64_i_min_line_lg2_sz_b: u32,
+    arm64_cache_block_size: u8,
+    arm64_requires_fallback_llsc: u8,
+    x86_cr0: u32,
+}
+
+impl ArchInfo {
+    fn to_ffi(self) -> ffi::VexArchInfo {
+        ffi::VexArchInfo {
+            hwcaps: self.hwcaps,
+            endness: self.endness,
+            hwcache_info: ffi::VexCacheInfo {
+                num_levels: 0,
+                num_caches: 0,
+                caches: ptr::null_mut(),
+                icaches_maintain_coherence: 1,
+            },
+            ppc_icache_line_sz_b: self.ppc_icache_line_sz_b,
+            ppc_dcbz_sz_b: self.ppc_dcbz_sz_b,
+            ppc_scv_supported: self.ppc_scv_supported,
+            ppc_dcbzl_sz_b: self.ppc_dcbzl_sz_b,
+            arm64_d_min_line_lg2_sz_b: self.arm64_d_min_line_lg2_sz_b,
+            arm64_i_min_line_lg2_sz_b: self.arm64_i_min_line_lg2_sz_b,
+            arm64_cache_block_size: self.arm64_cache_block_size,
+            arm64_requires_fallback_llsc: self.arm64_requires_fallback_llsc,
+            x86_cr0: self.x86_cr0,
+        }
+    }
+}
+
+/// libVEX `VexArch` guest tag for an `archinfo` `vex_arch` name (mirrors
+/// upstream's `convert_vex::vex_arch_int`, which is private).
+fn vex_arch_tag(name: &str) -> Option<u32> {
+    Some(match name {
+        "VexArchX86" => 0x401,
+        "VexArchAMD64" => 0x402,
+        "VexArchARM" => 0x403,
+        "VexArchARM64" => 0x404,
+        "VexArchPPC32" => 0x405,
+        "VexArchPPC64" => 0x406,
+        "VexArchS390X" => 0x407,
+        "VexArchMIPS32" => 0x408,
+        "VexArchMIPS64" => 0x409,
+        "VexArchRISCV64" => 0x40B,
+        _ => return None,
+    })
+}
+
+/// Native libVEX lifter backed by `libpyvex`'s `vex_lift` shim, configured
+/// for one guest arch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeLibVEXLifter {
+    guest: u32,
+    info: ArchInfo,
+}
 
 impl NativeLibVEXLifter {
-    pub fn new() -> Self {
-        NativeLibVEXLifter
+    /// Build a lifter from a Python `archinfo.Arch`.
+    ///
+    /// Resolves `vex_lift` in the loaded `libpyvex` (`vex_ffi::init_symbols`)
+    /// and raises `RuntimeError` when it cannot be found, `ValueError` for an
+    /// arch libVEX has no guest for.
+    pub fn from_py_arch(arch: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let py = arch.py();
+        // pyvex must be imported for init_symbols to find libpyvex; importing
+        // it also runs libVEX's one-time `vex_init`.
+        py.import("pyvex")?;
+        ffi::init_symbols(py);
+        if ffi::vex_lift_fn().is_none() {
+            return Err(PyRuntimeError::new_err(
+                "native lift: vex_lift was not found in the loaded libpyvex",
+            ));
+        }
+        let name: String = arch.getattr("vex_arch")?.extract()?;
+        let guest = vex_arch_tag(&name).ok_or_else(|| {
+            PyValueError::new_err(format!("native lift: no libVEX guest for {name}"))
+        })?;
+        let vai = arch.getattr("vex_archinfo")?;
+        // A key archinfo leaves out is zero, as pyvex's cffi struct
+        // initialization makes it; any other lookup error propagates.
+        let geti = |k: &str| -> PyResult<i64> {
+            match vai.get_item(k) {
+                Ok(v) => Ok(v.extract::<Option<i64>>()?.unwrap_or(0)),
+                Err(e) if e.is_instance_of::<PyKeyError>(py) => Ok(0),
+                Err(e) => Err(e),
+            }
+        };
+        let info = ArchInfo {
+            hwcaps: geti("hwcaps")? as u32,
+            endness: geti("endness")? as c_int,
+            ppc_icache_line_sz_b: geti("ppc_icache_line_szB")? as c_int,
+            ppc_dcbz_sz_b: geti("ppc_dcbz_szB")? as u32,
+            ppc_scv_supported: geti("ppc_scv_supported")? as u8,
+            ppc_dcbzl_sz_b: geti("ppc_dcbzl_szB")? as u32,
+            arm64_d_min_line_lg2_sz_b: geti("arm64_dMinLine_lg2_szB")? as u32,
+            arm64_i_min_line_lg2_sz_b: geti("arm64_iMinLine_lg2_szB")? as u32,
+            arm64_cache_block_size: geti("arm64_cache_block_size")? as u8,
+            arm64_requires_fallback_llsc: geti("arm64_requires_fallback_LLSC")? as u8,
+            x86_cr0: geti("x86_cr0")? as u32,
+        };
+        Ok(NativeLibVEXLifter { guest, info })
     }
-}
-
-/// Build the `VexArchInfo` pyvex passes to `vex_lift`, matching
-/// `archinfo.Arch<X>().vex_archinfo`. Across every arch angr's archinfo emits
-/// baseline hwcaps (0), empty cache info, and `x86_cr0 = 0xFFFFFFFF`; the sole
-/// per-arch difference is endianness (ARM/ARM64/AMD64/X86 little, MIPS big).
-/// Fields archinfo does not set (`ppc_scv_supported`,
-/// `arm64_cache_block_size`, `arm64_requires_fallback_LLSC`) are zero, as
-/// pyvex's cffi zero-initializes them. Keep this parity with
-/// `gen_libvex_corpus.py`, which lifts the reference blocks through those same
-/// `archinfo.Arch<X>()` objects.
-fn archinfo_for(arch: VexArch) -> ffi::VexArchInfo {
-    let endness = match arch.endness() {
-        Endness::Little => ffi::VexEndness::VexEndnessLE,
-        Endness::Big => ffi::VexEndness::VexEndnessBE,
-    };
-    ffi::VexArchInfo {
-        hwcaps: 0,
-        endness,
-        hwcache_info: ffi::VexCacheInfo {
-            num_levels: 0,
-            num_caches: 0,
-            caches: ptr::null_mut(),
-            icaches_maintain_coherence: 1,
-        },
-        ppc_icache_line_szB: 0,
-        ppc_dcbz_szB: 0,
-        ppc_scv_supported: 0,
-        ppc_dcbzl_szB: 0,
-        arm64_dMinLine_lg2_szB: 0,
-        arm64_iMinLine_lg2_szB: 0,
-        arm64_cache_block_size: 0,
-        arm64_requires_fallback_LLSC: 0,
-        x86_cr0: 0xFFFF_FFFF,
-    }
-}
-
-/// Map the Rust `VexArch` to the libVEX FFI `ffi::VexArch` guest tag. Returns
-/// `None` for arches the native lifter does not yet build archinfo for (X86,
-/// PPC, S390X) so the caller falls back to the pyvex-callback path.
-fn ffi_vex_arch(arch: VexArch) -> Option<ffi::VexArch> {
-    Some(match arch {
-        VexArch::AMD64 => ffi::VexArch::VexArchAMD64,
-        VexArch::ARM => ffi::VexArch::VexArchARM,
-        VexArch::ARM64 => ffi::VexArch::VexArchARM64,
-        VexArch::MIPS32 => ffi::VexArch::VexArchMIPS32,
-        VexArch::MIPS64 => ffi::VexArch::VexArchMIPS64,
-        VexArch::X86 | VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => return None,
-    })
 }
 
 impl VEXLifter for NativeLibVEXLifter {
@@ -137,10 +274,13 @@ impl VEXLifter for NativeLibVEXLifter {
         reason = "`LIFT_LOCK` poison guard: poison requires an unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
     )]
     fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
-        let Some(guest_arch) = ffi_vex_arch(arch) else {
-            return Err(LiftError::InvalidArch(format!(
-                "NativeLibVEXLifter has no archinfo for {arch:?} yet (falls back to pyvex)"
-            )));
+        // `from_py_arch` refuses to build a lifter without the symbol, so a
+        // miss here means it was never resolved in this process.
+        let Some(vex_lift) = ffi::vex_lift_fn() else {
+            return Err(LiftError::LiftFailed {
+                addr,
+                reason: "vex_lift is not resolved".to_string(),
+            });
         };
         if bytes.is_empty() {
             return Err(LiftError::LiftFailed {
@@ -149,14 +289,8 @@ impl VEXLifter for NativeLibVEXLifter {
             });
         }
 
-        // vex_init is idempotent (guarded by libVEX's `vex_initdone`), but we
-        // only need it once per process.
-        VEX_INIT.call_once(|| unsafe {
-            ffi::vex_init();
-        });
-
         // Cap max_bytes to the slice length so libVEX never reads past `bytes`.
-        let max_bytes = (bytes.len() as u32).min(super::VEX_MAX_BYTES as u32);
+        let max_bytes = bytes.len().min(super::VEX_MAX_BYTES) as u32;
 
         let _guard = LIFT_LOCK.lock().expect("libVEX lift lock poisoned");
         // SAFETY: single-threaded through LIFT_LOCK; we marshal the whole IRSB
@@ -164,10 +298,10 @@ impl VEXLifter for NativeLibVEXLifter {
         // arena. `bytes` outlives the call. vex_lift does not write through the
         // insn_start pointer.
         unsafe {
-            let result = ffi::vex_lift(
-                guest_arch,
-                archinfo_for(arch),
-                bytes.as_ptr() as *mut c_uchar,
+            let result = vex_lift(
+                self.guest,
+                self.info.to_ffi(),
+                bytes.as_ptr(),
                 addr,
                 VEX_MAX_INSTRUCTIONS,
                 max_bytes,
@@ -178,7 +312,7 @@ impl VEXLifter for NativeLibVEXLifter {
                 0, // collect_data_refs
                 0, // load_from_ro_regions
                 0, // const_prop
-                ffi::VexRegisterUpdates::VexRegUpdUnwindregsAtMemAccess,
+                VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS,
                 0, // lookback_amount
             );
             if result.is_null() {
@@ -209,78 +343,64 @@ impl VEXLifter for NativeLibVEXLifter {
 // Every fn below is `unsafe` — it dereferences arena pointers valid only while
 // LIFT_LOCK is held. Structural target shape matches pyvex_bridge::convert_*.
 
-/// Endness discriminant -> Rust `Endness` (via pyvex `Iend_*` name).
+/// Endness tag -> Rust `Endness`.
 ///
-/// A lookup miss means the generated `enum_names` table has drifted from the
-/// linked `libpyvex.so`; there is no `Endness` sentinel to carry the raw tag
-/// the way `c_op` does, so the raw discriminant goes to the log instead.
-fn c_endness(end: ffi::IREndness) -> Endness {
-    match enum_names::iend_name(end.0) {
-        Some(name) => parse_endness(name),
+/// There is no `Endness` sentinel to carry an unknown tag the way `c_op`
+/// does, so the raw tag goes to the log instead.
+fn c_endness(end: u32) -> Endness {
+    match end {
+        ffi::IEND_LE => Endness::Little,
+        ffi::IEND_BE => Endness::Big,
         // SILENT(cat-c): defaulting to LE on an unknown tag can silently
-        // byte-swap a BE load/store — warn so the table drift is traceable.
-        None => {
-            log::warn!(
-                "Unknown libVEX IREndness discriminant {}; assuming Iend_LE",
-                end.0
-            );
+        // byte-swap a BE load/store — warn so the drift is traceable.
+        _ => {
+            log::warn!("Unknown libVEX IREndness tag {end:#x}; assuming Iend_LE");
             Endness::Little
         }
     }
 }
 
-/// Jumpkind discriminant -> Rust `JumpKind` (via pyvex `Ijk_*` name).
+/// Jumpkind tag -> Rust `JumpKind` (via its pyvex `Ijk_*` name).
 ///
-/// As with [`c_endness`], a lookup miss is table drift and has no sentinel
-/// variant to preserve the raw tag, so it is logged.
-fn c_jumpkind(jk: ffi::IRJumpKind) -> JumpKind {
-    match enum_names::ijk_name(jk.0) {
+/// As with [`c_endness`], an unknown tag has no sentinel variant to preserve
+/// it, so it is logged.
+fn c_jumpkind(jk: u32) -> JumpKind {
+    match tag_name(IJK_NAMES, IJK_BASE, jk) {
         Some(name) => parse_jumpkind(name),
         // SILENT(cat-c): defaulting to Boring turns a call/ret/syscall exit
-        // into a plain jump — warn so the table drift is traceable.
+        // into a plain jump — warn so the drift is traceable.
         None => {
-            log::warn!(
-                "Unknown libVEX IRJumpKind discriminant {}; assuming Ijk_Boring",
-                jk.0
-            );
+            log::warn!("Unknown libVEX IRJumpKind tag {jk:#x}; assuming Ijk_Boring");
             JumpKind::Boring
         }
     }
 }
 
-/// Type discriminant -> Rust `IRType` (via pyvex `Ity_*` name), defaulting to
+/// Type tag -> Rust `IRType` (via its pyvex `Ity_*` name), defaulting to
 /// `I64` on an unknown tag (mirrors `pyvex_bridge`'s `unwrap_or(IRType::I64)`).
 ///
-/// Both miss paths (no name for the discriminant, and a name
-/// [`parse_type_or_log`] does not know) are logged for the same reason as
-/// [`c_endness`]; the latter shares its fallback with the JSON marshalling
-/// path in `pyvex_bridge` so both stay equally observable (angr-c7xno.90).
-fn c_type_parse(ty: ffi::IRType) -> IRType {
-    match enum_names::irtype_name(ty.0) {
+/// Both miss paths (no name for the tag, and a name [`parse_type_or_log`]
+/// does not know) are logged for the same reason as [`c_endness`]; the latter
+/// shares its fallback with the JSON marshalling path in `pyvex_bridge` so
+/// both stay equally observable (angr-c7xno.90).
+fn c_type_parse(ty: u32) -> IRType {
+    match tag_name(ITY_NAMES, ffi::ITY_INVALID, ty) {
         Some(name) => parse_type_or_log(name, "libVEX IRType"),
         // SILENT(cat-c): defaulting to I64 mis-sizes the value at every use
-        // site — warn so the table drift is traceable.
+        // site — warn so the drift is traceable.
         None => {
-            log::warn!(
-                "Unknown libVEX IRType discriminant {}; assuming Ity_I64",
-                ty.0
-            );
+            log::warn!("Unknown libVEX IRType tag {ty:#x}; assuming Ity_I64");
             IRType::I64
         }
     }
 }
 
-/// Convert a C `IROp` discriminant to a Rust `IROp` via its pyvex name.
-///
-/// # Safety
-/// Dereferences no pointers — `op` is a by-value discriminant newtype, so the
-/// caller has no aliasing/lifetime obligation. Marked `unsafe` only to keep the
-/// marshalling helpers in a single unsafe domain (see the module note).
-unsafe fn c_op(op: ffi::IROp) -> super::ir::IROp {
-    match enum_names::irop_name(op.0) {
+/// Convert a C `IROp` tag to a Rust `IROp` via its pyvex name.
+fn c_op(op: u32) -> super::ir::IROp {
+    match vexop::op_name(op) {
         Some(name) => parse_opcode(name),
         // Preserve the numeric tag so an unmapped op is still traceable.
-        None => parse_opcode(&format!("Iop_UNKNOWN_{}", op.0)),
+        None => parse_opcode(&format!("Iop_UNKNOWN_{op}")),
     }
 }
 
@@ -322,46 +442,37 @@ fn expand_v256(pattern: u32) -> [u64; 4] {
 /// libVEX arena (see the module-level arena contract). The pointee is only read
 /// and the `Ico` union is projected by `tag`, never retained past return.
 unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
-    let tag = (*c).tag.0;
-    let ico = &(*c).Ico;
-    if tag == ffi::IRConstTag::Ico_U1.0 {
-        IRConst::U1(ico.U1 != 0)
-    } else if tag == ffi::IRConstTag::Ico_U8.0 {
-        IRConst::U8(ico.U8)
-    } else if tag == ffi::IRConstTag::Ico_U16.0 {
-        IRConst::U16(ico.U16)
-    } else if tag == ffi::IRConstTag::Ico_U32.0 {
-        IRConst::U32(ico.U32)
-    } else if tag == ffi::IRConstTag::Ico_U64.0 {
-        IRConst::U64(ico.U64)
-    } else if tag == ffi::IRConstTag::Ico_U128.0 {
+    let ico = &(*c).ico;
+    match (*c).tag {
+        ffi::ICO_U1 => IRConst::U1(ico.u1 != 0),
+        ffi::ICO_U8 => IRConst::U8(ico.u8_),
+        ffi::ICO_U16 => IRConst::U16(ico.u16_),
+        ffi::ICO_U32 => IRConst::U32(ico.u32_),
+        ffi::ICO_U64 => IRConst::U64(ico.u64_),
         // A restricted constant in the same one-bit-per-byte encoding as
         // Ico_V128 (libvex_ir.h).
-        IRConst::U128(expand_v128(ico.U128))
-    } else if tag == ffi::IRConstTag::Ico_F32.0 {
-        IRConst::F32(ico.F32)
-    } else if tag == ffi::IRConstTag::Ico_F32i.0 {
-        IRConst::F32(f32::from_bits(ico.F32i))
-    } else if tag == ffi::IRConstTag::Ico_F64.0 {
-        IRConst::F64(ico.F64)
-    } else if tag == ffi::IRConstTag::Ico_F64i.0 {
-        IRConst::F64(f64::from_bits(ico.F64i))
-    } else if tag == ffi::IRConstTag::Ico_V128.0 {
-        IRConst::V128(expand_v128(ico.V128))
-    } else if tag == ffi::IRConstTag::Ico_V256.0 {
-        IRConst::V256(expand_v256(ico.V256))
-    } else if tag == ffi::IRConstTag::Ico_V512.0 {
-        // SILENT(cat-c): the engine has no 512-bit vector type, so an AVX-512
-        // constant cannot be represented; the zero stand-in is wrong for any
-        // nonzero pattern. Only EVEX-encoded code reaches this (angr-mx00p.5).
-        log::warn!("libVEX Ico_V512 constant is unsupported; assuming Ico_U64(0)");
-        IRConst::U64(0)
-    } else {
-        // SILENT(cat-c): defaulting to U64(0) on an unrecognized libVEX
-        // Ico_* tag silently corrupts every constant of that kind — warn so
-        // table drift is traceable.
-        log::warn!("Unknown libVEX IRConstTag discriminant {tag}; assuming Ico_U64(0)");
-        IRConst::U64(0)
+        ffi::ICO_U128 => IRConst::U128(expand_v128(ico.u128)),
+        ffi::ICO_F32 => IRConst::F32(ico.f32_),
+        ffi::ICO_F32I => IRConst::F32(f32::from_bits(ico.f32i)),
+        ffi::ICO_F64 => IRConst::F64(ico.f64_),
+        ffi::ICO_F64I => IRConst::F64(f64::from_bits(ico.f64i)),
+        ffi::ICO_V128 => IRConst::V128(expand_v128(ico.v128)),
+        ffi::ICO_V256 => IRConst::V256(expand_v256(ico.v256)),
+        ffi::ICO_V512 => {
+            // SILENT(cat-c): the engine has no 512-bit vector type, so an
+            // AVX-512 constant cannot be represented; the zero stand-in is
+            // wrong for any nonzero pattern. Only EVEX-encoded code reaches
+            // this (angr-mx00p.5).
+            log::warn!("libVEX Ico_V512 constant is unsupported; assuming Ico_U64(0)");
+            IRConst::U64(0)
+        }
+        tag => {
+            // SILENT(cat-c): defaulting to U64(0) on an unrecognized libVEX
+            // Ico_* tag silently corrupts every constant of that kind — warn
+            // so the drift is traceable.
+            log::warn!("Unknown libVEX IRConstTag {tag:#x}; assuming Ico_U64(0)");
+            IRConst::U64(0)
+        }
     }
 }
 
@@ -404,7 +515,7 @@ unsafe fn marshal_callee(cee: *const ffi::IRCallee) -> IRCallee {
         // non-deterministic across loads and unused by the Rust interpreter — it
         // dispatches CCalls by `name`. The pyvex serializer hardcodes `addr: 0`
         // (`rust_irsb_serializer._serialize_cee`), so normalize to 0 here to stay
-        // a byte-for-byte drop-in for the pyvex-serialized path (corpus parity gate).
+        // a byte-for-byte drop-in for the pyvex-serialized path (parity test).
         addr: 0,
         mcx_mask: (*cee).mcx_mask,
     }
@@ -418,8 +529,8 @@ unsafe fn marshal_callee(cee: *const ffi::IRCallee) -> IRCallee {
 unsafe fn marshal_reg_array(r: *const ffi::IRRegArray) -> IRRegArray {
     IRRegArray {
         base: (*r).base as u32,
-        elemTy: c_type_parse((*r).elemTy),
-        nElems: (*r).nElems as u32,
+        elemTy: c_type_parse((*r).elem_ty),
+        nElems: (*r).n_elems as u32,
     }
 }
 
@@ -449,76 +560,66 @@ unsafe fn marshal_expr_vec(mut args: *mut *mut ffi::IRExpr) -> Vec<IRExpr> {
 /// likewise valid. Recurses over the whole expr tree into owned types; retains
 /// no arena pointer past return.
 unsafe fn marshal_expr(e: *const ffi::IRExpr) -> IRExpr {
-    let tag = (*e).tag.0;
-    let iex = &(*e).Iex;
-    if tag == ffi::IRExprTag::Iex_Const.0 {
-        IRExpr::Const(marshal_const(iex.Const.con))
-    } else if tag == ffi::IRExprTag::Iex_RdTmp.0 {
-        IRExpr::RdTmp(iex.RdTmp.tmp)
-    } else if tag == ffi::IRExprTag::Iex_Get.0 {
-        IRExpr::Get {
-            offset: iex.Get.offset as u32,
-            ty: c_type_parse(iex.Get.ty),
+    let iex = &(*e).iex;
+    match (*e).tag {
+        ffi::IEX_CONST => IRExpr::Const(marshal_const(iex.con.con)),
+        ffi::IEX_RDTMP => IRExpr::RdTmp(iex.rdtmp.tmp),
+        ffi::IEX_GET => IRExpr::Get {
+            offset: iex.get.offset as u32,
+            ty: c_type_parse(iex.get.ty),
+        },
+        ffi::IEX_GETI => IRExpr::GetI {
+            descr: marshal_reg_array(iex.geti.descr),
+            ix: Box::new(marshal_expr(iex.geti.ix)),
+            bias: iex.geti.bias as u32,
+        },
+        ffi::IEX_LOAD => IRExpr::Load {
+            addr: Box::new(marshal_expr(iex.load.addr)),
+            ty: c_type_parse(iex.load.ty),
+            endness: c_endness(iex.load.end),
+        },
+        ffi::IEX_UNOP => IRExpr::Unop {
+            op: c_op(iex.unop.op),
+            arg: Box::new(marshal_expr(iex.unop.arg)),
+        },
+        ffi::IEX_BINOP => IRExpr::Binop {
+            op: c_op(iex.binop.op),
+            left: Box::new(marshal_expr(iex.binop.arg1)),
+            right: Box::new(marshal_expr(iex.binop.arg2)),
+        },
+        ffi::IEX_TRIOP => {
+            let d = iex.triop.details;
+            IRExpr::Triop {
+                op: c_op((*d).op),
+                arg1: Box::new(marshal_expr((*d).arg1)),
+                arg2: Box::new(marshal_expr((*d).arg2)),
+                arg3: Box::new(marshal_expr((*d).arg3)),
+            }
         }
-    } else if tag == ffi::IRExprTag::Iex_GetI.0 {
-        IRExpr::GetI {
-            descr: marshal_reg_array(iex.GetI.descr),
-            ix: Box::new(marshal_expr(iex.GetI.ix)),
-            bias: iex.GetI.bias as u32,
+        ffi::IEX_QOP => {
+            let d = iex.qop.details;
+            IRExpr::Qop {
+                op: c_op((*d).op),
+                arg1: Box::new(marshal_expr((*d).arg1)),
+                arg2: Box::new(marshal_expr((*d).arg2)),
+                arg3: Box::new(marshal_expr((*d).arg3)),
+                arg4: Box::new(marshal_expr((*d).arg4)),
+            }
         }
-    } else if tag == ffi::IRExprTag::Iex_Load.0 {
-        IRExpr::Load {
-            addr: Box::new(marshal_expr(iex.Load.addr)),
-            ty: c_type_parse(iex.Load.ty),
-            endness: c_endness(iex.Load.end),
-        }
-    } else if tag == ffi::IRExprTag::Iex_Unop.0 {
-        IRExpr::Unop {
-            op: c_op(iex.Unop.op),
-            arg: Box::new(marshal_expr(iex.Unop.arg)),
-        }
-    } else if tag == ffi::IRExprTag::Iex_Binop.0 {
-        IRExpr::Binop {
-            op: c_op(iex.Binop.op),
-            left: Box::new(marshal_expr(iex.Binop.arg1)),
-            right: Box::new(marshal_expr(iex.Binop.arg2)),
-        }
-    } else if tag == ffi::IRExprTag::Iex_Triop.0 {
-        let d = iex.Triop.details;
-        IRExpr::Triop {
-            op: c_op((*d).op),
-            arg1: Box::new(marshal_expr((*d).arg1)),
-            arg2: Box::new(marshal_expr((*d).arg2)),
-            arg3: Box::new(marshal_expr((*d).arg3)),
-        }
-    } else if tag == ffi::IRExprTag::Iex_Qop.0 {
-        let d = iex.Qop.details;
-        IRExpr::Qop {
-            op: c_op((*d).op),
-            arg1: Box::new(marshal_expr((*d).arg1)),
-            arg2: Box::new(marshal_expr((*d).arg2)),
-            arg3: Box::new(marshal_expr((*d).arg3)),
-            arg4: Box::new(marshal_expr((*d).arg4)),
-        }
-    } else if tag == ffi::IRExprTag::Iex_ITE.0 {
-        IRExpr::ITE {
-            cond: Box::new(marshal_expr(iex.ITE.cond)),
-            iftrue: Box::new(marshal_expr(iex.ITE.iftrue)),
-            iffalse: Box::new(marshal_expr(iex.ITE.iffalse)),
-        }
-    } else if tag == ffi::IRExprTag::Iex_CCall.0 {
-        IRExpr::CCall {
-            cee: marshal_callee(iex.CCall.cee),
-            retty: c_type_parse(iex.CCall.retty),
-            args: marshal_expr_vec(iex.CCall.args),
-        }
-    } else if tag == ffi::IRExprTag::Iex_VECRET.0 {
-        IRExpr::VECRET
-    } else if tag == ffi::IRExprTag::Iex_GSPTR.0 {
-        IRExpr::GSPTR
-    } else {
+        ffi::IEX_ITE => IRExpr::ITE {
+            cond: Box::new(marshal_expr(iex.ite.cond)),
+            iftrue: Box::new(marshal_expr(iex.ite.iftrue)),
+            iffalse: Box::new(marshal_expr(iex.ite.iffalse)),
+        },
+        ffi::IEX_CCALL => IRExpr::CCall {
+            cee: marshal_callee(iex.ccall.cee),
+            retty: c_type_parse(iex.ccall.retty),
+            args: marshal_expr_vec(iex.ccall.args),
+        },
+        ffi::IEX_VECRET => IRExpr::VECRET,
+        ffi::IEX_GSPTR => IRExpr::GSPTR,
         // Binder and any future tag: no Rust equivalent; surface as a 0 const.
-        IRExpr::Const(IRConst::U64(0))
+        _ => IRExpr::Const(IRConst::U64(0)),
     }
 }
 
@@ -541,42 +642,29 @@ unsafe fn opt_expr(e: *mut ffi::IRExpr) -> Option<Box<IRExpr>> {
     }
 }
 
-fn loadg_op(cvt: ffi::IRLoadGOp) -> IRLoadGOp {
-    let v = cvt.0;
-    if v == ffi::IRLoadGOp::ILGop_IdentV128.0
-        || v == ffi::IRLoadGOp::ILGop_Ident64.0
-        || v == ffi::IRLoadGOp::ILGop_Ident32.0
-        || v == ffi::IRLoadGOp::ILGop_Ident16.0
-        || v == ffi::IRLoadGOp::ILGop_Ident8.0
-    {
-        IRLoadGOp::Identity
-    } else if v == ffi::IRLoadGOp::ILGop_8Uto32.0 {
-        IRLoadGOp::WidenZ { src_bits: 8 }
-    } else if v == ffi::IRLoadGOp::ILGop_8Sto32.0 {
-        IRLoadGOp::WidenS { src_bits: 8 }
-    } else if v == ffi::IRLoadGOp::ILGop_16Uto32.0 {
-        IRLoadGOp::WidenZ { src_bits: 16 }
-    } else if v == ffi::IRLoadGOp::ILGop_16Sto32.0 {
-        IRLoadGOp::WidenS { src_bits: 16 }
-    } else {
-        IRLoadGOp::Unknown
+fn loadg_op(cvt: u32) -> IRLoadGOp {
+    match cvt {
+        ILGOP_IDENT_V128 | ILGOP_IDENT64 | ILGOP_IDENT32 | ILGOP_IDENT16 | ILGOP_IDENT8 => {
+            IRLoadGOp::Identity
+        }
+        ILGOP_8UTO32 => IRLoadGOp::WidenZ { src_bits: 8 },
+        ILGOP_8STO32 => IRLoadGOp::WidenS { src_bits: 8 },
+        ILGOP_16UTO32 => IRLoadGOp::WidenZ { src_bits: 16 },
+        ILGOP_16STO32 => IRLoadGOp::WidenS { src_bits: 16 },
+        _ => IRLoadGOp::Unknown,
     }
 }
 
-fn dirty_fx(fx: ffi::IREffect) -> DirtyFx {
-    let v = fx.0;
-    if v == ffi::IREffect::Ifx_Read.0 {
-        DirtyFx::Read
-    } else if v == ffi::IREffect::Ifx_Write.0 {
-        DirtyFx::Write
-    } else if v == ffi::IREffect::Ifx_Modify.0 {
-        DirtyFx::Modify
-    } else {
-        DirtyFx::None
+fn dirty_fx(fx: u32) -> DirtyFx {
+    match fx {
+        IFX_READ => DirtyFx::Read,
+        IFX_WRITE => DirtyFx::Write,
+        IFX_MODIFY => DirtyFx::Modify,
+        _ => DirtyFx::None,
     }
 }
 
-fn mbe_event(_ev: ffi::IRMBusEvent) -> MBusEvent {
+fn mbe_event(_ev: u32) -> MBusEvent {
     // SILENT(cat-a): the payload is inert. VEX only emits Imbe_Fence /
     // Imbe_CancelReservation, and `Interpreter`'s `IRStmt::MBE` arm discards
     // the event anyway (`statements.rs`, `IRStmt::MBE(_) => Continue`) — this
@@ -597,106 +685,101 @@ fn mbe_event(_ev: ffi::IRMBusEvent) -> MBusEvent {
 /// the `details` sub-structs) likewise valid. Marshals into owned types; retains
 /// no arena pointer past return.
 unsafe fn marshal_stmt(s: *const ffi::IRStmt) -> IRStmt {
-    let tag = (*s).tag.0;
-    let ist = &(*s).Ist;
-    if tag == ffi::IRStmtTag::Ist_IMark.0 {
-        IRStmt::IMark {
-            addr: ist.IMark.addr,
-            len: ist.IMark.len,
-            delta: ist.IMark.delta,
+    let ist = &(*s).ist;
+    match (*s).tag {
+        ffi::IST_IMARK => IRStmt::IMark {
+            addr: ist.imark.addr,
+            len: ist.imark.len,
+            delta: ist.imark.delta,
+        },
+        ffi::IST_WRTMP => IRStmt::WrTmp {
+            tmp: ist.wrtmp.tmp,
+            data: marshal_expr(ist.wrtmp.data),
+        },
+        ffi::IST_PUT => IRStmt::Put {
+            offset: ist.put.offset as u32,
+            data: marshal_expr(ist.put.data),
+        },
+        ffi::IST_STORE => IRStmt::Store {
+            addr: marshal_expr(ist.store.addr),
+            data: marshal_expr(ist.store.data),
+            endness: c_endness(ist.store.end),
+        },
+        ffi::IST_EXIT => IRStmt::Exit {
+            guard: marshal_expr(ist.exit.guard),
+            dst: const_to_u64(ist.exit.dst),
+            jk: c_jumpkind(ist.exit.jk),
+            offsIP: ist.exit.offs_ip as u32,
+        },
+        ffi::IST_NOOP => IRStmt::NoOp,
+        ffi::IST_ABIHINT => IRStmt::AbiHint {
+            base: Box::new(marshal_expr(ist.abi_hint.base)),
+            len: ist.abi_hint.len as u32,
+            nia: Box::new(marshal_expr(ist.abi_hint.nia)),
+        },
+        ffi::IST_PUTI => {
+            let d = ist.puti.details;
+            IRStmt::PutI {
+                descr: marshal_reg_array((*d).descr),
+                ix: Box::new(marshal_expr((*d).ix)),
+                bias: (*d).bias as u32,
+                data: Box::new(marshal_expr((*d).data)),
+            }
         }
-    } else if tag == ffi::IRStmtTag::Ist_WrTmp.0 {
-        IRStmt::WrTmp {
-            tmp: ist.WrTmp.tmp,
-            data: marshal_expr(ist.WrTmp.data),
+        ffi::IST_STOREG => {
+            let d = ist.storeg.details;
+            IRStmt::StoreG {
+                addr: Box::new(marshal_expr((*d).addr)),
+                data: Box::new(marshal_expr((*d).data)),
+                guard: Box::new(marshal_expr((*d).guard)),
+                endness: c_endness((*d).end),
+            }
         }
-    } else if tag == ffi::IRStmtTag::Ist_Put.0 {
-        IRStmt::Put {
-            offset: ist.Put.offset as u32,
-            data: marshal_expr(ist.Put.data),
+        ffi::IST_LOADG => {
+            let d = ist.loadg.details;
+            IRStmt::LoadG {
+                dst: (*d).dst,
+                addr: Box::new(marshal_expr((*d).addr)),
+                alt: Box::new(marshal_expr((*d).alt)),
+                guard: Box::new(marshal_expr((*d).guard)),
+                cvt: loadg_op((*d).cvt),
+                endness: c_endness((*d).end),
+            }
         }
-    } else if tag == ffi::IRStmtTag::Ist_Store.0 {
-        IRStmt::Store {
-            addr: marshal_expr(ist.Store.addr),
-            data: marshal_expr(ist.Store.data),
-            endness: c_endness(ist.Store.end),
+        ffi::IST_CAS => {
+            let d = ist.cas.details;
+            IRStmt::CAS {
+                old_hi: opt_temp((*d).old_hi),
+                old_lo: (*d).old_lo,
+                addr: Box::new(marshal_expr((*d).addr)),
+                expdHi: opt_expr((*d).expd_hi),
+                expdLo: Box::new(marshal_expr((*d).expd_lo)),
+                dataHi: opt_expr((*d).data_hi),
+                dataLo: Box::new(marshal_expr((*d).data_lo)),
+                endness: c_endness((*d).end),
+            }
         }
-    } else if tag == ffi::IRStmtTag::Ist_Exit.0 {
-        IRStmt::Exit {
-            guard: marshal_expr(ist.Exit.guard),
-            dst: const_to_u64(ist.Exit.dst),
-            jk: c_jumpkind(ist.Exit.jk),
-            offsIP: ist.Exit.offsIP as u32,
+        ffi::IST_LLSC => IRStmt::LLSC {
+            storedata: opt_expr(ist.llsc.storedata),
+            result: ist.llsc.result,
+            addr: Box::new(marshal_expr(ist.llsc.addr)),
+            endness: c_endness(ist.llsc.end),
+        },
+        ffi::IST_MBE => IRStmt::MBE(mbe_event(ist.mbe.event)),
+        ffi::IST_DIRTY => {
+            let d = ist.dirty.details;
+            IRStmt::Dirty(IRDirty {
+                cee: marshal_callee((*d).cee),
+                guard: opt_expr((*d).guard),
+                tmp: opt_temp((*d).tmp),
+                mFx: dirty_fx((*d).m_fx),
+                mAddr: opt_expr((*d).m_addr),
+                mSize: (*d).m_size as u32,
+                nFxState: (*d).n_fx_state as u32,
+                args: marshal_expr_vec((*d).args),
+            })
         }
-    } else if tag == ffi::IRStmtTag::Ist_NoOp.0 {
-        IRStmt::NoOp
-    } else if tag == ffi::IRStmtTag::Ist_AbiHint.0 {
-        IRStmt::AbiHint {
-            base: Box::new(marshal_expr(ist.AbiHint.base)),
-            len: ist.AbiHint.len as u32,
-            nia: Box::new(marshal_expr(ist.AbiHint.nia)),
-        }
-    } else if tag == ffi::IRStmtTag::Ist_PutI.0 {
-        let d = ist.PutI.details;
-        IRStmt::PutI {
-            descr: marshal_reg_array((*d).descr),
-            ix: Box::new(marshal_expr((*d).ix)),
-            bias: (*d).bias as u32,
-            data: Box::new(marshal_expr((*d).data)),
-        }
-    } else if tag == ffi::IRStmtTag::Ist_StoreG.0 {
-        let d = ist.StoreG.details;
-        IRStmt::StoreG {
-            addr: Box::new(marshal_expr((*d).addr)),
-            data: Box::new(marshal_expr((*d).data)),
-            guard: Box::new(marshal_expr((*d).guard)),
-            endness: c_endness((*d).end),
-        }
-    } else if tag == ffi::IRStmtTag::Ist_LoadG.0 {
-        let d = ist.LoadG.details;
-        IRStmt::LoadG {
-            dst: (*d).dst,
-            addr: Box::new(marshal_expr((*d).addr)),
-            alt: Box::new(marshal_expr((*d).alt)),
-            guard: Box::new(marshal_expr((*d).guard)),
-            cvt: loadg_op((*d).cvt),
-            endness: c_endness((*d).end),
-        }
-    } else if tag == ffi::IRStmtTag::Ist_CAS.0 {
-        let d = ist.CAS.details;
-        IRStmt::CAS {
-            old_hi: opt_temp((*d).oldHi),
-            old_lo: (*d).oldLo,
-            addr: Box::new(marshal_expr((*d).addr)),
-            expdHi: opt_expr((*d).expdHi),
-            expdLo: Box::new(marshal_expr((*d).expdLo)),
-            dataHi: opt_expr((*d).dataHi),
-            dataLo: Box::new(marshal_expr((*d).dataLo)),
-            endness: c_endness((*d).end),
-        }
-    } else if tag == ffi::IRStmtTag::Ist_LLSC.0 {
-        IRStmt::LLSC {
-            storedata: opt_expr(ist.LLSC.storedata),
-            result: ist.LLSC.result,
-            addr: Box::new(marshal_expr(ist.LLSC.addr)),
-            endness: c_endness(ist.LLSC.end),
-        }
-    } else if tag == ffi::IRStmtTag::Ist_MBE.0 {
-        IRStmt::MBE(mbe_event(ist.MBE.event))
-    } else if tag == ffi::IRStmtTag::Ist_Dirty.0 {
-        let d = ist.Dirty.details;
-        IRStmt::Dirty(IRDirty {
-            cee: marshal_callee((*d).cee),
-            guard: opt_expr((*d).guard),
-            tmp: opt_temp((*d).tmp),
-            mFx: dirty_fx((*d).mFx),
-            mAddr: opt_expr((*d).mAddr),
-            mSize: (*d).mSize as u32,
-            nFxState: (*d).nFxState as u32,
-            args: marshal_expr_vec((*d).args),
-        })
-    } else {
-        IRStmt::NoOp
+        _ => IRStmt::NoOp,
     }
 }
 
@@ -743,12 +826,101 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64, arch: VexArch) -> IRSB
         statements,
         next: marshal_expr((*irsb).next),
         jumpkind: c_jumpkind((*irsb).jumpkind),
-        offsIP: (*irsb).offsIP as u32,
+        offsIP: (*irsb).offs_ip as u32,
         tyenv: marshal_tyenv((*irsb).tyenv),
     }
 }
 
-test_submod!("libvex_lifter_tests.rs" => tests);
+/// The fork-local enum tables, as `(name, tag)` pairs, for
+/// `test_native_lift_parity.py` to check against pyvex's cffi library.
+pub(crate) fn enum_tables_for_test() -> Vec<(&'static str, u32)> {
+    let mut out: Vec<(&'static str, u32)> = Vec::new();
+    for (table, base) in [(IJK_NAMES, IJK_BASE), (ITY_NAMES, ffi::ITY_INVALID)] {
+        for (i, name) in table.iter().enumerate() {
+            out.push((name, base + i as u32)); // overflow-ok: a table index, a few dozen at most
+        }
+    }
+    out.extend([
+        ("Iend_LE", ffi::IEND_LE),
+        ("Iend_BE", ffi::IEND_BE),
+        ("Ifx_Read", IFX_READ),
+        ("Ifx_Write", IFX_WRITE),
+        ("Ifx_Modify", IFX_MODIFY),
+        ("ILGop_IdentV128", ILGOP_IDENT_V128),
+        ("ILGop_Ident64", ILGOP_IDENT64),
+        ("ILGop_Ident32", ILGOP_IDENT32),
+        ("ILGop_Ident16", ILGOP_IDENT16),
+        ("ILGop_Ident8", ILGOP_IDENT8),
+        ("ILGop_16Uto32", ILGOP_16UTO32),
+        ("ILGop_16Sto32", ILGOP_16STO32),
+        ("ILGop_8Uto32", ILGOP_8UTO32),
+        ("ILGop_8Sto32", ILGOP_8STO32),
+        (
+            "VexRegUpdUnwindregsAtMemAccess",
+            VEX_REG_UPD_UNWINDREGS_AT_MEM_ACCESS,
+        ),
+        ("Ico_U1", ffi::ICO_U1),
+        ("Ico_U8", ffi::ICO_U8),
+        ("Ico_U16", ffi::ICO_U16),
+        ("Ico_U32", ffi::ICO_U32),
+        ("Ico_U64", ffi::ICO_U64),
+        ("Ico_U128", ffi::ICO_U128),
+        ("Ico_F32", ffi::ICO_F32),
+        ("Ico_F32i", ffi::ICO_F32I),
+        ("Ico_F64", ffi::ICO_F64),
+        ("Ico_F64i", ffi::ICO_F64I),
+        ("Ico_V128", ffi::ICO_V128),
+        ("Ico_V256", ffi::ICO_V256),
+        ("Ico_V512", ffi::ICO_V512),
+    ]);
+    for name in [
+        "VexArchX86",
+        "VexArchAMD64",
+        "VexArchARM",
+        "VexArchARM64",
+        "VexArchPPC32",
+        "VexArchPPC64",
+        "VexArchS390X",
+        "VexArchMIPS32",
+        "VexArchMIPS64",
+        "VexArchRISCV64",
+    ] {
+        if let Some(tag) = vex_arch_tag(name) {
+            out.push((name, tag));
+        }
+    }
+    out
+}
 
-// Corpus IRSB parity gate (native vs pyvex-serialized).
-test_submod!("libvex_corpus_tests.rs" => corpus_tests);
+/// `(struct, size)` and `(struct.field, offset)` for the `ailment::vex_ffi`
+/// mirrors this lifter reads, for `test_native_lift_parity.py` to check
+/// against pyvex's cffi `sizeof` / `offsetof`.
+pub(crate) fn layouts_for_test() -> Vec<(&'static str, usize)> {
+    use std::mem::{offset_of, size_of};
+    vec![
+        ("IRSB", size_of::<ffi::IRSB>()),
+        ("IRSB.next", offset_of!(ffi::IRSB, next)),
+        ("IRSB.jumpkind", offset_of!(ffi::IRSB, jumpkind)),
+        ("IRSB.offsIP", offset_of!(ffi::IRSB, offs_ip)),
+        ("IRTypeEnv", size_of::<ffi::IRTypeEnv>()),
+        ("IRStmt", size_of::<ffi::IRStmt>()),
+        ("IRExpr", size_of::<ffi::IRExpr>()),
+        ("IRConst", size_of::<ffi::IRConst>()),
+        ("IRCallee", size_of::<ffi::IRCallee>()),
+        ("IRCallee.mcx_mask", offset_of!(ffi::IRCallee, mcx_mask)),
+        ("IRRegArray", size_of::<ffi::IRRegArray>()),
+        ("IRTriop", size_of::<ffi::IRTriop>()),
+        ("IRQop", size_of::<ffi::IRQop>()),
+        ("IRCAS", size_of::<ffi::IRCAS>()),
+        ("IRPutI", size_of::<ffi::IRPutI>()),
+        ("IRStoreG", size_of::<ffi::IRStoreG>()),
+        ("IRLoadG", size_of::<ffi::IRLoadG>()),
+        ("IRDirty", size_of::<ffi::IRDirty>()),
+        ("IRDirty.nFxState", offset_of!(ffi::IRDirty, n_fx_state)),
+        ("VexArchInfo", size_of::<ffi::VexArchInfo>()),
+        ("VexArchInfo.x86_cr0", offset_of!(ffi::VexArchInfo, x86_cr0)),
+        ("VexCacheInfo", size_of::<ffi::VexCacheInfo>()),
+    ]
+}
+
+test_submod!("libvex_lifter_tests.rs" => tests);

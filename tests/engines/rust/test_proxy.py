@@ -686,21 +686,13 @@ class TestRustInspectMarshalling:
     def test_native_lift_fires_vex_lift(self):
         """The native libVEX lift fires its own vex_lift pair (angr-op0dn.14.4.2).
 
-        ``try_native_lift`` bypasses ``_cb_lift_block``, so on a feature-on
-        build the Python-lift dispatch above never runs for a natively-lifted
-        block — the Rust dispatch is the only thing keeping the event alive.
-        Skipped on a build without ``--features libvex-ffi``.
+        ``try_native_lift`` bypasses ``_cb_lift_block``, so the Python-lift
+        dispatch above never runs for a natively-lifted block — the Rust
+        dispatch is the only thing keeping the event alive.
         """
         import angr
         import angr.sim_options as o
         from angr import claripy
-
-        try:
-            from angr.rustylib.vex_engine import libvex_ffi_enabled
-        except ImportError:
-            pytest.skip("build without --features libvex-ffi")
-        if not libvex_ffi_enabled():
-            pytest.skip("build without --features libvex-ffi")
 
         # Two-instruction blob: the cold block is served from the binary-region
         # store, so it lifts natively (see test_native_lift_serves_cold_blob).

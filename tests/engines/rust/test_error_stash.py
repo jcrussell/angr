@@ -880,7 +880,7 @@ class TestErrorRecovery:
         # entirely (it reads the live bytes straight out of rust_memory, so
         # it gets SMC freshness without the dirty_bytes plumbing — see
         # test_smc_native_lift_executes_stored_bytes). Without this the test
-        # records zero lifts at 0x1010 on a --features libvex-ffi build.
+        # records zero lifts at 0x1010.
         mgr = RustExplorationManager(proj, [state], use_native_lift=False)
         # load_shellcode's cle Blob has obj.binary == None, so the default
         # _load_binary_regions skips it and `is_in_binary` returns False
@@ -931,10 +931,6 @@ class TestErrorRecovery:
         (``jmp $``), and the store overwrites it with ``ret``. Executing the
         stale image loops forever (a state is still active at max_steps);
         executing the stored bytes returns and drains the active stash.
-
-        No-op on a build without ``--features libvex-ffi`` (the manager's
-        native-lift default is inert there and the callback path, covered by
-        test_smc_rust_passes_dirty_bytes_to_python_lift, serves the lift).
         """
         import angr.sim_options as o
 
@@ -972,19 +968,13 @@ class TestErrorRecovery:
             f"`ret`; stashes: { {k: len(v) for k, v in mgr.stashes.items() if v} }"
         )
 
-        # On a feature-on build the assertion above is only meaningful if the
-        # native seam actually served a lift — otherwise this silently
-        # degrades into a second copy of the callback-path test.
-        try:
-            from angr.rustylib.vex_engine import libvex_ffi_enabled
-        except ImportError:
-            libvex_ffi_enabled = None
-        if libvex_ffi_enabled is not None and libvex_ffi_enabled():
-            assert mgr.stats.get("rust_native_lift_count", 0) > 0, (
-                "libvex-ffi build with use_native_lift=True lifted nothing "
-                "natively; the SMC assertion above did not exercise the "
-                "native seam"
-            )
+        # The assertion above is only meaningful if the native seam actually
+        # served a lift — otherwise this silently degrades into a second copy
+        # of the callback-path test.
+        assert mgr.stats.get("rust_native_lift_count", 0) > 0, (
+            "use_native_lift=True lifted nothing natively; the SMC assertion "
+            "above did not exercise the native seam"
+        )
 
     def test_native_lift_serves_cold_page_from_binary_regions(self):
         """A cold code page must lift natively from the load-time image.
@@ -1003,16 +993,7 @@ class TestErrorRecovery:
         as plain fallbacks is what made cow_fork_scaling read as 21 native lifts
         against 256 misses when all 256 were return-to-0x0 deadend probes and the
         native path was really serving 21 of 21 real blocks.
-
-        Skipped on a build without ``--features libvex-ffi``.
         """
-        try:
-            from angr.rustylib.vex_engine import libvex_ffi_enabled
-        except ImportError:
-            pytest.skip("build without --features libvex-ffi")
-        if not libvex_ffi_enabled():
-            pytest.skip("build without --features libvex-ffi")
-
         import angr.sim_options as o
 
         shellcode = (
