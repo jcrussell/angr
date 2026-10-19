@@ -330,6 +330,34 @@ impl Float {
             .map(|value| BigInt::from(value as i64))
     }
 
+    /// The value rounded to an integer by `rm`, as `fp.to_ubv` / `fp.to_sbv`
+    /// round before converting. [`Self::to_signed_bigint`] and
+    /// [`Self::to_unsigned_biguint`] truncate, which is only `TowardZero`.
+    fn round_integral(&self, rm: FPRM) -> Option<f64> {
+        let value = self.to_f64()?;
+        Some(match rm {
+            FPRM::NearestTiesToEven => value.round_ties_even(),
+            FPRM::NearestTiesToAway => value.round(),
+            FPRM::TowardPositive => value.ceil(),
+            FPRM::TowardNegative => value.floor(),
+            FPRM::TowardZero => value.trunc(),
+        })
+    }
+
+    /// [`Self::to_signed_bigint`] after rounding by `rm`.
+    pub fn to_signed_bigint_rm(&self, rm: FPRM) -> Result<BigInt, BitVecError> {
+        self.round_integral(rm)
+            .ok_or(BitVecError::ConversionError)
+            .map(|value| BigInt::from(value as i64))
+    }
+
+    /// [`Self::to_unsigned_biguint`] after rounding by `rm`.
+    pub fn to_unsigned_biguint_rm(&self, rm: FPRM) -> Result<BigUint, BitVecError> {
+        self.round_integral(rm)
+            .ok_or(BitVecError::ConversionError)
+            .map(|value| BigUint::from(value as u64))
+    }
+
     pub fn to_f32(&self) -> Option<f32> {
         match self {
             Float::F32(f) => Some(*f),
