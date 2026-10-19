@@ -231,7 +231,10 @@ impl<'a> VEXInterpreter<'a> {
             // engines/successors.py::_resolve_syscall handles both
             // enumeration and NO_SYMBOLIC_SYSCALL_RESOLUTION.
             let syscall_num = self.get_syscall_num();
-            return BlockResult::Syscall { num: syscall_num };
+            return BlockResult::Syscall {
+                num: syscall_num,
+                jumpkind,
+            };
         }
 
         if self.is_hooked(target) {

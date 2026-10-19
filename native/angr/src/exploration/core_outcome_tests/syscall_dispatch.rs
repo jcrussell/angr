@@ -63,6 +63,15 @@ impl crate::syscalls::NativeSyscall for StubSyscall {
 /// `run_post_step_core`, optionally with `stub` registered for AMD64 at
 /// [`STUB_SYSCALL_NUM`]. Returns `(outcome, state_id)`.
 fn dispatch_syscall(num: Option<u64>, stub: Option<StubSyscall>) -> (CoreOutcome, u64) {
+    dispatch_syscall_exit(num, stub, crate::vex::ir::JumpKind::Sys_syscall)
+}
+
+/// [`dispatch_syscall`] for a syscall exit of kind `jumpkind`.
+fn dispatch_syscall_exit(
+    num: Option<u64>,
+    stub: Option<StubSyscall>,
+    jumpkind: crate::vex::ir::JumpKind,
+) -> (CoreOutcome, u64) {
     let mgr = RustExplorationManager::new("amd64", None).unwrap();
     let ctx = mgr.step_context();
     let prof = ParallelProfiling::default();
@@ -89,6 +98,7 @@ fn dispatch_syscall(num: Option<u64>, stub: Option<StubSyscall>) -> (CoreOutcome
             result: RunResult::Syscall {
                 num,
                 pc: SYSCALL_PC,
+                jumpkind,
             },
             deferred_forks: Vec::new(),
             last_condition: None,
@@ -209,7 +219,7 @@ fn syscall_native_decline_bounces_to_python() {
         );
         match outcome.ret {
             CoreReturn::NeedsPython(bounce) => match bounce.kind {
-                BounceKind::SyscallPython { num } => assert_eq!(num, Some(STUB_SYSCALL_NUM)),
+                BounceKind::SyscallPython { num, .. } => assert_eq!(num, Some(STUB_SYSCALL_NUM)),
                 other => panic!("expected SyscallPython bounce, got {other:?}"),
             },
             _ => panic!("expected NeedsPython"),
@@ -243,7 +253,8 @@ fn syscall_arg_extraction_failure_bounces_before_calling_handler() {
             outcome.ret,
             CoreReturn::NeedsPython(PendingBounce {
                 kind: BounceKind::SyscallPython {
-                    num: Some(STUB_SYSCALL_NUM)
+                    num: Some(STUB_SYSCALL_NUM),
+                    ..
                 },
                 ..
             })
@@ -268,7 +279,7 @@ fn syscall_without_native_handler_bounces_to_python() {
         assert!(matches!(
             outcome.ret,
             CoreReturn::NeedsPython(PendingBounce {
-                kind: BounceKind::SyscallPython { num: None },
+                kind: BounceKind::SyscallPython { num: None, .. },
                 ..
             })
         ));
@@ -376,5 +387,40 @@ fn write_syscall_return_passes_through_on_abis_without_an_error_register() {
             state.get_register_by_offset(cc.return_register, 8).as_u64(),
             Some(-2i64 as u64),
         );
+    });
+}
+
+/// On AMD64 only the `syscall` instruction is the amd64 syscall ABI. An
+/// `int 0x80` exit (`Ijk_Sys_int128`, or `Ijk_Sys_int` as pyvex 10 lifts
+/// it) is the i386 ABI, so a number the amd64 table registers must not run
+/// its amd64 handler: it bounces to Python with the exit's real jumpkind,
+/// which `SimLinux.syscall_abi` reads (angr-mx00p.57).
+#[test]
+fn amd64_int_0x80_bounces_even_when_the_amd64_table_has_the_number() {
+    use crate::vex::ir::JumpKind;
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for jumpkind in [JumpKind::Sys_int128, JumpKind::Sys_int] {
+            let (outcome, _) = dispatch_syscall_exit(
+                Some(STUB_SYSCALL_NUM),
+                Some(StubSyscall {
+                    behavior: StubSyscallBehavior::Exit,
+                    num_args: 0,
+                }),
+                jumpkind,
+            );
+            assert_eq!(outcome.counters.syscall_native_count, 0, "{jumpkind:?}");
+            assert_eq!(outcome.counters.syscall_python_fallback_count, 1);
+            match outcome.ret {
+                CoreReturn::NeedsPython(bounce) => match bounce.kind {
+                    BounceKind::SyscallPython { num, jumpkind: kind } => {
+                        assert_eq!(num, Some(STUB_SYSCALL_NUM));
+                        assert_eq!(kind, jumpkind);
+                    }
+                    other => panic!("expected SyscallPython bounce, got {other:?}"),
+                },
+                _ => panic!("expected NeedsPython for {jumpkind:?}"),
+            }
+        }
     });
 }

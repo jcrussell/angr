@@ -85,7 +85,10 @@ fn flush_keeps_parked_bounce_with_no_reenterable_address() {
     Python::attach(|_py| {
         let (mut mgr, state, id) = mgr_and_state(0x40_0000);
         mgr.pending_parallel_bounces
-            .push((state, BounceKind::SyscallPython { num: Some(60) }, id));
+            .push((state, BounceKind::SyscallPython {
+            num: Some(60),
+            jumpkind: crate::vex::ir::JumpKind::Sys_syscall,
+        }, id));
 
         mgr.flush_parked_bounces_to_active();
 

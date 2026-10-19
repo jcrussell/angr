@@ -992,22 +992,19 @@ pub(super) fn handle_syscall_core(
     cc: &CoreCtx,
     counters: &mut CoreCounters,
     mut state: RustSimState,
-    num: Option<u64>,
-    pc: u64,
+    exit: SyscallExit,
     payload: ForkPayload,
     root_hint: u64,
 ) -> CoreOutcome {
+    let SyscallExit { num, pc, jumpkind } = exit;
     let ctx = cc.ctx;
     let native_syscalls = cc.native_syscalls;
     state.set_pc(pc);
     state.add_to_history(pc);
 
-    let dispatch_key: &str = if ctx.os_name == "cgc" {
-        "CGC"
-    } else {
-        state.arch().name()
-    };
-    let native_handler = num.and_then(|n| native_syscalls.get(dispatch_key, n));
+    let native_handler = num.and_then(|n| {
+        native_syscalls.get_for_exit(ctx.os_name == "cgc", state.arch().name(), jumpkind, n)
+    });
     if let Some(handler) = native_handler {
         let handler_name = handler.name();
         let n_args = handler.num_args();
@@ -1033,7 +1030,7 @@ pub(super) fn handle_syscall_core(
                     .entry(num.map(|n| n as i128).unwrap_or(-1))
                     .or_insert(0) += 1;
                 return bounce(
-                    BounceKind::SyscallPython { num },
+                    BounceKind::SyscallPython { num, jumpkind },
                     state,
                     payload,
                     std::mem::take(counters),
@@ -1108,7 +1105,7 @@ pub(super) fn handle_syscall_core(
         .entry(num.map(|n| n as i128).unwrap_or(-1))
         .or_insert(0) += 1;
     bounce(
-        BounceKind::SyscallPython { num },
+        BounceKind::SyscallPython { num, jumpkind },
         state,
         payload,
         std::mem::take(counters),

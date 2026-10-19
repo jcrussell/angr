@@ -306,6 +306,7 @@ impl<'a> VEXInterpreter<'a> {
                                     RunResult::Syscall {
                                         num: syscall_num,
                                         pc: next_addr,
+                                        jumpkind,
                                     },
                                     blocks_executed,
                                     forks,
@@ -342,10 +343,14 @@ impl<'a> VEXInterpreter<'a> {
                             }
                             // Otherwise, continue execution
                         }
-                        BlockResult::Syscall { num } => {
+                        BlockResult::Syscall { num, jumpkind } => {
                             let forks = self.take_deferred_forks();
                             return (
-                                RunResult::Syscall { num, pc: self.pc },
+                                RunResult::Syscall {
+                                    num,
+                                    pc: self.pc,
+                                    jumpkind,
+                                },
                                 blocks_executed,
                                 forks,
                             );

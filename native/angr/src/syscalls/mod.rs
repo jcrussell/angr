@@ -102,6 +102,8 @@ mod write_gate;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::vex::ir::JumpKind;
+
 pub(crate) use support::{
     BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
     bounded_value, extract_bounded_concrete_arg, extract_concrete_arg, fresh_byte_names,
@@ -110,19 +112,271 @@ pub(crate) use support::{
 };
 pub(crate) use write_gate::write_path_gate;
 
-/// Registry of native syscall handlers, keyed by arch name then syscall num.
+/// A syscall ABI the native handlers are written for: one numbering and one
+/// syscall calling convention, named by the key angr's
+/// `SimSyscallLibrary.syscall_number_mapping` uses for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum SyscallAbi {
+    Amd64,
+    I386,
+    Arm,
+    Aarch64,
+    MipsO32,
+    MipsN64,
+    /// DECREE (`angr/procedures/definitions/cgc.py`, ABI `cgcabi`): x86
+    /// registers, numbers 1-7 that collide with Linux i386.
+    Cgc,
+}
+
+/// Every Linux ABI: the scope of a row whose angr name means the same
+/// syscall on each of them. A name an ABI's angr table does not list simply
+/// never resolves there, so this scope needs no per-ABI exceptions for
+/// absent syscalls (getrandom is only in angr's amd64 and i386 tables).
+const LINUX: &[SyscallAbi] = &[
+    SyscallAbi::Amd64,
+    SyscallAbi::I386,
+    SyscallAbi::Arm,
+    SyscallAbi::Aarch64,
+    SyscallAbi::MipsO32,
+    SyscallAbi::MipsN64,
+];
+
+/// angr ABI names with no native handlers, skipped rather than rejected
+/// because angr lists them for arches the engine supports: `armhf` is the
+/// OABI numbering (angr's `arm` table plus `0x900000`) angr adds for ARMHF,
+/// and `mips-n32` is listed next to `mips-n64` for MIPS64.
+const IGNORED_ABIS: &[&str] = &["armhf", "mips-n32"];
+
+impl SyscallAbi {
+    /// Parse an angr `syscall_number_mapping` key.
+    pub(crate) fn from_angr(name: &str) -> Option<Self> {
+        Some(match name {
+            "amd64" => Self::Amd64,
+            "i386" => Self::I386,
+            "arm" => Self::Arm,
+            "aarch64" => Self::Aarch64,
+            "mips-o32" => Self::MipsO32,
+            "mips-n64" => Self::MipsN64,
+            "cgcabi" => Self::Cgc,
+            _ => return None,
+        })
+    }
+
+    /// The angr `syscall_number_mapping` key for this ABI.
+    pub(crate) fn angr_name(self) -> &'static str {
+        match self {
+            Self::Amd64 => "amd64",
+            Self::I386 => "i386",
+            Self::Arm => "arm",
+            Self::Aarch64 => "aarch64",
+            Self::MipsO32 => "mips-o32",
+            Self::MipsN64 => "mips-n64",
+            Self::Cgc => "cgcabi",
+        }
+    }
+
+    /// The Linux ABI a syscall exit on `arch_name` (an `Arch::name`) uses,
+    /// or `None` when no native handler may serve it.
+    ///
+    /// Mirrors `angr/simos/linux.py::SimLinux.syscall_abi`: every arch has
+    /// one syscall ABI except AMD64, where only the `syscall` instruction
+    /// (`Ijk_Sys_syscall`) is the amd64 ABI. Any other syscall jumpkind
+    /// there (`int 0x80` lifts to `Ijk_Sys_int` / `Ijk_Sys_int128`) is the
+    /// i386 ABI, whose arguments the amd64 calling convention cannot read,
+    /// so it goes to the Python syscall path (angr-mx00p.57).
+    fn for_exit(arch_name: &str, jumpkind: JumpKind) -> Option<Self> {
+        Some(match arch_name {
+            "AMD64" if jumpkind == JumpKind::Sys_syscall => Self::Amd64,
+            "X86" => Self::I386,
+            "ARM" => Self::Arm,
+            "ARM64" => Self::Aarch64,
+            "MIPS32" => Self::MipsO32,
+            "MIPS64" => Self::MipsN64,
+            _ => return None,
+        })
+    }
+}
+
+/// One by-name registration: the native handler for the syscall angr calls
+/// `name` on each ABI in `scope`.
+struct ByName {
+    name: &'static str,
+    scope: &'static [SyscallAbi],
+    make: fn() -> Arc<dyn NativeSyscall>,
+}
+
+/// Spell `BY_NAME`'s rows as `"name" => handler` (scope [`LINUX`]) or
+/// `"name" @ SCOPE => handler`.
+macro_rules! by_name {
+    ($( $name:literal $(@ $scope:expr)? => $handler:expr ),* $(,)?) => {
+        &[$(
+            ByName {
+                name: $name,
+                scope: by_name!(@scope $($scope)?),
+                make: || Arc::new($handler),
+            },
+        )*]
+    };
+    (@scope) => { LINUX };
+    (@scope $scope:expr) => { $scope };
+}
+
+/// The native syscall handlers, keyed by the name angr's syscall library
+/// gives the syscall. The numbers come from angr at manager construction
+/// ([`NativeSyscallRegistry::from_angr_tables`]); this table is the
+/// authoritative list of what runs natively.
 ///
-/// Two-level map (`arch -> num -> handler`) so `get` resolves a runtime
-/// `&str` arch against the `&'static str` outer keys via `Borrow<str>` and
-/// then does a second hash lookup on the number — both O(1). A flat
-/// `(&'static str, u64)` key cannot be looked up from a runtime `&str`
-/// without interning, which previously forced a linear `iter().find()` over
-/// every registered row on every executed syscall (see angr-k95c).
+/// A row carries an explicit scope only where angr's name means a different
+/// handler on some ABI, or where a name angr lists must stay unregistered:
+/// - `mmap` is the 6-register byte-offset form on amd64, aarch64 and
+///   mips-n64, but angr's arm and mips-o32 tables call the struct-argument
+///   `old_mmap` "mmap" (i386 calls it `old_mmap`).
+/// - `stat` / `lstat` / `fstat` on i386, arm and mips-o32 are the pre-LFS
+///   `struct stat`, which has no writer; those ABIs reach the stat writers
+///   through the `*64` names. mips-n64 has no writer at all
+///   (`file_path::stat_layouts::STAT_LAYOUT_WRITERS`), and aarch64 has no
+///   legacy `stat` / `lstat`.
+/// - `arch_prctl` writes `fs_const` / `gs_const`, which only AMD64 has
+///   (angr's i386 table lists it too).
+///
+/// Deliberately absent although angr lists them: `rt_sigprocmask` (its
+/// Python implementation mutates `state.posix.sigmask`, which
+/// `RustSimState` does not carry) and amd64's pre-2.6 `epoll_ctl_old` /
+/// `epoll_wait_old`.
+static BY_NAME: &[ByName] = by_name![
+    // Process exit.
+    "exit" => exit::NativeExitSyscall,
+    "exit_group" => exit::NativeExitSyscall,
+    // IO.
+    "read" => read::NativeReadSyscall,
+    "write" => write::NativeWriteSyscall,
+    "lseek" => fd_io::NativeLseekSyscall,
+    "pread64" => fd_io::NativePread64Syscall,
+    "pwrite64" => fd_io::NativePwrite64Syscall,
+    "readv" => fd_io::NativeReadvSyscall,
+    "writev" => fd_io::NativeWritevSyscall,
+    // File namespace.
+    "open" => file_path::NativeOpenSyscall,
+    "openat" => file_path::NativeOpenatSyscall,
+    "close" => file_path::NativeCloseSyscall,
+    "access" => file_path::NativeAccessSyscall,
+    "faccessat" => file_path::NativeFaccessatSyscall,
+    "readlink" => file_path::NativeReadlinkSyscall,
+    "readlinkat" => file_path::NativeReadlinkatSyscall,
+    "stat" @ &[SyscallAbi::Amd64] => file_path::NativeStatSyscall,
+    "lstat" @ &[SyscallAbi::Amd64] => file_path::NativeLstatSyscall,
+    "fstat" @ &[SyscallAbi::Amd64, SyscallAbi::Aarch64] => file_path::NativeFstatSyscall,
+    "newfstatat" @ &[SyscallAbi::Amd64, SyscallAbi::Aarch64] => file_path::NativeNewfstatatSyscall,
+    "stat64" => file_path::NativeStatSyscall,
+    "lstat64" => file_path::NativeLstatSyscall,
+    "fstat64" => file_path::NativeFstatSyscall,
+    "fstatat64" => file_path::NativeNewfstatatSyscall,
+    // Directories.
+    "getcwd" => directory::NativeGetcwdSyscall,
+    "chdir" => directory::NativeChdirSyscall,
+    "fchdir" => directory::NativeFchdirSyscall,
+    "rename" => directory::NativeRenameSyscall,
+    "renameat" => directory::NativeRenameatSyscall,
+    "renameat2" => directory::NativeRenameat2Syscall,
+    "mkdir" => directory::NativeMkdirSyscall,
+    "mkdirat" => directory::NativeMkdiratSyscall,
+    "rmdir" => directory::NativeRmdirSyscall,
+    "unlink" => directory::NativeUnlinkSyscall,
+    "unlinkat" => directory::NativeUnlinkatSyscall,
+    // File descriptors.
+    "ioctl" => file_descriptor::NativeIoctlSyscall,
+    "fcntl" => file_descriptor::NativeFcntlSyscall,
+    "fcntl64" => file_descriptor::NativeFcntl64Syscall,
+    "pipe" => file_descriptor::NativePipeSyscall,
+    "pipe2" => file_descriptor::NativePipe2Syscall,
+    "dup" => file_descriptor::NativeDupSyscall,
+    "dup2" => file_descriptor::NativeDup2Syscall,
+    "dup3" => file_descriptor::NativeDup3Syscall,
+    // Memory.
+    "brk" => brk::NativeBrkSyscall,
+    "mmap" @ &[SyscallAbi::Amd64, SyscallAbi::Aarch64, SyscallAbi::MipsN64] => mmap::NativeMmapSyscall,
+    "mmap" @ &[SyscallAbi::Arm, SyscallAbi::MipsO32] => mmap::NativeOldMmapSyscall,
+    "old_mmap" => mmap::NativeOldMmapSyscall,
+    "mmap2" => mmap::NativeMmap2Syscall,
+    "mprotect" => mprotect::NativeMprotectSyscall,
+    "munmap" => munmap::NativeMunmapSyscall,
+    "mremap" => memory_extras::NativeMremapSyscall,
+    "msync" => memory_extras::NativeMsyncSyscall,
+    "madvise" => memory_extras::NativeMadviseSyscall,
+    "mlock" => memory_extras::NativeMlockSyscall,
+    "munlock" => memory_extras::NativeMunlockSyscall,
+    "mlockall" => memory_extras::NativeMlockallSyscall,
+    "munlockall" => memory_extras::NativeMunlockallSyscall,
+    "arch_prctl" @ &[SyscallAbi::Amd64] => arch_prctl::NativeArchPrctlSyscall,
+    // Identity. The i386/arm `*32` forms take 32-bit ids; angr returns the
+    // same constants for both.
+    "getpid" => identity::NativeGetpidSyscall,
+    "getppid" => identity::NativeGetppidSyscall,
+    "gettid" => identity::NativeGettidSyscall,
+    "getuid" => identity::NativeGetuidSyscall,
+    "getuid32" => identity::NativeGetuidSyscall,
+    "geteuid" => identity::NativeGeteuidSyscall,
+    "geteuid32" => identity::NativeGeteuidSyscall,
+    "getgid" => identity::NativeGetgidSyscall,
+    "getgid32" => identity::NativeGetgidSyscall,
+    "getegid" => identity::NativeGetegidSyscall,
+    "getegid32" => identity::NativeGetegidSyscall,
+    "setuid" => identity::NativeSetuidSyscall,
+    "setuid32" => identity::NativeSetuidSyscall,
+    "setgid" => identity::NativeSetgidSyscall,
+    "setgid32" => identity::NativeSetgidSyscall,
+    // Resource limits. `ugetrlimit` is the i386/arm getrlimit with the
+    // unsigned limit encoding.
+    "getrlimit" => rlimit::NativeGetrlimitSyscall,
+    "ugetrlimit" => rlimit::NativeGetrlimitSyscall,
+    "setrlimit" => rlimit::NativeSetrlimitSyscall,
+    "prlimit64" => rlimit::NativePrlimit64Syscall,
+    // Time.
+    "time" => sim_time::NativeTimeSyscall,
+    "gettimeofday" => sim_time::NativeGettimeofdaySyscall,
+    "clock_gettime" => sim_time::NativeClockGettimeSyscall,
+    // Signals.
+    "rt_sigaction" => sigaction::NativeRtSigactionSyscall,
+    "rt_sigreturn" => signals::NativeRtSigreturnSyscall,
+    "kill" => signals::NativeKillSyscall,
+    "tgkill" => signals::NativeTgkillSyscall,
+    "pause" => signals::NativePauseSyscall,
+    "alarm" => signals::NativeAlarmSyscall,
+    // Concurrency.
+    "futex" => concurrency::NativeFutexSyscall,
+    "epoll_create" => concurrency::NativeEpollCreateSyscall,
+    "epoll_create1" => concurrency::NativeEpollCreate1Syscall,
+    "epoll_ctl" => concurrency::NativeEpollCtlSyscall,
+    "epoll_wait" => concurrency::NativeEpollWaitSyscall,
+    "epoll_pwait" => concurrency::NativeEpollPwaitSyscall,
+    "eventfd" => concurrency::NativeEventfdSyscall,
+    "eventfd2" => concurrency::NativeEventfd2Syscall,
+    // Process startup.
+    "uname" => startup::NativeUnameSyscall,
+    "set_tid_address" => startup::NativeSetTidAddressSyscall,
+    "set_robust_list" => startup::NativeSetRobustListSyscall,
+    "getrandom" => startup::NativeGetrandomSyscall,
+    // DECREE.
+    "_terminate" @ &[SyscallAbi::Cgc] => cgc::NativeTerminateSyscall,
+    "transmit" @ &[SyscallAbi::Cgc] => cgc::NativeTransmitSyscall,
+    "receive" @ &[SyscallAbi::Cgc] => cgc::NativeReceiveSyscall,
+    "fdwait" @ &[SyscallAbi::Cgc] => cgc::NativeFdwaitSyscall,
+    "allocate" @ &[SyscallAbi::Cgc] => cgc::NativeAllocateSyscall,
+    "deallocate" @ &[SyscallAbi::Cgc] => cgc::NativeDeallocateSyscall,
+    "random" @ &[SyscallAbi::Cgc] => cgc::NativeRandomSyscall,
+];
+
+/// Registry of native syscall handlers, keyed by ABI then syscall number.
+///
+/// Built per manager by [`NativeSyscallRegistry::from_angr_tables`] from the
+/// numbering of the project's SimOS. A lookup is two O(1) hash probes (ABI,
+/// then number), never a scan of the rows (angr-k95c).
 pub(crate) struct NativeSyscallRegistry {
-    handlers: HashMap<&'static str, HashMap<u64, Arc<dyn NativeSyscall>>>,
+    handlers: HashMap<SyscallAbi, HashMap<u64, Arc<dyn NativeSyscall>>>,
 }
 
 /// Register a batch of `(syscall_number, handler)` rows for one arch.
+#[cfg(test)]
 ///
 /// Wraps each handler in `Arc::new(...)` and inserts into the registry.
 /// Each row is `(num, expr)` where `expr` constructs a `NativeSyscall`
@@ -139,13 +393,8 @@ macro_rules! register_syscalls {
     };
 }
 
-impl Default for NativeSyscallRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NativeSyscallRegistry {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         let mut r = NativeSyscallRegistry {
             handlers: HashMap::new(),
@@ -851,19 +1100,83 @@ impl NativeSyscallRegistry {
         }
     }
 
+    /// Build the registry from angr's syscall numbering: each entry is an
+    /// angr ABI name and its `SimSyscallLibrary.syscall_number_mapping[abi]`
+    /// (`{number: name}`), for the ABIs the project's SimOS lists in
+    /// `syscall_abis`.
+    ///
+    /// A number resolves to the [`BY_NAME`] row whose name angr gives it and
+    /// whose scope includes the ABI; a name with no row stays with Python.
+    /// [`IGNORED_ABIS`] are skipped. Any other ABI name is an error: angr
+    /// numbering the engine was never written against must not dispatch.
+    pub(crate) fn from_angr_tables(
+        tables: &[(String, HashMap<u64, String>)],
+    ) -> Result<Self, String> {
+        let mut registry = Self::empty();
+        for (abi_name, mapping) in tables {
+            let Some(abi) = SyscallAbi::from_angr(abi_name) else {
+                if IGNORED_ABIS.contains(&abi_name.as_str()) {
+                    continue;
+                }
+                return Err(format!("no native syscall ABI for angr ABI {abi_name:?}"));
+            };
+            let by_num = registry.handlers.entry(abi).or_default();
+            for (&num, name) in mapping {
+                if let Some(row) = BY_NAME
+                    .iter()
+                    .find(|row| row.name == name && row.scope.contains(&abi))
+                {
+                    by_num.insert(num, (row.make)());
+                }
+            }
+        }
+        Ok(registry)
+    }
+
+    /// The handler for `num` at a syscall exit on `arch_name` (an
+    /// `Arch::name`), or `None` when the syscall must take the Python path.
+    /// `cgc` selects the DECREE table, which the project's SimOS decides.
+    pub(crate) fn get_for_exit(
+        &self,
+        cgc: bool,
+        arch_name: &str,
+        jumpkind: JumpKind,
+        num: u64,
+    ) -> Option<&Arc<dyn NativeSyscall>> {
+        let abi = if cgc {
+            SyscallAbi::Cgc
+        } else {
+            SyscallAbi::for_exit(arch_name, jumpkind)?
+        };
+        self.handlers.get(&abi)?.get(&num)
+    }
+
+    /// The handler `from_angr_tables` would register for the syscall angr
+    /// calls `name` on `abi`.
+    #[cfg(test)]
+    pub(crate) fn handler_for(abi: SyscallAbi, name: &str) -> Option<Arc<dyn NativeSyscall>> {
+        BY_NAME
+            .iter()
+            .find(|row| row.name == name && row.scope.contains(&abi))
+            .map(|row| (row.make)())
+    }
+
+    #[cfg(test)]
     pub(crate) fn register(
         &mut self,
-        arch: &'static str,
+        key: &'static str,
         num: u64,
         syscall: Arc<dyn NativeSyscall>,
     ) {
-        self.handlers.entry(arch).or_default().insert(num, syscall);
+        self.handlers
+            .entry(abi_for_dispatch_key(key))
+            .or_default()
+            .insert(num, syscall);
     }
 
-    pub(crate) fn get(&self, arch: &str, num: u64) -> Option<&Arc<dyn NativeSyscall>> {
-        // Two O(1) hash lookups: arch (`&'static str` keys borrow as `str`,
-        // so a runtime `&str` resolves directly) then syscall number.
-        self.handlers.get(arch)?.get(&num)
+    #[cfg(test)]
+    pub(crate) fn get(&self, key: &str, num: u64) -> Option<&Arc<dyn NativeSyscall>> {
+        self.handlers.get(&abi_for_dispatch_key(key))?.get(&num)
     }
 
     /// Every registered row as `(angr ABI name, number, handler name)`.
@@ -873,23 +1186,29 @@ impl NativeSyscallRegistry {
     /// check each row against angr's own table.
     pub(crate) fn table(&self) -> Vec<(&'static str, u64, &'static str)> {
         let mut rows = Vec::new();
-        for (&key, by_num) in &self.handlers {
-            let abi = match key {
-                "AMD64" => "amd64",
-                "X86" => "i386",
-                "ARM" => "arm",
-                "ARM64" => "aarch64",
-                "MIPS32" => "mips-o32",
-                "MIPS64" => "mips-n64",
-                "CGC" => "cgcabi",
-                other => other,
-            };
+        for (&abi, by_num) in &self.handlers {
             for (&num, handler) in by_num {
-                rows.push((abi, num, handler.name()));
+                rows.push((abi.angr_name(), num, handler.name()));
             }
         }
         rows.sort_unstable();
         rows
+    }
+}
+
+/// The ABI behind a dispatch key of the hand-written tables in
+/// [`NativeSyscallRegistry::new`].
+#[cfg(test)]
+fn abi_for_dispatch_key(key: &str) -> SyscallAbi {
+    match key {
+        "AMD64" => SyscallAbi::Amd64,
+        "X86" => SyscallAbi::I386,
+        "ARM" => SyscallAbi::Arm,
+        "ARM64" => SyscallAbi::Aarch64,
+        "MIPS32" => SyscallAbi::MipsO32,
+        "MIPS64" => SyscallAbi::MipsN64,
+        "CGC" => SyscallAbi::Cgc,
+        other => panic!("unknown syscall dispatch key {other:?}"),
     }
 }
 

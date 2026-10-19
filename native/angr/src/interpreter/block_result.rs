@@ -41,8 +41,12 @@ pub(crate) enum BlockResult {
     /// is symbolic (angr-gffd); callers must route those cases to Python so
     /// `engines/successors.py::_resolve_syscall` can enumerate or honor
     /// `NO_SYMBOLIC_SYSCALL_RESOLUTION` instead of silently dispatching to
-    /// `read` (amd64 syscall 0).
-    Syscall { num: Option<u64> },
+    /// `read` (amd64 syscall 0). `jumpkind` is the exit's `Ijk_Sys*` kind,
+    /// which picks the syscall ABI on AMD64 (`syscall` vs `int 0x80`).
+    Syscall {
+        num: Option<u64>,
+        jumpkind: JumpKind,
+    },
     /// Symbolic branch - need to fork.
     SymbolicBranch {
         condition_id: u64,

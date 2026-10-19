@@ -63,9 +63,10 @@ use crate::stash::STASH_DEADENDED;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
+use crate::vex::ir::JumpKind;
 
 use super::ReturnExtension;
-use super::callback_types::SimProcCall;
+use super::callback_types::{SimProcCall, SyscallExit};
 use super::helpers::{
     ArgExtractAbi, advance_sp_past_return_addr, extract_args_with_abi, write_proc_return_with_abi,
 };
@@ -298,7 +299,12 @@ pub(crate) enum BounceKind {
         return_addr: u64,
     },
     /// Native syscall declined / errored / symbolic-num: Python syscall.
-    SyscallPython { num: Option<u64> },
+    /// `jumpkind` is the syscall exit's kind, which Python's
+    /// `SimLinux.syscall_abi` reads to pick the ABI on AMD64.
+    SyscallPython {
+        num: Option<u64>,
+        jumpkind: JumpKind,
+    },
     /// Unhooked CALL needing Python `resolve_function` (mutates hooks/simprocs).
     UnmodeledCall {
         addr: u64,
@@ -510,9 +516,14 @@ pub(crate) fn run_post_step_core(
             root_hint,
         ),
 
-        RunResult::Syscall { num, pc } => {
-            handle_syscall_core(cc, &mut counters, state, num, pc, payload, root_hint)
-        }
+        RunResult::Syscall { num, pc, jumpkind } => handle_syscall_core(
+            cc,
+            &mut counters,
+            state,
+            SyscallExit { num, pc, jumpkind },
+            payload,
+            root_hint,
+        ),
 
         RunResult::SymbolicBranch {
             condition_id,

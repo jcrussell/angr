@@ -1806,14 +1806,23 @@ class RustCallbackDispatchMixin:
             # engine (procedure.py:34 passes `procedure.display_name`).
             # If resolution fails, fall back to the numeric ID so the BP
             # still fires.
+            resolve_error = None
             try:
                 sc_proc = self._project.simos.syscall(state)
                 sc_name = getattr(sc_proc, "display_name", None) or str(syscall_num)
-            except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: SIMOS may not expose
-                # syscall() (non-Unix targets). Fall back to numeric ID.
+            except Exception as e:
+                # The SimOS could not resolve the syscall, e.g.
+                # SimLinux.syscall_abi raises for an AMD64 syscall jumpkind it
+                # does not know (pyvex 10 lifts int 0x80 as Ijk_Sys_int). The
+                # Python engine stops there too, so the state is errored with
+                # this error rather than resumed past an unexecuted syscall.
+                resolve_error = e
                 sc_proc = None
                 sc_name = str(syscall_num)
+
+            if resolve_error is not None:
+                self._rust_mgr.resume_after_error(state_id, f"{type(resolve_error).__name__}: {resolve_error}")
+                return
 
             if sc_proc is None:
                 # Mirror engines/syscall.py: with no syscall procedure (a SimOS

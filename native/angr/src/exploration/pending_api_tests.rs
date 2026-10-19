@@ -439,7 +439,10 @@ fn active_states_map_memory_reaches_parked_parallel_bounce_states() {
     ));
     mgr.pending_parallel_bounces.push((
         unreplayable,
-        BounceKind::SyscallPython { num: Some(60) },
+        BounceKind::SyscallPython {
+            num: Some(60),
+            jumpkind: crate::vex::ir::JumpKind::Sys_syscall,
+        },
         unreplayable_id,
     ));
 

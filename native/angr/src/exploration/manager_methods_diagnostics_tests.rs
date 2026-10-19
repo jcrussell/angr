@@ -206,7 +206,10 @@ fn analyze_constraint_sharing_walks_parked_callback_and_bounce_states() {
     let bounced_id = bounced.state_id();
     mgr.pending_parallel_bounces.push((
         bounced,
-        BounceKind::SyscallPython { num: Some(60) },
+        BounceKind::SyscallPython {
+            num: Some(60),
+            jumpkind: crate::vex::ir::JumpKind::Sys_syscall,
+        },
         bounced_id,
     ));
 

@@ -71,6 +71,17 @@ pub(crate) struct SimProcCall {
     pub(crate) return_addr: u64,
 }
 
+/// A syscall exit: the payload of [`crate::callbacks::RunResult::Syscall`],
+/// bundled for `handle_syscall_core` like [`SimProcCall`].
+pub(crate) struct SyscallExit {
+    /// The syscall number, `None` when its register is symbolic.
+    pub(crate) num: Option<u64>,
+    /// The pc after the syscall instruction.
+    pub(crate) pc: u64,
+    /// The exit's `Ijk_Sys*` kind, which picks the ABI on AMD64.
+    pub(crate) jumpkind: crate::vex::ir::JumpKind,
+}
+
 /// The deferred-fork bookkeeping a bounce carries from the interpreter to the
 /// Python callback. The three pieces always travel together, so they move as
 /// one bundle rather than three positional params.

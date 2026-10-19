@@ -72,14 +72,27 @@ impl RustExplorationManager {
         self.native_procedures.has_native(name)
     }
 
-    /// Drop every native syscall handler, so each syscall takes the Python
-    /// path. The Python wrapper calls this when the project's SimOS has no
-    /// syscall library (a plain `SimOS`, or Windows): Python's engine has no
-    /// syscall procedures there either, so the Rust engine must not run Linux
-    /// handlers in their place.
+    /// Install the native syscall handlers for the project's syscall ABIs.
+    ///
+    /// `tables` is `[(abi, {number: name})]`: each ABI in
+    /// `project.simos.syscall_abis` with angr's
+    /// `syscall_library.syscall_number_mapping[abi]`. Numbers resolve to
+    /// handlers by name (`NativeSyscallRegistry::from_angr_tables`). The
+    /// Python wrapper passes `[]` when the SimOS has no syscall library (a
+    /// plain `SimOS`, or Windows): Python's engine has no syscall procedures
+    /// there, so every syscall takes the Python path.
+    ///
+    /// Raises `ValueError` for an angr ABI the engine has no handlers for
+    /// and does not knowingly skip.
     #[angr_macros::steady_guarded]
-    pub fn clear_native_syscalls(&mut self) {
-        self.native_syscalls = Arc::new(NativeSyscallRegistry::empty());
+    pub fn set_syscall_tables(
+        &mut self,
+        tables: Vec<(String, HashMap<u64, String>)>,
+    ) -> PyResult<()> {
+        let registry =
+            NativeSyscallRegistry::from_angr_tables(&tables).map_err(PyValueError::new_err)?;
+        self.native_syscalls = Arc::new(registry);
+        Ok(())
     }
 
     /// The native syscall dispatch table as `{angr ABI name: {number: handler name}}`.

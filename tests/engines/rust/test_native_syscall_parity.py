@@ -149,3 +149,26 @@ def test_linux_simos_keeps_native_syscalls():
     assert mgr._rust_mgr.native_syscall_table()["amd64"][60] == "exit"
     mgr.run()
     assert len(mgr.deadended) == 1
+
+
+def test_amd64_int_0x80_is_not_the_amd64_abi():
+    """``int 0x80`` in 64-bit code must not run the amd64 handler for its number.
+
+    eax=1 is i386 ``exit`` but amd64 ``write``. The Rust engine used to look
+    it up in the amd64 table and keep executing (angr-mx00p.57); now it
+    defers to the SimOS, which stops the state at the ``int 0x80`` just as the
+    Python engine does.
+    """
+    # mov eax,1 ; xor ebx,ebx ; int 0x80 ; mov eax,60 ; mov edi,7 ; syscall
+    sc = bytes.fromhex("b80100000031dbcd80b83c000000bf070000000f05")
+    proj = angr.load_shellcode(sc, arch="AMD64", simos="linux", load_address=0x1000)
+    after_int80 = 0x1009
+
+    simgr = proj.factory.simulation_manager(proj.factory.entry_state(addr=0x1000))
+    simgr.run()
+    assert not simgr.deadended and not simgr.active
+
+    mgr = RustExplorationManager(proj, [proj.factory.entry_state(addr=0x1000)])
+    mgr.run()
+    assert not mgr.deadended, "the int 0x80 ran as amd64 write and execution reached the exit syscall"
+    assert [s.addr for s in mgr.errored] == [after_int80]

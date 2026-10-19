@@ -1108,6 +1108,19 @@ def _native_lift_settings(project) -> dict | None:
     }
 
 
+def _syscall_tables(simos) -> list[tuple[str, dict[int, str]]]:
+    """``[(abi, {number: name})]`` for each syscall ABI ``simos`` dispatches.
+
+    The input to ``set_syscall_tables``: angr's
+    ``syscall_library.syscall_number_mapping`` for every ABI in
+    ``simos.syscall_abis``, or ``[]`` when the SimOS has no syscall library.
+    """
+    library = getattr(simos, "syscall_library", None)
+    if library is None:
+        return []
+    return [(abi, dict(library.syscall_number_mapping[abi])) for abi in getattr(simos, "syscall_abis", {})]
+
+
 @_install_stash_accessors
 class RustExplorationManager(
     RustCallbackDispatchMixin,
@@ -1467,12 +1480,12 @@ class RustExplorationManager(
         if simos_name:
             self._rust_mgr.set_os_name(simos_name)
 
-        # A SimOS without a syscall library (plain SimOS, Windows) has no
-        # syscall procedures on the Python engine (``SimOS.syscall`` returns
-        # None), so the Rust engine must not run its Linux handlers there
-        # either (angr-mx00p.35).
-        if getattr(getattr(project, "simos", None), "syscall_library", None) is None:
-            self._rust_mgr.clear_native_syscalls()
+        # Native syscall handlers are registered by syscall name; the numbers
+        # come from the SimOS's own syscall library, for each ABI it lists
+        # (angr-mx00p.35). A SimOS without a syscall library (plain SimOS,
+        # Windows) has no syscall procedures on the Python engine either
+        # (``SimOS.syscall`` returns None), so it gets no native handlers.
+        self._rust_mgr.set_syscall_tables(_syscall_tables(getattr(project, "simos", None)))
 
         # angr-op0dn.10.3: strict-deterministic witness selection. The Z3 seed
         # pin above only stabilizes *which model Z3 builds*; this makes the

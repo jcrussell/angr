@@ -254,7 +254,10 @@ fn census_counts_parked_bounces_identically_before_and_after_a_flush() {
             .push((dup, BounceKind::Hook { addr: 0x40_6000 }, dup_id));
         mgr.pending_parallel_bounces.push((
             unreplayable,
-            BounceKind::SyscallPython { num: Some(60) },
+            BounceKind::SyscallPython {
+            num: Some(60),
+            jumpkind: crate::vex::ir::JumpKind::Sys_syscall,
+        },
             unreplayable_id,
         ));
 
@@ -476,7 +479,10 @@ fn park_two_bounces(mgr: &mut RustExplorationManager) -> (u64, u64) {
     ));
     mgr.pending_parallel_bounces.push((
         unreplayable,
-        BounceKind::SyscallPython { num: Some(60) },
+        BounceKind::SyscallPython {
+            num: Some(60),
+            jumpkind: crate::vex::ir::JumpKind::Sys_syscall,
+        },
         unreplayable_id,
     ));
     (replayable_id, unreplayable_id)

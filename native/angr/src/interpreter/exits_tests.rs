@@ -41,7 +41,7 @@ fn handle_exit_syscall_returns_syscall_variant() {
     interp.registers.put_reg("rax", RustBV::concrete(60, 64));
     let result = interp.handle_exit(0x1234, JumpKind::Sys_syscall);
     match result {
-        BlockResult::Syscall { num } => assert_eq!(num, Some(60)),
+        BlockResult::Syscall { num, .. } => assert_eq!(num, Some(60)),
         other => panic!("expected Syscall, got {other:?}"),
     }
     // PC is updated even for syscalls.

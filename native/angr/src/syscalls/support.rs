@@ -1,8 +1,7 @@
 //! Shared runtime utilities for the native syscall handlers.
 //!
 //! Split out of [`crate::syscalls`] (angr-5mnx3.58), which otherwise bundled these
-//! with the ~800-line arch-keyed registration table in
-//! [`NativeSyscallRegistry::new`](crate::syscalls::NativeSyscallRegistry::new). Nothing
+//! with the by-name registration table there (`BY_NAME`). Nothing
 //! here is registration data: it is the vocabulary every `syscalls/*.rs`
 //! handler file is written against — the [`SyscallError`] / [`SyscallOutcome`]
 //! result types, the [`NativeSyscall`] trait itself, the concrete-arg

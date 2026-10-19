@@ -3,6 +3,8 @@
 //!
 //! Split out of `callbacks.rs` (god-module decomposition, angr-zel8z.2).
 
+use crate::vex::ir::JumpKind;
+
 /// How a [`RunResult::Error`] should be routed by the exploration stepping
 /// loop. Carried as a typed signal so routing does not depend on matching
 /// substrings of the human-readable error message (angr-zzju9).
@@ -80,8 +82,14 @@ pub(crate) enum RunResult {
     ///
     /// `num` is `None` when the syscall-number register is symbolic
     /// (angr-gffd) — the dispatch loop must force a Python callback in that
-    /// case rather than picking a native handler.
-    Syscall { num: Option<u64>, pc: u64 },
+    /// case rather than picking a native handler. `jumpkind` is the exit's
+    /// `Ijk_Sys*` kind: it picks the syscall ABI on AMD64, and the Python
+    /// fallback hands it to `SimLinux.syscall_abi` the same way.
+    Syscall {
+        num: Option<u64>,
+        pc: u64,
+        jumpkind: JumpKind,
+    },
     /// Symbolic branch - need Python to fork states.
     /// This is returned when use_deferred_forks is false or max_deferred_forks is reached.
     SymbolicBranch {

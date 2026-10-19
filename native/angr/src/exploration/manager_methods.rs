@@ -84,7 +84,9 @@ impl RustExplorationManager {
             num_find: 1,
             max_steps_per_run: 5000,
             native_procedures: Arc::new(NativeProcedureRegistry::new()),
-            native_syscalls: Arc::new(NativeSyscallRegistry::new()),
+            // No native syscalls until the wrapper passes the SimOS's numbering
+            // through `set_syscall_tables`.
+            native_syscalls: Arc::new(NativeSyscallRegistry::empty()),
             vex_fallback_count: 0,
             vex_fallback_addrs: HashMap::new(),
             dcas_unsupported_count: 0,

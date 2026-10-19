@@ -93,14 +93,14 @@ impl RustExplorationManager {
                     },
                 )))
             }
-            BounceKind::SyscallPython { num } => {
+            BounceKind::SyscallPython { num, jumpkind } => {
                 let pre_callback_snapshot =
                     super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
                 Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
                     pre_callback_snapshot,
                     CallbackReason::Syscall { num },
-                    "Ijk_Sys_syscall",
+                    jumpkind.ijk_name(),
                     ForkBundle {
                         deferred_forks,
                         stored_conditions,

@@ -1274,3 +1274,139 @@ fn extract_bounded_concrete_arg_bounds_and_still_falls_back_on_symbolic() {
         other => panic!("expected SymbolicArgument, got {other:?}"),
     }
 }
+
+// ======================================================================
+// By-name registration (angr-mx00p.35)
+// ======================================================================
+
+fn angr_table(abi: &str, rows: &[(u64, &str)]) -> (String, HashMap<u64, String>) {
+    (
+        abi.to_string(),
+        rows.iter().map(|&(n, name)| (n, name.to_string())).collect(),
+    )
+}
+
+fn handler_name(r: &NativeSyscallRegistry, abi: SyscallAbi, num: u64) -> Option<&'static str> {
+    r.handlers.get(&abi)?.get(&num).map(|h| h.name())
+}
+
+#[test]
+fn from_angr_tables_resolves_numbers_by_name() {
+    let r = NativeSyscallRegistry::from_angr_tables(&[
+        angr_table("amd64", &[(0, "read"), (60, "exit"), (231, "exit_group"), (14, "rt_sigprocmask")]),
+        angr_table("i386", &[(1, "exit"), (195, "stat64"), (106, "stat")]),
+    ])
+    .expect("known ABIs");
+    assert_eq!(handler_name(&r, SyscallAbi::Amd64, 0), Some("read"));
+    assert_eq!(handler_name(&r, SyscallAbi::Amd64, 60), Some("exit"));
+    assert_eq!(handler_name(&r, SyscallAbi::Amd64, 231), Some("exit"));
+    // A name with no row stays with Python.
+    assert_eq!(handler_name(&r, SyscallAbi::Amd64, 14), None);
+    assert_eq!(handler_name(&r, SyscallAbi::I386, 1), Some("exit"));
+    assert_eq!(handler_name(&r, SyscallAbi::I386, 195), Some("stat"));
+    // i386's pre-LFS stat is out of the `stat` row's scope.
+    assert_eq!(handler_name(&r, SyscallAbi::I386, 106), None);
+}
+
+#[test]
+fn from_angr_tables_skips_ignored_abis_and_rejects_unknown_ones() {
+    let r = NativeSyscallRegistry::from_angr_tables(&[
+        angr_table("arm", &[(1, "exit")]),
+        angr_table("armhf", &[(0x90_0001, "exit")]),
+        angr_table("mips-n32", &[(6058, "exit")]),
+    ])
+    .expect("armhf and mips-n32 are skipped");
+    assert_eq!(handler_name(&r, SyscallAbi::Arm, 1), Some("exit"));
+    assert_eq!(r.table().len(), 1, "nothing registered for the ignored ABIs");
+
+    let err = NativeSyscallRegistry::from_angr_tables(&[angr_table("ppc", &[(1, "exit")])])
+        .err()
+        .expect("an ABI the engine was not written for must not dispatch");
+    assert!(err.contains("ppc"), "{err}");
+}
+
+#[test]
+fn mmap_name_means_the_struct_argument_form_on_arm_and_mips_o32() {
+    for (abi, expected) in [
+        (SyscallAbi::Amd64, "mmap"),
+        (SyscallAbi::Aarch64, "mmap"),
+        (SyscallAbi::MipsN64, "mmap"),
+        (SyscallAbi::Arm, "old_mmap"),
+        (SyscallAbi::MipsO32, "old_mmap"),
+    ] {
+        let h = NativeSyscallRegistry::handler_for(abi, "mmap").expect("mmap row");
+        assert_eq!(h.name(), expected, "{abi:?}");
+    }
+    assert_eq!(
+        NativeSyscallRegistry::handler_for(SyscallAbi::I386, "old_mmap").map(|h| h.name()),
+        Some("old_mmap")
+    );
+}
+
+#[test]
+fn names_angr_lists_but_the_engine_must_not_run_are_out_of_scope() {
+    // Pre-LFS struct stat has no writer on the 32-bit ABIs; mips-n64 has no
+    // stat writer at all; aarch64 has no legacy stat/lstat.
+    for abi in [SyscallAbi::I386, SyscallAbi::Arm, SyscallAbi::MipsO32, SyscallAbi::MipsN64] {
+        for name in ["stat", "lstat", "fstat"] {
+            assert!(NativeSyscallRegistry::handler_for(abi, name).is_none(), "{abi:?} {name}");
+        }
+    }
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::MipsN64, "newfstatat").is_none());
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Aarch64, "stat").is_none());
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Aarch64, "fstat").is_some());
+    // arch_prctl writes fs_const / gs_const, which only AMD64 has.
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::I386, "arch_prctl").is_none());
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Amd64, "arch_prctl").is_some());
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Amd64, "rt_sigprocmask").is_none());
+    // DECREE names never resolve on a Linux ABI and vice versa.
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::I386, "transmit").is_none());
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Cgc, "write").is_none());
+    assert_eq!(
+        NativeSyscallRegistry::handler_for(SyscallAbi::Cgc, "_terminate").map(|h| h.name()),
+        Some("exit")
+    );
+}
+
+#[test]
+fn by_name_rows_never_overlap() {
+    for (i, a) in BY_NAME.iter().enumerate() {
+        for b in &BY_NAME[i + 1..] {
+            if a.name == b.name {
+                assert!(
+                    !a.scope.iter().any(|abi| b.scope.contains(abi)),
+                    "two rows for {:?} share an ABI",
+                    a.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn amd64_dispatches_only_the_syscall_instruction() {
+    let r = NativeSyscallRegistry::from_angr_tables(&[
+        angr_table("i386", &[(1, "exit")]),
+        angr_table("amd64", &[(1, "write"), (60, "exit")]),
+    ])
+    .expect("known ABIs");
+    let name = |arch: &str, jk: JumpKind, num: u64| r.get_for_exit(false, arch, jk, num).map(|h| h.name());
+    assert_eq!(name("AMD64", JumpKind::Sys_syscall, 1), Some("write"));
+    // int 0x80 in 64-bit code is the i386 ABI: never the amd64 handler.
+    assert_eq!(name("AMD64", JumpKind::Sys_int128, 1), None);
+    assert_eq!(name("AMD64", JumpKind::Sys_int, 60), None);
+    // On X86 every syscall exit is the i386 ABI.
+    assert_eq!(name("X86", JumpKind::Sys_int128, 1), Some("exit"));
+    assert_eq!(name("X86", JumpKind::Sys_sysenter, 1), Some("exit"));
+}
+
+#[test]
+fn cgc_selects_the_decree_table() {
+    let r = NativeSyscallRegistry::from_angr_tables(&[angr_table("cgcabi", &[(1, "_terminate"), (2, "transmit")])])
+        .expect("cgcabi");
+    assert_eq!(
+        r.get_for_exit(true, "X86", JumpKind::Sys_int128, 2).map(|h| h.name()),
+        Some("transmit")
+    );
+    assert!(r.get_for_exit(false, "X86", JumpKind::Sys_int128, 2).is_none());
+}
