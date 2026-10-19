@@ -158,25 +158,20 @@ pub trait Arch: Send + Sync {
     /// This drives `register_names_for_arch` (the Python-side
     /// `_supported_register_names` filter) and `RustSimState::export_full`'s
     /// `named_registers`, so it is the set of registers that round-trip
-    /// through `state.regs.*`. It is a SUBSET of the per-arch `CANONICAL`
-    /// table: entries wider than 16 bytes must be omitted, because the
-    /// named-register channel carries each value as a `u128`
-    /// (`ExplorationStateSnapshot::get_registers_named`) and
-    /// `RegisterFile::get`'s concrete read composes bytes into a `u128`.
-    /// Today `fpreg` (64 B on x86/AMD64) is the only such register.
+    /// through `state.regs.*`. It is derived, not listed: the per-arch
+    /// `CANONICAL` table minus entries wider than
+    /// [`NAMED_REGISTER_MAX_BYTES`] ([`exported_register_names`]). Today
+    /// `fpreg` (64 B on x86/AMD64) is the only such register.
     fn register_names(&self) -> &[&'static str];
 
     /// The arch's whole `CANONICAL` register table — the superset
-    /// `register_names` is drawn from.
+    /// `register_names` is derived from, and what `arch_register_info` and
+    /// the big-endian containment table read.
     ///
-    /// Like `register_name`, this exists to be the assertion primitive of the
-    /// arch-table integrity sweeps rather than to serve a production caller:
-    /// `registry_tests::every_narrow_canonical_register_is_exported` walks it to
-    /// check the *converse* of the `register_names` doc above — every entry
-    /// that fits the u128 named-register channel has to be exported, or the
-    /// corresponding `state.regs.*` write is silently dropped on the Python
-    /// side. Only checking the forward direction is how X86's missing
-    /// `sseround` survived the angr-9ke6b.6 sweep (angr-sqfj8.1/.6).
+    /// `register_names` used to be a hand-kept copy of this table, and an
+    /// entry missing from the copy was silently unexported: X86's
+    /// `sseround` survived the angr-9ke6b.6 sweep that way (angr-sqfj8.1/.6).
+    /// Deriving the export list makes that unrepresentable (angr-mx00p.34).
     fn canonical_registers(&self) -> &[RegEntry];
 
     /// The arch's `ALIASES` table: the overlapping spellings (sub-registers,
@@ -265,11 +260,29 @@ pub(crate) fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Optio
         .map(|(n, _, _)| *n)
 }
 
-/// Generate the name/offset/size trait methods of `Arch` from a
-/// per-arch `(canonical, aliases, register_names)` triple. Place inside
-/// `impl Arch for $Arch { ... }` blocks alongside the other arch fields.
+/// Widest register, in bytes, that crosses the Python boundary by name.
+///
+/// The named-register channel carries each value as a `u128`
+/// (`ExplorationStateSnapshot::get_registers_named`), and `RegisterFile::get`'s
+/// concrete read composes bytes into a `u128`, so a wider register's bytes
+/// travel only in the raw guest-state image.
+pub(crate) const NAMED_REGISTER_MAX_BYTES: u32 = 16;
+
+/// `Arch::register_names` for a `CANONICAL` table: every entry that fits the
+/// named-register channel ([`NAMED_REGISTER_MAX_BYTES`]), in table order.
+pub(crate) fn exported_register_names(canonical: &[RegEntry]) -> Vec<&'static str> {
+    canonical
+        .iter()
+        .filter(|&&(_, _, size)| size <= NAMED_REGISTER_MAX_BYTES)
+        .map(|&(name, _, _)| name)
+        .collect()
+}
+
+/// Generate the name/offset/size trait methods of `Arch` from a per-arch
+/// `(canonical, aliases)` pair. Place inside `impl Arch for $Arch { ... }`
+/// blocks alongside the other arch fields.
 macro_rules! impl_arch_registers {
-    ($canonical:expr, $aliases:expr, $names:expr) => {
+    ($canonical:expr, $aliases:expr) => {
         fn register_offset(&self, name: &str) -> Option<u32> {
             super::lookup_register_offset(name, $canonical, $aliases)
         }
@@ -283,7 +296,10 @@ macro_rules! impl_arch_registers {
         }
 
         fn register_names(&self) -> &[&'static str] {
-            $names
+            // One static per `impl Arch` block: each expansion is its own fn.
+            static NAMES: std::sync::LazyLock<Vec<&'static str>> =
+                std::sync::LazyLock::new(|| super::exported_register_names($canonical));
+            &NAMES
         }
 
         fn canonical_registers(&self) -> &[super::RegEntry] {

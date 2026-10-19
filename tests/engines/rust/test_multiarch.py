@@ -473,7 +473,7 @@ class TestMultiArchSupport:
         Regression for angr-2uw03, the x86 half of the angr-l8kfw /
         angr-n2556 class. ``cs``/``ds``/``es``/``fs``/``gs``/``ss`` and
         ``ldt``/``gdt`` used to sit in ``ALIASES`` (``native/angr/src/arch/x86.rs``)
-        rather than ``CANONICAL``, so they never reached ``REGISTER_NAMES`` —
+        rather than ``CANONICAL``, so they never reached the export list (``Arch::register_names``) —
         the list ``RustStateSyncMixin._supported_register_names`` filters on
         and ``RustSimState::export_full`` walks for ``named_registers``. Both
         directions were silently dropped, each side reading 0, which matters
@@ -520,7 +520,7 @@ class TestMultiArchSupport:
         ``f0``-``f31`` and ``fir``/``fccr``/``fexr``/``fenr``/``fcsr`` used to
         sit in ``ALIASES_MIPS32`` / ``ALIASES_MIPS64``
         (``native/angr/src/arch/mips.rs``) rather than the ``CANONICAL_*``
-        tables, so they never reached ``REGISTER_NAMES_MIPS32/64``. That list
+        tables, so they never reached the MIPS export lists. That list
         is what ``RustStateSyncMixin._supported_register_names`` filters on and
         what ``RustSimState::export_full`` walks for ``named_registers``, so
         the round trip was broken in *both* directions with each side silently
@@ -798,13 +798,12 @@ class TestMultiArchSupport:
         Regression for angr-l8kfw. ARM's d0-d31 and AArch64's q0-q31 used to
         live in the per-arch ``ALIASES`` table (``native/angr/src/arch/arm.rs``,
         ``arm64.rs``) rather than ``CANONICAL``, so they were absent from
-        ``REGISTER_NAMES``. That list is what
+        the export list (``Arch::register_names``). That list is what
         ``RustStateSyncMixin._supported_register_names`` filters on and what
         ``RustSimState::export_full`` walks for ``named_registers``, so the
         round trip was broken in *both* directions and each side silently read
-        0 — the arch-table sweep
-        (``arch::registry_tests::every_narrow_canonical_register_is_exported``)
-        never saw them because it walks ``canonical_registers()`` only.
+        0 — the arch-table sweep of the time never saw them because it walked
+        ``canonical_registers()`` only.
 
         The guest *copies* each preset source register into a destination the
         Python side never wrote, so a passing assertion needs both halves: the

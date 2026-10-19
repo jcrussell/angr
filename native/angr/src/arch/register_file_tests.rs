@@ -270,7 +270,7 @@ fn serde_known_arch_name_round_trips() {
 
 
 /// The x87 control/status words must round-trip through the named-register
-/// path on both x86 arches — they were absent from `REGISTER_NAMES` while
+/// path on both x86 arches — they were absent from the hand-kept export list while
 /// present in `CANONICAL`, so x87 state silently never reached
 /// `state.regs.*` after Rust-engine exploration (angr-9ke6b.6).
 #[test]
@@ -319,8 +319,9 @@ fn x87_control_registers_round_trip_through_register_names() {
 /// Swept over the whole [`ALL_ARCHES`] × `canonical_registers()` cross-product
 /// rather than hardcoding `fpreg` on the two x86 arches, so a wide register
 /// added to any arch's table inherits the coverage instead of re-opening the
-/// gap. `every_narrow_canonical_register_is_exported` is the same sweep for
-/// the *export* channel; this one is the accessor path it feeds.
+/// gap. The *export* channel needs no sweep: `register_names` is derived from
+/// the same table (`exported_register_names`); this one is the accessor path
+/// it feeds.
 #[test]
 fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
     let ctx = SymContext::new();

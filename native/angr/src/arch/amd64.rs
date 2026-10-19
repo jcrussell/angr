@@ -425,21 +425,6 @@ const ALIASES: &[RegEntry] = &[
     ("xmm31hq", offsets::XMM31 + 8, 8),
 ];
 
-// Registers exported to / imported from Python (see `Arch::register_names`).
-// Deliberately omits `fpreg` and the AVX-512 `zmm*` / `ymm*` views: they are
-// wider than 16 bytes and the named-register channel is u128-capped, so they
-// cannot round-trip here (their bytes still travel in the raw guest-state image). The x87 control/status
-// words below are all <= 8 bytes and do round-trip (angr-9ke6b.6).
-const REGISTER_NAMES: &[&str] = &[
-    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
-    "r14", "r15", "rip", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag", "acflag", "idflag",
-    "fs_const", "gs_const", "sseround", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
-    "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15", "xmm16", "xmm17",
-    "xmm18", "xmm19", "xmm20", "xmm21", "xmm22", "xmm23", "xmm24", "xmm25", "xmm26", "xmm27",
-    "xmm28", "xmm29", "xmm30", "xmm31", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "fptag",
-    "fpround", "fc3210", "ftop",
-];
-
 impl Arch for AMD64 {
     fn vex_arch(&self) -> VexArch {
         VexArch::AMD64
@@ -469,7 +454,7 @@ impl Arch for AMD64 {
         Some(offsets::RBP)
     }
 
-    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
+    impl_arch_registers!(CANONICAL, ALIASES);
 
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::RAX)

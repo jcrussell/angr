@@ -28,7 +28,7 @@ fn test_mips64_reverse_name_lookup_is_complete() {
     // only 7 of 35 GPRs, unlike MIPS32 which maps all of them. Every canonical
     // name must round-trip offset -> name for consistency across the family.
     let arch = MIPS64;
-    assert_reverse_name_lookup_is_complete(&arch, REGISTER_NAMES_MIPS64);
+    assert_reverse_name_lookup_is_complete(&arch, arch.register_names());
 
     // N64 ABI: $8-$11 canonicalize to a4-a7; the O32 t0-t3 remain aliases that
     // forward-resolve to the same offsets but never appear in reverse lookup.
@@ -47,7 +47,7 @@ fn test_mips32_reverse_name_lookup_is_complete() {
     // therefore reverse-unresolvable) to reappear. MIPS64 has pinned this
     // since that fix; MIPS32 had nothing (angr-9ke6b.14).
     let arch = MIPS32;
-    assert_reverse_name_lookup_is_complete(&arch, REGISTER_NAMES_MIPS32);
+    assert_reverse_name_lookup_is_complete(&arch, arch.register_names());
 
     // O32 ABI: unlike N64, $8-$11 canonicalize to the temporaries t0-t3.
     assert_eq!(arch.register_name(offsets32::R8), Some("t0"));

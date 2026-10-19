@@ -108,7 +108,7 @@ const CANONICAL: &[RegEntry] = &[
     // SSE control register (4B per archinfo.ArchX86)
     ("sseround", offsets::SSEROUND, 4),
     // XMM registers (128-bit). Canonical, not aliased, to match AMD64's split:
-    // they are their own registers, not sub-names of a GPR, and `REGISTER_NAMES`
+    // they are their own registers, not sub-names of a GPR, and `register_names`
     // exports them — so `register_name(offset)` must resolve them (angr-9ke6b.9).
     ("xmm0", offsets::XMM0, 16),
     ("xmm1", offsets::XMM1, 16),
@@ -130,7 +130,7 @@ const CANONICAL: &[RegEntry] = &[
     // exist in `archinfo.ArchX86().registers` at the same offset/width, so
     // rules 1 and 3 of `invariant-arch-canonical-is-the-python-export-gate`
     // both put them here rather than in `ALIASES` — where they used to sit,
-    // which kept them out of `REGISTER_NAMES` and so out of *both* directions
+    // which kept them out of the export list and so out of *both* directions
     // of the Python boundary (angr-2uw03). They are amd64's `fs_const`/
     // `gs_const` analogue: TLS-aware x86 code reads `gs`, and `mov ax, gs`
     // must produce a value Python can see.
@@ -198,21 +198,6 @@ const ALIASES: &[RegEntry] = &[
     ("ip_at_syscall", offsets::IP_AT_SYSCALL, 4),
 ];
 
-// Registers exported to / imported from Python (see `Arch::register_names`).
-// `fpreg` is omitted for the same u128-width reason as on AMD64 (angr-9ke6b.6);
-// every other `CANONICAL` entry must be here, which is what
-// `registry_tests::every_narrow_canonical_register_is_exported` enforces.
-// `sseround` was the last straggler: it lives in `CANONICAL` and in AMD64's
-// export list, but was left out here, so a Python-side `state.regs.sseround`
-// write on an X86 state was dropped by `_supported_register_names`
-// (angr-sqfj8.1).
-const REGISTER_NAMES: &[&str] = &[
-    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip", "cc_op", "cc_dep1", "cc_dep2",
-    "cc_ndep", "dflag", "idflag", "acflag", "sseround", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
-    "xmm5", "xmm6", "xmm7", "fptag", "fpround", "fc3210", "ftop", "cs", "ds", "es", "fs", "gs",
-    "ss", "ldt", "gdt",
-];
-
 impl Arch for X86 {
     fn vex_arch(&self) -> VexArch {
         VexArch::X86
@@ -242,7 +227,7 @@ impl Arch for X86 {
         Some(offsets::EBP)
     }
 
-    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
+    impl_arch_registers!(CANONICAL, ALIASES);
 
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::EAX)

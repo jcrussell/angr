@@ -245,8 +245,8 @@ const CANONICAL_MIPS32: &[RegEntry] = &[
     // FPU file (64-bit on the MIPS32 VEX state) and the four FPU control
     // words, which VEX gives distinct storage even though hardware overlays
     // FCCR/FEXR/FENR on FCSR. Canonical rather than aliased because no other
-    // canonical entry covers these bytes, and CANONICAL is what feeds
-    // REGISTER_NAMES — the gate on both directions of the Python boundary
+    // canonical entry covers these bytes, and CANONICAL is what
+    // `register_names` is derived from — the gate on both directions of the Python boundary
     // (angr-n2556, same class as ARM/ARM64's VFP file in angr-l8kfw). The
     // `$fN` spellings stay in ALIASES: exactly one spelling per offset may be
     // canonical or `register_name` picks between them arbitrarily.
@@ -409,21 +409,12 @@ const ALIASES_MIPS32: &[RegEntry] = &[
     ("ip_at_syscall", offsets32::IP_AT_SYSCALL, 4),
 ];
 
-const REGISTER_NAMES_MIPS32: &[&str] = &[
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
-    "ra", "pc", "hi", "lo", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10",
-    "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23",
-    "f24", "f25", "f26", "f27", "f28", "f29", "f30", "f31", "fir", "fccr", "fexr", "fenr", "fcsr",
-];
-
 // MIPS64 canonical: one entry per offset, so `register_name` (reverse
 // offset->name lookup) resolves every GPR just like CANONICAL_MIPS32 does —
 // the two variants of the family are now consistent in reverse-lookup rigor
 // (angr-1yge9.13). Names follow the N64 ABI: $8-$11 are a4-a7 (not the O32
 // temporaries t0-t3, which live in ALIASES), and $30 canonicalizes to `fp`
-// (with `s8` an alias). This table is kept in exact agreement with
-// REGISTER_NAMES_MIPS64.
+// (with `s8` an alias).
 const CANONICAL_MIPS64: &[RegEntry] = &[
     ("zero", offsets64::R0, 8),
     ("at", offsets64::R1, 8),
@@ -625,14 +616,6 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     ("ip_at_syscall", offsets64::IP_AT_SYSCALL, 8),
 ];
 
-const REGISTER_NAMES_MIPS64: &[&str] = &[
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t4", "t5", "t6",
-    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
-    "ra", "pc", "hi", "lo", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10",
-    "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23",
-    "f24", "f25", "f26", "f27", "f28", "f29", "f30", "f31", "fir", "fccr", "fexr", "fenr", "fcsr",
-];
-
 impl Arch for MIPS32 {
     fn vex_arch(&self) -> VexArch {
         VexArch::MIPS32
@@ -662,7 +645,7 @@ impl Arch for MIPS32 {
         Some(offsets32::R30) // fp/s8
     }
 
-    impl_arch_registers!(CANONICAL_MIPS32, ALIASES_MIPS32, REGISTER_NAMES_MIPS32);
+    impl_arch_registers!(CANONICAL_MIPS32, ALIASES_MIPS32);
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // O32 Linux puts the syscall number in v0 ($2)
@@ -703,7 +686,7 @@ impl Arch for MIPS64 {
         Some(offsets64::R30)
     }
 
-    impl_arch_registers!(CANONICAL_MIPS64, ALIASES_MIPS64, REGISTER_NAMES_MIPS64);
+    impl_arch_registers!(CANONICAL_MIPS64, ALIASES_MIPS64);
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // N64 Linux puts the syscall number in v0 ($2)

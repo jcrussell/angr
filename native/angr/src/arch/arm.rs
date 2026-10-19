@@ -148,7 +148,7 @@ const CANONICAL: &[RegEntry] = &[
     // Canonical, not aliases (angr-l8kfw): each `dN` is 8 bytes of distinct
     // guest storage, and `register_names` is what drives both directions of the
     // Python boundary. While these sat in `ALIASES` they were absent from
-    // `REGISTER_NAMES`, so a Python-set `state.regs.d1` was dropped by
+    // the export list, so a Python-set `state.regs.d1` was dropped by
     // `_sync_registers_to_rust` and a Rust-computed `d0` never came back in
     // `export_full`'s `named_registers` — both silently reading 0.
     ("d0", offsets::D0, 8),
@@ -239,14 +239,6 @@ const ALIASES: &[RegEntry] = &[
     ("q15", offsets::D30, 16),
 ];
 
-const REGISTER_NAMES: &[&str] = &[
-    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr",
-    "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "qflag32", "geflag0", "geflag1", "geflag2",
-    "geflag3", "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12",
-    "d13", "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21", "d22", "d23", "d24", "d25",
-    "d26", "d27", "d28", "d29", "d30", "d31", "fpscr", "tpidruro", "itstate",
-];
-
 impl Arch for ARM {
     fn vex_arch(&self) -> VexArch {
         VexArch::ARM
@@ -276,7 +268,7 @@ impl Arch for ARM {
         Some(offsets::R11) // R11 is typically FP on ARM
     }
 
-    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
+    impl_arch_registers!(CANONICAL, ALIASES);
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // EABI Linux syscall convention puts the syscall number in R7

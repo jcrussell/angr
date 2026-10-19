@@ -335,81 +335,6 @@ const ALIASES: &[RegEntry] = &[
     ("ip_at_syscall", offsets::IP_AT_SYSCALL, 8),
 ];
 
-const REGISTER_NAMES: &[&str] = &[
-    "x0",
-    "x1",
-    "x2",
-    "x3",
-    "x4",
-    "x5",
-    "x6",
-    "x7",
-    "x8",
-    "x9",
-    "x10",
-    "x11",
-    "x12",
-    "x13",
-    "x14",
-    "x15",
-    "x16",
-    "x17",
-    "x18",
-    "x19",
-    "x20",
-    "x21",
-    "x22",
-    "x23",
-    "x24",
-    "x25",
-    "x26",
-    "x27",
-    "x28",
-    "fp",
-    "lr",
-    "sp",
-    "pc",
-    "cc_op",
-    "cc_dep1",
-    "cc_dep2",
-    "cc_ndep",
-    "tpidr_el0",
-    "q0",
-    "q1",
-    "q2",
-    "q3",
-    "q4",
-    "q5",
-    "q6",
-    "q7",
-    "q8",
-    "q9",
-    "q10",
-    "q11",
-    "q12",
-    "q13",
-    "q14",
-    "q15",
-    "q16",
-    "q17",
-    "q18",
-    "q19",
-    "q20",
-    "q21",
-    "q22",
-    "q23",
-    "q24",
-    "q25",
-    "q26",
-    "q27",
-    "q28",
-    "q29",
-    "q30",
-    "q31",
-    "qcflag",
-    "fpcr",
-];
-
 impl Arch for ARM64 {
     fn vex_arch(&self) -> VexArch {
         VexArch::ARM64
@@ -439,7 +364,7 @@ impl Arch for ARM64 {
         Some(offsets::X29) // X29 is FP on ARM64
     }
 
-    impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
+    impl_arch_registers!(CANONICAL, ALIASES);
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // Linux AArch64 syscall convention puts the syscall number in X8
