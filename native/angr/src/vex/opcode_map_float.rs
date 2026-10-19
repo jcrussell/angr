@@ -126,6 +126,71 @@ pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
     });
 
     match op_str {
+        // Vector int<->float conversions (per 32-bit lane).
+        "Iop_I32StoF32x2_DEP" => {
+            return Some(IROp::VI32toF32 {
+                count: 2,
+                signed: true,
+            });
+        }
+        "Iop_I32StoF32x4" | "Iop_I32StoF32x4_DEP" => {
+            return Some(IROp::VI32toF32 {
+                count: 4,
+                signed: true,
+            });
+        }
+        "Iop_I32StoF32x8" => {
+            return Some(IROp::VI32toF32 {
+                count: 8,
+                signed: true,
+            });
+        }
+        "Iop_I32UtoF32x2_DEP" => {
+            return Some(IROp::VI32toF32 {
+                count: 2,
+                signed: false,
+            });
+        }
+        "Iop_I32UtoF32x4_DEP" => {
+            return Some(IROp::VI32toF32 {
+                count: 4,
+                signed: false,
+            });
+        }
+        "Iop_F32toI32Sx2_RZ" => {
+            return Some(IROp::VF32toI32 {
+                count: 2,
+                signed: true,
+            });
+        }
+        "Iop_F32toI32Sx4" | "Iop_F32toI32Sx4_RZ" => {
+            return Some(IROp::VF32toI32 {
+                count: 4,
+                signed: true,
+            });
+        }
+        "Iop_F32toI32Sx8" => {
+            return Some(IROp::VF32toI32 {
+                count: 8,
+                signed: true,
+            });
+        }
+        "Iop_F32toI32Ux2_RZ" => {
+            return Some(IROp::VF32toI32 {
+                count: 2,
+                signed: false,
+            });
+        }
+        "Iop_F32toI32Ux4_RZ" => {
+            return Some(IROp::VF32toI32 {
+                count: 4,
+                signed: false,
+            });
+        }
+        _ => {}
+    }
+
+    match op_str {
         // SetV128lo operations
         "Iop_SetV128lo32" => Some(IROp::SetV128lo32),
         "Iop_SetV128lo64" => Some(IROp::SetV128lo64),

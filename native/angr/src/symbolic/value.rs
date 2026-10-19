@@ -152,6 +152,12 @@ pub enum FloatOpKind {
         src_bits: u8,
         signed: bool,
     },
+    /// Convert int BV to FP at `prec` with explicit rounding mode.
+    /// operand\[0\] = rm BV (32-bit), operand\[1\] = src BV at src_bits.
+    ConvertItoFRm {
+        src_bits: u8,
+        signed: bool,
+    },
     /// Convert FP at `prec` to int BV (signed/unsigned 2's complement).
     /// operand\[0\] = src FP BV at prec.bits(). RNE rounding implicit.
     ConvertFtoI {
@@ -215,6 +221,7 @@ impl FloatOpKind {
             | FloatOpKind::CmpLt
             | FloatOpKind::CmpLe
             | FloatOpKind::RoundToInt
+            | FloatOpKind::ConvertItoFRm { .. }
             | FloatOpKind::ConvertFtoIRm { .. }
             | FloatOpKind::ConvertFtoFRm { .. }
             | FloatOpKind::SqrtRm => 2,

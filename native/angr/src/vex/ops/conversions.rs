@@ -89,6 +89,119 @@ impl VEXOps {
         ))
     }
 
+    /// Int-to-float conversion under an explicit VEX rounding mode (the
+    /// binop form, `rm` first): `Iop_I{32,64}{S,U}toF{32,64}` except the
+    /// exact `I32{S,U}toF64` unops. Symbolic operands route through
+    /// `FloatOpKind::ConvertItoFRm`.
+    pub(super) fn int_to_float_rm(
+        rm: RustBV,
+        arg: RustBV,
+        src_bits: u32,
+        signed: bool,
+        dst_prec: FloatPrec,
+    ) -> Result<RustBV, OpError> {
+        Self::require_operand_width("int_to_float_rm arg", arg.width(), src_bits)?;
+        if let (Some(mode), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+            let value = if signed {
+                Self::sign_extend_low_to_i128(v, src_bits)
+            } else {
+                (v & Self::low_bit_mask_u128(src_bits)) as i128
+            };
+            return Ok(RustBV::concrete(
+                Self::int_to_float_bits_rm(value, dst_prec, mode as u32),
+                dst_prec.bits(),
+            ));
+        }
+        Ok(build_float_expr(
+            FloatOpKind::ConvertItoFRm {
+                src_bits: src_bits as u8,
+                signed,
+            },
+            dst_prec,
+            vec![rm, arg],
+        ))
+    }
+
+    /// `value` as IEEE bits at `prec`, rounded by VEX mode `mode` (0 nearest
+    /// ties-to-even, 1 toward -inf, 2 toward +inf, 3 toward zero). Rust's
+    /// int-to-float cast rounds to nearest; when that is inexact and the mode
+    /// points the other way, the answer is the adjacent float.
+    fn int_to_float_bits_rm(value: i128, prec: FloatPrec, mode: u32) -> u128 {
+        macro_rules! directed {
+            ($f:ty) => {{
+                let near = value as $f;
+                // Exact: |value| < 2^64, so `near` is an integer of at most
+                // 2^64 in magnitude and fits i128.
+                let back = near as i128;
+                let rounded = match mode & 0x3 {
+                    1 if back > value => near.next_down(),
+                    2 if back < value => near.next_up(),
+                    3 if value >= 0 && back > value => near.next_down(),
+                    3 if value < 0 && back < value => near.next_up(),
+                    _ => near,
+                };
+                rounded.to_bits() as u128
+            }};
+        }
+        match prec {
+            FloatPrec::F32 => directed!(f32),
+            FloatPrec::F64 => directed!(f64),
+        }
+    }
+
+    /// Run `f` on each 32-bit lane of `v` (`count` lanes, lane 0 lowest) and
+    /// concatenate the 32-bit results in the same order.
+    fn map_lanes32(
+        v: RustBV,
+        count: u8,
+        ctx: &SymContext,
+        f: impl Fn(RustBV) -> Result<RustBV, OpError>,
+    ) -> Result<RustBV, OpError> {
+        let lanes = u32::from(count);
+        Self::require_operand_width("map_lanes32 arg", v.width(), 32 * lanes)?;
+        let mut out: Option<RustBV> = None;
+        for i in (0..lanes).rev() {
+            let lane = f(v.extract(32 * i + 31, 32 * i, ctx))?;
+            out = Some(match out {
+                None => lane,
+                Some(high) => high.concat_into(lane, ctx),
+            });
+        }
+        out.ok_or_else(|| OpError::UnsupportedVectorOp("zero-lane conversion".to_string()))
+    }
+
+    /// `Iop_I32{S,U}toF32x{count}`: each 32-bit integer lane to F32 under
+    /// VEX rounding mode `rm` (the `_DEP` unop forms pass nearest).
+    pub(super) fn vec_i32_to_f32(
+        rm: RustBV,
+        v: RustBV,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        Self::map_lanes32(v, count, ctx, |lane| {
+            Self::int_to_float_rm(rm.clone(), lane, 32, signed, FloatPrec::F32)
+        })
+    }
+
+    /// `Iop_F32toI32{S,U}x{count}`: each F32 lane to a 32-bit integer under
+    /// VEX rounding mode `rm` (the `_RZ` unop forms pass toward-zero).
+    pub(super) fn vec_f32_to_i32(
+        rm: RustBV,
+        v: RustBV,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        Self::map_lanes32(v, count, ctx, |lane| {
+            if signed {
+                Self::f32_to_i32s_rm(rm.clone(), lane, ctx)
+            } else {
+                Self::f32_to_i32u_rm(rm.clone(), lane, ctx)
+            }
+        })
+    }
+
     /// Float-to-int conversion (unary, RNE implicit). Symbolic operands
     /// route through Z3 FP via `FloatOpKind::ConvertFtoI`.
     fn float_to_int(

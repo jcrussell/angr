@@ -196,6 +196,21 @@ pub enum IROp {
     /// Returns I32 encoded as 0x00 = GT, 0x01 = LT, 0x40 = EQ, 0x45 = UN.
     FComCC(IRType),
 
+    /// `Iop_I32{S,U}toF32x{count}`: per-lane 32-bit int to F32. The binop
+    /// forms take a rounding mode first; the `_DEP` unop forms round to
+    /// nearest.
+    VI32toF32 {
+        count: u8,
+        signed: bool,
+    },
+    /// `Iop_F32toI32{S,U}x{count}`: per-lane F32 to 32-bit int. The binop
+    /// forms take a rounding mode first; the `_RZ` unop forms round toward
+    /// zero.
+    VF32toI32 {
+        count: u8,
+        signed: bool,
+    },
+
     // Float conversions
     F32toF64,
     F64toF32,
@@ -1020,6 +1035,12 @@ impl IROp {
             }
             IROp::RoundF32toInt => Some(IRType::F32),
             IROp::RoundF64toInt => Some(IRType::F64),
+            IROp::VI32toF32 { count, .. } | IROp::VF32toI32 { count, .. } => match count {
+                2 => Some(IRType::I64),
+                4 => Some(IRType::V128),
+                8 => Some(IRType::V256),
+                _ => None,
+            },
 
             // Vector ops
             IROp::VAnd(t) | IROp::VOr(t) | IROp::VXor(t) | IROp::VNot(t) => Some(*t),

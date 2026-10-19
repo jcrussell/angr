@@ -86,6 +86,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::FCmpScalarLane { .. }
         | IROp::FCmpVecPacked { .. }
         | IROp::FComCC(_)
+        | IROp::VI32toF32 { .. }
+        | IROp::VF32toI32 { .. }
         | IROp::F32toF64
         | IROp::F64toF32
         | IROp::I32StoF32

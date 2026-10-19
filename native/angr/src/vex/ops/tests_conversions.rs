@@ -268,3 +268,157 @@ fn test_f64_to_f32_neg_infinity() {
     let f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!(f.is_infinite() && f.is_sign_negative(), "-inf preserved");
 }
+
+// =========================================================================
+// Rounding-mode int->float and the vector conversions (angr-mx00p.6)
+// =========================================================================
+
+/// 2^53 + 1 is not a double: nearest-even and toward-zero/-inf give 2^53,
+/// toward +inf gives 2^53 + 2; the negation mirrors it.
+#[test]
+fn test_i64s_to_f64_rounding_modes() {
+    let ctx = SymContext::new_mock();
+    let conv = |v: i64, mode: u128| {
+        let r = VEXOps::binop(
+            IROp::I64StoF64,
+            RustBV::concrete(mode, 32),
+            RustBV::concrete(v as u64 as u128, 64),
+            &ctx,
+        )
+        .unwrap();
+        f64::from_bits(r.as_u128().unwrap() as u64)
+    };
+    let x = (1i64 << 53) + 1;
+    let two53 = (1u64 << 53) as f64;
+    assert_eq!(conv(x, 0), two53);
+    assert_eq!(conv(x, 1), two53);
+    assert_eq!(conv(x, 2), two53 + 2.0);
+    assert_eq!(conv(x, 3), two53);
+    assert_eq!(conv(-x, 1), -two53 - 2.0);
+    assert_eq!(conv(-x, 2), -two53);
+    assert_eq!(conv(-x, 3), -two53);
+    // Exact values are unaffected by the mode.
+    assert_eq!(conv(-7, 2), -7.0);
+}
+
+#[test]
+fn test_i64u_to_f32_rounds_up_to_2_pow_64() {
+    let ctx = SymContext::new_mock();
+    let r = VEXOps::binop(
+        IROp::I64UtoF32,
+        RustBV::concrete(0, 32),
+        RustBV::concrete(u64::MAX as u128, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(f32::from_bits(r.as_u128().unwrap() as u32), 18446744073709551616.0);
+}
+
+/// The symbolic `ConvertItoFRm` term agrees with the concrete fold under
+/// every VEX rounding mode.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_int_to_float_rm_symbolic_matches_concrete() {
+    use crate::symbolic::FloatPrec;
+    let ctx = SymContext::new_mock();
+    let x = ((1i64 << 53) + 1).wrapping_neg() as u64 as u128;
+    for mode in 0..4u128 {
+        let concrete = VEXOps::binop(
+            IROp::I64StoF64,
+            RustBV::concrete(mode, 32),
+            RustBV::concrete(x, 64),
+            &ctx,
+        )
+        .unwrap();
+        let term = build_float_expr(
+            FloatOpKind::ConvertItoFRm {
+                src_bits: 64,
+                signed: true,
+            },
+            FloatPrec::F64,
+            vec![RustBV::concrete(mode, 32), RustBV::concrete(x, 64)],
+        );
+        assert_eq!(ctx.eval(&term), concrete.as_u128(), "mode {mode}");
+    }
+}
+
+/// cvtdq2ps: four signed int lanes to F32, lane 0 lowest.
+#[test]
+fn test_vec_i32s_to_f32x4() {
+    let ctx = SymContext::new_mock();
+    let lanes: [i32; 4] = [1, -2, 1 << 24 | 1, 7];
+    let v = lanes
+        .iter()
+        .rev()
+        .fold(0u128, |acc, l| (acc << 32) | (*l as u32 as u128));
+    let r = VEXOps::binop(
+        IROp::VI32toF32 {
+            count: 4,
+            signed: true,
+        },
+        RustBV::concrete(0, 32),
+        RustBV::concrete(v, 128),
+        &ctx,
+    )
+    .unwrap()
+    .as_u128()
+    .unwrap();
+    let lane = |i: u32| f32::from_bits((r >> (32 * i)) as u32);
+    assert_eq!(
+        [lane(0), lane(1), lane(2), lane(3)],
+        [1.0, -2.0, 16777216.0, 7.0]
+    );
+}
+
+/// cvtps2dq rounds by the passed mode; the `_RZ` unop form truncates.
+#[test]
+fn test_vec_f32_to_i32s_x4_modes() {
+    let ctx = SymContext::new_mock();
+    let lanes: [f32; 4] = [1.5, -1.5, 2.5, -0.4];
+    let v = lanes
+        .iter()
+        .rev()
+        .fold(0u128, |acc, l| (acc << 32) | (l.to_bits() as u128));
+    let op = IROp::VF32toI32 {
+        count: 4,
+        signed: true,
+    };
+    let unpack = |r: RustBV| {
+        let r = r.as_u128().unwrap();
+        [0, 1, 2, 3].map(|i| (r >> (32 * i)) as u32 as i32)
+    };
+    let nearest = VEXOps::binop(op, RustBV::concrete(0, 32), RustBV::concrete(v, 128), &ctx).unwrap();
+    assert_eq!(unpack(nearest), [2, -2, 2, 0]);
+    let rz = VEXOps::unop(op, RustBV::concrete(v, 128), &ctx).unwrap();
+    assert_eq!(unpack(rz), [1, -1, 2, 0]);
+}
+
+#[test]
+fn test_vec_conversions_check_width_and_map() {
+    let ctx = SymContext::new_mock();
+    assert!(
+        VEXOps::unop(
+            IROp::VI32toF32 {
+                count: 4,
+                signed: true
+            },
+            RustBV::concrete(0, 64),
+            &ctx
+        )
+        .is_err()
+    );
+    assert_eq!(
+        crate::vex::parse_opcode("Iop_I32StoF32x4"),
+        IROp::VI32toF32 {
+            count: 4,
+            signed: true
+        }
+    );
+    assert_eq!(
+        crate::vex::parse_opcode("Iop_F32toI32Ux2_RZ"),
+        IROp::VF32toI32 {
+            count: 2,
+            signed: false
+        }
+    );
+}

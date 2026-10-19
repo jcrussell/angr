@@ -797,6 +797,10 @@ fn test_every_float_op_kind_builds_at_declared_width() {
                 src_bits: 32,
                 signed: true,
             },
+            FloatOpKind::ConvertItoFRm {
+                src_bits: 32,
+                signed: true,
+            },
             FloatOpKind::ConvertFtoI {
                 dst_bits: 32,
                 signed: true,
@@ -840,6 +844,7 @@ fn test_every_float_op_kind_builds_at_declared_width() {
                 | FloatOpKind::IsNaN
                 | FloatOpKind::RoundToInt
                 | FloatOpKind::ConvertItoF { .. }
+                | FloatOpKind::ConvertItoFRm { .. }
                 | FloatOpKind::ConvertFtoI { .. }
                 | FloatOpKind::ConvertFtoIRm { .. }
                 | FloatOpKind::ConvertFtoF { .. }
@@ -860,6 +865,9 @@ fn test_every_float_op_kind_builds_at_declared_width() {
             let operands: Vec<RustBV> = match kind {
                 FloatOpKind::ConvertItoF { src_bits, .. } => {
                     vec![RustBV::concrete(3, u32::from(src_bits))]
+                }
+                FloatOpKind::ConvertItoFRm { src_bits, .. } => {
+                    vec![rm(0), RustBV::concrete(3, u32::from(src_bits))]
                 }
                 FloatOpKind::ConvertFtoF { src_prec } => vec![match src_prec {
                     FloatPrec::F32 => bv32(1.5),

@@ -30,7 +30,7 @@
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::symbolic::{FloatOpKind, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
 
 use super::ir::IROp;
 use super::transcendentals;
@@ -231,6 +231,16 @@ impl VEXOps {
             IROp::FNeg(ty) => Self::float_neg(arg, ty, ctx),
             IROp::FAbs(ty) => Self::float_abs(arg, ty, ctx),
             IROp::FSqrt(ty) => Self::float_sqrt(arg, ty, ctx),
+
+            // Vector int<->float conversions, rm-less forms: `_DEP` rounds to
+            // nearest, `_RZ` toward zero (angr's `_op_int_to_fp` /
+            // `_op_fp_to_int`).
+            IROp::VI32toF32 { count, signed } => {
+                Self::vec_i32_to_f32(RustBV::concrete(0, 32), arg, count, signed, ctx)
+            }
+            IROp::VF32toI32 { count, signed } => {
+                Self::vec_f32_to_i32(RustBV::concrete(3, 32), arg, count, signed, ctx)
+            }
 
             // Float conversions
             IROp::F32toF64 => Self::f32_to_f64(arg, ctx),
@@ -448,7 +458,15 @@ impl VEXOps {
             | IROp::F32toI32U
             | IROp::F64toI32U
             | IROp::F32toI64U
-            | IROp::F64toI64U => Self::binop_float(op, left, right, ctx),
+            | IROp::F64toI64U
+            | IROp::I32StoF32
+            | IROp::I32UtoF32
+            | IROp::I64StoF32
+            | IROp::I64UtoF32
+            | IROp::I64StoF64
+            | IROp::I64UtoF64
+            | IROp::VI32toF32 { .. }
+            | IROp::VF32toI32 { .. } => Self::binop_float(op, left, right, ctx),
 
             // -- Vector integer (packed integer ops, narrows, interleaves, shifts, bitwise) --
             IROp::VAnd(_)
@@ -643,6 +661,18 @@ impl VEXOps {
             IROp::F64toI32U => Self::f64_to_i32u_rm(left, right, ctx),
             IROp::F32toI64U => Self::f32_to_i64u_rm(left, right, ctx),
             IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
+            IROp::I32StoF32 => Self::int_to_float_rm(left, right, 32, true, FloatPrec::F32),
+            IROp::I32UtoF32 => Self::int_to_float_rm(left, right, 32, false, FloatPrec::F32),
+            IROp::I64StoF32 => Self::int_to_float_rm(left, right, 64, true, FloatPrec::F32),
+            IROp::I64UtoF32 => Self::int_to_float_rm(left, right, 64, false, FloatPrec::F32),
+            IROp::I64StoF64 => Self::int_to_float_rm(left, right, 64, true, FloatPrec::F64),
+            IROp::I64UtoF64 => Self::int_to_float_rm(left, right, 64, false, FloatPrec::F64),
+            IROp::VI32toF32 { count, signed } => {
+                Self::vec_i32_to_f32(left, right, count, signed, ctx)
+            }
+            IROp::VF32toI32 { count, signed } => {
+                Self::vec_f32_to_i32(left, right, count, signed, ctx)
+            }
 
             // Misroute (guard/family drift): degrade to Python fallback
             // instead of panicking. See angr-cudgw.15.

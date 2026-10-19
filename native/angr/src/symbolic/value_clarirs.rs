@@ -240,6 +240,16 @@ fn float_term(
                 gc.bv_to_fp_unsigned(arg(0)?, sort, rne)?
             }
         }
+        K::ConvertItoFRm { signed, .. } => {
+            let value = arg(1)?;
+            with_vex_rm(rm_of()?, |rm| {
+                if signed {
+                    gc.bv_to_fp_signed(value.clone(), sort, rm)
+                } else {
+                    gc.bv_to_fp_unsigned(value.clone(), sort, rm)
+                }
+            })?
+        }
         K::ConvertFtoF { src_prec } => gc.fp_to_fp(fp_in(0, fsort(src_prec))?, sort, rne)?,
         K::ConvertFtoFRm { src_prec } => {
             let value = fp_in(1, fsort(src_prec))?;
