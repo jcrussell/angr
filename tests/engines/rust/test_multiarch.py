@@ -234,7 +234,7 @@ class TestMultiArchSupport:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000

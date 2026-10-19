@@ -1,10 +1,10 @@
 //! VEX IR lifting interface.
 //!
 //! This module defines the [`VEXLifter`] trait and its [`LiftError`] taxonomy.
-//! Concrete lifting is implemented elsewhere: `pyvex_bridge` (JSON callback
-//! into pyvex) and `libvex_lifter` (`NativeLibVEXLifter`, direct libVEX FFI).
-//! Both construct `IRSB`s via struct literals rather than through any builder
-//! in this module.
+//! Concrete lifting is implemented elsewhere: `libvex_lifter`
+//! (`NativeLibVEXLifter`, direct libVEX FFI), and `pyvex_reader`, which reads
+//! the IRSB the Python `lift_block` callback returns. Both construct `IRSB`s
+//! via struct literals rather than through any builder in this module.
 
 use super::ir::{IRSB, VexArch};
 

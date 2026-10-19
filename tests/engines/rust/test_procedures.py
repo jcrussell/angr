@@ -2419,7 +2419,7 @@ class TestNativeReadCacheSync:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         mgr.set_callbacks(callbacks)
 
         invocations = []
@@ -2508,7 +2508,7 @@ class TestNativeReadCacheSync:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         mgr.set_callbacks(callbacks)
 
         def proc(args):
@@ -2584,7 +2584,7 @@ class TestNativeReadCacheSync:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         mgr.set_callbacks(callbacks)
 
         def proc(args):

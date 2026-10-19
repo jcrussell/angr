@@ -18,7 +18,7 @@ pub mod opcode_map;
 pub(crate) mod opcode_map_float;
 pub(crate) mod opcode_map_vector;
 pub mod ops;
-pub mod pyvex_bridge;
+pub mod pyvex_reader;
 pub mod transcendentals;
 
 /// pyvex `_lift`'s `max_bytes` default (`pyvex/lifting/libvex.py`): the largest
@@ -37,4 +37,3 @@ pub use ir::*;
 pub use lifter::{LiftError, VEXLifter};
 pub use opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
 pub use ops::{OpError, VEXOps, iropclass};
-pub use pyvex_bridge::{DeserializeError, deserialize_irsb};

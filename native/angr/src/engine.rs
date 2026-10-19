@@ -12,7 +12,6 @@ use crate::errors::RustExecError;
 use crate::interpreter::CbExecutionError;
 use crate::solver::RustSolverContext;
 use crate::symbolic::SymContext;
-use crate::vex::deserialize_irsb;
 use crate::vex::ops::OpError;
 
 /// Map a [`CbExecutionError`] from the callback-driven VEX interpreter to
@@ -85,7 +84,7 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
 /// any IRSB that needs real memory / register callbacks will surface a
 /// callback or unsupported error.
 ///
-/// `irsb_json` is a serialized pyvex IRSB, `arch_name` is e.g. `"amd64"`
+/// `irsb` is a pyvex `IRSB`, `arch_name` is e.g. `"amd64"`
 /// or `"arm64"` (case-insensitive, matches [`crate::arch::arch_from_name`]).
 ///
 /// `little_endian` is the target's byte order. It defaults to true because
@@ -94,9 +93,9 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
 /// `False` for a big-endian target so a sub-register Get/Put picks the same
 /// half angr's Python engine does (see `VEXInterpreter::with_config_endian`).
 #[pyfunction]
-#[pyo3(signature = (irsb_json, arch_name, little_endian = true))]
+#[pyo3(signature = (irsb, arch_name, little_endian = true))]
 pub(crate) fn execute_irsb_for_test(
-    irsb_json: &str,
+    irsb: &Bound<'_, PyAny>,
     arch_name: &str,
     little_endian: bool,
 ) -> PyResult<()> {
@@ -104,8 +103,7 @@ pub(crate) fn execute_irsb_for_test(
         .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {arch_name}")))?;
     let vex_arch = arch.vex_arch();
 
-    let irsb = deserialize_irsb(irsb_json)
-        .map_err(|e| PyValueError::new_err(format!("Failed to deserialize IRSB: {e}")))?;
+    let irsb = crate::vex::pyvex_reader::read_irsb(irsb)?;
 
     let ctx = SymContext::new_mock();
     let callbacks = PythonCallbacks::new();
@@ -357,7 +355,7 @@ fn _raise_typed_test_error(
 /// Lift `data` at `addr` with the native libVEX lifter for `arch` (a Python
 /// `archinfo.Arch`), at `opt_level` (`None`: the default), and return the
 /// IRSB's `{:#?}` rendering. Test-only: the native-vs-pyvex parity check in
-/// `test_native_lift_parity.py` compares it with [`irsb_json_debug_for_test`].
+/// `test_native_lift_parity.py` compares it with [`irsb_debug_for_test`].
 #[pyfunction]
 #[pyo3(signature = (arch, data, addr, opt_level = None))]
 pub(crate) fn native_lift_debug_for_test(
@@ -377,13 +375,19 @@ pub(crate) fn native_lift_debug_for_test(
     Ok(format!("{irsb:#?}"))
 }
 
-/// The `{:#?}` rendering of a serialized pyvex IRSB. Test-only, the pyvex
-/// side of [`native_lift_debug_for_test`].
+/// A pyvex `IRSB` as `pyvex_reader` reads it, rendered `{:#?}` (or `{:?}`
+/// with `pretty=False`). Test-only: the pyvex side of
+/// [`native_lift_debug_for_test`], and the subject of
+/// `test_pyvex_reader.py`.
 #[pyfunction]
-pub(crate) fn irsb_json_debug_for_test(irsb_json: &str) -> PyResult<String> {
-    let irsb = deserialize_irsb(irsb_json)
-        .map_err(|e| PyValueError::new_err(format!("Failed to deserialize IRSB: {e}")))?;
-    Ok(format!("{irsb:#?}"))
+#[pyo3(signature = (irsb, pretty = true))]
+pub(crate) fn irsb_debug_for_test(irsb: &Bound<'_, PyAny>, pretty: bool) -> PyResult<String> {
+    let irsb = crate::vex::pyvex_reader::read_irsb(irsb)?;
+    Ok(if pretty {
+        format!("{irsb:#?}")
+    } else {
+        format!("{irsb:?}")
+    })
 }
 
 /// Whether some thread holds the engine's libVEX lift lock, probed from a
@@ -441,7 +445,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(register_names_for_arch, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(native_lift_debug_for_test, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(irsb_json_debug_for_test, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(irsb_debug_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(lift_lock_is_held_for_test, m)?)?;
     // Memory layout constants (single source of truth; Python imports these

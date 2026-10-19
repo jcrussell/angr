@@ -503,7 +503,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // Native (in-process) libVEX lift, off unless Python set a lifter
         // (angr-z087y Stage-2). When the block's bytes are fully concrete in
-        // rust_memory, lift via FFI: no GIL, no JSON round-trip,
+        // rust_memory, lift via FFI: no GIL, no Python lift,
         // byte-for-byte-identical IRSB to the pyvex callback path. Any miss
         // (missing/symbolic bytes, or a libVEX error) falls through to the Python callback below — same result,
         // just slower — so behavior is unchanged when the native path can't
@@ -577,31 +577,35 @@ impl<'a> VEXInterpreter<'a> {
         // The callback's pyvex lift enters the same libVEX as a native lift on
         // another worker; hold the shared lift lock across it (angr-mx00p.45).
         let lift_guard = crate::vex::libvex_lifter::lift_lock();
-        let irsb_json = callbacks.call_lift_block(addr, opt_level, dirty_bytes.as_deref());
+        let outcome = callbacks.call_lift_block(addr, opt_level, dirty_bytes.as_deref());
         drop(lift_guard);
-        let irsb_json = irsb_json
+        let outcome = outcome
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {e}")))?;
         if self.profiling_enabled {
             self.stats.python_callback_count += 1;
         }
         profile_add!(callback_start, self.stats.python_callback_time_ns);
 
-        // `_cb_lift_block` returns the literal "{}" sentinel when the block
-        // could not be lifted (SimEngineError/PyVEXError, e.g. "No bytes in
-        // memory"). That is a designed graceful-deadend signal, not a malformed
-        // IRSB — keep it as a LiftError so it routes to the deadended stash
-        // (RunErrorKind::Deadend). A deserialize failure on any *other* JSON is
-        // a genuinely malformed IRSB and maps to InvalidIR -> errored
-        // (MalformedIRSB), consistent with the InvalidIR sites in statements.rs
-        // (angr-zzju9).
-        if irsb_json.trim() == "{}" {
-            return Err(CbExecutionError::LiftError(
-                "unliftable block: empty IRSB sentinel".to_string(),
-            ));
-        }
-        let irsb = deserialize_irsb(&irsb_json).map_err(|e| {
-            CbExecutionError::InvalidIR(format!("IRSB deserialization failed: {e}"))
-        })?;
+        // `_cb_lift_block` returns None when the block could not be lifted
+        // (SimEngineError/PyVEXError, e.g. "No bytes in memory"). That is a
+        // designed graceful-deadend signal, not a malformed IRSB — keep it as a
+        // LiftError so it routes to the deadended stash (RunErrorKind::Deadend).
+        // An object the reader cannot read is a genuinely malformed IRSB and
+        // maps to InvalidIR -> errored (MalformedIRSB), consistent with the
+        // InvalidIR sites in statements.rs (angr-zzju9).
+        let irsb = match outcome {
+            LiftBlockOutcome::Lifted(irsb) => irsb,
+            LiftBlockOutcome::Unliftable => {
+                return Err(CbExecutionError::LiftError(
+                    "unliftable block: the lift callback returned None".to_string(),
+                ));
+            }
+            LiftBlockOutcome::Malformed(e) => {
+                return Err(CbExecutionError::InvalidIR(format!(
+                    "reading the lifted IRSB failed: {e}"
+                )));
+            }
+        };
 
         profile_add!(lift_start, self.stats.lift_time_ns);
 

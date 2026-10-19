@@ -151,6 +151,7 @@ mod inspect_test_entries;
 test_submod!(test_support);
 
 pub(crate) use config::{DeferredFork, ExecutionConfig};
+pub(crate) use dispatch::LiftBlockOutcome;
 pub(crate) use events::{ErrorRoute, RunErrorKind, RunResult};
 pub(crate) use inspect::note_inspect_error;
 pub(crate) use inspect_bits::InspectBit;
@@ -290,8 +291,8 @@ pub struct PythonCallbacks {
     /// This is more efficient than individual loads when multiple loads can be batched.
     /// Unset falls back to individual `memory_load` calls.
     pub memory_load_batch: Option<Py<PyAny>>,
-    /// Callback for lifting a block: fn(addr: u64) -> irsb_json
-    /// The IRSB comes back as a JSON string.
+    /// Callback for lifting a block: fn(addr: u64, opt_level=None,
+    /// dirty_bytes=None) -> pyvex.IRSB | None, read by `pyvex_reader`.
     pub lift_block: Option<Py<PyAny>>,
     /// Callback for dirty helper calls: fn(name: str, args: list\[int\], ret_ty_bits: int) -> (bytes, bool, object | None)
     /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)

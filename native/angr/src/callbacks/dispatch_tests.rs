@@ -371,13 +371,16 @@ fn lift_block_arg_shapes_match_opt_level_and_dirty_bytes() {
             c"_calls = []
 def lift_cb(*args):
     _calls.append(args)
-    return 'irsb-json'
+    return None
 ",
         );
         let mut cb = PythonCallbacks::new();
         cb.set_lift_block(obj(&globals, "lift_cb"));
 
-        assert_eq!(cb.call_lift_block(0x1000, None, None).unwrap(), "irsb-json");
+        assert!(matches!(
+            cb.call_lift_block(0x1000, None, None).unwrap(),
+            LiftBlockOutcome::Unliftable
+        ));
         cb.call_lift_block(0x1000, Some(1), None).unwrap();
         cb.call_lift_block(0x1000, None, Some(&[0xaa, 0xbb]))
             .unwrap();
@@ -750,4 +753,26 @@ fn poisoned_servable_lock_degrades_only_its_own_predicate() {
     cb.py_set_python_servable_pages(vec![0x2000]);
     cb.py_clear_python_servable_pages();
     assert!(cb.python_can_serve_page(0x3000));
+}
+
+/// A callback that returns something `pyvex_reader` cannot read surfaces as
+/// `Malformed` (which the interpreter maps to `InvalidIR`), not as an
+/// unliftable block.
+#[test]
+fn lift_block_unreadable_result_is_malformed() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = defs(
+            py,
+            c"def lift_cb(*args):
+    return 'not an IRSB'
+",
+        );
+        let mut cb = PythonCallbacks::new();
+        cb.set_lift_block(obj(&globals, "lift_cb"));
+        assert!(matches!(
+            cb.call_lift_block(0x1000, None, None).unwrap(),
+            LiftBlockOutcome::Malformed(_)
+        ));
+    });
 }

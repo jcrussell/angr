@@ -113,7 +113,6 @@ from pyvex.errors import PyVEXError
 from angr import claripy
 from angr.claripy.errors import ClaripyError
 from angr.errors import SimEngineError, SimError, SimSolverError
-from angr.exploration.rust_irsb_serializer import serialize_irsb
 from angr.exploration.rust_perf_tracker import PerformanceTracker
 
 # Envelope head written by RustExplorationManager.dump_snapshot. A file without
@@ -2396,7 +2395,10 @@ class RustExplorationManager(
             # Claripy error — subsequent loads see stale data. Already warns.
             l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
-    def _cb_lift_block(self, addr: int, opt_level: int = None, dirty_bytes: bytes = None) -> str:
+    def _cb_lift_block(self, addr: int, opt_level: int = None, dirty_bytes: bytes = None):
+        """Lift the block at ``addr`` for the Rust engine, which reads the
+        returned ``pyvex.IRSB`` directly (``vex/pyvex_reader.rs``). Returns None
+        when no block can be lifted there."""
         _lb_start = time.perf_counter_ns()
         try:
             try:
@@ -2420,12 +2422,11 @@ class RustExplorationManager(
                 irsb = block.vex
                 if self._inspect_breakpoints.get("vex_lift"):
                     self._cb_inspect_vex_lift(-1, "after", addr, irsb.size)
-                return self._serialize_irsb(irsb)
+                return irsb
             except (SimEngineError, ClaripyError, PyVEXError) as e:
-                # cat-(c) WRONG-ANSWER RISK: lift returned empty IRSB; Rust will
-                # treat the block as a no-op step. Already warns.
+                # Rust routes None to the deadended stash (an unliftable block).
                 l.warning(f"Lift error at 0x{addr:x}: {e}")
-                return "{}"
+                return None
         finally:
             self._perf_stats.record_lift_block(time.perf_counter_ns() - _lb_start)
 
@@ -4712,10 +4713,6 @@ class RustExplorationManager(
     #   'str'  — convert attribute to string via str()
     #   'expr' — serialize as VEX expression (recursive)
     #   'exprs'— serialize list of VEX expressions
-    def _serialize_irsb(self, irsb) -> str:
-        """Serialize a pyvex IRSB to JSON for the Rust VEX interpreter."""
-        return serialize_irsb(irsb)
-
     def _extract_addrs(self, condition) -> list:
         """Extract addresses from a find/avoid condition."""
         if condition is None:

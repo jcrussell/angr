@@ -230,7 +230,7 @@ pub enum Endness {
 /// path — and the interpreter discards the MBE payload entirely, so the
 /// distinction is moot even if one did arrive. The two lifters nonetheless
 /// differ: `libvex_lifter::mbe_event` collapses *every* C-tag to `Fence`,
-/// while `pyvex_bridge::parse_mbe_event` preserves the
+/// while `pyvex_reader::parse_mbe_event` preserves the
 /// `Imbe_SFence`/`Imbe_LFence`/`Imbe_MFence` spellings and only defaults
 /// unrecognized ones to `Fence`. Retained for VEX-ABI parity and future
 /// fence-granularity honoring, see angr-36vvn.9.

@@ -495,7 +495,7 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         mgr.set_callbacks(callbacks)
 
         STRLEN_HOOK = 0x500000
@@ -585,7 +585,7 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         mgr.set_callbacks(callbacks)
 
         mgr.register_python_procedure(proc_name, num_args=num_args, no_return=no_return, callable=callable_)
@@ -618,7 +618,7 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         amd64_mgr.set_callbacks(callbacks)
 
         GETOPT_HOOK = 0x500500
@@ -937,7 +937,7 @@ class TestRustExplorationManagerUnit:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
 
         STRLEN_HOOK = 0x500500
         STRING_ADDR = 0x2000
@@ -1201,7 +1201,7 @@ class TestRustExplorationPython:
 
         def lift(addr):
             lift_addrs.append(addr)
-            return "{}"
+            return None
 
         callbacks.set_lift_block(lift)
         mgr.set_callbacks(callbacks)
@@ -1235,7 +1235,7 @@ class TestRustExplorationPython:
 
         def lift(addr):
             lift_addrs.append(addr)
-            return "{}"
+            return None
 
         callbacks.set_lift_block(lift)
         mgr.set_callbacks(callbacks)
@@ -2167,7 +2167,7 @@ class TestExplorationEvent:
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
+        callbacks.set_lift_block(lambda a: None)
         amd64_mgr.set_callbacks(callbacks)
 
         # Run should return an event

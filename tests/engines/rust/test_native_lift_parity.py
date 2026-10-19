@@ -21,7 +21,6 @@ import pytest
 import pyvex
 from pyvex.native import ffi, pvc
 
-from angr.exploration.rust_irsb_serializer import serialize_irsb
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE
 
 pytestmark = pytest.mark.skipif(
@@ -41,7 +40,7 @@ def _vex_engine():
 def _pyvex_debug(data: bytes, addr: int, arch: archinfo.Arch) -> str:
     """The pyvex lift at the native lifter's settings, as a Rust ``{:#?}``."""
     irsb = pyvex.lift(data, addr, arch, opt_level=1, strict_block_end=False, cross_insn_opt=True)
-    return _vex_engine().irsb_json_debug_for_test(serialize_irsb(irsb))
+    return _vex_engine().irsb_debug_for_test(irsb)
 
 
 def _corpus():
@@ -107,7 +106,7 @@ def test_native_lift_honors_opt_level(opt_level):
         data = bytes.fromhex(entry["bytes"])
         native = _vex_engine().native_lift_debug_for_test(arch, data, entry["addr"], opt_level)
         irsb = pyvex.lift(data, entry["addr"], arch, opt_level=opt_level, strict_block_end=False, cross_insn_opt=True)
-        assert native == _vex_engine().irsb_json_debug_for_test(serialize_irsb(irsb))
+        assert native == _vex_engine().irsb_debug_for_test(irsb)
 
 
 # nop ; rdmsr ; nop ; jmp $ -- libVEX stops at RDMSR with Ijk_NoDecode and

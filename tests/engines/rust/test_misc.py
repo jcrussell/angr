@@ -448,7 +448,7 @@ class TestRustExecutionErrorHierarchy:
     * Each class is also ``Exception``-derived (PyO3 base class
       ``PyException`` shows up in the MRO).
     * Real-path coverage: ``pytest.raises(RustUnsupportedVexOpError,
-      match="<op_name>.*<arch>")`` for a NEON op via ``execute_irsb_json``.
+      match="<op_name>.*<arch>")`` for a NEON op via ``execute_irsb_for_test``.
     * Demo coverage for the syscall path (full panic-site conversion
       lives in angr-tkbr.1): ``pytest.raises(RustUnsupportedSyscallError,
       match="<syscall_name>")`` via the ``_raise_typed_test_error`` helper.
@@ -559,47 +559,16 @@ class TestRustExecutionErrorHierarchy:
         when that op was implemented. ``Iop_PwAdd32Fx2`` (FP pairwise add) is
         the only remaining NeonUnimplemented placeholder.
         """
-        import json
 
         from angr.rustylib.vex_engine import execute_irsb_for_test
 
         from angr.exploration import RustUnsupportedVexOpError
 
-        irsb = {
-            "addr": 4096,
-            "arch": "ARM64",
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_Const",
-                        "con": {"tag": "Ico_U64", "value": 0},
-                    },
-                },
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 1,
-                    "data": {
-                        "tag": "Iex_Binop",
-                        "op": "Iop_QShlNsatSU8x8",
-                        "args": [
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                        ],
-                    },
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": 272,
-            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-        }
+        irsb = _binop_irsb("Iop_QShlNsatSU8x8", "ARM64")
         # Iop_PwAdd32Fx2 graduated to IROp::VFPwAdd (angr-cudgw.6); use the
         # still-unimplemented NEON shift-by-immediate as the unsupported probe.
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_QShlNsatSU8x8.*arm64"):
-            execute_irsb_for_test(json.dumps(irsb), "arm64")
+            execute_irsb_for_test(irsb, "arm64")
 
     def test_raise_unmapped_op_via_execute_irsb(self):
         """The angr-tkbr.2 acceptance: an opcode string with NO entry in
@@ -618,43 +587,15 @@ class TestRustExecutionErrorHierarchy:
         Uses a deliberately fake name (``Iop_NotARealOp1234``) so the
         test stays valid even as real opcodes get mapped over time.
         """
-        import json
 
         from angr.rustylib.vex_engine import execute_irsb_for_test
 
         from angr.exploration import RustUnsupportedVexOpError
 
         fake_op = "Iop_NotARealOp1234"
-        irsb = {
-            "addr": 4096,
-            "arch": "AMD64",
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_Const",
-                        "con": {"tag": "Ico_U64", "value": 0},
-                    },
-                },
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 1,
-                    "data": {
-                        "tag": "Iex_Unop",
-                        "op": fake_op,
-                        "arg": {"tag": "Iex_RdTmp", "tmp": 0},
-                    },
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": 184,
-            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-        }
+        irsb = _unop_irsb(fake_op, "AMD64")
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_NotARealOp1234.*amd64"):
-            execute_irsb_for_test(json.dumps(irsb), "amd64")
+            execute_irsb_for_test(irsb, "amd64")
 
     def test_unhandled_ccall_surfaces_error_not_concrete_zero(self):
         """The angr-ppgx acceptance: unhandled ``Iex_CCall`` in the legacy
@@ -669,39 +610,18 @@ class TestRustExecutionErrorHierarchy:
         maps through ``execution_error_to_typed`` to the base
         ``RustExecutionError`` class.
         """
-        import json
 
         from angr.rustylib.vex_engine import execute_irsb_for_test
+        from pyvex import expr as E
+        from pyvex import stmt as S
+        from pyvex.enums import IRCallee
 
         from angr.exploration import RustExecutionError
 
-        irsb = {
-            "addr": 4096,
-            "arch": "AMD64",
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_CCall",
-                        "cee": {
-                            "name": "amd64g_NotARealCCall",
-                            "addr": 0,
-                            "mcx_mask": 0,
-                        },
-                        "retty": "Ity_I64",
-                        "args": [],
-                    },
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": 184,
-            "tyenv": {"types": ["Ity_I64"]},
-        }
+        ccall = E.CCall("Ity_I64", IRCallee(0, "amd64g_NotARealCCall", 0), [])
+        irsb = _pyvex_irsb("AMD64", [S.IMark(0x1000, 4, 0), S.WrTmp(0, ccall)], ["Ity_I64"])
         with pytest.raises(RustExecutionError, match=r"CCall.*amd64g_NotARealCCall"):
-            execute_irsb_for_test(json.dumps(irsb), "amd64")
+            execute_irsb_for_test(irsb, "amd64")
 
     def test_malformed_irsb_surfaces_typed_error_with_addr(self):
         """The angr-95up.1 acceptance: a structurally-invalid IRSB surfaces
@@ -732,37 +652,23 @@ class TestRustExecutionErrorHierarchy:
         contract for the run-loop path is locked down separately via
         ``test_cb_lift_block_*`` in ``TestRustManagerCallbacksUnit``.
         """
-        import json
 
         from angr.rustylib.vex_engine import execute_irsb_for_test
+        from pyvex import const as C
+        from pyvex import expr as E
+        from pyvex import stmt as S
 
         from angr.exploration import RustMalformedIRSBError
 
         addr = 0x1000
-        irsb = {
-            "addr": addr,
-            "arch": "AMD64",
-            "statements": [
-                {"tag": "Ist_IMark", "addr": addr, "len": 4, "delta": 0},
-                # LLSC `result` references temp 99, but tyenv only declares
-                # one type (t0:Ity_I64). The dispatcher resolves the temp
-                # type via `irsb.tyenv.get(99)` -> None -> InvalidIR.
-                {
-                    "tag": "Ist_LLSC",
-                    "result": 99,
-                    "addr": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x2000}},
-                    "storedata": None,
-                    "end": "Iend_LE",
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": addr + 4}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": 184,
-            "tyenv": {"types": ["Ity_I64"]},
-        }
+        # LLSC `result` references temp 99, but tyenv only declares one type
+        # (t0:Ity_I64). The dispatcher resolves the temp type via
+        # `irsb.tyenv.get(99)` -> None -> InvalidIR.
+        llsc = S.LLSC(E.Const(C.U64(0x2000)), None, 99, "Iend_LE")
+        irsb = _pyvex_irsb("AMD64", [S.IMark(addr, 4, 0), llsc], ["Ity_I64"], addr=addr)
 
         with pytest.raises(RustMalformedIRSBError) as exc_info:
-            execute_irsb_for_test(json.dumps(irsb), "amd64")
+            execute_irsb_for_test(irsb, "amd64")
 
         # The typed-error contract: address is in the message so callers
         # can correlate the failure to a specific block, and the reason
@@ -898,125 +804,61 @@ _UNSUPPORTED_SYSCALLS = [
 ]
 
 
-def _build_unop_irsb_json(op_name, arch):
-    """Single-Unop IRSB referencing `op_name`. Args/result type are I64 since
-    the dispatch hits `IROp::Unmapped` before any width validation runs."""
-    import json
+def _pyvex_irsb(arch_name, statements, types, addr=0x1000):
+    """A pyvex IRSB at ``addr`` built from ``statements``, falling through to
+    ``addr + 4``, for ``execute_irsb_for_test``. pyvex accepts any op string,
+    so a fake or unmapped op builds fine."""
+    import archinfo
+    import pyvex
+    from pyvex import const as C
+    from pyvex import expr as E
 
-    offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
-    return json.dumps(
-        {
-            "addr": 4096,
-            "arch": arch,
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_Const",
-                        "con": {"tag": "Ico_U64", "value": 0},
-                    },
-                },
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 1,
-                    "data": {
-                        "tag": "Iex_Unop",
-                        "op": op_name,
-                        "arg": {"tag": "Iex_RdTmp", "tmp": 0},
-                    },
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": offs_ip,
-            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-        }
+    arch = archinfo.arch_from_id(arch_name)
+    return pyvex.IRSB.empty_block(
+        arch,
+        addr,
+        statements=statements,
+        nxt=E.Const(C.U64(addr + 4)),
+        tyenv=pyvex.IRTypeEnv(arch, types=types),
+        jumpkind="Ijk_Boring",
     )
 
 
-def _build_binop_irsb_json(op_name, arch):
-    """Single-Binop IRSB referencing `op_name`. Used for QShlN-style ops
-    (binary in VEX) and the lone NeonUnimplemented entry Iop_PwAdd32Fx2."""
-    import json
+def _op_irsb(expr_cls, op_name, arity, arch):
+    """t0 = 0; t1 = <op_name>(t0, ...). Args/result type are I64 since the
+    dispatch hits `IROp::Unmapped` before any width validation runs."""
+    from pyvex import const as C
+    from pyvex import expr as E
+    from pyvex import stmt as S
 
-    offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
-    return json.dumps(
-        {
-            "addr": 4096,
-            "arch": arch,
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_Const",
-                        "con": {"tag": "Ico_U64", "value": 0},
-                    },
-                },
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 1,
-                    "data": {
-                        "tag": "Iex_Binop",
-                        "op": op_name,
-                        "args": [
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                        ],
-                    },
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": offs_ip,
-            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-        }
-    )
+    zero = E.RdTmp.get_instance(0)
+    stmts = [
+        S.IMark(0x1000, 4, 0),
+        S.WrTmp(0, E.Const(C.U64(0))),
+        S.WrTmp(1, expr_cls(op_name, [zero] * arity)),
+    ]
+    return _pyvex_irsb(arch, stmts, ["Ity_I64", "Ity_I64"])
 
 
-def _build_triop_irsb_json(op_name, arch):
-    """Single-Triop IRSB referencing `op_name`, all three args the same
-    concrete I64 zero. Used for the x87 (rm, x, y) transcendentals."""
-    import json
+def _unop_irsb(op_name, arch):
+    from pyvex import expr as E
 
-    offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
-    return json.dumps(
-        {
-            "addr": 4096,
-            "arch": arch,
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_Const",
-                        "con": {"tag": "Ico_U64", "value": 0},
-                    },
-                },
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 1,
-                    "data": {
-                        "tag": "Iex_Triop",
-                        "op": op_name,
-                        "args": [
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                            {"tag": "Iex_RdTmp", "tmp": 0},
-                        ],
-                    },
-                },
-            ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": offs_ip,
-            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
-        }
-    )
+    return _op_irsb(E.Unop, op_name, 1, arch)
+
+
+def _binop_irsb(op_name, arch):
+    """Used for QShlN-style ops (binary in VEX)."""
+    from pyvex import expr as E
+
+    return _op_irsb(E.Binop, op_name, 2, arch)
+
+
+def _triop_irsb(op_name, arch):
+    """All three args the same concrete I64 zero. Used for the x87 (rm, x, y)
+    transcendentals."""
+    from pyvex import expr as E
+
+    return _op_irsb(E.Triop, op_name, 3, arch)
 
 
 class TestRustUnsupportedErrorParametrized:
@@ -1046,7 +888,7 @@ class TestRustUnsupportedErrorParametrized:
         from angr.exploration import RustUnsupportedVexOpError
 
         with pytest.raises(RustUnsupportedVexOpError) as exc_info:
-            execute_irsb_for_test(_build_unop_irsb_json(op_name, "AMD64"), "amd64")
+            execute_irsb_for_test(_unop_irsb(op_name, "AMD64"), "amd64")
         # Exact subclass — flattening the hierarchy would still satisfy the
         # base-class match but is a regression.
         assert type(exc_info.value).__name__ == "RustUnsupportedVexOpError"
@@ -1067,7 +909,7 @@ class TestRustUnsupportedErrorParametrized:
         """
         from angr.rustylib.vex_engine import execute_irsb_for_test
 
-        builder = _build_binop_irsb_json if arity == 2 else _build_triop_irsb_json
+        builder = _binop_irsb if arity == 2 else _triop_irsb
         # Concrete args -> the libm path returns a value; any exception here
         # (typically RustUnsupportedVexOpError) means the op lost its arm.
         execute_irsb_for_test(builder(op_name, "AMD64"), "amd64")
@@ -1081,7 +923,7 @@ class TestRustUnsupportedErrorParametrized:
         from angr.exploration import RustUnsupportedVexOpError
 
         with pytest.raises(RustUnsupportedVexOpError) as exc_info:
-            execute_irsb_for_test(_build_binop_irsb_json(op_name, "ARM64"), "arm64")
+            execute_irsb_for_test(_binop_irsb(op_name, "ARM64"), "arm64")
         assert type(exc_info.value).__name__ == "RustUnsupportedVexOpError"
         msg = str(exc_info.value)
         assert op_name in msg, f"op name missing from message: {msg}"

@@ -534,7 +534,7 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
         // `bytes()` report 10 rather than 16.
         //
         // Returning `None` here would be worse, not safer: every `parse_type`
-        // caller in `pyvex_bridge.rs` and `libvex_lifter.rs` goes through
+        // caller in `pyvex_reader.rs` and `libvex_lifter.rs` goes through
         // `parse_type_or_log`, which defaults to `IRType::I64`, so an unmapped
         // type becomes 64 bits (loudly, but still wrongly). A real fix needs `IRType::{D32, D64, D128, F128}` variants plus
         // evaluator support, which is only worth doing alongside PowerPC /
@@ -559,7 +559,7 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
 // SILENT(cat-c): `IRType` is a width tag, so defaulting to `I64` mis-sizes the
 // value at every use site — a 32-bit temp read back as 64 bits, or a load that
 // fetches twice the bytes it should. Every caller on both marshalling paths
-// (`pyvex_bridge`'s JSON deserializer and `libvex_lifter`'s FFI
+// (`pyvex_reader` and `libvex_lifter`'s FFI
 // `c_type_parse`) must go through this single logged fallback rather than a
 // bare `.unwrap_or(IRType::I64)`, so table drift is traceable on whichever
 // path a block happens to take (angr-c7xno.90).
@@ -577,11 +577,10 @@ pub fn parse_type_or_log(ty_str: &str, context: &str) -> IRType {
 /// when the string is neither `Iend_LE` nor `Iend_BE`.
 // SILENT(cat-c): endianness is not a hint — defaulting a big-endian load or
 // store to little-endian byte-swaps the value silently, and the result is
-// indistinguishable from a correct LE access downstream. Both marshalling
-// paths funnel here (`pyvex_bridge`'s JSON deserializer at every Load/Store/
-// StoreG/LoadG/CAS site, and `libvex_lifter::c_endness` after its own
-// discriminant lookup), so this is the single place table drift on either
-// path can be traced from (angr-03vl4.69).
+// indistinguishable from a correct LE access downstream. `pyvex_reader`
+// funnels every Load/Store/StoreG/LoadG/CAS site here; `libvex_lifter::
+// c_endness` matches the C tag directly and logs its own fallback
+// (angr-03vl4.69).
 pub fn parse_endness(end_str: &str) -> super::ir::Endness {
     use super::ir::Endness;
 

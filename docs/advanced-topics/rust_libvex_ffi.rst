@@ -14,9 +14,9 @@ Motivation
 ----------
 
 Without native lifting, cold VEX block lifts go
-Rust → Python callback → pyvex (libVEX) → serialize ``IRSB`` to JSON → Rust
-deserialize (``native/angr/src/vex/pyvex_bridge.rs``). Most of that time is
-GIL acquisition and the JSON round-trip; libVEX itself is a small fraction.
+Rust → Python callback → pyvex (libVEX) → Rust reads the returned ``IRSB``
+object (``native/angr/src/vex/pyvex_reader.rs``). Most of that time is GIL
+acquisition and the Python-side lift; libVEX itself is a small fraction.
 ``lift_block`` is by far the most frequent Rust→Python callback on the
 benchmark corpus. It is a **per-unique-block warmup cost** — the warm
 per-worker block cache already amortizes repeat lifts — so the ROI is

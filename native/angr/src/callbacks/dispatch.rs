@@ -262,6 +262,17 @@ fn page_set_contains(
     }
 }
 
+/// What the Python `lift_block` callback produced.
+#[derive(Debug)]
+pub(crate) enum LiftBlockOutcome {
+    /// `None`: no lifter can produce a block here (no bytes, a pyvex error).
+    Unliftable,
+    /// The pyvex `IRSB`, read into Rust.
+    Lifted(crate::vex::ir::IRSB),
+    /// An object `pyvex_reader::read_irsb` could not read.
+    Malformed(String),
+}
+
 impl PythonCallbacks {
     /// Call the memory load callback.
     ///
@@ -411,7 +422,8 @@ impl PythonCallbacks {
 
     /// Call the block lifting callback.
     ///
-    /// Returns the IRSB as a JSON string.
+    /// The callback returns the lifted pyvex `IRSB`, read here with the GIL
+    /// still held, or `None` for a block nothing can lift.
     /// If `opt_level` is `Some`, passes it as the second positional arg.
     /// If `dirty_bytes` is `Some`, passes it as the third positional arg
     /// (Python callback uses these as `byte_string=` for SMC fresh-bytes lift).
@@ -420,7 +432,7 @@ impl PythonCallbacks {
         addr: u64,
         opt_level: Option<i32>,
         dirty_bytes: Option<&[u8]>,
-    ) -> PyResult<String> {
+    ) -> PyResult<LiftBlockOutcome> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::LiftBlock,
@@ -439,7 +451,14 @@ impl PythonCallbacks {
                     cb.call1(py, (addr, level, py_bytes))?
                 }
             };
-            result.extract(py)
+            let irsb = result.bind(py);
+            if irsb.is_none() {
+                return Ok(LiftBlockOutcome::Unliftable);
+            }
+            Ok(match crate::vex::pyvex_reader::read_irsb(irsb) {
+                Ok(irsb) => LiftBlockOutcome::Lifted(irsb),
+                Err(e) => LiftBlockOutcome::Malformed(e.to_string()),
+            })
         })
     }
 

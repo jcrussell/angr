@@ -771,7 +771,7 @@ class TestErrorRecovery:
         mgr._project.factory.block = boom
 
         result = mgr._cb_lift_block(0x1000)
-        assert result == "{}"
+        assert result is None
 
     def test_cb_lift_block_swallows_sim_engine_error(self):
         """SimEngineError from block construction must keep falling back."""
@@ -785,7 +785,7 @@ class TestErrorRecovery:
         mgr._project.factory.block = boom
 
         result = mgr._cb_lift_block(0x1000)
-        assert result == "{}"
+        assert result is None
 
     def test_cb_lift_block_propagates_unrelated_exceptions(self):
         """Non-(SimEngine/Claripy/PyVEX) exceptions must propagate."""
@@ -805,8 +805,6 @@ class TestErrorRecovery:
     # store overwrites in-binary code.
     def test_cb_lift_block_uses_dirty_bytes_when_provided(self):
         """dirty_bytes lifts the supplied buffer, not the project's static binary."""
-        import json
-
         # Project's static binary at 0x1000 is "ret" (0xc3, 1 byte).
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
@@ -814,30 +812,23 @@ class TestErrorRecovery:
 
         # dirty_bytes is "nop; ret" (0x90 0xc3); the lift must reflect the
         # extra nop, proving cle's stale buffer was bypassed.
-        result = mgr._cb_lift_block(0x1000, dirty_bytes=b"\x90\xc3")
-        assert result and result != "{}", f"expected non-empty IRSB, got {result!r}"
-        irsb = json.loads(result)
-        imarks = [s for s in irsb["statements"] if s.get("tag") == "Ist_IMark"]
+        irsb = mgr._cb_lift_block(0x1000, dirty_bytes=b"\x90\xc3")
+        assert irsb is not None, "expected an IRSB"
+        imarks = [s.addr for s in irsb.statements if type(s).__name__ == "IMark"]
         # Two IMarks (nop at 0x1000, ret at 0x1001) prove both bytes were lifted.
-        assert len(imarks) == 2, f"expected 2 IMarks (nop+ret), got {len(imarks)}: {imarks}"
-        assert imarks[0]["addr"] == 0x1000
-        assert imarks[1]["addr"] == 0x1001
+        assert imarks == [0x1000, 0x1001], f"expected IMarks for nop+ret, got {imarks}"
 
     def test_cb_lift_block_static_binary_when_no_dirty_bytes(self):
         """Without dirty_bytes the lift comes from the project's static binary."""
-        import json
-
         proj = angr.load_shellcode(b"\xc3", arch="AMD64", load_address=0x1000)
         state = proj.factory.blank_state(addr=0x1000)
         mgr = RustExplorationManager(proj, [state])
 
-        result = mgr._cb_lift_block(0x1000)
-        assert result and result != "{}"
-        irsb = json.loads(result)
-        imarks = [s for s in irsb["statements"] if s.get("tag") == "Ist_IMark"]
+        irsb = mgr._cb_lift_block(0x1000)
+        assert irsb is not None
+        imarks = [s.addr for s in irsb.statements if type(s).__name__ == "IMark"]
         # Static binary is just 0xc3 (1 byte ret) — exactly one IMark.
-        assert len(imarks) == 1, f"expected 1 IMark (ret only), got {len(imarks)}"
-        assert imarks[0]["addr"] == 0x1000
+        assert imarks == [0x1000], f"expected 1 IMark (ret only), got {imarks}"
 
     def test_smc_rust_passes_dirty_bytes_to_python_lift(self):
         """End-to-end SMC: a Rust-side store to in-binary code marks the page
@@ -972,8 +963,7 @@ class TestErrorRecovery:
         # served a lift — otherwise this silently degrades into a second copy
         # of the callback-path test.
         assert mgr.stats.get("rust_native_lift_count", 0) > 0, (
-            "use_native_lift=True lifted nothing natively; the SMC assertion "
-            "above did not exercise the native seam"
+            "use_native_lift=True lifted nothing natively; the SMC assertion above did not exercise the native seam"
         )
 
     def test_native_lift_serves_cold_page_from_binary_regions(self):
@@ -988,7 +978,7 @@ class TestErrorRecovery:
         exactly that case: it must lift natively with zero callback lifts.
 
         The jump to unmapped 0x40000 then pins the miss *attribution*: no lifter
-        can produce a block there, the callback returns the ``"{}"`` sentinel and
+        can produce a block there, the callback returns ``None`` and
         the state deadends, so nothing was lost by falling back. Counting those
         as plain fallbacks is what made cow_fork_scaling read as 21 native lifts
         against 256 misses when all 256 were return-to-0x0 deadend probes and the
@@ -1031,7 +1021,7 @@ class TestErrorRecovery:
             f"native lift lost {fallbacks - probes} liftable block(s) to the Python "
             "callback; the only fallback here should be the unmapped-address probe"
         )
-        # The probe still visits the callback — that is how the "{}" sentinel
+        # The probe still visits the callback — that is how the None sentinel
         # (and the deadend) is produced. Every *liftable* block must not.
         assert callback_lifts == probes, (
             f"{callback_lifts - probes} liftable block(s) still lifted via the Python "
@@ -1600,7 +1590,6 @@ class TestErrorRecovery:
         means the LoadG was dropped (the regression caught by 0c90d4962
         before it returned `Unsupported`).
         """
-        import json
 
         from angr import claripy
 
@@ -1634,42 +1623,37 @@ class TestErrorRecovery:
         #   tmp 2 (I64) = Const(0)                   ; LoadG alt
         #   tmp 3 (I1)  = Const(true)                ; LoadG always-true guard
         #   LoadG dst=tmp1 addr=tmp0 alt=tmp2 guard=tmp3 cvt=Ident64 end=LE
-        irsb = {
-            "addr": 0x1000,
-            "arch": "AMD64",
-            "statements": [
-                {"tag": "Ist_IMark", "addr": 0x1000, "len": 4, "delta": 0},
-                {
-                    "tag": "Ist_WrTmp",
-                    "tmp": 0,
-                    "data": {
-                        "tag": "Iex_Load",
-                        "end": "Iend_LE",
-                        "ty": "Ity_I64",
-                        "addr": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x2000}},
-                    },
-                },
-                {"tag": "Ist_WrTmp", "tmp": 2, "data": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0}}},
-                {"tag": "Ist_WrTmp", "tmp": 3, "data": {"tag": "Iex_Const", "con": {"tag": "Ico_U1", "value": True}}},
-                {
-                    "tag": "Ist_LoadG",
-                    "dst": 1,
-                    "addr": {"tag": "Iex_RdTmp", "tmp": 0},
-                    "alt": {"tag": "Iex_RdTmp", "tmp": 2},
-                    "guard": {"tag": "Iex_RdTmp", "tmp": 3},
-                    "cvt": "ILGop_Ident64",
-                    "end": "Iend_LE",
-                },
+        import archinfo
+        import pyvex
+        from pyvex import const as C
+        from pyvex import expr as E
+        from pyvex import stmt as S
+
+        arch = archinfo.ArchAMD64()
+        irsb = pyvex.IRSB.empty_block(
+            arch,
+            0x1000,
+            statements=[
+                S.IMark(0x1000, 4, 0),
+                S.WrTmp(0, E.Load("Iend_LE", "Ity_I64", E.Const(C.U64(0x2000)))),
+                S.WrTmp(2, E.Const(C.U64(0))),
+                S.WrTmp(3, E.Const(C.U1(1))),
+                S.LoadG(
+                    "Iend_LE",
+                    "ILGop_Ident64",
+                    1,
+                    E.RdTmp.get_instance(0),
+                    E.RdTmp.get_instance(2),
+                    E.RdTmp.get_instance(3),
+                ),
             ],
-            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 0x1010}},
-            "jumpkind": "Ijk_Boring",
-            "offsIP": 184,  # AMD64 RIP register offset
-            "tyenv": {"types": ["Ity_I64", "Ity_I64", "Ity_I64", "Ity_I1"]},
-        }
-        irsb_json = json.dumps(irsb)
+            nxt=E.Const(C.U64(0x1010)),
+            tyenv=pyvex.IRTypeEnv(arch, types=["Ity_I64", "Ity_I64", "Ity_I64", "Ity_I1"]),
+            jumpkind="Ijk_Boring",
+        )
 
         def cb_lift(addr):
-            return irsb_json if addr == 0x1000 else "{}"
+            return irsb if addr == 0x1000 else None
 
         callbacks.set_lift_block(cb_lift)
         mgr.set_callbacks(callbacks)

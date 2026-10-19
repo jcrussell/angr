@@ -131,7 +131,7 @@ harness = false
 # API directly, so it only compiles with z3 present.
 required-features = ["vex-engine-z3"]
 
-# Examples gated behind engine features (bd angr-cagbn): both pull in
+# Examples gated behind engine features (bd angr-cagbn): they pull in
 # feature-gated modules (`vex`, `memory`, `state`, z3 solver), so the no-z3
 # nightly `cargo test` combos would fail to compile them without a
 # required-features guard. cargo only builds an example when its required
@@ -139,7 +139,3 @@ required-features = ["vex-engine-z3"]
 [[example]]
 name = "leak_probe"
 required-features = ["vex-engine-z3"]
-
-[[example]]
-name = "bench_deserialize"
-required-features = ["vex-engine"]

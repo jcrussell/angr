@@ -241,7 +241,7 @@ define_execution_stats! {
     vex_bypass_fabricate_count: sum,
     /// Number of cold-block lifts served natively via the
     /// `NativeLibVEXLifter`. Each hit is a
-    /// Python `lift_block` callback + JSON round-trip that did NOT happen.
+    /// Python `lift_block` callback that did NOT happen.
     native_lift_count: sum,
     /// Number of native-lift *attempts* that fell back to the Python callback
     /// (feature off / disabled paths do not count — only a live attempt that

@@ -149,3 +149,14 @@ struct mirrors, so the lifter moved onto it and the feature, header,
 tags are now checked against pyvex's cffi library by
 ``tests/engines/rust/test_native_lift_parity.py``; see
 :doc:`rust_libvex_ffi`.
+
+**JSON IRSB bridge replaced by reading pyvex objects** (``angr-mx00p.33``,
+``angr-mx00p.44``). The Python ``lift_block`` callback used to serialize
+``block.vex`` to JSON, which ``serde`` decoded on the Rust side against a
+hand-kept schema. The serializer and the schema drifted apart on every shape
+libVEX itself never produces: a Python-built ``U1`` holds an int, a Spotter's
+``Dirty`` leaves ``mSize`` as ``None``, and the serializer never emitted
+``MBE.event``. So Spotter blocks and fence blocks failed to decode whenever
+they came through the callback. ``vex/pyvex_reader.rs`` now reads the live
+objects over PyO3 with the GIL the callback already holds, using the
+native lifter's field conventions; see :doc:`rust_libvex_ffi`.

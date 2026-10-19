@@ -33,7 +33,8 @@ use crate::arch::{
     default_cc_for_arch,
 };
 use crate::callbacks::{
-    DeferredFork, ExecutionConfig, InspectBit, PythonCallbacks, RunResult, note_inspect_error,
+    DeferredFork, ExecutionConfig, InspectBit, LiftBlockOutcome, PythonCallbacks, RunResult,
+    note_inspect_error,
 };
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
 use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
@@ -48,7 +49,7 @@ use crate::vex::ir::{
     IRConst, IRExpr, IRLoadGOp, IROp, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch,
 };
 use crate::vex::ops::{OpError, VEXOps, iropclass};
-use crate::vex::{Endness, VEX_MAX_BYTES, deserialize_irsb};
+use crate::vex::{Endness, VEX_MAX_BYTES};
 
 /// VEX block (IRSB) LRU cache capacity in entries.
 ///

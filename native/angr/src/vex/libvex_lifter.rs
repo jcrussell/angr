@@ -17,9 +17,8 @@
 //! self-modifying-code setting, so a lift matches what the Python callback's
 //! `project.factory.block(addr)` would produce.
 //!
-//! The marshalling mirrors `pyvex_bridge.rs::convert_*` node-for-node — same
-//! `vex::ir` target shape — but reads the raw C structs instead of a
-//! serde-JSON round-trip. Op tags go through `vexop::op_name` and the other
+//! The marshalling mirrors `pyvex_reader.rs` node-for-node — same `vex::ir`
+//! target shape — but reads the raw C structs instead of pyvex objects. Op tags go through `vexop::op_name` and the other
 //! enum tags through the name tables below, so the existing string parsers in
 //! `opcode_map.rs` are reused verbatim (DRY).
 //!
@@ -436,7 +435,7 @@ impl VEXLifter for NativeLibVEXLifter {
 // =============================================================================
 //
 // Every fn below is `unsafe` — it dereferences arena pointers valid only while
-// LIFT_LOCK is held. Structural target shape matches pyvex_bridge::convert_*.
+// LIFT_LOCK is held. Structural target shape matches pyvex_reader::read_*.
 
 /// Endness tag -> Rust `Endness`.
 ///
@@ -472,11 +471,11 @@ fn c_jumpkind(jk: u32) -> JumpKind {
 }
 
 /// Type tag -> Rust `IRType` (via its pyvex `Ity_*` name), defaulting to
-/// `I64` on an unknown tag (mirrors `pyvex_bridge`'s `unwrap_or(IRType::I64)`).
+/// `I64` on an unknown tag (as `pyvex_reader`'s `parse_type_or_log` does).
 ///
 /// Both miss paths (no name for the tag, and a name [`parse_type_or_log`]
 /// does not know) are logged for the same reason as [`c_endness`]; the latter
-/// shares its fallback with the JSON marshalling path in `pyvex_bridge` so
+/// shares its fallback with the pyvex marshalling path in `pyvex_reader` so
 /// both stay equally observable (angr-c7xno.90).
 fn c_type_parse(ty: u32) -> IRType {
     match tag_name(ITY_NAMES, ffi::ITY_INVALID, ty) {
@@ -608,9 +607,8 @@ unsafe fn marshal_callee(cee: *const ffi::IRCallee) -> IRCallee {
         // The C `IRCallee.addr` is the *host* address of the helper (e.g. the
         // in-process pointer to `amd64g_calculate_condition`), which is
         // non-deterministic across loads and unused by the Rust interpreter — it
-        // dispatches CCalls by `name`. The pyvex serializer hardcodes `addr: 0`
-        // (`rust_irsb_serializer._serialize_cee`), so normalize to 0 here to stay
-        // a byte-for-byte drop-in for the pyvex-serialized path (parity test).
+        // dispatches CCalls by `name`. `pyvex_reader::read_callee` reads 0 too,
+        // so a block is identical whichever path lifted it (parity test).
         addr: 0,
         mcx_mask: (*cee).mcx_mask,
     }
@@ -764,7 +762,7 @@ fn mbe_event(_ev: u32) -> MBusEvent {
     // Imbe_CancelReservation, and `Interpreter`'s `IRStmt::MBE` arm discards
     // the event anyway (`statements.rs`, `IRStmt::MBE(_) => Continue`) — this
     // engine treats every barrier as a full fence. The pyvex sibling
-    // `pyvex_bridge::parse_mbe_event` keeps the SFence/LFence/MFence
+    // `pyvex_reader::parse_mbe_event` keeps the SFence/LFence/MFence
     // discriminants only because the string form carries them for free; both
     // collapse every unrecognized tag to `Fence`. Logging here would warn
     // about a value nothing reads.
