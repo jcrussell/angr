@@ -96,9 +96,6 @@ pub(crate) struct StepContext {
     /// fields `write_syscall_return` / `extract_*_args` / `setup_native_subcall`
     /// consult.
     pub(crate) cc: CcSnapshot,
-    /// OS / SimOS name (lowercase). Drives syscall-table dispatch ("cgc" routes
-    /// to the DECREE table). Snapshot of `environment.os_name`.
-    pub(crate) os_name: String,
     /// Manager-level deferred-fork mode (drives the `UnconstrainedJump` arm's
     /// drop-vs-materialize decision). Distinct from the per-state
     /// `force_eager_forks` override applied during interpreter stepping.
@@ -163,7 +160,6 @@ impl RustExplorationManager {
                     return_extension: cc.return_extension(),
                 }
             },
-            os_name: self.environment.os_name.clone(),
             use_deferred_forks: self.exec_config.use_deferred_forks,
             materialize_unconstrained_forks: self.materialize_unconstrained_forks,
         }

@@ -404,6 +404,15 @@ pub(crate) fn lift_lock_is_held_for_test(py: Python<'_>) -> bool {
     })
 }
 
+/// The native syscall registrations as `[(angr syscall name, [angr ABI
+/// names])]`: the rows `NativeSyscallRegistry::from_angr_tables` resolves
+/// angr's numbering through. `test_native_syscall_parity.py` checks each name
+/// exists in angr's table for some ABI in its scope.
+#[pyfunction]
+pub(crate) fn native_syscall_rows_for_test() -> Vec<(&'static str, Vec<&'static str>)> {
+    crate::syscalls::NativeSyscallRegistry::by_name_rows()
+}
+
 /// `(enum tags, struct layouts)` as returned by [`native_lift_tables_for_test`].
 type NativeLiftTables = (Vec<(&'static str, u32)>, Vec<(&'static str, usize)>);
 
@@ -448,6 +457,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(irsb_debug_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(lift_lock_is_held_for_test, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(native_syscall_rows_for_test, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;

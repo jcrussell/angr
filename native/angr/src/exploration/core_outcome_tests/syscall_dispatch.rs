@@ -3,9 +3,8 @@
 
 use super::*;
 
-/// A syscall number outside every production table in
-/// `NativeSyscallRegistry::new()`, so registering [`StubSyscall`] under it
-/// cannot shadow (or be shadowed by) a real handler.
+/// A syscall number no angr table assigns, so registering [`StubSyscall`]
+/// under it cannot shadow (or be shadowed by) a real handler.
 const STUB_SYSCALL_NUM: u64 = 0xdead_beef;
 const SYSCALL_PC: u64 = 0x40_7000;
 
@@ -76,9 +75,13 @@ fn dispatch_syscall_exit(
     let ctx = mgr.step_context();
     let prof = ParallelProfiling::default();
     let procs = NativeProcedureRegistry::new();
-    let mut syscalls = NativeSyscallRegistry::new();
+    let mut syscalls = NativeSyscallRegistry::empty();
     if let Some(stub) = stub {
-        syscalls.register("AMD64", STUB_SYSCALL_NUM, std::sync::Arc::new(stub));
+        syscalls.register(
+            crate::syscalls::SyscallAbi::Amd64,
+            STUB_SYSCALL_NUM,
+            std::sync::Arc::new(stub),
+        );
     }
 
     let mut state = RustSimState::new("amd64").unwrap();

@@ -588,8 +588,8 @@ and calls ``register``, which also installs every name the procedure's
 ``aliases()`` returns. Do **not** hand-write
 ``registry.register(Arc::new(..))`` call sites — the list is what makes a
 declared-but-unregistered procedure a ``dead_code`` build failure rather
-than a silently unreachable one, and it mirrors the ``register_syscalls!``
-table in ``syscalls/mod.rs``.
+than a silently unreachable one. ``BY_NAME`` in ``syscalls/mod.rs`` is the
+syscall counterpart.
 
 Every angr SimProcedure that has a matching name in the registry is
 intercepted before its Python ``run()`` would be invoked. The dispatcher
@@ -602,9 +602,10 @@ both force the dispatcher to fall back to Python — and a global
 ``disable_all()`` switch (used in differential testing). Native syscalls
 are dispatched separately, by
 ``exploration/core_outcome_handlers.rs::handle_syscall_core``, which
-looks the syscall number up in the ``register_syscalls!`` registry and
-bounces to the Python syscall on a miss or an argument-extraction
-failure.
+looks the syscall number up in the manager's ``NativeSyscallRegistry``
+(handlers registered by angr syscall name, numbers taken from the project's
+SimOS) and bounces to the Python syscall on a miss or an
+argument-extraction failure.
 
 Dispatch priority (native vs Python)
 """"""""""""""""""""""""""""""""""""

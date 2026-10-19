@@ -11,7 +11,7 @@ fn error_deadend_kind_routes_to_deadended() {
         let ctx = fresh_ctx();
         let prof = ParallelProfiling::default();
         let procs = NativeProcedureRegistry::new();
-        let syscalls = NativeSyscallRegistry::new();
+        let syscalls = NativeSyscallRegistry::empty();
 
         let state = RustSimState::new("amd64").unwrap();
         let sid = state.state_id();
@@ -55,7 +55,7 @@ fn error_fatal_kind_routes_to_errored() {
         let ctx = fresh_ctx();
         let prof = ParallelProfiling::default();
         let procs = NativeProcedureRegistry::new();
-        let syscalls = NativeSyscallRegistry::new();
+        let syscalls = NativeSyscallRegistry::empty();
 
         let state = RustSimState::new("amd64").unwrap();
         let sid = state.state_id();
@@ -102,7 +102,7 @@ fn error_fatal_at_null_addr_routes_to_deadended() {
         let ctx = fresh_ctx();
         let prof = ParallelProfiling::default();
         let procs = NativeProcedureRegistry::new();
-        let syscalls = NativeSyscallRegistry::new();
+        let syscalls = NativeSyscallRegistry::empty();
 
         let state = RustSimState::new("amd64").unwrap();
         let sid = state.state_id();

@@ -38,7 +38,7 @@ fn dispatch_symbolic_jump(
     let ctx = mgr.step_context();
     let prof = ParallelProfiling::default();
     let procs = NativeProcedureRegistry::new();
-    let syscalls = NativeSyscallRegistry::new();
+    let syscalls = NativeSyscallRegistry::empty();
 
     let mut state = RustSimState::new("amd64").unwrap();
     state.set_pc(0x40_0000);

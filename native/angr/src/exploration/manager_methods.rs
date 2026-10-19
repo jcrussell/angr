@@ -824,25 +824,6 @@ impl RustExplorationManager {
         self.environment.max_history
     }
 
-    /// Set the OS / SimOS name. Defaults to `"linux"`; pass `"cgc"` for
-    /// DECREE binaries so the syscall dispatcher routes to the CGC ABI
-    /// table instead of the per-arch Linux tables. Case-insensitive; the
-    /// value is lowercased before storage so callers can pass `"CGC"` or
-    /// `"Linux"` interchangeably.
-    #[angr_macros::steady_guarded]
-    pub fn set_os_name(&mut self, name: String) {
-        // os_name feeds the syscall-dispatch ABI selection baked into a
-        // worker's snapshotted StepContext, so finalize a live steady session
-        // before changing it like the other guarded config mutators
-        // (angr-1yge9.3).
-        self.environment.os_name = name.to_lowercase();
-    }
-
-    /// Get the current OS / SimOS name (lowercase).
-    pub fn get_os_name(&self) -> &str {
-        &self.environment.os_name
-    }
-
     /// Get accumulated execution statistics as a dict.
     pub fn get_execution_stats(&self) -> HashMap<String, u64> {
         self.profiling.accumulated_stats.to_hashmap()

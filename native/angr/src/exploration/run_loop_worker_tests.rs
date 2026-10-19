@@ -48,7 +48,7 @@ impl Harness {
             ctx: mgr.step_context(),
             prof: ParallelProfiling::default(),
             procs: NativeProcedureRegistry::new(),
-            syscalls: NativeSyscallRegistry::new(),
+            syscalls: NativeSyscallRegistry::empty(),
             callbacks: PythonCallbacks::new(),
             block_cache: LruCache::unbounded(),
         }

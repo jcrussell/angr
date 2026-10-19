@@ -61,19 +61,24 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
         mgr.set_deterministic(true);
         assert!(mgr.is_deterministic(), "set_deterministic flipped the flag");
 
-        // angr-1yge9.3: the two setters that were missing the guard now open
-        // with it too, matching the four above.
+        // angr-1yge9.3: set_solver_timeout was missing the guard and now
+        // opens with it, matching the four above; set_syscall_tables replaces
+        // the registry a steady session snapshots, so it is guarded too.
         mgr.set_solver_timeout(1234);
         assert_eq!(
             mgr.constraint_solver.solver_timeout_ms, 1234,
             "set_solver_timeout applied the new timeout"
         );
 
-        mgr.set_os_name("CGC".to_string());
+        mgr.set_syscall_tables(vec![(
+            "cgcabi".to_string(),
+            HashMap::from([(2, "transmit".to_string())]),
+        )])
+        .expect("cgcabi is a known ABI");
         assert_eq!(
-            mgr.get_os_name(),
-            "cgc",
-            "set_os_name lowercased and stored the name"
+            mgr.native_syscall_table()["cgcabi"][&2],
+            "transmit",
+            "set_syscall_tables installed the DECREE table"
         );
 
         // angr-9ke6b.53: the frontier cap is snapshotted into the steady

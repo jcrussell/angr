@@ -4,11 +4,6 @@
 //! interpreter on every step:
 //!
 //! * `arch_name` — architecture name string (used for arch_from_name lookups).
-//! * `os_name` — OS / SimOS name (lowercase: "linux" default, "cgc" for
-//!   DECREE binaries). Drives syscall-table dispatch when the syscall
-//!   ABI is OS-specific rather than arch-specific (CGC uses x86 syscall
-//!   numbers 1-7 that collide with Linux i386 numbers). Set from Python
-//!   via [`crate::exploration::RustExplorationManager::set_os_name`].
 //! * `vex_arch` — VEX architecture enum (passed to the interpreter).
 //! * `binary_regions` — code regions for native lifting (Arc-shared).
 //! * `block_cache` — IRSB cache shared with each interpreter via swap.
@@ -38,7 +33,6 @@ use crate::vex::{IRSB, VexArch};
 
 pub(crate) struct ExecutionEnvironment {
     pub(crate) arch_name: String,
-    pub(crate) os_name: String,
     pub(crate) vex_arch: VexArch,
     pub(crate) binary_regions: Vec<(u64, Arc<Vec<u8>>)>,
     pub(crate) block_cache: LruCache<u64, Arc<IRSB>>,
@@ -109,7 +103,6 @@ impl ExecutionEnvironment {
     ) -> Self {
         Self {
             arch_name,
-            os_name: "linux".to_string(),
             vex_arch,
             binary_regions: Vec::new(),
             block_cache: LruCache::new(BLOCK_CACHE_CAPACITY_NZ),

@@ -230,13 +230,13 @@ pub(crate) enum SyscallOutcome {
 pub(crate) trait NativeSyscall: Send + Sync {
     /// Human-readable handler label (e.g. `"read"`, `"getuid"`).
     ///
-    /// The dispatcher (`NativeSyscallRegistry::get`) keys on `(arch, num)`, so
-    /// this label is purely diagnostic: `handle_syscall_core` logs it on both
-    /// Python-fallback paths (arg extraction failed / handler declined), which
-    /// are otherwise indistinguishable from "no native handler registered" in
-    /// a debug log. Together with the `stub_syscall!` / `constant_syscall!`
-    /// `$label` argument it is also the only in-tree mapping from handler type
-    /// to syscall name (angr-9ke6b.218 item 6).
+    /// Dispatch never reads this label: the registry resolves angr's syscall
+    /// names to handlers through `BY_NAME` in `syscalls/mod.rs`, so one
+    /// handler can serve several names (`exit` serves `exit_group`, `stat`
+    /// serves `stat64`). It is diagnostic: `handle_syscall_core` logs it on
+    /// both Python-fallback paths (arg extraction failed / handler declined),
+    /// which are otherwise indistinguishable from "no native handler
+    /// registered" in a debug log, and `native_syscall_table()` reports it.
     fn name(&self) -> &'static str;
     fn num_args(&self) -> usize;
     fn call(

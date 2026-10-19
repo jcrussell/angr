@@ -18,7 +18,7 @@ fn block_end_no_forks_returns_single_main_successor() {
         let ctx = fresh_ctx();
         let prof = ParallelProfiling::default();
         let procs = NativeProcedureRegistry::new();
-        let syscalls = NativeSyscallRegistry::new();
+        let syscalls = NativeSyscallRegistry::empty();
 
         let mut state = RustSimState::new("amd64").unwrap();
         state.set_pc(0x40_0000);
@@ -67,7 +67,7 @@ fn block_end_missing_condition_fork_is_materialized_and_dispatched() {
         let ctx = fresh_ctx();
         let prof = ParallelProfiling::default();
         let procs = NativeProcedureRegistry::new();
-        let syscalls = NativeSyscallRegistry::new();
+        let syscalls = NativeSyscallRegistry::empty();
 
         let mut state = RustSimState::new("amd64").unwrap();
         state.set_pc(0x40_0000);
@@ -127,7 +127,7 @@ fn symbolic_branch_forks_both_targets_natively() {
         let ctx = fresh_ctx();
         let prof = ParallelProfiling::default();
         let procs = NativeProcedureRegistry::new();
-        let syscalls = NativeSyscallRegistry::new();
+        let syscalls = NativeSyscallRegistry::empty();
 
         let state = RustSimState::new("amd64").unwrap();
         let inputs = PostStepInputs {

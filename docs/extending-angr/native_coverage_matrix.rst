@@ -11,8 +11,10 @@ calls:
   :doc:`simprocedures` (the *Native (Rust) SimProcedures* section)
   for the dispatch-priority chain and the contributor guide.
 * ``NativeSyscallRegistry`` (``native/angr/src/syscalls/mod.rs``) —
-  intercepts ``syscall`` instructions keyed by ``(arch_name,
-  syscall_num)`` so the same handler can serve multiple ABIs.
+  intercepts syscalls. Handlers are registered by the name angr's
+  syscall library gives each syscall, and each manager resolves the
+  numbers from its project's SimOS, so the same handler serves every
+  ABI that names the syscall.
 
 This page is a **what's covered** index, not a contributor guide.
 Cross-list it when answering *"is X supported natively, or does it
@@ -229,27 +231,35 @@ obvious from the code). A brand-new family gets a new row. The two
 Native syscall coverage
 -----------------------
 
-Every entry below is registered in ``NativeSyscallRegistry::new``
-(``native/angr/src/syscalls/mod.rs``). Handlers themselves are
-arch-agnostic; each Linux table maps the ABI numbers from
-``<asm/unistd_*.h>`` to the same handler set. ``NativeSyscallRegistry::new``
-holds one ``register_syscalls!(r, "<key>", [...])`` block per dispatch key:
-``"AMD64"``, ``"X86"``, ``"ARM"``, ``"ARM64"``, ``"MIPS32"`` and ``"MIPS64"``
-for the Linux ABIs, plus ``"CGC"`` for DECREE (see *CGC / DECREE* below).
-MIPS64 leaves the stat family unregistered because
-``write_stat_for_arch`` has no MIPS64 ``struct stat`` writer. A symbolic
-syscall number, and any unregistered concrete number, falls through
-``core_outcome_handlers.rs::handle_syscall_core`` to Python's
-``engines/successors.py::_resolve_syscall``.
+Every entry below is a row of ``BY_NAME`` (``native/angr/src/syscalls/mod.rs``),
+keyed by the syscall's name in angr's syscall library. No syscall number
+is spelled in Rust: when the manager is built, the Python wrapper hands
+``set_syscall_tables`` angr's ``syscall_number_mapping`` for each ABI the
+project's SimOS lists (``amd64``, ``i386``, ``arm``, ``aarch64``,
+``mips-o32``, ``mips-n64``, and ``cgcabi`` for DECREE; see *CGC / DECREE*
+below), and ``NativeSyscallRegistry::from_angr_tables`` resolves each
+number through its name. Handlers themselves are arch-agnostic. A row
+carries an explicit ABI scope only where angr's name means a different
+handler on some ABI (``mmap`` is the struct-argument form on arm and
+mips-o32) or must stay unregistered there (MIPS64 leaves the stat family
+unregistered because ``write_stat_for_arch`` has no MIPS64
+``struct stat`` writer). A SimOS without a syscall library (a plain
+``SimOS``, Windows) gets no native syscalls, as Python's engine has no
+syscall procedures there. On AMD64 only the ``syscall`` instruction uses
+the amd64 table; ``int 0x80`` goes to Python, as ``SimLinux.syscall_abi``
+decides its ABI. A symbolic syscall number, and any unregistered concrete
+number, falls through ``core_outcome_handlers.rs::handle_syscall_core``
+to Python's ``engines/successors.py::_resolve_syscall``.
 
 Coverage shorthand:
 
 * ✓ — registered on this arch.
-* — — the syscall has no ``(arch, num)`` entry to register: either the
-  Linux ABI omits it on this arch (asm-generic dropped legacy variants
-  on AArch64; ``arch_prctl`` is amd64-only), or angr's own per-arch
-  table in ``angr/procedures/definitions/linux_kernel.py`` carries no
-  number for it (``getrandom`` outside AMD64 / X86).
+* — — angr's table for this arch's ABI (in
+  ``angr/procedures/definitions/linux_kernel.py``) gives the syscall no
+  number, so there is nothing to resolve: either the Linux ABI omits it
+  (asm-generic dropped legacy variants on AArch64; ``arch_prctl`` is
+  amd64-only), or angr's table stops short of it (``getrandom`` outside
+  AMD64 / X86).
 * ✗ — the ABI *does* have the syscall, but it is deliberately left
   unregistered so it falls through to Python (registering it would only
   add a dispatch hop before the same fallback).
@@ -553,25 +563,24 @@ Per-arch matrix
      - —
      - —
 
-The registry itself is authoritative for how many ``(arch, num)``
-entries each arch carries: count the tuples inside the relevant
-``register_syscalls!`` block in ``syscalls/mod.rs`` rather than trusting
+The registry itself is authoritative for what each ABI dispatches
+natively: ``RustExplorationManager._rust_mgr.native_syscall_table()``
+reports ``{abi: {number: handler}}`` for a project, rather than trusting
 a number written here. ``syscall_python_fallback_count`` on
 ``RustExplorationManager.stats`` says whether a workload reaches an
-unregistered ``(arch, num)`` at all; on the CTF benchmark corpus it does
-not, so a new handler only pays off once a workload that needs it
-arrives.
+unregistered number at all; on the CTF benchmark corpus it does not, so
+a new handler only pays off once a workload that needs it arrives.
 
 CGC / DECREE
 ~~~~~~~~~~~~
 
 DECREE binaries run on x86 but use their own syscall numbers, which
 collide with Linux i386 (1 is ``exit`` there and ``_terminate`` here).
-``core_outcome_handlers.rs::handle_syscall_core`` therefore uses the
-``"CGC"`` registry key instead of the arch name when the manager's
-``os_name`` is ``"cgc"``, and the ``register_syscalls!(r, "CGC", ...)``
-block in ``NativeSyscallRegistry::new`` maps those numbers to the handlers
-in ``native/angr/src/syscalls/cgc.rs``. The module doc of ``cgc.rs`` is
+angr's ``SimCGC`` lists only its own ``cgcabi`` numbering
+(``angr/procedures/definitions/cgc.py``), so a CGC project's registry
+holds only the DECREE table and every syscall dispatches through it; the
+``BY_NAME`` rows scoped to ``cgcabi`` map those names to the handlers in
+``native/angr/src/syscalls/cgc.rs``. The module doc of ``cgc.rs`` is
 authoritative for each handler's divergences; the Python counterparts live
 under ``angr/procedures/cgc/``.
 

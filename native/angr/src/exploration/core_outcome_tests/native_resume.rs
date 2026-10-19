@@ -81,7 +81,7 @@ fn dispatch_native_resume_seeded(
     let prof = ParallelProfiling::default();
     let mut procs = NativeProcedureRegistry::new();
     procs.register(std::sync::Arc::new(ResumeTestProc));
-    let syscalls = NativeSyscallRegistry::new();
+    let syscalls = NativeSyscallRegistry::empty();
 
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(RESUME_SP - 0x1000, 0x2000, crate::memory::Permission::RWX);

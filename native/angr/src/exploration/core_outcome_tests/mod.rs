@@ -154,7 +154,7 @@ fn dispatch_hook_seeded(
     let prof = ParallelProfiling::default();
     let mut procs = NativeProcedureRegistry::new();
     procs.register(std::sync::Arc::new(FindTargetProc));
-    let syscalls = NativeSyscallRegistry::new();
+    let syscalls = NativeSyscallRegistry::empty();
 
     let mut state = RustSimState::new(arch).unwrap();
     state.set_pc(HOOK_ADDR);

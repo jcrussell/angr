@@ -1470,21 +1470,13 @@ class RustExplorationManager(
         is_le = project.arch.memory_endness == "Iend_LE"
         self._rust_mgr = _RustExplorationManager(project.arch.name, little_endian=is_le)
 
-        # angr-krp1: plumb the SimOS name to Rust so the syscall dispatcher
-        # can route DECREE CGC binaries (x86 syscall numbers 1-7) through
-        # the CGC table instead of the Linux i386 table. project.simos.name
-        # is "Linux"/"CGC"/"Windows"/"Java"/... — lowercased by the Rust
-        # setter so case differences don't matter. Default ("linux") covers
-        # the common case so most paths are unaffected.
-        simos_name = getattr(getattr(project, "simos", None), "name", None) or ""
-        if simos_name:
-            self._rust_mgr.set_os_name(simos_name)
-
         # Native syscall handlers are registered by syscall name; the numbers
         # come from the SimOS's own syscall library, for each ABI it lists
-        # (angr-mx00p.35). A SimOS without a syscall library (plain SimOS,
-        # Windows) has no syscall procedures on the Python engine either
-        # (``SimOS.syscall`` returns None), so it gets no native handlers.
+        # (angr-mx00p.35). That also routes DECREE: SimCGC lists only the
+        # cgcabi numbering, whose 1-7 collide with Linux i386. A SimOS without
+        # a syscall library (plain SimOS, Windows) has no syscall procedures on
+        # the Python engine either (``SimOS.syscall`` returns None), so it gets
+        # no native handlers.
         self._rust_mgr.set_syscall_tables(_syscall_tables(getattr(project, "simos", None)))
 
         # angr-op0dn.10.3: strict-deterministic witness selection. The Z3 seed

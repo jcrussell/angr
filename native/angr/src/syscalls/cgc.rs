@@ -1,9 +1,10 @@
 //! DECREE CGC syscall ABI handlers (x86 only).
 //!
 //! The CGC platform defines seven syscalls with their own numbers; these
-//! collide with Linux i386 numbers (1=exit, 2=fork, ...) so the
-//! dispatcher routes CGC binaries through a separate `"CGC"` table
-//! based on `ExecutionEnvironment::os_name`. The arch under DECREE is
+//! collide with Linux i386 numbers (1=exit, 2=fork, ...). A CGC project's
+//! SimOS lists only angr's `cgcabi` numbering, so its registry holds only
+//! the DECREE table and every syscall dispatches through it
+//! (`NativeSyscallRegistry::get_for_exit`). The arch under DECREE is
 //! always 32-bit x86; the CGC syscall calling convention matches the
 //! Linux i386 ABI (eax=number, ebx/ecx/edx/esi/edi as arg1..5).
 //!

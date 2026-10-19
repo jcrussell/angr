@@ -89,7 +89,6 @@ fn step_context_mirrors_env_and_deferred_fork_mode() {
         let ctx = mgr.step_context();
 
         assert_eq!(ctx.vex_arch, mgr.environment.vex_arch);
-        assert_eq!(ctx.os_name, mgr.environment.os_name);
         // Manager-level deferred-fork mode is read straight off exec_config.
         assert_eq!(ctx.use_deferred_forks, mgr.exec_config.use_deferred_forks);
         assert_eq!(

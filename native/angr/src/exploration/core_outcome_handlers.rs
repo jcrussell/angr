@@ -1002,9 +1002,8 @@ pub(super) fn handle_syscall_core(
     state.set_pc(pc);
     state.add_to_history(pc);
 
-    let native_handler = num.and_then(|n| {
-        native_syscalls.get_for_exit(ctx.os_name == "cgc", state.arch().name(), jumpkind, n)
-    });
+    let native_handler =
+        num.and_then(|n| native_syscalls.get_for_exit(state.arch().name(), jumpkind, n));
     if let Some(handler) = native_handler {
         let handler_name = handler.name();
         let n_args = handler.num_args();

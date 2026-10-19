@@ -14,7 +14,6 @@ native/angr/src/interpreter/execution.rs	/// Mirrors Python `callstack.py:386` /
 native/angr/src/interpreter/execution.rs	/// `callstack.py:430` which reads `rself.top.func_addr` prior to
 native/angr/src/interpreter/exits.rs	// NO_IP_CONCRETIZATION (engines/successors.py:292-296) and
 native/angr/src/interpreter/exits.rs	// NO_SYMBOLIC_JUMP_RESOLUTION (engines/successors.py:234-239) both
-native/angr/src/interpreter/exits.rs	// _eval_target_brutal behaviour (engines/successors.py:308-323):
 native/angr/src/interpreter/exits.rs	// engines/successors.py:327-328, which skips
 native/angr/src/interpreter/mod.rs	// BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
 native/angr/src/interpreter/mod.rs	/// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).

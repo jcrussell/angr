@@ -172,10 +172,10 @@ macro_rules! declare_const_proc {
 ///
 /// Each row is the path to a unit struct declared by [`declare_proc!`] (or
 /// hand-written); the macro wraps it in `Arc::new(..)` and calls `register`,
-/// which also installs every `aliases()` name. Mirrors `register_syscalls!`
-/// in `syscalls/mod.rs` — the syscall table was already list-driven, the
-/// procedure table was 147 hand-written `registry.register(Arc::new(..));`
-/// lines (angr-12jjk.6).
+/// which also installs every `aliases()` name. The procedure table used to
+/// be 147 hand-written `registry.register(Arc::new(..));` lines
+/// (angr-12jjk.6); `BY_NAME` in `syscalls/mod.rs` is the syscall
+/// counterpart.
 ///
 /// The list is also what makes a declared-but-unregistered procedure a
 /// `dead_code` build failure rather than a silently unreachable one — see
