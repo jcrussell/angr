@@ -844,7 +844,7 @@ fn test_parse_perm() {
 /// falling through to `IROp::Unmapped` with no allowlist entry is the
 /// op-coverage-gap shape from angr-9ke6b.160 / angr-sqfj8.113 /
 /// angr-sqfj8.117 — this test exists so the next instance is a hard failure
-/// instead of a silent perf cliff nobody notices until an audit finds it.
+/// instead of a coverage gap nobody notices until a state errors on it.
 ///
 /// Ground truth is upstream's `ailment::vexop_names::IROP_NAMES`, the
 /// libVEX `IROp` enum in order, which `ailment::vexop::op_name` (and so the
@@ -872,11 +872,12 @@ fn libvex_iop_names() -> Vec<&'static str> {
 
 /// pyvex opcodes with no entry in `opcode_map.rs`'s `parse_*` dispatch tables —
 /// each falls through `parse_opcode` to `IROp::Unmapped`, which dispatch turns
-/// into `OpError::UnsupportedVexOp` and which the live-exploration path routes
-/// to the (slower, but still correct) Python engine. Not a wrong-answer bug —
-/// a silently-widening performance cliff, the shape behind angr-9ke6b.160,
-/// angr-sqfj8.113 and angr-sqfj8.117 ("op-coverage-gap"): a real gap with no
-/// error to notice it by. Grouped the same way `KNOWN_MISSING` groups register
+/// into `OpError::UnsupportedVexOp`; the interpreter surfaces that as a fatal
+/// `CbExecutionError::Op`, so a state that reaches the op lands in the errored
+/// stash (`RustUnsupportedVexOpError` on the `execute_irsb_for_test` path).
+/// Not a wrong-answer bug, but a coverage gap that the tests below keep from
+/// growing unnoticed — the shape behind angr-9ke6b.160, angr-sqfj8.113 and
+/// angr-sqfj8.117 ("op-coverage-gap"). Grouped the same way `KNOWN_MISSING` groups register
 /// names in `tests/engines/rust/test_arch_offset_parity.py` — one reason per
 /// mnemonic family rather than per opcode, since libVEX enumerates every
 /// width/signedness/lane-count combination of a family as its own tag.
@@ -1428,7 +1429,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     // PYVEX10_NEW — ops the libVEX bundled with pyvex 10 added that the
     // engine has not mapped yet (128-bit integer divide/modulo, the DivMod
     // forms, F16 arithmetic, I128/V128/F128 reinterprets, MIPS Rotx, ...);
-    // each defers to Python until it is mapped (angr-mx00p.6).
+    // a state that reaches one errors until it is mapped (angr-mx00p.6).
     (
         &[
             "Iop_2xMultU64Add128CarryOut",
