@@ -513,6 +513,7 @@ pub(super) fn parse_vreverse(op_str: &str) -> Option<IROp> {
         "Iop_Reverse8sIn16_x4" => (8u8, IRType::I16, 4u8),
         "Iop_Reverse8sIn16_x8" => (8, IRType::I16, 8),
         // Byte reversal within 32-bit words (REV32 / x86 BSWAP-like).
+        "Iop_Reverse8sIn32_x1" => (8, IRType::I32, 1),
         "Iop_Reverse8sIn32_x2" => (8, IRType::I32, 2),
         "Iop_Reverse8sIn32_x4" => (8, IRType::I32, 4),
         // Byte reversal within 64-bit doublewords (REV64).

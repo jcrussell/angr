@@ -122,6 +122,7 @@ pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
     cast_arms!(op_str; "Iop_Reinterp" => Reinterpret {
         "F32asI32" => (F32, I32), "I32asF32" => (I32, F32),
         "F64asI64" => (F64, I64), "I64asF64" => (I64, F64),
+        "I128asV128" => (I128, V128), "V128asI128" => (V128, I128),
     });
 
     match op_str {

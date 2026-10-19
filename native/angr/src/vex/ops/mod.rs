@@ -410,7 +410,8 @@ impl VEXOps {
             | IROp::DivModU64to32
             | IROp::DivModS64to32
             | IROp::DivModU128to64
-            | IROp::DivModS128to64 => Self::binop_arith(op, left, right, ctx),
+            | IROp::DivModS128to64
+            | IROp::DivModSameWidth { .. } => Self::binop_arith(op, left, right, ctx),
 
             // -- Scalar bitwise / shift / compare --
             IROp::And(_)
@@ -541,6 +542,11 @@ impl VEXOps {
             // DivMod: 128-bit / 64-bit -> 128-bit (low=quotient, high=remainder).
             IROp::DivModU128to64 => Self::divmod_128_to_64(left, right, false, ctx),
             IROp::DivModS128to64 => Self::divmod_128_to_64(left, right, true, ctx),
+
+            // DivMod: ty / ty -> 2*ty (low=quotient, high=remainder).
+            IROp::DivModSameWidth { ty, signed } => {
+                Self::divmod_same_width(left, right, ty, signed, ctx)
+            }
 
             // Misroute (a maintainer added this op to the top-level routing
             // guard but not here, or vice-versa). Degrade to the Python

@@ -8,6 +8,25 @@ use crate::vex::ir::IRType;
 // VReverse — byte/halfword/word/bit reversal within lane (angr-tukg.4).
 // =========================================================================
 
+/// Iop_Reverse8sIn32_x1 — the scalar 32-bit byte swap pyvex 10 added
+/// (angr-mx00p.6): one lane, so the whole I32 operand.
+#[test]
+fn test_vec_reverse_8in32_x1_concrete() {
+    let ctx = SymContext::new_mock();
+    let result = VEXOps::unop(
+        IROp::VReverse {
+            sub_width: 8,
+            elem: IRType::I32,
+            count: 1,
+        },
+        RustBV::concrete(0x11223344, 32),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 32);
+    assert_eq!(result.as_u128(), Some(0x44332211));
+}
+
 /// Iop_Reverse8sIn32_x2 — byte-swap within each 32-bit word (REV32
 /// applied to a NEON D-register). 64-bit total.
 #[test]

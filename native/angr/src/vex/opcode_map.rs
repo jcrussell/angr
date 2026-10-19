@@ -267,8 +267,11 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_Mul"   => Mul   { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_MullS" => MullS { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_MullU" => MullU { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_DivS"  => DivS  { "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_DivU"  => DivU  { "32" => I32, "64" => I64 });
+    tuple_arms!(op_str; "Iop_DivS"  => DivS  { "32" => I32, "64" => I64, "128" => I128 });
+    tuple_arms!(op_str; "Iop_DivU"  => DivU  { "32" => I32, "64" => I64, "128" => I128 });
+    // pyvex 10's libVEX added only the 128-bit standalone remainders.
+    tuple_arms!(op_str; "Iop_ModS"  => ModS  { "128" => I128 });
+    tuple_arms!(op_str; "Iop_ModU"  => ModU  { "128" => I128 });
     // No scalar-integer Iop_Neg arm: real VEX only defines float negates.
     // `IROP_NAMES` declares exactly Iop_NegF32, Iop_NegF64,
     // Iop_NegF128 and the vector Iop_Neg32Fx2 / Iop_Neg32Fx4 / Iop_Neg64Fx2 —
@@ -284,6 +287,22 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
         "Iop_DivModS64to32" => Some(IROp::DivModS64to32),
         "Iop_DivModU128to64" => Some(IROp::DivModU128to64),
         "Iop_DivModS128to64" => Some(IROp::DivModS128to64),
+        "Iop_DivModU32to32" => Some(IROp::DivModSameWidth {
+            ty: IRType::I32,
+            signed: false,
+        }),
+        "Iop_DivModS32to32" => Some(IROp::DivModSameWidth {
+            ty: IRType::I32,
+            signed: true,
+        }),
+        "Iop_DivModU64to64" => Some(IROp::DivModSameWidth {
+            ty: IRType::I64,
+            signed: false,
+        }),
+        "Iop_DivModS64to64" => Some(IROp::DivModSameWidth {
+            ty: IRType::I64,
+            signed: true,
+        }),
 
         // No scalar high-half-multiply arm: real VEX has no Iop_MulHi{32,64}
         // (the header only defines the vector Iop_MulHi<w>{U,S}x<n> family,

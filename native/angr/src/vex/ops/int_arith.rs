@@ -42,6 +42,31 @@ impl VEXOps {
 
     /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit result.
     /// Low 64 bits = quotient, High 64 bits = remainder.
+    /// `Iop_DivMod{U,S}{32to32,64to64}`: both operands are `ty` wide, the
+    /// result is `Concat(rem, quot)` at twice that. angr's Python `_op_divmod`
+    /// divides at the operand width; extending the dividend (zero- or
+    /// sign-, by `signed`) to double width and dividing by the `ty`-wide
+    /// divisor gives the same low halves, division by zero and `MIN / -1`
+    /// included, so this reuses [`Self::divmod_double_to_single`].
+    pub(super) fn divmod_same_width(
+        dividend: RustBV,
+        divisor: RustBV,
+        ty: IRType,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let bits = ty.bits();
+        Self::require_operand_width("divmod_same_width dividend", dividend.width(), bits)?;
+        Self::require_operand_width("divmod_same_width divisor", divisor.width(), bits)?;
+        let wide = 2 * bits; // overflow-ok: an IRType width, 64 at most here
+        let dividend = if signed {
+            dividend.sign_extend_into(wide, ctx)
+        } else {
+            dividend.zero_extend_into(wide, ctx)
+        };
+        Self::divmod_double_to_single(dividend, divisor, signed, ctx)
+    }
+
     pub(super) fn divmod_128_to_64(
         dividend: RustBV,
         divisor: RustBV,

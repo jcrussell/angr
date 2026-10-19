@@ -38,25 +38,14 @@ pub enum IROp {
     MullU(IRType), // Unsigned widening multiply
     DivS(IRType),  // Signed division
     DivU(IRType),  // Unsigned division
-    /// Signed modulo. **No libVEX producer** — see [`IROp::ModU`].
+    /// Signed modulo (remainder takes the dividend's sign, as claripy's
+    /// `SMod`). See [`IROp::ModU`] for which widths libVEX emits.
     ModS(IRType),
-    /// Unsigned modulo. **No libVEX producer**: libVEX's
-    /// opcode enum defines no `Iop_Mod*` at all, so `parse_opcode` never
-    /// constructs `ModS`/`ModU` and no real lift can reach the
-    /// `width_binop!(.., urem_into/srem_into, ..)` arms in
-    /// `VEXOps::binop_arith`. Guests get their remainder from the combined
-    /// `Iop_DivMod*` opcodes instead, and those do not route through here
-    /// either — `VEXOps::divmod_double_to_single` calls `RustBV::urem`/`srem`
-    /// directly and packs the remainder into the result's high half.
-    ///
-    /// Both variants are kept (with a `result_type` arm, a `classify.rs`
-    /// category and the `ops/property_tests.rs` coverage that pins
-    /// `urem`/`srem` divide-by-zero totals) as parameterized-width evaluator
-    /// scaffolding: a future `Iop_Mod*`-emitting lifter, or a synthesis path
-    /// that wants a standalone remainder, has the arm ready. Treat a missing
-    /// `opcode_map.rs` producer as intentional, not as a dispatch gap —
-    /// per `invariant-opcode-map-ground-truth-is-vendored-header`, the
-    /// vendored header is the ground truth for what a lift can emit.
+    /// Unsigned modulo. libVEX's only standalone remainders are pyvex 10's
+    /// `Iop_ModU128` / `Iop_ModS128`; every narrower remainder comes from the
+    /// combined `Iop_DivMod*` opcodes, which `VEXOps::divmod_double_to_single`
+    /// evaluates without routing through here. The arm is width-generic, and
+    /// `ops/property_tests.rs` pins the `urem`/`srem` divide-by-zero totals.
     ModU(IRType),
 
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit (low=quotient, high=remainder)
@@ -69,6 +58,14 @@ pub enum IROp {
     /// `Iop_64HLtoV128` and split the result with `Iop_V128to64` / `Iop_V128HIto64`.
     DivModU128to64, // Unsigned
     DivModS128to64, // Signed
+
+    /// DivMod with dividend and divisor of the same width `ty` (I32 or I64)
+    /// -> double width (low=quotient, high=remainder): `Iop_DivMod{U,S}32to32`
+    /// / `Iop_DivMod{U,S}64to64`, `:: ty,ty -> 2*ty`.
+    DivModSameWidth {
+        ty: IRType,
+        signed: bool,
+    },
 
     // =========================================================================
     // Bitwise (parameterized by width)
@@ -931,6 +928,13 @@ impl IROp {
             // `:: V128,I64 -> V128` signature; only the width (128) is load-bearing here,
             // since `divmod_128_to_64` dispatches on `.width()` alone.
             IROp::DivModU128to64 | IROp::DivModS128to64 => Some(IRType::V128),
+
+            // DivMod: ty / ty -> 2*ty.
+            IROp::DivModSameWidth { ty, .. } => match ty {
+                IRType::I32 => Some(IRType::I64),
+                IRType::I64 => Some(IRType::I128),
+                _ => None,
+            },
 
             // Bitwise ops return same type
             IROp::And(t)

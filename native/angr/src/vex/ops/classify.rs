@@ -31,7 +31,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::DivModU64to32
         | IROp::DivModS64to32
         | IROp::DivModU128to64
-        | IROp::DivModS128to64 => VexOpFamily::Arith,
+        | IROp::DivModS128to64
+        | IROp::DivModSameWidth { .. } => VexOpFamily::Arith,
 
         // Bitwise logic
         IROp::And(_) | IROp::Or(_) | IROp::Xor(_) | IROp::Not(_) => VexOpFamily::Logic,

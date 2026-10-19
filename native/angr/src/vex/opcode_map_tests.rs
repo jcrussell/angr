@@ -1112,13 +1112,12 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     // EXTENDED_DIVIDE
     (
         &[
-            "Iop_DivModS64to64",
             "Iop_DivS32E",
             "Iop_DivS64E",
             "Iop_DivU32E",
             "Iop_DivU64E",
         ],
-        "PowerPC \"extended\" divide (DivS32E/DivS64E/DivU32E/DivU64E, different rounding/overflow semantics than the plain DivS/DivU already mapped) and DivModS64to64 (64/64 combined divmod) — not yet implemented.",
+        "PowerPC \"extended\" divide (DivS32E/DivS64E/DivU32E/DivU64E, different rounding/overflow semantics than the plain DivS/DivU already mapped) — not yet implemented.",
     ),
     // CRYPTO
     (
@@ -1450,12 +1449,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_CmpLE16Fx8",
             "Iop_CmpLT16Fx8",
             "Iop_D128toI128S",
-            "Iop_DivModS32to32",
-            "Iop_DivModU32to32",
-            "Iop_DivModU64to64",
-            "Iop_DivS128",
             "Iop_DivS128E",
-            "Iop_DivU128",
             "Iop_DivU128E",
             "Iop_Exp2_32Fx4",
             "Iop_F16toF32x8",
@@ -1472,8 +1466,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_I32StoF32x8",
             "Iop_Log2_32Fx4",
             "Iop_Log2_64Fx2",
-            "Iop_ModS128",
-            "Iop_ModU128",
             "Iop_Neg16Fx8",
             "Iop_NegF16",
             "Iop_PackEvenLanes16x8",
@@ -1485,9 +1477,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_PwExtUSMulQAdd8x16",
             "Iop_ReinterpF128asI128",
             "Iop_ReinterpI128asF128",
-            "Iop_ReinterpI128asV128",
-            "Iop_ReinterpV128asI128",
-            "Iop_Reverse8sIn32_x1",
             "Iop_Rotx32",
             "Iop_Rotx64",
             "Iop_RoundF32toIntA0",
@@ -1808,4 +1797,46 @@ fn test_parse_pw_bit_mtx_xpose() {
             "{op_str} is not declared by libVEX and must stay unmapped"
         );
     }
+}
+
+/// The pyvex 10 same-width DivMod forms, 128-bit Div/Mod, the I128/V128
+/// reinterprets and the scalar 32-bit byte reverse map (angr-mx00p.6).
+#[test]
+fn test_pyvex10_divmod_and_reinterp_map() {
+    use crate::vex::ir::IRType;
+    assert_eq!(
+        parse_opcode("Iop_DivModU64to64"),
+        IROp::DivModSameWidth {
+            ty: IRType::I64,
+            signed: false
+        }
+    );
+    assert_eq!(
+        parse_opcode("Iop_DivModS32to32"),
+        IROp::DivModSameWidth {
+            ty: IRType::I32,
+            signed: true
+        }
+    );
+    assert_eq!(
+        parse_opcode("Iop_ReinterpI128asV128"),
+        IROp::Reinterpret {
+            from: IRType::I128,
+            to: IRType::V128
+        }
+    );
+    assert_eq!(
+        IROp::DivModSameWidth {
+            ty: IRType::I64,
+            signed: true
+        }
+        .result_type(),
+        Some(IRType::I128)
+    );
+    assert!(!matches!(
+        parse_opcode("Iop_Reverse8sIn32_x1"),
+        IROp::Unmapped(_)
+    ));
+    assert_eq!(parse_opcode("Iop_DivU128"), IROp::DivU(IRType::I128));
+    assert_eq!(parse_opcode("Iop_ModS128"), IROp::ModS(IRType::I128));
 }

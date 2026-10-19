@@ -161,3 +161,83 @@ fn test_divmod_u128_to_64_zero_divisor_matches_symbolic() {
 fn test_divmod_s128_to_64_zero_divisor_negative_dividend() {
     divmod_zero_divisor_matches_symbolic(IROp::DivModS128to64, (-1000i128) as u128, 128, 64);
 }
+
+/// `Iop_DivMod{U,S}{32to32,64to64}` (angr-mx00p.6): same-width operands,
+/// `Concat(rem, quot)` at double width, as angr's Python `_op_divmod`.
+#[test]
+fn test_divmod_same_width_concrete() {
+    let ctx = SymContext::new_mock();
+    let same = |a: u128, b: u128, ty: IRType, signed: bool| {
+        let bits = ty.bits();
+        VEXOps::binop(
+            IROp::DivModSameWidth { ty, signed },
+            RustBV::concrete(a, bits),
+            RustBV::concrete(b, bits),
+            &ctx,
+        )
+        .unwrap()
+    };
+    let r = same(100, 7, IRType::I64, false);
+    assert_eq!(r.width(), 128);
+    assert_eq!(r.as_u128(), Some((2u128 << 64) | 14), "rem:quot");
+    // -100 / 7 = -14 rem -2 (signed remainder takes the dividend's sign).
+    let r = same(0xFFFF_FF9C, 7, IRType::I32, true);
+    assert_eq!(r.width(), 64);
+    assert_eq!(r.as_u128(), Some((0xFFFF_FFFEu128 << 32) | 0xFFFF_FFF2));
+    // Division by zero follows Z3: unsigned quotient all-ones, remainder the
+    // dividend; signed quotient +1 for a negative dividend.
+    let r = same(9, 0, IRType::I32, false);
+    assert_eq!(r.as_u128(), Some((9u128 << 32) | 0xFFFF_FFFF));
+    let r = same(0xFFFF_FFF7, 0, IRType::I32, true);
+    assert_eq!(r.as_u128(), Some((0xFFFF_FFF7u128 << 32) | 1));
+    // MIN / -1 wraps to MIN with remainder 0.
+    let r = same(0x8000_0000, 0xFFFF_FFFF, IRType::I32, true);
+    assert_eq!(r.as_u128(), Some(0x8000_0000));
+}
+
+#[test]
+fn test_divmod_same_width_symbolic_and_width_checked() {
+    let ctx = SymContext::new_mock();
+    let op = IROp::DivModSameWidth {
+        ty: IRType::I64,
+        signed: true,
+    };
+    let r = VEXOps::binop(
+        op,
+        RustBV::symbolic(&ctx, "a", 64),
+        RustBV::concrete(3, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(r.width(), 128);
+    assert!(r.is_symbolic());
+    // A 32-bit divisor is an operand-width error, not a silent extension.
+    assert!(
+        VEXOps::binop(
+            op,
+            RustBV::concrete(1, 64),
+            RustBV::concrete(1, 32),
+            &ctx
+        )
+        .is_err()
+    );
+}
+
+/// pyvex 10's `Iop_{DivU,DivS,ModU,ModS}128` reach the width-generic arms
+/// at 128 bits (angr-mx00p.6).
+#[test]
+fn test_div_mod_128_concrete() {
+    let ctx = SymContext::new_mock();
+    let big = (1u128 << 100) + 5;
+    let op = |op: IROp, a: u128, b: u128| {
+        VEXOps::binop(op, RustBV::concrete(a, 128), RustBV::concrete(b, 128), &ctx)
+            .unwrap()
+            .as_u128()
+    };
+    assert_eq!(op(IROp::DivU(IRType::I128), big, 1 << 50), Some(1 << 50));
+    assert_eq!(op(IROp::ModU(IRType::I128), big, 1 << 50), Some(5));
+    // -7 / 2 = -3 rem -1.
+    let neg7 = 7u128.wrapping_neg();
+    assert_eq!(op(IROp::DivS(IRType::I128), neg7, 2), Some(3u128.wrapping_neg()));
+    assert_eq!(op(IROp::ModS(IRType::I128), neg7, 2), Some(1u128.wrapping_neg()));
+}
