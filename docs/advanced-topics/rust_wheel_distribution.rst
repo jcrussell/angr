@@ -76,12 +76,10 @@ The only wheel layout compatible with the shared-context constraint:
    **not** widen it. See the ``avoid-pip-install-deps`` bd memory — a
    ``libz3.so`` ABI change is something the unversioned ``NEEDED libz3.so``
    cannot guard against.
-#. **Apply the same rule to** ``libpyvex.so``. The default-on native libVEX
-   lifter (:doc:`rust_libvex_ffi`) links pyvex's shared object for the same
-   reason: the process must hold one libVEX. The repair step excludes it and
-   the runpath gains ``$ORIGIN/../pyvex/lib`` (``@loader_path/../pyvex/lib``
-   on macOS); Windows ships no ``libpyvex.so`` and auto-degrades to the
-   callback lifter.
+#. **libpyvex needs no rule.** The native libVEX lifter
+   (:doc:`rust_libvex_ffi`) links nothing from pyvex; it resolves the user's
+   installed libpyvex at runtime, so the process holds one libVEX and the
+   repair step has nothing of pyvex's to vendor.
 
 Why the unversioned SONAME is both convenient and dangerous
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -130,16 +128,15 @@ legs are independent and none has been executed):
    * - ``manylinux x86_64``
      - ubuntu-latest
      - ``auditwheel`` + ``patchelf``
-     - ``$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib``
+     - ``$ORIGIN/../z3/lib``
    * - ``manylinux aarch64``
      - ubuntu-latest + QEMU
      - ``auditwheel`` + ``patchelf``
-     - ``$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib``
+     - ``$ORIGIN/../z3/lib``
    * - ``macos arm64``
      - macos-14
      - ``delocate`` + ``install_name_tool``
-     - ``@loader_path/../z3/lib``, plus ``@loader_path/../pyvex/lib`` when
-       the extension links ``libpyvex``
+     - ``@loader_path/../z3/lib``
    * - ``windows x86_64``
      - windows-2022
      - *none (deliberate)*
@@ -148,18 +145,17 @@ legs are independent and none has been executed):
 Common to every leg: the Rust toolchain is installed at build time only
 (never enters the wheel); the pinned ``z3-solver`` is installed in the build
 env so ``build.rs::find_z3_lib_dir`` and ``setup.py::_configure_z3`` resolve
-the library and its version; neither
-libz3 nor libpyvex is ever vendored into the wheel; and ``CIBW_TEST_COMMAND``
+the library and its version; libz3
+is never vendored into the wheel; and ``CIBW_TEST_COMMAND``
 runs the AST-passthrough smoke test (``tests/smoke/wheel_ast_passthrough.py``)
 against the finished wheel. The smoke test mints a Z3 AST in ``claripy`` and
 reads it back through the Rust ``RustSolverContext`` (constraints +
 ``min``/``max``/``eval`` + an UNSAT contradiction), proving both halves resolved
 the **same** ``libz3``; it also runs standalone and under pytest. The ELF and
 Mach-O legs achieve "never vendored" through a repair step that excludes
-``libz3`` and ``libpyvex`` (``auditwheel repair --exclude libz3.so --exclude
-libpyvex.so``; ``delocate-wheel --exclude libz3 --exclude libpyvex``) and
-relativizes the runpath to the ``z3-solver`` and ``pyvex`` lib dirs, matching
-hazard 1 in :doc:`rust_libvex_ffi`; Windows, which has no runpath, achieves it
+``libz3`` (``auditwheel repair --exclude libz3.so``; ``delocate-wheel
+--exclude libz3``) and relativizes the runpath to the ``z3-solver`` lib dir;
+Windows, which has no runpath, achieves it
 by not repairing at all (see below).
 
 Per-platform wrinkles worth knowing
@@ -172,12 +168,11 @@ Per-platform wrinkles worth knowing
   aarch64 angr wheel that excludes libz3 is useless to a user who cannot
   ``pip install z3-solver`` on aarch64 either.
 * **macOS** needs three changes from the ELF recipe, all encoded in
-  ``CIBW_REPAIR_WHEEL_COMMAND_MACOS``: ``delocate-wheel --exclude libz3
-  --exclude libpyvex`` in place of ``auditwheel``; ``install_name_tool
-  -change`` to rewrite the build-machine absolute libz3 (and, when present,
-  libpyvex) paths ``build.rs`` recorded as dependent install names into
-  ``@rpath/libz3.dylib`` / ``@rpath/libpyvex.dylib``, plus ``-add_rpath
-  @loader_path/../z3/lib`` (and ``@loader_path/../pyvex/lib``); and a ``codesign --force --sign -`` re-sign, because
+  ``CIBW_REPAIR_WHEEL_COMMAND_MACOS``: ``delocate-wheel --exclude libz3``
+  in place of ``auditwheel``; ``install_name_tool -change`` to rewrite the
+  build-machine absolute libz3 path ``build.rs`` recorded as a dependent
+  install name into ``@rpath/libz3.dylib``, plus ``-add_rpath
+  @loader_path/../z3/lib``; and a ``codesign --force --sign -`` re-sign, because
   ``install_name_tool`` invalidates the ad-hoc arm64 signature and an unsigned
   ``.so`` will not load at all on Apple silicon. Anything cargo must see at
   build time goes in ``CIBW_ENVIRONMENT_MACOS``, not in an ``export`` from the
@@ -238,8 +233,8 @@ needed there; this memo only adds the *binary-distribution* option on top.
 Open blocker
 ------------
 
-Verify that the ``wheels.yml`` job builds, repairs (libz3 and libpyvex
-excluded, runpath relativized), and that the installed wheel passes
+Verify that the ``wheels.yml`` job builds, repairs (libz3 excluded,
+runpath relativized), and that the installed wheel passes
 ``tests/smoke/wheel_ast_passthrough.py`` in a clean venv **in CI**
 (``angr-3gjm``). No leg has been executed, so a green run of *any* leg is what
 unlocks the tag trigger.

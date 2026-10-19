@@ -21,12 +21,6 @@ Prerequisites
   pregenerated bindings, so no Z3 C headers or system Z3 are needed; the
   build links the wheel's ``libz3`` and must be told its version (see
   *Build layout* below). A system ``libz3-dev`` is harmless but unused.
-* ``libclang``: ``bindgen`` generates the ``z3-sys`` bindings and, with
-  the default-on ``libvex-ffi`` feature, the libVEX bindings.
-  ``apt install libclang-dev`` / ``dnf install clang-devel`` /
-  ``brew install llvm``; set ``LIBCLANG_PATH`` if it lives outside the
-  default search path. Building with ``ANGR_LIBVEX_FFI=0`` still needs
-  it for ``z3-sys``.
 * A ``.venv/`` virtualenv holding the angr ecosystem (``claripy``,
   ``pyvex``, ``archinfo``, ``cle``). ``pyproject.toml`` pins those four
   to one version on purpose; the rationale is in the comment above the
@@ -38,7 +32,7 @@ Bootstrap from a clean state
 
 .. code-block:: bash
 
-   sudo apt install libclang-dev rustup                        # or distro equivalent
+   sudo apt install rustup                                     # or distro equivalent
    rustup show                                                 # picks up rust-toolchain.toml
    python3 -m venv .venv
    .venv/bin/pip install --upgrade pip setuptools setuptools-rust
@@ -69,7 +63,7 @@ Incremental builds
    make check-no-z3      # the four --no-default-features combos CI gates
 
 ``make check`` is **not** the CI gate: it compiles default features only,
-so it never sees the ``fuzzer`` / ``fuzzing`` / ``libvex-ffi`` code. CI runs
+so it never sees the ``fuzzer`` / ``fuzzing`` code. CI runs
 ``cargo clippy --all-targets --all-features -- -D warnings`` from the repo
 root (no ``--manifest-path``, so the ``native/angr-macros`` test targets
 are covered too). Neither of those compiles the
@@ -113,7 +107,6 @@ Running tests
 .. code-block:: bash
 
    make test                     # tests/engines/rust/ (the canonical fast tier)
-   make test-libvex              # libVEX-FFI unit + corpus parity tests (--features libvex-ffi)
    make test-fuzzer              # icicle/libafl fuzzer unit tests (--features fuzzer)
    make test-python-baseline     # vanilla Python-engine regression subset (needs ../binaries)
    make test-full                # the whole angr suite (long)

@@ -43,7 +43,7 @@ To set up a development environment manually, first ensure that build
 dependencies are installed. These consist of python development headers,
 ``make``, a C++ compiler, and a Rust compiler. Building the Rust
 symbolic-execution engine from source additionally needs the Z3 development
-headers, ``pkg-config`` and ``libclang``; see
+headers and ``pkg-config``; see
 :doc:`/advanced-topics/rust_build`. On Ubuntu, these can be installed
 with:
 

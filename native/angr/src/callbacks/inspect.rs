@@ -454,10 +454,9 @@ inspect_dispatch! {
     /// Python endpoint attributes it to a representative active state.
     ///
     /// Caller gates on `inspect_event_enabled(InspectBit::VexLift)`. That
-    /// production caller lives in the native libVEX lift path, so in a build
-    /// without `libvex-ffi` (default-OFF in Cargo.toml, default-ON via
-    /// setup.py) the only way in is `py_call_inspect_vex_lift`, the test entry
-    /// point in `callbacks/mod.rs`.
+    /// production caller lives in the native libVEX lift path, which needs an
+    /// imported pyvex, so under `cargo test` the only way in is
+    /// `py_call_inspect_vex_lift`, the test entry point in `callbacks/mod.rs`.
     pub(crate) fn vex_lift(
         &self,
         state_id: i64,

@@ -151,9 +151,9 @@ naming convention.
 
 There is no second, numeric table to keep in sync. The native libVEX
 FFI path converts its ``IROp`` discriminant back to the pyvex name
-first (``vex/libvex_lifter.rs::c_op`` → ``enum_names::irop_name``) and
-then calls the same ``parse_opcode``, so a string arm added once covers
-both lifters. An opcode libVEX knows but ``enum_names`` doesn't is
+first (``vex/libvex_lifter.rs::c_op`` → upstream's ``ailment::vexop::op_name``)
+and then calls the same ``parse_opcode``, so a string arm added once covers
+both lifters. An opcode libVEX knows but ``op_name`` doesn't is
 routed as ``"Iop_UNKNOWN_<n>"``, which keeps the numeric tag visible in
 the ``Unmapped`` name.
 
@@ -371,10 +371,8 @@ doesn't know it yet. The end-to-end recipe:
 4. **Nothing to do for the FFI lifter.** The libVEX FFI path maps its
    numeric opcode back to the pyvex name before calling
    ``parse_opcode`` (``vex/libvex_lifter.rs::c_op``), so step 3 already
-   covers it. The discriminant-to-name table
-   (``vex/libvex_ffi.rs::enum_names``) is *generated* by
-   ``build.rs::generate_pyvex_ffi_enum_names`` from the vendored cdef —
-   never hand-edited.
+   covers it. The discriminant-to-name table is upstream's
+   ``ailment::vexop_names::IROP_NAMES``.
 
 5. **Implement.** Add the dispatch arm to ``VEXOps::unop`` /
    ``binop`` / ``qop`` in ``ops/mod.rs`` — or to
@@ -414,8 +412,8 @@ If at any point the lifter's pyvex bridge is involved (e.g. you're
 adding an op whose pyvex name is *not* a simple
 ``Iop_<name><width>``), look at ``vex/pyvex_bridge.rs`` and
 ``vex/libvex_lifter.rs`` — the latter is the FFI path used when the
-engine receives an already-lifted ``IRSB`` from C-side libVEX (raw
-bindings in ``vex/libvex_ffi.rs``).
+engine receives an already-lifted ``IRSB`` from C-side libVEX (struct
+mirrors in upstream's ``ailment/vex_ffi.rs``).
 
 Symbolic universality tests
 ---------------------------

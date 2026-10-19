@@ -270,7 +270,7 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_DivS"  => DivS  { "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_DivU"  => DivU  { "32" => I32, "64" => I64 });
     // No scalar-integer Iop_Neg arm: real VEX only defines float negates.
-    // `vendor/pyvex_ffi.h` declares exactly Iop_NegF32, Iop_NegF64,
+    // `IROP_NAMES` declares exactly Iop_NegF32, Iop_NegF64,
     // Iop_NegF128 and the vector Iop_Neg32Fx2 / Iop_Neg32Fx4 / Iop_Neg64Fx2 —
     // all mapped in `parse_float` except Iop_NegF128, which `IRType` has no
     // F128 variant to map to. There is no Iop_NegF16 (the header's only F16
@@ -297,7 +297,7 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
 /// Parse bitwise operations: And, Or, Xor, Not
 ///
 /// The `"1" => I1` arms cover `Iop_And1` / `Iop_Or1` / `Iop_Xor1`, which
-/// pyvex 10's libVEX emits alongside `Iop_Not1` (see `vendor/pyvex_ffi.h`).
+/// pyvex 10's libVEX emits alongside `Iop_Not1` (see `ailment::vexop_names::IROP_NAMES`).
 fn parse_bitwise(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_And" => And  { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_And" => VAnd { "V128" => V128, "V256" => V256 });
@@ -324,7 +324,7 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
     // siblings and was silently falling to IROp::Unmapped.)
     //
     // Two asymmetries below are real, not gaps — both mirror the x86 ISA and
-    // are declared exactly this way in `vendor/pyvex_ffi.h`:
+    // are declared exactly this way in `IROP_NAMES`:
     //   * no `8x32`: AVX2 has no byte shift-by-immediate (VPSLLB et al. do not
     //     exist), so VEX declares no 8x32 form for any of the three families;
     //   * no `SarN64x4`: arithmetic right shift of qwords arrived only with
@@ -462,7 +462,7 @@ fn parse_special(op_str: &str) -> Option<IROp> {
         // down. angr-sqfj8.117: the arm previously listed a nonexistent
         // `Iop_Perm8x32` (dead string) while the real `Iop_Perm32x4` /
         // `Iop_Perm32x8` went unmapped; verified against the full
-        // `Iop_Perm*` set in `vendor/pyvex_ffi.h`.
+        // `Iop_Perm*` set in `IROP_NAMES`.
         //
         // `PermOrZero` (what libVEX now lifts PSHUFB to) shares `VPerm`:
         // `VEXOps::vec_perm` zeroes a top-bit lane for both, as Python's
@@ -636,7 +636,7 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
         "Ijk_SigFPE_IntDiv" => JumpKind::SigFPE_IntDiv,
         "Ijk_SigFPE_IntOvf" => JumpKind::SigFPE_IntOvf,
         "Ijk_Privileged" => JumpKind::Privileged,
-        // SILENT(cat-c): every `IRJumpKind` in vendor/pyvex_ffi.h now has an
+        // SILENT(cat-c): every libVEX `IRJumpKind` now has an
         // arm above, so reaching this one means the lifter emitted a tag this
         // build does not know. Boring is the only non-terminal answer we can
         // give, but it is a wrong-answer risk (angr-sqfj8.111 was exactly that

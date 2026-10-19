@@ -130,3 +130,22 @@ measured cost of re-syncing whole pages per callback moved callback
 memory onto the proxy by default; registers and constraints keep
 diff-and-push at the callback boundary. The write-through contract is
 in :doc:`rust_engine`.
+
+Lifting
+-------
+
+**Link-time libVEX bindings replaced by runtime resolution**
+(``angr-z087y``, ``angr-mx00p.33``). The native lifter first bound
+libVEX at build time: a ``libvex-ffi`` cargo feature ran ``bindgen`` over a
+cffi cdef vendored from pyvex, linked ``-lpyvex`` with an rpath into the
+venv, and generated the enum-name tables from the same header. Every pyvex
+bump meant regenerating the header, the extension carried a ``NEEDED
+libpyvex`` that the wheel repair had to exclude and re-point, a source
+build needed libclang, and nothing checked the generated layouts against the
+pyvex actually loaded. Upstream's ``ailment::vex_ffi`` already resolves
+``vex_lift`` at runtime in the libpyvex pyvex has loaded, with hand-written
+struct mirrors, so the lifter moved onto it and the feature, header,
+``bindgen`` dependency and link flags were deleted. The layouts and enum
+tags are now checked against pyvex's cffi library by
+``tests/engines/rust/test_native_lift_parity.py``; see
+:doc:`rust_libvex_ffi`.

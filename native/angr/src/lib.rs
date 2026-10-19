@@ -39,14 +39,11 @@
 //!
 //! # Feature flags
 //!
-//! `default = ["vex-engine", "vex-engine-z3", "automaton"]`; `setup.py`
-//! additionally appends `libvex-ffi`, so a stock `pip install -e .` builds with
-//! native cold-block lifting.
+//! `default = ["vex-engine", "vex-engine-z3", "automaton"]`.
 //!
 //! - `vex-engine` — the interpreter, state model and native procedures
 //! - `vex-engine-z3` — adds the Z3-backed solver and the parallel scheduler
 //! - `automaton` — the DFA/NFA module
-//! - `libvex-ffi` — lift cold blocks through libVEX directly instead of pyvex
 //! - `fuzzer` — icicle/libafl backends; `fuzzing` — widen hostile-input parsers
 //!   to a crate-`pub` surface for the cargo-fuzz targets (see `fuzz_api`)
 //!

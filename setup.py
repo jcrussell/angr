@@ -108,65 +108,9 @@ def clean_unicornlib():
         os.unlink(fname)
 
 
-def _resolve_pyvex_libdir() -> None:
-    # The `libvex-ffi` Rust feature -- default-ON, see _rust_features below --
-    # links the venv's pyvex/lib/libpyvex.so (see
-    # docs/advanced-topics/rust_libvex_ffi.rst).
-    # build.rs resolves this itself via `python3 -c 'import pyvex'`, but export
-    # PYVEX_FFI_LIB_DIR here as the authoritative override so a setuptools-rust
-    # build (which may run cargo in a different cwd/interpreter) links the same
-    # pyvex the Python side loads. Harmless when the feature is off — build.rs
-    # only reads it under CARGO_FEATURE_LIBVEX_FFI.
-    if os.environ.get("PYVEX_FFI_LIB_DIR"):
-        return
-    try:
-        import pyvex
-    except ImportError:
-        return
-    lib_dir = os.path.join(os.path.dirname(pyvex.__file__), "lib")
-    for so in ("libpyvex.so", "libpyvex.dylib"):
-        if os.path.isfile(os.path.join(lib_dir, so)):
-            os.environ["PYVEX_FFI_LIB_DIR"] = lib_dir
-            return
-
-
-_resolve_pyvex_libdir()
-
-
-def _rust_features() -> list[str]:
-    # `libvex-ffi` (native cold-block lifting through libpyvex.so) is ON by
-    # default as of the human GO 2026-07-15 (bd angr-3trr7): a stock
-    # `pip install -e .` builds WITH the native libVEX lifter. Set
-    # ANGR_LIBVEX_FFI=0 (or false/off/no) to opt OUT -- the escape hatch.
-    #
-    # The resulting .so carries an rpath into the venv's pyvex/lib; wheel builds
-    # MUST exclude libpyvex.so from the repair step (see .github/workflows/
-    # wheels.yml -- mirrors the libz3 exclusion) so the wheel does not vendor a
-    # second copy of libVEX with its own vex_control/arena globals. See the
-    # "Shipping status" section of docs/advanced-topics/rust_libvex_ffi.rst.
-    if os.environ.get("ANGR_LIBVEX_FFI", "").strip().lower() in ("0", "false", "off", "no"):
-        return []
-    if not os.environ.get("PYVEX_FFI_LIB_DIR"):
-        # No libpyvex.so next to the installed pyvex (e.g. Windows, where pyvex
-        # ships no shared object) -- degrade gracefully to the pyvex-callback
-        # lift path rather than failing the build.
-        sys.stderr.write(
-            "note: no libpyvex.so was found next to the installed pyvex; building "
-            "without the libvex-ffi feature (set ANGR_LIBVEX_FFI=0 to silence).\n"
-        )
-        return []
-    return ["libvex-ffi"]
-
-
 class build_rust(setuptools_rust.build_rust):
     def run(self):
         configure_z3()
-        # The extension is declared by the [[tool.setuptools-rust.ext-modules]] table in
-        # pyproject.toml, which cannot express a conditional cargo feature; append it here.
-        features = _rust_features()
-        if features:
-            for ext in getattr(self.distribution, "rust_extensions", None) or []:
-                ext.features = [*ext.features, *features]
         super().run()
 
 

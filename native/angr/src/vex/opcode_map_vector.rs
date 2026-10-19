@@ -37,7 +37,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     // Per-lane saturating arithmetic; S/U selects clamp range. D-reg
     // (total=64), Q-reg (total=128) and AVX2 (total=256) variants. The 256-bit
     // tier is `VPADDS{B,W}`/`VPADDUS{B,W}` and their `VPSUB*` twins, hence
-    // 8/16-bit lanes only — `vendor/pyvex_ffi.h` declares no `Iop_QAdd32*x8`
+    // 8/16-bit lanes only — `IROP_NAMES` declares no `Iop_QAdd32*x8`
     // or `Iop_QAdd64*x4` (angr-li4ox.1).
     //
     // Widening this table to V256 needs no evaluator change:
@@ -77,7 +77,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     // semantics with `Shl` on two's complement; libVEX emits both names from
     // ARM SSHL/USHL decomposition (positive-count branches).
     //
-    // Only `Sal` has a D-reg 64-bit-lane form: `vendor/pyvex_ffi.h` declares
+    // Only `Sal` has a D-reg 64-bit-lane form: `IROP_NAMES` declares
     // `Iop_Sal64x1` but no `Iop_Shl64x1` / `Iop_Shr64x1` / `Iop_Sar64x1`, so the
     // other three tables stop at `32x2` (angr-0jh0j.62 — the `64x1` arms were
     // copy-pasted from `Sal` and could never match).
@@ -158,7 +158,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     // Maps to ARM URHADD/SRHADD; SSE PAVGB/PAVGW (unsigned-only) lifts here too.
     //
     // The D-reg (total=64) half is **unsigned-only** and 8/16-bit-lane only:
-    // `vendor/pyvex_ffi.h` declares just `Iop_Avg8Ux8` / `Iop_Avg16Ux4` there —
+    // `IROP_NAMES` declares just `Iop_Avg8Ux8` / `Iop_Avg16Ux4` there —
     // no signed D-reg forms and no `Iop_Avg32{S,U}x2` at all (angr-0jh0j.62;
     // the signed arms contradicted this family's own "unsigned-only" note
     // above). Q-reg (total=128) has both signednesses for 8/16/32-bit lanes,
@@ -390,7 +390,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     // backs ARM NEON VCGT.U8/U16/U32 and the SSE/AVX unsigned compares
     // (angr-9ke6b.160). libVEX defines no Iop_CmpGT64Ux1 (D-reg), so that
     // suffix is absent by design rather than omission. The AVX2 256-bit forms
-    // are **signed-only** — vendor/pyvex_ffi.h declares Iop_CmpGT8Sx32 and
+    // are **signed-only** — `IROP_NAMES` declares Iop_CmpGT8Sx32 and
     // friends but no `*Ux32`/`*Ux16`/`*Ux8`/`*Ux4` counterparts, matching the
     // ISA (VPCMPGT* is signed).
     vec_signed_arms!(op_str; "Iop_CmpGT" => VCmpGT {

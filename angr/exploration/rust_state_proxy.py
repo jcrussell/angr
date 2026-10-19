@@ -3031,10 +3031,9 @@ _INSPECT_EVENT_SPECS: dict = {
     #   1. Python — ``_cb_lift_block`` in rust_manager.py, the lift callback the
     #      Rust engine invokes on a block-cache miss.
     #   2. Rust — ``interpreter/execution.rs::try_native_lift``, the in-process
-    #      libVEX lift (cargo feature ``libvex-ffi``, and only for blocks whose
-    #      bytes are concrete). That path bypasses ``_cb_lift_block`` entirely,
-    #      so without its own fire the event would silently vanish on a
-    #      feature-on build. Both fires happen after libVEX has run, so exactly
+    #      libVEX lift (only for blocks whose bytes are concrete). That path
+    #      bypasses ``_cb_lift_block`` entirely, so without its own fire the
+    #      event would silently vanish. Both fires happen after libVEX has run, so exactly
     #      one BEFORE/AFTER pair is emitted per lift even when a native miss
     #      falls through to origin 1.
     #

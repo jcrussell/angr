@@ -13,7 +13,7 @@ Otherwise, for each task follow this loop:
  5. Build + lint: `cargo clippy --all-targets --all-features -- -D warnings`
     from the repo root, with no `--manifest-path`. That is CI's `rust_check`
     gate exactly, and clippy compiles, so it is also the type-check. Do not
-    drop `--all-features`: the `fuzzer`/`fuzzing`/`libvex-ffi` code is
+    drop `--all-features`: the `fuzzer`/`fuzzing` code is
     invisible without it. CI clippy and CI fmt are both hard gates. The Stop
     hook also runs CI's rustdoc lane (`RUSTDOCFLAGS='-D warnings' cargo doc
     --workspace --no-deps --all-features --document-private-items`); see bd

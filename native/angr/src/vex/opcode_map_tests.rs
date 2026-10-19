@@ -58,14 +58,14 @@ fn test_parse_cmp_ord_stays_unmapped() {
     }
 }
 
-/// angr-0jh0j.62: seventeen table arms named opcode strings `vendor/pyvex_ffi.h`
-/// never declares — copy-paste from an adjacent real table (the `Sal64x1` D-reg
+/// angr-0jh0j.62: table arms named opcode strings libVEX
+/// (`ailment::vexop_names::IROP_NAMES`) never declares — copy-paste from an adjacent real table (the `Sal64x1` D-reg
 /// shape onto `Shl`/`Shr`/`Sar`, the Q-reg `QNarrowBin32Sto16Ux8` suffix into
 /// the D-reg block), or a 256-bit tier invented for families that stop at
 /// Q-reg. Unreachable, but they overstate real libVEX coverage, which is how
 /// `Iop_Perm8x32` masked the two real `Iop_Perm32x{4,8}` shapes going unmapped
 /// (angr-sqfj8.117). Pin them as absent so a future widening pass has to check
-/// the header rather than copy a sibling table.
+/// `IROP_NAMES` rather than copy a sibling table.
 #[test]
 fn test_dead_opcode_strings_stay_unmapped() {
     for absent in [
@@ -96,7 +96,7 @@ fn test_dead_opcode_strings_stay_unmapped() {
     ] {
         assert!(
             matches!(parse_opcode(absent), IROp::Unmapped(_)),
-            "{absent} is not declared in vendor/pyvex_ffi.h and must stay unmapped"
+            "{absent} is not a libVEX opcode and must stay unmapped"
         );
     }
 }
@@ -226,7 +226,7 @@ fn test_parse_jumpkind() {
     }
 }
 
-/// Every `IRJumpKind` tag in `vendor/pyvex_ffi.h` must parse to a
+/// Every libVEX `IRJumpKind` tag must parse to a
 /// non-`Boring` variant (angr-sqfj8.111). Guards the whole class rather
 /// than the specific kinds this bead added: a future VEX bump that grows
 /// the C enum should fail here, not silently execute a trap as
@@ -812,7 +812,7 @@ fn test_parse_transcendental() {
 }
 
 /// angr-sqfj8.117: the `VPerm` arm carried a dead `Iop_Perm8x32` string (no
-/// such opcode in `vendor/pyvex_ffi.h`) while the real `Iop_Perm32x4` /
+/// such opcode in libVEX) while the real `Iop_Perm32x4` /
 /// `Iop_Perm32x8` were unmapped. Also pins `result_type`, which used to be a
 /// hardcoded `V128` and was therefore wrong for the 64- and 256-bit members.
 #[test]
@@ -846,34 +846,25 @@ fn test_parse_perm() {
 /// angr-sqfj8.117 — this test exists so the next instance is a hard failure
 /// instead of a silent perf cliff nobody notices until an audit finds it.
 ///
-/// Ground truth is `vendor/pyvex_ffi.h` — the vendored cffi cdef
-/// `tools/regen-pyvex-ffi-header.py` writes from the installed pyvex's own
-/// `IROp` C enum (see that script's docstring), so it is exactly the set of
-/// opcodes this pyvex pin can emit — not a hand-maintained approximation.
-/// `libvex_lifter_tests.rs::test_vendored_header_ilgop_variant_set_is_unchanged`
-/// established this "diff against the vendored header" pattern for the
-/// sibling `ILGop_*` tag family; this reuses the same
-/// find-the-next-`Prefix_`-token extraction rather than a second one.
+/// Ground truth is upstream's `ailment::vexop_names::IROP_NAMES`, the
+/// libVEX `IROp` enum in order, which `ailment::vexop::op_name` (and so the
+/// native lifter) decodes op tags through — exactly the set of opcodes the
+/// pinned pyvex can emit, not a hand-maintained approximation.
+/// `test_native_lift_parity.py` keeps the native lifter's own enum tables in
+/// step with pyvex the same way.
 ///
 /// Same "diff against a foreign ground truth + self-cleaning allowlist"
 /// shape `tests/engines/rust/test_arch_offset_parity.py` already proved out
 /// for arch/register coverage against `archinfo` (its `KNOWN_MISSING`
 /// table is the direct template for `KNOWN_UNMAPPED_GROUPS` below).
-fn vendored_iop_names() -> Vec<&'static str> {
-    let header = include_str!("../../vendor/pyvex_ffi.h");
-    let mut found: Vec<&str> = Vec::new();
-    let mut rest = header;
-    while let Some(pos) = rest.find("Iop_") {
-        let tail = &rest[pos..];
-        let end = tail
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(tail.len());
-        found.push(&tail[..end]);
-        rest = &tail[end..];
-    }
+fn libvex_iop_names() -> Vec<&'static str> {
     // Iop_INVALID / Iop_LAST are enum sentinels, not real opcodes pyvex can
     // ever hand to `parse_opcode`.
-    found.retain(|s| *s != "Iop_INVALID" && *s != "Iop_LAST");
+    let mut found: Vec<&str> = crate::ailment::vexop_names::IROP_NAMES
+        .iter()
+        .copied()
+        .filter(|s| *s != "Iop_INVALID" && *s != "Iop_LAST")
+        .collect();
     found.sort_unstable();
     found.dedup();
     found
@@ -891,7 +882,7 @@ fn vendored_iop_names() -> Vec<&'static str> {
 /// width/signedness/lane-count combination of a family as its own tag.
 ///
 /// Self-cleaning: `test_known_unmapped_groups_are_still_entirely_unmapped`
-/// asserts every name here is still both a real vendored opcode and still
+/// asserts every name here is still both a real libVEX opcode and still
 /// unmapped, so implementing one reddens that test until the name is removed —
 /// it cannot rot into a permanent allowlist.
 const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
@@ -1731,24 +1722,23 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     (
         &[
             "Iop_FIRST_EVEX",
-            "Iop_LAST_NOT_EVEX",
         ],
-        "libVEX range markers (Iop_LAST_NOT_EVEX / Iop_FIRST_EVEX), not operations.",
+        "libVEX range marker (Iop_FIRST_EVEX), not an operation.",
     ),
 ];
 
-/// The completeness gate: every vendored `Iop_*` name must be mapped by
+/// The completeness gate: every libVEX `Iop_*` name must be mapped by
 /// `parse_opcode`, or explicitly named (with a reason) in
 /// `KNOWN_UNMAPPED_GROUPS`. Fails loudly, listing every offending name, so a
 /// future VEX-pin bump that adds opcodes cannot silently grow the gap.
 #[test]
-fn test_opcode_map_completeness_against_vendored_header() {
+fn test_opcode_map_completeness_against_libvex_opcodes() {
     let known: std::collections::HashSet<&str> = KNOWN_UNMAPPED_GROUPS
         .iter()
         .flat_map(|(names, _)| names.iter().copied())
         .collect();
 
-    let mut newly_unmapped: Vec<&str> = vendored_iop_names()
+    let mut newly_unmapped: Vec<&str> = libvex_iop_names()
         .into_iter()
         .filter(|name| matches!(parse_opcode(name), IROp::Unmapped(_)) && !known.contains(name))
         .collect();
@@ -1768,18 +1758,18 @@ fn test_opcode_map_completeness_against_vendored_header() {
 /// The self-cleaning half of `KNOWN_UNMAPPED_GROUPS`, mirroring
 /// `test_known_missing_groups_are_still_entirely_missing` in
 /// `test_arch_offset_parity.py`: every named opcode must still be a real
-/// vendored name (catches a group rotting after a VEX-pin bump drops an
+/// libVEX name (catches a group rotting after a VEX-pin bump drops an
 /// opcode) and must still be unmapped (catches a group that was never
 /// cleaned up after someone implemented the opcode it names).
 #[test]
 fn test_known_unmapped_groups_are_still_entirely_unmapped() {
-    let vendored: std::collections::HashSet<&str> = vendored_iop_names().into_iter().collect();
+    let libvex: std::collections::HashSet<&str> = libvex_iop_names().into_iter().collect();
     for (names, reason) in KNOWN_UNMAPPED_GROUPS {
         for &name in *names {
             assert!(
-                vendored.contains(name),
+                libvex.contains(name),
                 "KNOWN_UNMAPPED_GROUPS entry ({reason}) names {name:?}, which \
-                 vendor/pyvex_ffi.h no longer declares — the group has rotted; drop it."
+                 IROP_NAMES no longer lists — the group has rotted; drop it."
             );
             assert!(
                 matches!(parse_opcode(name), IROp::Unmapped(_)),
@@ -1804,7 +1794,7 @@ fn test_parse_pw_bit_mtx_xpose() {
         "vgbbd is V128 -> V128"
     );
 
-    // libVEX declares exactly one shape (vendor/pyvex_ffi.h). Pin the absence
+    // libVEX declares exactly one shape (`IROP_NAMES`). Pin the absence
     // of the plausible-looking siblings so a future audit does not "restore
     // symmetry" by inventing opcodes that do not exist.
     for op_str in [

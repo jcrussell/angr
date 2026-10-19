@@ -12,8 +12,6 @@
 pub mod ccall;
 pub mod dirty;
 pub mod ir;
-#[cfg(feature = "libvex-ffi")]
-pub mod libvex_ffi;
 pub mod libvex_lifter;
 mod lifter;
 pub mod opcode_map;

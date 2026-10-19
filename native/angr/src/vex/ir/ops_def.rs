@@ -40,7 +40,7 @@ pub enum IROp {
     DivU(IRType),  // Unsigned division
     /// Signed modulo. **No libVEX producer** — see [`IROp::ModU`].
     ModS(IRType),
-    /// Unsigned modulo. **No libVEX producer**: the vendored `pyvex_ffi.h`
+    /// Unsigned modulo. **No libVEX producer**: libVEX's
     /// opcode enum defines no `Iop_Mod*` at all, so `parse_opcode` never
     /// constructs `ModS`/`ModU` and no real lift can reach the
     /// `width_binop!(.., urem_into/srem_into, ..)` arms in
@@ -151,7 +151,7 @@ pub enum IROp {
     /// see [`IROp::FCmpLE`].
     FCmpLT(IRType),
     /// Scalar FP less-or-equal producing a 1-bit result. **No libVEX
-    /// producer**: every float compare in the vendored `pyvex_ffi.h` opcode
+    /// producer**: every float compare in libVEX's opcode
     /// enum carries a width/lane suffix, so `parse_opcode` only ever builds
     /// the lane-shaped variants — `Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}` ->
     /// [`IROp::FCmpScalarLane`] and `Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,

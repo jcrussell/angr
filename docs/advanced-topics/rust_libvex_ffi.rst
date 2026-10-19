@@ -3,12 +3,12 @@ libVEX FFI native lifting
 
 .. note::
 
-   **Status: shipped and on by default** (feasibility ``angr-z087y``,
-   default flip ``angr-3trr7``). This page keeps the feasibility argument
-   (why binding pyvex's own libVEX is parity-safe), the build and link
-   recipe, where the native lifter gets its bytes, how to run the parity
-   gate, and the hazards that apply to a default-on build. The runnable
-   probe behind the feasibility verdict is ``tools/probe-libvex-ffi.py``.
+   **Status: shipped and on by default for AMD64** (feasibility
+   ``angr-z087y``, default flip ``angr-3trr7``, runtime binding
+   ``angr-mx00p.33``). This page keeps the argument for why binding pyvex's
+   own libVEX is parity-safe, how the binding is made, where the native lifter
+   gets its bytes, how to run the parity tests, and the hazards of the
+   default-on path.
 
 Motivation
 ----------
@@ -32,46 +32,30 @@ reason). Same libVEX, same configuration ⇒ same ``IRSB``.
 Why binding pyvex's libVEX is parity-safe
 -----------------------------------------
 
-All three feasibility unknowns resolve GO against the *installed* pyvex wheel
-(``tools/probe-libvex-ffi.py`` asserts each and exits non-zero on any NO-GO):
+1. **Same object.** ``pyvex/lib/libpyvex.so`` (``.dylib`` on macOS,
+   ``pyvex.dll`` on Windows) is the shared object pyvex loads through cffi. It
+   exports pyvex's exact-config shim ``vex_lift``. The engine calls that same
+   symbol in that same loaded object, so there is one copy of libVEX and its
+   globals in the process.
 
-1. **Link seam.** ``pyvex/lib/libpyvex.so`` (the shared object pyvex loads via
-   cffi) exports both pyvex's exact-config shim ``vex_lift`` / ``vex_init`` **and**
-   the raw ``LibVEX_*`` API (``LibVEX_Translate``, ``LibVEX_Lift``, …). A Rust
-   FFI backend links this ``.so`` directly — no separate libVEX build.
+2. **Same interface.** pyvex's cffi cdef (``pyvex/vex_ffi.py``) is the
+   authority for the ``vex_lift`` signature and the ``IRSB`` / ``VexArchInfo``
+   struct layouts. Upstream's ``native/angr/src/ailment/vex_ffi.rs`` mirrors
+   those layouts as ``#[repr(C)]`` structs, and ``tests/engines/rust/
+   test_native_lift_parity.py`` checks the mirrors and the enum tags the
+   native lifter hard-codes against pyvex's cffi ``sizeof`` / ``offsetof`` and
+   library constants.
 
-2. **Interface source.** The wheel ships **no C headers**, but
-   ``pyvex.vex_ffi.ffi_str`` (~44 KB) carries the *authoritative* cffi cdef:
-   the ``vex_lift`` signature plus ``VEXLiftResult`` / ``IRSB`` / ``VexArchInfo``
-   / ``ExitInfo`` struct layouts. This is the exact interface pyvex's own cffi
-   uses to marshal libVEX output, so binding against it is parity-safe. It can
-   be committed as a vendored ``.h`` for ``bindgen``, or the (small, stable)
-   subset can be hand-declared.
+3. **Same configuration.** ``NativeLibVEXLifter::from_py_arch``
+   (``native/angr/src/vex/libvex_lifter.rs``) builds the guest tag and the
+   ``VexArchInfo`` from the project's ``arch.vex_arch`` and
+   ``arch.vex_archinfo``, which is what ``pyvex.lifting.libvex.LibVEXLifter``
+   passes, and calls ``vex_lift`` with angr's default lifter settings (opt
+   level 1, ``strict_block_end`` off, ``cross_insn_opt`` on).
 
-3. **Parity.** The link target is the *same object file* pyvex loads in-process,
-   so a native lift through ``vex_lift`` is byte-for-byte what the Python
-   callback path produces — no divergence risk from opt-levels, arch/endness
-   options, or VEX guest/host setup, because those live inside ``vex_lift``.
-
-The exact-config shim, from ``pyvex.vex_ffi.ffi_str``:
+The shim, from pyvex's cdef:
 
 .. code-block:: c
-
-   typedef struct _VEXLiftResult {
-       IRSB* irsb;
-       Int   size;
-       Bool  is_noop_block;
-       Int   exit_count;
-       ExitInfo exits[400];
-       Int   is_default_exit_constant;
-       Addr  default_exit;
-       Int   insts;
-       Addr  inst_addrs[200];
-       Int   data_ref_count;
-       DataRef data_refs[2000];
-       Int   const_val_count;
-       ConstVal const_vals[1000];
-   } VEXLiftResult;
 
    VEXLiftResult *vex_lift(
        VexArch guest, VexArchInfo archinfo,
@@ -82,62 +66,47 @@ The exact-config shim, from ``pyvex.vex_ffi.ffi_str``:
        int collect_data_refs, int load_from_ro_regions, int const_prop,
        VexRegisterUpdates px_control, unsigned int lookback_amount);
 
-Build/link recipe
------------------
+Binding at runtime
+------------------
 
-Resolve the pyvex lib dir the same way ``build.rs`` / ``setup.py`` already
-resolve Z3 (probe the active venv's ``pyvex/lib``). ``tools/probe-libvex-ffi.py``
-prints the resolved recipe for the current environment; the shape is:
+The extension has **no link-time dependency** on libpyvex. ``vex_ffi::
+init_symbols`` (upstream, ``native/angr/src/ailment/vex_ffi.rs``) finds the
+library next to the imported pyvex package, reopens it by path (``dlopen`` on
+POSIX, ``LoadLibraryW`` on Windows — the library is already mapped, so this
+only returns a handle) and resolves ``vex_lift`` against that handle.
+``RustExplorationManager.set_native_lift(arch)`` triggers the resolution and
+raises when the symbol is missing; there is no cargo feature, build-time
+header, or rpath. pyvex runs libVEX's one-time ``vex_init`` at import, which
+``from_py_arch`` guarantees by importing pyvex first. The link-time design
+this replaced is in :doc:`rust_engine_decisions`.
 
-.. code-block:: text
+Running the parity tests
+------------------------
 
-   cargo:rustc-link-search=native=<venv>/site-packages/pyvex/lib
-   cargo:rustc-link-lib=dylib=pyvex
-   cargo:rustc-link-arg=-Wl,-rpath,<venv>/site-packages/pyvex/lib
+A lift needs the libpyvex an imported pyvex loads, which ``cargo test`` does
+not have, so the native-vs-pyvex checks are pytest::
 
-The link lives behind the ``libvex-ffi`` cargo feature. It is **default-off
-in** ``Cargo.toml`` so a bare ``cargo build`` / ``cargo test`` takes on no
-runtime dependency on ``libpyvex.so``'s rpath (which is why ``make
-test-libvex`` passes the feature explicitly), and **default-on in**
-``setup.py``: ``_rust_features`` appends it to the extension unless
-``ANGR_LIBVEX_FFI=0``, with ``_resolve_pyvex_libdir`` (mirroring
-``_configure_z3``) feeding the search path. See *Shipping status*.
+    python -m pytest tests/engines/rust/test_native_lift_parity.py
 
-Running the parity gate
------------------------
-
-The lifter unit tests and the corpus parity harness live *inside* the
-``#[cfg(feature = "libvex-ffi")]`` module, and that feature is default-**off**
-in ``native/angr/Cargo.toml`` (it is default-**on** in the shipped wheel via
-``setup.py::_rust_features``). A plain ``cargo test`` therefore compiles
-neither. Run them explicitly::
-
-    make test-libvex
-    # == cargo test --manifest-path native/angr/Cargo.toml --release \
-    #        --features libvex-ffi --lib libvex
-
-The build needs ``libpyvex.so``; ``build.rs::find_pyvex_lib_dir`` locates it by
-shelling out to ``python3 -c "import pyvex"``, or you can point it at a
-directory with ``PYVEX_FFI_LIB_DIR``. In CI this runs nightly as the
-``libvex_ffi_tests`` job in ``.github/workflows/nightly-ci.yml`` (nightly rather
-than PR-time because of the pyvex install + link cost); PR-time
-``cargo clippy --all-features`` compiles the module but does not execute it.
+They lift every block of ``tests/engines/rust/native_lift_corpus.json``
+through both paths and compare the resulting ``vex::ir`` trees, and check the
+enum tags and struct layouts against pyvex's cffi library. The pure
+marshalling helpers keep their unit tests in
+``native/angr/src/vex/libvex_lifter_tests.rs``.
 
 Open risks
 ----------
 
-* **Struct ABI drift:** the vendored cdef must track the pinned pyvex
-  (``==9.2.209``); a pyvex bump can change ``VEXLiftResult`` array sizes or
-  ``IRStmt`` layout. Regenerate from ``pyvex.vex_ffi.ffi_str`` on any bump and
-  re-run the parity harness. The pin is frozen (see ``avoid-pip-install-deps``),
-  so this is dormant.
 * **``vex_lift`` uses libVEX's arena allocator:** the returned ``VEXLiftResult*``
-  is owned by libVEX's temporary arena and is clobbered on the next lift — marshal
-  it into owned Rust types *before* the next ``vex_lift`` call. This matches how
-  pyvex's cffi copies out immediately.
+  is owned by libVEX's temporary arena and is clobbered on the next lift — the
+  lifter marshals it into owned Rust types *before* releasing its lift lock.
+  This matches how pyvex's cffi copies out immediately.
 * **Thread-safety:** libVEX global state (``vex_control``, the arena) is not
-  re-entrant; a parallel backend needs a per-worker lift lock or one lifter
-  thread. Relevant to parallel exploration, not to the single-threaded engine.
+  re-entrant. Native lifts are serialized by the Rust ``LIFT_LOCK`` and run on
+  worker threads with the GIL released. pyvex serializes its own lifts with a
+  Python lock, and cffi releases the GIL inside ``vex_lift``, so nothing yet
+  excludes a native lift from a concurrent ``pyvex.lift`` on another thread
+  (``angr-mx00p.45``).
 
 Default-on on AMD64
 -------------------
@@ -147,9 +116,7 @@ Default-on on AMD64
 ``rust_manager.py`` calls ``set_native_lift(project.arch)`` only when
 ``project.arch.name == "AMD64"``; that Python check is the gate that makes
 native lift AMD64-only. The Rust lifter itself is wider:
-``NativeLibVEXLifter::from_py_arch`` in ``vex/libvex_lifter.rs`` builds a
-lifter for any guest libVEX has, from the arch's ``vex_arch`` and
-``vex_archinfo``.
+``NativeLibVEXLifter::from_py_arch`` builds a lifter for any guest libVEX has.
 
 It is on by default because it is parity-safe and never a loss: it binds
 the same libVEX with the same configuration as pyvex (see *Why binding
@@ -185,58 +152,15 @@ serving every real block. ``rust_native_lift_deadend_probe_count`` splits the
 probes out; the genuinely-lost misses are
 ``fallback_count - deadend_probe_count``, and that is the number to watch.
 
-Shipping status: on by default (opt-OUT via ``ANGR_LIBVEX_FFI=0``)
-------------------------------------------------------------------
+Hazards of the default-on path
+------------------------------
 
-The ``libvex-ffi`` cargo feature is built **by default** by ``setup.py``
-(``angr-3trr7``): a stock ``pip install angr`` / ``pip install -e .`` on
-an ELF (Linux) or Mach-O (macOS) platform links the native libVEX lifter, so the
-default above reaches every stock AMD64 build. ``use_native_lift`` defaults
-to True and is double-guarded on ``libvex_ffi_enabled()`` (satisfied on a
-stock ``.so``) and the AMD64 arch check, so cold blocks go out through the
-native lifter, falling back to the pyvex callback on a lift miss; on any
-other arch every cold block uses the callback.
-
-To opt **out** (the escape hatch) and restore the pyvex-callback lift path:
-
-.. code-block:: bash
-
-   ANGR_LIBVEX_FFI=0 pip install -e . --no-build-isolation --no-deps
-
-``setup.py::_rust_features`` reads that env var and appends the cargo feature to
-the extension declared by ``[[tool.setuptools-rust.ext-modules]]`` unless it is
-set to a falsy value (``0``/``false``/``off``/``no``). The static ext-module
-table cannot express a conditional feature, so the append happens in the
-``build_rust`` subclass in ``setup.py``. It also degrades gracefully: if
-``_resolve_pyvex_libdir`` found no ``libpyvex.so`` next to the installed pyvex
-(e.g. Windows, where pyvex ships no shared object), the feature is dropped and
-the build falls back to the callback path rather than failing.
-
-Hazards that apply to the default-on build, and how each is handled
-(``angr-x5kmr``):
-
-1. **Wheels must not double-vendor libVEX.** ``build.rs`` emits
-   ``-Wl,-rpath,<venv>/site-packages/pyvex/lib``. Left alone, the
-   ``cibuildwheel`` repair step would copy ``libpyvex.so`` into the wheel, and
-   the process would then hold *two* copies of libVEX with independent
-   ``vex_control`` and arena globals, voiding the same-``.so`` parity argument.
-   ``.github/workflows/wheels.yml`` therefore excludes ``libpyvex`` alongside
-   ``libz3`` in the repair step (``auditwheel repair --exclude libz3.so
-   --exclude libpyvex.so`` on Linux, ``delocate-wheel --exclude libz3 --exclude
-   libpyvex`` on macOS) and sets the extension's runpath to
-   ``$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib`` (``@loader_path/../z3/lib`` and
-   ``@loader_path/../pyvex/lib`` on macOS). The wheel resolves the *user's*
-   installed z3-solver and pyvex at runtime. Windows ships no ``libpyvex.so``,
-   so that leg auto-degrades to the callback path and needs no repair change.
-   :doc:`rust_wheel_distribution` covers the full repair recipe.
+1. **Wheels must not vendor libVEX.** The extension resolves the *user's*
+   installed pyvex at runtime and links nothing from it, so the wheel repair
+   step has nothing of pyvex's to copy; a second libVEX in the process would
+   have independent ``vex_control`` and arena globals and void the same-object
+   parity argument. :doc:`rust_wheel_distribution` covers the repair recipe.
 2. **Bench baselines must be measured on the native lift path.**
-   ``baseline_timings.json`` is recorded with the stock (feature-on) build, so
-   the fast-tier gate measures against native-lift timings; a baseline
-   refreshed from an ``ANGR_LIBVEX_FFI=0`` build would hide a native-lift
-   regression.
-3. **Build-time dependency on libclang.** The feature pulls ``dep:bindgen``,
-   i.e. libclang, on anyone building from source. libclang is a documented
-   build-time dependency for source installs regardless of this feature:
-   ``z3-sys`` also generates its bindings with bindgen, so an
-   ``ANGR_LIBVEX_FFI=0`` build still needs it (see the *Prerequisites* in
-   :doc:`rust_build`).
+   ``baseline_timings.json`` is recorded with native lift on, so the fast-tier
+   gate measures against native-lift timings; a baseline refreshed with
+   ``--no-native-lift`` would hide a native-lift regression.

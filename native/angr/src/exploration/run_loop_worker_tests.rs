@@ -10,11 +10,10 @@
 //!
 //! **Scope note (same honesty as `step_core_tests.rs`).** The arms reachable
 //! only *after* a real interpreter step — `Continue`, `Deadended`, `Errored`,
-//! `Unconstrained` — need a live lifted block, and block lifting in a default
-//! `cargo test` build goes through the Python `lift_block` callback (the native
-//! lifter is behind the non-default `libvex-ffi` feature). A test asserting one
-//! of those arms would therefore assert a *different* thing depending on the
-//! feature set, so they stay out. Their post-step classification is unit-tested
+//! `Unconstrained` — need a live lifted block, and block lifting under `cargo
+//! test` has no lifter at all: the native lifter needs an imported pyvex and
+//! the Python `lift_block` callback is unregistered. Those arms therefore stay
+//! out. Their post-step classification is unit-tested
 //! directly on [`run_post_step_core`] in `core_outcome_tests/`, and the
 //! worker's own routing of them is covered end-to-end by the parallel tests in
 //! `tests/engines/rust/`. The bounce arm below IS reachable here because a
