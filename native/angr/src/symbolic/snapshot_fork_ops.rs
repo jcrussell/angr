@@ -159,30 +159,11 @@ impl SymContext {
                      asserted on the solver without recording into a log"
                 );
             }
-            // angr-t3l5o Phase 0b: record the EXACT residual (no-RustBV)
-            // assertion count, env-gated. Phase 1 makes the exact count
-            // available (the `non_bv_assertions` log) so we no longer
-            // approximate it as `z3_assertion_count - assumed.len()`.
-            if crate::migrate_phase_timers::count_armed() {
-                let non_bv_count = (self.non_bv_assertions_shared.lock().len()
-                    + self.local_constraints.lock().non_bv_assertions.len())
-                    as u64;
-                crate::migrate_phase_timers::add_raw_constraint_count(non_bv_count);
-            }
-            // Time the EMIT phase around the dump that actually runs. On the
-            // common reconstructible path this is `dump_non_bv_smtlib2`, which
-            // returns "" when the residual log is empty — so post-Phase-1
-            // attribution shows the text emit collapse toward ~0.
-            let residual = crate::migrate_phase_timers::time_phase(
-                &crate::migrate_phase_timers::MIGRATE_SMTLIB2_EMIT_NS,
-                || {
-                    if reassert_assumed {
-                        self.dump_non_bv_smtlib2()
-                    } else {
-                        self.dump_solver_smtlib2()
-                    }
-                },
-            );
+            let residual = if reassert_assumed {
+                self.dump_non_bv_smtlib2()
+            } else {
+                self.dump_solver_smtlib2()
+            };
             (residual, reassert_assumed)
         };
         #[cfg(not(feature = "vex-engine-z3"))]
@@ -418,17 +399,13 @@ impl SymContext {
     /// Replay an SMT-LIB2 residual dump onto this context's solver via the
     /// `from_string` + `get_assertions` + [`Self::add_constraint_raw`] loop
     /// (angr-t3l5o Phase 1). Each re-asserted Bool lands in the residual log
-    /// (`add_constraint_raw` is residual sink #1). Times the parse phase into
-    /// `MIGRATE_SMTLIB2_PARSE_NS` when migration phase timers are armed.
+    /// (`add_constraint_raw` is residual sink #1).
     #[cfg(feature = "vex-engine-z3")]
     fn replay_residual_smtlib2(&self, residual: &str) {
-        crate::migrate_phase_timers::time_phase(
-            &crate::migrate_phase_timers::MIGRATE_SMTLIB2_PARSE_NS,
-            || self.parse_smtlib2_into_solver(residual),
-        );
+        self.parse_smtlib2_into_solver(residual);
     }
 
-    /// The untimed body of [`Self::replay_residual_smtlib2`]: parse `smtlib2`
+    /// The body of [`Self::replay_residual_smtlib2`]: parse `smtlib2`
     /// into a scratch solver and re-assert each of its assertions onto `self`
     /// via [`Self::add_constraint_raw`]. Returns the number re-asserted.
     ///

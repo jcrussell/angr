@@ -1,10 +1,13 @@
-//! Thread-local GIL-work timer for the parallel-exploration spike (angr-1ilq.7).
+//! Thread-local GIL-work timer (introduced for the parallel-exploration spike,
+//! angr-1ilq.7).
 //!
 //! Measures, on a single worker thread, the wall-clock fraction of stepping
 //! that is spent *inside Python-touching code* (the "GIL-held" work that a
 //! lazy-GIL worker could NOT run with the GIL released). The complement is the
-//! pure-Rust+Z3 work that IS parallelizable. This number feeds the A-vs-B
-//! GIL-strategy decision via Amdahl's law (see the bead + the rust_engine docs).
+//! pure-Rust+Z3 work that IS parallelizable. Under profiling it backs the
+//! `gil_work_ns` / `gil_work_ns_callback_<site>` counters that
+//! `run_single.py --counters-json`, `baseline_counters.json` and
+//! `run_zeropy_gate.py` read to rank the remaining Python crossings.
 //!
 //! Design constraints that shaped this module (from adversarial peer review of
 //! the naive "bracket every site and sum" approach):

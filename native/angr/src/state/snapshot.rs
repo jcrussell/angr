@@ -269,12 +269,7 @@ impl RustSimState {
         crate::state::reserve_state_id(snap.state_id);
         let solver = Rc::new(RefCell::new(SymContext::new()));
         solver.borrow().restore_from_snapshot(&snap.solver);
-        // angr-t3l5o Phase 0b: time the symbolic-memory page rebuild (the
-        // non-solver "leaf rebuild" phase) when migration phase timers are on.
-        let memory = crate::migrate_phase_timers::time_phase(
-            &crate::migrate_phase_timers::MIGRATE_LEAF_REBUILD_NS,
-            || SymbolicMemory::from_snapshot(snap.memory),
-        );
+        let memory = SymbolicMemory::from_snapshot(snap.memory);
         let environment: HashMap<Vec<u8>, Vec<u8>> = snap.environment.into_iter().collect();
         let hooks: HashSet<u64> = snap.hooks.into_iter().collect();
         let removed_hooks: HashSet<u64> = snap.removed_hooks.into_iter().collect();
@@ -340,26 +335,14 @@ impl RustSimState {
         reason = "`serde_json::to_vec` over `RustSimStateSnapshot`, whose derived `Serialize` has no fallible arm and writes into a `Vec` (so no io error). Left as a panic rather than propagated because `to_serialized` returns `Vec<u8>` across the PyO3 surface and the migration payload path; widening it to `Result` would ripple into every caller — out of scope for angr-9ke6b.212"
     )]
     pub fn to_serialized(&mut self) -> Vec<u8> {
-        crate::migrate_phase_timers::time_roundtrip_half(|| {
-            // angr-t3l5o Phase 0b: arm the migration-serialize guard so the
-            // SMT-LIB2 emit timer inside `to_snapshot` fires ONLY for migration
-            // transport (not for unrelated stash `to_snapshot` calls).
-            let prev = crate::migrate_phase_timers::set_serializing(true);
-            let snap = self.to_snapshot();
-            // Time the pure serde-json encode (the SMT-LIB2 emit already
-            // happened inside `to_snapshot` and is timed separately).
-            let body = crate::migrate_phase_timers::time_phase(
-                &crate::migrate_phase_timers::MIGRATE_SERDE_NS,
-                || serde_json::to_vec(&snap).expect("snapshot encode"),
-            );
-            crate::migrate_phase_timers::set_serializing(prev);
-            // overflow-ok: `body` is a live `Vec`, so its length is at most
-            // `isize::MAX`; the version byte cannot push it past `usize::MAX`.
-            let mut out = Vec::with_capacity(1 + body.len());
-            out.push(SNAPSHOT_VERSION);
-            out.extend_from_slice(&body);
-            out
-        })
+        let snap = self.to_snapshot();
+        let body = serde_json::to_vec(&snap).expect("snapshot encode");
+        // overflow-ok: `body` is a live `Vec`, so its length is at most
+        // `isize::MAX`; the version byte cannot push it past `usize::MAX`.
+        let mut out = Vec::with_capacity(1 + body.len());
+        out.push(SNAPSHOT_VERSION);
+        out.extend_from_slice(&body);
+        out
     }
 
     /// Inverse of [`Self::to_serialized`]. Rejects an empty envelope or a
@@ -381,34 +364,11 @@ impl RustSimState {
         // `disable_recursion_limit()` lifts the cap; the on-disk envelope
         // is trusted (written by our own `to_serialized`) so the DoS
         // hardening the limit provides is not load-bearing here.
-        crate::migrate_phase_timers::time_roundtrip_half(|| {
-            // angr-t3l5o Phase 0b: arm the migration-serialize guard so the
-            // serde-decode / SMT-LIB2-parse / leaf-rebuild sub-timers inside
-            // `from_snapshot` fire ONLY for migration transport (not for stash
-            // `from_snapshot` calls). Restored before returning either arm.
-            let prev = crate::migrate_phase_timers::set_serializing(true);
-            // Time the pure serde-json decode of the snapshot struct (the
-            // SMT-LIB2 parse and memory leaf-rebuild happen later in
-            // `from_snapshot` and are timed separately).
-            let decoded: Result<RustSimStateSnapshot, _> = crate::migrate_phase_timers::time_phase(
-                &crate::migrate_phase_timers::MIGRATE_SERDE_NS,
-                || {
-                    let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
-                    de.disable_recursion_limit();
-                    serde::Deserialize::deserialize(&mut de)
-                },
-            );
-            let snap: RustSimStateSnapshot = match decoded {
-                Ok(s) => s,
-                Err(e) => {
-                    crate::migrate_phase_timers::set_serializing(prev);
-                    return Err(SnapshotError::Decode(e.to_string()));
-                }
-            };
-            let out = Self::from_snapshot(snap);
-            crate::migrate_phase_timers::set_serializing(prev);
-            out
-        })
+        let mut de = serde_json::Deserializer::from_slice(&bytes[1..]);
+        de.disable_recursion_limit();
+        let snap: RustSimStateSnapshot = serde::Deserialize::deserialize(&mut de)
+            .map_err(|e| SnapshotError::Decode(e.to_string()))?;
+        Self::from_snapshot(snap)
     }
 
     /// angr-t3l5o Phase 0a bench hook: serde-json decode a snapshot byte

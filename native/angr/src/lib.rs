@@ -294,6 +294,7 @@ test_submod!("silent_default_tests.rs" => silent_default_tests);
 ///
 /// The bound is ~584 years, so no real process reaches it; this is
 /// defensiveness and documentation, not a live bug fix.
+#[cfg(feature = "vex-engine")]
 pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -303,6 +304,7 @@ pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
 /// The `Instant` spelling of [`duration_ns`], which carries the rationale.
 /// Timing sites should call this rather than narrowing `as_nanos()`'s `u128`
 /// with a bare `as u64`.
+#[cfg(feature = "vex-engine")]
 pub(crate) fn elapsed_ns(start: std::time::Instant) -> u64 {
     duration_ns(start.elapsed())
 }
@@ -432,7 +434,6 @@ pub(crate) mod gil_profile;
 pub(crate) mod interpreter;
 #[cfg(feature = "vex-engine")]
 pub mod memory;
-pub(crate) mod migrate_phase_timers;
 #[cfg(feature = "vex-engine")]
 pub(crate) mod procedures;
 #[cfg(feature = "vex-engine")]
