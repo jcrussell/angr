@@ -270,6 +270,13 @@ impl Arch for ARM {
 
     impl_arch_registers!(CANONICAL, ALIASES);
 
+    fn sync_registers(&self) -> &'static [&'static str] {
+        &[
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp",
+            "lr", "pc",
+        ]
+    }
+
     fn syscall_num_offset(&self) -> Option<u32> {
         // EABI Linux syscall convention puts the syscall number in R7
         Some(offsets::R7)

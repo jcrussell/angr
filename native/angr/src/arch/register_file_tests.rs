@@ -676,6 +676,9 @@ impl Arch for ShortTailArch {
     fn alias_registers(&self) -> &[RegEntry] {
         AMD64.alias_registers()
     }
+    fn sync_registers(&self) -> &'static [&'static str] {
+        AMD64.sync_registers()
+    }
     fn is_little_endian(&self) -> bool {
         true
     }

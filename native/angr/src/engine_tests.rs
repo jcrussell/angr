@@ -180,15 +180,4 @@ fn arch_helpers_agree_with_arch_from_name() {
         !arch_supported("ppc32"),
         "unimplemented arch must route to Python"
     );
-
-    assert_eq!(register_size_for_arch("AMD64", "rax"), Some(8));
-    assert_eq!(register_size_for_arch("AMD64", "not_a_register"), None);
-    assert_eq!(register_size_for_arch("ppc32", "r0"), None);
-
-    let names = register_names_for_arch("AMD64");
-    assert!(names.iter().any(|n| n == "rax"));
-    assert!(
-        register_names_for_arch("ppc32").is_empty(),
-        "unknown arch must yield an empty name list, not a panic"
-    );
 }

@@ -616,6 +616,14 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     ("ip_at_syscall", offsets64::IP_AT_SYSCALL, 8),
 ];
 
+/// `Arch::sync_registers` for both MIPS widths: the 32 GPRs by their O32
+/// mnemonics (archinfo's spelling on both, with `s8` for `$30`) plus `pc`.
+const MIPS_SYNC_REGISTERS: &[&str] = &[
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "s8",
+    "ra", "pc",
+];
+
 impl Arch for MIPS32 {
     fn vex_arch(&self) -> VexArch {
         VexArch::MIPS32
@@ -646,6 +654,10 @@ impl Arch for MIPS32 {
     }
 
     impl_arch_registers!(CANONICAL_MIPS32, ALIASES_MIPS32);
+
+    fn sync_registers(&self) -> &'static [&'static str] {
+        MIPS_SYNC_REGISTERS
+    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // O32 Linux puts the syscall number in v0 ($2)
@@ -687,6 +699,10 @@ impl Arch for MIPS64 {
     }
 
     impl_arch_registers!(CANONICAL_MIPS64, ALIASES_MIPS64);
+
+    fn sync_registers(&self) -> &'static [&'static str] {
+        MIPS_SYNC_REGISTERS
+    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // N64 Linux puts the syscall number in v0 ($2)

@@ -128,34 +128,25 @@ pub trait Arch: Send + Sync {
     /// Get the name of a register by offset — the reverse of
     /// `register_offset`, resolved against `CANONICAL` only (never `ALIASES`).
     ///
-    /// **Deliberately has no non-test caller** (bead angr-9ke6b.8). Every
-    /// production path into the register file is name-keyed
-    /// (`register_offset` / `register_size` / `register_names`), so nothing in
-    /// the engine ever needs to go offset -> name. What this method exists for
-    /// is to be the assertion primitive of the arch-table integrity sweeps,
-    /// which is a load-bearing role, not dead weight — deleting it deletes
-    /// these gates:
+    /// The engine's own register file is name-keyed (`register_offset` /
+    /// `register_size` / `register_names`), so nothing on the execution path
+    /// goes offset -> name. Its one production caller is `arch_register_info`,
+    /// which names the special-purpose and calling-convention registers for
+    /// Python (angr-mx00p.34). It is also the assertion primitive of the
+    /// arch-table integrity sweeps:
     ///
     /// - `registry_tests::register_names_all_resolve_and_fit_in_u128`
     /// - `registry_tests::exported_register_names_reverse_resolve` (angr-9ke6b.9:
-    ///   catches an exported name that was left in `ALIASES`)
+    ///   catches two `CANONICAL` rows at one offset)
     /// - `registry_tests::vex_bookkeeping_fields_resolve_on_every_arch`
     /// - `calling_conventions_tests::test_cc_arg_registers_resolve_to_expected_register_names`
     ///   and `..::test_link_register_set_on_link_register_abis`, which turn a
     ///   raw CC offset back into a name to compare against the ABI tables
-    ///
-    /// Note that rustc's `dead_code` lint does not flag it (trait methods on a
-    /// used trait are exempt), so the "unused" reading has to be re-derived by
-    /// hand each audit — hence this note. Contrast
-    /// `CallingConvention::endness`, which angr-9ke6b.218 item 7 *deleted*
-    /// rather than kept: that one returned a hardcoded answer that would be
-    /// wrong for its first real caller, whereas this one is a correct lookup
-    /// with real callers that happen to all be tests.
     fn register_name(&self, offset: u32) -> Option<&'static str>;
 
     /// Get all register names that cross the Python boundary.
     ///
-    /// This drives `register_names_for_arch` (the Python-side
+    /// This drives `arch_register_info`'s `exported` list (the Python-side
     /// `_supported_register_names` filter) and `RustSimState::export_full`'s
     /// `named_registers`, so it is the set of registers that round-trip
     /// through `state.regs.*`. It is derived, not listed: the per-arch
@@ -181,6 +172,14 @@ pub trait Arch: Send + Sync {
     /// both so Python reads the engine's register table instead of keeping its
     /// own copy.
     fn alias_registers(&self) -> &[RegEntry];
+
+    /// The general-purpose registers (plus sp / pc) the Python side snapshots
+    /// and diffs around a SimProcedure callback and copies back from a pending
+    /// state (`rust_state_sync._get_reg_map_and_return_regs` /
+    /// `_get_arch_register_names`, via `arch_register_info`). Every name
+    /// resolves through `register_offset` and is archinfo's spelling, since
+    /// Python reads it with `getattr(state.regs, name)`.
+    fn sync_registers(&self) -> &'static [&'static str];
 
     /// Get the offset of the register holding the syscall number.
     ///

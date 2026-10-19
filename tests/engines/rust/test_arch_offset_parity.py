@@ -506,17 +506,22 @@ def test_big_endian_tables_match_archinfo(rust_arch, arch_id):
 
 
 @pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
-def test_python_sync_register_tables_match_rust(rust_arch, arch_id):
-    """``rust_state_sync``'s register map agrees with the engine's table.
+def test_sync_registers_are_archinfo_registers(rust_arch, arch_id):
+    """``Arch::sync_registers`` names archinfo registers at the engine's offsets.
 
-    The map is what the Python side snapshots and diffs around a SimProcedure
-    callback; an offset that disagrees with Rust's reads the wrong bytes.
+    ``rust_state_sync`` reads them off the Python SimState with
+    ``getattr(state.regs, name)`` and writes the bytes back at the engine's
+    offset, so a name archinfo lacks, or one at a different slot, drops or
+    misplaces a SimProcedure's register write.
     """
-    from angr.exploration.rust_state_sync import RustStateSyncMixin
-
-    arch = archinfo.arch_from_id(arch_id)
+    registers = archinfo.arch_from_id(arch_id).registers
     rust = _rust_offsets(rust_arch)
-    reg_map, return_regs = RustStateSyncMixin._get_reg_map_and_return_regs(arch)
-    assert {name: rust.get(name) for name in reg_map} == reg_map
-    assert set(RustStateSyncMixin._get_arch_register_names(None, arch)) == set(reg_map)
-    assert _rust_info(rust_arch)["cc_ret"] in return_regs
+    sync = _rust_info(rust_arch)["sync"]
+    assert sync, f"{rust_arch}: no sync registers"
+    assert {name: registers.get(name) for name in sync} == {name: rust[name] for name in sync}
+
+
+def test_arch_register_info_is_none_for_an_arch_the_engine_lacks():
+    from angr.rustylib import vex_engine
+
+    assert vex_engine.arch_register_info("PPC32") is None

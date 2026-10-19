@@ -464,7 +464,7 @@ fn test_clone_box_dyn_arch_roundtrips() {
 }
 
 /// `register_names()` is the set that crosses the Python boundary
-/// (`register_names_for_arch` -> `_supported_register_names`, and
+/// (`arch_register_info` -> `_supported_register_names`, and
 /// `export_full`'s `named_registers`). Two invariants, for every arch:
 ///
 ///  1. Every name resolves through `register_offset` / `register_size`,
@@ -651,5 +651,34 @@ fn vex_bookkeeping_fields_resolve_on_every_arch() {
                 arch.state_size()
             );
         }
+    }
+}
+
+/// `Arch::sync_registers` is what the Python side snapshots and diffs around a
+/// SimProcedure callback: every entry must resolve at pointer width, and the
+/// set must cover the stack and instruction pointers, or a callback's write to
+/// them never reaches Rust (angr-mx00p.34).
+#[test]
+fn sync_registers_resolve_at_pointer_width_and_cover_sp_ip() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let offsets: Vec<u32> = arch
+            .sync_registers()
+            .iter()
+            .map(|&name| {
+                let offset = arch
+                    .register_offset(name)
+                    .unwrap_or_else(|| panic!("{}: sync register {name} does not resolve", desc.name));
+                assert_eq!(
+                    arch.register_size(name),
+                    Some(arch.bytes()),
+                    "{}: sync register {name} is not pointer-width",
+                    desc.name
+                );
+                offset
+            })
+            .collect();
+        assert!(offsets.contains(&arch.sp_offset()), "{}: no sp", desc.name);
+        assert!(offsets.contains(&arch.ip_offset()), "{}: no ip", desc.name);
     }
 }

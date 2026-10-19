@@ -22,7 +22,6 @@ import logging
 import threading
 
 from angr import claripy
-from angr.rustylib.vex_engine import register_size_for_arch
 
 l = logging.getLogger(__name__)
 
@@ -1146,14 +1145,17 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
     def _get_register_width(self, name):
         """Get the bit width for a named register.
 
-        Looks up the size in BYTES from the Rust arch table (single source of
-        truth) and converts to bits. Falls back to ``arch.bits`` for registers
-        Rust doesn't model — the same default the old hand-rolled prefix
-        matcher used.
+        Looks up the size in BYTES from the engine's register table
+        (``rust_register_table``) and converts to bits. Falls back to
+        ``arch.bits`` for registers Rust doesn't model — the same default the
+        old hand-rolled prefix matcher used.
         """
-        size_bytes = register_size_for_arch(self._arch.name, name)
-        if size_bytes is not None:
-            return size_bytes * 8
+        from angr.exploration.rust_state_sync import rust_register_table
+
+        table = rust_register_table(self._arch)
+        entry = table["offsets"].get(name) if table is not None else None
+        if entry is not None:
+            return entry[1] * 8
         return self._arch.bits
 
     def _canonical_name(self, name):
@@ -1167,9 +1169,15 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         register: ip". Look up the alias's ``(offset, size)`` in
         ``arch.registers`` and translate via
         ``arch.register_size_names[(offset, size)]`` to the canonical name.
-        Returns the input unchanged when no translation is required (e.g.
-        ``"rip"`` itself, or names not present in ``arch.registers``).
+        Returns the input unchanged when no translation is required: a name
+        the engine's own table resolves (``rust_register_table``), or one not
+        present in ``arch.registers``.
         """
+        from angr.exploration.rust_state_sync import rust_register_table
+
+        table = rust_register_table(self._arch)
+        if table is not None and name in table["offsets"]:
+            return name
         info = self._arch.registers.get(name)
         if info is None:
             return name

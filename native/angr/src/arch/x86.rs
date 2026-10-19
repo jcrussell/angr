@@ -229,6 +229,12 @@ impl Arch for X86 {
 
     impl_arch_registers!(CANONICAL, ALIASES);
 
+    fn sync_registers(&self) -> &'static [&'static str] {
+        &[
+            "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip",
+        ]
+    }
+
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::EAX)
     }

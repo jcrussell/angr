@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sortedcontainers import SortedDict
 
 from angr import claripy
-from angr.rustylib.vex_engine import register_names_for_arch
+from angr.rustylib.vex_engine import arch_register_info
 from angr.storage.memory_mixins.paged_memory.pages import UltraPage
 from angr.storage.memory_object import SimMemoryObject
 
@@ -47,44 +47,37 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)
 
-# MIPS integer register file, in VEX guest-state order. Offsets are contiguous
-# (MIPS32: base 8, stride 4; MIPS64: base 16, stride 8), matching archinfo's
-# ArchMIPS32/ArchMIPS64 layout. $v0/$v1 hold the SimProcedure return value.
-_MIPS_GPR_NAMES = (
-    "zero",
-    "at",
-    "v0",
-    "v1",
-    "a0",
-    "a1",
-    "a2",
-    "a3",
-    "t0",
-    "t1",
-    "t2",
-    "t3",
-    "t4",
-    "t5",
-    "t6",
-    "t7",
-    "s0",
-    "s1",
-    "s2",
-    "s3",
-    "s4",
-    "s5",
-    "s6",
-    "s7",
-    "t8",
-    "t9",
-    "k0",
-    "k1",
-    "gp",
-    "sp",
-    "s8",
-    "ra",
-    "pc",
-)
+_RUST_REGISTER_TABLES: dict[str, dict | None] = {}
+
+
+def rust_register_table(arch) -> dict | None:
+    """The engine's register table for ``arch``, cached per arch name.
+
+    ``arch_register_info`` (``native/angr/src/engine.rs``) plus ``offsets``,
+    ``{name: (offset, size)}`` over every name the engine resolves,
+    ``sync_map``, the same for the ``sync`` registers, and ``return_regs``
+    (see ``RustStateSyncMixin._get_reg_map_and_return_regs``). ``None``
+    for an arch the engine does not implement. Rust's ``arch/*.rs`` tables
+    are the source of truth for what crosses the Python/Rust boundary
+    (angr-mx00p.34); ``tests/engines/rust/test_arch_offset_parity.py`` checks
+    them against archinfo's VEX guest layout.
+    """
+    try:
+        return _RUST_REGISTER_TABLES[arch.name]
+    except KeyError:
+        pass
+    info = arch_register_info(arch.name)
+    if info is not None:
+        info = dict(info)
+        offsets = {name: (offset, size) for name, offset, size, _ in info["registers"]}
+        info["offsets"] = offsets
+        info["sync_map"] = {name: offsets[name] for name in info["sync"]}
+        # MIPS also returns in v1 (the high half of a 64-bit result), which a
+        # proc may write as part of its return value (angr-hrcds).
+        mips_hi = {"v1"} if arch.name in ("MIPS32", "MIPS64") else set()
+        info["return_regs"] = frozenset({info["cc_ret"]} | mips_hi)
+    _RUST_REGISTER_TABLES[arch.name] = info
+    return info
 
 
 class RustStateSyncMixin:
@@ -154,15 +147,15 @@ class RustStateSyncMixin:
     def _supported_register_names(arch) -> list:
         """Registers that the Rust engine models for `arch`.
 
-        Single source of truth: delegates to Rust's per-arch canonical
-        register table via `register_names_for_arch`. Used by both the slow
-        sync path and the disk-cache fast path so they agree on which
-        registers cross the FFI boundary. archinfo defines many registers
+        The engine's exported register list (``rust_register_table``). Used by
+        both the slow sync path and the disk-cache fast path so they agree on
+        which registers cross the FFI boundary. archinfo defines many registers
         (cr0..8, ymm0..15, fs_seg, cmstart, ...) the Rust engine does not
         model; the Rust list excludes them, so `set_registers_bulk` will
         not raise ValueError on the names returned here.
         """
-        return register_names_for_arch(arch.name)
+        table = rust_register_table(arch)
+        return list(table["exported"]) if table is not None else []
 
     def _sync_registers_to_rust(
         self, angr_state: angr.SimState, rust_state: _RustSimState, precomputed_regs: dict = None
@@ -1104,131 +1097,32 @@ class RustStateSyncMixin:
         return any(lo <= addr <= hi for lo, hi in self._binary_addr_ranges)
 
     def _get_register_offset_map(self, arch) -> dict:
-        """Get cached {name: (offset, size)} mapping for register fast-path writes."""
-        if not hasattr(self, "_reg_offset_cache"):
-            self._reg_offset_cache = {}
-        arch_name = arch.name
-        if arch_name not in self._reg_offset_cache:
-            mapping = {}
-            for name in self._get_arch_register_names(arch):
-                try:
-                    info = arch.registers.get(name)
-                    if info is not None:
-                        mapping[name] = (info[0], info[1])  # (offset, size_bytes)
-                except Exception:
-                    # cat-(a) EXPECTED CONTROL FLOW: probing arch metadata
-                    # for an optional register name; absence is normal.
-                    pass
-            self._reg_offset_cache[arch_name] = mapping
-        return self._reg_offset_cache[arch_name]
+        """``{name: (offset, size)}`` of the callback sync registers, from the engine's table."""
+        reg_map, _ = self._get_reg_map_and_return_regs(arch)
+        return reg_map or {}
 
     def _get_arch_register_names(self, arch) -> list:
-        """Get register names for an architecture."""
-        if arch.name in ("AMD64", "X86_64"):
-            return [
-                "rax",
-                "rbx",
-                "rcx",
-                "rdx",
-                "rsi",
-                "rdi",
-                "rbp",
-                "rsp",
-                "r8",
-                "r9",
-                "r10",
-                "r11",
-                "r12",
-                "r13",
-                "r14",
-                "r15",
-                "rip",
-            ]
-        if arch.name == "X86":
-            return ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"]
-        if arch.name == "AARCH64":
-            return ["x%d" % i for i in range(31)] + ["sp", "pc"]
-        if arch.name.startswith("ARM"):
-            return ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc"]
-        if arch.name in ("MIPS32", "MIPS64"):
-            return list(_MIPS_GPR_NAMES)
-        return []
+        """The registers synced around a callback: ``Arch::sync_registers`` in Rust."""
+        table = rust_register_table(arch)
+        return list(table["sync"]) if table is not None else []
 
     @staticmethod
     def _get_reg_map_and_return_regs(arch):
-        """Get architecture-specific register map and return registers.
+        """The callback sync registers' ``{name: (offset, size)}`` and the return registers.
+
+        Both come from the engine's table (``rust_register_table``): the
+        ``Arch::sync_registers`` names at the engine's offsets, and the
+        default calling convention's return register (plus ``v1`` on MIPS).
+        The map is shared and cached per arch; callers must not mutate it.
 
         Returns:
             Tuple of (reg_map, return_regs) or (None, None) if unsupported.
         """
-        if arch.name in ("AMD64", "X86_64"):
-            reg_map = {
-                "rax": (16, 8),
-                "rcx": (24, 8),
-                "rdx": (32, 8),
-                "rbx": (40, 8),
-                "rsp": (48, 8),
-                "rbp": (56, 8),
-                "rsi": (64, 8),
-                "rdi": (72, 8),
-                "r8": (80, 8),
-                "r9": (88, 8),
-                "r10": (96, 8),
-                "r11": (104, 8),
-                "r12": (112, 8),
-                "r13": (120, 8),
-                "r14": (128, 8),
-                "r15": (136, 8),
-                "rip": (184, 8),
-            }
-            return_regs = {"rax"}
-        elif arch.name == "X86":
-            reg_map = {
-                "eax": (8, 4),
-                "ecx": (12, 4),
-                "edx": (16, 4),
-                "ebx": (20, 4),
-                "esp": (24, 4),
-                "ebp": (28, 4),
-                "esi": (32, 4),
-                "edi": (36, 4),
-                "eip": (68, 4),
-            }
-            return_regs = {"eax"}
-        elif arch.name in ("ARMEL", "ARMHF", "ARM"):
-            reg_map = {
-                "r0": (8, 4),
-                "r1": (12, 4),
-                "r2": (16, 4),
-                "r3": (20, 4),
-                "r4": (24, 4),
-                "r5": (28, 4),
-                "r6": (32, 4),
-                "r7": (36, 4),
-                "r8": (40, 4),
-                "r9": (44, 4),
-                "r10": (48, 4),
-                "r11": (52, 4),
-                "r12": (56, 4),
-                "sp": (60, 4),
-                "lr": (64, 4),
-                "pc": (68, 4),
-            }
-            return_regs = {"r0"}
-        elif arch.name == "AARCH64":
-            reg_map = {("x%d" % i): (16 + i * 8, 8) for i in range(31)}
-            reg_map["sp"] = (264, 8)
-            reg_map["pc"] = (272, 8)
-            return_regs = {"x0"}
-        elif arch.name in ("MIPS32", "MIPS64"):
-            # Contiguous GPR file: MIPS32 base 8/stride 4, MIPS64 base 16/stride 8.
-            base, stride = (16, 8) if arch.name == "MIPS64" else (8, 4)
-            reg_map = {name: (base + i * stride, stride) for i, name in enumerate(_MIPS_GPR_NAMES)}
-            return_regs = {"v0", "v1"}
-        else:
+        table = rust_register_table(arch)
+        if table is None:
             l.warning(f"Unknown architecture {arch.name} for register extraction")
             return None, None
-        return reg_map, return_regs
+        return table["sync_map"], table["return_regs"]
 
     def _snapshot_registers(self, state) -> dict:
         """Snapshot register values as a lightweight dict for later comparison.

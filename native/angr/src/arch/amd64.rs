@@ -456,6 +456,13 @@ impl Arch for AMD64 {
 
     impl_arch_registers!(CANONICAL, ALIASES);
 
+    fn sync_registers(&self) -> &'static [&'static str] {
+        &[
+            "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11",
+            "r12", "r13", "r14", "r15", "rip",
+        ]
+    }
+
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::RAX)
     }
