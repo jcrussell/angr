@@ -305,7 +305,7 @@ The dispatch site is in
 If you're adding a *new* memory-access shape (e.g. a guarded load,
 load-linked, gather), the corresponding ``IRStmt`` / ``IRExpr``
 variant goes into ``vex/ir/ast.rs``, the lifter wiring goes into
-``vex/pyvex_bridge.rs`` (string side) and ``vex/libvex_lifter.rs``
+``vex/pyvex_reader.rs`` (pyvex-object side) and ``vex/libvex_lifter.rs``
 (native side), and the *execution* goes into ``interpreter`` — not
 ``ops/mod.rs``. The split is durable: pure value-to-value transforms are
 in ``ops/mod.rs``; anything that touches memory, registers, temps,
@@ -408,12 +408,12 @@ doesn't know it yet. The end-to-end recipe:
    ``python -m pytest tests/engines/rust/`` to
    confirm nothing downstream regressed.
 
-If at any point the lifter's pyvex bridge is involved (e.g. you're
-adding an op whose pyvex name is *not* a simple
-``Iop_<name><width>``), look at ``vex/pyvex_bridge.rs`` and
-``vex/libvex_lifter.rs`` — the latter is the FFI path used when the
-engine receives an already-lifted ``IRSB`` from C-side libVEX (struct
-mirrors in upstream's ``ailment/vex_ffi.rs``).
+If at any point the lifter wiring is involved (e.g. you're adding an op
+whose pyvex name is *not* a simple ``Iop_<name><width>``), look at
+``vex/pyvex_reader.rs`` and ``vex/libvex_lifter.rs``: the former reads the
+``IRSB`` the Python ``lift_block`` callback returns, the latter marshals the
+one native lifting gets from C-side libVEX (struct mirrors in upstream's
+``ailment/vex_ffi.rs``).
 
 Symbolic universality tests
 ---------------------------

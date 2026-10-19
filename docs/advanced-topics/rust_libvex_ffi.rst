@@ -120,7 +120,7 @@ Open risks
   Python ``lift_block`` callback. The lock order is lift lock, then GIL; the
   helper never waits for the lock while holding the GIL. ``pyvex.lift`` calls
   made outside the engine serialize only on pyvex's Python lock, so they can
-  still overlap a native lift (``angr-mx00p.45``).
+  still overlap a native lift (``angr-mx00p.47``).
 
 Default-on
 ----------
