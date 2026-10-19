@@ -72,6 +72,22 @@ impl RustExplorationManager {
         self.native_procedures.has_native(name)
     }
 
+    /// The native syscall dispatch table as `{angr ABI name: {number: handler name}}`.
+    ///
+    /// The ABI names are the keys of angr's
+    /// `SimSyscallLibrary.syscall_number_mapping`; the handler name is
+    /// `NativeSyscall::name`, so two numbers served by one handler (e.g.
+    /// `exit` / `exit_group`) report the same name.
+    pub fn native_syscall_table(&self) -> HashMap<String, HashMap<u64, String>> {
+        let mut out: HashMap<String, HashMap<u64, String>> = HashMap::new();
+        for (abi, num, name) in self.native_syscalls.table() {
+            out.entry(abi.to_owned())
+                .or_default()
+                .insert(num, name.to_owned());
+        }
+        out
+    }
+
     /// Get native procedure statistics.
     /// See `stats_api::_native_procedure_stats` for the body.
     pub fn native_procedure_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

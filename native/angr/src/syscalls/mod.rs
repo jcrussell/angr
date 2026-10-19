@@ -858,6 +858,32 @@ impl NativeSyscallRegistry {
         // so a runtime `&str` resolves directly) then syscall number.
         self.handlers.get(arch)?.get(&num)
     }
+
+    /// Every registered row as `(angr ABI name, number, handler name)`.
+    ///
+    /// The ABI name is the key angr's `SimSyscallLibrary.syscall_number_mapping`
+    /// uses for the same numbering, so `test_native_syscall_parity.py` can
+    /// check each row against angr's own table.
+    pub(crate) fn table(&self) -> Vec<(&'static str, u64, &'static str)> {
+        let mut rows = Vec::new();
+        for (&key, by_num) in &self.handlers {
+            let abi = match key {
+                "AMD64" => "amd64",
+                "X86" => "i386",
+                "ARM" => "arm",
+                "ARM64" => "aarch64",
+                "MIPS32" => "mips-o32",
+                "MIPS64" => "mips-n64",
+                "CGC" => "cgcabi",
+                other => other,
+            };
+            for (&num, handler) in by_num {
+                rows.push((abi, num, handler.name()));
+            }
+        }
+        rows.sort_unstable();
+        rows
+    }
 }
 
 test_submod!("tests_support.rs" => tests_support);
