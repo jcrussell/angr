@@ -280,6 +280,42 @@ fn test_native_and_attribute_walks_agree() {
     });
 }
 
+/// A node reached along many paths imports once (angr-mx00p.89): each level
+/// of this chain uses the level below twice, so a walk that re-imports shared
+/// subterms visits 2^LEVELS nodes and never finishes, where the memo visits
+/// each of them once. The result is still the right value.
+#[test]
+fn test_shared_subterms_import_once() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
+    const LEVELS: u64 = 48;
+    Python::initialize();
+    Python::attach(|py| {
+        let g = &*GLOBAL_CONTEXT;
+        let x = g.bvs("shared_x", 32).expect("x");
+        let y = g.bvs("shared_y", 32).expect("y");
+        let k = |v: u64| g.bvv(BitVec::from((v, 32))).expect("k");
+        let mut v = y.clone();
+        for i in 1..=LEVELS {
+            let up = g.add(v.clone(), k(1)).expect("add");
+            let down = g.sub(v.clone(), k(1)).expect("sub");
+            v = g.ite(g.ult(x.clone(), k(i)).expect("ult"), up, down).expect("ite");
+        }
+        let ctx = SymContext::new();
+        let bv = claripy_to_rustbv(py, &claripy_object(py, v), &ctx).expect("shared import");
+        // x == 0 takes every `up` branch.
+        let x_bv = claripy_to_rustbv(py, &claripy_object(py, x), &ctx).expect("x");
+        let y_bv = claripy_to_rustbv(py, &claripy_object(py, y), &ctx).expect("y");
+        ctx.assume_true(&x_bv.eq(&RustBV::concrete(0, 32), &ctx));
+        let expected = y_bv.add(&RustBV::concrete(u128::from(LEVELS), 32), &ctx);
+        ctx.assume_true(&bv.ne(&expected, &ctx));
+        assert!(!ctx.is_sat(), "the memoized import changed the value");
+    });
+}
+
 /// A float predicate imports whole as a `RustBV::Ast` (angr-mx00p.11): its
 /// operands are never turned into IEEE bit patterns, so `fp.eq(x, x)` keeps
 /// IEEE semantics (false for NaN) instead of becoming a bit equality, which is

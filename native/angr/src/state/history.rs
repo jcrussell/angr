@@ -100,7 +100,12 @@ impl RustSimState {
     /// VEX `Ijk_Ret`, so the interpreter's return path never pops the frame
     /// its call pushed. Unwind it here the same way: through the frame that
     /// expects `return_addr`, or not at all when none does (angr-mx00p.91).
+    /// The return is recorded as an `Ijk_Ret` history entry from the hook
+    /// address, as angr's SimProcedure step records it, so an export reads
+    /// the jumpkind that led to `return_addr` (angr-mx00p.89).
     pub fn return_from_procedure(&mut self, return_addr: u64) {
+        let hook_addr = self.pc();
+        self.add_history_entry(hook_addr, HistoryEntry::JK_RET, return_addr);
         if let Some(i) = self
             .call_stack
             .iter()

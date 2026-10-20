@@ -368,20 +368,25 @@ impl RustExplorationManager {
     /// serves these instead of minting fresh `stdin_*` symbols, so the path
     /// condition on an exported found state references the harness's BVS and
     /// `solver.eval(bvs)` / `posix.dumps(0)` return the real solution. Reads
-    /// past the seeded content fall back to fresh symbols. Errors (not
-    /// panics) on unknown `state_id`, a non-convertible AST, or a non-8-bit
-    /// entry. See `pending_api::_seed_stdin_content` for the body.
+    /// past the seeded content fall back to fresh symbols. The first
+    /// `consumed` bytes count as already read (a state Python stepped past a
+    /// stdin read and handed back; angr-mx00p.89): fd 0 starts after them, so
+    /// no later read serves them again. Errors (not panics) on unknown
+    /// `state_id`, a non-convertible AST, or a non-8-bit entry. See
+    /// `pending_api::_seed_stdin_content` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own stdin fd content; does not mutate \
                   exploration config or the active stash."
     )]
+    #[pyo3(signature = (state_id, byte_asts, consumed = 0))]
     pub fn seed_stdin_content(
         &mut self,
         py: Python<'_>,
         state_id: u64,
         byte_asts: &Bound<'_, pyo3::types::PyList>,
+        consumed: usize,
     ) -> PyResult<()> {
-        self._seed_stdin_content(py, state_id, byte_asts)
+        self._seed_stdin_content(py, state_id, byte_asts, consumed)
     }
 
     /// Seed the guest's initial environment — the `entry_state(env=...)`

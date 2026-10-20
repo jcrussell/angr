@@ -236,12 +236,24 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
 
     source_ids = list(mgr._rust_mgr.get_state_ids(stash))
     applied = 0
-    hold_live = []  # angr SimStates that should re-enter `stash` after the native run
+    # A state already at a find/avoid address is classified before it is
+    # stepped (Explorer.filter under SimulationManager.explore); the native
+    # run's pre-step check does that, so the hook must not step it first
+    # (angr-mx00p.89: Veritesting's merged successors land on the target).
+    targets = set(getattr(mgr, "_explore_find_addrs", None) or ()) | set(
+        getattr(mgr, "_explore_avoid_addrs", None) or ()
+    )
 
     for sid in source_ids:
+        if targets and mgr._rust_mgr.get_state_pc_by_id(sid) in targets:
+            continue
         py_state = mgr.get_state_by_id(sid)
         if py_state is None:
             continue
+        # The hook may fork and step the state in Python and hand the
+        # successors back (angr-mx00p.89).
+        py_state = py_state.copy()
+        mgr._prepare_for_python_step(py_state, sid)
         try:
             successors = proxy.step_state(py_state)
         except _StepStateDeclined:
@@ -254,20 +266,26 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
             continue
 
         applied += 1
+        # The export carried no Python constraints (Rust holds the path
+        # condition), so each successor holds only what the hook added: give
+        # it the source's Rust constraints too (angr-mx00p.89).
+        source_constraints = mgr._rust_mgr.export_z3_constraint_ptrs(sid)
         # Non-live successors go straight to their terminal stash (they are
-        # never native-stepped). Live ones (None / "active") are held out of
-        # `active` until after the native run so they aren't double-stepped.
+        # never native-stepped). Live ones (None / "active") are parked in
+        # _vt_hold now, not after the native run, which may stop on a pending
+        # Python callback that a re-import would disturb (angr-mx00p.89), so
+        # the run does not step them.
         for key, states in successors.items():
             if not states or key == "unsat":
                 continue
-            if key in (None, "active"):
-                hold_live.extend(states)
-            else:
-                for st in states:
-                    try:
-                        mgr._add_rust_state(key, st)
-                    except Exception as e:
-                        l.warning("Failed to re-import step_state successor into %r: %s", key, e)
+            target = _VT_HOLD_STASH if key in (None, "active") else key
+            for st in states:
+                try:
+                    new_id = mgr._add_rust_state(target, st)
+                    if source_constraints:
+                        mgr._rust_mgr.import_z3_constraint_ptrs(new_id, source_constraints)
+                except Exception as e:
+                    l.warning("Failed to re-import step_state successor into %r: %s", target, e)
         # Drop the (still-present) source state now that it's been replaced.
         # cat-(a) EXPECTED CONTROL FLOW: source already consumed.
         with contextlib.suppress(RuntimeError, KeyError):
@@ -276,19 +294,24 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
     with contextlib.suppress(RuntimeError, KeyError):
         mgr._rust_mgr.clear_stash(_VT_DROP_STASH)
 
-    # Advance the states that every step_state hook declined, natively.
+    # Advance the states that every step_state hook declined, natively, one
+    # basic block at a time: the interpreter otherwise chains blocks within a
+    # step, so a state would run through the block (a loop head) where the
+    # hook should next see it (angr-mx00p.89).
     if mgr._rust_mgr.get_state_ids(stash):
-        event = mgr._rust_mgr.run(batch_size)
+        was_granular = mgr._rust_mgr.set_block_granular(True)
+        try:
+            event = mgr._rust_mgr.run(batch_size)
+        finally:
+            mgr._rust_mgr.set_block_granular(was_granular)
     else:
         counts = mgr._rust_mgr.stash_counts()
         event = _SyntheticStepEvent(counts.get("found", 0), counts.get(stash, 0))
 
     # Re-admit the held (merged) live successors into `stash` for the next batch.
-    for st in hold_live:
-        try:
-            mgr._add_rust_state(stash, st)
-        except Exception as e:
-            l.warning("Failed to re-import merged step_state successor into %r: %s", stash, e)
+    for held in list(mgr._rust_mgr.get_state_ids(_VT_HOLD_STASH)):
+        with contextlib.suppress(RuntimeError, KeyError):
+            mgr._rust_mgr.move_state(held, _VT_HOLD_STASH, stash)
 
     return event, applied
 

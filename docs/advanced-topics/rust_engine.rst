@@ -2062,7 +2062,16 @@ hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
   is advanced by a normal native ``run()`` (which, unlike the E1 proxy
   ``step_state``, drives SimProcedure/syscall callback bounces). The
   ``veritesting_dispatches`` / ``veritesting_applied`` stats counters
-  make the routing observable. Note that when a technique declines on a
+  make the routing observable. The hand-off keeps the state whole
+  (``angr-mx00p.89``): declined states advance one basic block per
+  batch, so the technique sees each block; the exported state has a
+  register file of its own, its history jumpkind and call stack, and
+  stdin as the symbols Rust read (``_prepare_for_python_step``); each
+  re-imported successor gets its source's Rust path condition on top of
+  the constraints the technique added; and ``explore()`` gives the first
+  ``Veritesting`` a ``deviation_filter`` for the find/avoid targets, as
+  ``SimulationManager.explore`` does, so a merge stops there instead of
+  stepping through. Note that when a technique declines on a
   block, no Python-side merging happens; and because Veritesting's
   merges occur inside its *own* nested Python ``SimulationManager``,
   ``states_merged_native`` stays 0 (use ``veritesting_applied`` to

@@ -1705,11 +1705,11 @@ class TestVeritestingNativeDispatch:
         assert mgr._active_techniques[-1].project is fauxware_project
 
     def test_dispatch_fires_and_reaches_target(self, fauxware_project):
-        """End-to-end on fauxware: the step_state dispatch fires and the run
-        still reaches the find address with the correct (backdoor) input —
-        parity with the Python-engine Veritesting run. Veritesting declines on
-        fauxware's SimProcedure-heavy blocks, so no merge is expected here; the
-        merge itself is pinned by test_merges_on_veritesting_a."""
+        """End-to-end on fauxware: Veritesting merges the backdoor check in
+        ``authenticate`` and the run reaches the find address with the backdoor
+        input, as the Python-engine Veritesting run does (angr-mx00p.89). The
+        merged successors carry their source's path condition and symbolic
+        stdin back into Rust, so the found state solves to SOSNEAKY."""
         from angr.exploration_techniques import Veritesting
 
         state = fauxware_project.factory.entry_state()
@@ -1718,9 +1718,76 @@ class TestVeritestingNativeDispatch:
         mgr.explore(find=self.FAUXWARE_ACCEPTED, max_steps=2000)
 
         assert len(mgr.found) >= 1, "Veritesting dispatch must still reach the find address"
-        assert mgr.stats.get("veritesting_dispatches", 0) >= 1, "step_state dispatch must have fired"
+        assert mgr.stats.get("veritesting_applied", 0) >= 1, "Veritesting must have merged"
         # The accepted branch is only reachable with the SOSNEAKY backdoor.
         assert b"SOSNEAKY" in mgr.found[0].posix.dumps(0)
+
+    def test_explore_stops_veritesting_at_targets(self, fauxware_project):
+        """explore() gives the first Veritesting a deviation filter for the
+        find/avoid targets, as SimulationManager.explore does, chained onto
+        the technique's own filter and restored afterwards: without it a merge
+        steps through the find address (angr-mx00p.89)."""
+        from angr.exploration_techniques import Veritesting
+
+        seen = []
+        own = lambda s: False  # noqa: E731
+        vt = Veritesting(deviation_filter=own)
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.use_technique(vt)
+        restore = mgr._install_veritesting_target_filter(self.FAUXWARE_ACCEPTED, 0x400692)
+        installed = vt.options["deviation_filter"]
+        for addr in (self.FAUXWARE_ACCEPTED, 0x400692, 0x400700):
+            st = fauxware_project.factory.blank_state(addr=addr)
+            seen.append(installed(st))
+        restore()
+        assert seen == [True, True, False]
+        assert vt.options["deviation_filter"] is own
+
+        bare = Veritesting()
+        mgr2 = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr2.use_technique(bare)
+        mgr2.explore(find=self.FAUXWARE_ACCEPTED, max_steps=2000)
+        assert "deviation_filter" not in bare.options
+
+    def test_export_carries_jumpkind_and_call_stack(self, fauxware_project):
+        """get_state_by_id gives the state the jumpkind that led to it and
+        Rust's call stack: Veritesting builds its CFG from ``(addr, jumpkind)``
+        and returns through the frames (angr-mx00p.89). 0x40068e is where the
+        hooked strncmp returns into authenticate (0x400664)."""
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.explore(find=0x40068E, max_steps=2000)
+        (sid,) = mgr._rust_mgr.get_state_ids("found")
+        st = mgr.get_state_by_id(sid)
+        assert st.history.jumpkind == "Ijk_Ret"
+        assert 0x400664 in [frame.func_addr for frame in st.callstack]
+
+    def test_reimport_after_stdin_read_keeps_input(self, fauxware_project):
+        """A technique that hands back a state Rust has already fed stdin
+        (here unchanged, at authenticate's entry) must not lose the input: the
+        re-imported state keeps its source's path condition and the stdin
+        symbols, consumed, so the found state still solves to the backdoor and
+        dumps each byte once (angr-mx00p.89)."""
+        from angr.exploration_techniques.base import ExplorationTechnique
+
+        class _IdentityAtAuthenticate(ExplorationTechnique):
+            applied = 0
+
+            def step_state(self, simgr, state, **kwargs):
+                if state.addr == 0x400664 and not self.applied:
+                    self.applied += 1
+                    return {"active": [state]}
+                return simgr.step_state(state, **kwargs)
+
+        tech = _IdentityAtAuthenticate()
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.use_technique(tech)
+        mgr.explore(find=self.FAUXWARE_ACCEPTED, max_steps=2000)
+
+        assert tech.applied == 1
+        assert len(mgr.found) >= 1
+        dumped = mgr.found[0].posix.dumps(0)
+        assert b"SOSNEAKY" in dumped
+        assert len(dumped) == 18, dumped
 
     def test_merges_on_veritesting_a(self):
         """Canonical Veritesting target (angr-op0dn.11.7 acceptance): the nested

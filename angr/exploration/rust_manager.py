@@ -135,6 +135,10 @@ _SNAPSHOT_MAGIC = b"ANGRSNAP\x01"
 # posix.stdin.content ASTs — see `_capture_seed_stdin_content`.
 _SEED_STDIN_KEY = -1
 
+# `HistoryEntry`'s jumpkind byte for each `Ijk_*` it names (native
+# `state/types.rs`); a syscall is 3 and anything else 4.
+_HISTORY_JUMPKIND_CODES = {"Ijk_Boring": 0, "Ijk_Call": 1, "Ijk_Ret": 2}
+
 if TYPE_CHECKING:
     import angr
     from angr.exploration.rust_state_proxy import RustInspectProxy
@@ -3800,11 +3804,17 @@ class RustExplorationManager(
             stdin = getattr(getattr(angr_state, "posix", None), "stdin", None)
             content = getattr(stdin, "content", None)
             asts = []
+            consumed = 0
             if isinstance(content, list) and content:
-                for data, _size in content:
+                # Packets before ``pos`` were already read (a state Python
+                # stepped past a stdin read; angr-mx00p.89).
+                read_packets = stdin.pos if isinstance(getattr(stdin, "pos", None), int) else 0
+                for i, (data, _size) in enumerate(content):
                     if not isinstance(data, claripy.ast.BV) or data.length % 8:
                         return
                     asts.extend(data.chop(8))  # chop(8)[0] is the byte at stream offset 0
+                    if i < read_packets:
+                        consumed += data.length // 8
             elif content is None and hasattr(stdin, "load") and hasattr(stdin, "size"):
                 # angr-23n3r: ``blank_state(stdin=BVS)`` makes a file-backed
                 # SimFileStream with no packet list; read it whole while its
@@ -3823,7 +3833,7 @@ class RustExplorationManager(
                 return
             if not asts or len(asts) > self._FS_EXPORT_MAX_FILE_SIZE:
                 return
-            self._rust_mgr.seed_stdin_content(state_id, asts)
+            self._rust_mgr.seed_stdin_content(state_id, asts, consumed)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: stdin seeding failed; native read(0)
             # mints fresh symbols, so the harness's BVS stays unconstrained on
@@ -4050,6 +4060,26 @@ class RustExplorationManager(
         for call_site, callee, ret_addr, sp in reversed(frames):
             rust_state.push_call_frame(call_site, callee, ret_addr, sp)
 
+    @staticmethod
+    def _seed_python_jumpkind(angr_state: angr.SimState, rust_state) -> None:
+        """Record the jumpkind that led to ``angr_state`` as ``rust_state``'s last history entry.
+
+        An export reads ``history.jumpkind`` back from that entry, and analyses
+        key on it (Veritesting starts its CFG from ``(addr, jumpkind)``), so a
+        state Python stepped and handed over must not come back as
+        ``Ijk_Boring`` (angr-mx00p.89). A state that has not stepped has no
+        jumpkind to carry.
+        """
+        history = angr_state.history
+        jumpkind = history.jumpkind
+        if not jumpkind or history.depth == 0:
+            return
+        code = _HISTORY_JUMPKIND_CODES.get(jumpkind)
+        if code is None:
+            code = 3 if jumpkind.startswith("Ijk_Sys") else 4
+        src = history.addr
+        rust_state.add_detailed_history(src if isinstance(src, int) else 0, code, angr_state.addr)
+
     def _add_rust_state(self, stash: str, angr_state: angr.SimState):
         """Add an angr state to a Rust stash.
 
@@ -4103,6 +4133,7 @@ class RustExplorationManager(
         # top-first; Rust's call stack is push-ordered. The bottom sentinel
         # frame is not a call.
         self._push_python_call_frames(angr_state, rust_state)
+        self._seed_python_jumpkind(angr_state, rust_state)
 
         # Push posix.brk so Rust's NativeBrkSyscall starts from the correct
         # base. The angr loader sets state.posix.brk to (binary last_addr +
@@ -4924,6 +4955,7 @@ class RustExplorationManager(
             self._rust_mgr.set_avoid_addrs(avoid_addrs)
         self._rust_mgr.set_avoid_needs_python(callable(avoid))
         self._avoid_predicate = avoid if callable(avoid) else None
+        self._explore_avoid_addrs = avoid_addrs
 
         # Set num_find
         self._rust_mgr.set_num_find(num_find)
@@ -4963,10 +4995,14 @@ class RustExplorationManager(
         # found-set stays correct (angr-op0dn.13.5).
         parallel_eligible = not has_predicates and until is None and not self._active_techniques
         self._engage_parallel_workers(parallel_eligible)
-        if has_predicates or bool(self._active_techniques):
-            result = self._explore_with_predicates(num_find, until, timeout, max_steps)
-        else:
-            result = self._explore_with_addresses(num_find, until, timeout, max_steps)
+        restore_veritesting = self._install_veritesting_target_filter(find, avoid)
+        try:
+            if has_predicates or bool(self._active_techniques):
+                result = self._explore_with_predicates(num_find, until, timeout, max_steps)
+            else:
+                result = self._explore_with_addresses(num_find, until, timeout, max_steps)
+        finally:
+            restore_veritesting()
 
         # angr-bdeqa: an address-based find that came up empty may be targeting
         # an address strictly inside the Python init prefix, which Rust never
@@ -4976,6 +5012,45 @@ class RustExplorationManager(
                 self._replay_preinit_prefix_for_find(self._extract_addrs(find), avoid_addrs)
             self._preinit_seeds = []
         return result
+
+    def _install_veritesting_target_filter(self, find, avoid) -> Callable[[], None]:
+        """Make the first Veritesting stop its nested run at a find/avoid state.
+
+        ``SimulationManager.explore`` does the same: Veritesting steps a merge
+        region in its own SimulationManager, which knows nothing of the
+        explore targets, so without this deviation filter a merge steps
+        straight through the find address and the outer manager never sees a
+        state there (angr-mx00p.89). Returns the callable that restores the
+        technique's own filter.
+        """
+        from angr.exploration_techniques import Veritesting
+
+        vt = next((t for t in self._active_techniques if isinstance(t, Veritesting)), None)
+        if vt is None or (find is None and avoid is None):
+            return lambda: None
+
+        def target_test(cond):
+            if cond is None:
+                return lambda _s: False
+            if callable(cond):
+                return lambda s: bool(cond(s))
+            addrs = frozenset(self._extract_addrs(cond))
+            return lambda s: s.addr in addrs
+
+        is_find, is_avoid = target_test(find), target_test(avoid)
+        saved = vt.options.get("deviation_filter")
+        if saved is None:
+            vt.options["deviation_filter"] = lambda s: is_find(s) or is_avoid(s)
+        else:
+            vt.options["deviation_filter"] = lambda s: is_find(s) or is_avoid(s) or saved(s)
+
+        def restore() -> None:
+            if saved is None:
+                vt.options.pop("deviation_filter", None)
+            else:
+                vt.options["deviation_filter"] = saved
+
+        return restore
 
     def _engage_parallel_workers(self, eligible: bool) -> None:
         """Apply the programmatic ``parallel_workers=`` request for this explore.
@@ -5142,6 +5217,11 @@ class RustExplorationManager(
             remaining = batch_limit - (steps_taken - batch_steps_start)
             _t1 = time.perf_counter_ns()
             if self._has_technique_step_state_hooks():
+                # One step per dispatch: a step_state technique (Veritesting)
+                # must see every state before it advances, as under
+                # SimulationManager.step (angr-mx00p.89). `remaining` is also
+                # what a step_complete event is credited with below.
+                remaining = 1
                 event = self._run_with_step_state_hooks(remaining)
             elif self._has_technique_step_hooks():
                 event = self._run_with_step_hooks(remaining)
@@ -5213,7 +5293,8 @@ class RustExplorationManager(
                 if max_steps is not None:
                     batch_size = min(batch_size, max_steps - steps_taken)
                 if self._has_technique_step_state_hooks():
-                    event = self._run_with_step_state_hooks(batch_size)
+                    # See _run_predicate_batch: one step per step_state dispatch.
+                    event = self._run_with_step_state_hooks(1)
                 elif self._has_technique_step_hooks():
                     event = self._run_with_step_hooks(batch_size)
                 else:

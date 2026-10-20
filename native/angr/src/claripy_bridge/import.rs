@@ -10,6 +10,9 @@
 //! imports the installed extension, whose claripy classes are different type
 //! objects; some tests hand in duck-typed ASTs).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use clarirs_core::prelude::{AstOp, AstRef};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -443,11 +446,43 @@ fn claripy_to_rustbv_depth(
 ///
 /// Op semantics and every width / bounds check mirror the attribute walk's
 /// arms one for one.
-#[allow(clippy::too_many_lines, reason = "one arm per supported AstOp")]
+///
+/// Each distinct node is imported once per call: a merged state's memory
+/// holds `If` trees that share their subterms, so a walk without the memo
+/// visits a node once per path to it, exponential in the merge depth
+/// (angr-mx00p.89).
 fn import_clarirs(
     node: &AstRef<'static>,
     ctx: &SymContext,
     depth: u32,
+) -> Result<RustBV, BridgeError> {
+    import_clarirs_memo(node, ctx, depth, &RefCell::new(HashMap::new()))
+}
+
+/// Imported value per clarirs node, keyed by its hash: clarirs interns nodes,
+/// so equal hashes are the same node.
+type ImportMemo = RefCell<HashMap<u64, RustBV>>;
+
+fn import_clarirs_memo(
+    node: &AstRef<'static>,
+    ctx: &SymContext,
+    depth: u32,
+    memo: &ImportMemo,
+) -> Result<RustBV, BridgeError> {
+    if let Some(done) = memo.borrow().get(&node.hash()) {
+        return Ok(done.clone());
+    }
+    let value = import_clarirs_node(node, ctx, depth, memo)?;
+    memo.borrow_mut().insert(node.hash(), value.clone());
+    Ok(value)
+}
+
+#[allow(clippy::too_many_lines, reason = "one arm per supported AstOp")]
+fn import_clarirs_node(
+    node: &AstRef<'static>,
+    ctx: &SymContext,
+    depth: u32,
+    memo: &ImportMemo,
 ) -> Result<RustBV, BridgeError> {
     if depth > MAX_IMPORT_RECURSION_DEPTH {
         return Err(BridgeError::RecursionLimit(format!(
@@ -458,7 +493,7 @@ fn import_clarirs(
 
     let op_name = || node.to_opstring();
     let children = || node.op().child_iter();
-    let import = |child: &AstRef<'static>| import_clarirs(child, ctx, depth + 1);
+    let import = |child: &AstRef<'static>| import_clarirs_memo(child, ctx, depth + 1, memo);
     let child = |i: usize| -> Result<RustBV, BridgeError> {
         let c = node.op().get_child(i).ok_or_else(|| {
             BridgeError::InvalidArgs(format!("{} is missing operand {i}", node.to_opstring()))

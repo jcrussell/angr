@@ -1409,6 +1409,13 @@ class RustStateExportMixin:
         # nothing it derives is tied to the input (angr-mx00p.89).
         self._inject_rust_stdout(state, snapshot.state_id)
         self._inject_rust_stdin(state, snapshot.state_id)
+        # The call stack and the jumpkind that led here: analyses that step
+        # the state themselves key on both (Veritesting builds its CFG from
+        # ``(addr, jumpkind)`` and returns through the frames; angr-mx00p.89).
+        self._sync_rust_callstack_to_state(state, snapshot.state_id)
+        detailed = snapshot.get_detailed_history_str()
+        if detailed:
+            state.history.jumpkind = detailed[-1][1]
         # Eval/min/max/satisfiable defer to the Rust solver — required because
         # _apply_symbolic_constraints no longer pre-pins recovered symbols
         # (pre-pinning was UNSAT-prone, see constraint-export-no-pre-pin memo).
@@ -1419,6 +1426,81 @@ class RustStateExportMixin:
     def _load_snapshot_registers(self, state: angr.SimState, snapshot):
         """Restore register values from snapshot using Rust's named register export."""
         self._write_named_registers(state, snapshot)
+
+    def _prepare_for_python_step(self, state: angr.SimState, state_id: int) -> None:
+        """Make an export of ``state_id`` safe for a Python technique to step and hand back.
+
+        A ``step_state`` hook (Veritesting) steps ``state`` in its own
+        SimulationManager and returns successors that are re-imported into
+        Rust (angr-mx00p.89). That needs a register file of the state's own
+        (:meth:`_detach_register_proxy`) and stdin as the symbols Rust read,
+        marked consumed (:meth:`_symbolic_rust_stdin`).
+        """
+        self._detach_register_proxy(state, state_id)
+        self._symbolic_rust_stdin(state, state_id)
+
+    def _symbolic_rust_stdin(self, state: angr.SimState, state_id: int) -> None:
+        """Replace the evaluated stdin packet on ``state`` with the symbols Rust read.
+
+        An export carries stdin as one concrete packet, each byte Rust read
+        evaluated under its constraints (``_inject_rust_stdin``): right for
+        ``posix.dumps(0)`` on a finished state, wrong for one that keeps
+        running, whose later constraints must stay on the input symbols. The
+        packet becomes those symbols, already read, so the re-import seeds them
+        to Rust as consumed (``_seed_stdin_to_rust``). Left alone when the
+        stream also holds harness packets, whose read position Rust owns.
+        """
+        if not self._rust_mgr.has_state_stdin_symbols(state_id):
+            return
+        stdin = getattr(state.posix, "stdin", None)
+        content = getattr(stdin, "content", None)
+        if not isinstance(content, list):
+            return
+        self._drop_stale_rust_stdin_packets(stdin)
+        if content:
+            return
+        leaves = []
+        for name, bits in self._rust_mgr.get_state_stdin_symbols(state_id):
+            sym = claripy.BVS(name, bits, explicit_name=True)
+            # _inject_rust_stdin lays a wider symbol (scanf %d) out little-endian.
+            leaves.append(sym.reversed if bits > 8 else sym)
+        data = claripy.Concat(*leaves) if len(leaves) > 1 else leaves[0]
+        content.append((data, claripy.BVV(data.length // 8, state.arch.bits)))
+        stdin.pos = len(content)
+
+    def _detach_register_proxy(self, state: angr.SimState, state_id: int) -> None:
+        """Give ``state`` its own register file in place of a ``RustRegisterProxy``.
+
+        The lazy proxy (:meth:`_recover_symbolic_registers_from_snapshot`) reads
+        and writes the Rust state ``state_id`` live, so every copy of ``state``
+        shares one register file. That is right for an export the caller only
+        reads, and wrong for one a Python technique steps itself (a
+        ``step_state`` hook such as Veritesting forks and steps it in a nested
+        Python SimulationManager): its successors would all write the same
+        Rust registers, and re-importing them fails once ``state_id`` is
+        dropped (angr-mx00p.89). Build a plain register plugin holding the
+        concrete registers plus each symbolic one recovered as its claripy AST.
+        No-op when ``state.registers`` is already a plain plugin.
+        """
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
+
+        if not isinstance(state.plugins.get("registers"), RustRegisterProxy):
+            return
+        snapshot = self._rust_mgr.export_state(state_id)
+        sim_registers_cls = state.plugin_preset.request_plugin("sym_memory")
+        registers = sim_registers_cls(memory_id="reg", endness=state.arch.register_endness)
+        state.register_plugin("registers", registers)
+        for reg_name, (value, size_bits) in snapshot.get_registers_named().items():
+            try:
+                setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
+            except (AttributeError, KeyError, ValueError) as e:
+                # cat-(a) EXPECTED CONTROL FLOW: VEX-internal registers angr's
+                # plugin does not expose; same skip as _write_named_registers.
+                l.debug("Skipping register %s while detaching: %s", reg_name, e)
+        for reg_name in snapshot.get_symbolic_register_names():
+            ast = self._rust_mgr.get_state_register_ast(state_id, reg_name)
+            if ast is not None:
+                setattr(state.regs, reg_name, ast)
 
     def _recover_symbolic_registers_from_snapshot(self, state: angr.SimState, snapshot):
         """Recover Rust-computed SYMBOLIC registers onto a plain export state.
