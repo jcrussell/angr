@@ -15,6 +15,7 @@ from angr.errors import AngrCallableMultistateError
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
+    BIN_LOCATION,
     RUST_EXPLORATION_AVAILABLE,
     TEST_BINARIES_DIR,
     ExplorationEvent,
@@ -1664,7 +1665,7 @@ def _locate_veritesting_a():
     ../binaries). CI checks out angr/binaries so the merge assertion runs there.
     """
     candidates = [
-        os.path.join(TEST_BINARIES_DIR, "..", "..", "..", "binaries", "tests", "x86_64", "veritesting_a"),
+        os.path.join(BIN_LOCATION, "tests", "x86_64", "veritesting_a"),
         os.path.expanduser("~/repos/binaries/tests/x86_64/veritesting_a"),
         os.path.expanduser("~/binaries/tests/x86_64/veritesting_a"),
     ]

@@ -51,18 +51,20 @@ except ImportError:
 
 
 # --- Path resolution ------------------------------------------------------
-# In-repo binaries first, then the angr-examples fauxware fallbacks.
-_BINARY_CANDIDATES = [
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "binaries"),
-    os.path.expanduser("~/repos/angr-examples/examples/fauxware"),
-    os.path.expanduser("~/angr-examples/examples/fauxware"),
-]
-TEST_BINARIES_DIR = next((d for d in _BINARY_CANDIDATES if os.path.isdir(d)), _BINARY_CANDIDATES[0])
+# The angr/binaries checkout next to this repo, as ``tests.common.bin_location``
+# defines it (not imported: tests.common raises at import without one).
+BIN_LOCATION = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", "binaries")
 
 # Honors ANGR_EXAMPLES_DIR (set by CI), else the default checkout location.
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
-FAUXWARE_PATH = os.path.join(TEST_BINARIES_DIR, "fauxware")
+# angr/binaries' x86_64 fauxware, else angr-examples' byte-identical copy.
+_FAUXWARE_CANDIDATES = [
+    os.path.join(BIN_LOCATION, "tests", "x86_64", "fauxware"),
+    os.path.join(EXAMPLES_DIR, "fauxware", "fauxware"),
+]
+FAUXWARE_PATH = next((p for p in _FAUXWARE_CANDIDATES if os.path.exists(p)), _FAUXWARE_CANDIDATES[0])
+TEST_BINARIES_DIR = os.path.dirname(FAUXWARE_PATH)
 
 # The bounded exhaustive find-all synthetic: 2^W = 8 leaves, one
 # ``read(0, b, 32)``, a ``trap_point(x) -> x`` bounce site and a

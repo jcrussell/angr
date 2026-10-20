@@ -29,12 +29,12 @@ from angr.sim_manager import SimulationManager
 
 # Availability guard and examples-dir resolution live in conftest (angr-7gdp).
 from tests.engines.conftest import (
-    EXAMPLES_DIR,
+    FAUXWARE_PATH,
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
 )
 
-FAUXWARE = os.path.join(EXAMPLES_DIR, "fauxware", "fauxware")
+FAUXWARE = FAUXWARE_PATH
 
 
 @pytest.fixture

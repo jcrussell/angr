@@ -31,9 +31,9 @@ import os
 import pytest
 
 import angr
-from tests.engines.conftest import EXAMPLES_DIR, RUST_EXPLORATION_AVAILABLE, RustExplorationManager
+from tests.engines.conftest import FAUXWARE_PATH, RUST_EXPLORATION_AVAILABLE, RustExplorationManager
 
-FAUXWARE = os.path.join(EXAMPLES_DIR, "fauxware", "fauxware")
+FAUXWARE = FAUXWARE_PATH
 
 
 def _load_rust_project() -> tuple[angr.Project, RustExplorationManager]:
