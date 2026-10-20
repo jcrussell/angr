@@ -401,6 +401,17 @@ BIMODAL_BENCHMARKS = frozenset(
 # edit this table — that way the new value lands in a reviewable diff with a
 # rationale, instead of arriving as a side effect of a refresh run.
 PINNED_RUST_TIMES = {
+    # angr-mx00p.24. Since the clarirs cutover the whole run is one Z3 check
+    # (z3_site_eval) at the find state, and that query is seed-luck-bound:
+    # the engine's own terms, dumped with debug_solver_smtlib2 and replayed in
+    # a fresh Z3 5.1, solve in 10.6-55.8 s across six random seeds and 19-46 s
+    # across the qfbv / bit-blast / simplify tactic pipelines; narrowing the
+    # 32/64-bit arithmetic to the 8 bits compared made it 50 s. The engine's
+    # fixed seed lands on 18.95-19.37 s (5 standalone runs), so the 3.5 s
+    # rust-symex pin was a different term shape's luck, not a target. 22 clears
+    # the standalone maximum by the ~15% in-gate load allowance the pins above
+    # settled on.
+    "google2016_unbreakable_1": 22.0,
     # angr-x6t9o. Bimodal (angr-5cx4r) *and* load-sensitive: 12 consecutive
     # ralph gate runs read 2.87-3.14s while standalone runs on the same commit
     # read 2.45-2.51s, because the gate always runs right after `cargo test

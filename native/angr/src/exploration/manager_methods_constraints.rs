@@ -11,7 +11,7 @@
 //!   `export_state_constraints`, `add_constraints_to_{pending,state}`,
 //!   `{export,import}_z3_constraint_ptrs`, `state_unsat_core`,
 //!   `{fork,borrow}_pending_solver`, `fork_state_solver`,
-//!   `{get,set}_state_solver_timeout`, `debug_solver_info`.
+//!   `{get,set}_state_solver_timeout`, `debug_solver_info`, `debug_solver_smtlib2`.
 //! - **Pending-state export/inspection**: `export_pending_state`,
 //!   `export_callback_bundle`, `get_active_handle_ids`,
 //!   `get_pending_{root_state_id,ancestry,mapped_pages}`,
@@ -309,6 +309,15 @@ impl RustExplorationManager {
     /// and cross-checks `exported_ptrs` against `export_z3_constraint_ptrs`.
     pub fn debug_solver_info(&self, state_id: u64) -> PyResult<String> {
         self._debug_solver_info(state_id)
+    }
+
+    /// Debug: the state's solver assertions as SMT-LIB2 text, the terms Z3
+    /// sees, for reproducing a slow query outside the engine (angr-mx00p.24).
+    /// Interactive-debugging tool like [`Self::debug_solver_info`].
+    pub fn debug_solver_smtlib2(&self, state_id: u64) -> PyResult<String> {
+        self.with_state(state_id, |state| {
+            Ok(state.solver().borrow().bench_dump_solver_smtlib2())
+        })
     }
 
     /// Export constraints from a state in any stash as claripy ASTs.

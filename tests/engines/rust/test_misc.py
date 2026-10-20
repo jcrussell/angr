@@ -1166,6 +1166,25 @@ class TestDebugSolverInfo:
         with pytest.raises(ValueError, match="not found"):
             mgr._rust_mgr.debug_solver_info(0xDEAD_BEEF)
 
+    def test_smtlib2_dump_replays_in_z3(self, fauxware_project):
+        """``debug_solver_smtlib2`` emits the state's assertions as SMT-LIB2
+        that a fresh Z3 parses back with the same count (angr-mx00p.24: it is
+        how a slow query is reproduced outside the engine)."""
+        import z3
+
+        from angr import claripy
+
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+        _donor, ptrs = _donor_bool_ptrs(proj, claripy.BVS("dbg_mx00p_24", 32) == 7)
+        assert mgr._rust_mgr.import_z3_constraint_ptrs(sid, ptrs) is True
+
+        smt = mgr._rust_mgr.debug_solver_smtlib2(sid)
+        assert "dbg_mx00p_24" in smt
+        assertions = z3.parse_smt2_string(smt)
+        assert len(assertions) == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+
 
 class TestStashNameValidation:
     """angr-630x: warn on unknown stash names in create_state/move_state/etc.
