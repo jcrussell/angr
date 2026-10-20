@@ -229,7 +229,7 @@ class TestInitCacheUserSymbolicGate:
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
 
         fs_state = proj.factory.entry_state()
-        content = claripy.Concat(*[claripy.BVS("license_byte_%d" % i, 8) for i in range(34)])
+        content = claripy.Concat(*[claripy.BVS(f"license_byte_{i}", 8) for i in range(34)])
         fs_state.fs.insert("/home/user/license", angr.storage.file.SimFile("license", content))
 
         assert mgr._compute_mem_init_key(fs_state, "dummy_key") == ""

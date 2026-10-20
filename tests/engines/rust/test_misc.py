@@ -1553,7 +1553,7 @@ class TestSnapshotRoundTrip:
         snapshot_path = tmp_path / "lineage.snap"
         mgr.dump_snapshot(str(snapshot_path))
 
-        sid = sorted(mgr._rust_mgr.get_state_ids("active"))[0]
+        sid = min(mgr._rust_mgr.get_state_ids("active"))
         mgr.get_state_options_py(sid).add("SENTINEL_OPTION")
         mgr.get_state_globals_py(sid)["sentinel"] = 1
         assert mgr._state_roots, "pre-condition: the seeded run must have recorded a lineage root"

@@ -95,6 +95,7 @@ I10. RustExplorationManager exposes `stats` as a @property
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import os
@@ -982,7 +983,7 @@ class RustErrorRecord:
 # leaking ~1.6 states/step). This is a *count* backstop that converts unbounded
 # growth into bounded growth — it is NOT a precise memory limit (per-state size
 # varies), so it is set far above any realistic workload (CTF explores peak in
-# the hundreds–low thousands of active states). When the cap is hit, excess
+# the hundreds-low thousands of active states). When the cap is hit, excess
 # forks are pruned to the ``pruned`` stash and a one-time warning is logged.
 # Pass ``max_active_states=None`` to disable, or a smaller int to bound tighter.
 # Memory-precise bounding is tracked separately (angr-wcxi).
@@ -1006,16 +1007,20 @@ _STASH_ACCESSORS = {
     "avoid": ("These are the states that matched the ``avoid`` predicate.", True, True),
     "deadended": ("These are the states that produced no successors.", True, True),
     "unconstrained": (
-        "These are states where a symbolic jump target (e.g., ret instruction "
-        "with symbolic return address) had too many possible concrete values "
-        "to enumerate and fork.",
+        (
+            "These are states where a symbolic jump target (e.g., ret instruction "
+            "with symbolic return address) had too many possible concrete values "
+            "to enumerate and fork."
+        ),
         True,
         True,
     ),
     "pruned": (
-        "These are states that were determined to be unsatisfiable during "
-        "exploration (e.g., both branches of a conditional were infeasible "
-        "given the current constraints).",
+        (
+            "These are states that were determined to be unsatisfiable during "
+            "exploration (e.g., both branches of a conditional were infeasible "
+            "given the current constraints)."
+        ),
         True,
         False,
     ),
@@ -2348,7 +2353,7 @@ class RustExplorationManager(
             # Claripy error — subsequent loads see stale data. Already warns.
             l.warning(f"Memory store error at 0x{addr:x}: {e}")
 
-    def _cb_lift_block(self, addr: int, opt_level: int = None, dirty_bytes: bytes = None):
+    def _cb_lift_block(self, addr: int, opt_level: int | None = None, dirty_bytes: bytes | None = None):
         """Lift the block at ``addr`` for the Rust engine, which reads the
         returned ``pyvex.IRSB`` directly (``vex/pyvex_reader.rs``). Returns None
         when no block can be lifted there."""
@@ -2477,13 +2482,12 @@ class RustExplorationManager(
 
     def _cb_resolve_function(self, addr: int, name: str | None) -> tuple[str, int, bool] | None:
         """Resolve an unmodeled function call."""
-        if hasattr(self._project, "_sim_procedures"):
-            if addr in self._project._sim_procedures:
-                proc = self._project._sim_procedures[addr]
-                proc_name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
-                num_args = getattr(proc, "num_args", 0) or 0
-                no_ret = getattr(proc, "NO_RET", False)
-                return (proc_name, num_args, no_ret)
+        if hasattr(self._project, "_sim_procedures") and addr in self._project._sim_procedures:
+            proc = self._project._sim_procedures[addr]
+            proc_name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+            num_args = getattr(proc, "num_args", 0) or 0
+            no_ret = getattr(proc, "NO_RET", False)
+            return (proc_name, num_args, no_ret)
 
         if hasattr(self._project, "loader"):
             obj = self._project.loader.find_object_containing(addr)
@@ -2579,10 +2583,13 @@ class RustExplorationManager(
             obj = self._project.loader.find_object_containing(addr)
             if obj and obj.binary is not None:
                 for section in obj.sections:
-                    if section.is_executable and section.min_addr <= addr < section.max_addr:
-                        if section.name not in (".plt", ".plt.got", ".plt.sec"):
-                            l.debug(f"Internal function at 0x{addr:x} - returning pass-through")
-                            return ("__internal_passthrough__", 0, False)
+                    if (
+                        section.is_executable
+                        and section.min_addr <= addr < section.max_addr
+                        and section.name not in (".plt", ".plt.got", ".plt.sec")
+                    ):
+                        l.debug(f"Internal function at 0x{addr:x} - returning pass-through")
+                        return ("__internal_passthrough__", 0, False)
 
         l.debug(f"Could not resolve function at 0x{addr:x} (name={name})")
         return None
@@ -2914,12 +2921,10 @@ class RustExplorationManager(
         if state_id is not None and state_id >= 0:
             from angr.exploration.rust_state_proxy import RustStateProxy
 
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: state may have been
+            # dropped from Rust between dispatch and proxy build.
+            with contextlib.suppress(Exception):
                 return RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
-            except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: state may have been
-                # dropped from Rust between dispatch and proxy build.
-                pass
         return self._get_callback_state() or self._get_default_state()
 
     def _dispatch_inspect_event(self, event_type: str, state_id: int, when: str, **attrs):
@@ -4755,7 +4760,10 @@ class RustExplorationManager(
             if steps_taken - last >= interval:
                 self._progress_last_fired = steps_taken
                 counts = self._rust_mgr.stash_counts()
-                try:
+                # cat-(b) FALLBACK WITH LOSS: progress callback raised; suppress so
+                # user code can't break exploration. The callback's view skips this
+                # tick.
+                with contextlib.suppress(Exception):
                     cb(
                         {
                             "step_count": steps_taken,
@@ -4765,11 +4773,6 @@ class RustExplorationManager(
                             "elapsed_seconds": time.time() - start_time,
                         }
                     )
-                except Exception:
-                    # cat-(b) FALLBACK WITH LOSS: progress callback raised; suppress so
-                    # user code can't break exploration. The callback's view skips this
-                    # tick.
-                    pass
 
     def set_progress_callback(self, callback: Callable, interval_steps: int = 100) -> None:
         """Set a progress callback that fires every `interval_steps` steps.
@@ -5411,13 +5414,11 @@ class RustExplorationManager(
 
             # Drop unconstrained states if save_unconstrained=False
             if not self._save_unconstrained:
-                try:
+                # cat-(b) FALLBACK WITH LOSS: clear_stash on the unconstrained
+                # stash failed (no such stash, race with Rust); states may persist
+                # in 'unconstrained' even though save_unconstrained=False.
+                with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.clear_stash("unconstrained")
-                except (RuntimeError, KeyError):
-                    # cat-(b) FALLBACK WITH LOSS: clear_stash on the unconstrained
-                    # stash failed (no such stash, race with Rust); states may persist
-                    # in 'unconstrained' even though save_unconstrained=False.
-                    pass
 
             # Periodically clean Python state cache to prevent memory leaks
             if steps_taken % 100 == 0:
@@ -5523,9 +5524,7 @@ class RustExplorationManager(
             self._phase2_reseeding = False
         self._rust_mgr.sync_state_index()
         # Guard against a no-op re-seed (would otherwise spin active_empty).
-        if not self._rust_mgr.get_state_ids("active"):
-            return False
-        return True
+        return bool(self._rust_mgr.get_state_ids("active"))
 
     def get_state_options_py(self, state_id: int) -> set:
         """Return the Python-side options set for a Rust state.
@@ -5658,19 +5657,15 @@ class RustExplorationManager(
 
         No-op on older Rust builds without the pymethod (steady mode absent).
         """
-        try:
+        with contextlib.suppress(AttributeError):
             self._rust_mgr.set_parallel_frontier_residency(bool(enabled))
-        except AttributeError:
-            pass
 
     def _finalize_parallel_session(self):
         """Drain any live steady-state session's resident frontier back into the
         stashes (angr-nkoct). No-op without a live session or on older Rust
         builds."""
-        try:
+        with contextlib.suppress(AttributeError):
             self._rust_mgr.finalize_parallel_session()
-        except AttributeError:
-            pass
 
     def _cleanup_state_cache(self):
         """Bound ``_state_cache`` size while preserving correctness invariants.
@@ -5796,16 +5791,14 @@ class RustExplorationManager(
         pinned = set(self._state_roots.values())
         if self._current_callback_state_id is not None:
             pinned.add(self._current_callback_state_id)
-            try:
+            # cat-(b) FALLBACK WITH LOSS: effective-state lookup failed; only
+            # the direct callback id is pinned, so an in-flight forked state
+            # could be evicted. Tolerated — eviction is recoverable via re-
+            # fetch on next access.
+            with contextlib.suppress(Exception):
                 eff_id = self._get_effective_state_id(self._current_callback_state_id)
                 if eff_id is not None:
                     pinned.add(eff_id)
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: effective-state lookup failed; only
-                # the direct callback id is pinned, so an in-flight forked state
-                # could be evicted. Tolerated — eviction is recoverable via re-
-                # fetch on next access.
-                pass
         if self._current_stepping_state_id is not None:
             pinned.add(self._current_stepping_state_id)
 
@@ -5931,14 +5924,12 @@ class RustExplorationManager(
         drain closes it on the owning coordinator thread. No-op (cheap locked
         empty check) in the single-worker case, where forks close inline.
         """
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: best-effort cleanup; never let a
+        # drain hiccup escape into the step loop.
+        with contextlib.suppress(Exception):
             from angr.exploration.rust_state_proxy import drain_solver_graveyard
 
             drain_solver_graveyard()
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: best-effort cleanup; never let a
-            # drain hiccup escape into the step loop.
-            pass
 
     def _found_count(self) -> int:
         """Fast count of found states without triggering full state export/sync."""
@@ -6385,12 +6376,11 @@ class RustExplorationManager(
 
             # Use Rust to move matching states
             for state_id in move_ids:
-                try:
+                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved
+                # (e.g., another technique deadended it). Suppress.
+                # State may have already been moved
+                with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(state_id, from_stash, to_stash)
-                except (RuntimeError, KeyError):
-                    # cat-(a) EXPECTED CONTROL FLOW: state may already have moved
-                    # (e.g., another technique deadended it). Suppress.
-                    pass  # State may have already been moved
 
         return self
 
@@ -6423,11 +6413,9 @@ class RustExplorationManager(
 
         # Move non-matching states to pruned stash
         for state_id in prune_ids:
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
+            with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.move_state(state_id, stash, "pruned")
-            except (RuntimeError, KeyError):
-                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                pass
 
         return self
 
@@ -6458,11 +6446,9 @@ class RustExplorationManager(
                     # state — if it's actually unsat, downstream solver use will catch.
                     pass  # Keep on error
             for state_id in prune_ids:
-                try:
+                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
+                with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(state_id, stash, "pruned")
-                except (RuntimeError, KeyError):
-                    # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                    pass
             return self
 
         return self.filter(stash=stash, filter_func=filter_func)
@@ -6493,11 +6479,9 @@ class RustExplorationManager(
             # Drop states matching predicate; unmatched/errored stay in place.
             drop_ids, _keep_ids, _errored_ids = self._evaluate_predicate_on_stash(stash, filter_func)
             for state_id in drop_ids:
-                try:
+                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
+                with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(state_id, stash, "deadended")
-                except (RuntimeError, KeyError):
-                    # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                    pass
 
         return self
 
@@ -6525,11 +6509,9 @@ class RustExplorationManager(
         # Move excess states to destination stash
         excess_ids = state_ids[limit:]
         for state_id in excess_ids:
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
+            with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.move_state(state_id, stash_from, stash_to)
-            except (RuntimeError, KeyError):
-                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                pass
 
         return self
 
@@ -6622,17 +6604,13 @@ class RustExplorationManager(
             merged_any = True
             # Drop the now-merged source states from the stash.
             for sid in group:
-                try:
+                # cat-(a) EXPECTED CONTROL FLOW: source already moved.
+                with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(sid, stash, "_merge_drop")
-                except (RuntimeError, KeyError):
-                    # cat-(a) EXPECTED CONTROL FLOW: source already moved.
-                    pass
         if merged_any:
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: intermediate stash never created.
+            with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.clear_stash("_merge_drop")
-            except (RuntimeError, KeyError):
-                # cat-(a) EXPECTED CONTROL FLOW: intermediate stash never created.
-                pass
         return True
 
     def merge(
@@ -6654,9 +6632,8 @@ class RustExplorationManager(
         # merge_states() and skip the export -> Python state.merge() ->
         # re-import round trip entirely. A custom merge_func or merge_key needs
         # exported SimStates, so those fall through to the Python path below.
-        if merge_func is None and merge_key is None:
-            if self._merge_native(stash, state_ids):
-                return self
+        if merge_func is None and merge_key is None and self._merge_native(stash, state_ids):
+            return self
 
         # Export all states to Python SimStates for merging
         try:
@@ -6732,17 +6709,13 @@ class RustExplorationManager(
 
             # Clear the Rust stash and re-add merged states
             for sid in state_ids:
-                try:
+                # cat-(a) EXPECTED CONTROL FLOW: source stash entry already moved.
+                with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(sid, stash, "_merge_drop")
-                except (RuntimeError, KeyError):
-                    # cat-(a) EXPECTED CONTROL FLOW: source stash entry already moved.
-                    pass
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop
+            # stash failed (already empty / never created).
+            with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.clear_stash("_merge_drop")
-            except (RuntimeError, KeyError):
-                # cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop
-                # stash failed (already empty / never created).
-                pass
 
             # Re-add merged states
             for ms, ms_demoted in merged:

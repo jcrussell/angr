@@ -77,6 +77,7 @@ class TestZ3TacticEnvVar:
             text=True,
             env=env,
             timeout=60,
+            check=False,
         )
         assert proc.returncode == 0, (
             f"subprocess failed (env={tactic_env_value!r}):\nstdout: {proc.stdout!r}\nstderr: {proc.stderr[-2000:]!r}"
@@ -135,6 +136,7 @@ class TestZ3TacticEnvVar:
             text=True,
             env=env,
             timeout=30,
+            check=False,
         )
         # Either a non-zero exit (panic via build_solver) or an exception name
         # in stdout is acceptable; the contract is "loud failure, not silent".
@@ -199,6 +201,7 @@ class TestZ3SatPhaseEnvVar:
             text=True,
             env=env,
             timeout=60,
+            check=False,
         )
         if not expect_success:
             return proc

@@ -127,7 +127,7 @@ class TestRustIntegration:
         if example_name in self.KNOWN_XFAIL:
             pytest.xfail(f"{example_name}: known Rust engine compatibility issue")
 
-        success, output, elapsed = _run_example(example_name, "rust", timeout)
+        success, output, _elapsed = _run_example(example_name, "rust", timeout)
         assert success, f"Rust engine failed on {example_name}:\n{output}"
 
         if expected:

@@ -209,5 +209,5 @@ def test_unknown_class_is_an_error():
     class Bogus:
         pass
 
-    with pytest.raises(ValueError, match="unknown pyvex statement class .Bogus."):
+    with pytest.raises(ValueError, match=r"unknown pyvex statement class .Bogus."):
         _read([Bogus()])

@@ -37,7 +37,9 @@ class RustStateCacheMixin:
         """Set the current callback state for memory access."""
         self._callback_state = state
 
-    def _register_handle(self, handle_id: int, ast: object, addr: int = None, size: int = None, state_id: int = None):
+    def _register_handle(
+        self, handle_id: int, ast: object, addr: int | None = None, size: int | None = None, state_id: int | None = None
+    ):
         """Pin a claripy AST to a state address for export recovery.
 
         When an AST is stored at a concrete address (``addr`` + ``state_id``

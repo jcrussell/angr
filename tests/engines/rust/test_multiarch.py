@@ -1014,7 +1014,7 @@ class TestMultiArchSupport:
         assert state.get_register("cmstart") == 0xDEAD_BEEF
 
         # x86 must reject the amd64-only segment-base names outright.
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="unknown register"):
             state.set_register("fs_const", 0x1234)
 
         # Rewriting emnote must not disturb cmstart (or vice versa),

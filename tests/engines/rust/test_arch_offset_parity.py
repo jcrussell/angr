@@ -90,8 +90,10 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
     "amd64": (
         (
             frozenset({"_bp", "bph", "dih", "sih"}),
-            "high-byte (bits 8-15) slices of rbp/rdi/rsi plus archinfo's 16-bit `_bp` "
-            "spelling; the Rust table stops at the 8-bit low, 16-, 32- and 64-bit forms",
+            (
+                "high-byte (bits 8-15) slices of rbp/rdi/rsi plus archinfo's 16-bit `_bp` "
+                "spelling; the Rust table stops at the 8-bit low, 16-, 32- and 64-bit forms"
+            ),
         ),
         (
             frozenset({"cr0", "cr2", "cr3", "cr4", "cr8"}),
@@ -99,13 +101,17 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
         ),
         (
             frozenset({"cs_seg", "ds_seg", "es_seg", "fs_seg", "gs_seg", "ss_seg"}),
-            "segment selectors; Rust models flat addressing and reaches TLS through "
-            "fs_const/gs_const, which it does implement",
+            (
+                "segment selectors; Rust models flat addressing and reaches TLS through "
+                "fs_const/gs_const, which it does implement"
+            ),
         ),
         (
             frozenset({"fpu_regs", "fpu_tags"}),
-            "aggregate x87 rows (the whole 64-byte register file / 8-byte tag block); "
-            "archinfo exposes no per-st* names and the Rust table has no aggregate entries",
+            (
+                "aggregate x87 rows (the whole 64-byte register file / 8-byte tag block); "
+                "archinfo exposes no per-st* names and the Rust table has no aggregate entries"
+            ),
         ),
         (_numbered("mm", 8), "MMX aliases over the x87 register file (mm0 is fpu_regs+0)"),
         (_numbered("r", 16, "w", start=8), "16-bit sub-registers of r8-r15"),
@@ -125,8 +131,10 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
         ),
         (
             frozenset({"fpu_regs", "fpu_tags"}),
-            "aggregate x87 rows (register file / tag block); archinfo exposes no "
-            "per-st* names and the Rust table has no aggregate entries",
+            (
+                "aggregate x87 rows (register file / tag block); archinfo exposes no "
+                "per-st* names and the Rust table has no aggregate entries"
+            ),
         ),
         (_numbered("mm", 8), "MMX aliases over the x87 register file (mm0 is fpu_regs+0)"),
     ),
@@ -149,8 +157,10 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
     "mips32": (
         (
             frozenset({"ulr", "cond", "cp0_status"}),
-            "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
-            "status) that the Rust MIPS table does not model",
+            (
+                "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
+                "status) that the Rust MIPS table does not model"
+            ),
         ),
         (frozenset({"dspcontrol"}) | _numbered("ac", 4), "MIPS DSP-ASE accumulators and control word"),
         (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
@@ -158,8 +168,10 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
     "mips64": (
         (
             frozenset({"ulr", "cond", "cp0_status"}),
-            "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
-            "status) that the Rust MIPS table does not model",
+            (
+                "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
+                "status) that the Rust MIPS table does not model"
+            ),
         ),
         (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
     ),

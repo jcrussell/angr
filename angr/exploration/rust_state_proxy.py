@@ -76,16 +76,14 @@ def _release_owned_ctx(ctx, owner_tid) -> None:
         with _SOLVER_GRAVEYARD_LOCK:
             _SOLVER_GRAVEYARD.append((ctx, owner_tid))
         return
-    try:
+    # cat-(a) EXPECTED CONTROL FLOW: teardown-time best-effort; a missing
+    # close()/is_closed() (older .so) or a torn-down module just means we
+    # fall back to pyo3's leak-safe cross-thread drop refusal.
+    with contextlib.suppress(Exception):
         ctx.close()
         if not ctx.is_closed():
             with _SOLVER_GRAVEYARD_LOCK:
                 _SOLVER_GRAVEYARD.append((ctx, owner_tid))
-    except Exception:
-        # cat-(a) EXPECTED CONTROL FLOW: teardown-time best-effort; a missing
-        # close()/is_closed() (older .so) or a torn-down module just means we
-        # fall back to pyo3's leak-safe cross-thread drop refusal.
-        pass
 
 
 def drain_solver_graveyard() -> int:
@@ -113,11 +111,9 @@ def drain_solver_graveyard() -> int:
         if current != owner_tid:
             requeue.append((ctx, owner_tid))
             continue
-        try:
+        with contextlib.suppress(Exception):
             ctx.close()
             drained += 1
-        except Exception:
-            pass
     if requeue:
         with _SOLVER_GRAVEYARD_LOCK:
             _SOLVER_GRAVEYARD.extend(requeue)
@@ -605,8 +601,7 @@ class RustSolverProxy(RustSolverProxyBase):
             result = self._cast_result(expr, result, cast_to)
             return (result,)
         results = self._solver_ctx.eval_upto(expr, n)
-        results = tuple(self._cast_result(expr, r, cast_to) for r in results)
-        return results
+        return tuple(self._cast_result(expr, r, cast_to) for r in results)
 
     def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), **kwargs):
         """Evaluate expression for up to n solutions. Returns a tuple."""
@@ -636,12 +631,10 @@ class RustSolverProxy(RustSolverProxyBase):
         # angr-87e56: release an *owned* fork on its owning thread (or defer to
         # the graveyard). Shared contexts (``_shared_ctx_getter`` set) are
         # aliased by the parent proxy — never close those here.
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
+        with contextlib.suppress(Exception):
             if self.__dict__.get("_shared_ctx_getter") is None:
                 _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-            pass
 
 
 class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
@@ -897,11 +890,9 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # clone. Release it on the owning thread (or defer) so a finalizer firing
         # on a scheduler worker never triggers pyo3's unsendable cross-thread
         # drop refusal.
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
+        with contextlib.suppress(Exception):
             _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"), self.__dict__.get("_rust_ctx_cache_owner"))
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-            pass
 
     def eval(self, expr, n_or_cast=None, cast_to=None, extra_constraints=(), exact=None, **kwargs):
         """``state.solver.eval(expr[, cast_to=bytes])``.
@@ -1069,10 +1060,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             return
         for name, canonical, val in zip(names, canonical_names, values):
             width = self._get_register_width(canonical)
-            if val is None:
-                result = self._recover_symbolic_register_ast(canonical, width)
-            else:
-                result = claripy.BVV(val, width)
+            result = self._recover_symbolic_register_ast(canonical, width) if val is None else claripy.BVV(val, width)
             # Cache under both the caller-supplied name and the canonical name
             # so a later read on either alias hits the cache (matches the
             # dual-cache write in __setattr__).
@@ -1098,10 +1086,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             )
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(canonical)
-        if val is None:
-            result = self._recover_symbolic_register_ast(canonical, width)
-        else:
-            result = claripy.BVV(val, width)
+        result = self._recover_symbolic_register_ast(canonical, width) if val is None else claripy.BVV(val, width)
         self._cache[name] = result
         return result
 
@@ -1408,12 +1393,10 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # angr-87e56: release an *owned* symbolic-addr fork on its owning thread
         # (or defer to the graveyard). Shared contexts (``_shared_ctx_getter``
         # set) are aliased by the parent proxy — never close those here.
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
+        with contextlib.suppress(Exception):
             if self.__dict__.get("_shared_ctx_getter") is None:
                 _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-            pass
 
     @property
     def category(self):
@@ -3180,10 +3163,8 @@ class RustInspectProxy:
             raise ValueError('remove_breakpoint(): You must specify either "bp" or "filter".')
         bps = self._mgr._inspect_breakpoints[event_type]
         if bp is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 bps.remove(bp)
-            except ValueError:
-                pass
         else:
             self._mgr._inspect_breakpoints[event_type] = [b for b in bps if not filter_func(b)]
         self._mgr._update_inspect_bitmask()
@@ -3543,22 +3524,18 @@ class RustStateProxy:
         # angr-87e56: release this proxy's owned solver fork (created via
         # fork_state_solver in _get_shared_solver_ctx) on its owning thread, or
         # defer to the graveyard. Must run regardless of _owns_copy.
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
+        with contextlib.suppress(Exception):
             _release_owned_ctx(self.__dict__.get("_shared_solver_ctx"), self.__dict__.get("_shared_solver_ctx_owner"))
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-            pass
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: __del__ is best-effort; swallow
+        # everything to match the SimulationManagerProxy.__del__ pattern.
+        with contextlib.suppress(Exception):
             if not getattr(self, "_owns_copy", False):
                 return
             python_mgr = getattr(self, "_python_mgr", None)
             if python_mgr is None:
                 return
             python_mgr.drop_copy(self._state_id)
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: __del__ is best-effort; swallow
-            # everything to match the SimulationManagerProxy.__del__ pattern.
-            pass
 
 
 # Rust step_state() bucket names -> SimulationManager.step_state() stash keys.

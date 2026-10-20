@@ -6,6 +6,7 @@ callback dispatching that routes through RustStateProxy objects.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -268,16 +269,12 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
                     except Exception as e:
                         l.warning("Failed to re-import step_state successor into %r: %s", key, e)
         # Drop the (still-present) source state now that it's been replaced.
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: source already consumed.
+        with contextlib.suppress(RuntimeError, KeyError):
             mgr._rust_mgr.move_state(sid, stash, _VT_DROP_STASH)
-        except (RuntimeError, KeyError):
-            # cat-(a) EXPECTED CONTROL FLOW: source already consumed.
-            pass
 
-    try:
+    with contextlib.suppress(RuntimeError, KeyError):
         mgr._rust_mgr.clear_stash(_VT_DROP_STASH)
-    except (RuntimeError, KeyError):
-        pass
 
     # Advance the states that every step_state hook declined, natively.
     if mgr._rust_mgr.get_state_ids(stash):
@@ -401,21 +398,17 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
 
                 for addr in stop_points:
                     mock = _MockState(addr)
-                    try:
+                    # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
+                    # may reject mock state; fall through to avoid probe.
+                    with contextlib.suppress(Exception):
                         if find_func(mock):
                             find_addrs.append(addr)
                             continue
-                    except Exception:
-                        # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
-                        # may reject mock state; fall through to avoid probe.
-                        pass
-                    try:
+                    # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
+                    # may reject mock state; addr is simply not classified.
+                    with contextlib.suppress(Exception):
                         if avoid_func(mock):
                             avoid_addrs.append(addr)
-                    except Exception:
-                        # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
-                        # may reject mock state; addr is simply not classified.
-                        pass
 
         if find_addrs:
             mgr._rust_mgr.set_find_addrs(find_addrs)
@@ -435,7 +428,7 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
             # Try to detect from source inspection — common grub pattern
             # uses ('eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'eip')
             arch = mgr._project.arch if mgr._project else None
-            if arch and arch.name in ("X86",):
+            if arch and arch.name == "X86":
                 regs = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"]
             elif arch and arch.name in ("AMD64", "X86_64"):
                 regs = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip"]
@@ -795,14 +788,12 @@ def apply_technique_filters(mgr: RustExplorationManager):
                     # Ensure the moved state can be reconstructed later by
                     # tracking its root state for plugin/constraint restoration
                     if sid not in mgr._state_cache:
-                        try:
+                        # cat-(a) EXPECTED CONTROL FLOW: state may not have
+                        # a Rust-tracked root; that's OK, the move succeeded.
+                        with contextlib.suppress(Exception):
                             root = mgr._rust_mgr.get_state_root(sid)
                             if root is not None:
                                 mgr._state_roots[sid] = root
-                        except Exception:
-                            # cat-(a) EXPECTED CONTROL FLOW: state may not have
-                            # a Rust-tracked root; that's OK, the move succeeded.
-                            pass
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: move_state failed; the state
                     # stays in its current stash and the next sweep will retry.
@@ -813,15 +804,13 @@ def apply_technique_filters(mgr: RustExplorationManager):
     mgr._filtered_cleanup_counter = getattr(mgr, "_filtered_cleanup_counter", 0) + 1
     if mgr._filtered_cleanup_counter >= 100:
         mgr._filtered_cleanup_counter = 0
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: best-effort cache GC; if we can't
+        # enumerate stashes the set just grows until next sweep.
+        with contextlib.suppress(Exception):
             live = set()
             for stash_name in ("active", "found", "errored", "deadended", "avoid"):
                 live.update(mgr._rust_mgr.get_state_ids(stash_name))
             mgr._filter_eval_sigs = {sid: sig for sid, sig in mgr._filter_eval_sigs.items() if sid in live}
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: best-effort cache GC; if we can't
-            # enumerate stashes the set just grows until next sweep.
-            pass
 
 
 def check_technique_complete(mgr: RustExplorationManager) -> bool:

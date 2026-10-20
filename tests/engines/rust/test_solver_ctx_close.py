@@ -228,6 +228,7 @@ class TestGraveyardOwnerCheck:
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
         assert proc.returncode == 0, (
             f"subprocess aborted or failed (returncode={proc.returncode}):\n"

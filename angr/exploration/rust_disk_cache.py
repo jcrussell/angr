@@ -395,13 +395,11 @@ def _extract_callstack_snapshot(state):
             "stack_ptr": frame.stack_ptr,
         }
         if pdata is not None and len(pdata) >= 5:
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: continuation addr in procedure_data
+            # is not int-castable (symbolic). Skip — saves no continuation, the
+            # normal procedure-data restore path handles it later.
+            with contextlib.suppress(TypeError, ValueError):
                 continuation_addrs.append(int(pdata[4]))
-            except (TypeError, ValueError):
-                # cat-(a) EXPECTED CONTROL FLOW: continuation addr in procedure_data
-                # is not int-castable (symbolic). Skip — saves no continuation, the
-                # normal procedure-data restore path handles it later.
-                pass
         callstack_frames.append(frame_data)
         frame = getattr(frame, "next", None)
     return callstack_frames, continuation_addrs
@@ -677,12 +675,12 @@ class RustDiskCacheManager:
         # a BVS into .data/.bss segment via state.memory.store()).
         try:
             mem = state.memory
-            for page_num, page in mem._pages.items():
+            for page in mem._pages.values():
                 sd = getattr(page, "symbolic_data", None)
                 if not sd:
                     continue
                 # Page has symbolic data — check if any variable is user-created
-                for offset, bv in sd.items():
+                for bv in sd.values():
                     if hasattr(bv, "variables"):
                         for name in bv.variables:
                             if not name.startswith(_user_prefixes):
@@ -700,11 +698,11 @@ class RustDiskCacheManager:
         # can't round-trip it.
         try:
             regs_mem = state.registers
-            for _page_num, page in regs_mem._pages.items():
+            for page in regs_mem._pages.values():
                 sd = getattr(page, "symbolic_data", None)
                 if not sd:
                     continue
-                for _offset, bv in sd.items():
+                for bv in sd.values():
                     if hasattr(bv, "variables"):
                         for name in bv.variables:
                             if not name.startswith(_user_prefixes):
@@ -783,13 +781,11 @@ class RustDiskCacheManager:
         `_apply_init_side_effects`)."""
         state = self._get_cached_blank_state(data["addr"])
         for reg_name, val in data["registers"].items():
-            try:
+            # cat-(b) FALLBACK WITH LOSS: per-register restore failed; that
+            # register stays at the blank-state default — may diverge from the
+            # pre-cached value.
+            with contextlib.suppress(AttributeError, TypeError, ValueError):
                 setattr(state.regs, reg_name, val)
-            except (AttributeError, TypeError, ValueError):
-                # cat-(b) FALLBACK WITH LOSS: per-register restore failed; that
-                # register stays at the blank-state default — may diverge from the
-                # pre-cached value.
-                pass
         if data.get("stack_page"):
             sp_page, page_bytes = data["stack_page"]
             state.memory.store(sp_page, claripy.BVV(page_bytes), endness="Iend_BE", inspect=False, disable_actions=True)
@@ -797,14 +793,12 @@ class RustDiskCacheManager:
         # Restore extra memory pages created during init
         # (e.g., ctype tables at 0xc0000000 written by SimProcedures)
         for page_addr, page_bytes in data.get("extra_pages", []):
-            try:
+            # cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page
+            # stays blank and Rust sees concrete zeros there.
+            with contextlib.suppress(TypeError, ValueError):
                 state.memory.store(
                     page_addr, claripy.BVV(page_bytes), endness="Iend_BE", inspect=False, disable_actions=True
                 )
-            except (TypeError, ValueError):
-                # cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page
-                # stays blank and Rust sees concrete zeros there.
-                pass
 
         # Restore posix.argv/argc/environ/auxv (angr-6cp06.12, angr-7tmoz).
         # Absent from pre-p3 pickles, which the version bump already orphans.

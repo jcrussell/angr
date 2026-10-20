@@ -7,6 +7,7 @@ mixin class that RustExplorationManager inherits from.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import warnings
@@ -218,14 +219,12 @@ class RustSolverFallback:
         # graveyard so it is closed on its owning (coordinator) thread.
         ctx = self.__dict__.get("_cached_rust_ctx")
         if ctx is not None:
-            try:
+            # Teardown-time best-effort: a torn-down module just falls back
+            # to pyo3's leak-safe cross-thread drop refusal.
+            with contextlib.suppress(Exception):
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 
                 _release_owned_ctx(ctx, self.__dict__.get("_cached_rust_ctx_owner"))
-            except Exception:
-                # Teardown-time best-effort: a torn-down module just falls back
-                # to pyo3's leak-safe cross-thread drop refusal.
-                pass
 
     def attach(self):
         """Bind wrapper methods onto state.solver. No-op if already attached."""
@@ -268,13 +267,11 @@ class RustSolverFallback:
         """
         ctx = self.__dict__.get("_cached_rust_ctx")
         if ctx is not None:
-            try:
+            # Best-effort release; pyo3 refuses unsafe cross-thread drops.
+            with contextlib.suppress(Exception):
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 
                 _release_owned_ctx(ctx, self.__dict__.get("_cached_rust_ctx_owner"))
-            except Exception:
-                # Best-effort release; pyo3 refuses unsafe cross-thread drops.
-                pass
             self._cached_rust_ctx = None
             self._cached_rust_ctx_owner = None
         self._state_id = state_id
@@ -284,13 +281,11 @@ class RustSolverFallback:
         if self._cached_rust_ctx is None:
             ctx = self._rust_mgr.fork_state_solver(self._state_id)
             # Default 30s is too short for complex post-exploration solving (asisctf)
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: set_timeout is a best-effort
+            # tuning knob; older Rust contexts may not expose it. Default
+            # 30s timeout still applies.
+            with contextlib.suppress(Exception):
                 ctx.set_timeout(120000)
-            except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: set_timeout is a best-effort
-                # tuning knob; older Rust contexts may not expose it. Default
-                # 30s timeout still applies.
-                pass
             self._cached_rust_ctx = ctx
             self._cached_rust_ctx_owner = threading.get_ident()
         # Replay constraints that the caller added after attach
@@ -503,9 +498,12 @@ class _LazySimStateRef:
         # ``_repr_html_``) don't accidentally materialize the state — EXCEPT
         # the known angr-core entry points above, and any private name once
         # the state is already materialized (delegation is then free).
-        if name.startswith("_") and name not in self._MATERIALIZING_PRIVATE:
-            if name.startswith("__") or self._lazy_state_id not in self._lazy_mgr._state_cache:
-                raise AttributeError(name)
+        if (
+            name.startswith("_")
+            and name not in self._MATERIALIZING_PRIVATE
+            and (name.startswith("__") or self._lazy_state_id not in self._lazy_mgr._state_cache)
+        ):
+            raise AttributeError(name)
         return getattr(self._materialize(), name)
 
     def __setattr__(self, name, value):
@@ -750,7 +748,10 @@ class RustStateExportMixin:
         SimPacketsStream objects (stdin/stdout/stderr) to their parent
         state can become stale. This refreshes them.
         """
-        try:
+        # cat-(a) EXPECTED CONTROL FLOW: states without posix plugin
+        # (custom factories, blank states) hit attribute / type errors
+        # that we silently absorb. Weakref refresh is fix-up only.
+        with contextlib.suppress(Exception):
             posix = getattr(state, "posix", None)
             if posix is None:
                 return
@@ -762,11 +763,6 @@ class RustStateExportMixin:
                 for fd_obj in posix.fd.values():
                     if fd_obj is not None and hasattr(fd_obj, "set_state"):
                         fd_obj.set_state(state)
-        except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: states without posix plugin
-            # (custom factories, blank states) hit attribute / type errors
-            # that we silently absorb. Weakref refresh is fix-up only.
-            pass
 
     def _sync_rust_registers_to_state(self, state: angr.SimState, state_id: int):
         """Sync concrete register values from Rust state to Python state.
@@ -1617,15 +1613,13 @@ class RustStateExportMixin:
 
         root_id = self._state_roots.get(state_id)
         if root_id is None or root_id == state_id:
-            try:
+            # cat-(a) EXPECTED CONTROL FLOW: Rust root probe failed
+            # (state already evicted / unknown id). Falls through to
+            # the any-cached-root fallback below.
+            with contextlib.suppress(Exception):
                 rust_root = self._rust_mgr.get_state_root(state_id)
                 if rust_root is not None:
                     root_id = rust_root
-            except Exception:
-                # cat-(a) EXPECTED CONTROL FLOW: Rust root probe failed
-                # (state already evicted / unknown id). Falls through to
-                # the any-cached-root fallback below.
-                pass
         if root_id is not None:
             cached = self._state_cache.get(root_id)
             if cached is not None:

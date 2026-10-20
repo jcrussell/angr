@@ -64,6 +64,7 @@ __all__ = [
     "RustUnsupportedSyscallError",
     "RustUnsupportedVexOpError",
     "RustZ3Error",
+    "__rust_engine_version__",
     "rust_auto_dispatch_enabled",
     "rust_default_engine_env",
     "rust_engine_eligible",

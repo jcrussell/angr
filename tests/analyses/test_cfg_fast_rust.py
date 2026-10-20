@@ -53,7 +53,7 @@ def _exec_func_addrs(proj: angr.Project, cfg) -> set[int]:
     the function set is stable.
     """
     exec_ranges = [(s.vaddr, s.vaddr + s.memsize) for s in proj.loader.main_object.sections if s.is_executable]
-    return {addr for addr in cfg.kb.functions.keys() if any(lo <= addr < hi for lo, hi in exec_ranges)}
+    return {addr for addr in cfg.kb.functions if any(lo <= addr < hi for lo, hi in exec_ranges)}
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
