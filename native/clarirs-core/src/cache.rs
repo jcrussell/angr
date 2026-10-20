@@ -61,17 +61,16 @@ impl<K: Hash + Eq, V: Clone> Cache<K, V> for GenericCache<K, V> {
 /// this cache stores weak references to the AST nodes; the value is a
 /// `Weak<AstNode>`.
 ///
-/// The map is split into [`AST_CACHE_SHARDS`] independently locked shards,
+/// The map is split into `AST_CACHE_SHARDS` independently locked shards,
 /// chosen by the key's high bits. Every node that is built takes a write lock
 /// to insert itself and, when it dies, another to evict itself, so with a
 /// single lock, threads building unrelated terms serialize on it.
-#[derive(Debug)]
 pub struct AstCache<'c> {
     shards: Box<[Shard<'c>]>,
 }
 
 /// Number of shards in an [`AstCache`]; a power of two.
-pub const AST_CACHE_SHARDS: usize = 64;
+pub(crate) const AST_CACHE_SHARDS: usize = 64;
 
 /// One shard, aligned so neighbouring locks do not share a cache line.
 #[derive(Debug, Default)]
@@ -83,6 +82,14 @@ impl Default for AstCache<'_> {
         Self {
             shards: (0..AST_CACHE_SHARDS).map(|_| Shard::default()).collect(),
         }
+    }
+}
+
+impl std::fmt::Debug for AstCache<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AstCache")
+            .field("len", &self.len())
+            .finish()
     }
 }
 
@@ -449,7 +456,7 @@ mod tests {
     #[cfg(not(feature = "panic-on-hash-collision"))]
     fn test_ast_cache_keys_in_different_shards() -> Result<(), ClarirsError> {
         // The lowest and highest keys land in the first and last shard; both
-        // must be found, and `len` must count across shards.
+        // must be found there, and `len` must count across shards.
         let ctx = crate::context::Context::new();
         let cache = AstCache::default();
         let a = ctx.bvv(BitVec::from((1, 64)))?;
@@ -458,6 +465,11 @@ mod tests {
         cache.insert(u64::MAX, &b);
         assert!(Arc::ptr_eq(&cache.get(&0).unwrap(), &a));
         assert!(Arc::ptr_eq(&cache.get(&u64::MAX).unwrap(), &b));
+        assert!(std::ptr::eq(cache.shard(0), &cache.shards[0].0));
+        assert!(std::ptr::eq(
+            cache.shard(u64::MAX),
+            &cache.shards[AST_CACHE_SHARDS - 1].0
+        ));
         assert_eq!(cache.len(), 2);
         Ok(())
     }

@@ -3,7 +3,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use super::{BitVec, BitVecError};
 use num_bigint::{BigInt, BigUint};
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FSort {
@@ -344,18 +344,20 @@ impl Float {
         })
     }
 
-    /// [`Self::to_signed_bigint`] after rounding by `rm`.
+    /// The value rounded to an integer by `rm`, exactly and at any width.
+    /// NaN and infinities have no integer value and are an error.
     pub fn to_signed_bigint_rm(&self, rm: FPRM) -> Result<BigInt, BitVecError> {
         self.round_integral(rm)
+            .and_then(BigInt::from_f64)
             .ok_or(BitVecError::ConversionError)
-            .map(|value| BigInt::from(value as i64))
     }
 
-    /// [`Self::to_unsigned_biguint`] after rounding by `rm`.
+    /// As [`Self::to_signed_bigint_rm`], for a non-negative result; a value
+    /// that rounds below zero is an error.
     pub fn to_unsigned_biguint_rm(&self, rm: FPRM) -> Result<BigUint, BitVecError> {
         self.round_integral(rm)
+            .and_then(BigUint::from_f64)
             .ok_or(BitVecError::ConversionError)
-            .map(|value| BigUint::from(value as u64))
     }
 
     pub fn to_f32(&self) -> Option<f32> {
@@ -427,6 +429,80 @@ impl Float {
             Float::F64(f) => Float::F64(f.abs()),
         }
     }
+
+    /// The value rounded to an integral value by `rm`, in the same format.
+    /// Zeros keep their sign, and NaN and infinities are returned unchanged.
+    pub fn round_to_integral(&self, rm: FPRM) -> Self {
+        fn round(value: f64, rm: FPRM) -> f64 {
+            match rm {
+                FPRM::NearestTiesToEven => value.round_ties_even(),
+                FPRM::NearestTiesToAway => value.round(),
+                FPRM::TowardPositive => value.ceil(),
+                FPRM::TowardNegative => value.floor(),
+                FPRM::TowardZero => value.trunc(),
+            }
+        }
+        match self {
+            // Widening is exact, and so is narrowing an integral value back
+            Float::F32(f) => Float::F32(round(f64::from(*f), rm) as f32),
+            Float::F64(f) => Float::F64(round(*f, rm)),
+        }
+    }
+
+    /// `self * b + c` rounded once, to nearest with ties to even like the other
+    /// arithmetic here. Both operands are converted to this value's format.
+    pub fn mul_add(&self, b: &Self, c: &Self) -> Self {
+        match self {
+            Float::F32(a) => {
+                let b = b.to_f64().unwrap_or(f64::NAN) as f32;
+                let c = c.to_f64().unwrap_or(f64::NAN) as f32;
+                Float::F32(fma_f32(*a, b, c))
+            }
+            Float::F64(a) => Float::F64(a.mul_add(
+                b.to_f64().unwrap_or(f64::NAN),
+                c.to_f64().unwrap_or(f64::NAN),
+            )),
+        }
+    }
+
+    /// The smaller (`max` false) or larger (`max` true) of two values, as
+    /// `fp.min`/`fp.max`: a NaN operand yields the other one. `None` for a
+    /// `+0`/`-0` pair, whose result SMT-LIB leaves unspecified.
+    pub fn min_max(&self, other: &Self, max: bool) -> Option<Self> {
+        if self.is_nan() {
+            return Some(*other);
+        }
+        if other.is_nan() {
+            return Some(*self);
+        }
+        if self.is_zero() && other.is_zero() && self.sign() != other.sign() {
+            return None;
+        }
+        Some(if self.lt(other) != max { *self } else { *other })
+    }
+}
+
+/// A single-rounding f32 fused multiply-add. The product of two f32s is exact
+/// in f64; the sum is rounded to odd in f64, which keeps enough information
+/// that the final rounding to f32 is the only one that counts.
+fn fma_f32(a: f32, b: f32, c: f32) -> f32 {
+    let (p, c) = (f64::from(a) * f64::from(b), f64::from(c));
+    let s = p + c;
+    // Two-sum: `err` is exactly what rounding `p + c` to `s` lost
+    let bb = s - p;
+    let err = (p - (s - bb)) + (c - bb);
+    let s = if err != 0.0 && s.is_finite() && s.to_bits() & 1 == 0 {
+        // Step to the odd neighbour on the side of the exact sum
+        let away_from_zero = (err > 0.0) == (s > 0.0);
+        f64::from_bits(if away_from_zero {
+            s.to_bits() + 1
+        } else {
+            s.to_bits() - 1
+        })
+    } else {
+        s
+    };
+    s as f32
 }
 
 impl Neg for Float {
@@ -560,6 +636,61 @@ pub fn recompose_f64_big_endian(sign: u8, exponent: u16, mantissa: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mul_add_f32_rounds_once() {
+        // (1 + 2^-12)^2 = 1 + 2^-11 + 2^-24 is exactly halfway between two
+        // f32s, so the sign of a tiny addend decides the rounding. Rounding
+        // the sum to f64 first would lose it and tie to even.
+        let a = Float::F32(1.0 + 2f32.powi(-12));
+        let tiny = Float::F32(2f32.powi(-100));
+        let up = 1.0 + 2f32.powi(-11) + 2f32.powi(-23);
+        let down = 1.0 + 2f32.powi(-11);
+        assert_eq!(a.mul_add(&a, &tiny), Float::F32(up));
+        assert_eq!(a.mul_add(&a, &-tiny), Float::F32(down));
+
+        let x = Float::F64(0.1);
+        assert_eq!(
+            x.mul_add(&Float::F64(10.0), &Float::F64(-1.0)),
+            Float::F64(0.1f64.mul_add(10.0, -1.0))
+        );
+    }
+
+    #[test]
+    fn round_to_integral_keeps_format_and_sign() {
+        let f = Float::F32(2.5);
+        assert_eq!(
+            f.round_to_integral(FPRM::NearestTiesToEven),
+            Float::F32(2.0)
+        );
+        assert_eq!(
+            f.round_to_integral(FPRM::NearestTiesToAway),
+            Float::F32(3.0)
+        );
+        assert_eq!(f.round_to_integral(FPRM::TowardNegative), Float::F32(2.0));
+        let neg = Float::F64(-0.4).round_to_integral(FPRM::NearestTiesToEven);
+        assert!(neg.is_zero() && neg.sign());
+        assert!(
+            Float::F64(f64::NAN)
+                .round_to_integral(FPRM::TowardZero)
+                .is_nan()
+        );
+    }
+
+    #[test]
+    fn min_max_follow_fp_min_max() {
+        let (one, two) = (Float::F64(1.0), Float::F64(2.0));
+        let nan = Float::F64(f64::NAN);
+        assert_eq!(one.min_max(&two, false), Some(one));
+        assert_eq!(one.min_max(&two, true), Some(two));
+        assert_eq!(nan.min_max(&two, false), Some(two));
+        assert_eq!(two.min_max(&nan, true), Some(two));
+        assert_eq!(Float::F64(0.0).min_max(&Float::F64(-0.0), false), None);
+        assert_eq!(
+            Float::F64(-0.0).min_max(&Float::F64(-0.0), true),
+            Some(Float::F64(-0.0))
+        );
+    }
+
     use super::*;
 
     #[test]

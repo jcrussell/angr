@@ -135,7 +135,10 @@ mod tests {
         let before = RELEASES_SKIPPED.load(Ordering::Relaxed);
         std::thread::spawn(|| {
             // Registered before the context, so destroyed after it: the
-            // handle's release must not touch the deleted context.
+            // handle's release must not touch the deleted context. This
+            // relies on thread-locals being destroyed in reverse order of
+            // registration, which Rust does not promise but which holds on
+            // Linux, macOS and Windows.
             HELD.with(|held| held.borrow_mut().take());
             let ast = use_z3();
             HELD.with(|held| *held.borrow_mut() = Some(ast));

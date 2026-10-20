@@ -10,7 +10,7 @@ mod test_bv;
 #[cfg(test)]
 mod test_float;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::{Arc, atomic::Ordering};
 
 use crate::{cache::Cache, prelude::*};
@@ -126,14 +126,17 @@ thread_local! {
 /// call returns. A subexpression shared by many parents is then simplified
 /// once per call rather than once per path to it, which on a heavily shared
 /// DAG is the difference between linear and exponential work.
-type Memo<'c> = HashMap<u64, AstRef<'c>>;
+///
+/// The cost is that every result stays alive until the top-level call
+/// returns, so peak memory grows with the number of distinct nodes visited.
+type Memo<'c> = ahash::HashMap<u64, AstRef<'c>>;
 
 fn simplify<'c>(
     ast: &AstRef<'c>,
     respect_annotations: bool,
     error_on_dbz: bool,
 ) -> Result<AstRef<'c>, ClarirsError> {
-    simplify_with(ast, respect_annotations, error_on_dbz, &mut Memo::new())
+    simplify_with(ast, respect_annotations, error_on_dbz, &mut Memo::default())
 }
 
 fn simplify_with<'c>(
@@ -275,6 +278,11 @@ fn simplify_with<'c>(
                 }
             }
         } else {
+            // Annotations block simplifying this node, so it is its own result,
+            // and so the result of any node a rewrite replaced with it.
+            for node in &state.origins {
+                memo.insert(node.hash(), state.expr.clone());
+            }
             last_result = Some(state.expr.clone());
         }
     }

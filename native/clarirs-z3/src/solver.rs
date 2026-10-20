@@ -4,7 +4,7 @@ use clarirs_core::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use z3_sys::{Z3_L_FALSE, Z3_L_TRUE, Z3_lbool};
+use z3_sys::{Z3_L_FALSE, Z3_L_TRUE, Z3_L_UNDEF, Z3_lbool};
 
 /// A persistent z3 solver, incrementally extended as constraints are added.
 ///
@@ -239,7 +239,11 @@ impl<'c> Z3Solver<'c> {
                 Some(v) => v,
                 None => {
                     let v = cached.solver.check()?;
-                    cached.verdict = Some(v);
+                    // An unknown (a timeout, say) is not remembered, so the
+                    // next query checks again instead of failing at once.
+                    if v != Z3_L_UNDEF {
+                        cached.verdict = Some(v);
+                    }
                     v
                 }
             };

@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fmt::Debug,
     hash::{Hash, Hasher},
-    sync::{Arc, LazyLock, atomic::AtomicU64},
+    sync::{Arc, atomic::AtomicU64},
 };
 
 use crate::{
@@ -20,8 +20,9 @@ pub struct AstNode<'c> {
     ctx: &'c Context<'c>,
     hash: u64,
     /// Shared with a child whenever that child's set already holds every
-    /// variable below this node (see [`node_variables`]).
-    variables: Arc<BTreeSet<InternedString>>,
+    /// variable below this node (see [`node_variables`]). `None` is the empty
+    /// set, so a node without variables touches no shared reference count.
+    variables: Option<Arc<BTreeSet<InternedString>>>,
     depth: u32,
     symbolic: bool,
     simplifiable: bool,
@@ -55,9 +56,8 @@ impl<'c> HasContext<'c> for AstNode<'c> {
     }
 }
 
-/// The one empty variable set, shared by every node without variables.
-static NO_VARIABLES: LazyLock<Arc<BTreeSet<InternedString>>> =
-    LazyLock::new(|| Arc::new(BTreeSet::new()));
+/// What [`AstNode::variables`] returns for a node without variables.
+static NO_VARIABLES: BTreeSet<InternedString> = BTreeSet::new();
 
 /// The variables below a node with operation `op`.
 ///
@@ -68,34 +68,27 @@ static NO_VARIABLES: LazyLock<Arc<BTreeSet<InternedString>>> =
 /// allocation and no per-variable work. Copying made every node over a wide
 /// term (one byte extracted from a large symbolic buffer, say) cost time and
 /// memory proportional to all the variables beneath it.
-fn node_variables(op: &AstOp<'_>) -> Arc<BTreeSet<InternedString>> {
+fn node_variables(op: &AstOp<'_>) -> Option<Arc<BTreeSet<InternedString>>> {
     match op {
         AstOp::BoolS(s) | AstOp::BVS(s, _) | AstOp::FPS(s, _) | AstOp::StringS(s) => {
-            Arc::new(BTreeSet::from([s.clone()]))
+            Some(Arc::new(BTreeSet::from([s.clone()])))
         }
         _ => {
             let children: Vec<_> = op.child_iter().collect();
-            let Some(widest) = children
+            let sets: Vec<_> = children
                 .iter()
-                .map(|c| &c.variables)
-                .max_by_key(|v| v.len())
-            else {
-                return NO_VARIABLES.clone();
-            };
-            if widest.is_empty() {
-                return NO_VARIABLES.clone();
-            }
-            if children
-                .iter()
-                .all(|c| Arc::ptr_eq(&c.variables, widest) || c.variables.is_subset(widest))
-            {
-                return widest.clone();
+                .filter_map(|c| c.variables.as_ref())
+                .collect();
+            let widest = *sets.iter().max_by_key(|v| v.len())?;
+            let others = || sets.iter().filter(|v| !Arc::ptr_eq(v, widest));
+            if others().all(|v| v.is_subset(widest)) {
+                return Some(widest.clone());
             }
             let mut set = (**widest).clone();
-            for c in &children {
-                set.extend(c.variables.iter().cloned());
+            for v in others() {
+                set.extend(v.iter().cloned());
             }
-            Arc::new(set)
+            Some(Arc::new(set))
         }
     }
 }
@@ -113,7 +106,7 @@ impl<'c> AstNode<'c> {
         let depth = 1 + op.child_iter().map(|c| c.depth()).max().unwrap_or(0);
         // Symbolic propagates from: having variables, the op itself being inherently
         // symbolic (e.g. VSA Union/Intersection/Widen), or any child being symbolic.
-        let symbolic = !variables.is_empty()
+        let symbolic = variables.is_some()
             || op.is_inherently_symbolic()
             || op.child_iter().any(|c| c.symbolic());
 
@@ -199,7 +192,7 @@ impl<'c> AstNode<'c> {
     }
 
     pub fn variables(&self) -> &BTreeSet<InternedString> {
-        &self.variables
+        self.variables.as_deref().unwrap_or(&NO_VARIABLES)
     }
 
     pub fn size(&self) -> u32 {

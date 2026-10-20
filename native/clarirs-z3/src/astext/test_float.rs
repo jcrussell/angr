@@ -872,20 +872,19 @@ mod smtlib {
     }
 
     #[test]
-    fn min_max_fma_round_to_integral_parse() {
+    fn min_max_fma_round_parse() {
         let ctx = Context::new();
-        let x = ctx.fps("x", FSort::f32()).unwrap();
-        let y = ctx.fps("y", FSort::f32()).unwrap();
+        let rm = FPRM::TowardZero;
+        let x = ctx.fps("x", FSort::f64()).unwrap();
+        let y = ctx.fps("y", FSort::f64()).unwrap();
+        let z = ctx.fps("z", FSort::f64()).unwrap();
+
         let constraints = [
-            ctx.fp_eq(&x, ctx.fp_min(&x, &y).unwrap()).unwrap(),
-            ctx.fp_eq(&x, ctx.fp_max(&x, &y).unwrap()).unwrap(),
-            ctx.fp_eq(&x, ctx.fp_fma(&x, &y, &x, FPRM::TowardZero).unwrap())
+            ctx.fp_eq(&x, ctx.fp_min(&y, &z).unwrap()).unwrap(),
+            ctx.fp_eq(&x, ctx.fp_max(&y, &z).unwrap()).unwrap(),
+            ctx.fp_eq(&x, ctx.fp_fma(&x, &y, &z, rm).unwrap()).unwrap(),
+            ctx.fp_eq(&x, ctx.fp_round_to_integral(&y, rm).unwrap())
                 .unwrap(),
-            ctx.fp_eq(
-                &x,
-                ctx.fp_round_to_integral(&y, FPRM::TowardPositive).unwrap(),
-            )
-            .unwrap(),
         ];
         z3_parses(&constraints_to_smtlib(&constraints).unwrap());
     }
@@ -916,6 +915,23 @@ mod semantics {
         assert!(holds(&ctx, ctx.fp_max(&two, &nan).unwrap(), 2.0));
         assert!(holds(&ctx, ctx.fp_min(&one, &two).unwrap(), 1.0));
         assert!(holds(&ctx, ctx.fp_max(&one, &two).unwrap(), 2.0));
+    }
+
+    /// SMT-LIB leaves the sign of `fp.min(+0, -0)` unspecified. Z3 may keep
+    /// the op or answer with either zero, but whatever it returns has to
+    /// decode: some versions rewrite it to internal ops `from_z3` cannot read.
+    #[test]
+    fn min_max_of_signed_zeros_come_back_from_z3() {
+        let ctx = Context::new();
+        let (pz, nz) = (f64v(&ctx, 0.0), f64v(&ctx, -0.0));
+        for got in [ctx.fp_min(&pz, &nz).unwrap(), ctx.fp_max(&nz, &pz).unwrap()] {
+            let back = got.simplify_z3().unwrap();
+            assert!(
+                matches!(back.op(), AstOp::FPV(f) if f.is_zero())
+                    || matches!(back.op(), AstOp::FpMin(..) | AstOp::FpMax(..)),
+                "{back:?}"
+            );
+        }
     }
 
     /// `(1 + 2^-52) * (1 - 2^-52) - 1` is `-2^-104` exactly; a separately

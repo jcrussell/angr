@@ -1169,6 +1169,13 @@ fn test_fp_to_bv_rounds_by_mode() -> Result<()> {
         .fp_to_ubv(ctx.fpv(Float::from(1.5_f64))?, 32, FPRM::NearestTiesToEven)?
         .simplify()?;
     assert_eq!(ubv, bv32(2)?);
+
+    // Results wider than 64 bits are exact, not saturated
+    let wide = ctx
+        .fp_to_ubv(ctx.fpv(Float::from(1e30_f64))?, 128, FPRM::TowardZero)?
+        .simplify()?;
+    let exact: BigUint = "1000000000000000019884624838656".parse()?;
+    assert_eq!(wide, ctx.bvv(BitVec::from((exact, 128)))?);
     Ok(())
 }
 
@@ -1293,7 +1300,8 @@ fn test_shared_subterms_simplify_once_per_call() -> Result<()> {
     // subterm is simplified once per path to it: 2^LEVELS work here.
     const LEVELS: u64 = 14;
     let ctx = Context::new();
-    let mut node = ctx.bvs("shared_x", 32)?;
+    let x = ctx.bvs("shared_x", 32)?;
+    let mut node = x.clone();
     for i in 0..LEVELS {
         let mask = ctx.bvv(BitVec::from((0x0f0f_0f0f ^ i, 32)))?;
         let bits = ctx.bvv(BitVec::from((0x3030_3030 | i, 32)))?;
@@ -1309,5 +1317,15 @@ fn test_shared_subterms_simplify_once_per_call() -> Result<()> {
         "simplify took {work} steps for {LEVELS} levels"
     );
     assert_eq!(simplified.size(), 8);
+
+    // Same value as the unsimplified term, at a few points.
+    for value in [0, 1, 0x8000_0001, 0xdead_beef, u32::MAX as u64] {
+        let point = ctx.bvv(BitVec::from((value, 32)))?;
+        assert_eq!(
+            root.replace(&x, &point)?.simplify()?,
+            simplified.replace(&x, &point)?.simplify()?,
+            "differs at x = {value:#x}"
+        );
+    }
     Ok(())
 }
