@@ -51,7 +51,8 @@ impl RustExplorationManager {
 
         let mut state = pending.state;
         state.apply_changes(&changes);
-        state.set_pc(new_pc);
+        // The procedure ran in Python: no Ijk_Ret popped its frame here.
+        state.return_from_procedure(new_pc);
 
         // Sync constraints from Python back to Rust
         // This ensures constraints added by SimProcedures (e.g., strcmp return conditions)

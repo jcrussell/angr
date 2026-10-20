@@ -484,6 +484,7 @@ impl<'a> VEXInterpreter<'a> {
                             .rust_memory
                             .as_ref()
                             .map(super::super::memory::SymbolicMemory::fork),
+                        call_stack: self.call_stack.clone(),
                     },
                 );
 

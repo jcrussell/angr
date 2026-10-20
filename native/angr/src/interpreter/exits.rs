@@ -238,6 +238,22 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         if self.is_hooked(target) {
+            // A call into a hook (a SimProcedure, or a find/avoid stop hook)
+            // never reaches run_until_event's BlockEnd call bookkeeping, so
+            // push its frame here; the procedure's return pops it
+            // (RustSimState::return_from_procedure; angr-mx00p.91).
+            if jumpkind.is_call() {
+                let stack_ptr =
+                    self.get_stack_pointer_or_log("CallStackEntry.stack_ptr (hooked call)");
+                let return_addr =
+                    self.get_return_addr_or_log("CallStackEntry.return_addr (hooked call)");
+                self.call_stack.push(crate::state::CallStackEntry {
+                    call_site_addr: self.current_insn_addr,
+                    callee_addr: target,
+                    return_addr,
+                    stack_ptr,
+                });
+            }
             return BlockResult::Hook { addr: target };
         }
 

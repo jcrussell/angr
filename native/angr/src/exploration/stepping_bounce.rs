@@ -278,7 +278,7 @@ impl RustExplorationManager {
         state.set_register_by_offset(ret_reg_offset, zero_val);
 
         // Continue at return address
-        state.set_pc(return_addr);
+        state.return_from_procedure(return_addr);
 
         // Process any deferred forks from the interpreter step
         let mut successors = vec![state];

@@ -94,6 +94,23 @@ impl RustSimState {
         self.call_stack.pop()
     }
 
+    /// Return from a hooked procedure to `return_addr`.
+    ///
+    /// A procedure (native or bounced to Python) returns without executing a
+    /// VEX `Ijk_Ret`, so the interpreter's return path never pops the frame
+    /// its call pushed. Unwind it here the same way: through the frame that
+    /// expects `return_addr`, or not at all when none does (angr-mx00p.91).
+    pub fn return_from_procedure(&mut self, return_addr: u64) {
+        if let Some(i) = self
+            .call_stack
+            .iter()
+            .rposition(|f| f.return_addr == return_addr)
+        {
+            self.call_stack.truncate(i);
+        }
+        self.set_pc(return_addr);
+    }
+
     /// Replace the call stack (used when restoring from interpreter).
     pub fn set_call_stack(&mut self, call_stack: Vec<CallStackEntry>) {
         self.call_stack = call_stack;

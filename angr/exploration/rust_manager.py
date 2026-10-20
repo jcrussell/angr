@@ -4033,6 +4033,23 @@ class RustExplorationManager(
         if exported:
             l.debug("Exported %d symbolic file(s) to Rust state %d", exported, state_id)
 
+    @staticmethod
+    def _push_python_call_frames(angr_state: angr.SimState, rust_state) -> None:
+        """Push ``angr_state.callstack``'s concrete frames onto ``rust_state``, outermost first."""
+        if not angr_state.has_plugin("callstack"):
+            return
+        frames = []
+        for frame in angr_state.callstack:
+            if not frame.func_addr and not frame.ret_addr:
+                continue  # the bottom sentinel (None or 0 fields)
+            sp = frame.stack_ptr
+            sp = sp.concrete_value if isinstance(sp, claripy.ast.BV) and not sp.symbolic else sp
+            if not all(isinstance(v, int) for v in (frame.call_site_addr, frame.func_addr, frame.ret_addr, sp)):
+                return  # a symbolic or missing field: keep Rust's stack empty rather than partial
+            frames.append((frame.call_site_addr, frame.func_addr, frame.ret_addr, sp))
+        for call_site, callee, ret_addr, sp in reversed(frames):
+            rust_state.push_call_frame(call_site, callee, ret_addr, sp)
+
     def _add_rust_state(self, stash: str, angr_state: angr.SimState):
         """Add an angr state to a Rust stash.
 
@@ -4079,6 +4096,13 @@ class RustExplorationManager(
 
         # Set PC
         rust_state.pc = angr_state.addr
+
+        # Carry the Python call stack (the frames of the init prefix Python ran
+        # before handing over, e.g. __libc_start_main -> main) so Rust's frames
+        # extend it rather than start empty (angr-mx00p.91). CallStack iterates
+        # top-first; Rust's call stack is push-ordered. The bottom sentinel
+        # frame is not a call.
+        self._push_python_call_frames(angr_state, rust_state)
 
         # Push posix.brk so Rust's NativeBrkSyscall starts from the correct
         # base. The angr loader sets state.posix.brk to (binary last_addr +

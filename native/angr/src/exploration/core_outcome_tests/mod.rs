@@ -184,6 +184,7 @@ fn dispatch_hook_seeded(
                     solver: state.solver().borrow().fork(),
                     registers: state.registers().fork(),
                     memory: None,
+                    call_stack: Vec::new(),
                 },
             );
         }

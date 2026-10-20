@@ -337,6 +337,7 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
             solver: state.solver().borrow().fork(),
             registers: state.registers().fork(),
             memory: Some(state.memory().fork()),
+            call_stack: Vec::new(),
         },
     );
     let pre_callback_snapshot = Some(state.fork());

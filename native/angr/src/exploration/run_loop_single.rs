@@ -401,7 +401,7 @@ impl RustExplorationManager {
                                 // site and `handle_simprocedure_core` from
                                 // drifting apart (angr-c7xno.29).
                                 advance_sp_past_return_addr(&mut state, pops_return_addr);
-                                state.set_pc(ret_addr);
+                                state.return_from_procedure(ret_addr);
                             } else if pops_return_addr {
                                 // Fallback: read ret addr from [sp] for
                                 // stack-based ABIs (only useful when the calling
@@ -417,7 +417,7 @@ impl RustExplorationManager {
                                     // overflow-checks) for a guest-influenced SP
                                     // near u64::MAX (angr-0jh0j.16).
                                     advance_sp_past_return_addr(&mut state, pops_return_addr);
-                                    state.set_pc(ret_addr);
+                                    state.return_from_procedure(ret_addr);
                                 }
                             }
 

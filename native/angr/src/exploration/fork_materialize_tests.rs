@@ -305,6 +305,7 @@ fn snapshot_built_fork_replays_earlier_guards() {
             solver: base.solver().borrow().fork(),
             registers: base.registers().fork(),
             memory: None,
+            call_stack: Vec::new(),
         },
     );
 

@@ -680,7 +680,7 @@ fn apply_native_disposition(
                 if let Some(rv) = ret_val {
                     ctx.cc.write_proc_return(state, rv);
                 }
-                state.set_pc(return_addr);
+                state.return_from_procedure(return_addr);
                 // Only stack-return ABIs (x86/AMD64) pop the return address, so
                 // only they advance SP here; the shared helper gates that and
                 // is what keeps this site and `step_one`'s inline native path

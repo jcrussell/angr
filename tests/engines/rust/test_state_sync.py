@@ -1461,6 +1461,26 @@ class TestExportByIdCarriesPosixAndBvOffsets:
             proxy.load(claripy.BVS("off", 64), size)
 
 
+class TestCallStackPopsHookedReturns:
+    """A hooked procedure returns without a VEX ret, so its call frame must be
+    popped where the procedure returns; otherwise every PLT call into a hook
+    leaves a frame behind (angr-mx00p.91)."""
+
+    def test_no_stale_plt_frames_after_hooked_calls(self, fauxware_project):
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        rm = mgr._rust_mgr
+        rm.set_block_granular(True)
+        # Step until a state is back in main after the puts/printf/read calls.
+        for _ in range(200):
+            ids = list(rm.get_state_ids("active"))
+            if not ids or any(rm.get_state_pc_by_id(s) == 0x4007B3 for s in ids):
+                break
+            rm.run(1)
+        sid = next(s for s in rm.get_state_ids("active") if rm.get_state_pc_by_id(s) == 0x4007B3)
+        # Back in main after authenticate returned: no callee frame is live.
+        assert rm.get_state_call_stack(sid) == []
+
+
 class TestWideConcreteMemoryRoundTrip:
     """Python-boundary regression for the >16-byte concrete load corruption
     fixed in commit df4bb4cd3 (bd angr-tk7yv).
