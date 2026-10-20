@@ -172,10 +172,9 @@ class TestGraveyardOwnerCheck:
         import subprocess
         import textwrap
 
-        from tests.engines.conftest import TEST_BINARIES_DIR
+        from tests.engines.conftest import FAUXWARE_PATH as binary_path
 
         # Mirrors the fauxware_project fixture's own path resolution exactly.
-        binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
         if not os.path.exists(binary_path):
             pytest.skip("fauxware binary not found")
 

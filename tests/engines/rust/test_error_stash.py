@@ -1566,7 +1566,7 @@ class TestErrorRecovery:
     # memory_load callback, so the LoadG address is symbolic and the
     # resolve_loadg_load dispatch must fire.
 
-    def test_loadg_symbolic_address_dispatches_through_resolve_loadg_load(self):
+    def test_loadg_symbolic_address_dispatches_through_resolve_loadg_load(self, amd64_mgr):
         """A hand-built IRSB containing a LoadG with a symbolic address must
         dispatch through `resolve_loadg_load` (interpreter/expressions.rs:546).
 
@@ -1586,7 +1586,6 @@ class TestErrorRecovery:
 
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
         callbacks = PythonCallbacks()
 
         sym_addr = claripy.BVS("loadg_sym_addr", 64)
@@ -1649,14 +1648,14 @@ class TestErrorRecovery:
             return irsb if addr == 0x1000 else None
 
         callbacks.set_lift_block(cb_lift)
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         state = RustSimState("amd64")
         state.map_memory(0x1000, 0x1000, 7)  # IRSB region
         state.pc = 0x1000
-        mgr.add_state("active", state)
+        amd64_mgr.add_state("active", state)
 
-        mgr.run(2)
+        amd64_mgr.run(2)
 
         # The LoadG must have been dispatched through resolve_loadg_load.
         # Either the Python full callback fires (Strided / TooLarge / Failed

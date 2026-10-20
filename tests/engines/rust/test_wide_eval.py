@@ -32,20 +32,10 @@ import sys
 
 import pytest
 
-import angr
-from angr import claripy
 from angr.errors import SimUnsatError
 from angr.exploration.rust_manager import RustExplorationManager
+from tests.engines.conftest import PBOUNCE_PATH, load_pbounce, pbounce_stdin_state
 
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
-_SEED_BYTES = 32
 _U32 = 0xFFFFFFFF
 
 
@@ -61,14 +51,10 @@ def _reaches_target(data: bytes) -> bool:
 
 @pytest.fixture(scope="module")
 def found_states():
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    project = angr.Project(_SYNTH_PATH, auto_load_libs=False)
+    project = load_pbounce()
     target = project.loader.find_symbol("reach_target").rebased_addr
 
-    stdin_bvs = claripy.BVS("stdin", _SEED_BYTES * 8)
-    state = project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr)
-    state.posix.stdin.content.append((stdin_bvs, claripy.BVV(_SEED_BYTES, state.arch.bits)))
+    state, stdin_bvs = pbounce_stdin_state(project)
 
     mgr = RustExplorationManager(project, [state])
     mgr.explore(find=target, num_find=8, n=4096)
@@ -232,11 +218,11 @@ class TestPythonBouncePreservesIdentity:
 
     def test_bounced_models_reach_the_target(self):
         """Each feasible leaf's model must still drive the program to the target."""
-        if not os.path.exists(_SYNTH_PATH):
-            pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
+        if not os.path.exists(PBOUNCE_PATH):
+            pytest.skip(f"synthetic bench binary not found: {PBOUNCE_PATH}")
 
         proc = subprocess.run(
-            [sys.executable, "-c", _BOUNCE_SCRIPT, _SYNTH_PATH],
+            [sys.executable, "-c", _BOUNCE_SCRIPT, PBOUNCE_PATH],
             capture_output=True,
             text=True,
             timeout=600,

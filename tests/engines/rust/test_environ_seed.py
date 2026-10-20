@@ -20,21 +20,10 @@ installed returns 0 while a never-seen key returns 1.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-import angr
 from angr.exploration.rust_manager import RustExplorationManager
-
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
+from tests.engines.conftest import load_pbounce
 
 _ENV = {"FLAG_CHECK": "1", "EMPTY_VAR": "", "PATH": "/usr/bin:/bin"}
 
@@ -42,9 +31,7 @@ _ENV = {"FLAG_CHECK": "1", "EMPTY_VAR": "", "PATH": "/usr/bin:/bin"}
 @pytest.fixture(scope="module")
 def seeded_mgr():
     """A Rust manager over an ``entry_state(env=...)`` state, plus its state id."""
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    project = angr.Project(_SYNTH_PATH, auto_load_libs=False)
+    project = load_pbounce()
     state = project.factory.entry_state(env=_ENV)
     mgr = RustExplorationManager(project, [state])
     sid = mgr._rust_mgr.get_state_ids("active")[0]
@@ -76,9 +63,7 @@ class TestEntryStateEnvironSeed:
         string table itself is inside the cached stack page. Clearing the
         in-memory ``_init_cache`` forces the disk path.
         """
-        if not os.path.exists(_SYNTH_PATH):
-            pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-        project = angr.Project(_SYNTH_PATH, auto_load_libs=False)
+        project = load_pbounce()
         # Cold run: populates both the in-memory and the disk init cache.
         RustExplorationManager(project, [project.factory.entry_state(env=_ENV)])
         RustExplorationManager._init_cache.clear()
@@ -88,9 +73,7 @@ class TestEntryStateEnvironSeed:
 
     def test_no_env_seeds_nothing(self):
         """A default ``entry_state()`` has an empty envp array --- nothing to seed."""
-        if not os.path.exists(_SYNTH_PATH):
-            pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-        project = angr.Project(_SYNTH_PATH, auto_load_libs=False)
+        project = load_pbounce()
         mgr = RustExplorationManager(project, [project.factory.entry_state()])
         sid = mgr._rust_mgr.get_state_ids("active")[0]
         assert mgr._rust_mgr.seed_environment(sid, [(b"FLAG_CHECK", b"1")]) == 1

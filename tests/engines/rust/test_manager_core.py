@@ -686,7 +686,7 @@ class TestRustExplorationManagerUnit:
         argval = bytes(mgr2.get_state_memory(sid2, optarg, 3))
         assert argval == b"val", f"optarg should point at 'val', got {argval!r}"
 
-    def test_python_procedure_symbolic_arg_falls_back_to_python(self, fauxware_project):
+    def test_python_procedure_symbolic_arg_falls_back_to_python(self, fauxware_project, amd64_mgr):
         """A symbolic argument must trigger the Python SimProcedure fallback,
         not invoke the registered native callable.
 
@@ -697,7 +697,6 @@ class TestRustExplorationManagerUnit:
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
         invocations = []
 
         def proc(args):
@@ -706,7 +705,7 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500000
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "sym_proc",
             num_args=1,
@@ -717,12 +716,12 @@ class TestRustExplorationManagerUnit:
         # Replace RDI with a fresh symbolic BV.
         state.set_register_symbolic_ast("rdi", claripy.BVS("sym_arg0", 64))
 
-        mgr.add_state("active", state)
-        event = mgr.run(5)
+        amd64_mgr.add_state("active", state)
+        event = amd64_mgr.run(5)
 
         # Native call attempted then errored → python_fallbacks bumped, event
         # emitted asking Python to take over the SimProcedure.
-        stats = mgr.native_procedure_stats()
+        stats = amd64_mgr.native_procedure_stats()
         assert stats["python_fallbacks"] >= 1, f"expected python_fallbacks>=1 after symbolic arg, got stats={stats}"
         assert stats["native_calls"] == 0
         assert invocations == [], f"python callable must NOT run for symbolic args; invocations={invocations}"
@@ -734,7 +733,7 @@ class TestRustExplorationManagerUnit:
         # angr-97l8: the by-name fallback map must record the procedure
         # under its registered name so users can see which procedures need
         # native handlers.
-        mgr_stats = mgr.stats()
+        mgr_stats = amd64_mgr.stats()
         by_name = mgr_stats["simprocedure_fallback_by_name"]
         assert by_name.get("sym_proc", 0) >= 1, (
             f"simprocedure_fallback_by_name should record 'sym_proc' fallback; got {by_name}"
@@ -765,7 +764,7 @@ class TestRustExplorationManagerUnit:
             f"other={stats['other_fallbacks']} total={stats['python_fallbacks']}"
         )
 
-    def test_load_snapshot_clears_parked_pending_callback(self):
+    def test_load_snapshot_clears_parked_pending_callback(self, amd64_mgr):
         """angr-ph300.21: ``load_snapshot_bytes`` must drop pre-restore pending
         state so the restored frontier does not merge with the discarded world.
 
@@ -783,10 +782,9 @@ class TestRustExplorationManagerUnit:
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
         HOOK = 0x500000
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "sym_proc_snap",
             num_args=1,
@@ -794,10 +792,10 @@ class TestRustExplorationManagerUnit:
             callable_=lambda args: 0,
         )
         state.set_register_symbolic_ast("rdi", claripy.BVS("sym_arg_snap", 64))
-        mgr.add_state("active", state)
-        event = mgr.run(5)
+        amd64_mgr.add_state("active", state)
+        event = amd64_mgr.run(5)
         assert event.event_type == "need_callback", f"expected parked need_callback; got {event.event_type}"
-        assert mgr.pending_callback_ids(), "precondition: a pending callback must be parked before load"
+        assert amd64_mgr.pending_callback_ids(), "precondition: a pending callback must be parked before load"
 
         # A valid snapshot from an independent fresh manager.
         donor = _RustExplorationManager("amd64")
@@ -805,9 +803,9 @@ class TestRustExplorationManagerUnit:
         snap = donor.dump_snapshot_bytes()
         assert len(snap) > 0
 
-        mgr.load_snapshot_bytes(snap)
-        assert not mgr.pending_callback_ids(), (
-            f"load_snapshot_bytes must clear pre-restore pending callbacks; still parked: {mgr.pending_callback_ids()}"
+        amd64_mgr.load_snapshot_bytes(snap)
+        assert not amd64_mgr.pending_callback_ids(), (
+            f"load_snapshot_bytes must clear pre-restore pending callbacks; still parked: {amd64_mgr.pending_callback_ids()}"
         )
 
     def test_python_procedure_num_args_truncates_at_registered_count(self, amd64_mgr):
@@ -926,7 +924,7 @@ class TestRustExplorationManagerUnit:
         assert stats["symbolic_fallbacks_by_name"].get("bad_ret_proc", 0) == 0
         assert stats["not_implemented_fallbacks_by_name"].get("bad_ret_proc", 0) == 0
 
-    def test_python_override_bypasses_native_strlen(self):
+    def test_python_override_bypasses_native_strlen(self, amd64_mgr):
         """``set_python_override("strlen")`` must skip the native strlen
         registered by default and emit a ``need_simprocedure`` event so
         Python can handle the call instead. Locks the contract documented
@@ -943,17 +941,16 @@ class TestRustExplorationManagerUnit:
         STRING_ADDR = 0x2000
         STACK_BASE = 0x7FFF0000
 
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
         # Bind an external address to the "strlen" SimProcedure name. The
         # default registry has a native NativeStrlen so this would normally
         # fire on the fast path.
-        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        amd64_mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
         # Force the dispatcher to bypass NativeStrlen by name.
-        assert mgr.has_native_procedure("strlen"), (
+        assert amd64_mgr.has_native_procedure("strlen"), (
             "precondition: strlen must be registered natively (else the override path is moot)"
         )
-        mgr.set_python_override("strlen")
+        amd64_mgr.set_python_override("strlen")
 
         state = RustSimState("amd64")
         state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
@@ -964,11 +961,11 @@ class TestRustExplorationManagerUnit:
         state.set_register("rdi", STRING_ADDR)
         state.pc = STRLEN_HOOK
 
-        mgr.add_state("active", state)
-        event = mgr.run(5)
+        amd64_mgr.add_state("active", state)
+        event = amd64_mgr.run(5)
 
         # Native must NOT have run (override skipped it before dispatch).
-        nstats = mgr.native_procedure_stats()
+        nstats = amd64_mgr.native_procedure_stats()
         assert nstats["native_calls"] == 0, (
             f"native strlen must not fire when Python override is set; native_procedure_stats={nstats}"
         )
@@ -982,7 +979,7 @@ class TestRustExplorationManagerUnit:
         # that bumps the generic simprocedure_python_fallback_count, NOT
         # native_proc_stats.python_fallbacks (those are distinct counters,
         # per the dispatch-priority docs).
-        mgr_stats = mgr.stats()
+        mgr_stats = amd64_mgr.stats()
         assert mgr_stats["simprocedure_python_fallback_count"] >= 1, (
             f"override should route through the Python SimProcedure path; got stats={mgr_stats}"
         )
@@ -999,7 +996,7 @@ class TestRustExplorationManagerUnit:
 
         # Removing the override restores the native fast path. Wire up a
         # fresh state at the same hook and confirm native fires this time.
-        mgr.remove_python_override("strlen")
+        amd64_mgr.remove_python_override("strlen")
         state2 = RustSimState("amd64")
         state2.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
         state2.map_memory(STACK_BASE, 0x1000, 7)
@@ -1008,10 +1005,10 @@ class TestRustExplorationManagerUnit:
         state2.set_register("rsp", STACK_BASE)
         state2.set_register("rdi", STRING_ADDR)
         state2.pc = STRLEN_HOOK
-        mgr.add_state("active", state2)
-        mgr.run(5)
+        amd64_mgr.add_state("active", state2)
+        amd64_mgr.run(5)
 
-        nstats2 = mgr.native_procedure_stats()
+        nstats2 = amd64_mgr.native_procedure_stats()
         assert nstats2["native_calls"] >= 1, (
             f"after remove_python_override, native strlen must fire; native_procedure_stats={nstats2}"
         )
@@ -1184,7 +1181,7 @@ class TestRustExplorationPython:
             "set_register('rip') must sync state.pc — otherwise the next block fetch lifts at a stale/zero address"
         )
 
-    def test_strict_page_access_blocks_nx_block_fetch(self):
+    def test_strict_page_access_blocks_nx_block_fetch(self, amd64_mgr):
         """Fetching a basic block from a mapped non-executable page must
         surface as a permission error (state lands in `errored`) when BOTH
         enforce_permissions and enforce_nx are on. Lift callback must NOT
@@ -1193,7 +1190,6 @@ class TestRustExplorationPython:
         when STRICT_PAGE_ACCESS AND ENABLE_NX are both set."""
         from angr.rustylib.vex_engine import PythonCallbacks
 
-        mgr = _RustExplorationManager("amd64")
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda addr, size: (bytes(size), False, None))
         callbacks.set_memory_store(lambda addr, data: None)
@@ -1203,22 +1199,22 @@ class TestRustExplorationPython:
             lift_addrs.append(addr)
 
         callbacks.set_lift_block(lift)
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         state = RustSimState("amd64")
         state.set_enforce_permissions(True)
         state.set_enforce_nx(True)
         state.map_memory(0x1000, 0x1000, 6)  # RW, no X
         state.pc = 0x1000
-        mgr.add_state("active", state)
+        amd64_mgr.add_state("active", state)
 
-        mgr.run(10)
+        amd64_mgr.run(10)
 
-        counts = mgr.stash_counts()
+        counts = amd64_mgr.stash_counts()
         assert counts.get("errored", 0) == 1, f"expected the NX block fetch to error the state, got stashes={counts}"
         assert 0x1000 not in lift_addrs, "permission check must fire before lift_block is dispatched"
 
-    def test_strict_page_access_alone_does_not_block_nx_fetch(self):
+    def test_strict_page_access_alone_does_not_block_nx_fetch(self, amd64_mgr):
         """STRICT_PAGE_ACCESS without ENABLE_NX must not raise on a fetch
         from a non-executable page — matches Python's heavy VEX engine,
         which guards the SimSegfaultError on `o.ENABLE_NX in options`
@@ -1226,7 +1222,6 @@ class TestRustExplorationPython:
         invoked because no early permission rejection fires."""
         from angr.rustylib.vex_engine import PythonCallbacks
 
-        mgr = _RustExplorationManager("amd64")
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda addr, size: (bytes(size), False, None))
         callbacks.set_memory_store(lambda addr, data: None)
@@ -1236,18 +1231,18 @@ class TestRustExplorationPython:
             lift_addrs.append(addr)
 
         callbacks.set_lift_block(lift)
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         state = RustSimState("amd64")
         state.set_enforce_permissions(True)
         # enforce_nx left OFF — NX should NOT fire.
         state.map_memory(0x1000, 0x1000, 6)  # RW, no X
         state.pc = 0x1000
-        mgr.add_state("active", state)
+        amd64_mgr.add_state("active", state)
 
-        mgr.run(10)
+        amd64_mgr.run(10)
 
-        counts = mgr.stash_counts()
+        counts = amd64_mgr.stash_counts()
         assert counts.get("errored", 0) == 0, f"NX should not fire without enforce_nx; got stashes={counts}"
         assert 0x1000 in lift_addrs, "lift_block should have been dispatched at 0x1000 since NX is off"
 
@@ -1801,7 +1796,7 @@ class TestRustExplorationPython:
             f"store routing counters ({stores}) cannot exceed store_stmt_count ({exec_stats['store_stmt_count']})"
         )
 
-    def test_reconvergence_counters_populate_on_forking_workload(self, fauxware_project):
+    def test_reconvergence_counters_populate_on_forking_workload(self, fauxware_project, amd64_mgr):
         """angr-11djq.16 (DS-instr): the state-reconvergence counters are
         exposed via ``stats()`` and populate on a forking workload.
 
@@ -1827,8 +1822,7 @@ class TestRustExplorationPython:
         )
 
         # Fresh manager: all reconvergence counters start at zero.
-        fresh = _RustExplorationManager("amd64")
-        fresh_stats = fresh.stats()
+        fresh_stats = amd64_mgr.stats()
         for key in keys:
             assert key in fresh_stats, f"missing key {key}"
         assert fresh_stats["reconvergence_collision_states"] == 0

@@ -24,45 +24,22 @@ solution has an observable, leaf-specific shape.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-import angr
-from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
+from tests.engines.conftest import PBOUNCE_SEED_BYTES, TrapPoint, load_pbounce, pbounce_stdin_state
 
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
 _LEAVES = 8  # 2^W, W=3
-_SEED_BYTES = 32
-
-
-class _TrapPoint(angr.SimProcedure):
-    """Identity hook for ``trap_point(x) -> x`` -- forces a Python bounce."""
-
-    def run(self, x):  # pylint: disable=arguments-differ
-        return x
 
 
 @pytest.fixture(scope="module")
 def seeded_found():
     """Explore the synthetic from a blank_state with a harness-seeded stdin BVS."""
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    project = angr.Project(_SYNTH_PATH, auto_load_libs=False)
-    project.hook(project.loader.find_symbol("trap_point").rebased_addr, _TrapPoint())
+    project = load_pbounce()
+    project.hook(project.loader.find_symbol("trap_point").rebased_addr, TrapPoint())
     target = project.loader.find_symbol("reach_target").rebased_addr
 
-    stdin_bvs = claripy.BVS("stdin", _SEED_BYTES * 8)
-    state = project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr)
-    state.posix.stdin.content.append((stdin_bvs, claripy.BVV(_SEED_BYTES, state.arch.bits)))
+    state, stdin_bvs = pbounce_stdin_state(project)
 
     mgr = RustExplorationManager(project, [state])
     mgr.explore(find=target, num_find=_LEAVES, n=4096)
@@ -109,7 +86,7 @@ class TestSeededStdinSolves:
         found, _ = seeded_found
         for state in found:
             data = state.posix.dumps(0)
-            assert len(data) == _SEED_BYTES, "seeded bytes must not be re-injected after the chunk"
+            assert len(data) == PBOUNCE_SEED_BYTES, "seeded bytes must not be re-injected after the chunk"
             assert data[:3] != b"\x00\x00\x00" or _leaf_pattern(data) == (0, 0, 0)
 
     def test_dumps_agrees_with_eval_on_leaf(self, seeded_found):

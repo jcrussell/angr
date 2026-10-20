@@ -38,22 +38,21 @@ class TestSolverProxyTimeout:
     and silently disappear, leaving Rust at the default 30s timeout.
     """
 
-    def test_timeout_setter_propagates_to_state_solver(self):
+    def test_timeout_setter_propagates_to_state_solver(self, amd64_mgr):
         """Assignment updates the underlying RustSimState's solver context,
         not just a proxy field, so future forks inherit the value."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        proxy = RustStateProxy(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        proxy = RustStateProxy(amd64_mgr, sid)
 
         proxy.solver.timeout = 1234
         # Read back via the manager (verifies state-level propagation)
-        assert mgr.get_state_solver_timeout(sid) == 1234
+        assert amd64_mgr.get_state_solver_timeout(sid) == 1234
         # Read back via the proxy (verifies getter shape)
         assert proxy.solver.timeout == 1234
 
-    def test_timeout_setter_bounds_satisfiable_walltime(self):
+    def test_timeout_setter_bounds_satisfiable_walltime(self, amd64_mgr):
         """A tight per-state timeout must bound `state.solver.satisfiable()`
         wall-clock — the path users actually hit when they write
         `state.solver.timeout = N` before evaluating.
@@ -63,9 +62,8 @@ class TestSolverProxyTimeout:
         from angr import claripy
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        proxy = RustStateProxy(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        proxy = RustStateProxy(amd64_mgr, sid)
 
         proxy.solver.timeout = 50  # ms
 

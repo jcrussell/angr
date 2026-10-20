@@ -22,7 +22,6 @@ from unittest import mock
 
 import pytest
 
-import angr
 from angr import claripy
 from angr.exploration.rust_disk_cache import (
     _POSIX_POINTER_FIELDS,
@@ -31,27 +30,13 @@ from angr.exploration.rust_disk_cache import (
     _restore_posix_entry_fields,
 )
 from angr.exploration.rust_manager import RustExplorationManager
-
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
+from tests.engines.conftest import load_pbounce
 
 _ARGS = ["prog", "alpha", "beta"]
 _ENV = {"FLAG_CHECK": "1"}
 
 _POSIX_FIELDS = (*_POSIX_POINTER_FIELDS, "argc")
 _CACHE_KEY = "test_angr7tmoz_posix"
-
-
-def _project():
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    return angr.Project(_SYNTH_PATH, auto_load_libs=False)
 
 
 def _snapshot(state) -> dict:
@@ -68,7 +53,7 @@ class TestPosixEntryFieldRoundTrip:
 
     @pytest.fixture(scope="class")
     def states(self):
-        project = _project()
+        project = load_pbounce()
         entry = project.factory.entry_state(args=_ARGS, env=_ENV)
         data = {f"posix_{f}": _extract_posix_pointer(entry, f) for f in _POSIX_POINTER_FIELDS}
         data["posix_argc"] = _extract_posix_argc(entry)
@@ -78,7 +63,7 @@ class TestPosixEntryFieldRoundTrip:
 
     def test_blank_state_lacks_the_fields_to_begin_with(self):
         """Control: this is the hole the restore fills, not a no-op."""
-        project = _project()
+        project = load_pbounce()
         blank = project.factory.blank_state(addr=project.entry)
         assert all(getattr(blank.posix, f) is None for f in _POSIX_FIELDS)
 
@@ -103,7 +88,7 @@ class TestPosixEntryFieldRoundTrip:
     def test_absent_fields_are_left_alone(self):
         """A pickle without the argv/argc/auxv fields (or an unreadable field) must
         not crash the restore or write a bogus zero pointer."""
-        project = _project()
+        project = load_pbounce()
         blank = project.factory.blank_state(addr=project.entry)
         _restore_posix_entry_fields(blank, {"posix_environ": 0x1000})
         assert blank.posix.environ is not None
@@ -113,7 +98,7 @@ class TestPosixEntryFieldRoundTrip:
     def test_symbolic_argc_is_not_persisted(self):
         """Concretizing it would silently drop a symbolic argc; None keeps the
         blank-state default instead."""
-        project = _project()
+        project = load_pbounce()
         state = project.factory.entry_state(args=_ARGS, argc=claripy.BVS("argc", 32))
         assert _extract_posix_argc(state) is None
 
@@ -130,7 +115,7 @@ class TestWarmDiskCacheKeepsPosix:
         particular, cannot be short-circuited into a skip by a pickle a previous
         run of this file left behind.
         """
-        project = _project()
+        project = load_pbounce()
         cache_dir = str(tmp_path_factory.mktemp("angr_rust_init"))
         # `mock.patch.object`, not a manual setattr/restore pair: the mixin
         # defines `_disk_cache_dir` as an inherited staticmethod, so restoring

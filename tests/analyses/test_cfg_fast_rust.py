@@ -19,16 +19,7 @@ import os
 import pytest
 
 import angr
-
-try:
-    from angr.exploration import RustExplorationManager
-
-    RUST_EXPLORATION_AVAILABLE = True
-except ImportError:
-    RUST_EXPLORATION_AVAILABLE = False
-
-
-EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
+from tests.engines.conftest import EXAMPLES_DIR, RUST_EXPLORATION_AVAILABLE, RustExplorationManager
 
 # (example dir name, binary file name within that dir)
 BINARIES = [

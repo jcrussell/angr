@@ -40,15 +40,16 @@ SET and reproduces the deterministic solution.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-import angr
-from angr import claripy
-
 # fauxware_project fixture lives in tests/engines/conftest.py (angr-7gdp).
-from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, RustExplorationManager
+from tests.engines.conftest import (
+    RUST_EXPLORATION_AVAILABLE,
+    RustExplorationManager,
+    TrapPoint,
+    load_pbounce,
+    pbounce_stdin_state,
+)
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration engine not built")
 
@@ -221,32 +222,15 @@ class TestParallelFindAllParity:
 # with no early exit -- exactly the find-all regime S7 targets, and the one
 # where a dropped path (too few) or cancel-token over-collection (too many) is
 # observable as a COUNT.
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
 _SYNTH_LEAVES = 8  # 2^W, W=3
-
-
-class _TrapPoint(angr.SimProcedure):
-    """Identity hook for ``trap_point(x) -> x`` -- a pure Python bounce."""
-
-    def run(self, x):  # pylint: disable=arguments-differ
-        return x
 
 
 @pytest.fixture(scope="module")
 def pbounce_project():
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    proj = angr.Project(_SYNTH_PATH, auto_load_libs=False)
+    proj = load_pbounce()
     trap = proj.loader.find_symbol("trap_point")
     assert trap is not None, "trap_point symbol not found"
-    proj.hook(trap.rebased_addr, _TrapPoint())
+    proj.hook(trap.rebased_addr, TrapPoint())
     return proj
 
 
@@ -256,15 +240,8 @@ def _explore_pbounce(project, workers, monkeypatch):
     else:
         monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
 
-    main_sym = project.loader.find_symbol("main")
     target = project.loader.find_symbol("reach_target")
-    state = project.factory.blank_state(addr=main_sym.rebased_addr)
-    # 32 fully-symbolic stdin bytes so the modelled read(0, b, 32) returns
-    # symbolic content without an extra fork (same seeding as the bench's
-    # solve.py).
-    state.posix.stdin.content.append((claripy.BVS("stdin", 32 * 8), claripy.BVV(32, state.arch.bits)))
-
-    mgr = RustExplorationManager(project, [state])
+    mgr = RustExplorationManager(project, [_pbounce_state(project)])
     assert mgr.stats["parallel_real_workers"] == workers
     mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
     return mgr, target.rebased_addr
@@ -400,10 +377,7 @@ class TestParallelFoundContentSynthetic:
 
 def _pbounce_state(project):
     """Blank state at ``main`` with 32 symbolic stdin bytes (the 8-leaf synthetic)."""
-    main_sym = project.loader.find_symbol("main")
-    state = project.factory.blank_state(addr=main_sym.rebased_addr)
-    state.posix.stdin.content.append((claripy.BVS("stdin", 32 * 8), claripy.BVV(32, state.arch.bits)))
-    return state
+    return pbounce_stdin_state(project)[0]
 
 
 def _fingerprint(mgr):

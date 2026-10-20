@@ -14,12 +14,12 @@ from angr import claripy
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
     RUST_EXPLORATION_AVAILABLE,
-    TEST_BINARIES_DIR,
     ExplorationEvent,
     PythonCallbacks,
     RustExplorationManager,
     RustSimState,
     _RustExplorationManager,
+    load_fauxware,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -482,14 +482,6 @@ class TestCallbackHeapSync:
 
         return AllocProc
 
-    @pytest.fixture
-    def hookable_project(self):
-        """Function-scoped: these tests install hooks, so they must not share
-        the module-scoped ``fauxware_project``."""
-        import os
-
-        return angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
-
     def test_bounced_alloc_sees_rust_heap_brk(self, hookable_project):
         """Inbound: a native allocation already moved Rust's heap_brk, so the
         address the bounced proc hands out must sit above it.
@@ -569,12 +561,6 @@ class TestCallbackPosixSync:
 
         return WriteProc
 
-    @pytest.fixture
-    def hookable_project(self):
-        import os
-
-        return angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
-
     def test_bounced_write_reaches_rust(self, hookable_project):
         """Outbound: what the bounced proc wrote to stdout must land in Rust.
 
@@ -649,12 +635,6 @@ class TestCallbackFdTableSync:
     """
 
     O_WRONLY = 1
-
-    @pytest.fixture
-    def hookable_project(self):
-        import os
-
-        return angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
 
     @staticmethod
     def _open_proc(path, opened):
@@ -732,9 +712,7 @@ class TestCallbackFdInboundSync:
 
     @pytest.fixture
     def mgr_and_sid(self):
-        import os
-
-        proj = angr.Project(os.path.join(TEST_BINARIES_DIR, "fauxware"), auto_load_libs=False)
+        proj = load_fauxware()
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         sid = mgr._rust_mgr.get_state_ids("active")[0]
         return proj, mgr, sid
@@ -840,55 +818,52 @@ class TestStateMetadataStorage:
     freed automatically.
     """
 
-    def test_addr_to_ast_round_trip(self):
+    def test_addr_to_ast_round_trip(self, amd64_mgr):
         """set_state_addr_to_ast then get_state_addr_to_ast returns the same
         AST object and size."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
+        sid = amd64_mgr.create_state("active")
         ast = claripy.BVS("sym_addr_round_trip", 32)
-        mgr.set_state_addr_to_ast(sid, 0x4000, ast, 4)
+        amd64_mgr.set_state_addr_to_ast(sid, 0x4000, ast, 4)
 
-        out = mgr.get_state_addr_to_ast(sid)
+        out = amd64_mgr.get_state_addr_to_ast(sid)
         assert 0x4000 in out
         recovered_ast, recovered_size = out[0x4000]
         # Identity preserved — Rust holds a strong PyObject ref, not a clone.
         assert recovered_ast is ast
         assert recovered_size == 4
 
-    def test_hook_symbolic_memory_round_trip(self):
+    def test_hook_symbolic_memory_round_trip(self, amd64_mgr):
         """Hook symbolic memory entries survive a round trip."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
+        sid = amd64_mgr.create_state("active")
         ast = claripy.BVS("hook_round_trip", 64)
-        mgr.set_state_hook_symbolic_memory(sid, 0x5000, ast, 8)
+        amd64_mgr.set_state_hook_symbolic_memory(sid, 0x5000, ast, 8)
 
-        out = mgr.get_state_hook_symbolic_memory(sid)
+        out = amd64_mgr.get_state_hook_symbolic_memory(sid)
         assert 0x5000 in out
         recovered_ast, recovered_size = out[0x5000]
         assert recovered_ast is ast
         assert recovered_size == 8
 
-    def test_symbolic_pages_replace_whole_dict(self):
+    def test_symbolic_pages_replace_whole_dict(self, amd64_mgr):
         """set_state_symbolic_pages replaces the entire map. A second call
         overwrites the previous contents — matches the old
         ``_state_md(sid).symbolic_pages = pages`` assignment semantics.
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
+        sid = amd64_mgr.create_state("active")
         first = {0x1000: claripy.BVS("page_first", 8 * 4096)}
-        mgr.set_state_symbolic_pages(sid, first)
-        assert dict(mgr.get_state_symbolic_pages(sid)) == first
+        amd64_mgr.set_state_symbolic_pages(sid, first)
+        assert dict(amd64_mgr.get_state_symbolic_pages(sid)) == first
 
         second = {0x2000: claripy.BVS("page_second", 8 * 4096)}
-        mgr.set_state_symbolic_pages(sid, second)
+        amd64_mgr.set_state_symbolic_pages(sid, second)
         # Old entry gone, new one present.
-        out = mgr.get_state_symbolic_pages(sid)
+        out = amd64_mgr.get_state_symbolic_pages(sid)
         assert 0x1000 not in out
         assert 0x2000 in out
         assert out[0x2000] is second[0x2000]
@@ -902,32 +877,30 @@ class TestStateMetadataStorage:
         assert dict(amd64_mgr.get_state_hook_symbolic_memory(424242)) == {}
         assert dict(amd64_mgr.get_state_symbolic_pages(424242)) == {}
 
-    def test_setter_unknown_state_raises(self):
+    def test_setter_unknown_state_raises(self, amd64_mgr):
         """Unknown state IDs on the setter side surface ValueError — matches
         every other ``set_state_*`` method on the manager."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
         ast = claripy.BVS("nope", 8)
         with pytest.raises(ValueError, match=r"state .* not found"):
-            mgr.set_state_addr_to_ast(424242, 0x1, ast, 1)
+            amd64_mgr.set_state_addr_to_ast(424242, 0x1, ast, 1)
 
-    def test_clear_state_metadata_drops_all_three_maps(self):
+    def test_clear_state_metadata_drops_all_three_maps(self, amd64_mgr):
         """clear_state_metadata removes every map for the state — replaces
         the previous ``_state_metadata.pop(sid, None)`` cleanup."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        mgr.set_state_addr_to_ast(sid, 0x10, claripy.BVS("a", 8), 1)
-        mgr.set_state_hook_symbolic_memory(sid, 0x20, claripy.BVS("b", 8), 1)
-        mgr.set_state_symbolic_pages(sid, {0x1000: claripy.BVS("c", 8 * 4096)})
+        sid = amd64_mgr.create_state("active")
+        amd64_mgr.set_state_addr_to_ast(sid, 0x10, claripy.BVS("a", 8), 1)
+        amd64_mgr.set_state_hook_symbolic_memory(sid, 0x20, claripy.BVS("b", 8), 1)
+        amd64_mgr.set_state_symbolic_pages(sid, {0x1000: claripy.BVS("c", 8 * 4096)})
 
-        mgr.clear_state_metadata(sid)
+        amd64_mgr.clear_state_metadata(sid)
 
-        assert dict(mgr.get_state_addr_to_ast(sid)) == {}
-        assert dict(mgr.get_state_hook_symbolic_memory(sid)) == {}
-        assert dict(mgr.get_state_symbolic_pages(sid)) == {}
+        assert dict(amd64_mgr.get_state_addr_to_ast(sid)) == {}
+        assert dict(amd64_mgr.get_state_hook_symbolic_memory(sid)) == {}
+        assert dict(amd64_mgr.get_state_symbolic_pages(sid)) == {}
 
     def test_clear_state_metadata_unknown_state_is_noop(self, amd64_mgr):
         """clear_state_metadata on a missing state returns silently — matches
@@ -948,7 +921,7 @@ class TestStateMetadataStorage:
         amd64_mgr.clear_state_metadata(sid)
         amd64_mgr.clear_state_metadata(0xDEAD_BEEF_DEAD_BEEF)
 
-    def test_fork_does_not_alias_metadata(self):
+    def test_fork_does_not_alias_metadata(self, amd64_mgr):
         """``RustSimState.fork`` clones the per-state metadata maps so that
         parent and child have independent storage. Catches the regression
         where a missing fork-time clone would leave both states pointing at
@@ -960,19 +933,18 @@ class TestStateMetadataStorage:
         # We need to set the entry through the manager API. Wire the state
         # in via create_state isn't enough since we want the .fork() path,
         # so do it directly through a manager + a fresh state.
-        mgr = _RustExplorationManager("amd64")
-        parent_sid = mgr.create_state("active")
-        mgr.set_state_addr_to_ast(parent_sid, 0x9000, ast_parent, 4)
+        parent_sid = amd64_mgr.create_state("active")
+        amd64_mgr.set_state_addr_to_ast(parent_sid, 0x9000, ast_parent, 4)
 
         # Sanity: parent entry visible.
-        assert 0x9000 in mgr.get_state_addr_to_ast(parent_sid)
+        assert 0x9000 in amd64_mgr.get_state_addr_to_ast(parent_sid)
 
         # Exercise the real fork path: ``fork_state_to_stash`` calls
         # ``RustSimState.fork``, which must clone the parent's metadata into
         # the child's own backing map. The child therefore sees the planted
         # entry...
-        child_sid = mgr.fork_state_to_stash(parent_sid, "active")
-        assert 0x9000 in mgr.get_state_addr_to_ast(child_sid), (
+        child_sid = amd64_mgr.fork_state_to_stash(parent_sid, "active")
+        assert 0x9000 in amd64_mgr.get_state_addr_to_ast(child_sid), (
             "fork must clone the parent's addr_to_ast entry into the child"
         )
 
@@ -980,12 +952,16 @@ class TestStateMetadataStorage:
         # appear on the parent, and vice-versa. A missing fork-time clone
         # (shared HashMap) would leak each write across the boundary.
         ast_child = claripy.BVS("child_only", 32)
-        mgr.set_state_addr_to_ast(child_sid, 0xA000, ast_child, 4)
-        assert 0xA000 not in mgr.get_state_addr_to_ast(parent_sid), "child write aliased into the parent's metadata map"
+        amd64_mgr.set_state_addr_to_ast(child_sid, 0xA000, ast_child, 4)
+        assert 0xA000 not in amd64_mgr.get_state_addr_to_ast(parent_sid), (
+            "child write aliased into the parent's metadata map"
+        )
 
         ast_parent2 = claripy.BVS("parent_only_2", 32)
-        mgr.set_state_addr_to_ast(parent_sid, 0xB000, ast_parent2, 4)
-        assert 0xB000 not in mgr.get_state_addr_to_ast(child_sid), "parent write aliased into the child's metadata map"
+        amd64_mgr.set_state_addr_to_ast(parent_sid, 0xB000, ast_parent2, 4)
+        assert 0xB000 not in amd64_mgr.get_state_addr_to_ast(child_sid), (
+            "parent write aliased into the child's metadata map"
+        )
 
     # ------------------------------------------------------------------
     # angr-nsg9: lifecycle tests for the metadata-storage refactor.

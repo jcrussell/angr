@@ -19,6 +19,7 @@ from tests.engines.conftest import (  # noqa: F401
     RustExplorationManager,
     RustSimState,
     _RustExplorationManager,
+    first_state_id,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -27,6 +28,24 @@ pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
     reason="Rust exploration not available",
 )
+
+
+def _zero_stub(proc_name: str, num_args: int):
+    """A Python SimProcedure stub whose class name matches the native-registry
+    key and whose ``run`` returns 0. ``run`` only executes on Python fallback;
+    when native dispatch fires it is bypassed, but the class still has to exist
+    for ``proj.hook`` to be valid and for ``_register_simprocedures`` to forward
+    the name to the Rust manager."""
+    runs = {
+        1: lambda self, a0: 0,
+        2: lambda self, a0, a1: 0,
+        3: lambda self, a0, a1, a2: 0,
+    }
+    return type(
+        proc_name,
+        (angr.SimProcedure,),
+        {"num_args": num_args, "run": runs[num_args]},
+    )
 
 
 class TestSymbolicLibcProcedures:
@@ -1220,25 +1239,6 @@ class TestNativeFileDescriptorErrorReturns:
     HOOK_ADDR = 0x600E30
     DEAD_ADDR = 0x4008B0
 
-    @staticmethod
-    def _make_stub(proc_name: str, num_args: int):
-        """Build a Python SimProcedure stub whose class name matches the
-        native-registry key. The stub's `run` is only invoked on Python
-        fallback — if native dispatch fires (as expected here), `run` is
-        bypassed, but the stub still has to exist for `proj.hook` to be
-        valid and for `_register_simprocedures` to forward the name to
-        the Rust manager."""
-        runs = {
-            1: lambda self, a0: 0,
-            2: lambda self, a0, a1: 0,
-            3: lambda self, a0, a1, a2: 0,
-        }
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": num_args, "run": runs[num_args]},
-        )
-
     @pytest.mark.parametrize(
         "proc_name,num_args,reg_args,bad_fd",
         [
@@ -1260,7 +1260,7 @@ class TestNativeFileDescriptorErrorReturns:
 
         proj = fauxware_project
 
-        stub_cls = self._make_stub(proc_name, num_args)
+        stub_cls = _zero_stub(proc_name, num_args)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = proj.factory.blank_state(
@@ -1549,21 +1549,13 @@ class TestNativeSleep:
     HOOK_ADDR = 0x600E30
     DEAD_ADDR = 0x4008B0
 
-    @staticmethod
-    def _make_stub(proc_name: str):
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": 1, "run": lambda self, n: 0},
-        )
-
     @pytest.mark.parametrize("proc_name", ["sleep", "usleep"])
     def test_timer_returns_zero(self, fauxware_project, proc_name):
         from angr import claripy
 
         proj = fauxware_project
 
-        stub_cls = self._make_stub(proc_name)
+        stub_cls = _zero_stub(proc_name, 1)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = proj.factory.blank_state(
@@ -1842,21 +1834,6 @@ class TestNativeMemoryAlignedAllocators:
     DEAD_ADDR = 0x4008B0
     BUF_ADDR = 0x601100  # past .bss, lazy-mapped
 
-    @staticmethod
-    def _make_stub(proc_name: str, num_args: int):
-        """Python SimProcedure stub whose class name matches the native key.
-        The `run` is bypassed when native dispatch fires (the expected path),
-        but the class must exist so `proj.hook` is valid."""
-        runs = {
-            2: lambda self, a0, a1: 0,
-            3: lambda self, a0, a1, a2: 0,
-        }
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": num_args, "run": runs[num_args]},
-        )
-
     def test_memalign_returns_aligned_pointer(self, fauxware_project):
         """memalign(64, 100) must dispatch natively, return an aligned
         non-zero pointer in rax, and tick the call_counts['memalign']
@@ -1865,7 +1842,7 @@ class TestNativeMemoryAlignedAllocators:
 
         proj = fauxware_project
 
-        stub_cls = self._make_stub("memalign", 2)
+        stub_cls = _zero_stub("memalign", 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = proj.factory.blank_state(
@@ -1906,7 +1883,7 @@ class TestNativeMemoryAlignedAllocators:
 
         proj = fauxware_project
 
-        stub_cls = self._make_stub("posix_memalign", 3)
+        stub_cls = _zero_stub("posix_memalign", 3)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = proj.factory.blank_state(
@@ -1968,19 +1945,6 @@ class TestNativeStringToNumericProcedures:
     STRING_ADDR = 0x601100  # past .bss, lazy-mapped
     ENDPTR_ADDR = 0x601200  # storage for *endptr
 
-    @staticmethod
-    def _make_stub(proc_name: str, num_args: int):
-        runs = {
-            1: lambda self, a0: 0,
-            2: lambda self, a0, a1: 0,
-            3: lambda self, a0, a1, a2: 0,
-        }
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": num_args, "run": runs[num_args]},
-        )
-
     def _setup_state(self, proj, string_bytes: bytes, *, set_endptr: bool = False):
         from angr import claripy
 
@@ -1997,19 +1961,12 @@ class TestNativeStringToNumericProcedures:
         state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
-    def _first_state_id(self, mgr):
-        for stash in ("active", "deadended", "errored", "unconstrained"):
-            ids = mgr._rust_mgr.get_state_ids(stash)
-            if ids:
-                return ids[0]
-        return None
-
     def test_strtoll_64bit_concrete_value(self, fauxware_project):
         """strtoll on a value beyond i32 range must produce the i64 result
         in rax via native dispatch."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("strtoll", 3)
+        stub_cls = _zero_stub("strtoll", 3)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, b"9223372036854775000")
@@ -2022,7 +1979,7 @@ class TestNativeStringToNumericProcedures:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("strtoll", 0) == 1, f"expected native strtoll dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None, f"no state: {mgr.stash_counts()}"
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 9223372036854775000, f"rax={rax:#x}"
@@ -2033,7 +1990,7 @@ class TestNativeStringToNumericProcedures:
         """strtoull must accept values above i64::MAX (interpreted as u64)."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("strtoull", 3)
+        stub_cls = _zero_stub("strtoull", 3)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, b"18446744073709551000")
@@ -2046,7 +2003,7 @@ class TestNativeStringToNumericProcedures:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("strtoull", 0) == 1, f"expected native strtoull dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 18446744073709551000, f"rax={rax:#x}"
@@ -2057,7 +2014,7 @@ class TestNativeStringToNumericProcedures:
         """strtoll with a non-null endptr must store nptr + consumed bytes."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("strtoll", 3)
+        stub_cls = _zero_stub("strtoll", 3)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, b"123abc")
@@ -2068,7 +2025,7 @@ class TestNativeStringToNumericProcedures:
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
 
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 123
@@ -2083,7 +2040,7 @@ class TestNativeStringToNumericProcedures:
         the parsed double to xmm0's low 64 bits, and leave rax untouched."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("strtod", 2)
+        stub_cls = _zero_stub("strtod", 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, b"3.141592653589793")
@@ -2095,7 +2052,7 @@ class TestNativeStringToNumericProcedures:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("strtod", 0) == 1, f"expected native strtod dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             xmm0 = mgr._rust_mgr.get_state_register(sid, "xmm0")
             # xmm0 is 128 bits; low 64 carry the scalar double return.
@@ -2127,18 +2084,6 @@ class TestNativeStdioStatusAndWrite:
     STRING_ADDR = 0x601100  # past .bss, lazy-mapped
     FILE_PTR = 0x601200  # FILE struct; +112 = _fileno on amd64
 
-    @staticmethod
-    def _make_stub(proc_name: str, num_args: int):
-        runs = {
-            1: lambda self, a0: 0,
-            2: lambda self, a0, a1: 0,
-        }
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": num_args, "run": runs[num_args]},
-        )
-
     def _setup_state(self, proj, *, fileno: int, source_bytes: bytes | None = None):
         from angr import claripy
 
@@ -2163,18 +2108,11 @@ class TestNativeStdioStatusAndWrite:
         state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
-    def _first_state_id(self, mgr):
-        for stash in ("active", "deadended", "errored", "unconstrained"):
-            ids = mgr._rust_mgr.get_state_ids(stash)
-            if ids:
-                return ids[0]
-        return None
-
     def test_feof_returns_one_on_empty_fd(self, fauxware_project):
         """fd=1 (stdout) starts empty: position 0 >= content_len 0 → EOF."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("feof", 1)
+        stub_cls = _zero_stub("feof", 1)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, fileno=1)
@@ -2185,7 +2123,7 @@ class TestNativeStdioStatusAndWrite:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("feof", 0) == 1, f"expected native feof dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None, f"no state: {mgr.stash_counts()}"
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 1, f"feof(empty fd) → rax={rax}, expected 1"
@@ -2196,7 +2134,7 @@ class TestNativeStdioStatusAndWrite:
         """ferror has no Python proc — the native entry returns 0 (no error)."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("ferror", 1)
+        stub_cls = _zero_stub("ferror", 1)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, fileno=1)
@@ -2207,7 +2145,7 @@ class TestNativeStdioStatusAndWrite:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("ferror", 0) == 1, f"expected native ferror dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 0, f"ferror → rax={rax}, expected 0"
@@ -2219,7 +2157,7 @@ class TestNativeStdioStatusAndWrite:
         buffer and return 1."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("fputs", 2)
+        stub_cls = _zero_stub("fputs", 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             payload = b"hello world"
@@ -2232,7 +2170,7 @@ class TestNativeStdioStatusAndWrite:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("fputs", 0) == 1, f"expected native fputs dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == 1, f"fputs success → rax={rax}, expected 1"
@@ -2245,7 +2183,7 @@ class TestNativeStdioStatusAndWrite:
         """fputs with a closed/sentinel fd (-1) must return -1 without writing."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("fputs", 2)
+        stub_cls = _zero_stub("fputs", 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, fileno=-1, source_bytes=b"discarded")
@@ -2257,7 +2195,7 @@ class TestNativeStdioStatusAndWrite:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("fputs", 0) == 1, f"expected native fputs dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             # `int fputs(..)`: the proc mints a 32-bit -1 and the amd64 ABI
@@ -2274,7 +2212,7 @@ class TestNativeStdioStatusAndWrite:
         suffix — mirrors Python posix/perror.py (write(2, s, strlen(s)))."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("perror", 1)
+        stub_cls = _zero_stub("perror", 1)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             payload = b"open failed"
@@ -2286,7 +2224,7 @@ class TestNativeStdioStatusAndWrite:
 
             stats = mgr._rust_mgr.native_procedure_stats()
             assert stats["call_counts"].get("perror", 0) == 1, f"expected native perror dispatch, got stats={stats}"
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             stderr_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 2))
             assert stderr_bytes == payload, f"stderr={stderr_bytes!r} expected {payload!r}"
@@ -2305,7 +2243,7 @@ class TestNativeStdioStatusAndWrite:
         the registry-level test_vprintf_family_aliases_dispatch unit test."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("vprintf", 1)
+        stub_cls = _zero_stub("vprintf", 1)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             payload = b"hello world"
@@ -2319,7 +2257,7 @@ class TestNativeStdioStatusAndWrite:
             assert stats["call_counts"].get("vprintf", 0) == 1, (
                 f"expected native vprintf alias dispatch, got stats={stats}"
             )
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == len(payload), f"vprintf → rax={rax}, expected {len(payload)}"
@@ -2336,7 +2274,7 @@ class TestNativeStdioStatusAndWrite:
         the stream's fd, mirroring the fputs stream test."""
         proj = fauxware_project
 
-        stub_cls = self._make_stub("vfprintf", 2)
+        stub_cls = _zero_stub("vfprintf", 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             payload = b"stream out"
@@ -2351,7 +2289,7 @@ class TestNativeStdioStatusAndWrite:
             assert stats["call_counts"].get("vfprintf", 0) == 1, (
                 f"expected native vfprintf alias dispatch, got stats={stats}"
             )
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             assert rax == len(payload), f"vfprintf → rax={rax}, expected {len(payload)}"
@@ -2385,7 +2323,7 @@ class TestNativeReadCacheSync:
             f"expected at least one native read dispatch, got stats={stats}"
         )
 
-    def test_pending_memory_load_symbolic_page_returns_page_symbols(self):
+    def test_pending_memory_load_symbolic_page_returns_page_symbols(self, amd64_mgr):
         """`pending_memory_load_symbolic_page` must return the symbolic
         objects on the queried page as (addr, ast) pairs AND exclude objects
         on other pages — driven inside a live pending callback.
@@ -2408,8 +2346,6 @@ class TestNativeReadCacheSync:
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-
         HOOK = 0x500000
         SYM_PAGE = 0x510000
         SYM_ADDR = SYM_PAGE + 0x40
@@ -2419,7 +2355,7 @@ class TestNativeReadCacheSync:
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
         callbacks.set_lift_block(lambda a: None)
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         invocations = []
 
@@ -2427,8 +2363,8 @@ class TestNativeReadCacheSync:
             invocations.append(tuple(args))
             return 0
 
-        mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
-        mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
+        amd64_mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
+        amd64_mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
 
         state = RustSimState("amd64")
         state.map_memory(STACK_BASE, 0x1000, 7)
@@ -2443,11 +2379,11 @@ class TestNativeReadCacheSync:
         sym_arg = claripy.BVS("sym_arg0", 64)
         state.set_register_symbolic_ast("rdi", sym_arg)
 
-        mgr.add_state("active", state)
+        amd64_mgr.add_state("active", state)
         # add_state forks the supplied state and mints a fresh monotonic id
         # (state_lifecycle::_add_state), so state.state_id is NOT the id the
         # manager tracks — query the active stash for the forked copy's id.
-        active_ids = mgr.get_state_ids("active")
+        active_ids = amd64_mgr.get_state_ids("active")
         assert len(active_ids) == 1, f"expected exactly one active state, got {active_ids}"
         sid = active_ids[0]
 
@@ -2455,10 +2391,10 @@ class TestNativeReadCacheSync:
         # store_concrete_lazy registers it in memory.symbolic_objects (the
         # source symbolic_objects_iter walks).
         sym_mem = claripy.BVS("sym_mem", 64)
-        ok = mgr.state_memory_store_symbolic_multi(sid, claripy.BVV(SYM_ADDR, 64), sym_mem)
+        ok = amd64_mgr.state_memory_store_symbolic_multi(sid, claripy.BVV(SYM_ADDR, 64), sym_mem)
         assert ok, "symbolic store to a concrete mapped addr must land in Rust memory"
 
-        event = mgr.run(5)
+        event = amd64_mgr.run(5)
         assert event.callback_reason == "simprocedure", (
             f"need a live SimProcedure pending callback; got reason={event.callback_reason}"
         )
@@ -2466,7 +2402,7 @@ class TestNativeReadCacheSync:
 
         # Inside the live pending callback: the wrapper returns the symbolic
         # object on SYM_PAGE as an (addr, ast) pair.
-        entries = mgr.pending_memory_load_symbolic_page(event.callback_state_id, SYM_PAGE)
+        entries = amd64_mgr.pending_memory_load_symbolic_page(event.callback_state_id, SYM_PAGE)
         by_addr = dict(entries)
         assert SYM_ADDR in by_addr, (
             f"symbolic object at 0x{SYM_ADDR:x} missing from page-0x{SYM_PAGE:x} replay; got {sorted(by_addr)}"
@@ -2479,12 +2415,12 @@ class TestNativeReadCacheSync:
 
         # The page filter must EXCLUDE objects whose base address is not on the
         # queried page — querying HOOK's page returns nothing for SYM_ADDR.
-        other = mgr.pending_memory_load_symbolic_page(event.callback_state_id, HOOK & ~0xFFF)
+        other = amd64_mgr.pending_memory_load_symbolic_page(event.callback_state_id, HOOK & ~0xFFF)
         assert SYM_ADDR not in [a for a, _ in other], (
             f"page filter leaked 0x{SYM_ADDR:x} into the wrong page (0x{HOOK & ~0xFFF:x})"
         )
 
-    def test_pending_memory_load_wide_concrete_not_truncated(self):
+    def test_pending_memory_load_wide_concrete_not_truncated(self, amd64_mgr):
         """`pending_memory_load`/`get_pending_memory` must return every byte of
         a >16-byte concrete load, not a 16-byte prefix (angr-ph300.19).
 
@@ -2496,8 +2432,6 @@ class TestNativeReadCacheSync:
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-
         HOOK = 0x500000
         DATA_PAGE = 0x510000
         DATA_ADDR = DATA_PAGE + 0x40
@@ -2508,13 +2442,13 @@ class TestNativeReadCacheSync:
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
         callbacks.set_lift_block(lambda a: None)
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         def proc(args):
             return 0
 
-        mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
-        mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
+        amd64_mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
+        amd64_mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
 
         state = RustSimState("amd64")
         state.map_memory(STACK_BASE, 0x1000, 7)
@@ -2528,26 +2462,26 @@ class TestNativeReadCacheSync:
         sym_arg = claripy.BVS("sym_arg0", 64)
         state.set_register_symbolic_ast("rdi", sym_arg)
 
-        mgr.add_state("active", state)
-        sid = mgr.get_state_ids("active")[0]
+        amd64_mgr.add_state("active", state)
+        sid = amd64_mgr.get_state_ids("active")[0]
         assert sid is not None
 
-        event = mgr.run(5)
+        event = amd64_mgr.run(5)
         assert event.callback_reason == "simprocedure", (
             f"need a live SimProcedure pending callback; got reason={event.callback_reason}"
         )
 
         cid = event.callback_state_id
-        loaded = mgr.pending_memory_load(cid, DATA_ADDR, 32)
+        loaded = amd64_mgr.pending_memory_load(cid, DATA_ADDR, 32)
         assert bytes(loaded) == pattern, (
             f"pending_memory_load truncated/garbled the 32-byte load: {bytes(loaded)!r} != {pattern!r}"
         )
-        got = mgr.get_pending_memory(cid, DATA_ADDR, 32)
+        got = amd64_mgr.get_pending_memory(cid, DATA_ADDR, 32)
         assert bytes(got) == pattern, (
             f"get_pending_memory truncated/garbled the 32-byte load: {bytes(got)!r} != {pattern!r}"
         )
 
-    def test_add_constraints_to_pending_accepts_constraint_in_live_callback(self):
+    def test_add_constraints_to_pending_accepts_constraint_in_live_callback(self, amd64_mgr):
         """`add_constraints_to_pending` must drive its constraint through the
         pending state's solver without raising, inside a live callback
         (angr-ph300.20).
@@ -2572,8 +2506,6 @@ class TestNativeReadCacheSync:
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-
         HOOK = 0x500000
         STACK_BASE = 0x7FFF0000
 
@@ -2581,13 +2513,13 @@ class TestNativeReadCacheSync:
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
         callbacks.set_lift_block(lambda a: None)
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         def proc(args):
             return 0
 
-        mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
-        mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
+        amd64_mgr.register_python_procedure("sym_proc", num_args=1, no_return=False, callable=proc)
+        amd64_mgr.register_simprocedure(HOOK, "sym_proc", num_args=1, no_return=False)
 
         state = RustSimState("amd64")
         state.map_memory(STACK_BASE, 0x1000, 7)
@@ -2598,10 +2530,10 @@ class TestNativeReadCacheSync:
         sym_arg = claripy.BVS("sym_arg0", 64)
         state.set_register_symbolic_ast("rdi", sym_arg)
 
-        mgr.add_state("active", state)
-        assert mgr.get_state_ids("active")[0] is not None
+        amd64_mgr.add_state("active", state)
+        assert amd64_mgr.get_state_ids("active")[0] is not None
 
-        event = mgr.run(5)
+        event = amd64_mgr.run(5)
         assert event.callback_reason == "simprocedure", (
             f"need a live SimProcedure pending callback; got reason={event.callback_reason}"
         )
@@ -2610,8 +2542,8 @@ class TestNativeReadCacheSync:
         # A convertible constraint exercises the fast path's Ok arm
         # (add_constraint_raw_assumed + assumed_constraints_push). It must not
         # raise and the pending state must remain queryable.
-        mgr.add_constraints_to_pending(cid, [sym_arg == 0x1234])
-        assert mgr.borrow_pending_solver(cid) is not None
+        amd64_mgr.add_constraints_to_pending(cid, [sym_arg == 0x1234])
+        assert amd64_mgr.borrow_pending_solver(cid) is not None
 
 
 class TestNativeExtendedStringProcedures:
@@ -2631,14 +2563,6 @@ class TestNativeExtendedStringProcedures:
     S_ADDR = 0x601100  # haystack / scan target
     SET_ADDR = 0x601200  # accept / reject set
 
-    @staticmethod
-    def _make_stub(proc_name: str):
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": 2, "run": lambda self, a0, a1: 0},
-        )
-
     def _setup_state(self, proj, s_bytes: bytes, set_bytes: bytes):
         from angr import claripy
 
@@ -2656,17 +2580,10 @@ class TestNativeExtendedStringProcedures:
         state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
-    def _first_state_id(self, mgr):
-        for stash in ("active", "deadended", "errored", "unconstrained"):
-            ids = mgr._rust_mgr.get_state_ids(stash)
-            if ids:
-                return ids[0]
-        return None
-
     def _run_one(self, proj, name, s_bytes, set_bytes, c_or_set_addr):
         """Hook, single-step, return (call_count, rax)."""
 
-        stub_cls = self._make_stub(name)
+        stub_cls = _zero_stub(name, 2)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = self._setup_state(proj, s_bytes, set_bytes)
@@ -2676,7 +2593,7 @@ class TestNativeExtendedStringProcedures:
             mgr.run(max_steps=1)
             stats = mgr._rust_mgr.native_procedure_stats()
             count = stats["call_counts"].get(name, 0)
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None, f"no state: {mgr.stash_counts()}"
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
             return count, rax
@@ -2811,14 +2728,6 @@ class TestNativeMemoryCopyAndSet:
     SRC_ADDR = 0x601100
     DST_ADDR = 0x601200
 
-    @staticmethod
-    def _make_stub(proc_name: str):
-        return type(
-            proc_name,
-            (angr.SimProcedure,),
-            {"num_args": 3, "run": lambda self, a0, a1, a2: 0},
-        )
-
     def _blank_state(self, proj):
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
@@ -2832,23 +2741,16 @@ class TestNativeMemoryCopyAndSet:
         state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
 
-    def _first_state_id(self, mgr):
-        for stash in ("active", "deadended", "errored", "unconstrained"):
-            ids = mgr._rust_mgr.get_state_ids(stash)
-            if ids:
-                return ids[0]
-        return None
-
     def _run(self, proj, name, state):
         """Hook `name`, single-step, return (call_count, state_id, mgr)."""
-        stub_cls = self._make_stub(name)
+        stub_cls = _zero_stub(name, 3)
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
             mgr.run(max_steps=1)
             stats = mgr._rust_mgr.native_procedure_stats()
             count = stats["call_counts"].get(name, 0)
-            sid = self._first_state_id(mgr)
+            sid = first_state_id(mgr)
             assert sid is not None, f"no state: {mgr.stash_counts()}"
             return count, sid, mgr
         finally:

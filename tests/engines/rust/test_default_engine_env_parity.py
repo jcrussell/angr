@@ -23,11 +23,10 @@ import os
 
 import pytest
 
-import angr
 from angr import sim_options as o
 from angr.exploration import RustExplorationManager
 from angr.sim_manager import SimulationManager
-from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, TEST_BINARIES_DIR
+from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
 
 pytestmark = [
     pytest.mark.skipif(
@@ -44,10 +43,7 @@ pytestmark = [
 @pytest.fixture
 def env_project():
     """A project built with *no* engine argument — the env var is what opts it in."""
-    binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-    if not os.path.exists(binary_path):
-        pytest.skip("fauxware binary not found")
-    return angr.Project(binary_path, auto_load_libs=False)
+    return load_fauxware()
 
 
 def test_eligible_workload_routes_to_rust(env_project):

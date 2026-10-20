@@ -33,13 +33,12 @@ pytestmark = pytest.mark.skipif(
 class TestCallStackProxy:
     """Tests for RustCallStackProxy on RustStateProxy."""
 
-    def test_callstack_empty_on_unit_state(self):
+    def test_callstack_empty_on_unit_state(self, amd64_mgr):
         """A bare manager state has no frames; proxy reports depth 0."""
         from angr.exploration.rust_state_proxy import RustCallStackProxy
 
-        mgr = _RustExplorationManager("amd64")
-        state_id = mgr.create_state("active")
-        proxy = RustCallStackProxy(mgr, state_id)
+        state_id = amd64_mgr.create_state("active")
+        proxy = RustCallStackProxy(amd64_mgr, state_id)
         assert len(proxy) == 0
         assert list(proxy) == []
         assert proxy.top is None
@@ -170,7 +169,7 @@ class TestCallStackProxy:
             (0xCCCC, 0xDDDD, 0xCCD1, 0x6E00),
         ]
 
-    def test_callstack_proxy_reverses_after_fork(self):
+    def test_callstack_proxy_reverses_after_fork(self, amd64_mgr):
         """After a Rust-level fork that produces divergent call stacks,
         the proxy's reverse-iteration semantics (innermost-frame-first)
         must hold independently for each state.
@@ -184,7 +183,6 @@ class TestCallStackProxy:
         # Build a manager and add two RustSimStates with divergent stacks
         # to its `active` stash. The proxy is keyed off (mgr, state_id),
         # so registering both states lets us read them via the proxy.
-        mgr = _RustExplorationManager("amd64")
         parent = RustSimState("amd64")
         parent.push_call_frame(0x100, 0x200, 0x105, 0x7000)
         parent.push_call_frame(0x208, 0x300, 0x20D, 0x6FF0)
@@ -192,15 +190,15 @@ class TestCallStackProxy:
         # Diverge at the top of the stack (post-fork divergence).
         parent.push_call_frame(0x310, 0x400, 0x315, 0x6FE0)
         child.push_call_frame(0x310, 0x500, 0x315, 0x6FE0)
-        mgr.add_state("active", parent)
-        mgr.add_state("active", child)
+        amd64_mgr.add_state("active", parent)
+        amd64_mgr.add_state("active", child)
         # add_state forks internally; recover the assigned ids in order.
-        ids = mgr.get_state_ids("active")
+        ids = amd64_mgr.get_state_ids("active")
         assert len(ids) == 2
         parent_id, child_id = ids
 
-        parent_proxy = RustCallStackProxy(mgr, parent_id)
-        child_proxy = RustCallStackProxy(mgr, child_id)
+        parent_proxy = RustCallStackProxy(amd64_mgr, parent_id)
+        child_proxy = RustCallStackProxy(amd64_mgr, child_id)
 
         # Reverse-iteration: index 0 must be the innermost frame.
         assert parent_proxy[0].func_addr == 0x400
@@ -223,7 +221,7 @@ class TestCallStackProxy:
             f = f.next
         assert child_walk == [0x500, 0x300, 0x200]
 
-    def test_callstack_proxy_independent_across_states(self):
+    def test_callstack_proxy_independent_across_states(self, amd64_mgr):
         """Two proxies on sibling states read their own state_id's frames.
 
         Each `RustCallStackProxy` reads live via
@@ -233,19 +231,18 @@ class TestCallStackProxy:
         the per-state-id read independence."""
         from angr.exploration.rust_state_proxy import RustCallStackProxy
 
-        mgr = _RustExplorationManager("amd64")
         a = RustSimState("amd64")
         a.push_call_frame(0x10, 0x20, 0x15, 0x7000)
         b = a.fork()
         b.push_call_frame(0x30, 0x40, 0x35, 0x6FF0)
-        mgr.add_state("active", a)
-        mgr.add_state("active", b)
-        ids = mgr.get_state_ids("active")
+        amd64_mgr.add_state("active", a)
+        amd64_mgr.add_state("active", b)
+        ids = amd64_mgr.get_state_ids("active")
         assert len(ids) == 2
         a_id, b_id = ids
 
-        proxy_a = RustCallStackProxy(mgr, a_id)
-        proxy_b = RustCallStackProxy(mgr, b_id)
+        proxy_a = RustCallStackProxy(amd64_mgr, a_id)
+        proxy_b = RustCallStackProxy(amd64_mgr, b_id)
 
         # Realize both views.
         list(proxy_a)
@@ -2417,14 +2414,13 @@ class TestStatePluginsProxy:
         assert proxy.heap.allocations == []
         assert proxy.heap.freed == []
 
-    def test_options_globals_fallback_without_python_mgr(self):
+    def test_options_globals_fallback_without_python_mgr(self, amd64_mgr):
         """When constructed without python_mgr, options/globals fall back to
         empty stand-ins (low-level unit-test path)."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        proxy = RustStateProxy(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        proxy = RustStateProxy(amd64_mgr, sid)
         # No python_mgr -> empty fallback (does not raise).
         assert proxy.options == set()
         assert proxy.globals == {}
@@ -2474,13 +2470,12 @@ class TestStatePluginsProxy:
         proxy = mgr.proxy.active[0]
         assert proxy.scratch is proxy.scratch
 
-    def test_scratch_jumpkind_empty_history(self):
+    def test_scratch_jumpkind_empty_history(self, amd64_mgr):
         """A state with no recorded transitions reports jumpkind=None."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        proxy = RustStateProxy(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        proxy = RustStateProxy(amd64_mgr, sid)
         # Brand-new state — no history yet.
         assert proxy.scratch.jumpkind is None
         # bbl_addr defaults to 0 (initial pc); ins_addr mirrors it.
@@ -2514,15 +2509,14 @@ class TestRegisterProxySymbolicRecovery:
         mgr.set_state_register_symbolic_ast(sid, "rax", sym)
         return sid, sym
 
-    def test_symbolic_register_returns_ast_not_orphan(self):
+    def test_symbolic_register_returns_ast_not_orphan(self, amd64_mgr):
         """proxy.regs.<sym_reg> returns the AST recovered from Rust — must
         report itself as symbolic and live in the proxy's cache (consistent
         repeated reads)."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid, _ = self._setup_symbolic_rax(mgr)
-        proxy = RustStateProxy(mgr, sid)
+        sid, _ = self._setup_symbolic_rax(amd64_mgr)
+        proxy = RustStateProxy(amd64_mgr, sid)
 
         ast = proxy.regs.rax
         assert ast is not None
@@ -2533,7 +2527,7 @@ class TestRegisterProxySymbolicRecovery:
         # first AST would not narrow the second.
         assert proxy.regs.rax is proxy.regs.rax
 
-    def test_symbolic_register_constraint_round_trip(self):
+    def test_symbolic_register_constraint_round_trip(self, amd64_mgr):
         """proxy.solver.add(proxy.regs.<sym_reg> == K) followed by
         proxy.solver.eval(proxy.regs.<sym_reg>) returns K.
 
@@ -2544,9 +2538,8 @@ class TestRegisterProxySymbolicRecovery:
         """
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid, _ = self._setup_symbolic_rax(mgr)
-        proxy = RustStateProxy(mgr, sid)
+        sid, _ = self._setup_symbolic_rax(amd64_mgr)
+        proxy = RustStateProxy(amd64_mgr, sid)
 
         rax = proxy.regs.rax
         proxy.solver.add(rax == 0x41)
@@ -2555,14 +2548,13 @@ class TestRegisterProxySymbolicRecovery:
         assert proxy.solver.eval(rax) == 0x41
         assert proxy.solver.eval(proxy.regs.rax) == 0x41
 
-    def test_symbolic_register_prefetch_recovers_ast(self):
+    def test_symbolic_register_prefetch_recovers_ast(self, amd64_mgr):
         """Prefetch path mirrors __getattr__: a register Rust reports as
         symbolic must land in the cache as an AST, not an orphan."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid, _ = self._setup_symbolic_rax(mgr)
-        proxy = RustStateProxy(mgr, sid)
+        sid, _ = self._setup_symbolic_rax(amd64_mgr)
+        proxy = RustStateProxy(amd64_mgr, sid)
 
         proxy.regs.prefetch(["rax"])
         ast = proxy.regs.rax
@@ -2572,7 +2564,7 @@ class TestRegisterProxySymbolicRecovery:
         proxy.solver.add(ast == 0x42)
         assert proxy.solver.eval(ast) == 0x42
 
-    def test_prefetch_alias_canonicalizes_no_orphan(self):
+    def test_prefetch_alias_canonicalizes_no_orphan(self, amd64_mgr):
         """prefetch() with an ABI alias (e.g. "ip") must canonicalize before
         the FFI call, so alias and canonical name share one cache entry
         (angr-hv4lt.4).
@@ -2588,11 +2580,10 @@ class TestRegisterProxySymbolicRecovery:
         from angr import claripy
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
+        sid = amd64_mgr.create_state("active")
         # Seed a concrete PC via the canonical name.
-        mgr.set_state_register_symbolic_ast(sid, "rip", claripy.BVV(0xDEADBEEF, 64))
-        proxy = RustStateProxy(mgr, sid)
+        amd64_mgr.set_state_register_symbolic_ast(sid, "rip", claripy.BVV(0xDEADBEEF, 64))
+        proxy = RustStateProxy(amd64_mgr, sid)
 
         proxy.regs.prefetch(["ip"])
         # Read via the alias: must be the real concrete PC, not an orphan BVS.
@@ -2643,16 +2634,15 @@ class TestStateProxyRepr:
         assert match is not None, text
         assert int(match.group(1)) >= 2, text
 
-    def test_repr_unknown_state_falls_back(self):
+    def test_repr_unknown_state_falls_back(self, amd64_mgr):
         """When the state_id has been GC'd (no longer in any stash and not
         the pending callback), repr still produces something readable rather
         than raising — stash/constraints fields just disappear."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
+        sid = amd64_mgr.create_state("active")
         # Use the proxy before clearing the state, then drop the state.
-        proxy = RustStateProxy(mgr, sid)
+        proxy = RustStateProxy(amd64_mgr, sid)
         # Capture the addr before clearing — proxy.addr does its own FFI lookup.
         baseline_repr = repr(proxy)
         assert f"id={sid}" in baseline_repr
@@ -2661,7 +2651,7 @@ class TestStateProxyRepr:
         # Clear the active stash. State is gone — stash/constraints disappear,
         # but the addr lookup uses cached value from the original creation
         # path, so repr still returns a valid string.
-        mgr.clear_stash("active")
+        amd64_mgr.clear_stash("active")
         text = repr(proxy)
         assert text.startswith("<RustStateProxy ")
         assert f"id={sid}" in text
@@ -2839,16 +2829,15 @@ class TestStateProxyCopySemantics:
         assert clone._state_id not in active_ids
         assert proxy._state_id in active_ids
 
-    def test_proxy_copy_without_manager_raises(self):
+    def test_proxy_copy_without_manager_raises(self, amd64_mgr):
         """Constructing a proxy bypassing the high-level manager (low-level
         unit-test path) leaves nowhere to store options/globals snapshots;
         ``copy()`` must surface that explicitly rather than silently
         skipping the metadata mirror."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        proxy = RustStateProxy(mgr, sid)  # no python_mgr=
+        sid = amd64_mgr.create_state("active")
+        proxy = RustStateProxy(amd64_mgr, sid)  # no python_mgr=
 
         with pytest.raises(NotImplementedError) as excinfo:
             proxy.copy()

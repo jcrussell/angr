@@ -1551,15 +1551,14 @@ class TestProxyUnsatCore:
         assert solver.satisfiable() is False
         return {str(solver.constraints[i]) for i in solver.unsat_core()}
 
-    def test_multi_constraint_core_matches_python(self):
+    def test_multi_constraint_core_matches_python(self, amd64_mgr):
         """Two mutually contradicting constraints among several: both are
         blamed, the innocent bystander is not — and the Rust core is the same
         set Python's tracking SimSolver reports."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        plugin = self._plugin(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        plugin = self._plugin(amd64_mgr, sid)
 
         x = claripy.BVS("ucore_x", 32)
         y = claripy.BVS("ucore_y", 32)
@@ -1571,7 +1570,7 @@ class TestProxyUnsatCore:
         assert core_strs == self._python_core(cons)
         assert str(y == 3) not in core_strs, f"innocent constraint blamed: {core_strs}"
 
-    def test_single_self_contradicting_constraint_is_blamed(self):
+    def test_single_self_contradicting_constraint_is_blamed(self, amd64_mgr):
         """A lone self-contradicting constraint is blamed on its own.
 
         No Python cross-check here, because neither shape of a one-constraint
@@ -1586,9 +1585,8 @@ class TestProxyUnsatCore:
         """
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        plugin = self._plugin(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        plugin = self._plugin(amd64_mgr, sid)
 
         x = claripy.BVS("ucore_solo", 32)
         cons = [claripy.And(x > 10, x < 5)]
@@ -1597,14 +1595,13 @@ class TestProxyUnsatCore:
         core = plugin.unsat_core()
         assert [str(c) for c in core] == [str(cons[0])]
 
-    def test_core_entries_are_state_constraints(self):
+    def test_core_entries_are_state_constraints(self, amd64_mgr):
         """Every core entry is one of ``solver.constraints`` — the core is a
         subset of the exported constraint list, not a re-derived AST."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        plugin = self._plugin(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        plugin = self._plugin(amd64_mgr, sid)
 
         x = claripy.BVS("ucore_sub", 32)
         plugin.add(x == 0, x == 1)
@@ -1614,26 +1611,24 @@ class TestProxyUnsatCore:
         assert core_strs, "expected a non-empty core on an UNSAT state"
         assert core_strs <= exported, f"core {core_strs} not a subset of constraints {exported}"
 
-    def test_core_empty_when_satisfiable(self):
+    def test_core_empty_when_satisfiable(self, amd64_mgr):
         """A SAT state has no core — matches SimSolver (Z3 produces none)."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        plugin = self._plugin(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        plugin = self._plugin(amd64_mgr, sid)
 
         x = claripy.BVS("ucore_sat", 32)
         plugin.add(x > 10, x < 20)
         assert plugin.unsat_core() == []
 
-    def test_extra_constraints_assumed_but_never_blamed(self):
+    def test_extra_constraints_assumed_but_never_blamed(self, amd64_mgr):
         """``extra_constraints`` can *cause* the UNSAT but are never reported —
         claripy's tracking solver leaves them untracked too."""
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        plugin = self._plugin(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        plugin = self._plugin(amd64_mgr, sid)
 
         x = claripy.BVS("ucore_extra", 32)
         plugin.add(x == 7)
@@ -1643,7 +1638,7 @@ class TestProxyUnsatCore:
         core_strs = {str(c) for c in core}
         assert core_strs == {str(x == 7)}, f"expected only the state constraint, got {core_strs}"
 
-    def test_core_empty_without_option_on_bound_state(self):
+    def test_core_empty_without_option_on_bound_state(self, amd64_mgr):
         """Without CONSTRAINT_TRACKING_IN_SOLVER on the bound state the proxy
         keeps returning [] rather than raising (SimSolver raises) — SimProcedures
         that opportunistically peek at the core must not crash.
@@ -1652,9 +1647,8 @@ class TestProxyUnsatCore:
 
         from angr import claripy
 
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        plugin = self._plugin(mgr, sid)
+        sid = amd64_mgr.create_state("active")
+        plugin = self._plugin(amd64_mgr, sid)
 
         x = claripy.BVS("ucore_noopt", 32)
         plugin.add(x == 0, x == 1)

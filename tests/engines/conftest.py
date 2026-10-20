@@ -5,7 +5,10 @@ Consolidates boilerplate that was copy-pasted across the six
 
 * the ``RUST_EXPLORATION_AVAILABLE`` availability guard,
 * test-binary / examples directory resolution,
-* the module-scoped ``fauxware_project`` fixture.
+* the module-scoped ``fauxware_project`` fixture and its function-scoped
+  ``hookable_project`` twin,
+* the ``fork_solve_pbounce`` synthetic loader and its symbolic-stdin seed
+  (angr-mx00p.68).
 
 Test modules import the names they need from here. When the Rust extension
 is not built, every Rust symbol below is ``None`` and
@@ -22,6 +25,7 @@ import os
 import pytest
 
 import angr
+from angr import claripy
 
 # --- Availability guard ---------------------------------------------------
 # Attempt the broadest import once. Modules import only the symbols they use.
@@ -58,6 +62,67 @@ TEST_BINARIES_DIR = next((d for d in _BINARY_CANDIDATES if os.path.isdir(d)), _B
 # Honors ANGR_EXAMPLES_DIR (set by CI), else the default checkout location.
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
+FAUXWARE_PATH = os.path.join(TEST_BINARIES_DIR, "fauxware")
+
+# The bounded exhaustive find-all synthetic: 2^W = 8 leaves, one
+# ``read(0, b, 32)``, a ``trap_point(x) -> x`` bounce site and a
+# ``reach_target`` find address.
+PBOUNCE_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
+PBOUNCE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "benchmarks",
+    "synthetic_examples",
+    PBOUNCE_NAME,
+    PBOUNCE_NAME,
+)
+PBOUNCE_SEED_BYTES = 32
+
+
+# --- Loaders --------------------------------------------------------------
+def load_fauxware(**kwargs) -> angr.Project:
+    """A fresh fauxware project (``auto_load_libs=False`` plus ``kwargs``);
+    skips the calling test when the binary is absent."""
+    if not os.path.exists(FAUXWARE_PATH):
+        pytest.skip("fauxware binary not found")
+    return angr.Project(FAUXWARE_PATH, auto_load_libs=False, **kwargs)
+
+
+def load_pbounce() -> angr.Project:
+    """A fresh project over the pbounce synthetic; skips the calling test when
+    the binary is absent."""
+    if not os.path.exists(PBOUNCE_PATH):
+        pytest.skip(f"synthetic bench binary not found: {PBOUNCE_PATH}")
+    return angr.Project(PBOUNCE_PATH, auto_load_libs=False)
+
+
+def pbounce_stdin_state(project):
+    """A ``blank_state`` at ``main`` whose stdin is one fully symbolic
+    ``PBOUNCE_SEED_BYTES`` packet, so the synthetic's single read returns
+    symbolic content without an extra fork. Returns ``(state, stdin_bvs)``."""
+    stdin_bvs = claripy.BVS("stdin", PBOUNCE_SEED_BYTES * 8)
+    state = project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr)
+    state.posix.stdin.content.append((stdin_bvs, claripy.BVV(PBOUNCE_SEED_BYTES, state.arch.bits)))
+    return state, stdin_bvs
+
+
+class TrapPoint(angr.SimProcedure):
+    """Identity hook for the synthetic's ``trap_point(x) -> x`` -- a pure
+    Python bounce."""
+
+    def run(self, x):  # pylint: disable=arguments-differ
+        return x
+
+
+def first_state_id(mgr):
+    """The first state id of a high-level ``RustExplorationManager`` across
+    the ``active``, ``deadended``, ``errored`` and ``unconstrained`` stashes,
+    or ``None`` when all four are empty."""
+    for stash in ("active", "deadended", "errored", "unconstrained"):
+        ids = mgr._rust_mgr.get_state_ids(stash)
+        if ids:
+            return ids[0]
+    return None
+
 
 # --- Fixtures -------------------------------------------------------------
 @pytest.fixture(scope="module")
@@ -68,10 +133,14 @@ def fauxware_project():
     mutate project state (e.g. installing hooks) override this with a
     function-scoped fixture of the same name in their own module.
     """
-    binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-    if not os.path.exists(binary_path):
-        pytest.skip("fauxware binary not found")
-    return angr.Project(binary_path, auto_load_libs=False)
+    return load_fauxware()
+
+
+@pytest.fixture
+def hookable_project():
+    """A fresh fauxware project per test, for tests that install hooks and so
+    must not share the module-scoped ``fauxware_project``."""
+    return load_fauxware()
 
 
 @pytest.fixture

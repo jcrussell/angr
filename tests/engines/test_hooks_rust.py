@@ -18,7 +18,6 @@ from __future__ import annotations
 
 __package__ = __package__ or "tests.engines"  # pylint:disable=redefined-builtin
 
-import os
 
 import pytest
 
@@ -27,8 +26,8 @@ import angr
 # Availability guard and binary-path resolution live in conftest (angr-7gdp).
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
-    TEST_BINARIES_DIR,
     RustExplorationManager,
+    load_fauxware,
 )
 
 
@@ -39,10 +38,7 @@ def fauxware_project():
     Overrides the module-scoped conftest fixture of the same name: these
     tests install hooks on the project, so each test needs its own.
     """
-    binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-    if not os.path.exists(binary_path):
-        pytest.skip("fauxware binary not found")
-    return angr.Project(binary_path, auto_load_libs=False)
+    return load_fauxware()
 
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")

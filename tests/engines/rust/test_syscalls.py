@@ -19,6 +19,7 @@ from tests.engines.conftest import (  # noqa: F401
     RustExplorationManager,
     RustSimState,
     _RustExplorationManager,
+    first_state_id,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -890,14 +891,6 @@ class TestPythonSyscallFallbackSyncsChanges:
         proj.simos.syscall_library = lib
         return proj
 
-    @staticmethod
-    def _first_state_id(mgr):
-        for stash in ("active", "deadended", "errored", "unconstrained"):
-            ids = mgr._rust_mgr.get_state_ids(stash)
-            if ids:
-                return ids[0]
-        return None
-
     def test_fallback_syscall_writes_reach_rust(self):
         proj = self._project()
         state = proj.factory.blank_state(addr=0x1000)
@@ -915,7 +908,7 @@ class TestPythonSyscallFallbackSyncsChanges:
             "syscall callback raised and was swallowed; changes were discarded"
         )
 
-        sid = self._first_state_id(mgr)
+        sid = first_state_id(mgr)
         assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
 
         stored = bytes(mgr._rust_mgr.get_state_memory(sid, self.BUF_ADDR, len(self.PAYLOAD)))

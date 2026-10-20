@@ -19,30 +19,13 @@ state forked off it afterwards is a copy of that cached frame.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-import angr
 from angr.exploration.rust_manager import RustExplorationManager
+from tests.engines.conftest import TrapPoint, load_pbounce
 
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
 _READ_BYTES = 32  # the synthetic's single read(0, b, 32)
 _LEAVES = 8
-
-
-class _TrapPoint(angr.SimProcedure):
-    """Identity hook for ``trap_point(x) -> x`` -- forces a Python bounce."""
-
-    def run(self, x):  # pylint: disable=arguments-differ
-        return x
 
 
 @pytest.fixture(scope="module")
@@ -53,10 +36,8 @@ def stepped_dumps():
     off it on later steps are copies that already carry its injected packet.
     Returns (dumps seen while stepping, dumps of the found leaves).
     """
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    project = angr.Project(_SYNTH_PATH, auto_load_libs=False)
-    project.hook(project.loader.find_symbol("trap_point").rebased_addr, _TrapPoint())
+    project = load_pbounce()
+    project.hook(project.loader.find_symbol("trap_point").rebased_addr, TrapPoint())
     target = project.loader.find_symbol("reach_target").rebased_addr
 
     mgr = RustExplorationManager(project, [project.factory.entry_state()])

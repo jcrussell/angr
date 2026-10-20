@@ -22,16 +22,13 @@ The invariants this file pins:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-import angr
 from angr.engines import UberEngine
 from angr.errors import AngrError
 from angr.exploration import RustExplorationManager, rust_auto_dispatch_enabled
 from angr.sim_manager import SimulationManager
-from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, TEST_BINARIES_DIR
+from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
 
 pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
@@ -39,16 +36,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _fauxware(**kwargs):
-    binary_path = os.path.join(TEST_BINARIES_DIR, "fauxware")
-    if not os.path.exists(binary_path):
-        pytest.skip("fauxware binary not found")
-    return angr.Project(binary_path, auto_load_libs=False, **kwargs)
-
-
 @pytest.fixture
 def rust_project():
-    return _fauxware(engine="rust")
+    return load_fauxware(engine="rust")
 
 
 class TestFlagOff:
@@ -64,7 +54,7 @@ class TestFlagOff:
 
     def test_global_auto_switch_is_still_off(self):
         """The flip is per-project opt-in; it must not flip the process-wide gate."""
-        _fauxware(engine="rust")
+        load_fauxware(engine="rust")
         assert rust_auto_dispatch_enabled() is False
 
 
@@ -100,10 +90,10 @@ class TestProjectEngineSentinel:
 
     def test_unknown_engine_string_raises(self):
         with pytest.raises(AngrError, match="Unknown engine"):
-            _fauxware(engine="pcode")
+            load_fauxware(engine="pcode")
 
     def test_simengine_class_still_accepted(self):
-        proj = _fauxware(engine=UberEngine)
+        proj = load_fauxware(engine=UberEngine)
         assert proj.factory.default_engine_factory is UberEngine
         assert proj.factory._rust_default is False
         assert type(proj.factory.simulation_manager()) is SimulationManager
@@ -153,25 +143,25 @@ class TestEnvGate:
 
     def test_env_rust_defaults_new_projects_to_rust(self, monkeypatch):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust")
-        proj = _fauxware()
+        proj = load_fauxware()
         assert proj.factory._rust_default is True
         assert isinstance(proj.factory.simulation_manager(), RustExplorationManager)
 
     def test_env_is_case_insensitive(self, monkeypatch):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "RuSt")
-        assert _fauxware().factory._rust_default is True
+        assert load_fauxware().factory._rust_default is True
 
     @pytest.mark.parametrize("value", ["", "python", "0"])
     def test_other_env_values_leave_the_default_alone(self, monkeypatch, value):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", value)
-        proj = _fauxware()
+        proj = load_fauxware()
         assert proj.factory._rust_default is False
         assert type(proj.factory.simulation_manager()) is SimulationManager
 
     def test_env_applies_even_with_an_explicit_simengine_class(self, monkeypatch):
         """The env gate picks the manager; the SimEngine class stays the caller's."""
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust")
-        proj = _fauxware(engine=UberEngine)
+        proj = load_fauxware(engine=UberEngine)
         assert proj.factory.default_engine_factory is UberEngine
         assert isinstance(proj.factory.simulation_manager(), RustExplorationManager)
 

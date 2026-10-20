@@ -15,12 +15,13 @@ import angr
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
+    EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
-    TEST_BINARIES_DIR,
     ExplorationEvent,
     PythonCallbacks,
     RustExplorationManager,
     _RustExplorationManager,
+    load_fauxware,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -29,6 +30,14 @@ pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
     reason="Rust exploration not available",
 )
+
+_CADET_PATH = os.path.join(EXAMPLES_DIR, "CADET_00001", "CADET_00001")
+
+
+def _load_cadet():
+    if not os.path.exists(_CADET_PATH):
+        pytest.skip(f"CADET_00001 binary not found at {_CADET_PATH}")
+    return angr.Project(_CADET_PATH, auto_load_libs=False)
 
 
 class TestUnconstrainedRet:
@@ -145,16 +154,11 @@ class TestLoaderPagesCache:
     def test_loader_pages_cache_separate_projects_separate_entries(self):
         """Two distinct projects must hold separate cache entries (the
         WeakKeyDictionary keys by Loader identity, not by file path)."""
-        import angr
         from angr.exploration.rust_manager import RustExplorationManager
 
         RustExplorationManager._loader_pages_cache.clear()
-        binary = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary):
-            pytest.skip("fauxware binary not found")
-
-        proj_a = angr.Project(binary, auto_load_libs=False)
-        proj_b = angr.Project(binary, auto_load_libs=False)
+        proj_a = load_fauxware()
+        proj_b = load_fauxware()
 
         main_a = proj_a.loader.find_symbol("main").rebased_addr
         main_b = proj_b.loader.find_symbol("main").rebased_addr
@@ -174,15 +178,10 @@ class TestLoaderPagesCache:
         WeakKeyDictionary entry must vanish — no stale-id collisions."""
         import gc
 
-        import angr
         from angr.exploration.rust_manager import RustExplorationManager
 
         RustExplorationManager._loader_pages_cache.clear()
-        binary = os.path.join(TEST_BINARIES_DIR, "fauxware")
-        if not os.path.exists(binary):
-            pytest.skip("fauxware binary not found")
-
-        proj = angr.Project(binary, auto_load_libs=False)
+        proj = load_fauxware()
         main = proj.loader.find_symbol("main").rebased_addr
         mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=main)])
         assert proj.loader in RustExplorationManager._loader_pages_cache
@@ -2138,12 +2137,7 @@ class TestCgcReceiveStdinSync:
     """
 
     def test_cadet_buffer_overflow_dumps_stdin(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
-        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
-        if not os.path.exists(cadet):
-            pytest.skip(f"CADET_00001 binary not found at {cadet}")
-
-        proj = angr.Project(cadet, auto_load_libs=False)
+        proj = _load_cadet()
         state = proj.factory.entry_state()
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
 
@@ -2182,12 +2176,7 @@ class TestCgcEndToEndNativeDispatch:
     """
 
     def test_cadet_buffer_overflow_native_cgc_dispatch(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
-        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
-        if not os.path.exists(cadet):
-            pytest.skip(f"CADET_00001 binary not found at {cadet}")
-
-        proj = angr.Project(cadet, auto_load_libs=False)
+        proj = _load_cadet()
         state = proj.factory.entry_state()
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
 
@@ -2244,13 +2233,8 @@ class TestCadetEasterEggStepLoop:
         if os.environ.get("ANGR_RUN_SLOW_CADET") != "1":
             pytest.skip("heavy CADET egg-hunt — set ANGR_RUN_SLOW_CADET=1 to run")
 
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
-        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
-        if not os.path.exists(cadet):
-            pytest.skip(f"CADET_00001 binary not found at {cadet}")
-
         egg = 0x804833E
-        proj = angr.Project(cadet, auto_load_libs=False)
+        proj = _load_cadet()
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         mgr.set_block_granular(True)
         mgr.set_materialize_unconstrained_forks(True)
@@ -2289,12 +2273,7 @@ class TestDirectCallEntryMainResolution:
     """
 
     def test_resolve_main_from_direct_call_entry(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
-        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
-        if not os.path.exists(cadet):
-            pytest.skip(f"CADET_00001 binary not found at {cadet}")
-
-        proj = angr.Project(cadet, auto_load_libs=False)
+        proj = _load_cadet()
         # The CGC binary has no 'main' symbol and its entry is `call 0x8048080`.
         assert proj.loader.find_symbol("main") is None
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
@@ -2305,12 +2284,7 @@ class TestDirectCallEntryMainResolution:
         )
 
     def test_imported_entry_state_starts_at_main_not_mid_init(self):
-        examples_dir = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
-        cadet = os.path.join(examples_dir, "CADET_00001", "CADET_00001")
-        if not os.path.exists(cadet):
-            pytest.skip(f"CADET_00001 binary not found at {cadet}")
-
-        proj = angr.Project(cadet, auto_load_libs=False)
+        proj = _load_cadet()
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         active = mgr.active
         assert len(active) == 1

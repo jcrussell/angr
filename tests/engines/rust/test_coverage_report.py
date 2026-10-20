@@ -27,30 +27,15 @@ speculatively step extra states before the stop is observed).
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-import angr
-from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
-
-_SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-_SYNTH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "benchmarks",
-    "synthetic_examples",
-    _SYNTH_NAME,
-    _SYNTH_NAME,
-)
-_SEED_BYTES = 32
+from tests.engines.conftest import load_pbounce, pbounce_stdin_state
 
 
 @pytest.fixture(scope="module")
 def project():
-    if not os.path.exists(_SYNTH_PATH):
-        pytest.skip(f"synthetic bench binary not found: {_SYNTH_PATH}")
-    return angr.Project(_SYNTH_PATH, auto_load_libs=False)
+    return load_pbounce()
 
 
 def _explore_coverage(project, workers, monkeypatch, strategy="coverage"):
@@ -60,9 +45,7 @@ def _explore_coverage(project, workers, monkeypatch, strategy="coverage"):
         monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
     else:
         monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
-    stdin_bvs = claripy.BVS("stdin", _SEED_BYTES * 8)
-    state = project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr)
-    state.posix.stdin.content.append((stdin_bvs, claripy.BVV(_SEED_BYTES, state.arch.bits)))
+    state, _ = pbounce_stdin_state(project)
     mgr = RustExplorationManager(project, [state])
     assert mgr.stats["parallel_real_workers"] == workers
     if strategy is not None:
