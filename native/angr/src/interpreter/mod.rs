@@ -154,14 +154,9 @@ pub(crate) use execution_error::{
 pub(crate) use execution_stats::ExecutionStats;
 pub(crate) use simprocedures::SimProcedureInfo;
 
-/// Full state snapshot at a symbolic branch point.
-/// Used by deferred forks to create correct alternate-path states
-/// with solver, registers, and memory from the branch point.
-pub struct BranchSnapshot {
-    pub solver: SymContext,
-    pub registers: RegisterFile,
-    pub memory: Option<SymbolicMemory>,
-}
+/// Re-exported from `state`, which owns it: `RustSimState::fork_from_snapshot`
+/// is the consumer, and the interpreter only fills one in at a branch.
+pub(crate) use crate::state::BranchSnapshot;
 
 /// Callback-aware VEX IR interpreter.
 ///

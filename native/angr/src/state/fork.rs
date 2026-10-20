@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// Full state snapshot at a symbolic branch point.
+/// Used by deferred forks to create correct alternate-path states
+/// with solver, registers, and memory from the branch point.
+pub struct BranchSnapshot {
+    pub solver: SymContext,
+    pub registers: RegisterFile,
+    pub memory: Option<SymbolicMemory>,
+}
+
 /// Fold one branch's Python-AST overlay map into the accumulating merged map.
 ///
 /// Shared by `merge`'s three overlay unions (`symbolic_pages`,
@@ -337,7 +346,7 @@ impl RustSimState {
     /// Create a forked state using a full branch snapshot (solver + registers + memory).
     /// The resulting state has the correct state from the branch point, not from
     /// the continuation of the taken path.
-    pub fn fork_from_snapshot(&self, snapshot: crate::interpreter::BranchSnapshot) -> Self {
+    pub fn fork_from_snapshot(&self, snapshot: BranchSnapshot) -> Self {
         let memory = snapshot.memory.unwrap_or_else(|| self.memory.fork());
         self.fork_with(snapshot.registers, memory, snapshot.solver, next_state_id())
     }

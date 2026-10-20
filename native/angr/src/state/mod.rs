@@ -94,6 +94,7 @@ use pyo3::prelude::*;
 // Called by the `merge_field_*` bodies `#[derive(angr_macros::MergePolicy)]`
 // generates for every `warn_on_diverge` field below; the derive emits a bare
 // call, so the name has to be in scope here.
+pub use self::fork::BranchSnapshot;
 use self::fork::warn_config_divergence;
 use crate::arch::{Arch, RegisterFile, arch_from_name};
 use crate::concretize::AddressConcretizer;
