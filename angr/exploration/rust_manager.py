@@ -136,6 +136,7 @@ _SEED_STDIN_KEY = -1
 
 if TYPE_CHECKING:
     import angr
+    from angr.exploration.rust_state_proxy import RustInspectProxy
     from angr.state_plugins import SimStateEdgeHitmap
 
 l = logging.getLogger(name=__name__)

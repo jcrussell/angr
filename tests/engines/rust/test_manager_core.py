@@ -1201,7 +1201,6 @@ class TestRustExplorationPython:
 
         def lift(addr):
             lift_addrs.append(addr)
-            return None
 
         callbacks.set_lift_block(lift)
         mgr.set_callbacks(callbacks)
@@ -1235,7 +1234,6 @@ class TestRustExplorationPython:
 
         def lift(addr):
             lift_addrs.append(addr)
-            return None
 
         callbacks.set_lift_block(lift)
         mgr.set_callbacks(callbacks)

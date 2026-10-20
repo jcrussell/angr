@@ -2008,7 +2008,7 @@ class TestRustInspectExtendedEvents:
             )
 
         mgr._get_inspect_proxy().b("dirty", when="after", action=on_dirty)
-        handler = lambda *a: None  # noqa: E731
+        handler = lambda *a: None
         args = [claripy.BVV(0x10, 64), claripy.BVV(0x20, 64)]
         result = claripy.BVV(0xDEADBEEF, 64)
         mgr._cb_inspect_dirty(sid, "after", "amd64g_dirtyhelper_RDTSC", handler, args, result)
@@ -2032,7 +2032,7 @@ class TestRustInspectExtendedEvents:
             s.inspect.dirty_result = injected
 
         mgr._get_inspect_proxy().b("dirty", when="after", action=on_dirty)
-        handler = lambda *a: None  # noqa: E731
+        handler = lambda *a: None
         args = [claripy.BVV(0x10, 64)]
         ret = mgr._cb_inspect_dirty(sid, "after", "amd64g_dirtyhelper_RDTSC", handler, args, original)
         assert ret is injected
@@ -2049,7 +2049,7 @@ class TestRustInspectExtendedEvents:
             _ = s.inspect.dirty_result  # read only
 
         mgr._get_inspect_proxy().b("dirty", when="after", action=on_dirty)
-        handler = lambda *a: None  # noqa: E731
+        handler = lambda *a: None
         ret = mgr._cb_inspect_dirty(sid, "after", "rdtsc", handler, [], original)
         assert ret is None
 

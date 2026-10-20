@@ -27,6 +27,7 @@ from angr.storage.file import SimFile, SimFileDescriptor
 
 if TYPE_CHECKING:
     import angr
+    from angr.rustylib.vex_engine import ExplorationEvent as _ExplorationEvent
 
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)

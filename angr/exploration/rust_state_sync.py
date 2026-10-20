@@ -43,6 +43,7 @@ def _ultrapage_bytes(page, *, writing: bool = False):
 
 if TYPE_CHECKING:
     import angr
+    from angr.rustylib.vex_engine import RustSimState as _RustSimState
 
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)

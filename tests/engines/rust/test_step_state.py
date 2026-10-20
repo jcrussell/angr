@@ -13,10 +13,9 @@ import pytest
 
 import angr
 from angr import claripy
-from tests.engines.conftest import (  # noqa: F401
+from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
-    fauxware_project,
 )
 
 pytestmark = pytest.mark.skipif(
