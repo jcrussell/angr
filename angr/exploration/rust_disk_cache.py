@@ -103,12 +103,15 @@ l = logging.getLogger(name=__name__)
 #                             callstack frame layout produced by Rust).
 #   _PYTHON_METADATA_VERSION: bump when Python-side SimState attributes that
 #                             we read or restore change shape (e.g., new
-#                             callstack frame field, new register imports).
+#                             callstack frame field, new register imports),
+#                             or when a restore bug means pickles saved from
+#                             a warm state hold less than they should (a
+#                             truncated call stack: angr-mx00p.92).
 # Both are mixed into the cache key together with the arch name, so a key
 # from a different (rust, python, arch) tuple lands at a different file and
 # is treated as a miss — never deserialized into a current-format slot.
 _RUST_CACHE_VERSION = 3
-_PYTHON_METADATA_VERSION = 3
+_PYTHON_METADATA_VERSION = 4
 
 # Bounded-cache policy for ~/.cache/angr_rust_init. The cache key is an MD5 of
 # (binary content, version axes, arch), so a version bump orphans the whole
@@ -817,10 +820,12 @@ class RustDiskCacheManager:
                     # Skip the bottom sentinel frame (all zeros)
                     if frame_data["call_site_addr"] == 0 and frame_data["func_addr"] == 0:
                         continue
-                    cs.call(
+                    # CallStack.call returns the new top; pushing onto the old
+                    # one would keep only the last frame (angr-mx00p.92).
+                    cs = cs.call(
                         frame_data["call_site_addr"],
                         frame_data["func_addr"],
-                        return_address=frame_data["ret_addr"],
+                        retn_target=frame_data["ret_addr"],
                         stack_pointer=frame_data["stack_ptr"],
                     )
             except Exception as e:

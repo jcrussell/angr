@@ -1477,8 +1477,9 @@ class TestCallStackPopsHookedReturns:
                 break
             rm.run(1)
         sid = next(s for s in rm.get_state_ids("active") if rm.get_state_pc_by_id(s) == 0x4007B3)
-        # Back in main after authenticate returned: no callee frame is live.
-        assert rm.get_state_call_stack(sid) == []
+        # Back in main after authenticate returned: only main's own frame is
+        # live, no callee frame.
+        assert [frame[1] for frame in rm.get_state_call_stack(sid)] == [0x40071D]
 
 
 class TestWideConcreteMemoryRoundTrip:

@@ -1120,9 +1120,11 @@ class TestCallbackCallStackProxyGate:
     def test_read_through_empty_stack(self, fauxware_project):
         """Empty Rust call stack → proxy reports len 0 and 0-valued
         top-frame attrs (matches the existing read-only
-        ``RustCallStackProxy`` shape)."""
+        ``RustCallStackProxy`` shape). A blank state at main skips the init
+        prefix, so its Rust stack is empty (an entry state carries main's
+        frame)."""
 
-        state = fauxware_project.factory.entry_state()
+        state = fauxware_project.factory.blank_state(addr=0x40071D)
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
@@ -1267,7 +1269,7 @@ class TestExportCallStackProxyGate:
         ``CallStack`` (not a proxy)."""
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
-        state = fauxware_project.factory.entry_state()
+        state = fauxware_project.factory.blank_state(addr=0x40071D)  # no init prefix: empty stack
         # Explicit kwarg=False pins the eager (off) path regardless of any
         # ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1 (nightly proxy_gates_on
         # soak) — kwarg beats env in _resolve_env_flag.
@@ -1305,7 +1307,7 @@ class TestExportCallStackProxyGate:
         installed proxy reports len 0."""
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
-        state = fauxware_project.factory.entry_state()
+        state = fauxware_project.factory.blank_state(addr=0x40071D)  # no init prefix: empty stack
         mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         target = fauxware_project.factory.entry_state()
