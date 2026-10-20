@@ -457,12 +457,6 @@ impl<'a> VEXInterpreter<'a> {
                     .current_insn_addr
                     .wrapping_add(self.current_insn_len as u64);
 
-                // Skip expensive rustbv_to_claripy conversion for the condition.
-                // The condition is stored in stored_conditions (below) as a RustBV,
-                // which is the primary lookup path in fork processing. The claripy
-                // AST was only a fallback for missing stored_conditions entries.
-                let condition_ast: Option<Py<PyAny>> = None;
-
                 // Take the "true" path (jump to dst), defer the "false" path
                 let cond_id = self.next_cond_id();
                 // Store the Rust condition for later retrieval when processing forks
@@ -503,7 +497,6 @@ impl<'a> VEXInterpreter<'a> {
                         path_taken: true, // we took the exit (guard=true) path
                         unexplored_target: false_target, // fall-through deferred
                         condition_id: cond_id,
-                        condition_ast,
                     }
                 } else {
                     DeferredFork {
@@ -511,7 +504,6 @@ impl<'a> VEXInterpreter<'a> {
                         path_taken: false, // we took the fallthrough (guard=false) path
                         unexplored_target: dst, // the exit target is deferred
                         condition_id: cond_id,
-                        condition_ast,
                     }
                 };
                 self.deferred_forks.push(deferred);

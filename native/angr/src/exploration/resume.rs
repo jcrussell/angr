@@ -72,10 +72,8 @@ impl RustExplorationManager {
         }
 
         // NOTE: deferred forks whose condition_id is absent from stored_conditions
-        // are NOT dropped — the materialization loop below reconstructs the
-        // condition from `fork.condition_ast` via
-        // `reconstruct_deferred_fork_condition` or, failing that, creates a
-        // conservative unconstrained fork. A diagnostic loop that warned
+        // are NOT dropped — the materialization loop below creates a
+        // conservative unconstrained fork for them. A diagnostic loop that warned
         // such forks "will be skipped" was removed (angr-cudgw.16): the claim was
         // false and the loop had no side effect.
 
@@ -294,12 +292,10 @@ impl RustExplorationManager {
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
 
         // Process deferred forks BEFORE deadending — these represent
-        // unexplored branches that diverged before the exit/abort call. The
-        // `condition_ast`
-        // `condition_ast` reconstruction matters most here: without it an
-        // AST-only deferred fork parked behind a no-return SimProcedure
-        // (exit/abort) was silently dropped and its unexplored branch never
-        // reached (angr-ph300.7).
+        // unexplored branches that diverged before the exit/abort call; a
+        // fork parked behind a no-return SimProcedure (exit/abort) was once
+        // silently dropped and its unexplored branch never reached
+        // (angr-ph300.7).
         let state = self.materialize_terminal_deferred_forks(pending);
         self.push_or_drop_terminal(STASH_DEADENDED, state);
         Ok(())

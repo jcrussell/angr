@@ -35,10 +35,6 @@ pub(crate) struct DeferredFork {
     /// Condition ID for constraint tracking, keying into the interpreter's
     /// stored-conditions map (see `apply_deferred_fork_constraints`).
     pub(crate) condition_id: u64,
-    /// The branch condition as a claripy AST (if available).
-    /// This is the original condition - path_taken indicates which path
-    /// was explored. For the fork, we need the opposite constraint.
-    pub(crate) condition_ast: Option<Py<PyAny>>,
 }
 
 /// Configuration for the execution loop with deferred forks.

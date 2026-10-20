@@ -25,7 +25,6 @@ fn deferred_fork(condition_id: u64, path_taken: bool) -> crate::callbacks::Defer
         path_taken,
         unexplored_target: 0x40_2000,
         condition_id,
-        condition_ast: None,
     }
 }
 
@@ -108,8 +107,8 @@ fn materialize_deferred_forks_unsat_split_and_lazy_solves() {
     assert!(lazy.unsat.is_empty());
 }
 
-/// A fork whose condition is in neither `stored_conditions` nor
-/// `condition_ast` still yields a conservative, unconstrained fork at the
+/// A fork whose condition is not in `stored_conditions` still yields a
+/// conservative, unconstrained fork at the
 /// unexplored target — dropping it, as one copy of this loop once did, would
 /// lose a reachable path (angr-ph300.7).
 #[test]
@@ -327,41 +326,5 @@ fn snapshot_built_fork_replays_earlier_guards() {
     assert!(
         !probe.satisfiable(),
         "snapshot-built fork did not inherit branch 1's taken-path guard"
-    );
-}
-
-/// `reconstruct_deferred_fork_condition` (the shared `condition_ast` helper)
-/// short-circuits without ever touching Python in its two
-/// non-reconstruction branches: when the condition is already present in
-/// `stored_conditions`, and when the fork carries no `condition_ast`. Both
-/// return `None` (nothing was reconstructed), leaving `condition.or(...)`
-/// intact at the call sites.
-#[test]
-fn reconstruct_deferred_fork_condition_early_returns_none() {
-    let fork_base = RustSimState::new("amd64").expect("base state");
-
-    let ctx = SymContext::new();
-    let stored = RustBV::symbolic(&ctx, "c", 1);
-    let fork_with_ast = crate::callbacks::DeferredFork {
-        branch_addr: 0x40_0500,
-        path_taken: true,
-        unexplored_target: 0x40_2000,
-        condition_id: 7,
-        condition_ast: None,
-    };
-
-    // Branch 1: stored condition already present -> nothing to reconstruct,
-    // even if an AST were also present. No Python attach happens.
-    assert!(
-        reconstruct_deferred_fork_condition(Some(&stored), &fork_with_ast, &fork_base).is_none(),
-        "present stored condition must short-circuit to None"
-    );
-
-    // Branch 2: no stored condition and no condition_ast -> reconstruction
-    // cannot supply a condition, so the conservative arm must take over at the
-    // call site.
-    assert!(
-        reconstruct_deferred_fork_condition(None, &fork_with_ast, &fork_base).is_none(),
-        "absent condition_ast must yield None"
     );
 }

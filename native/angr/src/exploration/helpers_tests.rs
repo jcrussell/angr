@@ -421,14 +421,13 @@ fn resume_after_error_deferred_fork_not_dropped() {
                 message: "hook raised".to_string(),
             },
             jumpkind: None,
-            // condition_id 999 absent from stored_conditions + no condition_ast
-            // -> only the conservative arm keeps this fork alive.
+            // condition_id 999 absent from stored_conditions -> only the
+            // conservative arm keeps this fork alive.
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
                 unexplored_target: 0x40_2000,
                 condition_id: 999,
-                condition_ast: None,
             }],
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
@@ -489,7 +488,6 @@ fn find_predicate_pending_with_deferred_fork_trips_canary() {
                 path_taken: true,
                 unexplored_target: 0x40_2000,
                 condition_id: 999,
-                condition_ast: None,
             }],
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
@@ -523,7 +521,6 @@ fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
                 path_taken: true,
                 unexplored_target: 0x40_2000,
                 condition_id: 999,
-                condition_ast: None,
             }],
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
@@ -534,8 +531,7 @@ fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
 }
 
 /// _deadend_pending_callback must not silently drop a deferred fork whose
-/// condition is absent from `stored_conditions` and which carries no
-/// `condition_ast` (angr-ph300.7). Before the P11/P15 fallback was ported to
+/// condition is absent from `stored_conditions` (angr-ph300.7). Before the P11/P15 fallback was ported to
 /// the deadend path, such a fork vanished — its unexplored branch was never
 /// routed, so a find target behind it was unreachable when the parking
 /// callback was an exit/abort SimProcedure. Here the fork has no condition
@@ -558,16 +554,13 @@ fn deadend_pending_callback_conservative_fork_not_dropped() {
                 message: "exit".to_string(),
             },
             jumpkind: None,
-            // condition_id 999 is absent from stored_conditions and there is no
-            // condition_ast -> neither the direct lookup nor reconstruction can
-            // supply a condition, so the conservative arm is the only path that
-            // keeps this fork alive.
+            // condition_id 999 is absent from stored_conditions, so the
+            // conservative arm is the only path that keeps this fork alive.
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
                 unexplored_target: 0x40_2000,
                 condition_id: 999,
-                condition_ast: None,
             }],
             stored_conditions: FxHashMap::default(),
             fork_snapshots: FxHashMap::default(),
@@ -651,7 +644,6 @@ fn resume_symbolic_branch_deferred_fork_uses_pre_callback_snapshot() {
                 path_taken: true, // unexplored side is x != 0
                 unexplored_target: 0x40_2000,
                 condition_id: 2,
-                condition_ast: None,
             }],
             stored_conditions: stored,
             fork_snapshots: FxHashMap::default(),

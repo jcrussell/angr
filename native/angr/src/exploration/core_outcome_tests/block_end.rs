@@ -82,7 +82,6 @@ fn block_end_missing_condition_fork_is_materialized_and_dispatched() {
                 path_taken: true,
                 unexplored_target: 0x40_2000,
                 condition_id: 999,
-                condition_ast: None,
             }],
             last_condition: None,
             stored_conditions: FxHashMap::default(),

@@ -441,7 +441,6 @@ fn twin_resume_fork_keeps_the_frame_the_main_successor_popped() {
             path_taken: true,
             unexplored_target: unexplored,
             condition_id: COND_ID,
-            condition_ast: None,
         }];
         state.set_sp(RustBV::concrete((sp + 8) as u128, 64));
         state.set_pc(native_resume_sentinel(8));

@@ -172,12 +172,9 @@ define_execution_stats! {
     /// state-snapshot fork taken in `SimulationLoop::dispatch_bounce`'s
     /// `BounceKind::Hook` arm before bouncing to a Python SimProcedure (NOT
     /// a deferred fork); (2) per-deferred-fork creation in
-    /// `fork_materialize::materialize_deferred_forks` when a condition is
-    /// available — either stored or reconstructed by
-    /// `reconstruct_deferred_fork_condition`; (3) the parallel-scheduler
-    /// mirror of (2) in
-    /// `core_outcome_handlers::materialize_deferred_forks_core` (stored
-    /// conditions only). NOT incremented by the no-condition
+    /// `fork_materialize::materialize_deferred_forks` when a stored
+    /// condition is available; (3) the parallel-scheduler mirror of (2) in
+    /// `core_outcome_handlers::materialize_deferred_forks_core`. NOT incremented by the no-condition
     /// conservative-fork fallback in either materializer, nor anywhere in
     /// `SimulationLoop::process_deferred_forks_into` /
     /// `core_outcome_handlers::process_deferred_forks_into_core`, which

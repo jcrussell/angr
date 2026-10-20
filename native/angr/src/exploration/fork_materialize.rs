@@ -55,39 +55,6 @@ fn add_fork_guard_constraint(
     }
 }
 
-/// Reconstruct a deferred fork's branch condition from its stored claripy AST
-/// — the `condition_ast` fallback — when the condition is absent from
-/// `stored_conditions`.
-///
-/// Returns `None` when `stored_condition` is already `Some` (nothing to
-/// reconstruct), when the fork carries no `condition_ast`, or when the
-/// claripy→RustBV conversion fails. The returned owned `RustBV` is evaluated
-/// against `fork_base`'s solver context so it shares the base's z3
-/// declarations.
-///
-/// This is the single source of truth for the four verbatim copies that used
-/// to live inline in `_resume_after_simprocedure`, `_deadend_pending_callback`,
-/// `_resume_after_symbolic_branch` (resume.rs) and the run-loop callback path
-/// (run_loop.rs). A drop-bug was once fixed by porting this arm into the
-/// deadend copy verbatim (angr-ph300.7); consolidating removes that copy-paste
-/// hazard.
-pub(crate) fn reconstruct_deferred_fork_condition(
-    stored_condition: Option<&RustBV>,
-    fork: &DeferredFork,
-    fork_base: &RustSimState,
-) -> Option<RustBV> {
-    if stored_condition.is_some() {
-        return None;
-    }
-    let py_ast = fork.condition_ast.as_ref()?;
-    Python::attach(|py| {
-        let ast = py_ast.bind(py);
-        let solver_ref = fork_base.solver();
-        let ctx: &SymContext = &solver_ref.borrow();
-        crate::claripy_bridge::claripy_to_rustbv(py, ast, ctx).ok()
-    })
-}
-
 /// Build the unexplored-path fork for one deferred branch.
 ///
 /// Every deferred-fork materialization site (`process_deferred_forks_into` in
@@ -278,8 +245,7 @@ pub(crate) struct MaterializeForkCtx<'a> {
 
 /// Materialize a step's deferred forks into SAT / UNSAT state lists.
 ///
-/// Single source of truth for the condition-lookup →
-/// [`reconstruct_deferred_fork_condition`] → conservative-fork arm →
+/// Single source of truth for the condition-lookup → conservative-fork arm →
 /// [`build_unexplored_fork`] → SAT
 /// check pipeline that used to be open-coded in three near-identical copies:
 /// `step_one`'s find/avoid callback arm (`run_loop.rs`), and both
@@ -287,10 +253,10 @@ pub(crate) struct MaterializeForkCtx<'a> {
 /// `_resume_after_symbolic_branch` loops (`resume.rs`). Only the parallel
 /// mirror (`core_outcome_handlers.rs::materialize_deferred_forks_core`) was
 /// unit-tested, so the serial copies were free to drift — a missing
-/// `condition_ast` arm silently dropped AST-only forks (angr-ph300.7).
+/// fallback arm once silently dropped forks (angr-ph300.7).
 ///
-/// The parallel mirror is deliberately NOT folded in here: it has no
-/// `condition_ast` fallback, fires the `constraints` inspect BP via
+/// The parallel mirror is deliberately NOT folded in here: it fires the
+/// `constraints` inspect BP via
 /// [`add_fork_guard_constraint`], and accumulates into atomics rather than
 /// `ExecutionStats`. That split is a knowingly-accepted duplication, not an
 /// outstanding TODO: of the deferred-fork materializers (this one, the
@@ -325,12 +291,7 @@ pub(crate) fn materialize_deferred_forks(
     let mut prior_guards = PriorGuards::new(false);
 
     for fork in forks {
-        let condition = stored_conditions.get(&fork.condition_id);
-        // Reconstruct from the stored claripy AST when the condition is
-        // absent from `stored_conditions`.
-        let reconstructed = reconstruct_deferred_fork_condition(condition, &fork, fork_base);
-
-        if let Some(cond) = condition.or(reconstructed.as_ref()) {
+        if let Some(cond) = stored_conditions.get(&fork.condition_id) {
             if let Some(sink) = guard_sink {
                 if fork.path_taken {
                     sink.solver().borrow().assume_true(cond);
@@ -342,12 +303,6 @@ pub(crate) fn materialize_deferred_forks(
             let forked = build_unexplored_fork(fork_base, &fork, cond, snapshots, &prior_guards);
             prior_guards.record(cond.clone(), fork.path_taken);
             charge_fork_op(stats.as_deref_mut(), fork_start);
-            if reconstructed.is_some() {
-                log::debug!(
-                    "Reconstructed condition from condition_ast for fork at 0x{:x}",
-                    fork.branch_addr
-                );
-            }
             let sat_start = stats.is_some().then(std::time::Instant::now);
             let sat = forked.survives_sat_prune(lazy_solves);
             charge_sat_op(stats.as_deref_mut(), sat_start);

@@ -117,7 +117,6 @@ fn dispatch_native_resume_seeded(
             path_taken: seed.path_taken,
             unexplored_target: seed.unexplored_target,
             condition_id: FORK_COND_ID,
-            condition_ast: None,
         });
     }
 

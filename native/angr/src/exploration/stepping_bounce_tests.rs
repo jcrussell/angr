@@ -14,7 +14,6 @@ fn deferred_fork() -> crate::callbacks::DeferredFork {
         path_taken: true,
         unexplored_target: 0x40_2000,
         condition_id: 11,
-        condition_ast: None,
     }
 }
 
