@@ -153,8 +153,6 @@ extend-select = [
     "UP",
 ]
 ignore = [
-    "B011",   # Asserts
-    "E402",   # Bottom imports — kept global until a follow-up cleanup; upstream moved it to a per-file ignore but our rust_* modules also need it
     "BLE001", # Catching Exception
     "DTZ",    # timezones
     "E741",   # Variable names
