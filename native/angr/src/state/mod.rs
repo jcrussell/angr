@@ -695,11 +695,6 @@ impl RustSimState {
         self.concretizer = concretizer;
     }
 
-    /// Configure address concretization.
-    pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
-        self.concretizer.configure(use_approximate, range_limit);
-    }
-
     /// Set whether to track history.
     pub fn set_track_history(&mut self, track: bool) {
         self.track_history = track;

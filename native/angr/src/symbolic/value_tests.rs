@@ -251,8 +251,8 @@ fn test_comparison_signed() {
 ///
 /// Z3 has no 0-width bitvector sort, so `BV::new_const(name, 0)` panicked inside
 /// the sort constructor — a SIGABRT under `panic="abort"`, not a catchable
-/// error. All three symbolic construction paths funnel through
-/// `RustBV::from_parts`, so all three are covered here (angr-fs8kb.28).
+/// error. Both symbolic leaf constructors funnel through `RustBV::from_parts`,
+/// so both are covered here (angr-fs8kb.28).
 #[test]
 fn test_zero_width_symbolic_degenerates_to_concrete() {
     let ctx = SymContext::new_mock();
@@ -260,12 +260,6 @@ fn test_zero_width_symbolic_degenerates_to_concrete() {
     for bv in [
         RustBV::symbolic(&ctx, "zw", 0),
         RustBV::symbolic_with_id(7, "zw_id", 0),
-        RustBV::try_from(RustBVData::Symbolic {
-            id: 7,
-            width: 0,
-            name: "zw_snapshot".to_string(),
-        })
-        .unwrap(),
     ] {
         assert!(bv.is_concrete(), "width-0 symbolic must degenerate: {bv:?}");
         assert_eq!(bv.width(), 0);

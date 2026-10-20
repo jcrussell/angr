@@ -581,13 +581,6 @@ impl PyRustSimState {
         }
     }
 
-    /// Configure address concretization (legacy interface).
-    #[pyo3(signature = (use_approximate, range_limit=None))]
-    pub fn configure_concretization(&mut self, use_approximate: bool, range_limit: Option<u64>) {
-        self.inner
-            .configure_concretization(use_approximate, range_limit);
-    }
-
     /// Configure address concretization with full strategy configuration.
     #[pyo3(signature = (use_approximate, read_range_limit=None, write_range_limit=None, symbolic_write_addresses=false, avoid_multivalued_reads=false, avoid_multivalued_writes=false))]
     pub fn configure_concretization_strategies(

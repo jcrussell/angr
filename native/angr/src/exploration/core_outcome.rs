@@ -238,26 +238,9 @@ pub(crate) struct CoreCounters {
     pub(crate) deferred_forks_dropped: u64,
 }
 
-/// Classification of a routed state (informational; the single-threaded
-/// coordinator routes via the run loop). `is_fork` and `root_hint` drive `sm.set_root`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // only `Continue` is constructed: the parallel coordinators
-// route by `TaskOutcome` (`run_loop_worker`), so the other variants are the
-// routing-tag contract with no reader yet.
-pub(crate) enum TagKind {
-    Continue,
-    Found,
-    Deadended,
-    Errored,
-    Unconstrained,
-    Pruned,
-    NeedsPython,
-}
-
+/// Where a routed state came from: `is_fork` and `root_hint` drive `sm.set_root`.
 #[derive(Clone, Copy)]
 pub(crate) struct RoutingTag {
-    #[allow(dead_code)] // no reader yet; see `TagKind`
-    pub(crate) kind: TagKind,
     pub(crate) root_hint: Option<u64>,
     pub(crate) is_fork: bool,
 }
@@ -266,7 +249,6 @@ impl RoutingTag {
     #[inline]
     fn main() -> Self {
         RoutingTag {
-            kind: TagKind::Continue,
             root_hint: None,
             is_fork: false,
         }
@@ -274,7 +256,6 @@ impl RoutingTag {
     #[inline]
     fn fork(root_hint: u64) -> Self {
         RoutingTag {
-            kind: TagKind::Continue,
             root_hint: Some(root_hint),
             is_fork: true,
         }

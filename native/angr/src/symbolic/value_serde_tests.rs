@@ -36,21 +36,6 @@ fn serde_roundtrip_concrete() {
     }
 }
 
-/// A snapshot written while the `Constrained` arm existed still restores:
-/// the record decodes as the `Concrete` of its pinned value (angr-mx00p.13).
-#[test]
-fn serde_legacy_constrained_record_decodes_as_concrete() {
-    let old = RustBVData::Constrained {
-        id: 42,
-        value: 7,
-        width: 64,
-    };
-    let json = serde_json::to_string(&old).expect("serialize");
-    let back: RustBV = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(back, RustBV::concrete(7, 64));
-    assert!(back.is_concrete());
-}
-
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_symbolic() {
@@ -66,22 +51,6 @@ fn serde_roundtrip_symbolic() {
     // pointer (sanity check that the lowering succeeds under the active
     // thread-local context).
     let _ptr = back.to_z3_ast().get_z3_ast().as_ptr();
-}
-
-/// A snapshot written before leaves were clarirs variables carries a
-/// `Symbolic` record; it still restores, as the leaf of that name and width.
-#[cfg(feature = "vex-engine-z3")]
-#[test]
-fn serde_old_symbolic_record_restores_the_named_leaf() {
-    let ctx = SymContext::new_mock();
-    let old = RustBVData::Symbolic {
-        id: 41,
-        width: 16,
-        name: "x_old_serde".to_owned(),
-    };
-    let json = serde_json::to_string(&old).expect("serialize");
-    let back: RustBV = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(back, RustBV::symbolic(&ctx, "x_old_serde", 16));
 }
 
 #[cfg(feature = "vex-engine-z3")]

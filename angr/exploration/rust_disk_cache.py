@@ -107,7 +107,7 @@ l = logging.getLogger(name=__name__)
 # Both are mixed into the cache key together with the arch name, so a key
 # from a different (rust, python, arch) tuple lands at a different file and
 # is treated as a miss — never deserialized into a current-format slot.
-_RUST_CACHE_VERSION = 2
+_RUST_CACHE_VERSION = 3
 _PYTHON_METADATA_VERSION = 3
 
 # Bounded-cache policy for ~/.cache/angr_rust_init. The cache key is an MD5 of

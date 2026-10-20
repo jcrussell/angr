@@ -325,8 +325,7 @@ type ExprMemo = ();
 ///
 /// `Concrete` mirrors [`RustBV::Concrete`]; an `Ast` travels as a [`WireDag`]
 /// of its clarirs term, and its Z3 memo is dropped (Z3 ASTs cannot cross
-/// process boundaries) and re-lowered lazily after load. The other arms only
-/// decode legacy records.
+/// process boundaries) and re-lowered lazily after load.
 ///
 /// This is the snapshot/serialization format from the angr-x04s spike.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,28 +333,6 @@ pub enum RustBVData {
     Concrete {
         value: u128,
         width: u32,
-    },
-    /// Legacy: the retired `Symbolic` arm, decoded as the leaf of its name;
-    /// never written.
-    Symbolic {
-        id: u64,
-        width: u32,
-        name: String,
-    },
-    /// Legacy: the retired `Constrained` arm, decoded as the `Concrete` of
-    /// its value; never written.
-    Constrained {
-        id: u64,
-        value: u128,
-        width: u32,
-    },
-    /// Legacy: the retired `Expression` arm, rebuilt as the clarirs term of
-    /// its op over its decoded operands; never written.
-    Expression {
-        id: u64,
-        width: u32,
-        op: BVOp,
-        operands: Vec<RustBVData>,
     },
     /// The clarirs node with every subterm shared, decoded into
     /// `GLOBAL_CONTEXT` on load.
@@ -383,25 +360,6 @@ impl TryFrom<RustBVData> for RustBV {
     fn try_from(data: RustBVData) -> Result<Self, String> {
         Ok(match data {
             RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
-            RustBVData::Symbolic { id, width, name } => {
-                RustBV::from_parts(id, Arc::<str>::from(name), width)
-            }
-            // A legacy record of the retired `Constrained` arm: its value was
-            // known, which is all a `Concrete` is (angr-mx00p.13).
-            RustBVData::Constrained { value, width, .. } => RustBV::concrete(value, width),
-            RustBVData::Expression {
-                width,
-                op,
-                operands,
-                ..
-            } => RustBV::from_op(
-                width,
-                op,
-                operands
-                    .into_iter()
-                    .map(RustBV::try_from)
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
             RustBVData::Ast { dag } => {
                 let roots = dag
                     .decode(&GLOBAL_CONTEXT)
@@ -481,28 +439,24 @@ impl RustBV {
 
     /// Build a leaf from its parts: the clarirs variable named `name`.
     ///
-    /// Single source of truth for leaf construction shared by `symbolic`,
-    /// `symbolic_with_id`, and the legacy `RustBVData::Symbolic` deserialize
-    /// arm — keeps the three in lockstep so the deserialize path can't drift
-    /// from the constructors.
+    /// Single source of truth for leaf construction shared by `symbolic` and
+    /// `symbolic_with_id`, so the two cannot drift apart.
     ///
     /// **Width 0 degenerates to `Concrete`.** Z3 has no 0-width bitvector sort,
     /// so lowering a width-0 leaf panics inside the sort constructor — and the
     /// extension builds with `panic="abort"`, making that a hard SIGABRT of the
-    /// whole process rather than a catchable Python exception. Every symbolic
-    /// construction path reaches this function (`symbolic`, `symbolic_with_id`,
-    /// and the `From<RustBVData>` snapshot/deserialize arm), and all three take
-    /// a caller-chosen width that `check_bv_width` deliberately permits to be 0
-    /// (see `width_guards`, where 0 is documented as a supported *concrete*
-    /// degenerate value) — so `claripy.BVS(name, 0)` imported through
-    /// `claripy_bridge::import` and a restored snapshot carrying a width-0
-    /// `Symbolic` were each a live process abort (angr-fs8kb.28).
+    /// whole process rather than a catchable Python exception. Both symbolic
+    /// leaf constructors reach this function and take a caller-chosen width
+    /// that `check_bv_width` deliberately permits to be 0 (see `width_guards`,
+    /// where 0 is documented as a supported *concrete* degenerate value) — so
+    /// `claripy.BVS(name, 0)` imported through `claripy_bridge::import` was a
+    /// live process abort (angr-fs8kb.28).
     ///
     /// The empty bitvector has exactly one inhabitant, so a width-0 *symbolic*
     /// leaf denotes the same single value a width-0 concrete does: collapsing it
     /// loses no information, and no constraint can distinguish two of them. That
     /// makes the degenerate answer correct here rather than merely safe, which
-    /// is why this returns a value instead of plumbing a `Result` through three
+    /// is why this returns a value instead of plumbing a `Result` through
     /// infallible signatures (same reasoning as the `w == 0` rotate arm in
     /// `value_ops`; see bd memory `invariant-rustbv-zero-width`). Handled before
     /// the cfg split so the no-z3 build agrees with the z3 one.
