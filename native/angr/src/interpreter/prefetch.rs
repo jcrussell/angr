@@ -33,7 +33,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns true if the page was successfully fetched and mapped.
     pub(crate) fn fetch_page(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         page_addr: u64,
     ) -> Result<bool, CbExecutionError> {
         // Check if we have the callback
@@ -44,13 +44,13 @@ impl<'a> VEXInterpreter<'a> {
         // angr-gorvf.4.6: Python told us at setup which pages it can serve.
         // A page outside that set would come back declined, so skip the GIL
         // attach and decline it here.
-        if !callbacks.python_can_serve_page(page_addr) {
+        if !callbacks.can_serve_page(page_addr) {
             return Ok(false);
         }
 
         // Call Python to fetch the page
         let (data, permissions, is_mapped) = callbacks
-            .call_fetch_page(page_addr)
+            .fetch_page(page_addr)
             .map_err(|e| CbExecutionError::Callback(format!("fetch_page failed: {e}")))?;
 
         if !is_mapped {
@@ -79,7 +79,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns the number of pages successfully fetched.
     pub(crate) fn fetch_pages_batch(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         page_addrs: &[u64],
     ) -> Result<usize, CbExecutionError> {
         if page_addrs.is_empty() {
@@ -103,7 +103,7 @@ impl<'a> VEXInterpreter<'a> {
         let servable: Vec<u64> = page_addrs
             .iter()
             .copied()
-            .filter(|&pa| callbacks.python_can_serve_page(pa))
+            .filter(|&pa| callbacks.can_serve_page(pa))
             .collect();
         if servable.is_empty() {
             return Ok(0);
@@ -111,7 +111,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // Call Python to fetch pages in batch
         let results = callbacks
-            .call_batch_fetch_pages(&servable)
+            .batch_fetch_pages(&servable)
             .map_err(|e| CbExecutionError::Callback(format!("batch_fetch_pages failed: {e}")))?;
 
         let mut fetched = 0;
@@ -152,7 +152,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns true if the main page was successfully fetched.
     pub(crate) fn fetch_page_with_prefetch(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         page_addr: u64,
         prefetch_count: u32,
     ) -> Result<bool, CbExecutionError> {

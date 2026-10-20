@@ -3,6 +3,8 @@
 //! statement-level coverage lives in the per-submodule `*_tests.rs` siblings.
 
 use super::*;
+use pyo3::prelude::*;
+use crate::callbacks::PythonCallbacks;
 
 #[test]
 fn test_interpreter_creation() {

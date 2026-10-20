@@ -25,7 +25,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Evaluate an IR expression using Python callbacks for memory loads.
     pub(super) fn eval_expr_with_callbacks(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         expr: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
@@ -48,7 +48,7 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_expr_with_callbacks_inner(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         expr: &IRExpr,
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
@@ -126,7 +126,7 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_ite(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         cond: &IRExpr,
         iftrue: &IRExpr,
         iffalse: &IRExpr,
@@ -164,7 +164,7 @@ impl<'a> VEXInterpreter<'a> {
 
     fn eval_geti(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         descr: IRRegArray,
         ix: &IRExpr,
         bias: u32,

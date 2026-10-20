@@ -88,7 +88,7 @@ impl<'a> VEXInterpreter<'a> {
     /// throughput.
     pub(crate) fn run_until_event(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         max_blocks: u32,
         stop_addrs: &std::collections::HashSet<u64>,
         block_granular: bool,
@@ -481,7 +481,7 @@ impl<'a> VEXInterpreter<'a> {
     /// 3. Fall back to Python callback for lifting
     fn get_or_lift_block(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr: u64,
     ) -> Result<Arc<IRSB>, CbExecutionError> {
         // Enforce execute permission before any cache hit / lift work so a
@@ -582,7 +582,7 @@ impl<'a> VEXInterpreter<'a> {
         // The callback's pyvex lift enters the same libVEX as a native lift on
         // another worker; hold the shared lift lock across it (angr-mx00p.45).
         let lift_guard = crate::vex::libvex_lifter::lift_lock();
-        let outcome = callbacks.call_lift_block(addr, opt_level, dirty_bytes.as_deref());
+        let outcome = callbacks.lift_block(addr, opt_level, dirty_bytes.as_deref());
         drop(lift_guard);
         let outcome = outcome
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {e}")))?;
@@ -646,7 +646,7 @@ impl<'a> VEXInterpreter<'a> {
         &self,
         lifter: &crate::vex::libvex_lifter::NativeLibVEXLifter,
         addr: u64,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
     ) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {
         if self.arch == VexArch::ARM && addr & 1 == 1 {
             return Err(NativeLiftMiss::Thumb);
@@ -679,14 +679,8 @@ impl<'a> VEXInterpreter<'a> {
             // the event to a representative active state, exactly as the
             // `_cb_lift_block` dispatch does.
             let bytes_for_bp = &bytes[..bytes.len().min(size.max(1) as usize)];
-            if let Err(e) =
-                callbacks.call_inspect_vex_lift(-1, "before", addr, None, Some(bytes_for_bp))
-            {
-                log::debug!("vex_lift inspect (before) dispatch failed at 0x{addr:x}: {e}");
-            }
-            if let Err(e) = callbacks.call_inspect_vex_lift(-1, "after", addr, Some(size), None) {
-                log::debug!("vex_lift inspect (after) dispatch failed at 0x{addr:x}: {e}");
-            }
+            callbacks.inspect_vex_lift(-1, "before", addr, None, Some(bytes_for_bp));
+            callbacks.inspect_vex_lift(-1, "after", addr, Some(size), None);
         }
 
         Ok(irsb)
@@ -731,7 +725,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `execute_block_with_callbacks` internally.
     pub(crate) fn execute_block(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
         self.execute_block_with_callbacks(callbacks, irsb)
@@ -740,7 +734,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Execute a block using Python callbacks for memory access.
     fn execute_block_with_callbacks(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
         // Reset incremental branch solver state for this block
@@ -762,10 +756,7 @@ impl<'a> VEXInterpreter<'a> {
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs.
         if callbacks.inspect_event_enabled(InspectBit::Irsb) {
-            note_inspect_error(
-                callbacks.call_inspect_irsb(self.current_state_id, "before", irsb.addr),
-                "irsb",
-            );
+            callbacks.inspect_irsb(self.current_state_id, "before", irsb.addr);
         }
 
         // Execute statements
@@ -779,14 +770,7 @@ impl<'a> VEXInterpreter<'a> {
             // gate keeps the no-BP cost at one `AtomicU32::load + AND` per
             // statement.
             if callbacks.inspect_event_enabled(InspectBit::Statement) {
-                note_inspect_error(
-                    callbacks.call_inspect_statement(
-                        self.current_state_id,
-                        "before",
-                        stmt_idx as u32,
-                    ),
-                    "statement",
-                );
+                callbacks.inspect_statement(self.current_state_id, "before", stmt_idx as u32);
             }
             let stmt_start = profile_start!(self);
             match self.execute_stmt_with_callbacks(callbacks, stmt, irsb)? {
@@ -877,19 +861,11 @@ impl<'a> VEXInterpreter<'a> {
     /// range and the custom bits used by instruction/irsb).
     /// `function_address` is the resolved call target.
     /// Mirrors Python `callstack.py:386` / `:419`.
-    fn dispatch_call_inspect(
-        &self,
-        callbacks: &PythonCallbacks,
-        function_address: u64,
-        when: &str,
-    ) {
+    fn dispatch_call_inspect(&self, callbacks: &dyn EngineHost, function_address: u64, when: &str) {
         if !callbacks.inspect_event_enabled(InspectBit::Call) {
             return;
         }
-        note_inspect_error(
-            callbacks.call_inspect_call(self.current_state_id, when, function_address),
-            "call",
-        );
+        callbacks.inspect_call(self.current_state_id, when, function_address);
     }
 
     /// Fire a `return` inspect callback into Python for an Ijk_Ret exit.
@@ -900,17 +876,14 @@ impl<'a> VEXInterpreter<'a> {
     /// `pop()`). Falls back to 0 when the call stack is empty.
     fn dispatch_return_inspect(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         function_address: u64,
         when: &str,
     ) {
         if !callbacks.inspect_event_enabled(InspectBit::Return) {
             return;
         }
-        note_inspect_error(
-            callbacks.call_inspect_return(self.current_state_id, when, function_address),
-            "return",
-        );
+        callbacks.inspect_return(self.current_state_id, when, function_address);
     }
 }
 

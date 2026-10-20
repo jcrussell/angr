@@ -4,6 +4,8 @@
 //! (bd memory `rust-module-root-split-recipe`).
 
 use super::*;
+use pyo3::prelude::*;
+use crate::callbacks::PythonCallbacks;
 use crate::state::CallStackEntry;
 use crate::vex::ir::IRType;
 

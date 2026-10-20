@@ -25,18 +25,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use lru::LruCache;
-use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::arch::{
     AddrOrSymbolic, RegisterFile, arch_from_vex, calling_conventions::CallingConvention,
     default_cc_for_arch,
 };
-use crate::callbacks::{
-    DeferredFork, ExecutionConfig, InspectBit, LiftBlockOutcome, PythonCallbacks, RunResult,
-    note_inspect_error,
-};
-use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast};
+use crate::callbacks::{DeferredFork, ExecutionConfig, InspectBit, LiftBlockOutcome, RunResult};
 use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{
@@ -125,6 +120,7 @@ mod expressions_arith;
 mod expressions_inspect;
 mod expressions_loads;
 mod fork_state;
+mod host;
 mod pending_store;
 mod prefetch;
 mod simprocedures;
@@ -152,6 +148,7 @@ pub(crate) use execution_error::{
     VECRET_GSPTR_REASON,
 };
 pub(crate) use execution_stats::ExecutionStats;
+pub(crate) use host::{EngineHost, HostLoad, HostPage};
 pub(crate) use simprocedures::SimProcedureInfo;
 
 /// Re-exported from `state`, which owns it: `RustSimState::fork_from_snapshot`
@@ -320,7 +317,7 @@ pub(crate) struct VEXInterpreter<'a> {
     /// (now stale) binary image.
     dirtied_code_pages: FxHashSet<crate::memory::PageIndex>,
     /// State id of the state currently being stepped. Forwarded to
-    /// `PythonCallbacks::call_inspect_mem_*` so the Python dispatcher can
+    /// `EngineHost::inspect_mem_*` so the Python dispatcher can
     /// build a `RustStateProxy` for the BP action. -1 means "unknown" —
     /// e.g. fresh interpreter from tests, or fork paths that never set it.
     pub current_state_id: i64,
@@ -470,7 +467,7 @@ impl<'a> VEXInterpreter<'a> {
     /// the callback isn't wired up — e.g. "Load", "LoadG", "store".
     pub(super) fn fallback_load_symbolic_full(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         size: usize,
         context: &str,
@@ -482,22 +479,22 @@ impl<'a> VEXInterpreter<'a> {
             )));
         }
 
-        let result_ast = callbacks
-            .call_memory_load_symbolic_full(addr_val, size as u32)
+        let value = callbacks
+            .memory_load_symbolic_full(self.ctx, addr_val, size as u32)
             .map_err(|e| {
                 CbExecutionError::Callback(format!(
                     "{context} symbolic load full callback failed ({addr_descr}): {e}"
                 ))
             })?;
 
-        // handle fast path -> claripy slow path -> fresh symbolic. (The prior
-        // open-coded copy logged a warn! on claripy-conversion failure; that
-        // diagnostic is dropped in favor of the shared ladder.)
-        Ok(
-            self.try_convert_symbolic_value(Some(&result_ast), (size * 8) as u32, || {
-                format!("sym_pyref_{addr_descr}_{size}")
-            }),
-        )
+        // The host's value, or a fresh symbol when it did not convert.
+        Ok(value.unwrap_or_else(|| {
+            RustBV::symbolic(
+                self.ctx,
+                format!("sym_pyref_{addr_descr}_{size}"),
+                (size * 8) as u32,
+            )
+        }))
     }
 
     /// Fall back to Python's full symbolic store callback for a store
@@ -510,7 +507,7 @@ impl<'a> VEXInterpreter<'a> {
     /// the callback isn't wired up.
     pub(super) fn fallback_store_symbolic_full(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         data_val: &RustBV,
         context: &str,
@@ -523,7 +520,7 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         callbacks
-            .call_memory_store_symbolic_full(addr_val, data_val)
+            .memory_store_symbolic_full(addr_val, data_val)
             .map_err(|e| {
                 CbExecutionError::Callback(format!(
                     "{context} symbolic store full callback failed ({addr_descr}): {e}"
@@ -563,12 +560,12 @@ impl<'a> VEXInterpreter<'a> {
     /// the `__stack_chk_fail` branch spuriously feasible.
     fn synthesize_unservable_load(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_concrete: u64,
         size: usize,
     ) -> Option<RustBV> {
         let page_addr = addr_concrete & !(crate::memory::PAGE_SIZE - 1);
-        if callbacks.python_has_page(page_addr) {
+        if callbacks.has_page(page_addr) {
             return None;
         }
         // Rust having the page mapped means the bytes are real and the decline
@@ -597,7 +594,7 @@ impl<'a> VEXInterpreter<'a> {
     /// last word before the GIL crossing.
     fn load_from_callback(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_concrete: u64,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
@@ -605,30 +602,15 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(bv);
         }
 
-        let (data, is_symbolic, symbolic_ast) = callbacks
-            .call_memory_load(addr_concrete, size as u32)
-            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+        let load = callbacks
+            .memory_load(self.ctx, addr_concrete, size as u32)
+            .map_err(CbExecutionError::Callback)?;
 
-        if is_symbolic {
-            // Try to convert to RustBV via the claripy bridge.
-            // Self-attach for the bridge work (angr-vh834 Phase 4): no caller
-            // GIL token is threaded in; re-entrant no-op when already held.
-            if let Some(ast_obj) = symbolic_ast {
-                let converted: Option<RustBV> = Python::attach(|py| {
-                    let ast = ast_obj.bind(py);
-
-                    // claripy AST conversion (can fail for complex/unsupported
-                    // ops -> fall through to fresh symbolic).
-                    if is_claripy_ast(ast)
-                        && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
-                    {
-                        return Some(bv);
-                    }
-                    None
-                });
-                if let Some(bv) = converted {
-                    return Ok(bv);
-                }
+        if load.symbolic {
+            // The host's symbolic value, when it converted (a complex or
+            // unsupported AST falls through to a fresh symbol).
+            if let Some(bv) = load.value {
+                return Ok(bv);
             }
             // Fallback: create a fresh symbolic value
             let name = format!("mem_{addr_concrete:x}_{size}");
@@ -642,7 +624,7 @@ impl<'a> VEXInterpreter<'a> {
             Ok(bv)
         } else {
             // Convert bytes to concrete value
-            Ok(bytes_to_bv(&data, (size * 8) as u32))
+            Ok(bytes_to_bv(&load.bytes, (size * 8) as u32))
         }
     }
 
@@ -664,7 +646,7 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// This sends all buffered stores in a single callback, reducing
     /// FFI overhead compared to individual store callbacks.
-    fn flush_stores(&mut self, callbacks: &PythonCallbacks) -> Result<(), CbExecutionError> {
+    fn flush_stores(&mut self, callbacks: &dyn EngineHost) -> Result<(), CbExecutionError> {
         if self.pending_stores.is_empty() && self.pending_symbolic_stores.is_empty() {
             return Ok(());
         }
@@ -720,7 +702,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // Python callback path (when Rust memory is not used)
         callbacks
-            .call_memory_store_batch(self.pending_stores.as_slice())
+            .memory_store_batch(self.pending_stores.as_slice())
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
         // Drain pending_stores into all_flushed_stores by move (no Vec<u8> clone).

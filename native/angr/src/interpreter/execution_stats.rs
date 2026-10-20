@@ -188,7 +188,7 @@ define_execution_stats! {
     /// Time spent in the main run() loop overhead (nanoseconds).
     run_loop_time_ns: sum,
     /// Number of dirty-helper invocations that fell back to the Python
-    /// `call_dirty_call` callback (no native handler matched).
+    /// `dirty_call` host callback (no native handler matched).
     python_dirty_call_count: sum,
     /// Number of VEX op evaluations (Unop/Binop/Triop/Qop) that reached
     /// `VEXInterpreter::vex_op_fallback` because `VEXOps::*` returned an

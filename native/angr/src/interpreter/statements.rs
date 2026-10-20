@@ -117,7 +117,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Execute a single statement using Python callbacks.
     pub(super) fn execute_stmt_with_callbacks(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         stmt: &IRStmt,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
@@ -348,7 +348,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `profile_add!` before every one of them.
     fn handle_exit_stmt(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         irsb: &IRSB,
         guard: &IRExpr,
         dst: u64,
@@ -542,7 +542,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `execute_stmt_with_callbacks` (cudgw.18).
     fn handle_storeg(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         guard: &IRExpr,
         addr: &IRExpr,
         data: &IRExpr,
@@ -617,7 +617,7 @@ impl<'a> VEXInterpreter<'a> {
                             self.flush_stores(callbacks)?;
                             if callbacks.has_memory_store_symbolic_full() {
                                 callbacks
-                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
+                                    .memory_store_symbolic_full(&addr_val, &data_val)
                                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                             } else {
                                 return Err(CbExecutionError::Unsupported(
@@ -641,7 +641,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `execute_stmt_with_callbacks` (cudgw.18).
     fn handle_loadg(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         args: LoadGArgs<'_>,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {

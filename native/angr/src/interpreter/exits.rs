@@ -16,7 +16,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Used for Exit statements where we still need callbacks for complex expressions.
     pub(super) fn eval_next_addr(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         irsb: &IRSB,
     ) -> Result<u64, CbExecutionError> {
         let next_val = self.eval_expr_with_callbacks(callbacks, &irsb.next, &irsb.tyenv)?;

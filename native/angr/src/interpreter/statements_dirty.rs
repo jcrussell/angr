@@ -90,7 +90,7 @@ impl<'a> VEXInterpreter<'a> {
     /// (angr-fs8kb.62).
     pub(super) fn handle_dirty_call(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         dirty: &crate::vex::ir::IRDirty,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
@@ -117,7 +117,7 @@ impl<'a> VEXInterpreter<'a> {
     /// been defined here.
     fn dirty_guard_phase(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         dirty: &crate::vex::ir::IRDirty,
         irsb: &IRSB,
     ) -> Result<DirtyGuard, CbExecutionError> {
@@ -171,7 +171,7 @@ impl<'a> VEXInterpreter<'a> {
     /// fallback policy for that, so this is not an error here.
     fn dirty_arg_values(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         dirty: &crate::vex::ir::IRDirty,
         tyenv: &crate::vex::ir::TypeEnv,
     ) -> Result<Option<Vec<u64>>, CbExecutionError> {
@@ -242,7 +242,7 @@ impl<'a> VEXInterpreter<'a> {
     /// no-handler-anywhere arms below run first.
     fn dirty_python_dispatch(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         dirty: &crate::vex::ir::IRDirty,
         arg_vals: Option<&[u64]>,
         ret_ty_bits: u32,
@@ -300,8 +300,8 @@ impl<'a> VEXInterpreter<'a> {
 
         // Call Python callback
         self.stats.python_dirty_call_count += 1;
-        let (data, is_symbolic, _symbolic_ast) = callbacks
-            .call_dirty_call(&dirty.cee.name, arg_vals, ret_ty_bits)
+        let (data, is_symbolic) = callbacks
+            .dirty_call(&dirty.cee.name, arg_vals, ret_ty_bits)
             .map_err(|e| {
                 CbExecutionError::Callback(format!("dirty call {} failed: {}", dirty.cee.name, e))
             })?;

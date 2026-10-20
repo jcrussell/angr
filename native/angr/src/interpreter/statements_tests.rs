@@ -5,6 +5,8 @@
 //! (end-to-end `IRStmt::CAS` dispatch). Helpers used by more than one of the
 //! three live in `statements_tests_support.rs` (angr-fs8kb.96).
 use super::*;
+use pyo3::prelude::*;
+use crate::callbacks::PythonCallbacks;
 use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_python};
 use crate::memory::PAGE_SIZE;
 use crate::vex::ir::{Endness, IRType, MBusEvent};

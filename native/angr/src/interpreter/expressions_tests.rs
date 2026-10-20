@@ -3,6 +3,7 @@
 //! eval_expr, the load ladder, the op dispatchers).
 
 use super::*;
+use pyo3::prelude::*;
 use crate::interpreter::expressions_arith::fabricated_result_width;
 use crate::vex::ir::{Endness, IRCallee, IRType};
 

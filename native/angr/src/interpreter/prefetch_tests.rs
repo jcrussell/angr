@@ -4,6 +4,7 @@
 //! convention to keep the implementation file focused. GIL-free: no PyO3.
 
 use super::*;
+use crate::callbacks::PythonCallbacks;
 use crate::vex::ir::Endness;
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {

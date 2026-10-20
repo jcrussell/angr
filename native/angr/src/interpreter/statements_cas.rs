@@ -61,7 +61,7 @@ impl<'a> VEXInterpreter<'a> {
     /// only real DCAS users (x86-64, ARM64) are LE; BE is rejected explicitly.
     pub(super) fn execute_cas_stmt(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         cas: &CasArgs<'_>,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
@@ -201,7 +201,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `(current_hi, expd_hi_val, data_hi_val)`.
     pub(super) fn cas_load_dcas_high(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_hi_expr: &IRExpr,
         cas: &CasArgs<'_>,
         half_ty: IRType,
@@ -233,7 +233,7 @@ impl<'a> VEXInterpreter<'a> {
     ///     state via ITE rather than splitting into two states.
     pub(super) fn cas_writeback(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         cas: &CasArgs<'_>,
         wb: &CasWriteback<'_>,
         irsb: &IRSB,
@@ -279,7 +279,7 @@ impl<'a> VEXInterpreter<'a> {
     /// data IRExpr); if symbolic, route through `cas_store_symbolic_data`.
     pub(super) fn cas_dispatch_store(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_expr: &IRExpr,
         data_expr: &IRExpr,
         data_bv: &RustBV,
@@ -326,7 +326,7 @@ impl<'a> VEXInterpreter<'a> {
     /// callback path a plain store would have taken more cheaply.
     pub(super) fn cas_store_symbolic_data(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_expr: &IRExpr,
         data_bv: &RustBV,
         irsb: &IRSB,
@@ -367,7 +367,7 @@ impl<'a> VEXInterpreter<'a> {
             self.invalidate_code_on_store(&conc_result, data_size);
             if callbacks.has_memory_store_symbolic_full() {
                 callbacks
-                    .call_memory_store_symbolic_full(&addr_val, data_bv)
+                    .memory_store_symbolic_full(&addr_val, data_bv)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             } else {
                 return Err(CbExecutionError::Unsupported(

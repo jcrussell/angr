@@ -139,6 +139,7 @@ pub(crate) type BatchLoadEntry = (Vec<u8>, bool, Option<Py<PyAny>>);
 mod config;
 mod dispatch;
 mod events;
+mod host_impl;
 mod inspect;
 mod inspect_bits;
 mod inspect_test_entries;

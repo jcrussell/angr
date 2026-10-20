@@ -111,7 +111,7 @@ impl<'a> VEXInterpreter<'a> {
 
     pub(super) fn eval_unop(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         op: IROp,
         arg: &IRExpr,
         tyenv: &TypeEnv,
@@ -152,7 +152,7 @@ impl<'a> VEXInterpreter<'a> {
     /// that file does — see the module doc comment there.
     pub(crate) fn eval_binop(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         op: IROp,
         left: &IRExpr,
         right: &IRExpr,
@@ -214,7 +214,7 @@ impl<'a> VEXInterpreter<'a> {
     /// dispatcher-selection-sweep reason applies here.
     pub(crate) fn eval_triop(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         op: IROp,
         arg1: &IRExpr,
         arg2: &IRExpr,
@@ -258,7 +258,7 @@ impl<'a> VEXInterpreter<'a> {
     /// sweep needs to call it directly.
     pub(crate) fn eval_qop(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         op: IROp,
         args: [&IRExpr; 4],
         tyenv: &TypeEnv,
@@ -294,7 +294,7 @@ impl<'a> VEXInterpreter<'a> {
 
     pub(super) fn eval_ccall(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         cee: &IRCallee,
         retty: IRType,
         args: &[IRExpr],

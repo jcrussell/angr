@@ -1,6 +1,7 @@
 // Unit tests for interpreter/execution.rs (VEXInterpreter block exec / memory / cache).
 // Split out per rust-module-root-split-recipe; included via #[cfg(test)] #[path].
 use super::*;
+use crate::callbacks::PythonCallbacks;
 use crate::callbacks::{ErrorRoute, RunErrorKind};
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {

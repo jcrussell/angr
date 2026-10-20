@@ -10,7 +10,7 @@
 //! `symbolic_overlap_load`, `symbolic_store_load`). The multi-address /
 //! ITE-chain callback helpers (`dispatch_multi_load`,
 //! `build_ite_load_from_callbacks`, `build_ite_store_from_callbacks`,
-//! `convert_load_result`, `try_convert_symbolic_value`) and the `LoadG`
+//! `convert_load_result`) and the `LoadG`
 //! guarded-load pair (`resolve_loadg_load`, `apply_loadg_conversion`) live here
 //! too. The op dispatchers are in `expressions_arith.rs`; the read-side
 //! `state.inspect` dispatchers in `expressions_inspect.rs`.
@@ -23,7 +23,7 @@ use rustc_hash::FxHashMap;
 impl<'a> VEXInterpreter<'a> {
     pub(super) fn eval_load(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr: &IRExpr,
         ty: IRType,
         endness: Endness,
@@ -121,7 +121,7 @@ impl<'a> VEXInterpreter<'a> {
     /// of the just-stored value.
     pub(super) fn load_layered(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         size: usize,
         load_start: Option<Instant>,
@@ -161,7 +161,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Rust-memory layer sees the same pointer size the block does.
     pub(super) fn load_layered_at(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         addr_concrete: u64,
         size: usize,
@@ -180,7 +180,7 @@ impl<'a> VEXInterpreter<'a> {
     /// rung between `load_layered` and the Python callback lives anywhere else.
     pub(super) fn load_concrete_addr(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_concrete: u64,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
@@ -244,7 +244,7 @@ impl<'a> VEXInterpreter<'a> {
     /// (the same-block read-back bug `load_layered`'s doc comment describes).
     fn load_concrete_addr_below_pending(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_concrete: u64,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
@@ -276,7 +276,7 @@ impl<'a> VEXInterpreter<'a> {
     /// (single / multiple / strided / too-large / failed).
     pub(super) fn load_symbolic_addr(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         size: usize,
     ) -> Result<RustBV, CbExecutionError> {
@@ -338,52 +338,24 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Convert one batched-load result entry to a RustBV.
     ///
-    /// Branches: missing index (fresh symbolic), concrete bytes, or symbolic AST
-    /// (delegates to `try_convert_symbolic_value`).
+    /// Branches: missing index (fresh symbolic), concrete bytes, the host's
+    /// symbolic value, or a fresh symbolic when it had none that converted.
     pub(super) fn convert_load_result(
         &self,
-        load_results: &[crate::callbacks::BatchLoadEntry],
+        load_results: &[HostLoad],
         i: usize,
         width: u32,
         fallback_name: impl Fn() -> String,
     ) -> RustBV {
-        let Some((data, is_symbolic, symbolic_ast)) = load_results.get(i) else {
+        let Some(load) = load_results.get(i) else {
             return RustBV::symbolic(self.ctx, fallback_name(), width);
         };
-        if !*is_symbolic {
-            return bytes_to_bv(data, width);
+        if !load.symbolic {
+            return bytes_to_bv(&load.bytes, width);
         }
-        self.try_convert_symbolic_value(symbolic_ast.as_ref(), width, fallback_name)
-    }
-
-    /// Convert an optional symbolic AST to RustBV, falling back to a fresh symbolic.
-    ///
-    /// Order: handle-table fast path, then claripy-AST conversion, then fresh symbolic.
-    pub(super) fn try_convert_symbolic_value(
-        &self,
-        ast_obj: Option<&Py<PyAny>>,
-        width: u32,
-        fallback_name: impl FnOnce() -> String,
-    ) -> RustBV {
-        let Some(ast_obj) = ast_obj else {
-            return RustBV::symbolic(self.ctx, fallback_name(), width);
-        };
-        // Self-attach: the claripy bridge work below needs the GIL, but this
-        // helper no longer threads a caller token (angr-vh834 Phase 4). When
-        // the GIL is already held (single-threaded path) this is a cheap
-        // re-entrant no-op.
-        let converted: Option<RustBV> = Python::attach(|py| {
-            let ast = ast_obj.bind(py);
-
-            if is_claripy_ast(ast)
-                && let Ok(bv) = claripy_to_rustbv(py, ast, self.ctx)
-            {
-                return Some(bv);
-            }
-            None
-        });
-
-        converted.unwrap_or_else(|| RustBV::symbolic(self.ctx, fallback_name(), width))
+        load.value
+            .clone()
+            .unwrap_or_else(|| RustBV::symbolic(self.ctx, fallback_name(), width))
     }
 
     /// Shared dispatch for Multiple/Strided concretization results on the load
@@ -401,7 +373,7 @@ impl<'a> VEXInterpreter<'a> {
     /// only way to resolve the load, so the cap yields rather than hard-erroring.
     pub(super) fn dispatch_multi_load(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addrs: &[u64],
         addr_val: &RustBV,
         size: usize,
@@ -423,10 +395,10 @@ impl<'a> VEXInterpreter<'a> {
     /// 1. We avoid FFI overhead for the ITE chain construction
     /// 2. The RustBV ITE nodes stay in Rust's Z3 context
     /// 3. The chain is assembled in one pass by `build_ite_chain`, after a single
-    ///    batched `call_memory_load_batch` for every candidate address
+    ///    batched `memory_load_batch` for every candidate address
     pub(super) fn build_ite_load_from_callbacks(
         &self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addrs: &[u64],
         addr_expr: &RustBV,
         size: usize,
@@ -446,8 +418,8 @@ impl<'a> VEXInterpreter<'a> {
 
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
-            .call_memory_load_batch(&load_requests)
-            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+            .memory_load_batch(self.ctx, &load_requests)
+            .map_err(CbExecutionError::Callback)?;
 
         let mut pairs: Vec<(RustBV, RustBV)> = Vec::with_capacity(addrs.len());
 
@@ -482,7 +454,7 @@ impl<'a> VEXInterpreter<'a> {
     /// for the ITE chain building that Python would otherwise do.
     pub(super) fn build_ite_store_from_callbacks(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addrs: &[u64],
         addr_expr: &RustBV,
         data_val: &RustBV,
@@ -497,8 +469,8 @@ impl<'a> VEXInterpreter<'a> {
 
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
-            .call_memory_load_batch(&load_requests)
-            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+            .memory_load_batch(self.ctx, &load_requests)
+            .map_err(CbExecutionError::Callback)?;
 
         for (i, &addr) in addrs.iter().enumerate() {
             let addr_const = RustBV::concrete(addr as u128, addr_width);
@@ -527,7 +499,7 @@ impl<'a> VEXInterpreter<'a> {
     /// later if needed.
     pub(super) fn resolve_loadg_load(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         load_size: usize,
         context: &str,
@@ -602,7 +574,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Python path, or `Err` for unrecoverable errors.
     pub(super) fn try_rust_memory_load(
         &mut self,
-        callbacks: &PythonCallbacks,
+        callbacks: &dyn EngineHost,
         addr_val: &RustBV,
         size: usize,
         load_start: Option<Instant>,
