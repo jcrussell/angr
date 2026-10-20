@@ -2197,7 +2197,12 @@ class RustExplorationManager(
                 return irsb
             except (SimEngineError, ClaripyError, PyVEXError) as e:
                 # Rust routes None to the deadended stash (an unliftable block).
-                l.warning(f"Lift error at 0x{addr:x}: {e}")
+                # A hooked address lands here on purpose: a zero-length terminal
+                # hook (CallReturn, the Callable's return sentinel) resumes at
+                # its own address so the state deadends with that PC; one per
+                # Callable call is not worth a warning (angr-mx00p.96).
+                log = l.debug if self._project.is_hooked(addr) else l.warning
+                log(f"Lift error at 0x{addr:x}: {e}")
                 return None
         finally:
             self._perf_stats.record_lift_block(time.perf_counter_ns() - _lb_start)
