@@ -440,17 +440,23 @@ def _unsupported_inspect_events(state) -> list[str]:
 # Every manager constructed in this process that is still alive (see _collect_dead_managers).
 _live_managers: weakref.WeakSet = weakref.WeakSet()
 
+# How many earlier managers may still be alive before building another one
+# forces a collection (see _collect_dead_managers).
+_DEAD_MANAGER_BATCH = 4
+
 
 def _collect_dead_managers() -> None:
-    """Free finished managers before another one is built.
+    """Free finished managers before too many pile up.
 
     A manager sits in several reference cycles (its PythonCallbacks hold bound methods, its proxies point back at
     it), so only the cyclic garbage collector frees it, and with it its Rust states and Z3 terms. claripy ASTs are
     native objects the collector does not count, so a collection can be far off, and a process that builds manager
-    after manager would keep every finished one resident until then. When an earlier manager is still alive, collect
-    first; a process with one manager at a time never pays for it.
+    after manager would keep every finished one resident until then. A full collection costs tens of milliseconds in
+    a large angr process, which dominated a ``Callable`` call (one manager per call; angr-mx00p.96), so collect only
+    once ``_DEAD_MANAGER_BATCH`` earlier managers are alive: resident memory stays bounded by that many finished
+    managers, and a process with one manager at a time never pays.
     """
-    if _live_managers:
+    if len(_live_managers) >= _DEAD_MANAGER_BATCH:
         gc.collect()
 
 
