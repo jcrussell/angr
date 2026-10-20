@@ -192,7 +192,8 @@ module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
   `inspect_test_entries!`, `inspect_dispatch!`); the crate doc explains
   each.
 - **Gates and tooling**: `tools/audit_*.py`, `tools/check_line_citations.py`,
-  `tools/rust_source_utils.py`, `tools/ralph-gate.sh`.
+  `tools/rust_source_utils.py`, `tools/ralph-gate.sh`; `tools/upstream_extract.py`
+  scrubs fork-process references from upstream PR branches.
 - **Tests and benches**: `tests/engines/rust/`, `tests/benchmarks/`
   (`run_single.py`, `run_regression.py`, `bench_diff.py`, the leak and
   find-all gates, `parity_census.py`), `native/angr/benches/`.

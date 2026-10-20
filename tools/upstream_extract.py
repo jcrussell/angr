@@ -53,29 +53,81 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
-BEAD = r"angr-[a-z0-9]{4,5}(?:\.\d+)*"
-BEAD_REF = rf"(?:bd |bead |see |cf\. )?{BEAD}(?: [Pp]hase \w+| [Ss]lice \w+| pt\d+)?"
+# The generic shape of a bead id: `angr-` plus 4-5 id characters, not part of
+# a longer word (`angr-macros`). Used by --self-test and when bd is absent;
+# a real run matches only the ids bd knows (:func:`known_bead_pattern`), so
+# prose such as `angr-side` is never mistaken for one.
+GENERIC_BEAD = r"angr-(?!(?:utils|bench|tests|docs|core|data|side)\b)[a-z0-9]{4,5}"
+# Child suffixes: `.3`, `.3.2`, and ranges written `.41/.42`.
+SUFFIX = r"(?:\.\d+)*(?:/\.\d+)*(?![a-z0-9-])"
 
-RULES: list[tuple[re.Pattern[str], str]] = [
-    # 1. a parenthetical of bead ids only
-    (re.compile(rf"\s*\((?:{BEAD_REF})(?:\s*(?:,|;|/|and)\s*{BEAD_REF})*\)"), ""),
-    # 2. a bead id inside a longer parenthetical: trailing, then leading
-    (re.compile(rf"\s*[,;]\s*{BEAD_REF}(?=\s*[)\]])"), ""),
-    (re.compile(rf"(?<=[(\[]){BEAD_REF}\s*[,;]\s*"), ""),
-    # 3. a leading tag
-    (re.compile(rf"^(\s*)(?:bd )?{BEAD}(?: [Pp]hase \w+)?:\s+"), r"\1"),
-    # 4. audit-gate markers
-    (re.compile(r"SILENT\(cat-[abc]\)\s*:?\s*"), ""),
-    (re.compile(r"\b(?:overflow-ok|page-shift-ok|sp-default-ok|rm-ignored|satresult-exempt):\s*"), ""),
-    # 5. memory citations
-    (re.compile(r"\s*\((?:see )?(?:the )?bd memor(?:y|ies) `[a-z0-9-]+`(?:\s*(?:,|and)\s*`[a-z0-9-]+`)*\)"), ""),
-]
 
-LEFTOVER_RE = re.compile(rf"{BEAD}|\bbd memor|\bbd (?:recall|remember|show|create)\b|\bbeads?\b|SILENT\(|-ok:")
+def known_bead_pattern() -> str | None:
+    """Alternation of every bead id root bd knows, or None without bd."""
+    try:
+        out = subprocess.run(
+            ["bd", "list", "--all", "--limit", "0", "--json"], capture_output=True, text=True, check=True, timeout=120
+        ).stdout
+        roots = {re.match(r"angr-[a-z0-9]+", x["id"]).group(0) for x in json.loads(out)}  # type: ignore[union-attr]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, AttributeError):
+        return None
+    return "(?:" + "|".join(sorted(map(re.escape, roots), key=len, reverse=True)) + ")"
+
+
+def make_rules(bead_root: str) -> tuple[list[tuple[re.Pattern[str], str]], re.Pattern[str]]:
+    bead = rf"(?:``|`)?{bead_root}{SUFFIX}(?:``|`)?"
+    # inside a parenthetical: optional lead-in word, the id, and up to three
+    # short qualifier words (`Phase 2`, `step 3`, `follow-up`, `pt2`)
+    ref = rf"(?:bd |bead |see |cf\. )?{bead}(?: [\w.\-]+){{0,3}}?"
+    rules = [
+        # 1. a parenthetical of bead ids only: mid-line (with the space before
+        #    it), or opening the text (keeping its indentation)
+        (re.compile(rf"(?<=\S)\s*\((?:{ref})(?:\s*(?:,|;|/|and)\s*{ref})*\)"), ""),
+        (re.compile(rf"^(\s*)\((?:{ref})(?:\s*(?:,|;|/|and)\s*{ref})*\) ?"), r"\1"),
+        # 2. a bead id inside a longer parenthetical: trailing, then leading
+        (re.compile(rf"\s*[,;]\s*{ref}(?=\s*[)\]])"), ""),
+        (re.compile(rf"(?<=[(\[]){ref}\s*[,;]\s*"), ""),
+        # 3. a leading tag: several ids, a qualifier, a parenthetical, possibly
+        #    right after a docstring's opening quotes
+        (
+            re.compile(
+                rf"^(\s*(?:[rb]?\"\"\"|\'\'\')?)(?:bd )?{bead}(?:\s*(?:/|,|and)\s*(?:{bead}|\.\d+))*"
+                rf"(?: [\w.\-]+){{0,2}}?(?: \([^()]*\))?:\s+"
+            ),
+            r"\1",
+        ),
+        # 3b. a trailing "see angr-x" closing a sentence
+        (re.compile(rf"\s*(?:—|--|;|,)?\s*\b[Ss]ee (?:also )?(?:bd )?{bead}(?:\s*(?:,|and)\s*{bead})*(?=\.?\s*$)"), ""),
+        # 4. audit-gate markers
+        (re.compile(r"SILENT\(cat-[abc]\)\s*:?\s*"), ""),
+        (re.compile(r"\b(?:overflow-ok|page-shift-ok|sp-default-ok|rm-ignored|satresult-exempt):\s*"), ""),
+        # 5. memory citations
+        (re.compile(r"\s*\((?:see )?(?:the )?bd memor(?:y|ies) `[a-z0-9-]+`(?:\s*(?:,|and)\s*`[a-z0-9-]+`)*\)"), ""),
+    ]
+    leftover = re.compile(
+        rf"{bead_root}{SUFFIX}|\bbd memor|\bbd (?:recall|remember|show|create)\b|\bbeads?\b|SILENT\(|-ok:"
+    )
+    return rules, leftover
+
+
+RULES, LEFTOVER_RE = make_rules(GENERIC_BEAD)
+
+
+def use_known_beads() -> bool:
+    """Switch the module rules to bd's real ids; False when bd is unavailable."""
+    global RULES, LEFTOVER_RE
+    pat = known_bead_pattern()
+    if pat is None:
+        return False
+    RULES, LEFTOVER_RE = make_rules(pat)
+    return True
+
 
 EXCLUDE = [
     "AGENTS.md",
@@ -195,6 +247,17 @@ def rewrite_text(path: str, src: str) -> tuple[str, list[tuple[int, str]]]:
                             prose += new
         if new != body and not new.strip() and body.strip():
             continue  # a comment-only line emptied by the scrub
+        if new != body:
+            # A continuation line the scrub left opening with punctuation
+            # (`//!   (angr-x).` -> `//!   .`): move it onto the previous
+            # line, and drop the line if nothing else is left.
+            m = re.match(r"^(\s*(?://[/!]?|#)?\s*)([.,;:])(\s*)(.*)$", new)
+            if m and out and m.group(1).strip() and out[-1].strip().startswith(m.group(1).strip()):
+                prev = out[-1].rstrip("\n")
+                out[-1] = prev + m.group(2) + out[-1][len(prev) :]
+                if not m.group(4):
+                    continue
+                new = m.group(1) + m.group(4)
         out.append(new.rstrip() + nl if new != body else line)
         if LEFTOVER_RE.search(prose):
             leftovers.append((lineno, new.strip()))
@@ -237,6 +300,27 @@ SELF_TESTS: list[tuple[str, str, str, bool]] = [
     ("a.py", '    """One line (angr-ab12c)."""\n', '    """One line."""\n', False),
     ("a.rst", "The pin (angr-iaol.1) holds.\n", "The pin holds.\n", False),
     ("a.rs", "    let p = 'a'; // angr-ab12c: note\n", "    let p = 'a'; // note\n", False),
+    (
+        "a.rs",
+        "// tables in native/angr and native/angr-macros\n",
+        "// tables in native/angr and native/angr-macros\n",
+        False,
+    ),
+    ("a.rs", "// proxy later (angr-4scu step 3), and more\n", "// proxy later, and more\n", False),
+    ("a.py", "# angr-qj30 (write-through .2): when the gate is on\n", "# when the gate is on\n", False),
+    ("a.py", "# angr-a8epx / angr-gorvf.3.2: native-dispatch gate\n", "# native-dispatch gate\n", False),
+    ("a.py", '    """angr-027h: re-seed the states."""\n', '    """re-seed the states."""\n', False),
+    ("a.py", "    # mutations — see angr-g9hy.\n", "    # mutations.\n", False),
+    ("a.rs", "// the angr-03vl4.74 class of bug\n", "// the angr-03vl4.74 class of bug\n", True),
+    ("a.rst", "is supported (``angr-d1dr``)\n", "is supported\n", False),
+    ("a.rs", "/// savepoints for `push()` (angr-ph300.41/.42).\n", "/// savepoints for `push()`.\n", False),
+    ("a.rs", "// residual state (angr-ua7fd follow-up): detach\n", "// residual state: detach\n", False),
+    ("a.rs", "/// angr-v5a5 slice 4c.2b: sibling isolation\n", "/// sibling isolation\n", False),
+    ("a.rs", "/// angr-sqfj8.113 / .118: the shift families\n", "/// the shift families\n", False),
+    ("a.py", "    # the angr-side has len(raw) + 1 entries\n", "    # the angr-side has len(raw) + 1 entries\n", False),
+    ("a.rs", "//! * `%p` sign-folds pointers\n//!   (angr-3i88a).\n//! * next\n", "//! * `%p` sign-folds pointers.\n//! * next\n", False),
+    ("a.rs", "//!   - `pread64(fd)`\n//!     (angr-dbb1) mirror `pread64.py`: positioned\n", "//!   - `pread64(fd)`\n//!     mirror `pread64.py`: positioned\n", False),
+    ("a.rs", "//!   `store_multi`; and **Phase 2**\n//!   (angr-qh5u): end-to-end install\n", "//!   `store_multi`; and **Phase 2**:\n//!   end-to-end install\n", False),
 ]
 
 
@@ -271,6 +355,8 @@ def main() -> int:
         for f in hits:
             print(f"excluded: {f}")
         return 1 if hits else 0
+    if not use_known_beads():
+        print("bd unavailable: matching the generic bead-id shape", file=sys.stderr)
     total_left = 0
     changed = 0
     for f in args.files:
