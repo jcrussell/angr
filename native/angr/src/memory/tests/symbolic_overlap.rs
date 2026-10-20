@@ -446,10 +446,11 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
     let tail = mem
         .load_concrete(0x1008, 8, &ctx)
         .expect("abandoned tail must load, not hard-fail");
+    // Python-engine parity (angr-7qon)
     assert_eq!(
         ctx.eval(&tail),
         Some(0),
-        "abandoned tail must reclassify as concrete (angr-7qon parity)"
+        "abandoned tail must reclassify as concrete (Python-engine parity)"
     );
 
     // Per-byte too: the first tail byte is the one whose stale span pointed

@@ -1432,11 +1432,12 @@ fn test_satoutcome_decided_maps_unknown_to_none() {
     use crate::symbolic::solver_build::SatOutcome;
     assert_eq!(z3::SatResult::Sat.decided(), Some(true));
     assert_eq!(z3::SatResult::Unsat.decided(), Some(false));
+    // (angr-ph300.43) (angr-n0irt.1)
     assert_eq!(
         z3::SatResult::Unknown.decided(),
         None,
-        "Unknown (timeout) must map to None, not a boolean — the angr-ph300.43 / \
-         angr-n0irt.1 bug class"
+        "Unknown (timeout) must map to None, not a boolean — reading a timeout as \
+         unsat silently prunes satisfiable paths"
     );
 }
 

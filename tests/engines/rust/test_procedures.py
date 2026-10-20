@@ -2783,7 +2783,7 @@ class TestSimProcedureSelfCallContinuation:
         marks = [s.solver.eval(s.memory.load(_SELFCALL_MARK, 8, endness="Iend_LE")) for s in states]
         assert _SELFCALL_SENTINEL in marks, (
             "after_call continuation never ran -> self.call() return-address "
-            f"push lost across FFI (angr-aca6y); marks={[hex(m) for m in marks]}, "
+            f"push lost across FFI; marks={[hex(m) for m in marks]}, "
             f"stash counts={mgr.stash_counts()}"
         )
 

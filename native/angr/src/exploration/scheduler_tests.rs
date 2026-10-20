@@ -273,9 +273,10 @@ fn test_wave_frontier_respects_max_active_states() {
          assertion below is vacuous (max_width={})",
         uncapped.max_width,
     );
+    // Pre-cap behavior is unchanged (angr-9ke6b.48)
     assert_eq!(
         uncapped.summarized_pruned, 0,
-        "an uncapped wave prunes nothing — pre-angr-9ke6b.48 behavior is unchanged",
+        "an uncapped wave prunes nothing — the pre-cap behavior is unchanged",
     );
 
     let (capped, capped_leaves) = run_fork_tree_capped(Some(CAP));

@@ -310,7 +310,7 @@ class TestSyncExtraPagesFastPath:
     def test_add_lazy_regions_batch_ffi_available(self, fauxware_project):
         """Smoke-test the new Rust FFI surface exists and is callable."""
         rust_state = self._fresh_rust_state(fauxware_project)
-        assert hasattr(rust_state, "add_lazy_regions_batch"), "Rust FFI must expose add_lazy_regions_batch (angr-b58a)"
+        assert hasattr(rust_state, "add_lazy_regions_batch"), "Rust FFI must expose add_lazy_regions_batch"
         before = rust_state.lazy_region_count()
         rust_state.add_lazy_regions_batch([(0x4200_0000, 0x1000), (0x4200_1000, 0x1000)])
         # The batch must actually register both regions, not no-op.

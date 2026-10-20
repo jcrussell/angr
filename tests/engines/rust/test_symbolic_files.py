@@ -184,7 +184,7 @@ class TestSymbolicFileNativeServe:
         stats = mgr.stats
         assert stats["symfile_reads_native"] == 0, "ineligible file must not be served from the registry"
         assert stats["simprocedure_fallback_by_name"].get("read", 0) == 0, (
-            "the contentless-fd read is served natively now (angr-gorvf.15)"
+            "the contentless-fd read must be served natively, not by the SimProcedure fallback"
         )
         # angr-4ref8: the scope-gate rejection is attributed to its reason
         # counter, and nothing was exported for this state.

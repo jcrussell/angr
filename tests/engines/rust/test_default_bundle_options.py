@@ -122,7 +122,10 @@ class TestTrackMemoryMapping:
             and "options.add" not in line
             and not line.lstrip().startswith("#")
         ]
-        assert readers == [], f"TRACK_MEMORY_MAPPING gained a reader; re-open angr-op0dn.14.7: {readers}"
+        # (angr-op0dn.14.7)
+        assert readers == [], (
+            f"TRACK_MEMORY_MAPPING gained a reader; revisit dropping it from the default bundle: {readers}"
+        )
 
     def test_default_state_does_not_raise(self, fauxware_project):
         state = fauxware_project.factory.entry_state()

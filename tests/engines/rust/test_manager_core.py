@@ -550,7 +550,7 @@ class TestRustExplorationManagerUnit:
             f"strlen('hello') landed in wrong register: eax={eax!r} edx={edx!r}. "
             f"Expected eax=5 (Cdecl return register = EAX, offset 8). "
             f"If eax==0xdeadbeef and edx==5, Cdecl is using offset 16 (EDX) — "
-            f"the angr-4pkm regression has come back."
+            f"the Cdecl return-register regression has come back."
         )
         # EDX must remain poisoned — strlen does not write it under Cdecl.
         assert edx == EDX_POISON, (

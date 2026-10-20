@@ -116,14 +116,15 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
             "parked bounces cleared"
         );
         assert_eq!(mgr.current_stepping_state_id, None);
+        // (angr-0jh0j.12)
         assert!(
             mgr.skip_hook_stack.is_empty(),
-            "angr-0jh0j.12: pre-restore skip-hook tokens cleared — otherwise the \
+            "pre-restore skip-hook tokens cleared — otherwise the \
              restored session skips a same-address hook once"
         );
         assert!(
             !mgr.must_run_serial(),
-            "angr-0jh0j.12: a leaked skip entry would keep forcing the restored \
+            "a leaked skip entry would keep forcing the restored \
              session serial (must_run_serial reads a bare is_empty())"
         );
     });

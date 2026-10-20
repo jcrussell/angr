@@ -179,6 +179,7 @@ class TestGraveyardOwnerCheck:
         if not os.path.exists(binary_path):
             pytest.skip("fauxware binary not found")
 
+        # The worker must route off-owner closes to the graveyard (angr-pxq0i).
         script = textwrap.dedent(
             f"""
             import threading
@@ -198,7 +199,7 @@ class TestGraveyardOwnerCheck:
             def worker():
                 try:
                     # Off-owner call from a real background thread: must route
-                    # to the graveyard, not abort inside close() (angr-pxq0i).
+                    # to the graveyard, not abort inside close().
                     rsp._release_owned_ctx(ctx, owner_tid)
                 except Exception as e:  # pragma: no cover - defensive
                     errors.append(repr(e))

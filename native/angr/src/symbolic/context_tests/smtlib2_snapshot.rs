@@ -102,7 +102,7 @@ fn test_smtlib2_constraint_round_trip() {
     // Step 4: report measurements. Captured by `cargo test -- --nocapture`
     // or `cargo test test_smtlib2_constraint_round_trip -- --nocapture`.
     eprintln!(
-        "[angr-9o4n.1] SMT-LIB2 round-trip (small): {} bytes; \
+        "SMT-LIB2 round-trip (small): {} bytes; \
          to_string={}us from_string={}us check_sat={}us; \
          5 assertions, 2 32-bit BV vars (Extract+Concat).",
         serialized_bytes,
@@ -173,7 +173,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
 
     let n_assertions = NVARS * 2 + (NVARS - 1);
     eprintln!(
-        "[angr-9o4n.1] SMT-LIB2 round-trip (scaled): {} bytes; \
+        "SMT-LIB2 round-trip (scaled): {} bytes; \
          to_string={}us from_string={}us check_sat={}us; \
          {} assertions, {} 32-bit BV vars.",
         serialized_bytes,
@@ -330,7 +330,7 @@ fn test_smtlib2_cross_context_round_trip() {
     );
 
     eprintln!(
-        "[angr-rwzi] SMT-LIB2 cross-context round-trip: {} bytes; \
+        "SMT-LIB2 cross-context round-trip: {} bytes; \
          to_string={}us from_string={}us check_sat={}us; \
          original_ctx=0x{:x} new_ctx=0x{:x}; \
          original_x_ast=0x{:x} new_x_ast=0x{:x}",

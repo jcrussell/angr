@@ -655,7 +655,7 @@ fn state_fd0_is_dup2d_tracks_a_dup2_from_a_reopened_dev_stdin() {
     );
     assert!(
         mgr._has_state_extra_fds(rewired),
-        "the dup2'd state still needs its fd table synced inbound (angr-qmrrp)",
+        "the dup2'd state still needs its fd table synced inbound",
     );
 }
 

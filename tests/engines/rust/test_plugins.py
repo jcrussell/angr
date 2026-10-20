@@ -267,7 +267,7 @@ class TestPluginTemplateSelection:
         mgr._restore_plugins_to_state(fresh, root_id)
 
         assert 77 in fresh.posix.fd, (
-            "posix plugin was never restored from the template — the vacuous hasattr guard regressed (angr-9cjmg)"
+            "posix plugin was never restored from the template — the vacuous hasattr guard regressed"
         )
 
     def test_falls_back_to_parent_id_when_state_not_cached(self, fauxware_project):

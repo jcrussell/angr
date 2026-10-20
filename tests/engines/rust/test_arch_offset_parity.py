@@ -247,8 +247,8 @@ def test_register_offset_and_size_match_archinfo(rust_arch, arch_id, name, arch_
         missing_reason = _known_missing_reason(rust_arch, name)
         assert missing_reason is not None, (
             f"{rust_arch} has no register named {name!r}, and KNOWN_MISSING does not "
-            "say why. A missing archinfo alias is usually a real bug (angr-9ke6b.217 "
-            "'pc', angr-03vl4.1 'bp', angr-03vl4.2 'lr'): add the row to that arch's "
+            "say why. A missing archinfo alias is usually a real bug (as 'pc', 'bp' "
+            "and 'lr' once were): add the row to that arch's "
             "ALIASES table in native/angr/src/arch/, or — if the omission is "
             "deliberate — add a KNOWN_MISSING group here stating the reason."
         )

@@ -639,7 +639,7 @@ fn test_dispatch_next_drops_a_corrupt_payload_and_keeps_stealing() {
     assert_eq!(
         t.counters.injector_dispatches.load(Ordering::SeqCst),
         1,
-        "only the steal that produced a state counts: a dropped payload was          never dispatched, and counting it would inflate          `SchedulerStats::dispatches` (angr-6cp06.21)",
+        "only the steal that produced a state counts: a dropped payload was          never dispatched, and counting it would inflate          `SchedulerStats::dispatches`",
     );
     assert_eq!(
         t.counters.reattaches.load(Ordering::SeqCst),

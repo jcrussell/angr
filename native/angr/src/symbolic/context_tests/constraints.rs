@@ -490,7 +490,7 @@ fn test_assume_true_no_self_seeding_under_fresh_context() {
         let local = ctx.local_constraints.lock();
         assert!(
             !local.dedup_set_seeded,
-            "assume_true alone must not trigger O(N) seeding (angr-mwbp)"
+            "assume_true alone must not trigger O(N) seeding"
         );
         // Without seeding, both pushes land in z3_assertions.
         assert_eq!(local.z3_assertions.len(), 2);

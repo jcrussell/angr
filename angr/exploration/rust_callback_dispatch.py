@@ -311,9 +311,10 @@ class RustCallbackDispatchMixin:
         ``callbacks.rs`` module invariant 5
         (``invariant-rust-solver-fallback-class``).
         """
+        # Explicit non-None contract (angr-ye2n)
         assert rust_ctx is not None, (
             "_install_rust_solver_on_callback_state requires a non-None "
-            "rust_ctx; see angr-ye2n for the explicit-contract rationale"
+            "rust_ctx: callers must pass the solver context explicitly"
         )
 
         # Idempotency: closures read state.scratch.rust_solver_ctx on every

@@ -684,13 +684,13 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
                     "{}: interpreter dispatch (eval_binop/eval_triop/eval_qop) at rm={rm} \
                      disagrees with the correctly-rm-threaded VEXOps::*_with_rm answer for \
                      case {case:?} — the interpreter likely routed through the rm-less \
-                     sibling (the angr-03vl4.30 bug shape)",
+                     sibling (the rm-dropping bug shape)",
                     entry.name
                 );
                 assert_ne!(
                     interp_bits, rne_only_bits,
                     "{}: interpreter dispatch at rm={rm} for case {case:?} matches the \
-                     RNE-only rm-less-sibling answer — this IS the angr-03vl4.30 bug shape \
+                     RNE-only rm-less-sibling answer — this IS the rm-dropping bug shape \
                      (the interpreter picked VEXOps::{{binop,unop,qop}} instead of the \
                      *_with_rm variant)",
                     entry.name
@@ -700,7 +700,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
             assert!(
                 divergent_modes_checked > 0,
                 "{}: case {case:?} is not mode-sensitive vs RNE under ANY of RD/RU/RZ, so it \
-                 cannot distinguish correct interpreter dispatch from the angr-03vl4.30 bug \
+                 cannot distinguish correct interpreter dispatch from the rm-dropping bug \
                  shape; pick a different operand case",
                 entry.name
             );

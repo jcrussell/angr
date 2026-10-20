@@ -498,13 +498,13 @@ class TestMultiArchSupport:
         got_ebx = out.solver.eval(out.regs.ebx)
         assert got_ebx == 0x63, (
             f"guest ran `mov ebx, gs` with gs preset to 0x63, but ebx reads back {got_ebx:#x} — "
-            f"the selector import channel is broken (angr-2uw03)"
+            f"the selector import channel is broken"
         )
 
         got_gs = out.solver.eval(out.regs.gs)
         assert got_gs == 0x33, (
             f"guest ran `mov gs, ax` with eax preset to 0x33, but gs reads back {got_gs:#x} — "
-            f"the selector export channel is broken (angr-2uw03)"
+            f"the selector export channel is broken"
         )
 
     @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
@@ -557,19 +557,19 @@ class TestMultiArchSupport:
         got_v1 = out.solver.eval(out.regs.v1)
         assert got_v1 == 0xCAFE, (
             f"{arch_name}: guest ran `cfc1 $v1, $31` with fcsr preset to 0xcafe, but v1 reads back "
-            f"{got_v1:#x} — the fcsr import channel is broken (angr-n2556)"
+            f"{got_v1:#x} — the fcsr import channel is broken"
         )
 
         got_fcsr = out.solver.eval(out.regs.fcsr)
         assert got_fcsr == 0xDEADBEEF, (
             f"{arch_name}: guest ran `ctc1 $v0, $31` with v0 preset to 0xdeadbeef, but fcsr reads "
-            f"back {got_fcsr:#x} — the fcsr export channel is broken (angr-n2556)"
+            f"back {got_fcsr:#x} — the fcsr export channel is broken"
         )
 
         got_f0 = out.solver.eval(out.regs.f0)
         assert got_f0 != 0, (
             f"{arch_name}: guest copied f2 (preset 0xaabbccdd11223344) into f0, which reads back 0 "
-            f"— the f-register channel is broken (angr-n2556)"
+            f"— the f-register channel is broken"
         )
 
         # Same block on the vanilla Python engine: the two must agree on which
@@ -586,7 +586,7 @@ class TestMultiArchSupport:
         assert got_f0 == want_f0 == 0xAABBCCDD00000000, (
             f"{arch_name}: after `mov.d $f0, $f2` the Rust engine reads f0 as {got_f0:#x} and the "
             f"Python engine as {want_f0:#x}. angr stores registers big-endian here, so VEX's F32 "
-            f"copy of `f2_lo` at f2's base offset moves the HIGH word (angr-fuhmm)"
+            f"copy of `f2_lo` at f2's base offset moves the HIGH word"
         )
 
     @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
@@ -767,8 +767,7 @@ class TestMultiArchSupport:
 
         assert rust_out == py_out, (
             f"{name}: Rust d0=0x{rust_out:016x} but Python d0=0x{py_out:016x} "
-            f"— the engines disagree on the NEON shift-by-vector amount "
-            f"convention (angr-0jh0j.64)"
+            f"— the engines disagree on the NEON shift-by-vector amount convention"
         )
         assert py_out == expected, (
             f"{name}: d0=0x{py_out:016x}, expected 0x{expected:016x} under the "
@@ -823,8 +822,7 @@ class TestMultiArchSupport:
             got = exported.solver.eval(getattr(exported.regs, dst))
             assert got == values[src], (
                 f"{arch_name}: guest copied {src} (preset {values[src]:#x}) into {dst}, "
-                f"which reads back {got:#x} — the vector-register channel is broken "
-                "(angr-l8kfw)"
+                f"which reads back {got:#x} — the vector-register channel is broken"
             )
 
     def test_arm32_offsets_match_archinfo(self):

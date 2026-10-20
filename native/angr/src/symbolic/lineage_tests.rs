@@ -567,7 +567,7 @@ fn test_sampler_hook_overhead_under_budget() {
     assert!(
         per_call_ns < 50_000,
         "sampler hook too slow: {per_call_ns} ns/call exceeds 50_000 ns budget \
-         (acceptance gate: <100_000 ns per angr-0hdq.2)"
+         (acceptance gate: <100_000 ns)"
     );
 }
 

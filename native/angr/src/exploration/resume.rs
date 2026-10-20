@@ -523,7 +523,7 @@ impl RustExplorationManager {
         // path is a Python-boundary bounce, not a hot loop, so the cost is nil.
         assert!(
             pending.deferred_forks.is_empty(),
-            "find-predicate pending carries {} deferred fork(s); lightweight callbacks must not (angr-qwyti.4)",
+            "find-predicate pending carries {} deferred fork(s); lightweight callbacks must not",
             pending.deferred_forks.len(),
         );
 
@@ -563,7 +563,7 @@ impl RustExplorationManager {
         // future refactor ever routes a fork-carrying pending here.
         assert!(
             pending.deferred_forks.is_empty(),
-            "avoid-predicate pending carries {} deferred fork(s); lightweight callbacks must not (angr-qwyti.4)",
+            "avoid-predicate pending carries {} deferred fork(s); lightweight callbacks must not",
             pending.deferred_forks.len(),
         );
 

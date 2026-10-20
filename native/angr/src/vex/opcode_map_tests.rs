@@ -1067,7 +1067,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_CmpORD64S",
             "Iop_CmpORD64U",
         ],
-        "PowerPC \"ordered compare\" (full-width -1/0 result, not a 1-bit compare) — deliberately unmapped, pinned by test_parse_cmp_ord_stays_unmapped (angr-sqfj8.120).",
+        "PowerPC \"ordered compare\" (full-width -1/0 result, not a 1-bit compare) — deliberately unmapped, pinned by test_parse_cmp_ord_stays_unmapped.",
     ),
     // CMP_NEZ
     (
@@ -1369,7 +1369,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     // PERM_TRIOP
     (
         &["Iop_Perm8x16x2"],
-        "the two-table AArch64 TBL form of Iop_Perm — deliberately unmapped because it is a triop, while VPerm and Python's _op_generic_Perm are both two-argument (see the parse_special doc comment, angr-sqfj8.117).",
+        "the two-table AArch64 TBL form of Iop_Perm — deliberately unmapped because it is a triop, while VPerm and Python's _op_generic_Perm are both two-argument (see the parse_special doc comment).",
     ),
     // V256_LANE_ACCESS
     (
@@ -1458,7 +1458,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_TruncF128toI128S",
             "Iop_TruncF128toI128U",
         ],
-        "added by the libVEX bundled with pyvex 10 and not yet mapped (angr-mx00p.6).",
+        "added by the libVEX bundled with pyvex 10 and not yet mapped.",
     ),
     // AVX512_EVEX — every op past libVEX's Iop_FIRST_EVEX marker. Only
     // EVEX-encoded code lifts to them and the engine has no 512-bit vector
@@ -1671,7 +1671,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_VPSHUFBITQMB_256",
             "Iop_VPSHUFBITQMB_512",
         ],
-        "AVX-512 (EVEX) ops: only EVEX-encoded code reaches them, and the engine has no 512-bit vector type (angr-mx00p.5).",
+        "AVX-512 (EVEX) ops: only EVEX-encoded code reaches them, and the engine has no 512-bit vector type.",
     ),
     // Range markers inside the IROp enum, not operations.
     (
@@ -1703,8 +1703,8 @@ fn test_opcode_map_completeness_against_libvex_opcodes() {
         newly_unmapped.is_empty(),
         "{} pyvex opcode(s) have no parse_opcode mapping and no \
          KNOWN_UNMAPPED_GROUPS entry: {newly_unmapped:?}. This is the \
-         op-coverage-gap shape from angr-9ke6b.160 / angr-sqfj8.113 / \
-         angr-sqfj8.117 — either add a parse_* arm mapping the opcode, or \
+         op-coverage-gap bug shape (an opcode silently lifting to Unmapped) \
+         — either add a parse_* arm mapping the opcode, or \
          add a KNOWN_UNMAPPED_GROUPS entry stating why it stays unmapped.",
         newly_unmapped.len()
     );

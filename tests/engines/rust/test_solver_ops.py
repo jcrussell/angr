@@ -687,11 +687,11 @@ class TestSolverOperations:
         ctx.add_constraint_ast(x >= 100)
         ctx.add_constraint_ast(x <= 200)
         v = ctx.eval(x)
+        # Seed-pinning was measured to corrupt the solver
+        # (iaol1-seed-pin-empirically-broken) (angr-iaol.1)
         assert v is not None and 100 <= v <= 200, (
             f"Sanity: eval(x) must satisfy x in [100, 200]; got {v}. "
-            "If this fails, a seed-pin attempt likely corrupted the solver "
-            "— see angr-iaol.1 close-out memory "
-            "iaol1-seed-pin-empirically-broken."
+            "If this fails, a seed-pin attempt likely corrupted the solver."
         )
 
     def test_model_stability_constraint_order(self):
@@ -1257,10 +1257,10 @@ class TestExplorationIntegration:
         assert final.solver.satisfiable(extra_constraints=[rax == 0xDEADBEEFCAFEBABE]), (
             "rax not constrainable to 0xDEADBEEFCAFEBABE — Rust load at "
             "dst returned a concrete witness rather than the hook-copied "
-            "symbolic value (angr-ctct)"
+            "symbolic value"
         )
         assert final.solver.satisfiable(extra_constraints=[rax == 0x1111222233334444]), (
-            "rax not constrainable to 0x1111222233334444 — Rust load at dst was concretized (angr-ctct)"
+            "rax not constrainable to 0x1111222233334444 — Rust load at dst was concretized"
         )
 
     def test_filler_materialised_multibyte_symbolic_preserved(self):
@@ -1323,7 +1323,7 @@ class TestExplorationIntegration:
         assert byte5.symbolic, (
             f"byte 5 of filler-materialised symbol lost symbolicity "
             f"(got {byte5}) — fallback extracted only the region-head "
-            f"byte (angr-fv81)"
+            f"byte"
         )
 
     def test_arm_conditional_ldrh_loads_two_bytes(self):
@@ -1380,7 +1380,7 @@ class TestExplorationIntegration:
         assert final.solver.satisfiable(extra_constraints=[r0 == VALUE]), (
             f"r0 cannot equal 0x{VALUE:x} — the conditional halfword load "
             f"read the wrong number of bytes (1 instead of 2), so the high "
-            f"byte 0x{VALUE >> 8:02x} was lost (angr-21am)"
+            f"byte 0x{VALUE >> 8:02x} was lost"
         )
 
     def test_hook_length_advances_pc_userhook(self, fauxware_project):

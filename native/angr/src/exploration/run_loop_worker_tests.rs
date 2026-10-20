@@ -366,10 +366,11 @@ fn python_simprocedure_bounce_is_materialized_and_re_pointed_at_its_addr() {
             1,
             "the bounce state crosses back"
         );
+        // (angr-op0dn.13.11)
         assert_eq!(
             out.terminal_states[0].pc(),
             addr,
-            "angr-op0dn.13.11: the bounce pc is stamped with its re-enterable \
+            "the bounce pc is stamped with its re-enterable \
              entry address, not the 0 the step preamble wrote"
         );
         match kind_of(&shared, out.terminal_states[0].state_id()) {

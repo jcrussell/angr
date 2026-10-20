@@ -172,7 +172,7 @@ fn mechanical_self_wins_fields_keep_selfs_value() {
             .map(|c| c.call_site_addr)
             .collect::<Vec<_>>(),
         vec![0x1000],
-        "call_stack still carries self's frames after the angr-fs8kb.71 switch \
+        "call_stack still carries self's frames after the switch \
          to warn_on_diverge — only the diagnostic is new"
     );
     assert_eq!(merged.max_history(), expected_max_history);

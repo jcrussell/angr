@@ -424,7 +424,7 @@ fn manual_inspection_keeps_selfs_events_and_drops_others_silently() {
     assert_eq!(
         merged.inspection().event_counts()[InspectEvent::MemWrite as usize],
         0,
-        "b's recorded event/count is dropped silently (angr-sqfj8.89): only \
+        "b's recorded event/count is dropped silently: only \
          enabled_mask is compared for divergence, not events/event_counts"
     );
     assert!(

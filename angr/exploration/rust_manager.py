@@ -5500,9 +5500,8 @@ class RustExplorationManager(
         if not seeds:
             return False
         self._phase2_retried = True
-        l.debug(
-            "angr-027h: phase 1 (deferred) exhausted without find; re-seeding %d state(s) in eager mode", len(seeds)
-        )
+        # (angr-027h)
+        l.debug("phase 1 (deferred) exhausted without find; re-seeding %d state(s) in eager mode", len(seeds))
         try:
             self._rust_mgr.set_use_deferred_forks(False)
         except AttributeError:
