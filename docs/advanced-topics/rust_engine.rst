@@ -2740,8 +2740,8 @@ update.
    **The typed taxonomy is currently a test-harness affordance, not the
    live-exploration contract** (angr-ghwsd.3). The variant→subclass
    mapping (``From<RustExecError> for PyErr``) is reached only from the
-   test-only ``#[pyfunction]`` hooks ``execute_irsb_for_test`` and
-   ``_raise_typed_test_error``. During a real ``mgr.run()`` / ``explore``
+   test-only hooks ``execute_irsb_for_test`` and
+   ``_raise_typed_test_error`` in ``angr.rustylib.vex_engine._testing``. During a real ``mgr.run()`` / ``explore``
    the typed ``CbExecutionError`` is **stringified at the interpreter
    boundary** — ``RunResult::Error { message, addr }`` carries a
    ``String`` that ``stepping`` collapses into

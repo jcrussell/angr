@@ -505,7 +505,7 @@ class TestRustExecutionErrorHierarchy:
         This is the key downstream contract: callers can write a single
         ``except RustExecutionError`` to handle all engine failures.
         """
-        from angr.rustylib.vex_engine import _raise_typed_test_error
+        from angr.rustylib.vex_engine._testing import _raise_typed_test_error
 
         from angr.exploration import RustExecutionError
 
@@ -531,7 +531,7 @@ class TestRustExecutionErrorHierarchy:
         — the API tkbr.1 will route into. Replace with a real-path test
         once tkbr.1 lands.
         """
-        from angr.rustylib.vex_engine import _raise_typed_test_error
+        from angr.rustylib.vex_engine._testing import _raise_typed_test_error
 
         from angr.exploration import RustUnsupportedSyscallError
 
@@ -560,7 +560,7 @@ class TestRustExecutionErrorHierarchy:
         the only remaining NeonUnimplemented placeholder.
         """
 
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
 
         from angr.exploration import RustUnsupportedVexOpError
 
@@ -588,7 +588,7 @@ class TestRustExecutionErrorHierarchy:
         test stays valid even as real opcodes get mapped over time.
         """
 
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
 
         from angr.exploration import RustUnsupportedVexOpError
 
@@ -611,7 +611,7 @@ class TestRustExecutionErrorHierarchy:
         ``RustExecutionError`` class.
         """
 
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
         from pyvex import expr as E
         from pyvex import stmt as S
         from pyvex.enums import IRCallee
@@ -653,7 +653,7 @@ class TestRustExecutionErrorHierarchy:
         ``test_cb_lift_block_*`` in ``TestRustManagerCallbacksUnit``.
         """
 
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
         from pyvex import const as C
         from pyvex import expr as E
         from pyvex import stmt as S
@@ -883,7 +883,7 @@ class TestRustUnsupportedErrorParametrized:
     def test_unmapped_vex_op_raises_unsupported(self, op_name):
         """Each currently-unmapped real opcode surfaces as
         ``RustUnsupportedVexOpError`` carrying `<op_name>` + arch."""
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
 
         from angr.exploration import RustUnsupportedVexOpError
 
@@ -907,7 +907,7 @@ class TestRustUnsupportedErrorParametrized:
         ``IROp::Unmapped`` and every caller silently degraded to the Python
         fallback.
         """
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
 
         builder = _binop_irsb if arity == 2 else _triop_irsb
         # Concrete args -> the libm path returns a value; any exception here
@@ -918,7 +918,7 @@ class TestRustUnsupportedErrorParametrized:
     def test_neon_unimplemented_raises_unsupported(self, op_name):
         """NeonUnimplemented routes through ``OpError::UnsupportedNeon`` but
         Python-side it still surfaces as ``RustUnsupportedVexOpError``."""
-        from angr.rustylib.vex_engine import execute_irsb_for_test
+        from angr.rustylib.vex_engine._testing import execute_irsb_for_test
 
         from angr.exploration import RustUnsupportedVexOpError
 
@@ -937,7 +937,7 @@ class TestRustUnsupportedErrorParametrized:
         back to the Python callback path; this parametrize pins the Python
         exception API so a follow-up tkbr.1-style conversion only needs to
         wire each handler into the existing typed-error path."""
-        from angr.rustylib.vex_engine import _raise_typed_test_error
+        from angr.rustylib.vex_engine._testing import _raise_typed_test_error
 
         from angr.exploration import RustUnsupportedSyscallError
 

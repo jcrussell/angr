@@ -2,7 +2,7 @@
 ``IRSB`` the ``lift_block`` callback returns into the engine's IR.
 
 Each test builds pyvex objects, reads them through
-``vex_engine.irsb_debug_for_test(irsb, pretty=False)`` and checks the Rust IR's
+``vex_engine._testing.irsb_debug_for_test(irsb, pretty=False)`` and checks the Rust IR's
 ``{:?}`` rendering. Ported from the Rust tests of the JSON bridge the reader
 replaced (angr-mx00p.33); the pure string helpers keep Rust tests in
 ``pyvex_reader_tests.rs``.
@@ -42,7 +42,7 @@ def _read(statements, types=("Ity_I64",) * 8, arch=None, jumpkind="Ijk_Boring"):
         tyenv=pyvex.IRTypeEnv(arch, types=list(types)),
         jumpkind=jumpkind,
     )
-    return vex_engine.irsb_debug_for_test(irsb, pretty=False)
+    return vex_engine._testing.irsb_debug_for_test(irsb, pretty=False)
 
 
 def _read_expr(expr):
@@ -55,7 +55,7 @@ def test_lifted_block_reads(fauxware_project):
     from angr.rustylib import vex_engine
 
     irsb = fauxware_project.factory.block(fauxware_project.entry).vex
-    out = vex_engine.irsb_debug_for_test(irsb, pretty=False)
+    out = vex_engine._testing.irsb_debug_for_test(irsb, pretty=False)
     assert out.startswith(f"IRSB {{ addr: {fauxware_project.entry}, arch: AMD64, statements: [IMark")
     assert "jumpkind:" in out and "tyenv: TypeEnv { types: [" in out
 
@@ -138,7 +138,7 @@ def test_spotter_block_reads(fauxware_project):
 
     project = angr.load_shellcode(bytes.fromhex("900f3290ebfe"), arch="amd64", load_address=0x400000)
     irsb = project.factory.block(0x400000).vex
-    assert "Dirty(IRDirty" in vex_engine.irsb_debug_for_test(irsb, pretty=False)
+    assert "Dirty(IRDirty" in vex_engine._testing.irsb_debug_for_test(irsb, pretty=False)
 
 
 def test_puti_and_geti_descr():

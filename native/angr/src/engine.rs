@@ -459,8 +459,6 @@ test_submod!("engine_tests.rs" => tests);
 pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Typed exception classes (angr-tkbr.3).
     crate::errors::register(m)?;
-    m.add_function(pyo3::wrap_pyfunction!(_raise_typed_test_error, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(execute_irsb_for_test, m)?)?;
     m.add_class::<PythonCallbacks>()?;
     m.add_class::<RustSolverContext>()?;
     // Deferred fork types (`DeferredFork` itself is Rust-internal — angr-03vl4.6)
@@ -479,11 +477,6 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_register_info, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(native_lift_debug_for_test, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(irsb_debug_for_test, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(lift_lock_is_held_for_test, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(native_syscall_rows_for_test, m)?)?;
     // Memory layout constants (single source of truth; Python imports these
     // rather than redeclaring 0x1000 etc.).
     m.add("PAGE_SIZE", crate::memory::PAGE_SIZE)?;
@@ -493,5 +486,28 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // user code can branch on engine API version independently of
     // `angr.__version__`.
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    register_testing(m)?;
     Ok(())
+}
+
+/// Register `angr.rustylib.vex_engine._testing`: hooks the engine's own tests
+/// drive (raw IRSB execution, lifter and syscall-table introspection, typed
+/// error construction). Not part of the engine API; kept out of `vex_engine`
+/// so the public module lists only what users call.
+fn register_testing(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+    let t = PyModule::new(py, "_testing")?;
+    t.add_function(pyo3::wrap_pyfunction!(_raise_typed_test_error, &t)?)?;
+    t.add_function(pyo3::wrap_pyfunction!(execute_irsb_for_test, &t)?)?;
+    t.add_function(pyo3::wrap_pyfunction!(native_lift_debug_for_test, &t)?)?;
+    t.add_function(pyo3::wrap_pyfunction!(irsb_debug_for_test, &t)?)?;
+    t.add_function(pyo3::wrap_pyfunction!(native_lift_tables_for_test, &t)?)?;
+    t.add_function(pyo3::wrap_pyfunction!(lift_lock_is_held_for_test, &t)?)?;
+    t.add_function(pyo3::wrap_pyfunction!(native_syscall_rows_for_test, &t)?)?;
+    // `from angr.rustylib.vex_engine._testing import ...` needs the dotted name
+    // in sys.modules, as `lib.rs::import_submodule` does for `vex_engine`.
+    PyModule::import(py, "sys")?
+        .getattr("modules")?
+        .set_item("angr.rustylib.vex_engine._testing", &t)?;
+    m.add_submodule(&t)
 }

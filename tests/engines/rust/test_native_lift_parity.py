@@ -40,7 +40,7 @@ def _vex_engine():
 def _pyvex_debug(data: bytes, addr: int, arch: archinfo.Arch) -> str:
     """The pyvex lift at the native lifter's settings, as a Rust ``{:#?}``."""
     irsb = pyvex.lift(data, addr, arch, opt_level=1, strict_block_end=False, cross_insn_opt=True)
-    return _vex_engine().irsb_debug_for_test(irsb)
+    return _vex_engine()._testing.irsb_debug_for_test(irsb)
 
 
 def _corpus():
@@ -52,12 +52,12 @@ def _corpus():
 def test_corpus_native_matches_pyvex(entry):
     arch = archinfo.arch_from_id(entry["arch"])
     data = bytes.fromhex(entry["bytes"])
-    native = _vex_engine().native_lift_debug_for_test(arch, data, entry["addr"])
+    native = _vex_engine()._testing.native_lift_debug_for_test(arch, data, entry["addr"])
     assert native == _pyvex_debug(data, entry["addr"], arch)
 
 
 def test_native_lift_reads_ret_jumpkind():
-    native = _vex_engine().native_lift_debug_for_test(archinfo.ArchAMD64(), b"\xc3", 0x1000)
+    native = _vex_engine()._testing.native_lift_debug_for_test(archinfo.ArchAMD64(), b"\xc3", 0x1000)
     assert "jumpkind: Ret" in native
 
 
@@ -68,11 +68,11 @@ def test_native_lift_rejects_unknown_guest():
         vex_archinfo = archinfo.ArchAMD64().vex_archinfo
 
     with pytest.raises(ValueError, match="no libVEX guest"):
-        _vex_engine().native_lift_debug_for_test(NoGuest(), b"\xc3", 0x1000)
+        _vex_engine()._testing.native_lift_debug_for_test(NoGuest(), b"\xc3", 0x1000)
 
 
 def test_enum_tags_match_pyvex():
-    tags, _ = _vex_engine().native_lift_tables_for_test()
+    tags, _ = _vex_engine()._testing.native_lift_tables_for_test()
     mismatched = {name: (tag, getattr(pvc, name, None)) for name, tag in tags if getattr(pvc, name, None) != tag}
     assert not mismatched, f"Rust tag != pyvex tag: {mismatched}"
 
@@ -80,7 +80,7 @@ def test_enum_tags_match_pyvex():
 @pytest.mark.parametrize("prefix", ["Ijk_", "Ity_", "Ico_", "ILGop_", "Iend_"])
 def test_enum_families_are_complete(prefix):
     """A tag pyvex grows must be taught to the Rust tables, not decoded as a fallback."""
-    tags, _ = _vex_engine().native_lift_tables_for_test()
+    tags, _ = _vex_engine()._testing.native_lift_tables_for_test()
     known = {name for name, _ in tags}
     missing = sorted(n for n in dir(pvc) if n.startswith(prefix) and n not in known)
     # ILGop_INVALID has no mapping on purpose (`loadg_op`'s `Unknown`).
@@ -88,7 +88,7 @@ def test_enum_families_are_complete(prefix):
 
 
 def test_struct_layouts_match_pyvex():
-    _, layouts = _vex_engine().native_lift_tables_for_test()
+    _, layouts = _vex_engine()._testing.native_lift_tables_for_test()
     mismatched = {}
     for name, value in layouts:
         struct, _, field = name.partition(".")
@@ -104,9 +104,9 @@ def test_native_lift_honors_opt_level(opt_level):
     arch = archinfo.ArchAMD64()
     for entry in _corpus()[:10]:
         data = bytes.fromhex(entry["bytes"])
-        native = _vex_engine().native_lift_debug_for_test(arch, data, entry["addr"], opt_level)
+        native = _vex_engine()._testing.native_lift_debug_for_test(arch, data, entry["addr"], opt_level)
         irsb = pyvex.lift(data, entry["addr"], arch, opt_level=opt_level, strict_block_end=False, cross_insn_opt=True)
-        assert native == _vex_engine().irsb_debug_for_test(irsb)
+        assert native == _vex_engine()._testing.irsb_debug_for_test(irsb)
 
 
 # nop ; rdmsr ; nop ; jmp $ -- libVEX stops at RDMSR with Ijk_NoDecode and
@@ -115,7 +115,7 @@ SPOTTER_CODE = bytes.fromhex("900f3290ebfe")
 
 
 def test_native_lift_stops_at_spotter_instruction():
-    native = _vex_engine().native_lift_debug_for_test(archinfo.ArchAMD64(), SPOTTER_CODE, 0x400000)
+    native = _vex_engine()._testing.native_lift_debug_for_test(archinfo.ArchAMD64(), SPOTTER_CODE, 0x400000)
     assert "jumpkind: NoDecode" in native
 
 
@@ -194,7 +194,7 @@ def test_lift_callback_holds_lift_lock(monkeypatch):
     original = RustExplorationManager._cb_lift_block
 
     def recording(self, *args, **kwargs):
-        held.append(_vex_engine().lift_lock_is_held_for_test())
+        held.append(_vex_engine()._testing.lift_lock_is_held_for_test())
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(RustExplorationManager, "_cb_lift_block", recording)
@@ -202,4 +202,4 @@ def test_lift_callback_holds_lift_lock(monkeypatch):
     project = angr.load_shellcode(code, arch="amd64", load_address=0x400000)
     _explore(project, False, find=0x400003)
     assert held and all(held)
-    assert not _vex_engine().lift_lock_is_held_for_test()
+    assert not _vex_engine()._testing.lift_lock_is_held_for_test()

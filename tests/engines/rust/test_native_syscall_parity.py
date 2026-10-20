@@ -96,7 +96,7 @@ def test_every_registration_names_a_syscall_angr_numbers():
     from angr.rustylib import vex_engine
 
     unknown = []
-    for name, abis in vex_engine.native_syscall_rows_for_test():
+    for name, abis in vex_engine._testing.native_syscall_rows_for_test():
         if not any(name in mappings[abi].values() for abi in abis):
             unknown.append((name, abis))
     assert not unknown, f"registrations angr numbers nowhere in their scope: {unknown}"
