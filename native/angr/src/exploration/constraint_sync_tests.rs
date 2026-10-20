@@ -19,7 +19,6 @@ use crate::state::RustSimState;
 
 /// Build a `PyList` out of already-bound Python objects (the shape
 /// `sync_constraints_from_python` takes).
-#[cfg(feature = "vex-engine-z3")]
 fn constraint_list<'py>(
     py: Python<'py>,
     items: &[Bound<'py, PyAny>],
@@ -36,7 +35,6 @@ fn constraint_list<'py>(
 /// understands must land on the state's own solver, not just be counted.
 /// Proven by solving for the symbol afterwards rather than by the return
 /// value alone — a no-op import would also return `Ok(true)`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn sync_constraints_typed_convert_binds_constraint() {
     Python::initialize();
@@ -72,7 +70,6 @@ fn sync_constraints_typed_convert_binds_constraint() {
 
 /// Contradictory constraints make the state UNSAT, and the method reports
 /// that as `Ok(false)` so `resume.rs` prunes instead of exploring a dead state.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn sync_constraints_unsat_returns_false_for_pruning() {
     Python::initialize();
@@ -103,7 +100,6 @@ fn sync_constraints_unsat_returns_false_for_pruning() {
 /// tier takes it. The import must be lossless, which the second sync proves:
 /// if the first constraint had
 /// merely been counted and dropped, `x == 2^201` would still be SAT.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn sync_constraints_wide_literal_imported_by_the_typed_tier() {
     use clarirs_core::prelude::*;
@@ -153,7 +149,6 @@ fn sync_constraints_wide_literal_imported_by_the_typed_tier() {
 /// Tier 3 (failure): an item neither tier can convert is counted and logged,
 /// never raised — one unconvertible entry must not abort the import of its
 /// well-formed siblings, and a still-satisfiable state stays alive.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
     Python::initialize();
@@ -198,14 +193,12 @@ fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
 /// constraints failed to convert AND the ones that landed are contradictory. It
 /// must be pruned.
 ///
-/// Note for future readers: under `vex-engine-z3` this outcome is decided by
-/// the unconditional post-sync SAT check, which dominates the partial-sync
-/// re-check (that one fires only when `failed_count > 0 && success_count > 0`,
-/// a strict subset of what the unconditional check already rejected). The
-/// re-check is retained as defence-in-depth for a build where the
-/// unconditional check is compiled out; this test pins the observable
-/// contract — partial sync + UNSAT => `Ok(false)` — not which gate fires.
-#[cfg(feature = "vex-engine-z3")]
+/// Note for future readers: this outcome is decided by the unconditional
+/// post-sync SAT check, which dominates the partial-sync re-check (that one
+/// fires only when `failed_count > 0 && success_count > 0`, a strict subset of
+/// what the unconditional check already rejected). The re-check is retained
+/// as defence-in-depth; this test pins the observable contract — partial
+/// sync + UNSAT => `Ok(false)` — not which gate fires.
 #[test]
 fn sync_constraints_partial_failure_unsat_is_pruned() {
     Python::initialize();

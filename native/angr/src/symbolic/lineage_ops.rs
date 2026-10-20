@@ -31,11 +31,8 @@
 use super::SymContext;
 use super::sharing::ConstraintSharingWalk;
 
-#[cfg(feature = "vex-engine-z3")]
 use parking_lot::Mutex;
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::Arc;
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::Ordering;
 
 impl SymContext {
@@ -66,7 +63,6 @@ impl SymContext {
     /// already had (i.e. `None`). Under an opt-in, `fork` mints a
     /// [`SharedLineageSolver`](super::lineage::SharedLineageSolver) and
     /// every descendant returns a clone of that Arc.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn lineage_arc(&self) -> Option<Arc<Mutex<super::lineage::SharedLineageSolver>>> {
         self.lineage.lock().as_ref().map(Arc::clone)
     }
@@ -76,7 +72,6 @@ impl SymContext {
     /// Always 0 while `lineage` is `None` (the default-off case) — frames
     /// are minted only when `assume_*` routes through the lineage solver.
     /// Exposed as a telemetry surface for both modes.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn scope_path_len(&self) -> usize {
         self.scope_path.lock().len()
     }
@@ -87,7 +82,6 @@ impl SymContext {
     /// Always 0 while `lineage` is `None` (the default-off case): that
     /// branch uses the per-context Z3 solver's native `push()/pop()`
     /// instead. Exposed for telemetry and test assertions.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn scope_savepoint_depth(&self) -> usize {
         self.scope_savepoints.lock().len()
     }
@@ -106,7 +100,6 @@ impl SymContext {
     /// gate in [`fork`](SymContext::fork), which refuses to mint a fresh
     /// `SharedLineageSolver` frame when the parent's
     /// `bare_z3_push_depth` is non-zero.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn bare_z3_push_depth(&self) -> usize {
         self.bare_z3_push_depth.load(Ordering::Relaxed)
     }
@@ -114,7 +107,7 @@ impl SymContext {
     /// Current length of the local `z3_assertions` log (angr-ph300.41).
     /// Test-only white-box accessor for asserting that a bare `pop()`
     /// truncates constraints added inside the popped scope.
-    #[cfg(all(test, feature = "vex-engine-z3"))]
+    #[cfg(test)]
     pub(crate) fn local_z3_assertions_len(&self) -> usize {
         self.local_constraints.lock().z3_assertions.len()
     }
@@ -127,7 +120,6 @@ impl SymContext {
     /// every fork (subject to the `bare_z3_push_depth == 0` correctness
     /// gate from step 1a and the lineage-dismantle detector). Inherited
     /// from parent to child by `fork`.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn use_shared_lineage_solver(&self) -> bool {
         self.use_shared_lineage_solver.load(Ordering::Relaxed)
     }
@@ -155,7 +147,6 @@ impl SymContext {
     /// The replacement is runtime thrash detection in
     /// [`super::lineage::sample_for_thrash`], which is strategy-agnostic
     /// and ships in `tick_and_sample_for_thrash` from `run_loop`.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn set_use_shared_lineage_solver(&self, v: bool) {
         self.use_shared_lineage_solver.store(v, Ordering::Relaxed);
     }
@@ -183,7 +174,6 @@ impl SymContext {
     /// the public wrapper (`push()`) owns that.
     ///
     /// Wired in by slice 4b.2: [`push()`](Self::push) is the public caller.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) fn scope_savepoint_push(&self) {
         // angr-ph300.41/.42: record the local-constraint log lengths so the
         // matching bare `pop()` can truncate everything added inside this
@@ -241,7 +231,6 @@ impl SymContext {
     ///
     /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
     /// the public wrapper (`pop()`) owns that.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) fn scope_savepoint_pop(&self) {
         // angr-ph300.41/.42: discard any local constraints logged inside the
         // scope this pop closes, so they neither dedup-suppress a re-add nor

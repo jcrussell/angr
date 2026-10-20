@@ -36,7 +36,6 @@ fn concretize_cached_read_short_circuits_concrete_addr() {
     }
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn concretize_cached_read_applies_any_fallback_on_cached_toolarge() {
     // angr-1c88c gap 6/7: cache-HIT TooLarge -> read_fallback_any (eval).
@@ -91,7 +90,6 @@ fn concretize_cached_read_keeps_toolarge_when_fallback_disabled() {
     }
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn concretize_cached_write_applies_max_fallback_on_cached_toolarge() {
     // angr-1c88c gap 5/7: cache-HIT TooLarge -> write_fallback_max (range.max).
@@ -225,7 +223,6 @@ fn bv_cache_key_separates_read_and_write_namespaces() {
 /// verbatim, fanning the store out across every cached address instead of
 /// collapsing to one Max-pinned cell. Whether that happened depended purely on
 /// whether a load / mid-block `Ist_Exit` touched the expression first.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn write_does_not_reuse_a_read_range_multiple() {
     let ctx = SymContext::new_mock();

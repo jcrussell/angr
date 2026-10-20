@@ -55,15 +55,11 @@ panic = "abort"
 # build would catch immediately in any test that exercises the path), and
 # `debug_assert!` guards actually run.
 #
-# `debug-assertions` (angr-03vl4.84): the codebase's `debug_assert!`s were
-# armed by NO cargo-test lane that also had the default features on. Every
-# default-feature lane is `--release` (debug-assertions off by inheritance),
-# and the one debug-assertions-on lane -- nightly `rust_feature_flags` --
-# is `--no-default-features`, which `#[cfg]`s the whole `vex-engine-z3`
-# block out. So the deliberately debug-only guards over the Z3 solver
+# `debug-assertions` (angr-03vl4.84): every other cargo-test lane is
+# `--release` (debug-assertions off by inheritance), so this is the lane that
+# arms the deliberately debug-only guards over the Z3 solver
 # (`SymContext::to_snapshot`'s residual/assumed accounting bound, written to
-# catch exactly the angr-03vl4.74 class of bug) had never been executed
-# anywhere. This is the lane that arms them; it stays off `release` for the
+# catch exactly the angr-03vl4.74 class of bug). It stays off `release` for the
 # same reason `overflow-checks` does -- `to_snapshot`'s guard alone costs
 # two mutex locks plus a Z3 `get_assertions` query per snapshot, squarely on
 # the fork path (angr-9ke6b.220).

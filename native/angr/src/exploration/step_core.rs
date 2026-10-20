@@ -118,8 +118,7 @@ impl RustExplorationManager {
     /// configuration. Clones/`Arc`-shares so the result borrows nothing from
     /// `self`. Called once per [`step_state_inner`] on the single-threaded
     /// path; the parallel path instead builds one per wave / session in
-    /// `build_parallel_process` (`vex-engine-z3` only, hence no intra-doc
-    /// link).
+    /// `build_parallel_process`.
     ///
     /// [`step_state_inner`]: Self::step_state_inner
     pub(crate) fn step_context(&self) -> StepContext {

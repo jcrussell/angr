@@ -142,7 +142,6 @@ pub(crate) fn execute_irsb_for_test(
 ///
 /// AVOID setting `parallel.enable=true` — see
 /// `avoid-z3-parallel-enable` memory.
-#[cfg(feature = "vex-engine-z3")]
 #[pyfunction]
 fn set_z3_global_param(key: &str, value: &str) -> PyResult<()> {
     z3::set_global_param(key, value);
@@ -160,7 +159,6 @@ fn set_z3_global_param(key: &str, value: &str) -> PyResult<()> {
 /// value into a thread-local buffer that the next call overwrites, so we
 /// copy it out immediately. Used by the round-trip test that pins down
 /// `deterministic=True` seed wiring (angr-a116s.11).
-#[cfg(feature = "vex-engine-z3")]
 #[pyfunction]
 fn get_z3_global_param(key: &str) -> PyResult<Option<String>> {
     use std::ffi::{CStr, CString};
@@ -470,9 +468,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Exploration manager
     crate::exploration::register_exploration(m)?;
     // Z3 global parameters
-    #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(set_z3_global_param, m)?)?;
-    #[cfg(feature = "vex-engine-z3")]
     m.add_function(pyo3::wrap_pyfunction!(get_z3_global_param, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_rust_log_level, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(arch_supported, m)?)?;

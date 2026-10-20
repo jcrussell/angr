@@ -7,7 +7,6 @@ use crate::vex::ir::IRType;
 
 /// Symbolic FCmpLT: bracket x with `1.0 < x < 2.0` via two symbolic
 /// FCmpLT comparisons. Solver should accept and produce x in (1.0, 2.0).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_cmp_lt_symbolic_constraint() {
     let ctx = SymContext::new_mock();
@@ -73,7 +72,6 @@ fn test_float_cmp_le_f64_concrete() {
 /// Symbolic scalar FCmpEQ: `x == 2.5` must pin x to exactly 2.5, proving
 /// `float_cmp_scalar` maps Eq → `FloatOpKind::CmpEq` rather than a sibling
 /// predicate.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_cmp_eq_symbolic_constraint() {
     let ctx = SymContext::new_mock();
@@ -93,7 +91,6 @@ fn test_float_cmp_eq_symbolic_constraint() {
 /// Symbolic scalar FCmpLE: `x <= 1.0 && 1.0 <= x` is SAT only because the
 /// predicate is non-strict — the same pair under FCmpLT would be UNSAT. Pins x
 /// to 1.0, so a routing regression to CmpLt/CmpEq is caught either way.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_cmp_le_symbolic_constraint() {
     let ctx = SymContext::new_mock();
@@ -231,7 +228,6 @@ fn test_fcmp_scalar_lane_un_f64_concrete_ordered() {
     assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF_FFFF_FFFF, 0);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     // Symbolic: constrain low32(result)==0xFFFFFFFF given right=2.0 and
@@ -305,7 +301,6 @@ fn test_fcom_cc_f64_concrete_unordered() {
     assert_eq!(res.as_u128().unwrap(), 0x45);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fcom_cc_symbolic_lt() {
     // Symbolic: constrain FComCC(x, 5.0) == 0x01 → x must be < 5.0 (and not NaN).
@@ -530,7 +525,6 @@ fn test_fcmp_packed_gt_32fx2_concrete_i64() {
     assert_eq!(v as u64, 0xFFFF_FFFFu64);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fcmp_packed_lt_32fx4_symbolic() {
     // Symbolic vector `l` against concrete `r`. Constrain low lane mask to all-1s

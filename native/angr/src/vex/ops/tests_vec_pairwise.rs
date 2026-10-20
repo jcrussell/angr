@@ -103,7 +103,6 @@ fn test_vfpwadd_32fx2_concrete() {
 
 /// Symbolic Iop_PwAdd32Fx2: free `left` constrained to [1.0, 2.0], concrete
 /// `right` = [5.0, 6.0]. Expect [1.0+2.0, 5.0+6.0] = [3.0, 11.0].
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfpwadd_32fx2_symbolic() {
     let ctx = SymContext::new_mock();
@@ -190,7 +189,6 @@ fn test_vfpwmax_32fx4_concrete() {
 
 /// Symbolic Iop_PwMin32Fx2: free `left` pinned to [1.0, 2.0], concrete
 /// `right` = [5.0, -6.0]. Expect [min(1.0,2.0), min(5.0,-6.0)] = [1.0, -6.0].
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfpwmin_32fx2_symbolic() {
     let ctx = SymContext::new_mock();
@@ -319,7 +317,6 @@ fn test_vpwaddl_64ux2_concrete() {
 
 /// Symbolic universality (spec-replay): Iop_PwAddL64Ux2 must equal the
 /// zero-extended sum of its two lanes in 128 bits.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vpwaddl_64ux2_symbolic_universal() {
     let ctx = SymContext::new_mock();
@@ -420,7 +417,6 @@ fn test_vpwmax_8ux8_concrete() {
 /// bits as a hand-built reference for any 64-bit input pair. Claripy has no
 /// `_op_generic_PwAdd`, so we reference-build inline per bd memory
 /// `z3-universality-parity-test-template`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vpwadd_16x4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
@@ -461,7 +457,6 @@ fn test_vpwadd_16x4_matches_spec_replay() {
 
 /// Symbolic universality (spec-replay): Iop_PwAddL16Sx4 widens each lane
 /// before adding. Reference uses explicit sign-extend.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vpwaddl_16sx4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
@@ -499,7 +494,6 @@ fn test_vpwaddl_16sx4_matches_spec_replay() {
 
 /// Symbolic universality (spec-replay): Iop_PwMin16Sx4 — signed pairwise
 /// min via SLE/ITE for each pair.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vpwmin_16sx4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
@@ -889,7 +883,6 @@ fn test_vavg_8sx8_concrete() {
 /// reference `((zext(a)+zext(b)+1) >> 1)[15:0]` per lane for all 64-bit
 /// inputs. Claripy has no `_op_generic_Avg`; the test uses the
 /// `z3-universality-parity-test-template` pattern.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vavg_16ux4_symbolic_universal_unsigned() {
     let ctx = SymContext::new_mock();
@@ -932,7 +925,6 @@ fn test_vavg_16ux4_symbolic_universal_unsigned() {
 
 /// Symbolic universality (spec-replay): Iop_Avg8Sx8 signed rounding-avg.
 /// Reference sign-extends each lane to 9 bits before summing.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vavg_8sx8_symbolic_universal_signed() {
     let ctx = SymContext::new_mock();

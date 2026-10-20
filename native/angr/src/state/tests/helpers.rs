@@ -28,7 +28,6 @@ pub(super) fn sym_file_bytes(n: usize, prefix: &str) -> Vec<RustBV> {
 /// constraints, history, call stack, file system, hooks, environment,
 /// flags). The Z3 ASTs are minted inside whichever Z3 context the test
 /// is currently running under.
-#[cfg(feature = "vex-engine-z3")]
 pub(super) fn build_populated_state() -> RustSimState {
     let mut s = RustSimState::new("amd64").unwrap();
     s.set_pc(0x4012a0);

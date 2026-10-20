@@ -154,7 +154,6 @@ fn test_atoi_single_symbolic_digit_returns_symbolic() {
     assert!(result.as_u64().is_none(), "expected symbolic result");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_atoi_single_symbolic_digit_constrained() {
     // Constrain the single byte to '7' — atoi should solve to 7.
@@ -177,7 +176,6 @@ fn test_atoi_single_symbolic_digit_constrained() {
     assert_eq!(ctx.max(&result, false), Some(7));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_atoi_three_symbolic_digits_constrained() {
     // Three symbolic bytes constrained to "123" -> 123.
@@ -208,7 +206,6 @@ fn test_atoi_three_symbolic_digits_constrained() {
     assert_eq!(ctx.max(&result, false), Some(123));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_atoi_symbolic_digit_range_bounds() {
     // One symbolic byte constrained to ['0'..'9']; atoi should yield [0, 9].
@@ -234,7 +231,6 @@ fn test_atoi_symbolic_digit_range_bounds() {
     assert_eq!(ctx.max(&result, false), Some(9));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_atoi_symbolic_terminator_after_digit() {
     // Buffer "5?\0" with the second byte symbolic and unconstrained.
@@ -260,7 +256,6 @@ fn test_atoi_symbolic_terminator_after_digit() {
     assert_eq!(ctx.max(&result, false), Some(5));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_atoi_negative_symbolic_digits() {
     // Concrete '-' prefix + two symbolic digits constrained to "42" -> -42.
@@ -350,7 +345,6 @@ fn test_strtoll_negative_hex() {
     assert_eq!(result.as_u64(), Some((-255i64) as u64));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strtoll_symbolic_digits_constrained() {
     // Symbolic digits in a buffer constrained to "456" → 456 via strtoll.
@@ -388,7 +382,6 @@ fn test_strtoll_symbolic_digits_constrained() {
     assert_eq!(ctx.max(&result, false), Some(456));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strtol_base_16_symbolic_letter_digit() {
     // strtol with base=16, symbolic byte constrained to 'a' -> 10.

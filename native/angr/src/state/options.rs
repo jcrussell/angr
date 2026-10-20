@@ -69,9 +69,8 @@ macro_rules! state_flag_export {
 /// (whose accessors share the flag's names).
 ///
 /// `use_shared_lineage_solver` is deliberately *not* in this list: it takes
-/// `&self` rather than `&mut self` (the bit lives behind `self.solver`) and is
-/// `#[cfg(feature = "vex-engine-z3")]`-gated, so it keeps its hand-written
-/// pair — and its hand-written `#[pyo3]` wrappers in `state/pymethods.rs`.
+/// `&self` rather than `&mut self` (the bit lives behind `self.solver`), so
+/// it keeps its hand-written pair — and its hand-written `#[pyo3]` wrappers in `state/pymethods.rs`.
 macro_rules! state_flags {
     ($(
         $storage:ident, $export:ident {
@@ -224,14 +223,12 @@ impl RustSimState {
     ///
     /// Inert in this slice — the materialization gate (step 1c) is the
     /// first consumer.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn set_use_shared_lineage_solver(&self, enabled: bool) {
         self.solver.borrow().set_use_shared_lineage_solver(enabled);
     }
 
     /// Whether fork-time `SharedLineageSolver` materialization is opted
     /// in on this state's solver context (angr-3ms1 step 1b).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn use_shared_lineage_solver(&self) -> bool {
         self.solver.borrow().use_shared_lineage_solver()
     }

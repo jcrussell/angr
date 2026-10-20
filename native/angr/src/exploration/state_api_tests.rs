@@ -11,7 +11,6 @@ use crate::symbolic::RustBV;
 /// symbolic-address store resolving to `Multiple` is routed through
 /// `install_multi_for_candidates_safe`, which leaves the value in
 /// `multi_objects` rather than in the page's `symbolic_bitmap`.
-#[cfg(feature = "vex-engine-z3")]
 fn state_with_multi_cell_store(value: u32) -> RustSimState {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state.map_memory(0x1000, 0x4000, Permission::RWX);
@@ -51,7 +50,6 @@ fn state_with_multi_cell_store(value: u32) -> RustSimState {
 }
 
 /// `symbolic_offsets` of the snapshot page starting at `page_addr`.
-#[cfg(feature = "vex-engine-z3")]
 fn symbolic_offsets_at(snap: &crate::state::ExplorationStateSnapshot, page_addr: u64) -> Vec<u16> {
     let index = snap
         .page_addresses()
@@ -65,7 +63,6 @@ fn symbolic_offsets_at(snap: &crate::state::ExplorationStateSnapshot, page_addr:
 /// `explore(find=...)` result API — must flush Multi cells, otherwise the
 /// stored bytes vanish from the snapshot because `export_full` reads only
 /// `symbolic_bitmap` via `MemoryPage::symbolic_offsets`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_found_states_flushes_multi_cells() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -98,7 +95,6 @@ fn export_found_states_flushes_multi_cells() {
 /// `symbolic_objects_iter()` directly without flushing first, so a
 /// Multi-covered byte was silently absent from the exported list —
 /// the same shape as the two Multi-flush regressions above.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn state_symbolic_objects_flushes_multi_cells() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -116,7 +112,6 @@ fn state_symbolic_objects_flushes_multi_cells() {
 }
 
 /// Same contract for the single-state path behind `mgr.get_state_by_id()`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_state_flushes_multi_cells() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -138,7 +133,6 @@ fn export_state_flushes_multi_cells() {
 /// outcomes (concrete / symbolic / unmodeled) plus the batch form, so the
 /// asymmetry documented on `_get_state_register` stays a decision rather than
 /// drifting into an accident (angr-sqfj8.56).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -190,7 +184,6 @@ fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
 /// The fold above is Python-facing only: inside Rust the two `None` causes are
 /// distinct `RegisterU128` variants, so a future caller can tell an unmodeled
 /// name from a symbolic value without re-deriving it (angr-91vj9.9).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn read_register_u128_names_both_causes_of_none() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
@@ -223,7 +216,6 @@ fn read_register_u128_names_both_causes_of_none() {
 /// offset 0x234 — inside a mapped page, so `_state_symbolic_info` has all
 /// three of its inputs (`symbolic_objects`, the page table, the page's
 /// `symbolic_bitmap`) populated with distinguishable values.
-#[cfg(feature = "vex-engine-z3")]
 fn state_with_symbolic_object_at_0x1234() -> RustSimState {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state.map_memory(0x1000, 0x1000, Permission::RW);
@@ -243,7 +235,6 @@ fn state_with_symbolic_object_at_0x1234() -> RustSimState {
 /// or `is_symbolic(offset)` change must not silently turn it into a liar
 /// (angr-03vl4.26). Pins the symbolic address, a concrete byte in the *same*
 /// mapped page, and an unmapped page.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn state_symbolic_info_reports_symbolic_and_concrete_addresses() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -275,7 +266,6 @@ fn state_symbolic_info_reports_symbolic_and_concrete_addresses() {
 /// `0x1235` shares 0x1234's page while landing on a different — here still
 /// symbolic — offset. Dropping either half would make one of these agree with
 /// the 0x1234 answer.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn state_symbolic_info_uses_both_page_and_offset() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -310,7 +300,6 @@ fn state_symbolic_info_uses_both_page_and_offset() {
 /// the easy `10 < x < 20` set under `rlimit=1`, the same rig
 /// `state/tests/solver_gate.rs::test_survives_sat_prune_keeps_an_undecided_state`
 /// uses (an rlimit beats a wall-clock timeout because it is deterministic).
-#[cfg(feature = "vex-engine-z3")]
 fn undecided_state_in(mgr: &mut RustExplorationManager, name: &str) -> u64 {
     let state = RustSimState::new("amd64").expect("amd64 state");
     {
@@ -327,7 +316,6 @@ fn undecided_state_in(mgr: &mut RustExplorationManager, name: &str) -> u64 {
 
 /// Lift the pinned rlimit so the same state decides instantly — proves the
 /// preceding `None` came from the budget, not from a poisoned solver.
-#[cfg(feature = "vex-engine-z3")]
 fn unpin_rlimit(mgr: &RustExplorationManager, state_id: u64) {
     mgr.find_state(state_id)
         .expect("state found")
@@ -341,7 +329,6 @@ fn unpin_rlimit(mgr: &RustExplorationManager, state_id: u64) {
 /// keeps it distinguishable as `None`. Without the split, a Python caller that
 /// drops the state on `False` deletes a state Z3 never proved contradictory
 /// (`invariant-z3-unknown-not-unsat`).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn add_constraints_to_state_separates_undecided_from_unsat() {
     Python::initialize();
@@ -378,7 +365,6 @@ fn add_constraints_to_state_separates_undecided_from_unsat() {
 
 /// The checked form is not a blanket "keep": a *proven* contradiction still
 /// comes back as `Some(false)`, matching the lenient form exactly.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
     Python::initialize();
@@ -411,7 +397,6 @@ fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
 /// A BV-sorted pointer is rejected as the wrong sort kind rather than asserted
 /// as a Bool, which would corrupt the solver (angr-33t9). Driven from Rust
 /// because Python has no way left to obtain a non-Bool Z3 pointer.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_z3_constraint_ptrs_rejects_bv_sorted_pointer() {
     use z3::ast::Ast;
@@ -436,7 +421,6 @@ fn import_z3_constraint_ptrs_rejects_bv_sorted_pointer() {
 
 /// Same split on the raw-Z3-pointer import path, which shares the verdict
 /// contract with `add_constraints_to_state`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_z3_constraint_ptrs_separates_undecided_from_unsat() {
     Python::initialize();
@@ -484,7 +468,6 @@ fn import_z3_constraint_ptrs_separates_undecided_from_unsat() {
 
 /// Push `state` into `found` and hand back its id — the two-line preamble
 /// every state-keyed accessor test below shares.
-#[cfg(feature = "vex-engine-z3")]
 fn stash_found(mgr: &mut RustExplorationManager, state: RustSimState) -> u64 {
     let state_id = state.state_id();
     mgr.sm.push(STASH_FOUND, state);
@@ -496,7 +479,6 @@ fn stash_found(mgr: &mut RustExplorationManager, state: RustSimState) -> u64 {
 /// (unmapped / no SAT witness — a *memory* answer), and `Err` for both a
 /// missing `state_id` and an over-cap `size` (caller bugs, which must not be
 /// laundered through the `Ok(None)` channel — angr-0jh0j.11).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn get_state_memory_separates_unreadable_from_caller_error() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -539,7 +521,6 @@ fn get_state_memory_separates_unreadable_from_caller_error() {
 /// outside every mapped page and lazy region, and the callback-memory proxy
 /// gets to *choose* such an address (angr-ijwp0). Pin both halves — plain
 /// store refuses, automap widens the lazy region and the bytes read back.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_state_memory_concrete_automap_accepts_what_the_plain_store_refuses() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -568,7 +549,6 @@ fn set_state_memory_concrete_automap_accepts_what_the_plain_store_refuses() {
 /// Pin that `_get_state_stdout` is fd 1 specifically, that `_has_*` agrees
 /// with `_get_*` per fd, and that a missing state answers `false` rather than
 /// raising (the `find_state`-based getters deliberately have no `PyResult`).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn state_fd_output_accessors_are_per_fd() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -603,7 +583,6 @@ fn state_fd_output_accessors_are_per_fd() {
 /// `_get_state_open_fds` / `_get_state_fd_content`, the re-register refusal,
 /// and `_has_state_extra_fds`, whose whole job is to stay `false` for the
 /// three standard descriptors so the common case skips the fd export.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn register_state_fd_round_trips_and_refuses_a_duplicate() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -651,7 +630,6 @@ fn register_state_fd_round_trips_and_refuses_a_duplicate() {
 /// `_get_state_open_fds`, whose only provenance signal is the name — and a
 /// guest `open("/dev/stdin")` + `dup2(fd, 0)` leaves fd 0 named exactly like
 /// the placeholder, which is the shape asserted here.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn state_fd0_is_dup2d_tracks_a_dup2_from_a_reopened_dev_stdin() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -689,7 +667,6 @@ fn state_fd0_is_dup2d_tracks_a_dup2_from_a_reopened_dev_stdin() {
 /// swapped field would type-check silently. Pin the field order of
 /// `CallStackEntry` and `HistoryEntry` as exported, plus the depth accessor
 /// and the allocated/freed split `_get_state_heap_metadata` returns.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn call_stack_history_and_heap_getters_preserve_field_order() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -737,7 +714,6 @@ fn call_stack_history_and_heap_getters_preserve_field_order() {
 /// `scanf("%d")` records, and eval then answered an arbitrary model value
 /// (angr-ph300.18). Constrain a 32-bit stdin symbol to a value no 8-bit
 /// const could produce, so a width regression cannot pass by luck.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -775,7 +751,6 @@ fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
 
 /// Export the symbolic objects of a fresh found-stash state built by `build`,
 /// returning the exported base addresses (angr-ccp2w helpers).
-#[cfg(feature = "vex-engine-z3")]
 fn exported_addrs(build: impl FnOnce(&mut RustSimState)) -> Vec<u64> {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let mut state = RustSimState::new("amd64").expect("amd64 state");
@@ -790,7 +765,6 @@ fn exported_addrs(build: impl FnOnce(&mut RustSimState)) -> Vec<u64> {
         .collect()
 }
 
-#[cfg(feature = "vex-engine-z3")]
 fn sym(state: &RustSimState, name: &str, bits: u32) -> RustBV {
     let ctx = state.solver().borrow();
     RustBV::symbolic(&ctx, name, bits)
@@ -798,7 +772,6 @@ fn sym(state: &RustSimState, name: &str, bits: u32) -> RustBV {
 
 /// A program-computed value: an Expression (`sym + 1`), which is what guest
 /// stores produce and the only kind `_state_symbolic_objects` exports.
-#[cfg(feature = "vex-engine-z3")]
 fn expr(state: &RustSimState, name: &str, bits: u32) -> RustBV {
     let ctx = state.solver().borrow();
     RustBV::symbolic(&ctx, name, bits).add(&RustBV::concrete(1, bits), &ctx)
@@ -806,7 +779,6 @@ fn expr(state: &RustSimState, name: &str, bits: u32) -> RustBV {
 
 /// angr-ccp2w: an imported value nobody overwrote stays out of the export —
 /// Python already holds it with its claripy identity (the flareon5 rule).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_skips_untouched_import() {
     let addrs = exported_addrs(|state| {
@@ -818,7 +790,6 @@ fn export_skips_untouched_import() {
 
 /// angr-ccp2w: once the program overwrites an imported value, the new value
 /// must be exported; skipping the address left Python with the stale import.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_includes_overwritten_import_same_base() {
     let addrs = exported_addrs(|state| {
@@ -831,7 +802,6 @@ fn export_includes_overwritten_import_same_base() {
 }
 
 /// Same, over per-byte imported lanes.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_includes_value_stored_over_imported_lanes() {
     let addrs = exported_addrs(|state| {
@@ -850,7 +820,6 @@ fn export_includes_value_stored_over_imported_lanes() {
 
 /// A store into the middle of an imported object: the overwritten bytes are
 /// exported, the untouched head lane keeps the flareon5 suppression.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_partial_overwrite_of_import() {
     let addrs = exported_addrs(|state| {
@@ -865,7 +834,6 @@ fn export_partial_overwrite_of_import() {
 
 /// A symbolic value the guest computed and the interpreter flushed into Rust
 /// memory is not a Python import, so it must be exported.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_includes_installed_guest_value() {
     let addrs = exported_addrs(|state| {
@@ -876,7 +844,6 @@ fn export_includes_installed_guest_value() {
 }
 
 /// Export entries `(addr, width_bits)` for a state built by `build`.
-#[cfg(feature = "vex-engine-z3")]
 fn exported_objects(build: impl FnOnce(&mut RustSimState)) -> Vec<(u64, u32)> {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let mut state = RustSimState::new("amd64").expect("amd64 state");
@@ -894,7 +861,6 @@ fn exported_objects(build: impl FnOnce(&mut RustSimState)) -> Vec<(u64, u32)> {
 /// angr-ccp2w: a concrete store over program-written per-byte lanes must
 /// retire them; left behind they are exported over the new concrete bytes
 /// (Python stores the symbolic objects after the concrete page bytes).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn concrete_store_over_lanes_retires_them() {
     let objs = exported_objects(|state| {
@@ -915,7 +881,6 @@ fn concrete_store_over_lanes_retires_them() {
 /// angr-ccp2w: a concrete store inside a wider program-written object must
 /// split it, so the export no longer carries the old value over the
 /// overwritten bytes; the untouched bytes keep their symbolic lanes.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn concrete_store_inside_wider_object_splits_it() {
     let objs = exported_objects(|state| {
@@ -935,7 +900,6 @@ fn concrete_store_inside_wider_object_splits_it() {
 /// angr-ccp2w: installing (or importing) a value over per-byte lanes must not
 /// leave the interior lanes shadowing it on load (the angr-c8mda shape on the
 /// import path).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn install_over_lanes_replaces_all_bytes() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
@@ -957,7 +921,6 @@ fn install_over_lanes_replaces_all_bytes() {
 /// angr-ccp2w: the program storing a bare symbol (a register's unconstrained
 /// value) over an import must export it too; only an *unmodified* import is
 /// Python's own copy.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_includes_bare_symbol_stored_over_import() {
     let addrs = exported_addrs(|state| {

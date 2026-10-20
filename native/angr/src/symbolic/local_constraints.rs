@@ -10,7 +10,6 @@
 //! clippy::expect_used)]`, same as the rest of the `SymContext` slice files.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-#[cfg(feature = "vex-engine-z3")]
 use std::collections::HashSet;
 
 use super::RustBV;
@@ -40,7 +39,6 @@ pub(super) struct LocalConstraints {
     /// (slice 9, angr-a2br.2.7).
     pub(super) assumed: Vec<(RustBV, bool)>,
     /// Local Z3 Bool assertions added after fork — only these are cloned on fork.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) z3_assertions: Vec<z3::ast::Bool>,
     /// Local residual (no-[`RustBV`]) Z3 Bool assertions added after fork
     /// (angr-t3l5o Phase 1). A strict subset of `z3_assertions`: the entries
@@ -50,21 +48,18 @@ pub(super) struct LocalConstraints {
     /// and `merge` carry it without new logic. Dumped to `residual_smtlib2`
     /// in `to_snapshot`; the assume class is reconstructed from
     /// `assumed_constraints` IR instead.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) non_bv_assertions: Vec<z3::ast::Bool>,
     /// HashSet of Z3_ast ptrs for O(1) dedup in `add_constraint_raw`.
     /// Holds ptrs for every assertion known to be currently asserted on the
     /// solver (i.e. everything in `z3_assertions_shared` + `z3_assertions`).
     /// Lazily seeded — `dedup_set_seeded == false` means the set is stale
     /// and must be rebuilt from the shared+local vecs before consultation.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) dedup_set: HashSet<usize>,
     /// True once `dedup_set` has been populated from shared+local for this
     /// context. Reset to false by `fork()`, `merge()` (via `new()`), and a
     /// bare `pop()` that closes a scope which added assertions
     /// (`scope_savepoint_pop`, angr-ph300.41) — all of which truncate
     /// `z3_assertions`.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) dedup_set_seeded: bool,
 }
 
@@ -72,13 +67,9 @@ impl LocalConstraints {
     pub(super) fn new() -> Self {
         LocalConstraints {
             assumed: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
             z3_assertions: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
             non_bv_assertions: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
             dedup_set: HashSet::new(),
-            #[cfg(feature = "vex-engine-z3")]
             dedup_set_seeded: false,
         }
     }
@@ -93,7 +84,6 @@ impl LocalConstraints {
     /// re-assert already-asserted constraints. A bulk caller wanting dedup
     /// should loop over [`SymContext::seed_and_check_z3_dedup`], which
     /// pushes on a miss, exactly as `add_constraints_raw_batch` now does.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) fn push_assertion(&mut self, b: z3::ast::Bool) {
         if self.dedup_set_seeded {
             use z3::ast::Ast;

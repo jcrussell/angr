@@ -38,4 +38,4 @@ crate::declare_proc! {
     }
 }
 
-test_submod!(z3 "time_tests.rs" => tests);
+test_submod!("time_tests.rs" => tests);

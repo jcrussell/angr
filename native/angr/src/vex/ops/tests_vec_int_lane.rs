@@ -83,7 +83,6 @@ fn test_vec_cmp_gt_signed_concrete_i32x4() {
 /// packing, forcing the symbolic per-lane path (eq_into then
 /// sign_extend_into(32)). Evaluating the model pins that a true lane becomes a
 /// full 0xFFFFFFFF (not just bit 0) and a false lane is all-zeros.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_cmp_eq_symbolic_i32x4() {
     let ctx = SymContext::new_mock();
@@ -119,7 +118,6 @@ fn test_vec_cmp_eq_symbolic_i32x4() {
 /// Symbolic VCmpGT (signed) over 4x i32 with INT_MIN/INT_MAX operands. Forces
 /// the symbolic per-lane path (sgt_into then sign_extend_into(32)) and pins that
 /// the Z3 comparison is signed: INT_MAX > INT_MIN true, INT_MIN > INT_MAX false.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_cmp_gt_signed_symbolic_i32x4() {
     let ctx = SymContext::new_mock();
@@ -225,7 +223,6 @@ fn test_vec_cmp_gt_unsigned_concrete_u8x16() {
 /// `sign_extend_into(32)` lane path under Z3 (the concrete tests above only
 /// cover `concrete_lane`). Same operand pairs as the concrete u32x4 case, so
 /// the two paths are pinned to the same reference answer.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
     let ctx = SymContext::new_mock();
@@ -271,7 +268,6 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
 /// `total_width <= 128` guard there protects: without it the concrete fold
 /// would shift a `u128` by up to 224 while assembling the result
 /// (`invariant-concrete-bv-u128-16-byte-limit`).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_cmp_avx2_256_bit_i32x8() {
     let ctx = SymContext::new_mock();

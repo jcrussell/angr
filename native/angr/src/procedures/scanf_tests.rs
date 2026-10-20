@@ -870,7 +870,6 @@ fn test_scanf_float_specifiers_fall_back() {
 
 /// angr-ptf54: `%s` off stdin consumes the harness-seeded fd-0 bytes (bound by
 /// constraint), while sscanf — which reads no stdin — is untouched.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_percent_s_consumes_seeded_stdin() {
     let mut state = setup_state();
@@ -898,7 +897,6 @@ fn test_scanf_percent_s_consumes_seeded_stdin() {
 
 /// angr-ggb66: `%c` reads one byte off the stream, so it consumes one seeded
 /// fd-0 byte per conversion, in order — same byte-for-byte mapping as `%s`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_percent_c_consumes_seeded_stdin() {
     let mut state = setup_state();
@@ -931,7 +929,6 @@ fn test_scanf_percent_c_consumes_seeded_stdin() {
 /// bytes off the stream, so it has to advance the fd-0 cursor — otherwise the
 /// next conversion in the same format string re-reads the seed from the wrong
 /// offset. Here `%*2s` must swallow "AB" so `%2s` lands on "CD".
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_suppressed_consumes_seeded_stdin() {
     let mut state = setup_state();
@@ -1179,9 +1176,8 @@ fn test_scanf_unmapped_format_propagates_error() {
 // explicitly — see `digit_range_bound`.
 // ---------------------------------------------------------------------------
 
-/// The pure decision seam, so the four `--no-default-features` combos keep
-/// coverage of the arithmetic even where the z3-gated behavioural tests below
-/// are compiled out.
+/// The pure decision seam: pins the arithmetic independently of the solver-
+/// driven behavioural tests below.
 #[test]
 fn test_digit_range_bound_matches_python_not_enough_bits() {
     // (base, digits, bits) -> (hi, lo_magnitude), i.e. the interval
@@ -1240,7 +1236,6 @@ fn scanf_one_int(fmt: &[u8]) -> (RustSimState, RustBV) {
 
 /// `%2d` must not be able to hold a value no two-digit decimal run could
 /// produce — the soundness half of the gap.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_numeric_field_width_bounds_value() {
     let (state, val) = scanf_one_int(b"%2d\x00");
@@ -1256,7 +1251,6 @@ fn test_scanf_numeric_field_width_bounds_value() {
 /// ...and it must still reach everything a two-digit run *can* produce,
 /// including the negative half Python's `SGE(-(base**(digits-1) - 1))` opens up
 /// for the leading minus sign.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_numeric_field_width_keeps_in_range_values() {
     let (state, val) = scanf_one_int(b"%2d\x00");
@@ -1272,7 +1266,6 @@ fn test_scanf_numeric_field_width_keeps_in_range_values() {
 
 /// A width-less `%d` keeps the fully unconstrained value: the bound is opt-in
 /// on an explicit field width, exactly as Python's `spec_digits is None` arm.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_numeric_without_field_width_is_unconstrained() {
     let (state, val) = scanf_one_int(b"%d\x00");
@@ -1285,7 +1278,6 @@ fn test_scanf_numeric_without_field_width_is_unconstrained() {
 
 /// The base is per-specifier: `%2x` reads hex, so its two digits span 0..0xff,
 /// not 0..99.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_hex_field_width_uses_base_16() {
     let (state, val) = scanf_one_int(b"%2x\x00");

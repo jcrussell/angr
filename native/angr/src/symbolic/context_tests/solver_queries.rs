@@ -10,13 +10,8 @@
 #![allow(clippy::arc_with_non_send_sync)]
 use super::*;
 // The instrumentation-counter tests below (`test_record_*_counters`) call
-// `stats.rs` directly, and `stats` itself is not feature-gated — but the glob
-// that pulls it into `context`'s scope is (`use super::stats::*` in
-// `context.rs` sits behind `vex-engine-z3`). Reaching them through
-// `use super::*` therefore only compiles in a z3 build, which is how the
-// no-z3 `--all-targets` build rotted unnoticed. Import them explicitly so the
-// counter tests build and run in every feature combo (angr-c7xno.99); an
-// explicit `use` shadows the glob, so this is a no-op for the z3 build.
+// `stats.rs` directly; the explicit import names what they depend on rather
+// than leaning on `context`'s `use super::stats::*` glob (angr-c7xno.99).
 use super::super::stats::{
     VexOpFamily, get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
     record_concretize_read, record_concretize_write, record_mem_lazy_page_fault, record_mem_load,
@@ -24,7 +19,6 @@ use super::super::stats::{
     record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop,
 };
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_z3_variable_identity() {
     // Test that Z3 variables with the same name are treated as the same variable
@@ -53,7 +47,6 @@ fn test_z3_variable_identity() {
     assert!(!ctx.solution(&x, 25)); // 25 > 20
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_max_constrained() {
     // Test min/max with constrained variable
@@ -76,7 +69,6 @@ fn test_min_max_constrained() {
     assert_eq!(max_val, Some(19), "max should be 19");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_z3_same_name_different_create() {
     // Test that creating variables with the same name but different calls
@@ -111,7 +103,6 @@ fn test_z3_same_name_different_create() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_max_use_cached_model_unsigned() {
     // Verify unsigned min()/max() return correct values when seeded by a
@@ -154,7 +145,6 @@ fn test_min_max_use_cached_model_unsigned() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_use_cached_model_seeds_unsigned_zero_witness() {
     // If the cached witness is 0, unsigned min should short-circuit
@@ -174,7 +164,6 @@ fn test_min_use_cached_model_seeds_unsigned_zero_witness() {
     assert_eq!(result, Some(0), "min should be 0 (witness-pinned)");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_max_signed_with_negative_witness() {
     // Verify signed min/max are correct when the cached witness is
@@ -208,7 +197,6 @@ fn test_min_max_signed_with_negative_witness() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_max_signed_with_positive_witness() {
     // Verify signed min/max are correct when the cached witness is
@@ -232,7 +220,6 @@ fn test_min_max_signed_with_positive_witness() {
     assert_eq!(ctx.max(&x, true), Some(20));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_max_no_cached_model_still_correct() {
     // When no model is cached (e.g. fresh context after pop without prior
@@ -253,13 +240,11 @@ fn test_min_max_no_cached_model_still_correct() {
 /// Helper: build a `(Bool, RustBV, bool)` tuple from a width-1 cond for use
 /// with `add_constraints_raw_batch`. Mirrors what the
 /// `RustSolverContext::add_constraints_ast` fast path does with claripy ASTs.
-#[cfg(feature = "vex-engine-z3")]
 fn batch_entry(cond: &RustBV) -> (z3::ast::Bool, RustBV, bool) {
     debug_assert_eq!(cond.width(), 1);
     (cond.to_z3_bool(), cond.clone(), true)
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_basic() {
     // Three independent constraints in one batch should constrain x as
@@ -286,7 +271,6 @@ fn test_add_constraints_raw_batch_basic() {
     assert!(!ctx.solution(&x, 20));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_empty_is_noop() {
     // Empty batch must not touch the solver or counter.
@@ -297,7 +281,6 @@ fn test_add_constraints_raw_batch_empty_is_noop() {
     assert!(ctx.is_sat());
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_drops_inconsistent_model() {
     // Populate the model cache with eval, then batch-add a constraint
@@ -317,7 +300,6 @@ fn test_add_constraints_raw_batch_drops_inconsistent_model() {
     assert_eq!(ctx.eval(&x), Some(new_val));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_preserves_consistent_model() {
     // A constraint already satisfied by the cached model should leave
@@ -336,7 +318,6 @@ fn test_add_constraints_raw_batch_preserves_consistent_model() {
     assert_eq!(ctx.eval(&x), Some(7));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_tracks_local_assertions() {
     // The batch path must populate local_constraints.z3_assertions so
@@ -360,7 +341,6 @@ fn test_add_constraints_raw_batch_tracks_local_assertions() {
 /// `self.with_z3_solver(|s| { for c in &constraints { s.assert(c); } })`
 /// call. Mirrors `test_add_constraint_raw_none_branch_no_scope_path`
 /// for the batched path, with a multi-entry batch.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_none_branch_no_scope_path() {
     let ctx = SymContext::new();
@@ -396,7 +376,6 @@ fn test_add_constraints_raw_batch_none_branch_no_scope_path() {
 /// then asserts each new frame inside its own Z3 push. Mirrors
 /// `test_add_constraint_raw_some_branch_appends_scope_frame` for the
 /// batched path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_some_branch_appends_scope_frames() {
     use super::super::lineage::SharedLineageSolver;
@@ -436,7 +415,6 @@ fn test_add_constraints_raw_batch_some_branch_appends_scope_frames() {
 /// `add_constraints_raw_batch` must NOT be visible when sibling B
 /// queries the same shared lineage solver. Mirrors
 /// `test_add_constraint_raw_sibling_isolation` with a multi-entry batch.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_sibling_isolation() {
     use super::super::lineage::SharedLineageSolver;
@@ -613,7 +591,6 @@ fn test_bvop_counters_fire_on_symbolic_construction() {
     assert!(stats.get("bvop_extract_count").copied().unwrap() > base_ext);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_range_seeded_constrained_interval() {
     // range_seeded must recover the true [min, max] of a constrained BV
@@ -637,7 +614,6 @@ fn test_range_seeded_constrained_interval() {
     assert_eq!(ctx.max(&x, false), Some(200));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_range_seeded_concrete_fast_path() {
     // A concrete BV short-circuits to (v, v) regardless of the seeds and
@@ -647,7 +623,6 @@ fn test_range_seeded_concrete_fast_path() {
     assert_eq!(ctx.range_seeded(&c, 0, 1000), Some((42, 42)));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_range_seeded_unsat_returns_none() {
     // An UNSAT context returns None before running either binary search.
@@ -663,7 +638,6 @@ fn test_range_seeded_unsat_returns_none() {
 /// (angr-sqfj8.103). Its bounds live in a `u128`, so above 128 bits the true
 /// extrema are unrepresentable and the binary search would report a truncated
 /// range with full confidence. 128 itself is still fine.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_range_seeded_above_128_bits_returns_none() {
     for width in [129u32, 192, 256] {
@@ -694,7 +668,6 @@ fn test_range_seeded_above_128_bits_returns_none() {
     assert_eq!(ctx.range_seeded(&x, 50, 150), Some((10, 200)));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_guards_each_branch_under_its_condition() {
     // Two contexts with disjoint constraints (x==5, x==9). The merged
@@ -730,7 +703,6 @@ fn test_merge_guards_each_branch_under_its_condition() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 #[should_panic(expected = "merge_conditions must have one entry per context")]
 fn test_merge_panics_on_condition_count_mismatch() {
@@ -744,7 +716,6 @@ fn test_merge_panics_on_condition_count_mismatch() {
 /// angr-ue4ro: `eval_many` must read every part off ONE model. Solving each
 /// part with a separate `eval` can mix models, so parts tied by a cross-part
 /// constraint come back mutually inconsistent.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_many_is_single_model() {
     let ctx = SymContext::new();
@@ -771,7 +742,6 @@ fn test_eval_many_is_single_model() {
 }
 
 /// An unsat context yields no model at all — never a partially-filled vector.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_many_unsat_returns_none() {
     let ctx = SymContext::new();
@@ -791,7 +761,6 @@ fn test_eval_many_unsat_returns_none() {
 /// `solutions()` pattern) is bit-for-bit reproducible across runs. Without the
 /// sort the order is whatever Z3's model-generation happened to produce, which
 /// is stable within a process but not something we may rely on.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_canonical_order() {
     // 5 <= x < 10 over 8 bits => exactly {5, 6, 7, 8, 9}.
@@ -815,7 +784,6 @@ fn test_eval_upto_canonical_order() {
 
 /// The wide (byte-vector) boundary carries the same guarantee. Every witness is
 /// `width` bits wide, so big-endian lexicographic order == numeric order.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_wide_canonical_order() {
     const WIDTH: u32 = 192; // > 128 bits: exercises the genuinely-wide path.
@@ -843,7 +811,6 @@ fn test_eval_upto_wide_canonical_order() {
 /// Strict-deterministic mode (angr-op0dn.10.2): `eval` picks the unsigned
 /// minimum of the feasible set, not an arbitrary Z3 model value. Ten fresh
 /// contexts must agree, and the value must equal `min`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_deterministic_is_min() {
     for _ in 0..10 {
@@ -868,7 +835,6 @@ fn test_eval_deterministic_is_min() {
 /// Truncated `eval_upto` under the flag returns the ascending prefix of the
 /// sorted feasible set (the hard half of M2.2 — 10.1's post-sort only made the
 /// exhaustive case canonical).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_deterministic_truncated_prefix() {
     for _ in 0..10 {
@@ -893,7 +859,6 @@ fn test_eval_upto_deterministic_truncated_prefix() {
 
 /// The ascending walk must terminate cleanly when the feasible set includes the
 /// top of the range (the `value == max_val` guard, where `lo + 1` would wrap).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_deterministic_saturating_top() {
     let ctx = SymContext::new();
@@ -908,7 +873,6 @@ fn test_eval_upto_deterministic_saturating_top() {
 }
 
 /// Unsat contexts and the flag's default-off state.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_deterministic_flag_default_and_unsat() {
     let ctx = SymContext::new();
@@ -936,7 +900,6 @@ fn test_deterministic_flag_default_and_unsat() {
 /// (byte-`Extract` decomposition → `eval_batch` → `eval_many`), and until 10.7
 /// it read whatever assignment Z3 happened to build — which made a partially
 /// constrained stdin print a different-but-valid answer on nearly every run.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_many_deterministic_is_lex_min() {
     for _ in 0..10 {
@@ -964,7 +927,6 @@ fn test_eval_many_deterministic_is_lex_min() {
 
 /// The joint witness must still come off ONE assignment (angr-ue4ro): a
 /// cross-part constraint has to hold for the values `eval_many` hands back.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_many_deterministic_respects_cross_part_constraint() {
     let ctx = SymContext::new();
@@ -984,7 +946,6 @@ fn test_eval_many_deterministic_respects_cross_part_constraint() {
 
 /// `eval_wide` under the flag returns the unsigned minimum as big-endian bytes,
 /// for widths past the 128-bit ceiling where `min` reports None (angr-cxw7).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_wide_deterministic_is_unsigned_min() {
     const WIDTH: u32 = 192;
@@ -1015,7 +976,6 @@ fn test_eval_wide_deterministic_is_unsigned_min() {
 /// and cross-checks the strict-deterministic encoding against the default
 /// arbitrary-model path (which goes through `extract_bv_value_wide`, the
 /// convention `make_bv_from_bytes` documents).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_wide_deterministic_ragged_width_is_big_endian() {
     const WIDTH: u32 = 129;
@@ -1065,14 +1025,12 @@ fn test_eval_wide_deterministic_ragged_width_is_big_endian() {
 /// Product of two 63-bit primes — a genuine semiprime whose factorization
 /// exists (so priming sat_cache(true) is legitimate) but that Z3 cannot crack
 /// within a 1ms budget.
-#[cfg(feature = "vex-engine-z3")]
 const HARD_SEMIPRIME: u128 = 9_223_372_036_854_775_783u128 * 9_223_372_036_854_775_643u128;
 
 /// Deterministic search budget layered under the 1ms wall-clock timeout — see
 /// [`pin_rlimit`]. Sized far above what 1ms of Z3 consumes (so the tests still
 /// exercise the *timeout* path they were written for) but far below anything
 /// that could run long: worst case the check aborts in well under a second.
-#[cfg(feature = "vex-engine-z3")]
 const HARD_FACTORING_RLIMIT: u32 = 100_000;
 
 /// Deterministic termination bound for the three hard-factoring timeout tests
@@ -1092,7 +1050,6 @@ const HARD_FACTORING_RLIMIT: u32 = 100_000;
 /// terminates so a missed timer degrades to a fast Unknown instead of a hang.
 /// Applied *after* the constraints are asserted, because `set_params` on a
 /// fresh solver would be clobbered by a later solver rebuild.
-#[cfg(feature = "vex-engine-z3")]
 fn pin_rlimit(ctx: &SymContext, rlimit: u32) {
     ctx.pin_rlimit_for_test(rlimit);
 }
@@ -1106,7 +1063,6 @@ fn pin_rlimit(ctx: &SymContext, rlimit: u32) {
 /// resource unit and no wall-clock timeout. If `rlimit` is honored the check
 /// aborts Unknown and `min()` returns None; if it is ignored the check runs to
 /// completion and returns `Some(11)` — a fast, non-hanging failure.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pin_rlimit_reaches_the_solver() {
     let ctx = SymContext::with_timeout(u32::MAX);
@@ -1136,7 +1092,6 @@ fn test_pin_rlimit_reaches_the_solver() {
 /// timeout, same as `test_pin_rlimit_reaches_the_solver` — the first check
 /// aborts Unknown, and lifting the rlimit afterwards decides it instantly, so
 /// the test cannot hang either way.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_is_sat_checked_reports_timeout_as_undecided() {
     let ctx = SymContext::with_timeout(u32::MAX);
@@ -1197,7 +1152,6 @@ fn test_is_sat_checked_reports_timeout_as_undecided() {
 // to sometimes never fire under a parallel `cargo test --release` run — using
 // it here would reintroduce exactly the flakiness that rig was built to
 // avoid, on a much larger set of call sites.
-#[cfg(feature = "vex-engine-z3")]
 fn with_forced_unknown<R>(f: impl FnOnce(&SymContext) -> R) -> R {
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "forced_unknown_x", 32);
@@ -1216,7 +1170,6 @@ fn with_forced_unknown<R>(f: impl FnOnce(&SymContext) -> R) -> R {
 /// only asserts a delta, same caveat as the `>=`-bound counter tests above —
 /// but since each fixture's callback issues at most a handful of checks, any
 /// concurrent noise only makes the assertion easier to satisfy, never harder.
-#[cfg(feature = "vex-engine-z3")]
 fn assert_z3_timeout_occurred<R>(f: impl FnOnce() -> R) -> R {
     let before = get_solver_stats()
         .get("z3_timeout_count")
@@ -1239,7 +1192,6 @@ fn assert_z3_timeout_occurred<R>(f: impl FnOnce() -> R) -> R {
 /// already falls through to `timed_check(..).decided() != Some(true) =>
 /// return None` before ever calling `get_model`, but that path had no direct
 /// regression test.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
@@ -1253,7 +1205,6 @@ fn test_eval_returns_none_under_forced_unknown() {
 }
 
 /// `eval_wide` twin of the above (the >128-bit path, `Vec<u8>` return).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_wide_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
@@ -1269,7 +1220,6 @@ fn test_eval_wide_returns_none_under_forced_unknown() {
 /// `eval_many` (angr-ue4ro's single-model batch reader) must likewise refuse
 /// to hand back a partially- or fully-fabricated vector when the check that
 /// would justify it never decided.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_many_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
@@ -1287,7 +1237,6 @@ fn test_eval_many_returns_none_under_forced_unknown() {
 /// `timed_check(..).decided()` gate. Same contract, different code path: an
 /// Unknown mid-loop must abort the whole joint witness to `None`, not return
 /// a witness built on a fabricated per-part minimum.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_many_deterministic_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
@@ -1304,7 +1253,6 @@ fn test_eval_many_deterministic_returns_none_under_forced_unknown() {
 /// `solution` answers "is this concrete value feasible?" — an undecided query
 /// cannot prove feasibility, so the conservative (and current) answer is
 /// `false`, never a spurious `true`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_solution_is_false_under_forced_unknown() {
     with_forced_unknown(|ctx| {
@@ -1333,7 +1281,6 @@ fn test_solution_is_false_under_forced_unknown() {
 /// documents as the reliable one), so the upfront gate resolves from cache
 /// for free and only the later per-iteration bisection checks are what hits
 /// the pinned rlimit.
-#[cfg(feature = "vex-engine-z3")]
 fn with_forced_unknown_mid_bisection<R>(f: impl FnOnce(&SymContext) -> R) -> R {
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "forced_unknown_x", 32);
@@ -1352,7 +1299,6 @@ fn with_forced_unknown_mid_bisection<R>(f: impl FnOnce(&SymContext) -> R) -> R {
 /// `range` composes `min` and `max` via `?`; confirm that composition really
 /// does propagate an Unknown-mid-bisection abort as `None` rather than, say,
 /// a half-filled tuple.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_range_returns_none_under_forced_unknown() {
     with_forced_unknown_mid_bisection(|ctx| {
@@ -1369,7 +1315,6 @@ fn test_range_returns_none_under_forced_unknown() {
 /// `test_range_seeded_unsat_returns_none`) never drove a genuine Z3 Unknown —
 /// only the width guard and a decided Unsat. Pin the same None contract for
 /// the real timeout case.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_range_seeded_returns_none_under_forced_unknown() {
     with_forced_unknown_mid_bisection(|ctx| {
@@ -1385,7 +1330,6 @@ fn test_range_seeded_returns_none_under_forced_unknown() {
 /// Assert `x * y == N`, `x > 1`, `y > 1` on a 1ms-budget context, returning the
 /// 64-bit factor `x`. The multiply is widened to 128 bits so the product does
 /// not overflow.
-#[cfg(feature = "vex-engine-z3")]
 fn build_hard_factoring(ctx: &SymContext) -> RustBV {
     let x = RustBV::symbolic(ctx, "fac_x", 64);
     let y = RustBV::symbolic(ctx, "fac_y", 64);
@@ -1406,7 +1350,6 @@ fn build_hard_factoring(ctx: &SymContext) -> RustBV {
 /// drives straight into bsearch_min, where every check times out at 1ms.
 /// Pre-fix: bsearch swallowed each Unknown as "not <= mid", moved lo up, and
 /// returned a confident wrong value. Post-fix: None.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_aborts_to_none_on_bisection_timeout() {
     let ctx = SymContext::with_timeout(1);
@@ -1422,7 +1365,6 @@ fn test_min_aborts_to_none_on_bisection_timeout() {
 }
 
 /// max() likewise aborts to None on a bisection timeout (angr-ph300.43).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_max_aborts_to_none_on_bisection_timeout() {
     let ctx = SymContext::with_timeout(1);
@@ -1458,7 +1400,6 @@ fn test_max_aborts_to_none_on_bisection_timeout() {
 /// which is deliberately avoided here because its timer is flaky under parallel
 /// `cargo test` (see `pin_rlimit`). The fix stays as a defensive correctness
 /// alignment with `invariant-z3-unknown-not-unsat` / angr-ph300.43.
-#[cfg(feature = "vex-engine-z3")]
 fn build_hard_sign_probe(ctx: &SymContext, hard_when_negative: bool) -> RustBV {
     let x = RustBV::symbolic(ctx, "sgn_x", 64);
     let a = RustBV::symbolic(ctx, "sgn_a", 64);
@@ -1486,7 +1427,6 @@ fn build_hard_sign_probe(ctx: &SymContext, hard_when_negative: bool) -> RustBV {
 /// single mapping every solver query now routes through, so the mapping itself
 /// is pinned here directly (deterministic, no timeout needed), complementing the
 /// end-to-end min/max probe tests below that exercise the None-propagation path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_satoutcome_decided_maps_unknown_to_none() {
     use crate::symbolic::solver_build::SatOutcome;
@@ -1506,7 +1446,6 @@ fn test_satoutcome_decided_maps_unknown_to_none() {
 /// this pins the None-on-timeout contract for the signed path. See
 /// `build_hard_sign_probe` for why this cannot isolate the n0irt.1 fix from the
 /// pre-fix behavior (cumulative rlimit makes both return None).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_min_signed_aborts_to_none_when_sign_probe_times_out() {
     let ctx = SymContext::with_timeout(1);
@@ -1527,7 +1466,6 @@ fn test_min_signed_aborts_to_none_when_sign_probe_times_out() {
 /// max() must return None, never a fabricated extremum (angr-n0irt.1). Pins the
 /// signed-path None-on-timeout contract; see `build_hard_sign_probe` for the
 /// discrimination caveat.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_max_signed_aborts_to_none_when_sign_probe_times_out() {
     let ctx = SymContext::with_timeout(1);
@@ -1548,7 +1486,6 @@ fn test_max_signed_aborts_to_none_when_sign_probe_times_out() {
 /// first check timed out, was read as "cond infeasible", and returned
 /// (false, true) — silently killing the feasible true branch. Post-fix both
 /// directions stay live: (true, true).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_check_branch_feasibility_keeps_branch_on_timeout() {
     let ctx = SymContext::with_timeout(1);
@@ -1589,7 +1526,6 @@ fn test_check_branch_feasibility_keeps_branch_on_timeout() {
 /// to time out mid-enumeration also times out on the seeding eval (measured).
 /// `rlimit=1` makes the cut-off deterministic instead of difficulty-dependent —
 /// `test_pin_rlimit_reaches_the_solver` is the guard that it really lands.
-#[cfg(feature = "vex-engine-z3")]
 fn build_warm_seed_then_stalled(ctx: &SymContext, name: &str, lo: u128, hi: u128) -> (RustBV, u128) {
     let x = RustBV::symbolic(ctx, name, 64);
     let a = x.eq(&RustBV::concrete(lo, 64), ctx);
@@ -1606,7 +1542,6 @@ fn build_warm_seed_then_stalled(ctx: &SymContext, name: &str, lo: u128, hi: u128
 /// The core of angr-03vl4.85: an enumeration that stops because Z3 stopped
 /// deciding must say so. Pre-fix `eval_upto` returned the one-element prefix
 /// byte-identical to the answer for a BV with exactly one feasible value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_checked_flags_mid_enumeration_timeout() {
     let ctx = SymContext::new();
@@ -1627,7 +1562,6 @@ fn test_eval_upto_checked_flags_mid_enumeration_timeout() {
 /// Companion: a decided enumeration must NOT be flagged, whether it stopped
 /// because the set ran out (Unsat) or because it hit the caller's cap. Without
 /// this the fix could "pass" by flagging everything.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_checked_not_flagged_when_decided() {
     let ctx = SymContext::new();
@@ -1656,7 +1590,6 @@ fn test_eval_upto_checked_not_flagged_when_decided() {
 /// because its only caller — the PyO3 `eval_upto` bridge — treated the result
 /// as a sample; that stopped being true once `RustSolverContext::
 /// eval_upto_checked` needed the flag for wide expressions too.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_wide_checked_flags_undecided() {
     with_forced_unknown(|ctx| {
@@ -1675,7 +1608,6 @@ fn test_eval_upto_wide_checked_flags_undecided() {
 }
 
 /// Companion to the above: the wide path must not flag a decided enumeration.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_eval_upto_wide_checked_not_flagged_when_decided() {
     let ctx = SymContext::new();
@@ -1703,7 +1635,6 @@ fn test_eval_upto_wide_checked_not_flagged_when_decided() {
 /// complete feasible set. Pre-fix the stalled two-value enumeration came back
 /// as `Single(seed)`, silently dropping the other feasible address. Lives here
 /// rather than in `concretize_tests.rs` so it can reuse the stall rig above.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_concretize_refuses_timeout_truncated_solution_set() {
     use crate::concretize::{AddressConcretizer, ConcretizationResult};
@@ -1727,7 +1658,6 @@ fn test_concretize_refuses_timeout_truncated_solution_set() {
 // encoding tied to the operand, not a shared unconstrained new_const. With the
 // old `BV::new_const("clz", w)`, every symbolic clz of a width lowered to ONE
 // hash-consed variable, so distinct operands' clz aliased.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_clz_distinct_operands_not_aliased() {
     let ctx = SymContext::new();
@@ -1752,7 +1682,6 @@ fn test_clz_distinct_operands_not_aliased() {
 // clz constraint on the operand. With the shared new_const, eval(x) was
 // unconstrained by `clz(x)==k` and could return a value whose real leading
 // zero count differs from k.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_clz_constraint_binds_operand_eval() {
     let ctx = SymContext::new();
@@ -1771,7 +1700,6 @@ fn test_clz_constraint_binds_operand_eval() {
 
 // angr-ph300.29: symbolic popcount must equal the concrete population count
 // when the operand is pinned, exercising the sum-of-bits Z3 encoding.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_popcount_matches_concrete_when_operand_pinned() {
     let ctx = SymContext::new();
@@ -1799,7 +1727,6 @@ fn test_popcount_matches_concrete_when_operand_pinned() {
 // narrow to hold `width` would truncate the ladder's constants and skew every
 // one of the three expected counts. The sibling tests above sit at 32 bits,
 // where `acc_w == width` and neither failure mode is reachable.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bitcount_ops_above_64_bits_match_concrete() {
     const WIDTH: u32 = 256;
@@ -1842,7 +1769,6 @@ fn test_bitcount_ops_above_64_bits_match_concrete() {
 // narrower truncates the ladder's default constant (256 -> 0 at 8 bits) and
 // still satisfies the pinned-operand test above, so this case is what makes
 // that test's sibling non-vacuous.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bitcount_ops_above_64_bits_on_zero_operand() {
     const WIDTH: u32 = 256;

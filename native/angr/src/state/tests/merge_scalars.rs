@@ -117,7 +117,6 @@ fn test_tsc_counter_forks_and_merges_as_watermark() {
 // ran backwards relative to any branch. Since `RustBV` has no `Ord`, this
 // takes a real symbolic maximum (`uge` + `ite`) rather than dropping straight
 // to `self`'s value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_takes_symbolic_max_of_last_time() {
     Python::initialize();

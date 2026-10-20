@@ -102,7 +102,6 @@ impl FloatPrec {
     /// Callers must bind the returned wrapper to a local before calling
     /// `get_z3_sort()` on it: the raw `Z3_sort` handle is only valid while the
     /// owned wrapper stays alive across subsequent unsafe Z3 calls.
-    #[cfg(feature = "vex-engine-z3")]
     #[inline]
     pub fn z3_sort(&self) -> z3::Sort {
         match self {
@@ -315,11 +314,7 @@ pub enum RustBV {
 /// `Rc<RefCell<SymContext>>`, so interior mutability is sound), `()` otherwise
 /// so constructors can write `memo: Default::default()` without a `#[cfg]`.
 /// Excluded from serde, `PartialEq`, `Debug` and every identity key.
-#[cfg(feature = "vex-engine-z3")]
 type ExprMemo = std::cell::RefCell<Option<z3::ast::BV>>;
-/// See the Z3-enabled variant above.
-#[cfg(not(feature = "vex-engine-z3"))]
-type ExprMemo = ();
 
 /// Serde shadow form for [`RustBV`].
 ///
@@ -458,8 +453,7 @@ impl RustBV {
     /// makes the degenerate answer correct here rather than merely safe, which
     /// is why this returns a value instead of plumbing a `Result` through
     /// infallible signatures (same reasoning as the `w == 0` rotate arm in
-    /// `value_ops`; see bd memory `invariant-rustbv-zero-width`). Handled before
-    /// the cfg split so the no-z3 build agrees with the z3 one.
+    /// `value_ops`; see bd memory `invariant-rustbv-zero-width`).
     #[inline]
     #[allow(
         clippy::expect_used,
@@ -532,13 +526,10 @@ impl RustBV {
         {
             return Ok(RustBV::concrete(v, value.len()));
         }
-        #[cfg(feature = "vex-engine-z3")]
         let memo = std::cell::RefCell::new(Some(
             crate::claripy_bridge::lower_bv(&ast)
                 .map_err(|e| ClarirsError::UnsupportedOperation(e.to_string()))?,
         ));
-        #[cfg(not(feature = "vex-engine-z3"))]
-        let memo = ();
         Ok(RustBV::Ast {
             width: ast.size(),
             ast,
@@ -654,19 +645,14 @@ impl PartialEq for RustBV {
 // `mod tests` (1219 lines) into a sibling file to shrink value.rs below the
 // god-object threshold. Declared as a direct child of `value` so
 // `use super::*` reaches `value`'s private items.
-// Gated on vex-engine-z3: these tests call `RustBV::to_z3_ast` /
-// `SymContext::add_constraint` and reference the `z3` crate, none of which
-// exist in a no-z3 build. The no-default-features / vex-engine (no-z3) nightly
-// combos build the lib test harness, so an ungated decl breaks `cargo test`
-// there (bd angr-cagbn). Default (z3-on) build still compiles and runs them.
 // angr-5mnx3.49: split again at 2062 lines, back over the <2000-line
 // threshold, into one topical module per former section banner plus a shared
 // `value_tests_support` for the two helpers more than one of them uses.
-test_submod!(z3 "value_tests_support.rs" => value_tests_support);
-test_submod!(z3 "value_tests.rs" => value_tests);
-test_submod!(z3 "value_simplify_tests.rs" => value_simplify_tests);
-test_submod!(z3 "value_zext_cmp_tests.rs" => value_zext_cmp_tests);
-test_submod!(z3 "value_serde_tests.rs" => value_serde_tests);
-test_submod!(z3 "value_ast_tests.rs" => value_ast_tests);
-test_submod!(z3 "value_concrete_arm_tests.rs" => value_concrete_arm_tests);
-test_submod!(z3 "value_eq_debug_tests.rs" => value_eq_debug_tests);
+test_submod!("value_tests_support.rs" => value_tests_support);
+test_submod!("value_tests.rs" => value_tests);
+test_submod!("value_simplify_tests.rs" => value_simplify_tests);
+test_submod!("value_zext_cmp_tests.rs" => value_zext_cmp_tests);
+test_submod!("value_serde_tests.rs" => value_serde_tests);
+test_submod!("value_ast_tests.rs" => value_ast_tests);
+test_submod!("value_concrete_arm_tests.rs" => value_concrete_arm_tests);
+test_submod!("value_eq_debug_tests.rs" => value_eq_debug_tests);

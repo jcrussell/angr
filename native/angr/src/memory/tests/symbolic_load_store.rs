@@ -37,7 +37,6 @@ fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u1
     (ctx, mem, pinned)
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_per_byte_symbolic_concat_little_endian() {
     let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Little);
@@ -53,7 +52,6 @@ fn test_per_byte_symbolic_concat_little_endian() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_per_byte_symbolic_concat_big_endian() {
     let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Big);
@@ -178,7 +176,6 @@ fn test_containing_wider_sym_spans_first() {
 /// reconstruction then calls `containing_wider_sym`, which finds the
 /// wider sym via spans path 1 and extracts the load range
 /// endianness-correctly.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_slow_path_spans_first_little_endian() {
     let ctx = SymContext::new_mock();

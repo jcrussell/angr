@@ -27,11 +27,6 @@
 //! `interpreter`, `symbolic` and `segmentlist` — no single existing module is
 //! an appropriate home, and the Harness-6 sweep above calls for
 //! one table reused everywhere rather than a per-module copy.
-//!
-//! Nothing here depends on the `vex-engine` feature, and `lib.rs` deliberately
-//! declares the module under a bare `#[cfg(test)]` so `segmentlist`'s
-//! unconditionally-built tests can reach it too — keep it that way (see the
-//! declaration's doc comment for why).
 
 /// Addresses/offsets worth sweeping at any guest-controlled `u64`
 /// address-or-offset call site: `0`/`1` (degenerate), a couple of

@@ -30,15 +30,10 @@
 use super::RustBV;
 use super::SymContext;
 
-#[cfg(feature = "vex-engine-z3")]
 use super::bv_codec::*;
-#[cfg(feature = "vex-engine-z3")]
 use super::query_class;
-#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
-#[cfg(feature = "vex-engine-z3")]
 use super::stats::*;
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::Ordering;
 
 /// Result of a bounded solution enumeration ([`SymContext::eval_upto_checked`],
@@ -63,8 +58,8 @@ pub struct Enumeration<T> {
 }
 
 impl<T> Enumeration<T> {
-    /// A fully decided enumeration (concrete fast paths, `n == 0`, and the
-    /// non-Z3 stubs, none of which ever consult a solver).
+    /// A fully decided enumeration (concrete fast paths and `n == 0`, neither
+    /// of which ever consults a solver).
     fn decided(values: Vec<T>) -> Self {
         Self {
             values,
@@ -108,7 +103,6 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
 /// engine had grown three independent copies of the saturating shift
 /// (angr-0jh0j.55). This stays a named wrapper because the solving path reads
 /// its result as a search bound, not as a mask; it carries no logic of its own.
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 fn max_val_for_width(width: u32) -> u128 {
     RustBV::all_ones_mask(width)
@@ -117,7 +111,6 @@ fn max_val_for_width(width: u32) -> u128 {
 /// Read every bv in `bvs` off a single Z3 model. All-or-nothing: `None` when
 /// any part fails to evaluate, so a caller never sees a half-model. Shared by
 /// `eval_many`'s cached-model and fresh-model paths (angr-ue4ro).
-#[cfg(feature = "vex-engine-z3")]
 fn eval_all_in_model(model: &z3::Model, bvs: &[RustBV]) -> Option<Vec<u128>> {
     let mut values = Vec::with_capacity(bvs.len());
     for bv in bvs {
@@ -143,7 +136,6 @@ fn eval_all_in_model(model: &z3::Model, bvs: &[RustBV]) -> Option<Vec<u128>> {
 /// "nothing at or below mid" from "gave up", and swallowing the Unknown as the
 /// former would move `lo` past the true minimum and return a confidently wrong
 /// bound. Aborting lets the caller degrade to `None` rather than fabricate one.
-#[cfg(feature = "vex-engine-z3")]
 fn bsearch_min(
     solver: &z3::Solver,
     ast: &z3::ast::BV,
@@ -179,7 +171,6 @@ fn bsearch_min(
 /// Returns `None` on a Z3 `Unknown` mid-bisection check for the same reason as
 /// [`bsearch_min`] (angr-ph300.43): swallowing the timeout would drop `hi`
 /// below the true maximum and return a wrong extremum.
-#[cfg(feature = "vex-engine-z3")]
 fn bsearch_max(
     solver: &z3::Solver,
     ast: &z3::ast::BV,
@@ -212,14 +203,12 @@ fn bsearch_max(
 /// differs between the two calls (angr-fs8kb.32). Keeping them fused is what
 /// stops a future bound-selection fix from landing on one and missing the
 /// other.
-#[cfg(feature = "vex-engine-z3")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Extremum {
     Min,
     Max,
 }
 
-#[cfg(feature = "vex-engine-z3")]
 impl Extremum {
     /// Solver-stats site for the signed sign probe.
     fn init_site(self) -> CheckSite {
@@ -269,7 +258,6 @@ impl Extremum {
 
 impl SymContext {
     /// Debug: dump solver state as string for comparison.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn debug_solver_string(&self) -> String {
         self.with_z3_solver(|solver| format!("{solver}"))
     }
@@ -283,7 +271,7 @@ impl SymContext {
     /// Lives on `SymContext` rather than beside `build_solver_params` because
     /// the `solver_build` module is private to `symbolic/`, and the prune-gate
     /// tests in `state/tests/solver_gate.rs` need the same rig.
-    #[cfg(all(test, feature = "vex-engine-z3"))]
+    #[cfg(test)]
     pub(crate) fn pin_rlimit_for_test(&self, rlimit: u32) {
         self.with_z3_solver(|solver| {
             let mut params = super::solver_build::build_solver_params(self.timeout_ms());
@@ -308,7 +296,6 @@ impl SymContext {
     /// pruning (`invariant-z3-unknown-not-unsat`).
     ///
     /// `None` is never cached: a later call retries the query.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn is_sat_checked(&self) -> Option<bool> {
         // Check cache first
         if let Some(cached) = self.sat_cache.get() {
@@ -357,7 +344,6 @@ impl SymContext {
     /// callers whose `false` branch is "give up on producing an answer"
     /// (`min`/`max`/`range` return `None`); a caller that *prunes* on `false`
     /// must use `is_sat_checked` instead (angr-03vl4.62).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn is_sat(&self) -> bool {
         silent_default!(
             cat_c,
@@ -368,13 +354,11 @@ impl SymContext {
     }
 
     /// Check if a bitvector condition can be true.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn can_be_true(&self, cond: &RustBV) -> bool {
         self.check_branch_feasibility(cond).0
     }
 
     /// Check if a bitvector condition can be false.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn can_be_false(&self, cond: &RustBV) -> bool {
         self.check_branch_feasibility(cond).1
     }
@@ -394,7 +378,6 @@ impl SymContext {
     /// Note: In deferred fork mode, this is NOT called — the interpreter
     /// skips feasibility checks and assumes both branches are feasible.
     /// This method is only used in non-deferred mode and for explicit checks.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn check_branch_feasibility(&self, cond: &RustBV) -> (bool, bool) {
         debug_assert_eq!(cond.width(), 1);
         // Quick check for concrete values
@@ -485,7 +468,6 @@ impl SymContext {
     }
 
     /// Whether strict-deterministic witness selection is on (angr-op0dn.10.2).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn is_deterministic(&self) -> bool {
         self.deterministic.load(Ordering::Relaxed)
     }
@@ -509,13 +491,11 @@ impl SymContext {
     ///
     /// Inherited parent→child on [`fork`](Self::fork), so setting it on a seed
     /// context covers the whole lineage.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn set_deterministic(&self, v: bool) {
         self.deterministic.store(v, Ordering::Relaxed);
     }
 
     /// Evaluate a bitvector to a concrete value if possible.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval(&self, bv: &RustBV) -> Option<u128> {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
@@ -585,7 +565,6 @@ impl SymContext {
     /// cache satisfies the current constraint set. So `M(bv)` is a feasible
     /// value of `bv` — for unsigned, `min <= M(bv) <= max`; for signed, the
     /// same holds under signed interpretation.
-    #[cfg(feature = "vex-engine-z3")]
     fn cached_model_eval(&self, ast: &z3::ast::BV) -> Option<u128> {
         self.cached_model_eval_with(ast, extract_bv_value)
     }
@@ -594,7 +573,6 @@ impl SymContext {
     /// cached model (if any) with a caller-supplied extractor. The wide
     /// (`Vec<u8>`) enumeration path in `enumerate_distinct` needs the same
     /// warm-model read with `extract_bv_value_wide` instead.
-    #[cfg(feature = "vex-engine-z3")]
     fn cached_model_eval_with<T>(
         &self,
         ast: &z3::ast::BV,
@@ -633,7 +611,6 @@ impl SymContext {
     /// the closure, so the Z3 scope stack returns to its pre-closure depth
     /// before `f` returns — safe for both the None (per-context) and Some
     /// (shared-lineage) dispatch paths.
-    #[cfg(feature = "vex-engine-z3")]
     fn enumerate_distinct<T: Ord>(
         &self,
         ast: &z3::ast::BV,
@@ -702,7 +679,6 @@ impl SymContext {
     /// the same bytes — must get the same answer both times. The old
     /// fresh-check-every-call version handed back a different (still
     /// satisfying) model each time, which reads as nondeterminism to a user.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
         let width = bv.width();
 
@@ -768,7 +744,6 @@ impl SymContext {
     ///
     /// Returns `None` when the constraints are unsat or any part fails to
     /// evaluate — never a partially-filled vector.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval_many(&self, bvs: &[RustBV]) -> Option<Vec<u128>> {
         if bvs.is_empty() {
             return Some(Vec::new());
@@ -844,14 +819,12 @@ impl SymContext {
     /// Drops the "did enumeration finish, or did Z3 give up?" signal — use
     /// [`eval_upto_checked`](Self::eval_upto_checked) when the answer's
     /// correctness depends on the set being complete (angr-03vl4.85).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto(&self, bv: &RustBV, n: usize) -> Vec<u128> {
         self.eval_upto_checked(bv, n).values
     }
 
     /// [`eval_upto`](Self::eval_upto) plus the stop reason — see
     /// [`Enumeration`].
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
@@ -909,7 +882,6 @@ impl SymContext {
     ///
     /// `None` when the constraint set is unsat, when Z3 times out mid-search,
     /// or when `parts` is empty.
-    #[cfg(feature = "vex-engine-z3")]
     fn lex_min_witness(&self, parts: &[(z3::ast::BV, u32)]) -> Option<Vec<u128>> {
         // `parts` is empty only for a width-0 bv: `min_wide`'s `while hi > 0`
         // loop never pushes a chunk, and the other caller (`eval_many`'s
@@ -975,7 +947,6 @@ impl SymContext {
     /// where `min` cannot be reused because it reports `None` above 128 bits
     /// (angr-cxw7). Minimizing the big-endian bytes most-significant-first is
     /// exactly minimizing the value, and each byte fits `bsearch_min`'s u128.
-    #[cfg(feature = "vex-engine-z3")]
     fn min_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
         let ast = bv.to_z3_ast();
         let mut parts = Vec::with_capacity(bv.width().div_ceil(8) as usize);
@@ -1016,7 +987,6 @@ impl SymContext {
     /// default path's `n` checks. No `get_model` call happens, so the warm
     /// model-cache seed is bypassed and `model_cache` is left untouched (a
     /// history-dependent seed is precisely the nondeterminism being removed).
-    #[cfg(feature = "vex-engine-z3")]
     fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         let width = bv.width();
         let ast = bv.to_z3_ast();
@@ -1078,14 +1048,12 @@ impl SymContext {
     /// say *why* enumeration stopped. Callers whose correctness depends on the
     /// set being complete want
     /// [`eval_upto_wide_checked`](Self::eval_upto_wide_checked).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
         self.eval_upto_wide_checked(bv, n).values
     }
 
     /// [`eval_upto_wide`](Self::eval_upto_wide) plus the stop reason — see
     /// [`Enumeration`].
-    #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto_wide_checked(&self, bv: &RustBV, n: usize) -> Enumeration<Vec<u8>> {
         let width = bv.width();
 
@@ -1129,7 +1097,6 @@ impl SymContext {
     /// it to tighten the initial `hi` bound: `min <= w` always holds. For the
     /// signed case, if `w` is negative we additionally skip the MinInit
     /// pre-check (we know a negative value exists).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn min(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         self.extremum(bv, signed, Extremum::Min)
     }
@@ -1142,7 +1109,6 @@ impl SymContext {
     /// initial `lo` bound. For the signed case, if `w` is non-negative we
     /// additionally skip the MaxInit pre-check (we know a non-negative value
     /// exists).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
         self.extremum(bv, signed, Extremum::Max)
     }
@@ -1156,7 +1122,6 @@ impl SymContext {
     /// uses. [`Extremum`] carries that difference so a future fix to the bound
     /// selection cannot land on one direction and miss the other
     /// (angr-fs8kb.32).
-    #[cfg(feature = "vex-engine-z3")]
     fn extremum(&self, bv: &RustBV, signed: bool, dir: Extremum) -> Option<u128> {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
@@ -1286,7 +1251,6 @@ impl SymContext {
     /// Get the range [min, max] of possible values for a bitvector.
     ///
     /// Returns None if the constraints are unsatisfiable or evaluation fails.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn range(&self, bv: &RustBV) -> Option<(u128, u128)> {
         let min = self.min(bv, false)?;
         let max = self.max(bv, false)?;
@@ -1305,7 +1269,6 @@ impl SymContext {
     /// Returns `None` for widths above 128 — the bounds are tracked in a
     /// `u128`, so a wider extremum cannot be represented (same guard as
     /// `min` / `max`).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn range_seeded(
         &self,
         bv: &RustBV,
@@ -1368,20 +1331,17 @@ impl SymContext {
     /// This is a convenience wrapper around eval_upto — and inherits its
     /// inability to report *why* enumeration stopped. Callers that need the
     /// complete feasible set want [`solutions_checked`](Self::solutions_checked).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn solutions(&self, bv: &RustBV, n: usize) -> Vec<u128> {
         self.eval_upto(bv, n)
     }
 
     /// [`solutions`](Self::solutions) plus the stop reason — see
     /// [`Enumeration`].
-    #[cfg(feature = "vex-engine-z3")]
     pub fn solutions_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         self.eval_upto_checked(bv, n)
     }
 
     /// Check if a specific value is a valid solution for a bitvector.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn solution(&self, bv: &RustBV, value: u128) -> bool {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
@@ -1415,138 +1375,9 @@ impl SymContext {
             result
         })
     }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn is_sat(&self) -> bool {
-        // Without Z3, we assume everything is satisfiable
-        true
-    }
-
-    /// Without Z3 there is no query to time out, so the answer is always decided.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn is_sat_checked(&self) -> Option<bool> {
-        Some(true)
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn can_be_true(&self, cond: &RustBV) -> bool {
-        // Quick check for concrete values
-        if let Some(v) = cond.as_u128() {
-            return v != 0;
-        }
-        // Without Z3, assume symbolic can be true
-        true
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn can_be_false(&self, cond: &RustBV) -> bool {
-        // Quick check for concrete values
-        if let Some(v) = cond.as_u128() {
-            return v == 0;
-        }
-        // Without Z3, assume symbolic can be false
-        true
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval(&self, bv: &RustBV) -> Option<u128> {
-        // Without Z3, can only evaluate concrete values
-        bv.as_u128()
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
-        // Without Z3, can only evaluate concrete values
-        let width = bv.width();
-        bv.as_u128().map(|v| u128_to_be_bytes_width(v, width))
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval_many(&self, bvs: &[RustBV]) -> Option<Vec<u128>> {
-        // Without Z3, can only evaluate concrete values
-        bvs.iter().map(|bv| bv.as_u128()).collect()
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval_upto(&self, bv: &RustBV, n: usize) -> Vec<u128> {
-        self.eval_upto_checked(bv, n).values
-    }
-
-    /// Without Z3 nothing is ever undecided: a concrete value enumerates to
-    /// itself and a symbolic one to the empty set, both definitively.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval_upto_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
-        if n == 0 {
-            return Enumeration::decided(vec![]);
-        }
-        // Without Z3, can only return concrete values
-        Enumeration::decided(bv.as_u128().map(|v| vec![v]).unwrap_or_default())
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
-        self.eval_upto_wide_checked(bv, n).values
-    }
-
-    /// See the Z3 twin — without Z3 the stop reason is always "decided".
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn eval_upto_wide_checked(&self, bv: &RustBV, n: usize) -> Enumeration<Vec<u8>> {
-        if n == 0 {
-            return Enumeration::decided(vec![]);
-        }
-        Enumeration::decided(self.eval_wide(bv).map(|v| vec![v]).unwrap_or_default())
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn min(&self, bv: &RustBV, _signed: bool) -> Option<u128> {
-        // Without Z3, can only return concrete values
-        bv.as_u128()
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn max(&self, bv: &RustBV, _signed: bool) -> Option<u128> {
-        // Without Z3, can only return concrete values
-        bv.as_u128()
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn solution(&self, bv: &RustBV, value: u128) -> bool {
-        // Without Z3, can only check concrete values
-        bv.as_u128().map(|v| v == value).unwrap_or(true)
-    }
-
-    /// Get the range [min, max] of possible values for a bitvector.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn range(&self, bv: &RustBV) -> Option<(u128, u128)> {
-        // Without Z3, can only return range for concrete values
-        bv.as_u128().map(|v| (v, v))
-    }
-
-    /// Seeded range — without Z3, equivalent to range().
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn range_seeded(
-        &self,
-        bv: &RustBV,
-        _smallest_known: u128,
-        _largest_known: u128,
-    ) -> Option<(u128, u128)> {
-        bv.as_u128().map(|v| (v, v))
-    }
-
-    /// Get up to n concrete solutions for a bitvector.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn solutions(&self, bv: &RustBV, n: usize) -> Vec<u128> {
-        self.eval_upto(bv, n)
-    }
-
-    /// See the Z3 twin — without Z3 the stop reason is always "decided".
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn solutions_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
-        self.eval_upto_checked(bv, n)
-    }
 }
 
 // `test_submod!`, not a hand-written `mod`: this file's `#![deny(clippy::
 // unwrap_used, clippy::expect_used)]` above propagates into the child test
 // module, and the macro is what re-`allow`s the two lints there (angr-03vl4.83).
-test_submod!(z3 "solving_ops_tests.rs" => solving_ops_tests);
+test_submod!("solving_ops_tests.rs" => solving_ops_tests);

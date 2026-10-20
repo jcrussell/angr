@@ -7,17 +7,11 @@
 //! claripy-AST API in the parent module calls. The claripy → Z3 lowering the
 //! constraint fast paths use is `claripy_bridge::lower_claripy_bool`.
 
-// Consumed only by the `vex-engine-z3`-gated paths below — importing them
-// unconditionally warns in the no-z3 combos `make check-no-z3` gates
-// (angr-sqfj8.139).
-#[cfg(feature = "vex-engine-z3")]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-#[cfg(feature = "vex-engine-z3")]
 use clarirs_core::prelude::AstRef;
 
-#[cfg(feature = "vex-engine-z3")]
 use crate::claripy::ast::base::Base;
 
 use crate::claripy_bridge::claripy_to_rustbv;
@@ -27,7 +21,6 @@ use super::RustSolverContext;
 
 /// The clarirs node behind a Python claripy AST, or `None` when `ast` is not
 /// one of this extension's claripy ASTs.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) fn claripy_node(ast: &Bound<'_, PyAny>) -> Option<AstRef<'static>> {
     Some(ast.cast::<Base>().ok()?.get().ast())
 }
@@ -39,7 +32,6 @@ pub(crate) fn claripy_node(ast: &Bound<'_, PyAny>) -> Option<AstRef<'static>> {
 /// The value is the node itself, so it lowers to the same Z3 term as a
 /// constraint built from that node: evaluation binds the variables the
 /// solver already constrains.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) fn node_to_eval_bv(node: &AstRef<'static>) -> Result<RustBV, String> {
     let sort = node.ast_type();
     if !(sort.is_bool() || sort.is_bitvec()) {
@@ -64,7 +56,6 @@ impl RustSolverContext {
         if let Ok(bv) = claripy_to_rustbv(py, ast, ctx) {
             return Some(bv);
         }
-        #[cfg(feature = "vex-engine-z3")]
         {
             let node = claripy_node(ast)?;
             // SILENT(cat-a): a non-BV-sorted AST is an expected miss on this
@@ -79,16 +70,11 @@ impl RustSolverContext {
             }
             node_to_eval_bv(&node).ok()
         }
-        #[cfg(not(feature = "vex-engine-z3"))]
-        {
-            None
-        }
     }
 
     /// Evaluate a claripy node directly in the solver context: the path for
     /// an AST `claripy_to_rustbv` cannot import operand-wise. Bool evaluates
     /// as 0/1 (see [`node_to_eval_bv`]); any other non-BV sort is an error.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn eval_claripy_node(
         &self,
         py: Python<'_>,

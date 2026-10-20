@@ -768,7 +768,6 @@ fn pinned_symbolic_addr(ctx: &SymContext, name: &str, addr: u64) -> RustBV {
 /// carries its own copy of the AVOID_MULTIVALUED_READS short-circuit ahead of
 /// `concretize_cached_read`. With the option on it must mint an unconstrained
 /// value without consulting the concrete-memory cache at all.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
     use crate::callbacks::PythonCallbacks;
@@ -811,7 +810,6 @@ fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
 /// `memory::tests::avoid_multivalued`). So this test pins the entry point's
 /// observable ON/OFF contract; what the interpreter-level copy adds on top is
 /// skipping the call — not a different result.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn try_rust_memory_load_short_circuits_under_avoid_multivalued_reads() {
     use crate::callbacks::PythonCallbacks;

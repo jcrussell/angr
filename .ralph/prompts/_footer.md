@@ -20,8 +20,7 @@ Otherwise, for each task follow this loop:
     memory `invariant-rustdoc-intra-doc-links` for the link rules it
     enforces. If you touch Python, the edit hook runs ruff; a manual
     `ruff check --fix <file> && ruff format <file>` before commit is the
-    backstop. Why each flag matters, and the other local checks
-    (`make check-no-z3`): `docs/advanced-topics/rust_build.rst`.
+    backstop. Why each flag matters: `docs/advanced-topics/rust_build.rst`.
  6. If Rust changed: `make rebuild-cargo` (the venv's `pip` is unreliable;
     see AGENTS.md "Building, testing, debugging").
  7. Test: `python -m pytest tests/engines/rust/ -q --tb=short`

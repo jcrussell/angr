@@ -48,7 +48,6 @@ impl RustExplorationManager {
     /// The width buckets come from the same sampler as the serial model's
     /// `record_migration_sample`, so `parallel_width_hist` stays a single
     /// comparable series regardless of which loop produced it.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn fold_scheduler_dispatch_stats(&mut self, stats: &scheduler::SchedulerStats) {
         for (i, count) in stats.width_hist.iter().enumerate() {
             self.parallel_width_hist[i] += *count as u64;
@@ -403,10 +402,6 @@ impl RustExplorationManager {
     /// `num_find` (angr-op0dn.13.17). The surplus stays in `STASH_ACTIVE` — an
     /// un-collected frontier state at the find pc — so a later resume explore
     /// with a larger `num_find` re-finds it exactly as the serial loop would.
-    ///
-    /// Retained without Z3: its only callers are the `vex-engine-z3`-gated
-    /// parallel wave/steady loops (angr-sqfj8.139).
-    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     pub(crate) fn push_found_capped(&mut self, state: RustSimState) {
         if self.found_count() >= self.num_find {
             self.push_to_active_or_drop(state);

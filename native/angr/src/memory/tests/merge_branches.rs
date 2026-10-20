@@ -18,7 +18,6 @@ use super::super::*;
 /// Two memories share a page but differ in one concrete byte. After merge the
 /// byte must be `ITE(cond, other, self)`: evaluating under cond=true yields the
 /// `other` byte, under cond=false the `self` byte.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_selects_other_vs_self_per_byte() {
     let ctx = SymContext::new();
@@ -65,7 +64,7 @@ fn test_merge_selects_other_vs_self_per_byte() {
 }
 
 // ---------------------------------------------------------------------------
-// merge: structural branches (no ITE eval, mock context suffices)
+// merge: structural branches (no ITE eval)
 // ---------------------------------------------------------------------------
 
 /// A page present only in `other` is adopted wholesale into `self.pages`,

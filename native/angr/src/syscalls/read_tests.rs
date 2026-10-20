@@ -487,7 +487,6 @@ fn read_content_sym_serves_natively_and_eof_returns_zero() {
 /// `read` procedure does through `stdin_common::mint_stdin_bytes`. It used to
 /// mint unbound `sys_read_*` bytes, so the path condition never mentioned the
 /// harness's symbol.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn read_stdin_binds_seeded_bytes() {
     let h = NativeReadSyscall;

@@ -62,7 +62,6 @@ fn test_qop_rejects_non_quaternary() {
 /// This is the canonical "constraint propagation" check for the new Z3
 /// FP-theory wiring: previously the symbolic branch returned a fresh
 /// unconstrained symbol and the solver would accept any value of x.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_add_symbolic_constraint() {
     let ctx = SymContext::new_mock();
@@ -86,7 +85,6 @@ fn test_float_add_symbolic_constraint() {
 }
 
 /// Symbolic FSqrt: `sqrt(x) == 4.0` should give x == 16.0.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_sqrt_symbolic_constraint() {
     let ctx = SymContext::new_mock();
@@ -125,7 +123,6 @@ fn test_float_div_with_rm_rne_fastpath_f32() {
 
 /// FDiv with concrete RZ (toward zero) rm: 1.0/10.0 truncates the last
 /// mantissa bit → 0x3DCCCCCC (one ULP below RNE).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_div_with_rm_rz_f32() {
     let ctx = SymContext::new_mock();
@@ -140,7 +137,6 @@ fn test_float_div_with_rm_rz_f32() {
 
 /// FDiv with concrete RU (toward +inf) rm: 1.0/10.0 = 0x3DCCCCCD (same
 /// as RNE because the discarded bits push up).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_div_with_rm_ru_f32() {
     let ctx = SymContext::new_mock();
@@ -155,7 +151,6 @@ fn test_float_div_with_rm_ru_f32() {
 
 /// FDiv with concrete RD (toward -inf) rm on a positive result equals RZ:
 /// 1.0/10.0 → 0x3DCCCCCC.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_div_with_rm_rd_f32() {
     let ctx = SymContext::new_mock();
@@ -171,7 +166,6 @@ fn test_float_div_with_rm_rd_f32() {
 /// FDiv with symbolic rm: constraining result == 0x3DCCCCCC forces rm
 /// low-2-bits ∈ {1, 3} (RD or RZ); 0x3DCCCCCD forces rm low-2-bits ∈
 /// {0, 2}. Exercises the 4-way ITE built by `build_fp_arith_rm_cached`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_div_with_symbolic_rm_f32() {
     let ctx = SymContext::new_mock();
@@ -197,7 +191,6 @@ fn test_float_div_with_symbolic_rm_f32() {
 /// FAdd with concrete RZ on inexact-sum operands. 0x3F800001 + 0x3F800002
 /// = 2.0 + 1.5ulp (exact). RNE rounds-to-even → 2.0 + 2ulp = 0x40000002;
 /// RZ truncates → 2.0 + 1ulp = 0x40000001.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_add_with_rm_rz_f32() {
     let ctx = SymContext::new_mock();
@@ -212,7 +205,6 @@ fn test_float_add_with_rm_rz_f32() {
 
 /// SqrtRm: sqrt(2.0f32) under RU (toward +inf). True value is between
 /// 0x3FB504F3 (RNE) and 0x3FB504F4; RU pushes up by one ulp.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_sqrt_with_rm_ru_f32() {
     let ctx = SymContext::new_mock();
@@ -239,7 +231,6 @@ fn test_float_sqrt_with_rm_rne_fastpath_f32() {
 /// Iop_SqrtF32 reaches us as a VEX Binop (arg1=rm, arg2=value). Verify
 /// that VEXOps::binop routes it through unop_with_rm so the rounding
 /// mode is honored — RU on sqrt(2.0f32) must round up by one ulp.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_sqrt_via_binop_with_rm_ru_f32() {
     let ctx = SymContext::new_mock();
@@ -269,7 +260,6 @@ fn test_float_sqrt_via_binop_rne_fastpath_f64() {
 /// under RZ. Constraining `a == 0x3F800001` must pin the result to the
 /// RZ-truncated sum `0x40000001` (a fresh-symbolic result would leave it
 /// free, making `result == 0x40000002` satisfiable too).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_add_symbolic_operand_with_rm_rz_f32() {
     let ctx = SymContext::new_mock();
@@ -329,7 +319,6 @@ fn test_qop_with_rm_rne_fastpath_f64() {
 }
 
 /// RZ rm on the same operands truncates toward zero → exactly 1.0.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_qop_with_rm_rz_f64_differs_from_rne() {
     let ctx = SymContext::new_mock();
@@ -353,7 +342,6 @@ fn test_qop_with_rm_rz_f64_differs_from_rne() {
 /// FMSub under RZ: `a*b - c` with a negated `c` reaches the same 1.5 ULP sum,
 /// proving both that the rm is threaded and that the `-c` negation survives
 /// the rm-carrying path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_qop_with_rm_fmsub_rz_f64() {
     let ctx = SymContext::new_mock();
@@ -369,7 +357,6 @@ fn test_qop_with_rm_fmsub_rz_f64() {
 
 /// A symbolic rm builds the 4-way ITE: pinning the result to the RZ answer
 /// forces the rm low-2-bits away from RNE.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_qop_with_rm_symbolic_rm_f64() {
     let ctx = SymContext::new_mock();
@@ -480,7 +467,6 @@ fn test_max_num_min_num_signed_zero() {
 /// Symbolic maxNum: constraining `maxNum(x, 2.0) == 5.0` forces x == 5.0, so
 /// the Z3 `fp.max` wiring actually propagates rather than minting a fresh
 /// unconstrained symbol.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_max_num_symbolic_constraint() {
     let ctx = SymContext::new_mock();

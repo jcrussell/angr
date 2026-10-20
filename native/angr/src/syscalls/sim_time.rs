@@ -203,4 +203,4 @@ impl NativeSyscall for NativeClockGettimeSyscall {
     }
 }
 
-test_submod!(z3 "sim_time_tests.rs" => sim_time_tests);
+test_submod!("sim_time_tests.rs" => sim_time_tests);

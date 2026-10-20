@@ -138,12 +138,9 @@ impl RustExplorationManager {
             parallel_shadow_migration_states: 0,
             parallel_shadow_migration_bytes: 0,
             parallel_shadow_migration_failures: 0,
-            #[cfg(feature = "vex-engine-z3")]
             shadow_probe_chan: None,
             pending_parallel_bounces: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
             parallel_pool: None,
-            #[cfg(feature = "vex-engine-z3")]
             parallel_session: None,
             parallel_frontier_residency: false,
             parallel_steady_env: env_flag("RUST_PARALLEL_STEADY"),
@@ -284,7 +281,6 @@ impl RustExplorationManager {
     /// with bounces parked would otherwise under-report the resumable frontier
     /// in `stash_counts()` relative to the serial loop. Unlike the steady
     /// drain, this half is not session-gated.
-    #[cfg(feature = "vex-engine-z3")]
     #[angr_macros::steady_guard_exempt(
         reason = "is the finalize/drain operation itself — the thing every #[steady_guarded] \
                   mutator calls into via steady_config_guard(); guarding it would be circular."
@@ -295,29 +291,13 @@ impl RustExplorationManager {
         Ok(())
     }
 
-    #[cfg(not(feature = "vex-engine-z3"))]
-    #[angr_macros::steady_guard_exempt(
-        reason = "no-Z3 build has no steady session at all (steady_config_guard is a no-op \
-                  stub here); nothing to finalize or guard."
-    )]
-    pub fn finalize_parallel_session(&mut self) -> PyResult<()> {
-        self.flush_parked_bounces_to_active();
-        Ok(())
-    }
-
     /// Whether a steady-state session is currently live (angr-nkoct). True only
     /// while worker frontiers are resident across a `need_callback` return, so
     /// some live states are inside worker Z3 contexts rather than any stash.
     /// The Python driver reads this to skip state-cache cleanup that would
-    /// mis-classify a resident state as dead. Always false on non-Z3 builds.
-    #[cfg(feature = "vex-engine-z3")]
+    /// mis-classify a resident state as dead.
     pub fn parallel_session_active(&self) -> bool {
         self.parallel_session.is_some()
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn parallel_session_active(&self) -> bool {
-        false
     }
 
     /// Set state selection to LIFO (DFS - depth-first search).
@@ -422,7 +402,6 @@ impl RustExplorationManager {
     #[angr_macros::steady_guarded]
     pub fn set_parallel_workers(&mut self, n: usize) {
         self.parallel_real_workers = n.max(1);
-        #[cfg(feature = "vex-engine-z3")]
         self.retire_parallel_pool_for_resize();
     }
 

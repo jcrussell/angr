@@ -227,7 +227,6 @@ fn test_nary_assoc_ops_import_every_operand() {
 /// build equivalent values. A Python shim exposing only `op` / `args` /
 /// `length` forces the attribute walk all the way down; Z3 then checks the two
 /// results cannot differ.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_native_and_attribute_walks_agree() {
     use clarirs_core::prelude::*;
@@ -284,7 +283,6 @@ fn test_native_and_attribute_walks_agree() {
 /// operands are never turned into IEEE bit patterns, so `fp.eq(x, x)` keeps
 /// IEEE semantics (false for NaN) instead of becoming a bit equality, which is
 /// always true. Exporting the value hands back the very same clarirs node.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_float_predicate_imports_whole_and_exports_unchanged() {
     use clarirs_core::prelude::*;

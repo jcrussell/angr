@@ -82,7 +82,6 @@ fn total_while_bumped(counter: &AtomicU64) -> u64 {
 
 /// A site with count 0 contributes no keys at all — not even a zeroed
 /// `_time_ns` — while a site that fired contributes exactly its two.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_check_site_stats_omit_untouched_sites() {
     let mut stats: HashMap<String, u64> = HashMap::new();
@@ -115,7 +114,6 @@ fn test_check_site_stats_omit_untouched_sites() {
 
 /// A site that fired but accumulated 0 ns still emits both keys — the filter
 /// is on the count, not the time.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_check_site_stats_emit_zero_time_when_count_nonzero() {
     let mut stats: HashMap<String, u64> = HashMap::new();
@@ -132,7 +130,6 @@ fn test_check_site_stats_emit_zero_time_when_count_nonzero() {
 /// The query-class loop is unconditional: every class key is present even
 /// when the classifier never fired, so a counters-json capture can tell
 /// "classifier off" from "key dropped".
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_query_class_stats_always_emitted() {
     let mut stats: HashMap<String, u64> = HashMap::new();
@@ -147,7 +144,6 @@ fn test_query_class_stats_always_emitted() {
 /// The real name tables must line up with their counter arrays and carry no
 /// duplicates — a repeated name would silently collapse two buckets into one
 /// key, and the survivor would be whichever the loop visited last.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bucket_name_tables_are_consistent() {
     assert_eq!(SITE_NAMES.len(), NUM_CHECK_SITES);

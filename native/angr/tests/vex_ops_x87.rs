@@ -6,7 +6,6 @@
 //! symbolic concretize-and-pin fallback. Symbolic tests require Z3 since
 //! they exercise `ctx.eval` and `ctx.assume_true`.
 
-#![cfg(feature = "vex-engine-z3")]
 // Integration-test harness code panicking on unwrap/expect is the desired
 // behavior, same rationale as #[cfg(test)] code in lib.rs -- not part of the
 // angr-9ke6b.212 production-code debt tracker.

@@ -45,7 +45,6 @@ impl RustBV {
     /// `SymbolKind::Bool` name so it never collides with a same-named `BVS`.
     /// Two leaves with the same name and width are one Z3 constant
     /// (`invariant-symbol-identity-is-by-name`).
-    #[cfg_attr(not(feature = "vex-engine"), allow(dead_code))]
     pub(crate) fn leaf_var(&self) -> Option<(std::sync::Arc<str>, u32)> {
         use super::symbol_kind::SymbolKind;
         use std::sync::Arc;

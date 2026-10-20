@@ -361,7 +361,6 @@ fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustB
     sym
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strncpy_symbolic_source_serves_natively() {
     // src = ['a', ?, 'c', 0]; the symbolic byte used to bounce to Python.
@@ -412,7 +411,6 @@ fn test_strncpy_symbolic_source_serves_natively() {
     }
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strncpy_symbolic_source_null_truncates_copy() {
     // Same buffer, but constrain the symbolic byte to NUL: the copy length

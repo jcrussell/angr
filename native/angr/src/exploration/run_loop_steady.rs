@@ -39,7 +39,6 @@ use super::run_loop_worker::{MatKind, ParallelShared};
 /// so the coordinator can route streamed terminals and fold counters without
 /// recovering sole ownership (workers keep their clones for the session's
 /// life).
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) struct SteadySession {
     session: Arc<RunSession>,
     /// Wrapped in a `Mutex` only so `SteadySession: Sync` holds — required
@@ -57,7 +56,6 @@ pub(crate) struct SteadySession {
     parked: Vec<usize>,
 }
 
-#[cfg(feature = "vex-engine-z3")]
 impl SteadySession {
     /// Cancel the session and wake every worker so it observes the cancel at
     /// its next task boundary. Does NOT wait for the drain — used by the
@@ -73,7 +71,6 @@ impl SteadySession {
 }
 
 /// What `steady_pump` hands back to the steady coordinator loop.
-#[cfg(feature = "vex-engine-z3")]
 enum SteadyOutcome {
     /// Bounce terminals to dispatch through `process_parallel_bounce_queue`
     /// (may be empty — a signal to re-check `num_find` at the loop top).
@@ -95,7 +92,6 @@ enum SteadyOutcome {
 /// solver timeout keeps a healthy-but-slow worker (raised
 /// `set_solver_timeout`) from being mistaken for a lost wakeup, while the 60s
 /// floor preserves the historical deadline at the 30s default.
-#[cfg(feature = "vex-engine-z3")]
 fn steady_finalize_deadline(solver_timeout_ms: u32) -> Duration {
     Duration::from_millis(u64::from(solver_timeout_ms).saturating_mul(2))
         .max(Duration::from_secs(60))
@@ -109,7 +105,6 @@ fn steady_finalize_deadline(solver_timeout_ms: u32) -> Duration {
 /// finalize path so the "which workers are stuck" computation is falsifiable
 /// without a running session — a regression that inverts the predicate (naming
 /// the *acked* workers) or off-by-ones the range trips the unit tests below.
-#[cfg(feature = "vex-engine-z3")]
 fn stuck_worker_ids(workers: usize, paused: &[usize]) -> Vec<usize> {
     (0..workers).filter(|w| !paused.contains(w)).collect()
 }
@@ -131,7 +126,6 @@ fn stuck_worker_ids(workers: usize, paused: &[usize]) -> Vec<usize> {
     clippy::expect_used,
     reason = "root_map/kind_map poison guards: the locks poison only on an impossible panic=abort unwind — see the module Panic policy header"
 )]
-#[cfg(feature = "vex-engine-z3")]
 fn take_steady_routing(shared: &ParallelShared, id: u64) -> (u64, Option<MatKind>) {
     let root = shared
         .root_map
@@ -147,7 +141,6 @@ fn take_steady_routing(shared: &ParallelShared, id: u64) -> (u64, Option<MatKind
     (root, kind)
 }
 
-#[cfg(feature = "vex-engine-z3")]
 impl RustExplorationManager {
     // =====================================================================
     // Steady-state coordinator (angr-nkoct). One long-lived `SteadySession`
@@ -366,7 +359,6 @@ impl RustExplorationManager {
     /// `resume_reinjects`, and wake the workers. Called by
     /// `route_resume_successors` (resume.rs) after it partitions off find/avoid
     /// successors; no-op on an empty batch or absent session.
-    #[cfg(feature = "vex-engine-z3")]
     #[allow(
         clippy::expect_used,
         reason = "root_map poison guard: poison implies a prior unwind under panic=abort, impossible — see the module Panic policy header"
@@ -404,7 +396,6 @@ impl RustExplorationManager {
     /// total would otherwise sit stale for the whole session. Both the counter
     /// drain and the `stepped` read are M2 swaps, so folding early and folding
     /// again at finalize cannot double-count.
-    #[cfg(feature = "vex-engine-z3")]
     fn fold_steady_counters_incrementally(&mut self) {
         let Some(shared) = self
             .parallel_session
@@ -612,7 +603,6 @@ impl RustExplorationManager {
     /// returns resident frontier states to the stashes, so it must run on
     /// every non-`need_callback` exit and before any config mutation (the
     /// `steady_config_guard`).
-    #[cfg(feature = "vex-engine-z3")]
     #[allow(
         clippy::expect_used,
         reason = "up_rx + root_map/kind_map poison guards: finalize consumes the live session and the locks poison only on an impossible panic=abort unwind — see the module Panic policy header"
@@ -754,9 +744,7 @@ impl RustExplorationManager {
     /// Finalize a live steady session if a config mutation is about to
     /// invalidate its snapshotted `StepContext` (find/avoid addrs, hooks,
     /// solver/memory config) or touch the active stash. Called from the guarded
-    /// `set_*` / `register_*` pymethods. The no-Z3 build has no steady session
-    /// at all; its no-op stub lives in `run_loop.rs`, because this whole module
-    /// is Z3-gated (angr-9ke6b.236).
+    /// `set_*` / `register_*` pymethods.
     pub(crate) fn steady_config_guard(&mut self) {
         if self.parallel_session.is_some() {
             // A pymethod may be called without a Python token in hand, but we
@@ -783,4 +771,4 @@ impl RustExplorationManager {
     }
 }
 
-test_submod!(z3 "run_loop_steady_tests.rs" => tests);
+test_submod!("run_loop_steady_tests.rs" => tests);

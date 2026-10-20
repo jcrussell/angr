@@ -11,7 +11,6 @@ use super::*;
 
 /// After a single load of a Multi byte, the payload's collapse cache must
 /// be populated. A second load returns the cached BV unchanged.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase3_collapse_cache_hit_after_load() {
     let ctx = SymContext::new_mock();
@@ -70,7 +69,6 @@ fn test_phase3_collapse_cache_invalidated_on_push() {
 /// byte changes between loads. Otherwise a concrete overwrite of the cell's
 /// page byte (which does not currently clear the Multi marker) would serve
 /// a stale ITE.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
     let ctx = SymContext::new_mock();
@@ -198,7 +196,6 @@ fn test_phase4_wider_load_cache_skips_size_one() {
 /// alternative whose cond can be made true while the first is false —
 /// letting eval pin the rebuilt result to the new value and fail loudly
 /// if the cache returned the stale BV.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     let ctx = SymContext::new_mock();

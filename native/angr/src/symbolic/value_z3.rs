@@ -15,7 +15,6 @@ impl RustBV {
     // =========================================================================
 
     /// Convert this RustBV to a Z3 AST, lowering a clarirs term on first use.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_ast(&self) -> z3::ast::BV {
         super::stats::record_z3_ast_build();
         let mut cache = std::collections::HashMap::new();
@@ -25,7 +24,6 @@ impl RustBV {
     /// [`Self::to_z3_ast`] with a per-call cache keyed by value address, for
     /// callers lowering many values in one pass. A clarirs term's lowering is
     /// also kept on the value (`memo`) and in `z3_lower`'s per-thread cache.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_ast_cached(
         &self,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
@@ -59,7 +57,6 @@ impl RustBV {
     }
 
     /// Lower a [`RustBV::Ast`] term into the thread-local context.
-    #[cfg(feature = "vex-engine-z3")]
     #[expect(
         clippy::expect_used,
         reason = "closed-world invariant: an `Ast` is built by `RustBV::from_clarirs`, which lowered the node, or by `from_clarirs_lowerable`, whose node is a subterm of one that was lowered or one `value_clarirs::build_term` built over such terms; lowering is a pure function of the node"
@@ -81,7 +78,6 @@ impl RustBV {
     /// `assume_true_ast` and `add_constraint_from_ast` do). See
     /// `to_z3_bool_cached` for why a multi-bit input would be silently
     /// mis-converted instead of rejected.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool(&self) -> z3::ast::Bool {
         debug_assert_eq!(
             self.width(),
@@ -111,7 +107,6 @@ impl RustBV {
     /// error but a *wrong answer*: the Bool view reads a bit, and a wider
     /// value has no single bit to read. Matches the `debug_assert_eq!` width
     /// convention the binary ops in `value_ops.rs` use.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool_cached(
         &self,
         _cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
@@ -131,7 +126,6 @@ impl RustBV {
 
     /// Lower the Bool a 1-bit [`RustBV::Ast`] term stands for: the `c` of the
     /// `ite(c, 1, 0)` encoding, or `bit != 0`.
-    #[cfg(feature = "vex-engine-z3")]
     #[expect(
         clippy::expect_used,
         reason = "closed-world invariant: the Bool is a subterm of a lowered `Ast` (or `bit != 0` over one), and building `0` or `!=` over a 1-bit term cannot fail"
@@ -145,4 +139,4 @@ impl RustBV {
 // Direct coverage for the float ops (angr-c7xno.74), built as the engine
 // builds them and lowered through clarirs. `z3` gating because every test
 // drives `SymContext::eval`.
-test_submod!(z3 "value_z3_fp_tests.rs" => value_z3_fp_tests);
+test_submod!("value_z3_fp_tests.rs" => value_z3_fp_tests);

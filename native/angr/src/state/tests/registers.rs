@@ -106,7 +106,6 @@ fn test_set_register_unknown_name_refuses_and_leaves_pc() {
 /// A symbolic IP write succeeds, but there is no concrete value to cache, so
 /// `pc` deliberately keeps its previous value — `get_ip()` stays the source of
 /// truth for the symbolic case.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_set_register_symbolic_ip_leaves_pc_unchanged() {
     let mut state = RustSimState::new("amd64").unwrap();

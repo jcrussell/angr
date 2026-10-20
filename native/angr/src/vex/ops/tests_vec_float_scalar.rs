@@ -52,7 +52,6 @@ fn test_vec_float_scalar_div() {
 
 /// Symbolic VFAddS (ADDSS-style): `x_low + 2.0 == 5.0` should yield x_low == 3.0,
 /// and the upper 96 bits of `xmm0` must pass through unchanged.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_scalar_add_symbolic() {
     let ctx = SymContext::new_mock();
@@ -90,7 +89,6 @@ fn test_vec_float_scalar_add_symbolic() {
 }
 
 /// Symbolic VFSqrtS (SQRTSS-style): sqrt(low32(xmm)) == 4.0 → low32 == 16.0.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_scalar_sqrt_symbolic() {
     let ctx = SymContext::new_mock();
@@ -120,7 +118,6 @@ fn test_vec_float_scalar_sqrt_symbolic() {
 /// constrain low32(result) == 5.0 — solver must pick xmm0.lane0 == 5.0 (since
 /// max(5.0, 3.0) == 5.0). Also a model where xmm0.lane0 == 1.0 must NOT satisfy
 /// the constraint (we don't test that here, but the ITE encoding guarantees it).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_scalar_max_symbolic() {
     let ctx = SymContext::new_mock();
@@ -147,7 +144,6 @@ fn test_vec_float_scalar_max_symbolic() {
 
 /// Symbolic VFMinS (MINSS-style): with `xmm1 = [3.0, ...]` and target == 1.0,
 /// solver must pick xmm0.lane0 == 1.0 (since min(1.0, 3.0) == 1.0).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_scalar_min_symbolic() {
     let ctx = SymContext::new_mock();
@@ -292,7 +288,6 @@ fn test_vec_float_scalar_max_nan_concrete() {
 
 /// SSE RCPSS shape: 128-bit result, lane 0 fresh symbolic (32-bit width),
 /// upper 96 bits passed through unchanged from the arg.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_est_s_f32_upper_passthrough() {
     let ctx = SymContext::new_mock();
@@ -305,7 +300,6 @@ fn test_vfrecip_est_s_f32_upper_passthrough() {
 }
 
 /// SSE RSQRTSS shape: same as RCPSS — upper 96 bits passthrough, lane 0 fresh.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrsqrt_est_s_f32_upper_passthrough() {
     let ctx = SymContext::new_mock();
@@ -318,7 +312,6 @@ fn test_vfrsqrt_est_s_f32_upper_passthrough() {
 }
 
 /// NEON Iop_RecipEst32Fx2 (D-reg, 2x f32 = 64-bit result).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_est_packed_f32x2_shape() {
     let ctx = SymContext::new_mock();
@@ -337,7 +330,6 @@ fn test_vfrecip_est_packed_f32x2_shape() {
 }
 
 /// SSE RCPPS / NEON Q-reg Iop_RecipEst32Fx4 (4x f32 = 128-bit result).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_est_packed_f32x4_shape() {
     let ctx = SymContext::new_mock();
@@ -407,7 +399,6 @@ fn test_vfrsqrt_est_packed_f64x2_shape() {
 }
 
 /// NEON Iop_RecipStep32Fx2: D-reg binary, 64-bit result.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_step_packed_f32x2_shape() {
     let ctx = SymContext::new_mock();

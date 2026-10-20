@@ -6,7 +6,6 @@
 use super::*;
 
 /// Seed fd 0 with concrete bytes the way `_seed_stdin_to_rust` does.
-#[cfg(feature = "vex-engine-z3")]
 fn seed_stdin(state: &mut RustSimState, bytes: &[u8]) {
     let seed: Vec<RustBV> = bytes
         .iter()
@@ -15,7 +14,6 @@ fn seed_stdin(state: &mut RustSimState, bytes: &[u8]) {
     state.file_system().set_fd_content_sym(0, seed);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mint_stdin_bytes_unseeded_records_every_leaf() {
     // No harness seed: every minted byte is a fresh unconstrained leaf and is
@@ -40,7 +38,6 @@ fn test_mint_stdin_bytes_unseeded_records_every_leaf() {
     assert!(state.stdin_symbols().iter().all(|(_, bits)| *bits == 8));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mint_stdin_bytes_binds_seed_and_skips_recording() {
     // Seeded bytes come back as plain leaves bound to the seed by constraint —
@@ -62,7 +59,6 @@ fn test_mint_stdin_bytes_binds_seed_and_skips_recording() {
     assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 2);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mint_stdin_bytes_partial_seed_records_only_the_tail() {
     // A read longer than the remaining seed binds the seeded prefix and mints
@@ -91,7 +87,6 @@ fn test_mint_stdin_bytes_partial_seed_records_only_the_tail() {
     assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 2);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mint_stdin_bytes_consumes_seed_in_read_order() {
     // Successive readers see successive seed bytes — the ordering contract
@@ -109,7 +104,6 @@ fn test_mint_stdin_bytes_consumes_seed_in_read_order() {
     assert_eq!(state.stdin_symbols().len(), 1);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mint_stdin_bytes_empty_names_is_a_noop() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -128,7 +122,6 @@ fn test_stdin_seed_unconsumed_false_without_seed() {
     assert!(!stdin_seed_unconsumed(&state));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_stdin_seed_unconsumed_tracks_position() {
     let mut state = RustSimState::new("amd64").unwrap();

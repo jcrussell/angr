@@ -6,20 +6,15 @@ use super::*;
 
 const JUMP_COND_ID: u64 = 77;
 
-/// Assert that a symbolic-jump successor pinned `expr` to `target`.
-///
-/// The pin is only *observable* where a model exists: without Z3 the mock
-/// solver's `eval` returns `None` for every symbolic BV, so the no-z3 build
-/// asserts exactly that rather than z3-gating the whole test away — the rest
-/// of each test (pc advanced, forked vs moved, ids, tags) is engine-agnostic
-/// and stays covered in both builds (angr-c7xno.100).
+/// Assert that a symbolic-jump successor pinned `expr` to `target`
+/// (angr-c7xno.100).
 fn assert_jump_pinned(
     state: &RustSimState,
     expr: &crate::symbolic::RustBV,
     target: u64,
     what: &str,
 ) {
-    let expected = cfg!(feature = "vex-engine-z3").then(|| u128::from(target));
+    let expected = Some(u128::from(target));
     assert_eq!(state.eval(expr), expected, "{what}");
 }
 

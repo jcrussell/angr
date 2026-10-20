@@ -418,7 +418,7 @@ one native lifting gets from C-side libVEX (struct mirrors in upstream's
 Symbolic universality tests
 ---------------------------
 
-Concrete unit tests cover one input; a ``#[cfg(feature = "vex-engine-z3")]``
+Concrete unit tests cover one input; a
 *universality* test proves the symbolic encoding correct for all inputs by
 asserting ``got != reference`` is UNSAT (``ctx.push()``,
 ``ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not())``,

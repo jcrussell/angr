@@ -15,7 +15,6 @@ use super::super::*;
 ///
 /// Regression for the wide-symbolic-object byte-reversal class of bugs
 /// described in project_endianness_bug.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_big_endian_128bit_wide_symbolic_store() {
     let ctx = SymContext::new_mock();
@@ -102,7 +101,6 @@ fn test_big_endian_128bit_wide_symbolic_store() {
 /// non-zero offsets). Before the fix, the LE branch returned MSB-side
 /// bytes from the wide BV instead of LSB-side bytes, so single-byte
 /// and 4-byte loads at non-zero offsets gave wrong values.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_little_endian_128bit_wide_symbolic_store() {
     let ctx = SymContext::new_mock();
@@ -204,7 +202,6 @@ fn wide_linear_scan_setup(endness: Endness) -> (SymContext, SymbolicMemory, u128
     (ctx, mem, pinned)
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_wide_linear_scan_little_endian() {
     let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Little);
@@ -220,7 +217,6 @@ fn test_wide_linear_scan_little_endian() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_wide_linear_scan_big_endian() {
     let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Big);
@@ -244,7 +240,6 @@ fn test_wide_linear_scan_big_endian() {
 /// wrapped to a small value, passing the check and handing the BE arm an
 /// underflowed `total_bits - byte_offset * 8 - 1`. The guard is now
 /// `checked_add`/`checked_mul`, so an unrepresentable offset is refused.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_extract_byte_lane_refuses_wrapping_byte_offset() {
     let ctx = SymContext::new_mock();

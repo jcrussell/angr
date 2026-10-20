@@ -9,9 +9,7 @@
 //! model-cache invalidators (`invalidate_model_if_inconsistent` and its
 //! batch variant).
 //!
-//! Every method here is `#[cfg(feature = "vex-engine-z3")]`, so the whole
-//! module is gated behind the feature in `mod.rs` (no empty `impl` block in
-//! the non-Z3 build). Lives as a second `impl SymContext` block in a child
+//! Lives as a second `impl SymContext` block in a child
 //! module of `symbolic`; the fields these mutate (`local_constraints`,
 //! `z3_assertions_shared`, `constraint_trackers`) plus the
 //! [`LocalConstraints`] struct and its fields are promoted to `pub(super)`
@@ -24,15 +22,10 @@
 use super::RustBV;
 use super::SymContext;
 
-#[cfg(feature = "vex-engine-z3")]
 use super::local_constraints::LocalConstraints;
-#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
-#[cfg(feature = "vex-engine-z3")]
 use super::stats::*;
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::Arc;
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::Ordering;
 
 impl SymContext {
@@ -50,7 +43,6 @@ impl SymContext {
     /// stays counter-agnostic so each call site (`add_constraint_raw`,
     /// `assume_true`, `assume_false`) attributes hits to its own counter
     /// pair (angr-mwbp).
-    #[cfg(feature = "vex-engine-z3")]
     fn seed_and_check_z3_dedup(
         &self,
         local: &mut LocalConstraints,
@@ -82,7 +74,6 @@ impl SymContext {
     /// otherwise inserts the ptr, pushes `constraint.clone()` onto
     /// `local.z3_assertions`, and returns `false`. Counter bookkeeping stays
     /// with the caller so each site attributes hits to its own counter.
-    #[cfg(feature = "vex-engine-z3")]
     fn contains_or_insert_ptr(local: &mut LocalConstraints, constraint: &z3::ast::Bool) -> bool {
         use z3::ast::Ast;
         let new_ptr = constraint.get_z3_ast().as_ptr() as usize;
@@ -108,7 +99,6 @@ impl SymContext {
     /// without `add_constraint_raw` traffic. Piggy-backing on an existing
     /// seed (most commonly placed by `add_constraint_raw` in the bridge)
     /// gets the dedup benefit when it's free and avoids cost otherwise.
-    #[cfg(feature = "vex-engine-z3")]
     fn check_z3_dedup_if_seeded(
         &self,
         local: &mut LocalConstraints,
@@ -145,7 +135,6 @@ impl SymContext {
     /// competing process-global `log` subscriber (`log::set_logger` is a
     /// one-shot singleton already claimed elsewhere in this test binary — see
     /// `constraint_ops_tests::test_dedup_backing_of_ptr_flags_stale_ptr_hit`).
-    #[cfg(feature = "vex-engine-z3")]
     fn dedup_backing_of_ptr(&self, local: &LocalConstraints, ptr: usize) -> (bool, bool) {
         use z3::ast::Ast;
         let in_local = local
@@ -166,7 +155,6 @@ impl SymContext {
     /// `local.z3_assertions`. Emits `debug!` when backed (sound true-positive)
     /// and `warn!` when unbacked (stale-ptr false positive — a dropped
     /// constraint). O(N) scan, so only invoked under Debug logging.
-    #[cfg(feature = "vex-engine-z3")]
     fn debug_verify_dedup_backing(&self, local: &LocalConstraints, constraint: &z3::ast::Bool) {
         use z3::ast::Ast;
         let ptr = constraint.get_z3_ast().as_ptr() as usize;
@@ -199,7 +187,6 @@ impl SymContext {
     /// through `with_z3_solver`'s closure form. Shared by
     /// [`Self::add_constraint_raw`], [`Self::add_constraint`], and
     /// [`Self::add_constraint_tracked_indexed`].
-    #[cfg(feature = "vex-engine-z3")]
     fn install_constraint(
         &self,
         constraint: &z3::ast::Bool,
@@ -243,7 +230,6 @@ impl SymContext {
     /// A non-dup constraint is also pushed to the residual log
     /// (`non_bv_assertions`) so it can be round-tripped without a RustBV form;
     /// [`Self::add_constraint_raw_assumed`] is the variant that skips that.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_raw(&self, ast: z3::ast::Bool) {
         self.add_constraint_raw_inner(ast, true);
     }
@@ -258,7 +244,6 @@ impl SymContext {
     /// claripy AST to blame) — a constraint sitting in both lists would be
     /// pinned outside its assumption literal, and an all-Python contradiction
     /// would come back Unsat with an EMPTY core (angr-op0dn.14.2).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_raw_assumed(&self, ast: z3::ast::Bool) {
         self.add_constraint_raw_inner(ast, false);
     }
@@ -281,7 +266,6 @@ impl SymContext {
     /// The caller must already have pushed the same `Bool` into
     /// `z3_assertions`, keeping the residual log a subset of it — the
     /// invariant `to_snapshot`'s `debug_assert!` pair checks.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn push_residual_assertion(&self, constraint: z3::ast::Bool) {
         self.local_constraints
             .lock()
@@ -289,7 +273,6 @@ impl SymContext {
             .push(constraint);
     }
 
-    #[cfg(feature = "vex-engine-z3")]
     fn add_constraint_raw_inner(&self, constraint: z3::ast::Bool, log_residual: bool) {
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
@@ -359,7 +342,6 @@ impl SymContext {
     /// negation in the Z3 Bool passed in. The flag is metadata for
     /// [`switch_to`](super::lineage::SharedLineageSolver::switch_to) — it
     /// only reads `z3_assertion`, so the flag doesn't affect Z3 semantics.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint(&self, constraint: z3::ast::Bool) {
         // Use plain assert for fast path (no unsat_core tracking overhead).
         // This avoids creating tracking booleans, string formatting, and
@@ -414,7 +396,6 @@ impl SymContext {
     /// base, so the N constraints would leak to all siblings. Mint-N-frames-
     /// then-switch keeps every constraint inside its own fresh push that
     /// only this state holds in its `scope_path`.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraints_raw_batch(&self, entries: Vec<(z3::ast::Bool, RustBV, bool)>) {
         if entries.is_empty() {
             return;
@@ -499,7 +480,6 @@ impl SymContext {
     /// Batched model invalidation: if the cached model fails to satisfy any
     /// constraint in `constraints`, drop it. Short-circuits on the first
     /// inconsistency. If the cache is already empty, returns immediately.
-    #[cfg(feature = "vex-engine-z3")]
     fn invalidate_model_if_inconsistent_batch(&self, constraints: &[z3::ast::Bool]) {
         let mut cache = self.model_cache.borrow_mut();
         if cache.is_none() {
@@ -559,7 +539,6 @@ impl SymContext {
     ///   See `add_constraint`'s rationale for why the Some branch can't
     ///   route through `with_z3_solver`'s closure form (it would land
     ///   the assert at scope 0 = the lineage base = sibling leak).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
         let idx = self.constraint_count.load(Ordering::SeqCst);
         let track_name = format!("__track_{idx}");
@@ -621,7 +600,6 @@ impl SymContext {
     /// constraint. Models that satisfy a superset of constraints stay valid;
     /// this lets check_branch_feasibility reuse a model across consecutive
     /// assume_true/assume_false calls in deferred-fork mode.
-    #[cfg(feature = "vex-engine-z3")]
     fn invalidate_model_if_inconsistent(&self, constraint: &z3::ast::Bool) {
         let mut cache = self.model_cache.borrow_mut();
         if cache.is_none() {
@@ -642,7 +620,6 @@ impl SymContext {
     }
 
     /// Add a constraint that the bitvector equals a specific value.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn add_bv_constraint(&self, bv: &RustBV, value: u128) {
         // Fast path: if bv is already concrete, the constraint is either
         // trivially true (skip) or trivially false (makes UNSAT).
@@ -671,13 +648,11 @@ impl SymContext {
     }
 
     /// Add a constraint that the bitvector is true (non-zero for 1-bit).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn assume_true(&self, cond: &RustBV) {
         self.assume(cond, true);
     }
 
     /// Add a constraint that the bitvector is false (zero for 1-bit).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn assume_false(&self, cond: &RustBV) {
         self.assume(cond, false);
     }
@@ -690,7 +665,6 @@ impl SymContext {
     /// counter split, the sampled simplify-skip probe, the dedup contract and
     /// the `add_constraint` handoff — is identical, so it lives here once
     /// rather than in two hand-synced copies.
-    #[cfg(feature = "vex-engine-z3")]
     fn assume(&self, cond: &RustBV, want_true: bool) {
         debug_assert_eq!(cond.width(), 1);
         // Fast path: the concrete value matching `want_true` is a tautology —

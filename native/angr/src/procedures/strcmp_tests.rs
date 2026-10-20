@@ -284,7 +284,6 @@ fn test_strcmp_symbolic_byte_returns_symbolic() {
     assert!(result.as_u64().is_none(), "expected symbolic result");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strcmp_symbolic_byte_solver_evaluation_equal() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -311,7 +310,6 @@ fn test_strcmp_symbolic_byte_solver_evaluation_equal() {
     assert_eq!(ctx.max(&result, false), Some(0));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strcmp_symbolic_byte_solver_evaluation_mismatch() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -339,7 +337,6 @@ fn test_strcmp_symbolic_byte_solver_evaluation_mismatch() {
     assert_eq!(ctx.max(&result, false), Some(1));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strncmp_symbolic_byte_within_limit_equal() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -405,7 +402,6 @@ fn symbolic_pinned_result<P: NativeSimProcedure>(
 /// The symbolic ITE chain must return the SIGN, not the raw byte difference
 /// (angr-u8gm8). Byte pairs are chosen >1 apart so a raw-diff regression
 /// surfaces as +/-2 rather than passing a sign-only assert.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strcmp_symbolic_mismatch_is_plus_minus_one() {
     // s1 = [a, ?, \0] vs s2 = "ab\0"; pin ? = 'd' -> raw diff would be +2.
@@ -420,7 +416,6 @@ fn test_strcmp_symbolic_mismatch_is_plus_minus_one() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcmp_symbolic_mismatch_is_plus_minus_one() {
     let n = [RustBV::concrete(3, 64)];
@@ -450,7 +445,6 @@ fn test_memcmp_symbolic_mismatch_is_plus_minus_one() {
 
 /// strcasecmp folds both sides before taking the sign: 'D' vs 'b' must
 /// compare as 'd' vs 'b' -> +1, not as 0x44 <u 0x62 -> -1.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strcasecmp_symbolic_mismatch_folds_then_signs() {
     assert_eq!(
@@ -550,7 +544,6 @@ fn test_strncmp_above_max_defers_to_python() {
 /// Two symbolic bytes compared under a caller-supplied `n` that covers exactly
 /// them: "both bytes equal and neither is null" must stay satisfiable. The
 /// unbounded spelling of the same window asserts a terminator and kills it.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_compare_bytes_null_requirement_follows_the_unbounded_flag() {
     for (unbounded, expect_sat) in [(false, true), (true, false)] {

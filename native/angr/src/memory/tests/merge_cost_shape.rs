@@ -178,7 +178,6 @@ fn test_merge_cost_shape_divergence_proportional() {
 /// Confirms ITE-cell count == divergent-byte count. This is the semantics-
 /// preservation argument the shipped `is_shared_identical` skip rests on;
 /// `merge_divergence.rs` asserts it against the production skip directly.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_ite_cells_equal_divergent_bytes() {
     let ctx = SymContext::new();

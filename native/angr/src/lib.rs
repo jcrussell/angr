@@ -39,13 +39,9 @@
 //!
 //! # Feature flags
 //!
-//! `default = ["vex-engine", "vex-engine-z3", "automaton"]`.
-//!
-//! - `vex-engine` — the interpreter, state model and native procedures
-//! - `vex-engine-z3` — adds the Z3-backed solver and the parallel scheduler
-//! - `automaton` — the DFA/NFA module
-//! - `fuzzer` — icicle/libafl backends; `fuzzing` — widen hostile-input parsers
-//!   to a crate-`pub` surface for the cargo-fuzz targets (see `fuzz_api`)
+//! Everything is built unconditionally. The one feature, `fuzzing`, widens
+//! the hostile-input parsers to a crate-`pub` surface for the cargo-fuzz
+//! targets (see `fuzz_api`).
 //!
 //! # Panic policy
 //!
@@ -97,20 +93,6 @@
 // crate-wide. Production code still gets the lint's full force: `--all-targets`
 // also compiles the plain (non-test) lib target, where `cfg(test)` is false.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-// Test-support rot in the no-z3 combos (angr-c7xno.99). Many `#[test]` fns
-// are individually `#[cfg(feature = "vex-engine-z3")]`-gated because they drive
-// `add_constraint` / `to_z3_ast`; compiling the test harness *without* z3
-// therefore strands their shared helpers, fixture consts and imports as
-// unused. Those are not real rot — they are live in every build anyone ships
-// or benchmarks — so gating each helper individually would scatter `cfg`s that
-// must be re-audited whenever a test moves. Scope the two lints off for
-// test-cfg no-z3 builds only: the default (z3) build, which is what CI's
-// `rust_check` clippy gate and `cargo test` run, keeps their full force over
-// the exact same code.
-#![cfg_attr(
-    all(test, not(feature = "vex-engine-z3")),
-    allow(dead_code, unused_imports)
-)]
 // Keep the crate's `pub` surface honest (angr-9ke6b.214).
 //
 // `[lib] crate-type = ["cdylib", "rlib"]` means rustc treats every `pub` item
@@ -146,9 +128,8 @@
 /// ```ignore
 /// test_submod!("stash_tests.rs" => tests);        // explicit `#[path]`
 /// test_submod!(tests_core);                       // default `tests_core.rs`
-/// // z3-only test files, so the no-z3 `cargo test` combos still compile:
-/// test_submod!(z3 "context_tests/constraints.rs" => context_tests_constraints);
-/// test_submod!(z3 tests_int_arith);
+/// test_submod!("context_tests/constraints.rs" => context_tests_constraints);
+/// test_submod!(tests_int_arith);
 /// ```
 ///
 /// Defined before the crate's `mod` declarations so legacy textual macro scope
@@ -176,28 +157,6 @@ macro_rules! test_submod {
     };
     ($name:ident) => {
         #[cfg(test)]
-        #[allow(
-            clippy::unwrap_used,
-            clippy::expect_used,
-            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-        )]
-        mod $name;
-    };
-    // Gated on vex-engine-z3 (bd angr-cagbn): test files that drive
-    // `SymContext::add_constraint` / `add_constraint_raw`, which only exist
-    // with z3.
-    (z3 $file:literal => $name:ident) => {
-        #[cfg(all(test, feature = "vex-engine-z3"))]
-        #[path = $file]
-        #[allow(
-            clippy::unwrap_used,
-            clippy::expect_used,
-            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-        )]
-        mod $name;
-    };
-    (z3 $name:ident) => {
-        #[cfg(all(test, feature = "vex-engine-z3"))]
         #[allow(
             clippy::unwrap_used,
             clippy::expect_used,
@@ -240,13 +199,6 @@ macro_rules! test_submod {
 ///
 /// Defined before the crate's `mod` declarations so legacy textual macro scope
 /// reaches every module; invoke it unqualified.
-#[allow(
-    unused_macros,
-    reason = "every current call site sits behind `vex-engine`, so the \
-              `--no-default-features` combos `make check-no-z3` gates compile \
-              the definition with no user. Defining it unconditionally keeps \
-              the convention reachable from feature-independent modules too"
-)]
 macro_rules! silent_default {
     // `Result<T, E>` form. Listed first: its `|err|` prefix would otherwise be
     // swallowed by the `$($msg:tt)+` of the `Option` arm below.
@@ -294,7 +246,6 @@ test_submod!("silent_default_tests.rs" => silent_default_tests);
 ///
 /// The bound is ~584 years, so no real process reaches it; this is
 /// defensiveness and documentation, not a live bug fix.
-#[cfg(feature = "vex-engine")]
 pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -304,7 +255,6 @@ pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
 /// The `Instant` spelling of [`duration_ns`], which carries the rationale.
 /// Timing sites should call this rather than narrowing `as_nanos()`'s `u128`
 /// with a bare `as u64`.
-#[cfg(feature = "vex-engine")]
 pub(crate) fn elapsed_ns(start: std::time::Instant) -> u64 {
     duration_ns(start.elapsed())
 }
@@ -315,9 +265,7 @@ pub(crate) fn elapsed_ns(start: std::time::Instant) -> u64 {
 // `fuzzing`, so a stock build never sees it.
 #[cfg(feature = "fuzzing")]
 pub mod fuzz_api {
-    #[cfg(feature = "vex-engine")]
     pub use crate::procedures::format_common::{parse_length_modifier, parse_width_digits};
-    #[cfg(feature = "vex-engine")]
     pub use crate::procedures::getopt::fuzz_exports::parse_optstring;
 }
 
@@ -413,39 +361,23 @@ pub mod icicle;
 )]
 pub mod segmentlist;
 
-// VEX Engine modules (requires vex-engine feature, enabled by default)
-#[cfg(feature = "vex-engine")]
+// VEX Engine modules
 pub(crate) mod arch;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod callbacks;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod claripy_bridge;
-#[cfg(feature = "vex-engine")]
 pub mod concretize;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod engine;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod errors;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod exploration;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod gil_profile;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod interpreter;
-#[cfg(feature = "vex-engine")]
 pub mod memory;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod procedures;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod solver;
-#[cfg(feature = "vex-engine")]
 pub mod stash;
-#[cfg(feature = "vex-engine")]
 pub mod state;
 pub mod symbolic;
-#[cfg(feature = "vex-engine")]
 pub(crate) mod syscalls;
-#[cfg(feature = "vex-engine")]
 pub mod vex;
 
 /// Shared boundary-value tables for the integer-overflow/wraparound proactive
@@ -455,12 +387,8 @@ pub mod vex;
 /// it is declared once here at the crate root rather than nested under any of
 /// them.
 ///
-/// Gated on `test` alone, *not* on `vex-engine`: the tables are two `Vec`
-/// literals with no engine dependency, and `segmentlist`'s own tests (which
-/// build unconditionally, so CFGFast-style consumers work standalone) sweep
-/// `boundary_addresses` over `SegmentList::{occupy,release}` (angr-fs8kb.87).
-/// Re-adding a `feature = "vex-engine"` here would break the
-/// `--no-default-features` test build rather than merely narrow coverage.
+/// `segmentlist`'s own tests sweep `boundary_addresses` over
+/// `SegmentList::{occupy,release}` too (angr-fs8kb.87).
 #[cfg(test)]
 pub(crate) mod test_boundary_values;
 
@@ -490,10 +418,6 @@ use pyo3::prelude::*;
 /// and collapses the 7 scattered per-fn `#[allow]`s into this single site.
 /// The lone `#[allow]` below is the single, deliberate suppression that
 /// replaces the former per-call-site cluster. See bd bead angr-inieg.1.
-///
-/// Retained without the engine: every caller lives under `vex-engine`
-/// (angr-sqfj8.139).
-#[cfg_attr(not(feature = "vex-engine"), allow(dead_code))]
 #[allow(clippy::arc_with_non_send_sync)]
 #[inline]
 pub(crate) fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
@@ -547,7 +471,6 @@ fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<segmentlist::SegmentList>()?;
 
     // VEX Engine module (enabled by default)
-    #[cfg(feature = "vex-engine")]
     import_submodule(m, "vex_engine", engine::vex_engine)?;
 
     Ok(())

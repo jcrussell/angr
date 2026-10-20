@@ -36,7 +36,6 @@ fn pending_for(state: RustSimState) -> PendingCallback {
 /// and the manager-level configuration the envelope does NOT carry (find
 /// addresses) must survive the wholesale `self.sm` swap rather than being
 /// reset with it.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn snapshot_round_trip_restores_stashes_and_keeps_manager_config() {
     Python::initialize();
@@ -105,11 +104,8 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
         mgr.current_stepping_state_id = Some(StateId::new(pending_id));
         mgr.parallel_real_workers = 4;
         mgr.set_skip_hook_addr(0x40_1000);
-        // `must_run_serial` only exists in the `vex-engine-z3` build — without
-        // z3 there are no parallel coordinators to route away from, so the
-        // predicate has nothing to decide (angr-9hkr6). The skip-hook clear it
-        // observes is asserted directly below either way.
-        #[cfg(feature = "vex-engine-z3")]
+        // The skip-hook clear `must_run_serial` observes (angr-9hkr6) is
+        // asserted directly below.
         assert!(mgr.must_run_serial(), "skip entry forces serial pre-restore");
 
         mgr.load_snapshot_bytes(&empty).expect("load");
@@ -125,7 +121,6 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
             "angr-0jh0j.12: pre-restore skip-hook tokens cleared — otherwise the \
              restored session skips a same-address hook once"
         );
-        #[cfg(feature = "vex-engine-z3")]
         assert!(
             !mgr.must_run_serial(),
             "angr-0jh0j.12: a leaked skip entry would keep forcing the restored \
@@ -171,7 +166,6 @@ fn rejected_envelope_leaves_the_manager_untouched() {
 /// flushing first would silently truncate the frontier. `dump_snapshot_bytes`
 /// flushes into ACTIVE, and the flushed state must therefore appear in the
 /// envelope.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn dump_flushes_parked_bounces_into_the_envelope() {
     Python::initialize();
@@ -242,7 +236,6 @@ impl selection_policy::SelectionPolicy for RemovalSpy {
 /// Every pre-restore ACTIVE state must be notified as removed — and only those:
 /// a state sitting in a terminal stash never entered the policy's deque, so
 /// notifying for it would be a spurious eviction.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn load_snapshot_notifies_policy_for_every_pre_restore_active_state() {
     Python::initialize();
@@ -295,7 +288,6 @@ fn load_snapshot_notifies_policy_for_every_pre_restore_active_state() {
 /// Every dumped state's register-tuple hash was inserted into `uniqueness_set`
 /// while it was live, so a set that outlived the load would send the whole
 /// restored active stash to `not_unique` on the first post-load step.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn load_snapshot_clears_uniqueness_set_so_restored_states_are_not_dropped() {
     Python::initialize();
@@ -334,7 +326,6 @@ fn load_snapshot_clears_uniqueness_set_so_restored_states_are_not_dropped() {
 /// here: the same-process load brings each state back under its original id,
 /// so a leftover token makes `step_one` skip the find/avoid predicate for a
 /// restored state at a pc it was never asked about.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn load_snapshot_clears_predicate_skip_tokens_for_restored_ids() {
     Python::initialize();

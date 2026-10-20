@@ -12,12 +12,10 @@ use super::*;
 /// `test_add_constraints_raw_batch_dedups_repeats` (4 hits observed, 3
 /// expected). Holding this lock across each window makes the deltas exact.
 /// Poison-tolerant: a panic in one test must not cascade into the others.
-#[cfg(feature = "vex-engine-z3")]
 static DEDUP_HIT_COUNTER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// angr-v5a5 slice 4b: a fresh SymContext has an empty
 /// scope-savepoint stack.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scope_savepoints_start_empty() {
     let ctx = SymContext::new();
@@ -28,7 +26,6 @@ fn test_scope_savepoints_start_empty() {
 /// dispatch path), `scope_savepoint_push` goes to the per-context
 /// Z3 solver and does NOT record on `scope_savepoints` — preserving
 /// the pre-slice behavior of bare `self.solver().push()`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scope_savepoint_none_branch_skips_stack() {
     let ctx = SymContext::new();
@@ -48,7 +45,6 @@ fn test_scope_savepoint_none_branch_skips_stack() {
 /// angr-v5a5 slice 4b: with a lineage attached (Some dispatch
 /// path), `scope_savepoint_push` records the current scope_path
 /// length on `scope_savepoints`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scope_savepoint_some_branch_records_depth() {
     use super::super::lineage::SharedLineageSolver;
@@ -79,7 +75,6 @@ fn test_scope_savepoint_some_branch_records_depth() {
 /// angr-v5a5 slice 4b: with a lineage attached, frames pushed onto
 /// `scope_path` between `scope_savepoint_push` and
 /// `scope_savepoint_pop` are truncated by the pop.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scope_savepoint_truncates_scope_path() {
     use super::super::lineage::{ScopeFrame, SharedLineageSolver};
@@ -118,7 +113,6 @@ fn test_scope_savepoint_truncates_scope_path() {
 /// angr-v5a5 slice 4b: nested savepoints LIFO correctly. Pushing
 /// twice then popping once truncates to the inner savepoint;
 /// popping again truncates to the outer.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scope_savepoint_nested_lifo() {
     use super::super::lineage::{ScopeFrame, SharedLineageSolver};
@@ -161,7 +155,6 @@ fn test_scope_savepoint_nested_lifo() {
 /// must hit the per-context Z3 solver and leave `scope_path` empty
 /// — byte-identical behavior to the pre-slice
 /// `self.with_z3_solver(|s| s.assert(&c))` call.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_none_branch_no_scope_path() {
     let ctx = SymContext::new();
@@ -188,7 +181,6 @@ fn test_add_constraint_none_branch_no_scope_path() {
 /// mints a fresh `ScopeFrame`, appends it to `scope_path`, and
 /// routes the assert through the shared solver's switch_to —
 /// the bug-shaped piece the slice-4-blocker-analysis memo called out.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
@@ -225,7 +217,6 @@ fn test_add_constraint_some_branch_appends_scope_frame() {
 /// shared lineage solver. This is the core invariant the slice-4
 /// design protects: per-state constraints stay in per-state scope
 /// frames, never at the lineage base.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_sibling_isolation() {
     use super::super::lineage::SharedLineageSolver;
@@ -259,7 +250,6 @@ fn test_add_constraint_sibling_isolation() {
 
 /// angr-v5a5 slice 4c.2: helper mirrors `batch_entry` for the
 /// single-shot `add_constraint_raw` path: a width-1 RustBV's Z3 Bool.
-#[cfg(feature = "vex-engine-z3")]
 fn raw_entry(cond: &RustBV) -> z3::ast::Bool {
     debug_assert_eq!(cond.width(), 1);
     cond.to_z3_bool()
@@ -270,7 +260,6 @@ fn raw_entry(cond: &RustBV) -> z3::ast::Bool {
 /// byte-identical behavior to the pre-slice
 /// `self.with_z3_solver(|s| s.assert(&c))` call. Mirrors
 /// `test_add_constraint_none_branch_no_scope_path` for the raw path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_raw_none_branch_no_scope_path() {
     let ctx = SymContext::new();
@@ -300,7 +289,6 @@ fn test_add_constraint_raw_none_branch_no_scope_path() {
 /// `test_add_constraint_some_branch_appends_scope_frame` for the raw
 /// path. The `constraint.clone()` inside `add_constraint_raw` is a
 /// ref-bump on the Z3 AST originally wrapped from the raw pointer.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_raw_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
@@ -336,7 +324,6 @@ fn test_add_constraint_raw_some_branch_appends_scope_frame() {
 /// — the constraint minted by sibling A's `add_constraint_raw` must
 /// NOT be visible when sibling B issues a query through the same
 /// shared lineage solver. Mirrors `test_add_constraint_sibling_isolation`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_raw_sibling_isolation() {
     use super::super::lineage::SharedLineageSolver;
@@ -369,7 +356,6 @@ fn test_add_constraint_raw_sibling_isolation() {
 /// angr-sfp9: a second `add_constraint_raw` with the SAME Z3_ast ptr
 /// must hit the dedup side-table — z3_assertions stays at 1 entry, the
 /// per-call hit counter increments, and the constraint stays in force.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_raw_dedup_repeat_skips_push() {
     let ctx = SymContext::new();
@@ -418,7 +404,6 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
 /// an O(N) regression on branch-heavy benches without
 /// `add_constraint_raw` traffic — see `check_z3_dedup_if_seeded`). The
 /// `add_constraint_raw` call below provides the seed.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_assume_true_dedup_repeat_skips_assert() {
     let ctx = SymContext::new();
@@ -460,7 +445,6 @@ fn test_assume_true_dedup_repeat_skips_assert() {
 /// angr-mwbp: `assume_false` on the same 1-bit cond also dedups when the
 /// dedup_set is seeded. The negation `!cond` produces a stable Z3 ptr
 /// (the negation node is hash-cons'd by Z3), so reps 2+ are caught.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_assume_false_dedup_repeat_skips_assert() {
     let ctx = SymContext::new();
@@ -492,7 +476,6 @@ fn test_assume_false_dedup_repeat_skips_assert() {
 /// `assume_true` must NOT trigger seeding by itself — fresh contexts
 /// stay unseeded and fall through to the legacy push-only behavior.
 /// This is the bench-safety contract for `check_z3_dedup_if_seeded`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_assume_true_no_self_seeding_under_fresh_context() {
     let ctx = SymContext::new();
@@ -521,7 +504,6 @@ fn test_assume_true_no_self_seeding_under_fresh_context() {
 /// angr-sfp9: a ptr already present in shared (post-fork) must be
 /// caught by the lazy seed on first `add_constraint_raw` call in the
 /// child — verifies the seed walks `z3_assertions_shared`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_raw_dedup_seeds_from_shared() {
     let parent = SymContext::new();
@@ -566,7 +548,6 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
 /// matches the trackers vector position. Mirrors
 /// `test_add_constraint_none_branch_no_scope_path` plus an explicit
 /// unsat-core fidelity check.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     let ctx = SymContext::new();
@@ -615,7 +596,6 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
 /// tests. The tracker registers in `constraint_trackers` (so the
 /// returned index is stable) but `switch_to` uses plain `assert`,
 /// so unsat-core fidelity is intentionally deferred here.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
@@ -656,7 +636,6 @@ fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
 /// `add_constraint_tracked_indexed` must NOT be visible when sibling
 /// B issues a query through the same shared lineage solver. Mirrors
 /// `test_add_constraint_sibling_isolation` for the tracked variant.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_tracked_indexed_sibling_isolation() {
     use super::super::lineage::SharedLineageSolver;
@@ -703,7 +682,6 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
 /// This test calls the tracked add as the very first Z3-touching operation
 /// on a forked child (forcing the cold-start path) and checks both tracker
 /// indices survive in the core.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
     let parent = SymContext::new();
@@ -746,7 +724,6 @@ fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
 /// `assumed_constraints_push` pair the fixed code now calls must NOT touch
 /// `non_bv_assertions`, in contrast to plain `add_constraint_raw`, which
 /// does (that's the whole point of the `_assumed` variant existing).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_raw_assumed_skips_residual_log() {
     let ctx = SymContext::new();
@@ -792,7 +769,6 @@ fn test_add_constraint_raw_assumed_skips_residual_log() {
 /// UNTRACKED (the `assume_true`/`assume_false` fork-guard path) are still
 /// nameable. The returned indices index `get_assumed_constraints()`, which is
 /// the list `state.solver.constraints` exports.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_unsat_core_assumed_names_untracked_engine_constraints() {
     let ctx = SymContext::new();
@@ -827,7 +803,6 @@ fn test_unsat_core_assumed_names_untracked_engine_constraints() {
 /// must guard such a constraint by its assumption literal ONLY: asserting the
 /// residual copy unguarded as well pins it outside the literals, so an
 /// all-Python contradiction comes back Unsat with an EMPTY core.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
     let ctx = SymContext::new();
@@ -862,7 +837,6 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
 /// Z3 frame but left the log intact, so the stale ptr dedup-suppressed a
 /// re-assert and `fork()` replayed the popped constraint as a permanent
 /// assert.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bare_pop_truncates_local_z3_assertions_log() {
     let ctx = SymContext::new();
@@ -889,7 +863,6 @@ fn test_bare_pop_truncates_local_z3_assertions_log() {
 /// so the child is free to assert `z != 20` and stay SAT. Before the fix,
 /// the stale `z3_assertions` entry was frozen into the child on fork and
 /// replayed as a permanent assert, pruning the feasible `z != 20` path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_after_bare_pop_drops_popped_constraint() {
     let ctx = SymContext::new();
@@ -922,7 +895,6 @@ fn test_fork_after_bare_pop_drops_popped_constraint() {
 /// from `frozen_assumed.len()`, so a concretize-then-fork shrank the child's
 /// `num_constraints()` below the parent's for the identical carried set. The
 /// fix seeds from the parent's live `num_constraints()`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_preserves_num_constraints_after_add_bv_constraint() {
     let ctx = SymContext::new();
@@ -946,7 +918,6 @@ fn test_fork_preserves_num_constraints_after_add_bv_constraint() {
 /// angr-ph300.47: the residual `add_constraint_raw`-without-pair path also
 /// bumps `constraint_count` with no `assumed` entry. Fork must carry that count
 /// to the child exactly.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_preserves_num_constraints_after_raw_constraint() {
     let ctx = SymContext::new();
@@ -974,7 +945,6 @@ fn test_fork_preserves_num_constraints_after_raw_constraint() {
 ///
 /// This is the exact repro from the bead: push, assume `y == 5`, fork,
 /// pop, fork again, and assert the second child is free to take `y == 6`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
     let parent = SymContext::new();
@@ -1021,7 +991,6 @@ fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
 /// parent's own scope bookkeeping intact, so the matching `pop()` still
 /// truncates. Guards the preserve branch of `freeze_into_shared` against a
 /// future "optimization" that drains local and merely defers the append.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_under_bare_push_leaves_parent_poppable() {
     let parent = SymContext::new();
@@ -1063,7 +1032,6 @@ fn test_fork_under_bare_push_leaves_parent_poppable() {
 /// `z3_assertions` growth (constraint-export/serialization work),
 /// `num_constraints` inflation, and the dedup HIT telemetry the batch path
 /// never bumped at all.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_dedups_repeats() {
     let ctx = SymContext::new();
@@ -1126,7 +1094,6 @@ fn test_add_constraints_raw_batch_dedups_repeats() {
 /// angr-5mnx3.43 companion: an all-duplicate batch is a full no-op beyond
 /// the `assumed` log — it must not clear the sat cache or bump the count,
 /// mirroring `add_constraint_raw_inner`'s `was_dup` early return.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraints_raw_batch_all_dups_is_noop() {
     let ctx = SymContext::new();

@@ -14,7 +14,6 @@ use super::*;
 /// Round-trip a multi-byte LE store through `store_concrete_multi` and
 /// the Phase 1.2 load path. With two candidates {A, B}, the load at A
 /// should yield the full stored value, and the load at B likewise.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_concrete_multi_le_round_trip() {
     let ctx = SymContext::new_mock();
@@ -57,7 +56,6 @@ fn test_store_concrete_multi_le_round_trip() {
 
 /// Big-endian variant of the round-trip. byte 0 is the MSB so the
 /// per-byte split must mirror that orientation.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_concrete_multi_be_round_trip() {
     let ctx = SymContext::new_mock();
@@ -82,7 +80,6 @@ fn test_store_concrete_multi_be_round_trip() {
 
 /// Fork independence: installing Multi cells in a child must not bleed
 /// into the parent, even when the child later mutates them again.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_concrete_multi_fork_independence() {
     let ctx = SymContext::new_mock();
@@ -127,7 +124,6 @@ fn test_store_concrete_multi_fork_independence() {
 /// End-to-end: `store_symbolic_unified_multi` with an address constrained
 /// to two solutions concretizes to Multiple, installs Multi cells, and
 /// `load_concrete_lazy` materializes the correct value for each candidate.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_symbolic_unified_multi_multiple_round_trip() {
     let ctx = SymContext::new_mock();
@@ -199,7 +195,6 @@ fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
 
 /// `store_symbolic_unified` routes Multiple to Multi cells — same end-state as
 /// `store_symbolic_unified_multi`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_gate_on_installs_multi() {
     let ctx = SymContext::new_mock();
@@ -230,7 +225,6 @@ fn test_phase2_gate_on_installs_multi() {
 /// candidate page lives in a declared lazy region — the interpreter
 /// fetches the page from Python rather than letting Rust auto-map a
 /// zero page that diverges from Python's backer data.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_safe_install_lazy_region_signals() {
     let ctx = SymContext::new_mock();
@@ -265,7 +259,6 @@ fn test_phase2_safe_install_lazy_region_signals() {
 /// The Phase 2 safe installer must silently skip candidates whose pages
 /// are unmapped and NOT in any lazy region (matches
 /// `prepare_addresses_for_ite`'s skip-unmapped behavior).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     let ctx = SymContext::new_mock();
@@ -299,7 +292,6 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
 /// turns "all candidates unreachable" into an error (diverging from eager
 /// `prepare_addresses_for_ite`, which stores nothing in the same situation)
 /// fails loudly here.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
     let ctx = SymContext::new_mock();
@@ -332,7 +324,6 @@ fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
 /// the Single-concretized store `store_concrete` already rejects. Before the
 /// fix `install_multi_for_candidates` never consulted `check_perms_range`, so
 /// the write silently mutated the read-only page.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_install_enforces_write_permission() {
     let ctx = SymContext::new_mock();
@@ -381,7 +372,6 @@ fn test_multi_install_enforces_write_permission() {
 /// The permission gate must be inert when `enforce_permissions` is off (the
 /// default), so ordinary Multi installs into R-only or auto-mapped pages keep
 /// working.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_install_permission_check_off_by_default() {
     let ctx = SymContext::new_mock();
@@ -483,7 +473,6 @@ fn install_multi_for_candidates_boundary_sweep_rejects_wrapping_candidates() {
 /// state export pipeline picks it up. This is the export-correctness
 /// invariant `MultiFlushed` certifies (see `SymbolicMemory::flush_multi_cells`
 /// in `memory/multi.rs`).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_flush_multi_to_symbolic_objects() {
     let ctx = SymContext::new_mock();
@@ -521,7 +510,6 @@ fn test_phase2_flush_multi_to_symbolic_objects() {
 /// the child via the new safe-install path. Pairs with
 /// `test_store_concrete_multi_fork_independence` but exercises the
 /// Phase 2 entry point.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_fork_independence_via_safe_install() {
     let ctx = SymContext::new_mock();

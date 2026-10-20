@@ -168,7 +168,6 @@ impl RustExplorationManager {
         })
     }
 
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _export_z3_constraint_ptrs(&self, state_id: u64) -> PyResult<Vec<usize>> {
         self.with_state(state_id, |state| {
             let solver_ref = state.solver();
@@ -180,7 +179,6 @@ impl RustExplorationManager {
     /// Import raw Z3 assertion pointers onto the state's solver, reporting the
     /// resulting satisfiability in the same decided-only form as
     /// `_add_constraints_to_state` — `None` is "Z3 gave up", not "unsat".
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _import_z3_constraint_ptrs(
         &mut self,
         state_id: u64,
@@ -249,7 +247,6 @@ impl RustExplorationManager {
         })
     }
 
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _debug_solver_info(&self, state_id: u64) -> PyResult<String> {
         self.with_state(state_id, |state| {
             let solver_ref = state.solver();
@@ -314,7 +311,6 @@ impl RustExplorationManager {
     ///
     /// `extra_constraints` are asserted untracked, so they never appear in the
     /// core — matching claripy's tracking-solver semantics.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _state_unsat_core(
         &self,
         py: Python<'_>,
@@ -367,16 +363,6 @@ impl RustExplorationManager {
             }
             Ok(results)
         })
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub(crate) fn _state_unsat_core(
-        &self,
-        _py: Python<'_>,
-        _state_id: u64,
-        _extra_constraints: &Bound<'_, pyo3::types::PyList>,
-    ) -> PyResult<Vec<Py<PyAny>>> {
-        Ok(Vec::new())
     }
 
     // -------------------------------------------------------------------------
@@ -586,7 +572,6 @@ impl RustExplorationManager {
     /// an angr-sqfj8.71-family fix) — otherwise a byte still living in a Multi
     /// cell (the lazy symbolic-address store default) is silently absent from
     /// the export.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _state_symbolic_objects(
         &mut self,
         state_id: u64,
@@ -616,7 +601,6 @@ impl RustExplorationManager {
     }
 
     /// [`Self::_state_symbolic_objects`], exported as claripy ASTs.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _get_state_symbolic_asts(
         &mut self,
         py: Python<'_>,

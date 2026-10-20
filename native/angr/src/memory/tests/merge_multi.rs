@@ -27,7 +27,6 @@ fn multi_cell(cond: RustBV, value: u8) -> MultiAlternative {
 
 /// Both arms Multi at the same byte → union of guarded alternatives, count ==
 /// n_self + n_other, and the byte stays a Multi cell (not eagerly collapsed).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_both_multi_unions_alternatives() {
     let ctx = SymContext::new();
@@ -76,7 +75,6 @@ fn test_both_multi_unions_alternatives() {
 /// Under a concrete merge condition the union collapses to the correct arm:
 /// other under `m == 1`, self under `m == 0`. Deterministic — every cond is
 /// concrete so `as_u128()` resolves.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_both_multi_union_collapses_to_correct_arm() {
     let ctx = SymContext::new();
@@ -120,7 +118,6 @@ fn test_both_multi_union_collapses_to_correct_arm() {
 
 /// A byte Multi on one arm and plain-concrete on the other falls back to the
 /// collapse-and-ITE path (a single `symbolic_objects` cell), not a Multi union.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mixed_multi_and_concrete_collapses() {
     let ctx = SymContext::new();
@@ -147,7 +144,6 @@ fn test_mixed_multi_and_concrete_collapses() {
 /// Deterministic: `m == 1`, so self's write (guarded `!m`) resolves to a `0`
 /// condition and other's write (guarded `m`, composed with its prior `1`
 /// condition via `And`) resolves to `1`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pending_writes_are_merge_guarded() {
     let ctx = SymContext::new();
@@ -201,7 +197,6 @@ fn test_pending_writes_are_merge_guarded() {
 /// `multi_bitmap`, but the payload table is flat on `SymbolicMemory`, so
 /// without an explicit copy the adopted bit points at nothing: `range_has_multi`
 /// reports false and the load silently returns the page's stale concrete byte.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_adopts_multi_cells_from_other_only_page() {
     let ctx = SymContext::new();
@@ -244,7 +239,6 @@ fn test_merge_adopts_multi_cells_from_other_only_page() {
 /// Multi cell, a *second* merge whose third state is Multi at the same byte
 /// hits the `s_multi implies a payload` expect. With the payload orphaned that
 /// expect panics; with it copied the union merges normally.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
     let ctx = SymContext::new();
@@ -288,7 +282,6 @@ fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
 /// byte to the Multi path before `symbolic_objects` is consulted, so every later
 /// load returned the stale single-arm payload, and `flush_multi_cells` wrote that
 /// stale value back over the merged entry on export.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_collapsed_multi_side_is_retired_from_the_multi_sidecar() {
     let ctx = SymContext::new();

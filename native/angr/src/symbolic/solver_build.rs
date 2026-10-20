@@ -29,7 +29,6 @@ use super::stats::*;
 /// matches the `tactic_spec` / `qfbv_smart_threshold` pattern. A stride of 1
 /// gives full-population sampling for a profiling spike (~`SIMPLIFY_SAMPLE_STRIDE_DEFAULT`x
 /// overhead on the simplify path; safe for offline runs only).
-#[cfg(feature = "vex-engine-z3")]
 fn simplify_sample_stride() -> u64 {
     static STRIDE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *STRIDE.get_or_init(|| {
@@ -53,7 +52,6 @@ fn simplify_sample_stride() -> u64 {
 /// `tests/engines/rust/test_solver_ops.py`, which aborted the whole
 /// interpreter on the unwrap). This is a diagnostic counter — a NULL just
 /// means "no sample", never a crash.
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
     use z3::ast::Ast;
@@ -98,7 +96,7 @@ pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
 /// State is thread-local and released by the returned [`EnumerationFault`]
 /// guard: `cargo test -- --test-threads=1` runs every test on one thread, so
 /// an arming that outlived its test would silently corrupt the next one.
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 pub(crate) fn stop_enumeration_after_for_test(decided: u32) -> EnumerationFault {
     ENUM_FAULT.set(Some(decided));
     EnumerationFault
@@ -107,17 +105,17 @@ pub(crate) fn stop_enumeration_after_for_test(decided: u32) -> EnumerationFault 
 // ENUM_FAULT: remaining real `CheckSite::EvalUpto` checks, or `None` when
 // disarmed. A `///` here would be an unused doc comment — rustdoc does not
 // document items produced by a macro invocation.
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 thread_local! {
     static ENUM_FAULT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 /// Scope guard for [`stop_enumeration_after_for_test`]; disarms on drop.
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 #[must_use = "the fault is disarmed as soon as the guard drops"]
 pub(crate) struct EnumerationFault;
 
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 impl Drop for EnumerationFault {
     fn drop(&mut self) {
         ENUM_FAULT.set(None);
@@ -127,7 +125,7 @@ impl Drop for EnumerationFault {
 /// Whether this check must be forced to `Unknown`, consuming one unit of the
 /// armed allowance. Always `false` unless a test armed
 /// [`stop_enumeration_after_for_test`].
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 fn enum_fault_fires(site: CheckSite) -> bool {
     if site as usize != CheckSite::EvalUpto as usize {
         return false;
@@ -143,7 +141,6 @@ fn enum_fault_fires(site: CheckSite) -> bool {
 }
 
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
     let start = std::time::Instant::now();
@@ -190,7 +187,6 @@ pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult
 /// `SatResult::{Sat,Unsat}` matches are this trait's impl and the stats
 /// counter in [`timed_check`], both tagged `// satresult-exempt`; a grep gate
 /// (`tools/audit_satresult.py`) bans any new ones.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) trait SatOutcome {
     /// `Some(true)` = Sat, `Some(false)` = Unsat, `None` = Unknown (undecided
     /// — timeout or incompleteness). Callers must decide what `None` means at
@@ -198,7 +194,6 @@ pub(crate) trait SatOutcome {
     fn decided(self) -> Option<bool>;
 }
 
-#[cfg(feature = "vex-engine-z3")]
 impl SatOutcome for z3::SatResult {
     #[inline]
     fn decided(self) -> Option<bool> {
@@ -231,7 +226,6 @@ impl SatOutcome for z3::SatResult {
 /// determinism knob (`deterministic=True`) pins seeds via
 /// `Z3_global_param_set` before the first `Solver::new`, which still leaves
 /// Z3's variable / restart heuristic latitude unbound.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
     let mut params = z3::Params::new();
     params.set_u32("timeout", timeout_ms);
@@ -260,7 +254,6 @@ pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
 ///
 /// Example: `ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,string_solver=sym:seq"`.
 /// A name Z3 does not know fails loud in `validate_extra_params`.
-#[cfg(feature = "vex-engine-z3")]
 fn extra_params_spec() -> &'static Vec<(String, ParamValue)> {
     static SPEC: std::sync::OnceLock<Vec<(String, ParamValue)>> = std::sync::OnceLock::new();
     SPEC.get_or_init(|| {
@@ -277,7 +270,6 @@ fn extra_params_spec() -> &'static Vec<(String, ParamValue)> {
 
 /// Pure parser for the `ANGR_Z3_PARAMS` spec — split out so it is unit-testable
 /// without touching the process env / `OnceLock` cache.
-#[cfg(feature = "vex-engine-z3")]
 fn parse_extra_params(s: &str) -> Vec<(String, ParamValue)> {
     s.split(',')
         .filter_map(|kv| {
@@ -305,7 +297,6 @@ fn parse_extra_params(s: &str) -> Vec<(String, ParamValue)> {
         .collect()
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[derive(Debug, Clone, PartialEq)]
 enum ParamValue {
     Bool(bool),
@@ -313,14 +304,12 @@ enum ParamValue {
     Symbol(String),
 }
 
-#[cfg(feature = "vex-engine-z3")]
 fn apply_extra_params(params: &mut z3::Params) {
     for (key, val) in extra_params_spec() {
         set_param(params, key, val);
     }
 }
 
-#[cfg(feature = "vex-engine-z3")]
 fn set_param(params: &mut z3::Params, key: &str, val: &ParamValue) {
     match val {
         ParamValue::Bool(b) => params.set_bool(key, *b),
@@ -342,7 +331,6 @@ fn set_param(params: &mut z3::Params, key: &str, val: &ParamValue) {
 /// stops the process instead of skewing every later query (angr-sijyb.1).
 /// Runs inside the `extra_params_spec` initializer, so it must not call
 /// back into it.
-#[cfg(feature = "vex-engine-z3")]
 fn validate_extra_params(spec: &[(String, ParamValue)]) {
     let mut params = z3::Params::new();
     for (key, val) in spec {
@@ -389,7 +377,6 @@ fn validate_extra_params(spec: &[(String, ParamValue)]) {
 /// - any other value → colon-separated pipeline of tactic names
 ///   composed via `Tactic::and_then`, e.g.
 ///   `simplify:propagate-values:solve-eqs:bit-blast:sat`.
-#[cfg(feature = "vex-engine-z3")]
 #[derive(Debug, Clone)]
 enum TacticSpec {
     Default,
@@ -397,7 +384,6 @@ enum TacticSpec {
     QfbvSmart,
 }
 
-#[cfg(feature = "vex-engine-z3")]
 fn tactic_spec() -> &'static TacticSpec {
     static SPEC: std::sync::OnceLock<TacticSpec> = std::sync::OnceLock::new();
     SPEC.get_or_init(|| match std::env::var("ANGR_Z3_TACTIC") {
@@ -429,7 +415,6 @@ fn tactic_spec() -> &'static TacticSpec {
 /// hash-cracker problems (winners) and CTF-style small-problem benches
 /// (regressers), per the angr-ya00 sweep; `rust_engine.rst` documents the
 /// `qfbv_smart` tactic.
-#[cfg(feature = "vex-engine-z3")]
 fn qfbv_smart_threshold() -> f64 {
     static THRESHOLD: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *THRESHOLD.get_or_init(|| {
@@ -443,7 +428,6 @@ fn qfbv_smart_threshold() -> f64 {
 /// Construct a fresh Z3 solver per the active [`TacticSpec`], with timeout
 /// and bv_rewriter params applied. Three sites in this file rely on this:
 /// initial creation, lazy fork materialization, and `set_timeout`.
-#[cfg(feature = "vex-engine-z3")]
 #[allow(
     clippy::expect_used,
     reason = "`TacticSpec::Pipeline` is only ever constructed by `tactic_spec`, which filters empty names out of `ANGR_Z3_TACTIC` and falls back to `TacticSpec::Default` when the resulting vec is empty — so the variant's payload is non-empty even for hostile env-var input"
@@ -470,7 +454,7 @@ pub(crate) fn build_solver(timeout_ms: u32) -> z3::Solver {
     solver
 }
 
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,

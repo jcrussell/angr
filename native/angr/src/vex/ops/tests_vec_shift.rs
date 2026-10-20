@@ -6,7 +6,6 @@ use crate::vex::ir::IRType;
 /// Symbolic ShlN16x8: shift count is symbolic; constrain to 4 and verify
 /// each lane is `lane << 4`. Exercises the symbolic-shift fallback that
 /// builds Z3 `bvshl` expressions per lane.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_shl_n_symbolic_shift() {
     let ctx = SymContext::new_mock();
@@ -50,7 +49,6 @@ fn test_vec_shl_n_symbolic_shift() {
 
 /// Symbolic ShrN32x4: shift count is symbolic; constrain to 8 and verify
 /// each lane is `lane >> 8`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_shr_n_symbolic_shift() {
     let ctx = SymContext::new_mock();
@@ -93,7 +91,6 @@ fn test_vec_shr_n_symbolic_shift() {
 
 /// Symbolic SarN16x8 with negative lanes: shift count is symbolic; constrain
 /// to 4 and verify sign-extending shift (negative values stay negative).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_sar_n_symbolic_shift() {
     let ctx = SymContext::new_mock();
@@ -134,7 +131,6 @@ fn test_vec_sar_n_symbolic_shift() {
 /// Symbolic ShlN with unbounded shift: just verify a Z3 expression is
 /// produced rather than an UnsupportedVectorOp error. Documents the
 /// "fully unconstrained" path stays inside the solver.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_shl_n_unbounded_shift() {
     let ctx = SymContext::new_mock();
@@ -340,7 +336,6 @@ fn test_vsal_routes_to_vshl_and_matches() {
 /// `Iop_Shl16x4` (operation_map["Shl"] = "__lshift__"; vector dispatch
 /// per `_op_vector_mapped` extracts each lane and applies `bvshl`).
 /// Symbolic inputs + add_constraint(got ≠ py).not() → assert UNSAT.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vshl_16x4_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
@@ -381,7 +376,6 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
 /// Z3 universality parity vs the claripy reference for `Iop_Sar8x16`
 /// (operation_map["Sar"] = "__rshift__" → bvashr; 16 lanes of 8 bits
 /// across a 128-bit vector).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vsar_8x16_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
@@ -560,7 +554,6 @@ fn test_sar_fill_mask_shift0_is_empty_every_width() {
 /// value in a `u128` — so it arrives as a `Concat` expression and must route
 /// through the per-lane path. Before the `total_width <= 128` guard in
 /// `vec_shift.rs` the concrete fold would have shifted a `u128` by up to 192.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_shift_n_avx2_256_bit() {
     let ctx = SymContext::new_mock();

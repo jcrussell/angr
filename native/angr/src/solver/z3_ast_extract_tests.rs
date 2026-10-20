@@ -10,7 +10,6 @@
 //! `claripy_node` / `ast_to_bv_for_eval` do need claripy and stay covered by
 //! `tests/engines/rust/test_solver_ops.py`.)
 
-#![cfg(feature = "vex-engine-z3")]
 #![allow(clippy::unwrap_used, reason = "test fixtures")]
 
 use super::*;

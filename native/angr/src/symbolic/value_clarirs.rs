@@ -339,4 +339,4 @@ fn popcount(x: &Term, width: u32) -> Result<Term, ClarirsError> {
     widen(acc, acc_w, width)
 }
 
-test_submod!(z3 "value_clarirs_tests.rs" => tests);
+test_submod!("value_clarirs_tests.rs" => tests);

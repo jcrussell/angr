@@ -199,7 +199,6 @@ fn serde_roundtrip_register_file_concrete() {
 /// reconstructed with a fresh Z3 AST under the active thread-local
 /// context, and the rebuilt value is the same leaf (name and width), which
 /// lowers to the same Z3 constant in the new context.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_register_file_symbolic() {
     use z3::{Config, with_z3_config};
@@ -503,7 +502,6 @@ fn merge_widen_keeps_adjacent_symbolic_overlay() {
 /// Solver twin of `merge_widen_keeps_adjacent_symbolic_overlay`: the `cond == 0`
 /// leg of the widened ITE must reproduce *both* of `self`'s byte overlays in
 /// their own bit positions, zero-extended over its concrete high bytes.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
     let ctx = SymContext::new();
@@ -596,7 +594,6 @@ fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
 /// Solver twin of `merge_concrete_chunk_keeps_unaligned_subregister_overlay`:
 /// each leg of the merged full-width value must equal that path's own
 /// composition, `other`'s carrying `ah` in byte 1.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
     let ctx = SymContext::new();
@@ -720,7 +717,6 @@ fn merge_covers_short_tail_chunk_of_guest_state() {
 
 /// Solver twin of `merge_covers_short_tail_chunk_of_guest_state`: each leg of
 /// the merged tail value must equal that path's own bytes.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn merge_short_tail_chunk_selects_each_path_under_solver() {
     let ctx = SymContext::new();
@@ -753,7 +749,6 @@ fn merge_short_tail_chunk_selects_each_path_under_solver() {
 /// the solver that the widened ITE selects each path's value under the
 /// matching merge condition. `self`'s 32-bit value composes with its own
 /// (zero) high bytes, so the `cond == 0` leg must equal `zero_extend(narrow)`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn merge_width_mismatch_selects_each_path_under_solver() {
     let ctx = SymContext::new();

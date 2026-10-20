@@ -6,7 +6,6 @@
 //! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69).
 
 use super::super::*;
-#[cfg(feature = "vex-engine-z3")]
 use super::helpers::build_populated_state;
 
 /// Round-trip assertions: bucket A scalars + bucket B field counts +
@@ -14,7 +13,6 @@ use super::helpers::build_populated_state;
 /// proves the assumed_constraints were faithfully replayed (the
 /// SymContextSnapshot path is already covered separately, this just
 /// confirms the wiring through RustSimStateSnapshot).
-#[cfg(feature = "vex-engine-z3")]
 fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     // Bucket A scalars.
     assert_eq!(restored.pc(), orig.pc());
@@ -112,7 +110,6 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_state_snapshot_round_trip_buckets_a_b_c() {
     let mut orig = build_populated_state();
@@ -125,7 +122,6 @@ fn test_state_snapshot_round_trip_buckets_a_b_c() {
 /// an ID minted by a foreign counter, so `from_snapshot` must lift the local
 /// counter above it. Otherwise a resumed manager re-mints IDs that are live in
 /// its own stashes (angr-op0dn.13.14).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_from_snapshot_reserves_foreign_state_id() {
     let mut snap = build_populated_state().to_snapshot();
@@ -150,7 +146,6 @@ fn test_from_snapshot_reserves_foreign_state_id() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_state_to_from_serialized_round_trip() {
     let mut orig = build_populated_state();

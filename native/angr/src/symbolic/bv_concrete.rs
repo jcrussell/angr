@@ -1,12 +1,7 @@
 //! Z3-independent concrete bitvector folds.
 //!
-//! These helpers operate purely on `u128` and carry no Z3 dependency, so —
-//! unlike the sibling [`bv_codec`](super::bv_codec) module — they compile under
-//! every feature combo (including `--no-default-features`). Keep Z3-free folds
-//! here so the concrete `RustBV` code paths that call them stay buildable
-//! without the `vex-engine-z3` feature (angr-1yge9.14: the no-default-features
-//! combo referenced `bv_codec::concrete_extract_u128` while that module was
-//! gated behind `vex-engine-z3`).
+//! These helpers operate purely on `u128` and carry no Z3 dependency, unlike
+//! the sibling [`bv_codec`](super::bv_codec) module (angr-1yge9.14).
 
 /// Fold a concrete `Extract(high, low)` at the u128 level, returning the
 /// extracted bits right-aligned.

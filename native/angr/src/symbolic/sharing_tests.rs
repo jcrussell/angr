@@ -6,7 +6,6 @@
 // the walk's own accounting — in particular that node addresses stay
 // comparable ACROSS batches, which is the angr-gkcxh miscount.
 use super::*;
-#[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::SymContext;
 
 /// One batch, two separately-built but structurally identical leaves: two
@@ -82,7 +81,6 @@ fn pointers_never_undercount_shapes_across_many_batches() {
 /// context's assumed list, and that clone is the temporary angr-gkcxh was
 /// about. Two contexts holding different constraints must contribute two
 /// pointers and two shapes.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn fold_sharing_walk_keeps_each_contexts_clone_alive() {
     let mut walk = ConstraintSharingWalk::new();

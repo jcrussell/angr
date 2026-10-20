@@ -491,7 +491,6 @@ fn test_open_o_append_flag_appends() {
 }
 
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_open_symbolic_pathname_is_concretized() {
     // A symbolic byte in the pathname used to bounce the call to Python

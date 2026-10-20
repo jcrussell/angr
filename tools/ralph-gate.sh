@@ -5,28 +5,9 @@
 # body here stops the two hooks from drifting (they already had: dirty/gate was
 # missing --retry-failures 2).
 #
-# Three checks, cheapest-and-most-fundamental first:
+# Two checks, cheapest-and-most-fundamental first:
 #
-#   1. make check-no-z3 — `cargo check -D warnings --all-targets` over the
-#      `--no-default-features` combos CI's PR-time `rust_feature_flags_check`
-#      job gates (the nightly `rust_feature_flags` matrix runs them in full).
-#      Added after angr-nk8p0. That surface had rotted and been repaired four
-#      times (angr-1yge9.14, angr-cagbn, angr-c7xno.99, angr-9hkr6) for a
-#      structural reason: nothing in the local loop ever compiled a
-#      `#[cfg(not(feature = "vex-engine-z3"))]` arm. Check 2 below is
-#      default-features-only, and the Stop hook's clippy runs `--all-features`,
-#      which is the exact opposite of what those arms need; CI covers it but
-#      never fires here (no network to GitHub). So each red sat in the branch
-#      until some later iteration happened to remember `make check-no-z3`.
-#
-#      Runs first because it is by far the cheapest: 0.7s when nothing changed
-#      since the last run, ~13s when the crate's sources did (measured
-#      2026-08-16 / iter57, all four combos). It builds into the *dev* profile
-#      target dir, a separate fingerprint set from both `release-checked`
-#      (check 2) and clippy's driver, so the first run after this lands pays a
-#      one-time from-scratch dependency build of that profile.
-#
-#   2. cargo test --profile release-checked — the Rust unit + integration
+#   1. cargo test --profile release-checked — the Rust unit + integration
 #      suite. Added after angr-8kk32, where a real correctness regression
 #      (NativeRead minting fresh symbolic bytes over a write-demoted file) was
 #      caught by a Rust unit test, failed for a full iteration, and nothing
@@ -74,7 +55,7 @@
 #      also sweep any surviving `rustylib-*` test binary by name after a
 #      timeout/failure.
 #
-#   3. run_regression.py — the fast-tier benchmark regression check, mirroring
+#   2. run_regression.py — the fast-tier benchmark regression check, mirroring
 #      .github/workflows/ci.yml::benchmark_regression
 #      (--rust-only --skip-bimodal --threshold 0.15).
 #
@@ -101,10 +82,7 @@ export Z3_NO_PKG_CONFIG="${Z3_NO_PKG_CONFIG:-1}"
 export Z3_LIBRARY_PATH_OVERRIDE="${Z3_LIBRARY_PATH_OVERRIDE:-$(python -c 'import os, z3; print(os.path.join(os.path.dirname(z3.__file__), "lib"))')}"
 export Z3_SYS_Z3_VERSION="${Z3_SYS_Z3_VERSION:-$(python -c 'import z3; print(z3.get_version_string())')}"
 
-echo "== ralph gate [1/3]: make check-no-z3 (four --no-default-features combos) =="
-make check-no-z3
-
-echo "== ralph gate [2/3]: cargo test --profile release-checked =="
+echo "== ralph gate [1/2]: cargo test --profile release-checked =="
 : "${CARGO_TEST_TIMEOUT_SECS:=600}"
 # `rc=$?` must be captured on the || side, not inside `if ! cmd`: the `!`
 # rewrites $? to 0 in the then-block, so the gate would exit 0 on a failure.
@@ -117,6 +95,6 @@ if [ "$rc" -ne 0 ]; then
     exit "$rc"
 fi
 
-echo "== ralph gate [3/3]: fast-tier benchmark regression =="
+echo "== ralph gate [2/2]: fast-tier benchmark regression =="
 exec python tests/benchmarks/run_regression.py \
     --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2

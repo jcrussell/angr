@@ -11,7 +11,6 @@ use super::*;
 /// the address variable to either candidate, then probe-fork to pin the
 /// address and verify the load eval'd to the matching alternative's value.
 /// Also asserts that `mem_ite_depth_max` reflects the 2-alt collapse.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_single_byte() {
     use crate::symbolic::get_solver_stats;
@@ -73,7 +72,6 @@ fn test_multi_cell_load_single_byte() {
 ///   byte 2 (0x1002): concrete 0x22
 ///   byte 3 (0x1003): concrete 0x33
 /// Under addr==A the load must read 0x332211AA, under addr==B 0x332211BB.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_mixed_concrete() {
     let ctx = SymContext::new_mock();
@@ -115,7 +113,6 @@ fn test_multi_cell_load_mixed_concrete() {
 
 /// Big-endian variant of the mixed concrete + Multi load. byte 0 is the
 /// MSB so addr==A should yield 0xAA_11_22_33 and addr==B 0xBB_11_22_33.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_big_endian() {
     let ctx = SymContext::new_mock();
@@ -156,7 +153,6 @@ fn test_multi_cell_load_big_endian() {
 /// Multi cells at multiple bytes within the load range, plus a concrete
 /// byte in between, exercises the per-byte loop's ability to handle
 /// several independent ITE chains in one load.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_multiple_multi_bytes() {
     let ctx = SymContext::new_mock();
@@ -277,7 +273,6 @@ fn test_symbolic_overwrite_clears_multi_cell() {
 /// Value-level companion to the test above: after the symbolic overwrite the
 /// lazy load must resolve to the newly stored symbol, not the stale Multi
 /// alternative (0x42).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_overwrite_of_multi_loads_new_value() {
     let ctx = SymContext::new_mock();
@@ -355,7 +350,6 @@ fn test_import_symbolic_value_clears_multi_cell() {
 
 /// Value-level companion to the test above: after the import the load must
 /// resolve to the imported symbol, not the stale Multi alternative (0x42).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_import_symbolic_value_over_multi_loads_new_value() {
     let ctx = SymContext::new_mock();
@@ -396,7 +390,6 @@ fn test_import_symbolic_value_over_multi_loads_new_value() {
 
 /// `load_concrete` on an un-flushed Multi cell must reconstruct the
 /// alternative, not return the placeholder byte underneath it.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_sees_unflushed_multi_cell() {
     let ctx = SymContext::new_mock();
@@ -448,7 +441,6 @@ fn test_load_concrete_sees_unflushed_multi_cell() {
 /// A Multi cell that only partially covers the loaded range must still
 /// route through the per-byte assembler; the untouched bytes keep their
 /// concrete page values.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_partial_multi_overlap() {
     let ctx = SymContext::new_mock();
@@ -529,7 +521,6 @@ fn test_lift_read_stops_at_multi_byte() {
 /// so collapse must put the newest alternative outermost. sym-write's
 /// `bits[(u >> i) & 1]++` loop read the oldest store back and returned
 /// 254 win values instead of 70.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_later_store_wins_overlapping_conds() {
     let ctx = SymContext::new_mock();
@@ -577,7 +568,6 @@ fn test_multi_cell_later_store_wins_overlapping_conds() {
 /// Wider variant through the `flush_multi_cells` coalesce branch: a
 /// 4-byte value stored twice at the same symbolic address collapses into
 /// one wider ITE, which must also return the newest store (angr-acg99).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_coalesced_flush_newest_wins() {
     let ctx = SymContext::new_mock();

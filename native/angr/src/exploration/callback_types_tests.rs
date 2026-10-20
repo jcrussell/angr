@@ -4,16 +4,12 @@
 // `exploration::pending_api` (`_get_pending_history_and_jumpkind` and
 // `_export_callback_bundle`) go through, so the `Some` / `None` split is
 // pinned here rather than duplicated per call site.
-//
-// Gated on `vex-engine-z3` like `constraints_tests.rs`: building a
-// `RustSimState` needs the solver backend.
 
 use super::*;
 use crate::state::RustSimState;
 
 /// A callback carrying an exit reports that exit verbatim — no normalization,
 /// no default substitution for an unrecognized-but-present jumpkind.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn jumpkind_or_boring_reports_the_recorded_jumpkind() {
     let state = RustSimState::new("amd64").expect("state");
@@ -31,7 +27,6 @@ fn jumpkind_or_boring_reports_the_recorded_jumpkind() {
 /// A lightweight (predicate-evaluation) callback has no exit of its own, and
 /// must fall back to `Ijk_Boring` — the value Python's state-export path
 /// expects when the field is absent.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn jumpkind_or_boring_defaults_lightweight_callbacks_to_boring() {
     let state = RustSimState::new("amd64").expect("state");

@@ -81,7 +81,6 @@ fn test_vgetmsbs_8x8_concrete() {
 
 /// Symbolic universality (spec-replay): Iop_GetMSBs8x16 must equal the
 /// little-endian concat of each byte's MSB bit.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vgetmsbs_8x16_symbolic_universal() {
     let ctx = SymContext::new_mock();
@@ -195,7 +194,6 @@ fn test_vclz_64x2_concrete() {
 /// that agrees with the concrete answers above. Drives the ITE builder (not
 /// the `as_u128()` fast path) by constraining a symbolic input rather than
 /// handing in a concrete one.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vclz_64x2_symbolic_matches_concrete() {
     let ctx = SymContext::new_mock();
@@ -369,7 +367,6 @@ fn test_vpolynomial_mull_8x8_concrete() {
 
 /// Symbolic universality (spec-replay): Iop_Cnt8x8 must equal the
 /// per-byte bit-sum reference for all 64-bit inputs.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vcnt_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
@@ -399,7 +396,6 @@ fn test_vcnt_8x8_symbolic_universal() {
 
 /// Symbolic universality (spec-replay): Iop_Clz8x8 must match the
 /// claripy-style ITE chain reference per lane.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vclz_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
@@ -443,7 +439,6 @@ fn test_vclz_8x8_symbolic_universal() {
 
 /// Symbolic universality (spec-replay): Iop_PolynomialMul8x8 must match
 /// the XOR-of-shifts reference per lane (low 8 bits).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vpolynomial_mul_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
@@ -580,7 +575,6 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
 /// lane where clz saturates at N and the answer is N-1. Built entirely from
 /// ops that predate `cls_chain` (`VSarN`, `Xor`, `VClz`, `VSub`), so an
 /// off-by-one in its `n - 2 - a` formula cannot cancel out.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vcls_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
@@ -642,7 +636,6 @@ fn test_vcls_8x8_symbolic_universal() {
 /// symbolic branches are independently written (masked u128 arithmetic vs
 /// `cls_chain`'s ITE chain), and only the concrete one was covered at the
 /// widest lane shape libVEX emits.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vcls_64x2_symbolic_matches_concrete() {
     let ctx = SymContext::new_mock();

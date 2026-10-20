@@ -35,7 +35,6 @@ fn test_check_symbolic_addr_size_over_cap_rejects() {
     ));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_check_symbolic_addr_size_symbolic_rejects() {
     // A symbolic size on the symbolic-address path always falls back, even
@@ -59,7 +58,6 @@ fn test_enumerate_addr_candidates_concrete_is_singleton() {
     assert_eq!(cands, vec![0x1000]);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_enumerate_addr_candidates_pinned_pair() {
     let state = RustSimState::new("amd64").unwrap();
@@ -80,7 +78,6 @@ fn test_enumerate_addr_candidates_pinned_pair() {
     assert_eq!(cands, vec![0x1000, 0x2000]);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_enumerate_addr_candidates_unbounded_rejects() {
     // An unconstrained pointer blows past MAX_SYMBOLIC_ADDR_CANDIDATES; the
@@ -96,7 +93,6 @@ fn test_enumerate_addr_candidates_unbounded_rejects() {
     ));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_enumerate_addr_candidates_at_cap_accepted() {
     // Exactly MAX_SYMBOLIC_ADDR_CANDIDATES solutions is in range — the cap is
@@ -147,7 +143,6 @@ fn test_bounded_symbolic_size_over_cap_rejects() {
     ));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bounded_symbolic_size_uses_solver_upper_bound() {
     // The bound is the solver's max, not the symbol's width: n <= 4 yields 4.
@@ -164,7 +159,6 @@ fn test_bounded_symbolic_size_uses_solver_upper_bound() {
     assert_eq!(bounded_symbolic_size(&state, &sym).unwrap(), Some(4));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bounded_symbolic_size_unbounded_rejects() {
     let state = RustSimState::new("amd64").unwrap();
@@ -202,7 +196,6 @@ fn test_symbolic_size_conditional_store_concrete_length() {
     assert_eq!(b.as_u64(), Some(0xFF));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_size_conditional_store_symbolic_length() {
     // Every byte in [0, max_size) becomes ITE(i < n, value, original), so both
@@ -236,7 +229,6 @@ fn test_symbolic_size_conditional_store_symbolic_length() {
     assert_eq!(b.as_u64(), Some(0xFF), "byte past the bound untouched");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_size_conditional_store_writes_per_index_values() {
     // `values` is indexed per byte (memcpy passes its pre-snapshotted source

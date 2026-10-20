@@ -929,7 +929,7 @@ Implementation:
   guards the pin with a module-level boolean so repeated manager
   constructions are no-ops after the first.
 * The pin routes through the new ``set_z3_global_param`` PyO3 binding
-  in ``native/angr/src/engine.rs`` (cfg-gated on ``vex-engine-z3``)
+  in ``native/angr/src/engine.rs``
   rather than ``Z3_solver_set_params`` — the solver-level path
   empirically *corrupts* the solver for these keys (see iaol.1
   finding above).

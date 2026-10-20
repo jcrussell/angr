@@ -243,7 +243,6 @@ pub(crate) static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new
 /// `ANGR_Z3_SIMPLIFY_STRIDE` (e.g. `=1` for full-population sampling
 /// during a profiling spike); see `simplify_sample_stride()` in
 /// `solver_build.rs`, which reads the override.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) const SIMPLIFY_SAMPLE_STRIDE_DEFAULT: u64 = 64;
 /// DELIBERATELY NOT EMITTED by `get_solver_stats()` — the only declared-and-reset
 /// counter in this file without a matching `stats.insert(...)`, pinned by
@@ -299,11 +298,9 @@ pub(crate) static SYMFILE_WRITE_DEMOTIONS: AtomicU64 = AtomicU64::new(0);
 /// property the indexing relies on.
 ///
 /// The two macros stay separate rather than being hoisted into one shared
-/// spot: this family splits across the `vex-engine-z3` cfg (the enum and
-/// `SITE_NAMES` are gated; the arity and both counter arrays are not, because
-/// `reset_solver_stats` clears them in every build), carries two counter
-/// arrays instead of one, and uses different visibilities. Parameterizing over
-/// all three for a second caller costs more than the variant list it shares.
+/// spot: this family carries two counter arrays instead of one and uses
+/// different visibilities. Parameterizing over both for a second caller costs
+/// more than the variant list it shares.
 macro_rules! check_sites {
     (
         $(#[$enum_meta:meta])*
@@ -328,7 +325,6 @@ macro_rules! check_sites {
             [const { AtomicU64::new(0) }; NUM_CHECK_SITES];
 
         $(#[$enum_meta])*
-        #[cfg(feature = "vex-engine-z3")]
         #[derive(Clone, Copy)]
         #[repr(usize)]
         pub(super) enum $name {
@@ -336,15 +332,12 @@ macro_rules! check_sites {
         }
 
         /// Stats-key suffixes, indexed by `CheckSite as usize`.
-        #[cfg(feature = "vex-engine-z3")]
         pub(crate) const SITE_NAMES: [&str; NUM_CHECK_SITES] = [$($key),+];
 
         /// Every variant in declaration order; exists only so the const block
         /// below can walk the discriminants.
-        #[cfg(feature = "vex-engine-z3")]
         const ALL_CHECK_SITES: [$name; NUM_CHECK_SITES] = [$($name::$variant),+];
 
-        #[cfg(feature = "vex-engine-z3")]
         const _: () = {
             let mut i = 0;
             while i < NUM_CHECK_SITES {
@@ -391,7 +384,6 @@ check_sites! {
 /// Split out of `get_solver_stats` so the policy is exercisable from
 /// `stats_tests` against synthetic inputs, with no dependence on the
 /// process-global atomics (angr-9ke6b.146).
-#[cfg(feature = "vex-engine-z3")]
 fn insert_check_site_stats(
     stats: &mut HashMap<String, u64>,
     counts: &[u64],
@@ -418,7 +410,6 @@ fn insert_check_site_stats(
 ///
 /// Split out of `get_solver_stats` alongside `insert_check_site_stats` so
 /// both policies are directly testable (angr-9ke6b.146).
-#[cfg(feature = "vex-engine-z3")]
 fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], names: &[&str]) {
     for (name, &count) in names.iter().zip(counts) {
         stats.insert(format!("z3_check_class_{name}"), count);
@@ -638,7 +629,6 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     // `RustExplorationManager.get_solver_stats()`. Always 0 until the
     // lineage-creation slice lands — emitting them now keeps the key set
     // stable across versions.
-    #[cfg(feature = "vex-engine-z3")]
     for (name, value) in super::lineage::lineage_stats() {
         stats.insert(name.into(), value);
     }
@@ -647,7 +637,6 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     // `lineage_dismantle_count` is the number of times the sampler has
     // flipped the switch on across resets (typically 0 or 1 per
     // exploration since dismantle is sticky until reset).
-    #[cfg(feature = "vex-engine-z3")]
     for (name, value) in super::lineage::dismantle_stats() {
         stats.insert(name.into(), value);
     }
@@ -655,11 +644,9 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     // (rather than global one-shot) dismantle decision is even
     // buildable — a tree that never reaches a decision window cannot be
     // decided about individually.
-    #[cfg(feature = "vex-engine-z3")]
     for (name, value) in super::lineage::tree_census_stats() {
         stats.insert(name.into(), value);
     }
-    #[cfg(feature = "vex-engine-z3")]
     {
         let counts: Vec<u64> = Z3_CHECK_SITE_COUNT
             .iter()
@@ -701,7 +688,6 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
 
 /// Reset all solver profiling stats to zero.
 pub fn reset_solver_stats() {
-    #[cfg(feature = "vex-engine-z3")]
     crate::symbolic::query_class::reset();
     // Same tables `get_solver_stats` emits from, so a counter cannot be
     // emitted without also being cleared here (angr-9ke6b.150 for the
@@ -713,7 +699,6 @@ pub fn reset_solver_stats() {
     // see the doc comment on the static.
     SIMPLIFY_SAMPLE_TICKER.store(0, Ordering::Relaxed);
     // angr-v5a5: clear lineage telemetry alongside the rest.
-    #[cfg(feature = "vex-engine-z3")]
     super::lineage::reset_lineage_stats();
     for i in 0..NUM_CHECK_SITES {
         Z3_CHECK_SITE_COUNT[i].store(0, Ordering::Relaxed);
@@ -737,28 +722,24 @@ pub fn record_mem_ite_depth(depth: u32) {
 }
 
 /// Increment Z3 AST build counter (called from value.rs).
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(super) fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment per-call to_z3_ast_cached cache-hit counter (angr-zdho).
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(super) fn record_z3_ast_cache_hit() {
     Z3_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment per-call to_z3_ast_cached cache-miss counter (angr-zdho).
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(super) fn record_z3_ast_cache_miss() {
     Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment the persistent `RustBV::Ast` memo-hit counter (angr-ovqja.3).
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(super) fn record_z3_ast_memo_hit() {
     Z3_AST_MEMO_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -766,7 +747,6 @@ pub(super) fn record_z3_ast_memo_hit() {
 
 /// Read the (cache_miss, memo_hit) node counters, for bracketing one top-level
 /// conversion (angr-op0dn.9.6).
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(crate) fn ast_node_counters() -> (u64, u64) {
     (
@@ -782,7 +762,6 @@ pub(crate) fn ast_node_counters() -> (u64, u64) {
 /// conversion on another engine thread can leak into a bracket. Census runs
 /// are single-threaded; treat the numbers as approximate under the parallel
 /// scheduler.
-#[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(crate) fn record_z3_bool_build(built: u64, reused: u64) {
     Z3_BOOL_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);

@@ -69,32 +69,24 @@ mod run_loop;
 // `//!` block inside the file — in the scope of THIS module rather than the
 // module's own, which silently breaks all of its `super::`-relative and
 // bare-item intra-doc links. Each file's `//!` header carries the real module
-// doc; what stays here is the `#[cfg]` rationale a reader of mod.rs wants.
+// doc; what stays here is a one-line orientation a reader of mod.rs wants.
 // The single-threaded run loop (`run_loop_single_threaded` + `step_one`), the
-// always-compiled default driver. Split out of `run_loop.rs` (angr-9ke6b.49).
+// default driver. Split out of `run_loop.rs` (angr-9ke6b.49).
 mod run_loop_single;
-// The steady-state parallel coordinator (angr-nkoct). Z3-gated: it drives the
-// scheduler, which transports `crate::state::StateMigrationPayload`.
-#[cfg(feature = "vex-engine-z3")]
+// The steady-state parallel coordinator (angr-nkoct). It drives the scheduler,
+// which transports `crate::state::StateMigrationPayload`.
 mod run_loop_steady;
-// The per-wave parallel coordinator (angr-vh834 Phase 5). Z3-gated for the
-// same reason as `run_loop_steady`.
-#[cfg(feature = "vex-engine-z3")]
+// The per-wave parallel coordinator (angr-vh834 Phase 5).
 mod run_loop_wave;
-// The GIL-free worker body both parallel coordinators dispatch. Z3-gated for
-// the same reason as `run_loop_steady`.
-#[cfg(feature = "vex-engine-z3")]
+// The GIL-free worker body both parallel coordinators dispatch.
 mod run_loop_worker;
 // Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3).
-// Z3-gated: it transports `crate::state::StateMigrationPayload`, which only
-// exists with the Z3-backed engine.
-#[cfg(feature = "vex-engine-z3")]
+// It transports `crate::state::StateMigrationPayload`.
 mod scheduler;
 pub(crate) mod selection_policy;
 /// SI-B (angr-1ilq.3 increment 2b'): opt-in shadow probe measuring the real
-/// state-migration serde tax. Z3-gated: the scratch thread builds states into
-/// its own `z3::Context`, so it only exists with the Z3-backed engine.
-#[cfg(feature = "vex-engine-z3")]
+/// state-migration serde tax. The scratch thread builds states into its own
+/// `z3::Context`.
 mod shadow_probe;
 mod state_api;
 mod state_id;
@@ -104,9 +96,8 @@ mod step_core;
 mod stepping;
 // Shared `state_at`/`mgr_and_state`/`unsat_state_at` fixtures for the
 // `exploration/` test modules (angr-5mnx3.15). Lives here, one level above
-// them, because those sit under five different parents. Z3-gated like every
-// one of its consumers: `unsat_state_at` drives `add_constraint`.
-test_submod!(z3 test_support);
+// them, because those sit under five different parents.
+test_submod!(test_support);
 
 use self::constraints::{ConstraintSolver, ConstraintTracker, import_constraints_and_recheck};
 use self::execution_env::ExecutionEnvironment;
@@ -446,10 +437,6 @@ pub struct RustExplorationManager {
     /// `StateMigrationPayload::reattach`'s cross-context AST minting) and the
     /// result is discarded — it measures the migration cost, never routes it.
     /// Feeds the 2b' overhead GO/NO-GO gate (SI-C).
-    ///
-    /// Retained without Z3: the probe's only reader is the parallel dispatch
-    /// path, which is `vex-engine-z3`-gated (angr-sqfj8.139).
-    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     pub(crate) shadow_probe: bool,
     /// Cumulative nanoseconds spent in the shadow-probe migration round-trip:
     /// `to_serialized` time (measured on the main thread) + `from_serialized`
@@ -476,9 +463,6 @@ pub struct RustExplorationManager {
     /// `z3::Context` for its whole life and exits cleanly when this Sender drops
     /// at manager teardown (channel close ends its `recv` loop) — no JoinHandle
     /// or Drop impl is needed.
-    /// Z3-gated for the same reason as [`shadow_probe`]:
-    /// the scratch thread owns its own `z3::Context`.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) shadow_probe_chan: Option<shadow_probe::ShadowProbeChan>,
     /// angr-vh834 Phase 5 (M3): bounce states a parallel wave discovered but
     /// could not dispatch yet, because an earlier bounce in the same wave already
@@ -496,7 +480,6 @@ pub struct RustExplorationManager {
     /// life, so subsequent waves pay no thread-spawn / context-creation tax. Only
     /// ever populated on the `parallel_real_workers >= 2` path; the pool's `Drop`
     /// broadcasts shutdown and joins the workers at manager teardown.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) parallel_pool: Option<self::scheduler::PersistentPool>,
     /// angr-nkoct steady-state: the live cross-`run()` parallel session, when
     /// one exists. `Some` only while the steady loop is running or parked
@@ -505,7 +488,6 @@ pub struct RustExplorationManager {
     /// frontier drained back to `STASH_ACTIVE` — on every other event return,
     /// on any exploration-config mutation (`steady_config_guard`), and at
     /// manager teardown.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) parallel_session: Option<self::run_loop_steady::SteadySession>,
     /// The Python driver's promise that nothing reads or mutates the active
     /// stash between `run()` calls (set per explore loop by rust_manager.py;
@@ -517,10 +499,6 @@ pub struct RustExplorationManager {
     /// per-manager pattern as `RUST_PARALLEL_WORKERS`, so tests can
     /// monkeypatch it). Opt-in for the steady-state loop during angr-nkoct
     /// phases C-D; flipped to opt-out once the measurement gate passes.
-    ///
-    /// Retained without Z3: the steady-state engagement check that reads it is
-    /// `vex-engine-z3`-gated (angr-sqfj8.139).
-    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     pub(crate) parallel_steady_env: bool,
     /// Residual live frontier states a cancelled parallel run returned to
     /// `STASH_ACTIVE` instead of dropping (the Bug M1 cancel-drain; both the
@@ -576,7 +554,6 @@ mod manager_methods_techniques;
 /// the GIL there.
 impl Drop for RustExplorationManager {
     fn drop(&mut self) {
-        #[cfg(feature = "vex-engine-z3")]
         {
             let had_session = self.parallel_session.is_some();
             if let Some(sess) = self.parallel_session.take() {

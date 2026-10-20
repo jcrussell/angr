@@ -64,10 +64,7 @@ fn test_solver_close_off_owner_is_noop() {
 #[test]
 fn test_z3_available() {
     let available = RustSolverContext::z3_available();
-    #[cfg(feature = "vex-engine-z3")]
     assert!(available);
-    #[cfg(not(feature = "vex-engine-z3"))]
-    assert!(!available);
 }
 
 /// Documentation-grade size probe for the `large_enum_variant` allow on
@@ -144,7 +141,6 @@ fn test_pop_to_level_pops_the_difference_and_refuses_to_overshoot() {
 /// (`rust_callback_dispatch.py`); `constraint_delta` is the debug-only
 /// convenience over it, and must saturate rather than underflow when the
 /// baseline is already ahead.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_num_constraints_and_delta_track_adds() {
     let ctx = RustSolverContext::new();
@@ -166,7 +162,6 @@ fn test_num_constraints_and_delta_track_adds() {
 /// `get_all_constraints_str` / `export_constraint_info` / `z3_assertion_count`
 /// are three debugging views of the same assertion list; they must agree with
 /// each other.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_constraint_export_views_agree() {
     let ctx = RustSolverContext::new();
@@ -209,7 +204,6 @@ fn test_new_context_is_not_shared_and_mints_unique_names() {
 
 /// An FP constraint has no `RustBV` form, so `add_constraint_ast` can only
 /// honor it through the Z3 lowering; the second constraint proves it landed.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_add_constraint_ast_lowers_fp_constraint() {
     use clarirs_core::prelude::*;

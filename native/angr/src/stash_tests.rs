@@ -38,7 +38,6 @@ fn test_counts() {
 /// `STASH_ERRORED` is deliberately absent: it now panics here (angr-sqfj8.136)
 /// and is covered by `test_push_errored_counts_indexes_and_never_drops` plus
 /// `test_push_or_drop_terminal_rejects_errored`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_push_or_drop_terminal_counters_track_stash_constants() {
     type CounterFn = fn(&StashManager) -> u64;
@@ -67,7 +66,6 @@ fn test_push_or_drop_terminal_counters_track_stash_constants() {
 /// The serial run loop used to open-code the errored push, which skipped both
 /// the counter and the index while the parallel loop folded
 /// `stats.summarized_errored` into the same field.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_push_errored_counts_indexes_and_never_drops() {
     for drop_terminal in [false, true] {
@@ -91,7 +89,6 @@ fn test_push_errored_counts_indexes_and_never_drops() {
 /// angr-sqfj8.136: routing an errored state through `push_or_drop_terminal`
 /// is a programming error, not a silently-counted alternative — under
 /// `drop_terminal_states` it would discard the state, breaking invariant I6.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 #[should_panic(expected = "push_errored")]
 fn test_push_or_drop_terminal_rejects_errored() {
@@ -105,7 +102,6 @@ fn test_push_or_drop_terminal_rejects_errored() {
 /// `dump_snapshot` → `load_snapshot` and asserts (a) stash counts
 /// match, (b) state_ids survive in their respective stashes, (c) the
 /// `state_index` is rebuilt so `stash_of` answers consistently.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_stash_manager_dump_load_round_trip() {
     let mut mgr = StashManager::new();
@@ -172,7 +168,6 @@ fn test_stash_manager_load_snapshot_errors() {
 /// (angr-mx00p.12), so whichever process wrote the envelope, a restored
 /// constraint must mention the very leaf of that name — the variable Z3 binds
 /// — rather than a renamed or id-shifted copy.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_foreign_envelope_keeps_symbol_names() {
     use crate::symbolic::RustBV;

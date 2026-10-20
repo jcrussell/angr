@@ -26,7 +26,6 @@ pub(super) fn bv_shape(bv: &RustBV) -> String {
 /// Helper: build an Extract node without going through `extract_into`'s
 /// rewrites, so a test can check how such a node behaves (simulates Extract
 /// nodes that bypass the construction-time rewrite, e.g. via `truncate_into`).
-#[cfg(feature = "vex-engine-z3")]
 pub(super) fn raw_extract_node(inner: RustBV, high: u32, low: u32) -> RustBV {
     RustBV::from_op(high - low + 1, BVOp::Extract(high, low), vec![inner])
 }

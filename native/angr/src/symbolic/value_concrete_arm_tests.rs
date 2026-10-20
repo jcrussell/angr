@@ -197,7 +197,6 @@ fn test_rotl_rotr_concrete_identities() {
 // and +1 for x < 0. The concrete fold in `sdiv_into` used to return all-ones
 // unconditionally, so sdiv(-5, 0) differed depending on whether the operands
 // arrived concrete or symbolic-then-pinned.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_sdiv_by_zero_concrete_matches_z3() {
     for dividend in [5u128, 0, (-5i64) as u64 as u128, 1u128 << 63] {
@@ -219,7 +218,6 @@ fn test_sdiv_by_zero_concrete_matches_z3() {
 
 // Sibling coverage for the ops that were already Z3-correct, so a future
 // "simplification" of the zero-divisor arms cannot silently break them.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_udiv_srem_urem_by_zero_concrete_matches_z3() {
     for dividend in [7u128, 0, (-7i64) as u64 as u128] {
@@ -252,7 +250,6 @@ fn test_udiv_srem_urem_by_zero_concrete_matches_z3() {
 // when the operand is 1u128<<127. The by-zero tests above are width-64 and
 // never a non-zero divisor at width 128, so a revert to plain `/`,`%` during a
 // future dedup pass would go uncaught. This pins the exact overflow case.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_sdiv_srem_min_by_neg_one_width_128() {
     let ctx = SymContext::new_mock();

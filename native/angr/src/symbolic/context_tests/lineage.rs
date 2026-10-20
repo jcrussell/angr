@@ -69,7 +69,6 @@ fn test_fork() {
 
 /// angr-v5a5 spike: fresh contexts have no lineage attached and an
 /// empty scope path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_lineage_starts_none() {
     let ctx = SymContext::new();
@@ -80,7 +79,6 @@ fn test_lineage_starts_none() {
 /// angr-v5a5 spike: forking does not auto-create a lineage. The
 /// inert-fields slice keeps both parent and child at None — the next
 /// slice will add the lineage-creation path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_keeps_lineage_none() {
     let ctx = SymContext::new();
@@ -95,7 +93,6 @@ fn test_fork_keeps_lineage_none() {
 /// Uses set_lineage_for_testing because the integration patch that
 /// creates the lineage on fork lives in a later slice; today we
 /// only verify the propagation wiring.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_propagates_lineage_arc() {
     let parent = SymContext::new();
@@ -124,7 +121,6 @@ fn test_fork_propagates_lineage_arc() {
 /// values because the global atomics are shared with other tests in
 /// the suite — instead, assert the keys are present and that a
 /// post-reset snapshot taken before any new switch_to is 0.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_lineage_telemetry_surfaced() {
     let stats = get_solver_stats();
@@ -163,7 +159,6 @@ fn test_lineage_telemetry_surfaced() {
 /// angr-v5a5 slice 3b: with_z3_solver dispatches to self.solver() when
 /// no lineage is attached. The closure must see the same per-context
 /// lazy solver that a direct `self.solver()` would.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_with_z3_solver_no_lineage_uses_local_solver() {
     let ctx = SymContext::new();
@@ -197,7 +192,6 @@ fn test_with_z3_solver_no_lineage_uses_local_solver() {
 /// shared solver when one is attached, bumping the lineage_switch_count
 /// telemetry. Today the production path never installs a lineage, so
 /// we use set_lineage_for_testing to exercise the dispatcher.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_with_z3_solver_routes_to_lineage() {
     use super::super::lineage::SharedLineageSolver;

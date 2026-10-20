@@ -18,7 +18,6 @@ use super::super::*;
 /// difference for `mem_ite_depth_total` must be at least 3 (one
 /// 3-candidate eager store from this test); for `mem_ite_depth_max` the
 /// post-store watermark must be at least 3 (it can only climb).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mem_ite_depth_counter_records_eager_multi_store() {
     use crate::concretize::AddressConcretizer;
@@ -118,7 +117,6 @@ fn test_memory_volume_counters_fire_on_load_store() {
 /// angr-2j5v: a symbolic-address store routed through `concretize_write`
 /// must bump `concretize_write_count` and `concretize_total_candidates`.
 /// Uses the same setup as the ITE-depth test (3 candidate addresses).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_concretize_counters_fire_on_symbolic_store() {
     use crate::concretize::AddressConcretizer;
@@ -214,7 +212,6 @@ fn test_record_mem_ite_depth_helper() {
 /// Counters are process-global and tests run in parallel, so this asserts
 /// strict growth against a baseline read just before the faulting op rather
 /// than an exact delta.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_lazy_page_fault_counter_ticks_on_both_sides() {
     use crate::symbolic::get_solver_stats;
@@ -276,7 +273,6 @@ fn test_lazy_page_fault_counter_ticks_on_both_sides() {
 /// `SymbolicMemory::{load,store}` wrappers (which `.228` showed nothing calls).
 /// Lower-bound assertions only — the counters are process-global and other
 /// tests run concurrently in the same process.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_addr_counters_tick_from_production_entry_points() {
     let load_sym = || {

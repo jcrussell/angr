@@ -341,7 +341,6 @@ fn test_read_dup2d_stdin_falls_back() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_read_stdin_short_reads_returns_symbolic_size() {
     // With SHORT_READS, native stdin read returns a symbolic real_size in

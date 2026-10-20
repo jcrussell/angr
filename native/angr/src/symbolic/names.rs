@@ -27,7 +27,6 @@ fn counters() -> MutexGuard<'static, HashMap<String, u64>> {
 }
 
 /// The next index for names under `key`: 0, 1, 2, ... for each key on its own.
-#[cfg_attr(not(feature = "vex-engine"), allow(dead_code))]
 pub(crate) fn next(key: &str) -> u64 {
     let mut counters = counters();
     match counters.get_mut(key) {

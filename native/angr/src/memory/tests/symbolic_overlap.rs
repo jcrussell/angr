@@ -13,7 +13,6 @@ use super::super::*;
 /// angr-wyxb: when two symbolic stores partially overlap, the address
 /// constraint on each store's address expression and any value
 /// constraints must remain in the solver after the stores complete.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_store_partial_overlap_constraint_propagation() {
     let ctx = SymContext::new_mock();
@@ -93,7 +92,6 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
 /// A subsequent load(0x1000, 8) must produce concat(sym2[31:0],
 /// sym1[31:0]) for LE memory, not the entire sym1 via the
 /// exact-address fast path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_partial_overlap_later_store_wins() {
     let ctx = SymContext::new_mock();
@@ -160,7 +158,6 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
 /// stale wider object with no error. Same setup as
 /// `test_load_concrete_partial_overlap_later_store_wins`, loaded through
 /// the lazy entry point.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_lazy_partial_overlap_later_store_wins() {
     let ctx = SymContext::new_mock();
@@ -208,7 +205,6 @@ fn test_load_concrete_lazy_partial_overlap_later_store_wins() {
 /// LE-only `containing_wider_sym` tail. Sharing `load_concrete`'s
 /// endianness-aware fast path fixes the big-endian case, which previously
 /// extracted the wrong lane.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_lazy_partial_read_of_wider_sym_big_endian() {
     let ctx = SymContext::new_mock();
@@ -247,7 +243,6 @@ fn test_load_concrete_lazy_partial_read_of_wider_sym_big_endian() {
 /// `symbolic_objects[addr]` entire because its
 /// width still matches the requested size — the concrete byte we
 /// wrote at addr+3 is silently lost.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
     let ctx = SymContext::new_mock();
@@ -431,9 +426,8 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
 /// out-of-range extract and hard-failed with `SymbolicAddress`, so a readable
 /// byte became an error. Mirrors the concrete branch's angr-7qon semantics:
 /// the tail reclassifies as concrete.
-// Reads a symbolic span back as a concrete value, which needs a real solver
-// (angr-9ke6b.236, bd memory `vex-engine-z3-test-gate-invariant`).
-#[cfg(feature = "vex-engine-z3")]
+// Reads a symbolic span back as a concrete value through the solver
+// (angr-9ke6b.236).
 #[test]
 fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
     let ctx = SymContext::new_mock();
@@ -478,7 +472,6 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
 
 /// Load `width_bits` at `addr` and prove it equals `expected` (no model
 /// in which they differ).
-#[cfg(feature = "vex-engine-z3")]
 fn assert_load_is(mem: &mut SymbolicMemory, ctx: &SymContext, addr: u64, expected: &RustBV, what: &str) {
     let loaded = mem
         .load_concrete_lazy(addr, expected.width() / 8, ctx)
@@ -492,7 +485,6 @@ fn assert_load_is(mem: &mut SymbolicMemory, ctx: &SymContext, addr: u64, expecte
 /// object must replace every byte of it. sokohashv2's frame slots were
 /// imported from the initial state and then overwritten by the program;
 /// Rust read the old object back for bytes 1..3 and computed a wrong hash.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_store_over_imported_object_replaces_all_bytes() {
     let ctx = SymContext::new_mock();
@@ -509,7 +501,6 @@ fn test_symbolic_store_over_imported_object_replaces_all_bytes() {
 /// Same as above with the import split into per-byte lanes, the shape a
 /// byte-granular import (or `retire_symbolic_object_at`) leaves behind:
 /// exact-key objects at the interior bytes must not shadow the new store.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_store_over_per_byte_objects_replaces_all_bytes() {
     let ctx = SymContext::new_mock();
@@ -528,7 +519,6 @@ fn test_symbolic_store_over_per_byte_objects_replaces_all_bytes() {
 /// A store landing inside a wider imported object (base below the store)
 /// must win for the bytes it covers, and the untouched head bytes must
 /// keep the old object's lanes.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_store_inside_wider_imported_object() {
     let ctx = SymContext::new_mock();

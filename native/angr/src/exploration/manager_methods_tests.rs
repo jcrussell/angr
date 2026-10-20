@@ -309,7 +309,6 @@ fn census_counts_parked_bounces_identically_before_and_after_a_flush() {
 ///
 /// Asserted in both directions: the flag has to be a genuine propagation, not
 /// a one-way `true` latch that a fresh `SymContext` would satisfy by accident.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_deterministic_reaches_parked_pending_callback_states() {
     use crate::exploration::{CallbackReason, PendingCallback};
@@ -506,7 +505,6 @@ fn parked_bounce(mgr: &RustExplorationManager, id: u64) -> &RustSimState {
 /// states minting non-canonical witnesses forever once flushed back to active.
 ///
 /// Asserted in both directions so a one-way `true` latch cannot pass.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_deterministic_reaches_parked_parallel_bounce_states() {
     Python::initialize();

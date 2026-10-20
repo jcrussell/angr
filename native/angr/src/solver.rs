@@ -36,9 +36,7 @@ use std::rc::Rc;
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
 
-#[cfg(feature = "vex-engine-z3")]
 use crate::claripy_bridge::lower_claripy_bool;
-#[cfg(feature = "vex-engine-z3")]
 use z3_ast_extract::{claripy_node, node_to_eval_bv};
 
 pub(crate) mod z3_ast_extract;
@@ -78,7 +76,6 @@ impl From<BridgeError> for PyErr {
 ///
 /// `Cow` rather than a plain `RustBV` so the (common) 1-bit case stays
 /// clone-free — cloning an `Ast` also clones its Z3 memo.
-#[cfg(feature = "vex-engine-z3")]
 fn bool_constraint_bv<'a>(bv: &'a RustBV, ctx: &SymContext) -> std::borrow::Cow<'a, RustBV> {
     if bv.width() == 1 {
         std::borrow::Cow::Borrowed(bv)
@@ -194,12 +191,6 @@ impl RustSolverContext {
     /// Uses fast path when Z3 context is shared: extracts the raw Z3_ast
     /// from claripy's z3 backend and asserts it directly, preserving the
     /// original Z3 AST structure. Falls back to RustBV conversion otherwise.
-    // Without Z3 the assert half compiles out and the slow path's `bv` is
-    // unread — the conversion still runs for its `?` validation (angr-sqfj8.139).
-    #[cfg_attr(
-        not(feature = "vex-engine-z3"),
-        allow(unused_variables, reason = "Z3-only consumer")
-    )]
     pub fn add_constraint_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
         let ctx = self.i().ctx();
 
@@ -207,7 +198,6 @@ impl RustSolverContext {
         // This preserves the original AST structure (Python's claripy creates
         // different Z3 trees than our build_z3_ast_cached), avoiding the structural
         // divergence that makes Z3 solving several times slower.
-        #[cfg(feature = "vex-engine-z3")]
         {
             // angr-58ks: `add_constraint_raw` takes a `Bool`, so only a
             // Bool-sorted lowering takes the raw fast path. A non-Bool (e.g.
@@ -237,7 +227,6 @@ impl RustSolverContext {
         // Slow path: convert claripy AST to RustBV, then build Z3 AST
         let bv = claripy_to_rustbv(py, ast, &ctx)?;
 
-        #[cfg(feature = "vex-engine-z3")]
         {
             ctx.assume_true(&bool_constraint_bv(&bv, &ctx));
         }
@@ -265,12 +254,6 @@ impl RustSolverContext {
         // through `add_constraint_ast` one at a time.
         let resume_from: usize;
 
-        #[cfg(not(feature = "vex-engine-z3"))]
-        {
-            resume_from = 0;
-        }
-
-        #[cfg(feature = "vex-engine-z3")]
         {
             let ctx = self.i().ctx();
             let n = asts.len();
@@ -323,10 +306,7 @@ impl RustSolverContext {
         py: Python<'_>,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<usize> {
-        #[cfg(feature = "vex-engine-z3")]
         {
-            // Bound inside the gate: the no-z3 arm below errors out without
-            // ever touching the context (angr-sqfj8.139).
             let ctx = self.i().ctx();
             // angr-d01qu: mirror add_constraint_ast's is_bool() gate. A
             // non-Bool AST wrapped as z3::ast::Bool would trip Z3's
@@ -368,13 +348,6 @@ impl RustSolverContext {
             let idx = ctx.add_constraint_tracked_indexed(constraint);
             ctx.assumed_constraints_push(bv, true);
             Ok(idx)
-        }
-        #[cfg(not(feature = "vex-engine-z3"))]
-        {
-            let _ = (py, ast);
-            Err(PyRuntimeError::new_err(
-                "unsat_core tracking requires Z3 support (vex-engine-z3 feature)",
-            ))
         }
     }
 
@@ -440,7 +413,6 @@ impl RustSolverContext {
         // (2) complex expressions containing imported Z3 ASTs.
         // Using the original Z3 AST pointer preserves identity with
         // constraints already in the solver.
-        #[cfg(feature = "vex-engine-z3")]
         {
             if let Some(node) = claripy_node(ast) {
                 return self.eval_claripy_node(py, &node);
@@ -679,7 +651,6 @@ impl RustSolverContext {
                 bv.width()
             )));
         }
-        #[cfg(feature = "vex-engine-z3")]
         {
             ctx.assume_true(&bv);
         }
@@ -698,7 +669,6 @@ impl RustSolverContext {
                 bv.width()
             )));
         }
-        #[cfg(feature = "vex-engine-z3")]
         {
             ctx.assume_false(&bv);
         }
@@ -720,7 +690,7 @@ impl RustSolverContext {
     /// Check if Z3 is available.
     #[staticmethod]
     pub fn z3_available() -> bool {
-        cfg!(feature = "vex-engine-z3")
+        true
     }
 
     /// Check if this solver context is shared (borrowed from a pending state).
@@ -859,7 +829,6 @@ impl RustSolverContext {
             Ok(bv) => bv,
             Err(_) => {
                 // Z3 fast path for complex expressions
-                #[cfg(feature = "vex-engine-z3")]
                 {
                     let Some(node) = claripy_node(ast) else {
                         return Ok((result_list.into(), false));
@@ -872,10 +841,6 @@ impl RustSolverContext {
                             )));
                         }
                     }
-                }
-                #[cfg(not(feature = "vex-engine-z3"))]
-                {
-                    return Ok((result_list.into(), false));
                 }
             }
         };

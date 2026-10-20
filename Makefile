@@ -80,20 +80,6 @@ rebuild-fast:  ## Inner-loop rebuild via [profile.release-fast] (~3s warm vs ~36
 check:  ## cargo check (release) — fast type/borrow check, no link.
 	$(CARGO) check --manifest-path $(MANIFEST) --release
 
-.PHONY: check-no-z3
-check-no-z3:  ## cargo check the four --no-default-features combos CI gates (angr-9ke6b.236).
-	@# -D warnings (angr-sqfj8.139): these combos compile the
-	@# #[cfg(not(feature = "vex-engine-z3"))] arms nothing else covers, so
-	@# without it unused-import/dead-code rot accumulates here invisibly.
-	@# --all-targets (angr-c7xno.99): without it only the lib is compiled, so
-	@# the no-z3 *test* targets were checked by nothing and rotted to 41 errors
-	@# — which is why the no-z3 mock arms had zero runtime coverage.
-	@for f in "" "vex-engine" "vex-engine,vex-engine-z3" "automaton"; do \
-		echo "--- --no-default-features --features \"$$f\""; \
-		RUSTFLAGS="$$RUSTFLAGS -D warnings" \
-		$(CARGO) check --manifest-path $(MANIFEST) --no-default-features --features "$$f" --all-targets || exit 1; \
-	done
-
 .PHONY: clean
 clean:  ## Remove built .so files and setuptools build/ dir.
 	rm -fv $(REPO_ROOT)/angr/rustylib*.so
@@ -117,8 +103,8 @@ test-full:  ## Run the full angr test suite (long; use sparingly).
 	$(PYTEST) tests/ --tb=short -q
 
 .PHONY: test-fuzzer
-test-fuzzer:  ## Run the icicle/libafl fuzzer unit tests (feature is default-off in cargo).
-	$(CARGO) test --manifest-path $(MANIFEST) --release --features fuzzer --lib fuzzer
+test-fuzzer:  ## Run the icicle/libafl fuzzer unit tests.
+	$(CARGO) test --manifest-path $(MANIFEST) --release --lib fuzzer
 
 .PHONY: gate-findall
 gate-findall:  ## Find-all worker-count-invariance gate (found-set fingerprint across 1/2/4 workers; ~12min).

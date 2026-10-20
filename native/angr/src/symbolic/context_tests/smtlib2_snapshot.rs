@@ -8,7 +8,6 @@ use crate::symbolic::SymContextSnapshot;
 // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /
 // Z3_solver_from_string. Drives whether SMT-LIB2 is the right format for
 // angr-9o4n state save/restore. See bead notes for measured numbers.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_smtlib2_constraint_round_trip() {
     use std::time::Instant;
@@ -116,7 +115,6 @@ fn test_smtlib2_constraint_round_trip() {
 
 // angr-9o4n.1: scaling check. Mid-sized constraint set (~100 assertions,
 // 32 BV vars) to give a sense of cost as exploration state grows.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_smtlib2_constraint_round_trip_scaled() {
     use std::time::Instant;
@@ -199,7 +197,6 @@ fn test_smtlib2_constraint_round_trip_scaled() {
 // works cross-context, the new model returns 11/7 via name lookup. If the
 // re-declared const is disconnected from the parsed assertions,
 // model.eval(.., model_completion=true) returns the Z3 default (0).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_smtlib2_cross_context_round_trip() {
     use std::time::Instant;
@@ -353,7 +350,6 @@ fn test_smtlib2_cross_context_round_trip() {
 /// `scope_savepoint_push`/`pop` bump `bare_z3_push_depth` in lockstep
 /// with the per-context Z3 solver's stack. Nested pushes accumulate;
 /// matching pops drain the counter back to 0.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bare_z3_push_depth_none_branch_balanced() {
     let ctx = SymContext::new();
@@ -386,7 +382,6 @@ fn test_bare_z3_push_depth_none_branch_balanced() {
 /// angr-ph300.48: `try_pop()` refuses an unbalanced under-pop on the None
 /// lineage branch (which would reach z3-rs's panic) and returns `false`,
 /// while a balanced push/pop pair pops cleanly and returns `true`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_try_pop_refuses_bare_underpop() {
     let ctx = SymContext::new();
@@ -410,7 +405,6 @@ fn test_try_pop_refuses_bare_underpop() {
 /// angr-ph300.48: on the Some (shared-lineage) branch a mismatched pop is
 /// harmlessly ignored, so `try_pop()` is always safe (returns `true`) even
 /// with no matching push — it never touches the panic-prone bare Z3 scope.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_try_pop_always_safe_on_some_branch() {
     use super::super::lineage::SharedLineageSolver;
@@ -428,7 +422,6 @@ fn test_try_pop_always_safe_on_some_branch() {
 /// `scope_savepoint_push`/`pop` record on `scope_savepoints` and must
 /// NOT touch `bare_z3_push_depth` — the counter only tracks pushes
 /// against the per-context Z3 solver.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bare_z3_push_depth_some_branch_inert() {
     use super::super::lineage::SharedLineageSolver;
@@ -463,7 +456,6 @@ fn test_bare_z3_push_depth_some_branch_inert() {
 /// non-zero value let `try_pop()` (gated solely on this counter) forward a
 /// `pop(1)` to a never-pushed solver, and locked the child out of lineage
 /// minting via gate (b) forever.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_bare_z3_push_depth_reset_on_fork() {
     let parent = SymContext::new();
@@ -507,7 +499,6 @@ fn test_bare_z3_push_depth_reset_on_fork() {
 /// angr-3ms1 step 1b: a freshly constructed context has
 /// `use_shared_lineage_solver == false`. Setter flips it; the value
 /// round-trips through the getter.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_use_shared_lineage_solver_default_and_setter() {
     let ctx = SymContext::new();
@@ -529,7 +520,6 @@ fn test_use_shared_lineage_solver_default_and_setter() {
 /// fork — no per-fork plumbing on the Python side. Like
 /// `bare_z3_push_depth`, the child carries its own AtomicBool, so
 /// post-fork mutations on either side don't bleed into the other.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_use_shared_lineage_solver_inherited_on_fork() {
     let parent = SymContext::new();
@@ -567,7 +557,6 @@ fn test_use_shared_lineage_solver_inherited_on_fork() {
 /// touched — staying `None` so the parent keeps querying its
 /// per-context solver. The two contexts therefore hold distinct
 /// solver instances after the fork.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_mints_lineage_when_gate_passes() {
     let parent = SymContext::new();
@@ -593,7 +582,6 @@ fn test_fork_mints_lineage_when_gate_passes() {
 /// angr-3ms1 step 1c: with the opt-in flag off (the default),
 /// `fork()` keeps the pre-1c behavior of Arc::cloning the parent's
 /// lineage Arc. Default `None` parent → `None` child.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_skips_mint_when_flag_off() {
     let parent = SymContext::new();
@@ -614,7 +602,6 @@ fn test_fork_skips_mint_when_flag_off() {
 /// constraints into the new lineage base — the failure mode that
 /// `test_fork_inside_push_isolation` exposed in earlier slice 4c.3
 /// attempts (see bd memory `invariant-bare-z3-push-depth`).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_skips_mint_when_bare_push_outstanding() {
     let parent = SymContext::new();
@@ -645,7 +632,6 @@ fn test_fork_skips_mint_when_bare_push_outstanding() {
 /// the base assertions installed at fork time. Verifies the child's
 /// solver returns UNSAT when the parent's constraints already entail
 /// it, even though the child added no constraints of its own.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_minted_lineage_seeded_with_parent_constraints() {
     let parent = SymContext::new();
@@ -682,7 +668,6 @@ fn test_fork_minted_lineage_seeded_with_parent_constraints() {
 /// minting behavior to every descendant. Each fork along that chain
 /// mints its own fresh lineage (the gate keeps passing because the
 /// flag stays true and bare_z3_push_depth stays 0).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_chain_mints_fresh_lineage_at_each_level() {
     let parent = SymContext::new();
@@ -710,7 +695,6 @@ fn test_fork_chain_mints_fresh_lineage_at_each_level() {
 /// acceptance check). Uses Z3 `Bool::eq` to confirm that the original
 /// and restored constraint ASTs are *structurally* the same expression
 /// (after Z3's `simplify()`), not just satisfy the same models.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
     use z3::ast::Ast;
@@ -787,7 +771,6 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
 /// `assumed_constraint_count` stays unchanged across the trip (the
 /// raw entries never touch the BV log), but `num_constraints` and
 /// solver SAT state are preserved end-to-end.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_add_constraint_raw_roundtrip() {
     let ctx = SymContext::new();
@@ -860,7 +843,6 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
 /// angr-82g6: backward-compat path — a snapshot deserialized from
 /// JSON that omits `solver_smtlib2` (older payloads) must still
 /// restore via the assumed-replay codepath alone.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
     // Legacy JSON shape — a snapshot that omits both residual fields. The
@@ -877,27 +859,6 @@ fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
     assert_eq!(ctx.num_constraints(), 0);
 }
 
-/// Mock-backend round-trip: with the Z3 feature off, the snapshot
-/// still preserves the `(RustBV, bool)` log and restore replays the
-/// pairs into a fresh context.
-#[cfg(not(feature = "vex-engine-z3"))]
-#[test]
-fn test_snapshot_assumed_constraints_roundtrip_mock() {
-    let ctx = SymContext::new_mock();
-    let cond_a = RustBV::concrete(1, 1);
-    let cond_b = RustBV::concrete(0, 1);
-    ctx.assume_true(&cond_a);
-    ctx.assume_false(&cond_b);
-    let snap = ctx.to_snapshot();
-    let json = serde_json::to_string(&snap).expect("serialize");
-    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
-    let ctx2 = SymContext::new_mock();
-    ctx2.restore_from_snapshot(&restored);
-    let post = ctx2.get_assumed_constraints();
-    assert_eq!(post.len(), 2);
-    assert_eq!(post[0].1, true);
-    assert_eq!(post[1].1, false);
-}
 
 // =============================================================================
 // angr-t3l5o Phase 1: two-class (assume-IR + residual-text) round-trip tests.
@@ -906,7 +867,6 @@ fn test_snapshot_assumed_constraints_roundtrip_mock() {
 /// THE WIN PATH: a pure-`assume` context emits NO SMT-LIB2 residual text —
 /// the assume class round-trips entirely as `RustBV` IR. Proves the old
 /// full-solver text dump vanishes on the common (codegate/cmu) migration path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_pure_assume_residual_empty() {
     let ctx = SymContext::new();
@@ -954,7 +914,6 @@ fn test_snapshot_pure_assume_residual_empty() {
 /// An `add_bv_constraint` (address-concretization) constraint has no `RustBV`
 /// assume entry, so it round-trips via the residual text dump. The restored
 /// solver must pin x to the concretized value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_add_bv_constraint_roundtrip() {
     let ctx = SymContext::new();
@@ -1009,7 +968,6 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
 /// restores, using a plain BV-eq Bool as the stand-in for the unconvertible
 /// AST (the tracked adder cannot tell the difference — what matters is that
 /// the caller records no assumed entry).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_tracked_residual_roundtrip() {
     let ctx = SymContext::new();
@@ -1052,7 +1010,6 @@ fn test_snapshot_tracked_residual_roundtrip() {
 /// A mixed assume + raw context: the assume class rebuilds from IR, the raw
 /// class from the residual text. Both must be present and binding after
 /// restore, with the assume entry alone in the BV-export log.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_mixed_assume_raw_roundtrip() {
     let ctx = SymContext::new();
@@ -1112,7 +1069,6 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
 /// residual text dump, and crucially the assume class is NOT re-asserted
 /// (which would collapse the guarded disjunctions into unconditional
 /// constraints and over-constrain the merged state).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_snapshot_merge_context_roundtrip() {
     let ctx1 = SymContext::new();

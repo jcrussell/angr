@@ -77,8 +77,6 @@
 //! - **Hot-threshold calibration** — the dismantle threshold was calibrated
 //!   on a small workload set; widen the dataset before changing it.
 
-#![cfg(feature = "vex-engine-z3")]
-
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use z3::ast::Bool;

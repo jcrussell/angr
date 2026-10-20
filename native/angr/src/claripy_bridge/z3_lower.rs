@@ -27,7 +27,6 @@
 //! memo scoped to one call, every wrap would re-lower its whole subtree,
 //! quadratic along an op chain (angr-mx00p.12).
 
-#![cfg(feature = "vex-engine-z3")]
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;

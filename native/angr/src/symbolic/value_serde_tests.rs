@@ -36,7 +36,6 @@ fn serde_roundtrip_concrete() {
     }
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_symbolic() {
     use z3::ast::Ast as Z3AstTrait;
@@ -53,7 +52,6 @@ fn serde_roundtrip_symbolic() {
     let _ptr = back.to_z3_ast().get_z3_ast().as_ptr();
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_expression_tree() {
     let ctx = SymContext::new_mock();
@@ -79,7 +77,6 @@ fn serde_roundtrip_expression_tree() {
     ));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_float_op() {
     // BVOp::Float carries kind + prec; verify it survives JSON
@@ -102,7 +99,6 @@ fn serde_roundtrip_float_op() {
 /// (`with_z3_config`), `to_z3_ast()` must rebuild
 /// against the active context rather than return the cached BV from the
 /// previous context.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_expression_memo_no_stale_context_leak() {
     use z3::ast::Ast as Z3AstTrait;

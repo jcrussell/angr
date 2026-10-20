@@ -1,8 +1,7 @@
 #!/bin/sh
 # states/clean/gate: post-commit regression gate for the clean state.
 #
-# Thin wrapper — the checks (make check-no-z3, then cargo test --profile
-# release-checked, then the fast-tier benchmark regression) live in
+# Thin wrapper — the checks (cargo test --profile release-checked, then the fast-tier benchmark regression) live in
 # tools/ralph-gate.sh so this hook and dirty/gate cannot drift apart. See that
 # script for the rationale behind each check.
 #

@@ -132,7 +132,6 @@ impl RustExplorationManager {
     /// Returns `(addr, ast, width_bits)` per symbolic object. Used to carry
     /// Rust-computed symbolic expressions (e.g. flag computations in asisctf)
     /// into Python state memory during state export.
-    #[cfg(feature = "vex-engine-z3")]
     #[angr_macros::steady_guard_exempt(
         reason = "read-only export of one state_id-scoped state's symbolic memory; does not \
                   mutate exploration config or the active stash."

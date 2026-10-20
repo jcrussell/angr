@@ -5,7 +5,6 @@
 //! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69).
 
 use super::super::*;
-#[cfg(feature = "vex-engine-z3")]
 use super::helpers::build_populated_state;
 
 // =============================================================================
@@ -23,7 +22,6 @@ use super::helpers::build_populated_state;
 /// and (b) list a *symbolic* register in `symbolic_register_names` while
 /// EXCLUDING it from `named_registers`, so Python attaches a lazy proxy instead
 /// of silently dropping the Rust-computed symbolic value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_export_full_named_vs_symbolic_register_split() {
     let mut s = RustSimState::new("amd64").unwrap();
@@ -121,7 +119,6 @@ fn test_export_full_memory_pages_and_load_boundary() {
 
 /// A symbolic store marks the page's symbolic bitmap, and export_full must
 /// surface those byte offsets via get_symbolic_offsets (the non-empty branch).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_export_full_symbolic_offsets_nonempty() {
     let mut s = RustSimState::new("amd64").unwrap();
@@ -180,7 +177,6 @@ fn test_export_full_heap_and_open_fds() {
 /// Broad smoke over the remaining getters on a fully-populated state: raw
 /// register bytes, history, call stack (list + depth), and arch name are all
 /// exported non-trivially.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_export_full_smoke_history_callstack_arch() {
     let snap = build_populated_state().export_full();

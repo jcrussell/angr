@@ -21,7 +21,6 @@ use super::super::*;
 /// Symbolic 64-bit address constrained to exactly `{a, b}` via
 /// `(addr == a) | (addr == b)`, the same two-solution idiom
 /// `symbolic_cross_page` uses.
-#[cfg(feature = "vex-engine-z3")]
 fn two_solution_addr(ctx: &SymContext, name: &str, a: u64, b: u64) -> RustBV {
     let addr = RustBV::symbolic(ctx, name, 64);
     let eq_a = addr.eq(&RustBV::concrete(a as u128, 64), ctx);
@@ -35,7 +34,6 @@ fn two_solution_addr(ctx: &SymContext, name: &str, a: u64, b: u64) -> RustBV {
 /// symbolic value. Built from two contradictory equalities on a *symbolic*
 /// operand rather than a concrete `false`, so nothing folds the contradiction
 /// away before it reaches the solver.
-#[cfg(feature = "vex-engine-z3")]
 fn unsat_ctx_with_symbolic_addr() -> (SymContext, RustBV) {
     let ctx = SymContext::new_mock();
     let addr = RustBV::symbolic(&ctx, "unsat_addr", 64);
@@ -50,7 +48,6 @@ fn unsat_ctx_with_symbolic_addr() -> (SymContext, RustBV) {
 /// afterwards. Without the pin, a later `eval` of the same address could
 /// legally answer with the *other* solution, and the caller's loaded value
 /// would then belong to an address the path no longer says was read.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_symbolic_addr_pins_chosen_solution() {
     let ctx = SymContext::new_mock();
@@ -94,7 +91,6 @@ fn test_load_symbolic_addr_pins_chosen_solution() {
 /// solver picked, pins it, and leaves the other candidate untouched. The pin
 /// is what makes the write visible: an unpinned path could later concretize
 /// the same address to the other candidate and read back the stale value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_symbolic_addr_pins_chosen_solution() {
     let ctx = SymContext::new_mock();
@@ -133,7 +129,6 @@ fn test_store_symbolic_addr_pins_chosen_solution() {
 /// With no witness available, `load` reports `SymbolicAddress` instead of
 /// falling back to some default address. The distinct message text is the
 /// only thing separating this from the store-side arm below.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_unresolvable_symbolic_addr_errors() {
     let (ctx, addr) = unsat_ctx_with_symbolic_addr();
@@ -152,7 +147,6 @@ fn test_load_unresolvable_symbolic_addr_errors() {
 /// pins that the failed store leaves memory alone — the wrapper returns
 /// before `store_concrete` is reached, so neither candidate page is written
 /// or auto-mapped.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_unresolvable_symbolic_addr_errors() {
     let (ctx, addr) = unsat_ctx_with_symbolic_addr();

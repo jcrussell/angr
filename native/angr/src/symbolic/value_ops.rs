@@ -310,7 +310,6 @@ impl RustBV {
     }
 
     /// Build a float op over IEEE bit patterns (see [`Self::from_op`]).
-    #[cfg(feature = "vex-engine")]
     pub(crate) fn float_node(
         kind: super::value::FloatOpKind,
         prec: super::value::FloatPrec,
@@ -1870,15 +1869,8 @@ impl ExtractTarget for RustBVExtractTarget {
 // angr-ph300.1: quickcheck property tests for the concrete-folding ops above
 // and for `bv_codec`'s concrete<->Z3 round-trips. Child of `value_ops` so
 // `use super::*` reaches the private `sign_extend`/`sign_extend_to` helpers.
-// Gated on vex-engine-z3 (bd angr-cagbn): the property tests round-trip
-// through `bv_codec` and the `z3` crate, which are absent from a no-z3 build.
-// Whole-module gate keeps the no-default-features / vex-engine nightly `cargo
-// test` combos compiling; default (z3-on) build still runs every test here.
-test_submod!(z3 "value_ops_property_tests.rs" => value_ops_property_tests);
+test_submod!("value_ops_property_tests.rs" => value_ops_property_tests);
 
 // angr-0jh0j.9: the `Clz`/`Ctz` concrete-fold helpers are plain integer math
-// with no Z3 in reach, so this submod is deliberately *not* z3-gated — the
-// width > 128 underflow it pins would otherwise go unchecked in the no-z3
-// `cargo test` combos, which are exactly where a wrapped count is hardest to
-// notice.
+// with no Z3 in reach; these tests pin their width > 128 underflow.
 test_submod!("value_ops_bitcount_tests.rs" => value_ops_bitcount_tests);

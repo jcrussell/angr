@@ -12,7 +12,7 @@
 //! this module was split into (angr-a2br: `bv_id_ops.rs`, `constraint_ops.rs`,
 //! `solving_ops.rs`, `transaction_ops.rs`, `snapshot_fork_ops.rs`,
 //! `lineage_ops.rs`; angr-fs8kb.35: `context_snapshot.rs`,
-//! `local_constraints.rs`, `context_mock.rs`, `merge_instrument.rs` — see the
+//! `local_constraints.rs`, `merge_instrument.rs` — see the
 //! file index in `symbolic/mod.rs` for what landed where). The splits preserved
 //! all of them, and any further refactor must too;
 //! because no single slice owns them, they stay documented here beside the
@@ -56,17 +56,10 @@
 //! `#[allow]`, so count non-test sites only when checking that claim.)
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-// The Z3-only half of the std imports: every consumer of `Cell`/`RefCell`
-// (`sat_cache`, `model_cache`), `AtomicU32` (`timeout_ms`) and `Ordering` is
-// itself behind `#[cfg(feature = "vex-engine-z3")]`, so importing them
-// unconditionally warns in the no-z3 combos `make check-no-z3` gates
-// (angr-sqfj8.139).
-#[cfg(feature = "vex-engine-z3")]
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::Mutex;
@@ -78,16 +71,13 @@ use super::local_constraints::LocalConstraints;
 // Solver/engine profiling counters live in `stats.rs` (angr-ugc2). The glob
 // brings every counter static plus `CheckSite` / `VexOpFamily` and the
 // `record_*` helpers into scope so the solving paths below read and bump them
-// unchanged. Z3-gated: every read/bump site is itself behind
-// `vex-engine-z3` (angr-sqfj8.139).
-#[cfg(feature = "vex-engine-z3")]
+// unchanged.
 use super::stats::*;
 
 // Z3 solver construction + per-check timing/sampling wrappers live in
 // `solver_build.rs` (angr-a2br.2 slice 2). The glob brings `build_solver`,
 // `build_solver_params`, `timed_check`, and `sample_simplify_skip` into scope
 // for the solving paths below (and, via `use super::*`, the test module).
-#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
 
 /// Default Z3 solver timeout in milliseconds.
@@ -131,24 +121,8 @@ pub struct SymContext {
     /// stale log into the child as permanent asserts (.42).
     ///
     /// Pairs push↔pop exactly like `scope_savepoints`.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
 
-    /// No-Z3 analogue of [`bare_local_savepoints`](Self::bare_local_savepoints)
-    /// (angr-c7xno.100).
-    ///
-    /// Each entry is `local_constraints.assumed.len()` at the moment of a
-    /// `push()` — the only local log this build has, since `z3_assertions` /
-    /// `non_bv_assertions` / `dedup_set` are all Z3-gated out of
-    /// [`LocalConstraints`]. `pop()` truncates back to it, so the mock arm
-    /// honours the same "constraints added inside a scope do not survive the
-    /// matching pop" contract, and its length is the scope depth
-    /// [`try_pop`](Self::try_pop) needs to refuse an under-pop. Before this
-    /// existed the mock `push()`/`pop()` were no-ops and `try_pop()` returned
-    /// `true` unconditionally, so `RustSolverContext::pop` accepted an
-    /// unbalanced pop that the Z3 arm rejects with a `ValueError`.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub(super) mock_scope_savepoints: Mutex<Vec<usize>>,
     /// Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
     /// Arc<Vec<...>> for O(1) clone on fork; local additions live alongside
@@ -162,7 +136,6 @@ pub struct SymContext {
     /// (avoids cloning every Bool — each Bool::clone would call Z3_inc_ref).
     /// `pub(super)` for the dedup-seed path in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) z3_assertions_shared: Mutex<Arc<Vec<z3::ast::Bool>>>,
 
     /// Shared (frozen) residual (no-[`RustBV`]) Z3 Bool assertions from
@@ -171,7 +144,6 @@ pub struct SymContext {
     /// the residual subset (raw / bv-eq / merge-guard); the assume class is
     /// reconstructed from `assumed_constraints` IR. Dumped to
     /// `residual_smtlib2` in `to_snapshot`.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) non_bv_assertions_shared: Mutex<Arc<Vec<z3::ast::Bool>>>,
 
     /// Whether this context's `assumed` pairs are directly asserted on the
@@ -198,29 +170,24 @@ pub struct SymContext {
     /// pruned/avoided/deadended without ever querying the solver.
     /// `pub(super)` so `set_timeout` in `transaction_ops.rs` (slice 10,
     /// angr-a2br.2.8) can re-apply params without forcing lazy materialization.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) solver: Mutex<Option<z3::Solver>>,
     /// Cached SAT result, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
     /// (slice 7, angr-wf6f) can read/write it.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) sat_cache: Cell<Option<bool>>,
     /// Cached Z3 model, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
     /// (slice 7, angr-wf6f) can read/write it. Held in an `Rc` so a fork
     /// shares the parent's model instead of copying it (angr-gorvf.16).
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
     /// List of Z3 tracking boolean constants for unsat core mapping.
     /// Each entry is a (track_bool, constraint_ast) pair.
     /// `pub(super)` for `add_constraint_tracked_indexed` in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) constraint_trackers: Mutex<Vec<z3::ast::Bool>>,
     /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
     /// `pub(super)` for `set_timeout`/`timeout_ms` in `transaction_ops.rs`
     /// (slice 10, angr-a2br.2.8).
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) timeout_ms: AtomicU32,
 
     /// Strict-deterministic witness selection (angr-op0dn.10.2, M2.2).
@@ -233,7 +200,6 @@ pub struct SymContext {
     /// happened to build — see `solving_ops.rs`. Inherited parent→child on
     /// `fork` so a whole lineage stays in the same mode.
     /// `pub(super)` for the query methods in `solving_ops.rs`.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) deterministic: AtomicBool,
 
     /// Shared-lineage Z3 solver (angr-v5a5 / angr-3ms1) — working, default-off.
@@ -255,7 +221,6 @@ pub struct SymContext {
     /// against the shared Z3 solver. Both layers are required; do not
     /// collapse to `OnceLock` or `Option<Arc<...>>` without first changing
     /// the fork signature.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) lineage: Mutex<Option<Arc<Mutex<super::lineage::SharedLineageSolver>>>>,
 
     /// Per-state scope path: the ordered list of constraint frames this
@@ -271,7 +236,6 @@ pub struct SymContext {
     /// default, since the shared-lineage feature is opt-in. Once a lineage
     /// is installed, `assume_*` mints a frame here per constraint and routes
     /// the query through `SharedLineageSolver::switch_to`.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) scope_path: Mutex<super::lineage::ScopePath>,
 
     /// Per-state stack of saved `scope_path` lengths (angr-v5a5 slice 4b).
@@ -288,7 +252,6 @@ pub struct SymContext {
     /// the transactional plumbing (push/pop and transaction_*) coexist
     /// with the shared Z3 stack — bare Z3 push/pop on the shared solver
     /// would corrupt sibling state.
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) scope_savepoints: Mutex<Vec<usize>>,
 
     /// Outstanding bare Z3 pushes on the per-context solver (angr-3ms1
@@ -311,7 +274,6 @@ pub struct SymContext {
     /// would leak into the child's base (see bd memory
     /// `invariant-bare-z3-push-depth` for the failure mode this gates
     /// against).
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) bare_z3_push_depth: AtomicUsize,
 
     /// Opt-in flag for fork-time `SharedLineageSolver` materialization
@@ -329,7 +291,6 @@ pub struct SymContext {
     ///
     /// Why it stays default-off: `docs/advanced-topics/rust_engine_decisions.rst`,
     /// "Shared-lineage Z3 solver stays opt-in".
-    #[cfg(feature = "vex-engine-z3")]
     pub(super) use_shared_lineage_solver: AtomicBool,
 }
 
@@ -338,7 +299,6 @@ impl SymContext {
     ///
     /// With z3-rs 0.19+, the Z3 context is thread-local.
     /// All Z3 operations on this thread will use the same context.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn new() -> Self {
         Self::with_timeout(DEFAULT_SOLVER_TIMEOUT_MS)
     }
@@ -352,7 +312,6 @@ impl SymContext {
     // transport is StateMigrationPayload (state/migration.rs), which is Send-by-construction
     // and compile-time asserted. Switching to Rc would propagate non-Send through the
     // SymContext API surface. See `arc_shared` in lib.rs for the full rationale.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn with_timeout(timeout_ms: u32) -> Self {
         // unsat_core disabled for performance — tracking booleans add
         // significant overhead per constraint.
@@ -381,8 +340,7 @@ impl SymContext {
         }
     }
 
-    /// Create a mock context for testing (when Z3 is enabled but not needed).
-    #[cfg(feature = "vex-engine-z3")]
+    /// Alias for [`Self::new`], used by tests.
     pub fn new_mock() -> Self {
         Self::new()
     }
@@ -393,7 +351,6 @@ impl SymContext {
     /// replay for states that are pruned/avoided without querying the solver.
     /// On first access, a fresh solver is created and cached assertions are
     /// replayed.
-    #[cfg(feature = "vex-engine-z3")]
     #[allow(
         clippy::expect_used,
         reason = "`guard` is `Some` here by construction: the block directly above stores `*guard = Some(new_solver)` on the `None` path and the guard is held across both, so no other thread can clear it in between. `MutexGuard::map` must yield a `&mut Solver`, so there is no `Option` return to widen into"
@@ -433,7 +390,6 @@ impl SymContext {
 
     /// Push an entry to assumed_constraints for export tracking.
     /// Used by the fast path that bypasses assume_true.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn assumed_constraints_push(&self, bv: RustBV, is_true: bool) {
         self.local_constraints.lock().assumed.push((bv, is_true));
     }
@@ -448,7 +404,6 @@ impl SymContext {
     /// feasibility-check assumes would otherwise leak into the log that
     /// `to_snapshot`/`restore_from_snapshot` faithfully re-assert on a wave
     /// migration — the ype54 concrete-guard poison (angr-ype54).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn assumed_local_len(&self) -> usize {
         self.local_constraints.lock().assumed.len()
     }
@@ -457,7 +412,6 @@ impl SymContext {
     /// discarding transient entries appended since an
     /// [`Self::assumed_local_len`] savepoint. Does not touch the Z3 solver
     /// (the enclosing `pop()` owns that) — only the export/re-assert log.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn truncate_assumed_local(&self, len: usize) {
         let mut local = self.local_constraints.lock();
         if len < local.assumed.len() {
@@ -468,7 +422,6 @@ impl SymContext {
     /// Export all Z3 assertion pointers from the assertion cache.
     /// Uses z3_assertions_shared + the local z3_assertions vector which track
     /// every assertion made via assume_true/assume_false/add_constraint_raw.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn export_z3_assertion_ptrs(&self) -> Vec<usize> {
         use z3::ast::Ast;
         let mut ptrs = Vec::new();
@@ -491,7 +444,7 @@ impl SymContext {
 
     // Scoping &self methods (set_timeout / timeout_ms / set_sat_cache /
     // push / pop / try_pop / unsat_core / get_all_constraints_str /
-    // z3_assertion_count, plus their non-Z3 mock variants) moved to
+    // z3_assertion_count) moved to
     // transaction_ops.rs (slice 10, angr-a2br.2.8). The transaction_begin/
     // commit/rollback lifecycle was removed in angr-ph300.44.
 
@@ -544,17 +497,13 @@ impl Default for SymContext {
 #[path = "merge_instrument.rs"]
 pub(crate) mod merge_instrument;
 
-// Gated on vex-engine-z3 (bd angr-cagbn): every test here drives
-// `SymContext::add_constraint` / `add_constraint_raw`, which only exist with
-// z3. Keeps the no-z3 nightly `cargo test` combos compiling; default build
-// runs them all.
 // The *file* paths below are nested under context_tests/, but the modules they
 // create are FLAT siblings of each other directly under `context` — there is no
 // `context_tests` parent module. Cite a test as
 // `context_tests_constraints::test_name`, never `context_tests::constraints::…`
 // (angr-6cp06.48 found four citations that took the file layout for the module
 // layout; neither grep nor rust-analyzer resolves that form).
-test_submod!(z3 "context_tests/constraints.rs" => context_tests_constraints);
+test_submod!("context_tests/constraints.rs" => context_tests_constraints);
 test_submod!("context_tests/lineage.rs" => context_tests_lineage);
 test_submod!("context_tests/merge_prefix.rs" => context_tests_merge_prefix);
 test_submod!("context_tests/merge_shape_spike.rs" => context_tests_merge_shape_spike);

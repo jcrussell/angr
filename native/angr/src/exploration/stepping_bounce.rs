@@ -292,4 +292,4 @@ impl RustExplorationManager {
     }
 }
 
-test_submod!(z3 "stepping_bounce_tests.rs" => stepping_bounce_tests);
+test_submod!("stepping_bounce_tests.rs" => stepping_bounce_tests);

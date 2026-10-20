@@ -9,7 +9,6 @@ use super::super::*;
 /// Run `f` on a fresh OS thread and return its result. Each thread owns its
 /// own thread-local Z3 context, so this is the production worker model: the
 /// only thing that crosses is `Send` data (a migration payload, plain values).
-#[cfg(feature = "vex-engine-z3")]
 fn on_worker<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     std::thread::scope(|s| {
         s.spawn(f)
@@ -19,7 +18,6 @@ fn on_worker<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 }
 
 /// The calling thread's thread-local Z3 context, as a comparable address.
-#[cfg(feature = "vex-engine-z3")]
 fn thread_ctx_addr() -> usize {
     z3::Context::thread_local().get_z3_context().as_ptr() as usize
 }
@@ -28,7 +26,6 @@ fn thread_ctx_addr() -> usize {
 // owner and rebuilds the ASTs in the stealing worker's own context, never
 // reading the source context cross-thread. A symbolic register pinned by a
 // path constraint must re-evaluate to its witness after the round trip.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_via_snapshot_cross_context() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -80,7 +77,6 @@ fn test_migrate_via_snapshot_cross_context() {
 // (`flush_memory`), so this is a compiler-enforced invariant
 // (`SymbolicMemory::to_snapshot` requires a `MultiFlushed` proof), not just a
 // call-site convention; this test proves the DATA survives the round trip.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_carries_multi_cell_bytes() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -137,7 +133,6 @@ fn test_migrate_carries_multi_cell_bytes() {
 // every hop; a concrete saved_arg clones verbatim. Each hop serializes under
 // the context that is then live, so a half-rebuilt foreign-context AST would
 // surface here.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_resume_stack_roundtrip() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -209,7 +204,6 @@ fn test_migrate_resume_stack_roundtrip() {
 // on callback-heavy workloads. Migration carries them as live `Send` handles.
 // This proves they survive a cross-context round-trip alongside the Rust-side
 // register/constraint state.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_preserves_py_overlays() {
     use pyo3::prelude::*;
@@ -282,7 +276,6 @@ fn test_migrate_preserves_py_overlays() {
 // mints ASTs in the active thread-local, so a stale thread-local would bind the
 // rebuilt state to the wrong context — Z3 UB on the next query. The guard is
 // unconditional (returns ContextMismatch), so this holds in release too.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_migrate_reattach_wrong_context_errors() {
     let state = RustSimState::new("amd64").unwrap();

@@ -1,4 +1,4 @@
-//! The single-threaded run loop: the always-compiled default driver.
+//! The single-threaded run loop: the default driver.
 //!
 //! `run_loop_single_threaded` owns the loop frame (I8 termination, state pop,
 //! post-step bookkeeping) and delegates the entire per-state body to `step_one`,
@@ -83,7 +83,6 @@ impl RustExplorationManager {
             // dismantle when ≥20 lineage_switch events show <35% hot
             // ratio over a window — threshold calibrated in angr-1gfa; widen
             // the measured workload set before retuning it.
-            #[cfg(feature = "vex-engine-z3")]
             crate::symbolic::lineage::tick_and_sample_for_thrash(10, 20, 35);
 
             // Check if we have enough solutions.
@@ -117,7 +116,6 @@ impl RustExplorationManager {
                     // No-op unless RUST_PARALLEL_SHADOW_PROBE is set; when it
                     // is, `shadow_probe_migrate` forks `s` internally so the
                     // live state itself is never mutated (see its doc).
-                    #[cfg(feature = "vex-engine-z3")]
                     self.shadow_probe_migrate(&s);
                     s
                 }
@@ -751,4 +749,4 @@ impl RustExplorationManager {
     }
 }
 
-test_submod!(z3 "run_loop_single_tests.rs" => tests);
+test_submod!("run_loop_single_tests.rs" => tests);

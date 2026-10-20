@@ -743,4 +743,4 @@ impl SelectionPolicy for FindDirected {
     }
 }
 
-test_submod!(z3 "selection_policy_tests.rs" => tests);
+test_submod!("selection_policy_tests.rs" => tests);

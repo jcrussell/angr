@@ -213,7 +213,6 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
 /// universality check — `bv != roundtrip` must be unsatisfiable — plus a width
 /// guard so a silent width drift (the class of bug the AST_CACHE width check
 /// defends against) is caught even when it happens to stay satisfiable-clean.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_roundtrip_import_export_preserves_semantics() {
     pyo3::Python::initialize();
@@ -361,7 +360,6 @@ fn test_roundtrip_concrete_value_exact() {
 /// that comment so a future op-name remap regresses loudly. The operand is a
 /// pinned symbolic BVS (not two concrete BVVs) so claripy keeps the div/mod op
 /// node instead of const-folding it away before it reaches the import arm.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_import_floordiv_mod_are_unsigned() {
     pyo3::Python::initialize();
@@ -425,9 +423,8 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
         // 256 MiB, not 8: the MAX_*_RECURSION_DEPTH=4096 guard was calibrated
         // against release frame sizes, which fit 4096 frames in 8 MiB (this test
         // passes in release at 8 MiB). A debug build's frames are several times
-        // larger — the import direction's especially — so `cargo test` (debug),
-        // the form the nightly `rust_feature_flags` matrix runs for every
-        // feature combo, overflowed 8 MiB *before* reaching the guard. The
+        // larger — the import direction's especially — so `cargo test` (debug)
+        // overflowed 8 MiB *before* reaching the guard. The
         // reservation is virtual: only the ~4096 frames actually descended
         // commit. Sizing for the debug frame lets the guard fire (returning
         // RecursionLimit) in both profiles; the test still proves the guard,
@@ -504,9 +501,8 @@ fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
         // 256 MiB, not 8: the MAX_*_RECURSION_DEPTH=4096 guard was calibrated
         // against release frame sizes, which fit 4096 frames in 8 MiB (this test
         // passes in release at 8 MiB). A debug build's frames are several times
-        // larger — the import direction's especially — so `cargo test` (debug),
-        // the form the nightly `rust_feature_flags` matrix runs for every
-        // feature combo, overflowed 8 MiB *before* reaching the guard. The
+        // larger — the import direction's especially — so `cargo test` (debug)
+        // overflowed 8 MiB *before* reaching the guard. The
         // reservation is virtual: only the ~4096 frames actually descended
         // commit. Sizing for the debug frame lets the guard fire (returning
         // RecursionLimit) in both profiles; the test still proves the guard,
@@ -606,8 +602,6 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 /// assertions below pin both halves: the exported claripy name is the Rust name,
 /// and a leaf re-minted from that name denotes the same Z3 constant despite
 /// carrying a different `rust_id`.
-// `to_z3_ast` only exists with the Z3-backed engine (angr-9ke6b.236).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_rust_minted_leaf_exports_under_its_rust_name() {
     pyo3::Python::initialize();
@@ -698,11 +692,8 @@ fn test_assumed_guard_to_claripy_all_four_branches() {
 
         // Pin x = 5 so every result below evaluates to a single concrete bit:
         // the Bool guard holds, and x's bit 0 is 1.
-        #[cfg(feature = "vex-engine-z3")]
         ctx.add_constraint(x.to_z3_ast().eq(z3::ast::BV::from_u64(5, 32)));
 
-        // `_want_eval` is underscore-named because the block that reads it is
-        // compiled out in the no-z3 build; the name is still usable there.
         // `want_op` is a set, not a single name: claripy's simplifier folds
         // `Not(a == b)` down to `a != b`, so the Bool/false branch is allowed
         // to surface either spelling. The semantic check below is what actually
@@ -754,7 +745,6 @@ fn test_assumed_guard_to_claripy_all_four_branches() {
 
             // Semantic check under the pinned x: a true-assumed guard must
             // evaluate to 1 and a false-assumed one to 0, in both shapes.
-            #[cfg(feature = "vex-engine-z3")]
             {
                 let back = claripy_to_rustbv(py, out, &ctx)
                     .unwrap_or_else(|e| panic!("{label}: re-import failed: {e}"));

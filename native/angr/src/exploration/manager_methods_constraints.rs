@@ -262,7 +262,6 @@ impl RustExplorationManager {
     /// Export raw Z3 assertion pointers from a state's solver.
     /// Lossless — captures ALL Z3 assertions, not just those tracked
     /// in assumed_constraints (which drops constraints where claripy_to_rustbv fails).
-    #[cfg(feature = "vex-engine-z3")]
     pub fn export_z3_constraint_ptrs(&self, state_id: u64) -> PyResult<Vec<usize>> {
         self._export_z3_constraint_ptrs(state_id)
     }
@@ -272,7 +271,6 @@ impl RustExplorationManager {
     /// Lenient form — see `add_constraints_to_state` for why `False` here can
     /// also mean "Z3 gave up", and `import_z3_constraint_ptrs_checked` for the
     /// form that tells the two apart.
-    #[cfg(feature = "vex-engine-z3")]
     #[angr_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
@@ -291,7 +289,6 @@ impl RustExplorationManager {
 
     /// `import_z3_constraint_ptrs`, but reporting an undecided satisfiability
     /// query as `None` rather than collapsing it into `False`.
-    #[cfg(feature = "vex-engine-z3")]
     #[angr_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
@@ -310,7 +307,6 @@ impl RustExplorationManager {
     /// design (angr-sqfj8.59). The key set it emits is still a de-facto API,
     /// so `TestDebugSolverInfo` in `tests/engines/rust/test_misc.py` pins it
     /// and cross-checks `exported_ptrs` against `export_z3_constraint_ptrs`.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn debug_solver_info(&self, state_id: u64) -> PyResult<String> {
         self._debug_solver_info(state_id)
     }

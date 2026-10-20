@@ -105,7 +105,6 @@ fn scratch_thread_exits_when_the_reply_receiver_is_dropped() {
 /// fork. This pins that the live state's `multi_cell_count`/pending-write
 /// state survives the probe unchanged regardless of whether the probe itself
 /// succeeds.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn shadow_probe_migrate_does_not_mutate_the_live_state() {
     Python::initialize();

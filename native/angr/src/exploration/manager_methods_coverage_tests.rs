@@ -115,7 +115,6 @@ fn find_anywhere(mgr: &RustExplorationManager, id: u64) -> Option<&RustSimState>
 /// `set_deterministic`'s contract covers every bucket: it loops every named
 /// stash generically, then `pending_callbacks`, then `parked_bounce_states`.
 /// Asserted over a true/false/true sequence so a one-way latch cannot pass.
-#[cfg(feature = "vex-engine-z3")]
 fn assert_set_deterministic_reaches(bucket: Bucket) {
     Python::initialize();
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -133,25 +132,21 @@ fn assert_set_deterministic_reaches(bucket: Bucket) {
     }
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_deterministic_reaches_active_stash() {
     assert_set_deterministic_reaches(Bucket::ActiveStash);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_deterministic_reaches_other_stash() {
     assert_set_deterministic_reaches(Bucket::OtherStash);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_deterministic_reaches_pending_callback() {
     assert_set_deterministic_reaches(Bucket::PendingCallback);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn set_deterministic_reaches_parallel_bounce() {
     assert_set_deterministic_reaches(Bucket::ParallelBounce);

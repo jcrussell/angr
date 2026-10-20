@@ -198,7 +198,6 @@ fn test_vqnarrow_bin_16sto8sx16_two_inputs() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vqnarrow_un_symbolic_saturates() {
     // Symbolic I16 saturating to signed I8. Constrain output lane to 127
@@ -487,7 +486,6 @@ fn test_vqsub_32ux4_concrete() {
 /// Symbolic universality: Iop_QAdd8Sx8 must produce the same bits as the
 /// claripy reference at `_op_generic_QAdd` for any 64-bit input. Built per
 /// lane using the explicit sign-bit overflow formula (cap_cond + cap).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vqadd_8sx8_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
@@ -894,7 +892,6 @@ fn test_parse_vqshlsat_routing() {
 /// reference is the same algorithm encoded straight from the spec. This
 /// catches encoding mistakes (wrong cap, swapped then/else, sign-bit
 /// extraction errors) without depending on a Python reference.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vqshl_16x4_symbolic_universal_unsigned() {
     let ctx = SymContext::new_mock();
@@ -945,7 +942,6 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
 
 /// Same parity check for the signed (QSal) branch — verifies the SMAX/
 /// SMIN cap selection from the data-sign bit.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vqsal_16x4_symbolic_universal_signed() {
     let ctx = SymContext::new_mock();

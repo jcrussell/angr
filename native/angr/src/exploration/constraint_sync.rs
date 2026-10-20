@@ -120,7 +120,6 @@ impl RustExplorationManager {
         // would lose a path that is very likely feasible (angr-03vl4.62,
         // `invariant-z3-unknown-not-unsat`). The state is kept and the caller
         // re-checks it on the next solver query.
-        #[cfg(feature = "vex-engine-z3")]
         match sym_ctx.is_sat_checked() {
             Some(false) => {
                 log::debug!(
@@ -140,12 +139,11 @@ impl RustExplorationManager {
 
         // Partial-sync re-check: if any constraints failed to convert, do an
         // explicit SAT check. Failed conversions can leave state in divergent state.
-        // Defence-in-depth only: under `vex-engine-z3` the unconditional
-        // post-sync SAT check above already rejects everything this gate could
-        // catch. Kept for a build where that check is compiled out. `sync_constraints_partial_failure_unsat_is_pruned`
-        // (helpers_tests.rs) pins the observable contract — partial sync plus
+        // Defence-in-depth only: the unconditional post-sync SAT check above
+        // already rejects everything this gate could catch.
+        // `sync_constraints_partial_failure_unsat_is_pruned`
+        // (constraint_sync_tests.rs) pins the observable contract — partial sync plus
         // contradictory constraints prunes — not which gate fires.
-        #[cfg(feature = "vex-engine-z3")]
         if failed_count > 0 && success_count > 0 {
             // Same decided-Unsat-only rule as the post-sync check above.
             if sym_ctx.is_sat_checked() == Some(false) {

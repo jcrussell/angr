@@ -81,7 +81,6 @@ fn test_symbolic_isdigit_returns_constrained_bv() {
     assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_isdigit_solver_evaluation() {
     // Constrain the symbolic byte to '5' and check the result solves to 1.
@@ -99,7 +98,6 @@ fn test_symbolic_isdigit_solver_evaluation() {
     assert_eq!(ctx.max(&result, false), Some(1));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_tolower_returns_symbolic() {
     let mut s = make_state();
@@ -281,7 +279,6 @@ fn test_case_shift_preserves_out_of_range_argument() {
 /// The symbolic path shares the concrete path's range tables, so it must reject
 /// the same out-of-byte-range values. Before the fix the solver could satisfy
 /// `isdigit(c) == 1` with `c == 304`, an unsoundness Python would never allow.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_predicate_rejects_high_byte_alias() {
     let mut s = make_state();
@@ -300,7 +297,6 @@ fn test_symbolic_predicate_rejects_high_byte_alias() {
 }
 
 /// Symbolic twin of `test_case_shift_preserves_out_of_range_argument`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_tolower_preserves_eof() {
     let mut s = make_state();

@@ -117,4 +117,4 @@ stub_syscall!(
     6
 );
 
-test_submod!(z3 "concurrency_tests.rs" => concurrency_tests);
+test_submod!("concurrency_tests.rs" => concurrency_tests);

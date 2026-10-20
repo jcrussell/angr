@@ -159,9 +159,8 @@ target. Two local facts worth knowing up front:
 
 - This checkout's `.venv/` `pip` is unreliable: rebuild with
   `make rebuild-cargo`.
-- `make check` is not the CI gate, and `make check-no-z3` is the only local
-  check of the no-Z3 arms; the rst's "Incremental builds" section has the
-  exact commands.
+- `make check` is not the CI gate; the rst's "Incremental builds" section
+  has the exact commands.
 
 ## Key Files
 
@@ -213,8 +212,7 @@ Everything it needs is under `.ralph/`:
   SAFETY rules.
 - `hooks/states/{clean,dirty}/gate` — thin wrappers around
   `tools/ralph-gate.sh`, whose header is the authority on the checks it
-  runs, in order: `make check-no-z3`, `cargo test --profile
-  release-checked`, and the fast-tier benchmark regression with the
+  runs, in order: `cargo test --profile release-checked` and the fast-tier benchmark regression with the
   PR-gate flags. `revert/gate` and `review/gate` are no-op stubs that
   exit 0.
 - `state/` — runtime state (FSM, logs, `session.md` handoff), gitignored.

@@ -196,7 +196,6 @@ fn test_zext_cmp_chain_collapse_to_narrowest() {
 ///
 /// If this test ever fails, the assumption that drove closing
 /// angr-behq is broken and that bead should be re-opened.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn z3_already_dedupes_structurally_equal_rustbv_trees() {
     use z3::ast::Ast as Z3AstTrait;
@@ -226,7 +225,6 @@ fn z3_already_dedupes_structurally_equal_rustbv_trees() {
 /// the same Z3 AST). Z3 itself does NOT normalize commutative arg order
 /// at mk_bv* time — preprocessing tactics do, but only on assertions —
 /// so the canonicalization happens on the Rust side at construction.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn commutative_ops_canonicalize_operand_order() {
     use z3::ast::Ast as Z3AstTrait;

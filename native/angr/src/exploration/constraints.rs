@@ -8,9 +8,9 @@
 //!   filter and the find/avoid predicate skip sets that prevent infinite
 //!   loops after `resume_*_predicate(false)`.
 //!
-//! It also holds the two cfg-gated free functions that are the single seam for
-//! the strict-deterministic flag — `apply_state_deterministic` and
-//! `state_is_deterministic` — both inert on a non-`vex-engine-z3` build, plus
+//! It also holds the two free functions that are the single seam for the
+//! strict-deterministic flag — `apply_state_deterministic` and
+//! `state_is_deterministic` — plus
 //! the claripy constraint-import seam: `import_one_constraint` (the single
 //! per-constraint body, shared with `constraint_sync.rs`), the
 //! `import_python_constraints` list wrapper over it, and
@@ -58,15 +58,10 @@ impl ConstraintSolver {
 /// Apply strict-deterministic witness selection to one state's solver.
 ///
 /// Single seam for the `deterministic` flag so `_create_state`, `_add_state`
-/// and `set_deterministic` share one cfg-gated body: on a non-Z3 build there
-/// is no `SymContext::set_deterministic` and the flag is inert.
-#[cfg(feature = "vex-engine-z3")]
+/// and `set_deterministic` share one body.
 pub(crate) fn apply_state_deterministic(state: &crate::state::RustSimState, v: bool) {
     state.solver().borrow().set_deterministic(v);
 }
-
-#[cfg(not(feature = "vex-engine-z3"))]
-pub(crate) fn apply_state_deterministic(_state: &crate::state::RustSimState, _v: bool) {}
 
 /// Apply strict-deterministic witness selection to the one solver context a
 /// parked callback owns that is NOT a `RustSimState` (angr-sqfj8.32).
@@ -95,26 +90,15 @@ pub(crate) fn apply_state_deterministic(_state: &crate::state::RustSimState, _v:
 /// Missing any of the three silently leaves that lineage on the old
 /// witness-selection mode with no error — the failure shape bd memory
 /// `invariant-lineage-flag-propagation` describes.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) fn apply_fork_snapshots_deterministic(pending: &super::PendingCallback, v: bool) {
     for snapshot in pending.fork_snapshots.values() {
         snapshot.solver.set_deterministic(v);
     }
 }
 
-#[cfg(not(feature = "vex-engine-z3"))]
-pub(crate) fn apply_fork_snapshots_deterministic(_pending: &super::PendingCallback, _v: bool) {}
-
-/// Whether a state's solver is in strict-deterministic mode. Always false on
-/// a non-Z3 build, where the mode does not exist.
-#[cfg(feature = "vex-engine-z3")]
+/// Whether a state's solver is in strict-deterministic mode.
 pub(crate) fn state_is_deterministic(state: &crate::state::RustSimState) -> bool {
     state.solver().borrow().is_deterministic()
-}
-
-#[cfg(not(feature = "vex-engine-z3"))]
-pub(crate) fn state_is_deterministic(_state: &crate::state::RustSimState) -> bool {
-    false
 }
 
 /// Which conversion tier [`import_one_constraint`] tries first.
@@ -139,13 +123,6 @@ pub(crate) enum ConstraintTier {
 }
 
 /// How [`import_one_constraint`] disposed of one constraint.
-#[cfg_attr(
-    not(feature = "vex-engine-z3"),
-    allow(
-        dead_code,
-        reason = "RawOnly is only reachable through the Z3-pointer tier"
-    )
-)]
 pub(crate) enum ConstraintImport {
     /// Asserted, with a width-1 `RustBV` form recorded in the assumed-constraint
     /// export log so a Python re-import can reconstruct it.
@@ -170,7 +147,6 @@ pub(crate) enum ConstraintImport {
 /// is `None` too (angr-mx00p.41): asserting it would trip Z3's silent
 /// sort-mismatch guard (angr-d01qu), and the RustBV tier's `as_bool` lowers it
 /// to the proper `!= 0`.
-#[cfg(feature = "vex-engine-z3")]
 fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<z3::ast::Bool> {
     crate::claripy_bridge::lower_claripy_bool(item).ok()
 }
@@ -200,10 +176,6 @@ fn as_bool(
 /// with *inverted* tier precedence and no cross-reference between them
 /// (angr-6cp06.26); `tier` is the only thing that still differs.
 ///
-#[cfg_attr(
-    not(feature = "vex-engine-z3"),
-    allow(unused_variables, reason = "no raw-pointer tier without Z3")
-)]
 pub(crate) fn import_one_constraint(
     py: pyo3::Python<'_>,
     ctx: &crate::symbolic::SymContext,
@@ -213,9 +185,7 @@ pub(crate) fn import_one_constraint(
     use crate::claripy_bridge::claripy_to_rustbv;
 
     // Tier: raw Z3 pointer. Only reachable when it is preferred *and* the AST
-    // lowers; otherwise both orders fall through to the RustBV tier below,
-    // which is also the whole body on a non-Z3 build.
-    #[cfg(feature = "vex-engine-z3")]
+    // lowers; otherwise both orders fall through to the RustBV tier below.
     if tier == ConstraintTier::Z3PtrFirst
         && let Some(z3_ast) = claripy_z3_ptr(item)
     {
@@ -236,7 +206,7 @@ pub(crate) fn import_one_constraint(
     }
 
     // Tier: RustBV. Preserves the assumed-constraint tracking Python re-import
-    // depends on, and is the only tier on a non-Z3 build.
+    // depends on.
     match claripy_to_rustbv(py, item, ctx) {
         Ok(bv) => {
             ctx.assume_true(&as_bool(bv, ctx));
@@ -246,7 +216,6 @@ pub(crate) fn import_one_constraint(
             // Rescue an op `claripy_to_rustbv` does not model (FP, etc) by
             // asserting the lowered clarirs AST, keeping the round-trip
             // lossless.
-            #[cfg(feature = "vex-engine-z3")]
             if let Some(z3_ast) = claripy_z3_ptr(item) {
                 ctx.add_constraint_raw(z3_ast);
                 return ConstraintImport::RawOnly(e);

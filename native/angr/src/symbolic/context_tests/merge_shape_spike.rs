@@ -16,7 +16,6 @@
 //! shipped merge against it. The prototype predates the production rewrite and
 //! is test-only code: it describes nothing still to be done.
 
-#![cfg(feature = "vex-engine-z3")]
 
 use super::*;
 use std::sync::Arc;

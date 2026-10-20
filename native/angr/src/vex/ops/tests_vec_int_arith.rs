@@ -91,7 +91,6 @@ fn test_vec_int_abs_concrete() {
 /// Symbolic VMax (signed): constrain right == 7, derive left from a free
 /// 4x i32 vector, and verify that asserting result == [7, 7, 7, 7] forces
 /// every lane of left to be <= 7.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_int_max_symbolic_signed() {
     let ctx = SymContext::new_mock();

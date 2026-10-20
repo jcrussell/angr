@@ -12,13 +12,11 @@ use super::super::*;
 /// deterministically. Mirrors `pin_rlimit` in `symbolic/context_tests/solver_queries.rs`
 /// — see `test_pin_rlimit_reaches_the_solver` there for why an rlimit beats a
 /// wall-clock timeout in a test.
-#[cfg(feature = "vex-engine-z3")]
 fn pin_rlimit(state: &RustSimState, rlimit: u32) {
     state.solver().borrow().pin_rlimit_for_test(rlimit);
 }
 
 /// A *proven* Unsat still prunes — the gate must not be a blanket "keep".
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_survives_sat_prune_drops_a_proven_unsat_state() {
     let state = RustSimState::new("amd64").unwrap();
@@ -39,7 +37,6 @@ fn test_survives_sat_prune_drops_a_proven_unsat_state() {
 /// `10 < x < 20` set under `rlimit=1`, so the check aborts immediately and
 /// lifting the budget afterwards decides it instantly — the test cannot hang
 /// in either direction.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_survives_sat_prune_keeps_an_undecided_state() {
     let state = RustSimState::new("amd64").unwrap();
@@ -75,7 +72,6 @@ fn test_survives_sat_prune_keeps_an_undecided_state() {
 
 /// `lazy_solves` short-circuits the gate entirely — no Z3 query runs, so even
 /// a contradictory state is kept (that is the whole point of the mode).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_survives_sat_prune_short_circuits_under_lazy_solves() {
     let state = RustSimState::new("amd64").unwrap();

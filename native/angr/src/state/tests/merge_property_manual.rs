@@ -51,7 +51,6 @@ fn computed_fields_get_fresh_identity_not_inherited_from_either_branch() {
 /// `#[derive(MergePolicy)]`, `arch/mod.rs`) has its own deep ITE-shape
 /// coverage in `arch/register_file_tests.rs`; this proves `RustSimState::merge` wires
 /// its result in rather than dropping a branch-only concrete register write.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn delegate_registers_merge_preserves_a_branch_only_concrete_write() {
     let (a, mut b) = base_pair("amd64");
@@ -117,7 +116,6 @@ fn delegate_memory_merge_preserves_a_branch_only_store() {
 /// shared symbol; the merged solver must let each branch's own condition
 /// force its own value, proving both arms' constraints survived (not just
 /// self's).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn delegate_solver_merge_preserves_each_branchs_constraint() {
     let (a, b) = base_pair("amd64");
@@ -443,7 +441,6 @@ fn manual_inspection_keeps_selfs_events_and_drops_others_silently() {
 /// `Option<RustBV>` has no `Ord`; the maximum is built symbolically via
 /// `uge`+`ite`. Deeper coverage (including the `None`-vs-`Some` fold arms)
 /// lives in `merge_scalars.rs`; this is the census entry.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn manual_last_time_takes_the_symbolic_max_across_branches() {
     // b bigger than a: rules out "merge always keeps self's smaller value".

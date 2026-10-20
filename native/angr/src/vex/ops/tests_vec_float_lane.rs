@@ -159,7 +159,6 @@ fn test_vec_float_neg_concrete_f64x2() {
 
 /// Iop_Neg32Fx2-style: the NEON D-reg shape, symbolic operand. Pins that the
 /// Z3 path builds a 64-bit (not 128-bit) result and negates each lane.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_neg_symbolic_f32x2() {
     let ctx = SymContext::new_mock();
@@ -231,7 +230,6 @@ fn test_vec_float_min_concrete_f64x2() {
 /// Symbolic VFAdd: build a free f32x4 left vector, constrain it so each
 /// lane equals 1.0, add a concrete [2.0, 3.0, 4.0, 5.0], and verify the
 /// model agrees with [3.0, 4.0, 5.0, 6.0] per lane.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_add_symbolic_f32x4() {
     let ctx = SymContext::new_mock();
@@ -337,7 +335,6 @@ fn test_vec_float_lane_over_arity_returns_error() {
 
 /// Pack 8 f32 lanes (lane 0 first) into a 256-bit `Concat` of two 128-bit
 /// concrete halves.
-#[cfg(feature = "vex-engine-z3")]
 fn pack_v256_f32x8(lanes: &[f32; 8], ctx: &SymContext) -> RustBV {
     let mut halves = [0u128; 2];
     for (i, lane) in lanes.iter().enumerate() {
@@ -348,7 +345,6 @@ fn pack_v256_f32x8(lanes: &[f32; 8], ctx: &SymContext) -> RustBV {
 
 /// Pack 4 f64 lanes (lane 0 first) into a 256-bit `Concat` of two 128-bit
 /// concrete halves.
-#[cfg(feature = "vex-engine-z3")]
 fn pack_v256_f64x4(lanes: &[f64; 4], ctx: &SymContext) -> RustBV {
     let mut halves = [0u128; 2];
     for (i, lane) in lanes.iter().enumerate() {
@@ -358,14 +354,12 @@ fn pack_v256_f64x4(lanes: &[f64; 4], ctx: &SymContext) -> RustBV {
 }
 
 /// Read lane `i` of a 256-bit result back as f32 via `extract` + model eval.
-#[cfg(feature = "vex-engine-z3")]
 fn eval_v256_lane_f32(ctx: &SymContext, result: &RustBV, i: u32) -> f32 {
     let lane = result.extract(i * 32 + 31, i * 32, ctx);
     f32::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u32)
 }
 
 /// Read lane `i` of a 256-bit result back as f64 via `extract` + model eval.
-#[cfg(feature = "vex-engine-z3")]
 fn eval_v256_lane_f64(ctx: &SymContext, result: &RustBV, i: u32) -> f64 {
     let lane = result.extract(i * 64 + 63, i * 64, ctx);
     f64::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u64)
@@ -375,7 +369,6 @@ fn eval_v256_lane_f64(ctx: &SymContext, result: &RustBV, i: u32) -> f64 {
 /// Lane values are exactly representable in binary32, so the expected value is
 /// the plain Rust `f32` op — no tolerance needed, and a lane-indexing slip
 /// shows up as a mismatch rather than a rounding wobble.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_binops_avx2_256_bit_f32x8() {
     let ctx = SymContext::new_mock();
@@ -428,7 +421,6 @@ fn test_vec_float_binops_avx2_256_bit_f32x8() {
 /// VMINPD/VMAXPD/VSQRTPD-style: the AVX2 f64x4 tier, covering both a binary
 /// (`VFMin`/`VFMax`) and a unary (`VFSqrt`) `FloatLaneOp` above 128 bits —
 /// `vec_float_lane_op`'s arity-1 path never saw a 256-bit operand before.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
     let ctx = SymContext::new_mock();

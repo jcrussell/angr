@@ -271,4 +271,4 @@ fn recip_exp_f32(x: f32) -> f32 {
     f32::from_bits(sign | (new_biased << 23))
 }
 
-test_submod!(z3 "transcendentals_tests.rs" => tests);
+test_submod!("transcendentals_tests.rs" => tests);

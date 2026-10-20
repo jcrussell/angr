@@ -409,7 +409,6 @@ impl PyRustSimState {
     /// seed state suffices. Default off — the slice-1c materialization
     /// gate stays inert on plain `RustExplorationManager` runs (why:
     /// `rust_engine_decisions.rst`, "Shared-lineage Z3 solver stays opt-in").
-    #[cfg(feature = "vex-engine-z3")]
     #[pyo3(name = "set_use_shared_lineage_solver")]
     pub fn py_set_use_shared_lineage_solver(&self, enabled: bool) {
         self.inner.set_use_shared_lineage_solver(enabled);
@@ -417,7 +416,6 @@ impl PyRustSimState {
 
     /// Whether fork-time `SharedLineageSolver` materialization is opted
     /// in on this state (angr-3ms1 step 1b).
-    #[cfg(feature = "vex-engine-z3")]
     #[pyo3(name = "use_shared_lineage_solver")]
     pub fn py_use_shared_lineage_solver(&self) -> bool {
         self.inner.use_shared_lineage_solver()

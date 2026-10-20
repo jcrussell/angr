@@ -2,9 +2,8 @@
 //! driver shares.
 //!
 //! Split into four sibling modules (angr-9ke6b.49), one per concern:
-//! [`run_loop_single`] (the always-compiled
-//! single-threaded driver), [`run_loop_wave`] and
-//! [`run_loop_steady`] (the two Z3-gated parallel
+//! [`run_loop_single`] (the single-threaded driver),
+//! [`run_loop_wave`] and [`run_loop_steady`] (the two parallel
 //! coordinators), and [`run_loop_worker`] (the GIL-free
 //! worker body both coordinators dispatch). What stays here is what more than
 //! one of them needs: the `run_loop` entry point and its `must_run_serial` /
@@ -119,7 +118,6 @@ impl RustExplorationManager {
         // The parallel/steady coordinator paths only exist with the Z3-backed
         // engine (the scheduler transports `StateMigrationPayload`). Without
         // Z3 there is only the single-threaded loop.
-        #[cfg(feature = "vex-engine-z3")]
         {
             if !self.must_run_serial() {
                 if self.steady_state_eligible() {
@@ -128,24 +126,13 @@ impl RustExplorationManager {
                 return self.run_loop_parallel_wave(py, n);
             }
         }
-        #[cfg(not(feature = "vex-engine-z3"))]
-        let _ = py;
         self.run_loop_single_threaded(n)
     }
-
-    /// No-Z3 stub for the steady-session config guard the `set_*` /
-    /// `register_*` pymethods call unconditionally. The real implementation
-    /// lives on `run_loop_steady.rs`, but that whole module is Z3-gated, so a
-    /// `#[cfg(not(...))]` twin inside it is unreachable — it has to live here,
-    /// in an ungated module (angr-9ke6b.236).
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub(crate) fn steady_config_guard(&mut self) {}
 }
 
 /// Dispatcher predicates for the parallel/steady coordinator paths, which only
 /// exist with the Z3-backed engine (the scheduler transports
 /// `StateMigrationPayload`).
-#[cfg(feature = "vex-engine-z3")]
 impl RustExplorationManager {
     /// Whether `run_loop` must fall back to the single-threaded loop instead of
     /// any parallel path, given the worker count and registered native
@@ -545,4 +532,4 @@ pub(super) fn non_stash_states_mut<'a>(
     pending_states_mut(pending_callbacks).chain(parked_states_mut(pending_parallel_bounces))
 }
 
-test_submod!(z3 "run_loop_tests.rs" => tests);
+test_submod!("run_loop_tests.rs" => tests);

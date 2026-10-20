@@ -198,7 +198,6 @@ impl RustExplorationManager {
     /// `route_successor`. Without a live session this is exactly
     /// `for s in successors { route_successor(s, false) }`.
     pub(crate) fn route_resume_successors(&mut self, successors: Vec<RustSimState>) {
-        #[cfg(feature = "vex-engine-z3")]
         {
             if self.parallel_session.is_some() {
                 // Stamp roots + detach active-bound successors (owned pass over

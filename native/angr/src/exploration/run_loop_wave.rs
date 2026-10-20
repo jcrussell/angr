@@ -26,10 +26,7 @@ use super::run_loop_worker::{MatKind, ParallelShared, parallel_process_state};
 
 /// The parallel/steady-state coordinator half of the run loop. Every method
 /// here transports work through the work-stealing `scheduler` (which carries
-/// `StateMigrationPayload`), so the whole block is gated on the Z3-backed
-/// engine — the `vex-engine`-without-`vex-engine-z3` build has only the
-/// single-threaded loop below.
-#[cfg(feature = "vex-engine-z3")]
+/// `StateMigrationPayload`).
 impl RustExplorationManager {
     /// Parallel coordinator path (angr-vh834 Phase 5): a real work-stealing wave
     /// loop. Each wave drains the entire active stash into migration seeds, runs
@@ -624,4 +621,4 @@ impl RustExplorationManager {
     }
 }
 
-test_submod!(z3 "run_loop_wave_tests.rs" => tests);
+test_submod!("run_loop_wave_tests.rs" => tests);

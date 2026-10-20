@@ -12,8 +12,7 @@
 //! `angr-a2br.2` / `angr-7hwz` splits adopted. Those splits are *mechanical* —
 //! one file per `impl` block or per slice of one — so a filename does not
 //! reliably tell you which concept lives inside. Use this table instead of
-//! guessing. Files marked **(z3)** are `#[cfg(feature = "vex-engine-z3")]` and
-//! vanish from a `--no-default-features` build.
+//! guessing. Files marked **(z3)** hold the Z3-backed solving surface.
 //!
 //! ## `RustBV` — the bitvector value
 //!
@@ -38,7 +37,6 @@
 //! | `context.rs` | The `SymContext` struct, its Z3 construction (`new` / `with_timeout` / `new_mock` / `Default` / `Clone`), `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `merge_instrument.rs` + `context_tests/`. Plus the unsliced `&self` surface: the lazily-materializing `solver()` accessor and the assumed-constraint export log (`assumed_constraints_push`, `assumed_local_len`, `truncate_assumed_local`, `get_assumed_constraints`, `assumed_constraint_count`, `export_z3_assertion_ptrs`). |
 //! | `context_snapshot.rs` | `SymContextSnapshot` — the serde capture of a context's path constraints, plus its `serde(default)` helper. Data only; `to_snapshot` / `restore_from_snapshot` live in `snapshot_fork_ops.rs`. |
 //! | `local_constraints.rs` | `LocalConstraints` — the post-fork local additions (`assumed`, `z3_assertions`, `non_bv_assertions`, `dedup_set`) that share `SymContext`'s one hot-path Mutex. |
-//! | `context_mock.rs` | The no-Z3 half of `SymContext`: the mock constructors and the mock twins of `assume_true` / `assume_false` / `check_branch_feasibility` (their z3 halves are in `constraint_ops.rs` / `solving_ops.rs`). `#[cfg(not(feature = "vex-engine-z3"))]` — the inverse of the **(z3)** marker. |
 //! | `merge_instrument.rs` | `#[cfg(test)]` guarded-assertion counter `SymContext::merge` bumps and `context_tests_merge_prefix` reads. Declared from `context.rs` via `#[path]`, so its module path is still `context::merge_instrument`. |
 //! | `bv_id_ops.rs` | Slice 8: unique-id allocation (`next_id`), the symbolic-BV factories, `num_constraints`, and the `SymbolIdRebase` watermark helpers. |
 //! | `constraint_ops.rs` | Slice 9: constraint mutation — `add_constraint*`, `add_bv_constraint`, `assume_true`. **(z3)** |
@@ -73,29 +71,22 @@
 //! themed one file per area and wired from `context.rs`.
 
 mod bv_chunk;
-#[cfg(feature = "vex-engine-z3")]
 mod bv_codec;
 mod bv_concrete;
 mod bv_id_ops;
 pub use bv_id_ops::{
     SymbolIdRebase, reserve_symbol_id, symbol_id_rebase_offset, symbol_id_watermark,
 };
-#[cfg(feature = "vex-engine-z3")]
 mod constraint_ops;
 mod context;
-#[cfg(not(feature = "vex-engine-z3"))]
-mod context_mock;
 mod context_snapshot;
-#[cfg(feature = "vex-engine-z3")]
 pub mod lineage;
 mod lineage_ops;
 mod local_constraints;
 pub(crate) mod names;
-#[cfg(feature = "vex-engine-z3")]
 mod query_class;
 mod sharing;
 mod snapshot_fork_ops;
-#[cfg(feature = "vex-engine-z3")]
 mod solver_build;
 mod solving_ops;
 mod stats;
@@ -105,7 +96,6 @@ mod value;
 mod value_clarirs;
 mod value_ops;
 mod value_shape;
-#[cfg(feature = "vex-engine-z3")]
 mod value_z3;
 mod width_guards;
 
@@ -116,7 +106,7 @@ pub use bv_chunk::{
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
 pub use context_snapshot::SymContextSnapshot;
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
-#[cfg(all(test, feature = "vex-engine-z3"))]
+#[cfg(test)]
 pub(crate) use solver_build::stop_enumeration_after_for_test;
 pub use solving_ops::Enumeration;
 pub use stats::{
@@ -130,9 +120,7 @@ pub use stats::{
 };
 pub use symbol_kind::SymbolKind;
 pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
-// Used by the claripy export, which is built with vex-engine.
-#[cfg(feature = "vex-engine")]
+// Used by the claripy export.
 pub(crate) use value_clarirs::bool_inside;
-#[cfg(feature = "vex-engine")]
 pub(crate) use value_shape::Node;
 pub use width_guards::{MAX_BV_WIDTH, check_bv_width, check_extract_bounds};

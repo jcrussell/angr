@@ -286,7 +286,6 @@ fn test_fork_pending_writes_visible_in_both_after_flush() {
 /// rather than materializing an ITE whose `else` branch is a zero fill.
 /// Candidates preceding the lazy one still materialize against their real
 /// prior contents.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
     let ctx = SymContext::new_mock();
@@ -337,7 +336,6 @@ fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
 /// angr-9ke6b.100 companion: when the unmapped candidate is NOT in a lazy
 /// region there is genuinely no prior value anywhere, so the zero `current`
 /// default stands and the flush fails only on the store's own mapping check.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pending_write_flush_never_mapped_candidate_is_plain_unmapped() {
     let ctx = SymContext::new_mock();

@@ -477,7 +477,7 @@ pub struct PythonCallbacks {
     ///
     /// Signature: `fn(state_id: int, when: str, addr: int, size: int | None,
     /// buff: bytes | None) -> None`. Fired from `try_native_lift`
-    /// (`interpreter/execution.rs`) when the feature-gated in-process libVEX
+    /// (`interpreter/execution.rs`) when the in-process libVEX
     /// lifter serves a block — that path bypasses `_cb_lift_block`, which is
     /// where the Python-lift dispatch of this event lives. The Python
     /// endpoint, `RustExplorationManager._cb_inspect_vex_lift`, is shared by

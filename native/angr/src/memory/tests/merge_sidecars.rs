@@ -31,7 +31,6 @@ fn multi_payload(ctx: &SymContext, name: &str, value: u8) -> MultiPayload {
 /// angr-c7xno.50 regression: a Multi cell living on a page only `other` has.
 /// The page clone carries the `multi_bitmap` bit; the payload lives in the flat
 /// `multi_objects` side table and must be copied explicitly.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn other_only_page_adopts_multi_objects_payload() {
     let ctx = SymContext::new();
@@ -65,7 +64,6 @@ fn other_only_page_adopts_multi_objects_payload() {
 /// `multi_versions` is the fingerprint sidecar the Phase 4.1 wider-load cache
 /// keys on. An adopted Multi cell must bump it, or a cached pre-merge load of
 /// that range would still look fresh.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn other_only_page_adopts_multi_versions_entry() {
     let ctx = SymContext::new();
@@ -88,7 +86,6 @@ fn other_only_page_adopts_multi_versions_entry() {
 /// owns an entry per covered byte. Adopting the object while indexing only its
 /// base left the interior bytes symbolic in the page bitmap but unresolvable
 /// through either sidecar (angr-91vj9.3).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn other_only_page_adopts_full_symbolic_span_range() {
     let ctx = SymContext::new();
@@ -124,7 +121,6 @@ fn other_only_page_adopts_full_symbolic_span_range() {
 
 /// The accumulating sidecars: sets that grow monotonically over a branch's life
 /// and are keyed off nothing the page walk can rebuild.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn merge_unions_the_accumulating_sidecars() {
     let ctx = SymContext::new();
@@ -164,7 +160,6 @@ fn merge_unions_the_accumulating_sidecars() {
 
 /// Census: one merge, every address-keyed sidecar populated only on `other`,
 /// on a page `self` does not have. Any sidecar the merge forgets shows up here.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn every_address_keyed_sidecar_survives_other_only_merge() {
     let ctx = SymContext::new();
@@ -218,7 +213,6 @@ fn every_address_keyed_sidecar_survives_other_only_merge() {
 ///   * the base byte got the whole 32-bit object, feeding a width-32 `then` and a
 ///     width-8 `else` into `RustBV::ite_into` — a `debug_assert` trip here, a
 ///     malformed-width `Ite` node in the shipped release build.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn wide_symbolic_divergence_merges_per_byte_lanes() {
     let ctx = SymContext::new();
@@ -256,7 +250,6 @@ fn wide_symbolic_divergence_merges_per_byte_lanes() {
 /// `other`'s value, so the whole wide read resolves. Before the fix bytes 1..4
 /// of `self` merged against a concrete-0 placeholder and byte 0's ITE was
 /// width-mismatched, so this load could not resolve to `other`'s value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
     let ctx = SymContext::new();
@@ -294,7 +287,6 @@ fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
 /// bitmap-symbolic (the page clone carries `is_symbolic`) with no
 /// `symbolic_objects`/`symbolic_spans` entry resolving them, and the load fails
 /// outright instead of returning the merged value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn split_page_object_backfills_tail_bytes_when_base_key_is_occupied() {
     let ctx = SymContext::new();

@@ -52,7 +52,6 @@ fn test_state_fork_memory_cow() {
 /// to Multiple/Strided leaves the value in un-flushed Multi cells with the
 /// page's symbolic bitmap clear, so before the fix this returned the stale
 /// concrete placeholder bytes with no error.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memory_load_sees_unflushed_multi_cells() {
     let mut state = RustSimState::new("amd64").unwrap();

@@ -60,15 +60,12 @@ Incremental builds
    make rebuild-fast     # [profile.release-fast] inner loop; NOT for bench gates
    make rebuild-cargo    # cargo build --release + copy; bypasses pip
    make check            # cargo check --release (default features only)
-   make check-no-z3      # the four --no-default-features combos CI gates
 
 ``make check`` is **not** the CI gate: it compiles default features only,
 so it never sees the ``fuzzer`` / ``fuzzing`` code. CI runs
 ``cargo clippy --all-targets --all-features -- -D warnings`` from the repo
 root (no ``--manifest-path``, so the ``native/angr-macros`` test targets
-are covered too). Neither of those compiles the
-``#[cfg(not(feature = "vex-engine-z3"))]`` arms; ``make check-no-z3`` is the
-only local check of those, which is why the ralph gate runs it first.
+are covered too).
 
 ``z3-sys`` links whatever ``Z3_LIBRARY_PATH_OVERRIDE`` names, and
 ``native/angr/build.rs`` runpaths the crate's binaries (the extension and

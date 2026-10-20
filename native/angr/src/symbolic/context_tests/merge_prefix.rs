@@ -16,7 +16,6 @@
 //! counter (`context.rs`), which the production merge increments per guarded
 //! `Or` plus the final flag `Or`.
 
-#![cfg(feature = "vex-engine-z3")]
 
 use super::*;
 use std::sync::Arc;

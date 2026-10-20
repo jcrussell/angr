@@ -137,7 +137,6 @@ fn test_vec_interleave_lo_64x2_concrete() {
 /// (vec_interleave's `else` branch, concat_le_elements). Evaluating the model
 /// pins that the symbolic path produces the same lane order as the concrete
 /// path: output lane `2i` = right[i], lane `2i+1` = left[i] for i in 0..4.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_interleave_lo_16x8_symbolic() {
     let ctx = SymContext::new_mock();
@@ -248,7 +247,6 @@ fn test_vec_interleave_8x8_concrete_is_64_bit() {
 /// while assembling the result (`invariant-concrete-bv-u128-16-byte-limit`).
 /// Same defense the sibling helpers carry — see
 /// `test_vec_cmp_avx2_256_bit_i32x8` (`tests_vec_int_lane.rs`).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_interleave_lo_8x32_256_bit() {
     let ctx = SymContext::new_mock();

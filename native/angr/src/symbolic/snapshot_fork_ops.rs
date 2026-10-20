@@ -2,14 +2,10 @@
 //!
 //! Slice 11 of the `symbolic/context.rs` split (angr-a2br.2.9). These are the
 //! state-cloning and serialization entry points: snapshot round-trip
-//! (`to_snapshot` / `restore_from_snapshot` plus the Z3-only
+//! (`to_snapshot` / `restore_from_snapshot` plus the
 //! `dump_solver_smtlib2` helper), structural cloning (`fork`, and the
 //! branch-conditioned `fork_true` / `fork_false`), and state combination
 //! (`merge`).
-//!
-//! Like `transaction_ops` / `solving_ops`, this slice carries BOTH the
-//! `#[cfg(feature = "vex-engine-z3")]` implementations and their non-Z3 mock
-//! counterparts, so the module decl in `mod.rs` is NOT feature-gated.
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`.
 //! `fork`/`merge` reconstruct a full `SymContext { .. }`, so every struct field
@@ -27,11 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
-#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
-#[cfg(feature = "vex-engine-z3")]
 use std::cell::{Cell, RefCell};
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::AtomicU32;
 
 impl SymContext {
@@ -51,7 +44,7 @@ impl SymContext {
     /// not free.
     #[inline]
     fn debug_assert_no_open_scope(&self, who: &str) {
-        #[cfg(all(debug_assertions, feature = "vex-engine-z3"))]
+        #[cfg(debug_assertions)]
         {
             let open = self.bare_local_savepoints.lock().len();
             debug_assert_eq!(
@@ -62,7 +55,7 @@ impl SymContext {
                  fork() mint a SharedLineageSolver the gate exists to prevent"
             );
         }
-        #[cfg(not(all(debug_assertions, feature = "vex-engine-z3")))]
+        #[cfg(not(debug_assertions))]
         let _ = who;
     }
 
@@ -117,7 +110,6 @@ impl SymContext {
         // the FULL solver and tell restore (via `reassert_assumed = false`)
         // not to re-assert the assume class — the pre-Phase-1 behavior,
         // preserved for correctness on merged lineages.
-        #[cfg(feature = "vex-engine-z3")]
         let (residual_smtlib2, reassert_assumed) = {
             let reassert_assumed = self
                 .assume_class_reconstructible
@@ -166,12 +158,6 @@ impl SymContext {
             };
             (residual, reassert_assumed)
         };
-        #[cfg(not(feature = "vex-engine-z3"))]
-        let (residual_smtlib2, reassert_assumed) = (
-            String::new(),
-            self.assume_class_reconstructible
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
         SymContextSnapshot {
             assumed_constraints,
             residual_smtlib2,
@@ -197,18 +183,8 @@ impl SymContext {
             // opt-in are per-lineage flags that `fork` inherits, so a snapshot
             // must round-trip them or a restored deterministic state reverts to
             // arbitrary-model witnesses (nondeterminism returns).
-            // The witness-selection mode and shared-lineage opt-in only exist
-            // on `SymContext` under `vex-engine-z3` (they are Z3 features);
-            // without it there is no deterministic mode to round-trip, so the
-            // snapshot carries the `false` defaults.
-            #[cfg(feature = "vex-engine-z3")]
             deterministic: self.deterministic.load(Ordering::Relaxed),
-            #[cfg(not(feature = "vex-engine-z3"))]
-            deterministic: false,
-            #[cfg(feature = "vex-engine-z3")]
             use_shared_lineage_solver: self.use_shared_lineage_solver.load(Ordering::Relaxed),
-            #[cfg(not(feature = "vex-engine-z3"))]
-            use_shared_lineage_solver: false,
         }
     }
 
@@ -220,7 +196,6 @@ impl SymContext {
     /// merge fallback path (`assume_class_reconstructible == false`); the
     /// common path uses [`Self::dump_non_bv_smtlib2`]. Still reachable from
     /// the Phase-0 bench hook `bench_dump_solver_smtlib2`.
-    #[cfg(feature = "vex-engine-z3")]
     fn dump_solver_smtlib2(&self) -> String {
         let temp = z3::Solver::new();
         let mut any = false;
@@ -249,7 +224,6 @@ impl SymContext {
     /// common case (pure assume-class contexts). This is the lever that
     /// collapses the old full-solver text round-trip: the assume class is
     /// rebuilt from `assumed_constraints` IR instead of from text.
-    #[cfg(feature = "vex-engine-z3")]
     fn dump_non_bv_smtlib2(&self) -> String {
         let temp = z3::Solver::new();
         let mut any = false;
@@ -294,9 +268,8 @@ impl SymContext {
     /// over-constrain the guarded merge state); `assume_class_reconstructible`
     /// is set false so a re-migration of the restored context stays correct.
     ///
-    /// Must run inside an active Z3 thread-local context when the
-    /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
-    /// deserialization — see `snapshot-rustbv-shadow-type-pattern`).
+    /// Must run inside an active Z3 thread-local context (the same rule as
+    /// `RustBV` deserialization — see `snapshot-rustbv-shadow-type-pattern`).
     ///
     /// Like `to_snapshot`, this must run at a quiescent point — `self` is
     /// expected to be a freshly-constructed context with no open push/pop
@@ -327,17 +300,14 @@ impl SymContext {
         // raised past every name the snapshot's process had minted.
         super::names::reserve(&snap.name_counters);
         // angr-ph300.46: restore the per-lineage witness-selection mode and
-        // shared-lineage opt-in captured by `to_snapshot`. The snapshot fields
-        // always exist (legacy snapshots carry `false` via serde), but the
-        // `SymContext` targets are `vex-engine-z3`-only, so the store is gated.
-        #[cfg(feature = "vex-engine-z3")]
+        // shared-lineage opt-in captured by `to_snapshot` (legacy snapshots
+        // carry `false` via serde).
         {
             self.deterministic
                 .store(snap.deterministic, Ordering::Relaxed);
             self.use_shared_lineage_solver
                 .store(snap.use_shared_lineage_solver, Ordering::Relaxed);
         }
-        #[cfg(feature = "vex-engine-z3")]
         {
             if snap.reassert_assumed {
                 // (i) Rebuild the assume class from IR — no text round-trip.
@@ -381,26 +351,12 @@ impl SymContext {
                 }
             }
         }
-        // Non-Z3 (mock) path: no solver to assert against, so replay the
-        // assume pairs through the mock `assume_*` (which only repopulates the
-        // BV-export log). The residual class does not exist without Z3.
-        #[cfg(not(feature = "vex-engine-z3"))]
-        {
-            for (cond, is_true) in &snap.assumed_constraints {
-                if *is_true {
-                    self.assume_true(cond);
-                } else {
-                    self.assume_false(cond);
-                }
-            }
-        }
     }
 
     /// Replay an SMT-LIB2 residual dump onto this context's solver via the
     /// `from_string` + `get_assertions` + [`Self::add_constraint_raw`] loop
     /// (angr-t3l5o Phase 1). Each re-asserted Bool lands in the residual log
     /// (`add_constraint_raw` is residual sink #1).
-    #[cfg(feature = "vex-engine-z3")]
     fn replay_residual_smtlib2(&self, residual: &str) {
         self.parse_smtlib2_into_solver(residual);
     }
@@ -412,7 +368,6 @@ impl SymContext {
     /// Sole home of the handoff between the scratch solver and this context —
     /// [`Self::bench_parse_smtlib2`] routes through here too, so a fix to it
     /// only has to land once (angr-9ke6b.143).
-    #[cfg(feature = "vex-engine-z3")]
     fn parse_smtlib2_into_solver(&self, smtlib2: &str) -> usize {
         let tmp = z3::Solver::new();
         tmp.from_string(smtlib2);
@@ -429,7 +384,6 @@ impl SymContext {
     /// `benches/vex_engine.rs` can time the SMT-LIB2 *emit* in isolation
     /// without copy-pasting its body.
     #[doc(hidden)]
-    #[cfg(feature = "vex-engine-z3")]
     pub fn bench_dump_solver_smtlib2(&self) -> String {
         self.dump_solver_smtlib2()
     }
@@ -441,7 +395,6 @@ impl SymContext {
     /// (angr-9ke6b.143). Returns the number of re-asserted constraints. Must
     /// run inside an active thread-local Z3 context.
     #[doc(hidden)]
-    #[cfg(feature = "vex-engine-z3")]
     pub fn bench_parse_smtlib2(smtlib2: &str) -> usize {
         SymContext::new().parse_smtlib2_into_solver(smtlib2)
     }
@@ -452,7 +405,6 @@ impl SymContext {
     /// and so survives the round-trip only through the SMT-LIB2 text dump.
     /// Lets the micro-bench populate the `raw_fraction` axis.
     #[doc(hidden)]
-    #[cfg(feature = "vex-engine-z3")]
     pub fn bench_add_constraint_raw_from_bool(&self, pred: &RustBV) {
         self.add_constraint_raw(pred.to_z3_bool());
     }
@@ -516,7 +468,6 @@ impl SymContext {
     // travels between threads as a StateMigrationPayload (state/migration.rs), which rebuilds
     // the solver on the destination thread; Rc would force the fork signature to surface
     // non-Send, breaking the Arc<Mutex<...>> sharing contract. See `arc_shared` in lib.rs.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
         // angr-c7xno.75: freeze must not drain `local` while a bare
         // `push()` scope is open — the matching `pop()` truncates `local`,
@@ -746,7 +697,6 @@ impl SymContext {
     ///
     /// The per-call-site migration history that used to live here (angr-v5a5
     /// slices 3c–4c.2c) is in `git log`; do not re-add it.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
@@ -770,7 +720,7 @@ impl SymContext {
     /// [`fork()`](Self::fork), which would require flipping the
     /// `use_shared_lineage_solver` opt-in and staging a parent lineage
     /// first.
-    #[cfg(all(test, feature = "vex-engine-z3"))]
+    #[cfg(test)]
     pub(crate) fn set_lineage_for_testing(
         &self,
         lin: Arc<Mutex<super::lineage::SharedLineageSolver>>,
@@ -784,72 +734,23 @@ impl SymContext {
     /// Lets unit tests exercise the truncation behavior of
     /// `scope_savepoint_pop` before the
     /// production path that mints frames lands in slice 4c.
-    #[cfg(all(test, feature = "vex-engine-z3"))]
+    #[cfg(test)]
     pub(crate) fn push_scope_frame_for_testing(&self, frame: super::lineage::ScopeFrame) {
         self.scope_path.lock().push(frame);
     }
 
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn fork(&self) -> Self {
-        // Mirrors the Z3 arm's `bare_local_savepoints` gate: inside an open
-        // bare `push()` scope `local.assumed` must survive the freeze so the
-        // matching `pop()` can still truncate it (angr-c7xno.75 / .100).
-        let scope_open = !self.mock_scope_savepoints.lock().is_empty();
-        let frozen_assumed = {
-            let mut local = self.local_constraints.lock();
-            freeze_into_shared(
-                &self.assumed_constraints_shared,
-                &mut local.assumed,
-                scope_open,
-            )
-        };
-
-        SymContext {
-            // angr-9ke6b.144: seed from the parent's live count, mirroring the
-            // Z3 `fork()` above (angr-ph300.47). Today this is provably a
-            // no-op — the only `constraint_count.fetch_add` lives in
-            // `install_constraint` (constraint_ops.rs), and that whole module
-            // is `#[cfg(feature = "vex-engine-z3")]`, so in a no-z3 build the
-            // field is dead weight that stays 0 for every context's lifetime.
-            // Seeding anyway keeps the two `fork()` bodies from diverging if a
-            // non-Z3 write site ever appears.
-            constraint_count: AtomicUsize::new(self.num_constraints()),
-            symbol_table: Arc::clone(&self.symbol_table),
-            assumed_constraints_shared: Mutex::new(frozen_assumed),
-            assume_class_reconstructible: AtomicBool::new(
-                self.assume_class_reconstructible.load(Ordering::Relaxed),
-            ),
-            local_constraints: Mutex::new(LocalConstraints::new()),
-            // A fork starts outside any scope — same as the Z3 arm's fresh
-            // `bare_local_savepoints`.
-            mock_scope_savepoints: Mutex::new(Vec::new()),
-        }
-    }
-
     /// Fork with an additional constraint on the true branch.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn fork_true(&self, cond: &RustBV) -> Self {
         let forked = self.fork();
         forked.assume_true(cond);
         forked
     }
 
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn fork_true(&self, _cond: &RustBV) -> Self {
-        self.fork()
-    }
-
     /// Fork with an additional constraint on the false branch.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn fork_false(&self, cond: &RustBV) -> Self {
         let forked = self.fork();
         forked.assume_false(cond);
         forked
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn fork_false(&self, _cond: &RustBV) -> Self {
-        self.fork()
     }
 
     /// Merge multiple solver contexts into one.
@@ -865,7 +766,6 @@ impl SymContext {
     ///
     /// # Returns
     /// A new SymContext containing the merged constraints.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
         assert_eq!(
             others.len() + 1,
@@ -1078,70 +978,6 @@ impl SymContext {
                 .any(|ctx| ctx.use_shared_lineage_solver.load(Ordering::Relaxed)),
             Ordering::Relaxed,
         );
-
-        merged
-    }
-
-    /// Merge without Z3 — just combines assumed constraints.
-    ///
-    /// The conditions themselves are unused here (there is no solver to guard
-    /// constraints with), but the length invariant is asserted identically to
-    /// the z3 variant so a caller bug fails the same way in both feature
-    /// builds rather than only under `vex-engine-z3`.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
-        assert_eq!(
-            others.len() + 1,
-            merge_conditions.len(),
-            "merge_conditions must have one entry per context (self + others)"
-        );
-
-        let mut merged = Self::new();
-
-        // Merge symbol tables — see Z3 path comment about Arc::make_mut on
-        // a freshly constructed Arc (refcount 1 → uniquely owned).
-        {
-            let merged_table = Arc::make_mut(&mut merged.symbol_table);
-            merged_table.extend(self.symbol_table.iter().map(|(k, v)| (k.clone(), *v)));
-            for other in others {
-                for (k, v) in other.symbol_table.iter() {
-                    merged_table.entry(k.clone()).or_insert(*v);
-                }
-            }
-        }
-
-        // No id reconciliation needed: symbol ids come from the process-global
-        // allocator (`symbolic::bv_id_ops::NEXT_SYMBOL_ID`), so every input
-        // context's ids are already disjoint from every other's. Mirrors the
-        // `vex-engine-z3` merge path.
-
-        // Merge assumed constraints (shared + local from each context).
-        {
-            let mut merged_local = merged.local_constraints.lock();
-            let self_shared = Arc::clone(&self.assumed_constraints_shared.lock());
-            merged_local.assumed.extend(self_shared.iter().cloned());
-            merged_local
-                .assumed
-                .extend(self.local_constraints.lock().assumed.iter().cloned());
-            for other in others {
-                let other_shared = Arc::clone(&other.assumed_constraints_shared.lock());
-                merged_local.assumed.extend(other_shared.iter().cloned());
-                merged_local
-                    .assumed
-                    .extend(other.local_constraints.lock().assumed.iter().cloned());
-            }
-        }
-
-        // angr-t3l5o Phase 1: keep the flag consistent with the Z3 merge path
-        // (inert for the mock restore, which always replays via `assume_*`).
-        merged
-            .assume_class_reconstructible
-            .store(false, Ordering::Relaxed);
-
-        // angr-ph300.46: the per-lineage witness-selection mode and
-        // shared-lineage opt-in are `vex-engine-z3`-only fields (see the Z3
-        // `merge` variant above, which ORs them across arms). Without that
-        // feature there is no such state on `SymContext`, so nothing to mirror.
 
         merged
     }

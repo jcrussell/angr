@@ -175,7 +175,6 @@ fn consume_skip_hook_drops_expired_entries() {
 /// `store_symbolic_unified`, which leaves the value in `multi_objects`
 /// rather than the page's `symbolic_bitmap`. Mirrors
 /// `state_api_tests::state_with_multi_cell_store`.
-#[cfg(feature = "vex-engine-z3")]
 fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
     use crate::concretize::AddressConcretizer;
     use crate::memory::Permission;
@@ -219,7 +218,6 @@ fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
 /// `_export_state`/`_export_stash` sites (angr-9ke6b.101) — so a
 /// pending-callback state's Multi-cell bytes silently vanished from the
 /// export.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn export_pending_state_flushes_multi_cells() {
     Python::initialize();
@@ -248,7 +246,6 @@ fn export_pending_state_flushes_multi_cells() {
 /// `symbolic_objects_iter()` directly without flushing first, so a
 /// Multi-covered byte was silently dropped from every pending-callback sync
 /// (`_create_state_for_callback`'s symbolic-store replay).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn pending_memory_load_symbolic_page_flushes_multi_cells() {
     Python::initialize();
@@ -277,7 +274,6 @@ fn pending_memory_load_symbolic_page_flushes_multi_cells() {
 /// on the pending API an unknown register name is a hard `PyValueError`, so
 /// `Ok(None)` means "known register, symbolic value" and nothing else
 /// (angr-sqfj8.56).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn get_pending_register_raises_for_unknown_name_but_not_for_symbolic() {
     Python::initialize();

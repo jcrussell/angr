@@ -29,7 +29,6 @@ use super::super::*;
 /// with stride 0x1000 hit the Strided concretization branch in
 /// `load_symbolic_unified`, so this also covers the strided ITE
 /// path's per-leaf cross-page handling.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_load_cross_page_multiple_solutions() {
     let ctx = SymContext::new_mock();

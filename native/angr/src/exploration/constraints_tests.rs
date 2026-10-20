@@ -27,7 +27,6 @@ use pyo3::types::{PyList, PyListMethods};
 /// directions. Asserted as a flip sequence rather than a single `true` so a
 /// one-way latch (or a fresh `SymContext` that happens to default the same
 /// way) cannot pass.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn apply_state_deterministic_round_trips_both_directions() {
     let state = RustSimState::new("amd64").expect("state");
@@ -50,7 +49,6 @@ fn apply_state_deterministic_round_trips_both_directions() {
 /// snapshot (the deferred forks' `fork_base`), and one pre-branch fork
 /// snapshot. The first two are `RustSimState`s that `all_live_states` yields;
 /// only the third needs `apply_fork_snapshots_deterministic`.
-#[cfg(feature = "vex-engine-z3")]
 fn pending_with_all_contexts() -> PendingCallback {
     use rustc_hash::FxHashMap;
 
@@ -82,7 +80,6 @@ fn pending_with_all_contexts() -> PendingCallback {
 /// `all_live_states` walk. Asserting the two *untouched* contexts is the point:
 /// re-widening this function would silently duplicate that walk's work, and
 /// narrowing it further would drop the angr-sqfj8.32 lineage entirely.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn apply_fork_snapshots_deterministic_reaches_only_the_branch_snapshots() {
     let pending = pending_with_all_contexts();
@@ -114,7 +111,6 @@ fn apply_fork_snapshots_deterministic_reaches_only_the_branch_snapshots() {
 /// A lightweight callback owns only its state: no `pre_callback_snapshot` and
 /// no `fork_snapshots`. The seam must be a no-op on it rather than panicking
 /// on the absent map.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn apply_fork_snapshots_deterministic_handles_absent_snapshots() {
     let state = RustSimState::new("amd64").expect("state");
@@ -151,8 +147,7 @@ fn constraint_list<'py>(py: Python<'py>, items: &[Bound<'py, PyAny>]) -> Bound<'
 ///
 /// The point of the duck type is the *fast path declining*: claripy's z3
 /// backend raises on a non-AST, so these constraints are the only way to reach
-/// `import_python_constraints`'s slow path deterministically on a Z3 build
-/// (with a real claripy AST the raw-pointer fast path always wins).
+/// `import_python_constraints`'s slow path deterministically (with a real claripy AST the raw-pointer fast path always wins).
 fn duck_bvv(py: Python<'_>, value: u64, width: u32) -> Bound<'_, PyAny> {
     let types = py.import("types").expect("import types");
     let kwargs = pyo3::types::PyDict::new(py);
@@ -166,7 +161,6 @@ fn duck_bvv(py: Python<'_>, value: u64, width: u32) -> Bound<'_, PyAny> {
 /// Slow path, `width == 1` arm: the constraint is assumed true as-is. Pinned
 /// by polarity — a false one must make the context UNSAT, which no-op import
 /// behavior could not produce.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_slow_path_boolean_is_assumed_as_is() {
     Python::initialize();
@@ -199,7 +193,6 @@ fn import_slow_path_boolean_is_assumed_as_is() {
 /// Slow path, `width != 1` arm: a wider value is widened to `bv != 0`, not
 /// truncated to its low bit. Value 2 discriminates the two: its low bit is 0,
 /// so a truncating implementation would report UNSAT here.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_slow_path_widens_non_boolean_to_nonzero() {
     Python::initialize();
@@ -274,7 +267,6 @@ fn import_skips_unconvertible_items_without_aborting_siblings() {
 /// has to report `Some(false)` — `_add_constraints_to_pending`, which did no
 /// check at all before this seam existed, could only ever have reported
 /// "nothing".
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_constraints_and_recheck_reports_unsat_after_a_partial_import() {
     Python::initialize();
@@ -298,7 +290,6 @@ fn import_constraints_and_recheck_reports_unsat_after_a_partial_import() {
 /// Control for the test above: a fully convertible, consistent import reports
 /// SAT. Without it, a body that returned `Some(false)` unconditionally would
 /// pass the partial-import test.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_constraints_and_recheck_reports_sat_for_a_clean_import() {
     Python::initialize();
@@ -313,12 +304,11 @@ fn import_constraints_and_recheck_reports_sat_for_a_clean_import() {
     });
 }
 
-/// Fast path (Z3 builds), convertible arm: a real claripy constraint is
+/// Fast path, convertible arm: a real claripy constraint is
 /// asserted via its raw Z3 pointer *and* recorded in the assumed IR, because
 /// `claripy_to_rustbv` also succeeds for it (angr-op0dn.14.2 — otherwise the
 /// constraint would be exported as an opaque residual).
 ///
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_fast_path_asserts_and_records_convertible_constraint() {
     use clarirs_core::prelude::*;
@@ -358,7 +348,6 @@ fn import_fast_path_asserts_and_records_convertible_constraint() {
 /// the literal losslessly, so the typed tier takes it and records it in the
 /// assumed IR. Proven by a second import: if the first constraint had merely
 /// been counted, `x == 2^201` alone would still be SAT.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_types_a_wide_literal_constraint() {
     use clarirs_core::prelude::*;
@@ -411,7 +400,6 @@ fn import_types_a_wide_literal_constraint() {
 /// An FP comparison converts to a `RustBV::Ast` (angr-mx00p.11), so it is
 /// recorded in the assumed IR like any other converted constraint rather than
 /// asserted raw only, and it still binds: `f > 1.0 && f < 0.0` is UNSAT.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_fp_comparison_converts_to_the_assumed_ir() {
     use clarirs_core::prelude::*;
@@ -450,7 +438,6 @@ fn import_fp_comparison_converts_to_the_assumed_ir() {
 /// declines — go through `claripy_z3_ptr`, so a BV-sorted lowering must come
 /// back `None` there (the rescue then reports `Failed`) rather than reach
 /// `add_constraint_raw` as a mis-sorted Bool.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn claripy_z3_ptr_declines_a_bv_sorted_lowering() {
     use clarirs_core::prelude::*;
@@ -480,7 +467,6 @@ fn claripy_z3_ptr_declines_a_bv_sorted_lowering() {
 /// falls through to the RustBV tier and is asserted as `x != 0`. Before the
 /// Bool gate it was asserted raw as a mis-sorted Bool, which Z3's sort guard
 /// drops silently (angr-d01qu), so `x == 0` stayed satisfiable.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn import_fast_path_widens_a_bv_sorted_constraint_to_nonzero() {
     use clarirs_core::prelude::*;

@@ -21,8 +21,7 @@
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! `pub(super)` (== `pub(in crate::symbolic)`) keeps the promoted atomics
-//! module-private — no public API leak. These methods are not Z3-gated: they
-//! exist in both the z3 and non-z3 builds.
+//! module-private — no public API leak.
 
 use super::RustBV;
 use super::SymContext;

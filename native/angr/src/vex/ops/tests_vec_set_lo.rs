@@ -54,7 +54,6 @@ fn test_set_v128_lo32_concrete() {
 /// Symbolic SetV128lo64: with a symbolic vector, constrain the low 64 bits of
 /// the result to equal the (concrete) inserted value, then Z3-check that the
 /// upper 64 bits of the result track the original vector's upper 64 bits.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_set_v128_lo64_symbolic() {
     let ctx = SymContext::new_mock();
@@ -82,7 +81,6 @@ fn test_set_v128_lo64_symbolic() {
 /// Symbolic SetV128lo32: mixing the low-32 replacement with a symbolic upper.
 /// Constrain the low 32 bits of the result and prove the upper 96 bits are the
 /// symbolic input's upper 96 bits (never disturbed by the splice).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_set_v128_lo32_symbolic() {
     let ctx = SymContext::new_mock();

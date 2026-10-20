@@ -22,7 +22,6 @@ use crate::symbolic::RustBV;
 /// `SymContext::fold_sharing_walk` reads. Goes in via
 /// `assumed_constraints_push` rather than `assume_true` so the tests below do
 /// no solver work at all.
-#[cfg(feature = "vex-engine-z3")]
 fn assume_bv(state: &RustSimState, bv: RustBV) {
     state.solver().borrow().assumed_constraints_push(bv, true);
 }
@@ -30,7 +29,6 @@ fn assume_bv(state: &RustSimState, bv: RustBV) {
 /// The all-zeroes baseline. Worth pinning because every other assertion here
 /// is a delta against it: if a fresh manager reported nonzero sharing, the
 /// counts below would say nothing about the constraints the test pushed.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn analyze_constraint_sharing_is_all_zeroes_on_an_empty_manager() {
     let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -59,7 +57,6 @@ fn analyze_constraint_sharing_is_all_zeroes_on_an_empty_manager() {
 /// Both constraints live on the same state here; the cross-state case is
 /// pinned separately below, since keeping per-state addresses comparable took
 /// a fix of its own (angr-gkcxh).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn analyze_constraint_sharing_reports_structurally_duplicate_allocations() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -94,7 +91,6 @@ fn analyze_constraint_sharing_reports_structurally_duplicate_allocations() {
 /// that let those temporaries die would score later states' nodes as
 /// already-seen and report far fewer than `n` of each. Enough states to make
 /// address reuse near-certain if it can happen at all.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn analyze_constraint_sharing_counts_every_state_not_just_the_first() {
     const N: u128 = 32;
@@ -126,7 +122,6 @@ fn analyze_constraint_sharing_counts_every_state_not_just_the_first() {
 /// not just `active`. The latter is what makes the number deterministic
 /// across exploration outcomes, so a state parked in `found`/`deadended` must
 /// count exactly like an active one.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn analyze_constraint_sharing_walks_all_stashes_and_skips_empty_states() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -166,7 +161,6 @@ fn analyze_constraint_sharing_walks_all_stashes_and_skips_empty_states() {
 ///
 /// Each parked state carries a distinct constraint value so the assertion
 /// pins *which* buckets were reached, not merely that some total went up.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn analyze_constraint_sharing_walks_parked_callback_and_bounce_states() {
     use crate::exploration::core_outcome::BounceKind;

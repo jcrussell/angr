@@ -624,7 +624,6 @@ fn test_switch_fast_path_does_not_collide_on_different_tails() {
 /// Lives here rather than beside its two siblings because it mutates the
 /// process-global `LINEAGE_DISMANTLED` flag and so must hold
 /// `SAMPLER_TEST_LOCK`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_drops_lineage_when_dismantled() {
     use crate::symbolic::SymContext;

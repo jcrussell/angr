@@ -36,7 +36,6 @@ fn backed_memory() -> SymbolicMemory {
 /// A 64-bit BVS pinned by constraint to [`ADDR`]. `as_u64()` stays `None`, so
 /// `should_avoid_multivalued_{read,write}` fires, but the concretizer has
 /// exactly one solution when it does not.
-#[cfg(feature = "vex-engine-z3")]
 fn pinned_symbolic_addr(ctx: &SymContext, name: &str) -> RustBV {
     let addr = RustBV::symbolic(ctx, name, 64);
     ctx.assume_true(&addr.eq(&RustBV::concrete(ADDR as u128, 64), ctx));
@@ -56,7 +55,6 @@ fn concretizer_with(reads: bool, writes: bool) -> AddressConcretizer {
 }
 
 /// `(min, max)` solver bounds of `bv`.
-#[cfg(feature = "vex-engine-z3")]
 fn bounds(ctx: &SymContext, bv: &RustBV) -> (u128, u128) {
     (
         ctx.min(bv, false).expect("min must be SAT"),
@@ -70,7 +68,6 @@ fn bounds(ctx: &SymContext, bv: &RustBV) -> (u128, u128) {
 
 /// `load_symbolic` with AVOID_MULTIVALUED_READS off reads the backer; with it
 /// on it returns a fully unconstrained value that never touched the page.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn load_symbolic_short_circuits_to_unconstrained_under_avoid_multivalued_reads() {
     let ctx = SymContext::new_mock();
@@ -107,7 +104,6 @@ fn load_symbolic_short_circuits_to_unconstrained_under_avoid_multivalued_reads()
 
 /// Same contract for the unified entry point, which has its own copy of the
 /// short-circuit.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn load_symbolic_unified_short_circuits_to_unconstrained_under_avoid_multivalued_reads() {
     let ctx = SymContext::new_mock();
@@ -145,7 +141,6 @@ fn load_symbolic_unified_short_circuits_to_unconstrained_under_avoid_multivalued
 /// The short-circuit routes through `unconstrained_read_value`, so
 /// `zero_fill_unconstrained` still decides the shape of the fabricated value.
 /// A test that only asserted "not the backer" would pass on either.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn avoid_multivalued_read_short_circuit_honors_zero_fill_unconstrained() {
     let ctx = SymContext::new_mock();
@@ -175,7 +170,6 @@ fn avoid_multivalued_read_short_circuit_honors_zero_fill_unconstrained() {
 /// The gate is `option && addr.as_u64().is_none()` — a concrete address must
 /// read through even with the option on, matching Python (the short-circuit
 /// lives past the concrete fast path).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn avoid_multivalued_reads_does_not_fire_for_concrete_addresses() {
     let ctx = SymContext::new_mock();
@@ -199,7 +193,6 @@ fn avoid_multivalued_reads_does_not_fire_for_concrete_addresses() {
 
 /// Reads [`ADDR`] back concretely — the store paths are what is under test, so
 /// the verification read deliberately avoids them.
-#[cfg(feature = "vex-engine-z3")]
 fn read_back(mem: &SymbolicMemory, ctx: &SymContext) -> Option<u64> {
     mem.load_concrete(ADDR, 8, ctx)
         .expect("concrete read-back must succeed")
@@ -208,7 +201,6 @@ fn read_back(mem: &SymbolicMemory, ctx: &SymContext) -> Option<u64> {
 
 /// `store_symbolic` with AVOID_MULTIVALUED_WRITES off writes through the
 /// pinned address; with it on the write is silently dropped.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn store_symbolic_drops_the_write_under_avoid_multivalued_writes() {
     let ctx = SymContext::new_mock();
@@ -244,7 +236,6 @@ fn store_symbolic_drops_the_write_under_avoid_multivalued_writes() {
 
 /// The unified store signals the drop through its return value (`Ok(None)`)
 /// as well as by leaving memory untouched.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn store_symbolic_unified_reports_none_and_drops_the_write_under_avoid_multivalued_writes() {
     let ctx = SymContext::new_mock();
@@ -286,7 +277,6 @@ fn store_symbolic_unified_reports_none_and_drops_the_write_under_avoid_multivalu
 
 /// The multiwrite entry point carries its own copy of the short-circuit ahead
 /// of `concretize_write_multiwrite`, so it needs its own coverage.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn store_symbolic_unified_multi_reports_none_and_drops_the_write_under_avoid_multivalued_writes() {
     let ctx = SymContext::new_mock();
@@ -328,7 +318,6 @@ fn store_symbolic_unified_multi_reports_none_and_drops_the_write_under_avoid_mul
 
 /// Concrete-address stores are past the fast path before the gate, so all
 /// three write entry points must still land with the option on.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn avoid_multivalued_writes_does_not_fire_for_concrete_addresses() {
     let ctx = SymContext::new_mock();

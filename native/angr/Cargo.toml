@@ -39,19 +39,11 @@ name = "rustylib"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# VEX engine with Z3 enabled by default. `fuzzer` and `automaton` are
-# always built (their deps are unconditional, as upstream); the features stay
-# as empty names so existing `#[cfg(feature = ...)]` gates keep resolving.
-default = ["vex-engine", "vex-engine-z3", "automaton"]
-vex-engine = ["im", "lru"]
-vex-engine-z3 = ["vex-engine", "z3", "z3-sys", "crossbeam-deque"]
-fuzzer = []
 # Dev-only: widen the pure hostile-input parsers (format-string width/length,
 # Z3 numeral-string decoders) to a crate-`pub` surface so the cargo-fuzz targets
 # under `fuzz/` can reach them. NOT in `default`; adds no runtime code to a
 # stock build. See fuzz/README.md (angr-qwyti.9).
 fuzzing = []
-automaton = []
 
 [dependencies]
 angr-macros = { path = "../angr-macros" }
@@ -99,16 +91,14 @@ rustc-hash = "2"
 target-lexicon = "0.13.5"
 
 # VEX Engine dependencies (optional, enabled by default)
-z3 = { version = "0.21", optional = true }
+z3 = "0.21"
 # Direct z3-sys dep so we can call Z3 FP-theory FFI functions that are not
 # exposed via z3-rs high-level API (sqrt, fma, to_fp_bv).
-z3-sys = { version = "0.13", optional = true }
-im = { version = "15.1", optional = true }
-lru = { version = "0.12", optional = true }
+z3-sys = "0.13"
+im = "15.1"
+lru = "0.12"
 # Work-stealing deque for the parallel exploration scheduler (angr-1ilq.3).
-# Gated under vex-engine-z3 (the scheduler only exists alongside the Z3-backed
-# StateMigrationPayload transport).
-crossbeam-deque = { version = "0.8", optional = true }
+crossbeam-deque = "0.8"
 
 # Not used from Rust: this is how the extension configures the Z3 that clarirs-z3 links against.
 # Windows links against an import library — only a name-to-DLL mapping — and the z3-solver wheel
@@ -126,16 +116,6 @@ criterion = "0.5"
 [[bench]]
 name = "vex_engine"
 harness = false
-# Same required-features guard as the examples below (angr-c7xno.99): the bench
-# drives `SymContext::add_constraint`, `bench_parse_smtlib2` and the z3 `Ast`
-# API directly, so it only compiles with z3 present.
-required-features = ["vex-engine-z3"]
 
-# Examples gated behind engine features (bd angr-cagbn): they pull in
-# feature-gated modules (`vex`, `memory`, `state`, z3 solver), so the no-z3
-# nightly `cargo test` combos would fail to compile them without a
-# required-features guard. cargo only builds an example when its required
-# features are active.
 [[example]]
 name = "leak_probe"
-required-features = ["vex-engine-z3"]

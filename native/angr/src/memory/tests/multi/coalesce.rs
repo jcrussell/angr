@@ -13,7 +13,6 @@ use super::*;
 /// wider symbolic_objects (one per candidate base), each width 32, with
 /// symbolic_spans covering the interior bytes — instead of 8 per-byte
 /// entries. This is the export-cost win called out in `phase41-bottleneck`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase42_flush_coalesces_le_multi_byte_run() {
     let ctx = SymContext::new_mock();
@@ -76,7 +75,6 @@ fn test_phase42_flush_coalesces_le_multi_byte_run() {
 /// Big-endian variant of the LE coalesce test. byte 0 (lowest addr) is
 /// the MSB in BE; the wider value's right-fold must reconstruct the
 /// original word.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase42_flush_coalesces_be_multi_byte_run() {
     let ctx = SymContext::new_mock();

@@ -651,15 +651,8 @@ def _apply_deterministic_z3_globals() -> None:
     global _z3_deterministic_applied
     if _z3_deterministic_applied:
         return
-    try:
-        from angr.rustylib.vex_engine import set_z3_global_param
-    except ImportError:
-        # cat-(b) FALLBACK WITH LOSS: the Rust extension was built without
-        # the vex-engine-z3 feature; determinism pin cannot be applied.
-        # Manager construction proceeds with current (nondeterministic)
-        # Z3 globals.
-        l.debug("set_z3_global_param not available; deterministic=True ignored")
-        return
+    from angr.rustylib.vex_engine import set_z3_global_param
+
     set_z3_global_param("smt.random_seed", "0")
     set_z3_global_param("sat.random_seed", "0")
     _z3_deterministic_applied = True
@@ -1463,7 +1456,7 @@ class RustExplorationManager(
         self._deterministic = bool(deterministic)
 
         if not RUST_EXPLORATION_AVAILABLE:
-            raise ImportError("RustExplorationManager not available. Build with vex-engine feature enabled.")
+            raise ImportError("RustExplorationManager not available: angr.rustylib.vex_engine failed to import.")
 
         self._project = project
         self._save_unconstrained = save_unconstrained

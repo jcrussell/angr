@@ -124,11 +124,7 @@ fn simproc_success_fork_does_not_inherit_the_calls_register_mutations() {
 
 /// Both states get the branch guard, on opposite polarities: the main successor
 /// is assumed onto the taken side in place, the sibling is replayed onto the
-/// other one from the guard-free snapshot solver.
-///
-/// Only observable where a model exists — the no-z3 mock solver's `eval`
-/// returns `None` for every symbolic BV, so that build asserts exactly that and
-/// keeps the structural coverage above (angr-c7xno.100).
+/// other one from the guard-free snapshot solver (angr-c7xno.100).
 #[test]
 fn simproc_success_fork_guard_polarities_are_opposite() {
     pyo3::Python::initialize();
@@ -139,7 +135,7 @@ fn simproc_success_fork_guard_polarities_are_opposite() {
             let CoreReturn::Continue(succ) = d.outcome.ret else {
                 panic!("expected Continue");
             };
-            let want = |v: bool| cfg!(feature = "vex-engine-z3").then_some(u128::from(v));
+            let want = |v: bool| Some(u128::from(v));
             assert_eq!(
                 succ[0].0.eval(&guard),
                 want(path_taken),
@@ -186,7 +182,7 @@ fn simproc_success_fork_without_snapshot_survives_with_opposite_guard() {
             };
             assert_eq!(succ.len(), 2, "main successor plus the sibling");
             assert_eq!(succ[1].0.state_id(), d.outcome.fork_ids[0]);
-            let want = |v: bool| cfg!(feature = "vex-engine-z3").then_some(u128::from(v));
+            let want = |v: bool| Some(u128::from(v));
             assert_eq!(
                 succ[0].0.eval(&guard),
                 want(path_taken),

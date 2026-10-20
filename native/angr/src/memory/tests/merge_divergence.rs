@@ -51,7 +51,6 @@ fn diamond_arms() -> (SymbolicMemory, SymbolicMemory) {
 
 /// ACCEPTANCE — sharing N pages, diverging on 1, walks exactly 1. Drives the
 /// real `merge` and reads the production walk counter.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_walks_only_divergent_page() {
     let ctx = SymContext::new();
@@ -72,7 +71,6 @@ fn test_merge_walks_only_divergent_page() {
 /// The skip is semantics-preserving: the divergent bytes still merge into ITE
 /// cells, and only on the divergent page. Same expectation the S5a spike proved
 /// for the simulated walk, now against the real fast-path-enabled merge.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_ite_cells_survive_skip() {
     let ctx = SymContext::new();
@@ -104,7 +102,6 @@ fn test_merge_ite_cells_survive_skip() {
 /// naive `shares_data_with` (ptr-eq + bitmap-eq) would wrongly skip the page and
 /// drop the divergence. `is_shared_identical` refuses to skip symbolic pages, so
 /// the page is walked and an ITE cell is emitted.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_overlay_not_skipped() {
     let ctx = SymContext::new();

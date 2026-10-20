@@ -576,7 +576,6 @@ fn cas_concrete_store_without_callback_buffers_bytes_only() {
 // `concretize_write`'s own Max-fallback uses internally -- so the test gets a
 // deterministic `Single` result without depending on the concretizer's
 // range-enumeration heuristics for an otherwise-unconstrained value.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     let ctx = SymContext::new_mock();
@@ -631,7 +630,6 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
 // base -- exactly the "constrained index" example from the bug report,
 // verified via a genuine Z3-backed concretization (not a hand-seeded cache
 // entry) so the test exercises the real `detect_stride_from_solutions` path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
     let ctx = SymContext::new_mock();
@@ -694,7 +692,6 @@ fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
 // Same gap, Multiple shape: index constrained to the non-arithmetic set
 // {0, 1, 3} (via explicit disjunction) so stride-detection's GCD collapses to
 // 1 and `concretize` genuinely returns `Multiple`, not `Strided`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
     let ctx = SymContext::new_mock();
@@ -840,9 +837,7 @@ fn loadg_sees_rust_memory_store_from_same_block() {
 /// which must go through the same layered read (`load_layered_at`) rather than
 /// straight to the Python callback.
 // Needs a real solver: the `Single` branch is only taken when concretization
-// finds exactly one solution, which the no-Z3 mock context never does
-// (angr-9ke6b.236, bd memory `vex-engine-z3-test-gate-invariant`).
-#[cfg(feature = "vex-engine-z3")]
+// finds exactly one solution (angr-9ke6b.236).
 #[test]
 fn loadg_single_concretization_sees_rust_memory_store() {
     let ctx = SymContext::new_mock();
@@ -950,13 +945,9 @@ def store_cb(addr, data):
 /// still writes the concretized bytes little-endian through `memory_store`.
 /// Guards against "fix the zero-fill by disabling the fallback entirely".
 ///
-/// Z3-gated (angr-c7xno.100): the premise is a value that is symbolic but
-/// *concretizable* — `data_val` is pinned to `0xdeadbeef` by a constraint, and
-/// only a real solver can read that back through `eval`. The no-z3 mock has no
-/// model at all, so it takes the sibling test's unconcretizable path instead;
-/// there is no faithful mock arm to write, short of reimplementing constraint
-/// solving.
-#[cfg(feature = "vex-engine-z3")]
+/// The premise is a value that is symbolic but *concretizable* — `data_val` is
+/// pinned to `0xdeadbeef` by a constraint, and the solver reads that back
+/// through `eval` (angr-c7xno.100).
 #[test]
 fn symbolic_store_fallback_writes_concretized_bytes_when_eval_succeeds() {
     use pyo3::types::{PyDict, PyList};
@@ -1073,9 +1064,7 @@ fn new_interp_rust_memory(ctx: &SymContext) -> VEXInterpreter<'_> {
 /// otherwise the predicated store (ARM conditional stores, masked SIMD) is
 /// silently dropped.
 // Needs a real solver: `classify_guard` must return `Symbolic`, which requires
-// `check_branch_feasibility` to find both branches satisfiable
-// (bd memory `vex-engine-z3-test-gate-invariant`).
-#[cfg(feature = "vex-engine-z3")]
+// `check_branch_feasibility` to find both branches satisfiable.
 #[test]
 fn storeg_symbolic_guard_buffers_for_rust_memory() {
     let ctx = SymContext::new_mock();
@@ -1289,7 +1278,6 @@ fn mv_write_addr(ctx: &SymContext, name: &str) -> RustBV {
 /// `try_rust_memory_store`'s AVOID_MULTIVALUED_WRITES gate returns
 /// `Ok(true)` — "handled" — without concretizing or buffering anything, so the
 /// backer survives. With the option off the same store lands.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn try_rust_memory_store_drops_the_write_under_avoid_multivalued_writes() {
     pyo3::Python::initialize();
@@ -1337,7 +1325,6 @@ fn try_rust_memory_store_drops_the_write_under_avoid_multivalued_writes() {
 /// registered the store dispatch the gate would have skipped errors out. ON
 /// returning `Ok(())` on the identical setup is therefore proof the write was
 /// dropped before ever reaching that dispatch — the gate's whole contract.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn handle_symbolic_store_drops_the_write_under_avoid_multivalued_writes() {
     let ctx = SymContext::new_mock();

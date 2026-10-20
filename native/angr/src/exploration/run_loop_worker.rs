@@ -47,7 +47,6 @@ use super::run_loop::bounce_target_addr;
 /// the injector surplus the coordinator drained after the barrier. Neither ever
 /// reached `run_post_step_core`, so neither can be tagged here; the coordinator
 /// routes untagged payloads as bare active successors.
-#[cfg(feature = "vex-engine-z3")]
 #[derive(Clone)]
 pub(crate) enum MatKind {
     Found,
@@ -58,7 +57,6 @@ pub(crate) enum MatKind {
 /// Per-wave state shared (by `&`) across all scheduler workers. Every field is
 /// interior-mutable (atomics / `Mutex`) so the `Fn + Sync` worker closure can
 /// touch it without `&mut`.
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) struct ParallelShared {
     /// `state_id -> lineage root`. Seeded with each drained active state's
     /// `root_or_self`; workers insert every successor / materialized terminal so
@@ -98,7 +96,6 @@ pub(crate) struct ParallelShared {
     pub(crate) stepped: AtomicUsize,
 }
 
-#[cfg(feature = "vex-engine-z3")]
 impl ParallelShared {
     /// The single construction site for a wave-scoped OR session-scoped
     /// `ParallelShared`: empty maps/counters, zeroed `stepped`, and the
@@ -148,7 +145,6 @@ impl ParallelShared {
     clippy::expect_used,
     reason = "poison-guard invariants: the ParallelShared root_map/kind_map/counters locks only poison if a thread unwound while holding them, which panic=abort forecloses — see the module Panic policy header"
 )]
-#[cfg(feature = "vex-engine-z3")]
 pub(crate) fn parallel_process_state(
     mut state: RustSimState,
     cancel: &CancelToken,
@@ -408,4 +404,4 @@ pub(crate) fn parallel_process_state(
     }
 }
 
-test_submod!(z3 "run_loop_worker_tests.rs" => tests);
+test_submod!("run_loop_worker_tests.rs" => tests);

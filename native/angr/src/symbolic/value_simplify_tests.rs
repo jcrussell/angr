@@ -362,7 +362,6 @@ fn test_extract_sign_ext_low_bits() {
     assert_eq!(lo.width(), 8);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_reverse_z3_emission_32bit_leaf() {
     // Reverse(x) over a symbolic leaf should produce byte-reversed value
@@ -376,7 +375,6 @@ fn test_reverse_z3_emission_32bit_leaf() {
     assert_eq!(ctx.eval(&rev), Some(0x44332211));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_reverse_z3_emission_64bit_leaf() {
     let ctx = SymContext::new_mock();
@@ -387,7 +385,6 @@ fn test_reverse_z3_emission_64bit_leaf() {
     assert_eq!(ctx.eval(&rev), Some(0xEFCDAB8967452301));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_reverse_z3_emission_16bit_leaf() {
     let ctx = SymContext::new_mock();
@@ -398,7 +395,6 @@ fn test_reverse_z3_emission_16bit_leaf() {
     assert_eq!(ctx.eval(&rev), Some(0xBBAA));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_reverse_z3_emission_concat_of_bytes() {
     // Reverse(Concat(b0, b1, ..., b7)) with independent byte BVSes.
@@ -427,7 +423,6 @@ fn test_reverse_z3_emission_concat_of_bytes() {
 // --- Pre-Z3 Extract rewrite pass (angr-p8cz) ---
 
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_reverse_byte_aligned() {
     // Extract a single byte from Reverse(x). With the rewrite pass the
@@ -444,7 +439,6 @@ fn test_pre_z3_extract_over_reverse_byte_aligned() {
     assert_eq!(ctx.eval(&lo_byte), Some(0x11));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_reverse_crossing_byte() {
     // Two-byte extract across a byte boundary on Reverse — still
@@ -460,7 +454,6 @@ fn test_pre_z3_extract_over_reverse_crossing_byte() {
     assert_eq!(ctx.eval(&lower16), Some(0x2211));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_concat_within_low() {
     // Extract entirely within the low (right) part of a Concat — should
@@ -484,7 +477,6 @@ fn test_pre_z3_extract_over_concat_within_low() {
     assert_eq!(ctx.eval(&lo), Some(0xBBBB));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_concat_within_high() {
     let ctx = SymContext::new_mock();
@@ -506,7 +498,6 @@ fn test_pre_z3_extract_over_concat_within_high() {
     assert_eq!(ctx.eval(&hi), Some(0xAAAA));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_concat_crossing() {
     // Crosses the a/b boundary in the middle — distribute Extract to both.
@@ -530,7 +521,6 @@ fn test_pre_z3_extract_over_concat_crossing() {
     assert_eq!(ctx.eval(&mid), Some(0x3456));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_extract_fused() {
     let ctx = SymContext::new_mock();
@@ -548,7 +538,6 @@ fn test_pre_z3_extract_over_extract_fused() {
     assert_eq!(ctx.eval(&outer), Some(0x3344));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_zero_ext_low_bits() {
     let ctx = SymContext::new_mock();
@@ -564,7 +553,6 @@ fn test_pre_z3_extract_over_zero_ext_low_bits() {
     assert_eq!(ctx.eval(&lo), Some(0xAB));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_zero_ext_extended_bits() {
     let ctx = SymContext::new_mock();
@@ -585,7 +573,6 @@ fn test_pre_z3_extract_over_zero_ext_extended_bits() {
 /// (returned plain Extract from x), giving the wrong byte order in the
 /// constraint tree. Now it returns Reverse(Extract(...)), preserving
 /// semantics through every consumer (Z3 round-trip, downstream rewrites).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_extract_over_reverse_multibyte_construction() {
     let ctx = SymContext::new_mock();
@@ -599,7 +586,6 @@ fn test_extract_over_reverse_multibyte_construction() {
     assert_eq!(ctx.eval(&lower16), Some(0x2211));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_extract_over_reverse_single_byte_construction() {
     // Single-byte case: rule reduces to plain Extract from x.
@@ -616,7 +602,6 @@ fn test_extract_over_reverse_single_byte_construction() {
     assert_eq!(ctx.eval(&b0), Some(0x11));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_pre_z3_extract_over_sign_ext_low_bits() {
     let ctx = SymContext::new_mock();

@@ -19,11 +19,6 @@
 //! through a `#[pyo3(get)]` getter Python never called); it was likewise
 //! always zero and went in angr-03vl4.6.
 //!
-//! Unlike the fully Z3-gated `constraint_ops`, this slice carries both the
-//! `#[cfg(feature = "vex-engine-z3")]` implementations and their non-Z3 mock
-//! counterparts, so the module decl in `mod.rs` is NOT feature-gated (mirrors
-//! `solving_ops` / `lineage_ops`).
-//!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! the scope-bookkeeping fields it mutates (`solver`, `timeout_ms`) are
 //! promoted to
@@ -35,14 +30,11 @@
 
 use super::SymContext;
 
-#[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
-#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::Ordering;
 
 impl SymContext {
     /// Set the Z3 solver timeout in milliseconds.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn set_timeout(&self, timeout_ms: u32) {
         self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
         if let Some(solver) = self.solver.lock().as_ref() {
@@ -51,7 +43,6 @@ impl SymContext {
     }
 
     /// Get the Z3 solver timeout in milliseconds.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn timeout_ms(&self) -> u32 {
         self.timeout_ms.load(Ordering::SeqCst)
     }
@@ -59,13 +50,9 @@ impl SymContext {
     /// Prime the SAT cache with a known value.
     /// Used after symbolic branch forking where the interpreter already
     /// proved feasibility — avoids redundant Z3 check() calls.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn set_sat_cache(&self, value: bool) {
         self.sat_cache.set(Some(value));
     }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn set_sat_cache(&self, _value: bool) {}
 
     /// Save solver state for temporary constraints.
     ///
@@ -79,7 +66,6 @@ impl SymContext {
     /// (`sat_cache`, `model_cache`) is owned here rather than by the
     /// helper, since different future callers of the savepoint helpers
     /// may want different invalidation policies.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn push(&self) {
         self.scope_savepoint_push();
         // Invalidate caches since constraint set may change
@@ -98,7 +84,6 @@ impl SymContext {
     /// (`sat_cache`, `model_cache`) is owned here rather than by the
     /// helper, since different future callers of the savepoint helpers
     /// may want different invalidation policies.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn pop(&self) {
         self.scope_savepoint_pop();
         // Invalidate caches since constraint set has changed
@@ -123,26 +108,9 @@ impl SymContext {
     ///
     /// Returns `true` when a pop was performed (or would have been safe),
     /// `false` when it was refused to avoid a bare-scope underflow.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn try_pop(&self) -> bool {
         let has_lineage = self.lineage.lock().is_some();
         if !has_lineage && self.bare_z3_push_depth() == 0 {
-            return false;
-        }
-        self.pop();
-        true
-    }
-
-    /// Mock `try_pop` — refuses an under-pop exactly like the Z3 arm
-    /// (angr-c7xno.100), consulting `mock_scope_savepoints` where that arm
-    /// consults [`bare_z3_push_depth()`](Self::bare_z3_push_depth).
-    ///
-    /// The previous mock forwarded to `pop()` and returned `true`
-    /// unconditionally, so `RustSolverContext::pop` silently accepted the
-    /// unbalanced pop the Z3 build reports as a `ValueError`.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn try_pop(&self) -> bool {
-        if self.mock_scope_savepoints.lock().is_empty() {
             return false;
         }
         self.pop();
@@ -153,7 +121,6 @@ impl SymContext {
     ///
     /// Returns the indices of constraints that form the unsatisfiable core.
     /// Call this after checking satisfiability and finding UNSAT.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn unsat_core(&self) -> Vec<usize> {
         let core_strs: Vec<String> = self.with_z3_solver(|solver| {
             solver
@@ -203,7 +170,6 @@ impl SymContext {
     /// The returned indices are positions in `get_assumed_constraints()` — so
     /// they index `state.solver.constraints` 1:1. Empty when the constraint set
     /// is SAT (Z3 produces no core), matching `SimSolver.unsat_core`.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn unsat_core_assumed(&self, extra: &[z3::ast::Bool]) -> Vec<usize> {
         use std::collections::HashSet;
 
@@ -286,7 +252,6 @@ impl SymContext {
     /// `is_true == false` negates. The concrete fast paths in `assume_*` are
     /// deliberately NOT replicated — a concrete guard round-trips through Z3 as
     /// a constant Bool, which the solver folds away.
-    #[cfg(feature = "vex-engine-z3")]
     fn assumed_pair_to_z3_bool(&self, bv: &super::RustBV, is_true: bool) -> z3::ast::Bool {
         let cond = if bv.width() == 1 {
             bv.to_z3_bool()
@@ -302,7 +267,6 @@ impl SymContext {
     /// Returns string representations of all Z3 constraints. Useful for debugging
     /// and for syncing constraint state to Python. While not a full AST export,
     /// this allows Python to understand what constraints are active.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn get_all_constraints_str(&self) -> Vec<String> {
         self.with_z3_solver(|solver| {
             solver
@@ -316,7 +280,6 @@ impl SymContext {
     /// Check the total number of assertions in the Z3 solver.
     ///
     /// This can be used to verify constraint sync between Rust and Python.
-    #[cfg(feature = "vex-engine-z3")]
     pub fn z3_assertion_count(&self) -> usize {
         self.with_z3_solver(|solver| solver.get_assertions().len())
     }
@@ -324,67 +287,4 @@ impl SymContext {
     // =========================================================================
     // Mock implementations when Z3 is not available
     // =========================================================================
-
-    /// Mock `push` — records the local assumed-constraint log length so the
-    /// matching `pop()` can retract everything added inside the scope, and so
-    /// the savepoint stack's length tracks the scope depth (angr-c7xno.100).
-    /// Mirrors `scope_savepoint_push`'s local-log bookkeeping; there is no Z3
-    /// stack to touch here.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn push(&self) {
-        let assumed_len = self.local_constraints.lock().assumed.len();
-        self.mock_scope_savepoints.lock().push(assumed_len);
-    }
-
-    /// Mock `pop` — truncates the assumed log back to the matching `push()`'s
-    /// savepoint, mirroring `scope_savepoint_pop` (angr-c7xno.100).
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn pop(&self) {
-        // Pop into a local first so the savepoint guard drops before
-        // `local_constraints` is locked — never hold both at once, same rule
-        // as `scope_savepoint_pop`.
-        let popped = self.mock_scope_savepoints.lock().pop();
-        match popped {
-            Some(assumed_len) => self.local_constraints.lock().assumed.truncate(assumed_len),
-            // SILENT(cat-a): an unbalanced bare `pop()` has no scope to close.
-            // `try_pop()` is the guarded entry point that reports it; the Z3
-            // arm inherits z3-rs's panic here, which the mock cannot mimic
-            // without aborting the process.
-            None => {}
-        }
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn set_timeout(&self, _timeout_ms: u32) {
-        // No-op without Z3
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn timeout_ms(&self) -> u32 {
-        0
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn unsat_core(&self) -> Vec<usize> {
-        // Without Z3, no unsat core available
-        vec![]
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn unsat_core_assumed(&self, _extra: &[()]) -> Vec<usize> {
-        // Without Z3, no unsat core available
-        vec![]
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn get_all_constraints_str(&self) -> Vec<String> {
-        // Without Z3, no constraints available
-        vec![]
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn z3_assertion_count(&self) -> usize {
-        // Without Z3, no assertions
-        0
-    }
 }

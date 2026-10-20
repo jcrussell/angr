@@ -142,7 +142,6 @@ fn test_vec_reverse_16in64_x2_concrete() {
 /// Involution: applying VReverse twice is the identity (any permutation
 /// that swaps positions i ↔ n-1-i is its own inverse). Exercise on a
 /// symbolic 128-bit input via a Z3 equivalence check.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_reverse_double_apply_is_identity() {
     let ctx = SymContext::new_mock();
@@ -176,7 +175,6 @@ fn test_vec_reverse_double_apply_is_identity() {
 /// produce the same bits as the explicit Python implementation
 /// `Concat(arg[95:64], arg[127:96], arg[31:0], arg[63:32])` for any
 /// 128-bit input. Verified through a Z3 universality check.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
@@ -410,7 +408,6 @@ fn test_vec_mull_even_32ux4_concrete() {
 /// Symbolic parity: Iop_Mull16Sx4 on fully-symbolic operands must equal the
 /// reference concat of per-lane sign-extended 16->32 products, for every
 /// input. Verified by a Z3 universality check (no satisfying counter-example).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_mull_16sx4_symbolic_matches_reference() {
     let ctx = SymContext::new_mock();
@@ -460,7 +457,6 @@ fn test_vec_mull_16sx4_symbolic_matches_reference() {
 /// multiplier), the symbolic MullEven path would silently multiply adjacent
 /// instead of every-other lanes; the universality check below catches it since
 /// the reference selects lanes 0 and 2 explicitly.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
     let ctx = SymContext::new_mock();
@@ -570,7 +566,6 @@ fn test_vec_mulhi_16sx8_concrete() {
 /// wrong shift amount, a flipped extension, or a reversed lane order in
 /// `vec_mulhi` breaks the identity. Checked for unsatisfiability of the
 /// negation, i.e. over all inputs.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_mulhi_symbolic_matches_mull_split() {
     // (elem, count, signed, operand width) — signed 16Sx4 on a D-reg pair and
@@ -708,7 +703,6 @@ fn test_vec_qdmull_32sx2_concrete() {
 /// check — no satisfying counter-example. Independent of the impl's internal
 /// `mul_width` so it catches lane-layout, doubling, and saturation-direction
 /// bugs, not just a copy of the same arithmetic.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
     let ctx = SymContext::new_mock();
@@ -834,11 +828,7 @@ fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
 
 /// A transpose is its own inverse, so applying the op twice must be the
 /// identity — proved over a fully symbolic operand, which exercises the
-/// per-bit extract/concat path rather than the u128 fold.
-///
-/// z3-gated (angr-c7xno.99): `SymContext::add_constraint` / `RustBV::to_z3_ast`
-/// only exist under `vex-engine-z3`.
-#[cfg(feature = "vex-engine-z3")]
+/// per-bit extract/concat path rather than the u128 fold (angr-c7xno.99).
 #[test]
 fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
     let ctx = SymContext::new_mock();
@@ -858,10 +848,7 @@ fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
 }
 
 /// The symbolic per-bit path must agree with the concrete u128 fold: pin a
-/// symbolic operand to a known value and eval the result.
-///
-/// z3-gated (angr-c7xno.99): see the sibling double-apply test above.
-#[cfg(feature = "vex-engine-z3")]
+/// symbolic operand to a known value and eval the result (angr-c7xno.99).
 #[test]
 fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
     let ctx = SymContext::new_mock();
@@ -1050,7 +1037,6 @@ fn test_vec_perm_rejects_mismatched_widths() {
 
 /// A symbolic control lane builds Python's ite chain; pinned to the concrete
 /// controls it must agree with the reference.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
     let ctx = SymContext::new_mock();
@@ -1080,7 +1066,6 @@ fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
 
 /// A symbolic table with a concrete control (PSHUFB with a constant mask) and
 /// the 256-bit `Perm32x8`, which is past the u128 fast path.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_perm_32x8_symbolic_table_matches_python_ref() {
     let ctx = SymContext::new_mock();

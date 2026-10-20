@@ -54,7 +54,6 @@ fn test_fgets_basic() {
     assert_eq!(nul.as_u64(), Some(0));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fgets_newline_only_at_last_byte() {
     // A full read of (size-1) bytes cannot contain an embedded newline: real
@@ -417,7 +416,6 @@ fn test_fgetc_short_reads_can_return_eof() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fgetc_default_never_eof() {
     // Default path (SHORT_READS off): fgetc returns a bare zero-extended byte,
@@ -443,7 +441,6 @@ fn test_fgetc_default_never_eof() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fgets_short_reads_returns_symbolic_size() {
     // With SHORT_READS, native fgets models a variable-length read: it returns
@@ -487,7 +484,6 @@ fn test_fgets_short_reads_returns_symbolic_size() {
     assert!(!ctx.solution(&result, 8), "real_size cannot exceed size-1");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fgets_short_reads_nul_at_real_size() {
     // The NUL terminator is stored at the symbolic real_size offset: pinning
@@ -626,7 +622,6 @@ fn test_fgets_content_sym_fd_falls_back_without_half_serving() {
 /// are bound to the seed by constraint, so they solve to the seeded values, and
 /// the seeded prefix is NOT re-recorded as a stdin symbol (that would make
 /// `_inject_rust_stdin` append a duplicate copy of the harness's own chunk).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fgets_consumes_seeded_stdin() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -664,7 +659,6 @@ fn test_fgets_consumes_seeded_stdin() {
 
 /// getchar/fgetc share the same seed-consuming helper: one seeded byte per call,
 /// in read order.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_getchar_consumes_seeded_stdin_in_order() {
     let mut state = RustSimState::new("amd64").unwrap();

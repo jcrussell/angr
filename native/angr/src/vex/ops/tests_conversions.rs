@@ -9,7 +9,6 @@ use super::*;
 /// RoundF32toInt with symbolic rm: value=-2.5f32, target=-3.0f32 forces
 /// rm low-2-bits == 1 (round toward -inf). Exercises the 4-way ITE built
 /// by build_fp_round_to_int_cached.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_round_f32_to_int_symbolic_rm() {
     let ctx = SymContext::new_mock();
@@ -33,7 +32,6 @@ fn test_round_f32_to_int_symbolic_rm() {
 
 /// RoundF64toInt with symbolic rm: value=2.5f64, target=3.0f64 forces
 /// rm low-2-bits == 2 (round toward +inf). RNE on 2.5 ties to even (2).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_round_f64_to_int_symbolic_rm() {
     let ctx = SymContext::new_mock();
@@ -316,7 +314,6 @@ fn test_i64u_to_f32_rounds_up_to_2_pow_64() {
 
 /// The symbolic `ConvertItoFRm` term agrees with the concrete fold under
 /// every VEX rounding mode.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_int_to_float_rm_symbolic_matches_concrete() {
     use crate::symbolic::FloatPrec;

@@ -130,8 +130,7 @@ def assert_probe_counters(name: str, stats: dict) -> None:
     if not states:
         raise GateError(
             f"{name}: parallel_shadow_migration_states == {states!r} (expected > 0). "
-            f"The shadow probe never fired — no state was dispatched, or the "
-            f"probe is compiled out (vex-engine-z3 feature off)."
+            f"The shadow probe never fired — no state was dispatched."
         )
 
 

@@ -371,7 +371,6 @@ fn test_vwiden_32sto64x2_signed() {
     assert_eq!(hi, 0x0000_0000_1234_5678u64, "lane 1 zero-positive");
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vdup_symbolic_arg() {
     // Symbolic 8-bit value, dup to 8x8. Constrain the output to a known
@@ -394,7 +393,6 @@ fn test_vdup_symbolic_arg() {
     assert_eq!(model_arg, 0x42);
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vget_elem_symbolic_idx() {
     // Build a concrete vector with distinct lane values, then read

@@ -164,7 +164,6 @@ fn test_configure_strategies() {
 // return true exactly when some feasible address is off the `{ base+i*stride }`
 // grid, so try_detect_stride can fall back to TooLarge instead of emitting an
 // unsound Strided result.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_stride_grid_excludes_feasible_off_grid() {
     let ctx = SymContext::new_mock();
@@ -186,7 +185,6 @@ fn test_stride_grid_excludes_feasible_off_grid() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_stride_grid_excludes_feasible_on_grid() {
     let ctx = SymContext::new_mock();
@@ -212,7 +210,6 @@ fn test_stride_grid_excludes_feasible_on_grid() {
 // fallback picked one cell but left the address var ranging over [min,max], so
 // a later eval() of inputs on a "found" state could yield path-infeasible
 // solutions. After the fix the address has exactly one solution.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_read_fallback_pins_address_to_single_solution() {
     let ctx = SymContext::new_mock();
@@ -245,7 +242,6 @@ fn test_read_fallback_pins_address_to_single_solution() {
     );
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_write_fallback_pins_address_to_single_solution() {
     let ctx = SymContext::new_mock();
@@ -275,7 +271,6 @@ fn test_write_fallback_pins_address_to_single_solution() {
 /// that runs is `Max()` — the store lands on a single address (the maximum
 /// satisfying one), never on a candidate set. Rust used to run the Range
 /// strategy unconditionally and fan the store out to every candidate.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn unannotated_write_without_symbolic_write_addresses_is_max_only() {
     let ctx = SymContext::new_mock();
@@ -302,7 +297,6 @@ fn unannotated_write_without_symbolic_write_addresses_is_max_only() {
 /// `store_symbolic_unified_multi`) passes `_multiwrite_filter`, so Range stays
 /// in the chain even with `SYMBOLIC_WRITE_ADDRESSES` off and the store keeps
 /// all its candidates.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn multiwrite_annotated_write_keeps_the_range_strategy() {
     let ctx = SymContext::new_mock();
@@ -327,7 +321,6 @@ fn multiwrite_annotated_write_keeps_the_range_strategy() {
 /// `SYMBOLIC_WRITE_ADDRESSES` on restores the Range strategy for *every*
 /// write, annotated or not — the option is the global equivalent of the
 /// annotation.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn symbolic_write_addresses_on_restores_range_for_unannotated_writes() {
     let ctx = SymContext::new_mock();
@@ -352,7 +345,6 @@ fn symbolic_write_addresses_on_restores_range_for_unannotated_writes() {
 
 /// The Max-only chain still pins `addr == chosen` so downstream loads and the
 /// exported solver agree on where the store landed.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn max_only_write_pins_the_chosen_address() {
     let ctx = SymContext::new_mock();
@@ -388,7 +380,6 @@ fn max_only_write_pins_the_chosen_address() {
 // list that every consumer (ITE load default arm, store disjunction hoist,
 // `invalidate_code_for_concretization`) treats as exhaustive. It must now
 // report `TooLarge` instead.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_over_max_solutions_is_too_large_not_truncated_multiple() {
     let ctx = SymContext::new_mock();
@@ -415,7 +406,6 @@ fn test_over_max_solutions_is_too_large_not_truncated_multiple() {
 
 // Companion: with the cap above the feasible count the same address still
 // enumerates, and the returned set is complete (not clipped at the cap).
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_under_max_solutions_still_enumerates_completely() {
     let ctx = SymContext::new_mock();
@@ -461,7 +451,6 @@ fn strided_addrs_wraps_at_the_top_of_the_address_space() {
 /// of 63 that fits inside both the read (1024) and write (128) limits, so the
 /// tail reaches the `max_solutions` enumeration instead of stopping at the
 /// over-range fallback.
-#[cfg(feature = "vex-engine-z3")]
 fn ranged_addr(ctx: &SymContext, name: &str) -> RustBV {
     let addr = ctx.new_bv(name, 64);
     ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), ctx));
@@ -473,7 +462,6 @@ fn ranged_addr(ctx: &SymContext, name: &str) -> RustBV {
 /// `Strided` grid: `[0x1000, 0x103f]` is a stride-1 run, and a grid the
 /// angr-lf108 completeness gate accepts would be a *correct* answer that hides
 /// which branch produced it.
-#[cfg(feature = "vex-engine-z3")]
 fn no_stride_concretizer() -> AddressConcretizer {
     let mut concretizer = AddressConcretizer::new();
     concretizer.enable_stride_detection = false;
@@ -488,7 +476,6 @@ fn no_stride_concretizer() -> AddressConcretizer {
 /// Driven by a real Z3 abort (`pin_rlimit_for_test`, the rig
 /// `state/tests/solver_gate.rs` uses) rather than by the injection rig below,
 /// so this also proves the branch is reachable from an actual solver timeout.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn fast_enum_undecided_reports_failed_for_every_entry_point() {
     let ctx = SymContext::with_timeout(u32::MAX);
@@ -545,7 +532,6 @@ fn fast_enum_undecided_reports_failed_for_every_entry_point() {
 /// so the forced `Unknown` lands on the *second* enumeration. Either count
 /// leaves that enumeration undecided — with an empty or a one-element prefix —
 /// which is the branch under test.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn undecided_max_solutions_enum_reports_too_large_not_a_truncated_set() {
     let ctx = SymContext::new_mock();
@@ -567,7 +553,6 @@ fn undecided_max_solutions_enum_reports_too_large_not_a_truncated_set() {
 /// `Single`/`Multiple` would claim a 3-address set for a 64-address one. The
 /// prefix must never escape — here the range tail takes over and reports
 /// `TooLarge`.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn undecided_fast_enum_prefix_never_escapes_as_a_complete_set() {
     let ctx = SymContext::new_mock();
@@ -596,7 +581,6 @@ fn undecided_fast_enum_prefix_never_escapes_as_a_complete_set() {
 /// and — because `--test-threads=1` puts every test on one thread — must be
 /// fully released when its guard drops. A rig that silently did nothing would
 /// make the two tests above pass vacuously.
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn enumeration_fault_arms_and_disarms_with_its_guard() {
     let ctx = SymContext::new_mock();

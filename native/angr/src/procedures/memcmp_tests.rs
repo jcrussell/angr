@@ -177,7 +177,6 @@ fn test_memcmp_symbolic_byte_returns_symbolic() {
     assert!(result.as_u64().is_none());
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcmp_symbolic_byte_solver_evaluation() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -210,7 +209,6 @@ fn test_memcmp_symbolic_byte_solver_evaluation() {
     assert_eq!(ctx.max(&result, false), Some(1));
 }
 
-#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcmp_symbolic_byte_equal_solution() {
     let mut state = RustSimState::new("amd64").unwrap();
