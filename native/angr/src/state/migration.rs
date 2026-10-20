@@ -37,9 +37,9 @@ use super::*;
 /// after that worker's Z3 context is the active thread-local.
 pub struct StateMigrationPayload {
     state_bytes: Vec<u8>,
-    symbolic_pages: OverlayMap<SharedPyAst>,
-    hook_symbolic_memory: OverlayMap<(SharedPyAst, u32)>,
-    addr_to_ast: OverlayMap<(SharedPyAst, u32)>,
+    symbolic_pages: OverlayMap<HostAst>,
+    hook_symbolic_memory: OverlayMap<(HostAst, u32)>,
+    addr_to_ast: OverlayMap<(HostAst, u32)>,
 }
 
 // angr-1ilq.1: the migration transport is `Send` by construction, proven at

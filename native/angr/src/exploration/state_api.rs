@@ -65,6 +65,13 @@ macro_rules! state_accessors {
     };
 }
 
+/// The claripy AST behind a state overlay entry. Every entry is stored by
+/// this module's setters as a `Py<PyAny>`, so the downcast only fails for a
+/// value some other code stored, which is then skipped.
+fn host_py_ast(ast: &crate::state::HostAst) -> Option<&Py<PyAny>> {
+    ast.downcast_ref::<Py<PyAny>>()
+}
+
 /// Why a `u128` register read produced no value, with the two causes named
 /// instead of collapsed into one `None` (angr-91vj9.9).
 ///
@@ -427,7 +434,9 @@ impl RustExplorationManager {
         let dict = PyDict::new(py);
         if let Some(state) = self.find_state(state_id) {
             for (addr, ast) in state.symbolic_pages() {
-                dict.set_item(*addr, ast.clone_ref(py))?;
+                if let Some(ast) = host_py_ast(ast) {
+                    dict.set_item(*addr, ast.clone_ref(py))?;
+                }
             }
         }
         Ok(dict)
@@ -446,7 +455,9 @@ impl RustExplorationManager {
         let dict = PyDict::new(py);
         if let Some(state) = self.find_state(state_id) {
             for (addr, (ast, size)) in state.hook_symbolic_memory() {
-                dict.set_item(*addr, (ast.clone_ref(py), *size))?;
+                if let Some(ast) = host_py_ast(ast) {
+                    dict.set_item(*addr, (ast.clone_ref(py), *size))?;
+                }
             }
         }
         Ok(dict)
@@ -464,7 +475,9 @@ impl RustExplorationManager {
         let dict = PyDict::new(py);
         if let Some(state) = self.find_state(state_id) {
             for (addr, (ast, size)) in state.addr_to_ast() {
-                dict.set_item(*addr, (ast.clone_ref(py), *size))?;
+                if let Some(ast) = host_py_ast(ast) {
+                    dict.set_item(*addr, (ast.clone_ref(py), *size))?;
+                }
             }
         }
         Ok(dict)

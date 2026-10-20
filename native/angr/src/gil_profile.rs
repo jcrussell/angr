@@ -128,7 +128,7 @@ pub(crate) enum GilClass {
     /// `claripy_to_rustbv` — importing a claripy AST into Rust.
     ClaripyImport,
     /// A state fork cloning its Python-side overlays. **Expected to stay 0**:
-    /// the overlays hold `SharedPyAst` (`Arc<Py<PyAny>>`) (angr-gorvf.4.2),
+    /// the overlays hold `HostAst` (an `Arc`) (angr-gorvf.4.2),
     /// so `clone_py_metadata` bumps atomic refcounts instead of attaching to
     /// Python. The class is kept (rather than deleted) so the counter keeps
     /// *proving* that — a regression that reintroduces a GIL attach on the fork

@@ -272,23 +272,21 @@ fn joint_cgc_sinkholes_intersects_freed_regions_across_branches() {
 /// wired into ONE merge together.
 #[test]
 fn joint_py_ast_overlay_maps_union_with_self_priority_on_conflict() {
-    Python::initialize();
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
 
-    Python::attach(|py| {
-        a.set_hook_symbolic_memory(0x1000, py.None(), 4); // self-only key
-        b.set_hook_symbolic_memory(0x1000, py.None(), 8); // conflict -> self (size 4) wins
-        b.set_hook_symbolic_memory(0x2000, py.None(), 8); // other-only -> survives
+    // The overlays are opaque to `state`; `()` and an integer stand in for the
+    // shell's ASTs.
+    a.set_hook_symbolic_memory(0x1000, (), 4); // self-only key
+    b.set_hook_symbolic_memory(0x1000, (), 8); // conflict -> self (size 4) wins
+    b.set_hook_symbolic_memory(0x2000, (), 8); // other-only -> survives
 
-        a.set_addr_to_ast(0x3000, py.None(), 4);
-        b.set_addr_to_ast(0x4000, py.None(), 8);
+    a.set_addr_to_ast(0x3000, (), 4);
+    b.set_addr_to_ast(0x4000, (), 8);
 
-        let ast = |n: i64| n.into_pyobject(py).unwrap().into_any().unbind();
-        let mut pb = std::collections::HashMap::new();
-        pb.insert(0x5000u64, ast(1));
-        b.replace_symbolic_pages(pb);
-    });
+    let mut pb = std::collections::HashMap::new();
+    pb.insert(0x5000u64, 1i64);
+    b.replace_symbolic_pages(pb);
 
     let [m0, m1] = conds(&a, "overlay_union");
     let merged = a.merge(&[&b], &[m0, m1]);

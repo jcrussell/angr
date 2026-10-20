@@ -47,10 +47,11 @@
 //! - **`state-metadata-rust-owned`** — Per-state Python AST metadata
 //!   (`symbolic_pages`, `hook_symbolic_memory`, `addr_to_ast`) is owned by
 //!   `RustSimState`; there is no Python-side mirror any more
-//!   (`rust_state_cache.py` keeps only a no-op shim). The maps hold
-//!   `Py<PyAny>` refs: fork clones them under the GIL and `RustSimState::Drop`
-//!   decrements the refcounts, so the only thing the two sides must agree on
-//!   is the set of *live* state IDs (`state-id-never-reused`).
+//!   (`rust_state_cache.py` keeps only a no-op shim). The maps hold opaque
+//!   [`HostAst`] handles (claripy ASTs the shell stored); fork clones the
+//!   `Arc`s and dropping the state releases them, so the only thing the two
+//!   sides must agree on is the set of *live* state IDs
+//!   (`state-id-never-reused`).
 //! - **`arc-make-mut-cow`** — Fields that are read on every fork but
 //!   mutated rarely are wrapped in `Arc<T>` and use `Arc::make_mut` for
 //!   copy-on-write. Mutators must peek the read path first to skip the
@@ -89,6 +90,8 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
+// Only for the `PyRustSimState` wrapper below, which moves to the PyO3 shell
+// with the rest of the state's Python surface (angr-mx00p.75 item 5).
 use pyo3::prelude::*;
 
 // Called by the `merge_field_*` bodies `#[derive(angr_macros::MergePolicy)]`
@@ -224,18 +227,19 @@ pub struct NativeResumeFrame {
     pub caller_return_addr: u64,
 }
 
-/// A claripy AST held in per-state metadata, shared by `Arc` rather than stored
-/// as a bare `Py<PyAny>`.
+/// A host object (the PyO3 shell's claripy AST) held in per-state metadata.
 ///
-/// The `Arc` exists purely to keep state forking off the GIL (angr-gorvf.4.2).
-/// `Py::clone_ref` needs a `Python` token, so cloning a map of bare `Py` handles
-/// on an exploration worker forces a `Python::attach` on **every fork** of any
-/// state that carries a non-empty overlay — measured as the *sole* GIL holder on
-/// four otherwise Python-free corpus benches. `Arc::clone` is an atomic bump and
-/// needs no token, so the fork path never touches Python. Dropping the last
-/// `Arc` still decrements the Py-refcount correctly: pyo3 defers the decref when
-/// the GIL is not held.
-pub type SharedPyAst = Arc<Py<PyAny>>;
+/// Opaque to `state`: it is stored, cloned on fork and unioned on merge, but
+/// only the shell that put it there reads it back, by downcasting
+/// (`exploration::state_api`). That keeps PyO3 types out of `state`
+/// (angr-mx00p.75).
+///
+/// Shared by `Arc` so state forking stays off the GIL (angr-gorvf.4.2):
+/// cloning a map of bare `Py` handles needs a `Python` token, which forced a
+/// `Python::attach` on every fork of a state with a non-empty overlay. Dropping
+/// the last `Arc` still decrements a `Py` refcount correctly: pyo3 defers the
+/// decref when the GIL is not held.
+pub type HostAst = Arc<dyn std::any::Any + Send + Sync>;
 
 /// A per-state overlay map keyed by guest address. Persistent, so forking a
 /// state clones it in O(1) instead of copying every entry (angr-mx00p.95);
@@ -439,26 +443,26 @@ pub struct RustSimState {
     /// symbolic memory. Migrated out of Python `_state_metadata` so storage is
     /// owned alongside the rest of the state. Each entry is a strong ref to a
     /// claripy AST; cleared automatically when the state is dropped.
-    /// Cloned on fork — see [`SharedPyAst`] for why the `Arc` is load-bearing.
+    /// Cloned on fork — see [`HostAst`] for why the `Arc` is load-bearing.
     ///
     /// See module-level `state-metadata-rust-owned`: Rust owns this map and
     /// its drop decrements the Py-refcounts.
     #[merge_policy = "joint"]
-    symbolic_pages: OverlayMap<SharedPyAst>,
+    symbolic_pages: OverlayMap<HostAst>,
     /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
     /// Tracks symbolic writes performed inside Python hooks so Rust can replay
     /// them on resume. Cloned on fork.
     ///
     /// See module-level `state-metadata-rust-owned`.
     #[merge_policy = "joint"]
-    hook_symbolic_memory: OverlayMap<(SharedPyAst, u32)>,
+    hook_symbolic_memory: OverlayMap<(HostAst, u32)>,
     /// Per-state addr -> (AST, byte size) recorded by handle registration so
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
     ///
     /// See module-level `state-metadata-rust-owned`.
     #[merge_policy = "joint"]
-    addr_to_ast: OverlayMap<(SharedPyAst, u32)>,
+    addr_to_ast: OverlayMap<(HostAst, u32)>,
     /// Most recent symbolic value returned by the time(2) syscall — mirrors
     /// `state.globals['sys_last_time']` in Python's
     /// `procedures/linux_kernel/time.py`. Used to constrain consecutive calls

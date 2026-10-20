@@ -55,38 +55,52 @@ impl RustSimState {
     // =========================================================================
 
     /// Insert/replace a hook-symbolic-memory entry.
-    pub fn set_hook_symbolic_memory(&mut self, addr: u64, ast: Py<PyAny>, size: u32) {
+    pub fn set_hook_symbolic_memory<T: std::any::Any + Send + Sync>(
+        &mut self,
+        addr: u64,
+        ast: T,
+        size: u32,
+    ) {
         self.hook_symbolic_memory
-            .insert(addr, (SharedPyAst::new(ast), size));
+            .insert(addr, (Arc::new(ast) as HostAst, size));
     }
 
     /// Insert/replace an addr-to-AST entry.
-    pub fn set_addr_to_ast(&mut self, addr: u64, ast: Py<PyAny>, size: u32) {
-        self.addr_to_ast.insert(addr, (SharedPyAst::new(ast), size));
+    pub fn set_addr_to_ast<T: std::any::Any + Send + Sync>(
+        &mut self,
+        addr: u64,
+        ast: T,
+        size: u32,
+    ) {
+        self.addr_to_ast
+            .insert(addr, (Arc::new(ast) as HostAst, size));
     }
 
     /// Read-only access to the symbolic-pages map.
-    pub fn symbolic_pages(&self) -> &OverlayMap<SharedPyAst> {
+    pub fn symbolic_pages(&self) -> &OverlayMap<HostAst> {
         &self.symbolic_pages
     }
 
     /// Read-only access to the hook-symbolic-memory map.
-    pub fn hook_symbolic_memory(&self) -> &OverlayMap<(SharedPyAst, u32)> {
+    pub fn hook_symbolic_memory(&self) -> &OverlayMap<(HostAst, u32)> {
         &self.hook_symbolic_memory
     }
 
     /// Read-only access to the addr-to-AST map.
-    pub fn addr_to_ast(&self) -> &OverlayMap<(SharedPyAst, u32)> {
+    pub fn addr_to_ast(&self) -> &OverlayMap<(HostAst, u32)> {
         &self.addr_to_ast
     }
 
     /// Replace the entire symbolic-pages map (used by full-page recovery flow).
     /// Takes bare `Py` handles from the caller and wraps them — the `Arc` is an
-    /// internal storage detail (see [`SharedPyAst`]), not part of this API.
-    pub fn replace_symbolic_pages(&mut self, pages: HashMap<u64, Py<PyAny>>) {
+    /// internal storage detail (see [`HostAst`]), not part of this API.
+    pub fn replace_symbolic_pages<T: std::any::Any + Send + Sync>(
+        &mut self,
+        pages: HashMap<u64, T>,
+    ) {
         self.symbolic_pages = pages
             .into_iter()
-            .map(|(addr, ast)| (addr, SharedPyAst::new(ast)))
+            .map(|(addr, ast)| (addr, Arc::new(ast) as HostAst))
             .collect();
     }
 

@@ -170,7 +170,7 @@ impl RustSimState {
     /// independent maps over shared AST handles.
     ///
     /// **GIL-free by construction** (angr-gorvf.4.2). The values are
-    /// [`SharedPyAst`] (`Arc<Py<PyAny>>`), so this is a map copy plus an atomic
+    /// [`HostAst`] (an `Arc`), so this is a map copy plus an atomic
     /// refcount bump per entry — no `Python::attach`, hence no `GilWorkGuard`
     /// here and `gil_work_ns_fork_metadata` stays 0. Storing bare `Py` handles
     /// instead would force a `clone_ref` pass (which needs a `Python` token) on
@@ -181,9 +181,9 @@ impl RustSimState {
     fn clone_py_metadata(
         &self,
     ) -> (
-        OverlayMap<SharedPyAst>,
-        OverlayMap<(SharedPyAst, u32)>,
-        OverlayMap<(SharedPyAst, u32)>,
+        OverlayMap<HostAst>,
+        OverlayMap<(HostAst, u32)>,
+        OverlayMap<(HostAst, u32)>,
     ) {
         (
             self.symbolic_pages.clone(),

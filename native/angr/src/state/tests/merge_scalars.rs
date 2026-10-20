@@ -12,18 +12,15 @@ use super::super::*;
 // the merged state's next malloc can alias live allocations from B's ITE arm.
 #[test]
 fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
-    Python::initialize();
-
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
 
     // Self (a) owns an overlay at 0x1000; other (b) owns a *distinct* overlay at
     // 0x2000 plus a conflicting one at 0x1000. b also advances the allocators.
-    Python::attach(|py| {
-        a.set_hook_symbolic_memory(0x1000, py.None(), 8);
-        b.set_hook_symbolic_memory(0x1000, py.None(), 4); // conflict -> keep self
-        b.set_hook_symbolic_memory(0x2000, py.None(), 8); // other-only -> survive
-    });
+    // The overlays are opaque to `state`; `()` stands in for the shell's AST.
+    a.set_hook_symbolic_memory(0x1000, (), 8);
+    b.set_hook_symbolic_memory(0x1000, (), 4); // conflict -> keep self
+    b.set_hook_symbolic_memory(0x2000, (), 8); // other-only -> survive
     a.set_heap_brk(0x10_0000);
     b.set_heap_brk(0x20_0000); // b allocated further
     a.set_posix_brk(0x30_0000);

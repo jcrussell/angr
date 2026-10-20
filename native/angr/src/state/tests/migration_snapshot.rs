@@ -206,10 +206,6 @@ fn test_migrate_resume_stack_roundtrip() {
 // register/constraint state.
 #[test]
 fn test_migrate_preserves_py_overlays() {
-    use pyo3::prelude::*;
-
-    Python::initialize();
-
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
         let s = state.solver().borrow();
@@ -222,14 +218,13 @@ fn test_migrate_preserves_py_overlays() {
     };
     state.add_constraint(constraint);
 
-    // Populate one entry in each Bucket-D overlay map.
-    Python::attach(|py| {
-        let mut pages: std::collections::HashMap<u64, Py<PyAny>> = std::collections::HashMap::new();
-        pages.insert(0x1000, py.None());
-        state.replace_symbolic_pages(pages);
-        state.set_hook_symbolic_memory(0x2000, py.None(), 8);
-        state.set_addr_to_ast(0x3000, py.None(), 4);
-    });
+    // Populate one entry in each Bucket-D overlay map. The overlays are opaque
+    // to `state`; `()` stands in for the shell's AST.
+    let mut pages = std::collections::HashMap::new();
+    pages.insert(0x1000u64, ());
+    state.replace_symbolic_pages(pages);
+    state.set_hook_symbolic_memory(0x2000, (), 8);
+    state.set_addr_to_ast(0x3000, (), 4);
 
     let payload = state.detach_for_migration();
     on_worker(move || {

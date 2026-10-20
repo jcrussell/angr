@@ -108,17 +108,17 @@ fn test_merge_filesystem_keeps_longest_stdout_branch() {
 // likewise untested before.
 #[test]
 fn test_merge_three_state_overlay_union_and_tiebreak() {
-    Python::initialize();
-
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
     let mut c = RustSimState::new("amd64").unwrap();
 
     // Per-state, per-address entries. The *size* field (u32) of hook/addr_to_ast
-    // entries and the *int value* of symbolic_pages ASTs double as a provenance
-    // tag: 1 == came from a (self), 2 == b (earlier other), 3 == c (later other).
-    Python::attach(|py| {
-        let ast = |n: i64| n.into_pyobject(py).unwrap().into_any().unbind();
+    // entries and the stored value of symbolic_pages entries double as a
+    // provenance tag: 1 == came from a (self), 2 == b (earlier other), 3 == c
+    // (later other). The overlays are opaque to `state`, so plain integers
+    // stand in for the claripy ASTs the shell stores.
+    {
+        let ast = |n: i64| n;
 
         // symbolic_pages: replace_symbolic_pages takes the whole map per state.
         let mut pa = std::collections::HashMap::new();
@@ -137,18 +137,18 @@ fn test_merge_three_state_overlay_union_and_tiebreak() {
 
         // hook_symbolic_memory + addr_to_ast: same table, provenance in the size.
         for (st, tag) in [(&mut a, 1u32), (&mut b, 2), (&mut c, 3)] {
-            st.set_hook_symbolic_memory(0x1000, py.None(), tag);
-            st.set_addr_to_ast(0x1000, py.None(), tag);
+            st.set_hook_symbolic_memory(0x1000, (), tag);
+            st.set_addr_to_ast(0x1000, (), tag);
         }
         for (st, tag) in [(&mut b, 2u32), (&mut c, 3)] {
-            st.set_hook_symbolic_memory(0x2000, py.None(), tag);
-            st.set_addr_to_ast(0x2000, py.None(), tag);
+            st.set_hook_symbolic_memory(0x2000, (), tag);
+            st.set_addr_to_ast(0x2000, (), tag);
         }
-        c.set_hook_symbolic_memory(0x3000, py.None(), 3);
-        c.set_addr_to_ast(0x3000, py.None(), 3);
-        a.set_hook_symbolic_memory(0x4000, py.None(), 1);
-        a.set_addr_to_ast(0x4000, py.None(), 1);
-    });
+        c.set_hook_symbolic_memory(0x3000, (), 3);
+        c.set_addr_to_ast(0x3000, (), 3);
+        a.set_hook_symbolic_memory(0x4000, (), 1);
+        a.set_addr_to_ast(0x4000, (), 1);
+    }
 
     // stdin_symbols union: b re-reads "sa" (dup of self) and adds "sb"; c adds
     // "sc". Merged must be self-order-first with dups dropped: [sa, sb, sc].
@@ -226,8 +226,8 @@ fn test_merge_three_state_overlay_union_and_tiebreak() {
         4,
         "symbolic_pages: every distinct addr must survive"
     );
-    Python::attach(|py| {
-        let tag = |addr: u64| pages.get(&addr).unwrap().bind(py).extract::<i64>().unwrap();
+    {
+        let tag = |addr: u64| *pages.get(&addr).unwrap().downcast_ref::<i64>().unwrap();
         assert_eq!(tag(0x1000), 1, "symbolic_pages 0x1000: self wins");
         assert_eq!(
             tag(0x2000),
@@ -236,7 +236,7 @@ fn test_merge_three_state_overlay_union_and_tiebreak() {
         );
         assert_eq!(tag(0x3000), 3, "symbolic_pages 0x3000: last-other survives");
         assert_eq!(tag(0x4000), 1, "symbolic_pages 0x4000: self-only survives");
-    });
+    }
 
     // --- stdin_symbols union (dedup by name, self-order-first) ---
     let names: Vec<&str> = merged
