@@ -68,16 +68,6 @@ class RustStateCacheMixin:
             # link is best-effort and missing it is fine.
             l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s", effective_id, addr, type(e).__name__, e)
 
-    def _cleanup_symbolic_pages_cache(self):
-        """No-op shim retained for back-compat hooks.
-
-        Per-state metadata storage moved into Rust (``RustSimState``); the
-        Python-side ``_state_metadata`` dict no longer exists, and metadata is
-        freed automatically when Rust drops the owning state. The eviction
-        path is therefore unnecessary.
-        """
-        return
-
     def _evaluate_predicates_on_active(self):
         """Evaluate callable find/avoid predicates on all Rust states.
 

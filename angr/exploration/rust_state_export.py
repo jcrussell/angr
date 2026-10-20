@@ -1387,11 +1387,7 @@ class RustStateExportMixin:
         every symbolic register here measurably regressed flareon2015_2 (see
         ``avoid-eager-symbolic-register-export``).
         """
-        try:
-            symbolic_names = snapshot.get_symbolic_register_names()
-        except Exception:
-            # Old build without the FFI shim — nothing to recover.
-            return
+        symbolic_names = snapshot.get_symbolic_register_names()
         if not symbolic_names:
             return
         state_id = getattr(snapshot, "state_id", None)

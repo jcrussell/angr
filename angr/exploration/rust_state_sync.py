@@ -1074,28 +1074,6 @@ class RustStateSyncMixin:
                 # divergence.
                 pass
 
-    def _is_binary_code_addr(self, addr: int) -> bool:
-        """Check if address is in real binary code (not extern/loader space).
-
-        Cached on first call. Only considers ELF objects with actual binary
-        files, excluding CLE's ExternObject, KernelObject, TLSObject etc.
-        """
-        if not hasattr(self, "_binary_addr_ranges"):
-            self._binary_addr_ranges = []
-            for obj in self._project.loader.all_objects:
-                # Only include real binary files (ELF, PE, etc.)
-                # Skip CLE's synthetic objects (ExternObject, KernelObject, TLS)
-                binary_path = getattr(obj, "binary", None)
-                if not binary_path or not isinstance(binary_path, str) or binary_path.startswith("cle##"):
-                    continue
-                if hasattr(obj, "segments") and obj.segments:
-                    for seg in obj.segments:
-                        if seg.memsize > 0:
-                            self._binary_addr_ranges.append((seg.min_addr, seg.max_addr))
-                else:
-                    self._binary_addr_ranges.append((obj.min_addr, obj.max_addr))
-        return any(lo <= addr <= hi for lo, hi in self._binary_addr_ranges)
-
     def _get_register_offset_map(self, arch) -> dict:
         """``{name: (offset, size)}`` of the callback sync registers, from the engine's table."""
         reg_map, _ = self._get_reg_map_and_return_regs(arch)

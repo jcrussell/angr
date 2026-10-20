@@ -1784,7 +1784,6 @@ class RustExplorationManager(
         # goes through `self._rust_mgr.{get,set}_state_*` PyO3 methods so the
         # storage and the state lifetime are unified — when Rust drops a state,
         # its metadata is freed automatically.
-        self._max_symbolic_pages_cache = 100  # Retained for back-compat hooks.
 
         # Track the current callback state ID for memory tracking during callbacks
         self._current_callback_state_id: int | None = None
@@ -2158,57 +2157,6 @@ class RustExplorationManager(
             )
             lines.append(f"  DCAS unsupported: {fb.get('dcas_unsupported_count', 0)}")
             lines.append(f"  VEX block fallback (PythonVEXFallback): {fb.get('vex_fallback_count', 0)}")
-        return "\n".join(lines)
-
-    def get_exploration_summary(self) -> str:
-        """Return a high-level summary of the exploration run."""
-        s = self._perf_stats
-        lines = ["=== Exploration Summary ==="]
-
-        # Duration
-        explore_ns = getattr(self, "_time_in_explore_ns", 0)
-        init_ns = s.get("init_total_ns", 0)
-        total_ns = init_ns + explore_ns
-        lines.append(
-            f"Total time: {total_ns / 1e6:.1f}ms (init: {init_ns / 1e6:.1f}ms, explore: {explore_ns / 1e6:.1f}ms)"
-        )
-
-        # Steps and throughput
-        explore_s = explore_ns / 1e9 if explore_ns > 0 else 0
-        steps_per_sec = f" ({self._stats_ffi_crossings / explore_s:.0f} steps/sec)" if explore_s > 0.001 else ""
-        lines.append(f"Steps: {self._stats_ffi_crossings}{steps_per_sec}")
-
-        # State counts
-        try:
-            n_found = len(self._rust_mgr.get_state_ids("found"))
-            n_active = len(self._rust_mgr.get_state_ids("active"))
-            n_deadended = len(self._rust_mgr.get_state_ids("deadended"))
-            n_avoided = len(self._rust_mgr.get_state_ids("avoided"))
-            lines.append(f"States: {n_found} found, {n_active} active, {n_avoided} avoided, {n_deadended} deadended")
-        except Exception:
-            # cat-(b) FALLBACK WITH LOSS: state-count snapshot failed;
-            # the summary skips the per-stash count line.
-            pass
-
-        # Callback breakdown
-        cb_total = self._stats_callback_count
-        sp_count = s.get("callback_simprocedure_count", 0)
-        native_count = cb_total - sp_count  # memory/lift/fetch callbacks
-        lines.append(f"Callbacks: {cb_total} total ({sp_count} SimProcedure, {native_count} other)")
-        if self._stats_time_in_callbacks_ns > 0:
-            lines.append(f"  Time in callbacks: {self._stats_time_in_callbacks_ns / 1e6:.1f}ms")
-
-        # Per-procedure breakdown (top 5)
-        if self._procedure_times:
-            sorted_procs = sorted(self._procedure_times.items(), key=lambda x: -x[1]["execute_ns"])
-            lines.append(f"SimProcedure breakdown ({len(sorted_procs)} unique):")
-            for pname, pt in sorted_procs[:5]:
-                lines.append(f"  {pname}: {pt['count']}x, {pt['execute_ns'] / 1e6:.1f}ms")
-
-        # FFI stats
-        lines.append(f"State creations: {self._stats_state_creations}")
-        lines.append(f"Cache: {self._stats_cache_hits} hits, {self._stats_cache_misses} misses")
-
         return "\n".join(lines)
 
     def _setup_callbacks(self):
@@ -5508,11 +5456,8 @@ class RustExplorationManager(
             if event.event_type == "need_callback":
                 if self._dispatch_callback(event):
                     break
-            elif event.event_type == "errored":
-                if _DBG:
-                    l.debug(f"Exploration error (state deadended): {event.callback_reason}")
-            elif event.event_type == "step_complete":
-                self._cleanup_symbolic_pages_cache()
+            elif event.event_type == "errored" and _DBG:
+                l.debug(f"Exploration error (state deadended): {event.callback_reason}")
 
             # Apply technique filters after step events
             if self._active_techniques and event.event_type in ("step_complete", "found", "steps_exhausted"):
@@ -6109,43 +6054,6 @@ class RustExplorationManager(
     # ``found_proxies`` / ``active_proxies`` / ``avoid_proxies`` /
     # ``deadended_proxies`` / ``unconstrained_proxies`` are generated from
     # ``_STASH_ACCESSORS`` by ``_install_stash_accessors``.
-
-    def eval_register(self, state_id: int, name: str) -> int | None:
-        """Evaluate a register from a Rust state.
-
-        Args:
-            state_id: The Rust state ID.
-            name: Register name (e.g., 'rax').
-
-        Returns:
-            Concrete register value, or None if not available.
-        """
-        return self._rust_mgr.get_state_register(state_id, name)
-
-    def is_satisfiable(self, state_id: int) -> bool:
-        """Check if a state's constraints are satisfiable.
-
-        Args:
-            state_id: The Rust state ID.
-
-        Returns:
-            True if satisfiable, False otherwise.
-        """
-        return self._rust_mgr.state_satisfiable(state_id)
-
-    def one_found_state(self) -> angr.SimState | None:
-        """Get one found state as an angr SimState.
-
-        This is a convenience method that returns a single found state
-        converted to an angr SimState for solution extraction.
-
-        Returns:
-            An angr SimState, or None if no found states exist.
-        """
-        found_ids = self.found
-        if found_ids:
-            return self.get_state_by_id(found_ids[0])
-        return None
 
     def stash_counts(self) -> dict:
         """Get state counts for all stashes."""

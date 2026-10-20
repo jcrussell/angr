@@ -1118,21 +1118,19 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         ``get_state_register_ast`` (which round-trips through
         ``rustbv_to_claripy`` and preserves the underlying Z3 AST), so
         downstream solver operations land on the correct symbol. Only when
-        the manager genuinely has no value for the register (unknown name or
-        old build without the FFI shim) do we fall back to the orphan BVS —
-        same loss-of-identity behavior as before, but at least with a debug
-        log so the gap is visible.
+        the manager genuinely has no value for the register (unknown name)
+        do we fall back to the orphan BVS — same loss-of-identity behavior as
+        before, but at least with a debug log so the gap is visible.
         """
-        if hasattr(self._mgr, "get_state_register_ast"):
-            try:
-                ast = self._mgr.get_state_register_ast(self._state_id, name)
-            except (RuntimeError, ValueError, KeyError, AttributeError):
-                # cat-(b) FALLBACK WITH LOSS: AST recovery failed; we mint
-                # an orphan BVS below. Solver writes through that BVS will
-                # not affect the actual register value.
-                ast = None
-            if ast is not None:
-                return ast
+        try:
+            ast = self._mgr.get_state_register_ast(self._state_id, name)
+        except (RuntimeError, ValueError, KeyError, AttributeError):
+            # cat-(b) FALLBACK WITH LOSS: AST recovery failed; we mint
+            # an orphan BVS below. Solver writes through that BVS will
+            # not affect the actual register value.
+            ast = None
+        if ast is not None:
+            return ast
         l.debug(
             "RustRegisterProxy: no AST recovered for symbolic register %r "
             "(sid=%d); minting orphan BVS — solver writes through the proxy "

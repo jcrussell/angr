@@ -22,8 +22,7 @@
 //! The Python `RustExplorationManager` maintains an orthogonal set of
 //! caches (in-memory `_init_cache`, disk init cache, `_mem_cache`,
 //! `_state_cache`). Per-state metadata is NOT among them — it lives on
-//! the Rust `RustSimState` and is freed when Rust drops the state (see
-//! `RustStateCacheMixin::_cleanup_symbolic_pages_cache`). None of these
+//! the Rust `RustSimState` and is freed when Rust drops the state. None of these
 //! are documented here; see the cross-mixin invariants **I3**, **I4**,
 //! **I5**, **I6** in the `angr/exploration/rust_manager.py` module
 //! docstring for the cross-FFI rules and the bd memories
