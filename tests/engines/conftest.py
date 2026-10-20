@@ -5,8 +5,7 @@ Consolidates boilerplate that was copy-pasted across the six
 
 * the ``RUST_EXPLORATION_AVAILABLE`` availability guard,
 * test-binary / examples directory resolution,
-* the module-scoped ``fauxware_project`` fixture, and
-* the ``BufferedStringIO`` stdout-capture helper.
+* the module-scoped ``fauxware_project`` fixture.
 
 Test modules import the names they need from here. When the Rust extension
 is not built, every Rust symbol below is ``None`` and
@@ -23,10 +22,6 @@ import os
 import pytest
 
 import angr
-
-# Single source of the BufferedStringIO helper (definition lives in the
-# benchmark utilities; re-exported here so engine tests don't keep a copy).
-from tests.benchmarks.test_utils import BufferedStringIO  # noqa: F401
 
 # --- Availability guard ---------------------------------------------------
 # Attempt the broadest import once. Modules import only the symbols they use.

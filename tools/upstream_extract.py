@@ -164,6 +164,8 @@ EXCLUDE = [
     "docs/advanced-topics/rust_bimodal_variance.rst",
     ".github/workflows/perf-dashboard.yml",
     "tests/benchmarks/*",
+    # runs angr-examples solve.py scripts and imports tests/benchmarks
+    "tests/engines/test_rust_integration.py",
 ]
 
 RS_REASON_RE = re.compile(r'(reason\s*=\s*")((?:[^"\\]|\\.)*)(")')

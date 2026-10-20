@@ -1917,6 +1917,8 @@ class TestCounterParity:
             "benchmarks",
             "run_single.py",
         )
+        if not os.path.exists(run_single_path):
+            pytest.skip("tests/benchmarks/run_single.py (the fork's bench harness) is not present")
         spec = importlib.util.spec_from_file_location("_bench_run_single", run_single_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

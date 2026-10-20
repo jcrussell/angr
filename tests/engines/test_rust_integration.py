@@ -14,12 +14,12 @@ import time
 
 import pytest
 
-# Availability guard, examples-dir resolution, and the BufferedStringIO
-# stdout-capture helper live in conftest (angr-7gdp).
+from tests.benchmarks.test_utils import BufferedStringIO
+
+# Availability guard and examples-dir resolution live in conftest (angr-7gdp).
 from tests.engines.conftest import (
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
-    BufferedStringIO,
     RustFactoryPatch,
 )
 
