@@ -143,17 +143,11 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug calls
 
-# angr-kzjv6: symex-relevant SimOptions mirrored onto the Rust state so native
-# SimProcedures can branch on them via ``RustSimState.has_option``. Kept as the
-# raw option strings (the ``angr.sim_options`` constants are plain ``str``) to
-# avoid an import-order dependency. Add an entry here only when a native proc
-# actually consults the option; the full per-state option set otherwise stays
-# Python-side (``rust_state_proxy.options``).
-# ``SYMBOLIC_INITIAL_VALUES`` (angr-c7xno.61) gates whether
-# ``procedures/stub.rs::NativeReturnUnconstrained`` mints a symbol or returns a
-# concrete 0, matching ``SimSolver.Unconstrained``. It is present in every stock
-# mode bundle, so the Rust state seeds it ON and the mirror below exists mostly
-# to *clear* it for a user who passed ``remove_options=``.
+# SimOptions mirrored onto the Rust state for native SimProcedures to read via
+# ``RustSimState.has_option`` (angr-kzjv6). Add one only when a native proc
+# consults it. SYMBOLIC_INITIAL_VALUES is seeded on in Rust (every stock bundle
+# has it), so the mirror mostly exists to clear it after remove_options=
+# (angr-c7xno.61).
 _NATIVE_SIMOPTIONS = frozenset({"SHORT_READS", "SYMBOLIC_INITIAL_VALUES"})
 
 
@@ -200,246 +194,61 @@ except ImportError:
     PythonCallbacks = None
     _RustSimState = None
 
-# SimOptions tagged "(b) explicitly reject" in docs/advanced-topics/rust_engine.rst.
-# Setting any of these on a state owned by RustExplorationManager would change
-# Python-engine semantics, but the Rust engine silently ignores them — without
-# a warning users can spend hours chasing a divergence between engines. We
-# warn-once per option per manager rather than raise, since the user may have
-# inherited the option from a parent state without explicit consent. Two
-# entries from the matrix's (b) category — `TRACK_CONSTRAINT_ACTIONS` and
-# `TRACK_MEMORY_MAPPING` — are intentionally **excluded** here because they
-# ship in the default `symbolic` mode bundle (sim_options.py:391, 374). Every
-# `factory.entry_state()` would otherwise trigger a warning the user did not
-# choose. This set covers the options a user must opt into; the two
-# default-bundle ones are resolved at their *consumption* site instead
-# (angr-op0dn.14.7): TRACK_CONSTRAINT_ACTIONS' only observable effect is the
-# SimActionConstraint stream, and reading `state.history.actions` warns once via
-# `_RustOwnedSimStateHistory` (rust_state_export.py); TRACK_MEMORY_MAPPING is
-# vestigial — no code in angr or its dependencies reads it, only
-# analyses/identifier/runner.py adds it — so ignoring it cannot diverge.
+# SimOption ledgers. The per-option rationale is the "SimOption coverage
+# matrix" in docs/advanced-topics/rust_engine.rst; keep the two in step. An
+# option the engine honors natively, honors transparently through the Python
+# fallback, or that nothing consults appears in none of these sets.
+
+# Warn once per option per manager: the engine ignores them, but they may be
+# inherited from a parent state rather than chosen. TRACK_CONSTRAINT_ACTIONS and
+# TRACK_MEMORY_MAPPING are deliberately absent: they ship in the default
+# `symbolic` bundle, so warning on them would fire on every entry_state(); the
+# first warns where it is consumed (reading state.history.actions), the second
+# is read by nothing (angr-op0dn.14.7).
 _REJECTED_OPTION_NAMES = frozenset(
     {
-        # Conservative read strategy: refuses to concretize on range-check
-        # failure. (The write strategy variant raises, see _RAISE_OPTION_NAMES.)
-        "CONSERVATIVE_READ_STRATEGY",
-        # SimMemory error-handling tweaks.
+        "CONSERVATIVE_READ_STRATEGY",  # the write variant raises instead
         "UNINITIALIZED_ACCESS_AWARENESS",
         "BEST_EFFORT_MEMORY_STORING",
-        # Ret-emulation guard sibling. The DO_RET_EMULATION half raises (see
-        # _RAISE_OPTION_NAMES); the guard alone is harmless without it.
-        "TRUE_RET_EMULATION_GUARD",
-        # Alternate Python engines / memory plugins.
+        "TRUE_RET_EMULATION_GUARD",  # a guard tweak; DO_RET_EMULATION itself raises
         "SUPER_FASTPATH",
         "FAST_MEMORY",
         "FAST_REGISTERS",
         "UNDER_CONSTRAINED_SYMEXEC",
-        # BYPASS_VERITESTING_EXCEPTIONS is consulted only from
-        # angr/analyses/veritesting.py (resilience= kwarg passed to nested
-        # SimulationManager.run). That analysis builds its own Python
-        # SimulationManager, so it never runs on the Rust engine and the
-        # option can have no effect there.
-        # Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
-        # no-op — `resilience` bundle users carry it implicitly. Reject with
-        # a warn-once rather than raise so adding `angr.options.resilience`
-        # to a non-Veritesting state does not crash. (angr-6rz8)
-        "BYPASS_VERITESTING_EXCEPTIONS",
-        # USE_SYSTEM_TIMES tells Python's posix sim_time procedures
-        # (procedures/posix/sim_time.py) to return the host's real
-        # `int(time.time())` instead of a fresh symbolic timeval/timespec.
-        # The native handlers (native/angr/src/syscalls/sim_time.rs:
-        # gettimeofday/time/clock_gettime) always write a fresh symbolic
-        # value and never consult the option — wiring host-time into the
-        # native path would be a behavior change with no benchmark demand.
-        # Warn-once so a user who opted into concrete host times learns the
-        # native syscalls are ignoring it rather than silently exploring a
-        # symbolic-time path. Not in any default mode bundle, so this only
-        # fires on explicit opt-in. (angr-0y0v)
-        "USE_SYSTEM_TIMES",
+        "BYPASS_VERITESTING_EXCEPTIONS",  # only Veritesting reads it, on its own Python manager (angr-6rz8)
+        "USE_SYSTEM_TIMES",  # native time syscalls always return a fresh symbol (angr-0y0v)
     }
 )
 
-
-# SimOptions that we hard-fail rather than warn on. The Rust engine never
-# produces SimAction or SimEvent records, so anything driven by
-# state.history.actions or unsat_core() will silently get empty data under
-# Rust. Loud failure beats hours of chasing a phantom divergence. None of
-# these ship in the default `symbolic` bundle (sim_options.py:391), so this
-# only fires when a user explicitly added the option. TRACK_OP_ACTIONS does
-# ship in the `fastpath` mode bundle — fastpath users will hit this and must
-# drop to the Python engine for action-stream-driven analyses.
-#
-# CONCRETIZE eagerly concretizes every symbol introduced (Python:
-# sim_options.py + SimSolver.BatchedConcretizationBacker). Silent ignore
-# under Rust would totally change semantics — symbol-driven solver tests
-# would behave like concrete tests but without the speedup. Promoted to
-# raise (angr-gmrc).
-#
-# CONSERVATIVE_WRITE_STRATEGY tells SimMemory to refuse symbolic-write
-# address concretization on range-check failure (Python: storage/
-# memory_mixins/address_concretization_mixin.py concretize_write_addr). Rust's
-# SymbolicMemory always concretizes within strategy limits, so silently
-# accepting this would mask the user's intent to keep an analysis
-# conservative. Promoted to raise (angr-csmm).
-#
-# DO_RET_EMULATION asks the engine to add an emulated successor at every
-# ret site (Python: SimEngineVEX returns the ret successor with a guard
-# that's true unless TRUE_RET_EMULATION_GUARD is also set). Rust does
-# not emulate rets at all, so the emulated successor is silently missing
-# under Rust; that's a divergence in the successor set that Callable
-# workflows (the typical caller) depend on. Promoted to raise (angr-cf9h). TRUE_RET_EMULATION_GUARD stays in _REJECTED_OPTION_NAMES
-# because alone it's just a guard tweak with no effect.
-#
-# CALLLESS replaces every call with an unconstraining of the return
-# register, used by Callable to short-circuit function bodies. Rust has
-# no equivalent path, so calls execute normally; silently accepting the
-# option means Callable workflows would step into the callee instead of
-# skipping it — a structural divergence, not a precision one. Promoted
-# to raise (angr-cf9h).
-#
-# EFFICIENT_STATE_MERGING asks SimStateHistory to retain a strong
-# reference to each ancestor state so state.merge() can find a common
-# ancestor for plugin merging (Python: state_plugins/history.py
-# set_strongref_state). It was raise-listed (angr-n129)
-# while the Rust engine merged only through the Python export path,
-# which needs that common-ancestor walk. DEMOTED (angr-op0dn.11.6):
-# merge is now native. RustExplorationManager.merge() runs the M3-4
-# fast path (_merge_native -> _rust_mgr.merge_states, no export, no
-# SimStateHistory walk), and the M3-5 native MergePoint technique
-# (ManualMergepoint -> register_merge_point) forks-and-merges entirely
-# in Rust. Neither path consults SimStateHistory's strongref, so the
-# option's Python rationale is moot: it is honored by NOT raising, which
-# lets a state carrying it (including Veritesting's auto-added copy)
-# explore under the native merge machinery instead of hard-failing at
-# the manager boundary. The paired SIMPLIFY_MERGED_CONSTRAINTS was never
-# promoted because it ships in the default `symbolic` mode bundle
-# (simplification set); it is honored implicitly through the Python
-# state.merge() fallback that still backs custom merge_func/merge_key.
-# NOTE for M6 coordination: this option is M3-owned — the M6 dispatcher
-# routes it to Python meanwhile and must not double-count it.
-#
-# SYMBOL_FILL_UNCONSTRAINED_REGISTERS asks the Python filler to create
-# a fresh symbolic BVS on every read of an uninitialized register, and
-# suppresses the otherwise-emitted warning (Python: state_plugins/
-# light_registers.py _fill, storage/memory_mixins/default_filler_mixin.py
-# _default_value). The Rust RegisterFile always returns concrete zero
-# from its vec![0; size] storage — there is no "uninitialized" marker,
-# so register reads cannot generate fresh symbols regardless of options.
-# Silently accepting the option means a user who opted into symbolic-fill
-# would get concrete-zero registers and never know — paths that depend
-# on unconstrained initial register values would simply not be explored.
-# Promoted to raise (angr-apre). The MEMORY variant
-# SYMBOL_FILL_UNCONSTRAINED_MEMORY is NOT promoted because Rust's
-# load_concrete_lazy (native/angr/src/memory/load.rs fn load_concrete_lazy) falls back
-# to a fresh `unc_mem_*` symbolic BVS when zero_fill_unconstrained is
-# unset — i.e., symbolic-fill is already Rust's default for memory.
-#
-# BYPASS_ERRORED_IROP / BYPASS_ERRORED_IRCCALL / BYPASS_ERRORED_IRSTMT
-# tell Python's HeavyResilienceMixin (engines/vex/heavy/resilience.py) to
-# catch SimError / SimOperationError raised during op / ccall / stmt
-# evaluation and substitute a default symbol or zero. Rust's interpreter
-# routes its own errors via FallbackStrategy (interpreter/execution_error.rs):
-# UnsupportedFeature falls back to Python so the BYPASS_UNSUPPORTED_*
-# bypass fires, but Op / TypeMismatch / InvalidIR are Panic-strategy and
-# move the state to the errored stash without ever giving Python a chance
-# to substitute. The "ERRORED" bypasses therefore silently do nothing
-# under Rust when Rust hits a Panic-strategy variant — a divergence the
-# user paid into resilience for. Promoted to raise (angr-6rz8). The "UNSUPPORTED" siblings (BYPASS_UNSUPPORTED_IROP /
-# IRDIRTY / IRCCALL / SYSCALL) are honored transparently via the
-# UnsupportedFeature -> Python fallback path and therefore stay out of
-# both _RAISE and _REJECTED. BYPASS_UNSUPPORTED_IREXPR and
-# BYPASS_UNSUPPORTED_IRSTMT are vestigial — defined but not consulted
-# anywhere in angr today; also honored vacuously. The modifier options
-# UNSUPPORTED_BYPASS_ZERO_DEFAULT and UNSUPPORTED_FORCE_CONCRETIZE only
-# affect what value Python substitutes when its bypass fires, so they
-# are also honored transparently through the same path.
-# CONSTRAINT_TRACKING_IN_SOLVER tells SimSolver to build a tracking
-# claripy Solver (state_plugins/solver.py _init_add_constraints) so that
-# unsat_core() can name the constraints that made a state infeasible;
-# without it, unsat_core() refuses to run at all (raises
-# SimSolverOptionError). It was raise-listed (angr-op0dn.14.8) while the
-# Rust engine had no core to give: constraints go onto the shared Z3
-# solver with no assumption literals, so an opting-in user got a
-# *silently empty* core — the one failure mode the option exists to
-# prevent. DEMOTED (angr-op0dn.14.2): RustSolverProxyPlugin.unsat_core now
-# computes the core on demand (SymContext::unsat_core_assumed) by rebuilding
-# a throwaway assumption-guarded solver from the assumed-constraint IR, so
-# the core is complete — it names the engine's own fork guards too, which a
-# core read off the live solver could not — and nothing is paid on the hot
-# add path. The proxy still honors the option: without it on the bound
-# state, unsat_core() raises SimSolverOptionError like Python's.
-#
-# CONCRETIZE_SYMBOLIC_WRITE_SIZES is NOT promoted. Its only in-tree
-# consumer is SimFileBase._prep_generic (storage/file.py), and every
-# native write path (syscalls/write.rs, the CGC `transmit` in
-# syscalls/cgc.rs) falls back to Python on a symbolic count — so the
-# option is honored transparently wherever it can fire. (The memory-side
-# knob of the same name is a SimMemory *constructor kwarg*, not this
-# option.)
-#
-# CGC_NON_BLOCKING_FDS is NOT promoted either: the native `fdwait`
-# (syscalls/cgc.rs NativeFdwaitSyscall) implements exactly the
-# option-is-set behavior, and it falls back to Python when the option is
-# unset — where the Python proc's unconstrained ready bits are produced
-# (angr-op0dn.14.8). Honored in both directions.
-#
-# TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (angr-fkvt). Unlike its TRACK_*_ACTIONS siblings, it does not gate
-# action recording — angr's heavy/actions.py only consults
-# TRACK_REGISTER_ACTIONS / TRACK_MEMORY_ACTIONS to populate
-# state.history.recent_events. TRACK_ACTION_HISTORY's only consumer in
-# current angr is preconstrainer.py (state_plugins/preconstrainer.py:98)
-# which uses it as a metadata flag — temporarily clears it during
-# preconstraint to suppress action recording, then restores. Under Rust
-# that clear/restore is a vacuous no-op (Rust never records actions
-# regardless) so honoring the option silently is safe. Unblocks AEG
-# workloads (insomnihack_aeg, angr-86c4) which set the option but never
-# inspect state.history.actions directly. The TRACK_*_ACTIONS family
-# remains raise-listed because those DO gate action recording.
+# Raise at manager construction: silently ignoring these would change what the
+# analysis explores or returns, and none ships in the default `symbolic` bundle.
 _RAISE_OPTION_NAMES = frozenset(
     {
+        # The engine records no SimActions (TRACK_ACTION_HISTORY is only a flag
+        # the preconstrainer toggles, so it is honored vacuously; angr-fkvt).
         "TRACK_MEMORY_ACTIONS",
         "TRACK_REGISTER_ACTIONS",
         "TRACK_TMP_ACTIONS",
         "TRACK_JMP_ACTIONS",
         "TRACK_OP_ACTIONS",
-        "CONCRETIZE",
-        "CONSERVATIVE_WRITE_STRATEGY",
-        "DO_RET_EMULATION",
-        "CALLLESS",
-        "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",
+        "CONCRETIZE",  # eager concretization of every new symbol (angr-gmrc)
+        "CONSERVATIVE_WRITE_STRATEGY",  # the engine always concretizes within limits (angr-csmm)
+        "DO_RET_EMULATION",  # no emulated ret successor (angr-cf9h)
+        "CALLLESS",  # calls execute instead of being skipped (angr-cf9h)
+        "SYMBOL_FILL_UNCONSTRAINED_REGISTERS",  # unset registers read as concrete 0 (angr-apre)
+        # Op/TypeMismatch/InvalidIR errors move the state to errored without a
+        # Python substitution (angr-6rz8); the BYPASS_UNSUPPORTED_* siblings are
+        # honored through the Python fallback.
         "BYPASS_ERRORED_IROP",
         "BYPASS_ERRORED_IRCCALL",
         "BYPASS_ERRORED_IRSTMT",
-        # PRODUCE_ZERODIV_SUCCESSORS (angr-op0dn.14.9). Python's
-        # zero-division path is a *lifting* one: irop.py raises
-        # SimZeroDivisionException on a concrete zero divisor, the resilience
-        # mixin turns that into an `Ijk_SigFPE_IntDiv` exit, and
-        # engines/successors.py::add_successor keeps that successor only when
-        # this option is set (it drops it otherwise). The Rust interpreter has
-        # no such path at all: DivS/DivU lower to Z3's bvsdiv/bvudiv, which are
-        # *total* (Z3 defines x/0), so no SigFPE exit is ever produced and the
-        # option can never fire. It ships only in the `tracing` bundle, which a
-        # user reaches by passing mode= — an opt-in, so the raise is routable:
-        # the auto-dispatcher sends those workloads to Python rather than
-        # silently dropping the divide-by-zero successor.
-        "PRODUCE_ZERODIV_SUCCESSORS",
+        "PRODUCE_ZERODIV_SUCCESSORS",  # Z3 division is total, so no SigFPE successor exists (angr-op0dn.14.9)
     }
 )
 
-# Inverse-polarity gate (angr-op0dn.14.7): options Rust cannot honor by their
-# *absence*. Same shape as the CGC_NON_BLOCKING_FDS polarity trap (angr-op0dn.14.8):
-# the divergent configuration is the one where the option is UNSET.
-#
-# EXTENDED_IROP_SUPPORT ships in every mode bundle, so `_RAISE_OPTION_NAMES`
-# could never carry it — routing on its presence routes every user to Python.
-# But the option only ever *widens* Python's op table: `vexop_to_simop`
-# (engines/vex/claripy/irop.py) auto-generates a SimIROp from the op name when
-# `extended=True` and raises UnsupportedIROpError when it is False. Set (the
-# default) it is therefore honored transparently — Rust runs the op natively, or
-# defers the block to Python where extended=True applies. Unset, the user is
-# asking for the *narrow* table, and the Rust interpreter has no narrow mode:
-# it would execute an auto-generated-only op where Python would have refused.
-# That is the only direction it can diverge, and it is an explicit opt-out of a
-# default option, so we make it loud (and auto-dispatch routes it to Python).
+# Options whose ABSENCE the engine cannot honor. EXTENDED_IROP_SUPPORT ships in
+# every bundle and only widens Python's op table; unset, a user asks for the
+# narrow table, which the interpreter has no mode for (angr-op0dn.14.7).
 _REQUIRED_OPTION_NAMES = frozenset({"EXTENDED_IROP_SUPPORT"})
 
 
