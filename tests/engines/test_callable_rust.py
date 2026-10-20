@@ -23,7 +23,6 @@ __package__ = __package__ or "tests.engines"  # pylint:disable=redefined-builtin
 
 import os
 
-from angr import claripy
 import pytest
 
 import angr
@@ -71,7 +70,7 @@ class TestCallableRust:
             for i in range(n_calls):
                 ret = howtouse(i)
                 assert ret is not None, f"Callable returned None for index {i}"
-                concrete = claripy.backends.concrete.convert(ret).value
+                concrete = ret.concrete_value
                 ch = chr(concrete & 0xFF)
                 assert ch == expected[i], f"index {i}: got {ch!r} (0x{concrete:x}), expected {expected[i]!r}"
 
