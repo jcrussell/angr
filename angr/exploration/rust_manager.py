@@ -440,24 +440,36 @@ def _unsupported_inspect_events(state) -> list[str]:
 # Every manager constructed in this process that is still alive (see _collect_dead_managers).
 _live_managers: weakref.WeakSet = weakref.WeakSet()
 
-# How many earlier managers may still be alive before building another one
-# forces a collection (see _collect_dead_managers).
-_DEAD_MANAGER_BATCH = 4
+# A collection may take at most 1 / (1 + _GC_DUTY) of the time spent building
+# managers (see _collect_dead_managers).
+_GC_DUTY = 2.0
+_last_collect_end = 0.0
+_last_collect_cost = 0.0
 
 
 def _collect_dead_managers() -> None:
-    """Free finished managers before too many pile up.
+    """Free finished managers before another one is built.
 
     A manager sits in several reference cycles (its PythonCallbacks hold bound methods, its proxies point back at
     it), so only the cyclic garbage collector frees it, and with it its Rust states and Z3 terms. claripy ASTs are
     native objects the collector does not count, so a collection can be far off, and a process that builds manager
-    after manager would keep every finished one resident until then. A full collection costs tens of milliseconds in
-    a large angr process, which dominated a ``Callable`` call (one manager per call; angr-mx00p.96), so collect only
-    once ``_DEAD_MANAGER_BATCH`` earlier managers are alive: resident memory stays bounded by that many finished
-    managers, and a process with one manager at a time never pays.
+    after manager would keep every finished one resident until then.
+
+    A full collection costs tens of milliseconds in a large angr process, which dominated a ``Callable`` call (one
+    manager per call; angr-mx00p.96). So collect when an earlier manager is alive, unless the last collection ended
+    less than ``_GC_DUTY`` times its own duration ago: managers built in quick succession share a collection, and
+    ones built further apart (a test suite, a long exploration) are each collected first, as before. A count-based
+    batch kept too many large finished managers resident between tests.
     """
-    if len(_live_managers) >= _DEAD_MANAGER_BATCH:
-        gc.collect()
+    global _last_collect_end, _last_collect_cost
+    if not _live_managers:
+        return
+    now = time.perf_counter()
+    if now - _last_collect_end < _GC_DUTY * _last_collect_cost:
+        return
+    gc.collect()
+    _last_collect_end = time.perf_counter()
+    _last_collect_cost = _last_collect_end - now
 
 
 _z3_deterministic_applied = False
