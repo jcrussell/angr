@@ -57,7 +57,6 @@ use super::helpers::{base_pair, conds};
 /// constructed states, not a fork of a common ancestor.
 #[test]
 fn mechanical_arch_and_vex_arch_self_wins_across_differing_archs() {
-    Python::initialize();
     let a = RustSimState::new("amd64").unwrap();
     let b = RustSimState::new("x86").unwrap();
 

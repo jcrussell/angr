@@ -12,7 +12,6 @@ use super::super::*;
 /// mirrors OR (an option a branch switched on stays on).
 #[test]
 fn test_merge_unions_config_like_fields_across_branches() {
-    Python::initialize();
 
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
@@ -85,7 +84,6 @@ fn test_merge_unions_config_like_fields_across_branches() {
 /// forks leaves the sets pointer-identical to self's.
 #[test]
 fn test_merge_config_union_keeps_shared_arcs_when_nothing_diverged() {
-    Python::initialize();
 
     let mut a = RustSimState::new("amd64").unwrap();
     a.set_option("SHORT_READS", true);
@@ -123,7 +121,6 @@ fn test_merge_config_union_keeps_shared_arcs_when_nothing_diverged() {
 /// exercised additions.
 #[test]
 fn test_merge_does_not_resurrect_removed_hook_option_or_env_var() {
-    Python::initialize();
 
     let mut ancestor = RustSimState::new("amd64").unwrap();
     ancestor.add_hook(0x400000);
@@ -166,7 +163,6 @@ fn test_merge_does_not_resurrect_removed_hook_option_or_env_var() {
 /// touching it, must still survive the merge.
 #[test]
 fn test_merge_still_unions_additions_alongside_removals() {
-    Python::initialize();
 
     let mut ancestor = RustSimState::new("amd64").unwrap();
     ancestor.add_hook(0x400000);
@@ -217,7 +213,6 @@ fn test_merge_still_unions_additions_alongside_removals() {
 /// branch that currently has it live.
 #[test]
 fn test_merge_reinstated_hook_option_env_survives_own_removal_tombstone() {
-    Python::initialize();
 
     let ancestor = RustSimState::new("amd64").unwrap();
     let mut a = ancestor.fork();

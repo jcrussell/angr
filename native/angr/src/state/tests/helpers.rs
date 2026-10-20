@@ -100,7 +100,6 @@ pub(super) fn build_populated_state() -> RustSimState {
 /// `removed_hooks`/`removed_sim_options`/`removed_env_keys` (fork-point-
 /// relative tombstones) depend on for correct semantics.
 pub(super) fn base_pair(arch: &str) -> (RustSimState, RustSimState) {
-    Python::initialize();
     let ancestor = RustSimState::new(arch).unwrap();
     (ancestor.fork(), ancestor.fork())
 }

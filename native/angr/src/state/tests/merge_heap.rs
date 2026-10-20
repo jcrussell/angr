@@ -14,7 +14,6 @@ use super::super::*;
 // unioning sinkholes would reintroduce aliasing).
 #[test]
 fn test_merge_takes_min_cgc_base_and_intersects_sinkholes() {
-    Python::initialize();
 
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
@@ -70,7 +69,6 @@ fn test_merge_takes_min_cgc_base_and_intersects_sinkholes() {
 // allocation. Unioning allocations closes that; freed addresses union as a set.
 #[test]
 fn test_merge_unions_heap_metadata_across_branches() {
-    Python::initialize();
 
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
