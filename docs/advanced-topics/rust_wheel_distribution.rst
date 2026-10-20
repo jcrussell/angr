@@ -48,8 +48,8 @@ Observed facts
 * The built extension ``angr/rustylib.cpython-312-x86_64-linux-gnu.so`` carries
   ``NEEDED libz3.so`` and a ``RUNPATH`` pointing at the **build machine's**
   absolute venv path (``.../site-packages/z3/lib``) — set by
-  ``native/angr/build.rs::find_z3_lib_dir`` (prefers the active venv's ``z3``
-  package). That absolute RUNPATH is correct for an editable dev install but
+  ``native/angr/build.rs`` from ``Z3_LIBRARY_PATH_OVERRIDE``, which
+  ``setup.py::configure_z3`` points at the build env's ``z3`` package. That absolute RUNPATH is correct for an editable dev install but
   **non-portable** in a distributed wheel.
 * ``pyo3`` carries the ``abi3-py312`` feature (angr-6f0i), so the distributed wheel is a single limited-ABI artifact covering
   CPython 3.12+ rather than one per minor version. The editable dev ``.so`` is
@@ -144,8 +144,8 @@ legs are independent and none has been executed):
 
 Common to every leg: the Rust toolchain is installed at build time only
 (never enters the wheel); the pinned ``z3-solver`` is installed in the build
-env so ``build.rs::find_z3_lib_dir`` and ``setup.py::_configure_z3`` resolve
-the library and its version; libz3
+env so ``setup.py::configure_z3`` resolves the library and its version
+(and ``build.rs`` runpaths to it); libz3
 is never vendored into the wheel; and ``CIBW_TEST_COMMAND``
 runs the AST-passthrough smoke test (``tests/smoke/wheel_ast_passthrough.py``)
 against the finished wheel. The smoke test mints a Z3 AST in ``claripy`` and
@@ -177,7 +177,7 @@ Per-platform wrinkles worth knowing
   ``.so`` will not load at all on Apple silicon. Anything cargo must see at
   build time goes in ``CIBW_ENVIRONMENT_MACOS``, not in an ``export`` from the
   before-build hook — cibuildwheel runs that hook in its own shell, so the
-  export never reaches cargo (``setup.py::_configure_z3`` sets the Z3
+  export never reaches cargo (``setup.py::configure_z3`` sets the Z3
   variables in-process, so none are needed for Z3 itself).
 
 Windows: same invariant, different mechanism
@@ -209,7 +209,7 @@ extension's own import failure is the more informative error).
 
 Two supporting changes fall out of this:
 
-* ``build.rs::emit_rpath`` skips the ``-Wl,-rpath`` link-arg when
+* ``build.rs`` skips the ``-Wl,-rpath`` link-arg when
   ``CARGO_CFG_TARGET_OS == "windows"`` — MSVC's ``link.exe`` rejects the flag
   outright, so without the guard the leg would not even link.
 * The Windows build env has no header or import-library source at all: the

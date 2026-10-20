@@ -116,9 +116,8 @@ if (( CARGO_ONLY == 1 )); then
     fi
     # z3-sys ships its bindings (no C header), but probes pkg-config first and,
     # failing that, assumes its minimum-supported Z3 and hides newer API. Pin it
-    # to the venv's z3-solver wheel instead -- the same libz3 Python loads
-    # (docs/advanced-topics/rust_z3_sharing.rst). setup.py::_configure_z3 does
-    # the same for the pip path.
+    # to the venv's z3-solver wheel instead -- the libz3 angr/_z3.py loads.
+    # setup.py::configure_z3 does the same for the pip path.
     export Z3_NO_PKG_CONFIG="${Z3_NO_PKG_CONFIG:-1}"
     if [[ -z "${Z3_SYS_Z3_VERSION:-}" ]]; then
         Z3_VER="$("$VENV/bin/python" -c 'import z3; print(z3.get_version_string())' 2>/dev/null || true)"
@@ -127,12 +126,8 @@ if (( CARGO_ONLY == 1 )); then
             echo "using Z3_SYS_Z3_VERSION=$Z3_SYS_Z3_VERSION"
         fi
     fi
-    # build.rs runpaths the .so to whatever libz3 `python3` (on PATH) resolves —
-    # which in --cargo-only mode is the SYSTEM python3, not the venv. Linking the
-    # system libz3 while claripy loads the venv libz3 loads TWO libz3 instances
-    # and double-frees at interpreter teardown (`free(): invalid pointer`,
-    # SIGABRT/SIGSEGV at process exit — see bd libz3-soname-mismatch-root-cause).
-    # Pin the runpath to the venv's libz3 so Python and Rust share one instance.
+    # Link against, and (via build.rs) runpath to, the venv's libz3 rather than
+    # whatever pkg-config finds: the bindings are tied to one Z3 release.
     if [[ -z "${Z3_LIBRARY_PATH_OVERRIDE:-}" ]]; then
         VENV_Z3_LIB="$VENV/lib/python3.12/site-packages/z3/lib"
         if [[ -f "$VENV_Z3_LIB/libz3.so" || -f "$VENV_Z3_LIB/libz3.dylib" ]]; then

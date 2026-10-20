@@ -101,14 +101,14 @@ jobs:
           # ---- Linux (manylinux, both arches) --------------------------------
           # build.rs needs the Rust toolchain + z3-solver's libz3.so. z3-sys ships
           # its bindings, so no Z3 headers or system Z3 package are involved;
-          # setup.py::_configure_z3 points z3-sys at the wheel's lib dir and
+          # setup.py::configure_z3 points z3-sys at the wheel's lib dir and
           # version in-process, so no Z3 variables are needed in the environment.
           CIBW_BEFORE_ALL_LINUX: >
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y &&
             (yum install -y zlib-devel || true)
           CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
-          # z3-solver must be importable so build.rs::find_z3_pkg_from_python and
-          # setup.py::_configure_z3 resolve libz3.so and its version.
+          # z3-solver must be importable so setup.py::configure_z3 resolves
+          # libz3.so and its version (build.rs then runpaths to it).
           CIBW_BEFORE_BUILD_LINUX: >
             pip install z3-solver==5.1.0.0 patchelf
           # DO NOT vendor libz3: exclude it, then point RUNPATH at the z3-solver
@@ -127,7 +127,7 @@ jobs:
           # ---- macOS ---------------------------------------------------------
           # Rust ships preinstalled on the GitHub macOS images; the z3-solver wheel
           # supplies libz3 (no brew z3 — a second Z3 on the machine is exactly what
-          # Z3_NO_PKG_CONFIG in setup.py::_configure_z3 exists to ignore).
+          # Z3_NO_PKG_CONFIG in setup.py::configure_z3 exists to ignore).
           # MACOSX_DEPLOYMENT_TARGET must match the macos-14 image's arm64 floor,
           # else delocate rejects the wheel tag. Anything cargo must see goes HERE,
           # not in an export from CIBW_BEFORE_BUILD_MACOS — cibuildwheel runs

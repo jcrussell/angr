@@ -118,7 +118,7 @@ crossbeam-deque = { version = "0.8", optional = true }
 z3-sys = { version = "0.13", features = ["gh-release"] }
 
 [dev-dependencies]
-tempfile = "3.24.0"
+tempfile = "3.27.0"
 quickcheck = "1.0"
 quickcheck_macros = "1.0"
 criterion = "0.5"

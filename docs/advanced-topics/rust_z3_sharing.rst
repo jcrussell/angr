@@ -42,28 +42,15 @@ The solver surface is split across the files below (angr-9ke6b.205):
 How the link is wired (build.rs + venv)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``native/angr/build.rs::find_z3_lib_dir`` discovers the Z3 install in
-this order, then emits ``cargo:rustc-link-arg=-Wl,-rpath,<lib_dir>``
-so the compiled Rust ``.so`` carries the venv's library directory
-baked into its ``DT_RUNPATH``:
-
-1. ``Z3_LIBRARY_PATH_OVERRIDE`` environment variable (escape hatch
-   for non-standard installs).
-2. The active Python's ``z3`` package directory (``python3 -c "import
-   z3, os; print(os.path.dirname(z3.__file__))"`` then ``/lib``), as
-   long as ``libz3.so`` / ``libz3.dylib`` / ``z3.dll`` lives there —
-   this is the production path when the build runs inside the
-   project venv.
-3. System fallbacks: ``/usr/lib/x86_64-linux-gnu``, ``/usr/lib64``,
-   ``/usr/lib``, ``/usr/local/lib``, ``/opt/homebrew/lib``.
-
-Because the runpath is hard-coded at link time, ``import angr`` works
-from inside the venv without any ``LD_LIBRARY_PATH`` setup. Outside
-the venv, point ``LD_LIBRARY_PATH`` at the venv's ``z3/lib`` or set
-``Z3_LIBRARY_PATH_OVERRIDE`` to override discovery for the next build.
+``native/angr/build.rs`` emits ``cargo:rustc-link-arg=-Wl,-rpath,<dir>``
+for ``Z3_LIBRARY_PATH_OVERRIDE`` and nothing else: no probing of the
+active Python, no system fallbacks, nothing when the variable is unset.
+The extension does not depend on that runpath when imported from Python,
+because ``angr/_z3.py`` opens the ``z3-solver`` wheel's libz3 before
+``angr.rustylib`` loads; the runpath is for the ``cargo test`` binaries.
 
 Which Z3 version ``z3-sys`` believes it links is a separate, build-time
-concern handled by ``setup.py::_configure_z3`` and
+concern handled by ``setup.py::configure_z3`` and
 ``tools/rebuild-rust.sh`` — see *Build layout* in :doc:`rust_build`.
 The runtime sharing documented here applies to any working build.
 

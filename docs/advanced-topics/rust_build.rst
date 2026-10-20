@@ -70,12 +70,14 @@ are covered too). Neither of those compiles the
 ``#[cfg(not(feature = "vex-engine-z3"))]`` arms; ``make check-no-z3`` is the
 only local check of those, which is why the ralph gate runs it first.
 
-``native/angr/build.rs`` detects the Z3 shared library from the active
-venv's ``z3-solver`` install and sets the runpath so Python and Rust load
-the same ``libz3.so`` (required for AST passthrough; see
-:doc:`rust_z3_sharing`). ``z3-sys`` would otherwise probe pkg-config
-first and, failing that, assume its minimum-supported Z3 and hide newer
-API, so ``setup.py::_configure_z3`` (pip path) and
+``z3-sys`` links whatever ``Z3_LIBRARY_PATH_OVERRIDE`` names, and
+``native/angr/build.rs`` runpaths the crate's binaries (the extension and
+the ``cargo test`` executables) to that directory; it does nothing when
+the variable is unset. Imported from Python the extension needs no
+runpath, because ``angr/_z3.py`` opens libz3 first. ``z3-sys`` would
+otherwise probe pkg-config first and, failing that, assume its
+minimum-supported Z3 and hide newer API, so ``setup.py::configure_z3``
+(pip path) and
 ``tools/rebuild-rust.sh`` (cargo path) export ``Z3_NO_PKG_CONFIG=1``,
 ``Z3_LIBRARY_PATH_OVERRIDE`` (the wheel's ``z3/lib``) and
 ``Z3_SYS_Z3_VERSION`` (from the installed ``z3-solver``) before cargo
@@ -96,10 +98,10 @@ build ran without ``Z3_SYS_Z3_VERSION`` and will assume the minimum
 supported Z3. Export the three variables above (or go through
 ``make rebuild-cargo`` / ``pip install``, which set them).
 
-**Linker can't find libz3 at runtime** — ``build.rs`` sets the runpath to
-the venv's ``z3/lib``, so ``import angr`` works from inside the venv.
-Outside it, set ``LD_LIBRARY_PATH`` to that directory or override with
-``Z3_LIBRARY_PATH_OVERRIDE=/path/to/lib``.
+**A cargo test binary can't find libz3 at runtime** — it was built
+without ``Z3_LIBRARY_PATH_OVERRIDE``, so ``build.rs`` emitted no runpath.
+Export the three variables above and rebuild, or set ``LD_LIBRARY_PATH``
+to the venv's ``z3/lib``.
 
 Running tests
 -------------
