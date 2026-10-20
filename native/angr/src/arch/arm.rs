@@ -278,13 +278,23 @@ impl Arch for ARM {
     }
 
     fn syscall_num_offset(&self) -> Option<u32> {
-        // EABI Linux syscall convention puts the syscall number in R7
+        // EABI Linux syscall convention puts the syscall number in R7. An OABI
+        // `svc #0x9000NN` carries it in the immediate instead; the interpreter
+        // decodes that (`oabi_syscall_num`).
         Some(offsets::R7)
     }
 
     fn is_little_endian(&self) -> bool {
         true // ARM can be big or little endian, but little is more common
     }
+}
+
+/// The syscall number an ARM-mode `svc` word encodes under the OABI, or
+/// `None` for an EABI `svc` (number in r7). Mirrors
+/// `SimCCARMLinuxSyscall.syscall_num`, bounds exclusive as there.
+pub(crate) fn oabi_syscall_num(svc_insn: u32) -> Option<u64> {
+    let imm = svc_insn & 0x00FF_FFFF;
+    (imm > 0x90_0000 && imm < 0x90_FFFF).then(|| u64::from(imm - 0x90_0000))
 }
 
 test_submod!("arm_tests.rs" => tests);

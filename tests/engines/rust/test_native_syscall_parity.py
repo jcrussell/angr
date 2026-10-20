@@ -161,3 +161,26 @@ def test_amd64_int_0x80_is_not_the_amd64_abi():
     mgr.run()
     assert not mgr.deadended, "the int 0x80 ran as amd64 write and execution reached the exit syscall"
     assert [s.addr for s in mgr.errored] == [after_int80]
+
+
+def test_arm_oabi_svc_takes_number_from_immediate():
+    """An ARM ``svc #0x9000NN`` (OABI) is syscall NN, not whatever r7 holds.
+
+    The shellcode sets r7=4 (EABI ``write``) and then issues the OABI
+    ``exit``; the Rust engine used to dispatch on r7 and run on to the EABI
+    ``exit`` after it (angr-mx00p.58). Both engines must stop at the first
+    ``svc``, with r7 still 4.
+    """
+    # mov r7,#4 ; svc #0x900001 (OABI exit) ; mov r7,#1 ; svc #0
+    sc = bytes.fromhex("0470a0e3010090ef0170a0e3000000ef")
+    proj = angr.load_shellcode(sc, arch="ARMEL", simos="linux", load_address=0x1000)
+
+    simgr = proj.factory.simulation_manager(proj.factory.entry_state(addr=0x1000))
+    simgr.run()
+    assert len(simgr.deadended) == 1
+    assert simgr.deadended[0].regs.r7.concrete_value == 4
+
+    mgr = RustExplorationManager(proj, [proj.factory.entry_state(addr=0x1000)])
+    mgr.run()
+    assert len(mgr.deadended) == 1, mgr._rust_mgr.stash_counts()
+    assert mgr.deadended[0].regs.r7.concrete_value == 4, "execution ran past the OABI exit"

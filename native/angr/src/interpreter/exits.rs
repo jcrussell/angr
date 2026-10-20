@@ -328,8 +328,42 @@ impl<'a> VEXInterpreter<'a> {
     /// `unwrap_or(0)` fallback in spirit but without silently dispatching
     /// to syscall 0.
     pub(super) fn get_syscall_num(&self) -> Option<u64> {
+        if self.registers.arch().vex_arch() == crate::vex::VexArch::ARM {
+            return self.arm_linux_syscall_num();
+        }
         let offset = self.registers.arch().syscall_num_offset()?;
         self.registers.get_offset_u64(offset, self.ctx)
+    }
+
+    /// ARM Linux syscall number, decoded as `SimCCARMLinuxSyscall.syscall_num`
+    /// decodes it (angr-mx00p.58): an ARM-mode `svc #0x9000NN` is an OABI call
+    /// whose number is the immediate less `0x900000`; any other `svc` (EABI
+    /// `svc #0`, every Thumb `svc`) takes it from r7. `None` when the `svc`
+    /// word cannot be read as concrete code or is not an `svc`, so the caller
+    /// routes the call to Python rather than dispatching on r7.
+    ///
+    /// Both callers have already set `self.pc` to the syscall exit's target,
+    /// the instruction after the `svc` (with the Thumb bit), which is what
+    /// angr stores in `ip_at_syscall`.
+    fn arm_linux_syscall_num(&self) -> Option<u64> {
+        let after_svc = self.pc;
+        if after_svc & 1 == 0 {
+            let bytes = self.native_lift_source_bytes(after_svc.wrapping_sub(4))?;
+            let word: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
+            let insn = if self.registers.arch().is_little_endian() {
+                u32::from_le_bytes(word)
+            } else {
+                u32::from_be_bytes(word)
+            };
+            if insn & 0x0F00_0000 != 0x0F00_0000 {
+                return None;
+            }
+            if let Some(num) = crate::arch::arm::oabi_syscall_num(insn) {
+                return Some(num);
+            }
+        }
+        self.registers
+            .get_offset_u64(crate::arch::arm::offsets::R7, self.ctx)
     }
 }
 

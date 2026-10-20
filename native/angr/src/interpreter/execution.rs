@@ -707,7 +707,7 @@ impl<'a> VEXInterpreter<'a> {
     /// makes the sidecar read fail, and answering from the pristine image there
     /// would silently lift the pre-store program. Dirtied pages are therefore
     /// left to the callback, which passes fresh bytes through `byte_string=`.
-    fn native_lift_source_bytes(&self, addr: u64) -> Option<Vec<u8>> {
+    pub(super) fn native_lift_source_bytes(&self, addr: u64) -> Option<Vec<u8>> {
         if let Some(rust_mem) = self.rust_memory.as_ref()
             && let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, VEX_MAX_BYTES)
             && !bytes.is_empty()

@@ -26,3 +26,15 @@ fn test_neon_q_and_d_registers() {
         assert_eq!(arch.register_size(&q), Some(16));
     }
 }
+
+/// `svc #0x9000NN` is OABI syscall NN; the bounds are exclusive as in
+/// `SimCCARMLinuxSyscall.syscall_num`, and an EABI `svc #0` has none
+/// (angr-mx00p.58).
+#[test]
+fn oabi_syscall_num_decodes_the_immediate() {
+    assert_eq!(super::oabi_syscall_num(0xEF90_0001), Some(1));
+    assert_eq!(super::oabi_syscall_num(0xEF90_00F8), Some(0xF8));
+    assert_eq!(super::oabi_syscall_num(0xEF00_0000), None);
+    assert_eq!(super::oabi_syscall_num(0xEF90_0000), None);
+    assert_eq!(super::oabi_syscall_num(0xEF90_FFFF), None);
+}
