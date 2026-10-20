@@ -22,7 +22,8 @@
 //! | `value_ops.rs` | Slice .2: arithmetic, bitwise, shift/rotate, comparison and structural (`extract` / `concat` / `reverse` / extend) ops, and the construction-time canonicalization rules they run. |
 //! | `value_clarirs.rs` | `RustBV::to_clarirs`: the clarirs term a value denotes, with the Bool and bitcount encodings its Z3 lowering uses. |
 //! | `value_shape.rs` | `RustBV::node`: the op and operands of a compound value, read off a clarirs `Ast` term in `BVOp` vocabulary, plus `leaf_var`. |
-//! | `value_z3.rs` | Z3 lowering — `to_z3_ast*` / `to_z3_bool*`, through `claripy_bridge::z3_lower` with the per-value memo. **(z3)** |
+//! | `value_z3.rs` | Z3 lowering — `to_z3_ast*` / `to_z3_bool*`, through `z3_lower` with the per-value memo. **(z3)** |
+//! | `z3_lower.rs` | Lowering a clarirs `AstRef` into the thread-local Z3 context (`lower` / `lower_bv` / `lower_bool`), with the per-thread node cache and `LowerError`. `claripy_bridge::lower` is its PyO3 face. **(z3)** |
 //! | `bv_concrete.rs` | Z3-independent concrete folds over raw `u128`. Deliberately Z3-free so concrete paths still build with no z3. |
 //! | `bv_codec.rs` | Codec between concrete values and Z3 BV constants (`context.rs` slice 5). **(z3)** |
 //! | `bv_chunk.rs` | The `<= 16`-byte chunking loop every memory entry point needs to move a `&[u8]` through `RustBV::Concrete`. |
@@ -98,6 +99,7 @@ mod value_ops;
 mod value_shape;
 mod value_z3;
 mod width_guards;
+pub(crate) mod z3_lower;
 
 pub use bv_chunk::{
     MAX_CONCRETE_CHUNK, MAX_CONCRETE_LOAD_BYTES, check_concrete_load_size,

@@ -14,7 +14,7 @@
 //! The import keeps no cache: it walks the claripy AST's clarirs nodes, and
 //! repeated imports of a node build the same interned terms (measured as no
 //! slower than the former claripy-hash `AST_CACHE`, angr-mx00p.14). The one
-//! memo in the bridge is `z3_lower`'s, which holds a node's Z3 lowering only
+//! memo here is `symbolic::z3_lower`'s, which holds a node's Z3 lowering only
 //! while the node lives.
 //!
 //! ## Python-side counterparts
@@ -49,11 +49,11 @@ use pyo3::prelude::*;
 
 mod export;
 mod import;
-mod z3_lower;
+mod lower;
 
 pub(crate) use export::*;
 pub(crate) use import::*;
-pub(crate) use z3_lower::{lower_bool, lower_bv, lower_claripy_bool};
+pub(crate) use lower::lower_claripy_bool;
 
 /// The claripy Python module (clarirs, built into this extension).
 ///

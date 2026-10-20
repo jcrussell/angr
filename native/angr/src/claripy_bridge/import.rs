@@ -173,7 +173,7 @@ pub(crate) fn claripy_to_rustbv(
 /// smaller measured per-frame footprint is dominated by the padding above, so
 /// the two bounds are meant to move together. Revising the calibration here
 /// revises both; re-check that dominance claim in `export.rs` when you do.
-pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
+pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = crate::symbolic::z3_lower::MAX_LOWER_DEPTH;
 
 /// Depth-guarded recursive implementation of [`claripy_to_rustbv`]. See that
 /// function's doc comment for the public contract; see

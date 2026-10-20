@@ -18,7 +18,7 @@
 //! constraint binds the same Z3 constants as the engine's own terms.
 //!
 //! Strings and the VSA ops (`Union` / `Intersection` / `Widen`) are refused
-//! with [`BridgeError::UnsupportedOp`]; callers treat that like any other
+//! with [`LowerError::UnsupportedOp`]; callers treat that like any other
 //! failed lowering and fall back to `claripy_to_rustbv`.
 //!
 //! Lowerings persist per thread in [`LOWERED`], keyed by node, so lowering a
@@ -35,47 +35,43 @@ use std::ffi::CString;
 use std::sync::{Arc, Weak};
 
 use clarirs_core::prelude::*;
-use pyo3::prelude::*;
 use z3_sys::*;
 
 use z3::ast::{Ast, Dynamic};
 
-use crate::claripy::ast::base::Base;
-
-use super::BridgeError;
-use super::import::MAX_IMPORT_RECURSION_DEPTH;
-
-/// Lower the clarirs AST behind a Python claripy object.
-///
-/// `Err(TypeMismatch)` when `obj` is not a claripy AST of *this* extension's
-/// type — notably under `cargo test`, where the embedded interpreter imports
-/// the installed `angr.rustylib`, whose `Base` is a different type object.
-pub(crate) fn lower_claripy_ast(obj: &Bound<'_, PyAny>) -> Result<Dynamic, BridgeError> {
-    let base = obj
-        .cast::<Base>()
-        .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
-    lower(&base.get().ast())
+/// Why a clarirs term could not be lowered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LowerError {
+    /// An op with no Z3 counterpart here (strings, the VSA ops).
+    UnsupportedOp(String),
+    /// Malformed operands for an op.
+    InvalidArgs(String),
+    /// A term deeper than [`MAX_LOWER_DEPTH`].
+    RecursionLimit(String),
 }
 
-/// Lower the clarirs AST behind a Python claripy object to a Z3 Bool, the
-/// form a constraint is asserted in.
-///
-/// A lowering of any other sort is `Err` rather than a mis-sorted `Bool`:
-/// asserting a non-Bool trips Z3's `CHECK_FORMULA` sort guard, which — under
-/// the engine's no-op error handler — drops the constraint silently while the
-/// caller sees success (angr-d01qu, angr-mx00p.41). A caller wanting a BV
-/// treated as a truthiness test lowers it through `claripy_to_rustbv` instead.
-pub(crate) fn lower_claripy_bool(obj: &Bound<'_, PyAny>) -> Result<z3::ast::Bool, BridgeError> {
-    expect_bool(lower_claripy_ast(obj)?)
+impl std::fmt::Display for LowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LowerError::UnsupportedOp(m) => write!(f, "unsupported operation: {m}"),
+            LowerError::InvalidArgs(m) => write!(f, "invalid arguments: {m}"),
+            LowerError::RecursionLimit(m) => write!(f, "recursion limit: {m}"),
+        }
+    }
 }
+
+/// Deepest term [`lower`] accepts. The claripy import walk shares this budget
+/// (`claripy_bridge::import::MAX_LOWER_DEPTH`, which documents the
+/// calibration, angr-2a3i9).
+pub(crate) const MAX_LOWER_DEPTH: u32 = 4096;
 
 /// Lower a clarirs AST, sharing the lowering of repeated subtrees.
-pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Dynamic, BridgeError> {
+pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Dynamic, LowerError> {
     // `depth` is cached on every node, so this bounds the recursion below
     // before it starts (same budget as the claripy import walk, angr-2a3i9).
-    if ast.depth() > MAX_IMPORT_RECURSION_DEPTH {
-        return Err(BridgeError::RecursionLimit(format!(
-            "z3 lowering: AST depth {} exceeds {MAX_IMPORT_RECURSION_DEPTH}",
+    if ast.depth() > MAX_LOWER_DEPTH {
+        return Err(LowerError::RecursionLimit(format!(
+            "z3 lowering: AST depth {} exceeds {MAX_LOWER_DEPTH}",
             ast.depth()
         )));
     }
@@ -135,7 +131,7 @@ impl LoweredCache {
 
 /// Lower a bitvector-sorted clarirs AST to a z3-rs `BV`, the form a
 /// [`RustBV::Ast`](crate::symbolic::RustBV::Ast) term takes in the solver.
-pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, BridgeError> {
+pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, LowerError> {
     let lowered = lower(ast)?;
     lowered
         .as_bv()
@@ -150,12 +146,12 @@ pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, BridgeError
 }
 
 /// Lower a Bool-sorted clarirs AST to a z3-rs `Bool`.
-pub(crate) fn lower_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, BridgeError> {
+pub(crate) fn lower_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, LowerError> {
     expect_bool(lower(ast)?)
 }
 
 /// `lowered` as a `Bool`, or `Err` naming its actual sort.
-fn expect_bool(lowered: Dynamic) -> Result<z3::ast::Bool, BridgeError> {
+pub(crate) fn expect_bool(lowered: Dynamic) -> Result<z3::ast::Bool, LowerError> {
     lowered.as_bool().ok_or_else(|| {
         conversion(format!(
             "expected a Bool lowering, got {:?}",
@@ -171,8 +167,8 @@ struct Lowerer<'a> {
     cache: &'a mut LoweredCache,
 }
 
-fn conversion(msg: impl Into<String>) -> BridgeError {
-    BridgeError::InvalidArgs(msg.into())
+fn conversion(msg: impl Into<String>) -> LowerError {
+    LowerError::InvalidArgs(msg.into())
 }
 
 impl Lowerer<'_> {
@@ -183,21 +179,21 @@ impl Lowerer<'_> {
     /// Take ownership of a freshly built term: `Z3_mk_*` returns it with
     /// refcount 0, and `Dynamic::wrap` takes the first reference before any
     /// other Z3 call can run.
-    fn own(&self, raw: Option<Z3_ast>) -> Result<Dynamic, BridgeError> {
+    fn own(&self, raw: Option<Z3_ast>) -> Result<Dynamic, LowerError> {
         let raw = raw.ok_or_else(|| conversion("Z3 returned a null term"))?;
         // SAFETY: `raw` is non-null and was just returned by a `Z3_mk_*` call
         // on `self.ctx`, with no Z3 call since that could have freed it.
         Ok(unsafe { Dynamic::wrap(self.ctx, raw) })
     }
 
-    fn symbol(&self, name: &str) -> Result<Z3_symbol, BridgeError> {
+    fn symbol(&self, name: &str) -> Result<Z3_symbol, LowerError> {
         let name = CString::new(name).map_err(|e| conversion(e.to_string()))?;
         // SAFETY: `name` outlives the call; Z3 copies the string.
         unsafe { Z3_mk_string_symbol(self.raw_ctx(), name.as_ptr()) }
             .ok_or_else(|| conversion("Z3_mk_string_symbol returned null"))
     }
 
-    fn constant(&self, name: &str, sort: Z3_sort) -> Result<Dynamic, BridgeError> {
+    fn constant(&self, name: &str, sort: Z3_sort) -> Result<Dynamic, LowerError> {
         let sym = self.symbol(name)?;
         // SAFETY: `sym` and `sort` belong to this context.
         self.own(unsafe { Z3_mk_const(self.raw_ctx(), sym, sort) })
@@ -206,7 +202,7 @@ impl Lowerer<'_> {
     /// A bitvector sort. Sorts are not reference-counted here: Z3 keeps the
     /// one returned alive only until the next API call that builds a term,
     /// so build it after every other operand of the call that uses it.
-    fn bv_sort(&self, width: u32) -> Result<Z3_sort, BridgeError> {
+    fn bv_sort(&self, width: u32) -> Result<Z3_sort, LowerError> {
         if width == 0 {
             return Err(conversion("zero-width bitvector"));
         }
@@ -217,13 +213,13 @@ impl Lowerer<'_> {
 
     /// A float sort, alive only until the next term-building Z3 call (see
     /// [`Self::bv_sort`]).
-    fn fp_sort(&self, sort: FSort) -> Result<Z3_sort, BridgeError> {
+    fn fp_sort(&self, sort: FSort) -> Result<Z3_sort, LowerError> {
         // SAFETY: plain sort constructor on a live context.
         unsafe { Z3_mk_fpa_sort(self.raw_ctx(), sort.exponent, sort.mantissa + 1) }
             .ok_or_else(|| conversion("Z3_mk_fpa_sort returned null"))
     }
 
-    fn rounding_mode(&self, rm: FPRM) -> Result<Dynamic, BridgeError> {
+    fn rounding_mode(&self, rm: FPRM) -> Result<Dynamic, LowerError> {
         let c = self.raw_ctx();
         // SAFETY: nullary constructors on a live context.
         self.own(unsafe {
@@ -237,7 +233,7 @@ impl Lowerer<'_> {
         })
     }
 
-    fn numeral(&self, value: &str, sort: Z3_sort) -> Result<Dynamic, BridgeError> {
+    fn numeral(&self, value: &str, sort: Z3_sort) -> Result<Dynamic, LowerError> {
         let value = CString::new(value).map_err(|e| conversion(e.to_string()))?;
         // SAFETY: `value` outlives the call; `sort` belongs to this context.
         self.own(unsafe { Z3_mk_numeral(self.raw_ctx(), value.as_ptr(), sort) })
@@ -249,7 +245,7 @@ impl Lowerer<'_> {
         &self,
         children: &[Dynamic],
         op: unsafe extern "C" fn(Z3_context, Z3_ast, Z3_ast) -> Option<Z3_ast>,
-    ) -> Result<Dynamic, BridgeError> {
+    ) -> Result<Dynamic, LowerError> {
         let (first, rest) = children
             .split_first()
             .ok_or_else(|| conversion("n-ary op with no operands"))?;
@@ -262,7 +258,7 @@ impl Lowerer<'_> {
         Ok(acc)
     }
 
-    fn lower(&mut self, ast: &AstRef<'static>) -> Result<Dynamic, BridgeError> {
+    fn lower(&mut self, ast: &AstRef<'static>) -> Result<Dynamic, LowerError> {
         if let Some(done) = self.cache.get(ast) {
             return Ok(done);
         }
@@ -279,9 +275,9 @@ impl Lowerer<'_> {
 
     /// Build one node from its already-lowered children.
     #[allow(clippy::too_many_lines, reason = "one arm per AstOp variant")]
-    fn node(&self, ast: &AstRef<'static>, ch: &[Dynamic]) -> Result<Dynamic, BridgeError> {
+    fn node(&self, ast: &AstRef<'static>, ch: &[Dynamic]) -> Result<Dynamic, LowerError> {
         let c = self.raw_ctx();
-        let arg = |i: usize| -> Result<Z3_ast, BridgeError> {
+        let arg = |i: usize| -> Result<Z3_ast, LowerError> {
             ch.get(i)
                 .map(Ast::get_z3_ast)
                 .ok_or_else(|| conversion(format!("missing operand {i}")))
@@ -489,7 +485,7 @@ impl Lowerer<'_> {
             | AstOp::Intersection(..)
             | AstOp::Widen(..) => {
                 use crate::claripy::ast::opstring::ToOpString;
-                return Err(BridgeError::UnsupportedOp(ast.to_opstring()));
+                return Err(LowerError::UnsupportedOp(ast.to_opstring()));
             }
         };
         self.own(raw)

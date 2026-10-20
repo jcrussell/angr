@@ -9,7 +9,7 @@
 use clarirs_core::prelude::*;
 use z3::ast::{Ast, BV, Bool};
 
-use super::{BridgeError, lower};
+use super::{LowerError, lower};
 use crate::claripy::ast::GLOBAL_CONTEXT;
 
 fn bvv(value: u64, width: u32) -> AstRef<'static> {
@@ -160,7 +160,7 @@ fn shared_subtrees_lower_once() {
 fn strings_are_refused_not_mislowered() {
     let s = GLOBAL_CONTEXT.strings("lower_s").unwrap();
     let len = GLOBAL_CONTEXT.str_len(s).unwrap();
-    assert!(matches!(lower(&len), Err(BridgeError::UnsupportedOp(_))));
+    assert!(matches!(lower(&len), Err(LowerError::UnsupportedOp(_))));
 }
 
 #[test]

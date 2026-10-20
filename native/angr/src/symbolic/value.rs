@@ -527,7 +527,7 @@ impl RustBV {
             return Ok(RustBV::concrete(v, value.len()));
         }
         let memo = std::cell::RefCell::new(Some(
-            crate::claripy_bridge::lower_bv(&ast)
+            super::z3_lower::lower_bv(&ast)
                 .map_err(|e| ClarirsError::UnsupportedOperation(e.to_string()))?,
         ));
         Ok(RustBV::Ast {

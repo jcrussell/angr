@@ -4,7 +4,7 @@ Z3 contexts in the Rust engine
 The Rust engine solves with its own Z3 contexts, one per thread, through
 the upstream ``z3`` crate. Python never hands it a Z3 pointer: claripy is
 clarirs, so a claripy AST reaching the engine is a clarirs term, and
-``claripy_bridge::z3_lower`` rebuilds it in the calling thread's Z3
+``symbolic::z3_lower`` rebuilds it in the calling thread's Z3
 context (``Context::thread_local()``), memoizing each lowered node while
 the node lives. ``RustSolverContext.eval(...)`` returns plain values that
 Python wraps into ``claripy.BVV``. This page documents the context
@@ -23,7 +23,7 @@ Z3 represents every AST as a ``Z3_ast`` pointer into a parent
 AST it builds in the thread-local context of the thread that built it:
 ``RustBV`` values are clarirs terms with a lazy per-value Z3 memo, and
 claripy ASTs from Python are lowered by
-``native/angr/src/claripy_bridge/z3_lower.rs::lower_claripy_ast`` to a
+``native/angr/src/claripy_bridge/lower.rs::lower_claripy_ast`` to a
 ``z3::ast::Dynamic`` (and, for a constraint, through the sort-checked
 ``lower_claripy_bool``) before ``Z3_solver_assert`` sees them. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
 its own; the two never exchange pointers.

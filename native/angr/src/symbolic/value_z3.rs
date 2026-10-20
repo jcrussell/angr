@@ -62,7 +62,7 @@ impl RustBV {
         reason = "closed-world invariant: an `Ast` is built by `RustBV::from_clarirs`, which lowered the node, or by `from_clarirs_lowerable`, whose node is a subterm of one that was lowered or one `value_clarirs::build_term` built over such terms; lowering is a pure function of the node"
     )]
     fn lower_clarirs(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::BV {
-        crate::claripy_bridge::lower_bv(ast).expect("from_clarirs lowered this node once already")
+        super::z3_lower::lower_bv(ast).expect("from_clarirs lowered this node once already")
     }
 
     /// Convert a 1-bit RustBV to a native Z3 Bool, avoiding ITE wrapping.
@@ -132,7 +132,7 @@ impl RustBV {
     )]
     fn lower_clarirs_bool(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::Bool {
         let cond = super::value_clarirs::bool_of(ast).expect("a 1-bit term has a Bool view");
-        crate::claripy_bridge::lower_bool(&cond).expect("a subterm of a lowered term lowers")
+        super::z3_lower::lower_bool(&cond).expect("a subterm of a lowered term lowers")
     }
 }
 

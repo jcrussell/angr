@@ -342,7 +342,7 @@ cooperate through PyO3:
   (``invariant-symbol-identity-is-by-name``). Construction-time rewrites
   live in ``symbolic/value_ops.rs`` and read operands through
   ``RustBV::node``; terms lower to Z3 through
-  ``claripy_bridge::z3_lower``, which keeps each node's lowering while
+  ``symbolic::z3_lower``, which keeps each node's lowering while
   the node lives. Every op is built by ``RustBV::from_op``; a snapshot
   written with the older ``Symbolic`` / ``Constrained`` / ``Expression``
   arms still decodes, into these two forms.
@@ -2575,7 +2575,7 @@ Where memory accumulates
 * **claripy AST caches** — Python-side, ``WeakValueDictionary`` based;
   trims with GC, no explicit knob.
 * **Rust Z3 lowering memo** — thread-local, keyed on live clarirs nodes
-  (``claripy_bridge/z3_lower.rs``); an entry goes when its node does.
+  (``symbolic/z3_lower.rs``); an entry goes when its node does.
   The claripy import keeps no cache.
 
 Behavior on exhaustion
