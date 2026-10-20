@@ -37,9 +37,9 @@ use super::*;
 /// after that worker's Z3 context is the active thread-local.
 pub struct StateMigrationPayload {
     state_bytes: Vec<u8>,
-    symbolic_pages: HashMap<u64, SharedPyAst>,
-    hook_symbolic_memory: HashMap<u64, (SharedPyAst, u32)>,
-    addr_to_ast: HashMap<u64, (SharedPyAst, u32)>,
+    symbolic_pages: OverlayMap<SharedPyAst>,
+    hook_symbolic_memory: OverlayMap<(SharedPyAst, u32)>,
+    addr_to_ast: OverlayMap<(SharedPyAst, u32)>,
 }
 
 // angr-1ilq.1: the migration transport is `Send` by construction, proven at
@@ -108,9 +108,9 @@ impl StateMigrationPayload {
     pub(crate) fn corrupt_for_test() -> Self {
         Self {
             state_bytes: vec![0xff; 8],
-            symbolic_pages: HashMap::default(),
-            hook_symbolic_memory: HashMap::default(),
-            addr_to_ast: HashMap::default(),
+            symbolic_pages: OverlayMap::default(),
+            hook_symbolic_memory: OverlayMap::default(),
+            addr_to_ast: OverlayMap::default(),
         }
     }
 }

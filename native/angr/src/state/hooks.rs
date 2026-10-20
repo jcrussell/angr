@@ -66,17 +66,17 @@ impl RustSimState {
     }
 
     /// Read-only access to the symbolic-pages map.
-    pub fn symbolic_pages(&self) -> &HashMap<u64, SharedPyAst> {
+    pub fn symbolic_pages(&self) -> &OverlayMap<SharedPyAst> {
         &self.symbolic_pages
     }
 
     /// Read-only access to the hook-symbolic-memory map.
-    pub fn hook_symbolic_memory(&self) -> &HashMap<u64, (SharedPyAst, u32)> {
+    pub fn hook_symbolic_memory(&self) -> &OverlayMap<(SharedPyAst, u32)> {
         &self.hook_symbolic_memory
     }
 
     /// Read-only access to the addr-to-AST map.
-    pub fn addr_to_ast(&self) -> &HashMap<u64, (SharedPyAst, u32)> {
+    pub fn addr_to_ast(&self) -> &OverlayMap<(SharedPyAst, u32)> {
         &self.addr_to_ast
     }
 

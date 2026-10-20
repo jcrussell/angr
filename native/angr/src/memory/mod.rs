@@ -35,6 +35,14 @@ use std::cell::RefCell;
 use im::OrdMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// A persistent hash map for the per-address symbolic side tables. Forking
+/// clones it in O(1) and a write copies only the trie path it touches, so a
+/// fork tree shares the entries its states have in common (a deep
+/// `FxHashMap` clone per fork dominated peak memory on fork-heavy runs;
+/// angr-mx00p.95).
+pub(crate) type SymMap<K, V> =
+    im::HashMap<K, V, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+
 use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
@@ -328,7 +336,7 @@ pub struct SymbolicMemory {
     pages: OrdMap<u64, MemoryPage>,
     /// Symbolic objects (for values that span multiple bytes).
     #[merge_policy = "joint"]
-    symbolic_objects: FxHashMap<Address, RustBV>,
+    symbolic_objects: SymMap<Address, RustBV>,
     /// Default permissions for new pages.
     ///
     /// Merge-invariant: merge arms are fork siblings, which inherit this from
@@ -360,7 +368,7 @@ pub struct SymbolicMemory {
     /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
     /// loading a byte that falls inside a wider symbolic object.
     #[merge_policy = "joint"]
-    symbolic_spans: FxHashMap<Address, (Address, u32)>,
+    symbolic_spans: SymMap<Address, (Address, u32)>,
     /// Multi-cell side table indexed by byte address. A byte is "Multi"
     /// (has an entry here) when a symbolic-address store emitted lazy
     /// alternatives at that cell instead of folding into an ITE chain.
@@ -396,7 +404,7 @@ pub struct SymbolicMemory {
     /// Merged as a union — see the accumulating-sidecar block at the end of
     /// [`Self::merge`].
     #[merge_policy = "joint"]
-    imported_addrs: FxHashMap<Address, RustBV>,
+    imported_addrs: SymMap<Address, RustBV>,
     /// If true, enforce per-page R/W permissions on load and store. Mirrors
     /// angr's STRICT_PAGE_ACCESS option. Default is false to keep existing
     /// callers (which often map all memory as RWX or rely on Python perms)
@@ -476,16 +484,16 @@ impl SymbolicMemory {
     pub fn new(endness: Endness) -> Self {
         SymbolicMemory {
             pages: OrdMap::new(),
-            symbolic_objects: FxHashMap::default(),
+            symbolic_objects: SymMap::default(),
             default_permissions: Permission::RWX,
             endness,
             dirty_pages: FxHashSet::default(),
             lazy_regions: Vec::new(),
-            symbolic_spans: FxHashMap::default(),
+            symbolic_spans: SymMap::default(),
             multi_objects: FxHashMap::default(),
             pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
-            imported_addrs: FxHashMap::default(),
+            imported_addrs: SymMap::default(),
             enforce_permissions: false,
             enforce_nx: false,
             multi_versions: FxHashMap::default(),
@@ -1313,12 +1321,12 @@ impl SymbolicMemory {
         for (k, v) in snap.pages {
             pages.insert(k, v);
         }
-        let symbolic_objects: FxHashMap<Address, RustBV> = snap
+        let symbolic_objects: SymMap<Address, RustBV> = snap
             .symbolic_objects
             .into_iter()
             .map(|(k, v)| (Address::new(k), v))
             .collect();
-        let mut symbolic_spans: FxHashMap<Address, (Address, u32)> = FxHashMap::default();
+        let mut symbolic_spans: SymMap<Address, (Address, u32)> = SymMap::default();
         for (base, bv) in symbolic_objects.iter() {
             let width = bv.width();
             let bytes = width.div_ceil(8);
@@ -1326,7 +1334,7 @@ impl SymbolicMemory {
                 symbolic_spans.insert(Address::new(base.raw() + i as u64), (*base, width));
             }
         }
-        let imported_addrs: FxHashMap<Address, RustBV> = snap
+        let imported_addrs: SymMap<Address, RustBV> = snap
             .imported_addrs
             .into_iter()
             .map(Address::new)

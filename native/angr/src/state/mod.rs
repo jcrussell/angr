@@ -237,6 +237,11 @@ pub struct NativeResumeFrame {
 /// the GIL is not held.
 pub type SharedPyAst = Arc<Py<PyAny>>;
 
+/// A per-state overlay map keyed by guest address. Persistent, so forking a
+/// state clones it in O(1) instead of copying every entry (angr-mx00p.95);
+/// values are `Arc`s, so the shared entries cost nothing per fork.
+pub type OverlayMap<V> = im::HashMap<u64, V, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
@@ -439,21 +444,21 @@ pub struct RustSimState {
     /// See module-level `state-metadata-rust-owned`: Rust owns this map and
     /// its drop decrements the Py-refcounts.
     #[merge_policy = "joint"]
-    symbolic_pages: HashMap<u64, SharedPyAst>,
+    symbolic_pages: OverlayMap<SharedPyAst>,
     /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
     /// Tracks symbolic writes performed inside Python hooks so Rust can replay
     /// them on resume. Cloned on fork.
     ///
     /// See module-level `state-metadata-rust-owned`.
     #[merge_policy = "joint"]
-    hook_symbolic_memory: HashMap<u64, (SharedPyAst, u32)>,
+    hook_symbolic_memory: OverlayMap<(SharedPyAst, u32)>,
     /// Per-state addr -> (AST, byte size) recorded by handle registration so
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
     ///
     /// See module-level `state-metadata-rust-owned`.
     #[merge_policy = "joint"]
-    addr_to_ast: HashMap<u64, (SharedPyAst, u32)>,
+    addr_to_ast: OverlayMap<(SharedPyAst, u32)>,
     /// Most recent symbolic value returned by the time(2) syscall — mirrors
     /// `state.globals['sys_last_time']` in Python's
     /// `procedures/linux_kernel/time.py`. Used to constrain consecutive calls

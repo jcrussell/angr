@@ -24,7 +24,7 @@ pub struct BranchSnapshot {
 /// loops into one implementation means the conflict/insert logic is written —
 /// and tested — exactly once (angr-n0irt.10).
 fn union_overlay<'a, V>(
-    target: &mut HashMap<u64, V>,
+    target: &mut OverlayMap<V>,
     source: impl IntoIterator<Item = (&'a u64, &'a V)>,
     field: &str,
 ) where
@@ -181,9 +181,9 @@ impl RustSimState {
     fn clone_py_metadata(
         &self,
     ) -> (
-        HashMap<u64, SharedPyAst>,
-        HashMap<u64, (SharedPyAst, u32)>,
-        HashMap<u64, (SharedPyAst, u32)>,
+        OverlayMap<SharedPyAst>,
+        OverlayMap<(SharedPyAst, u32)>,
+        OverlayMap<(SharedPyAst, u32)>,
     ) {
         (
             self.symbolic_pages.clone(),

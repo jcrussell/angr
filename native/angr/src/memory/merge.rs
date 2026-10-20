@@ -15,7 +15,7 @@ use rustc_hash::FxHashMap;
 
 use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{PAGE_SIZE, PageIndex};
-use super::{Address, MemoryPage, PendingWrite, SymbolicMemory};
+use super::{Address, MemoryPage, PendingWrite, SymMap, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
@@ -257,8 +257,7 @@ impl SymbolicMemory {
         for (&addr, other_obj) in &other.symbolic_objects {
             let width = other_obj.width();
             let byte_count = u64::from(width / 8);
-            if let std::collections::hash_map::Entry::Vacant(e) = self.symbolic_objects.entry(addr)
-            {
+            if let im::hashmap::Entry::Vacant(e) = self.symbolic_objects.entry(addr) {
                 e.insert(other_obj.clone());
                 // `symbolic_spans` is the *reverse* index: an object wider than
                 // one byte owns an entry per covered byte, not just its base
@@ -411,8 +410,8 @@ impl SymbolicMemory {
         struct would add a type whose only purpose is to be destructured one line later"
     )]
     fn merge_byte_value(
-        symbolic_objects: &FxHashMap<Address, RustBV>,
-        symbolic_spans: &FxHashMap<Address, (Address, u32)>,
+        symbolic_objects: &SymMap<Address, RustBV>,
+        symbolic_spans: &SymMap<Address, (Address, u32)>,
         multi_objects: &FxHashMap<Address, MultiPayload>,
         addr: Address,
         concrete_byte: u8,
@@ -461,8 +460,8 @@ impl SymbolicMemory {
     /// entry, stale span width, out-of-range offset) so the caller can log and
     /// fall back.
     fn symbolic_byte_lane(
-        symbolic_objects: &FxHashMap<Address, RustBV>,
-        symbolic_spans: &FxHashMap<Address, (Address, u32)>,
+        symbolic_objects: &SymMap<Address, RustBV>,
+        symbolic_spans: &SymMap<Address, (Address, u32)>,
         addr: Address,
         endness: Endness,
     ) -> Option<RustBV> {
