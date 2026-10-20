@@ -78,8 +78,7 @@ fn test_switch_push_then_pop() {
 }
 
 /// Switching to the same path twice is a no-op the second time —
-/// the hot-path optimization the BFS-thrashing heuristic in the
-/// parent bead's description depends on.
+/// the hot-path optimization the BFS-thrashing heuristic depends on.
 #[test]
 fn test_switch_same_path_is_hot_noop() {
     let mut lin = SharedLineageSolver::new(make_solver());
@@ -510,7 +509,7 @@ fn test_reset_dismantle_state_for_test_is_narrow() {
 }
 
 /// Per-call overhead of [`tick_and_sample_for_thrash`] (the always-on
-/// run-loop hook) must stay well under the angr-v5ht 0.1ms budget,
+/// run-loop hook) must stay well under a 0.1ms budget (angr-v5ht),
 /// even when the sampler does real work on every sample step. The
 /// hook is invoked once per `run_loop` iteration; a bench at the
 /// 0.1ms ceiling would alone account for a 10% regression at 1000
@@ -613,7 +612,7 @@ fn test_switch_fast_path_does_not_collide_on_different_tails() {
 /// `None` — NOT an `Arc::clone` of the parent's lineage. The Arc-clone
 /// would hand the child a base frozen at some ancestor's mint time,
 /// missing every constraint the parent added since, which leaks
-/// unconstrained SAT solutions (the baby-re `chr()` repro in angr-v5ht).
+/// unconstrained SAT solutions (the baby-re `chr()` repro) (angr-v5ht).
 ///
 /// This is the arm gates (a) and (b) have no coverage for: their guards
 /// are pinned by `context_tests_smtlib2_snapshot::test_fork_skips_mint_when_flag_off`

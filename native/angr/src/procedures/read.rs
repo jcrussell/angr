@@ -128,7 +128,7 @@ crate::declare_proc! {
 ///
 /// This is Python's model for an unknown/empty file: `open` drops a fresh
 /// `SimFile` with symbolic content into `state.fs`, and reading it mints
-/// symbolic bytes. Bouncing instead (the pre-angr-gorvf.15 behavior) merely
+/// symbolic bytes (angr-gorvf.15). Bouncing instead merely
 /// moved the Python round-trip from `open` to `read`, and the natively-opened
 /// fd is not mirrored into Python anyway (angr-8j16), so the bounce had no
 /// Python-side fd to read from.

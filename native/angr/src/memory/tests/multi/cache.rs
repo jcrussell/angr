@@ -1,5 +1,5 @@
 //! Phase 3 (angr-j0n4) and Phase 4.1 (angr-mmdh.1): the per-load and
-//! wider-load Multi-cell collapse caches, plus the angr-1tes invariant that a
+//! wider-load Multi-cell collapse caches, plus the invariant (angr-1tes) that a
 //! concrete overwrite clears the `multi_objects` entry rather than only the
 //! page bitmap bit.
 

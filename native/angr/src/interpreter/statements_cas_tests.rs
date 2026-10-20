@@ -1,5 +1,5 @@
 //! End-to-end `IRStmt::CAS` dispatch tests (extracted from
-//! `statements_tests.rs` by angr-fs8kb.96).
+//! `statements_tests.rs`; angr-fs8kb.96).
 //!
 //! Everything here drives `execute_stmt_with_callbacks` with a real
 //! `IRStmt::CAS` rather than reaching into `execute_cas_stmt`'s helpers, so the

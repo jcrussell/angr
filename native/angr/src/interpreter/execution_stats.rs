@@ -203,11 +203,11 @@ define_execution_stats! {
     /// `CbExecutionError::Op`, which routes the state to the errored
     /// stash. The silent fresh-symbolic synthesis this counter used to
     /// describe is now opt-in only, behind
-    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (off by default since
-    /// angr-oyzvj) — see `vex_bypass_fabricate_count` for that subset.
-    /// Also counts the dispatch-fabricate families (`is_dispatch_fabricate_family`,
-    /// angr-s6miz), which route to Python for concrete args too
-    /// (angr-9ke6b.85).
+    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (off by default; angr-oyzvj) —
+    /// see `vex_bypass_fabricate_count` for that subset.
+    /// Also counts the dispatch-fabricate families (`is_dispatch_fabricate_family`),
+    /// which route to Python for concrete args too
+    /// (angr-s6miz, angr-9ke6b.85).
     python_vex_op_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Unop`.
     python_vex_unop_fallback_count: sum,
@@ -229,8 +229,8 @@ define_execution_stats! {
     /// relation holds per-arm, not in aggregate. Likewise the
     /// no-handler-anywhere arm of `VEXInterpreter::handle_dirty_call`
     /// (angr-c7xno.44): same gate, same counter, no
-    /// `python_vex_op_fallback_count` bump. Since
-    /// angr-oyzvj this BYPASS is OPT-IN — it fires only when
+    /// `python_vex_op_fallback_count` bump. This
+    /// BYPASS is OPT-IN (angr-oyzvj) — it fires only when
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` is set; by default the symbolic arm
     /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless
     /// the escape hatch is enabled. The dispatch-fabricate families

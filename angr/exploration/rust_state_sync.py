@@ -18,7 +18,7 @@ from ._constants import MAX_OVERLAY_SECTION_SIZE, PAGE_MASK, PAGE_SIZE, STACK_SI
 
 # Precomputed all-zero buffers for _sync_extra_python_pages fast-path
 # zero-page detection (memcmp-based instead of any() byte iteration, which
-# dominates per-page cost in mma_howtouse-style workloads — see angr-b58a).
+# dominates per-page cost in mma_howtouse-style workloads; angr-b58a).
 _ZERO_PAGE_BA = bytearray(PAGE_SIZE)
 _ZERO_PAGE_BYTES = bytes(PAGE_SIZE)
 
@@ -645,13 +645,12 @@ class RustStateSyncMixin:
         """
         extra_pages_synced = 0
         # angr-8t45: eager-map all-zero pages too when there aren't many.
-        # angr-9maq made zero pages lazy-only to avoid mma_howtouse blowing
-        # up to 1.9GB (2000+ zero pages per state * 45 short-lived states).
-        # But hackcon2016 has only ~35 zero pages per state, and keeping
-        # them lazy multiplied final-solve Z3 time (root
-        # cause is structural — see angr-8t45 memory). Cap below: if a
-        # state has more all-zero pages than this, keep them all lazy
-        # (mma path); otherwise eager-map (hackcon path).
+        # Zero pages stay lazy when numerous, to keep mma_howtouse from
+        # blowing up in memory (thousands of zero pages per state across many
+        # short-lived states; angr-9maq). But hackcon2016 has only a few dozen
+        # zero pages per state, and keeping them lazy multiplies final-solve
+        # Z3 time. Cap below: if a state has more all-zero pages than this,
+        # keep them all lazy (mma path); otherwise eager-map (hackcon path).
         zero_eager_cap = 200
         # cat-(b) FALLBACK WITH LOSS: outer iteration failed (rare,
         # _pages dict shape mismatch). All non-loader pages skip
@@ -1920,8 +1919,8 @@ class RustStateSyncMixin:
         """Rebuild an UltraPage's symbolic half from Rust's object list in one pass.
 
         angr-gorvf.11: the page carries many symbolic objects on csaw_wyvern
-        (most of them a single byte wide), and even the direct ``page.store``
-        of angr-gorvf.10 pays per-entry overhead on each: the
+        (most of them a single byte wide), and even a direct ``page.store``
+        pays per-entry overhead on each: the
         cooperation generator wraps every entry in a ``SimMemoryObject``, then
         the store re-derives the range it must clear with two ``SortedDict``
         ``irange`` walks.
@@ -1965,8 +1964,8 @@ class RustStateSyncMixin:
         symbolic byte does not get clobbered by a concrete-zero default
         sitting at the same address.
 
-        This is the cache-sync fix from angr-3tek.2 that re-enables
-        NativeRead/NativeWrite: native procs mutate Rust memory but never
+        This cache sync is what NativeRead/NativeWrite rely on (angr-3tek.2):
+        native procs mutate Rust memory but never
         push into the symbolic-page snapshot consumed by
         `_restore_symbolic_pages`, so without this replay a later Python
         SimProc (e.g. strcmp) reads stale concrete-zero bytes.

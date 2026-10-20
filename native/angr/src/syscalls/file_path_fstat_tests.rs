@@ -464,7 +464,7 @@ fn fstat_statbuf_boundary_sweep_never_panics_and_wraps_field_offsets() {
 /// `require_stat_arch` (the handlers' pre-flight guard) and
 /// `write_stat_for_arch` (the dispatcher) both read `STAT_LAYOUT_WRITERS`,
 /// so an arch added to that table reaches all four handlers at once —
-/// the drift angr-6cp06.53 removed. Pins the agreement so a future
+/// no drift between the two (angr-6cp06.53). Pins the agreement so a future
 /// rewrite that re-hand-rolls either side reds here.
 #[test]
 fn require_stat_arch_agrees_with_the_writer_table() {

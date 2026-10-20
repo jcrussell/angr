@@ -1,7 +1,7 @@
 //! Tests for [`super::super::opcode_map`] — VEX opcode string parsing (`parse_opcode`).
 //!
-//! Extracted from the `mod tests` block in `opcode_map.rs` (see
-//! `rust-module-root-split-recipe` bd memory).
+//! Extracted from the `mod tests` block in `opcode_map.rs`
+//! (bd memory `rust-module-root-split-recipe`).
 
 use super::*;
 
@@ -130,7 +130,7 @@ fn test_parse_conversion() {
 fn test_setv128lo64_resolves_to_binop_not_reinterpret() {
     // parse_float runs before parse_vector in parse_opcode, so
     // "Iop_SetV128lo64" must map to the binop variant (upper 64 bits
-    // preserved) — NOT a Reinterpret(I64->V128). Locks in angr-ph300.62.
+    // preserved) — NOT a Reinterpret(I64->V128) (angr-ph300.62).
     assert_eq!(parse_opcode("Iop_SetV128lo64"), IROp::SetV128lo64);
     assert_eq!(parse_opcode("Iop_SetV128lo32"), IROp::SetV128lo32);
 }
@@ -228,7 +228,7 @@ fn test_parse_jumpkind() {
 
 /// Every libVEX `IRJumpKind` tag must parse to a
 /// non-`Boring` variant (angr-sqfj8.111). Guards the whole class rather
-/// than the specific kinds this bead added: a future VEX bump that grows
+/// than specific kinds: a future VEX bump that grows
 /// the C enum should fail here, not silently execute a trap as
 /// fallthrough.
 #[test]
@@ -831,7 +831,7 @@ fn test_parse_perm() {
         assert_eq!(op, IROp::VPerm { elem, count }, "{op_str}");
         assert_eq!(op.result_type(), Some(result), "{op_str} result_type");
     }
-    // Never existed in VEX — the dead string that motivated this bead.
+    // Never existed in VEX.
     assert!(matches!(parse_opcode("Iop_Perm8x32"), IROp::Unmapped(_)));
     // Real, but deliberately unmapped: a triop whose two-table form Python's
     // two-argument `_op_generic_Perm` cannot model either.
@@ -842,9 +842,9 @@ fn test_parse_perm() {
 /// version declares must be either mapped by `parse_opcode` or named in
 /// `KNOWN_UNMAPPED_GROUPS` below with a reason. A new pyvex opcode silently
 /// falling through to `IROp::Unmapped` with no allowlist entry is the
-/// op-coverage-gap shape from angr-9ke6b.160 / angr-sqfj8.113 /
-/// angr-sqfj8.117 — this test exists so the next instance is a hard failure
-/// instead of a coverage gap nobody notices until a state errors on it.
+/// op-coverage-gap shape (angr-9ke6b.160, angr-sqfj8.113, angr-sqfj8.117);
+/// this test exists so the next instance is a hard failure instead of a
+/// coverage gap nobody notices until a state errors on it.
 ///
 /// Ground truth is upstream's `ailment::vexop_names::IROP_NAMES`, the
 /// libVEX `IROp` enum in order, which `ailment::vexop::op_name` (and so the
@@ -876,8 +876,7 @@ fn libvex_iop_names() -> Vec<&'static str> {
 /// `CbExecutionError::Op`, so a state that reaches the op lands in the errored
 /// stash (`RustUnsupportedVexOpError` on the `execute_irsb_for_test` path).
 /// Not a wrong-answer bug, but a coverage gap that the tests below keep from
-/// growing unnoticed — the shape behind angr-9ke6b.160, angr-sqfj8.113 and
-/// angr-sqfj8.117 ("op-coverage-gap"). Grouped the same way `KNOWN_MISSING` groups register
+/// growing unnoticed ("op-coverage-gap"). Grouped the same way `KNOWN_MISSING` groups register
 /// names in `tests/engines/rust/test_arch_offset_parity.py` — one reason per
 /// mnemonic family rather than per opcode, since libVEX enumerates every
 /// width/signedness/lane-count combination of a family as its own tag.
@@ -1050,9 +1049,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "PowerPC \"round to 32-bit precision after the op\" (*F64r32) arithmetic plus adjacent scalar FP helpers (F64toI16S, RSqrtEst5GoodF64, TruncF64asF32, RoundF64toF32, RoundF64toF64_*) — PowerPC-specific FP helper ops, not yet implemented.",
     ),
-    // (The ARM32 VMAXNM/VMINNM group that used to sit here — Iop_MaxNumF32/F64,
-    // Iop_MinNumF32/F64 — was dropped when angr-0bh1z implemented them as
-    // IROp::FMaxNum/FMinNum; test_parse_max_num_min_num pins the mapping.)
     // X87_PREM
     (
         &[
@@ -1203,10 +1199,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "ARM doubling variants of the high-half widening multiply (VQDMULH/VQRDMULH: product doubled, then saturated, with the rounding form adding a half-ULP first) — the plain MulHi family is mapped, these are not yet implemented.",
     ),
-    // (The AVX2_MUL group that used to sit here — Iop_Mul16x16/Mul32x8 — was
-    // dropped in angr-li4ox.1: vec_int_lane_op already gates its concrete fast
-    // path on total_width <= 128, so the widening was a parse-table entry only.
-    // test_parse_vmul_routing pins all 8 shapes.)
     // LANE_SHUFFLE_ODD_EVEN
     (
         &[
@@ -1234,9 +1226,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         "Odd/even-lane deinterleave (CatOddLanes/CatEvenLanes) and interleave (InterleaveOddLanes/InterleaveEvenLanes) vector shuffles — siblings of the already-mapped InterleaveHI/InterleaveLO family; not yet implemented.",
     ),
     // CTZ
-    // (Iop_Clz64x2 used to sit in this group — dropped in angr-li4ox.2:
-    // vec_lane_count is lane-generic, so the widening was a parse-table entry
-    // only. test_parse_cnt_clz_cls_pmul_routing pins the 64x2 shape.)
     (
         &[
             "Iop_Ctz16x8",
@@ -1246,18 +1235,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "NEON Q-reg per-lane count-trailing-zeros — the whole Ctz{8,16,32,64} vector family has no IROp variant; not yet implemented.",
     ),
-    // (The AVG_WIDE group that used to sit here — Iop_Avg64Sx2/64Ux2 and the
-    // AVX2 Iop_Avg8Ux32/16Ux16 — was dropped in angr-li4ox: vec_rounding_avg
-    // is lane-generic, so the widening was a parse-table entry only.
-    // test_parse_avg_routing pins all 12 shapes.)
-    // (The PWADDL_WIDE group that used to sit here — the sole Iop_PwAddL64Ux2
-    // shape — was dropped in angr-li4ox.2: vec_pairwise_add_long is
-    // lane-generic and its 128-bit output lane stays inside the u128 concrete
-    // limit. test_parse_pairwise_routing pins the shape.)
-    // (The QADD_QSUB_AVX2 group that used to sit here — the eight
-    // Iop_{QAdd,QSub}{8S,8U}x32 / {16S,16U}x16 shapes — was dropped in
-    // angr-li4ox.1: vec_int_saturating already gates its concrete fast path on
-    // total_width <= 128. test_parse_vqaddsub_routing pins the V256 tier.)
     // ROL
     (
         &["Iop_Rol16x8", "Iop_Rol32x4", "Iop_Rol64x2", "Iop_Rol8x16"],

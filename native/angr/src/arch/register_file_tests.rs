@@ -3,8 +3,7 @@
 //! and the serde round-trips through [`RegisterFileData`].
 //!
 //! Sibling of `registry_tests.rs`, which holds the [`ALL_ARCHES`] registry and
-//! per-architecture descriptor sweeps. Split out of `mod_tests.rs` in
-//! angr-6cp06.76 along the same seam round 6 (angr-5mnx3.1) used to split
+//! per-architecture descriptor sweeps. The split follows the same seam as
 //! `arch/mod.rs` into `register_file.rs` + `registry.rs`: per that file's own
 //! header, get/put/merge "carry the densest regression history in `arch/`" and
 //! sat interleaved with the unrelated architecture registry.
@@ -117,8 +116,8 @@ fn copy_to_bytes_zeroes_partially_concrete_symbolic_register() {
 /// after `fork()` the child shares the parent's `data` Arc, but the first
 /// concrete write to either side must `Arc::make_mut`-clone so the other
 /// side is unaffected. Mirrors `memory::tests` fork isolation; the
-/// faithfulness gate for angr-6t8z3.1 (CoW must not leak writes across
-/// the parent/child boundary).
+/// faithfulness gate for CoW: it must not leak writes across the
+/// parent/child boundary (angr-6t8z3.1).
 #[test]
 fn test_register_file_fork_cow_isolation() {
     let ctx = SymContext::new_mock();
@@ -385,7 +384,7 @@ fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
     }
     // x86 and amd64 `fpreg` (64 B each) are the two the sweep exists for; if
     // the tables ever stop carrying a wide register the assertions above all
-    // pass vacuously, which would silently retire the angr-0jh0j.1/.2 guard.
+    // pass vacuously, which would silently retire this guard (angr-0jh0j.1/.2).
     assert!(
         covered >= 2,
         "expected at least the two fpreg entries wider than \
@@ -440,7 +439,7 @@ fn merge_width_mismatch_ite_merges_both_paths() {
     );
 }
 
-/// Regression for angr-49v03: the widening merge must not drop an *adjacent*
+/// Regression (angr-49v03): the widening merge must not drop an *adjacent*
 /// overlay of `self`'s. `self` holds two independent byte overlays — `al` at
 /// `rax_off` and `ah` at `rax_off + 1` — while `other` holds a full 64-bit
 /// `rax`. `rax_off` takes the width-mismatch arm and records a widened span of

@@ -74,7 +74,7 @@ impl NativeSimProcedure for NativeReturnUnconstrained {
         // Parity gate (angr-c7xno.61): Python's `ReturnUnconstrained` goes
         // through `SimSolver::Unconstrained`, which returns `BVV(0, bits)`
         // unless `SYMBOLIC_INITIAL_VALUES` is in `state.options`. Minting a
-        // symbol unconditionally is the angr-8mjd regression shape — a
+        // symbol unconditionally is a known regression shape (angr-8mjd) — a
         // symbolic pointer out of a C++-ABI stub feeds null-checks and
         // store/load addresses, forking or paying concretization at each.
         if !state.has_option(crate::state::SYMBOLIC_INITIAL_VALUES) {

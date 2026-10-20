@@ -174,10 +174,10 @@ def _extract_posix_pointer(state, field: str) -> int | None:
 
     ``simos/linux.py::state_entry`` stores these alongside the argv/``KEY=VALUE``
     string table it dumps onto the entry stack; they are the only handle either
-    engine has on ``entry_state(args=..., env=...)`` (angr-6cp06.12 did
-    ``environ`` for the Rust getenv seed bridge, angr-7tmoz the other two for
-    the Python SimProcedures — e.g. ``__libc_start_main`` — that read
-    ``state.posix.argv``). Returns None when the plugin never set the field, or
+    engine has on ``entry_state(args=..., env=...)``: ``environ`` feeds the Rust
+    getenv seed bridge (angr-6cp06.12), and the others feed the Python
+    SimProcedures that read ``state.posix.argv``, e.g. ``__libc_start_main``
+    (angr-7tmoz). Returns None when the plugin never set the field, or
     when it is symbolic — the pickle must stay plain-data, and a symbolic
     pointer is unusable to those consumers anyway.
     """
@@ -192,8 +192,8 @@ def _extract_posix_pointer(state, field: str) -> int | None:
         return int(ptr)
     except Exception:
         # cat-(b) FALLBACK WITH LOSS: an unreadable pointer is cached as absent,
-        # so a warm hit restores that field as None — the pre-angr-6cp06.12
-        # behavior — rather than aborting the cache write.
+        # so a warm hit restores that field as None (as if it were never
+        # persisted) rather than aborting the cache write.
         return None
 
 
@@ -645,8 +645,8 @@ class RustDiskCacheManager:
            falls into the ALL_FILES_EXIST branch and mints a fresh
            symbolic-size SimFile. ``ftell`` then returns an unbounded
            symbolic file size and ``fread`` over-reads, exploding into tens
-           of thousands of fill bytes (asisctffinals2015_license TIMEOUT;
-           see angr-ql3ja).
+           of thousands of fill bytes, e.g. the asisctffinals2015_license
+           TIMEOUT (angr-ql3ja).
         """
         # 4. User-inserted SimFiles can't round-trip through the cached
         # blank_state — disable caching if the filesystem is non-empty.

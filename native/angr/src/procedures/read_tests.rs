@@ -233,7 +233,7 @@ fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u
 
 #[test]
 fn test_read_content_sym_serves_natively() {
-    // angr-0xyq2 Phase 2 counterpart of test_read_empty_content_fd_falls_back:
+    // Counterpart of test_read_empty_content_fd_falls_back (angr-0xyq2 Phase 2):
     // registered symbolic content is served natively (Ok, not a fallback Err).
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);

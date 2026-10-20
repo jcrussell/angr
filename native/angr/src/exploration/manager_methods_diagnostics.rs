@@ -13,7 +13,7 @@
 //!   every live state's assumed-constraint DAG and reports pointer- vs
 //!   structural-identity sharing (angr-zdho).
 //!
-//! Split out of the former `manager_methods_stats` in angr-03vl4.25; the
+//! Split out of the former `manager_methods_stats` (angr-03vl4.25); the
 //! per-exploration counters a reader looking for "stats" usually wants are in
 //! `stats_api`, whose wrappers live in `manager_methods_constraints`
 //! (`stats`, `get_fallback_stats`) and `manager_methods_procedures`
@@ -62,8 +62,8 @@ impl RustExplorationManager {
     /// deterministic across exploration outcomes — no `find`/`avoid` bias),
     /// plus the two buckets of live states that live in NO stash, the ones
     /// parked in `pending_callbacks` and in `pending_parallel_bounces`
-    /// (angr-0jh0j.15, same third-bucket gap `set_max_history` was swept for
-    /// in angr-03vl4.10). A parked state is a real state whose constraints a
+    /// (the same third-bucket gap `set_max_history` was swept for)
+    /// (angr-0jh0j.15, angr-03vl4.10). A parked state is a real state whose constraints a
     /// later step can observe, so omitting it undercounted the census by
     /// however many states a mid-exploration callback or bounce happened to be
     /// holding.

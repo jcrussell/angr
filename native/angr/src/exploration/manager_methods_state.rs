@@ -70,7 +70,7 @@ impl RustExplorationManager {
 
     /// Get the PC of a state in a stash by index.
     ///
-    /// Applies the same angr-4rq7 pc==0 IP fallback as `get_state_pc_by_id` so
+    /// Applies the same pc==0 IP fallback as `get_state_pc_by_id` so
     /// the two accessors agree for a stale-pc forked state (angr-ph300.23).
     #[pyo3(signature = (stash="active", index=0))]
     pub fn get_state_pc(&self, stash: &str, index: usize) -> Option<u64> {
@@ -322,8 +322,8 @@ impl RustExplorationManager {
         self._import_symbolic_memory(py, state_id, addr, ast)
     }
 
-    /// Replace a state's filesystem current working directory (angr-0xyq2
-    /// Phase 3). Python `state.fs._files` keys are cwd-normalized (default
+    /// Replace a state's filesystem current working directory
+    /// (angr-0xyq2 Phase 3). Python `state.fs._files` keys are cwd-normalized (default
     /// `/home/user`) while the Rust `FileSystem` cwd defaults to `/`, so the
     /// init-time export must push the Python cwd BEFORE registering file
     /// content — otherwise a relative guest `open()` never matches the

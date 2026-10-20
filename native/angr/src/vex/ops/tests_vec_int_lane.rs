@@ -152,7 +152,7 @@ fn test_vec_cmp_gt_signed_symbolic_i32x4() {
 }
 
 // =========================================================================
-// VCmpGT (unsigned) — angr-9ke6b.160
+// VCmpGT (unsigned) (angr-9ke6b.160)
 // =========================================================================
 
 /// NEON `VCGT.U32` / SSE-style unsigned packed greater-than over 4x u32.
@@ -356,7 +356,7 @@ fn test_vec_cmp_avx2_256_bit_i32x8() {
 }
 
 // =========================================================================
-// VMul — the AVX2 256-bit tier angr-li4ox.1 mapped (Iop_Mul16x16/Mul32x8).
+// VMul — the AVX2 256-bit tier (Iop_Mul16x16/Mul32x8; angr-li4ox.1).
 // =========================================================================
 
 /// Parse routing: every mapped `Iop_Mul{N}x{M}` shape lands on `VMul` with the
@@ -472,9 +472,9 @@ impl IntLaneOp for OverArityLaneOp {
 }
 
 /// The concrete fast path must return a typed error rather than index `buf`
-/// out of bounds. Before angr-5mnx3.67 this was only a `debug_assert!`, so a
-/// release build (which is what ships) reached `buf[idx]` and aborted the
-/// process. Mirrors the float-side hardening from angr-j60q0.2.
+/// out of bounds: a `debug_assert!` alone would let a release build (which
+/// is what ships) reach `buf[idx]` and abort the process. Mirrors the
+/// float-side hardening (angr-5mnx3.67, angr-j60q0.2).
 #[test]
 fn test_vec_int_lane_over_arity_returns_error() {
     let ctx = SymContext::new_mock();

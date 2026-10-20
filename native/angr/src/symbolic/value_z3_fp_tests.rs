@@ -3,8 +3,8 @@
 //! `build_fp_arith_rm_cached` / `build_fp_i_to_f_cached` /
 //! `build_fp_f_to_i_cached` / `build_fp_f_to_f_cached` helpers).
 //!
-//! Before angr-c7xno.74 this surface was only covered *transitively*, through
-//! the VEX-op layer (`vex/ops/tests_float_arith.rs` and friends). A regression
+//! These cover this surface directly, not only *transitively* through
+//! the VEX-op layer (`vex/ops/tests_float_arith.rs` and friends) (angr-c7xno.74). A regression
 //! confined to the Z3-emission layer — a swapped operand order inside an
 //! `unsafe { Z3_mk_fpa_* }` call, a wrong `vex_rm_to_z3` selector mapping, a
 //! rounding mode dropped on the way to a builder — would only have been caught
@@ -331,7 +331,7 @@ fn test_fp_round_to_int_symbolic_rm_matches_concrete() {
 // ---------------------------------------------------------------------------
 
 /// `1.0/10.0` under round-toward-zero is one ULP below the RNE result, so a
-/// builder that dropped the rm operand (the angr-c7xno.85 bug shape) fails
+/// builder that dropped the rm operand (angr-c7xno.85) fails
 /// here.
 ///
 /// The witness has to be picked with care: `1/3` is *not* one, because its
@@ -384,7 +384,7 @@ fn test_fp_arith_rm_values_match_plain_ops_under_rne() {
 
 /// `FmaRm`/`FmsRm`: `1.0*1.0 + 1.5*2^-53` sits 1.5 ULP above 1.0, so RNE
 /// rounds up to `1.0 + 2^-52` while RZ truncates back to 1.0. A builder that
-/// ignored the rm operand (the angr-03vl4.30 bug shape) returns the RNE
+/// ignored the rm operand (angr-03vl4.30) returns the RNE
 /// answer for every mode.
 #[test]
 fn test_fp_fma_rm_rounding_is_threaded() {
@@ -602,7 +602,7 @@ fn test_fp_convert_f_to_f_both_directions() {
 
 /// f64 -> f32 narrowing is the rounding-sensitive direction. `1/3` at double
 /// precision sits between two f32 neighbours, so RNE and RZ disagree — the
-/// exact shape `f64_to_f32_rm` silently got wrong in angr-c7xno.85.
+/// exact shape `f64_to_f32_rm` once silently got wrong (angr-c7xno.85).
 #[test]
 fn test_fp_convert_f_to_f_rm_rounding_is_threaded() {
     let ctx = SymContext::new();

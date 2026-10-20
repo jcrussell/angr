@@ -35,7 +35,7 @@ fn test_extract_int_value_above_128_bits_errors() {
     });
 }
 
-/// Regression for angr-c3rd: exporting `And(Eq(x,5), Eq(y,7))` (two
+/// Regression (angr-c3rd): exporting `And(Eq(x,5), Eq(y,7))` (two
 /// Bool-converting operands) must keep BOTH operands. The old (None,None)
 /// arm returned only `args[0]`, silently dropping the second comparison.
 #[test]
@@ -69,7 +69,7 @@ fn test_export_and_of_two_bools_keeps_both_operands() {
     });
 }
 
-/// Regression for angr-c3rd: a non-And/Or/Xor op with one Bool operand
+/// Regression (angr-c3rd): a non-And/Or/Xor op with one Bool operand
 /// (here `Eq(Eq(x,5), BVV(1,1))`) must dispatch through the real op, not
 /// be rebuilt as `__add__`. An `__add__` rebuild yields a BV (length 1);
 /// the correct `__eq__` yields a Bool (length None).
@@ -404,17 +404,17 @@ fn test_import_floordiv_mod_are_unsigned() {
 /// common subexpressions) gets zero benefit from `AST_CACHE` — every node
 /// has a distinct claripy hash — so it recurses to full tree depth in
 /// `claripy_to_rustbv`. Before the depth guard this class of input was the
-/// reachable trigger for the raw-SIGSEGV failure mode described in
-/// angr-2a3i9 (mirroring the real angr-h92bx worker-thread crash, but on the
-/// *unguarded* main thread). Build a chain well past
+/// reachable trigger for a raw-SIGSEGV failure mode (angr-2a3i9), mirroring
+/// the real worker-thread crash (angr-h92bx) but on the
+/// *unguarded* main thread. Build a chain well past
 /// `MAX_IMPORT_RECURSION_DEPTH` and assert a catchable
 /// `BridgeError::RecursionLimit` instead of a crash.
 ///
 /// Runs on an explicit 8 MiB thread to mirror the CPython main-thread stack
-/// the depth guard is calibrated against (angr-2a3i9's target budget) — the
+/// the depth guard is calibrated against — the
 /// default `cargo test` harness thread has a much smaller stack (~2 MiB,
-/// the same undersized default that caused the sibling angr-h92bx
-/// worker-thread crash) and would overflow *before* the ~4096-deep guarded
+/// the same undersized default that caused the worker-thread crash) and
+/// would overflow *before* the ~4096-deep guarded
 /// descent completes, which would fail this test for an unrelated reason.
 #[test]
 fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
@@ -541,7 +541,7 @@ fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
         .unwrap();
 }
 
-/// Regression for angr-9ke6b.38: `BVS(name, 1)` and `BoolS(name)` sharing an
+/// Regression (angr-9ke6b.38): `BVS(name, 1)` and `BoolS(name)` sharing an
 /// explicit name must import to DISTINCT rust ids and export back to their own
 /// claripy AST.
 ///
@@ -598,7 +598,7 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 /// `name_<counter>_<w>`. Re-importing such an AST after a registry miss mints a
 /// Rust leaf named `name_<counter>_<w>`, and because `RustBV::from_parts`
 /// derives the Z3 constant from the NAME, that leaf is a brand-new variable no
-/// existing constraint binds — the angr-izov2 failure mode, silently wrong. The
+/// existing constraint binds — silently wrong (angr-izov2). The
 /// assertions below pin both halves: the exported claripy name is the Rust name,
 /// and a leaf re-minted from that name denotes the same Z3 constant despite
 /// carrying a different `rust_id`.
@@ -654,7 +654,7 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
 /// `is_true` true / false). The invariant that matters in every one of them:
 /// the result is a claripy **Bool**, never the `NotImplemented` singleton —
 /// `claripy.Not()` on a BV returns `NotImplemented` rather than raising, which
-/// is the angr-op0dn.14.4.1 bug the BV branch exists to prevent.
+/// is the bug the BV branch exists to prevent (angr-op0dn.14.4.1).
 #[test]
 fn test_assumed_guard_to_claripy_all_four_branches() {
     pyo3::Python::initialize();

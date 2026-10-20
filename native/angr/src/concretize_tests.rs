@@ -88,8 +88,8 @@ fn test_default_config() {
     assert_eq!(concretizer.write_range_limit, 128); // Match Python default
     assert_eq!(concretizer.max_solutions, 256);
     assert_eq!(concretizer.max_stride_count, 16384);
-    // This is the *only* stride-detection switch (angr-c7xno.5 removed the
-    // disconnected `ExecutionConfig::enable_stride_detection` twin): a caller
+    // This is the *only* stride-detection switch (there is no
+    // `ExecutionConfig::enable_stride_detection` twin) (angr-c7xno.5): a caller
     // that wants stride detection off must clear it here.
     assert!(concretizer.enable_stride_detection);
     assert!(!concretizer.use_approximate);
@@ -460,7 +460,7 @@ fn ranged_addr(ctx: &SymContext, name: &str) -> RustBV {
 
 /// Stride detection off, so `unenumerable` reports `TooLarge` rather than a
 /// `Strided` grid: `[0x1000, 0x103f]` is a stride-1 run, and a grid the
-/// angr-lf108 completeness gate accepts would be a *correct* answer that hides
+/// stride completeness gate accepts would be a *correct* answer that hides
 /// which branch produced it.
 fn no_stride_concretizer() -> AddressConcretizer {
     let mut concretizer = AddressConcretizer::new();

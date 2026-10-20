@@ -224,8 +224,8 @@ mod tests {
 
     /// Round-trip a `<=128`-bit value at a ragged width: build the reference
     /// constant via make_bv_const, extract its bytes, rebuild via
-    /// make_bv_from_bytes, and require identical Z3 numerals. Before the
-    /// angr-ph300.34 fix the rebuilt constant was corrupted for width % 8 != 0.
+    /// make_bv_from_bytes, and require identical Z3 numerals, including for
+    /// width % 8 != 0 (angr-ph300.34).
     fn assert_roundtrip_u128(value: u128, width: u32) {
         let masked = if width >= 128 {
             value

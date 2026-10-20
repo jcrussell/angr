@@ -190,8 +190,8 @@ impl FileSystem {
     /// answering natively from the concrete buffer (size 0), identical to
     /// the pre-feature behavior for natively-opened fds whose writes
     /// bounce. Bouncing them to Python could not work either: natively
-    /// minted fds are not mirrored into Python's fd table (the angr-8j16
-    /// unsynced-fd trade-off). Target workloads (parsers *reading* a
+    /// minted fds are not mirrored into Python's fd table (the
+    /// unsynced-fd trade-off, angr-8j16). Target workloads (parsers *reading* a
     /// symbolic input file) don't write the input file, so this only
     /// bites guests that write their own symbolic input.
     pub fn demote_symbolic_content(&mut self, fd: u32) -> bool {

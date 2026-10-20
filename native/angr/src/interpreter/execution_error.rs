@@ -31,8 +31,8 @@ pub(crate) const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 /// substring in `PythonVEXFallback` reasons and bumps
 /// `vecret_gsptr_fallback_count` so we can measure how often the corpus
 /// actually exercises these vector-call/global-state pointer holders.
-/// See bd `angr-2iow` — prevalence drives whether to implement natively or
-/// document as a corpus-absent limitation.
+/// Prevalence drives whether to implement natively or document as a
+/// corpus-absent limitation (angr-2iow).
 pub(crate) const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
 
 /// Reason marker for the dispatch-fabricate binop families
@@ -40,7 +40,7 @@ pub(crate) const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
 /// concrete IROp but have no native dispatch arm, so `VEXOps::binop` returns
 /// `OpError::NotBinary`. Rather than fabricate a wrong fresh symbolic
 /// (`eval_binop`'s BYPASS arm), `eval_binop` routes them to Python's VEX engine
-/// — deterministic ops Python models exactly. See bd `angr-s6miz` and the
+/// — deterministic ops Python models exactly (angr-s6miz). See the
 /// "Parse-succeeds / dispatch-fabricates (silent BYPASS)" section of
 /// `docs/extending-angr/rust_vex_ops.rst`.
 pub(crate) const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";

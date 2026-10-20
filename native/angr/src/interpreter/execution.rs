@@ -75,9 +75,9 @@ impl<'a> VEXInterpreter<'a> {
     /// right past an address-based find/avoid target and the step-boundary
     /// filter in `run_loop` would only ever observe the final pc. This mirrors
     /// the `steps_limit = 1` guard that already exists for *callable* find/avoid
-    /// predicates (see `stepping.rs`). angr-027h: CADET easter-egg find at
+    /// predicates (see `stepping.rs`). Without it a CADET easter-egg find at
     /// 0x804833E was silently skipped because the chain ran on to the
-    /// overflow-corrupted ret and went unconstrained.
+    /// overflow-corrupted ret and went unconstrained (angr-027h).
     ///
     /// `block_granular` (angr-bmyx) generalizes that: when `true`, the chain
     /// breaks at *every* block boundary, not just at `stop_addrs`, so each call

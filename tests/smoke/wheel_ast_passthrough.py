@@ -37,9 +37,8 @@ def check_ast_passthrough() -> None:
     sharing one ``libz3.so`` — which is exactly the failure the wheel's
     ``--exclude libz3.so`` repair step is designed to prevent.
     """
-    from angr.rustylib.vex_engine import RustSolverContext
-
     from angr import claripy
+    from angr.rustylib.vex_engine import RustSolverContext
 
     # Mint an AST in claripy's Z3 backend...
     x = claripy.BVS("x", 32)

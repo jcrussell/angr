@@ -247,7 +247,7 @@ const CANONICAL_MIPS32: &[RegEntry] = &[
     // FCCR/FEXR/FENR on FCSR. Canonical rather than aliased because no other
     // canonical entry covers these bytes, and CANONICAL is what
     // `register_names` is derived from — the gate on both directions of the Python boundary
-    // (angr-n2556, same class as ARM/ARM64's VFP file in angr-l8kfw). The
+    // (same class as ARM/ARM64's VFP file) (angr-n2556, angr-l8kfw). The
     // `$fN` spellings stay in ALIASES: exactly one spelling per offset may be
     // canonical or `register_name` picks between them arbitrarily.
     ("f0", offsets32::F0, 8),

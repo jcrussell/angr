@@ -1,5 +1,5 @@
-//! angr-op0dn.11.3 — acceptance tests for the shared-prefix-aware
-//! `SymContext::merge` (`snapshot_fork_ops.rs`).
+//! Acceptance tests for the shared-prefix-aware `SymContext::merge`
+//! (`snapshot_fork_ops.rs`) (angr-op0dn.11.3).
 //!
 //! The S5b spike (`merge_shape_spike.rs`) prototyped the CoW-cheap merge in a
 //! throwaway `cow_merge` helper and proved feasibility. These tests exercise
@@ -283,7 +283,7 @@ fn test_snapshot_roundtrips_lineage_flags() {
 }
 
 // =============================================================================
-// angr-9ke6b.139 — `assumed_constraints` shared-prefix dedup
+// `assumed_constraints` shared-prefix dedup (angr-9ke6b.139)
 // =============================================================================
 
 /// ACCEPTANCE: on a diamond whose arms hold the SAME frozen

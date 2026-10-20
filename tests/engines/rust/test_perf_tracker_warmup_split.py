@@ -5,14 +5,13 @@
 crossing, so a bench with a single crossing does not report its one-time
 warmup (lazy imports, page-cache fill) as per-crossing steady-state cost.
 
-Regression coverage for angr-zi35f.3: the gate used to key off
-``callback_simprocedure_count``, which the fast paths in
+The gate must not key off ``callback_simprocedure_count``: the fast paths in
 rust_callback_dispatch.py (internal passthrough, stale-hook skip, deadend fast
-path) bump via ``record_simprocedure_call`` *without* recording any phase. A
-fast-path bounce firing before the first real crossing therefore closed the
-warmup window early and folded the real warmup into steady-state totals. The
-gate now counts phase-recording crossings independently, so fast paths no
-longer perturb it. Pure-Python, no Rust manager needed.
+path) bump it via ``record_simprocedure_call`` *without* recording any phase,
+so a fast-path bounce firing before the first real crossing would close the
+warmup window early and fold the real warmup into steady-state totals. The
+gate counts phase-recording crossings independently, so fast paths do not
+perturb it (angr-zi35f.3). Pure-Python, no Rust manager needed.
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ def test_second_crossing_does_not_bank_first_twins():
 
 
 def test_fast_path_before_first_crossing_does_not_close_window():
-    """The core angr-zi35f.3 regression: a fast-path bounce that only calls
+    """The core regression: a fast-path bounce that only calls
     record_simprocedure_call must not consume the warmup window."""
     t = PerformanceTracker()
     # Three fast-path bounces fire first (deadend / passthrough / stale hook).

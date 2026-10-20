@@ -10,8 +10,8 @@ use crate::vex::VexArch;
 ///
 /// Name mirrors archinfo's `ArchARM` / the VEX `Ijk`/guest-state spelling, and
 /// is matched against `archinfo` arch names elsewhere in `arch::mod`, so it
-/// keeps the all-caps form. (Only visible to clippy since angr-9ke6b.214 made
-/// `arch` a `pub(crate)` module — style lints skip exported items.)
+/// keeps the all-caps form. (Visible to clippy because `arch` is a
+/// `pub(crate)` module — style lints skip exported items.)
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ARM;

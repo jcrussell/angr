@@ -3,9 +3,8 @@ libVEX FFI native lifting
 
 .. note::
 
-   **Status: shipped and on by default** (feasibility
-   ``angr-z087y``, default flip ``angr-3trr7``, runtime binding
-   ``angr-mx00p.33``). This page keeps the argument for why binding pyvex's
+   **Status: shipped and on by default** (angr-z087y feasibility, angr-3trr7 flip, angr-mx00p.33 binding).
+   This page keeps the argument for why binding pyvex's
    own libVEX is parity-safe, how the binding is made, where the native lifter
    gets its bytes, how to run the parity tests, and the hazards of the
    default-on path.
@@ -59,8 +58,8 @@ Why binding pyvex's libVEX is parity-safe
 Native lift stands in for the callback only where the callback would be a
 plain libVEX lift. ``_native_lift_settings`` in ``rust_manager.py`` leaves it
 off when libVEX is not the arch's first pyvex lifter, a pyvex postprocessor is
-registered, the engine overrides ``lift_vex``, or ``kb.patches`` is non-empty
-(``angr-mx00p.46``). Per block, ``try_native_lift`` falls back to the callback
+registered, the engine overrides ``lift_vex``, or ``kb.patches`` is non-empty (``angr-mx00p.46``).
+Per block, ``try_native_lift`` falls back to the callback
 for a Thumb address and for a block libVEX ends in ``Ijk_NoDecode``: pyvex
 hands the rest of such a block to its per-arch Python lifters, the
 "Spotters" (``angr-mx00p.43``).
@@ -126,8 +125,8 @@ Default-on
 ----------
 
 ``RustExplorationManager(use_native_lift=...)`` defaults to **True**
-(``angr-op0dn.2.2``) on every arch the engine runs (``angr-mx00p.33``
-lifted the earlier AMD64-only gate). ``RustExplorationManager.__init__`` in
+(``angr-op0dn.2.2``) on every arch the engine runs (``angr-mx00p.33``).
+``RustExplorationManager.__init__`` in
 ``rust_manager.py`` calls ``set_native_lift(project.arch, ...)`` unless
 ``_native_lift_settings`` finds the callback would not be a plain libVEX lift.
 
@@ -138,7 +137,7 @@ pyvex's libVEX is parity-safe*), so the lifted ``IRSB`` and the
 to the pyvex callback. What it buys is less GIL-held work per cold
 block — lift-warmup-heavy binaries get faster, and parallel warmup loses
 a serialization point even where single-threaded wall time does not
-move. The per-bench evidence is on ``angr-op0dn.2.2``.
+move (``angr-op0dn.2.2``).
 
 Where native lift gets its bytes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

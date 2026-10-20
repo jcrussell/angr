@@ -49,9 +49,9 @@ pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
     scalar_arms!(op_str; "Iop_Min"  => VFMinS  { "32F0x4" => F32, "64F0x2" => F64 });
 
     // Packed (whole-vector) float ops — SSE / AVX / NEON.
-    // The 32Fx2 shape is the ARM NEON D-reg 2-lane form (VADD.F32 &c.). It was
-    // missing from Add/Sub/Mul/Min/Max until angr-sqfj8.114 even though the
-    // evaluator is generic over (elem, count). Div and Sqrt have no 32Fx2 arm
+    // The 32Fx2 shape is the ARM NEON D-reg 2-lane form (VADD.F32 &c.), mapped
+    // for Add/Sub/Mul/Min/Max since the evaluator is generic over (elem, count)
+    // (angr-sqfj8.114). Div and Sqrt have no 32Fx2 arm
     // because VEX declares no `Iop_Div32Fx2`/`Iop_Sqrt32Fx2`.
     //
     // Abs/Neg have their own shape set (angr-sqfj8.115): the header declares
@@ -235,11 +235,9 @@ pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
 /// against libVEX any more: they are an internal token that only has to
 /// agree with the `IOP_*` consts in `transcendentals.rs`.
 ///
-/// Between angr-h0ur (which deleted the native-lift feature, the last
-/// caller of the numeric `parse_opcode_from_u32`) and angr-9ke6b.233,
-/// nothing constructed `IROp::Raw` at all, so every one of these opcodes
-/// fell through to `IROp::Unmapped` and the libm paths were dead outside
-/// their own unit tests.
+/// Without this function nothing constructs `IROp::Raw`, so every one of
+/// these opcodes would fall through to `IROp::Unmapped` and the libm paths
+/// would be dead outside their own unit tests (angr-h0ur, angr-9ke6b.233).
 pub(super) fn parse_transcendental(op_str: &str) -> Option<IROp> {
     use super::transcendentals as tr;
     let tag = match op_str {

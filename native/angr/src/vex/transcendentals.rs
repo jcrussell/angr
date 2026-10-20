@@ -22,7 +22,7 @@
 //! the sampled value(s) with hard constraints (so the path stays
 //! consistent), and the concrete f64 result is returned.
 //!
-//! Coverage (bd `angr-i5lj.1` + `angr-i5lj.2`):
+//! Coverage (angr-i5lj.1, angr-i5lj.2):
 //! * binop: `Iop_SinF64`, `Iop_CosF64`, `Iop_TanF64`, `Iop_2xm1F64`
 //! * triop: `Iop_AtanF64`, `Iop_Yl2xF64`, `Iop_Yl2xp1F64`, `Iop_ScaleF64`
 //!
@@ -36,10 +36,8 @@
 //! * Option 3 — Pure-symbolic via a Z3 UF with monotonicity / range
 //!   axioms: expensive, brittle, and no current benchmark routes a
 //!   symbolic path through these ops (sokohashv2 hooks them out at the
-//!   test driver). Tracked by closed bd `angr-9l1y`, whose recorded
-//!   re-open trigger is exactly this revisit condition: a new benchmark
-//!   or test that actually invokes one of these ops with a symbolic
-//!   operand.
+//!   test driver). Revisit when a new benchmark or test actually invokes
+//!   one of these ops with a symbolic operand (angr-9l1y).
 //!
 //! `Iop_RecpExpF64`/`Iop_RecpExpF32` (ARM AArch64 FRECPX) are NOT in
 //! this fallback — they have a closed-form exponent-only implementation
@@ -62,9 +60,9 @@
 //! unchanged to those two.
 //!
 //! Opcode values: libvex_ir.h Iop_* enum, base 0x1400, validated against
-//! pyvex.const.enums_to_ints. Since angr-9ke6b.233 the only
-//! producer is the *string* router `parse_transcendental`, so these are
-//! internal tags — they no longer have to track libVEX renumbering, they
+//! pyvex.const.enums_to_ints. The only producer is the *string* router
+//! `parse_transcendental` (angr-9ke6b.233), so these are
+//! internal tags — they do not have to track libVEX renumbering, they
 //! only have to stay distinct and agree with that router.
 
 use crate::symbolic::{RustBV, SymContext};

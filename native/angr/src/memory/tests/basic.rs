@@ -208,7 +208,7 @@ fn test_zero_size_access_is_rejected_not_looped() {
 
 #[test]
 fn test_oversize_access_is_rejected_not_width_wrapped() {
-    // angr-0jh0j.35, the upper-bound sibling of the zero-size test above: the
+    // The upper-bound sibling of the zero-size test above (angr-0jh0j.35): the
     // load family computes its result width as `size * 8` in u32, which wraps
     // in release past `MAX_ACCESS_BYTES` (u32::MAX / 8). `size == 1 << 29`
     // wraps to width 0 — a BV Z3 cannot represent — and `size * 8 - 1` in the
@@ -695,7 +695,7 @@ fn end_page_helpers_boundary_sweep_matches_checked_add_reference() {
                 );
             } else {
                 match addr.checked_add(size - 1) {
-                    // `MemoryError` has no `PartialEq` (angr-irwe `#[non_exhaustive]`),
+                    // `MemoryError` has no `PartialEq` (it is `#[non_exhaustive]`),
                     // so unwrap the `Ok` payload rather than `assert_eq!`-ing the
                     // whole `Result`.
                     Some(last) => match inclusive {

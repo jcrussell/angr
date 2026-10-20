@@ -4,8 +4,8 @@
 //! common locking primitives are pure no-ops that report success. These mirror
 //! angr's Python `pthread_mutex_lock` / `pthread_mutex_unlock` SimProcedures
 //! (both `return 0`), eliminating a Python fallback round-trip per call on
-//! lock-heavy real binaries (measured on the bounded xmllint_getenv slice —
-//! see bd memory T2-MEASURE / angr-11djq.4).
+//! lock-heavy real binaries, as measured on the bounded xmllint_getenv
+//! slice (angr-11djq.4).
 //!
 //! The mutex pointer argument is declared `bv` (cloned, never inspected) so a
 //! symbolic pointer does NOT trigger a Python fallback — it is ignored either
@@ -13,7 +13,7 @@
 //! convention's return register, consistent with the ctype procedures.
 //!
 //! `pthread_once` IS implemented natively below via the sub-call mechanism
-//! (`ProcOutcome::CallAndResume`, bead angr-5gf0s / xxukz). NOT implemented
+//! (`ProcOutcome::CallAndResume`; angr-5gf0s). NOT implemented
 //! natively: `pthread_create` (spawns a symbolic branch); it correctly falls
 //! through to its Python SimProcedure.
 
@@ -103,7 +103,7 @@ impl NativeSimProcedure for NativePthreadOnce {
         // Guard-before-mutate: the sub-call setup writes the resume sentinel to
         // [sp], so it needs a concrete SP. Bail *before* writing the guard bit —
         // otherwise a symbolic-SP fallback to Python would leave the bit set and
-        // Python would skip `func` entirely (bead xxukz correctness note).
+        // Python would skip `func` entirely.
         if state.get_sp().as_u64().is_none() {
             return Err(ProcedureError::SymbolicArgument(
                 "pthread_once: symbolic SP".to_string(),

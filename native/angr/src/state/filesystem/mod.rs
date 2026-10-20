@@ -13,10 +13,9 @@
 //! - [`persist`] — the serde shadow form.
 //!
 //! The concrete, Z3-free unit tests for all of the above live in this
-//! directory too, as the `tests` submodule (`state/filesystem/tests.rs`) —
-//! moved here from `state/filesystem_tests.rs` in angr-5mnx3.41 so its name no
-//! longer collides with the `RustSimState`-level `state/tests/filesystem_*.rs`
-//! trio.
+//! directory too, as the `tests` submodule (`state/filesystem/tests.rs`),
+//! whose name does not collide with the `RustSimState`-level
+//! `state/tests/filesystem_*.rs` trio (angr-5mnx3.41).
 
 use super::*;
 

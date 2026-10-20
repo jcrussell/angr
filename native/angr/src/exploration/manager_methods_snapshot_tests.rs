@@ -79,7 +79,7 @@ fn snapshot_round_trip_restores_stashes_and_keeps_manager_config() {
     });
 }
 
-/// The angr-ph300.21 half of the contract: everything belonging to the
+/// The discard half of the contract (angr-ph300.21): everything belonging to the
 /// PRE-restore world is dropped. A surviving pending callback could resume a
 /// state from the discarded exploration, and a surviving parked bounce would
 /// be flushed into the freshly restored stashes by the next `run()`.
@@ -161,7 +161,7 @@ fn rejected_envelope_leaves_the_manager_untouched() {
     });
 }
 
-/// angr-op0dn.13.6's finalize-then-capture contract, serial half: a state
+/// The finalize-then-capture contract, serial half (angr-op0dn.13.6): a state
 /// parked as a pending parallel bounce lives in NO stash, so dumping without
 /// flushing first would silently truncate the frontier. `dump_snapshot_bytes`
 /// flushes into ACTIVE, and the flushed state must therefore appear in the

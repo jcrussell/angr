@@ -131,7 +131,7 @@ pub(crate) fn symbol_counter(prefix: &'static str) -> u64 {
 ///
 /// Errors trigger fallback to Python SimProcedure handling.
 ///
-/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[non_exhaustive]` (angr-irwe): minor versions may add new
 /// variants; intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
@@ -172,7 +172,7 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Proc
 ///
 /// - the error variant is always [`ProcedureError::MaxIterations`] — never
 ///   `Other(format!(...))`, which buries the same condition in prose (the
-///   `malloc`/`calloc`/`memalign` family did exactly that before angr-12jjk.24);
+///   `malloc`/`calloc`/`memalign` family once did exactly that, angr-12jjk.24);
 /// - the payload is the **offending value** `n`, not the cap. The cap is a
 ///   compile-time constant a reader can look up; `n` is the part of the
 ///   diagnostic that isn't already in the source.
@@ -195,9 +195,9 @@ pub(crate) fn check_max(n: u64, max: usize) -> Result<(), ProcedureError> {
 /// a byte count, or an errno-style `-1` widened to the ABI return register.
 /// Funnelling them through one helper keeps the "sized to the **return
 /// register**, not to the value" convention visible at each use, and removes
-/// the chance of a call site sourcing the width from something else in scope (a
-/// literal `64`, a nearby `int_conv_bits(..)` result, a host `size_of`) —
-/// angr-12jjk.23.
+/// the chance of a call site sourcing the width from something else in scope
+/// (a literal `64`, a nearby `int_conv_bits(..)` result, a host `size_of`)
+/// (angr-12jjk.23).
 ///
 /// `value` is a `u64` because every caller's payload already is one; a signed
 /// return passes the two's-complement pattern (`-1i64 as u64`) and
@@ -275,8 +275,8 @@ pub(crate) fn native_resume_sentinel(ptr_bytes: u32) -> u64 {
 /// e.g. `pthread_once`) overrides `call_ex`/`resume` and returns
 /// [`ProcOutcome::CallAndResume`]. The dispatcher then jumps into `target`,
 /// and on its return re-enters the proc via [`NativeSimProcedure::resume`].
-/// Design: `tools/decisions/native_subcall_dispatcher_design.md` (bead
-/// `angr-5gf0s`, Option B).
+/// Design: `tools/decisions/native_subcall_dispatcher_design.md`, Option B
+/// (angr-5gf0s).
 pub(crate) enum ProcOutcome {
     /// Procedure completed; store this return value (or `None` for void).
     /// Flows through the dispatcher's existing return path (set return
@@ -341,7 +341,7 @@ pub(crate) trait NativeSimProcedure: Send + Sync {
     /// The dispatcher calls this on **fresh** entry (not `call` directly). The
     /// default delegates to [`Self::call`] and wraps the result in
     /// [`ProcOutcome::Return`], so the ~24 return-only procedures need no
-    /// changes (Option B, design `angr-5gf0s`). Only procedures that invoke a
+    /// changes (Option B; angr-5gf0s). Only procedures that invoke a
     /// guest routine override this to return [`ProcOutcome::CallAndResume`].
     fn call_ex(
         &self,
@@ -593,11 +593,11 @@ impl NativeProcedureRegistry {
                 fortify_printf::NativeSnprintfChk,
                 fortify_printf::NativeFprintfChk,
                 fortify_printf::NativeVsnprintfChk,
-                // I/O procedures: re-enabled by angr-3tek.2. The Python-side cache
-                // is now invalidate-and-replayed per dirty page in
-                // `_create_state_for_callback` (rust_callback_dispatch.py +
-                // rust_state_sync.py::_replay_rust_dirty_pages), so the stale-cache
-                // issue described in angr-mme3 / angr-3tek no longer applies.
+                // I/O procedures. The Python-side cache is invalidate-and-replayed
+                // per dirty page in `_create_state_for_callback`
+                // (rust_callback_dispatch.py +
+                // rust_state_sync.py::_replay_rust_dirty_pages), so a stale cache
+                // cannot shadow their writes (angr-3tek.2, angr-mme3).
                 read::NativeRead,
                 write::NativeWrite,
                 // fread/fread_unlocked (angr-m674p): resolve FILE._fileno → serve

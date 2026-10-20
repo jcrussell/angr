@@ -14,12 +14,12 @@ use crate::vex::ir::IRCallee;
 
 /// The binop families that parse to a concrete `IROp` but have no native
 /// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`): `Iop_Pclmul*`
-/// and `Iop_Crc32C` (`VPerm` left the list with `VEXOps::vec_perm`,
-/// angr-mx00p.6). All deterministic — Python's
+/// and `Iop_Crc32C` (`VPerm` is handled natively by
+/// `VEXOps::vec_perm`; angr-mx00p.6). All deterministic — Python's
 /// VEX engine models them exactly — so `eval_binop` routes them to Python
 /// fallback rather than fabricating a wrong fresh symbolic. Keep this in lockstep
 /// with `opcode_map.rs` if a new must-fallback family is added.
-/// See bd `angr-s6miz` and the "Parse-succeeds / dispatch-fabricates (silent
+/// See the "Parse-succeeds / dispatch-fabricates (silent
 /// BYPASS)" section of `docs/extending-angr/rust_vex_ops.rst`.
 pub(super) fn is_dispatch_fabricate_family(op: &IROp) -> bool {
     matches!(
@@ -31,10 +31,9 @@ pub(super) fn is_dispatch_fabricate_family(op: &IROp) -> bool {
 /// Width of the fresh symbolic [`VEXInterpreter::vex_op_fallback`] fabricates
 /// for an unsupported op. Normally the op's own `result_type()`; when that is
 /// `None` — an unmapped VEX op, the only way to reach the fallback — the widest
-/// *value* operand stands in. A hardcoded 64 (what `eval_unop`/`eval_triop`/
-/// `eval_qop` each used before angr-0jh0j.28, while `eval_binop` already did
-/// this) fabricates a wrongly-narrow placeholder for a 128-bit+ float/vector
-/// op, and a wrongly-wide one for a byte/short op.
+/// *value* operand stands in, in every `eval_*` dispatcher. A hardcoded 64
+/// would fabricate a wrongly-narrow placeholder for a 128-bit+ float/vector
+/// op, and a wrongly-wide one for a byte/short op (angr-0jh0j.28).
 ///
 /// `value_widths` deliberately excludes a Triop/Qop rounding-mode operand: `rm`
 /// is I32 metadata, not a value, so letting it participate would be a no-op at
@@ -53,7 +52,7 @@ pub(super) fn fabricated_result_width(op: &IROp, value_widths: &[u32]) -> u32 {
 /// no-handler-anywhere arm of `VEXInterpreter::handle_dirty_call`
 /// (`statements.rs`). When set (to any
 /// non-empty, non-`"0"` value) an unsupported op with a symbolic operand
-/// fabricates a fresh unconstrained symbolic (the pre-angr-oyzvj behavior)
+/// fabricates a fresh unconstrained symbolic (the old default, angr-oyzvj)
 /// instead of routing the block to Python. Default (unset): route to Python —
 /// the correct behavior, since fabricating an unconstrained value silently
 /// explores both branches of any downstream condition. Read once per process
@@ -77,7 +76,7 @@ impl<'a> VEXInterpreter<'a> {
     /// the block to Python's VEX engine (the reference implementation for the
     /// float / vector-float conversions that land here), mirroring the
     /// dispatch-fabricate family (angr-s6miz). Fabricating a fresh unconstrained
-    /// symbolic instead — the pre-angr-oyzvj default — silently diverges: any
+    /// symbolic instead (the old default, angr-oyzvj) silently diverges: any
     /// downstream condition over the fabricated value explores both branches
     /// unconstrained. That behavior is retained only as an explicit opt-in via
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (visibility via
@@ -148,7 +147,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `pub(crate)` (rather than the module-private default every sibling
     /// `eval_*` dispatcher uses) so `vex::ops::tests_rounding_mode_sweep`'s
     /// dispatcher-selection sweep can drive evaluation through the real
-    /// entry point that had the angr-03vl4.30 bug, instead of calling
+    /// entry point that had the dispatcher-selection bug (angr-03vl4.30), instead of calling
     /// `VEXOps::binop_with_rm`/`qop_with_rm` directly the way the rest of
     /// that file does — see the module doc comment there.
     pub(crate) fn eval_binop(
@@ -254,8 +253,8 @@ impl<'a> VEXInterpreter<'a> {
     /// `args` is the Qop's four operands in IR order (`arg1..arg4`).
     ///
     /// `pub(crate)` — see the doc comment on `eval_binop` above; this is the
-    /// exact dispatcher the angr-03vl4.30 bug lived in (routed to
-    /// `VEXOps::qop` instead of `qop_with_rm`), so the dispatcher-selection
+    /// exact dispatcher the rounding-mode bug lived in (routed to
+    /// `VEXOps::qop` instead of `qop_with_rm`; angr-03vl4.30), so the dispatcher-selection
     /// sweep needs to call it directly.
     pub(crate) fn eval_qop(
         &mut self,
@@ -313,8 +312,8 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // eflags/rflags condition-calculation CCalls that we couldn't handle
-        // symbolically follow the same policy as `vex_op_fallback` (angr-oyzvj,
-        // angr-9ke6b.88): route the block to Python by default. Fabricating a
+        // symbolically follow the same policy as `vex_op_fallback`
+        // (angr-oyzvj, angr-9ke6b.88): route the block to Python by default. Fabricating a
         // fresh unconstrained symbolic here is *worse* than for an ordinary op,
         // because the result of a `calculate_condition` CCall IS a branch
         // guard — an unconstrained one explores both directions regardless of

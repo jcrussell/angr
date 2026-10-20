@@ -13,7 +13,7 @@ use super::helpers::sym_file_bytes;
 // serve paths still consume the concrete buffer; these tests cover the
 // registry→open attach, cwd normalization, Arc sharing on fork, the
 // length consumers (SEEK_END / stat sizes), and the snapshot wire format
-// (including pre-angr-0xyq2 backward compat).
+// (including backward compat with snapshots predating those fields).
 
 #[test]
 fn test_register_file_content_open_attaches() {
@@ -196,7 +196,7 @@ fn test_content_sym_snapshot_backward_compat() {
     fs.register_file_content("/tmp/flag", sym_file_bytes(2, "compat"));
     let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
-    // Simulate a pre-angr-0xyq2 snapshot: strip the new fields entirely.
+    // Simulate an older snapshot: strip the new fields entirely.
     let mut v = serde_json::to_value(&fs).expect("to_value");
     v.as_object_mut().unwrap().remove("file_contents");
     for fd_v in v["fds"].as_object_mut().unwrap().values_mut() {

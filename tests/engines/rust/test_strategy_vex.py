@@ -146,7 +146,7 @@ class TestExplorationStrategy:
     def test_cfg_distance_map_drives_directed_search(self, fauxware_project):
         """cfg_distance_map builds a real snapshot that steers directed search.
 
-        End-to-end angr-a32jl.4 workflow: build the CFG once, snapshot
+        End-to-end workflow (angr-a32jl.4): build the CFG once, snapshot
         addr->distance-to-target Python-side, ship it into the Rust directed
         policy. The target block must be at distance 0 and reachable states must
         find it.
@@ -251,7 +251,8 @@ class TestExplorationStrategy:
 
         Equivalent to a post-init set_exploration_strategy('dfs') call but
         applied during __init__ so the first step already sees the chosen
-        order. Regression for the angr-3ms1 Flavor-1 wiring step.
+        order. Regression test for the ``exploration_strategy`` init-kwarg
+        wiring (angr-3ms1).
         """
 
         find_addr = 0x4006ED
@@ -325,8 +326,7 @@ class TestExplorationStrategy:
 
     def test_init_kwarg_use_shared_lineage_solver_on(self, fauxware_project):
         """``use_shared_lineage_solver=True`` must explore identically to a
-        default-off run, producing *sound* concrete solutions (angr-3ms1 step
-        1b).
+        default-off run, producing *sound* concrete solutions (angr-3ms1).
 
         The opt-in mints a fresh ``SharedLineageSolver`` at fork time
         (snapshot_fork_ops.rs) — a distinct constraint-solving path from the
@@ -405,8 +405,8 @@ class TestExplorationStrategy:
             )
 
     def test_deep_loop_recipe_full_knob_stack(self, fauxware_project):
-        """End-to-end smoke for the full deep-input-loop recipe (angr-11djq.2 /
-        T1b) documented in ``docs/advanced-topics/rust_engine.rst``
+        """End-to-end smoke for the full deep-input-loop recipe (angr-11djq.2)
+        documented in ``docs/advanced-topics/rust_engine.rst``
         ("Deep-input-loop binaries (grub-class)" subsection).
 
         Composes every knob the recipe recommends:
@@ -1234,29 +1234,28 @@ class TestVexBitCountInstructions:
         assert s_lo.solver.eval(s_lo.regs.edx) == 31
         assert s_lo.solver.eval(s_lo.regs.ebx) == 0
 
-    # --- Symbolic soundness (executable spec for the open bug angr-4ju9e) ---
+    # --- Symbolic soundness (angr-4ju9e) ---
     #
     # These encode the CORRECT Python-engine behaviour: a symbolic operand must
     # leave lzcnt/tzcnt symbolic so constraining the result back-solves a
-    # consistent operand.
+    # consistent operand. Two layers make that hold:
     #
-    # LAYER 1 (export drop) — FIXED, commit 0b6b0ea1d. RustSimState::export_full
-    # skipped symbolic registers; the plain-state path now attaches a lazy
-    # RustRegisterProxy when the snapshot reports symbolic registers, so edx/ebx
-    # export the full symbolic Iop_Clz64/Iop_Ctz64 nested-If tree (was 0 under
-    # ZERO_FILL).
+    # LAYER 1 (export). RustSimState::export_full's plain-state path attaches a
+    # lazy RustRegisterProxy when the snapshot reports symbolic registers, so
+    # edx/ebx export the full symbolic Iop_Clz64/Iop_Ctz64 nested-If tree rather
+    # than 0 under ZERO_FILL.
     #
-    # LAYER 2 (subregister symbol identity) — FIXED in angr-21vi5. The
-    # Python->Rust register import now routes `state.regs.ecx = BVS('ecx')`
+    # LAYER 2 (subregister symbol identity, angr-21vi5). The
+    # Python->Rust register import routes `state.regs.ecx = BVS('ecx')`
     # through claripy_to_rustbv (set_register_symbolic_ast), so the ecx leaf
     # symbol interns into the shared cache and the recovered clz/ctz tree
     # references the user's ecx — back-solving x is sound.
     @pytest.mark.parametrize("clz_target", [0, 4, 8, 16, 23, 31])
     def test_lzcnt_symbolic_export_is_sound(self, clz_target):
         """Symbolic operand: constraining the lzcnt result back-solves a value
-        whose true clz matches. A fresh unconstrained BVS export (pre-acoq) or
-        an interpreter-level concretization (angr-4ju9e) would let eval(ecx)
-        return a Rust-infeasible value with the wrong clz.
+        whose true clz matches. A fresh unconstrained BVS export or an
+        interpreter-level concretization would let eval(ecx) return a
+        Rust-infeasible value with the wrong clz (angr-4ju9e).
         """
         from angr import claripy
 
@@ -1270,8 +1269,8 @@ class TestVexBitCountInstructions:
     @pytest.mark.parametrize("ctz_target", [0, 4, 8, 16, 31])
     def test_tzcnt_symbolic_export_is_sound(self, ctz_target):
         """Symbolic operand: constraining the tzcnt result back-solves a value
-        whose true ctz matches (sound Ctz export, commit e3f46fa9a; gated on
-        the interpreter-concretization fix angr-4ju9e).
+        whose true ctz matches; needs both the sound Ctz export and no
+        interpreter-level concretization (angr-4ju9e).
         """
         from angr import claripy
 

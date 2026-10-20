@@ -18,7 +18,7 @@
 //! `#[cfg(test)]` `tests` child opts out of the deny wholesale, so count
 //! non-test sites only when checking that claim.
 //!
-//! Two protocol rules from the bead, both load-bearing for the >=30% gate:
+//! Two protocol rules, both load-bearing for the >=30% gate:
 //!
 //! - **No double-counting.** The classifiers run *after* the fast paths that
 //!   already ship (`as_u128()` short-circuits in `solving_ops.rs`, the cached
@@ -127,7 +127,7 @@ query_classes! {
         TrivialDecide => "trivial_decide",
         /// Exactly one free symbol, and every constraint that mentions it is
         /// itself single-symbol and interval-shaped: decidable by interval
-        /// arithmetic over that symbol (feeds angr-op0dn.9.2).
+        /// arithmetic over that symbol (angr-op0dn.9.2).
         SingleVarRange => "single_var_range",
         /// Model query whose target is syntactically pinned by the constraints
         /// (every symbol it reads has an `x == const` constraint). The value is
@@ -141,7 +141,7 @@ query_classes! {
         Hard => "hard",
         /// Boolean query that still has free symbols but whose *verdict* is fixed
         /// by syntax alone: `Eq(a, a)`, `Ult(x, 0)`, `Ule(x, UMAX)`, a mask-bit
-        /// contradiction, … (feeds angr-op0dn.9.1). Distinct from
+        /// contradiction, … (angr-op0dn.9.1). Distinct from
         /// [`TrivialDecide`](QueryClass::TrivialDecide), which means "no free
         /// symbols left at all".
         SyntacticDecide => "syntactic_decide",
@@ -495,7 +495,7 @@ pub(crate) fn classify_bool(cond: &RustBV, constraints: &[(RustBV, bool)]) -> Qu
 }
 
 /// Classify a model query (`eval`, `eval_upto`). Splits forced values (unique
-/// by construction) from solver-chosen witnesses, per the bead's protocol.
+/// by construction) from solver-chosen witnesses.
 pub(crate) fn classify_eval(target: &RustBV, constraints: &[(RustBV, bool)]) -> QueryClass {
     let shape = shape_of(target);
     if !shape.within_budget {

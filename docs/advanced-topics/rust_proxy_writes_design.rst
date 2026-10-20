@@ -19,8 +19,7 @@ Rust engine: proxy-backed SimState writes — design comparison
    write-through: every callback state's ``state.memory`` is a
    ``RustMemoryProxy``, so a Python SimProcedure's
    ``state.memory.store(…)`` lands in Rust immediately and nothing is
-   replayed on return (the tracked-write replay and its opt-out were
-   deleted by angr-mx00p.28). See :doc:`rust_engine` for the shipped
+   replayed on return (``angr-mx00p.28``). See :doc:`rust_engine` for the shipped
    contract.
 
    The "proposed proxy-plugin design" section is now
@@ -79,8 +78,7 @@ corpus (``angr-g7ug`` holds the numbers): per-callback sync-back costs
 on the order of a millisecond, and even on the callback-densest bench
 the aggregate is a single-digit percentage of wall time; on most
 benches it is well under one percent. The dominant cost on
-callback-heavy benches is state creation, not sync-back
-(``angr-9maq``).
+callback-heavy benches is state creation, not sync-back (``angr-9maq``).
 
 
 Current diff-and-push model
@@ -190,7 +188,7 @@ Implementation cost
 Medium-high. New PyO3 shims (concrete state-id register and
 memory writes) and a pair of proxy plugin classes. Test surface includes every SimProcedure path
 that currently uses diff-and-push, plus the inspect-event corners,
-plus the plugin-restoration interaction with ``angr-2k64``.
+plus the interaction with per-state-id plugin restoration (``angr-2k64``).
 
 Risk surface
 ~~~~~~~~~~~~
@@ -385,14 +383,14 @@ Rationale:
 * A future workload pushes callback density high enough to put
   sync-back into seconds. No bench in the regression matrix is
   anywhere near that.
-* ``angr-2k64`` plugin-restoration work needs the
+* Per-state-id plugin restoration (``angr-2k64``) needs the
   proxy-write architecture as a prerequisite to retire the
   per-state-id plugin cache. In that case Option A becomes a
   dependency rather than an optimization, and the risk surface
   is paid down by the larger refactor.
 * The mma_howtouse / hackcon residual gaps turn out to be in
   the diff-and-push path (not the case at design time — both were in
-  ``state_create`` or Z3-shape mismatches, per the ``angr-9maq`` bisect).
+  ``state_create`` or Z3-shape mismatches, per a bisect; ``angr-9maq``).
 
 **What shipped** reversed the recommendation on the write side without
 adopting either option's machinery: ``RustStateProxy`` register and
@@ -408,7 +406,6 @@ write-through contract").
 References
 ----------
 
-* Provenance: ``angr-g7ug`` (this comparison and its measurements).
 * Per-state-id plugin restoration (``angr-2k64``) would interact with
   Option A's plugin substitution.
 * On Callable-heavy benches the dominant cost is state creation, not
@@ -427,8 +424,7 @@ References
     ``_state_memory_store_symbolic_multi``, the existing
     symbolic-write FFI shims that the proxy would reuse.
 
-* Measurements: ``run_single.py --dump-counters`` per-bench output,
-  recorded on ``angr-g7ug``.
+* Measurements: ``run_single.py --dump-counters`` per-bench output (``angr-g7ug``).
 * Prior caution: a similar attempt to skip state.copy() broke
   register sync silently on ais3 (see the risk-asymmetry item under
   *Recommendation at design time, and what shipped*).

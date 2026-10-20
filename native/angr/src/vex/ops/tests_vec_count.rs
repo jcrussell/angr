@@ -4,7 +4,7 @@ use super::*;
 use crate::vex::ir::IRType;
 
 // =========================================================================
-// angr-tukg.6 — NEON per-lane Cnt / Clz / Cls + GF(2) PolynomialMul.
+// NEON per-lane Cnt / Clz / Cls + GF(2) PolynomialMul (angr-tukg.6).
 // =========================================================================
 
 /// Iop_Cnt8x8 — per-byte popcount over 8 lanes. Covers all bits-set,

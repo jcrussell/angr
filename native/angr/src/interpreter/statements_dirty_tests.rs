@@ -1,5 +1,5 @@
-//! Tests for `IRStmt::Dirty` execution (extracted from `statements_tests.rs`
-//! by angr-fs8kb.96, following the prod-side split in angr-fs8kb.62).
+//! Tests for `IRStmt::Dirty` execution, extracted from `statements_tests.rs`
+//! following the prod-side split (angr-fs8kb.96, angr-fs8kb.62).
 //!
 //! Covers the two no-handler-anywhere policies
 //! (`VEXInterpreter::dirty_python_dispatch`'s route-to-Python default and the

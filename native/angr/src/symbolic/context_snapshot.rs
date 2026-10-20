@@ -55,7 +55,7 @@ use super::SymContext;
 /// on restore, which would let a later [`fork`](SymContext::fork) mint a
 /// `SharedLineageSolver` frame in exactly the situation that counter's gate
 /// exists to prevent (the parent's unbalanced bare pushes leaking into the
-/// child's base — see bd memory `invariant-bare-z3-push-depth`).
+/// child's base).
 /// `to_snapshot` / `restore_from_snapshot` carry a `debug_assert!` for this.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymContextSnapshot {

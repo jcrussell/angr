@@ -35,8 +35,8 @@ fn test_getuid_width_tracks_arch_32bit() {
 }
 
 // The PLT-libc-call path (`procedures/getid.rs`) and the raw-syscall path
-// (`syscalls/identity.rs`) back the same four getters. Since angr-5mnx3.35 they
-// share one `DEFAULT_UID_GID`, but that only pins the *const* — nothing stops a
+// (`syscalls/identity.rs`) back the same four getters. They share one
+// `DEFAULT_UID_GID` (angr-5mnx3.35), but that only pins the *const* — nothing stops a
 // future edit from handing `constant_syscall!` a different value, so pin the
 // agreement behaviourally by driving both dispatchers.
 #[test]

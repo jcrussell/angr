@@ -5,7 +5,7 @@ use crate::stash::STASH_ACTIVE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Regression for angr-ph300.17: `_move_states` with `from_stash == to_stash`
+/// Regression (angr-ph300.17): `_move_states` with `from_stash == to_stash`
 /// used to `remove()` the source deque, re-append every state into the
 /// recreated key, then overwrite that key with an empty `VecDeque` — silently
 /// destroying every state in the stash while reporting them as moved. The
@@ -73,7 +73,7 @@ fn move_states_cross_stash_relocates_all() {
     assert_eq!(found.len(), 2, "destination stash received both states");
 }
 
-/// Regression for angr-ph300.26: `_reset_for_stage` cleared only a hardcoded
+/// Regression (angr-ph300.26): `_reset_for_stage` cleared only a hardcoded
 /// five-name stash list, so `pruned` and every technique stash
 /// (cut/spinning/timeout/…) survived the reset with their states — and their
 /// Z3 solver clones — alive for the remainder of the session.
@@ -127,7 +127,7 @@ fn reset_for_stage_clears_pruned_and_technique_stashes() {
     );
 }
 
-/// Regression for angr-ph300.26: the `active.retain(...)` that drops the
+/// Regression (angr-ph300.26): the `active.retain(...)` that drops the
 /// non-found states used to bypass the bookkeeping maps entirely, so
 /// `state_stash(dropped_id)` kept answering `active` and `state_roots` grew
 /// without bound across stages.
@@ -218,8 +218,8 @@ fn reset_for_stage_errors_on_unknown_state() {
 // notified id.
 // ---------------------------------------------------------------------------
 
-/// Records every `state_id` passed to `on_state_removed` (and, for
-/// angr-1o7i0, to `on_fork`); forwards the deque operations to `Lifo` so
+/// Records every `state_id` passed to `on_state_removed` (and to `on_fork`)
+/// (angr-1o7i0); forwards the deque operations to `Lifo` so
 /// nothing else changes.
 #[derive(Default)]
 struct SpyPolicy {
@@ -720,7 +720,7 @@ fn drop_state_from_active_notifies_policy() {
 // _merge_states — removal-tombstone survival through the manager-level path
 // =============================================================================
 //
-// `RustSimState::merge` grew removal tombstones in the angr-9ke6b.121 follow-up
+// `RustSimState::merge` keeps removal tombstones (angr-9ke6b.121)
 // so one branch's explicit `remove_hook` / `set_option(_, false)` / `unsetenv`
 // can't be resurrected by a sibling that never touched the item, and
 // `state/tests/merge_config.rs` covers that on `merge` directly. `_merge_states` is the
@@ -749,7 +749,7 @@ fn merge_tombstone_mgr() -> (RustExplorationManager, u64) {
     (mgr, ancestor_id)
 }
 
-/// Regression for angr-sqfj8.33: a branch that explicitly removed a hook /
+/// Regression (angr-sqfj8.33): a branch that explicitly removed a hook /
 /// option / env var must keep it removed after `_merge_states`, even though a
 /// sibling branch still has it live. `_merge_states` forking its inputs reset
 /// the tombstones before `merge` could consult them, so every removal was
@@ -890,7 +890,7 @@ fn merge_states_reinstated_item_survives_own_tombstone() {
     );
 }
 
-/// Regression for angr-6cp06.27: `_reset_for_stage` swept the stashes but not
+/// Regression (angr-6cp06.27): `_reset_for_stage` swept the stashes but not
 /// the two non-stash buckets a live state can sit in, so a state parked in
 /// `pending_callbacks` (mid-Python-callback) or `pending_parallel_bounces` (a
 /// wave's undispatched bounce) survived the stage transition and leaked its
@@ -963,7 +963,7 @@ fn reset_for_stage_clears_pending_callbacks_and_parked_bounces() {
     assert_eq!(mgr.sm.get_root(found_id), Some(found_id));
 }
 
-/// Regression for angr-fs8kb.9: `_reset_for_stage` swept the stashes and both
+/// Regression (angr-fs8kb.9): `_reset_for_stage` swept the stashes and both
 /// pending buckets but left `constraint_tracker.uniqueness_set` populated with
 /// stage-1 register-tuple hashes, so `apply_uniqueness_filter` would send a
 /// legitimate stage-2 state whose hash collided with any stage-1 state to

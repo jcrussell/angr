@@ -77,7 +77,6 @@ from run_single import (
     _run_in_child,
 )
 
-
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
 # Optional per-bench counter snapshot. When present, a timing regression
 # triggers a `bench_diff` table against the cached snapshot so CI logs

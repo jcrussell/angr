@@ -257,8 +257,8 @@ fn write_symbolic_byte_falls_back() {
 
 #[test]
 fn write_count_zero_is_native_no_op_without_demoting() {
-    // angr-0xyq2 A3, now enforced in one place for all three write-path
-    // handlers (syscalls::write_gate step 4): a concrete zero-length write is
+    // Enforced in one place for all three write-path handlers (angr-0xyq2 A3)
+    // (syscalls::write_gate step 4): a concrete zero-length write is
     // a POSIX no-op, so it must return 0 natively and leave the fd's symbolic
     // content registered rather than demoting it to Python.
     let h = NativeWriteSyscall;
@@ -298,7 +298,7 @@ fn write_count_zero_is_native_no_op_without_demoting() {
 
 #[test]
 fn write_content_sym_demotes_and_falls_back() {
-    // angr-0xyq2 Phase 2 write-demotion — syscall twin of
+    // Write-demotion (angr-0xyq2 Phase 2) — syscall twin of
     // procedures/write_tests.rs::test_write_content_sym_demotes_and_falls_back.
     let h = NativeWriteSyscall;
     let mut state = RustSimState::new("amd64").expect("amd64 state");

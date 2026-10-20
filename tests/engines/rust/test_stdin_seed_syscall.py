@@ -1,7 +1,7 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""Regression tests for angr-23n3r: a harness's own stdin symbol must be solved
-through the raw read syscall and a file-backed stdin (test_stdin_seed.py covers
-the libc ``read`` procedure with packet stdin, angr-mb09c).
+"""Regression tests: a harness's own stdin symbol must be solved through the
+raw read syscall and a file-backed stdin (angr-23n3r). test_stdin_seed.py covers
+the libc ``read`` procedure with packet stdin.
 
 ``blank_state(stdin=BVS)`` makes ``posix.stdin`` a ``SimFileStream``, which has
 no ``content`` packet list. ``_seed_stdin_to_rust`` only flattened packet

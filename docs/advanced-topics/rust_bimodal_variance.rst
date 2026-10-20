@@ -91,8 +91,7 @@ slow tail is a continuum rather than a gap can read STABLE while its
 single-shot timings are still untrustworthy, so treat any bench with a
 coefficient of variation well above the noise floor as
 single-shot-unreliable regardless of its label. To sweep the whole
-corpus, pass every key of ``baseline_timings.json`` as ``--benchmarks``
-(provenance: ``angr-9w6ad.3``).
+corpus, pass every key of ``baseline_timings.json`` as ``--benchmarks`` (``angr-9w6ad.3``).
 
 Related memories
 ----------------

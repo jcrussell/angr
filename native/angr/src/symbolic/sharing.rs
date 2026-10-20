@@ -14,8 +14,8 @@
 //!   same op/width and structurally-equal children share a shape. This is the
 //!   lower bound a construction-time hash-cons (angr-behq) would reach.
 //!
-//! `unique_pointers - unique_shapes` is the "structural-duplicate" count from
-//! the bead — RustBVs that hash-cons could merge but the current build path
+//! `unique_pointers - unique_shapes` is the "structural-duplicate" count —
+//! RustBVs that hash-cons could merge but the current build path
 //! keeps distinct.
 //!
 //! # Why the walk takes ownership

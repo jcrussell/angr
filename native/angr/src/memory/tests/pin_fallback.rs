@@ -1,6 +1,6 @@
 //! The symbolic-address fallback inside the [`SymbolicMemory::load`] /
-//! [`SymbolicMemory::store`] convenience wrappers (angr-mv08h pin-on-path
-//! semantics).
+//! [`SymbolicMemory::store`] convenience wrappers, with pin-on-path
+//! semantics (angr-mv08h).
 //!
 //! Both wrappers accept an address `RustBV` that may be symbolic. When
 //! `RustBV::as_u64` fails they ask the solver for *one* witness via

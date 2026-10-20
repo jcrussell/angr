@@ -4,7 +4,7 @@ use super::*;
 fn test_cpuid_not_handled_natively() {
     // CPUID/RDTSCP receive a GSPTR arg and are deliberately routed to the
     // Python engine; they must NOT be registered for native dispatch
-    // (angr-t1ok: dead-code removal).
+    // (angr-t1ok).
     let dispatch = DirtyHelperDispatch::new();
     let mut hs = DirtyHelperState::default();
     assert!(

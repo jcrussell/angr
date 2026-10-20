@@ -26,9 +26,9 @@ backdoor solution) rather than the raw content fingerprint
   fidelity gap tracked by the known-failing
   ``test_dump_load_fauxware_round_trip_preserves_stash_shape``.
 
-The same two reasons are why the exhaustive find-all gate added for
-angr-op0dn.13.1 (``TestParallelExhaustiveSynthetic``) compares drain COUNTS and
-pcs rather than vh834 AST content fingerprints -- see that class's docstring.
+The same two reasons are why the exhaustive find-all gate
+(``TestParallelExhaustiveSynthetic``) compares drain COUNTS and pcs rather than
+AST content fingerprints -- see that class's docstring.
 
 Both divergence sources are orthogonal to the wave loop. The order-independent,
 migration-robust content guarantee the scheduler itself provides is covered by
@@ -310,7 +310,7 @@ class TestParallelExhaustiveSynthetic:
 # arithmetic, not inferred from a run.
 _FEASIBLE_LEAVES = {1, 2, 3, 5, 6, 7}
 
-# angr-lkim0 found this the moment the content projection existed: found states
+# The content projection catches under-constrained forks (angr-lkim0): found states
 # exported stdin solutions replaying to ``acc & 0xff != 0xee`` — witnesses that
 # do not reach ``reach_target`` — while the count/pc gates stayed green. Root
 # cause (angr-62ar5): a fork built from a pre-branch solver *snapshot* inherited
@@ -559,7 +559,7 @@ class TestParallelCancelFrontier:
 
 
 class TestParallelCheckpointFrontier:
-    """angr-op0dn.13.6 — the drained frontier is CHECKPOINTABLE.
+    """The drained frontier is CHECKPOINTABLE (angr-op0dn.13.6).
 
     ``dump_snapshot`` finalizes any live steady session before capturing (Python
     ``_finalize_parallel_session`` + the Rust ``steady_config_guard`` inside
@@ -579,10 +579,10 @@ class TestParallelCheckpointFrontier:
         snap = tmp_path / "pbounce.snap"
         mgr.dump_snapshot(str(snap))
 
-        # Fingerprint AFTER the dump: dumping is a finalize (angr-op0dn.13.6
-        # drains a live steady session; .13.10 flushes the parked parallel
-        # bounce queue into `active`), so the pre-dump stashes are not yet the
-        # ones the snapshot captures. The contract under test is
+        # Fingerprint AFTER the dump: dumping is a finalize (it drains a live
+        # steady session and flushes the parked parallel bounce queue into
+        # `active`), so the pre-dump stashes are not yet the ones the snapshot
+        # captures. The contract under test is
         # dump-point == restore-point.
         pre = _fingerprint(mgr)
         assert pre["stash_counts"].get("active", 0) > 0, f"workers={workers}: nothing to checkpoint"
@@ -597,33 +597,31 @@ class TestParallelCheckpointFrontier:
         assert len(list(resumed.errored)) == 0, f"workers={workers} errored: {list(resumed.errored)}"
         assert {s.addr for s in found} == {target_addr}
 
-        # angr-op0dn.13.12 recalibrated this gate. It used to demand all 8 leaves
-        # on the serial arm, and it passed — but for the wrong reason: the resume
-        # exhausted the restored frontier, went active_empty, and the angr-027h
-        # phase-2 eager retry re-seeded `_initial_seed_states`, i.e. the *pre-load
-        # placeholder* the constructor was handed above. That placeholder happens
-        # to be a valid pbounce entry state, so phase 2 silently re-ran the whole
-        # exploration from scratch and back-filled the leaves the snapshot had
-        # actually lost. With phase 2 retired on a resumed manager, the true
-        # restored-frontier yield shows through: 4/8 serial. The remaining loss is
-        # deferred-fork bookkeeping... or so it looked. angr-op0dn.13.14 then
-        # proved the restore is faithful and the deferred frontier complete: 4-6
-        # IS the phase-1 ceiling for this dump point, and the 2 leaves it never
-        # reaches are UNSAT arrivals the live run prunes too.
+        # Why this is a range and not all 8 leaves (angr-op0dn.13.12): the
+        # phase-2 eager retry on an active_empty manager re-seeds
+        # `_initial_seed_states`, i.e. the *pre-load placeholder* the constructor
+        # was handed above. That placeholder happens to be a valid pbounce entry
+        # state, so on a resumed manager phase 2 would silently re-run the whole
+        # exploration from scratch and back-fill leaves the snapshot does not
+        # hold. Phase 2 is therefore retired on a resumed manager, and the true
+        # restored-frontier yield shows through. The restore is faithful and the
+        # deferred frontier complete (angr-op0dn.13.14): 4-6 IS the phase-1
+        # ceiling for this dump point, and the 2 leaves it never reaches are
+        # UNSAT arrivals the live run prunes too.
         #
-        # The range gate stays, and angr-op0dn.13.13 says why it must: this arm
-        # dumps after a *parallel* find-1 cancel, and which residual frontier that
-        # captures is not deterministic (the CancelToken fires in whichever worker
+        # The range gate must stay (angr-op0dn.13.13): this arm dumps after a
+        # *parallel* find-1 cancel, and which residual frontier that captures is
+        # not deterministic (the CancelToken fires in whichever worker
         # reaches the target first; the others stop at their own task boundaries).
         # A wider residual resumes into more leaves, so the count moves with the
         # dump, not with the resume. `test_resume_from_fixed_snapshot_is_worker_
         # count_invariant` below holds the snapshot bytes fixed and pins the exact
         # invariant the resume side really owes: same leaves, any worker count.
-        # The upper bound is still load-bearing — it is the .13.12 fix's own
-        # observable, i.e. that a resume can no longer overshoot by replaying the
-        # constructor's placeholder seed (the old 9-of-8).
+        # The upper bound is still load-bearing — it is the observable of the
+        # phase-2 retirement above, i.e. that a resume cannot overshoot by
+        # replaying the constructor's placeholder seed (9-of-8).
         #
-        # angr-vplge: the lower bound applies only to the SERIAL arm. On the
+        # The lower bound (angr-vplge) applies only to the SERIAL arm. On the
         # parallel arm the residual width at the dump point is set by which worker
         # wins the race to the target and where its peers happened to be — under
         # full-suite load that residual can be narrower than the one this bound was
@@ -641,11 +639,10 @@ class TestParallelCheckpointFrontier:
         )
 
     def test_resume_from_fixed_snapshot_is_worker_count_invariant(self, pbounce_project, monkeypatch, tmp_path):
-        """angr-op0dn.13.13 — the resume side is deterministic; the *dump* side is not.
+        """The resume side is deterministic; the *dump* side is not (angr-op0dn.13.13).
 
-        The bead titled this "leaf count is nondeterministic under CPU contention
-        (6-9 of 8)" and read it as the resumed exploration *losing* states to
-        worker scheduling. Measurement says otherwise, in two parts.
+        A leaf count that varies under CPU contention looks like the resumed
+        exploration *losing* states to worker scheduling. It is not, in two parts.
 
         First, most of the spread is dump-side, not resume-side. A parallel
         ``num_find=1`` explore trips the CancelToken in whichever worker reaches
@@ -659,9 +656,9 @@ class TestParallelCheckpointFrontier:
         resume below sees identical input), the *serial* resume is bit-stable and
         the parallel one is not — but it varies UPWARD (4 leaves serially, 4-6
         under workers=4), never down. So the parallel arm is not dropping restored
-        subtrees; the two arms disagree on how far a deferred frontier drains, and
-        angr-op0dn.13.15 owns deciding which is right. What this test pins is the
-        invariant that survives either answer: no worker count may resume FEWER
+        subtrees; the two arms disagree on how far a deferred frontier drains
+        (angr-op0dn.13.15). What this test pins is the invariant that holds
+        whichever arm is right: no worker count may resume FEWER
         leaves than the serial drain, and every leaf it does report must be a real,
         independently-satisfiable path.
 
@@ -881,8 +878,8 @@ def _drain_pbounce(project, workers, monkeypatch):
     arms are comparable at all (see ``snapshot-resume-spread-is-dump-side``).
 
     Driven through ``explore`` (a BATCH native budget), not ``run(n=...)``:
-    since angr-9ke6b.221 a step-mode ``run(n=N)`` — N native ``run(1)`` calls —
-    routes to the single-threaded loop because a per-wave dispatch budget of 1
+    a step-mode ``run(n=N)`` — N native ``run(1)`` calls — routes to the
+    single-threaded loop (angr-9ke6b.221) because a per-wave dispatch budget of 1
     costs a full-frontier residual drain per dispatch. Only the batch entry
     point still engages the wave, which is what these terminal-accounting tests
     are about. ``drop_terminal_states`` is pinned off around the explore because
@@ -921,7 +918,7 @@ class TestParallelTerminalAccounting:
     def test_terminal_count_survives_the_worker_boundary(self, pbounce_project, workers, monkeypatch):
         # The synthetic's leaves return from main through the symbolic return
         # address a blank state leaves, so they are unconstrained terminals, as
-        # under the Python engine (angr-x39ae: they used to be deadended).
+        # under the Python engine, not deadended (angr-x39ae).
         serial = _terminal_count(_drain_pbounce(pbounce_project, 1, monkeypatch))
         assert serial > 0, "the serial drain must produce terminal paths for this test to mean anything"
 
@@ -1051,7 +1048,7 @@ class TestProgrammaticParallelWorkers:
 
 
 class TestEnvParallelIneligibleDowngrade:
-    """angr-ph300.77: the env-path residual of the angr-ph300.6 fix.
+    """angr-ph300.77: the env-path residual of the ineligible-explore serial downgrade (angr-ph300.6).
 
     ``RUST_PARALLEL_WORKERS`` is applied once in Rust ``new()`` and wins for
     eligible (address-based) explores. But an *ineligible* explore — callable
@@ -1093,8 +1090,8 @@ def _run_pbounce_step_mode(project, workers, monkeypatch, steps=4096):
     """Drive the 8-leaf synthetic through ``run(n=...)`` STEP mode, not ``explore``.
 
     ``RustExplorationManager.run(n=N)`` maps to N native ``run(1)`` calls, so
-    each native call carries a dispatch budget of 1 — the regime angr-9ke6b.221
-    is about. Find state is set directly on the Rust manager because ``run()``
+    each native call carries a dispatch budget of 1 — the regime that routes to
+    the single-threaded loop (angr-9ke6b.221). Find state is set directly on the Rust manager because ``run()``
     forwards its kwargs to ``step()``, which has no find/avoid surface.
     """
     if workers > 1:

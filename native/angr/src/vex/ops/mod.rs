@@ -8,10 +8,10 @@
 //! never unwrapped — an operand this module cannot handle returns [`OpError`],
 //! and the arity/type `debug_assert!`s on both packed-vector dispatchers have
 //! been hardened into typed errors for exactly that reason
-//! (`VEXOps::vec_float_lane_op` by angr-j60q0.2, `VEXOps::vec_int_lane_op`
-//! by angr-5mnx3.67). The same reasoning was swept across the whole `vec_*`
-//! family by angr-3fb7p, and across the *scalar* integer/float/conversion
-//! helpers by angr-fs8kb.95: every operand-*width* precondition in this module
+//! (`VEXOps::vec_float_lane_op`, `VEXOps::vec_int_lane_op`)
+//! (angr-j60q0.2, angr-5mnx3.67). The same reasoning applies across the whole
+//! `vec_*` family and the *scalar* integer/float/conversion helpers
+//! (angr-3fb7p, angr-fs8kb.95): every operand-*width* precondition in this module
 //! tree now goes through `VEXOps::require_operand_width` (see its rustdoc for
 //! why a `debug_assert!` was the wrong tool), while the shape/arity ones stay
 //! `debug_assert!`. The two
@@ -141,10 +141,9 @@ impl VEXOps {
     /// constants — and then apply those offsets to operands whose widths come
     /// from guest data. A mismatch makes each of them fold a *wrong concrete
     /// answer* on the `as_u128` fast path, which reaches neither the Python
-    /// boundary nor Z3, so nothing downstream can catch it (angr-3fb7p; see
-    /// the `debug-assert-triage-policy` bd memory for why class (1)'s
-    /// "already rejected at the Python boundary" rationale does not cover
-    /// this family). Every one of those helpers already returns
+    /// boundary nor Z3, so nothing downstream can catch it, and the "already
+    /// rejected at the Python boundary" rationale does not cover this family
+    /// (angr-3fb7p) (bd memory `debug-assert-triage-policy`). Every one of those helpers already returns
     /// [`OpError`], so the check is cheap to report through in *every*
     /// profile rather than panicking in dev and silently miscomputing in
     /// release — the `NativeMprotectSyscall` shape, not `assert!`.
@@ -370,8 +369,8 @@ impl VEXOps {
 
             // NEON scaffolding: surface as a typed error rather than silently
             // falling back. interpreter::expressions special-cases
-            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
-            // Implementations land in angr-bkcs.2.
+            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer
+            // (angr-bkcs.2).
             IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
 
             // Unmapped opcode — captured at parse time, surfaces here so the
@@ -1083,9 +1082,9 @@ impl VEXOps {
     /// delivers as the Qop's first operand: `(rm, a, b, c)`. RNE concrete rm
     /// keeps the native `mul_add` fast path in `qop`; non-RNE or symbolic rm
     /// routes through `FloatOpKind::FmaRm`/`FmsRm` so the guest's MXCSR
-    /// rounding mode is honored. Exactly the `binop_with_rm` shape — before
-    /// angr-03vl4.30 the interpreter dropped the Qop rm and always computed
-    /// RNE.
+    /// rounding mode is honored. Exactly the `binop_with_rm` shape; the
+    /// interpreter must not drop the Qop rm and always compute RNE
+    /// (angr-03vl4.30).
     #[inline]
     pub fn qop_with_rm(
         op: IROp,

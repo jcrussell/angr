@@ -1,5 +1,5 @@
 //! In-module unit tests for `claripy_bridge/export/width_decisions.rs`
-//! (angr-ph300.52; moved here alongside its subject by the angr-5mnx3.11 split).
+//! (angr-ph300.52), kept alongside its subject (angr-5mnx3.11).
 //!
 //! These pin the concrete-value `BVV` encoding decision (`ConcreteBvvEncoding`).
 //! A copy of it once missed the `width / 8 <= 16` clause, so a byte-aligned
@@ -55,7 +55,7 @@ fn non_byte_aligned_over_64_uses_pyint() {
 
 #[test]
 fn byte_aligned_over_128_uses_pyint_not_bytes() {
-    // The angr-ph300.52 regression: width = 192 is byte-aligned but > 128, so
+    // Regression (angr-ph300.52): width = 192 is byte-aligned but > 128, so
     // its 24 bytes cannot come from the u128's 16 bytes. MUST be PyIntWide, not
     // Bytes(24) — the latter is what the un-guarded Constrained arm produced.
     assert_eq!(

@@ -86,7 +86,7 @@ fn test_serde_budget_boundary_is_inclusive() {
 
 // The budget is monotone and never reset, so an early serde-heavy phase is
 // sticky: a later step-heavy phase re-opens Trigger A only once accumulated step
-// time has caught up. Documents the known workload assumption in the bead — if
+// time has caught up. Documents the known workload assumption — if
 // this is ever changed to a windowed/decaying ratio, this test is the one to
 // rewrite.
 #[test]
@@ -538,7 +538,7 @@ fn test_absorb_continues_cap_holds_under_concurrent_workers() {
 }
 
 // No cap configured (the default for every Rust-side / test construction) must
-// leave the pre-angr-9ke6b.48 behavior byte-identical: every fork is queued.
+// leave the uncapped behavior byte-identical: every fork is queued.
 #[test]
 fn test_absorb_continues_unbounded_without_cap() {
     let t = lifo_transport();

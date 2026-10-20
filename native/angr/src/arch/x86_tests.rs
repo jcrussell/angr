@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn test_segment_base_aliases() {
     // angr-5spy.2: segment-base entries (ldt/gdt) must resolve through the
-    // ALIASES fallback. angr-rfxc7: x86 has NO fs_const/gs_const — that pair
+    // ALIASES fallback. x86 has NO fs_const/gs_const (angr-rfxc7) — that pair
     // is amd64-only (arch_prctl is an amd64 syscall). 320/324 are VEX's
     // guest_EMNOTE/guest_CMSTART and are now named as such, so a name-based
     // write can no longer clobber them under a segment-base alias.

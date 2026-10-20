@@ -73,7 +73,7 @@ The only wheel layout compatible with the shared-context constraint:
 #. **Declare the runtime dependency** so ``site-packages/z3/lib/libz3.so``
    always exists: ``pyproject.toml`` pins ``z3-solver`` directly (it also
    satisfies the Rust side's ``z3-sys`` minimum). Keep that pin exact; do
-   **not** widen it. See the ``avoid-pip-install-deps`` bd memory — a
+   **not** widen it (bd memory `avoid-pip-install-deps`): a
    ``libz3.so`` ABI change is something the unversioned ``NEEDED libz3.so``
    cannot guard against.
 #. **libpyvex needs no rule.** The native libVEX lifter
@@ -235,6 +235,6 @@ Open blocker
 
 Verify that the ``wheels.yml`` job builds, repairs (libz3 excluded,
 runpath relativized), and that the installed wheel passes
-``tests/smoke/wheel_ast_passthrough.py`` in a clean venv **in CI**
-(``angr-3gjm``). No leg has been executed, so a green run of *any* leg is what
+``tests/smoke/wheel_ast_passthrough.py`` in a clean venv **in CI** (``angr-3gjm``).
+No leg has been executed, so a green run of *any* leg is what
 unlocks the tag trigger.

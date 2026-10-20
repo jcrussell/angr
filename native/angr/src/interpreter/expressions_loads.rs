@@ -673,8 +673,8 @@ impl<'a> VEXInterpreter<'a> {
                 // multi-byte load, or imports didn't cover all bytes at the addr.
                 Ok(None)
             }
-            // SILENT(cat-b): angr-0jh0j.83 — `check_access_size`'s own doc
-            // ("refuse instead and let the caller bounce to Python") makes this
+            // SILENT(cat-b): `check_access_size`'s own doc ("refuse instead and
+            // let the caller bounce to Python", angr-0jh0j.83) makes this
             // a fallback, not a terminal fault: the load never touched memory,
             // so Python's model can answer it (or raise) exactly as it does for
             // the unmapped/symbolic-address refusals above. Warn rather than

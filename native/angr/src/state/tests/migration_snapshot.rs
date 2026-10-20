@@ -128,7 +128,7 @@ fn test_migrate_carries_multi_cell_bytes() {
 }
 
 // angr-1ilq.1: an A->B->A' round trip. Proves the snapshot transport carries
-// `native_resume_stack` (the angr-1ilq.2 field) faithfully across two
+// `native_resume_stack` (angr-1ilq.2) faithfully across two
 // distinct worker contexts: a symbolic saved_arg re-proves its witness at
 // every hop; a concrete saved_arg clones verbatim. Each hop serializes under
 // the context that is then live, so a half-rebuilt foreign-context AST would

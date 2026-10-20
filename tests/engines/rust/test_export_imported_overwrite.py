@@ -1,5 +1,5 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""Regression tests for angr-ccp2w: overwritten imports must reach the found state.
+"""Regression tests: overwritten imports must reach the found state (angr-ccp2w).
 
 ``_state_symbolic_objects`` skipped every address imported from the
 initial Python state "even if the binary modified them" (the flareon5 rule),

@@ -34,7 +34,7 @@ use crate::symbolic::{RustBV, SymContext};
 /// 12+-digit concrete string makes Python's `final_constraint` Or(...) evaluate
 /// False, so the state goes unsat and is silently discarded, while native
 /// parses it C-style. Native's behavior is closer to C; Python's unsat-at-12
-/// is arguably its own bug. See bd angr-vu1q4 (axis 2). We do NOT replicate
+/// is arguably its own bug (angr-vu1q4). We do NOT replicate
 /// Python's cap because truncating to 11 digits would match neither engine
 /// (Python rejects the input outright rather than truncating), and forcing the
 /// state unsat is an invasive behavior change with real benchmark risk.
@@ -417,7 +417,7 @@ fn run_strtol(
         // concrete input as unsat *before* the clamp fires, so there is no
         // Python value to match — native keeps its C-style full-width parse
         // (this is what lets strtoull return values above i64::MAX). See the
-        // MAX_DIGITS note and bd angr-vu1q4 (axis 1 vs axis 2).
+        // MAX_DIGITS note (angr-vu1q4).
         let clamped = if bits < 64 {
             mag.min(signed_max(bits))
         } else {

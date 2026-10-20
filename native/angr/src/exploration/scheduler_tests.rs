@@ -212,8 +212,8 @@ fn test_scheduler_fork_tree_quiesces() {
 // forking worker's own in-flight parent is discounted from its budget). That
 // bound used to be `cap + workers - 1`: `absorb_continues` decided its budget
 // from a plain load and only counted the children IN afterwards, so every
-// worker could spend the same stale snapshot. It reserves with a CAS since
-// angr-5mnx3.18, which makes the overshoot independent of the worker count. The
+// worker could spend the same stale snapshot. It reserves with a CAS
+// (angr-5mnx3.18), which makes the overshoot independent of the worker count. The
 // pruned-summary count proves the cap actually fired rather than the workload
 // simply never reaching it (the `max-active-states-test-pattern` trap: a
 // width-only assertion passes vacuously on a workload that never forks wide).

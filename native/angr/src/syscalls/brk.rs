@@ -121,8 +121,7 @@ impl NativeSyscall for NativeBrkSyscall {
             // `mprotect.rs` and `mmap.rs::range_collides` use: it iterates page
             // *numbers*, so there is no byte-address `+= PAGE_SIZE` step that
             // could wrap to 0 past the final page and rescan low memory
-            // (angr-fs8kb.49's bug, in the shape that produced it —
-            // angr-fs8kb.51), and open-coding the shift is the drift
+            // (angr-fs8kb.49, angr-fs8kb.51), and open-coding the shift is the drift
             // `PageIndex` exists to prevent (see its doc in `memory/page.rs`).
             let memory = state.memory();
             for page in PageIndex::range_covering(aligned_start, map_len) {

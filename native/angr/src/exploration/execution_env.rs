@@ -14,8 +14,7 @@
 //! Same `pub(crate)` direct-field pattern as `ProfilingCollector`,
 //! `ConstraintSolver`, and `MemoryConfiguration`: callsites read/write
 //! the inner fields through a thin delegation. Do NOT add helper methods
-//! as a separate cleanup; the parent angr-4j5u was deferred multiple
-//! times for cosmetic gains.
+//! as a separate cleanup; the cosmetic gain does not pay for the churn.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. There are no
@@ -42,7 +41,7 @@ pub(crate) struct ExecutionEnvironment {
     /// `[start, end)` of the main object's code regions, when known. Hooks in
     /// this range are user `proj.hook()` territory and always defer to Python.
     pub(crate) main_object_range: Option<(u64, u64)>,
-    /// On by default (angr-gorvf.6; gate added by angr-a8epx / angr-gorvf.3.2):
+    /// On by default (angr-gorvf.6, angr-a8epx, angr-gorvf.3.2):
     /// also prefer the native registry for hooks that land inside a NON-main
     /// loaded object. Python sets this explicitly on every manager.
     pub(crate) prefer_native_library_hooks: bool,
@@ -55,7 +54,7 @@ pub(crate) struct ExecutionEnvironment {
 /// statically-known symbol. Hooks that land inside a loaded object's code go to
 /// Python.
 ///
-/// With it on (the default since angr-gorvf.6), a hook inside a **non-main**
+/// With it on (the default) (angr-gorvf.6), a hook inside a **non-main**
 /// loaded object (libc &c., installed by `use_sim_procedures=True` on a
 /// dynamically-linked binary) prefers the native registry instead of bouncing
 /// to Python. Main-object hooks go to Python either way, so a user

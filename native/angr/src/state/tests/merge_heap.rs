@@ -5,7 +5,7 @@
 
 use super::super::*;
 
-// angr-n0irt.2: RustSimState::merge must extend the angr-ph300.51 max-merge fix
+// angr-n0irt.2: RustSimState::merge must extend the brk/mmap max-merge (angr-ph300.51)
 // to the CGC allocator state. cgc_allocation_base grows DOWNWARD, so the anti-
 // alias combinator is min (furthest-advanced base across branches), NOT the max
 // used for the up-growing brk/mmap watermarks. cgc_sinkholes must INTERSECT (a

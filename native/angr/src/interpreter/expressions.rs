@@ -8,7 +8,7 @@
 //! their own: `eval_ite`, `eval_geti` (+ `regarray_offset`), `eval_const`, and
 //! the `concretize_and_pin` address helper.
 //!
-//! The three groups split out of this file by angr-fs8kb.66:
+//! The three groups split out of this file (angr-fs8kb.66):
 //!
 //! * `expressions_loads.rs` — the load-resolution ladder (`eval_load` and
 //!   everything under it, the multi-address/ITE callback helpers, `LoadG`).
@@ -255,11 +255,12 @@ impl<'a> VEXInterpreter<'a> {
             // A `Concrete` only ever stores its low 128 bits, so packing all four
             // u64 lanes into one would drop `v[2]`/`v[3]` *and* mistag the width as
             // 128 (every sibling arm tags its true IRType width). Assemble the two
-            // halves as a `Concat` instead — the wide-concrete rule from bd memory
-            // `invariant-concrete-bv-u128-16-byte-limit`, same shape as
-            // `bv_utils::bytes_to_bv`. `a.concat(b)` puts `a` above `b`, so the
-            // high half leads. Ico_V256's halves genuinely differ (see bd memory
-            // `invariant-libvex-restricted-vector-consts`), so this is reachable.
+            // halves as a `Concat` instead — the wide-concrete rule
+            // (bd memory `invariant-concrete-bv-u128-16-byte-limit`), same shape
+            // as `bv_utils::bytes_to_bv`. `a.concat(b)` puts `a` above `b`, so
+            // the high half leads. Ico_V256's halves genuinely differ
+            // (bd memory `invariant-libvex-restricted-vector-consts`), so this
+            // is reachable.
             IRConst::V256(v) => {
                 let high = RustBV::concrete(v[2] as u128 | ((v[3] as u128) << 64), 128);
                 let low = RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128);

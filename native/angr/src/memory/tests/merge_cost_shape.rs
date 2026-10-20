@@ -34,7 +34,7 @@
 //! are simulated locally here, so they keep passing independently of what
 //! production merge does — and record the
 //! OrdMap/Arc-sharing-survives-to-reconvergence finding (which retired the risk
-//! premise behind angr-op0dn.11.2.1).
+//! premise that sharing is already destroyed by reconvergence; angr-op0dn.11.2.1).
 
 use super::super::*;
 
@@ -60,8 +60,7 @@ fn build_base() -> SymbolicMemory {
     mem
 }
 
-/// Cost of the *pre-CoW-skip* merge shape (what production did before
-/// angr-op0dn.11.2.1): every page present in both arms is walked
+/// Cost of the *pre-CoW-skip* merge shape (angr-op0dn.11.2.1): every page present in both arms is walked
 /// (load_concrete ×2 + full PAGE_SIZE byte compare). Simulated here, not read
 /// off `SymbolicMemory::merge`.
 fn pre_cow_merge_cost(a: &SymbolicMemory, b: &SymbolicMemory) -> (u64, u64) {
@@ -110,8 +109,8 @@ fn diamond_arms() -> (SymbolicMemory, SymbolicMemory) {
 /// FINDING 1 — OrdMap + Arc structural sharing SURVIVES to the reconvergence
 /// (merge) point. Untouched pages remain ptr-equal across both arms after a
 /// fork + a divergent write; only the written page breaks sharing. This retires
-/// the risk premise behind angr-op0dn.11.2.1 ("sharing already destroyed by
-/// reconvergence").
+/// the risk premise "sharing already destroyed by reconvergence"
+/// (angr-op0dn.11.2.1).
 #[test]
 fn test_ordmap_sharing_survives_to_merge_point() {
     let (a, b) = diamond_arms();

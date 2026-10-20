@@ -285,8 +285,8 @@ pub struct MemoryPage {
     /// (fully concrete).
     symbolic_bitmap: PageBitmap,
     /// Bitmap tracking Multi-cell bytes: bit i set means byte i carries
-    /// lazy alternatives in `SymbolicMemory::multi_objects` (Phase 1 of
-    /// angr-czph). Parallel to `symbolic_bitmap`; a byte may be marked in
+    /// lazy alternatives in `SymbolicMemory::multi_objects`
+    /// (angr-czph Phase 1). Parallel to `symbolic_bitmap`; a byte may be marked in
     /// at most one of the two bitmaps at a time. Empty means no Multi
     /// cells on this page — common case, so we pay one Option discriminant
     /// rather than a 512-byte bitmap allocation.

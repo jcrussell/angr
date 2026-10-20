@@ -28,12 +28,11 @@
 //!     symbolic-file model owns those, and synthesizing fresh bytes here would
 //!     drop the SimFile's own constraints.
 //!
-//! NOTE (angr-m674p, superseded by angr-0xyq2): pre-Phase-3, this native
-//! fread did NOT fix asisctffinals2015_license — `fread`'s `size` came from
-//! fstat/ftell on the symbolic file (symbolic `filesize_*`), so the macro
-//! bounced `SymbolicArgument` and the Rust→Python export churned the shared
-//! Z3 solver. With the bounded-symbolic-content export (angr-0xyq2 Phase 3),
-//! the file is registered natively and `effective_len` makes fstat/ftell
+//! NOTE: without the bounded-symbolic-content export, `fread`'s `size` on
+//! asisctffinals2015_license comes from fstat/ftell on the symbolic file
+//! (symbolic `filesize_*`), so the macro bounces `SymbolicArgument` and the
+//! Rust→Python export churns the shared Z3 solver. With that export
+//! (angr-m674p, angr-0xyq2), the file is registered natively and `effective_len` makes fstat/ftell
 //! CONCRETE, so the same fread arrives with a concrete size and is served
 //! from `content_sym` — the license bench now passes.
 

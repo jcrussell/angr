@@ -322,7 +322,7 @@ type ExprMemo = std::cell::RefCell<Option<z3::ast::BV>>;
 /// of its clarirs term, and its Z3 memo is dropped (Z3 ASTs cannot cross
 /// process boundaries) and re-lowered lazily after load.
 ///
-/// This is the snapshot/serialization format from the angr-x04s spike.
+/// This is the snapshot/serialization format (angr-x04s).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RustBVData {
     Concrete {
@@ -453,7 +453,7 @@ impl RustBV {
     /// makes the degenerate answer correct here rather than merely safe, which
     /// is why this returns a value instead of plumbing a `Result` through
     /// infallible signatures (same reasoning as the `w == 0` rotate arm in
-    /// `value_ops`; see bd memory `invariant-rustbv-zero-width`).
+    /// `value_ops`).
     #[inline]
     #[allow(
         clippy::expect_used,

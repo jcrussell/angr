@@ -7,9 +7,8 @@
 //! deferred forks, and route the resulting states into the right stashes.
 //!
 //! The pyclass-facing thin wrappers live in `manager_methods_run.rs` and
-//! forward to the `pub(crate)` bodies in this module. (They were in `mod.rs`
-//! until the `#[pymethods]` surface was split out of it per angr-nbim4.1 /
-//! angr-9ke6b.50; see `mod.rs`'s own module doc.)
+//! forward to the `pub(crate)` bodies in this module
+//! (angr-nbim4.1, angr-9ke6b.50); see `mod.rs`'s own module doc.
 //!
 //! Extension-impl module; see the [`exploration`](super) module doc.
 //!
@@ -233,15 +232,15 @@ impl RustExplorationManager {
     /// `_resume_after_error` → ERRORED). Both must process deferred forks that
     /// diverged EARLIER in the same step BEFORE sinking the main state: those
     /// forks are unexplored branches with nothing to do with why the state is
-    /// terminating, so dropping them silently prunes a reachable path (the
-    /// deadend variant was angr-ph300.7, the error variant angr-4xaga.5).
+    /// terminating, so dropping them silently prunes a reachable path
+    /// (angr-ph300.7, angr-4xaga.5).
     ///
     /// Because the main state sinks to a terminal stash, it is the `guard_sink`
     /// for each taken-path constraint, and UNSAT materialized forks are only
     /// lineage-registered (no pruned-stash push) — identical for both callers.
     /// Centralizing here means a future terminal consumer calls ONE method
     /// instead of re-deriving the fork_base / guard_sink / routing dance, which
-    /// is exactly the step that was forgotten in angr-4xaga.5 (angr-qwyti.4).
+    /// is exactly the step that is easy to forget (angr-4xaga.5, angr-qwyti.4).
     /// The contrasting non-terminal consumers (`_resume_after_simprocedure`,
     /// `_resume_after_symbolic_branch`) keep their own materialize blocks: their
     /// main state survives and carries the taken-path guard, so `guard_sink`
@@ -380,8 +379,8 @@ impl RustExplorationManager {
         // clean fork base from the pre-callback snapshot (or a fork of the
         // pre-branch state) BEFORE either is applied. Without this, a
         // snapshot-less deferred fork gets built on a guard-polluted solver
-        // and a reachable path is falsely pruned as UNSAT (angr-ph300.9 for
-        // the branch guard, angr-khpsh for the taken-path constraints). Only
+        // and a reachable path is falsely pruned as UNSAT, by either the branch
+        // guard or the taken-path constraints (angr-ph300.9, angr-khpsh). Only
         // pay the solver-clone fork cost when there are deferred forks to materialize.
         let fork_base = if pending.deferred_forks.is_empty() {
             drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
@@ -518,7 +517,7 @@ impl RustExplorationManager {
         // `deferred_forks`, so this consumer deliberately does NOT materialize.
         // If a future refactor ever routes a `with_context` pending (carrying
         // deferred forks) here, this trips loudly rather than silently pruning a
-        // reachable branch — the exact silent-drop bug class of angr-4xaga.5.
+        // reachable branch (angr-4xaga.5).
         // Real `assert!` (not `debug_assert!`) because the ralph/CI gate runs
         // `cargo test --release`, where debug assertions are compiled out; this
         // path is a Python-boundary bounce, not a hot loop, so the cost is nil.

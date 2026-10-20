@@ -30,7 +30,7 @@ use super::{BridgeError, extract_int_value};
 /// and that arm now refuses such a width, so returning the pair here would let
 /// the shortcut accept what the general path rejects (and hand
 /// `solver::RustSolverContext::eval_batch` an absurd width to build a
-/// `RustBV::concrete` from — angr-0jh0j.8). Callers fall back to the general
+/// `RustBV::concrete` from) (angr-0jh0j.8). Callers fall back to the general
 /// path, which reports the refusal as a catchable error.
 #[inline]
 pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
@@ -87,9 +87,7 @@ fn check_same_width(op: &str, left: &RustBV, right: &RustBV) -> Result<(), Bridg
 /// narrowing precondition `value_ops::zero_extend_into` only `debug_assert!`s;
 /// and an unwrapped sum can still be an absurd width Z3 would allocate a
 /// multi-gigabit sort for. So: `checked_add` to refuse rather than saturate (an
-/// identity, not a size — see bd memory
-/// `invariant-overflow-fix-refuse-not-saturate-identities`), then
-/// [`check_bv_width`] on the sum.
+/// identity, not a size), then [`check_bv_width`] on the sum.
 fn extended_width(op: &str, source_width: u32, extend_bits: u32) -> Result<u32, BridgeError> {
     let new_width = source_width.checked_add(extend_bits).ok_or_else(|| {
         BridgeError::InvalidArgs(format!(
@@ -159,8 +157,9 @@ pub(crate) fn claripy_to_rustbv(
 /// Targeting well inside the 8 MiB main-thread stack — not the full 8 MiB,
 /// since the interpreter/solver call chain that reaches this function
 /// carries its own (non-recursive) frames below it, and per the sibling
-/// worker-thread fix's own margin philosophy (angr-h92bx: 16 MiB "to clear the main thread by 2x rather than fall
-/// short of it") — a **4096**-deep limit costs at most
+/// worker-thread fix's own margin philosophy (16 MiB "to clear the main
+/// thread by 2x rather than fall short of it") (angr-h92bx) — a **4096**-deep
+/// limit costs at most
 /// `4096 * 1024 B = 4 MiB`, leaving >2x headroom under the 8 MiB budget
 /// even at the padded per-frame estimate. 4096 is also far beyond any real
 /// (non-adversarial) claripy AST depth: the sym-write benchmark's
@@ -603,7 +602,7 @@ fn import_clarirs(
 }
 
 /// Shared body for the ~24 plain binary ops in [`claripy_to_rustbv_depth`]'s
-/// op-dispatch match (angr-9ke6b.45 collapsed them into this).
+/// op-dispatch match, collapsed into this one helper (angr-9ke6b.45).
 ///
 /// Every one of those arms — arithmetic, bitwise, shift/rotate, comparison —
 /// had grown its own verbatim copy of the same shape: extract `args` into a
@@ -746,8 +745,8 @@ fn import_nary_op(
 
 /// Import a symbol leaf from the attribute walk: the leaf of its Rust-side
 /// name, the Bool tag applied ([`SymbolKind::rust_symbol_name`]), so a `BoolS`
-/// and a same-named 1-bit `BVS` stay two variables (angr-9ke6b.38,
-/// angr-9ke6b.223). A leaf is its name, so re-importing a symbol is the same
+/// and a same-named 1-bit `BVS` stay two variables (angr-9ke6b.38/.223).
+/// A leaf is its name, so re-importing a symbol is the same
 /// leaf (angr-mx00p.12).
 fn import_symbolic_leaf(name: &str, width: u32, kind: SymbolKind, ctx: &SymContext) -> RustBV {
     RustBV::symbolic(ctx, kind.rust_symbol_name(name), width)

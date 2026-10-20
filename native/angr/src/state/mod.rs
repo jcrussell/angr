@@ -24,7 +24,7 @@
 //!
 //! The invariants below cross the FFI boundary in addition to (or instead
 //! of) the I-bullets above. Each bullet is stated in full here and its backticked
-//! label is an anchor for this file only — not a bd memory key — except
+//! label is an anchor for this file only, except
 //! where the bullet says otherwise. Enforcement-site comments below
 //! cross-reference back to this header rather than duplicating the prose.
 //!
@@ -38,8 +38,8 @@
 //!   keyed by `state_id` must prune against `any_stash`, not invent
 //!   per-structure LRU caps. Enforced at `next_state_id()` below; the
 //!   always-on `assert!` in `fork_with()` confirms the child ID is fresh
-//!   (promoted from `debug_assert!` in angr-9ke6b.220, alongside the
-//!   sibling ID-minting guards in `exploration/state_lifecycle.rs`).
+//!   (an `assert!`, not a `debug_assert!`, like the sibling ID-minting
+//!   guards in `exploration/state_lifecycle.rs`; angr-9ke6b.220).
 //!   Snapshot restore imports IDs minted under a *foreign* counter, so
 //!   `from_snapshot` calls `reserve_state_id()` to lift the local counter
 //!   above every restored ID — otherwise a resumed manager re-mints live
@@ -191,8 +191,8 @@ pub struct GetoptExternAddrs {
 }
 
 /// One suspended-continuation frame for the native sub-call (ADDS_EXITS)
-/// dispatcher (design: `tools/decisions/native_subcall_dispatcher_design.md`,
-/// spike angr-5gf0s). When a native proc needs to call a guest function and
+/// dispatcher (design: `tools/decisions/native_subcall_dispatcher_design.md`)
+/// (angr-5gf0s). When a native proc needs to call a guest function and
 /// resume afterwards (the analogue of Python's `SimProcedure.call(...,
 /// continue_at="retsite")`), the continuation cannot be a Rust closure — it
 /// must be *data* on the state so it survives fork/snapshot. This frame is that
@@ -218,8 +218,8 @@ pub struct NativeResumeFrame {
     /// the stack: a stack-return ABI clobbers the slot when the guest routine
     /// returns to the resume sentinel, and a link-register ABI loses the
     /// original return address when the dispatcher overwrites LR with the
-    /// sentinel. Storing it on the frame makes resume correct on both (S2,
-    /// bead angr-5gf0s).
+    /// sentinel. Storing it on the frame makes resume correct on both
+    /// (angr-5gf0s).
     pub caller_return_addr: u64,
 }
 
@@ -343,7 +343,7 @@ pub struct RustSimState {
     #[merge_policy = "max"]
     mmap_base: u64,
     /// Simulated timestamp counter backing the `RDTSC` dirty helper. Per-state
-    /// (was a process-wide `AtomicU64` — angr-9ke6b.173) so the Nth RDTSC along
+    /// (not a process-wide `AtomicU64`; angr-9ke6b.173) so the Nth RDTSC along
     /// a path is reproducible across runs, worker counts, and unrelated states.
     /// Default [`crate::vex::dirty::TSC_INITIAL`]; advances by
     /// [`crate::vex::dirty::TSC_STEP`] per RDTSC. Carried across fork +
@@ -354,8 +354,8 @@ pub struct RustSimState {
     /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
     /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
     /// fork + snapshot so each path resumes option scanning correctly.
-    /// Consumed by the native getopt proc (bead angr-bhk0a.3); the
-    /// loader-resolved extern-symbol address push is bead angr-bhk0a.2.
+    /// Consumed by the native getopt proc (angr-bhk0a.3), with the
+    /// loader-resolved extern-symbol address push (angr-bhk0a.2).
     #[merge_policy = "warn_on_diverge"]
     getopt_optind: u32,
     /// getopt(3) cursor — index into the current `argv` element (POSIX

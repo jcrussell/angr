@@ -73,7 +73,7 @@ fn unset_dispatch_callbacks_hard_error() {
 }
 
 /// `call_memory_store_symbolic` hard-errors when `_full` is unwired rather
-/// than storing only `addrs[0]` (the angr-ph300.64 divergent-memory bug).
+/// than storing only `addrs[0]`, a divergent-memory bug (angr-ph300.64).
 /// Complements `concrete_multi_addr_store_prefers_full_callback` in
 /// `callbacks_tests.rs`, which pins the wired half.
 #[test]
@@ -440,7 +440,7 @@ fn resolve_function_handles_none_tuple_and_bad_arity() {
 
 /// Both page-universe predicates fail *open* when Python never installed a
 /// snapshot — an unknown page must keep crossing exactly as before
-/// (angr-gorvf.4.6 / .4.7).
+/// (angr-gorvf.4.6, angr-gorvf.4.7).
 #[test]
 fn page_predicates_fail_open_without_snapshot() {
     Python::initialize();
@@ -721,8 +721,8 @@ fn store_page_set_drops_update_on_poisoned_lock() {
 /// End-to-end over the real call sites: poisoning one snapshot's lock must
 /// degrade only that predicate, leaving the sibling snapshot authoritative.
 ///
-/// The two locks are independent (angr-gorvf.4.6 / .4.7), so a fault in one
-/// must not disable the other's optimization.
+/// The two locks are independent, so a fault in one must not disable the
+/// other's optimization (angr-gorvf.4.6, angr-gorvf.4.7).
 #[test]
 fn poisoned_servable_lock_degrades_only_its_own_predicate() {
     use std::sync::atomic::Ordering;

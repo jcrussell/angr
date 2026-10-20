@@ -2362,12 +2362,11 @@ class TestNativeStdioStatusAndWrite:
 
 
 class TestNativeReadCacheSync:
-    """Regression for angr-3tek.2: re-enabling NativeRead/NativeWrite
-    requires the cached Python SimState to be invalidate-and-replayed per
-    dirty page in `_create_state_for_callback`. Without the replay,
-    symbolic bytes written by NativeRead are invisible to a later Python
-    SimProc fallback (the original failure that kept NativeRead disabled —
-    see angr-mme3)."""
+    """Regression test: NativeRead/NativeWrite require the cached Python
+    SimState to be invalidate-and-replayed per dirty page in
+    `_create_state_for_callback` (angr-3tek.2). Without the replay, symbolic
+    bytes written by NativeRead are invisible to a later Python SimProc
+    fallback (angr-mme3)."""
 
     def test_native_read_dispatches_during_fauxware_exploration(self, fauxware_project):
         """NativeRead is registered by default and dispatches when fauxware
@@ -2553,26 +2552,23 @@ class TestNativeReadCacheSync:
         pending state's solver without raising, inside a live callback
         (angr-ph300.20).
 
-        Regression guard for the fast-path port: the prior body wrapped the
-        *entire* assume block in ``#[cfg(feature = "vex-engine-z3")]`` (a full
-        no-op on non-z3 builds) and had no raw-Z3-pointer path, so an AST the
-        claripy->RustBV bridge cannot convert silently vanished from the pending
-        solver. The fix ports the raw-pointer fast path from
-        ``_add_constraints_to_state`` and un-gates the slow path; angr-9ke6b.71
-        then collapsed the two copies onto the shared
-        ``exploration::constraints::import_python_constraints`` helper, so both
-        entry points now execute one body. This test asserts the call path
-        executes cleanly and the manager keeps stepping afterward.
+        Regression guard for the raw-Z3-pointer fast path: without it (and
+        with the assume block gated on ``#[cfg(feature = "vex-engine-z3")]``,
+        a full no-op on non-z3 builds) an AST the claripy->RustBV bridge cannot
+        convert silently vanishes from the pending solver. Both this entry
+        point and ``_add_constraints_to_state`` run the shared
+        ``exploration::constraints::import_python_constraints`` helper
+        (angr-9ke6b.71). This test asserts the call path executes cleanly and
+        the manager keeps stepping afterward.
 
         NOTE: full soundness (an unconvertible AST actually *binds* to the
         pending solver, or a contradiction turning it UNSAT) is NOT observable
         from this bare fixture — it wires no shared claripy<->Rust z3 context, so
         every raw-pointer assert lands in a context disconnected from the manager
         and ``satisfiable()`` / ``export_pending_constraints`` never reflect it
-        (a concrete ``1 != 1`` reads SAT here). That verification is blocked on
-        the shared-context fixture scoped by angr-ph300.3.1; the fix's soundness
-        rests on sharing the production-tested ``_add_constraints_to_state``
-        body.
+        (a concrete ``1 != 1`` reads SAT here). That verification needs a
+        shared-context fixture (angr-ph300.3.1); soundness rests on sharing the
+        production-tested ``_add_constraints_to_state`` body.
         """
         from angr import claripy
 
@@ -2747,8 +2743,8 @@ class _SelfCallContinuationProc(angr.SimProcedure):
 
 
 class TestSimProcedureSelfCallContinuation:
-    """Regression for angr-aca6y: a SimProcedure ``self.call`` continuation
-    must survive the FFI boundary.
+    """Regression test: a SimProcedure ``self.call`` continuation must
+    survive the FFI boundary (angr-aca6y).
 
     ``SimProcedure.call`` runs ``cc.setup_callsite`` on a *copy* of the
     executing state, so the continuation return address it pushes never goes

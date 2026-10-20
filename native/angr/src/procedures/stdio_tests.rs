@@ -299,11 +299,10 @@ fn test_fputs_empty_string_writes_nothing_returns_one() {
 }
 
 /// Every value-returning proc in `stdio.rs` is `int`-typed in C, so each must
-/// mint a 32-bit return — never the arch word width, which is what the
-/// `invariant-native-proc-return-width-extension` bd memory's second corollary
-/// rules out (an amd64 `(int)-1` is `0xFFFFFFFF` in RAX, not all-ones). The
-/// five used to go through `arch_word`; angr-fs8kb.93 flipped them to match
-/// `fgets.rs`'s `fgetc`/`getchar`/`getc`. `fputs`'s error path below is the
+/// mint a 32-bit return — never the arch word width, which the
+/// return-width-extension invariant rules out (an amd64 `(int)-1` is
+/// `0xFFFFFFFF` in RAX, not all-ones), matching `fgets.rs`'s
+/// `fgetc`/`getchar`/`getc` (angr-fs8kb.93). `fputs`'s error path below is the
 /// sharpest case: all-ones and `(int)-1` are indistinguishable by
 /// `.as_u64()` once the ABI extension runs, so only the width assertion
 /// covers it. See [`assert_ret_width`] for why the `.as_u64()` assertions

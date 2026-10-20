@@ -172,7 +172,7 @@ fn write_count_at_limit_is_native() {
 
 #[test]
 fn test_write_content_sym_demotes_and_falls_back() {
-    // angr-0xyq2 Phase 2 write-demotion: a native write to a bounded
+    // Write-demotion (angr-0xyq2 Phase 2): a native write to a bounded
     // symbolic file clears content_sym on ALL fds for the path, drops the
     // registry entry, and bounces to Python — the write itself and all
     // subsequent I/O on the file are Python-owned.
@@ -215,9 +215,9 @@ fn test_write_content_sym_demotes_and_falls_back() {
     }
 
     // Subsequent read on the demoted fd stays a Python fallback: the file is
-    // Python-owned from here on, so the contentless-fd mint of angr-gorvf.15
+    // Python-owned from here on, so the contentless-fd mint
     // must NOT kick in and invent bytes over Python's written content
-    // (angr-8kk32).
+    // (angr-gorvf.15, angr-8kk32).
     let read_result = crate::procedures::read::NativeRead.call(
         &mut state,
         &[

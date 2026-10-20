@@ -22,8 +22,8 @@ use pyo3::prelude::*;
 ///
 /// Dropping the getters exposed a `push_level: u32` field that only the
 /// unreachable getter ever read — a third copy of the always-zero counter
-/// whose siblings died in angr-ph300.44 / angr-c7xno.75 (see
-/// `symbolic::transaction_ops`'s module doc), so it went too.
+/// whose siblings were also removed (angr-ph300.44, angr-c7xno.75); see
+/// `symbolic::transaction_ops`'s module doc. So it went too.
 #[derive(Debug, Clone)]
 pub(crate) struct DeferredFork {
     /// Address where the branch occurred.
@@ -67,7 +67,7 @@ pub(crate) struct DeferredFork {
 /// `angr/` ever set it, and stride detection is unconditionally on. Toggle it
 /// on `AddressConcretizer` directly if a caller ever needs it off.
 ///
-/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[non_exhaustive]`: minor versions may add new (angr-irwe)
 /// `#[pyo3(get, set)]` knob fields. Construction outside this crate
 /// must go through `ExecutionConfig::py_new` (the PyO3 `__init__`)
 /// rather than struct-literal syntax.

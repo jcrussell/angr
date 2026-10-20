@@ -6,16 +6,15 @@
 //! pyclass-facing thin wrappers live in the `manager_methods_*.rs` family —
 //! split between `manager_methods_state.rs` and
 //! `manager_methods_constraints.rs` — and forward to the `pub(crate)` bodies
-//! in this module. (They were in `mod.rs` until the `#[pymethods]` surface
-//! was split out of it per angr-nbim4.1 / angr-9ke6b.50; see `mod.rs`'s own
-//! module doc.)
+//! in this module (angr-nbim4.1, angr-9ke6b.50); see `mod.rs`'s own module
+//! doc.
 //!
 //! Extension-impl module; see the [`exploration`](super) module doc.
 //!
 //! # Cross-cutting invariants enforced here
 //!
 //! Each bullet is stated in full here; the backticked labels are anchors
-//! for cross-referencing within the Rust tree, not bd memory keys.
+//! for cross-referencing within the Rust tree.
 //!
 //! - **`state-id-never-reused`** — every state added or merged into a stash
 //!   gets a fresh monotonic ID from `next_state_id()` (allocated inside
@@ -433,8 +432,8 @@ impl RustExplorationManager {
         // Unlike that one we cannot drop the bookkeeping wholesale (it swaps
         // in a fresh `StashManager`; we keep ours), so each discarded id gets
         // the same unindex + remove_root treatment as the dropped actives
-        // above — otherwise `stash_of` would keep answering for a dead id, the
-        // angr-ph300.26 bug in a different bucket. No `on_state_removed`:
+        // above — otherwise `stash_of` would keep answering for a dead id
+        // (angr-ph300.26). No `on_state_removed`:
         // every id in both buckets was already notified on its way out of
         // STASH_ACTIVE, but by two different mechanisms. A `pending_callbacks`
         // state went through `policy.select`, which notifies

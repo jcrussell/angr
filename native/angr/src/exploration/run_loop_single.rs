@@ -74,14 +74,13 @@ impl RustExplorationManager {
             // because callback-heavy workloads (e.g.
             // google2016_unbreakable_0: every iteration returns via
             // `need_simprocedure`) never reach `self.steps += 1` and
-            // would otherwise never sample (`bd recall
-            // v5ht-sampler-tick-bottleneck`). `tick_and_sample_for_thrash`
+            // would otherwise never sample. `tick_and_sample_for_thrash`
             // uses its own internal tick counter so the sampling cadence
             // is independent of `self.steps`. Always-on: cheap (single
             // atomic load + branch on `LINEAGE_DISMANTLED`) and a no-op
             // until the kill switch is turned on. Sample every 10 ticks;
             // dismantle when ≥20 lineage_switch events show <35% hot
-            // ratio over a window — threshold calibrated in angr-1gfa; widen
+            // ratio over a window; the threshold is calibrated (angr-1gfa). Widen
             // the measured workload set before retuning it.
             crate::symbolic::lineage::tick_and_sample_for_thrash(10, 20, 35);
 
@@ -110,7 +109,7 @@ impl RustExplorationManager {
                     STEPPING_STATE_ID.with(|cell| cell.set(Some(sid)));
                     // angr-panhl.1: model a work-stealing migration at dispatch.
                     self.record_migration_sample(sid);
-                    // SI-B (angr-1ilq.3 increment 2b'): the REAL analog of the
+                    // SI-B (angr-1ilq.3): the REAL analog of the
                     // MODEL sample above — measure the migration serde tax on
                     // a fork of this pre-step state and discard the result.
                     // No-op unless RUST_PARALLEL_SHADOW_PROBE is set; when it
@@ -347,7 +346,7 @@ impl RustExplorationManager {
                         args,
                         // `mirror_segfault`: unlike the parallel mirror, a
                         // strict-page-access fault still bounces to Python here.
-                        // Deliberate — angr-ph300.73's shared-dispatch extraction
+                        // Deliberate — the shared-dispatch extraction
                         // parameterized this flag precisely to preserve each
                         // caller's behavior; see `dispatch_native_proc`'s doc.
                         false,

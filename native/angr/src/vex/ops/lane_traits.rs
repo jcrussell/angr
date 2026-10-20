@@ -3,7 +3,7 @@
 //! Extracted from `ops/mod.rs` (angr-9ke6b.170) to shrink the dispatch file
 //! down to the `VEXOps` entry points themselves — `unop` / `binop` / `qop`
 //! plus their rm-aware counterparts `unop_with_rm` / `binop_with_rm` /
-//! `qop_with_rm` (six of them, the last added by angr-03vl4.30). Holds the
+//! `qop_with_rm` (angr-03vl4.30). Holds the
 //! `FloatLaneOp` / `IntLaneOp` contracts, their marker types and
 //! impl-generating macros, and the `float_prec_of` / `build_float_expr` free
 //! fns the scalar-FP siblings share. Declared as a child module of `ops`

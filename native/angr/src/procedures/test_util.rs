@@ -47,8 +47,8 @@ pub(crate) fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32
 }
 
 /// Register `n` fully symbolic bytes as the content of `path`, then open it
-/// read-only. Returns the fd. This is the angr-0xyq2 Phase 2 "bounded
-/// symbolic file" shape the write-demotion tests need.
+/// read-only. Returns the fd. This is the "bounded symbolic file" shape the
+/// write-demotion tests need (angr-0xyq2 Phase 2).
 pub(crate) fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
     let bytes: Vec<RustBV> = {
         let ctx = state.solver().borrow();

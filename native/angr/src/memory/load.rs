@@ -7,10 +7,7 @@
 //! # Variant matrix (angr-9ke6b.102)
 //!
 //! The `load_*` family is large and the `_lazy` / `_unified` suffixes do
-//! **not** consistently signal behavior. (There used to be a
-//! `load_concrete_automap` that notably did *not* auto-map — the name was
-//! historical; angr-sqfj8.75 removed it as a byte-identical duplicate of
-//! `load_concrete_lazy`.) Every row below is classified on four axes:
+//! **not** consistently signal behavior. Every row below is classified on four axes:
 //!
 //! * **Perm** — does the path run `check_perms_range(.., Permission::R)`?
 //! * **Unmapped** — `Unmapped` hard error, or `UnmappedPageInRegion` for a page
@@ -57,9 +54,9 @@
 //!
 //! **Adding a variant:** place its body behind `load_concrete_common` rather
 //! than re-deriving the fast paths — that is what keeps the Multi dispatch and
-//! the angr-jvjf / angr-3zhl partial-overwrite guards on every path (the
-//! angr-9ke6b.96 bug was exactly a Multi gate living on one copy only). Then
-//! add a row here. The store-side matrix lives in the `memory::store` module
+//! the partial-overwrite guards on every path (a Multi gate living on one
+//! copy only is exactly the bug this prevents) (angr-jvjf, angr-3zhl, angr-9ke6b.96).
+//! Then add a row here. The store-side matrix lives in the `memory::store` module
 //! docs.
 //!
 //! **Panic policy (angr-9ke6b.212):** loads run on guest-supplied addresses, so
@@ -85,7 +82,7 @@ use super::{
 };
 
 impl SymbolicMemory {
-    /// angr-jvjf partial-overwrite guard (shared by `load_concrete` and
+    /// Partial-overwrite guard (angr-jvjf; shared by `load_concrete` and
     /// `load_concrete_lazy_inner`). `store_concrete` clears the page bitmap
     /// for overwritten bytes but leaves `symbolic_objects` / `symbolic_spans`
     /// claims intact when those belong to a wider sym based at a different
@@ -205,7 +202,7 @@ impl SymbolicMemory {
     /// [`SymbolicMemory::load_concrete_lazy_inner`] (angr-9ke6b.97).
     ///
     /// These were ~200-line near-duplicates that drifted apart repeatedly —
-    /// Multi-cell dispatch, the angr-3zhl partial-overlap merge, the wider-sym
+    /// Multi-cell dispatch, the partial-overlap merge (angr-3zhl), the wider-sym
     /// fast paths and the endianness-aware `containing_wider_sym` extract each
     /// landed in one copy only. `lazy` now carries the single real difference:
     /// whether an unmapped page inside a lazy region is reported as
@@ -465,7 +462,7 @@ impl SymbolicMemory {
                 // overflow-ok: the distance is a real in-region byte offset with
                 // `off_bits + size * 8 <= total_bits`.
                 let off_bits = (addr - sym_addr) as u32 * 8;
-                // Mirror of fast-path angr-v1q2 fix: the wide BV's byte
+                // Mirror of the fast path (angr-v1q2): the wide BV's byte
                 // layout depends on memory endianness.
                 // BE: bytes [off, off+size) occupy bits
                 //     [total-1-off_bits : total-off_bits-size*8].
@@ -808,7 +805,7 @@ impl SymbolicMemory {
     }
 
     /// Per-byte reconstruction for loads that touch at least one Multi cell
-    /// (Phase 1.2 of angr-czph, bead angr-n082). For each byte in
+    /// (angr-czph Phase 1.2, angr-n082). For each byte in
     /// `[addr, addr + size)`:
     ///   * Multi byte: right-fold the payload's `(cond, value)` pairs into
     ///     an ITE chain whose final `else` is the page's concrete byte.

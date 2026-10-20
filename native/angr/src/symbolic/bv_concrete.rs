@@ -13,7 +13,7 @@
 /// (`result_width`) must be guarded. This is the single source of truth for the
 /// concrete-extract fold shared by `RustBV::extract_into`, `extract_no_ctx`, and
 /// the Z3 emitter `emit_extract_z3_cached`; keeping one copy prevents the three
-/// sites from silently diverging (they have before — see angr-ph300.36).
+/// sites from silently diverging (angr-ph300.36).
 #[inline]
 pub(super) fn concrete_extract_u128(value: u128, low: u32, result_width: u32) -> u128 {
     let shifted = if low >= 128 { 0 } else { value >> low };

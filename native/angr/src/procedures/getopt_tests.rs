@@ -350,7 +350,7 @@ fn getopt_element_near_u64_max_wraps_inline_optarg() {
     assert_eq!(read_optarg(&state), 1);
 }
 
-/// Harness 6 boundary sweep for angr-03vl4.44: every value in the shared
+/// Harness 6 boundary sweep (angr-03vl4.44): every value in the shared
 /// `test_boundary_values` table, not just the single `u64::MAX - 7` pivot
 /// `getopt_argv_ptr_near_u64_max_wraps_element_slot` pins, must resolve
 /// argv[1]'s slot (`argv_ptr.wrapping_add(1 * ps)`) at the exact wrapped

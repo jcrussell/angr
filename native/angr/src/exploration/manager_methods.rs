@@ -10,8 +10,8 @@
 //! modules, each with its own `#[pymethods] impl RustExplorationManager`
 //! block: `_hooks`, `_state`, `_constraints`, `_procedures`, `_techniques`,
 //! `_export`, `_run`, `_diagnostics`, `_snapshot` (PyO3's
-//! `multiple-pymethods` feature, angr-9ke6b.50; see the `exploration` module
-//! doc). The split is by section so no single file grows: adding a method
+//! `multiple-pymethods` feature; see the `exploration` module doc)
+//! (angr-9ke6b.50). The split is by section so no single file grows: adding a method
 //! means picking the module that matches its section. `stats_api`'s
 //! wrappers live in `_constraints` and `_procedures`, not in a module of
 //! their own (angr-03vl4.25).
@@ -69,7 +69,7 @@ impl RustExplorationManager {
             // angr-x39ae: keep (materialize) the deferred forks pending at an
             // UnconstrainedJump by default — dropping them silently lost every
             // sibling path of a state that went unconstrained, and the
-            // angr-027h eager retry did not recover them all either.
+            // eager retry did not recover them all either.
             materialize_unconstrained_forks: true,
             find_needs_python: false,
             avoid_needs_python: false,
@@ -424,8 +424,8 @@ impl RustExplorationManager {
         self.memory_config.zero_fill_unconstrained = enabled;
     }
 
-    /// Toggle deferred-fork mode for the whole manager (angr-027h two-phase
-    /// explore). `true` (the default) is the fast deferred path: forward-branch
+    /// Toggle deferred-fork mode for the whole manager (two-phase explore)
+    /// (angr-027h). `true` (the default) is the fast deferred path: forward-branch
     /// loop exits are deferred and the loop-continuation is taken as the main
     /// chain. `false` makes every fork materialize eagerly (BFS), which lets a
     /// find-guided search reach a target behind a symbolic loop exit at the cost

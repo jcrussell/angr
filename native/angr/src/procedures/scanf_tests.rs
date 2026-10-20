@@ -128,7 +128,7 @@ fn test_scanf_percent_s_with_width() {
     assert_eq!(nul.as_u64(), Some(0));
 }
 
-/// Regression test for angr-mi56k: an explicit field width whose digit run
+/// Regression test (angr-mi56k): an explicit field width whose digit run
 /// saturates `parse_width_digits` to (near) `usize::MAX` must be clamped to
 /// `MAX_SCANF_STR_LEN`, not fed straight into `do_scanf`'s
 /// `(0..str_len).map(...).collect::<Vec<String>>()`. Unclamped, `Range<u64>`'s

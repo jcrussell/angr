@@ -12,8 +12,7 @@
 //! they touch must be reachable from this sibling module. All but two were
 //! already promoted by earlier slices; this slice promotes the last holdouts
 //! (`symbol_table`, `assumed_constraints_shared`) to `pub(super)`
-//! (== `pub(in crate::symbolic)`). See bead angr-a2br.2.4
-//! for the slice plan.
+//! (== `pub(in crate::symbolic)`) (angr-a2br.2.4).
 
 use super::local_constraints::LocalConstraints;
 use super::{RustBV, SymContext, SymContextSnapshot};
@@ -90,7 +89,7 @@ impl SymContext {
     /// precondition" section on [`SymContextSnapshot`] and the
     /// `debug_assert!` below.
     ///
-    /// The broader snapshot plan is angr-x04s; the rustdoc on
+    /// The rustdoc on
     /// [`RustSimStateSnapshot`](crate::state::RustSimStateSnapshot) lists
     /// which surrounding state buckets are covered (RegisterFile /
     /// MemoryPage) versus deferred (Python-side `Py<PyAny>` overlays).
@@ -170,8 +169,7 @@ impl SymContext {
             // entries re-assert on restore under fresh ptrs, so a naive replay
             // over-counts. Pinning `constraint_count` to the source value keeps
             // the round-trip contract (`state_constraint_count` preserved) that
-            // the pre-Phase-1 full-solver dump gave for free. See bd memory
-            // `snapshot-constraint-count-pin`.
+            // a full-solver dump would give for free.
             constraint_count: self.num_constraints(),
             // angr-op0dn.13.14: capture the id watermark. Restore builds a
             // fresh SymContext (next_id = 0) whose restored leaves already own
@@ -324,7 +322,7 @@ impl SymContext {
                 if !snap.residual_smtlib2.is_empty() {
                     self.replay_residual_smtlib2(&snap.residual_smtlib2);
                 }
-                // (iii) angr-kenpr: pin `constraint_count` back to the source's
+                // (iii) pin `constraint_count` back to the source's
                 // authoritative value. The assume-class IR replay above can
                 // re-assert `assumed`-log entries that were live-deduped away on
                 // the source solver (ptr-dedup fires against a since-freed AST
@@ -379,7 +377,7 @@ impl SymContext {
         n
     }
 
-    /// angr-t3l5o Phase 0a bench hook: expose the private
+    /// Bench hook: expose the private
     /// [`Self::dump_solver_smtlib2`] so the per-phase micro-bench in
     /// `benches/vex_engine.rs` can time the SMT-LIB2 *emit* in isolation
     /// without copy-pasting its body.
@@ -388,7 +386,7 @@ impl SymContext {
         self.dump_solver_smtlib2()
     }
 
-    /// angr-t3l5o Phase 0a bench hook: re-parse an SMT-LIB2 text dump into a
+    /// Bench hook: re-parse an SMT-LIB2 text dump into a
     /// fresh context's solver, isolating the SMT-LIB2 *parse* cost. Shares its
     /// body with the production restore path — both call
     /// [`Self::parse_smtlib2_into_solver`] — so the two can't drift
@@ -399,7 +397,7 @@ impl SymContext {
         SymContext::new().parse_smtlib2_into_solver(smtlib2)
     }
 
-    /// angr-t3l5o Phase 0a bench hook: assert a width-1 `RustBV` predicate via
+    /// Bench hook: assert a width-1 `RustBV` predicate via
     /// the *raw* path (`add_constraint_raw`) so it lands in the residual
     /// (no-`RustBV`) class — i.e. it is NOT recorded in `assumed_constraints`
     /// and so survives the round-trip only through the SMT-LIB2 text dump.
@@ -515,8 +513,7 @@ impl SymContext {
         // Condition (b) protects the per-context solver's bare-push frames
         // from being clobbered by a sibling that takes over Z3 stack
         // ownership through the new lineage (the exact correctness bug
-        // that `test_fork_inside_push_isolation` exposes in earlier
-        // attempts; see bd memory `invariant-bare-z3-push-depth`).
+        // that `test_fork_inside_push_isolation` exposes).
         //
         // Seeding via `assert_base` puts the parent's frozen constraints
         // at scope 0 of the lineage's solver, so the child's first query
@@ -525,7 +522,7 @@ impl SymContext {
         // separately. Subsequent constraints added on the child go
         // through the slice-4c migrated `add_constraint*` paths, which
         // mint per-state ScopeFrames on top of the lineage base.
-        // angr-v5ht adds the third gate (c): if the runtime thrash
+        // The third gate (c): if the runtime thrash
         // detector has dismantled lineage minting (the hot-cache hit
         // ratio dropped below threshold over a recent sampling window),
         // skip lineage minting AND drop the lineage Arc on the child.
@@ -590,8 +587,8 @@ impl SymContext {
             // `constraint_count` but push no assumed pair. Seeding from the
             // assumed length alone erased those from the child's count, so a
             // concretize-then-fork shrank `num_constraints()` below the parent's
-            // for an identical effective set. This mirrors the angr-kenpr
-            // snapshot-restore pin (`create_snapshot` pins to `num_constraints()`),
+            // for an identical effective set. This mirrors the snapshot-restore
+            // pin (`create_snapshot` pins to `num_constraints()`),
             // keeping the `state_constraint_count` round-trip contract intact.
             constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
@@ -630,8 +627,8 @@ impl SymContext {
             lineage: Mutex::new(child_lineage),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),
-            // angr-c7xno.75: the child starts at 0, NOT the parent's depth
-            // (the angr-3ms1 step 1a behavior). The counter means "open bare
+            // angr-c7xno.75: the child starts at 0, NOT the parent's depth.
+            // The counter means "open bare
             // push scopes on *this* context's per-context Z3 solver"
             // (`invariant-bare-z3-push-depth`), and the child has none: its
             // `bare_local_savepoints` is empty above, and its solver is
@@ -695,8 +692,7 @@ impl SymContext {
     /// solver without a frame recording it, and it would silently vanish
     /// the next time `switch_to` rewound past that point.
     ///
-    /// The per-call-site migration history that used to live here (angr-v5a5
-    /// slices 3c–4c.2c) is in `git log`; do not re-add it.
+    /// The per-call-site migration history is in `git log`; do not re-add it.
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
@@ -728,8 +724,8 @@ impl SymContext {
         *self.lineage.lock() = Some(lin);
     }
 
-    /// Append a `ScopeFrame` to this context's `scope_path` (test-only,
-    /// angr-v5a5 slice 4b).
+    /// Append a `ScopeFrame` to this context's `scope_path` (test-only)
+    /// (angr-v5a5 slice 4b).
     ///
     /// Lets unit tests exercise the truncation behavior of
     /// `scope_savepoint_pop` before the
@@ -1002,10 +998,9 @@ impl SymContext {
 /// The returned Arc is the child's constraint set either way, so a fork taken
 /// *inside* an open scope still sees the in-scope constraints — only the
 /// parent's ability to retract them later is preserved. Callers derive
-/// `scope_open` from `bare_local_savepoints` (see `SymContext::fork`); the
-/// pre-angr-c7xno.75 gate read the long-dead `push_level` instead, which made
-/// the preserve branch unreachable and let in-scope constraints leak
-/// permanently into `shared`.
+/// `scope_open` from `bare_local_savepoints` (see `SymContext::fork`); a gate
+/// on any other counter can leave the preserve branch unreachable and let
+/// in-scope constraints leak permanently into `shared` (angr-c7xno.75).
 fn freeze_into_shared<T: Clone>(
     shared: &Mutex<Arc<Vec<T>>>,
     local: &mut Vec<T>,

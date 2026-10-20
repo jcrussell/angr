@@ -2,8 +2,8 @@
 //!
 //! Split out of `callbacks/mod.rs` (angr-5mnx3.8), which had grown to be the
 //! largest file in the directory while the module's own header already
-//! documented the angr-zel8z.2 decomposition into `config`/`dispatch`/
-//! `events`/`inspect`. Nothing here is reachable from the engine: every item
+//! documented its decomposition into `config`/`dispatch`/`events`/`inspect`
+//! (angr-zel8z.2). Nothing here is reachable from the engine: every item
 //! exists so the marshalling round-trip of an `inspect` breakpoint can be
 //! exercised from Python without driving a VEX dispatch site (uq4n.3). The
 //! dispatch methods these forward to live in `callbacks/inspect.rs`; their

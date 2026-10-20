@@ -3,11 +3,8 @@
 //! backward-compat wrappers that predate `state.file_system()`.
 //!
 //! Everything reachable from a bare `FileSystem::default()` lives in
-//! `state/filesystem/tests.rs` instead — this file was carved out of the
-//! monolithic `state_tests.rs` as `filesystem_basic` (angr-c7xno.69) and
-//! carried a duplicate of that file's CRUD/fd-table coverage until
-//! angr-03vl4.56 folded the duplicates back and renamed it for the boundary
-//! it actually holds.
+//! `state/filesystem/tests.rs` instead, so this file does not duplicate
+//! that file's CRUD/fd-table coverage (angr-c7xno.69, angr-03vl4.56).
 
 use super::super::*;
 

@@ -18,8 +18,6 @@
 //!
 //! Centralizing these means null-boundary edge cases live in one place. Tests
 //! for the shared helpers live in this file.
-//!
-//! Anchor for source-of-history: angr-arf5.
 
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -36,13 +34,13 @@ use crate::symbolic::{RustBV, SymContext};
 /// why it returns the truncated prefix instead.
 ///
 /// One home so a future security-driven reduction is applied everywhere at
-/// once rather than silently missing a copy that kept its own local `4096`
-/// (angr-myzjx.7, continued for the getopt/perror/getenv trio in
-/// angr-03vl4.45, for strchr/strlen in angr-03vl4.49, and for the
-/// `puts`/`fputs` pair — neither takes a length argument, so both are string
-/// scans rather than payload-size caps — in angr-0jh0j.45, and for
-/// `sprintf_conv.rs`'s `%s` *conversion argument* — a plain C string, unlike the
-/// format string itself — in angr-0jh0j.44). Importers alias it
+/// once rather than silently missing a copy that kept its own local `4096`.
+/// Its users include the getopt/perror/getenv trio, strchr/strlen, the
+/// `puts`/`fputs` pair (neither takes a length argument, so both are string
+/// scans rather than payload-size caps), and `sprintf_conv.rs`'s `%s`
+/// *conversion argument* (a plain C string, unlike the format string itself)
+/// (angr-myzjx.7, angr-03vl4.45, angr-03vl4.49, angr-0jh0j.45, angr-0jh0j.44).
+/// Importers alias it
 /// locally (`MAX_STRING_SCAN as MAX_SCAN`) where the file already had its own
 /// vocabulary. `strcmp`/`memcmp` share their own equivalent
 /// (`strcmp::MAX_STRCMP_LEN`); the printf/scanf family share
@@ -60,7 +58,7 @@ pub(crate) const MAX_STRING_SCAN: usize = 4096;
 ///
 /// One home for the same reason [`MAX_STRING_SCAN`] has one: these three used
 /// to be three independent `256` literals whose agreement was a coincidence a
-/// reader had to verify by hand (angr-03vl4.46, same class as angr-myzjx.7).
+/// reader had to verify by hand (angr-03vl4.46, angr-myzjx.7).
 /// `syscalls/directory.rs::PATH_MAX` is deliberately *not* folded in — it is a
 /// larger (4096) cap with truncating rather than erroring semantics; see the
 /// asymmetry note on `file_path::read_path`.
@@ -441,7 +439,7 @@ pub(crate) fn build_strlen_chain(
 /// caller-supplied one: `strncmp(a, b, 4)` may legitimately compare four
 /// non-null bytes, so the caller-bounded variants (strnlen, strncmp,
 /// strncasecmp) must not apply this **at any `n`** — not even one that reaches
-/// the MAX cap, which is how angr-fs8kb.36 crept in. Callers pass an explicit
+/// the MAX cap (angr-fs8kb.36). Callers pass an explicit
 /// flag (`strlen::scan_for_null`'s `require_null`, `strcmp::compare_bytes`'s
 /// `unbounded`); never re-derive it from the window length.
 pub(crate) fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) -> Option<RustBV> {

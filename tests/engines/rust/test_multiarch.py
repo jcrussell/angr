@@ -7,7 +7,7 @@ table existed, coverage of a minority arch depended on someone remembering to
 hand-author a test for it, so arch-specific bugs slipped through
 disproportionately (BE ``htonl``/``htons``/``pipe`` byte order, 32-bit
 ``scanf``/``sprintf`` length modifiers, unmapped NEON unsigned vector compares
-— all angr-9ke6b findings). Adding an assertion or an architecture now buys the
+— each a real finding, angr-9ke6b). Adding an assertion or an architecture now buys the
 whole matrix at once; ``test_arch_offset_parity.py`` is the same idiom applied
 to the register tables.
 
@@ -283,12 +283,11 @@ class TestMultiArchSupport:
         resolve a calling convention, so the ``#[new]`` constructor succeeds
         rather than panicking in ``default_cc_for_arch``.
 
-        Regression for angr-n0irt.6: ``arch_from_name`` accepted ``"mipsle"``
-        but the MIPS O32 calling convention's alias list (then a per-CC
-        ``ARCH_ALIASES`` const, now the MIPS32 row of ``ALL_ARCHES`` in
-        ``arch/mod.rs``) listed ``"mipsbe"`` instead, so
-        ``_RustExplorationManager("mipsle")`` passed the arch lookup then
-        panicked (PyO3 catch_unwind -> PanicException) on the very next line —
+        Regression test (angr-n0irt.6): every alias ``arch_from_name`` accepts
+        must also be in the MIPS32 row of ``ALL_ARCHES`` in ``arch/mod.rs``.
+        A mismatch (``"mipsle"`` accepted by the lookup but missing from the
+        calling convention's alias list) makes ``_RustExplorationManager("mipsle")``
+        pass the arch lookup then panic (PyO3 catch_unwind -> PanicException) —
         a *recognized* alias failing more violently than an unrecognized one.
         """
         for alias in ("mips", "mips32", "mipsel", "mipsle"):
@@ -304,13 +303,13 @@ class TestMultiArchSupport:
     def test_mips32_big_endian(self):
         """MIPS32 big-endian memory lays out multi-byte values MSB-first.
 
-        Regression for angr-a116s.7: the prior body only did an
-        endian-agnostic register round-trip (RegisterFile::put_reg/get_reg
-        are pure offset+size ops with no byte ordering), so silently
-        dropping the ``little_endian=False`` override was invisible.
-        MIPS32's arch default is little-endian, so the override is the only
-        thing that selects BE — exercise a memory store whose physical byte
-        layout differs under BE vs LE to make the override load-bearing.
+        Regression test (angr-a116s.7): a register round-trip is
+        endian-agnostic (RegisterFile::put_reg/get_reg are pure offset+size
+        ops with no byte ordering), so it cannot detect a dropped
+        ``little_endian=False`` override. MIPS32's arch default is
+        little-endian, so the override is the only thing that selects BE —
+        exercise a memory store whose physical byte layout differs under BE
+        vs LE to make the override load-bearing.
         """
         be = RustSimState("mips32", little_endian=False)
         be.map_memory(0x1000, 0x1000, 7)  # RWX
@@ -335,11 +334,9 @@ class TestMultiArchSupport:
         """MIPS32 FPU, HI/LO, and previously-untested GPRs round-trip via
         the standard register dispatch.
 
-        Covers angr-w2gj.1: every entry in `offsets32` is now reachable
-        through ``set_register``/``get_register`` (full-ABI MIPS32). The
-        previous test set hit only a0/v0/sp/t0 — this exercises the
-        register families that the dead-code audit (bd memory
-        `dead-code-bd-ticket-policy`) flagged as unreachable.
+        Every entry in `offsets32` is reachable through
+        ``set_register``/``get_register`` (full-ABI MIPS32), beyond the
+        a0/v0/sp/t0 the basic tests hit (angr-w2gj.1).
         """
         state = RustSimState("mips32")
 
@@ -382,12 +379,9 @@ class TestMultiArchSupport:
         """MIPS64 FPU, HI/LO, and FPU-control registers round-trip via
         the standard register dispatch.
 
-        Covers angr-w2gj.2: every entry in ``offsets64`` is now
-        reachable through ``set_register``/``get_register`` (full-ABI
-        MIPS64). The previous MIPS64 test set only exercised v0 — this
-        exercises the register families that the dead-code audit
-        (bd memory ``dead-code-bd-ticket-policy``) flagged as
-        unreachable.
+        Every entry in ``offsets64`` is reachable through
+        ``set_register``/``get_register`` (full-ABI MIPS64), beyond the v0
+        the basic tests hit (angr-w2gj.2).
         """
         state = RustSimState("mips64")
 
@@ -427,11 +421,12 @@ class TestMultiArchSupport:
         """MIPS64 FPU register offsets are ground-truth-checked against
         archinfo, not just self-consistent round-trips.
 
-        Covers angr-mpln0: the whole ``offsets64`` FPU block (F0-F31 +
-        FIR/FCCR/FEXR/FENR/FCSR) was +8 off the VEX guest layout. Because
-        get/set share the same table, an in-isolation round-trip (the
-        angr-w2gj.2 test) passed despite every name aliasing the adjacent
-        register. This test writes each FPU name and reads the raw register
+        Regression test (angr-mpln0): an ``offsets64`` FPU block (F0-F31 +
+        FIR/FCCR/FEXR/FENR/FCSR) shifted +8 off the VEX guest layout would
+        go unnoticed by an in-isolation round-trip such as
+        ``test_mips64_full_register_family_dispatch``, because get/set share
+        the same table, even with every name aliasing the adjacent register.
+        This test writes each FPU name and reads the raw register
         file at the *archinfo* offset — the interpreter's ground truth — so
         a wrong offset fails here. The raw guest state is stored host-native
         little-endian regardless of arch endianness.
@@ -470,8 +465,8 @@ class TestMultiArchSupport:
         """A Python-set x86 segment selector reaches Rust, and Rust's value
         comes back.
 
-        Regression for angr-2uw03, the x86 half of the angr-l8kfw /
-        angr-n2556 class. ``cs``/``ds``/``es``/``fs``/``gs``/``ss`` and
+        Regression test for the x86 half of the non-canonical-register
+        export class (angr-2uw03). ``cs``/``ds``/``es``/``fs``/``gs``/``ss`` and
         ``ldt``/``gdt`` used to sit in ``ALIASES`` (``native/angr/src/arch/x86.rs``)
         rather than ``CANONICAL``, so they never reached the export list (``Arch::register_names``) —
         the list ``RustStateSyncMixin._supported_register_names`` filters on
@@ -516,7 +511,7 @@ class TestMultiArchSupport:
     def test_mips_fpu_registers_cross_the_python_boundary(self, arch_name):
         """A Python-set MIPS FPU register reaches Rust, and Rust's value comes back.
 
-        Regression for angr-n2556, the MIPS half of the angr-l8kfw class.
+        Regression test for the MIPS half of the non-canonical-register export class (angr-n2556).
         ``f0``-``f31`` and ``fir``/``fccr``/``fexr``/``fenr``/``fcsr`` used to
         sit in ``ALIASES_MIPS32`` / ``ALIASES_MIPS64``
         (``native/angr/src/arch/mips.rs``) rather than the ``CANONICAL_*``
@@ -533,7 +528,7 @@ class TestMultiArchSupport:
         known-good GPR channel; ``mov.d`` copies the ``f`` file.
 
         The ``f0`` assertion is a strict engine-vs-engine equality, and doubles
-        as the regression for angr-fuhmm. VEX models FR=0, so ``mov.d`` lifts
+        as the big-endian register-half regression (angr-fuhmm). VEX models FR=0, so ``mov.d`` lifts
         to F32 copies of the ``fN_lo`` sub-fields at each register's *base*
         offset. angr's register file is stored at ``arch.register_endness``
         (``Iend_BE`` here), so that base offset names the register's HIGH word;
@@ -598,7 +593,7 @@ class TestMultiArchSupport:
     def test_mips_sync_reg_map_matches_archinfo(self, arch_name):
         """MIPS GPR sync-back tables ground-truth-checked against archinfo.
 
-        Covers angr-hrcds: `_get_reg_map_and_return_regs` /
+        Regression test (angr-hrcds): `_get_reg_map_and_return_regs` /
         `_get_arch_register_names` (angr/exploration/rust_state_sync.py) had
         no MIPS arms, so a MIPS Python-SimProcedure bounce dropped every
         register the proc wrote — including the $v0/$v1 return value — on
@@ -654,8 +649,8 @@ class TestMultiArchSupport:
         """ARM32 VFP (d/q), FPSCR, and high GPRs round-trip via the standard
         register dispatch.
 
-        Covers angr-9n19: the prior ARM32 unit tests touched only
-        r0/r1/sp/lr. ``native/angr/src/arch/arm.rs`` defines d0-d31, q0-q15,
+        Beyond the r0/r1/sp/lr the basic tests touch (angr-9n19),
+        ``native/angr/src/arch/arm.rs`` defines d0-d31, q0-q15,
         fpscr, and r8-r12 (plus the fp/ip aliases) that were verified only by
         Rust-side offset assertions — this exercises them through the same
         ``set_register``/``get_register`` path real explorations use.
@@ -671,8 +666,8 @@ class TestMultiArchSupport:
         assert state.get_register("r8") == 0x08080808
         assert state.get_register("r9") == 0x09090909
         assert state.get_register("r10") == 0x10101010
-        # fp aliases r11. "ip" is the PC (R15T), NOT r12 (angr-itm3u,
-        # angr-690nc): archinfo reserves "ip" for the instruction pointer on
+        # fp aliases r11. "ip" is the PC (R15T), NOT r12 (angr-itm3u, angr-690nc):
+        # archinfo reserves "ip" for the instruction pointer on
         # every arch, so the ARM-ABI reading of "ip" as r12 would silently
         # redirect a PC write into a scratch register.
         assert state.get_register("fp") == 0x11111111
@@ -718,7 +713,7 @@ class TestMultiArchSupport:
         """ARM32 NEON shift-by-vector keeps the *VEX-generic* unsigned
         shift-amount convention, matching the Python engine lane for lane.
 
-        Characterization for angr-0jh0j.64. libVEX's own header carries a
+        Characterization test (angr-0jh0j.64). libVEX's own header carries a
         FIXME above ``Iop_Shl8x16``/``Iop_Sal...`` saying the ARM32 front/back
         ends read the second operand as an **8-bit signed** count (negative =
         shift the other way) while every other target reads it as unsigned.
@@ -738,10 +733,8 @@ class TestMultiArchSupport:
 
         The vectors are preset straight into ``state.regs.d1``/``d2`` and the
         answer read back out of ``state.regs.d0``, which only works because
-        angr-l8kfw made the ARM VFP registers canonical (and therefore
-        exported); the first cut of this test had to route them through memory
-        (``vldr``/``vstr``) because a preset d-register never reached Rust and
-        a computed one never came back.
+        the ARM VFP registers are canonical and therefore exported (angr-l8kfw);
+        see ``test_vector_registers_cross_the_python_boundary``.
         """
         # <op> d0, d1, d2 ; b .
         shellcode = bytes.fromhex(op_bytes + "feffffea")
@@ -795,7 +788,7 @@ class TestMultiArchSupport:
     def test_vector_registers_cross_the_python_boundary(self, arch_name, shellcode_hex, width, src_regs, dst_regs):
         """A Python-set vector register reaches Rust, and Rust's value comes back.
 
-        Regression for angr-l8kfw. ARM's d0-d31 and AArch64's q0-q31 used to
+        Regression test (angr-l8kfw). ARM's d0-d31 and AArch64's q0-q31 used to
         live in the per-arch ``ALIASES`` table (``native/angr/src/arch/arm.rs``,
         ``arm64.rs``) rather than ``CANONICAL``, so they were absent from
         the export list (``Arch::register_names``). That list is what
@@ -838,7 +831,7 @@ class TestMultiArchSupport:
         """ARM32 register offsets are ground-truth-checked against archinfo,
         not just self-consistent round-trips.
 
-        Covers angr-ihfe5: the ``mod offsets`` table omitted the 16-byte VEX
+        Regression test (angr-ihfe5): the ``mod offsets`` table omitted the 16-byte VEX
         block at 108-127 (emnote/cmstart/cmlen/nraddr/ip_at_syscall), so every
         field from D0 on was shifted -16 vs the real VEX/pyvex layout
         (D0=112 not 128, fpscr=368 not 384, tpidruro=372 not 388,
@@ -887,7 +880,7 @@ class TestMultiArchSupport:
         """AArch64 SIMD (q/v/d), CC thunks, and high GPRs round-trip via the
         standard register dispatch.
 
-        Covers angr-9n19: the prior AArch64 unit test touched only x0/x1/sp.
+        Beyond the x0/x1/sp the basic test touches (angr-9n19),
         ``native/angr/src/arch/arm64.rs`` defines x8-x30 (+ w aliases),
         q0-q31/v0-v31 (128-bit), d0-d31 (low-64 views), and the VEX
         condition-code thunks (cc_op/cc_dep1/cc_dep2/cc_ndep). AArch64's VEX
@@ -939,7 +932,7 @@ class TestMultiArchSupport:
         """x86 (32-bit) segment selectors round-trip via the standard
         register dispatch.
 
-        Covers angr-5spy.1: the six 16-bit segment selectors
+        Checks that the six 16-bit segment selectors
         (``cs``/``ds``/``es``/``fs``/``gs``/``ss``) in
         ``arch/x86.rs`` are reachable through
         ``set_register``/``get_register``. Each selector sits at its
@@ -983,12 +976,11 @@ class TestMultiArchSupport:
         """x86 (32-bit) segment-base entries round-trip via the standard
         register dispatch.
 
-        Covers angr-5spy.2: ``ldt`` (304, 8B per archinfo) and ``gdt``
+        Checks that ``ldt`` (304, 8B per archinfo) and ``gdt``
         (312, 8B per archinfo) are reachable through
-        ``set_register``/``get_register`` after wiring them into
-        ``arch/x86.rs::ALIASES``.
+        ``set_register``/``get_register`` (angr-5spy.2).
 
-        Covers angr-rfxc7: x86 has **no** ``fs_const``/``gs_const`` —
+        Also checks that x86 has **no** ``fs_const``/``gs_const`` —
         that pair is amd64-only (``arch_prctl`` is an amd64 syscall).
         The former Rust-only placeholders sat on VEX's live
         ``guest_EMNOTE``/``guest_CMSTART`` (320/324), so writing them
@@ -1034,7 +1026,7 @@ class TestMultiArchSupport:
         """amd64 ``gs_const`` lives at archinfo offset 1032, not the
         SSEROUND slot at 216.
 
-        Covers angr-a68t: the Rust ``ALIASES`` table used to alias
+        Regression test (angr-a68t): the Rust ``ALIASES`` table used to alias
         ``gs_const`` to offset 216, the SSEROUND slot. Every
         ``arch_prctl(ARCH_SET_GS, addr)`` therefore silently corrupted
         SSEROUND and left VEX's gs_const offset (1032) reading zero.
@@ -1154,7 +1146,7 @@ class TestMultiArchSupport:
     def test_aarch64_neon_mla_blob(self, tmp_path):
         """End-to-end AArch64 NEON exploration on a hand-assembled blob.
 
-        Validates angr-bkcs.2: NEON SIMD ops (Iop_Add8x16, Iop_Mul8x16) run
+        Validates that NEON SIMD ops (Iop_Add8x16, Iop_Mul8x16) run
         natively through the Rust engine without falling back to Python.
         The program performs a byte-wise multiply-accumulate on the low byte
         of a symbolic w0 and branches based on the result. The MLA NEON
@@ -1232,7 +1224,7 @@ class TestMultiArchSupport:
 
         No AArch64 binaries ship with angr-examples and no cross-compiler is
         available locally, so the ELF is constructed inline via
-        ``arch_specs.build_elf``. Pairs with angr-gxhf.1.
+        ``arch_specs.build_elf`` (angr-gxhf.1).
         """
         from angr import claripy
 

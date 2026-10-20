@@ -8,8 +8,8 @@
 //!
 //! The file count here is much larger than the concept count: two types
 //! (`RustBV` and `SymContext`) dominate the directory, and each is split across
-//! several files purely to keep every file under the <2000-line cap the
-//! `angr-a2br.2` / `angr-7hwz` splits adopted. Those splits are *mechanical* —
+//! several files purely to keep every file under a <2000-line cap
+//! (angr-a2br.2, angr-7hwz). Those splits are *mechanical* —
 //! one file per `impl` block or per slice of one — so a filename does not
 //! reliably tell you which concept lives inside. Use this table instead of
 //! guessing. Files marked **(z3)** hold the Z3-backed solving surface.

@@ -613,7 +613,7 @@ fn pread64_content_sym_reads_at_offset_without_moving_position() {
 
 #[test]
 fn writev_iovcnt_zero_is_native_no_op_without_demoting() {
-    // angr-0xyq2 A3, writev leg — see the `write` twin in write_tests.rs.
+    // writev leg (angr-0xyq2 A3) — see the `write` twin in write_tests.rs.
     let mut state = fresh_state();
     let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
     write_iovec_array(&mut state, 0x2100, &[(0x2200, 2)]);
@@ -637,7 +637,7 @@ fn writev_iovcnt_zero_is_native_no_op_without_demoting() {
 
 #[test]
 fn pwrite64_nbyte_zero_is_native_no_op_without_demoting() {
-    // angr-0xyq2 A3, pwrite64 leg — see the `write` twin in write_tests.rs.
+    // pwrite64 leg (angr-0xyq2 A3) — see the `write` twin in write_tests.rs.
     let mut state = fresh_state();
     let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
 
@@ -661,7 +661,7 @@ fn pwrite64_nbyte_zero_is_native_no_op_without_demoting() {
 
 #[test]
 fn writev_content_sym_demotes_and_falls_back() {
-    // angr-0xyq2 Phase 2 write-demotion, writev leg.
+    // Write-demotion, writev leg (angr-0xyq2 Phase 2).
     let mut state = fresh_state();
     let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
     state.map_memory_data(0x3000, b"hi", Permission::RWX);
@@ -689,7 +689,7 @@ fn writev_content_sym_demotes_and_falls_back() {
 
 #[test]
 fn pwrite64_content_sym_demotes_and_falls_back() {
-    // angr-0xyq2 Phase 2 write-demotion, pwrite64 leg.
+    // Write-demotion, pwrite64 leg (angr-0xyq2 Phase 2).
     let mut state = fresh_state();
     let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
     state.map_memory_data(0x3000, b"hi", Permission::RWX);

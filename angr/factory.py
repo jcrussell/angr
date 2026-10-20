@@ -248,7 +248,7 @@ class AngrObjectFactory:
     def simulation_manager(
         self,
         thing: list[SimState] | SimState | None = None,
-        use_rust_engine: bool | None | _EngineDefault = _ENGINE_DEFAULT,
+        use_rust_engine: bool | _EngineDefault | None = _ENGINE_DEFAULT,
         **kwargs,
     ) -> SimulationManager:
         """

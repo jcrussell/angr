@@ -1,6 +1,6 @@
 //! Bucket x method coverage table for the "misses states parked outside a
-//! stash" bug class (angr-sqfj8.32, angr-c7xno.21/.97, angr-03vl4.10/.15/.23
-//! — bd category `state-tracking-coverage-gap`).
+//! stash" bug class
+//! (angr-sqfj8.32, angr-c7xno.21/.97, angr-03vl4.10/.15/.23).
 //!
 //! `manager_methods_tests.rs` and `pending_api_tests.rs` each pin specific
 //! instances of this bug by hand: one `#[test]` per (method, bucket) pair
@@ -95,7 +95,7 @@ fn park(mgr: &mut RustExplorationManager, bucket: Bucket) -> u64 {
 /// Find a parked state by id wherever it lives — the shared "find" half of
 /// the pair, searching all three known storage locations. Deliberately
 /// independent of [`RustExplorationManager::find_state`] (which searches the
-/// same three since angr-eukuf) so a regression in that lookup shows up as a
+/// same three) (angr-eukuf) so a regression in that lookup shows up as a
 /// failure of the `with_state` column below, not as every other column
 /// silently losing its state.
 fn find_anywhere(mgr: &RustExplorationManager, id: u64) -> Option<&RustSimState> {

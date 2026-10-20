@@ -847,7 +847,7 @@ fn test_sprintf_conversion_flags_defer_to_python() {
     assert_eq!(sprintf_one(b"%5d", 42).unwrap(), b"   42");
 }
 
-/// Regression test for angr-mi56k: an explicit field width whose digit run
+/// Regression test (angr-mi56k): an explicit field width whose digit run
 /// encodes a huge value must be clamped to `MAX_OUTPUT_LEN` before
 /// `pad_and_push` uses it as its padding-loop bound. The
 /// `output.len() > MAX_OUTPUT_LEN` check in `format_string` only runs AFTER

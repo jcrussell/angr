@@ -5,9 +5,8 @@
 //! them to. The *ordering* of the checks in front of that — specifically where
 //! `demote_symbolic_content` sits relative to the concrete-zero short-circuit
 //! and to the `?` on the remaining arguments — is one correctness invariant
-//! shared by all three (angr-0xyq2 A3/A4). It used to be hand-repeated in each
-//! handler with only comment cross-references holding the three copies in
-//! lockstep (angr-fs8kb.54).
+//! shared by all three (angr-0xyq2), so it lives here once rather than
+//! hand-repeated in each handler (angr-fs8kb.54).
 //!
 //! [`write_path_gate`] is that prologue, written once:
 //!

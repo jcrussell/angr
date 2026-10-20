@@ -26,7 +26,7 @@ pub(crate) fn claripy_node(ast: &Bound<'_, PyAny>) -> Option<AstRef<'static>> {
 }
 
 /// A claripy node as a [`RustBV`] to evaluate: a bitvector as itself, a Bool
-/// as the bit `ite(b, 1, 0)` (angr-58ks: never as a mis-sorted BV). Any other
+/// as the bit `ite(b, 1, 0)`, never as a mis-sorted BV (angr-58ks). Any other
 /// sort is `Err` with the sort, for the caller's error.
 ///
 /// The value is the node itself, so it lowers to the same Z3 term as a

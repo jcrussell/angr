@@ -171,7 +171,7 @@ pub(crate) static MEM_STORE_BYTES: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MEM_LOAD_SYMBOLIC_ADDR: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MEM_STORE_SYMBOLIC_ADDR: AtomicU64 = AtomicU64::new(0);
 /// `UnmappedPageInRegion` faults — lazy region had no backing page, caller
-/// must materialize. angr-9ke6b.228: bumped by the four *producers* of that
+/// must materialize. Bumped by the four *producers* of that
 /// error, not by the public `SymbolicMemory::{load,store}` wrappers (which no
 /// production path calls, and whose store-side bump was dead because
 /// `store_concrete` has no lazy classification). Producers are
@@ -220,8 +220,7 @@ pub(crate) static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // angr-1joc: constraint-dedup measurement counters. Three signals to decide
 // whether canonicalization/dedup at add_constraint_raw is worth implementing
-// (threshold: any >=10% wins a follow-up bead). See bd memory
-// invariant-commutative-canonicalization-active for the underlying Z3 contract.
+// (threshold: any >=10%).
 //
 // (a) commutative-arg-order: how often the RustBV-level
 // `canonicalize_commutative` actually swaps operands. Swap rate ≈ how often
@@ -398,8 +397,8 @@ fn insert_check_site_stats(
     }
 }
 
-/// Emit the structural query-class counters into `stats` (S1 spike,
-/// angr-op0dn.3).
+/// Emit the structural query-class counters into `stats` (S1 spike)
+/// (angr-op0dn.3).
 ///
 /// Key-presence policy: **always emitted**, zeros included, so a
 /// counters-json capture shows the classifier was off (everything lands in
@@ -425,8 +424,8 @@ fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], na
 /// counter cannot be emitted but not reset (or vice versa), and the key
 /// string exists in exactly one place (angr-9ke6b.150).
 ///
-/// - angr-g7nq: trivial-constraint fast path.
-/// - angr-1joc: constraint-dedup measurement.
+/// - trivial-constraint fast path (angr-g7nq).
+/// - constraint-dedup measurement (angr-1joc).
 pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 8] = [
     ("zext_cmp_collapse_count", &ZEXT_CMP_COLLAPSE_COUNT),
     (
@@ -460,7 +459,7 @@ pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 8] = [
 ///
 /// Kept as a table distinct from `MEASUREMENT_COUNTERS` because the two have
 /// different *lifecycles*, not different mechanics: the measurement groups are
-/// audit-scoped and expected to be retired when their bead's question is
+/// audit-scoped and expected to be retired once the question they measure is
 /// answered, while these are the standing engine instrumentation
 /// `--counters-json` captures compare across releases. Both feed the same
 /// `insert_counter_stats` / `reset_counter_stats` pair, so neither can be
@@ -618,8 +617,7 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     let mut stats = HashMap::new();
     // Every plain counter this file declares, emitted from the same tables
     // `reset_solver_stats` clears, so a counter cannot be emitted without
-    // also being reset (angr-9ke6b.150 for the measurement groups,
-    // angr-03vl4.64 for the rest).
+    // also being reset (angr-9ke6b.150, angr-03vl4.64).
     insert_counter_stats(&mut stats, CORE_COUNTERS);
     insert_counter_stats(&mut stats, WATERMARK_COUNTERS);
     insert_counter_stats(&mut stats, &MEASUREMENT_COUNTERS);
@@ -690,8 +688,7 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
 pub fn reset_solver_stats() {
     crate::symbolic::query_class::reset();
     // Same tables `get_solver_stats` emits from, so a counter cannot be
-    // emitted without also being cleared here (angr-9ke6b.150 for the
-    // measurement groups, angr-03vl4.64 for the rest).
+    // emitted without also being cleared here (angr-9ke6b.150, angr-03vl4.64).
     reset_counter_stats(CORE_COUNTERS);
     reset_counter_stats(WATERMARK_COUNTERS);
     reset_counter_stats(&MEASUREMENT_COUNTERS);
@@ -773,7 +770,7 @@ pub(crate) fn record_z3_bool_build(built: u64, reused: u64) {
 }
 
 // -----------------------------------------------------------------------------
-// Recorder functions for angr-2j5v counters
+// Recorder functions for the instrumentation counters
 // -----------------------------------------------------------------------------
 
 /// VEX IR op family — passed by the dispatcher in `vex/ops/mod.rs` so the
@@ -848,7 +845,7 @@ pub fn record_mem_store(bytes: u64) {
 }
 
 /// Record a load whose address BV was not a concrete literal, i.e. one that
-/// entered address concretization. angr-9ke6b.229: bumped by the *symbolic*
+/// entered address concretization. Bumped by the *symbolic*
 /// entry points — `SymbolicMemory::{load_symbolic, load_symbolic_unified}`,
 /// each after its concrete fast path — not by `SymbolicMemory::load`, which no
 /// production path calls (see `.228`). Disjoint from `mem_load_count`, not a

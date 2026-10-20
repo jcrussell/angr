@@ -49,8 +49,8 @@ impl RustExplorationManager {
     /// count falls back the same way (angr-9ke6b.221): see the residual-drain
     /// comment on the `max_steps < workers` check below.
     ///
-    /// **`num_find` early-exit preserves the active frontier (Bug M1, fixed in
-    /// angr-op0dn.13.8).** When a wave reaches `num_find`, a worker trips the
+    /// **`num_find` early-exit preserves the active frontier (Bug M1)
+    /// (angr-op0dn.13.8).** When a wave reaches `num_find`, a worker trips the
     /// shared [`CancelToken`](crate::exploration::scheduler::CancelToken) and every
     /// worker stops at its next *task boundary*.
     /// Both halves of the un-explored frontier are drained back rather than
@@ -312,7 +312,7 @@ impl RustExplorationManager {
             self.parallel_tasks += stats.dispatches() as u64;
             self.parallel_migrations +=
                 (stats.surplus_offloaded + stats.materialized_terminals) as u64;
-            // angr-vh834 Phase 1 duplex-protocol accounting (observability only):
+            // Duplex-protocol accounting (observability only) (angr-vh834):
             // `bounce_roundtrips` / `resume_reinjects` stay 0 until later phases.
             self.parallel_reattaches += stats.reattaches as u64;
             self.parallel_bounce_roundtrips += stats.bounce_roundtrips as u64;
@@ -365,7 +365,7 @@ impl RustExplorationManager {
     /// `callbacks` must already be cloned by the caller WHILE HOLDING THE GIL
     /// (`Py<T>::clone` needs it, and this must never run on a worker). The wave
     /// loop rebuilds one per wave, `ensure_steady_session` one per session
-    /// (angr-ph300.12 — previously duplicated verbatim in both).
+    /// (angr-ph300.12).
     pub(crate) fn build_parallel_process(
         &self,
         callbacks: PythonCallbacks,
@@ -474,9 +474,8 @@ impl RustExplorationManager {
                 // The coordinator handed this state to a worker without
                 // un-indexing it; `push_found_capped` re-indexes over the stale
                 // "active" entry, but the drop path of `push_or_drop_terminal`
-                // asserts I6 against it. Unconstrained terminals were rare here
-                // until angr-x39ae made returns through a symbolic address
-                // classify correctly.
+                // asserts I6 against it. Returns through a symbolic address
+                // classify as unconstrained terminals here (angr-x39ae).
                 self.sm.unindex(id);
                 self.sm.set_root(id, root);
                 self.push_or_drop_terminal(STASH_UNCONSTRAINED, state);

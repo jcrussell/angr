@@ -10,7 +10,7 @@
 //!   * Anything else → return 22 (EINVAL).
 //!
 //! Hit early during glibc's TLS initialization (the "frequently called
-//! during early init" rationale in angr-4e3q).
+//! during early init" rationale, angr-4e3q).
 
 use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};

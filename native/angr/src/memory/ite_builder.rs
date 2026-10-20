@@ -27,7 +27,7 @@ use super::{MemoryError, SymbolicMemory};
 /// expression trees — conservative by design, so it never collapses
 /// distinct ASTs.
 ///
-/// Catches the common bead-described case (angr-269l): N-way concretization
+/// Catches the common case (angr-269l): N-way concretization
 /// where every candidate address maps to the same memory content (zero
 /// pages, repeated initializers). Those loads return identical
 /// `RustBV::Concrete` values, so the entire balanced ITE tree collapses to
@@ -186,7 +186,7 @@ impl SymbolicMemory {
     /// (`load_concrete_or_unconstrained`, unconstrained fallback) builders is
     /// the leaf loader. Tree shape: 1-addr leaf; 2-addr `eq`-ITE with
     /// `loads_match` dedup; N-addr midpoint split on `ult` then recurse with
-    /// identical-subtree collapse (all angr-269l).
+    /// identical-subtree collapse (angr-269l).
     fn build_ite_tree_generic(
         &self,
         addr_expr: &RustBV,

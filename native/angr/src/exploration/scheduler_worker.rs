@@ -19,8 +19,7 @@
 //! the guard. Each is covered by the "Mutex poisoning is unreachable" rule of
 //! the crate-level [Panic policy](crate#panic-policy). No literal
 //! count is stated on purpose: one of the sites is `#[cfg(test)]`-gated, so a
-//! naive grep disagrees with any number written here (see bd memory
-//! `avoid-enumerating-expect-sites-in-module-docs`). The parent's
+//! naive grep disagrees with any number written here. The parent's
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]` already reaches this
 //! file (it is a `#[path]` child module); the deny is restated below so the
 //! guarantee is visible to anyone reading this file on its own.
@@ -128,7 +127,7 @@ pub(super) fn worker_loop(
         // Production reads only the counters (`record_summaries`); the vec-copy
         // into `job.summaries` exists solely for the `#[cfg(test)]`
         // `WaveJob::into_results` reader, so it is gated out of the production
-        // wave path (no per-batch mutex lock) — angr-1yge9.8 item 7.
+        // wave path (no per-batch mutex lock) (angr-1yge9.8).
         if !outcome.terminal_summaries.is_empty() {
             t.counters.record_summaries(&outcome.terminal_summaries);
             #[cfg(test)]
@@ -632,8 +631,8 @@ pub(super) fn offload_surplus(
 ///
 /// This is the single body shared by both `offload_surplus` triggers: keeping
 /// the eviction hook + counter bump in one place is what prevents the
-/// per-site-fix-missed-in-a-sibling divergence class (angr-04tw3.7, same shape
-/// as angr-myzjx.25). Any future invariant added to the offload path lands here
+/// per-site-fix-missed-in-a-sibling divergence class
+/// (angr-04tw3.7, angr-myzjx.25). Any future invariant added to the offload path lands here
 /// once and both triggers inherit it.
 fn offload_one(
     local: &mut VecDeque<RustSimState>,

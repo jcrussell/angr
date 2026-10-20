@@ -86,8 +86,8 @@ impl Address {
     /// Byte offset of `self` inside the region `[base, base + region_size)`,
     /// or `None` when `self` lies outside it.
     ///
-    /// The wrapping-distance containment test (bd memory
-    /// `invariant-address-containment-wrapping-distance`): the natural
+    /// The wrapping-distance containment test
+    /// (bd memory `invariant-address-containment-wrapping-distance`): the natural
     /// spelling `self >= base && self < base + region_size` forms
     /// `base + region_size`, which wraps for a region abutting the top of the
     /// guest address space — and with `[profile.release]` overflow-checks off

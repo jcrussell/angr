@@ -84,7 +84,7 @@ fn int_conv_bits_lp64() {
 
 /// `l`/`z`/`t` are `long`-width and must narrow to 32 on ILP32 targets
 /// (Python's `SimTypeLong` / `SimTypeLength`), while `ll`/`j`
-/// (`SimTypeLongLong`) stay 64-bit everywhere. angr-9ke6b.111.
+/// (`SimTypeLongLong`) stay 64-bit everywhere (angr-9ke6b.111).
 #[test]
 fn int_conv_bits_ilp32_narrows_long_family_only() {
     assert_eq!(LengthModifier::Long.int_conv_bits(32), 32);

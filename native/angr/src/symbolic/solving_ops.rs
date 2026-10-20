@@ -13,8 +13,7 @@
 //! promoted to `pub(super)` so this sibling module can reach them. The
 //! solver/lineage/timeout mutators (`set_timeout` / `timeout_ms` /
 //! `set_sat_cache`) stay in `context.rs`: they write `solver`/`timeout_ms`
-//! directly and are not part of the read path. See bead angr-a2br.2.4
-//! for the slice plan.
+//! directly and are not part of the read path (angr-a2br.2.4).
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. Every query
@@ -93,8 +92,8 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
 /// wrap under release), and callers that binary-search in a `u128` cannot
 /// represent anything above `u128::MAX` anyway — the `width > 128` guard in
 /// `min` / `max` / `range_seeded` bails out before the search rather than
-/// returning a truncated extremum (angr-cxw7, extended to the seeded path in
-/// angr-sqfj8.103). Shared by `lex_min_witness`,
+/// returning a truncated extremum, on the seeded path too
+/// (angr-cxw7, angr-sqfj8.103). Shared by `lex_min_witness`,
 /// `eval_upto_ascending`, both arms of `min` and `max`, and `range_seeded`
 /// so a future width-boundary fix lands in one place (angr-9ke6b.141).
 ///
@@ -485,8 +484,8 @@ impl SymContext {
     ///
     /// Carve-out: [`eval_upto_wide`](Self::eval_upto_wide) is unaffected. Its
     /// widths exceed the `u128` bounds the binary search tracks (`min` itself
-    /// returns `None` above 128 bits, angr-cxw7); it keeps the
-    /// enumerate-then-sort canonicalization from angr-op0dn.10.1, which is
+    /// returns `None` above 128 bits) (angr-cxw7); it keeps the
+    /// enumerate-then-sort canonicalization (angr-op0dn.10.1), which is
     /// canonical only when `n >= #feasible`.
     ///
     /// Inherited parent→child on [`fork`](Self::fork), so setting it on a seed
@@ -873,8 +872,8 @@ impl SymContext {
     /// must be <= 128 (the `bsearch_min` bound; see `min`).
     ///
     /// Each part is minimized with every earlier part pinned to its own chosen
-    /// value, so all parts still come off ONE satisfying assignment (the
-    /// angr-ue4ro invariant) while that assignment is now determined by the
+    /// value, so all parts still come off ONE satisfying assignment
+    /// (angr-ue4ro) while that assignment is now determined by the
     /// constraints rather than by Z3's search. For the big-endian byte
     /// decomposition both callers hand it, the lexicographic minimum over the
     /// parts IS the unsigned minimum of the reassembled value — the witness rule
@@ -1288,8 +1287,8 @@ impl SymContext {
         // Same u128-bound guard `min` and `max` carry: the two binary searches
         // below track bounds in a u128, so for widths above 128 the true
         // extremum can exceed `u128::MAX` and `max_val_for_width` saturates.
-        // Report unknown rather than a truncated range (angr-sqfj8.103, the
-        // angr-cxw7 fix applied to the seeded path). 128-bit BVs are fine:
+        // Report unknown rather than a truncated range, as `min`/`max` do
+        // (angr-sqfj8.103, angr-cxw7). 128-bit BVs are fine:
         // their range is exactly [0, u128::MAX].
         if width > 128 {
             return None;

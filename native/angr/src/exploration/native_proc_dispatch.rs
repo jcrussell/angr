@@ -13,8 +13,8 @@
 
 use super::*;
 
-/// The address a state should report to Python, with the angr-4rq7 pc==0
-/// fallback applied.
+/// The address a state should report to Python, with the pc==0 fallback
+/// applied (angr-4rq7).
 ///
 /// `self.pc` is stale at 0 for states produced by register-file-replace paths
 /// that never round-trip through `set_pc` — notably forked successors under the

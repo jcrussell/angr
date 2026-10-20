@@ -161,7 +161,7 @@ crate::declare_proc! {
     ///
     /// An `oldfd` that does not fit in a `u32` is "not open" rather than
     /// truncated: `oldfd as u32` would alias an unrelated descriptor
-    /// (`0x1_0000_0000` → 0 → stdin) — angr-03vl4.52.
+    /// (`0x1_0000_0000` → 0 → stdin; angr-03vl4.52).
     name = "dup",
     struct = NativeDup,
     args = [oldfd: concrete],
@@ -188,10 +188,10 @@ crate::declare_proc! {
     /// Returns `newfd` on success, or -1 if `oldfd` is not open, if either fd
     /// does not fit in a `u32` (truncating would alias an unrelated
     /// descriptor), or if `newfd` is at/above
-    /// [`MAX_FD`](crate::state::MAX_FD) — angr-03vl4.52. Unlike the `dup2`
-    /// *syscall* there is no layer above this one applying that cap, so a
-    /// guest `dup2(fd, 0xFFFFFFFF)` used to reach the unbounded `next_fd`
-    /// bump inside [`FileSystem::dup2`](crate::state::FileSystem::dup2).
+    /// [`MAX_FD`](crate::state::MAX_FD) (angr-03vl4.52). Unlike the `dup2`
+    /// *syscall* there is no layer above this one applying that cap, so
+    /// without it a guest `dup2(fd, 0xFFFFFFFF)` would reach the unbounded
+    /// `next_fd` bump inside [`FileSystem::dup2`](crate::state::FileSystem::dup2).
     name = "dup2",
     struct = NativeDup2,
     args = [oldfd: concrete, newfd: concrete],

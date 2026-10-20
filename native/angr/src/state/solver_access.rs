@@ -8,8 +8,8 @@
 //! / `registers.rs` / `memory.rs` extension-impl pattern.
 //!
 //! Named `solver_access.rs`, not `solver.rs`, so no basename search collides
-//! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`) —
-//! angr-5mnx3.50.
+//! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`)
+//! (angr-5mnx3.50).
 
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};

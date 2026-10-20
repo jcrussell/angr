@@ -157,8 +157,8 @@ const ALIASES: &[RegEntry] = &[
     // The two architecture-independent instruction-pointer spellings, matching
     // the ARM/ARM64/MIPS tables (angr-9ke6b.217) and archinfo's ArchX86
     // pc=(68,4)/ip=(68,4). `ip` is the *instruction pointer* on every arch,
-    // never an ABI scratch register — see the angr-itm3u note in arch/arm.rs
-    // (angr-690nc).
+    // never an ABI scratch register — see the `ip` note in arch/arm.rs
+    // (angr-itm3u, angr-690nc).
     ("pc", offsets::EIP, 4),
     ("ip", offsets::EIP, 4),
     // 16-bit

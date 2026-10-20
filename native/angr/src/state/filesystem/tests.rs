@@ -17,10 +17,9 @@
 //! `filesystem_state` needs a whole
 //! [`RustSimState`](crate::state::RustSimState) around the fs (fork
 //! isolation, the `write_stdout`/`fd_buffer` convenience wrappers). Anything
-//! reachable from a bare `FileSystem::default()` belongs here — angr-c7xno.69's mechanical
-//! carve-out of `state_tests.rs` had re-tested this file's CRUD/fd-table
-//! surface under a second set of idioms, and angr-03vl4.56 folded those
-//! duplicates back in.
+//! reachable from a bare `FileSystem::default()` belongs here, so this
+//! file's CRUD/fd-table surface is not re-tested under a second set of
+//! idioms elsewhere (angr-c7xno.69, angr-03vl4.56).
 
 use super::*;
 
@@ -115,7 +114,7 @@ fn read_closed_fd_serves_nothing() {
 
 #[test]
 fn write_overwrites_in_place_and_zero_fills_after_a_sparse_seek() {
-    // `write` is position-aware (see the `write-fd-position-aware` bd memory),
+    // `write` is position-aware (bd memory `write-fd-position-aware`),
     // not append-only: it honors a prior seek instead of extending the buffer.
     let mut fs = FileSystem::default();
     let fd = fs
@@ -224,7 +223,7 @@ fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
     assert_eq!(fs.seek(fd, i64::MIN, 2), Some(0));
 }
 
-/// Harness 6 boundary sweep for angr-03vl4.54: `offset_position` (shared by
+/// Harness 6 boundary sweep (angr-03vl4.54): `offset_position` (shared by
 /// SEEK_CUR and SEEK_END) must match an independent `i128`-clamped reference
 /// at every base/delta combination drawn from the shared boundary table, not
 /// just the one hand-picked chain above.

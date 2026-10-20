@@ -7,8 +7,8 @@ the Rust engine's loud surface (raise-options, unimplemented arches, unsupported
 kwargs) from "a regression the day the default flips" into "transparently routed
 to Python".
 
-Auto mode is off until angr-op0dn.14.6 flips it, so the default path here must
-be byte-identical to today's ``use_rust_engine=False``.
+Auto mode is off by default, so the default path here must be byte-identical
+to ``use_rust_engine=False`` (angr-op0dn.14.6).
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ class TestEligibilityPredicate:
 
 class TestFactoryDispatch:
     def test_auto_is_off_by_default(self, fauxware_project):
-        """Zero behavioral diff until angr-op0dn.14.6 flips the flag."""
+        """Zero behavioral diff while the auto-dispatch flag is off (angr-op0dn.14.6)."""
         assert rust_auto_dispatch_enabled() is False
         state = fauxware_project.factory.entry_state()
         mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=None)

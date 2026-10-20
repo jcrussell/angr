@@ -50,8 +50,8 @@ pub(crate) const MAX_SYMBOLIC_ADDR_STORES: u64 = 4096;
 /// count from [`check_symbolic_addr_size`]. The multiply saturates rather than
 /// wrapping: a product too large to represent is unambiguously over budget, so
 /// saturation refuses where a bare `*` would wrap to a small in-budget value
-/// (see the `invariant-rust-concrete-arith-must-wrap` bd memory for why a size
-/// must refuse rather than wrap). Both current callers are bounded well below
+/// (a size must refuse rather than wrap)
+/// (bd memory `invariant-rust-concrete-arith-must-wrap`). Both current callers are bounded well below
 /// `u64::MAX`, so this is a shape guard for the next one.
 pub(crate) fn check_store_budget(units: u64, size: u64, name: &str) -> Result<(), ProcedureError> {
     if units.saturating_mul(size) > MAX_SYMBOLIC_ADDR_STORES {

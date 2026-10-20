@@ -105,8 +105,8 @@ fn test_packed_lane_result_type_tracks_mapped_width() {
         ("Iop_InterleaveHI16x8", IRType::V128),
         ("Iop_InterleaveHI32x4", IRType::V128),
         ("Iop_InterleaveHI64x2", IRType::V128),
-        // Packed integer min/max/abs and packed FP arith: the last group that
-        // still hardcoded V128 until angr-sqfj8.115. Same 2x-both-directions
+        // Packed integer min/max/abs and packed FP arith must not hardcode V128
+        // (angr-sqfj8.115): that is the same 2x-both-directions
         // error — D-reg NEON shapes are 64-bit, AVX/AVX2 shapes are 256-bit.
         ("Iop_Min8Sx8", IRType::I64),
         ("Iop_Max32Ux2", IRType::I64),

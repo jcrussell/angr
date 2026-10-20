@@ -193,7 +193,7 @@ fn time_null_pointer_returns_symbolic_and_does_not_store() {
 
 #[test]
 fn time_two_calls_are_solver_distinct() {
-    // Regression guard for angr-8o7w: two time() returns on one path must
+    // Regression guard (angr-8o7w): two time() returns on one path must
     // be satisfiably unequal. A fixed Z3 name would alias both to the same
     // `new_const`, making `ret1 != ret2` unsatisfiable — fresh_symbolic
     // appends symbol_counter so each return is a distinct Z3 term.

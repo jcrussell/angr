@@ -1,6 +1,6 @@
 //! Phase 1.2 (angr-n082): Multi-cell collapse on the load path, plus the
-//! angr-9ke6b.96 follow-up that made the non-lazy `load_concrete` path
-//! dispatch to the same assembler.
+//! requirement that the non-lazy `load_concrete` path dispatch to the same
+//! assembler (angr-9ke6b.96).
 
 use super::*;
 
@@ -202,10 +202,10 @@ fn test_multi_cell_load_multiple_multi_bytes() {
 ///
 /// This pins only that page-level half. The sidecar half — dropping the
 /// owning `multi_objects` entry and bumping its `multi_versions` counter —
-/// is `SymbolicMemory::store_concrete`'s own responsibility since angr-1tes,
+/// is `SymbolicMemory::store_concrete`'s own responsibility (angr-1tes),
 /// and is pinned by the sibling
 /// `multi/cache.rs::test_concrete_overwrite_clears_multi_cell`, whose doc
-/// describes the pre-angr-1tes bug where only this page bit was cleared.
+/// describes the bug where only this page bit was cleared.
 #[test]
 fn test_concrete_overwrite_clears_multi_bit() {
     let ctx = SymContext::new_mock();

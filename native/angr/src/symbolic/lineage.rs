@@ -1,7 +1,7 @@
 //! Shared-lineage Z3 solver with push/pop scope tracking (angr-v5a5 spike).
 //!
-//! Implements the data structures and core mechanics for Option A from the
-//! angr-hk7k research spike.
+//! Implements the data structures and core mechanics for Option A from a
+//! research spike (angr-hk7k).
 //! The plan: all states descended from a common ancestor share one Z3
 //! [`z3::Solver`] wrapped in an `Arc<Mutex<SharedLineageSolver>>`. The
 //! shared solver carries the lineage's base assertions at scope 0; each
@@ -32,9 +32,9 @@
 //!   [`SharedLineageSolver::switch_to`]. See `install_constraint` /
 //!   `install_constraints_batch` (`constraint_ops.rs`) and
 //!   `SymContext::with_z3_solver` (`snapshot_fork_ops.rs`).
-//! - **Built on top** — the angr-v5ht thrash detector (the dismantle
-//!   path below) and the angr-g1fev per-tree census both consume this
-//!   module's telemetry counters.
+//! - **Built on top** — the thrash detector (the dismantle path below) and
+//!   the per-tree census both consume this module's telemetry counters
+//!   (angr-v5ht, angr-g1fev).
 //!
 //! The opt-in defaults **off**; see
 //! [`SymContext::set_use_shared_lineage_solver`](crate::symbolic::SymContext::set_use_shared_lineage_solver)
@@ -445,7 +445,7 @@ pub fn reset_dismantle_state_for_test() {
 /// fallback). `lineage_switch_fast_path_count` is the strict subset that
 /// hit the O(1) check — useful for measuring how often consecutive
 /// queries land on the same state (the hot-cache win the BFS-thrash
-/// motivation in angr-v5a5 design targets).
+/// motivation targets) (angr-v5a5).
 pub fn lineage_stats() -> [(&'static str, u64); 5] {
     [
         (
@@ -601,7 +601,7 @@ impl SharedLineageSolver {
     ///    `D-1` ancestor frames. This O(1) check avoids the O(min(|loaded|,
     ///    |target|)) walk through `common_prefix_len` when consecutive
     ///    queries come from the same state (the BFS-step intra-state query
-    ///    burst that motivates the hot-state cache in the angr-v5a5 design).
+    ///    burst that motivates the hot-state cache) (angr-v5a5).
     ///
     /// 2. **General prefix walk.** If the O(1) cache misses, fall back to
     ///    `common_prefix_len` for the full prefix calculation. Pops the

@@ -59,10 +59,10 @@ macro_rules! state_flag_export {
 ///
 /// Every entry expands to the inherent `set_x` / `x` pair on [`RustSimState`]
 /// *and*, unless it is marked `rust_only`, the matching `#[pymethods]` block
-/// on `PyRustSimState` exposing them to Python under the same names. Before
-/// angr-12jjk.13 those layers were hand-written in two files, so a flag added
-/// here and forgotten in `state/pymethods.rs` was silently unreachable from
-/// Python with no compile error. Adding a flag is now a single entry below.
+/// on `PyRustSimState` exposing them to Python under the same names, so a
+/// flag cannot be added here and forgotten in `state/pymethods.rs`, silently
+/// unreachable from Python (angr-12jjk.13). Adding a flag is a single entry
+/// below.
 ///
 /// `$storage` says where the bit lives: `field` for a plain `RustSimState`
 /// field named after the getter, `memory` for one owned by `self.memory`

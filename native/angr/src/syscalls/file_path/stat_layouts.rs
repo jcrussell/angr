@@ -4,8 +4,8 @@
 //! Layouts cover AMD64 + ARM64 (the 64-bit `struct stat` —
 //! [`write_amd64_stat`] / [`write_aarch64_stat`]), i386 (`struct stat64`
 //! via the LFS `fstat64`/`stat64`/`lstat64`/`fstatat64` syscalls —
-//! [`write_i386_stat`], mirroring `fstat64.py::_store_i386`,
-//! angr-11djq.5.1), and ARM EABI / MIPS32 (their own 32-bit LFS
+//! [`write_i386_stat`], mirroring `fstat64.py::_store_i386` (angr-11djq.5.1)),
+//! and ARM EABI / MIPS32 (their own 32-bit LFS
 //! `struct stat64` layouts — [`write_arm_stat`] / [`write_mips32_stat`]).
 //! [`STAT_LAYOUT_WRITERS`] is the table pairing each arch with its
 //! writer and [`write_stat_for_arch`] the single dispatch point; an arch
@@ -39,7 +39,7 @@ pub(super) const S_IFLNK_0777: u64 = 0o120_777;
 
 /// Shared `struct stat` field writers used by every per-arch layout below.
 /// Each takes the destination `buf` base plus the field `off`, so the arch
-/// writers no longer redefine identical store closures (audit angr-myzjx.17).
+/// writers do not redefine identical store closures (angr-myzjx.17).
 ///
 /// `buf + off` is spelled `wrapping_add`: `buf` reaches us straight from
 /// `extract_concrete_arg(&args[1], "…statbuf")` with no upper-bound check, and

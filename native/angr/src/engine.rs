@@ -18,8 +18,7 @@ use crate::vex::ops::OpError;
 /// a typed [`RustExecError`] for surfacing as a Python exception.
 ///
 /// `arch` is the engine's `arch_name`; carried into `UnsupportedVexOp` so
-/// the Python message can name the arch as well as the op (acceptance
-/// criterion for angr-tkbr.3).
+/// the Python message can name the arch as well as the op (angr-tkbr.3).
 ///
 /// The match is fully exhaustive (no `_` wildcard) so adding a new
 /// `CbExecutionError` or `OpError` variant fails to compile until each
@@ -130,9 +129,8 @@ pub(crate) fn execute_irsb_for_test(
 ///
 /// This is the only path that takes effect for keys like
 /// `smt.random_seed` — the per-solver `Z3_solver_set_params` route
-/// is empirically broken for those keys (see angr-iaol.1 memory
-/// `iaol1-seed-pin-empirically-broken` and the
-/// `build_solver_params` docstring in `symbolic/context.rs`).
+/// is empirically broken for those keys (see the
+/// `build_solver_params` docstring in `symbolic/context.rs`) (angr-iaol.1).
 ///
 /// Used by `RustExplorationManager(deterministic=True)` (angr-iaol.2)
 /// to pin `smt.random_seed` + `sat.random_seed` before the first
@@ -339,9 +337,9 @@ fn arch_supported(arch_name: &str) -> bool {
 /// Raise a typed [`RustExecError`] for unit tests.
 ///
 /// Lets the pytest.raises tests cover exception variants whose real-path
-/// trigger is gated behind sibling beads (e.g. the syscall panics in
-/// angr-tkbr.1). When tkbr.1 lands, syscall handlers raise these directly
-/// and this helper becomes redundant — keep it as the API smoke test.
+/// trigger is not yet reachable (e.g. the syscall panics) (angr-tkbr.1).
+/// Once syscall handlers raise these directly this helper is redundant —
+/// keep it as the API smoke test.
 ///
 /// `kind` selects the variant: "malformed_irsb" | "unsupported_syscall"
 /// | "unsupported_vex_op" | "z3" | "oom" | "other". `name` carries the
@@ -459,7 +457,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::errors::register(m)?;
     m.add_class::<PythonCallbacks>()?;
     m.add_class::<RustSolverContext>()?;
-    // Deferred fork types (`DeferredFork` itself is Rust-internal — angr-03vl4.6)
+    // Deferred fork types (`DeferredFork` itself is Rust-internal) (angr-03vl4.6)
     m.add_class::<ExecutionConfig>()?;
     // Rust-first state
     m.add_class::<crate::state::PyRustSimState>()?;

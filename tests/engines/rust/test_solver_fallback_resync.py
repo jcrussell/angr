@@ -1,5 +1,5 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""Regression test for angr-hv4lt.9: RustSolverFallback must refresh on re-sync.
+"""Regression test: RustSolverFallback must refresh on re-sync (angr-hv4lt.9).
 
 ``RustSolverFallback`` caches a forked Rust Z3 context the first time
 eval/min/max/satisfiable is called. ``attach()`` was idempotent via the

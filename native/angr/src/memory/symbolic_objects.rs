@@ -90,7 +90,7 @@ impl SymbolicMemory {
             }
         }
         // angr-ccp2w: an import over existing objects must not leave interior
-        // lanes shadowing it (the angr-c8mda shape on this path).
+        // lanes shadowing it (the interior-lane shape on this path, angr-c8mda).
         self.retire_symbolic_overlapping(addr, sym_bytes);
         // Store in symbolic_objects for lookup
         self.symbolic_objects.insert(addr, value.clone());

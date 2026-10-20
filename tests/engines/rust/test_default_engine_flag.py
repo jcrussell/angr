@@ -1,6 +1,6 @@
 """The config-gated ``default_engine="rust"`` flip (angr-op0dn.14.6).
 
-Two opt-in doors onto the auto-dispatch mechanism that angr-op0dn.14.5 built:
+Two opt-in doors onto the auto-dispatch mechanism (angr-op0dn.14.5):
 ``angr.Project(binary, engine="rust")`` and ``ANGR_DEFAULT_ENGINE=rust``. Both
 make ``factory.simulation_manager()`` — called with *no* ``use_rust_engine``
 argument — route through the eligibility predicate instead of unconditionally

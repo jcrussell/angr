@@ -5,7 +5,7 @@ use super::*;
 use crate::vex::ir::IRType;
 
 // =========================================================================
-// angr-tukg.2 — NEON pairwise add/min/max (VPwAdd / VPwAddL / VPwMin / VPwMax).
+// NEON pairwise add/min/max (VPwAdd / VPwAddL / VPwMin / VPwMax) (angr-tukg.2).
 // =========================================================================
 
 /// Iop_PwAdd16x4 — pairwise add over 4 lanes of 16 bits, two 64-bit
@@ -415,8 +415,8 @@ fn test_vpwmax_8ux8_concrete() {
 
 /// Symbolic universality (spec-replay): Iop_PwAdd16x4 must produce the same
 /// bits as a hand-built reference for any 64-bit input pair. Claripy has no
-/// `_op_generic_PwAdd`, so we reference-build inline per bd memory
-/// `z3-universality-parity-test-template`.
+/// `_op_generic_PwAdd`, so we reference-build inline
+/// (bd memory `z3-universality-parity-test-template`).
 #[test]
 fn test_vpwadd_16x4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
@@ -688,7 +688,7 @@ fn test_parse_pairwise_routing() {
 }
 
 // =========================================================================
-// angr-tukg.3 — NEON rounding halving add (VAvg).
+// NEON rounding halving add (VAvg) (angr-tukg.3).
 // =========================================================================
 
 /// Iop_Avg8Ux8 — unsigned rounding-average over 8 lanes of 8 bits.
@@ -764,7 +764,7 @@ fn test_vavg_16ux8_concrete() {
     assert_eq!(result.as_u128().unwrap(), e);
 }
 
-/// Iop_Avg64Sx2 — the Q-reg 64-bit-lane shape angr-li4ox mapped. The lane is
+/// Iop_Avg64Sx2 — the Q-reg 64-bit-lane shape (angr-li4ox). The lane is
 /// as wide as the `u128` a concrete `RustBV` is backed by, so the `elem+1`
 /// widening `vec_rounding_avg` does lands at 65 bits: the case where a
 /// sloppier "widen to `2 * elem`" would have overflowed.
@@ -794,10 +794,10 @@ fn test_vavg_64sx2_concrete() {
     assert_eq!(result.as_u128().unwrap(), pack(&e_lanes));
 }
 
-/// Iop_Avg8Ux32 — the AVX2 `VPAVGB` shape angr-li4ox mapped. 256 bits is past
+/// Iop_Avg8Ux32 — the AVX2 `VPAVGB` shape (angr-li4ox). 256 bits is past
 /// the 16-byte concrete backing store, so the operands are built as a `Concat`
 /// of two 128-bit concretes and the result is checked one lane at a time
-/// (bd `invariant-concrete-bv-u128-16-byte-limit`, hazard family 3).
+/// (bd memory `invariant-concrete-bv-u128-16-byte-limit`).
 #[test]
 fn test_vavg_8ux32_avx2_256_bit() {
     let ctx = SymContext::new_mock();

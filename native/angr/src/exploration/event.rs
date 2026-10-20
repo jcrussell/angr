@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 
 /// Event returned from exploration to Python.
 ///
-/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[non_exhaustive]` (angr-irwe): minor versions may add new
 /// `#[pyo3(get)]` fields as new callback reasons emerge. Construction
 /// outside this crate must go through the `ExplorationEvent::*`
 /// helpers below rather than struct-literal syntax.

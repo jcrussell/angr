@@ -1,33 +1,31 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""Regression tests for angr-87e56 / angr-pxq0i: owner-thread teardown of
-solver forks.
+"""Regression tests for owner-thread teardown of solver forks (angr-87e56, angr-pxq0i).
 
 An owned ``RustSolverContext`` (Owned ``SymContext`` + cloned Z3 solver) is
-``#[pyclass(unsendable)]``. Before angr-87e56, under ``RUST_PARALLEL_WORKERS>1``
-a dead fork whose last Python reference was collected on a scheduler worker
-thread took its final ``tp_dealloc`` off the owning (coordinator) thread, where
-pyo3 refuses to drop it — writing an unraisable ``RuntimeError`` (``... is
-unsendable, but is being dropped on another thread``) and permanently leaking
-the Z3 solver clone.
+``#[pyclass(unsendable)]``. Under ``RUST_PARALLEL_WORKERS>1`` a dead fork whose
+last Python reference is collected on a scheduler worker thread would take its
+final ``tp_dealloc`` off the owning (coordinator) thread, where pyo3 refuses to
+drop it — writing an unraisable ``RuntimeError`` (``... is unsendable, but is
+being dropped on another thread``) and permanently leaking the Z3 solver clone.
 
-angr-87e56 gave ``RustSolverContext`` an owner-thread-guarded ``close()`` plus
-a Python graveyard (``rust_state_proxy._release_owned_ctx`` /
+So ``RustSolverContext`` has an owner-thread-guarded ``close()`` plus a Python
+graveyard (``rust_state_proxy._release_owned_ctx`` /
 ``drain_solver_graveyard``) that proxy finalizers hand contexts to and the
 coordinator drains on its own thread.
 
-angr-pxq0i: that fix was itself broken. PyO3 0.27.2's codegen for ANY
+The owner check cannot live inside ``close()`` alone: PyO3's codegen for ANY
 receiver method on an ``unsendable`` pyclass — including ``close()`` and
 ``is_closed()`` — runs a cross-thread guard (a hard ``assert_eq!`` panic)
 BEFORE the method body, i.e. before ``close()``'s own internal owner check
 ever gets a chance to no-op. Since the crate builds with ``panic = "abort"``,
 calling ``close()``/``is_closed()`` from any thread but the true owner aborts
-the WHOLE PROCESS — not a catchable Python exception. The fix tracks the
-owner thread id in plain Python (captured on the thread that actually forks
-the context) and checks it via ``threading.get_ident()`` *before* ever
-calling a pymethod on an off-thread context, routing straight to the
-graveyard instead. ``TestGraveyardOwnerCheck`` pins that contract; the
-``test_workers_explore_no_unsendable_drop`` test below still guards the
-angr-87e56 leak behavior end-to-end.
+the WHOLE PROCESS — not a catchable Python exception. The owner thread id is
+therefore tracked in plain Python (captured on the thread that actually forks
+the context) and checked via ``threading.get_ident()`` *before* ever calling a
+pymethod on an off-thread context, routing straight to the graveyard instead.
+``TestGraveyardOwnerCheck`` pins that contract; the
+``test_workers_explore_no_unsendable_drop`` test below guards the leak behavior
+end-to-end.
 """
 
 from __future__ import annotations
@@ -160,9 +158,9 @@ class TestGraveyardOwnerCheck:
         """A real background thread calling the fixed ``_release_owned_ctx``
         on a main-thread-owned context must NOT abort the process.
 
-        This is the direct repro from the bead: before the fix, the exact call
-        path here (``_release_owned_ctx`` invoked from a non-owner thread) hit
-        PyO3's cross-thread thread-guard panic, which ``panic = "abort"`` turns
+        This is the direct repro: without the Python-side owner check, the exact
+        call path here (``_release_owned_ctx`` invoked from a non-owner thread)
+        hits PyO3's cross-thread thread-guard panic, which ``panic = "abort"`` turns
         into a hard process abort ("Fatal Python error: Aborted") — not a
         Python exception, so no ``try/except`` in this test process could ever
         catch it or turn it into a normal assertion failure. A wrong fix here
@@ -199,8 +197,8 @@ class TestGraveyardOwnerCheck:
 
             def worker():
                 try:
-                    # Off-owner call from a real background thread. Before
-                    # angr-pxq0i this aborted the process inside close().
+                    # Off-owner call from a real background thread: must route
+                    # to the graveyard, not abort inside close() (angr-pxq0i).
                     rsp._release_owned_ctx(ctx, owner_tid)
                 except Exception as e:  # pragma: no cover - defensive
                     errors.append(repr(e))

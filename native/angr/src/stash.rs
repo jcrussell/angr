@@ -45,8 +45,8 @@ pub const STASH_UNCONSTRAINED: &str = "unconstrained";
 pub const STASH_STEP_OUT: &str = "_step_out";
 
 /// Standard stash names pre-registered at construction. Anything else triggers
-/// a one-time `log::warn!` on first creation via `ensure_stash` — typo guard
-/// per angr-630x (follow-up from the angr-9l9j PyO3 trust-model audit).
+/// a one-time `log::warn!` on first creation via `ensure_stash` — a typo guard
+/// (angr-630x, angr-9l9j).
 pub const STANDARD_STASHES: &[&str] = &[
     STASH_ACTIVE,
     STASH_FOUND,
@@ -148,9 +148,8 @@ impl StashManager {
     /// `set_deterministic`, `set_max_history`, `_active_states_map_memory`)
     /// must also reach `RustExplorationManager::all_live_states_mut`
     /// (`exploration/run_loop.rs`), which adds the two non-stash buckets —
-    /// see those three functions for the canonical shape, and the
-    /// `invariant-*-covers-pending` bd memories for why this keeps
-    /// recurring. Single-state lookups don't have this problem:
+    /// see those three functions for the canonical shape. Single-state
+    /// lookups don't have this problem:
     /// `find_state`/`find_state_mut` (`exploration/helpers.rs`) already check
     /// `pending_callbacks` first.
     #[inline]
@@ -385,14 +384,14 @@ impl StashManager {
     /// Errored states are the one terminal disposition that is **never**
     /// dropped (`drop_terminal_states` does not apply — an error is a
     /// diagnostic the caller always needs), so they cannot go through
-    /// `push_or_drop_terminal`. Before angr-9ke6b.231 the serial sites open-coded
-    /// `stashes_mut().entry(STASH_ERRORED).push_back(...)`, which skipped both
-    /// the counter and the index: a serial run's `StashSnapshot` reported
-    /// `errored_count == 0` while the parallel loop folded
-    /// `stats.summarized_errored` into the same field. This method is the
+    /// `push_or_drop_terminal`. An open-coded
+    /// `stashes_mut().entry(STASH_ERRORED).push_back(...)` skips both
+    /// the counter and the index: a serial run's `StashSnapshot` would report
+    /// `errored_count == 0` while the parallel loop folds
+    /// `stats.summarized_errored` into the same field (angr-9ke6b.231). This method is the
     /// errored-only counterpart of `push_or_drop_terminal`; route every errored
-    /// push through it — since angr-sqfj8.136 that is enforced, not merely
-    /// documented: `push_or_drop_terminal` panics on `STASH_ERRORED`.
+    /// push through it. That is enforced, not merely documented:
+    /// `push_or_drop_terminal` panics on `STASH_ERRORED` (angr-sqfj8.136).
     pub fn push_errored(&mut self, state: RustSimState) {
         self.errored_count += 1;
         self.push(STASH_ERRORED, state);
@@ -462,9 +461,9 @@ impl StashManager {
     /// The indexed stash is consulted first, but only accepted once the state
     /// is actually found in it: a *present-but-stale* entry (index says stash
     /// A, the state now lives in stash B) falls through to the full scan
-    /// exactly as a missing entry does. Before angr-c7xno.97 only `find_state`
-    /// self-healed this way, while `find_state_mut` / `take_state` trusted a
-    /// present entry and returned `None` for a live state — an observable
+    /// exactly as a missing entry does, in all of `find_state`,
+    /// `find_state_mut` and `take_state` (angr-c7xno.97). Trusting a present
+    /// entry would return `None` for a live state — an observable
     /// read-vs-write divergence whenever a raw stash move skipped
     /// [`index`](Self::index) (the `NativeTechnique` `Timeout` /
     /// `evict_active_states` bypass). Single-sourcing the lookup here means a
@@ -589,7 +588,7 @@ impl StashManager {
     /// `state_index` is rebuilt from the dumped stashes on load.
     #[allow(
         clippy::expect_used,
-        reason = "`serde_json::to_vec` over `StashManagerSnapshot`, whose derived `Serialize` has no fallible arm (no non-string map keys, no custom impl) — the only `Err` shape is an io error, which cannot arise writing to a `Vec`. Left as a panic rather than propagated because `dump_snapshot` is the pyclass-facing API returning `Vec<u8>`; giving it a `Result` would ripple through the PyO3 surface and its callers, which is out of scope for angr-9ke6b.212"
+        reason = "`serde_json::to_vec` over `StashManagerSnapshot`, whose derived `Serialize` has no fallible arm (no non-string map keys, no custom impl) — the only `Err` shape is an io error, which cannot arise writing to a `Vec`. Left as a panic rather than propagated because `dump_snapshot` is the pyclass-facing API returning `Vec<u8>`; giving it a `Result` would ripple through the PyO3 surface and its callers, which is out of scope here"
     )]
     pub fn dump_snapshot(&mut self) -> Vec<u8> {
         let snap = self.to_snapshot();

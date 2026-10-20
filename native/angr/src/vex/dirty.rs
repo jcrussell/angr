@@ -13,8 +13,8 @@
 //! statements with `NeedPythonFallback` while evaluating GSPTR/VECRET args
 //! (see `interpreter/expressions.rs` + `statements.rs`) *before* native
 //! dispatch runs. Any handler registered for them would be dead code, so the
-//! Python engine handles CPUID/RDTSCP. (angr-2iow measured zero GSPTR hits
-//! corpus-wide; angr-t1ok removed the dead CPUID/RDTSCP handlers.)
+//! Python engine handles CPUID/RDTSCP and no native handler exists for them
+//! (angr-2iow, angr-t1ok).
 
 use std::collections::HashMap;
 

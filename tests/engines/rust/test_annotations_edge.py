@@ -55,7 +55,7 @@ class _ExprTaint(claripy.Annotation):
 
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
-    roundtrip (constraint export, memory load, eval). See angr-ykdq."""
+    roundtrip (constraint export, memory load, eval) (angr-ykdq)."""
 
     def test_uninitialized_annotation_on_bvs_in_memory(self, fauxware_project):
         """A UninitializedAnnotation on a BVS stored in symbolic memory
@@ -339,8 +339,8 @@ class TestEdgeCases:
         """
 
         # Pick two options that stay in _REJECTED_OPTION_NAMES (warn-only).
-        # CALLLESS and DO_RET_EMULATION were promoted to raise in angr-cf9h,
-        # so this test now exercises the SimMemory error-handling pair.
+        # CALLLESS and DO_RET_EMULATION raise (angr-cf9h), so this test
+        # exercises the SimMemory error-handling pair.
         state = fauxware_project.factory.entry_state(
             add_options={
                 angr.sim_options.UNINITIALIZED_ACCESS_AWARENESS,
@@ -378,10 +378,10 @@ class TestEdgeCases:
         RustExplorationManager construction. Rust does not emit SimAction
         records, so silently honoring these would hand the user an empty
         ``state.history.actions`` stream — a hard-to-diagnose divergence.
-        Acceptance for angr-xghv. TRACK_ACTION_HISTORY was demoted
-        from this list in angr-fkvt (2026-06-06) — it is a metadata
-        flag consulted only by preconstrainer.py and does not by itself
-        gate action recording; see test_track_action_history_does_not_raise.
+        Acceptance test (angr-xghv). TRACK_ACTION_HISTORY is not in this
+        list (angr-fkvt) — it is a metadata flag consulted only by
+        preconstrainer.py and does not by itself gate action recording; see
+        test_track_action_history_does_not_raise.
         """
 
         state = fauxware_project.factory.entry_state(
@@ -400,7 +400,7 @@ class TestEdgeCases:
         recording itself. The TRACK_*_ACTIONS family is the actual
         recording switch and remains raise-listed.
 
-        Acceptance for angr-fkvt: unblocks insomnihack_aeg (angr-86c4)
+        Acceptance test (angr-fkvt): unblocks insomnihack_aeg (angr-86c4)
         whose solve.py sets ``{REVERSE_MEMORY_NAME_MAP,
         TRACK_ACTION_HISTORY}``. Both engines produce an empty
         ``state.history.actions`` when only this option is set, so
@@ -451,7 +451,7 @@ class TestEdgeCases:
         Rust does not honor SimSolver's BatchedConcretizationBacker, so
         silently accepting it would mean symbolic-driven analyses run
         symbolically instead of eagerly concretizing — a hard-to-diagnose
-        semantic divergence. Acceptance for angr-gmrc.
+        semantic divergence (angr-gmrc).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -472,7 +472,7 @@ class TestEdgeCases:
         within strategy limits and does not honor the option's
         "refuse to concretize on range-check failure" semantics, so
         silently accepting it would mask the user's intent to keep the
-        analysis conservative. Acceptance for angr-csmm.
+        analysis conservative (angr-csmm).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -492,7 +492,7 @@ class TestEdgeCases:
         construction. The Python engine emits an emulated ret successor at
         every ret site; Rust does not emulate rets at all, so the successor
         set silently differs. Callable workflows are the typical caller and
-        would lose the emulated successor. Acceptance for angr-cf9h.
+        would lose the emulated successor (angr-cf9h).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -509,7 +509,7 @@ class TestEdgeCases:
         The Python engine replaces each call with an unconstraining of the
         return register so Callable can short-circuit function bodies; Rust
         has no equivalent path and would step into the callee, structurally
-        diverging from the Callable contract. Acceptance for angr-cf9h.
+        diverging from the Callable contract (angr-cf9h).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -525,14 +525,13 @@ class TestEdgeCases:
         self,
         fauxware_project,
     ):
-        """EFFICIENT_STATE_MERGING must NOT raise (demoted angr-op0dn.11.6).
+        """EFFICIENT_STATE_MERGING must NOT raise (angr-op0dn.11.6).
 
-        It was raise-listed (angr-n129) while merge went through the Python
-        export path, which needs the SimStateHistory common-ancestor walk the
-        option feeds. Merge is now native — RustExplorationManager.merge()
-        runs the M3-4 fast path (merge_states, no export) and the M3-5 native
-        ManualMergepoint technique forks-and-merges in Rust — so the option's
-        Python rationale is moot and it is honored by not raising. Veritesting
+        The option feeds the SimStateHistory common-ancestor walk that a
+        Python-export merge would need. Merge is native —
+        RustExplorationManager.merge() runs the native fast path
+        (merge_states, no export) and the native ManualMergepoint technique
+        forks-and-merges in Rust — so it is honored by not raising. Veritesting
         auto-adds it; honoring it lets such a state explore under the native
         merge machinery instead of hard-failing at the manager boundary.
         """
@@ -557,7 +556,7 @@ class TestEdgeCases:
         unconstrained initial register values would simply not be explored.
         The MEMORY variant SYMBOL_FILL_UNCONSTRAINED_MEMORY is NOT promoted
         because Rust's load_concrete_lazy already defaults to symbolic-fill
-        when zero_fill_unconstrained is unset. Acceptance for angr-apre.
+        when zero_fill_unconstrained is unset (angr-apre).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -577,7 +576,7 @@ class TestEdgeCases:
         load_concrete_lazy in native/angr/src/memory/load.rs falls back to a
         fresh symbolic BVS when zero_fill_unconstrained is unset, so the
         memory variant matches Python's symbolic-fill behavior. Only the
-        REGISTERS variant is a silent divergence. Acceptance for angr-apre.
+        REGISTERS variant is a silent divergence (angr-apre).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -606,8 +605,7 @@ class TestEdgeCases:
         default value; Rust's interpreter maps Op / TypeMismatch /
         InvalidIR errors to FallbackStrategy::Panic and moves the state
         to the errored stash without ever falling back to Python — the
-        bypass never fires. Silent divergence from the Python engine.
-        Acceptance for angr-6rz8.
+        bypass never fires. Silent divergence from the Python engine (angr-6rz8).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -646,7 +644,7 @@ class TestEdgeCases:
         honored transparently and need neither raise nor warn entries.
         BYPASS_UNSUPPORTED_IREXPR and BYPASS_UNSUPPORTED_IRSTMT are
         vestigial (defined but not consulted anywhere); they pass
-        through vacuously. Acceptance for angr-6rz8.
+        through vacuously (angr-6rz8).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -663,12 +661,12 @@ class TestEdgeCases:
 
     def test_bypass_veritesting_exceptions_warns(self, fauxware_project):
         """BYPASS_VERITESTING_EXCEPTIONS is consulted only by
-        analyses/veritesting.py; the Rust manager does not yet drive the
-        Veritesting technique (angr-op0dn.11.7 is still open). Outside
+        analyses/veritesting.py; the Rust manager does not drive the
+        Veritesting technique (angr-op0dn.11.7). Outside
         Veritesting the option is a no-op. It travels with the
         ``angr.options.resilience`` bundle, so reject-with-warn (not
         raise) keeps resilience-bundle users alive while still signaling
-        the divergence. Acceptance for angr-6rz8.
+        the divergence (angr-6rz8).
         """
 
         state = fauxware_project.factory.entry_state(
@@ -685,7 +683,7 @@ class TestEdgeCases:
     def test_rejected_options_warn_once_per_manager(self, fauxware_project):
         """The warning fires once per option per manager, not per state added."""
 
-        # CALLLESS was promoted to raise in angr-cf9h; use a still-warn-only
+        # CALLLESS raises (angr-cf9h); use a still-warn-only
         # option so the test exercises the warn-once latch.
         s1 = fauxware_project.factory.entry_state(
             add_options={angr.sim_options.UNINITIALIZED_ACCESS_AWARENESS},

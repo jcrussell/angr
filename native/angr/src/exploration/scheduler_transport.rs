@@ -93,8 +93,8 @@ pub(crate) struct WorkTransport {
     ///
     /// Soft by up to `workers - 1`: `W` workers can each observe `limit - 1`
     /// simultaneously and dispatch, so the bound is `limit + W - 1` dispatches.
-    /// (`max_active_states` used to carry the same slack; since angr-5mnx3.18 it
-    /// reserves its admissions with a CAS and is soft by exactly one. A
+    /// (`max_active_states` reserves its admissions with a CAS and is soft by
+    /// exactly one (angr-5mnx3.18). A
     /// dispatch budget overshooting by `W - 1` steps costs `W - 1` steps; a
     /// frontier cap overshooting is the OOM valve failing, hence the
     /// difference.) `None` = unbounded (every Rust-side/test

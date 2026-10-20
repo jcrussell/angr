@@ -4,7 +4,7 @@
 // The manager-level fold on top of this walk is pinned separately in
 // `exploration/manager_methods_diagnostics_tests.rs`; what is pinned here is
 // the walk's own accounting — in particular that node addresses stay
-// comparable ACROSS batches, which is the angr-gkcxh miscount.
+// comparable ACROSS batches (angr-gkcxh).
 use super::*;
 use crate::symbolic::SymContext;
 
@@ -21,7 +21,7 @@ fn one_batch_separates_pointer_identity_from_structural_identity() {
     assert_eq!(stats.unique_shapes, 1, "...of one structural shape");
 }
 
-/// The angr-gkcxh regression: batches handed in one at a time must each be
+/// Regression (angr-gkcxh): batches handed in one at a time must each be
 /// counted, not collapsed onto a freed predecessor's address.
 ///
 /// Before the fix, `fold_sharing_walk` walked a `Vec` it dropped on return, so
@@ -78,8 +78,8 @@ fn pointers_never_undercount_shapes_across_many_batches() {
 }
 
 /// The same guarantee through the real caller: `fold_sharing_walk` clones the
-/// context's assumed list, and that clone is the temporary angr-gkcxh was
-/// about. Two contexts holding different constraints must contribute two
+/// context's assumed list, and that clone is the temporary at issue
+/// (angr-gkcxh). Two contexts holding different constraints must contribute two
 /// pointers and two shapes.
 #[test]
 fn fold_sharing_walk_keeps_each_contexts_clone_alive() {

@@ -24,8 +24,7 @@ Prerequisites
 * A ``.venv/`` virtualenv holding the angr ecosystem (``claripy``,
   ``pyvex``, ``archinfo``, ``cle``). ``pyproject.toml`` pins those four
   to one version on purpose; the rationale is in the comment above the
-  pins and in the ``avoid-pip-install-deps`` bd memory. Do not bump
-  them casually.
+  pins (bd memory `avoid-pip-install-deps`). Do not bump them casually.
 
 Bootstrap from a clean state
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

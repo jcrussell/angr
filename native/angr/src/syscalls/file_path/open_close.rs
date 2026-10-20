@@ -5,8 +5,8 @@
 //! `RustSimState::file_system()`, mirroring the existing
 //! `procedures/fileops::NativeOpen` / `NativeClose` libc procs (which
 //! are already wired through `state.file_system()` and therefore
-//! diverge from Python `state.posix.fd` in the same way — see the
-//! `syscall-vs-procedure-dispatch` bd memory). The Python proc
+//! diverge from Python `state.posix.fd` in the same way)
+//! (bd memory `syscall-vs-procedure-dispatch`). The Python proc
 //! `procedures/posix/open.py` returns `-1` when `state.fs.get(path)`
 //! is `None` and creation flags are absent; we always allocate a fresh
 //! fd since the Rust-side `FileSystem` does not mirror Python's

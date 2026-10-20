@@ -52,8 +52,8 @@
 //! - `environment`: the per-state environment map and its fork/merge rules.
 //! - `export`: `export_full`'s dump shape.
 //!
-//! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69), which
-//! angr-c2cv had in turn pulled out of `state.rs`'s in-file `mod tests`.
+//! Carved out of the former monolithic `state_tests.rs`
+//! (angr-c7xno.69, angr-c2cv).
 
 mod basics;
 mod cow_peek;

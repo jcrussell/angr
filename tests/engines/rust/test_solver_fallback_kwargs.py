@@ -1,5 +1,5 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""Regression tests for angr-mm5sw: RustSolverFallback must honour solver kwargs.
+"""Regression tests: RustSolverFallback must honour solver kwargs (angr-mm5sw).
 
 ``RustSolverFallback`` patches ``eval``/``eval_upto``/``min``/``max``/
 ``satisfiable`` onto every Rust-exported state's ``state.solver``. It accepted

@@ -44,8 +44,8 @@ impl FileSystem {
     ///
     /// Prefers the [`norm_name`](FileDescriptor::norm_name) frozen at open
     /// time; only descriptors minted outside the `open` family (std fds,
-    /// pipe ends, auto-vivified write fds) and pre-angr-9ke6b.120
-    /// snapshots fall back to normalizing the raw `name` against the
+    /// pipe ends, auto-vivified write fds) and older snapshots
+    /// (angr-9ke6b.120) fall back to normalizing the raw `name` against the
     /// *current* cwd. Every path-keyed fd scan goes through this so a
     /// guest `chdir` between open and query cannot mis-key an fd.
     pub(super) fn fd_norm_name<'a>(&self, d: &'a FileDescriptor) -> Cow<'a, str> {

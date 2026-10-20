@@ -85,15 +85,16 @@ pub struct ExplorationStateSnapshot {
 //   `get_heap_freed`, `get_heap_alloc_count`, `get_heap_free_count`,
 //   `get_open_fds`, `get_fd_count`, `get_inspection_counts`,
 //   `get_symbolic_offsets`, `memory_load`, `page_addresses`, `get_history`,
-//   `get_registers_raw` (angr-9ke6b.5 re-audit: the Python bridge reconstructs
+//   `get_registers_raw` (the Python bridge reconstructs
 //   registers from `get_registers_named` + `get_symbolic_register_names`; the
-//   flat buffer is only read by the Rust/pytest arch-offset parity tests).
+//   flat buffer is only read by the Rust/pytest arch-offset parity tests)
+//   (angr-9ke6b.5).
 //   The Python sync helpers (`_sync_rust_callstack_to_state`,
 //   `_sync_rust_heap_brk_to_state`, `_sync_state_posix_fds_to_rust`, ...) read
 //   the LIVE `rust_mgr.get_state_*` accessors instead of a materialized
 //   snapshot, so these duplicate that data at snapshot granularity. Retained
-//   as a stable Rust-side introspection API (exercised by `state/tests/export.rs`,
-//   angr-n0irt.17) — not dead, just not on the materialization hot path.
+//   as a stable Rust-side introspection API (exercised by
+//   `state/tests/export.rs`; angr-n0irt.17) — not dead, just not on the materialization hot path.
 #[pymethods]
 impl ExplorationStateSnapshot {
     /// Get raw register bytes.

@@ -74,12 +74,13 @@ fn pending_with_all_contexts() -> PendingCallback {
     }
 }
 
-/// Direct coverage of the angr-0jh0j.82 split: this seam owns exactly the one
+/// Direct coverage of the split (angr-0jh0j.82): this seam owns exactly the one
 /// context of the three that is NOT a `RustSimState` — the pre-branch fork
 /// snapshot — and leaves the other two to `set_deterministic`'s
 /// `all_live_states` walk. Asserting the two *untouched* contexts is the point:
 /// re-widening this function would silently duplicate that walk's work, and
-/// narrowing it further would drop the angr-sqfj8.32 lineage entirely.
+/// narrowing it further would drop the pre-branch snapshot's lineage entirely
+/// (angr-sqfj8.32).
 #[test]
 fn apply_fork_snapshots_deterministic_reaches_only_the_branch_snapshots() {
     let pending = pending_with_all_contexts();
@@ -306,8 +307,8 @@ fn import_constraints_and_recheck_reports_sat_for_a_clean_import() {
 
 /// Fast path, convertible arm: a real claripy constraint is
 /// asserted via its raw Z3 pointer *and* recorded in the assumed IR, because
-/// `claripy_to_rustbv` also succeeds for it (angr-op0dn.14.2 — otherwise the
-/// constraint would be exported as an opaque residual).
+/// `claripy_to_rustbv` also succeeds for it (otherwise the constraint would
+/// be exported as an opaque residual) (angr-op0dn.14.2).
 ///
 #[test]
 fn import_fast_path_asserts_and_records_convertible_constraint() {
@@ -463,7 +464,7 @@ fn claripy_z3_ptr_declines_a_bv_sorted_lowering() {
     });
 }
 
-/// angr-mx00p.41, end to end on the `Z3PtrFirst` tier: a BV-sorted constraint
+/// End to end on the `Z3PtrFirst` tier (angr-mx00p.41): a BV-sorted constraint
 /// falls through to the RustBV tier and is asserted as `x != 0`. Before the
 /// Bool gate it was asserted raw as a mis-sorted Bool, which Z3's sort guard
 /// drops silently (angr-d01qu), so `x == 0` stayed satisfiable.

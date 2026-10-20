@@ -1,7 +1,7 @@
 //! Behavioural tests for the `silent_default!` macro (`lib.rs`).
 //!
-//! The macro is the one-line spelling of the `SILENT(cat-x)` +
-//! `log::warn!` convention (angr-91vj9.6). These lock in the two things a
+//! The macro logs a discarded failure and falls back to a default
+//! (angr-91vj9.6). These lock in the two things a
 //! caller relies on: the success payload passes through untouched, and the
 //! failure arm yields exactly `$default` rather than panicking or diverging.
 //! Log *level* selection (cat_b -> debug, cat_c -> warn) is enforced at

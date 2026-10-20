@@ -31,6 +31,7 @@ from tests.benchmarks.test_utils import BufferedStringIO  # noqa: F401
 # --- Availability guard ---------------------------------------------------
 # Attempt the broadest import once. Modules import only the symbols they use.
 try:
+    from angr.exploration import RustExplorationManager
     from angr.rustylib.vex_engine import (
         ExplorationEvent,
         PythonCallbacks,
@@ -39,8 +40,6 @@ try:
     from angr.rustylib.vex_engine import (
         RustExplorationManager as _RustExplorationManager,
     )
-
-    from angr.exploration import RustExplorationManager
 
     RUST_EXPLORATION_AVAILABLE = True
 except ImportError:

@@ -3,8 +3,8 @@
 //!
 //! The invariants they cover (steady-config guarding, Multi-cell flushing,
 //! per-field merge reconciliation) were each upheld at some call sites and
-//! silently skipped at others (angr-9ke6b, angr-sqfj8). This crate doc is the design record; the bd memory
-//! `angr-macros-call-site-invariants` keeps only the process lessons.
+//! silently skipped at others (angr-9ke6b, angr-sqfj8). This crate doc is the
+//! design record (bd memory `angr-macros-call-site-invariants`).
 //!
 //! # The macros
 //!
@@ -350,8 +350,8 @@ const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min",
 /// Adding a field to `RustSimState` without a `#[merge_policy]` (or with a
 /// mistyped one) is a compile error, so "silently reuses the struct-literal's
 /// bare `self.x.clone()` shape without anyone deciding that's actually
-/// correct" (the angr-9ke6b.121 / angr-sqfj8.85/.86/.88 bug family) can no
-/// longer hide unlabeled among the other 40-odd fields.
+/// correct" can no longer hide unlabeled among the other fields
+/// (angr-9ke6b.121, angr-sqfj8.85/.86/.88).
 ///
 /// # What the generated methods buy
 ///
@@ -701,7 +701,7 @@ fn callback_setters_impl(input: proc_macro2::TokenStream) -> proc_macro2::TokenS
 /// `<event>` ident. Hand-written, the same-signature pairs
 /// (`reg_read`/`reg_write`, `tmp_read`/`tmp_write`, `mem_read`/`mem_write`,
 /// `call`/`return`) let a copy-paste compile while testing the *sibling*
-/// dispatch, which is exactly the class angr-0jh0j.6 raised for this file.
+/// dispatch, which is exactly the sibling-dispatch class of bug (angr-0jh0j.6).
 ///
 /// A body must call `self.forward(..)` exactly once, and may not name a
 /// `call_inspect_*` method directly — the placeholder is the only route to the

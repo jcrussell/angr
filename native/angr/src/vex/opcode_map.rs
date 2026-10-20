@@ -213,10 +213,9 @@ pub(super) use fcmp_scalar_arms;
 /// maps to a typed `RustUnsupportedVexOpError(op_name, arch)`; in live
 /// exploration it is stringified into the errored stash (see the
 /// "Test-only taxonomy vs. the live exploration path" note in
-/// `errors.rs`). Before angr-tkbr.2 this
-/// path silently rewrote to `IROp::Raw(0)` and `log::warn!`-ed the
-/// name, which masked missing coverage and produced fresh-symbolic
-/// results that were hard to attribute.
+/// `errors.rs`). Silently rewriting this path to `IROp::Raw(0)` would
+/// mask missing coverage and produce fresh-symbolic results that are
+/// hard to attribute (angr-tkbr.2).
 pub fn parse_opcode(op_str: &str) -> IROp {
     // Fast path for common operations
     if let Some(op) = parse_arithmetic(op_str) {
@@ -338,9 +337,8 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
     // Vector shift {left, right-logical, right-arithmetic} by immediate.
     // The 8x8/16x4/32x2 shapes are NEON D-reg, the 8x16/16x8/32x4/64x2 shapes
     // SSE/NEON Q-reg, and the 16x16/32x8/64x4 shapes AVX2 (angr-sqfj8.118).
-    // (Before angr-sqfj8.113 SarN omitted 64x2 on the false premise that pyvex
-    // has no such op; `Iop_SarN64x2` is declared right alongside its ShlN/ShrN
-    // siblings and was silently falling to IROp::Unmapped.)
+    // `Iop_SarN64x2` is declared right alongside its ShlN/ShrN siblings, so
+    // SarN maps 64x2 too (angr-sqfj8.113).
     //
     // Two asymmetries below are real, not gaps — both mirror the x86 ISA and
     // are declared exactly this way in `IROP_NAMES`:
@@ -378,9 +376,8 @@ fn parse_comparison(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_ExpCmpNE" => CmpNE { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     // CasCmpEQ / CasCmpNE: identical semantics to CmpEQ / CmpNE — the "Cas"
     // prefix only signals to optimizers that the operand pattern came from
-    // a CAS lowering. Before angr-tkbr.2 these silently rewrote
-    // to IROp::Raw(0) and produced a fresh-symbolic zero, which masked
-    // the missing mapping for cmpxchg/cmpxchg16b lifts.
+    // a CAS lowering. They need explicit arms for cmpxchg/cmpxchg16b lifts
+    // (angr-tkbr.2).
     tuple_arms!(op_str; "Iop_CasCmpEQ" => CmpEQ { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_CasCmpNE" => CmpNE { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
 
@@ -478,10 +475,8 @@ fn parse_special(op_str: &str) -> Option<IROp> {
     match op_str {
         // Byte/word lane permute (PSHUFB on x86, VPERMD on AVX2, TBL/TBX on
         // NEON). Not PCLMUL — that is the correctly-labeled block further
-        // down. angr-sqfj8.117: the arm previously listed a nonexistent
-        // `Iop_Perm8x32` (dead string) while the real `Iop_Perm32x4` /
-        // `Iop_Perm32x8` went unmapped; verified against the full
-        // `Iop_Perm*` set in `IROP_NAMES`.
+        // down. Verified against the full `Iop_Perm*` set in `IROP_NAMES`
+        // (there is no `Iop_Perm8x32`; angr-sqfj8.117).
         //
         // `PermOrZero` (what libVEX now lifts PSHUFB to) shares `VPerm`:
         // `VEXOps::vec_perm` zeroes a top-bit lane for both, as Python's
@@ -657,8 +652,8 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
         // SILENT(cat-c): every libVEX `IRJumpKind` now has an
         // arm above, so reaching this one means the lifter emitted a tag this
         // build does not know. Boring is the only non-terminal answer we can
-        // give, but it is a wrong-answer risk (angr-sqfj8.111 was exactly that
-        // for the trap kinds), hence the warn.
+        // give, but it is a wrong-answer risk (as for the trap kinds)
+        // (angr-sqfj8.111), hence the warn.
         _ => {
             log::warn!(
                 "parse_jumpkind: unrecognized VEX jumpkind {jk_str:?}, treating as Ijk_Boring"

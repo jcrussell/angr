@@ -478,12 +478,11 @@ impl<'a> VEXInterpreter<'a> {
     /// The callback is a documented no-op (the callback state's memory is a
     /// `RustMemoryProxy`), so a raw dispatch that skips `buffer_store_for_rust_memory`
     /// lands in neither Rust's pending-store buffers nor Python's shadow
-    /// memory and is lost outright (angr-5rjbq fixed the two
-    /// `statements_store.rs` paths; angr-5mnx3.23 found four more siblings —
-    /// `handle_storeg`'s two symbolic-guard branches,
-    /// `cas_store_symbolic_data`, and `build_ite_store_from_callbacks` —
-    /// that had repeated the raw form). Bundling the pair here is what stops
-    /// a seventh site from repeating it.
+    /// memory and is lost outright. The raw form recurred at the two
+    /// `statements_store.rs` paths and four siblings — `handle_storeg`'s two
+    /// symbolic-guard branches, `cas_store_symbolic_data`, and
+    /// `build_ite_store_from_callbacks` (angr-5rjbq, angr-5mnx3.23). Bundling
+    /// the pair here is what stops another site from repeating it.
     ///
     /// Callers that need the pending buffer drained first (so Python cannot
     /// observe a write ordered after this one) still call `flush_stores`

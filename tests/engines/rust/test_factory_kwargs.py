@@ -1,13 +1,11 @@
 """Property test: ``factory.simulation_manager(use_rust_engine=True, **kwargs)``
 never *silently drops* a kwarg.
 
-Before angr-op0dn.14.5.1 the Rust branch of
-:meth:`angr.factory.AngrObjectFactory.simulation_manager` popped
-``save_unconstrained`` and threw the rest of ``**kwargs`` away, so
-``simulation_manager(state, use_rust_engine=True, resilience=True)``
-constructed a manager that quietly ignored ``resilience``. The contract now
-is: every kwarg the Python ``SimulationManager`` accepts either reaches the
-constructed Rust manager or raises loudly.
+The contract: every kwarg the Python ``SimulationManager`` accepts either
+reaches the Rust manager built by
+:meth:`angr.factory.AngrObjectFactory.simulation_manager` or raises loudly, so
+``simulation_manager(state, use_rust_engine=True, resilience=True)`` never
+constructs a manager that quietly ignores ``resilience`` (angr-op0dn.14.5.1).
 """
 
 from __future__ import annotations
@@ -112,8 +110,8 @@ class TestRaiseOptionPredicate:
     """The raise-option list has exactly one source of truth."""
 
     # Every mode bundle ships EXTENDED_IROP_SUPPORT, and its *absence* is itself
-    # an offense (_REQUIRED_OPTION_NAMES, angr-op0dn.14.7 — see
-    # test_default_bundle_options.py), so a realistic option set carries it.
+    # an offense (_REQUIRED_OPTION_NAMES; see test_default_bundle_options.py),
+    # so a realistic option set carries it (angr-op0dn.14.7).
     def test_predicate_flags_offending_options(self):
         base = {"SYMBOLIC", "EXTENDED_IROP_SUPPORT"}
         assert rust_unsupported_options(base | {"TRACK_MEMORY_ACTIONS"}) == ["TRACK_MEMORY_ACTIONS"]

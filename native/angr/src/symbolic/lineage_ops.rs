@@ -20,8 +20,7 @@
 //!   `local_constraints` on the pop side.
 //! - The test-only `local_z3_assertions_len` reads `local_constraints`.
 //!
-//! See bead angr-a2br.2.4 for the slice plan and
-//! `rust_z3_sharing.rst` "Interaction with `SharedLineageSolver`" for the
+//! See `rust_z3_sharing.rst` "Interaction with `SharedLineageSolver`" for the
 //! lineage invariants that gate which methods stay in `context.rs`.
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
@@ -44,8 +43,8 @@ impl SymContext {
     ///
     /// The cloned vector is handed to the walk *by value*: it would otherwise
     /// be dropped here, and the next context's clone could reuse its addresses
-    /// and be scored as already-seen (angr-gkcxh — see the `sharing` module
-    /// doc).
+    /// and be scored as already-seen (see the `sharing` module doc)
+    /// (angr-gkcxh).
     pub fn fold_sharing_walk(&self, walk: &mut ConstraintSharingWalk) {
         walk.visit_batch(
             self.get_assumed_constraints()
@@ -76,8 +75,8 @@ impl SymContext {
         self.scope_path.lock().len()
     }
 
-    /// Current size of this context's scope-savepoint stack (angr-v5a5
-    /// slice 4b).
+    /// Current size of this context's scope-savepoint stack
+    /// (angr-v5a5 slice 4b).
     ///
     /// Always 0 while `lineage` is `None` (the default-off case): that
     /// branch uses the per-context Z3 solver's native `push()/pop()`
@@ -139,9 +138,9 @@ impl SymContext {
     /// each seed state's solver context so descendants inherit the
     /// opt-in through `fork()`.
     ///
-    /// **Do NOT default this on for any single exploration strategy.** The
-    /// angr-ua1i proposal — flip default-on for `strategy='dfs'` — is
-    /// the wrong direction: both the canonical WIN canary (ais3_crackme)
+    /// **Do NOT default this on for any single exploration strategy.**
+    /// Flipping it default-on for `strategy='dfs'` is
+    /// the wrong direction (angr-ua1i): both the canonical WIN canary (ais3_crackme)
     /// and LOSE canary (defcon2016quals_baby-re) run
     /// BFS in the bench harness, so strategy is not the discriminator.
     /// The replacement is runtime thrash detection in
@@ -151,8 +150,8 @@ impl SymContext {
         self.use_shared_lineage_solver.store(v, Ordering::Relaxed);
     }
 
-    /// Save a scope-path savepoint, dispatching by lineage (angr-v5a5
-    /// slice 4b).
+    /// Save a scope-path savepoint, dispatching by lineage
+    /// (angr-v5a5 slice 4b).
     ///
     /// In the **None** dispatch path (today's only production path),
     /// this directly pushes the per-context Z3 solver — preserving the

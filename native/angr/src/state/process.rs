@@ -193,8 +193,8 @@ impl RustSimState {
 
     /// getopt(3) cursor pair `(optind, optchar)` — mirrors Python's
     /// `state.libc.getopt_optind` / `getopt_optchar`. Per-state, fork- and
-    /// snapshot-carried. Consumed by the native getopt proc (bead
-    /// angr-bhk0a.3).
+    /// snapshot-carried. Consumed by the native getopt proc
+    /// (angr-bhk0a.3).
     pub fn getopt_cursor(&self) -> (u32, u32) {
         (self.getopt_optind, self.getopt_optchar)
     }
@@ -360,8 +360,8 @@ impl RustSimState {
         // angr-xloth.1: the freelist is fed by the guest-controlled CGC
         // `deallocate` handler (`syscalls/cgc.rs`), so a sinkhole may name a
         // region running past the top of the address space. Guest address
-        // arithmetic wraps — see bd memory
-        // `invariant-rust-concrete-arith-must-wrap`.
+        // arithmetic wraps
+        // (bd memory `invariant-rust-concrete-arith-must-wrap`).
         let chosen = addr.wrapping_add(remaining);
         if remaining > 0 {
             self.cgc_sinkholes.push((addr, remaining));

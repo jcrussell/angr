@@ -110,8 +110,8 @@ fn materialize_deferred_forks_unsat_split_and_lazy_solves() {
 
 /// A fork whose condition is in neither `stored_conditions` nor
 /// `condition_ast` still yields a conservative, unconstrained fork at the
-/// unexplored target — dropping it would lose a reachable path (angr-ph300.7
-/// was exactly that drop, in one copy of this loop).
+/// unexplored target — dropping it, as one copy of this loop once did, would
+/// lose a reachable path (angr-ph300.7).
 #[test]
 fn materialize_deferred_forks_p15_conservative_fork() {
     Python::initialize();
@@ -329,8 +329,8 @@ fn snapshot_built_fork_replays_earlier_guards() {
     );
 }
 
-/// `reconstruct_deferred_fork_condition` (the shared `condition_ast` helper extracted in
-/// angr-ph300.76) short-circuits without ever touching Python in its two
+/// `reconstruct_deferred_fork_condition` (the shared `condition_ast` helper)
+/// short-circuits without ever touching Python in its two
 /// non-reconstruction branches: when the condition is already present in
 /// `stored_conditions`, and when the fork carries no `condition_ast`. Both
 /// return `None` (nothing was reconstructed), leaving `condition.or(...)`

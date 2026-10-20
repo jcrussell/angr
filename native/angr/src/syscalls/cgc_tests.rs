@@ -316,7 +316,7 @@ fn receive_zero_count_non_stdin_fd_falls_back() {
 /// `count > MAX_CGC_BYTES` *before* the fd, which is only safe while that arm
 /// returns a Python fallback — the moment it answers natively (a concrete CGC
 /// errno, say), a never-opened fd would be reported on rather than deferred,
-/// the angr-fs583 bug class one argument over (angr-6cp06.56).
+/// the same bug class one argument over (angr-fs583, angr-6cp06.56).
 #[test]
 fn receive_oversize_count_non_stdin_fd_falls_back() {
     let h = NativeReceiveSyscall;

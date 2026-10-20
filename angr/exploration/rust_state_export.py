@@ -259,8 +259,7 @@ class RustSolverFallback:
 
         Called when ``_sync_cached_state`` re-attaches for a state_id whose
         Rust engine has stepped further (new branch constraints pushed onto the
-        same id, invisible to the Python mirror — see bd memory
-        ``invariant-mirror-solver-constraints-not-authoritative``). Drops the
+        same id, invisible to the Python mirror). Drops the
         cached fork so the next eval/min/max/satisfiable re-forks from the
         CURRENT Rust state, and rewinds the replay cursor so all caller-added
         Python constraints are re-applied onto the fresh fork.
@@ -1067,9 +1066,9 @@ class RustStateExportMixin:
           via register_plugin. No-op if Rust has zero frames (preserves the
           template's empty CallStack so we don't clobber pre-Rust call
           history for forks made from non-entry states).
-        * **Proxy install** (when ``self._use_export_callstack_proxy`` is on,
-          angr-yk2g). Installs ``RustCallStackProxyPlugin`` bound to
-          ``state_id`` instead — iteration / top-frame attribute access reads
+        * **Proxy install** (when ``self._use_export_callstack_proxy`` is
+          on). Installs ``RustCallStackProxyPlugin`` bound to ``state_id``
+          instead (angr-yk2g) — iteration / top-frame attribute access reads
           frames live from Rust via ``get_state_call_stack``. No eager FFI
           read or chain reconstruction. Matches the write-through model used
           for memory / registers / solver.
@@ -1136,9 +1135,9 @@ class RustStateExportMixin:
           memory pages and symbolic expressions, and pushes them into
           ``state.memory`` via ``store(...)`` so ``state.memory.load()``
           returns current values.
-        * **Proxy install** (when ``self._use_export_memory_proxy`` is on,
-          angr-ul4k). Installs ``RustMemoryProxy`` bound to ``state_id`` as
-          ``state.memory`` instead — every ``load`` / ``store`` after that
+        * **Proxy install** (when ``self._use_export_memory_proxy`` is on).
+          Installs ``RustMemoryProxy`` bound to ``state_id`` as
+          ``state.memory`` instead (angr-ul4k) — every ``load`` / ``store`` after that
           routes directly into Rust by ``state_id`` (loads use
           ``get_state_memory_ast`` for symbolic-AST round-trip). No FFI
           page export and no writeback into the SimState. Matches the
@@ -1169,8 +1168,8 @@ class RustStateExportMixin:
         try:
             # Use flushed export to materialize any pending symbolic writes
             # (and Multi cells) before exporting memory pages to Python.
-            # Since angr-9ke6b.101 the plain ``export_state`` flushes too, so
-            # there is no unflushed fallback to retry with.
+            # The plain ``export_state`` flushes too, so there is no unflushed
+            # fallback to retry with (angr-9ke6b.101).
             snapshot = self._rust_mgr.export_state_flushed(state_id)
         except Exception as e_flushed:
             # cat-(c) WRONG-ANSWER RISK: the export failed. Python
@@ -1488,7 +1487,7 @@ class RustStateExportMixin:
             # angr-4o7d: instrumented to measure fire rate.
             # Snapshot-export path, not hot exploration loop — distinct
             # threat model from rust_manager.py's mem_thunk_/sym_load_full_fail_
-            # fallbacks (which counter angr-ymoe showed are dead in practice).
+            # fallbacks, which counters show are dead in practice (angr-ymoe).
             sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
             ast = claripy.BVS(sym_name, size * 8)
             self._stats_orphan_bvs_snapshot_restore += 1
@@ -1675,12 +1674,11 @@ class RustStateExportMixin:
                         # auto-instantiated on first access — none of them carry
                         # the user's seeded config (argv/environ, heap layout).
                         # The template is the nearest cached ancestor SimState,
-                        # so its plugins are authoritative. The previous
-                        # `not hasattr(state, plugin_name)` guard was vacuous:
+                        # so its plugins are authoritative. A
+                        # `not hasattr(state, plugin_name)` guard would be vacuous:
                         # PluginHub.__getattr__ auto-instantiates on the hasattr
-                        # probe, so it was always False and this copy never ran
-                        # (angr-9cjmg — posix.argv silently lost on every
-                        # exported/found state).
+                        # probe, so the copy would never run and posix.argv would
+                        # be silently lost on every exported/found state (angr-9cjmg).
                         state.register_plugin(plugin_name, plugin.copy())
                         l.debug(f"Restored {plugin_name} plugin to state")
             except Exception as e:

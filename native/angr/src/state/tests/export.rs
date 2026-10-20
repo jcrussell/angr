@@ -9,9 +9,8 @@ use super::helpers::build_populated_state;
 
 // =============================================================================
 // export.rs — ExplorationStateSnapshot / RustSimState::export_full coverage
-// (angr-n0irt.17). Before this, state/export.rs — the single choke point every
-// found/errored/exported state crosses — had no #[cfg(test)] and no sibling
-// *_tests.rs. These pin the zero-coverage branches named in the bead:
+// (angr-n0irt.17). state/export.rs is the single choke point every
+// found/errored/exported state crosses. These pin its branches:
 // the named-vs-symbolic register split (angr-4ju9e), memory_load page-boundary
 // logic, get_page/page_addresses/get_symbolic_offsets, heap alloc/free, and
 // open-fd export.

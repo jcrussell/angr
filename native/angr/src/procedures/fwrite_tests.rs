@@ -187,7 +187,7 @@ fn test_fwrite_size_times_nmemb_saturates_instead_of_wrapping() {
 
 #[test]
 fn test_fwrite_content_sym_demotes_and_falls_back() {
-    // angr-0xyq2 Phase 2 write-demotion: fwrite to a bounded symbolic file
+    // Write-demotion (angr-0xyq2 Phase 2): fwrite to a bounded symbolic file
     // drops the content (fd + registry) and bounces to Python.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"hello", Permission::RWX);

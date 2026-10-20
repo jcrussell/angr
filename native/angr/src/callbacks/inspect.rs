@@ -95,7 +95,7 @@ impl PythonCallbacks {
     /// Raw-bit form of [`Self::inspect_event_enabled`]. Only the enabled-mask
     /// plumbing (and its tests) should reach for this — engine code names its
     /// event via [`InspectBit`]. Bits up to 31 are valid since the underlying
-    /// bitmask is `AtomicU32` (widened in angr-lge2 to fit `expr` at bit 16).
+    /// bitmask is `AtomicU32`, wide enough to fit `expr` at bit 16 (angr-lge2).
     #[inline(always)]
     fn inspect_bit_enabled(&self, event_bit: u8) -> bool {
         self.inspect_enabled
@@ -159,7 +159,7 @@ inspect_dispatch! {
     ///
     /// Returns the value the user's BP action left in `state.inspect.
     /// mem_read_expr` when it differs from what we passed in (value
-    /// injection — angr-uy32); `None` when unchanged, no breakpoint fired,
+    /// injection); `None` when unchanged, no breakpoint fired,
     /// or no callback is registered. The caller converts a returned AST
     /// back to a `RustBV` and substitutes it for the loaded value.
     pub(crate) fn mem_read(

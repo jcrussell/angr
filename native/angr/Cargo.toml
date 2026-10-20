@@ -15,15 +15,15 @@ categories.workspace = true
 all = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
 # Panics on caller-supplied/untrusted input are a recurring audit-bug class
-# (angr-9ke6b .126/.191/.63/.75). New code and files without a grandfather
+# (angr-9ke6b.126/.191/.63/.75). New code and files without a grandfather
 # #![allow(...)] must handle the None/Err case explicitly instead of
-# unwrap()/expect(). See angr-9ke6b follow-up bead for burning down the
-# existing grandfathered sites.
+# unwrap()/expect(); the existing grandfathered sites are burned down
+# incrementally.
 unwrap_used = "warn"
 expect_used = "warn"
 # `Result`/`Option` are already `#[must_use]`, but every silently-discarded-error
-# finding across all three audit rounds (angr-sqfj8 .87/.82/.38, angr-c7xno
-# .60/.84, plus round 1's dead-code cluster) opted OUT of that via
+# finding the audits turned up (angr-sqfj8.87/.82/.38, angr-c7xno.60/.84)
+# opted OUT of that via
 # `let _ = <fallible expr>;` — so plain must_use never caught them. This lint
 # flags exactly that shape. A discard that really is expected control flow
 # stays legal by spelling itself `drop(expr)` with a `SILENT(cat-a)` rationale

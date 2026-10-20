@@ -2,7 +2,7 @@
 //! (angr-5mnx3.46).
 //!
 //! The subject is [`SymContext::dedup_backing_of_ptr`] and its `log!` wrapper
-//! [`SymContext::debug_verify_dedup_backing`]: the angr-gmad2 detector that
+//! [`SymContext::debug_verify_dedup_backing`]: the detector (angr-gmad2) that
 //! decides whether a dedup HIT is a sound true-positive (Z3 hash-consing
 //! handed back the ptr of an assertion that is still live) or a STALE-PTR
 //! false positive (a freed AST's address got reused, so an *intended*

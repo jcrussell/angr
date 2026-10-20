@@ -25,7 +25,7 @@ use super::super::*;
 /// page's bytes — the eval under the *other* solution would diverge
 /// from the expected value.
 ///
-/// Locks down current behaviour for angr-jdz9. Two pinned solutions
+/// Locks down current behaviour (angr-jdz9). Two pinned solutions
 /// with stride 0x1000 hit the Strided concretization branch in
 /// `load_symbolic_unified`, so this also covers the strided ITE
 /// path's per-leaf cross-page handling.
@@ -127,8 +127,7 @@ fn test_symbolic_load_cross_page_multiple_solutions() {
 /// store_concrete must defer to check_perms_range, which must reject
 /// the W check on the middle page.
 ///
-/// (The bead originally said "32 bytes ... 3 pages", but a 32-byte
-/// access can span at most 2 pages. See companion test
+/// (A 32-byte access can span at most 2 pages. See companion test
 /// test_permission_enforcement_wide_store_three_pages_middle_readonly
 /// for the true 3-page case.)
 #[test]

@@ -188,14 +188,14 @@ fn test_zext_cmp_chain_collapse_to_narrowest() {
         assert_eq!(operands[1].as_u64(), Some(0xFF));
 }
 
-/// Regression guard for the angr-behq finding:
+/// Regression guard (angr-behq):
 /// Z3's AST hash-cons already de-dupes structurally-equal RustBV trees
 /// at to_z3_ast time. Two structurally-equal Expression trees produce
 /// the SAME Z3_ast pointer — so RustBV-level construction hash-cons
 /// would NOT reduce Z3 AST node count for the to_z3_ast() output.
 ///
-/// If this test ever fails, the assumption that drove closing
-/// angr-behq is broken and that bead should be re-opened.
+/// If this test ever fails, the assumption that RustBV-level hash-consing is
+/// unnecessary is broken and should be revisited.
 #[test]
 fn z3_already_dedupes_structurally_equal_rustbv_trees() {
     use z3::ast::Ast as Z3AstTrait;
@@ -218,7 +218,7 @@ fn z3_already_dedupes_structurally_equal_rustbv_trees() {
     assert_eq!(q1_ptr, q2_ptr, "Z3 should canonicalize mul(add(x,5),y)");
 }
 
-/// Regression guard for angr-kkpr:
+/// Regression guard (angr-kkpr):
 /// RustBV constructors for commutative ops (add/mul/and/or/xor/eq/ne)
 /// canonicalize operand order via `canonical_sort_key`. After this fix,
 /// `add(x, y)` and `add(y, x)` produce the SAME RustBV (and therefore

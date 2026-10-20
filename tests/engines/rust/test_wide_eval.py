@@ -106,7 +106,7 @@ class TestWideEvalSingleModel:
     def test_model_satisfies_cross_byte_gate(self, found_states):
         """The model must satisfy the (acc & 0xff) == 0xee gate, not just per-byte constraints.
 
-        This is the angr-ue4ro regression: a per-byte model gets the branched-on
+        Regression test (angr-ue4ro): a per-byte model gets the branched-on
         bytes right and the gate wrong. A state whose Rust context is unsat must
         raise rather than hand back zeros.
         """
@@ -246,10 +246,10 @@ class TestPythonBouncePreservesIdentity:
         result = json.loads(line[len("RESULT ") :])
 
         # Six of the eight leaves are feasible (s=0 and s=4 force a constant
-        # accumulator). Before the identity fix only the two leaves that never
-        # bounce (s=3, s=7) produced a model that reached the target; the
-        # angr-027h phase-2 retry then re-seeded a mutated seed state and
-        # parked a constraint-less state in `found` (angr-je2xt).
+        # accumulator). If a bounced value loses its identity, only the two
+        # leaves that never bounce (s=3, s=7) produce a model that reaches the
+        # target, and the phase-2 retry re-seeds a mutated seed state and parks
+        # a constraint-less state in `found` (angr-je2xt).
         assert result["found"] >= 6, f"only {result['found']} found states, expected every feasible leaf"
         # EVERY found state must carry a model that drives the program to the
         # target — a found state whose constraints went missing is trivially

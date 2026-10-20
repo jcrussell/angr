@@ -124,7 +124,7 @@ fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u
 
 #[test]
 fn test_fread_content_sym_serves_natively() {
-    // angr-0xyq2 Phase 2 counterpart of test_fread_empty_content_falls_back:
+    // Counterpart of test_fread_empty_content_falls_back (angr-0xyq2 Phase 2):
     // registered symbolic content is served natively (Ok, not a fallback Err).
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
@@ -181,7 +181,7 @@ fn test_fread_content_sym_item_rounding_matches_python() {
     );
 }
 
-/// angr-0xyq2 Phase 3 review: fread of ONE item larger than the old 4096
+/// angr-0xyq2 Phase 3: fread of ONE item larger than the old 4096
 /// clamp must return 1 item, not 0. Under the old `MAX_FREAD_SIZE` clamp,
 /// `fread(buf, 8192, 1, f)` on an 8192-byte file served 4096 bytes and
 /// returned `4096 / 8192 = 0` items — forever (the cursor half-advanced,

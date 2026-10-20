@@ -3,9 +3,9 @@
 //! `RustSimState`'s `#[derive(angr_macros::MergePolicy)]` proves every
 //! top-level field declares a merge treatment, but `memory` is labelled
 //! `delegate` — so the guarantee stops at [`SymbolicMemory`]'s boundary, and
-//! the same bug family recurred one level deeper (angr-c7xno.50: an other-only
+//! the same bug family recurred one level deeper (an other-only
 //! page was adopted with its `multi_bitmap` but without the matching
-//! `multi_objects` payloads). [`SymbolicMemory`] now carries the derive too,
+//! `multi_objects` payloads; angr-c7xno.50). [`SymbolicMemory`] now carries the derive too,
 //! which makes an *unlabelled* new field a compile error; this module is the
 //! behavioural half, and asserts that every address-keyed sidecar actually
 //! survives a merge.

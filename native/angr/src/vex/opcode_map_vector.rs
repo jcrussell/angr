@@ -79,8 +79,8 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     //
     // Only `Sal` has a D-reg 64-bit-lane form: `IROP_NAMES` declares
     // `Iop_Sal64x1` but no `Iop_Shl64x1` / `Iop_Shr64x1` / `Iop_Sar64x1`, so the
-    // other three tables stop at `32x2` (angr-0jh0j.62 — the `64x1` arms were
-    // copy-pasted from `Sal` and could never match).
+    // other three tables stop at `32x2` (a `64x1` arm copied from `Sal` could
+    // never match; angr-0jh0j.62).
     vec_arms!(op_str; "Iop_Shl" => VShl {
         "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
@@ -359,8 +359,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     });
     // The binary family's D-reg (x8/x4) block has no `32Sto16Ux4`: libVEX only
     // declares the signed-source/unsigned-dest 32-bit narrow at Q-reg width, as
-    // `Iop_QNarrowBin32Sto16Ux8` (mapped below). angr-0jh0j.62 removed the D-reg
-    // arm, which was the Q-reg suffix miscopied into this block.
+    // `Iop_QNarrowBin32Sto16Ux8` (mapped below; angr-0jh0j.62).
     vec_qnarrow_arms!(op_str; "Iop_QNarrowBin" => VQNarrowBin {
         "16Sto8Sx8"  => (I16, 8,  true,  true),
         "16Sto8Ux8"  => (I16, 8,  true,  false),
@@ -461,7 +460,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
 
     // NEON integer reciprocal estimate — Iop_RecipEst32Ux{2,4} (URECPE) and
     // Iop_RSqrtEst32Ux{2,4} (URSQRTE). Fresh-symbolic per lane via VIRecipEst /
-    // VIRSqrtEst. Implemented in angr-tukg.5.
+    // VIRSqrtEst (angr-tukg.5).
     if let Some(rest) = op_str.strip_prefix("Iop_RecipEst") {
         match rest {
             "32Ux2" => return Some(IROp::VIRecipEst { count: 2 }),
@@ -497,7 +496,7 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
 /// Parse NEON byte/halfword/word/bit reversal opcodes —
 /// `Iop_Reverse{sub_width}sIn{elem_width}_x{count}`. Returns
 /// `IROp::VReverse { sub_width, elem, count }` which dispatches through
-/// `VEXOps::unop` to `vec_reverse`. Implemented in angr-tukg.4.
+/// `VEXOps::unop` to `vec_reverse` (angr-tukg.4).
 ///
 /// ARM ISA mapping (DDI 0487 C7.2.288 / C7.2.297-300):
 ///   - `Reverse1sIn8_*`   → RBIT (bit reverse within each byte)
@@ -561,7 +560,7 @@ pub(super) fn parse_vreverse(op_str: &str) -> Option<IROp> {
 /// This function currently claims nothing: every NEON family that once routed
 /// here has graduated to a real handler. The "NEON op families" table in
 /// `docs/extending-angr/rust_vex_ops.rst` records which parse fn each family
-/// now routes through and the bead that implemented it, so a future NEON gap
+/// now routes through, so a future NEON gap
 /// can be checked against what is already covered. `QShlN`
 /// (shift-by-immediate) is still unimplemented.
 pub(super) fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {

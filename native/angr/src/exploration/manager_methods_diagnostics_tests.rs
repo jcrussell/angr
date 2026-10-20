@@ -52,7 +52,7 @@ fn analyze_constraint_sharing_is_all_zeroes_on_an_empty_manager() {
 /// Two separately-built but structurally identical constraints on ONE state:
 /// the walk must see two distinct allocations collapsing to a single shape,
 /// which is exactly the `structural_duplicates` signal the analysis exists to
-/// report (angr-zdho: what a construction-time hash-cons would save).
+/// report: what a construction-time hash-cons would save (angr-zdho).
 ///
 /// Both constraints live on the same state here; the cross-state case is
 /// pinned separately below, since keeping per-state addresses comparable took
@@ -157,7 +157,7 @@ fn analyze_constraint_sharing_walks_all_stashes_and_skips_empty_states() {
 /// materialized from) or in `pending_parallel_bounces` lives in NO stash, so
 /// the stash loop alone silently undercounts the census by however many states
 /// a mid-exploration callback or bounce happens to be holding — the same
-/// third-bucket gap swept for `set_max_history` in angr-03vl4.10.
+/// third-bucket gap swept for `set_max_history` (angr-03vl4.10).
 ///
 /// Each parked state carries a distinct constraint value so the assertion
 /// pins *which* buckets were reached, not merely that some total went up.

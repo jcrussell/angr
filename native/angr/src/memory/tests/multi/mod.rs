@@ -15,23 +15,23 @@
 //!
 //! - `payload` — **Phase 1.1** (angr-me3z): `MultiPayload`/`MultiAlternative`
 //!   themselves and their sidecar storage (`multi_objects`, `multi_bitmap`)
-//!   round-trips; and **angr-6cp06.63**: installing a cell over a byte a
+//!   round-trips; and (angr-6cp06.63) installing a cell over a byte a
 //!   wider `symbolic_objects` entry already covers must retire that container
 //!   into per-byte lanes (`retire_symbolic_object_at`).
 //! - `collapse` — **Phase 1.2** (angr-n082): collapse of installed cells on
 //!   the lazy load path (`load_concrete_lazy_inner` →
-//!   `assemble_load_with_multi`), plus **angr-9ke6b.96**: the non-lazy
+//!   `assemble_load_with_multi`), plus (angr-9ke6b.96) the non-lazy
 //!   `load_concrete` path (behind `RustSimState::memory_load`) must dispatch
 //!   to `assemble_load_with_multi` as well, since
 //!   `install_multi_for_candidates` never sets the page's symbolic bit; and
-//!   **angr-4r8mh**: the native-lift read (`read_concrete_bytes_for_lift`)
+//!   (angr-4r8mh) the native-lift read (`read_concrete_bytes_for_lift`)
 //!   must break its concrete run on a Multi byte for that same reason.
 //! - `install` — **Phase 1.3** (angr-aija): the store-side helpers
 //!   `store_concrete_multi` / `store_symbolic_unified_multi`; and **Phase 2**
 //!   (angr-qh5u): end-to-end install via `install_multi_for_candidates`,
 //!   lazy-region safety, and Multi/concrete interaction.
 //! - `cache` — **Phase 3** (angr-j0n4): the per-load collapse cache; **Phase
-//!   4.1** (angr-mmdh.1): the wider-load collapse cache; and **angr-1tes**: a
+//!   4.1** (angr-mmdh.1): the wider-load collapse cache; and (angr-1tes) a
 //!   concrete overwrite must clear the `multi_objects` entry, not just the
 //!   page bitmap bit, so the stale alternative cannot resurface.
 //! - `coalesce` — **Phase 4.2** (angr-mmdh.2): `flush_multi_cells` run
@@ -51,8 +51,8 @@ mod payload;
 
 /// A concretizer with `SYMBOLIC_WRITE_ADDRESSES` on, so the Range write
 /// strategy is part of the chain and a symbolic-address store concretizes to
-/// a candidate *set*. With the option off (the default) Python — and, since
-/// angr-9ke6b.194, Rust — uses a Max-only chain for unannotated addresses,
+/// a candidate *set*. With the option off (the default) Python and Rust
+/// (angr-9ke6b.194) use a Max-only chain for unannotated addresses,
 /// which yields a single address and installs no Multi cells. See
 /// `AddressConcretizer::write_range_applies`.
 fn multi_write_concretizer() -> AddressConcretizer {

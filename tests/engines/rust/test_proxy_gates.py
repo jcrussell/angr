@@ -34,8 +34,8 @@ pytestmark = pytest.mark.skipif(
 class TestSolverProxyTimeout:
     """Tests that state.solver.timeout = N propagates to the Rust solver.
 
-    Regression for angr-cmfn: previously the assignment landed on the proxy
-    and silently disappeared — Rust kept the default 30s timeout.
+    Regression test (angr-cmfn): the assignment must not land on the proxy
+    and silently disappear, leaving Rust at the default 30s timeout.
     """
 
     def test_timeout_setter_propagates_to_state_solver(self):
@@ -325,7 +325,7 @@ class TestProxyLiskovGaps:
 
         proxy.memory.store(sym_addr, sym_val)
 
-        # After angr-8dop.1 the proxy returns the symbolic AST, so we eval
+        # The proxy returns the symbolic AST (angr-8dop.1), so we eval
         # through the proxy solver to observe the constrained value (a
         # constrained BVS is not the same object as a BVV with that value).
         assert proxy.solver.eval(proxy.memory.load(target, 4)) == 0xCAFEBABE
@@ -720,7 +720,7 @@ class TestCallbackMemoryProxyReentryGuards:
     def _mgr_with_proxy_in_cache(self, fauxware_project):
         """Construct a manager and seed the per-fork state cache with a
         SimState whose ``memory`` plugin is a ``RustMemoryProxy``. Mimics
-        the post-callback cache state that triggers angr-hcok.
+        the post-callback cache state that triggers the re-entry.
         """
 
         state = fauxware_project.factory.entry_state()
@@ -977,8 +977,8 @@ class TestCallbackSolverProxyGate:
         ``width > 128`` (solving_ops.rs). Pre-fix the plugin raised
         ``UnsatError`` on any ``None``, killing a valid state. Post-fix a
         satisfiable wide bound falls back to claripy's big-int solver over the
-        exported constraints (same disambiguation as the ``RustSolverFallback``
-        twin, angr-8iv6j; keeps the four solver-shim sites in sync).
+        exported constraints, the same disambiguation as the ``RustSolverFallback``
+        twin (angr-8iv6j), which keeps the four solver-shim sites in sync.
         """
         from angr import claripy
 
@@ -1608,7 +1608,8 @@ class TestProxyWriteThrough:
     def test_register_write_symbolic_round_trip(self, fauxware_project):
         """proxy.regs.<name> = <BVS> registers the symbol in the shared
         cache so the subsequent constraint-add path narrows the live
-        symbol (angr-4pm1 invariant carried over for the write path)."""
+        symbol: the read-path symbol-identity invariant, carried over to the
+        write path (angr-4pm1)."""
         from angr import claripy
 
         state = fauxware_project.factory.entry_state()
@@ -1683,7 +1684,7 @@ class TestCallbackMemoryProxySymbolicStore:
     Not a red-without-the-fix guard: this single-block shape survives even
     when the store reaches Rust memory only via the registered-handle /
     symbolic-page side channel, which is exactly what made the flareon2015_5
-    drop so hard to catch. The real regression signal for angr-5rjbq is
+    drop so hard to catch. The real regression signal for this drop is
     flareon2015_5 (a bench, not a unit test) — see the
     MEDIUM-suite proxy differential (angr-ijwp0).
     """

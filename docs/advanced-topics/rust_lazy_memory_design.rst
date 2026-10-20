@@ -12,8 +12,8 @@ Rust engine: lazy symbolic memory — design
 
    - **Lazy LOAD** (``angr-czph``) and **lazy STORE** (``angr-qh5u``)
      both shipped. Multi-cell stores are the *only* path for
-     ``Multiple`` / ``Strided`` symbolic-address store results
-     (``angr-mmdh.3``); the eager ``store_conditional_multiple`` helper
+     ``Multiple`` / ``Strided`` symbolic-address store results (``angr-mmdh.3``);
+     the eager ``store_conditional_multiple`` helper
      is gone.
    - **Architecture deviation** — the shipped code is a *sidecar*, not
      the enum-per-byte ``Multi`` variant this document proposes. Symbolic
@@ -287,9 +287,9 @@ Open questions
 
   *Resolved:* the shipped policy is **collapse on overwrite only**. A
   concrete write drops any overwritten Multi cell from the
-  ``multi_objects`` sidecar and bumps its per-byte version so the
-  wider-load cache invalidates (``SymbolicMemory::store_concrete`` in
-  ``memory/store.rs``, angr-1tes; the page-level ``multi_bitmap`` is
+  ``multi_objects`` sidecar and bumps its per-byte version (``angr-1tes``)
+  so the wider-load cache invalidates (``SymbolicMemory::store_concrete`` in
+  ``memory/store.rs``; the page-level ``multi_bitmap`` is
   cleared inside ``MemoryPage::store_concrete`` / ``clear_multi``). Merge
   equality and fork-quiescence collapse were **not** implemented — a
   collapsed cell is simply re-collapsed to an ITE at load time
@@ -334,8 +334,8 @@ Open questions
 References
 ----------
 
-* Provenance: ``angr-pogf`` (this design), ``angr-czph`` (Phase 1,
-  LOAD), ``angr-qh5u`` (Phase 2, STORE).
+* This design (``angr-pogf``) shipped in two phases: Phase 1, LOAD (``angr-czph``),
+  and Phase 2, STORE (``angr-qh5u``).
 * Existing user-facing engine doc: :doc:`rust_engine` ("Benchmarks
   slower than Python").
 * Python comparator: ``angr/storage/memory_mixins/address_concretization_mixin.py``

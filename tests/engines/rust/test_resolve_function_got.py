@@ -1,8 +1,8 @@
 """Regression tests for RustExplorationManager._cb_resolve_function GOT-value fallback.
 
-Covers angr-hv4lt.1: the GOT-slot load width must follow arch.bytes, not a
+The GOT-slot load width must follow arch.bytes, not a
 hardcoded 8. On a 32-bit arch a GOT entry is 4 bytes wide; loading 8 pulls in
-the neighbouring entry's bytes and corrupts the resolved pointer.
+the neighbouring entry's bytes and corrupts the resolved pointer (angr-hv4lt.1).
 """
 
 from __future__ import annotations

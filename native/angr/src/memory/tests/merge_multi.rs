@@ -235,7 +235,7 @@ fn test_merge_adopts_multi_cells_from_other_only_page() {
     );
 }
 
-/// The second half of angr-c7xno.50: after adopting an other-only page with a
+/// The second half of the orphaned-payload bug (angr-c7xno.50): after adopting an other-only page with a
 /// Multi cell, a *second* merge whose third state is Multi at the same byte
 /// hits the `s_multi implies a payload` expect. With the payload orphaned that
 /// expect panics; with it copied the union merges normally.

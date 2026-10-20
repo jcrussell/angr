@@ -3,9 +3,9 @@
 // shrink procedures/fileops.rs below the god-object threshold. Declared as a
 // direct child of `fileops` so `use super::*` reaches its private items.
 //
-// angr-fs8kb.48 moved the `FILE *`-based half (fopen/fdopen/fclose/fseek/
-// ftell/rewind) to `stream_ops_tests.rs`; what remains covers the fd-table
-// primitives open/close/lseek/dup/dup2/pipe.
+// The `FILE *`-based half (fopen/fdopen/fclose/fseek/ftell/rewind) lives in
+// `stream_ops_tests.rs`; this file covers the fd-table primitives
+// open/close/lseek/dup/dup2/pipe (angr-fs8kb.48).
 
 use super::*;
 use crate::memory::Permission;

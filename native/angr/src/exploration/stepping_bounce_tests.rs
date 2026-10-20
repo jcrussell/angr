@@ -41,8 +41,7 @@ fn snapshot_of(result: Result<Vec<RustSimState>, StepError>) -> Option<RustSimSt
 /// `deferred_forks`. It resumes through `_resume_after_simprocedure`, which
 /// falls back to `state.fork()` *after* the fallback block's writes and
 /// constraints have been applied — so without a snapshot here the unexplored
-/// side is based on the post-block state (same shape as bd memory
-/// `avoid-deferred-fork-base-mismatch`).
+/// side is based on the post-block state (a deferred-fork base mismatch).
 #[test]
 fn vex_fallback_bounce_snapshots_state_when_forks_are_deferred() {
     Python::initialize();

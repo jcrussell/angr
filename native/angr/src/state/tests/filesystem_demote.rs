@@ -186,8 +186,8 @@ fn test_write_offset_past_size_cap_is_refused() {
 /// angr-c7xno.67 companion: an oversized write on a bounded-symbolic-content
 /// fd must still DEMOTE before refusing. Refusing first would leave Rust
 /// serving the registered symbolic content while the Python fallback performs
-/// the write — the exact divergence the angr-0xyq2 Phase 2 choke point exists
-/// to prevent.
+/// the write — the exact divergence the write choke point exists to prevent
+/// (angr-0xyq2 Phase 2).
 #[test]
 fn test_write_offset_cap_still_demotes_symbolic_content() {
     let mut fs = FileSystem::default();

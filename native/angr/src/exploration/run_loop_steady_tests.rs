@@ -256,7 +256,7 @@ fn stuck_worker_ids_saturates_at_both_ends() {
     assert_eq!(stuck_worker_ids(2, &[7, 9]), vec![0, 1]);
 }
 
-/// angr-offd5(b): the incremental folder is reachable on the no-session path
+/// The incremental folder is reachable on the no-session path
 /// (a `need_callback` can surface before `ensure_steady_session` ever ran, and
 /// the serial/wave loops never build one) and must leave the manager untouched
 /// there rather than panicking on the absent session.

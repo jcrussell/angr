@@ -163,7 +163,7 @@ impl NativeSyscall for NativeTransmitSyscall {
         let bytes = gather_concrete_bytes(state, buf, count, "transmit buf")?;
 
         // A refusal means the fd carried bounded symbolic content (now
-        // demoted) — bounce to Python (angr-0xyq2 Phase 2 choke point; see
+        // demoted) — bounce to Python (angr-0xyq2 Phase 2; see
         // FileSystem::write).
         if !state.write_fd(fd_u32, &bytes) {
             return Err(SyscallError::Other(format!(
@@ -216,7 +216,7 @@ impl NativeSyscall for NativeReceiveSyscall {
         // `NativeTransmitSyscall::call` alike. That stays correct only because
         // the oversize path returns the same Python-fallback `Err` an invalid
         // fd would; making it answer a concrete CGC errno instead would
-        // reintroduce the angr-fs583 bug for `count > MAX_CGC_BYTES`.
+        // reintroduce the unopened-fd bug for `count > MAX_CGC_BYTES` (angr-fs583).
         if fd != 0 {
             // Non-stdin receive: defer to Python's symbolic-file model.
             return Err(SyscallError::Other(format!(

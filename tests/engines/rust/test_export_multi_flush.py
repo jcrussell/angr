@@ -85,7 +85,7 @@ class TestExportFlushesMultiCells:
     def test_step_state_sees_multi_cell_data(self, fauxware_project):
         """``step_state()`` (``_step_state`` on the Rust side) must flush
         Multi cells on every returned successor too — a fourth export site
-        that the original ``angr-9ke6b.101`` fix missed. Used directly by
+        alongside the other three (angr-9ke6b.101). Used directly by
         ``RustSimulationManagerProxy.step_state()`` and, through it, by
         Veritesting/Tracer/Slicecutor.
         """

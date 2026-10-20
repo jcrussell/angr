@@ -1,4 +1,4 @@
-//! SI-B (angr-1ilq.3 increment 2b'): opt-in "shadow probe" measuring the REAL
+//! SI-B (angr-1ilq.3): opt-in "shadow probe" measuring the REAL
 //! state-migration serde tax on the live benchmark workload.
 //!
 //! When `RUST_PARALLEL_SHADOW_PROBE` is set (read once at manager construction

@@ -1,12 +1,13 @@
 // Generic *_rm rounding-mode coverage sweep, in three sections.
 //
-// Historical bug shapes:
-//   * angr-c7xno.85: `f64_to_f32_rm`'s concrete path ignored the VEX
-//     rounding mode — a bug *inside* a `_with_rm`-family implementation.
-//   * angr-03vl4.30: `eval_qop` (interpreter/expressions_arith.rs) dropped the
-//     Qop's rm and called the rm-less `VEXOps::qop` instead of
-//     `VEXOps::qop_with_rm` — a bug in the CALLER's dispatch choice, not in
-//     `qop_with_rm` itself.
+// The two bug shapes it guards against:
+//   * the inner-rm shape: a `_with_rm`-family implementation's concrete path
+//     ignores the VEX rounding mode, as `f64_to_f32_rm`'s once did
+//     (angr-c7xno.85).
+//   * the caller-dispatch shape: a dispatcher such as `eval_qop`
+//     (interpreter/expressions_arith.rs) drops the Qop's rm and calls the
+//     rm-less `VEXOps::qop` instead of `VEXOps::qop_with_rm` — a bug in the
+//     CALLER's dispatch choice, not in `qop_with_rm` itself (angr-03vl4.30).
 // Both were caught reactively with hand-written per-op tests (see
 // `test_f64_to_f32_rm_straddles_boundary` in tests_conversions.rs and
 // `test_qop_with_rm_rz_f64_differs_from_rne` in tests_float_arith.rs). This
@@ -21,21 +22,21 @@
 //    ways (fully concrete, and symbolic vars pinned via a Z3 constraint to
 //    the same bits) and asserts the SAME dispatch method — called directly,
 //    never through the interpreter — gives the same bit-exact answer either
-//    way. This catches the angr-c7xno.85 bug shape (a `_with_rm` method's
+//    way. This catches the inner-rm bug shape (a `_with_rm` method's
 //    concrete-fast-path branch silently dropping rm) for every op, both
-//    families. It does **not** catch the angr-03vl4.30 bug shape for Family
+//    families. It does **not** catch the caller-dispatch bug shape for Family
 //    B: `binop_with_rm`/`unop_with_rm`/`qop_with_rm` branch on the RM
 //    OPERAND's concreteness, not the value operands', so this section's
 //    "concrete" and "symbolic" legs call the identical dispatch method and
 //    are Z3-vs-Z3 self-consistency for all 14 Family-B ops — mutation
-//    testing the angr-03vl4.30 shape back in (interpreter calls the rm-less
+//    testing the caller-dispatch shape back in (interpreter calls the rm-less
 //    sibling instead of the `_with_rm` variant) leaves this section green.
 //    Section 2 exists to close that gap.
 // 2. `test_dispatcher_selection_routes_through_rm_threaded_sibling` —
 //    Family B only. Drives evaluation through the REAL interpreter-level
 //    dispatch entry points (`VEXInterpreter::eval_binop`/`eval_triop`/
 //    `eval_qop` in `interpreter/expressions_arith.rs`) — the layer the
-//    angr-03vl4.30 bug actually lived in — for one representative op per
+//    caller-dispatch bug actually lived in — for one representative op per
 //    Family-B kind, and asserts the interpreter's answer matches the
 //    correctly-rm-threaded `*_with_rm` sibling and NOT the rm-less
 //    (RNE-only) sibling. This is the section that would catch a
@@ -111,7 +112,7 @@ enum RmDispatchKind {
     /// (FAdd/FSub/FMul/FDiv).
     TriopWithRm,
     /// VEX `Qop(rm, a, b, c)` -> `eval_qop` -> `VEXOps::qop_with_rm`
-    /// (FMAdd/FMSub) — the exact shape angr-03vl4.30 broke.
+    /// (FMAdd/FMSub) — the exact caller-dispatch shape (angr-03vl4.30).
     QopWithRm,
 }
 
@@ -399,7 +400,7 @@ fn all_rm_ops() -> Vec<RmOpEntry> {
 /// symbolic vars pinned via a Z3 constraint to the same bits) and assert the
 /// dispatcher gives the same bit-exact answer either way. A `*_rm`
 /// implementation that silently drops the rm operand (the exact
-/// angr-c7xno.85 / angr-03vl4.30 bug shape) would still agree with itself on
+/// inner-rm / caller-dispatch bug shape) would still agree with itself on
 /// the concrete side — the divergence only shows up against the Z3 path,
 /// which unconditionally honors the mode.
 #[test]
@@ -495,7 +496,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
 // Section 2: dispatcher-selection coverage (Family B only).
 // =============================================================================
 
-/// The angr-03vl4.30 bug shape, reconstructed directly: call the rm-LESS
+/// The caller-dispatch bug shape, reconstructed directly: call the rm-LESS
 /// sibling `VEXOps` method (always RNE) instead of the `*_with_rm` variant —
 /// what `eval_binop`/`eval_triop`/`eval_qop` would compute if they picked
 /// the wrong method. `operands` excludes rm (same shape as `RmOpEntry::cases`).
@@ -539,7 +540,7 @@ fn irconst_for(bits: u128, width: u32) -> crate::vex::ir::IRConst {
 
 /// Evaluate one Family-B op through the REAL interpreter-level dispatch
 /// entry point (`VEXInterpreter::eval_binop`/`eval_triop`/`eval_qop` in
-/// `interpreter/expressions_arith.rs`) — the layer the angr-03vl4.30 bug actually
+/// `interpreter/expressions_arith.rs`) — the layer the caller-dispatch bug actually
 /// lived in (the caller picked `VEXOps::qop` instead of `qop_with_rm`),
 /// as opposed to the rest of this file, which calls
 /// `VEXOps::binop_with_rm`/`unop_with_rm`/`qop_with_rm` directly and so
@@ -608,7 +609,7 @@ fn eval_through_interpreter(
 /// interpreter dispatch entry points and cross-checks the result against
 /// BOTH the correctly-rm-threaded `*_with_rm` sibling (must match) and the
 /// rm-less RNE-only sibling (must NOT match) — directly reconstructing the
-/// angr-03vl4.30 regression shape at the layer it actually lived in,
+/// caller-dispatch regression shape at the layer it actually lived in,
 /// generalized across all 7 Family-B op kinds.
 #[test]
 fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
@@ -648,7 +649,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
                     panic!("{}: eval(with_rm result) returned None rm={rm}", entry.name)
                 });
 
-                // The angr-03vl4.30 bug shape: the rm-less sibling, always RNE.
+                // The caller-dispatch bug shape: the rm-less sibling, always RNE.
                 let rne_only = eval_rne_only_sibling(entry.kind, entry.op, &operands, &ctx)
                     .unwrap_or_else(|e| {
                         panic!("{}: rm-less sibling call failed: {e:?}", entry.name)

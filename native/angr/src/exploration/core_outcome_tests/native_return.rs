@@ -43,10 +43,10 @@ fn native_return_advances_sp_on_stack_return_abi() {
 }
 
 /// ARM/ARM64/MIPS return through LR/X30/$ra: nothing was pushed, so nothing may
-/// be popped. Before angr-sqfj8.37 `handle_simprocedure_core` bumped SP
-/// unconditionally — only `step_one` (run_loop_single.rs) gated it — so every
-/// native proc return under the wave/steady/worker engines silently dropped a
-/// pointer-sized live stack slot.
+/// be popped. An unconditional SP bump in `handle_simprocedure_core` (with
+/// only `step_one` in run_loop_single.rs gating it) made every native proc
+/// return under the wave/steady/worker engines silently drop a pointer-sized
+/// live stack slot (angr-sqfj8.37).
 #[test]
 fn native_return_leaves_sp_untouched_on_link_register_abis() {
     pyo3::Python::initialize();

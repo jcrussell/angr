@@ -1,7 +1,7 @@
 """Tests for the bounded-cache policy on the Rust init disk cache.
 
 Covers ``_disk_cache_budgets`` (env overrides) and ``_prune_disk_cache``
-(LRU-by-mtime eviction past the byte/count budget) — see angr-728cf. These
+(LRU-by-mtime eviction past the byte/count budget) (angr-728cf). These
 exercise pure filesystem bookkeeping, so they need neither the Rust extension
 nor a project.
 """

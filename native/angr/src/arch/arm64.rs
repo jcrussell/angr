@@ -219,8 +219,8 @@ const ALIASES: &[RegEntry] = &[
     ("xsp", offsets::XSP, 8),
     // Architecture-independent instruction-pointer name, mirroring archinfo's
     // ArchAArch64 ip=(272,8)=pc. Note this is the *program counter*, not
-    // AAPCS64's ip0/ip1 scratch aliases of x16/x17 — see the angr-itm3u note
-    // in arch/arm.rs for the corruption the ABI reading caused (angr-690nc).
+    // AAPCS64's ip0/ip1 scratch aliases of x16/x17 — see the `ip` note in
+    // arch/arm.rs for the corruption the ABI reading caused (angr-itm3u, angr-690nc).
     ("ip", offsets::PC, 8),
     // 32-bit W registers (lower 32 bits of X registers)
     ("w0", offsets::X0, 4),

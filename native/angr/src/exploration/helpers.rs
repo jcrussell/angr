@@ -153,8 +153,7 @@ impl RustExplorationManager {
     /// worker still has a backlog (≥2 queued tasks, incl. this one) while some
     /// other worker is idle (0 queued) — that idle worker would steal this task
     /// across a boundary. Two `O(width)` passes; short-circuits the common
-    /// `<2`-state frontier. Counters only; no behaviour change. See bd memory
-    /// `parallel-migration-model`.
+    /// `<2`-state frontier. Counters only; no behaviour change.
     pub(crate) fn record_migration_sample(&mut self, stepped: u64) {
         self.parallel_tasks += 1;
         let m = self.parallel_num_workers;
@@ -470,8 +469,8 @@ impl RustExplorationManager {
     /// Mirrors `find_state`'s pending-first lookup: while a SimProcedure
     /// callback (or find/avoid predicate) is in flight the state lives in
     /// `pending_callback` and is NOT present in any stash. Without this
-    /// pending-aware fallback, write-through FFI shims (the proxy plugins
-    /// at angr-4scu memory / angr-qj30 registers) would fail with
+    /// pending-aware fallback, write-through FFI shims (the memory and
+    /// register proxy plugins) would fail with
     /// "state N not found" any time a Python SimProc wrote to
     /// `state.regs.<name>` or `state.memory.store(...)` during a callback.
     ///
@@ -698,8 +697,8 @@ impl RustExplorationManager {
     /// the serial `NativeProcDisposition::SubCall` arm feeds this value into
     /// `NativeSubcall::caller_return_addr`, which the resume path later installs
     /// as the PC. On a link-register ABI `[sp]` is not the return address, so
-    /// that would jump to whatever happened to be on the stack (bead
-    /// angr-9ke6b.3).
+    /// that would jump to whatever happened to be on the stack
+    /// (angr-9ke6b.3).
     pub(crate) fn get_return_addr(&self, state: &RustSimState) -> AddrOrSymbolic {
         self.get_return_addr_raw(state).into()
     }
@@ -729,7 +728,7 @@ impl RustExplorationManager {
     /// answer is symbolic/unavailable instead of silently carrying a
     /// plausible-looking-but-wrong address forward. Mirrors
     /// `VEXInterpreter::get_return_addr_or_log` (same contract, same
-    /// rationale — `angr-sqfj8.62`).
+    /// rationale) (`angr-sqfj8.62`).
     pub(crate) fn get_return_addr_or_log(&self, state: &RustSimState, context: &str) -> u64 {
         self.get_return_addr(state)
             .or_log("get_return_addr", context)
@@ -764,8 +763,8 @@ pub(crate) struct ArgExtractAbi<'a> {
 /// procedure/syscall dispatchers in `core_outcome_handlers.rs` and
 /// `run_loop_single.rs` — treat any error as a signal to skip the native fast
 /// path and fall through to the Python callback rather than handing the handler
-/// a fabricated `RustBV::zero` that would mask a real stack-setup bug (the
-/// angr-ydli fix to the trait method).
+/// a fabricated `RustBV::zero` that would mask a real stack-setup bug
+/// (angr-ydli).
 ///
 /// Every procedure ABI supplies a stack window, so `RegisterOverflow` is
 /// reachable only from the syscall adapters. MIPS O32 is the one syscall ABI

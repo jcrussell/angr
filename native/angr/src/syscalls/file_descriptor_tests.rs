@@ -381,7 +381,7 @@ fn dup3_handler_ignores_flags_and_matches_dup2() {
     // dup3(0, 0, 0) — oldfd == newfd on an open fd. Real dup3(2) returns
     // -EINVAL here, but angr's Python `dup3` returns newfd (no-op success,
     // same as dup2). The Rust engine targets Python-engine parity, so it must
-    // return 0, NOT -EINVAL. Regression guard for bd angr-1yge9.7.
+    // return 0, NOT -EINVAL (regression guard, angr-1yge9.7).
     let same_fd = NativeDup3Syscall
         .call(
             &mut state,
@@ -402,7 +402,7 @@ fn dup3_handler_ignores_flags_and_matches_dup2() {
 /// is never read, so forcing concretization would cost a needless
 /// Python round-trip for an outcome identical to the concrete case.
 /// Mirrors the `let _ = args.get(2)` tolerance in `fcntl_dispatch` /
-/// `NativeIoctlSyscall`. Regression guard for bd angr-9ke6b.155.
+/// `NativeIoctlSyscall` (regression guard, angr-9ke6b.155).
 #[test]
 fn dup3_tolerates_symbolic_flags_without_python_fallback() {
     let mut state = RustSimState::new("amd64").expect("state");
@@ -423,7 +423,7 @@ fn dup3_tolerates_symbolic_flags_without_python_fallback() {
     assert!(state.file_system_ref().is_open(7));
 }
 
-/// Harness 6 boundary sweep for angr-03vl4.52 at the syscall-dispatch layer:
+/// Harness 6 boundary sweep (angr-03vl4.52) at the syscall-dispatch layer:
 /// `dup2_body`'s own `newfd >= NEWFD_LIMIT` check duplicates
 /// `FileSystem::dup2`'s guard (kept here so the `oldfd == newfd` early
 /// return can still precede it — see the doc comment on `dup2_body`), so it

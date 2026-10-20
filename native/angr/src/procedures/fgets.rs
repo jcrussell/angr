@@ -155,8 +155,8 @@ pub(crate) fn store_symbolic_line(
 ///
 /// The cost of the fallback this avoids is a *first*-fallback one, dominated by
 /// one-time Python state-sync warmup rather than a steady-state per-call cost
-/// (angr-42g67; numbers in bd memory `fallback-cost-first-call-vs-amortized`,
-/// write-side sibling `write-side-fileno-fallback-correct`).
+/// (angr-42g67)
+/// (bd memory `fallback-cost-first-call-vs-amortized`, `write-side-fileno-fallback-correct`).
 ///
 /// A `FILE *` whose struct is unmapped in Rust can only be a cle standard
 /// stream — `fopen`'d files allocate their `_IO_FILE` in Rust memory (native

@@ -104,7 +104,7 @@ impl<'a> VEXInterpreter<'a> {
     /// IR disagrees with its own tyenv, which is a lifter trust-boundary bug,
     /// so the one policy here is to fail loud with `UnknownTemp`. A future
     /// caller that genuinely wants to drop the write must say so explicitly
-    /// with a `SILENT(cat-x)` tag rather than by omitting an `else` arm.
+    /// with a tagged discard rather than by omitting an `else` arm.
     pub(super) fn write_tmp(&mut self, tmp: u32, value: RustBV) -> Result<(), CbExecutionError> {
         let slot = self
             .temps

@@ -270,7 +270,7 @@ fn test_realloc_unmapped_source_errors_instead_of_truncating() {
     assert_eq!(state.heap_metadata().free_count(), 0);
 }
 
-/// The bead's concrete scenario: the source is readable at the start and hits
+/// The concrete scenario: the source is readable at the start and hits
 /// an unmapped page partway through (e.g. next to a guard page).
 #[test]
 fn test_realloc_source_unmapped_partway_through_errors() {

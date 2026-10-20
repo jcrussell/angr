@@ -216,7 +216,7 @@ fn collision_at_explicit_addr_falls_back() {
 fn map_fixed_collision_unmaps_and_remaps_natively() {
     // POSIX MAP_FIXED: collision is not an error — the kernel
     // discards the colliding pages and maps the new range at the
-    // requested address. angr-ttr7.
+    // requested address (angr-ttr7).
     let h = NativeMmapSyscall;
     let mut state = fresh_state();
     let target = 0x4000_0000;
@@ -477,7 +477,7 @@ fn addr_zero_boundary_sweep_refuses_exactly_the_unrepresentable_next_bases() {
     }
 }
 
-/// Harness 6 boundary sweep for angr-03vl4.68: every page-aligned candidate
+/// Harness 6 boundary sweep (angr-03vl4.68): every page-aligned candidate
 /// in the shared `test_boundary_values` table — not just the two hand-picked
 /// targets above — must be rejected as `-1` (EINVAL) exactly when
 /// `target + length - 1` overflows `u64`, and must still map normally

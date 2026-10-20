@@ -15,9 +15,8 @@
 //! reads the process-global `NEXT_SYMBOL_ID` static below, for the aliasing
 //! reason its own doc gives. `new_bv` routes construction through
 //! `RustBV::symbolic`. None of these touch the constraint-mutation/transaction
-//! path (`local_constraints` / `solver` / `bare_local_savepoints` / lineage), which the
-//! design defers to a separate, higher-coupling slice 9. See bead angr-a2br.2.4
-//! for the slice plan.
+//! path (`local_constraints` / `solver` / `bare_local_savepoints` / lineage), which
+//! lives in its own, higher-coupling module (angr-a2br.2.4).
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! `pub(super)` (== `pub(in crate::symbolic)`) keeps the promoted atomics
@@ -36,8 +35,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// counter starting at 0 therefore made the second exploration in a process
 /// mint ids the first one's symbols still own in the registry, so an exported
 /// symbol resolved to a *stranger's* claripy AST — the same aliasing failure
-/// angr-op0dn.13.14 fixed for snapshot resume, but across two explorations
-/// (angr-op0dn.13.16). Aliased symbols collapse a compare-and-branch to a
+/// as on snapshot resume, but across two explorations
+/// (angr-op0dn.13.14, angr-op0dn.13.16). Aliased symbols collapse a compare-and-branch to a
 /// concrete guard, which silently adds or drops whole search subtrees.
 ///
 /// Mirrors the `state-id-never-reused` contract on `state::NEXT_STATE_ID`.
@@ -137,8 +136,8 @@ impl SymContext {
     /// Overwrite the constraint counter. Used only by
     /// [`SymContext::restore_from_snapshot`](crate::symbolic::SymContext::restore_from_snapshot)
     /// to pin the count back to the source's captured value after the
-    /// assume-class IR replay (angr-kenpr — the replay can re-assert
-    /// live-deduped entries and inflate the counter).
+    /// assume-class IR replay, which can re-assert live-deduped entries and
+    /// inflate the counter (angr-kenpr).
     pub fn set_constraint_count(&self, count: usize) {
         self.constraint_count.store(count, Ordering::SeqCst);
     }

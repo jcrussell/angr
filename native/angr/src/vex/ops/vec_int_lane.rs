@@ -38,8 +38,8 @@ impl VEXOps {
                 args.iter().map(crate::symbolic::RustBV::as_u128).collect();
             if let Some(concrete) = concrete {
                 let arity = concrete.len();
-                // Hardened from a `debug_assert!` (angr-5mnx3.67), mirroring
-                // `VEXOps::vec_float_lane_op`'s angr-j60q0.2 fix: `buf` is a
+                // A typed error rather than a `debug_assert!`, mirroring
+                // `VEXOps::vec_float_lane_op` (angr-5mnx3.67, angr-j60q0.2): `buf` is a
                 // fixed `INT_LANE_OP_MAX_ARITY`-wide array indexed `[idx]` for
                 // `idx in 0..arity` below, so an over-arity caller would be an
                 // index-panic process abort in release. Return a typed error

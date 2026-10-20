@@ -3,8 +3,8 @@
 //! Split out of `exploration::mod` (angr-zel8z.3). These variants avoid Python
 //! callback overhead for common technique patterns; they are applied in the
 //! Rust exploration loop — the application logic lives in this file's
-//! `impl RustExplorationManager` block (moved here from `exploration::helpers`
-//! by angr-9ke6b.76).
+//! `impl RustExplorationManager` block (moved here from `exploration::helpers`)
+//! (angr-9ke6b.76).
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one

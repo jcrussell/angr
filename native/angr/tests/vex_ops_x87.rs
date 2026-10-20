@@ -7,8 +7,8 @@
 //! they exercise `ctx.eval` and `ctx.assume_true`.
 
 // Integration-test harness code panicking on unwrap/expect is the desired
-// behavior, same rationale as #[cfg(test)] code in lib.rs -- not part of the
-// angr-9ke6b.212 production-code debt tracker.
+// behavior, same rationale as #[cfg(test)] code in lib.rs -- not
+// production-code debt (angr-9ke6b.212).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rustylib::symbolic::{RustBV, SymContext};
@@ -131,7 +131,7 @@ fn concretize_other_opcode_returns_none() {
 }
 
 // =============================================================================
-// angr-i5lj.2 — symbolic concretize coverage for Sin/Cos/Tan/Atan/Yl2xp1/Scale.
+// Symbolic concretize coverage for Sin/Cos/Tan/Atan/Yl2xp1/Scale (angr-i5lj.2).
 // =============================================================================
 
 #[test]

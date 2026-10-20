@@ -2,9 +2,9 @@
 //!
 //! Sibling of `arch/mod.rs`, which keeps the [`RegisterFile`] struct itself,
 //! its serde shadow [`RegisterFileData`], the [`Arch`] trait and the
-//! per-offset lookup helpers. Extracted in angr-5mnx3.1: `get`/`put`/`merge`
-//! carry the densest regression history in `arch/` and sat interleaved with
-//! the unrelated architecture registry (now `registry.rs`).
+//! per-offset lookup helpers. `get`/`put`/`merge` live here, apart from the
+//! unrelated architecture registry in `registry.rs`, because they carry the
+//! densest regression history in `arch/` (angr-5mnx3.1).
 //!
 //! # Range arithmetic
 //!
@@ -723,8 +723,8 @@ impl RegisterFile {
         // chunks, so bytes 1056..1060 — the tail of archinfo's segment-selector
         // block — used to fall off the end of the scan and a concrete
         // divergence there was silently dropped in `self`'s favour
-        // (angr-91vj9.13, same shape as angr-c7xno.1 one chunk over). Clamping
-        // the chunk to what is left covers the whole buffer.
+        // (angr-91vj9.13, angr-c7xno.1).
+        // Clamping the chunk to what is left covers the whole buffer.
         //
         // Runs *before* `updates` is applied so the `get` calls below still see
         // each file's own pre-merge overlay; staging into the same vectors keeps

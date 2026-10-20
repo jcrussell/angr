@@ -4,7 +4,7 @@
 //! collapse lives in the sibling `collapse` module and the store-side helpers
 //! in `install`.
 //!
-//! Also the home of the angr-6cp06.63 regressions: `set_multi_alternatives`
+//! Also the home of the wider-entry retirement regressions (angr-6cp06.63): `set_multi_alternatives`
 //! retiring a *wider* `symbolic_objects` entry that covers the byte being
 //! superseded, rather than only an exact-key one.
 

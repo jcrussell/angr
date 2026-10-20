@@ -35,7 +35,7 @@ impl RustExplorationManager {
             if let Some(condition) = stored_conditions.get(&fork.condition_id) {
                 // Mint the unexplored-path fork, THEN add the taken-path
                 // constraint to the main state (which fires the constraints
-                // inspect BP around the add — angr-op0dn.14.4.1). The order is
+                // inspect BP around the add) (angr-op0dn.14.4.1). The order is
                 // load-bearing: see `fork_unexplored_and_guard_base`.
                 let forked = super::fork_materialize::fork_unexplored_and_guard_base(
                     self.callbacks.as_ref(),

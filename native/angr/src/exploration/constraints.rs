@@ -88,8 +88,7 @@ pub(crate) fn apply_state_deterministic(state: &crate::state::RustSimState, v: b
 /// and needs this call.
 ///
 /// Missing any of the three silently leaves that lineage on the old
-/// witness-selection mode with no error — the failure shape bd memory
-/// `invariant-lineage-flag-propagation` describes.
+/// witness-selection mode with no error.
 pub(crate) fn apply_fork_snapshots_deterministic(pending: &super::PendingCallback, v: bool) {
     for snapshot in pending.fork_snapshots.values() {
         snapshot.solver.set_deterministic(v);
@@ -307,8 +306,8 @@ pub(crate) fn import_python_constraints(
 /// Single body shared by `_add_constraints_to_state` (state_api.rs) and
 /// `_add_constraints_to_pending` (pending_api.rs). The SAT re-check is the
 /// mitigation for [`import_python_constraints`]'s dropped-constraint arm; the
-/// pending call site had none at all until angr-fs8kb.12, so a dropped
-/// constraint there left a state nothing downstream would ever re-examine.
+/// pending call site needs it too: without it a dropped constraint there left a
+/// state nothing downstream would ever re-examine (angr-fs8kb.12).
 ///
 /// Reports satisfiability in decided-only form: `None` is "Z3 gave up", not
 /// "unsat" (`invariant-z3-unknown-not-unsat`), so a caller must not prune on

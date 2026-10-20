@@ -7,7 +7,7 @@
 //! `Python::initialize`).
 //!
 //! `DeferredFork` had two tests here covering its `#[new]` constructor and
-//! `__repr__`; both went away with that Python surface in angr-03vl4.6. Its
+//! `__repr__`; both went away with that Python surface (angr-03vl4.6). Its
 //! behaviour is covered by the consumers instead —
 //! `exploration::fork_materialize_tests` and `callback_types_tests`.
 
@@ -32,8 +32,8 @@ fn test_execution_config_py_new_overrides_only_two_args() {
 #[test]
 fn test_execution_config_py_new_defaults_match_default_trait() {
     // Calling ExecutionConfig() from Python (both args defaulted) must produce
-    // exactly the engine's runtime Default — the divergence tracked by
-    // angr-ph300.68 is now impossible because py_new is built ..Default.
+    // exactly the engine's runtime Default. A divergence between the two is
+    // impossible because py_new is built ..Default (angr-ph300.68).
     let cfg = ExecutionConfig::py_new(500, true);
     let def = ExecutionConfig::default();
     assert_eq!(cfg.max_deferred_forks, def.max_deferred_forks);

@@ -8,8 +8,6 @@ from typing import Any
 
 import pytest
 
-import pytest
-
 import angr
 from angr.engines.icicle import UberIcicleEngine
 from angr.procedures.glibc.__libc_start_main import (

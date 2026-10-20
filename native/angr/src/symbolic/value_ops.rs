@@ -45,7 +45,7 @@ use super::value_shape::Node;
 ///
 /// The concrete branch evaluates `if a $cmp b { 1 } else { 0 }` on the raw
 /// `u128` representations. The symbolic branch tries the bidirectional
-/// `try_zext_const_cmp_fold` shortcut (angr-g7nq pattern (b)) before falling
+/// `try_zext_const_cmp_fold` shortcut (pattern (b)) (angr-g7nq) before falling
 /// through to a generic clarirs comparison term.
 macro_rules! define_unsigned_cmp_pair {
     (
@@ -113,7 +113,7 @@ macro_rules! define_signed_cmp_pair {
                         // Both operands are logically non-negative, so the
                         // signed compare degenerates to an unsigned one. Going
                         // through `sign_extend` here would read bit 127 as the
-                        // sign and flip the result. angr-03vl4.58.
+                        // sign and flip the result (angr-03vl4.58).
                         a.cmp(&b)
                     } else {
                         sign_extend(a, width).cmp(&sign_extend(b, width))
@@ -502,7 +502,7 @@ impl RustBV {
                     lhs
                 } else if sign_bit_beyond_storage(width) {
                     // Both operands are logically non-negative, so bvsrem
-                    // degenerates to bvurem. angr-03vl4.58.
+                    // degenerates to bvurem (angr-03vl4.58).
                     Self::concrete(a % b, width)
                 } else {
                     let a_signed = sign_extend(a, width);
@@ -958,7 +958,7 @@ impl RustBV {
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(u128::from(a != b), 1),
             _ => {
-                // angr-g7nq pattern (b), see `eq_into`. For Ne the trivial-decide
+                // Zext-compare fold pattern (b), see `eq_into`. For Ne the trivial-decide
                 // direction inverts (high-bit-nonzero const → always not-equal).
                 if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ne, ctx) {
                     return folded;
@@ -1340,7 +1340,7 @@ impl RustBV {
 /// its own copy spelled `value.leading_zeros() - (128 - width)` — unguarded
 /// `u32` arithmetic that underflows for `width > 128` (a panic under
 /// `release-checked`, a wrapped near-`u32::MAX` count folded into the exported
-/// `claripy.BVV` in the shipped release profile). angr-0jh0j.9.
+/// `claripy.BVV` in the shipped release profile) (angr-0jh0j.9).
 ///
 /// Spelled `width - significant_bits` instead, which is well-defined for every
 /// `width` a `u128`-representable value fits in. `saturating_sub` covers only

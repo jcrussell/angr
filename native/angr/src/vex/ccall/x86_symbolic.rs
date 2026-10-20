@@ -141,9 +141,9 @@ pub(super) fn sym_flags_add(
 ///
 /// Mirrors `calc_flags_adc` (the concrete path) exactly, including VEX's
 /// `argR = dep2 ^ oldC` encoding and the oldC-dependent carry test
-/// (`res <= argL` with an incoming carry, `res < argL` without). Before
-/// angr-9ke6b.88 this category had no symbolic builder, so `sym_flags_for_category`
-/// declined it and any ADC/SBB with a symbolic operand fell back to Python.
+/// (`res <= argL` with an incoming carry, `res < argL` without), so an
+/// ADC/SBB with a symbolic operand does not fall back to Python
+/// (angr-9ke6b.88).
 pub(super) fn sym_flags_adc(
     nbits: u32,
     dep1: &RustBV,
@@ -512,7 +512,7 @@ pub(super) fn sym_extract_flag(packed: &RustBV, shift: u32, ctx: &SymContext) ->
 
 /// Why `sym_flags_for_category` may decline to build a `SymFlags`.
 ///
-/// Since angr-9ke6b.219 every non-Copy category has a symbolic builder, so
+/// Every non-Copy category has a symbolic builder (angr-9ke6b.219), so
 /// `Copy` is the only reason left. The error type stays because callers still
 /// need to distinguish "declined" from "built", and a future category added to
 /// [`OpCategory`] would land here rather than silently degrading.
@@ -531,7 +531,7 @@ pub(super) enum SymFlagsError {
 ///
 /// The match is deliberately exhaustive (no `_` arm): a new `OpCategory` must
 /// be given a symbolic builder, not silently routed to the Python ccall path —
-/// angr-9ke6b.88 measured that fallback as far slower wall-clock on a real bench.
+/// that fallback is far slower wall-clock on a real bench (angr-9ke6b.88).
 pub(super) fn sym_flags_for_category(
     category: OpCategory,
     nbits: u32,
@@ -593,8 +593,9 @@ pub(super) fn eval_sym_condition(cond: u64, flags: &SymFlags, ctx: &SymContext) 
 /// Pack symbolic flags into the standard EFLAGS layout at `ret_bits` width.
 ///
 /// Bit positions come from the same `flag_shift` constants the concrete
-/// `pack_eflags` uses rather than hand-written literals, per bd memory
-/// `invariant-ccall-flag-mask-named-constants`: OF@11, SF@7, ZF@6, AF@4,
+/// `pack_eflags` uses rather than hand-written literals
+/// (bd memory `invariant-ccall-flag-mask-named-constants`):
+/// OF@11, SF@7, ZF@6, AF@4,
 /// PF@2, CF@0. Both packers must cover every flag the Copy path passes
 /// through, or the omitted bit is structurally always 0 for every computed
 /// category (angr-5mnx3.59).

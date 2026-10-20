@@ -266,7 +266,7 @@ fn store_to_concrete_addr_buffers_pending_store() {
     assert_eq!(data, &[0xef, 0xbe, 0xad, 0xde]);
 }
 
-/// angr-1c88c gap 3/7: drive `expressions_loads.rs::build_ite_store_from_callbacks`.
+/// angr-1c88c: drive `expressions_loads.rs::build_ite_store_from_callbacks`.
 ///
 /// This site is only reachable when `use_rust_memory == false` — during normal
 /// exploration the manager always installs `rust_memory` (stepping.rs
@@ -785,7 +785,7 @@ fn loadg_sees_pending_store_from_same_block() {
     );
 }
 
-/// angr-9ke6b.83, Rust-memory variant: with `use_rust_memory` on (the
+/// Rust-memory variant (angr-9ke6b.83): with `use_rust_memory` on (the
 /// production configuration — `exploration/step_core.rs` installs the state's
 /// memory into the interpreter) stores commit only to `rust_memory` and are
 /// never synced to Python, so a `LoadG` that skipped `try_rust_memory_load`
@@ -832,7 +832,7 @@ fn loadg_sees_rust_memory_store_from_same_block() {
     );
 }
 
-/// angr-9ke6b.83, `Single` concretization arm: a symbolic address pinned to one
+/// `Single` concretization arm (angr-9ke6b.83): a symbolic address pinned to one
 /// solution takes `resolve_loadg_load`'s `ConcretizationResult::Single` branch,
 /// which must go through the same layered read (`load_layered_at`) rather than
 /// straight to the Python callback.
@@ -1095,7 +1095,7 @@ fn storeg_symbolic_guard_buffers_for_rust_memory() {
     });
 }
 
-/// angr-5mnx3.23, CAS variant: `cas_store_symbolic_data` writes back a computed
+/// CAS variant (angr-5mnx3.23): `cas_store_symbolic_data` writes back a computed
 /// `RustBV` (the success/failure ITE) that cannot be re-expressed as an
 /// `IRExpr`, so it dispatches the symbolic-value callback directly. Same
 /// no-op callback, same requirement to buffer.
@@ -1120,7 +1120,7 @@ fn cas_symbolic_writeback_buffers_for_rust_memory() {
     });
 }
 
-/// angr-5mnx3.23, multi-address variant: a symbolic-address store that
+/// Multi-address variant (angr-5mnx3.23): a symbolic-address store that
 /// concretizes to several candidates within `MAX_ITE_ADDRS` emits one
 /// `ITE(addr == a_i, data, mem[a_i])` per candidate through the same callback.
 /// Each of those must be buffered too.

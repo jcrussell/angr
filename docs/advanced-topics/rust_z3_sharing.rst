@@ -141,7 +141,7 @@ assertion list directly. It is structurally unsuitable: when source
 and destination contexts are the same — the case for every fork under
 our one-context-per-thread design — ``Z3_solver_translate`` returns a
 solver with **zero** assertions, silently losing the entire constraint
-set (measured in ``angr-59jk.2``); this engine therefore never uses
+set (``angr-59jk.2``); this engine therefore never uses
 ``Z3_solver_translate`` to fork a solver.
 
 Push/pop discipline
@@ -157,24 +157,22 @@ Scope save/restore on a ``SymContext`` is a **single** system today:
 
 .. note::
 
-   A second, higher-level ``transaction_begin`` /
-   ``transaction_commit`` / ``transaction_rollback`` lifecycle used to
-   coexist with this one, tracked by its own ``push_level`` counter.
-   It was **removed** in ``angr-ph300.44`` — it had zero callers and a
-   latent corruption bug (commit popped one of the three aux stacks and
-   never released the Z3 frame) — and the ``push_level`` field itself
-   was deleted in ``angr-c7xno.75``. No Rust or Python code calls or
-   reads any of them; the names survive only in historical comments on
-   ``SymContext`` and in ``transaction_ops.rs``'s module doc. A future
-   feature needing transactional scoping should build on bare
-   ``push()``/``pop()`` rather than resurrect a ``push_level``-style
-   counter — see the ``invariant-transaction-api-removed`` bd memory.
+   There is no second, higher-level ``transaction_begin`` /
+   ``transaction_commit`` / ``transaction_rollback`` lifecycle and no
+   ``push_level`` counter (``angr-ph300.44``, ``angr-c7xno.75``). That
+   lifecycle had zero callers and a latent corruption bug (commit popped
+   one of the three aux stacks and never released the Z3 frame). No Rust
+   or Python code calls or reads any of those names; they survive only in
+   historical comments on ``SymContext`` and in ``transaction_ops.rs``'s
+   module doc. A future feature needing transactional scoping should
+   build on bare ``push()``/``pop()`` rather than resurrect a
+   ``push_level``-style counter (bd memory `invariant-transaction-api-removed`).
 
 Every ``push()`` records the current ``(z3_assertions, assumed,
 non_bv_assertions)`` lengths on ``bare_local_savepoints`` so the
 matching ``pop()`` truncates everything logged inside the scope, and
 clears the dedup side-table so a re-assert after the pop is not
-falsely suppressed (``angr-ph300.41`` / ``.42``). Beyond that
+falsely suppressed (``angr-ph300.41`` / ``angr-ph300.42``). Beyond that
 bookkeeping, the dispatch inside ``scope_savepoint_*`` keys on whether
 this ``SymContext`` has a lineage (``self.lineage`` is ``Some``):
 
@@ -200,18 +198,16 @@ Symmetry rules:
   the ``scope_savepoints`` vector silently no-ops on an empty pop.
 * ``fork()`` gives the child a *fresh* scope state — empty
   ``bare_local_savepoints`` / ``scope_savepoints`` / ``scope_path``
-  and ``bare_z3_push_depth == 0`` — regardless of the parent's depth
-  (``angr-c7xno.75``: inheriting a non-zero depth let ``try_pop()``
-  hand a ``pop(1)`` to a child solver that was never pushed, and
-  permanently disqualified the child from lineage minting). The
-  counter means "open bare push scopes on *this* context's solver";
-  see the ``invariant-bare-z3-push-depth`` bd memory.
+  and ``bare_z3_push_depth == 0`` — regardless of the parent's depth:
+  inheriting a non-zero depth would let ``try_pop()`` hand a ``pop(1)``
+  to a child solver that was never pushed, and permanently disqualify
+  the child from lineage minting (``angr-c7xno.75``). The counter means
+  "open bare push scopes on *this* context's solver" (bd memory `invariant-bare-z3-push-depth`).
 * Forking *while* a bare scope is open is safe but deliberately does
   not freeze: ``fork()`` reads ``bare_local_savepoints`` before taking
   ``local_constraints`` and skips draining the local logs into the
   append-only ``*_shared`` Arcs, so a constraint added inside the
-  scope cannot outlive the parent's matching ``pop()``
-  (``angr-c7xno.75``).
+  scope cannot outlive the parent's matching ``pop()`` (``angr-c7xno.75``).
 
 Interaction with ``SharedLineageSolver``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -337,7 +333,7 @@ Counter cheat-sheet relevant to per-context solver behavior:
 Counters are process-wide ``AtomicU64`` statics, so
 ``mgr.reset_solver_stats()`` zeros them across every active
 ``SymContext``. They are also zero-cost when not read — the
-counter design from ``angr-2j5v`` / verified in ``angr-pdq8``
+counter design (``angr-2j5v`` / ``angr-pdq8``)
 guarantees an unread counter contributes only the
 ``fetch_add(1, Relaxed)`` cost on its hot path.
 

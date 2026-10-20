@@ -34,10 +34,10 @@ class TestMmapBaseSync:
     """Tests that the Rust per-state mmap_base mirrors back to Python's
     state.heap.mmap_base on stash export.
 
-    Regression for angr-0cnm: previously the native mmap syscall handler
-    bumped Rust's mmap_base on addr=0 calls, but nothing pushed that bump
-    back to the angr SimState — so a subsequent Python-side fallback
-    allocation would overlap a Rust-allocated region.
+    Regression test (angr-0cnm): the native mmap syscall handler bumps
+    Rust's mmap_base on addr=0 calls, and unless that bump is pushed back
+    to the angr SimState a subsequent Python-side fallback allocation
+    overlaps a Rust-allocated region.
     """
 
     def test_get_state_mmap_base_default(self, amd64_mgr):
@@ -65,7 +65,8 @@ class TestMmapBaseSync:
 
         Pre-fix this fails — state.heap.mmap_base stays at the default
         0xC1000000 even though Rust bumped its internal counter, leading to
-        the silent-corruption scenario in the bead description.
+        a later Python-side allocation silently overlapping a Rust-allocated
+        region.
         """
 
         proj = fauxware_project
@@ -132,9 +133,9 @@ class TestMmapMapFixedNative:
     address. Matches Linux mmap(2) semantics and diverges from the
     Python posix mmap procedure (which returns -1 on collision).
 
-    Regression for angr-ttr7: previously the native fast path bailed
-    to Python on any collision, including the MAP_FIXED case where
-    Python would just return -1.
+    Regression test (angr-ttr7): the native fast path must not bail to
+    Python on a collision, including the MAP_FIXED case where Python
+    would just return -1.
     """
 
     MAP_PRIVATE = 0x02
@@ -212,10 +213,10 @@ class TestPosixBrkSync:
     """Tests that the Rust per-state posix_brk mirrors back to Python's
     state.posix.brk on stash export.
 
-    Regression for angr-as3c (mirrors angr-0cnm for mmap_base): NativeBrkSyscall
-    bumps Rust's posix_brk on a concrete grow, but nothing pushed that bump
-    back to the angr SimState — so a Python-side fallback (symbolic brk arg
-    or set_brk collision retry) would read a stale state.posix.brk and hand
+    Regression test (angr-as3c); mirrors TestMmapBaseSync for mmap_base.
+    NativeBrkSyscall bumps Rust's posix_brk on a concrete grow, and unless that
+    bump is pushed back to the angr SimState a Python-side fallback (symbolic brk arg
+    or set_brk collision retry) reads a stale state.posix.brk and hands
     out heap addresses overlapping a Rust-allocated region.
     """
 
@@ -262,8 +263,8 @@ class TestPosixBrkSync:
         SimState returned by mgr.active.
 
         Pre-fix this fails — state.posix.brk stays at the loader-set value
-        even though Rust bumped its internal counter, leading to the silent
-        heap-collision scenario in the bead description.
+        even though Rust bumped its internal counter, leading to a silent
+        heap collision with a Rust-allocated region.
         """
 
         proj = fauxware_project
@@ -352,13 +353,12 @@ class TestHeapBrkSync:
     """Tests that the Rust per-state heap_brk (malloc bump allocator) mirrors
     back to Python's state.heap.heap_location on stash export.
 
-    Regression for angr-um39j (mirrors TestPosixBrkSync for the brk syscall and
-    TestMmapBaseSync for mmap): native heap-allocating SimProcedures
+    Regression test (angr-um39j); mirrors TestPosixBrkSync for the brk syscall
+    and TestMmapBaseSync for mmap. Native heap-allocating SimProcedures
     (malloc/calloc/realloc/strdup/fopen) bump Rust's heap_brk via heap_alloc,
-    but nothing pushed that bump back to the angr SimState — so a later
-    Python-side fallback SimProcedure would read a stale state.heap.heap_location
-    and hand out heap addresses overlapping a Rust-allocated region. Latent
-    until angr-blq01 made native fopen/calloc/realloc actually run.
+    and unless that bump is pushed back to the angr SimState a later
+    Python-side fallback SimProcedure reads a stale state.heap.heap_location
+    and hands out heap addresses overlapping a Rust-allocated region.
     """
 
     def test_get_state_heap_brk_default(self, amd64_mgr):
@@ -406,8 +406,8 @@ class TestHeapBrkSync:
         SimState returned by mgr.active.
 
         Pre-fix this fails — state.heap.heap_location stays at the default
-        even though Rust bumped its internal counter, leading to the silent
-        heap-collision scenario in the bead description.
+        even though Rust bumped its internal counter, leading to a silent
+        heap collision with a Rust-allocated region.
         """
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -463,12 +463,11 @@ class TestHeapBrkSync:
 class TestCallbackHeapSync:
     """The SimProcedure-callback bounce must round-trip the heap break pointer.
 
-    Regression for angr-op0dn.14.1.3 (found by the M6.5a fallback census): the
-    heap sync helpers were export-path-only, so a bounced malloc/calloc/
-    operator-new read the *default* heap_location off its freshly copied
-    callback state — even when native allocations had already moved Rust's
-    heap_brk past it — and its own bump never reached Rust. Either half hands
-    out overlapping heap blocks.
+    Regression test (angr-op0dn.14.1.3): heap sync must run on the bounce, not
+    only on export. Otherwise a bounced malloc/calloc/operator-new reads the
+    *default* heap_location off its freshly copied callback state — even when
+    native allocations had already moved Rust's heap_brk past it — and its own
+    bump never reaches Rust. Either half hands out overlapping heap blocks.
 
     Both directions are exercised through a Python-only SimProcedure (the Rust
     engine has no handler for it, so hitting it forces the bounce).
@@ -552,13 +551,11 @@ class TestCallbackHeapSync:
 class TestCallbackPosixSync:
     """The SimProcedure-callback bounce must round-trip fd output buffers.
 
-    Regression for angr-op0dn.14.1.4 (gap 2 of the M6.5a fallback census): the
-    bounce had no outbound posix channel at all, so a bounced
-    fwrite/fputc/fprintf wrote the callback state's posix stream and that
-    output was invisible to ``posix.dumps(1)`` read back from the Rust state —
-    and to any find predicate keyed on stdout. The inbound half was
-    export-path-only, so a bounced proc could not see the native output that
-    preceded it either.
+    Regression test (angr-op0dn.14.1.4): without an outbound posix channel, a
+    bounced fwrite/fputc/fprintf writes the callback state's posix stream and
+    that output is invisible to ``posix.dumps(1)`` read back from the Rust
+    state — and to any find predicate keyed on stdout. Without the inbound
+    half, a bounced proc cannot see the native output that preceded it.
     """
 
     @staticmethod
@@ -645,10 +642,10 @@ class TestCallbackFdTableSync:
     """The SimProcedure-callback bounce must round-trip the fd *table*, not
     just the fd output bytes.
 
-    Regression for angr-op0dn.14.1.5: a bounced open/fopen/dup allocates an fd
-    in ``state.posix`` and a ``SimFile`` in ``state.fs``, and Rust's FileSystem
-    never learned about it — so ``get_state_open_fds`` omitted the fd and a
-    later *native* read/write on it hit a closed fd.
+    Regression test (angr-op0dn.14.1.5): a bounced open/fopen/dup allocates an
+    fd in ``state.posix`` and a ``SimFile`` in ``state.fs``, and unless Rust's
+    FileSystem learns about it ``get_state_open_fds`` omits the fd and a later
+    *native* read/write on it hits a closed fd.
     """
 
     O_WRONLY = 1

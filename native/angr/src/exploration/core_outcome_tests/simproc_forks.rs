@@ -6,8 +6,7 @@
 //! `deferred_forks: Vec::new()`, so the whole materialization branch was
 //! unpinned: neither a fix nor a regression to it would show up in any test.
 //! These are characterization tests — they pin what the code does today, which
-//! is what makes the open audit item in bd memory
-//! `avoid-deferred-fork-base-mismatch` (does the unexplored sibling observe the
+//! makes the open question (does the unexplored sibling observe the
 //! mutations a *successful* native call applied to the main successor?)
 //! decidable rather than invisible.
 //!
@@ -84,7 +83,7 @@ fn simproc_success_materializes_deferred_fork_alongside_main() {
 /// snapshot, so the native call's mutations — the return-register write and the
 /// popped-return-address SP bump — stay on the main successor.
 ///
-/// This is the assertion bd memory `avoid-deferred-fork-base-mismatch` needs:
+/// This is the assertion that settles the fork-base question:
 /// for the snapshot shape the interpreter emits, the SimProc-native success
 /// path does *not* leak the call into its siblings, even though it passes the
 /// post-call state as `base`.
@@ -155,9 +154,9 @@ fn simproc_success_fork_guard_polarities_are_opposite() {
 /// satisfiability depends entirely on `base` NOT yet carrying the taken-path
 /// guard when the fork is minted.
 ///
-/// It did carry it until angr-z3obp — the guard was assumed onto `base` before
-/// the fork was built, so the sibling was UNSAT by construction and landed in
-/// `pruned` instead of being explored. `fork_unexplored_and_guard_base` now
+/// Assuming the guard onto `base` before building the fork made the sibling
+/// UNSAT by construction, landing it in `pruned` instead of being explored
+/// (angr-z3obp). `fork_unexplored_and_guard_base` now
 /// owns the order (fork first, guard second), and this pins the sibling
 /// surviving with the *opposite* guard, matching the snapshot shape above.
 ///

@@ -100,7 +100,7 @@ fn get_nearby_prefetch_list_main_page_only_without_rust_memory() {
 
 #[test]
 fn get_eager_prefetch_list_caps_at_max_prefetch_batch() {
-    // angr-1c88c gap 7/7: enable_eager_prefetch eager branch ->
+    // angr-1c88c: enable_eager_prefetch eager branch ->
     // get_region_prefetch_list capped at config.max_prefetch_batch.
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);

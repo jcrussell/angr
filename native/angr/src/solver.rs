@@ -458,7 +458,7 @@ impl RustSolverContext {
     /// come back as a short list. Callers whose correctness depends on the set
     /// being complete — anything that would conclude "only these values are
     /// possible" — should use [`eval_upto_checked`](Self::eval_upto_checked)
-    /// (angr-0qqun, the PyO3 twin of the angr-03vl4.85 internal fix).
+    /// (the PyO3 twin of the internal fix) (angr-0qqun, angr-03vl4.85).
     pub fn eval_upto(
         &self,
         py: Python<'_>,

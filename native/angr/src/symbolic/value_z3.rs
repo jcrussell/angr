@@ -87,8 +87,8 @@ impl RustBV {
         super::stats::record_z3_ast_build();
         // Bracket the conversion with the node counters so the Bool path's
         // built-vs-memo-reused split is attributable (angr-op0dn.9.6): only
-        // the nodes still being *built* here are what a Bool memo (M1.d /
-        // angr-op0dn.9.4) could remove.
+        // the nodes still being *built* here are what a Bool memo (M1.d)
+        // (angr-op0dn.9.4) could remove.
         let (miss0, memo0) = super::stats::ast_node_counters();
         let mut cache = std::collections::HashMap::new();
         let result = self.to_z3_bool_cached(&mut cache);

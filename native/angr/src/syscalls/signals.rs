@@ -18,9 +18,8 @@
 //! Notes on what is *not* covered here:
 //!
 //! * `rt_sigaction` — already covered by
-//!   `syscalls::sigaction::NativeRtSigactionSyscall` (baseline). The
-//!   bd description for angr-0hif.6 lists it for completeness; no new
-//!   handler is needed.
+//!   `syscalls::sigaction::NativeRtSigactionSyscall` (baseline). Listed
+//!   here for completeness; no new handler is needed.
 //! * `rt_sigprocmask` — Python's
 //!   `procedures/linux_kernel/sigprocmask.py` mutates
 //!   `state.posix.sigmask` and stores at the `oldset` pointer.

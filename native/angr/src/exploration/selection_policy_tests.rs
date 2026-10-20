@@ -1,6 +1,6 @@
 // Tests for exploration/selection_policy.rs (split out of the inline
-// `#[cfg(test)] mod tests` alongside its scheduler-fileset siblings,
-// angr-5mnx3.21).
+// `#[cfg(test)] mod tests` alongside its scheduler-fileset siblings)
+// (angr-5mnx3.21).
 
 use super::{
     CoverageGuided, DirectedCfgDistance, Fifo, FindDirected, Lifo, LoopHeadRoundRobin,
@@ -428,7 +428,7 @@ fn test_directed_is_permutation() {
     assert_eq!(order, want, "drain is a permutation: no drops or dupes");
 }
 
-/// Reference beam pick built on a **full sort** — the pre-angr-9ke6b.60
+/// Reference beam pick built on a **full sort** — the original
 /// implementation of `DirectedCfgDistance::select`, kept here as the oracle
 /// the partial `select_nth_unstable_by_key` selection must agree with.
 /// Returns the dispatch order as *insertion indices* into `pcs`.

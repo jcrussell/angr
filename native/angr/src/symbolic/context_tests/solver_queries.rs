@@ -5,8 +5,8 @@
 //! that pins how each of those aborts rather than guessing.
 //!
 //! Named `solver_queries.rs`, not `solver.rs`, so no basename search collides
-//! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`) —
-//! angr-5mnx3.50.
+//! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`)
+//! (angr-5mnx3.50).
 #![allow(clippy::arc_with_non_send_sync)]
 use super::*;
 // The instrumentation-counter tests below (`test_record_*_counters`) call
@@ -448,7 +448,7 @@ fn test_add_constraints_raw_batch_sibling_isolation() {
 }
 
 // -------------------------------------------------------------------------
-// angr-2j5v instrumentation counter tests
+// Instrumentation counter tests (angr-2j5v)
 // -------------------------------------------------------------------------
 //
 // Counters are process-global atomics — other parallel tests may touch
@@ -1134,9 +1134,9 @@ fn test_is_sat_checked_reports_timeout_as_undecided() {
 // `is_sat_checked` / `min` / `max` / `check_branch_feasibility` /
 // `eval_upto_checked` above each got a bespoke rig (hard-factoring +
 // wall-clock timeout, or a one-off `pin_rlimit` call) built for that specific
-// call site's already-fixed bug (angr-03vl4.62 / angr-03vl4.85 /
-// angr-ph300.43 / angr-n0irt.1). None of that plumbing was reusable as a
-// single call, so every *other* satisfiability-adjacent method on
+// call site's already-fixed bug
+// (angr-03vl4.62, angr-03vl4.85, angr-ph300.43, angr-n0irt.1). None of that
+// plumbing was reusable as a single call, so every *other* satisfiability-adjacent method on
 // `SymContext` (`eval`, `eval_wide`, `eval_many`, `solution`, `range`,
 // `range_seeded`) had never been driven through a genuine Z3 Unknown at all —
 // only through the decided Sat/Unsat cases their other tests exercise.
@@ -1217,7 +1217,7 @@ fn test_eval_wide_returns_none_under_forced_unknown() {
     });
 }
 
-/// `eval_many` (angr-ue4ro's single-model batch reader) must likewise refuse
+/// `eval_many` (the single-model batch reader) must likewise refuse
 /// to hand back a partially- or fully-fabricated vector when the check that
 /// would justify it never decided.
 #[test]
@@ -1399,7 +1399,7 @@ fn test_max_aborts_to_none_on_bisection_timeout() {
 /// `bsearch` still decides — only reachable via the wall-clock-only timeout,
 /// which is deliberately avoided here because its timer is flaky under parallel
 /// `cargo test` (see `pin_rlimit`). The fix stays as a defensive correctness
-/// alignment with `invariant-z3-unknown-not-unsat` / angr-ph300.43.
+/// alignment with `invariant-z3-unknown-not-unsat` (angr-ph300.43).
 fn build_hard_sign_probe(ctx: &SymContext, hard_when_negative: bool) -> RustBV {
     let x = RustBV::symbolic(ctx, "sgn_x", 64);
     let a = RustBV::symbolic(ctx, "sgn_a", 64);
@@ -1539,8 +1539,8 @@ fn build_warm_seed_then_stalled(ctx: &SymContext, name: &str, lo: u128, hi: u128
     (x, seeded)
 }
 
-/// The core of angr-03vl4.85: an enumeration that stops because Z3 stopped
-/// deciding must say so. Pre-fix `eval_upto` returned the one-element prefix
+/// The core contract (angr-03vl4.85): an enumeration that stops because Z3 stopped
+/// deciding must say so, rather than returning a one-element prefix
 /// byte-identical to the answer for a BV with exactly one feasible value.
 #[test]
 fn test_eval_upto_checked_flags_mid_enumeration_timeout() {

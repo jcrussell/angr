@@ -103,7 +103,7 @@ crate::declare_proc! {
         }
         // A refusal means the fd carried bounded symbolic content (now
         // demoted) — bounce to Python, which owns the file from here
-        // (angr-0xyq2 Phase 2 choke point; see FileSystem::write).
+        // (angr-0xyq2 Phase 2; see FileSystem::write).
         if !state.write_fd(fd as u32, &[byte]) {
             return Err(crate::procedures::ProcedureError::Other(format!(
                 "fputc to fd={fd} with symbolic content falls back to Python (demoted)"

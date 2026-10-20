@@ -4,11 +4,11 @@
 ``rust_disk_cache.py::_deserialize_init_state`` rebuilds a *blank* state and
 restores registers + memory pages, so every pointer
 ``simos/linux.py::state_entry`` parks in the ``posix`` plugin is lost unless it
-was explicitly persisted. angr-6cp06.12 persisted ``environ`` (the Rust getenv
-seed bridge needs it); ``argv`` / ``argc`` / ``auxv`` stayed dropped, so a
-Python SimProcedure that reads ``state.posix.argv`` --- ``__libc_start_main``
-being the load-bearing one --- saw ``None`` on a cache-warm run and a real
-pointer on a cold one.
+was explicitly persisted. Persisting only ``environ`` (the Rust getenv seed
+bridge needs it) and dropping ``argv`` / ``argc`` / ``auxv`` means a Python
+SimProcedure that reads ``state.posix.argv`` --- ``__libc_start_main`` being
+the load-bearing one --- sees ``None`` on a cache-warm run and a real pointer
+on a cold one.
 
 Two layers of coverage: a round-trip over the module-level extract/restore
 helpers, and an end-to-end check that the pickle a real cold run writes to
@@ -101,8 +101,8 @@ class TestPosixEntryFieldRoundTrip:
         assert blank.posix.argc.size() == entry.posix.argc.size()
 
     def test_absent_fields_are_left_alone(self):
-        """A pre-angr-7tmoz pickle (or an unreadable field) must not crash the
-        restore or write a bogus zero pointer."""
+        """A pickle without the argv/argc/auxv fields (or an unreadable field) must
+        not crash the restore or write a bogus zero pointer."""
         project = _project()
         blank = project.factory.blank_state(addr=project.entry)
         _restore_posix_entry_fields(blank, {"posix_environ": 0x1000})

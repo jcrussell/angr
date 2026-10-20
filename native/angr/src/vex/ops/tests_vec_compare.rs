@@ -184,7 +184,7 @@ fn test_vec_interleave_lo_16x8_symbolic() {
 /// bits, not 128. `vec_interleave` derives the lane count from the operand
 /// width rather than from `IROp::count`, so this pins that the narrower
 /// operands produce a 64-bit result over 4 source lanes per operand — the
-/// evaluator half of the angr-sqfj8.142 width bug, whose `result_type()` half
+/// evaluator half of the interleave width bug (angr-sqfj8.142), whose `result_type()` half
 /// is pinned by `test_packed_lane_result_type_tracks_mapped_width`
 /// (`vex/ir_tests.rs`).
 #[test]

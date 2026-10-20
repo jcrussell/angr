@@ -1,15 +1,16 @@
 # pylint: disable=missing-class-docstring,no-self-use
 """Regression tests for how the Rust engine classifies block exits.
 
-* angr-et24a: a plain fall-through to an address outside the loaded image was
-  treated as an unmodeled call — a "generic skip" to a return address of 0
-  that also zeroed the return register. Python just leaves the state at the
-  fall-through target.
-* angr-x39ae: a SimProcedure return never popped the call-stack frame its
-  call pushed, so a later ``ret`` to a symbolic return address no longer saw
-  an empty call stack, missed the angr-3uye unconstrained-return guard, and
-  the state was deadended instead of landing in ``unconstrained``. The
-  manager also dropped unconstrained states by default, unlike Python.
+* Out-of-image fall-through (angr-et24a): a plain fall-through to an address
+  outside the loaded image must not be treated as an unmodeled call — a
+  "generic skip" to a return address of 0 that also zeroes the return
+  register. Python just leaves the state at the fall-through target.
+* SimProcedure return (angr-x39ae): a SimProcedure return must pop the
+  call-stack frame its call pushed; otherwise a later ``ret`` to a symbolic
+  return address no longer sees an empty call stack, misses the
+  unconstrained-return guard, and the state is deadended instead of landing
+  in ``unconstrained``. The manager must also keep unconstrained states by
+  default, like Python.
 """
 
 from __future__ import annotations

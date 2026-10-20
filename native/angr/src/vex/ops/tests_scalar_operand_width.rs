@@ -1,7 +1,7 @@
 // angr-fs8kb.95: operand-width rejection across the SCALAR op families.
 //
 // The sibling `tests_vec_operand_width.rs` pins the same contract for the
-// packed-vector family (swept by angr-3fb7p). The scalar families shared both
+// packed-vector family (angr-3fb7p). The scalar families shared both
 // properties that made `debug_assert_eq!` the wrong tool there:
 // `VEXOps::binop`/`unop` match on the opcode alone and never check an operand
 // against the `IRType` the opcode carries, and `RustBV`'s own guard
@@ -228,8 +228,8 @@ fn test_float_to_int_rejects_narrow_operand() {
 }
 
 /// `float_cmp.rs`'s two FP-compare helpers live outside the `vec_*` modules
-/// the angr-3fb7p sweep walked, so they kept their `debug_assert!`s a round
-/// longer despite deriving lane offsets exactly the same way.
+/// but derive lane offsets exactly the same way, so they need the same typed
+/// rejection (angr-3fb7p).
 #[test]
 fn test_float_packed_cmp_rejects_narrow_operand() {
     let ctx = SymContext::new_mock();

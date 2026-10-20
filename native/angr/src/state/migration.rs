@@ -9,9 +9,9 @@
 //!
 //! Rather than asserting `unsafe impl Send for RustSimState` — which is
 //! **unsound** (it would let the stealing thread read the owner's *live* Z3
-//! context, and race the non-atomic `Rc` solver refcount; see the
-//! `angr-1ilq.1` bead notes for hazards A/B/C) — this module crosses the
-//! thread boundary with data that is `Send` *by construction*:
+//! context, and race the non-atomic `Rc` solver refcount; angr-1ilq.1) — this
+//! module crosses the thread boundary with data that is `Send` *by
+//! construction*:
 //!
 //! * `state_bytes` — the versioned serde envelope
 //!   ([`RustSimState::to_serialized`]). Every Z3 AST is serialized to a
@@ -43,8 +43,8 @@ pub struct StateMigrationPayload {
 }
 
 // angr-1ilq.1: the migration transport is `Send` by construction, proven at
-// compile time. This REPLACES the unsound `unsafe impl Send for RustSimState`
-// the bead originally proposed — this design contains no `unsafe`. If a future
+// compile time; this design contains no `unsafe` (an `unsafe impl Send for
+// RustSimState` would be unsound). If a future
 // field reintroduces a non-`Send` member, this assertion fails the build.
 const _: fn() = || {
     fn assert_send<T: Send>() {}

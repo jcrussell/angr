@@ -857,11 +857,11 @@ pub enum IROp {
     /// whose semantics have not been implemented yet. Dispatch (`VEXOps::unop`,
     /// `VEXOps::binop` via `binop_misc`, `VEXOps::qop`) returns
     /// `Err(OpError::UnsupportedNeon { name })` with the captured opcode name
-    /// (angr-tkbr.2 replaced the original panic), which surfaces as
+    /// (angr-tkbr.2), which surfaces as
     /// `RustExecError::UnsupportedVexOp` and bails the block to Python so
-    /// missing NEON coverage is visible immediately. Implementations land
-    /// one-by-one in angr-bkcs.2 by replacing the matching `opcode_map` entry
-    /// with a real `IROp::V*` variant.
+    /// missing NEON coverage is visible immediately. An implementation lands
+    /// by replacing the matching `opcode_map` entry with a real `IROp::V*`
+    /// variant (angr-bkcs.2).
     NeonUnimplemented(&'static str),
 
     // =========================================================================
@@ -1195,11 +1195,11 @@ impl IROp {
             }
 
             // Packed integer min/max/abs and packed FP arith: width = elem * count.
-            // These arms used to hardcode V128, which was wrong in both directions —
+            // These arms must not hardcode V128, which is wrong in both directions —
             // opcode_map maps the D-reg NEON shapes (Iop_Min8Sx8, Iop_Abs32x2,
             // Iop_Add32Fx2 → 64-bit totals) and the AVX2/AVX shapes (Iop_Min8Sx32,
-            // Iop_Add32Fx8 → 256-bit totals) alongside the 128-bit ones. Closed in
-            // angr-sqfj8.115; see the width rule in width_total_to_type.
+            // Iop_Add32Fx8 → 256-bit totals) alongside the 128-bit ones
+            // (angr-sqfj8.115); see the width rule in width_total_to_type.
             IROp::VMin {
                 elem,
                 count,

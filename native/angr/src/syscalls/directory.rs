@@ -25,8 +25,8 @@
 //!   in Rust is purely fd-keyed (no path → SimFile map yet). The
 //!   handlers below mirror `syscall_stub` for now; angr's real `unlink`
 //!   path stays accessible to callers that route through the Python
-//!   manager directly. This is the same trade-off angr-k3ol calls out
-//!   for the `open` / `close` family.
+//!   manager directly. This is the same trade-off as the `open` / `close`
+//!   family (angr-k3ol).
 //!
 //! ## What is intentionally NOT covered yet
 //!

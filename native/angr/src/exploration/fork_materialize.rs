@@ -68,9 +68,9 @@ fn add_fork_guard_constraint(
 /// This is the single source of truth for the four verbatim copies that used
 /// to live inline in `_resume_after_simprocedure`, `_deadend_pending_callback`,
 /// `_resume_after_symbolic_branch` (resume.rs) and the run-loop callback path
-/// (run_loop.rs). angr-ph300.7 fixed a drop-bug by porting this arm into the
-/// deadend copy verbatim; consolidating removes that copy-paste hazard (memory
-/// invariant-deferred-fork-condition-fallback-arms).
+/// (run_loop.rs). A drop-bug was once fixed by porting this arm into the
+/// deadend copy verbatim (angr-ph300.7); consolidating removes that copy-paste
+/// hazard.
 pub(crate) fn reconstruct_deferred_fork_condition(
     stored_condition: Option<&RustBV>,
     fork: &DeferredFork,
@@ -286,18 +286,16 @@ pub(crate) struct MaterializeForkCtx<'a> {
 /// `_resume_after_simprocedure` / `_deadend_pending_callback` /
 /// `_resume_after_symbolic_branch` loops (`resume.rs`). Only the parallel
 /// mirror (`core_outcome_handlers.rs::materialize_deferred_forks_core`) was
-/// unit-tested, so the serial copies were free to drift — angr-ph300.7 was
-/// exactly that drift (a missing `condition_ast` arm silently dropping
-/// AST-only forks).
+/// unit-tested, so the serial copies were free to drift — a missing
+/// `condition_ast` arm silently dropped AST-only forks (angr-ph300.7).
 ///
 /// The parallel mirror is deliberately NOT folded in here: it has no
 /// `condition_ast` fallback, fires the `constraints` inspect BP via
 /// [`add_fork_guard_constraint`], and accumulates into atomics rather than
 /// `ExecutionStats`. That split is a knowingly-accepted duplication, not an
-/// outstanding TODO: the bd memory `invariant-stepping-decomposition`
-/// enumerates all four deferred-fork materializers (this one, the parallel
-/// mirror, and the two `process_deferred_forks_into*` helpers) and records
-/// that unifying them would either lose profiling or force it everywhere, so
+/// outstanding TODO: of the deferred-fork materializers (this one, the
+/// parallel mirror, and the two `process_deferred_forks_into*` helpers),
+/// unifying them would either lose profiling or force it everywhere, so
 /// it needs an explicit decision rather than a drive-by refactor.
 pub(crate) fn materialize_deferred_forks(
     forks: Vec<DeferredFork>,
@@ -323,7 +321,7 @@ pub(crate) fn materialize_deferred_forks(
     let total = forks.len() as u64;
     let batch_start = stats.is_some().then(std::time::Instant::now);
     // Taken-path guards of the forks already materialized, replayed onto each
-    // later fork (`fork_base` is fixed and guard-free here — angr-62ar5).
+    // later fork (`fork_base` is fixed and guard-free here) (angr-62ar5).
     let mut prior_guards = PriorGuards::new(false);
 
     for fork in forks {

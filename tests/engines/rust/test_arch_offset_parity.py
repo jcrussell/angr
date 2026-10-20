@@ -24,15 +24,15 @@ is recovered behaviorally (:func:`_rust_offset_size`): write all-ones through
 This generalizes the two hand-written ground-truth checks in
 ``test_multiarch.py`` (``test_mips64_fpu_offsets_match_archinfo`` /
 ``test_arm32_offsets_match_archinfo``), which stay as named anchors for the
-angr-mpln0 and angr-ihfe5 regressions.
+MIPS64 FPU and ARM32 offset regressions (angr-mpln0, angr-ihfe5).
 
 Registers that Rust does not know cannot be probed (``set_register`` raises
 ``ValueError``), so the offset check covers the intersection — 90-170 names per
 arch. Those names are not silently skipped: each must appear in
 :data:`KNOWN_MISSING` with a stated reason, so a *missing* register name is a
 hard failure rather than an invisible one (angr-keda8). Genuine offset/size
-disagreements live in :data:`KNOWN_DRIFT`, each pinned to a bead. Both tables
-are asserted to *still* describe reality, so fixing a bead reddens this test and
+disagreements live in :data:`KNOWN_DRIFT`, each pinned to an issue id. Both tables
+are asserted to *still* describe reality, so fixing an entry reddens this test and
 forces the entry's removal — neither can silently rot into a permanent
 allowlist.
 """
@@ -56,14 +56,14 @@ pytestmark = pytest.mark.skipif(
     reason="Rust exploration not available",
 )
 
-# (rust_arch, register) -> (rust_offset, rust_size, bead, why).
+# (rust_arch, register) -> (rust_offset, rust_size, issue id, why).
 #
-# Each entry is a REAL disagreement with archinfo, filed as its own bug. The
-# parity test asserts the drift is still exactly this, so closing the bead
+# Each entry is a REAL disagreement with archinfo, tracked as its own bug. The
+# parity test asserts the drift is still exactly this, so fixing the bug
 # fails this module until the entry is deleted.
 KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {}
 
-# archinfo arch id -> beads for guest-state sizes smaller than the last
+# archinfo arch id -> issue ids for guest-state sizes smaller than the last
 # archinfo register slot. Same self-cleaning contract as KNOWN_DRIFT.
 KNOWN_STATE_SIZE_DRIFT: dict[str, str] = {}
 
@@ -74,13 +74,12 @@ def _numbered(prefix: str, stop: int, suffix: str = "", start: int = 0) -> froze
 
 
 # rust_arch -> ((names, reason), ...): archinfo register names the Rust tables
-# deliberately (or, when a bead is cited, accidentally) do not implement.
+# deliberately (or, when an issue id is cited, accidentally) do not implement.
 #
 # The parity test may only skip a name listed here. Without this table an
-# archinfo name Rust never defined just disappeared into a ``pytest.skip``,
-# which is how three missing aliases reached master unnoticed — angr-9ke6b.217
-# ('pc' on x86/amd64), angr-03vl4.1 ('bp' on ARM/ARM64/MIPS) and angr-03vl4.2
-# ('lr' on MIPS). See angr-keda8.
+# archinfo name Rust never defined would disappear into a ``pytest.skip``,
+# letting a missing alias (such as 'pc' on x86/amd64, 'bp' on ARM/ARM64/MIPS
+# or 'lr' on MIPS) go unnoticed (angr-keda8).
 #
 # Same self-cleaning contract as KNOWN_DRIFT:
 # :func:`test_known_missing_groups_are_still_entirely_missing` asserts every

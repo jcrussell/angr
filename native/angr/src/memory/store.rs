@@ -195,8 +195,8 @@ impl SymbolicMemory {
                     width_bits,
                 });
             }
-            // angr-9ke6b.95: mirror the concrete branch's angr-1tes cleanup
-            // below. A byte may be marked Multi *or* Symbolic but not both
+            // angr-9ke6b.95: mirror the concrete branch's Multi-cell cleanup
+            // below (angr-1tes). A byte may be marked Multi *or* Symbolic but not both
             // (invariant documented on `SymbolicMemory`), and
             // `load_concrete_lazy_inner` dispatches to Multi cells *before*
             // consulting `symbolic_objects` — so leaving a pre-existing Multi
@@ -294,8 +294,8 @@ impl SymbolicMemory {
         // bytes. Interior lanes and a wider object based below `addr` used
         // to survive (the page bitmap hid them from loads) and were exported
         // over the new concrete bytes. Splitting keeps bytes outside the
-        // store symbolic, which also replaces the angr-7qon recovery that
-        // reclassified a truncated object's tail as concrete.
+        // store symbolic, so there is no separate recovery that reclassifies
+        // a truncated object's tail as concrete (angr-7qon).
         self.retire_symbolic_overlapping(addr, size);
         // What is left at `addr` is no wider than the store.
         if let Some(old_sym) = self.symbolic_objects.remove(&addr) {

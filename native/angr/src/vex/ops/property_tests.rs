@@ -1,5 +1,5 @@
 //! Property-based tests for the VEX op-dispatch layer (`VEXOps::binop` /
-//! `VEXOps::unop`), added under angr-qwyti.14.
+//! `VEXOps::unop`; angr-qwyti.14).
 //!
 //! `value_ops_property_tests.rs` already covers the `RustBV` concrete-folding
 //! primitives directly. These tests instead drive the *guest-facing* VEX op

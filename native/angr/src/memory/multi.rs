@@ -1,4 +1,4 @@
-//! Multi-cell byte storage for lazy symbolic memory (Phase 1 of angr-czph).
+//! Multi-cell byte storage for lazy symbolic memory (angr-czph Phase 1).
 //!
 //! When a symbolic-address store concretizes to multiple candidate addresses,
 //! the existing eager path builds an `ITE(addr == cand_i, new, current)` chain
@@ -219,8 +219,8 @@ impl MultiPayload {
 /// field is private to this module), so any API that requires a `&MultiFlushed`
 /// argument cannot be called without the caller having flushed first — turning
 /// "a read path forgot to flush Multi cells before looking at
-/// `symbolic_objects`" (the angr-9ke6b.96/.83/.101 and angr-sqfj8.26/.27/.52/.71
-/// bug family) from a discipline lapse into a compile error.
+/// `symbolic_objects`" from a discipline lapse into a compile error
+/// (angr-9ke6b.96/.83/.101, angr-sqfj8.26/.27/.52/.71).
 #[derive(Debug)]
 pub struct MultiFlushed(());
 

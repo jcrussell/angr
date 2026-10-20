@@ -1,12 +1,11 @@
-// Tests for symbolic/bv_chunk.rs — the read tests moved here from
-// exploration/helpers_tests.rs when angr-9ke6b.230 sank the helpers to the
-// symbolic layer. `E = String` keeps them hermetic (no Python interpreter).
+// Tests for symbolic/bv_chunk.rs — the read tests for the chunking helpers
+// (angr-9ke6b.230). `E = String` keeps them hermetic (no Python interpreter).
 use super::*;
 
 /// The chunker must walk the range in <=16-byte steps (the `u128` round-trip
 /// limit), hand each chunk's own address to the source, and concatenate in
 /// order — a wider single call would wrap `u128_to_le_bytes` mod 128
-/// (angr-9ke6b.82 consolidated three hand-copies of this loop).
+/// (angr-9ke6b.82).
 #[test]
 fn load_concrete_bytes_chunked_splits_at_16_and_concatenates() {
     let mut seen = Vec::new();

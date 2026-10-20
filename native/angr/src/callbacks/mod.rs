@@ -5,11 +5,9 @@
 //!
 //! # Callback + sync invariants
 //!
-//! This is the Rust side of the cross-language callback contract. Several
-//! cross-cutting rules are documented in bd memories; the most load-bearing
-//! ones for any future edit in this module are mirrored here so they live
-//! next to their enforcement sites (mirroring pattern documented in bd
-//! memory `invariant-mirror-pattern`).
+//! This is the Rust side of the cross-language callback contract. The most
+//! load-bearing cross-cutting rules for any future edit in this module are
+//! stated here so they live next to their enforcement sites.
 //!
 //! 1. **`avoid-silent-no-op-callback-fallbacks`** — every *dispatch*
 //!    `call_*` method on [`PythonCallbacks`] MUST hard-error when the hook
@@ -91,7 +89,7 @@
 //!
 //! # What lives where
 //!
-//! The angr-zel8z.2 god-module decomposition split this file by concern; the
+//! This file is split by concern (angr-zel8z.2); the
 //! submodules are all private, with the few cross-crate names re-exported
 //! below.
 //!
@@ -345,7 +343,7 @@ pub struct PythonCallbacks {
     /// The return value is **not** ignored: a non-None AST is the user's
     /// overridden `state.inspect.mem_read_expr`, which the caller converts
     /// back to a `RustBV` and substitutes for the loaded value (value
-    /// injection — angr-uy32); None leaves the original load result standing.
+    /// injection); None leaves the original load result standing.
     /// See `PythonCallbacks::call_inspect_mem_read` for the Rust-side contract.
     /// Only dispatched when bit InspectEvent::MemRead in `inspect_enabled` is set.
     pub inspect_mem_read: Option<Py<PyAny>>,
@@ -353,7 +351,7 @@ pub struct PythonCallbacks {
     /// Signature mirrors `inspect_mem_read` but `value_ast` is the data
     /// being stored (set on BEFORE and AFTER), and a non-None return is the
     /// overridden `state.inspect.mem_write_expr` substituted for the stored
-    /// value (value injection — angr-inh0). Only the BEFORE return can
+    /// value (value injection). Only the BEFORE return can
     /// change anything; on AFTER the store has already committed, so the
     /// return is informational. See `PythonCallbacks::call_inspect_mem_write`.
     pub inspect_mem_write: Option<Py<PyAny>>,
@@ -498,9 +496,8 @@ pub struct PythonCallbacks {
     /// passes the original in via `set_callbacks`. Bitmask updates from
     /// Python (`mgr._callbacks.set_inspect_enabled(...)`) must be visible
     /// to the Rust side; sharing the atomic makes both copies read/write
-    /// the same word. Widened from `AtomicU8` in angr-4ai9 (added bits 8/9
-    /// for call/return), then from `AtomicU16` in angr-lge2 so `expr`
-    /// (bit 16) fits after `statement` filled bit 15.
+    /// the same word. It is `AtomicU32` so call/return (bits 8/9) and `expr`
+    /// (bit 16, after `statement` at bit 15) all fit (angr-4ai9, angr-lge2).
     pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// The set of page addresses `fetch_page` / `batch_fetch_pages` could
     /// actually serve, snapshotted from the Python state at setup (angr-gorvf.4.6).

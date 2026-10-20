@@ -2,7 +2,7 @@
 //! `fflush`, `setvbuf`, `setbuf`, `feof`, `ferror`, `fputs`.
 //!
 //! These are among the highest-volume libc stdio procedures the Python
-//! fallback still serviced (per angr-otjw spike). `fflush` / `setvbuf` /
+//! fallback serviced (angr-otjw). `fflush` / `setvbuf` /
 //! `setbuf` are no-ops; `feof` / `ferror` report status; `fputs` writes.
 //! The three fd-touching ones resolve the FILE struct's `_fileno` field via
 //! the shared [`super::fileops`] helpers.
@@ -13,8 +13,9 @@
 //! Every value-returning proc here is `int`-typed in C, so each mints a 32-bit
 //! `RustBV` rather than calling [`super::arch_word`] — the same convention
 //! [`super::fgets`]'s `fgetc`/`getchar`/`getc` follow, and the one the
-//! `invariant-native-proc-return-width-extension` bd memory's second corollary
-//! requires: `write_proc_return_with_abi` extends a narrow return to the
+//! return-width-extension invariant requires
+//! (bd memory `invariant-native-proc-return-width-extension`):
+//! `write_proc_return_with_abi` extends a narrow return to the
 //! return register per the ABI, so an amd64 `(int)-1` lands in RAX as
 //! `0x0000_0000_FFFF_FFFF`, not all-ones. `fwrite`'s identical `-1` path does
 //! use `arch_word`, correctly — it returns `size_t`. Pinned by

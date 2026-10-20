@@ -6,9 +6,8 @@
 //! `manager_methods_*.rs` family — `stats` / `get_fallback_stats` in
 //! `manager_methods_constraints.rs`, `native_procedure_stats` in
 //! `manager_methods_procedures.rs` — and forward to the `pub(crate)` bodies
-//! in this module. (They were in `mod.rs` until the `#[pymethods]` surface
-//! was split out of it per angr-nbim4.1 / angr-9ke6b.50; see `mod.rs`'s own
-//! module doc.)
+//! in this module (angr-nbim4.1, angr-9ke6b.50); see `mod.rs`'s own module
+//! doc.
 //!
 //! Extension-impl module; see the [`exploration`](super) module doc.
 //!
@@ -238,7 +237,7 @@ impl RustExplorationManager {
             "parallel_worker_dispatch_folded",
             self.parallel_worker_dispatch_folded,
         )?;
-        // SI-B (angr-1ilq.3 increment 2b'): real state-migration serde tax,
+        // SI-B (angr-1ilq.3): real state-migration serde tax,
         // measured by the opt-in shadow probe (RUST_PARALLEL_SHADOW_PROBE). All
         // zero unless the probe is on; feeds the 2b' overhead GO/NO-GO gate.
         // `parallel_shadow_migration_ns` is to_serialized (main thread) +

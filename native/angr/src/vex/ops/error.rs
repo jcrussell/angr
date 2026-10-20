@@ -8,7 +8,7 @@ use crate::vex::ir::{IROp, IRType};
 
 /// Errors from VEX operation execution.
 ///
-/// `#[non_exhaustive]` per angr-irwe: new variants land in minor
+/// `#[non_exhaustive]` (angr-irwe): new variants land in minor
 /// versions as more ops gain explicit failure modes (e.g. additional
 /// NEON scaffold buckets). Match sites must include a wildcard arm.
 #[non_exhaustive]
@@ -26,7 +26,7 @@ pub enum OpError {
     /// Type mismatch.
     ///
     /// Reserved/defensive variant on this public `#[non_exhaustive]` enum:
-    /// currently unconstructed (kept-with-ticket per angr-36vvn.5) for the
+    /// currently unconstructed (kept deliberately, angr-36vvn.5) for the
     /// forthcoming type-checked op paths that will validate operand widths.
     #[error("type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: IRType, got: IRType },

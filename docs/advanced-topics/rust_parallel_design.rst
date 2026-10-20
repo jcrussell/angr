@@ -3,9 +3,8 @@ Rust engine: parallel exploration threading model — design comparison
 
 This document compares threading models for parallel exploration in
 the Rust engine (``angr-59jk``, ``angr-59jk.1``). The empirical
-translate-cost numbers
-quoted below come from the companion spike ``angr-59jk.2`` (its
-reproducer was deleted with the translate path, angr-mx00p.15).
+translate-cost numbers quoted below come from a companion spike
+(``angr-59jk.2``) whose reproducer was deleted with the translate path (angr-mx00p.15).
 
 Audience: contributors working on the parallel stack, or judging how a
 change interacts with it. The Option A / Option B comparison is kept as
@@ -61,12 +60,12 @@ The constraints are sharp:
 Two viable threading models for spanning multiple cores exist. This
 document compares them on complexity, throughput, memory, sensitivity
 to bench shape, and migration path, using the
-empirical translate-cost data from ``angr-59jk.2``.
+companion spike's empirical translate-cost data (``angr-59jk.2``).
 
 A third path — ``Z3 parallel.enable=true``, which fan-outs *inside* a
-single solver — is explicitly out of scope. It was tested in
-``angr-gfay`` and proved correctness-breaking on
-several sampled benchmarks (see bd memory ``avoid-z3-parallel-enable``).
+single solver — is explicitly out of scope. It was tested
+(``angr-gfay``) and proved correctness-breaking on several sampled
+benchmarks (bd memory `avoid-z3-parallel-enable`).
 The two options below are about **parallel state stepping**, not
 parallel SAT.
 
@@ -74,7 +73,7 @@ parallel SAT.
 Empirical input: Z3_translate cost
 ----------------------------------
 
-``angr-59jk.2`` measured ``Z3_translate`` per AST node. The
+The companion spike (``angr-59jk.2``) measured ``Z3_translate`` per AST node. The
 cost is linear in node count with a small constant, so a whole exported
 state of a few thousand nodes moves between contexts in single-digit
 milliseconds. That is negligible against a task of tens of milliseconds
@@ -170,8 +169,8 @@ Cons
   that complete a "task" in 10–50 ms (the CTF reverser shape — many
   short paths), translate at 5 ms can still be 10–50 % of runtime.
 * **Cache invalidation.** The Rust engine has a translation-side
-  LRU (``angr-518z``) and a thread-local AST cache
-  (``angr-m81n``-adjacent territory). Both would need per-context
+  LRU (``angr-518z``) and a thread-local AST cache (cf. ``angr-m81n``).
+  Both would need per-context
   partitioning.
 
 Implementation cost
@@ -374,11 +373,10 @@ Where it landed
 ---------------
 
 The staged rollout planned for Option A shipped, but almost every
-increment taught something that redirected the next one. Each entry
-names the bead that holds the measurements.
+increment taught something that redirected the next one.
 
-* **Snapshot transport, not translate-on-steal** (``angr-1ilq``,
-  ``angr-1ilq.1``). The original plan had the stealing worker call
+* **Snapshot transport, not translate-on-steal** (``angr-1ilq``, ``angr-1ilq.1``).
+  The original plan had the stealing worker call
   a ``translate_state`` (since deleted, angr-mx00p.15) to pull a victim
   state into its own context. Adversarial review showed that is a data race: it reads the
   *source* Z3 context on the *stealing* thread while the victim worker
@@ -386,8 +384,8 @@ names the bead that holds the measurements.
   shipped transport is a ``StateMigrationPayload`` built from the same
   per-state encoding ``dump_snapshot`` uses (``state/migration.rs``);
   the receiving worker rebuilds the state and its solver locally.
-* **Migration count, not transport cost, is the lever**
-  (``angr-t3l5o``). The overhead gate models a level-synchronous wave
+* **Migration count, not transport cost, is the lever** (``angr-t3l5o``).
+  The overhead gate models a level-synchronous wave
   that migrates every dispatched state; a steal-on-imbalance scheduler
   migrates only the fraction that is actually stolen. Making the
   transport several times cheaper widened the break-even steal
@@ -400,8 +398,8 @@ names the bead that holds the measurements.
   active stash into the shared ``Injector`` every wave and reattached
   every deep-constraint state in a new Z3 context. The fix is
   worker-local frontiers that persist across waves.
-* **Anti-migration scheduler** (``angr-729vn``, wired by ``angr-vh834``
-  and ``angr-nkoct``). Each worker keeps a thread-private
+* **Anti-migration scheduler** (``angr-729vn``, ``angr-vh834``, ``angr-nkoct``).
+  Each worker keeps a thread-private
   ``VecDeque<RustSimState>`` in its home Z3 context that is never
   serialized; the shared crossbeam ``Injector<StateMigrationPayload>`` is
   the only cross-thread channel; serde is paid on exactly two paths
@@ -433,8 +431,8 @@ State-selection policy seam
 Neither end of the ordering described under *Where it landed* above is
 hardcoded any more. Both the *which state do I step next* decision and the
 *which state do I ship away* decision go through the ``SelectionPolicy`` trait
-in ``exploration/selection_policy.rs`` (landed by ``angr-a32jl.1``, extended
-for the offload side by ``angr-03vl4.19``). The trait's methods:
+in ``exploration/selection_policy.rs`` (``angr-a32jl.1``, ``angr-03vl4.19``).
+The trait's methods:
 
 * ``select`` — pop the next active state (the run loop's only removal path);
 * ``on_fork`` — where a freshly-forked successor lands in the active deque
@@ -513,12 +511,10 @@ Open questions
 References
 ----------
 
-* Provenance: ``angr-59jk`` — design of parallel exploration with
-  per-thread Z3 contexts.
-* Companion spike: ``angr-59jk.2`` — Z3_translate cost per node.
-* Excluded alternative: ``angr-gfay`` (closed) — ``Z3 parallel.enable=true``
-  is correctness-breaking in this codebase; documented in bd memory
-  ``avoid-z3-parallel-enable``.
+* This design: parallel exploration with per-thread Z3 contexts (``angr-59jk``).
+* Companion spike: Z3_translate cost per node (``angr-59jk.2``).
+* Excluded alternative: ``Z3 parallel.enable=true`` is
+  correctness-breaking in this codebase (``angr-gfay``).
 * User-facing engine doc: :doc:`rust_engine` (see "Benchmarks slower
   than Python" for the workloads this work targets).
 * Bimodal variance background: :doc:`rust_bimodal_variance`.

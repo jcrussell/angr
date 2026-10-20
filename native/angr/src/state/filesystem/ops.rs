@@ -153,7 +153,7 @@ impl FileSystem {
     /// at a caller-chosen number: a bounced Python SimProcedure's
     /// `open`/`fopen`/`dup` allocates the fd in `state.posix`, and without
     /// this the native side never learns of it (a later native read/write on
-    /// that fd hits a closed fd — angr-op0dn.14.1.5). Unlike
+    /// that fd hits a closed fd; angr-op0dn.14.1.5). Unlike
     /// [`open`](Self::open) the number is dictated by Python rather than
     /// drawn from `next_fd`, so `next_fd` is bumped past it to keep later
     /// native opens from colliding.

@@ -152,7 +152,7 @@ fn test_vec_shl_n_unbounded_shift() {
 }
 
 // =========================================================================
-// angr-tukg.7 — NEON vector-shift-by-vector (VShl / VShr / VSar).
+// NEON vector-shift-by-vector (VShl / VShr / VSar) (angr-tukg.7).
 // =========================================================================
 
 /// Iop_Shl8x8 — left shift each of 8 lanes by the corresponding count lane.
@@ -484,7 +484,7 @@ fn test_parse_vshift_routing() {
     }
 }
 
-// angr-qwyti.17 — sign-fill mask overflow guard for arithmetic vector shifts.
+// Sign-fill mask overflow guard for arithmetic vector shifts (angr-qwyti.17).
 //
 // `sar_fill_mask` feeds the negative-lane branch of `shift_lane_u128`, the
 // concrete per-lane core both `vec_shift_n` and `vec_shift_vec` shift through

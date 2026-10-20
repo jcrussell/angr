@@ -932,7 +932,7 @@ fn test_vec_mulhi_16x16_avx2_256_bit() {
 }
 
 // =========================================================================
-// VPerm — lane permute by index (PSHUFB / TBL / VPERMD), angr-mx00p.6.
+// VPerm — lane permute by index (PSHUFB / TBL / VPERMD; angr-mx00p.6).
 // =========================================================================
 
 /// Python's `_op_generic_Perm` over little-endian lanes: lane `i` is

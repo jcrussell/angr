@@ -98,8 +98,8 @@ class PerformanceTracker:
         "callback_vex_fallback_count",
         "callback_vex_fallback_total_ns",
         # angr-afbx: Python posix-plugin callback (stdin/stdout injection).
-        # Enables angr-6zxx's DEFER->GO trigger (>5% wall in posix) to be
-        # checked from any --counters-json capture.
+        # Lets the posix DEFER->GO trigger (>5% wall in posix) be checked
+        # from any --counters-json capture (angr-6zxx).
         "callback_posix_count",
         "callback_posix_total_ns",
     )

@@ -92,8 +92,8 @@ fn test_vec_float_abs_concrete_f32x4() {
     assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
 }
 
-/// Iop_Abs32Fx2-style: the NEON D-reg shape (64-bit total), which had no
-/// parse arm until angr-sqfj8.115. Only the low two lanes are meaningful.
+/// Iop_Abs32Fx2-style: the NEON D-reg shape (64-bit total; angr-sqfj8.115).
+/// Only the low two lanes are meaningful.
 #[test]
 fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
     let ctx = SymContext::new_mock();

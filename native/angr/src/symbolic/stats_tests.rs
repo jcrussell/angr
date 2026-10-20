@@ -280,8 +280,8 @@ fn test_measurement_counters_reach_their_stats_key() {
 }
 
 /// Same wiring check as `test_measurement_counters_reach_their_stats_key`, for
-/// the `CORE_COUNTERS` table `get_solver_stats()` was hand-writing an
-/// `insert`/`store` pair per counter for until angr-03vl4.64.
+/// the `CORE_COUNTERS` table, which replaces a hand-written
+/// `insert`/`store` pair per counter in `get_solver_stats()` (angr-03vl4.64).
 ///
 /// This is the test that would have caught the drift the table exists to
 /// prevent: a counter declared and reset but never emitted, or emitted under a

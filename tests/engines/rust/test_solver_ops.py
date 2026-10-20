@@ -36,9 +36,8 @@ class TestSolverOperations:
 
     def test_solver_min_max(self):
         """min() and max() return correct bounds."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -51,9 +50,9 @@ class TestSolverOperations:
     def test_unbalanced_pop_raises_valueerror(self):
         """pop() with no matching push() raises ValueError, not a panic.
 
-        Regression for angr-ph300.48: an unbalanced ``pop()`` used to reach
-        z3-rs's under-pop panic (surfaced as a PanicException/abort) instead
-        of a clean Python exception.
+        Regression test (angr-ph300.48): an unbalanced ``pop()`` must not
+        reach z3-rs's under-pop panic (surfaced as a PanicException/abort);
+        it raises a clean Python exception instead.
         """
         from angr.rustylib.vex_engine import RustSolverContext
 
@@ -70,7 +69,7 @@ class TestSolverOperations:
     def test_pop_to_level_beyond_depth_raises(self):
         """pop_to_level past the actual scope depth raises ValueError.
 
-        Regression for angr-ph300.48: ``pop_to_level(0, 5)`` after only two
+        Regression test (angr-ph300.48): ``pop_to_level(0, 5)`` after only two
         pushes must refuse the surplus pops cleanly.
         """
         from angr.rustylib.vex_engine import RustSolverContext
@@ -83,9 +82,8 @@ class TestSolverOperations:
 
     def test_solver_unsatisfiable(self):
         """Contradictory constraints make solver UNSAT."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -97,12 +95,11 @@ class TestSolverOperations:
         """Inequality contradictions (x>100 AND x<50) make solver UNSAT and
         leave eval/min/max returning None instead of bogus concrete values.
 
-        Locks down behaviour for angr-eldx. False from satisfiable() must
+        Locks down this behaviour (angr-eldx). False from satisfiable() must
         mean a definitive UNSAT, never a swallowed exception.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -129,9 +126,8 @@ class TestSolverOperations:
         Python surface, and a wall-clock timeout is not deterministic enough
         for a test.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         # Narrow (<=128-bit) path.
         ctx = RustSolverContext()
@@ -164,9 +160,8 @@ class TestSolverOperations:
         Guards the eval_upto_wide_checked() sibling added alongside it: the
         wide path previously had no checked variant at all.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         w = claripy.BVS("w", 256)
@@ -182,14 +177,13 @@ class TestSolverOperations:
         """add_constraint_tracked_ast() + unsat_core() reports the indices
         of the constraints participating in the UNSAT core.
 
-        Locks down angr-w2je: untracked constraints (added via
-        add_constraint_ast) NEVER appear in unsat_core output — only
+        Locks down that untracked constraints (added via add_constraint_ast)
+        NEVER appear in unsat_core output (angr-w2je) — only
         tracked constraints do. The returned indices are 0-based and
         match the order in which add_constraint_tracked_ast() was called.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -215,7 +209,7 @@ class TestSolverOperations:
         must lower it to a `!= 0` Bool constraint like add_constraint_ast
         does, not silently drop it.
 
-        Regression for angr-d01qu: unlike its siblings add_constraint_ast
+        Regression test (angr-d01qu): unlike its siblings add_constraint_ast
         and add_constraints_ast, add_constraint_tracked_ast used to skip the
         is_bool() gate on the raw-fast-path Z3 AST it extracts from
         claripy, unsafely wrapping a BV-sorted Z3_ast as z3::ast::Bool and
@@ -234,9 +228,8 @@ class TestSolverOperations:
         this constraint was dropped, so a subsequent `x == 0` constraint was
         wrongly satisfiable. Post-fix, `x != 0` AND `x == 0` is UNSAT.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 8)
@@ -255,12 +248,12 @@ class TestSolverOperations:
         lower (an FP comparison) must still bind the solver, and must survive
         into a fork.
 
-        Coverage gap closed for angr-03vl4.74: every existing tracked-path test
-        uses an AST that *does* convert to a RustBV, so the branch that runs
-        when the conversion fails had no test at all. That branch used to have
-        no `else`, leaving the constraint live on the Z3 solver but recorded in
-        neither the assumed log nor the residual log -- so it silently vanished
-        from every reconstruction path (snapshot/restore, unsat_core_assumed,
+        Closes a residual-accounting coverage gap (angr-03vl4.74): every other
+        tracked-path test uses an AST that *does* convert to a RustBV, leaving
+        the conversion-failure branch untested. Without an `else` there, the
+        constraint stays live on the Z3 solver but is recorded in neither the
+        assumed log nor the residual log -- so it silently vanishes from every
+        reconstruction path (snapshot/restore, unsat_core_assumed,
         state.solver.constraints).
 
         RustSolverContext exposes no snapshot API, so the residual-log half of
@@ -271,9 +264,8 @@ class TestSolverOperations:
         does not divert to the RustBV slow path, which would reject it with
         UnsupportedOp) and that the fix did not break enforcement.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         fp = claripy.FPS("tracked_fp_var", claripy.FSORT_DOUBLE)
@@ -296,7 +288,7 @@ class TestSolverOperations:
         """add_constraint_tracked_ast() must be visible to a forked child,
         not just the live solver it was asserted on directly.
 
-        Regression for angr-sqfj8.101: add_constraint_tracked_indexed used
+        Regression test (angr-sqfj8.101): add_constraint_tracked_indexed used
         to call install_constraint() directly, skipping the
         local_constraints.z3_assertions push every sibling adder does.
         fork() freezes z3_assertions into the shared prefix the child
@@ -304,9 +296,8 @@ class TestSolverOperations:
         every forked child (and to a lazily-rematerialized solver on the
         parent itself).
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -331,9 +322,8 @@ class TestSolverOperations:
         extraction must opt in via add_constraint_tracked_ast(). Locks
         down that silent-empty behaviour.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -347,9 +337,8 @@ class TestSolverOperations:
         if constraints were tracked. Z3 does not produce a core for a
         SAT instance, so the matched indices list is empty.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -371,9 +360,8 @@ class TestSolverOperations:
         `!= 0` by the slow path) and entry 2 (Bool, after the failure) all
         have to reach the solver.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 8)
         y = claripy.BVS("y", 8)
@@ -406,9 +394,8 @@ class TestSolverOperations:
         `add_constraints_raw_batch` must be a no-op and `resume_from` must
         be 0 (not 1).
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 8)
 
@@ -419,9 +406,8 @@ class TestSolverOperations:
 
     def test_solver_fork_independence(self):
         """Forked solver contexts are independent."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx1 = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -443,16 +429,15 @@ class TestSolverOperations:
         cannot lower (an fpEQ float comparison) must return a 0/1 value,
         never BV-wrap the Bool node.
 
-        Regression for angr-58ks: the claripy -> Z3 lowering is not
+        Regression test (angr-58ks): the claripy -> Z3 lowering is not
         sort-specific; the eval fast paths used to BV::wrap it
         unconditionally (width defaulting to 64). For a Bool-sorted node
         that is a wrong-sort Z3 call, which trips Z3's error handler
         (process abort), not a recoverable PyErr. The fix lowers a Bool to
         a 1-bit BV via ite(1, 0) before evaluating.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         a = claripy.FPS("a", claripy.FSORT_DOUBLE)
         b = claripy.FPS("b", claripy.FSORT_DOUBLE)
@@ -479,16 +464,14 @@ class TestSolverOperations:
         """Bidirectional fork isolation: parent and sibling constraints
         added after fork() must not leak across.
 
-        Locks the freeze-in-place fork invariant (commit 589b814e9,
-        SymContext::fork at native/angr/src/symbolic/context.rs:1823):
-        when push_level==0, fork drains the local assumed/z3 vecs into
-        a shared Arc — but each side's post-fork additions go into its
-        own fresh local vec and must remain isolated. Regression for
-        angr-agvl.
+        Locks the freeze-in-place fork invariant of ``SymContext::fork``
+        (native/angr/src/symbolic/context.rs): when push_level==0, fork
+        drains the local assumed/z3 vecs into a shared Arc — but each side's
+        post-fork additions go into its own fresh local vec and must remain
+        isolated (angr-agvl).
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx_a = RustSolverContext()
         x = claripy.BVS("x_iso", 32)
@@ -534,11 +517,10 @@ class TestSolverOperations:
         the parent's local in place, because rollback expects local intact.
 
         Sibling state must still be isolated from the parent's post-fork
-        constraints. Regression for angr-agvl.
+        constraints (angr-agvl).
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx_a = RustSolverContext()
         x = claripy.BVS("x_push_iso", 32)
@@ -585,9 +567,8 @@ class TestSolverOperations:
 
     def test_solver_multiple_variables(self):
         """Solver handles multiple independent symbolic variables."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -605,9 +586,8 @@ class TestSolverOperations:
 
     def test_solver_eval_upto_wide_bvs(self):
         """eval_upto should handle BVS wider than 128 bits without truncation."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         # 296-bit BVS (like whitehatvn's 37-byte arg)
@@ -626,9 +606,8 @@ class TestSolverOperations:
 
     def test_solver_eval_upto_excludes_duplicates(self):
         """eval_upto should return distinct values."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 8)
@@ -651,9 +630,8 @@ class TestSolverOperations:
         solutions like x = 51 (and also x in [0, 5]). A regression that
         loses ITE structure could over-constrain and force x to one branch.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -680,11 +658,10 @@ class TestSolverOperations:
 
     def test_z3_seed_pin_not_attempted(self):
         """``build_solver_params`` does NOT pin ``smt.random_seed`` /
-        ``sat.random_seed`` — a deliberate non-pin documented in
-        angr-iaol.1 (2026-05-25).
+        ``sat.random_seed`` — a deliberate non-pin (angr-iaol.1).
 
-        The audit (parent iaol) hypothesized pinning would deliver model
-        stability across fresh ``RustSolverContext`` instances. Empirically
+        Pinning might be expected to deliver model stability across fresh
+        ``RustSolverContext`` instances. Empirically
         the three reachable param-name forms via the z3-rs
         ``Params::set_u32`` route are all problematic:
 
@@ -702,9 +679,8 @@ class TestSolverOperations:
         details and follow-up paths (Z3_global_param_set before
         ``Solver::new``).
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 32)
         ctx = RustSolverContext()
@@ -726,11 +702,10 @@ class TestSolverOperations:
         so asserting ``eval(x_a) == eval(x_b)`` across two independently
         constructed solvers is fragile: Z3's heuristics legitimately pick
         different valid models depending on process-internal state that other
-        tests perturb. That fragility is the whole story behind angr-4st5 —
-        the original ``v_a == v_b`` assertion flaked ~1-in-4 under the
-        register-proxy gate, but it is NOT gate-specific (it also flakes
-        gate-off given the right ``PYTHONHASHSEED``); it is inherent
-        eval-model non-determinism, not cross-test solver pollution.
+        tests perturb. A ``v_a == v_b`` assertion flakes (angr-4st5), and not
+        only under the register-proxy gate (it also flakes gate-off given the
+        right ``PYTHONHASHSEED``); it is inherent eval-model non-determinism,
+        not cross-test solver pollution.
 
         What our bridge *must* keep order-stable is the constraint SET: a
         reorder or dedup bug would change the satisfiable range. ``min`` and
@@ -738,9 +713,8 @@ class TestSolverOperations:
         order-independence witnesses — they catch a dropped/duplicated
         constraint while staying immune to Z3's model-choice latitude.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 32)
         c1 = x >= 100
@@ -811,7 +785,7 @@ class TestSolverOperations:
 
 
 class TestDeterministicMode:
-    """``RustExplorationManager(deterministic=True)`` — angr-iaol.2.
+    """``RustExplorationManager(deterministic=True)`` (angr-iaol.2).
 
     The flag pins ``smt.random_seed`` + ``sat.random_seed`` to 0 via
     ``Z3_global_param_set`` before any new solver is constructed. Z3 4.13
@@ -1099,7 +1073,7 @@ class TestExplorationIntegration:
     def test_hook_fp_constraint_uses_z3_ptr_fallback(self, fauxware_project):
         """Constraints with ops that claripy_to_rustbv can't translate (e.g. FP)
         must still reach the Rust solver via the Z3 ptr fallback in
-        sync_constraints_from_python (added for angr-1epf).
+        sync_constraints_from_python (angr-1epf).
 
         Without the fallback, FP constraints raise UnsupportedOp inside
         claripy_to_rustbv and get dropped silently. We compare the Rust-side
@@ -1162,7 +1136,7 @@ class TestExplorationIntegration:
     def test_hook_constraint_propagates_to_rust_solver(self, fauxware_project):
         """A constraint added inside a Python hook callback must reach the Rust solver.
 
-        Regression for angr-1epf: post-callback the dispatch passes new claripy
+        Regression test (angr-1epf): post-callback the dispatch passes new claripy
         constraints back via resume_after_simprocedure. If that round-trip drops
         the constraint, the Rust state's solver itself will be missing it.
         """
@@ -1221,7 +1195,7 @@ class TestExplorationIntegration:
     def test_hook_copies_symbolic_memory_preserves_symbolicity(self):
         """Hook that copies symbolic memory must preserve symbolicity at the dest.
 
-        Regression for angr-ctct (sokohashv2's do_repmovsd pattern). The hook
+        Regression test for sokohashv2's do_repmovsd pattern (angr-ctct). The hook
         runs ``state.memory.load(src, 32) -> state.memory.store(dst, ...)``,
         mirroring the manual ``rep movsd`` in solve.py. After resume, the
         Rust engine must read symbolic bytes from ``dst``, not concrete
@@ -1292,14 +1266,14 @@ class TestExplorationIntegration:
     def test_filler_materialised_multibyte_symbolic_preserved(self):
         """Init-time ``memory.load(addr, N>1)`` must round-trip every byte.
 
-        Regression for angr-fv81 (sokohashv2 hash routine). When solve.py
+        Regression test for the sokohashv2 hash routine (angr-fv81). When solve.py
         does ``init.memory.load(addr, 8)`` to capture a symbolic input var,
         ``SYMBOL_FILL_UNCONSTRAINED_MEMORY`` materialises an 8-byte symbol
         but ``UltraPage.symbolic_data`` stores ONE entry keyed by the
         region's start offset (the bitmap marks all 8 bytes symbolic, but
-        the dict has only the head). The previous angr-ctct fallback
-        walked dict keys only, so bytes 1..7 silently became concrete
-        zeros on the Rust side — the hash AST collapsed to 4 terms
+        the dict has only the head). A fallback that walks dict keys only
+        (angr-ctct) would silently turn bytes 1..7 into concrete
+        zeros on the Rust side — collapsing the hash AST to 4 terms
         (low-byte-only) instead of the expected 15 (all 16-bit halves).
 
         This test loads an 8-byte symbol at init, then runs a 1-byte ``mov
@@ -1355,7 +1329,7 @@ class TestExplorationIntegration:
     def test_arm_conditional_ldrh_loads_two_bytes(self):
         """ARM ``ldrneh`` (conditional halfword load) must read 2 bytes.
 
-        Regression for angr-21am. ``ldrneh r0, [r1]`` lifts to a VEX
+        Regression test (angr-21am). ``ldrneh r0, [r1]`` lifts to a VEX
         ``LoadG`` with ``cvt=ILGop_16Uto32``. The Rust interpreter used to
         drop the source width and default a 32-bit-destination widening
         load to a *1-byte* memory read, so only the low byte survived and
@@ -1372,7 +1346,7 @@ class TestExplorationIntegration:
         # 0x1000: ldrneh r0, [r1]   ; bytes b0 00 d1 11 (ARMEL, little-endian)
         # 0x1004: b .               ; keeps the block's exit inside the image so
         #         this test checks only the load width; an exit out of the
-        #         image is angr-et24a's regression test.
+        #         image has its own regression test (angr-et24a).
         shellcode = bytes.fromhex("b000d111feffffea")
         proj = angr.load_shellcode(shellcode, arch="ARMEL", load_address=0x1000)
 
@@ -1412,7 +1386,7 @@ class TestExplorationIntegration:
     def test_hook_length_advances_pc_userhook(self, fauxware_project):
         """proj.hook(addr, fn, length=N>0) on a UserHook must skip N bytes.
 
-        Regression for angr-03ej. Confirms the Rust dispatch honors
+        Regression test (angr-03ej). Confirms the Rust dispatch honors
         the new_pc that UserHook sets via ``state.addr + length`` so
         the hooked N-byte instruction is replaced (not re-executed)
         and the hook does not re-fire in a loop.
@@ -1464,7 +1438,7 @@ class TestExplorationIntegration:
     def test_vex_fallback_forks_multi_successors(self, fauxware_project):
         """Multi-successor Python VEX fallback must fork extras instead of dropping them.
 
-        Regression for angr-v8iz: factory.successors(num_inst=99) inside
+        Regression test (angr-v8iz): factory.successors(num_inst=99) inside
         _handle_python_vex_fallback can return N>1 successors when the
         fallback block contains a symbolic branch. Previously only
         all_succs[0] was synced back to Rust and the rest were silently

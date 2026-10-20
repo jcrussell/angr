@@ -71,8 +71,8 @@ claim the name but routed back to Python through
        ``strspn``, ``strcspn``, ``strtok`` ✗
      - 10 / 11
      - ``strchr.rs``, ``strstr.rs``, ``byteset.rs`` (angr-f16h.5).
-       ``strtok`` intentionally left on the Python fallback path
-       (angr-4c65 wontfix): a 14-bench fallback profile shows zero
+       ``strtok`` intentionally left on the Python fallback path (angr-4c65 wontfix):
+       a 14-bench fallback profile shows zero
        ``strtok`` appearances, so the stateful ``state.globals`` save
        pointer + ``strtok_r`` symbolic-write plumbing is not justified.
    * - Bulk memory
@@ -114,8 +114,8 @@ claim the name but routed back to Python through
      - ``malloc``, ``free``, ``calloc``, ``realloc``, ``memalign``,
        ``posix_memalign``
      - 6 / 6
-     - ``malloc.rs`` (bump allocator, matches ``SimHeapBrk``);
-       the extended four are angr-f16h.2
+     - ``malloc.rs`` covers all six (bump allocator, matches
+       ``SimHeapBrk``; angr-f16h.2)
    * - Input (stdin)
      - ``read``, ``fgets``, ``fgetc``, ``getchar``, ``getc``,
        ``gets``, ``scanf`` (alias ``__isoc99_scanf``), ``fscanf``
@@ -128,8 +128,7 @@ claim the name but routed back to Python through
        invocation pays the full Python round-trip and it does not
        count toward the native speed-up. Deliberate: only Python
        parses the concrete source region and constrains the outputs,
-       and a native free-BVS mint would explore impossible paths
-       (angr-8onrp).
+       and a native free-BVS mint would explore impossible paths (angr-8onrp).
    * - Output (stdout / formatted)
      - ``write``, ``puts``, ``putchar``, ``fputc`` (aliases ``putc``,
        ``*_unlocked``), ``perror``, ``printf`` (alias ``vprintf``),
@@ -144,8 +143,8 @@ claim the name but routed back to Python through
        (``fread_unlocked``), ``ftell`` (alias ``ftello``), ``fseek``
        (alias ``fseeko``), ``rewind``, ``setvbuf``, ``setbuf``
      - 14 / 14
-     - angr-f16h.1 / angr-karp / angr-70no / angr-m674p —
-       ``stdio.rs``, ``stream_ops.rs``, ``fread.rs``, ``fwrite.rs``.
+     - ``stdio.rs``, ``stream_ops.rs``, ``fread.rs``,
+       ``fwrite.rs`` (angr-f16h.1 / angr-karp / angr-70no / angr-m674p).
        ``fopen``/``fdopen``
        heap-allocate an ``_IO_FILE``; the rest dispatch off
        ``FILE._fileno``.
@@ -157,26 +156,26 @@ claim the name but routed back to Python through
      - ``exit``, ``_exit``, ``abort``, ``__stack_chk_fail``,
        ``rand``, ``srand``, ``system``, ``__libc_start_main``
      - 8 / 8
-     - ``exit.rs``, ``rand.rs``, ``system.rs`` (angr-ae54t.16 —
-       models the exit status as an unconstrained 8-bit code),
+     - ``exit.rs``, ``rand.rs``, ``system.rs`` (models the exit
+       status as an unconstrained 8-bit code; angr-ae54t.16),
        ``libc_start_main.rs``
    * - Environment / identity / args
      - ``getenv``, ``setenv``, ``putenv``, ``unsetenv``,
        ``clearenv``, ``getopt``, ``getuid``, ``geteuid``, ``getgid``,
        ``getegid``
      - 10 / 10
-     - ``getenv.rs`` (mutators are angr-f16h.4), ``getopt.rs``,
-       ``getid.rs`` (angr-ae54t.9 — the four id getters return the
-       constant 1000, mirroring ``syscalls/identity.rs``)
+     - ``getenv.rs`` (with the mutators; angr-f16h.4), ``getopt.rs``,
+       ``getid.rs`` (the four id getters return the constant 1000,
+       mirroring ``syscalls/identity.rs``; angr-ae54t.9)
    * - Time / sleep / logging no-ops
      - ``time``, ``sleep``, ``usleep``, ``openlog``, ``closelog``,
        ``access``
      - 6 / 6
-     - ``time.rs`` (angr-ae54t.21 — forwards to
+     - ``time.rs`` (forwards to
        ``syscalls::sim_time::fresh_monotonic_time``, so the libc entry
-       and the syscall share one model), ``sleep.rs`` (angr-ae54t.15),
-       ``syslog.rs`` (angr-ae54t.20 — void no-ops; ``syslog(3)`` itself
-       stays on Python), ``access.rs``
+       and the syscall share one model; angr-ae54t.21), ``sleep.rs`` (angr-ae54t.15),
+       ``syslog.rs`` (void no-ops; ``syslog(3)`` itself
+       stays on Python; angr-ae54t.20), ``access.rs``
    * - Threads
      - ``pthread_mutex_lock``, ``pthread_mutex_unlock``,
        ``pthread_once``
@@ -224,7 +223,7 @@ Maintaining the matrix
 
 When a procedure gains or loses a native path, flip the member's mark
 and the ``M / N`` count in the same commit, and keep the provenance
-column pointing at the file (and the bead, when the reason is not
+column pointing at the file (and at the tracking issue, when the reason is not
 obvious from the code). A brand-new family gets a new row. The two
 ``mod.rs`` registries are the source of truth; this page is the index.
 
@@ -642,26 +641,24 @@ Stubbed / incomplete
   records the fallback under ``syscall_python_fallback_by_num`` key
   ``-1`` and hands the state to Python. The counter is at zero on the
   current bench corpus.
-* **``lstat`` / ``newfstatat`` / ``faccessat`` flag args** — the
-  ``angr-6009`` audit landed: all five names it covered (``readlink``,
-  ``readlinkat``, ``lstat``, ``newfstatat``, ``faccessat``) are real
-  native handlers in ``syscalls/file_path/``, registered per the
-  matrix above, and no longer route through the stub-symbolic Python
-  handler. Two deliberate gaps remain. ``newfstatat`` ignores its
+* **``lstat`` / ``newfstatat`` / ``faccessat`` flag args** —
+  ``readlink``, ``readlinkat``, ``lstat``, ``newfstatat`` and
+  ``faccessat`` are all real native handlers (``angr-6009``) in
+  ``syscalls/file_path/``, registered per the matrix above, and no
+  longer route through the stub-symbolic Python handler. Two deliberate gaps remain. ``newfstatat`` ignores its
   ``flag`` argument — ``AT_EMPTY_PATH`` (0x1000) would have to
   re-dispatch to ``NativeFstatSyscall(dirfd)``, and
   ``AT_SYMLINK_NOFOLLOW`` (0x100) would have to route through
   ``stat_lookup_nofollow`` instead of the following
   ``stat_lookup_follow`` it shares with ``stat``. ``faccessat``
   ignores ``mode``, matching angr's Python ``access``.
-  (The third gap — ``lstat``/``stat`` ignoring the symlink table that
-  ``readlink`` reads — was closed by ``angr-9ke6b.235``: ``lstat`` now
-  reports a registered symlink as ``S_IFLNK | 0777`` sized to its raw
-  target bytes, and ``stat``/``newfstatat`` walk the link to its target,
+  ``lstat``/``stat`` honor the symlink table that ``readlink``
+  reads (``angr-9ke6b.235``): ``lstat`` reports a registered symlink
+  as ``S_IFLNK | 0777`` sized to its raw target bytes, and ``stat``/``newfstatat`` walk the link to its target,
   up to ``MAX_SYMLINK_HOPS``, returning ``-1`` on a dangling link or a
   cycle. MIPS32 is a partial exception: its ``struct stat64`` writer
   emits no ``st_mode`` field at all, so there the link shows up only in
-  ``st_size``.)
+  ``st_size``.
 
 .. _native-documented-divergences:
 
@@ -696,8 +693,8 @@ independent model", not "the two engines disagree".
        diffed back across the resume FFI.
    * - ``operator new(unsigned long)``, ``operator delete(void*)``
      - Resolve to angr's ``malloc`` / ``free`` procs. Parity is
-       inherited from those rows: the bounced heap bump round-trips
-       since ``angr-op0dn.14.1.3``, and ``free`` does not move the bump.
+       inherited from those rows: the bounced heap bump round-trips (``angr-op0dn.14.1.3``),
+       and ``free`` does not move the bump.
    * - ``std::allocator<char>``, ``std::basic_string<...>``,
        ``std::basic_ostream<...> operator<<``, ``std::string::length``
      - C++ stdlib symbols. angr models them with a Python proc (or

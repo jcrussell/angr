@@ -255,8 +255,8 @@ fn test_float_sqrt_via_binop_rne_fastpath_f64() {
 }
 
 /// Symbolic OPERAND under a concrete non-RNE rm must flow through the Z3
-/// rm-aware path, NOT collapse to a fresh unconstrained symbolic (the
-/// pre-angr-tfjl behavior cudgw.5 tracked). `a` is symbolic; FAdd(a, b)
+/// rm-aware path, NOT collapse to a fresh unconstrained symbolic
+/// (angr-tfjl). `a` is symbolic; FAdd(a, b)
 /// under RZ. Constraining `a == 0x3F800001` must pin the result to the
 /// RZ-truncated sum `0x40000001` (a fresh-symbolic result would leave it
 /// free, making `result == 0x40000002` satisfiable too).
@@ -290,12 +290,12 @@ fn test_float_add_symbolic_operand_with_rm_rz_f32() {
 }
 
 // ---------------------------------------------------------------------------
-// Qop (FMAdd / FMSub) rounding-mode threading — angr-03vl4.30
+// Qop (FMAdd / FMSub) rounding-mode threading (angr-03vl4.30)
 // ---------------------------------------------------------------------------
 
 /// Witness for FMA rounding: `1.0 * 1.0 + 1.5*2^-53` sits 1.5 ULP above 1.0,
 /// so RNE rounds *up* to `1.0 + 2^-52` while RZ truncates back to `1.0`. Any
-/// path that drops the Qop's rm operand (the pre-angr-03vl4.30 behaviour)
+/// path that drops the Qop's rm operand (angr-03vl4.30)
 /// returns the RNE answer for every mode.
 fn fma_tie_operands() -> (RustBV, RustBV, RustBV) {
     let c = 3.0f64 * 2.0f64.powi(-54);

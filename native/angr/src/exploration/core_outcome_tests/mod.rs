@@ -8,23 +8,23 @@
 //!
 //! This module holds only the fixtures more than one submodule shares; the
 //! tests are split by the `RunResult` arm (or the outcome concern) they drive,
-//! mirroring the angr-nbim4.3 split of `core_outcome.rs` itself into
-//! `core_outcome_cc.rs` + `core_outcome_handlers.rs`:
+//! mirroring the split of `core_outcome.rs` itself into
+//! `core_outcome_cc.rs` + `core_outcome_handlers.rs` (angr-nbim4.3):
 //!
 //! - `block_end` — `BlockEnd` successors, deferred-fork materialization, and
 //!   the natively-forked `SymbolicBranch`.
 //! - `errors` — `Error` routing per [`RunErrorKind`], plus `segfault_message`.
-//! - `hooks` — angr-1i5h7: native `SimProcedure` dispatch vs find/avoid target
-//!   hooks, and the parked-bounce flush.
-//! - `native_return` — angr-sqfj8.37 / angr-c7xno.29: the return path's SP
-//!   adjustment, per calling convention and for a symbolic SP.
-//! - `simproc_forks` — angr-6cp06.24: the fork base the same success path hands
-//!   to `process_deferred_forks_into_core`.
-//! - `syscall_dispatch` — angr-c7xno.33: `handle_syscall_core`'s four dispatch
-//!   outcomes, plus `CcSnapshot::write_syscall_return`.
-//! - `symbolic_jump` — angr-c7xno.33: `handle_symbolic_jump_target_core`.
-//! - `native_resume` — angr-c7xno.32: the production `handle_native_resume_core`
-//!   path.
+//! - `hooks` — native `SimProcedure` dispatch vs find/avoid target hooks, and
+//!   the parked-bounce flush (angr-1i5h7).
+//! - `native_return` — the return path's SP adjustment, per calling convention
+//!   and for a symbolic SP (angr-sqfj8.37, angr-c7xno.29).
+//! - `simproc_forks` — the fork base the same success path hands to
+//!   `process_deferred_forks_into_core` (angr-6cp06.24).
+//! - `syscall_dispatch` — `handle_syscall_core`'s four dispatch outcomes, plus
+//!   `CcSnapshot::write_syscall_return` (angr-c7xno.33).
+//! - `symbolic_jump` — `handle_symbolic_jump_target_core` (angr-c7xno.33).
+//! - `native_resume` — the production `handle_native_resume_core` path
+//!   (angr-c7xno.32).
 //! - `stats` — [`ParallelProfiling`]'s `accumulate_step` / `drain_into`.
 
 use super::*;
@@ -51,7 +51,7 @@ fn fresh_ctx() -> super::StepContext {
     mgr.step_context()
 }
 
-// --- angr-1i5h7 hook fixtures, shared by `hooks` and `native_return` ---
+// --- hook fixtures, shared by `hooks` and `native_return` ---
 
 const HOOK_ADDR: u64 = 0x50_0000;
 const HOOK_RET: u64 = 0x40_2000;

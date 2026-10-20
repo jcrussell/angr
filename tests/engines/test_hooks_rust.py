@@ -8,11 +8,10 @@ reach for — :meth:`Project.hook` with a SimProcedure (``replace=True``),
 ``hook(addr, hook=cb, length=0)`` advance hook, and :meth:`Project.unhook`
 to revert.
 
-These surfaces are already exercised implicitly by 6+ benchmarks
+These surfaces are already exercised implicitly by benchmarks
 (``flareon2015_5``, ``flareon2015_10``, ``whitehatvn_re400`` and others),
-but no explicit smoke test had pinned the contract end-to-end. Per
-``angr-3bz1`` this file makes the surface explicit so a regression here
-fails loudly rather than as a benchmark slowdown.
+and this file pins the contract end-to-end so a regression here fails
+loudly rather than as a benchmark slowdown (angr-3bz1).
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-//! Constraint-merge cost-shape oracle (origin: spike angr-op0dn.11.1.2, S5b).
+//! Constraint-merge cost-shape oracle (spike S5b) (angr-op0dn.11.1.2).
 //!
 //! `SymContext::merge` (`snapshot_fork_ops.rs::merge`) asserts the arms'
 //! ptr-equal frozen `z3_assertions_shared` prefix once, **unguarded**, and
@@ -61,7 +61,7 @@ fn arm_shape(arm: &SymContext) -> (usize, usize) {
     (shared, local)
 }
 
-/// Cost of the *pre-angr-op0dn.11.3* merge shape: guard EVERY constraint of
+/// Cost of the *original* merge shape: guard EVERY constraint of
 /// EVERY arm. Kept as the baseline the shipped shared-prefix merge is measured
 /// against — it is arithmetic over `arm_shape`, not a call into `merge`.
 /// Returns the guarded-`Or` count (excludes the final `Or` of merge flags).
@@ -197,7 +197,7 @@ fn test_fork_freeze_prefix_arc_is_ptr_shared_across_arms() {
     );
 }
 
-/// SHADOWING CHECK (soundness input for angr-op0dn.11.3's kill clause): an
+/// SHADOWING CHECK (soundness input for the shared-prefix merge): an
 /// arm's `local` constraints must be strictly ADDITIVE — never a duplicate or
 /// override of a `shared` prefix constraint. Verified by Z3 string identity:
 /// no local assertion's textual form appears in the shared prefix.
@@ -258,8 +258,8 @@ fn test_cow_merge_stays_sat_and_evals_arm_union() {
 
 /// PRODUCTION PARITY: the CoW prototype is behaviour-equivalent to the shipped
 /// `SymContext::merge` — same SAT verdict and same admit/reject on the union of
-/// arm values. Since angr-op0dn.11.3 shipped the unguarded-prefix shape into
-/// `merge` itself, this is no longer a cost comparison but an independent
+/// arm values. Since `merge` itself uses the unguarded-prefix shape
+/// (angr-op0dn.11.3), this is no longer a cost comparison but an independent
 /// reimplementation kept as a semantic oracle for it.
 #[test]
 fn test_cow_merge_matches_production_semantics() {

@@ -1,5 +1,5 @@
-//! Tests for the native sub-call (CallAndResume) dispatcher core (S2, bead
-//! angr-5gf0s). Exercises the two new dispatcher methods directly —
+//! Tests for the native sub-call (CallAndResume) dispatcher core
+//! (angr-5gf0s). Exercises the two new dispatcher methods directly —
 //! `setup_native_subcall` and `handle_native_resume` — plus the `ProcOutcome`
 //! sibling-trait defaults (Option B).
 //!

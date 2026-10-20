@@ -107,9 +107,7 @@ pub(crate) enum TerminalStep {
 impl RustExplorationManager {
     /// Run-loop entry point. Dispatches to the verbatim single-threaded loop
     /// (default, zero-regression) or the parallel coordinator when
-    /// `RUST_PARALLEL_WORKERS > 1`. The coordinator is scaffolding in 2a — it
-    /// currently delegates to the single-threaded path (no behaviour change);
-    /// the real wave loop lands in angr-vh834 (1ilq.3c).
+    /// `RUST_PARALLEL_WORKERS > 1` (angr-vh834).
     pub(crate) fn run_loop(
         &mut self,
         py: Python<'_>,
@@ -236,8 +234,7 @@ impl RustExplorationManager {
     /// `parallel_workers=` kwarg: the found over-collection is fixed
     /// (`push_found_capped` makes the found set worker-invariant, angr-op0dn.13.17)
     /// but steady is still net-negative on the CTF corpus, so enabling it by
-    /// default would regress `num_find=1` first-find benches (bd memory
-    /// `steady-state-loop-opt-in-net-negative-corpus`).
+    /// default would regress `num_find=1` first-find benches.
     fn steady_state_eligible(&self) -> bool {
         self.parallel_steady_env
             && self.parallel_frontier_residency
@@ -250,8 +247,8 @@ impl RustExplorationManager {
     /// Materialize `pending_parallel_bounces` back into `STASH_ACTIVE` so any
     /// consumer that only reads stashes can see them (angr-op0dn.13.10):
     /// `dump_snapshot_bytes`, `finalize_parallel_session` (explore-end stash
-    /// accounting), and `run_loop_single_threaded` (angr-05kiw — the only
-    /// route that never drains the queue itself).
+    /// accounting), and `run_loop_single_threaded` (the only route that never
+    /// drains the queue itself) (angr-05kiw).
     ///
     /// A wave that surfaces one `need_callback` event parks the REST of its
     /// bounce queue in `pending_parallel_bounces` — states that live in NO
@@ -413,8 +410,8 @@ impl RustExplorationManager {
 
     /// The two buckets of live `RustSimState`s that live in NO stash, chained:
     /// [`pending_states_mut`] (the parked callback's live continuation plus the
-    /// pre-branch snapshot its deferred forks are materialized from,
-    /// angr-sqfj8.32) and [`parked_states_mut`] (the parked parallel bounce
+    /// pre-branch snapshot its deferred forks are materialized from)
+    /// (angr-sqfj8.32) and [`parked_states_mut`] (the parked parallel bounce
     /// queue).
     ///
     /// For a broadcast that deliberately covers only *some* stashes and so
@@ -439,8 +436,8 @@ impl RustExplorationManager {
     /// (`analyze_constraint_sharing` folds each state's solver into a sharing
     /// census; `set_deterministic` reaches through each state to its shared
     /// solver). Hand-rolling the `.chain().chain()` instead is how the
-    /// undercount bugs of angr-sqfj8.32 / angr-03vl4.10 / angr-0jh0j.15 each
-    /// reappeared in a new call site: the three bucket lines differ only by
+    /// non-stash undercount bugs each reappeared in a new call site
+    /// (angr-sqfj8.32, angr-03vl4.10, angr-0jh0j.15): the three bucket lines differ only by
     /// method name, so a copy that drops one still compiles (angr-0jh0j.82).
     ///
     /// Walks ALL stashes, not just `STASH_ACTIVE`, so a census built on it is
@@ -524,7 +521,7 @@ pub(super) fn parked_states_mut(
 /// Buckets 2 and 3 chained, shared by
 /// [`RustExplorationManager::non_stash_live_states_mut`] and
 /// [`RustExplorationManager::all_live_states_mut`] so the pair of `.chain()`
-/// lines this bead exists to de-duplicate is written once.
+/// lines is written once.
 pub(super) fn non_stash_states_mut<'a>(
     pending_callbacks: &'a mut FxHashMap<StateId, PendingCallback>,
     pending_parallel_bounces: &'a mut [(RustSimState, BounceKind, u64)],

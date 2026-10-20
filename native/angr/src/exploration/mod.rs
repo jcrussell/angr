@@ -15,8 +15,8 @@
 //! Several submodules (`helpers`, `stepping`, `run_loop`, `resume`,
 //! `pending_api`, `state_api`, `state_lifecycle`, `stats_api`) each hold a
 //! plain `impl RustExplorationManager` block rather than a `#[pymethods]`
-//! one. The split predates PyO3's `multiple-pymethods` feature (now enabled,
-//! angr-9ke6b.50) and is kept as a style choice.
+//! one. The split predates PyO3's `multiple-pymethods` feature (now enabled)
+//! (angr-9ke6b.50) and is kept as a style choice.
 
 use crate::stash::{
     STASH_ACTIVE, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_FOUND, STASH_PRUNED,
@@ -84,7 +84,7 @@ mod run_loop_worker;
 // It transports `crate::state::StateMigrationPayload`.
 mod scheduler;
 pub(crate) mod selection_policy;
-/// SI-B (angr-1ilq.3 increment 2b'): opt-in shadow probe measuring the real
+/// SI-B (angr-1ilq.3): opt-in shadow probe measuring the real
 /// state-migration serde tax. The scratch thread builds states into its own
 /// `z3::Context`.
 mod shadow_probe;
@@ -254,7 +254,7 @@ pub struct RustExplorationManager {
     pub(crate) dcas_unsupported_count: u64,
     /// Visibility counter for `IRExpr::VECRET`/`IRExpr::GSPTR` Python
     /// fallbacks. Incremented alongside `vex_fallback_count` whenever the
-    /// reason carries `VECRET_GSPTR_REASON`. angr-2iow: prevalence drives
+    /// reason carries `VECRET_GSPTR_REASON`. Prevalence drives
     /// whether to implement these natively (non-zero) or downgrade to a
     /// documented limitation (corpus-wide zero).
     pub(crate) vecret_gsptr_fallback_count: u64,
@@ -327,11 +327,11 @@ pub struct RustExplorationManager {
     pub(crate) max_active_warned: bool,
     /// Cumulative count of deferred forks DROPPED without materialization.
     /// Two contributors: loop-exit forks dropped at an `UnconstrainedJump`
-    /// while `exec_config.use_deferred_forks` is true (the angr-027h phase-1
-    /// behavior), and forks held by a block whose `resolve_function` callback
+    /// while `exec_config.use_deferred_forks` is true (the phase-1
+    /// behavior) (angr-027h), and forks held by a block whose `resolve_function` callback
     /// raised, since the resulting `StepError::Error` carries only the one
-    /// errored state (`stepping_bounce.rs::handle_unmodeled_call`,
-    /// angr-6cp06.20). Non-zero in the dominant first case means a
+    /// errored state (`stepping_bounce.rs::handle_unmodeled_call`)
+    /// (angr-6cp06.20). Non-zero in the dominant first case means a
     /// step-driven run reached `active_empty` only because egg-reaching
     /// loop-exit forks were discarded — the precise trigger Python's `_maybe_step_eager_retry`
     /// uses to flip to eager mode and re-seed (angr-ckdy). Always tracked
@@ -393,7 +393,7 @@ pub struct RustExplorationManager {
     /// Denominator for the per-task duration the kill-gate's >100ms target uses
     /// (avg task duration = wall_time / parallel_tasks, computed Python-side).
     pub(crate) parallel_tasks: u64,
-    /// angr-vh834 steady-state redesign (Phase 1) — duplex-protocol accounting,
+    /// Steady-state duplex-protocol accounting (angr-vh834 Phase 1),
     /// folded from `SchedulerStats` after each wave. `parallel_reattaches` counts
     /// injector-steal reattaches (observability of the migration path);
     /// `parallel_bounce_roundtrips` and `parallel_resume_reinjects` are wired by
@@ -427,7 +427,7 @@ pub struct RustExplorationManager {
     /// Sticky home-worker assignment per active state id, rebuilt each sample
     /// from the surviving frontier (bounds memory to the active width).
     pub(crate) parallel_worker_of: HashMap<u64, usize>,
-    /// SI-B (angr-1ilq.3 increment 2b'): opt-in "shadow probe" that measures the
+    /// SI-B (angr-1ilq.3): opt-in "shadow probe" that measures the
     /// REAL state-migration serde tax on the live benchmark workload. Read ONCE
     /// from `RUST_PARALLEL_SHADOW_PROBE` at construction (default false). When
     /// false the probe is a no-op and exploration behaviour is byte-identical.
@@ -474,7 +474,7 @@ pub struct RustExplorationManager {
     /// (`simprocedure_python_fallback_count`, …). Each entry is
     /// `(bounce state, BounceKind, lineage root)`. Empty in single-threaded mode.
     pub(crate) pending_parallel_bounces: Vec<(RustSimState, self::core_outcome::BounceKind, u64)>,
-    /// angr-vh834 Work Item 2: the persistent work-stealing worker pool. `None`
+    /// The persistent work-stealing worker pool (angr-vh834). `None`
     /// until the first parallel wave lazily spawns it (`run_loop_parallel_wave`); the
     /// N long-lived worker threads each own a Z3 context for the pool's whole
     /// life, so subsequent waves pay no thread-spawn / context-creation tax. Only
@@ -497,8 +497,7 @@ pub struct RustExplorationManager {
     pub(crate) parallel_frontier_residency: bool,
     /// `RUST_PARALLEL_STEADY` env flag, read once at construction (same
     /// per-manager pattern as `RUST_PARALLEL_WORKERS`, so tests can
-    /// monkeypatch it). Opt-in for the steady-state loop during angr-nkoct
-    /// phases C-D; flipped to opt-out once the measurement gate passes.
+    /// monkeypatch it). Opt-in switch for the steady-state loop (angr-nkoct).
     pub(crate) parallel_steady_env: bool,
     /// Residual live frontier states a cancelled parallel run returned to
     /// `STASH_ACTIVE` instead of dropping (the Bug M1 cancel-drain; both the
@@ -508,7 +507,7 @@ pub struct RustExplorationManager {
     /// Post-find speculative steps: work committed on a worker after another
     /// origin already requested cancel (angr-1ilq.8 measure-first), folded from
     /// `SchedulerStats::post_cancel_steps`. Quantifies the num_find=1
-    /// speculative waste the find-aware dispatch bead (angr-1ilq.9) targets.
+    /// speculative waste that find-aware dispatch targets (angr-1ilq.9).
     pub(crate) parallel_post_cancel_steps: u64,
     /// Steady-loop budget yields: a `run(n)` dispatched its whole allotment
     /// with work still resident, so the session was finalized and control

@@ -7,8 +7,8 @@
 //!   - any other fd open in the Rust `FileSystem` that has remaining
 //!     concrete content (pos < content_len). Serves bytes from the FS buffer
 //!     and advances the position.
-//!   - fds with bounded symbolic content (`content_sym`, angr-0xyq2
-//!     Phase 2): the registered per-byte BVs are stored to the buffer
+//!   - fds with bounded symbolic content (`content_sym`; angr-0xyq2 Phase 2):
+//!     the registered per-byte BVs are stored to the buffer
 //!     natively via `FileSystem::read_sym`; EOF returns 0. Counts are
 //!     clamped to `MAX_SYMFILE_SERVE_SIZE` (= the export cap, so any
 //!     registered file serves in one call, matching Python), never

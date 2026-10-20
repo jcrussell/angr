@@ -110,9 +110,8 @@ crate::declare_proc! {
         //
         // A symbolic byte in the window is served natively too: only then is
         // the scan redone symbolically (the all-concrete path keeps its single
-        // pass) and the copy length becomes an ITE chain (angr-gorvf.13 —
-        // strncpy on a symbolic input buffer was the sole Python bounce on
-        // google2016_unbreakable_0 / securityfest_fairlight).
+        // pass) and the copy length becomes an ITE chain, so strncpy on a
+        // symbolic input buffer does not bounce to Python (angr-gorvf.13).
         match scan_concrete_bounded(state, src, n as usize, "src") {
             Ok((mut buf, null_found)) => {
                 if null_found {

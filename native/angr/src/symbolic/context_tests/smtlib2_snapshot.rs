@@ -7,7 +7,7 @@ use crate::symbolic::SymContextSnapshot;
 
 // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /
 // Z3_solver_from_string. Drives whether SMT-LIB2 is the right format for
-// angr-9o4n state save/restore. See bead notes for measured numbers.
+// state save/restore.
 #[test]
 fn test_smtlib2_constraint_round_trip() {
     use std::time::Instant;
@@ -100,8 +100,7 @@ fn test_smtlib2_constraint_round_trip() {
     );
 
     // Step 4: report measurements. Captured by `cargo test -- --nocapture`
-    // or `cargo test test_smtlib2_constraint_round_trip -- --nocapture`,
-    // and pasted into the bead notes.
+    // or `cargo test test_smtlib2_constraint_round_trip -- --nocapture`.
     eprintln!(
         "[angr-9o4n.1] SMT-LIB2 round-trip (small): {} bytes; \
          to_string={}us from_string={}us check_sat={}us; \
@@ -187,7 +186,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
 }
 
 // angr-rwzi: Validate SMT-LIB2 round-trip across a SEPARATE Z3 context.
-// Same-thread/same-context worked in angr-9o4n.1 because constants in the
+// Same-thread/same-context works because constants in the
 // shared context dedupe by (symbol, sort). The realistic save/restore path
 // (different thread or different process) gets a fresh Z3_context, so the
 // open question is whether name-based re-resolution (BV::new_const) in the
@@ -448,7 +447,7 @@ fn test_bare_z3_push_depth_some_branch_inert() {
 }
 
 /// angr-c7xno.75: `fork()` hands the child a **zero** `bare_z3_push_depth`
-/// regardless of the parent's — reversing the angr-3ms1 step 1a inheritance.
+/// regardless of the parent's, rather than inheriting it (angr-3ms1 step 1a).
 /// The counter means "open bare pushes on *this* context's per-context Z3
 /// solver" (`invariant-bare-z3-push-depth`), and a child has none: its
 /// `bare_local_savepoints` starts empty and its lazily-rebuilt solver replays
@@ -691,8 +690,8 @@ fn test_fork_chain_mints_fresh_lineage_at_each_level() {
 }
 
 /// Round-trip the snapshot through serde JSON and verify the captured
-/// assumed_constraints reconstruct equivalent Z3 ASTs (angr-x04s.1.2
-/// acceptance check). Uses Z3 `Bool::eq` to confirm that the original
+/// assumed_constraints reconstruct equivalent Z3 ASTs
+/// (angr-x04s.1.2). Uses Z3 `Bool::eq` to confirm that the original
 /// and restored constraint ASTs are *structurally* the same expression
 /// (after Z3's `simplify()`), not just satisfy the same models.
 #[test]
@@ -958,7 +957,7 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
 /// A *tracked* constraint with no `RustBV` form must round-trip via the
 /// residual text dump.
 ///
-/// Regression for angr-03vl4.74. `add_constraint_tracked_ast`'s raw fast path
+/// Regression (angr-03vl4.74). `add_constraint_tracked_ast`'s raw fast path
 /// asserts through `add_constraint_tracked_indexed` (which only logs into
 /// `z3_assertions`) and used to push an assumed entry *only* when
 /// `claripy_to_rustbv` succeeded, with no `else`. An AST the converter cannot

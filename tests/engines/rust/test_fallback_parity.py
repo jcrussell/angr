@@ -309,9 +309,8 @@ class TestCensusCoverage:
         )
 
     def test_no_census_row_is_still_flip_blocking(self):
-        """Every flip-blocking row the census opened has been closed
-        (angr-op0dn.14.1.3 through .14.1.6, plus the syscall resume fix
-        angr-89w70). A new one appearing here blocks the M6 default flip."""
+        """No census row is flip-blocking: a new one appearing here blocks
+        making the Rust engine the default."""
         census = self._census()
         blocking = [n for n, row in census["names"].items() if row["semantics"] == "flip-blocking"]
         blocking += [f"syscall {n}" for n, row in census["syscalls"].items() if row["semantics"] == "flip-blocking"]

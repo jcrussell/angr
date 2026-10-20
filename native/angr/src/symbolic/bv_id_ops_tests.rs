@@ -1,8 +1,8 @@
 // Tests for symbolic/bv_id_ops.rs — the process-global symbol-id allocator
 // (`NEXT_SYMBOL_ID` / `next_id` / `reserve_symbol_id` / `symbol_id_watermark`)
-// and the thread-local `SymbolIdRebase` save/restore guard (angr-5mnx3.45:
-// the guard stores `prev` rather than resetting to 0, and nothing exercised
-// that LIFO contract).
+// and the thread-local `SymbolIdRebase` save/restore guard (the guard stores
+// `prev` rather than resetting to 0; these pin that LIFO contract)
+// (angr-5mnx3.45).
 //
 // `NEXT_SYMBOL_ID` is process-global and `cargo test` runs these concurrently,
 // so nothing here asserts an *absolute* id or watermark — only monotonicity,
@@ -136,7 +136,7 @@ fn reserve_symbol_id_raises_but_never_lowers_the_watermark() {
 
 /// `new_bv` mints exactly one id and uses it for both halves of the value, so
 /// the display name's suffix and the `Symbolic.id` identity key agree
-/// (angr-sqfj8.90 — going via `unique_name` + `RustBV::symbolic` drew two).
+/// (going via `unique_name` + `RustBV::symbolic` would draw two) (angr-sqfj8.90).
 #[test]
 fn new_bv_name_suffix_matches_its_id() {
     let ctx = SymContext::new();

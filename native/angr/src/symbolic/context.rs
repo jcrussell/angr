@@ -9,16 +9,14 @@
 //!
 //! The shared-lineage Z3 solver path (angr-v5a5 / angr-3ms1 / angr-v5ht)
 //! introduces several cross-cutting invariants that cut across the slice files
-//! this module was split into (angr-a2br: `bv_id_ops.rs`, `constraint_ops.rs`,
+//! this module was split into (`bv_id_ops.rs`, `constraint_ops.rs`,
 //! `solving_ops.rs`, `transaction_ops.rs`, `snapshot_fork_ops.rs`,
-//! `lineage_ops.rs`; angr-fs8kb.35: `context_snapshot.rs`,
+//! `lineage_ops.rs`, `context_snapshot.rs`,
 //! `local_constraints.rs`, `merge_instrument.rs` — see the
 //! file index in `symbolic/mod.rs` for what landed where). The splits preserved
 //! all of them, and any further refactor must too;
 //! because no single slice owns them, they stay documented here beside the
-//! struct definition. Invariants that have a bd memory carrying the long-form
-//! rationale cite its key (recall via `bd recall <key>`); the rest are
-//! stated in full here.
+//! struct definition.
 //!
 //! - **`lineage` mutex shape**:
 //!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`. The outer `Mutex` is
@@ -98,7 +96,7 @@ pub const DEFAULT_SOLVER_TIMEOUT_MS: u32 = 30_000;
 ///
 /// Bare scope save/restore is available via `push()` / `pop()` / `try_pop()`
 /// (see `transaction_ops.rs`); the higher-level `transaction_begin/commit/
-/// rollback` API was removed in angr-ph300.44 (dead code + latent corruption).
+/// rollback` API was removed (dead code + latent corruption) (angr-ph300.44).
 pub struct SymContext {
     /// Number of constraints added (for tracking).
     /// `pub(super)` for the `num_constraints` accessor in `bv_id_ops.rs`.
@@ -168,8 +166,8 @@ pub struct SymContext {
     /// Z3 solver — lazy: starts as None on fork(), materialized on first access.
     /// This avoids O(n) assertion replay for forked states that are
     /// pruned/avoided/deadended without ever querying the solver.
-    /// `pub(super)` so `set_timeout` in `transaction_ops.rs` (slice 10,
-    /// angr-a2br.2.8) can re-apply params without forcing lazy materialization.
+    /// `pub(super)` so `set_timeout` in `transaction_ops.rs`
+    /// can re-apply params without forcing lazy materialization.
     pub(super) solver: Mutex<Option<z3::Solver>>,
     /// Cached SAT result, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
@@ -254,8 +252,8 @@ pub struct SymContext {
     /// would corrupt sibling state.
     pub(super) scope_savepoints: Mutex<Vec<usize>>,
 
-    /// Outstanding bare Z3 pushes on the per-context solver (angr-3ms1
-    /// step 1a).
+    /// Outstanding bare Z3 pushes on the per-context solver
+    /// (angr-3ms1 step 1a).
     ///
     /// Tracks calls to `scope_savepoint_push`
     /// that took the **None** dispatch branch — i.e. those that issued
@@ -271,9 +269,7 @@ pub struct SymContext {
     /// `SharedLineageSolver` frame when this
     /// counter is non-zero: the child's lineage would otherwise steal
     /// ownership of the Z3 stack and the parent's unbalanced bare pushes
-    /// would leak into the child's base (see bd memory
-    /// `invariant-bare-z3-push-depth` for the failure mode this gates
-    /// against).
+    /// would leak into the child's base.
     pub(super) bare_z3_push_depth: AtomicUsize,
 
     /// Opt-in flag for fork-time `SharedLineageSolver` materialization
@@ -445,8 +441,8 @@ impl SymContext {
     // Scoping &self methods (set_timeout / timeout_ms / set_sat_cache /
     // push / pop / try_pop / unsat_core / get_all_constraints_str /
     // z3_assertion_count) moved to
-    // transaction_ops.rs (slice 10, angr-a2br.2.8). The transaction_begin/
-    // commit/rollback lifecycle was removed in angr-ph300.44.
+    // transaction_ops.rs (angr-a2br.2.8). There is no transaction_begin/
+    // commit/rollback lifecycle (angr-ph300.44).
 
     // =========================================================================
     // Constraint Export
@@ -501,8 +497,8 @@ pub(crate) mod merge_instrument;
 // create are FLAT siblings of each other directly under `context` — there is no
 // `context_tests` parent module. Cite a test as
 // `context_tests_constraints::test_name`, never `context_tests::constraints::…`
-// (angr-6cp06.48 found four citations that took the file layout for the module
-// layout; neither grep nor rust-analyzer resolves that form).
+// (that form takes the file layout for the module layout; neither grep nor
+// rust-analyzer resolves it) (angr-6cp06.48).
 test_submod!("context_tests/constraints.rs" => context_tests_constraints);
 test_submod!("context_tests/lineage.rs" => context_tests_lineage);
 test_submod!("context_tests/merge_prefix.rs" => context_tests_merge_prefix);

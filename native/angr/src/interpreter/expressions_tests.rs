@@ -408,7 +408,7 @@ fn symbolic_overlap_load_returns_symbolic_for_offset_load() {
 // that itself wraps, and the saturated `s_hi` clamped the store's reach to
 // `u64::MAX`. A miss here is not merely a lost fast path -- it falls through
 // to the concrete buffer, which holds `bv_to_bytes`' concrete-0 placeholder
-// for a symbolic store (the angr-ofyh bug this function exists to fix).
+// for a symbolic store (the bug this function exists to fix, angr-ofyh).
 #[test]
 fn symbolic_overlap_load_covers_store_wrapping_past_address_top() {
     let ctx = SymContext::new_mock();

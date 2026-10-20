@@ -9,8 +9,8 @@ use crate::symbolic::RustBV;
 // ---------------------------------------------------------------------------
 // dispatch_native_proc — the shared proc-dispatch decision consumed by BOTH
 // `step_one` (run_loop_single.rs) and `handle_simprocedure_core`
-// (core_outcome_handlers.rs). Only the parallel copy was covered before
-// angr-ph300.73, so the serial copy was free to drift.
+// (core_outcome_handlers.rs). Covering only the parallel copy would leave the
+// serial copy free to drift (angr-ph300.73).
 // ---------------------------------------------------------------------------
 
 /// Stub proc whose `call_ex` replays a canned outcome, so the dispatcher's
@@ -263,7 +263,7 @@ fn dispatch_native_proc_counts_return_but_leaves_subcall_to_the_caller() {
 // otherwise sync `self.pc` and hide the stale-pc case we need to reproduce.
 const RIP: u32 = 184;
 
-/// Build the angr-4rq7 shape: IP register holds the real branch target while
+/// Build the stale-pc shape (angr-4rq7): IP register holds the real branch target while
 /// `self.pc` is still 0 (register-file-replace path that never went through
 /// `set_pc`). Returns the state id.
 fn push_active_stale_pc(mgr: &mut RustExplorationManager, target: u64) -> u64 {

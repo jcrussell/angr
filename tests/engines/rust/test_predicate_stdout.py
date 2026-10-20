@@ -1,5 +1,5 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""Regression tests for angr-hc1yj: callable find/avoid on stdout.
+"""Regression tests: callable find/avoid on stdout (angr-hc1yj).
 
 Under RustExplorationManager with callable predicates, (a) the sweep handed
 predicates stale cached Python frames whose posix stdout had another state's
@@ -95,8 +95,8 @@ class TestInjectRustFdOutput:
 
 
 def test_sym_write_single_win_state():
-    """sym-write (angr-acg99's bench): one found state, carrying its own
-    "you win!" — it used to be listed twice, once with "you lose!"."""
+    """sym-write bench (angr-acg99): exactly one found state, carrying its
+    own "you win!" and not a second copy with "you lose!"."""
     import os
 
     import angr

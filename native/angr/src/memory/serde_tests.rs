@@ -74,8 +74,8 @@ fn serde_malformed_bitmap_length_drops_to_none() {
 }
 
 /// The wire form is `BITMAP_WORDS` u64 words with byte `i` at bit `i % 64` of
-/// word `i / 64` (angr-mx00p.30 moved the in-memory form onto `FixedBitSet`;
-/// existing snapshots must keep decoding).
+/// word `i / 64`, independent of the in-memory `FixedBitSet` form, so
+/// existing snapshots keep decoding (angr-mx00p.30).
 #[test]
 fn serde_bitmap_word_layout_is_stable() {
     let mut p = MemoryPage::new(0x5000, Permission::RW);

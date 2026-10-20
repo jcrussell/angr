@@ -53,7 +53,7 @@ pub(crate) const MAX_MAP_SIZE: u64 = 0x1000_0000;
 /// Returning `Err` falls back to the Python `_handle_syscall_callback`
 /// path so semantics remain identical to angr's existing behavior.
 ///
-/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[non_exhaustive]` (angr-irwe): minor versions may add new
 /// variants; intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
@@ -84,8 +84,8 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Sysc
 /// value is only reachable through a `match`, which means a new bounded call
 /// site does not compile until its author writes the refusal arm. Otherwise
 /// the extraction and the bound check are two separate,
-/// independently-forgettable steps (angr-91vj9.1; the bug family is
-/// angr-c7xno.67/.80/.81/.92/.93/.94).
+/// independently-forgettable steps
+/// (angr-91vj9.1, angr-c7xno.67/.80/.81/.92/.93/.94).
 ///
 /// The cap itself is a host-safety bound, not a Python-parity rule: see
 /// [`MAX_MAP_SIZE`] for why refusing beats falling back to Python.

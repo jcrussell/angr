@@ -304,8 +304,8 @@ fn test_heap_alloc_aligned_records_requested_size_at_aligned_address() {
 /// small (or zero) bump. `procedures/malloc.rs` caps guest sizes long before
 /// this, but the state-layer allocator must not depend on that to stay sane —
 /// the wrapping form panicked under `[profile.release-checked]` and produced
-/// aliasing allocations under `[profile.release]`. Since angr-0jh0j.50 the
-/// *bump* saturates too (`advance_brk`), so such a size leaves the brk pinned
+/// aliasing allocations under `[profile.release]`. The
+/// *bump* saturates too (`advance_brk`; angr-0jh0j.50), so such a size leaves the brk pinned
 /// at `u64::MAX` rather than wrapped around below the address it just returned.
 #[test]
 fn test_heap_alloc_saturates_instead_of_wrapping_the_size_rounding() {

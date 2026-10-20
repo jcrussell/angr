@@ -478,7 +478,7 @@ fn stash_found(mgr: &mut RustExplorationManager, state: RustSimState) -> u64 {
 /// distinct: bytes for a readable range, `Ok(None)` for an unreadable one
 /// (unmapped / no SAT witness — a *memory* answer), and `Err` for both a
 /// missing `state_id` and an over-cap `size` (caller bugs, which must not be
-/// laundered through the `Ok(None)` channel — angr-0jh0j.11).
+/// laundered through the `Ok(None)` channel) (angr-0jh0j.11).
 #[test]
 fn get_state_memory_separates_unreadable_from_caller_error() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -898,8 +898,8 @@ fn concrete_store_inside_wider_object_splits_it() {
 }
 
 /// angr-ccp2w: installing (or importing) a value over per-byte lanes must not
-/// leave the interior lanes shadowing it on load (the angr-c8mda shape on the
-/// import path).
+/// leave the interior lanes shadowing it on load, on the import path
+/// (angr-c8mda).
 #[test]
 fn install_over_lanes_replaces_all_bytes() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");

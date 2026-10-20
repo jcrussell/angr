@@ -118,8 +118,8 @@ fn merge_point_defers_then_fires_on_counter() {
     assert_eq!(active_ids.len(), 2, "live state + merged product");
 }
 
-/// Records every `state_id` passed to `on_state_removed` (and, for
-/// angr-0jh0j.19, to `on_fork`); forwards the deque operations to `Lifo` so
+/// Records every `state_id` passed to `on_state_removed` (and to `on_fork`)
+/// (angr-0jh0j.19); forwards the deque operations to `Lifo` so
 /// nothing else changes. Local copy of the same spy `state_lifecycle_tests.rs`
 /// and `scheduler_worker_tests.rs` use — each `test_submod!` module is private
 /// to its parent, so the shape cannot be shared without widening a test-only

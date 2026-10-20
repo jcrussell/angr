@@ -933,8 +933,8 @@ Implementation:
   rather than ``Z3_solver_set_params`` — the solver-level path
   empirically *corrupts* the solver for these keys (see iaol.1
   finding above).
-* Since angr-op0dn.10.3 the flag also turns on **strict-deterministic
-  witness selection** in every state's ``SymContext``
+* The flag also turns on **strict-deterministic witness selection**
+  (``angr-op0dn.10.3``) in every state's ``SymContext``
   (``RustExplorationManager.set_deterministic`` on the Rust manager,
   propagated as each state enters a stash and inherited by every fork).
   The seed pin only stabilizes *which model Z3 builds*; witness
@@ -1050,7 +1050,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
   * ``concretize_max_candidates`` — watermark of the largest ``K``
     seen. ``TooLarge`` / ``Failed`` outcomes count as ``K = 0``.
   * ``concretize_disjunction_count`` / ``_terms_total`` /
-    ``_max_terms`` — angr-62li. Number of times the engine hoisted
+    ``_max_terms`` (``angr-62li``) — number of times the engine hoisted
     ``Or(addr == a0, ..., addr == aK)`` to the top-level Rust solver
     (matches Python's ``address_concretization_mixin``), the sum of
     ``K`` across those hoists, and the largest ``K``. Hoisting is
@@ -1170,7 +1170,7 @@ would otherwise receive.
 
 **Default behavior (env unset) is unchanged** — the override list is
 empty and only the baked defaults apply. This knob exists for the
-A/B param surveys under ``angr-ovqja`` (z3/ffi/concretize hotpath perf):
+A/B param surveys of the z3/ffi/concretize hot path (``angr-ovqja``):
 capture ``--counters-json`` across candidate specs without recompiling
 per candidate. It is *not* a supported production tuning surface — no
 value is baked into a default, and unknown Z3 param names are handled by
@@ -1497,7 +1497,7 @@ vs. Python.
    * - ``TRACK_ACTION_HISTORY``
      - Metadata flag toggled around preconstraint; not a
        ``TRACK_*_ACTIONS`` recording gate.
-     - **Honored silently** (demoted from raise in ``angr-fkvt``). Unlike
+     - **Honored silently** rather than raising (``angr-fkvt``). Unlike
        its ``TRACK_*_ACTIONS`` siblings it does not gate action recording;
        its only consumer is ``preconstrainer.py`` which clears/restores it
        to suppress action recording during preconstraint — a vacuous
@@ -1568,8 +1568,7 @@ vs. Python.
        ``SimulationManager`` and is unsupported under a Rust-attached
        project regardless. Outside Veritesting the option is a
        no-op. Carried by the ``angr.options.resilience`` bundle, so
-       reject-with-warn rather than raise to keep bundle users alive
-       (angr-6rz8).
+       reject-with-warn rather than raise to keep bundle users alive (angr-6rz8).
    * - ``UNINITIALIZED_ACCESS_AWARENESS``, ``BEST_EFFORT_MEMORY_STORING``
      - Affect SimMemory error handling.
      - (b) explicitly reject.
@@ -1621,8 +1620,8 @@ vs. Python.
    * - ``PRODUCE_ZERODIV_SUCCESSORS``
      - Keeps the ``Ijk_SigFPE_IntDiv`` successor Python spawns on a
        concrete zero divisor (dropped in ``add_successor`` when unset).
-     - **(c) raise NotImplementedError** at manager construction
-       (``angr-op0dn.14.9``). Python's zero-division successor is produced
+     - **(c) raise NotImplementedError** at manager construction (``angr-op0dn.14.9``).
+       Python's zero-division successor is produced
        during lifting — ``irop.py`` raises ``SimZeroDivisionException`` and
        the resilience mixin turns it into a SigFPE exit — whereas Rust's
        ``DivS`` / ``DivU`` lower to Z3's ``bvsdiv`` / ``bvudiv``, which are
@@ -1814,8 +1813,8 @@ BP attribute write-back
 
 Python angr's ``_inspect`` semantics let a breakpoint action *override*
 certain attributes to inject a value or short-circuit a computation.
-The Rust engine honors a curated subset of these write-backs
-(angr-uy32, angr-inh0); the rest fire read-only (mutations are ignored).
+The Rust engine honors a curated subset of these write-backs (angr-uy32, angr-inh0);
+the rest fire read-only (mutations are ignored).
 
 **Honored (write-back applied):**
 
@@ -2091,9 +2090,9 @@ Caveats specific to ``step()`` dispatch:
   :class:`~angr.SimSuccessors`-level introspection (``state.history``
   is the limited :class:`RustHistoryProxy`).
 * Per-state mutations (``state.regs.X = ...``,
-  ``state.solver.add(...)``) **write through** to the live Rust state as
-  of the write-through epic (``angr-j28e`` / ``angr-qj30`` /
-  ``angr-8oiw``) — see `RustStateProxy write-through contract`_ above.
+  ``state.solver.add(...)``) **write through** to the live Rust state
+  (``angr-j28e`` / ``angr-qj30`` / ``angr-8oiw``) — see
+  `RustStateProxy write-through contract`_ above.
   Symbolic-address ``memory.store`` is the one refused write.
 
 ``mgr.remove_technique(tech)`` mirrors
@@ -2166,8 +2165,8 @@ registered returns ``False`` and disarms nothing.
    * - ``MemoryWatcher``
      - **Step hook dispatched**
      - Memory check runs in ``step()`` (``psutil.virtual_memory()`` +
-       ``simgr.move``). Since ``angr-rqvq``, ``step()`` is dispatched
-       per Rust batch and ``simgr.move(...)`` works against the proxy,
+       ``simgr.move``). ``step()`` is dispatched per Rust batch
+       (``angr-rqvq``) and ``simgr.move(...)`` works against the proxy,
        so the safety valve arms.
    * - ``Spiller``
      - **Step hook dispatched, copy() now supported with GC**
@@ -2186,8 +2185,8 @@ registered returns ``False`` and disarms nothing.
        chain, and the nested CMU merging analysis' successor dict is
        re-imported into the Rust stashes. ``EFFICIENT_STATE_MERGING``,
        which the technique auto-adds, is **no longer** in
-       ``_RAISE_OPTION_NAMES`` (demoted in ``angr-op0dn.11.6`` — merge is
-       native, so the ``SimStateHistory`` strongref rationale is moot),
+       ``_RAISE_OPTION_NAMES`` (merge is native, so the
+       ``SimStateHistory`` strongref rationale is moot; ``angr-op0dn.11.6``),
        so construction no longer raises. Watch the
        ``veritesting_dispatches`` / ``veritesting_applied`` stats
        counters to confirm the hook fired; ``states_merged_native``
@@ -2221,9 +2220,8 @@ registered returns ``False`` and disarms nothing.
        unicorn-fallback for unsupported VEX ops.
    * - ``Tracer``
      - **Incompatible — silently declines (no loud failure)**
-     - Trace-following hooks run (``angr-rqvq``) and proxy writes now
-       write through (the read-only-proxy blocker is gone, write-through
-       epic ``angr-j28e`` landed). ``Tracer.step_state()``
+     - Trace-following hooks run (``angr-rqvq``) and proxy writes
+       write through (``angr-j28e``). ``Tracer.step_state()``
        (``tracer.py``) *is* dispatched by
        ``dispatch_step_state_with_hooks``, but it delegates the actual
        step to ``simgr.step_state(...)``, which the dispatcher has
@@ -2480,9 +2478,8 @@ the verdict for running it against a project that has had a
        ``SimState`` machinery not modelled on
        :class:`RustStateProxy`. In practice the resolver runs as a
        sub-step of ``CFGFast`` / ``CFGEmulated``; the verdict here
-       inherits from those parents. Defer-fix beads can be filed
-       post-v1.0 if a user needs jumptable resolution against a
-       Rust-attached project.
+       inherits from those parents. Support is deferred until a user
+       needs jumptable resolution against a Rust-attached project.
    * - ``Veritesting``
      - **Unsupported (v1.0)**
      - Constructs ``SimulationManager`` directly
@@ -2637,7 +2634,7 @@ selection. The BFS frontier expands wide at shallow depth and exhausts
 the step budget before reaching the target depth, OOM-ing the host
 under a typical 4 GB ``RLIMIT_AS``.
 
-The ``angr-xel4`` characterisation on a synthetic grub-proxy showed
+A characterisation on a synthetic grub-proxy (``angr-xel4``) showed
 BFS plateauing at a shallow depth regardless of step budget, while DFS
 reached the iteration cap with lower peak RSS and a smaller active
 stash. The harness and its live numbers are in
@@ -2888,8 +2885,8 @@ raises ``NotImplementedError``), so the recovery hook never runs —
 the typed ``Rust*Error`` propagates straight out of ``mgr.run(...)``
 as if no technique were installed. Resolution: use
 ``use_rust_engine=False`` for the unicorn-fallback workflow. See
-``angr-v4qi`` and the *Exploration technique compatibility* table
-above for the full chain of issues (dispatch, exception inheritance,
+the *Exploration technique compatibility* table above (``angr-v4qi``)
+for the full chain of issues (dispatch, exception inheritance,
 ``executed_instruction_count`` attribute) that would each need to be
 addressed before Oppologist could work under Rust.
 
@@ -3168,7 +3165,7 @@ Summary
 State IDs, addresses, BV handles, callbacks and claripy ASTs all
 surface type/lookup errors as ``PyErr`` rather than panicking or
 UB-ing; ``import_z3_constraint_ptrs`` is the single validated-but-unsafe
-exception (trust model: angr-9l9j). A new pymethod keeps to the same
+exception (angr-9l9j). A new pymethod keeps to the same
 shapes: look states up through ``find_state`` / ``find_state_mut``,
 take guest addresses rather than host pointers, and return ``PyErr``
 on malformed input.

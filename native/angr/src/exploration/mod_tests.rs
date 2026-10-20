@@ -50,7 +50,7 @@ fn test_find_avoid_addresses() {
 
 /// Orchestrator semantics: pyclass setters mutate the sub-struct, not a
 /// shadow field on the manager. This test asserts the delegation pattern
-/// established by the angr-4j5u decomposition — `set_*` and `get_*` round
+/// established by the decomposition (angr-4j5u) — `set_*` and `get_*` round
 /// through `constraint_solver`, `memory_config`, `environment`, and
 /// `profiling` respectively.
 #[test]

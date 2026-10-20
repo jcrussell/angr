@@ -96,8 +96,8 @@ fn mechanical_arch_and_vex_arch_self_wins_across_differing_archs() {
 /// self_wins (5 of the remaining 8; `arch`/`vex_arch` above): `pc`,
 /// `history`, `detailed_history`, `max_history`, `track_history`. One
 /// populated pair, one merge, per-field comparison against the generated
-/// `merge_field_*` method. `call_stack` used to belong here; angr-fs8kb.71
-/// moved it to `warn_on_diverge` + `#[merge_manual]`, so its carry is
+/// `merge_field_*` method. `call_stack` is not here: it is
+/// `warn_on_diverge` + `#[merge_manual]` (angr-fs8kb.71), so its carry is
 /// asserted below against `self`'s value directly and its divergence
 /// detection is unit-tested by
 /// `test_call_stack_diverges_ignores_stack_ptr_noise`.

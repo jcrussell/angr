@@ -30,9 +30,8 @@
 //! The pyclass-facing thin wrappers live in the
 //! `manager_methods_*.rs` family — split between `manager_methods_state.rs`
 //! and `manager_methods_constraints.rs` — and forward to the `pub(crate)`
-//! bodies in this module. (They were in `mod.rs` until the `#[pymethods]`
-//! surface was split out of it per angr-nbim4.1 / angr-9ke6b.50; see
-//! `mod.rs`'s own module doc.)
+//! bodies in this module (angr-nbim4.1, angr-9ke6b.50); see `mod.rs`'s own
+//! module doc.
 //!
 //! Extension-impl module; see the [`exploration`](super) module doc.
 //!
@@ -351,7 +350,7 @@ impl RustExplorationManager {
     /// Concrete bytes for `size` bytes of memory on a pending callback state.
     ///
     /// Errors (rather than concretizing) when any chunk of the range is
-    /// symbolic — angr-04tw3.2 deliberately keeps this path eval-free, which is
+    /// symbolic — this path is deliberately eval-free (angr-04tw3.2), which is
     /// the one behavioral difference from `_get_state_memory`.
     pub(crate) fn _get_pending_memory(
         &self,
@@ -471,8 +470,8 @@ impl RustExplorationManager {
     /// (pending first, as a direct hash lookup; parked bounces last).
     /// A state in none of them has been consumed by a fork or dropped, so its
     /// parent link is unrecoverable — hence the best-effort walk in
-    /// `_get_pending_ancestry`. Before angr-eukuf the parked-bounce leg was
-    /// missing, and an ancestor parked there truncated that walk early.
+    /// `_get_pending_ancestry`. Without the parked-bounce leg, an ancestor
+    /// parked there would truncate that walk early (angr-eukuf).
     fn _parent_of(&self, state_id: u64) -> Option<u64> {
         self.find_state(state_id).and_then(RustSimState::parent_id)
     }
@@ -589,10 +588,9 @@ impl RustExplorationManager {
     /// `_add_constraints_to_state` — `None` is "Z3 gave up", not "unsat".
     ///
     /// The re-check is not cosmetic: `import_python_constraints` drops a
-    /// constraint neither conversion tier can handle, and until angr-fs8kb.12
-    /// this path did nothing about it, so a pending state could sit UNSAT-on-
-    /// the-Python-side with nothing downstream ever re-deriving its
-    /// feasibility.
+    /// constraint neither conversion tier can handle; without the re-check a
+    /// pending state could sit UNSAT-on-the-Python-side with nothing
+    /// downstream ever re-deriving its feasibility (angr-fs8kb.12).
     pub(crate) fn _add_constraints_to_pending(
         &mut self,
         py: Python<'_>,
@@ -603,7 +601,7 @@ impl RustExplorationManager {
             // Shares `import_constraints_and_recheck` with
             // `_add_constraints_to_state` so the raw-pointer fast path (which
             // keeps an unconvertible-but-live AST bound instead of silently
-            // vanishing — angr-ph300.20) and the dropped-constraint re-check
+            // vanishing) (angr-ph300.20) and the dropped-constraint re-check
             // can only ever be fixed in one place (angr-9ke6b.71).
             Ok(import_constraints_and_recheck(
                 py,
@@ -689,7 +687,7 @@ impl RustExplorationManager {
     /// Concrete bytes for a pending callback state's memory, evaluating
     /// symbolic bytes against the state's live solver.
     ///
-    /// Unlike `_get_pending_memory` (which is eval-free per angr-04tw3.2) this
+    /// Unlike `_get_pending_memory` (which is eval-free) this
     /// concretizes a symbolic load to any SAT witness; it errors only when the
     /// load fails outright or no witness exists. Both refusals are errors
     /// rather than a zero fill: callbacks consume the result by length and

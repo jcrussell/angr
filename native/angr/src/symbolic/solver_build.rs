@@ -162,8 +162,8 @@ pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult
     let idx = site as usize;
     Z3_CHECK_SITE_COUNT[idx].fetch_add(1, Ordering::Relaxed);
     Z3_CHECK_SITE_TIME_NS[idx].fetch_add(elapsed_ns, Ordering::Relaxed);
-    // Attribute this check to whatever query class is in flight (S1 spike,
-    // angr-op0dn.3). Unclassified unless ANGR_RUST_QUERY_CLASS is set.
+    // Attribute this check to whatever query class is in flight (S1 spike)
+    // (angr-op0dn.3). Unclassified unless ANGR_RUST_QUERY_CLASS is set.
     crate::symbolic::query_class::record_check();
     match result {
         // satresult-exempt: per-variant stats counter distinguishes all three.
@@ -211,9 +211,8 @@ impl SatOutcome for z3::SatResult {
 ///
 /// Two knobs enabled (Z3 disables both by default):
 /// - `bv_extract_prop`: propagates Extract inward through arithmetic.
-/// - `mul2concat`: rewrites `x * 2^k` -> `concat(x, 0^k)`. Added by the
-///   angr-ya00.1 bv_* sweep for a large win on the bimodal hash-cracker
-///   benches with no regression elsewhere.
+/// - `mul2concat`: rewrites `x * 2^k` -> `concat(x, 0^k)`. A large win on the
+///   bimodal hash-cracker benches with no regression elsewhere (angr-ya00.1).
 ///
 /// Sweep knobs left disabled: `bv_not_simpl`, `bv_ite2id`, `blast_eq_value`
 /// had no measurable effect; `bv_sort_ac` helped one bench and badly
@@ -413,7 +412,7 @@ fn tactic_spec() -> &'static TacticSpec {
 /// `num-consts > N` threshold used by `qfbv_smart`. Override via
 /// `ANGR_Z3_QFBV_THRESHOLD`. 20 is the empirical pivot between bimodal
 /// hash-cracker problems (winners) and CTF-style small-problem benches
-/// (regressers), per the angr-ya00 sweep; `rust_engine.rst` documents the
+/// (regressers) (angr-ya00); `rust_engine.rst` documents the
 /// `qfbv_smart` tactic.
 fn qfbv_smart_threshold() -> f64 {
     static THRESHOLD: std::sync::OnceLock<f64> = std::sync::OnceLock::new();

@@ -8,9 +8,8 @@
 //! The pyclass-facing thin wrappers live in the `manager_methods_*.rs`
 //! family — mostly `manager_methods_export.rs`, with the constraint
 //! export/import ones in `manager_methods_constraints.rs` — and forward to
-//! the `pub(crate)` bodies in this module. (They were in `mod.rs` until the
-//! `#[pymethods]` surface was split out of it per angr-nbim4.1 /
-//! angr-9ke6b.50; see `mod.rs`'s own module doc.)
+//! the `pub(crate)` bodies in this module (angr-nbim4.1, angr-9ke6b.50); see
+//! `mod.rs`'s own module doc.
 //!
 //! Extension-impl module; see the [`exploration`](super) module doc.
 //!
@@ -419,7 +418,7 @@ impl RustExplorationManager {
     // "try the next ancestor". A raise would abort that fallback walk.
     // `_clear_state_metadata` is likewise a best-effort cleanup invoked on ids
     // that may already be gone (rust_manager.py). Keep these advisory; do not
-    // route them through with_state*. (audit angr-04tw3.6)
+    // route them through with_state* (angr-04tw3.6).
     pub(crate) fn _get_state_symbolic_pages<'py>(
         &self,
         py: Python<'py>,
@@ -568,8 +567,8 @@ impl RustExplorationManager {
     /// Every program-written symbolic object in a state's memory, as
     /// `(addr, value)` pairs.
     ///
-    /// Flushes memory before reading `symbolic_objects_iter()` (angr-sqfj8.52,
-    /// an angr-sqfj8.71-family fix) — otherwise a byte still living in a Multi
+    /// Flushes memory before reading `symbolic_objects_iter()`
+    /// (angr-sqfj8.52, angr-sqfj8.71) — otherwise a byte still living in a Multi
     /// cell (the lazy symbolic-address store default) is silently absent from
     /// the export.
     pub(crate) fn _state_symbolic_objects(
@@ -761,8 +760,8 @@ impl RustExplorationManager {
     /// raise is the unreadable-chunk sentinel below.
     ///
     /// Unlike `_get_pending_memory`, this falls back to `state.eval()` for a
-    /// symbolic-but-satisfiable load (angr-04tw3.2 deliberately keeps the
-    /// pending path eval-free).
+    /// symbolic-but-satisfiable load (the pending path is deliberately
+    /// eval-free) (angr-04tw3.2).
     pub(crate) fn _get_state_memory(
         &self,
         state_id: u64,
@@ -840,15 +839,15 @@ impl RustExplorationManager {
     /// state: `with_state_mut` -> `find_state_mut` checks `pending_callbacks`
     /// before the stash manager, so no separate pending-only store method is
     /// needed (the dead `_set_pending_memory` / `_pending_memory_store` pair
-    /// was removed as redundant in angr-9ke6b.72).
+    /// was removed as redundant) (angr-9ke6b.72).
     pub(crate) fn _set_state_memory_concrete(
         &mut self,
         state_id: u64,
         addr: u64,
         data: &[u8],
     ) -> PyResult<()> {
-        // The 16-byte chunk walk (and the angr-5aj8 shift-overflow it exists
-        // to prevent) is documented once on
+        // The 16-byte chunk walk (and the shift-overflow it exists to
+        // prevent) (angr-5aj8) is documented once on
         // `symbolic::store_concrete_bytes_chunked`; every concrete-byte store
         // entry point shares that helper (angr-9ke6b.230).
         self.with_state_mut(state_id, |state| {

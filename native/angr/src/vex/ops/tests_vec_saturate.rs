@@ -316,7 +316,7 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_concrete() {
     }
 }
 
-/// Symbolic half of the angr-fs8kb.14 regression: with a symbolic lane pinned
+/// Symbolic half of the signed-saturation regression (angr-fs8kb.14): with a symbolic lane pinned
 /// to 5, the result must be 5 and must *not* be the destination minimum
 /// (0x8 = -8 in 4-bit two's complement) that the buggy unsigned compare
 /// produced.
@@ -338,7 +338,7 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_symbolic() {
 }
 
 // =========================================================================
-// angr-tukg.1 — NEON saturating add/sub (VQAdd / VQSub).
+// NEON saturating add/sub (VQAdd / VQSub) (angr-tukg.1).
 // =========================================================================
 
 /// Iop_QAdd8Sx8 — signed 8-bit saturating add over 8 lanes. Exercises:
@@ -601,7 +601,7 @@ fn test_parse_vqaddsub_routing() {
     }
 }
 
-/// The AVX2 256-bit tier angr-li4ox.1 mapped, all four semantics at once:
+/// The AVX2 256-bit tier (angr-li4ox.1), all four semantics at once:
 /// `Iop_{QAdd,QSub}8{S,U}x32` (`VPADDSB`/`VPADDUSB`/`VPSUBSB`/`VPSUBUSB`).
 /// 256 bits is past the 16-byte concrete backing store, so the operands are
 /// built as a `Concat` of two 128-bit concretes and the result is checked one
@@ -697,7 +697,7 @@ fn test_vqaddsub_8x32_avx2_256_bit() {
 }
 
 // =========================================================================
-// angr-tukg.8 — NEON saturating vector shifts (VQShlSat).
+// NEON saturating vector shifts (VQShlSat) (angr-tukg.8).
 // =========================================================================
 
 /// Iop_QShl8x8 — unsigned saturating left shift by vector (D-reg).

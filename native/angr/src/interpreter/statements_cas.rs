@@ -104,8 +104,8 @@ impl<'a> VEXInterpreter<'a> {
             // The message embeds `DCAS_UNSUPPORTED_REASON` because this is the
             // one path that can still produce a DCAS fallback: the manager
             // string-matches that marker to bump `dcas_unsupported_count` and
-            // emit its per-state warning (angr-fs8kb.59 — the old message did
-            // not contain it, so the counter was permanently 0).
+            // emit its per-state warning; without it the counter stays
+            // permanently 0 (angr-fs8kb.59).
             return Err(CbExecutionError::Unsupported(format!(
                 "{DCAS_UNSUPPORTED_REASON} with big-endian memory not supported"
             )));
@@ -309,7 +309,7 @@ impl<'a> VEXInterpreter<'a> {
     /// and `memory_store_symbolic_full` for symbolic addresses.
     ///
     /// Both branches invalidate any stale cached IRSB at the (concretized)
-    /// target address(es) before dispatching the store — angr-slbsd. This
+    /// target address(es) before dispatching the store (angr-slbsd). This
     /// reuses the same helpers the ordinary `IRStmt::Store` path uses
     /// (`statements_store.rs`): `invalidate_code_at_store` for a concrete
     /// address, and `concretize_cached_write` + `invalidate_code_on_store`

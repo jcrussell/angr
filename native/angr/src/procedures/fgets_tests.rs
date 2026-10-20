@@ -268,7 +268,7 @@ fn test_fgets_symbolic_stream_falls_back() {
 /// back rather than mint fresh unconstrained bytes over it.
 ///
 /// `name` is the path the source fd was opened as: `"/dev/stdin"` is the
-/// angr-tqw60 corner case (a guest reopening stdin by path), where the dup2'd
+/// reopened-stdin corner case (a guest reopening stdin by path; angr-tqw60), where the dup2'd
 /// clone's `name` is indistinguishable from the pristine placeholder's and
 /// only [`FileSystem::fd0_is_dup2d`](crate::state::FileSystem::fd0_is_dup2d)'s
 /// `is_std_placeholder` provenance separates them.
@@ -344,8 +344,8 @@ fn test_gets_dup2d_stdin_falls_back() {
 
 /// angr-tqw60: the same rewiring spelled `open("/dev/stdin")` + `dup2(fd, 0)`.
 /// `FileSystem::open` stores the caller-supplied path verbatim, so the dup2'd
-/// clone's `name` is still `"/dev/stdin"` -- the pre-angr-tqw60 name
-/// comparison read fd 0 as pristine here and minted fresh unconstrained bytes
+/// clone's `name` is still `"/dev/stdin"` -- a plain name
+/// comparison would read fd 0 as pristine here and minted fresh unconstrained bytes
 /// over the guest's real content instead of bouncing.
 #[test]
 fn test_fgets_dup2d_reopened_dev_stdin_falls_back() {
@@ -578,9 +578,9 @@ fn test_gets_nul_at_real_size_bounded() {
 
 #[test]
 fn test_fgets_content_sym_fd_falls_back_without_half_serving() {
-    // angr-0xyq2 Phase 2 guard: bounded symbolic file content is served by
-    // read/fread, but fgets keeps its Python fallback (the newline-constraint
-    // model is a separate bead) — and must not half-serve: the destination
+    // Phase 2 guard (angr-0xyq2): bounded symbolic file content is served by
+    // read/fread, but fgets keeps its Python fallback (it has no
+    // newline-constraint model) — and must not half-serve: the destination
     // buffer stays untouched.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x2000, &[0xAAu8; 16], Permission::RWX);

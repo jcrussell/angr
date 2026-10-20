@@ -25,7 +25,7 @@
 //! the Rust `RustSimState` and is freed when Rust drops the state. None of these
 //! are documented here; see the cross-mixin invariants **I3**, **I4**,
 //! **I5**, **I6** in the `angr/exploration/rust_manager.py` module
-//! docstring for the cross-FFI rules and the bd memories
+//! docstring for the cross-FFI rules and the invariants
 //! `invariant-init-cache-plugin-coverage` (what the init cache does and
 //! does not carry; the option allow-list is a *mirror*, not additive),
 //! `invariant-apply-state-metadata-option-allowlist` (value-changing
@@ -95,8 +95,8 @@ pub(crate) fn claripy_object<'py>(
 
 /// Error type for claripy bridge operations.
 ///
-/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
-/// variants; intra-crate matches must include a wildcard arm.
+/// `#[non_exhaustive]`: minor versions may add new variants (angr-irwe);
+/// intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum BridgeError {
@@ -180,8 +180,7 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
     // For larger values, use Python's int.to_bytes. Propagate an extract
     // failure rather than assuming some width: guessing here would either
     // truncate a wide value or spuriously trip the >128 rejection below, and
-    // both are the silently-wrong-answer outcome the angr-cxw7 comment exists
-    // to prevent (angr-sqfj8.24).
+    // both are silently-wrong-answer outcomes (angr-cxw7, angr-sqfj8.24).
     let bit_length: usize = obj.call_method0("bit_length")?.extract()?;
 
     // RustBV::Concrete stores its value in a u128, so any integer that needs

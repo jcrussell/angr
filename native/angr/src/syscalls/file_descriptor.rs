@@ -1,6 +1,6 @@
 //! File-descriptor control syscall handlers — `fcntl`, `fcntl64`,
-//! `ioctl`, `pipe`, `pipe2` (the stub-fallthrough subset of
-//! `angr-0hif.5`) and `dup`, `dup2`, `dup3` (`angr-vp19`).
+//! `ioctl`, `pipe`, `pipe2` (the stub-fallthrough subset; `angr-0hif.5`)
+//! and `dup`, `dup2`, `dup3` (`angr-vp19`).
 //!
 //! ## fcntl / fcntl64 (angr-aig2)
 //!
@@ -78,9 +78,8 @@
 //! `procedures/fileops::NativeDup` / `NativeDup2`, which already
 //! manipulate the Rust-side `FileSystem` without touching the Python
 //! plugin. Like Python `procedures/posix/dup.py`, `FileSystem::dup`
-//! allocates the lowest free fd, so a closed slot is reused (angr-9ke6b.119
-//! replaced the earlier monotonic `next_fd` allocator, which diverged from
-//! both POSIX and Python once an exploration closed an fd). The one
+//! allocates the lowest free fd, so a closed slot is reused, matching both
+//! POSIX and Python (angr-9ke6b.119). The one
 //! remaining divergence is Python's multi-gap scan quirk — see
 //! `FileSystem::dup`'s doc comment.
 //!
@@ -102,7 +101,7 @@ use super::errno::{NEG_EBADF, NEG_ENOTTY};
 ///
 /// Shares the [`MAX_FD`] value with [`FileSystem::dup2`](crate::state::FileSystem::dup2),
 /// which enforces the same cap for the callers that do not come through this
-/// layer (the native `dup2` SimProcedure) — angr-03vl4.52. The check stays
+/// layer (the native `dup2` SimProcedure; angr-03vl4.52). The check stays
 /// here as well because Python's ordering puts the `oldfd == newfd` success
 /// *before* it.
 const NEWFD_LIMIT: u64 = MAX_FD as u64;
@@ -119,8 +118,8 @@ const NEWFD_LIMIT: u64 = MAX_FD as u64;
 /// NOTE: real `dup3(2)` returns `-EINVAL` when `oldfd == newfd`, but angr's
 /// Python `dup3` does not — it returns `newfd` like `dup2`. The Rust engine
 /// targets Python-engine parity, so we deliberately match Python (no EINVAL)
-/// here; adding EINVAL would diverge from the reference engine. See
-/// bd `angr-1yge9.7`.
+/// here; adding EINVAL would diverge from the reference engine
+/// (angr-1yge9.7).
 fn dup2_body(state: &mut RustSimState, oldfd: u64, newfd: u64) -> u64 {
     if !state.file_system().is_open(oldfd as u32) {
         return NEG_EBADF;

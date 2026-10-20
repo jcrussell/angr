@@ -112,11 +112,12 @@ pub(super) fn warn_config_divergence(field: &str, diverged: bool) {
 /// True when any other branch's suspended native sub-call frame count
 /// differs from `this`'s. `NativeResumeFrame` has no `PartialEq` (its
 /// `saved_args: Vec<RustBV>` would need one, and `RustBV`'s own `PartialEq`
-/// is documented non-reflexive for symbolic values — angr-sqfj8.96), so
+/// is documented non-reflexive for symbolic values; angr-sqfj8.96), so
 /// depth is the divergence proxy: any length mismatch means some branch
 /// pushed or popped a frame the others didn't. Split out from `merge` (rather
-/// than left as an inline closure) so angr-sqfj8.86's detection logic is
-/// directly unit-testable without going through the process-global logger.
+/// than left as an inline closure) so the divergence detection is directly
+/// unit-testable without going through the process-global logger
+/// (angr-sqfj8.86).
 pub(crate) fn native_resume_stack_diverges(this: &RustSimState, others: &[&RustSimState]) -> bool {
     others
         .iter()
@@ -669,8 +670,8 @@ impl RustSimState {
             // advanced) base across branches. memory::merge unions pages from
             // every branch, so keeping only self's higher base would let a
             // later allocate() hand out an address aliasing a live allocation
-            // from a branch that bumped lower (angr-n0irt.2; same bug class as
-            // angr-ph300.51's heap_brk/mmap_base fix).
+            // from a branch that bumped lower (same bug class as the
+            // heap_brk/mmap_base merge) (angr-n0irt.2, angr-ph300.51).
             cgc_allocation_base: self.merge_field_cgc_allocation_base(others),
             // A sinkhole is a freed (unmapped) region eligible for allocate()
             // reuse. After a page-unioning merge a region is only safe to reuse

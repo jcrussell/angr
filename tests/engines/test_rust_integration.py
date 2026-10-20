@@ -112,8 +112,7 @@ class TestRustIntegration:
         # cause is symbolic-memory branch divergence at the loads from
         # 0x1000-0x1018 the binary uses for anti-fingerprinting; those
         # loads all go through load_from_callback, so concrete-memory
-        # interception is ruled out. Triage and the keep-xfail decision:
-        # angr-kcf.1 / angr-kcf.2.
+        # interception is ruled out (angr-kcf.1, angr-kcf.2).
         "codegate_2017-angrybird",
     }
 

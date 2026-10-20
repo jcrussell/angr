@@ -51,8 +51,8 @@ pub(crate) struct SubcallAbi<'a> {
 /// sentinel so the proc's continuation re-enters via `handle_native_resume`.
 ///
 /// All feasibility checks happen before any state mutation, so on `Err` the
-/// caller can cleanly fall back to the Python SimProcedure path. `S2`,
-/// bead angr-5gf0s. See `tools/decisions/native_subcall_dispatcher_design.md`.
+/// caller can cleanly fall back to the Python SimProcedure path (angr-5gf0s).
+/// See `tools/decisions/native_subcall_dispatcher_design.md`.
 ///
 /// Stack-return ABI (x86/amd64): at proc entry `[sp]` holds the caller's
 /// return address; we overwrite it with the sentinel so the guest `ret`
@@ -154,7 +154,7 @@ impl RustExplorationManager {
     /// Re-enter a native proc's continuation after a `CallAndResume` sub-call
     /// returns to the resume sentinel. Pops the top resume frame, calls the
     /// proc's [`crate::procedures::NativeSimProcedure::resume`], and applies the
-    /// resulting [`ProcOutcome`]. `S2`, bead angr-5gf0s.
+    /// resulting [`ProcOutcome`] (angr-5gf0s).
     ///
     /// Retained as a focused direct-call test harness (`subcall_tests.rs`); the
     /// production single-threaded path now resumes via

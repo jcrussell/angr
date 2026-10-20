@@ -90,8 +90,8 @@ impl RustExplorationManager {
         self.sm.declare_stash(discard_stash);
     }
 
-    /// Register a native MergePoint technique (ManualMergepoint parity,
-    /// angr-op0dn.11.5).
+    /// Register a native MergePoint technique (ManualMergepoint parity)
+    /// (angr-op0dn.11.5).
     ///
     /// States reaching `address` are parked in a per-address wait stash; once
     /// the active stash drains (or `wait_counter` post-step rounds elapse

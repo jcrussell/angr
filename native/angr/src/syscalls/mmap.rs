@@ -45,8 +45,8 @@
 //!    the existing mapping(s) will be discarded." See angr-ttr7.
 //!    A *misaligned* MAP_FIXED addr is rejected with -1 (EINVAL),
 //!    also matching Linux and again diverging from Python, which
-//!    would silently map the containing page instead. See
-//!    angr-sqfj8.110 and the check in `do_mmap`.
+//!    would silently map the containing page instead (angr-sqfj8.110).
+//!    See the check in `do_mmap`.
 //!
 //! Oversized-request fast path: a `length` above `MAX_MAP_SIZE` is
 //! rejected with -1 (MAP_FAILED) rather than mapped or bounced to

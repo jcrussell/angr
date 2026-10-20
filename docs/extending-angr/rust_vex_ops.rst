@@ -47,8 +47,8 @@ head as you read the worked examples below:
        ``parse_transcendental`` (angr-fs8kb.20).
    * - ``native/angr/src/vex/opcode_map_vector.rs``
      - Sibling module holding the SIMD sub-routers ``parse_vector``,
-       ``parse_vreverse`` and ``parse_neon_unimplemented``
-       (angr-fs8kb.20). ``parse_vector`` is by far the largest of the
+       ``parse_vreverse`` and ``parse_neon_unimplemented`` (angr-fs8kb.20).
+       ``parse_vector`` is by far the largest of the
        family, which is what motivated the split.
    * - ``native/angr/src/vex/ops/mod.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``qop`` and the
@@ -100,8 +100,7 @@ The ``parse_*`` family pattern
        IROp::Unmapped(intern_unmapped_op(op_str))
    }
 
-The ``IROp::Unmapped(name)`` sentinel (introduced in angr-tkbr.2,
-replacing the older silent ``IROp::Raw(0)``) keeps the original pyvex
+The ``IROp::Unmapped(name)`` sentinel (angr-tkbr.2) keeps the original pyvex
 opcode string so dispatch can surface ``RustUnsupportedVexOpError``
 with a useful name instead of returning a fresh-symbolic value.
 
@@ -178,10 +177,9 @@ the ``RustBV`` method's responsibility — the dispatch layer doesn't
 care. That's why so many arithmetic arms are one-liners.
 
 **Test.** A representative unit test, from ``ops/tests_core.rs`` — the
-per-family test sibling for the core integer/logic ops (angr-9hleg split
-the former monolithic ``ops_tests.rs`` by family; the ``tests_*.rs``
+per-family test sibling for the core integer/logic ops (the ``tests_*.rs``
 files are declared at the bottom of ``ops/mod.rs`` via
-``test_submod!``):
+``test_submod!``; angr-9hleg):
 
 .. code-block:: rust
 
@@ -504,7 +502,7 @@ Source of truth: ``native/angr/src/vex/opcode_map_vector.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
 ``native/angr/src/vex/ops/mod.rs`` (the dispatch arms). Update the
 matching row in the same change that adds or graduates an op; the
-provenance column cites the bead that implemented each family.
+provenance column names the ``IROp`` variant that implements each family.
 
 NEON op families
 ^^^^^^^^^^^^^^^^
@@ -522,8 +520,7 @@ NEON op families
    * - Pairwise integer (``Iop_PwAdd*`` / ``Iop_PwAddL*`` /
        ``Iop_PwMin*`` / ``Iop_PwMax*``)
      - Implemented
-     - ``IROp::VPwAdd`` / ``VPwAddL`` / ``VPwMin`` / ``VPwMax``
-       (angr-tukg.2)
+     - ``IROp::VPwAdd`` / ``VPwAddL`` / ``VPwMin`` / ``VPwMax`` (angr-tukg.2)
    * - Pairwise FP (``Iop_PwAdd32Fx2``)
      - Implemented
      - ``IROp::VFPwAdd`` via ``parse_float`` (angr-cudgw.6) — the last
@@ -577,8 +574,7 @@ NEON op families
      - Implemented
      - ``IROp::VCmpEQ`` / ``IROp::VCmpGT { signed }`` via the
        ``ICmpEq`` / ``ICmpGt`` ``IntLaneOp`` impls. The unsigned
-       ``CmpGT`` half (NEON ``VCGT.U*``) was unmapped until
-       angr-9ke6b.160. libVEX defines no ``Iop_CmpGT64Ux1``, so the
+       ``CmpGT`` half (NEON ``VCGT.U*``) is mapped too (angr-9ke6b.160). libVEX defines no ``Iop_CmpGT64Ux1``, so the
        D-reg 64-bit lane is absent by design.
 
 ``Iop_QShlN*`` is the only NEON family in this table without a
@@ -603,15 +599,9 @@ tokens — they only have to agree with the ``IOP_*`` consts in
 
 .. note::
 
-   This used to be a **two-path** arrangement: only the numeric FFI
-   lifter path produced ``IROp::Raw``, and the string path fell through
-   to ``IROp::Unmapped``. When ``angr-h0ur`` deleted the *numeric*
-   native-lift path of the time (not the libVEX FFI lifter that ships
-   today, which goes through the string router) it took the last caller
-   of ``parse_opcode_from_u32`` with it, leaving ``IROp::Raw`` with no
-   producer at all — so every one of these ops was ``Unmapped`` and
-   ``transcendentals.rs`` was dead outside its own unit tests.
-   ``angr-9ke6b.233`` re-wired them onto the string router.
+   These ops reach ``parse_transcendental`` only through the string
+   router, which the libVEX FFI lifter also goes through; there is no
+   numeric-opcode route to them (``angr-h0ur``, ``angr-9ke6b.233``).
 
 Opcode names below are libvex (matches what pyvex's numeric-to-string
 table emits).
@@ -728,7 +718,7 @@ dispatchers in ``interpreter/expressions_arith.rs`` hand the error to
 concreteness:
 
 - **Concrete args** → the typed ``OpError`` propagates and surfaces as
-  ``RustUnsupportedVexOpError`` (no silently-wrong value — angr-sa3j).
+  ``RustUnsupportedVexOpError`` (no silently-wrong value; angr-sa3j).
 - **Symbolic args** → by default the block is routed to Python's VEX
   engine via ``CbExecutionError::NeedPythonFallback`` (angr-oyzvj).
   Python is the reference implementation for the float / vector-float
@@ -850,5 +840,5 @@ on a new workload:
    ``opcode_map_vector.rs``, the integer families in ``opcode_map.rs``)
    and add it there.
 3. Add a row to the matrix above with status ``Placeholder`` (or
-   ``Implemented`` plus the implementing bead id, if you add the
+   ``Implemented`` plus the implementing ``IROp`` variant, if you add the
    handler in the same change).

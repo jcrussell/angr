@@ -1,7 +1,7 @@
 //! Tests for [`super::super::exits`] — VEX exit/jump dispatch logic.
 //!
-//! Extracted from the `mod tests` block in `exits.rs` (see
-//! `rust-module-root-split-recipe` bd memory).
+//! Extracted from the `mod tests` block in `exits.rs`
+//! (bd memory `rust-module-root-split-recipe`).
 
 use super::*;
 use crate::state::CallStackEntry;
@@ -198,7 +198,7 @@ fn handle_exit_ret_to_external_no_frame_expects_is_unconstrained() {
     }
 }
 
-/// angr-1c88c gap 4/7: drive `exits.rs::eval_next_addr` (the callback-aware
+/// angr-1c88c: drive `exits.rs::eval_next_addr` (the callback-aware
 /// fallthrough evaluator used for symbolic `Ist_Exit` next addresses in
 /// non-deferred fork mode).
 ///

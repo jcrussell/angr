@@ -943,7 +943,7 @@ fn test_fork_preserves_num_constraints_after_raw_constraint() {
 /// fork of the parent with a constraint the parent itself no longer
 /// believes (a silent spurious-UNSAT prune, not an error).
 ///
-/// This is the exact repro from the bead: push, assume `y == 5`, fork,
+/// This is the exact repro: push, assume `y == 5`, fork,
 /// pop, fork again, and assert the second child is free to take `y == 6`.
 #[test]
 fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
@@ -1022,9 +1022,8 @@ fn test_fork_under_bare_push_leaves_parent_poppable() {
     assert!(parent.solution(&x, 2));
 }
 
-/// angr-5mnx3.43: `add_constraints_raw_batch` predates the angr-sfp9
-/// ptr-dedup by a week and used to push/assert/count every entry
-/// unconditionally. It must now dedup exactly like `add_constraint_raw`,
+/// angr-5mnx3.43: `add_constraints_raw_batch` must not push/assert/count every
+/// entry unconditionally (angr-sfp9). It must dedup exactly like `add_constraint_raw`,
 /// both against constraints added by an earlier call AND against repeats
 /// inside the same batch.
 ///

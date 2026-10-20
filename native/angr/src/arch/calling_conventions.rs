@@ -419,7 +419,7 @@ impl CallingConvention for Cdecl {
 /// Return value: R0 (with R1 for 64-bit)
 /// Return address: LR (R14) — ARM uses BL which stores return addr in LR, not stack.
 /// Name mirrors the ABI's own spelling ("ARM EABI"); see the note on
-/// `arch::arm::ARM` for why clippy only started seeing it in angr-9ke6b.214.
+/// `arch::arm::ARM` for why clippy sees it.
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ARMEABI;
@@ -593,8 +593,7 @@ impl CallingConvention for MipsO32 {
         // would read the wrong slot rather than no slot at all. That
         // positional ambiguity is the whole reason; the offsets themselves
         // exist (`mips32_off::F12`/`F14`, reachable via `register_offset`).
-        // angr-9ke6b.218 item 7 removed an older clause here claiming they
-        // have "no canonical `register_name` entry" — true, but it does not
+        // They also have no canonical `register_name` entry, but that does not
         // distinguish MIPS: ARM's `d0`-`d7` and AArch64's `q0`-`q7` are
         // alias-only too, and those tables are populated.
         &[]

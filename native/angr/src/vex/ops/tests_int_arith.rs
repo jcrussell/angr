@@ -63,7 +63,7 @@ fn test_divmod_s128_to_64_int_min_by_neg_one() {
     // i128::MIN / -1 overflows; the concrete arm must wrap (not panic) to match
     // Z3 bvsdiv/bvsrem. dividend = 1<<127 (= i128::MIN as signed 128), divisor =
     // 0xFFFF..FF (= -1 as signed 64). Reference (Python engine): rax/quotient = 0,
-    // rdx/remainder = 0. Regression for angr-n0xru (was SIGABRT under panic=abort).
+    // rdx/remainder = 0 (regression, angr-n0xru).
     let ctx = SymContext::new_mock();
     let dvd = RustBV::concrete(1u128 << 127, 128);
     let dvs = RustBV::concrete(u64::MAX as u128, 64);

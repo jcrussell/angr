@@ -103,7 +103,7 @@ impl RustSimState {
     }
 
     /// Store to a symbolic address using the lazy Multi-cell path
-    /// (Phase 1.3/1.4 of angr-czph). Mirrors `memory_store_symbolic` but
+    /// (angr-czph). Mirrors `memory_store_symbolic` but
     /// routes Multiple/Strided concretization results to per-byte Multi
     /// alternatives instead of eager ITE chains. Single addresses still
     /// short-circuit to the eager concrete store; TooLarge / Failed surface

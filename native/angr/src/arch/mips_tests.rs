@@ -42,10 +42,10 @@ fn test_mips64_reverse_name_lookup_is_complete() {
 #[test]
 fn test_mips32_reverse_name_lookup_is_complete() {
     // MIPS32's offset table is the largest hand-curated one in this directory,
-    // so it is the likeliest place for the angr-1yge9.13 class of bug (a
+    // so it is the likeliest place for the reverse-lookup class of bug (a
     // canonical entry deleted, leaving the name only in ALIASES_MIPS32 and
-    // therefore reverse-unresolvable) to reappear. MIPS64 has pinned this
-    // since that fix; MIPS32 had nothing (angr-9ke6b.14).
+    // therefore reverse-unresolvable, angr-1yge9.13) to reappear. MIPS64 pins
+    // the same property (angr-9ke6b.14).
     let arch = MIPS32;
     assert_reverse_name_lookup_is_complete(&arch, arch.register_names());
 

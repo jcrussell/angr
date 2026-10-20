@@ -133,10 +133,10 @@ def _explore(project, use_native_lift, find, max_steps=10, opt_level=None):
 
 @pytest.mark.parametrize("use_native_lift", [False, True])
 def test_spotter_block_runs(use_native_lift):
-    """A block pyvex's Spotter finishes lifts through the callback and runs
-    (angr-mx00p.43: the native lift used to serve libVEX's NoDecode block;
-    angr-mx00p.44: the callback's JSON rejected the Spotter's int U1 guard
-    and None Dirty fields)."""
+    """A block pyvex's Spotter finishes lifts through the callback and runs:
+    the native lift must not serve libVEX's NoDecode block (angr-mx00p.43),
+    and the callback's JSON must accept the Spotter's int U1 guard and None
+    Dirty fields (angr-mx00p.44)."""
     import angr
 
     project = angr.load_shellcode(SPOTTER_CODE, arch="amd64", load_address=0x400000)
@@ -159,8 +159,9 @@ def test_native_lift_serves_opt_level_override():
 
 
 def test_native_lift_off_with_patches():
-    """``lift_vex`` lifts patched bytes, which native lift does not read
-    (angr-mx00p.46: native lift ran the unpatched instruction)."""
+    """``lift_vex`` lifts patched bytes, which native lift does not read, so
+    native lift must stay off rather than run the unpatched instruction
+    (angr-mx00p.46)."""
     import angr
 
     code = bytes.fromhex("4831c04883c001ebfe")

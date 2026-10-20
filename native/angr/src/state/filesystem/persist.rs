@@ -13,12 +13,12 @@ pub struct FileSystemData {
     pub fds: std::collections::BTreeMap<u32, FileDescriptor>,
     pub next_fd: u32,
     pub cwd: Vec<u8>,
-    /// `#[serde(default)]` keeps pre-angr-k3ol.2 snapshots loadable —
+    /// `#[serde(default)]` keeps older snapshots loadable —
     /// the field reconstitutes to an empty set, matching the previous
     /// behavior (no native access lookups would succeed).
     #[serde(default)]
     pub known_paths: std::collections::BTreeSet<String>,
-    /// `#[serde(default)]` keeps pre-angr-11djq.6.2 snapshots loadable —
+    /// `#[serde(default)]` keeps older snapshots loadable —
     /// reconstitutes to an empty map (no symlinks, `readlink` → `-1`).
     #[serde(default)]
     pub symlinks: std::collections::BTreeMap<String, Vec<u8>>,
@@ -26,13 +26,13 @@ pub struct FileSystemData {
     /// inner `Vec<RustBV>` via serde's `rc` feature (symbolic leaves
     /// rebuild by (name, width) via the `RustBVData` shadow); each load
     /// rebuilds fresh `Arc`s, so fd/registry sharing is not preserved
-    /// through serde. `#[serde(default)]` keeps pre-angr-0xyq2 snapshots
+    /// through serde. `#[serde(default)]` keeps older snapshots
     /// loadable — reconstitutes to an empty registry. BTreeMap keeps the
     /// wire ordering deterministic.
     #[serde(default)]
     pub file_contents: std::collections::BTreeMap<String, Arc<Vec<RustBV>>>,
     /// Accumulated demoted-path set (angr-qluof). `#[serde(default)]` keeps
-    /// pre-angr-qluof snapshots loadable — reconstitutes to an empty set
+    /// older snapshots loadable — reconstitutes to an empty set
     /// (no lineage-demotion memory, matching the previous behavior).
     /// BTreeSet keeps the wire ordering deterministic.
     #[serde(default)]

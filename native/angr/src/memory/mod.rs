@@ -71,7 +71,7 @@ pub struct PendingWrite {
 
 /// Errors from memory operations.
 ///
-/// `#[non_exhaustive]` per angr-irwe: minor versions may add new
+/// `#[non_exhaustive]` (angr-irwe): minor versions may add new
 /// variants; intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
@@ -231,8 +231,8 @@ pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
 /// `[addr, addr + size)` — i.e. the upper bound of a `start_page..end_page`
 /// half-open range.
 ///
-/// The exclusive sibling of [`end_page_inclusive`], centralized per
-/// angr-sqfj8.76 (the formula was copy-pasted at six sites). Unlike the
+/// The exclusive sibling of [`end_page_inclusive`], centralized so the
+/// formula is not copy-pasted at each site (angr-sqfj8.76). Unlike the
 /// inclusive form this only ever *adds*, so `size == 0` cannot underflow —
 /// it simply yields `ceil(addr / PAGE_SIZE)`, an empty range for a
 /// page-aligned `addr`. Callers that must reject a zero-size access do so
@@ -309,10 +309,10 @@ impl ConcretizationResult {
 /// `RustSimState` labels `memory` `#[merge_policy = "delegate"]`, which stops
 /// the top-level derive at this struct's boundary — and the same
 /// "field-added-without-a-merge-line" bug family promptly recurred one level
-/// deeper (angr-c7xno.50: [`Self::merge`] adopted an other-only page's
+/// deeper ([`Self::merge`] adopted an other-only page's
 /// `multi_bitmap` but never copied the matching `multi_objects` payloads,
 /// because that sidecar is a flat map here rather than nested in
-/// [`MemoryPage`]). Deriving [`angr_macros::MergePolicy`] here extends the
+/// [`MemoryPage`]; angr-c7xno.50). Deriving [`angr_macros::MergePolicy`] here extends the
 /// guarantee: a new field — especially a new address-keyed sidecar map — does
 /// not compile until it declares how [`Self::merge`] treats it. The behavioural
 /// half lives in `memory/tests/merge_sidecars.rs`, which exercises every

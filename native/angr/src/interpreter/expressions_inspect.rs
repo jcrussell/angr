@@ -45,7 +45,7 @@ impl<'a> VEXInterpreter<'a> {
     /// error must not halt exploration.
     ///
     /// Returns `Some(bv)` when the user's BP action overrode
-    /// `state.inspect.mem_read_expr` (value injection — angr-uy32); the
+    /// `state.inspect.mem_read_expr` (value injection; angr-uy32); the
     /// caller substitutes it for the loaded value. Returns `None` when the
     /// value is unchanged, so the original load result stands.
     pub(super) fn dispatch_mem_read_inspect(

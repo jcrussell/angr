@@ -1,5 +1,5 @@
-//! Thread-local GIL-work timer (introduced for the parallel-exploration spike,
-//! angr-1ilq.7).
+//! Thread-local GIL-work timer (introduced for the parallel-exploration spike)
+//! (angr-1ilq.7).
 //!
 //! Measures, on a single worker thread, the wall-clock fraction of stepping
 //! that is spent *inside Python-touching code* (the "GIL-held" work that a
@@ -128,7 +128,7 @@ pub(crate) enum GilClass {
     /// `claripy_to_rustbv` — importing a claripy AST into Rust.
     ClaripyImport,
     /// A state fork cloning its Python-side overlays. **Expected to stay 0**:
-    /// since angr-gorvf.4.2 the overlays hold `SharedPyAst` (`Arc<Py<PyAny>>`),
+    /// the overlays hold `SharedPyAst` (`Arc<Py<PyAny>>`) (angr-gorvf.4.2),
     /// so `clone_py_metadata` bumps atomic refcounts instead of attaching to
     /// Python. The class is kept (rather than deleted) so the counter keeps
     /// *proving* that — a regression that reintroduces a GIL attach on the fork
@@ -142,9 +142,9 @@ pub(crate) enum GilClass {
     /// This class exists because a bounce is *not* a [`GilWorkGuard`] region:
     /// no Rust frame is live while it runs, so the run loop's
     /// [`RunLoopWallGuard`] has already dropped and neither the numerator nor
-    /// the denominator would otherwise see the excursion (bd angr-gorvf.8 —
-    /// fauxware banked a whole Python `open` SimProcedure while reporting
-    /// `gil_work_time_ns == 0`). [`park_start`] / [`park_end`] bracket the
+    /// the denominator would otherwise see the excursion (fauxware banked a
+    /// whole Python `open` SimProcedure while reporting `gil_work_time_ns == 0`)
+    /// (angr-gorvf.8). [`park_start`] / [`park_end`] bracket the
     /// excursion at the pymethod boundary and bank it into *both* accumulators,
     /// so `gil_work_time_ns == 0` really does mean "no Python ran during
     /// exploration" and `gil_work_ns() <= run_wall_ns()` still holds.
@@ -171,8 +171,8 @@ profile_enum_meta!(
 /// sum exactly to `gil_class_ns(GilClass::Callback)`.
 ///
 /// It exists because the Python-side `callback_*_total_ns` counters do not
-/// explain the residual `Callback` GIL on the zero-bounce path (bd
-/// angr-gorvf.4.1): `google2016_unbreakable_1` banks most of its run-loop wall
+/// explain the residual `Callback` GIL on the zero-bounce path
+/// (angr-gorvf.4.1): `google2016_unbreakable_1` banks most of its run-loop wall
 /// as `Callback` while its only counted surface is a couple of near-free
 /// `posix` calls. Those counters are process-wide and also tick outside the profiled run
 /// loop; these are thread-local, run-loop-gated, and complete by construction.

@@ -1,5 +1,5 @@
-//! Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3,
-//! correctness-first isolated increment; anti-migration redesign angr-729vn).
+//! Work-stealing scheduler machinery for parallel exploration
+//! (angr-1ilq.3, angr-729vn).
 //!
 //! # What this is
 //!

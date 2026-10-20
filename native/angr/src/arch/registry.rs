@@ -4,7 +4,7 @@
 //! supported architecture, the spellings [`arch_desc_from_name`] accepts for
 //! it, and the constructors for its [`Arch`] and
 //! [`CallingConvention`] singletons; `arch/mod.rs` re-exports the lookups so
-//! `crate::arch::arch_from_name` keeps working. Extracted in angr-5mnx3.1.
+//! `crate::arch::arch_from_name` keeps working (angr-5mnx3.1).
 
 use super::*;
 

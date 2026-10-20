@@ -8,7 +8,7 @@
 // right up until a plain `add_hook` on that same address re-opens the gate and
 // resurrects the stale SimProcedure. Every mutator that removes an address
 // must therefore remove it from BOTH maps (`unregister_simprocedures` always
-// did; `clear_hooks` did not — angr-sqfj8.30).
+// does, and so must `clear_hooks`) (angr-sqfj8.30).
 use super::*;
 
 /// `clear_hooks` clears the SimProcedure table too, so a later plain

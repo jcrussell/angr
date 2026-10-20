@@ -5,11 +5,10 @@
 //! fields).
 //!
 //! Sibling of `register_file_tests.rs`, which holds the [`RegisterFile`]
-//! get/put/merge/fork/serde tests. Split out of `mod_tests.rs` in angr-6cp06.76
-//! along the same seam round 6 (angr-5mnx3.1) used to split `arch/mod.rs` into
-//! `register_file.rs` + `registry.rs`: the register-file regression tests and
-//! the unrelated architecture-registry sweeps sat interleaved in one 1595-line
-//! file.
+//! get/put/merge/fork/serde tests. The split follows the same seam as
+//! `arch/mod.rs` into `register_file.rs` + `registry.rs`: the register-file
+//! regression tests and the unrelated architecture-registry sweeps are kept
+//! apart.
 
 use super::*;
 
@@ -304,7 +303,7 @@ fn test_all_arches_report_expected_special_register_offsets() {
             expect.ip_name,
         );
         // Every arch must also answer to the architecture-independent `"pc"`
-        // spelling (angr-9ke6b.217 closed the X86/AMD64 gap); archinfo defines
+        // spelling (angr-9ke6b.217); archinfo defines
         // it on all six, and a direct Rust-level `set_register("pc", ...)`
         // never passes through `RustStateProxy._canonical_name`.
         assert_eq!(
@@ -376,9 +375,9 @@ fn test_all_arches_resolve_their_alias_spellings() {
 
 /// `lookup_register_offset`/`lookup_register_size` promise case-insensitive
 /// matching, but every caller in-tree passes an already-lowercase name, so
-/// nothing else would notice if a refactor dropped the property (it was an
-/// allocating `to_lowercase()` before angr-c7xno.4 swapped in
-/// `eq_ignore_ascii_case`).
+/// nothing else would notice if a refactor dropped the property (the
+/// implementation is `eq_ignore_ascii_case`, not an allocating
+/// `to_lowercase()`; angr-c7xno.4).
 #[test]
 fn test_all_arches_resolve_register_names_case_insensitively() {
     for desc in ALL_ARCHES {

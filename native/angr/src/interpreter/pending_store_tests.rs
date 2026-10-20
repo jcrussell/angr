@@ -138,8 +138,8 @@ fn store_wrapping_past_the_top_of_the_address_space() {
     // A store based at u64::MAX - 3 covers MAX-3..=MAX and then 0..=3.
     // `push` indexes those bytes with `wrapping_add` and `try_load` recovers
     // the offset with the matching `wrapping_sub`; under
-    // `--profile release-checked` the pre-angr-xloth.3 `addr + offset` /
-    // `addr - store_addr` pair panicked instead (angr-xloth.3).
+    // `--profile release-checked` a bare `addr + offset` /
+    // `addr - store_addr` pair would panic instead (angr-xloth.3).
     let base = u64::MAX - 3;
     let mut buf = PendingStoreBuffer::with_capacity(4);
     buf.push(base, vec![10, 11, 12, 13, 14, 15, 16, 17]);
@@ -297,7 +297,7 @@ fn assembled_load_after_drain_misses() {
 
 #[test]
 fn partial_load_reports_covered_bytes_and_holes() {
-    // The shape angr-6cp06.88 is about: 1 byte stored at 0x100, 2 bytes read
+    // The partial-coverage shape (angr-6cp06.88): 1 byte stored at 0x100, 2 bytes read
     // from 0x100. `try_load`/`try_load_assembled` both miss; the partial
     // gather reports the buffered byte and a hole the caller fills from the
     // layers below.

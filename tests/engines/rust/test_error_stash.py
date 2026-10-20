@@ -185,8 +185,8 @@ class TestErrorRecovery:
         would diverge from Python angr (which raises SimUnsatError /
         SimMemoryAddressError under STRICT_PAGE_ACCESS).
 
-        Locks down current behaviour for angr-ho6i: if the engine ever silently
-        keeps the state in `active`, this test fails and a real bug is filed.
+        Locks down current behaviour (angr-ho6i): if the engine ever silently
+        keeps the state in `active`, this test fails.
         """
         from angr import claripy
         from angr import sim_options as o
@@ -291,8 +291,8 @@ class TestErrorRecovery:
         state.memory.store(0x7FFFFE00, b"\x00" * 8)
 
         # save_unconstrained=True: the shellcode is `cmpxchg16b [rdi]; ret`,
-        # and the trailing ret runs against an empty call stack — angr-3uye.2
-        # routes that to the unconstrained stash. Without saving it, the
+        # and the trailing ret runs against an empty call stack, which routes
+        # to the unconstrained stash (angr-3uye.2). Without saving it, the
         # post-step state would be dropped before we can inspect memory.
         mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
         mgr.enable_profiling()
@@ -320,12 +320,12 @@ class TestErrorRecovery:
         `execute_cas_stmt`. When RAX matches `[m64]`, the data is stored
         and memory ends up holding the source register's value.
 
-        Locks down the angr-4enc fix to the IRSB serializer: pyvex reports
-        `oldHi=0xFFFFFFFF` (IRTemp_INVALID sentinel) for single-word CAS
-        and the Python-side JSON bridge has to map the sentinel to None
-        so the Rust validation accepts the all-Some/all-None shape.
-        Before the fix this test errored with "CAS: oldHi/expdHi/dataHi
-        must be all-Some (DCAS) or all-None (single)".
+        Locks down the IRSB serializer's sentinel mapping (angr-4enc): pyvex
+        reports `oldHi=0xFFFFFFFF` (IRTemp_INVALID sentinel) for single-word
+        CAS and the Python-side JSON bridge has to map the sentinel to None
+        so the Rust validation accepts the all-Some/all-None shape. Without
+        it this test errors with "CAS: oldHi/expdHi/dataHi must be all-Some
+        (DCAS) or all-None (single)".
         """
         from angr import claripy
 
@@ -467,10 +467,9 @@ class TestErrorRecovery:
 
     def test_unsat_state_pruned_during_step(self):
         """State with pre-existing contradictory constraints (x>100 AND x<50)
-        must NOT remain in `active` after stepping. Locks down behaviour for
-        angr-eldx — engine eagerly checks fork satisfiability and prunes
-        UNSAT children, so an UNSAT parent is evicted via the prune path
-        rather than silently advancing.
+        must NOT remain in `active` after stepping. The engine eagerly checks
+        fork satisfiability and prunes UNSAT children, so an UNSAT parent is
+        evicted via the prune path rather than silently advancing (angr-eldx).
         """
         from angr import claripy
 
@@ -512,9 +511,8 @@ class TestErrorRecovery:
 
     def test_solver_eval_after_unsat(self):
         """Evaluating an expression on an UNSAT solver should return None, not crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -527,9 +525,8 @@ class TestErrorRecovery:
 
     def test_solver_min_on_unsat(self):
         """min() on UNSAT solver should return None, not crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -541,9 +538,8 @@ class TestErrorRecovery:
 
     def test_solver_eval_upto_on_unsat(self):
         """eval_upto() on UNSAT solver returns empty list, not crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -555,9 +551,8 @@ class TestErrorRecovery:
 
     def test_solver_many_constraints(self):
         """Solver handles many constraints without crashing."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -571,9 +566,8 @@ class TestErrorRecovery:
 
     def test_solver_fork_many_times(self):
         """Forking solver many times should not leak or crash."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -738,7 +732,7 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected bug"):
             mgr._cb_memory_store(0x1000, b"\x41\x42\x43\x44")
 
-    # angr-2f7o: extend the angr-8e81 contract to the remaining callbacks.
+    # The remaining callbacks follow the same contract (angr-2f7o, angr-8e81).
     # Each callback must:
     #   1. swallow Sim*/Claripy/PyVEX errors (legitimate symbolic-engine failures)
     #   2. propagate RuntimeError (or any other unrelated exception) so real
@@ -750,9 +744,9 @@ class TestErrorRecovery:
         through _state_cache rather than _callback_state.
 
         _get_default_state() returns the *first* cache entry
-        (``next(iter(_state_cache.values()))``). Since angr-hv4lt.7,
-        RustExplorationManager construction caches a private *copy* of the
-        seed under its Rust state id, so that copy is the first entry — not
+        (``next(iter(_state_cache.values()))``). RustExplorationManager
+        construction caches a private *copy* of the seed under its Rust state
+        id (angr-hv4lt.7), so that copy is the first entry — not
         the `state` this helper receives. Clear the cache first so the
         injected object is the sole (hence first) entry and the callbacks
         read through to the memory this test set up on it."""
@@ -835,9 +829,9 @@ class TestErrorRecovery:
         dirty; the next lift must call _cb_lift_block with dirty_bytes from
         rust_memory (not None / not the cle static buffer).
 
-        This locks down the angr-kwwd contract: without the fix, _cb_lift_block
-        is called with dirty_bytes=None and lifts cle's stale binary buffer,
-        causing the engine to execute the pre-store instructions.
+        This locks down the SMC dirty-bytes contract (angr-kwwd): otherwise
+        _cb_lift_block is called with dirty_bytes=None and lifts cle's stale
+        binary buffer, causing the engine to execute the pre-store instructions.
         """
         import angr.sim_options as o
 
@@ -878,7 +872,6 @@ class TestErrorRecovery:
         # everywhere — the engine then treats the jmp at 0x100d as an
         # UnmodeledCall and never lifts 0x1010. Register the shellcode
         # bytes manually so 0x1000-0x1011 counts as "in binary".
-        # See bd memory load-shellcode-blob-binary-none.
         mgr._rust_mgr.load_binary_regions([(0x1000, shellcode)])
 
         # Wrap _cb_lift_block to record (addr, dirty_bytes) for each call,
@@ -1101,8 +1094,8 @@ class TestErrorRecovery:
         covers every live callback site; non-zero here signals a callback
         site forgot to attach the Rust solver context. The legacy Path B
         constraint-sync counters (cb_sync_calls, cb_sync_constraints,
-        cb_sync_failures, pending_ast_sync_calls) were retired in this
-        bead after a 20-bench soak proved they stayed at 0."""
+        cb_sync_failures, pending_ast_sync_calls) are retired and must not
+        reappear."""
         mgr, _ = self._build_load_store_manager()
         stats = mgr.stats
         assert stats["rust_ctx_missing"] == 0
@@ -1327,9 +1320,9 @@ class TestErrorRecovery:
         assert state.solver.eval(result) == 0xDEADBEEF
 
     def test_cb_memory_store_symbolic_full_swallows_sim_memory_error(self):
-        """SimMemoryError from state.memory.store() must be swallowed (matches
-        the angr-8e81 / angr-2f7o convention used by the other symbolic
-        callbacks). Otherwise Rust's flush_stores() path would propagate the
+        """SimMemoryError from state.memory.store() must be swallowed, matching
+        the convention used by the other symbolic callbacks (angr-8e81, angr-2f7o).
+        Otherwise Rust's flush_stores() path would propagate the
         error and tear down exploration."""
         from angr import claripy
         from angr.errors import SimMemoryError
@@ -1412,7 +1405,7 @@ class TestErrorRecovery:
     # back to Python's state.memory.store.  These tests pin the routing
     # contract.  End-to-end correctness of the Rust Multi-cell helpers
     # themselves is covered by Rust unit tests in
-    # native/angr/src/memory/tests.rs (Phase 1.3 / angr-aija).
+    # native/angr/src/memory/tests.rs (angr-aija).
 
     def test_try_multi_cell_store_skips_when_no_annotation(self):
         """No MultiwriteAnnotation on addr → fall through (return False).
@@ -1727,9 +1720,8 @@ class TestErrorRecovery:
         """
         import time
 
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         ctx.set_timeout(50)  # 50ms — far smaller than the 5s assertion bound

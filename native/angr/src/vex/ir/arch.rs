@@ -131,10 +131,9 @@ impl JumpKind {
     /// Python treats these as unexecutable: `engines/failure.py`'s
     /// `SimEngineFailure::process_successors` raises `AngrExitError` for any
     /// `Ijk_Sig*` parent jumpkind, so such a successor always ends up in the
-    /// errored stash. Before angr-sqfj8.111 `parse_jumpkind` had no variants
-    /// for them at all and folded every one into `Boring`, so a native `int3`
-    /// or `ud2` continued executing as an ordinary fallthrough — a silently
-    /// wrong answer with no diagnostic trail.
+    /// errored stash. Folding them into `Boring` would let a native `int3`
+    /// or `ud2` continue executing as an ordinary fallthrough — a silently
+    /// wrong answer with no diagnostic trail (angr-sqfj8.111).
     ///
     /// `Ijk_Privileged` joins them: the guest took a privilege fault, and
     /// continuing straight-line is equally wrong. `Ijk_NoRedir` does not — it

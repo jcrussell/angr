@@ -327,8 +327,8 @@ pub(crate) fn materialize_bounce_forks(
 /// Resolve an eager-mode symbolic branch natively (angr-gorvf.14).
 ///
 /// The interpreter only emits `RunResult::SymbolicBranch` when deferred forks
-/// are off (`ExecutionConfig::use_deferred_forks == false` — the angr-027h
-/// phase-2 eager retry), where a symbolic guard forks *both* directions at
+/// are off (`ExecutionConfig::use_deferred_forks == false`, the phase-2 eager
+/// retry) (angr-027h), where a symbolic guard forks *both* directions at
 /// once instead of deferring one. This used to park the state and bounce to
 /// Python, but the Python handler did no work the core cannot do: it re-derived
 /// the guard as a claripy AST only to hand back constraints that

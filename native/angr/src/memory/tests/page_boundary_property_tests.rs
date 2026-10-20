@@ -1,5 +1,5 @@
 //! Property-based tests for concrete `SymbolicMemory` read/write round-trips
-//! that straddle a page boundary (angr-qwyti.13, item 2 of angr-qwyti.5).
+//! that straddle a page boundary (angr-qwyti.13, angr-qwyti.5).
 //!
 //! Two adjacent pages are mapped (`0x1000..0x3000`) and a concrete value is
 //! stored at an address whose byte range crosses the `0x2000` boundary. The

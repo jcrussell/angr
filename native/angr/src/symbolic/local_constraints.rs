@@ -79,9 +79,8 @@ impl LocalConstraints {
     ///
     /// Callers must already know `b` is not present: this records the ptr
     /// but never *consults* the set. There is deliberately no bulk sibling —
-    /// the one that existed (`extend_assertions`) was the whole of
-    /// angr-5mnx3.43, letting `add_constraints_raw_batch` re-push and
-    /// re-assert already-asserted constraints. A bulk caller wanting dedup
+    /// a bulk `extend_assertions` let `add_constraints_raw_batch` re-push and
+    /// re-assert already-asserted constraints (angr-5mnx3.43). A bulk caller wanting dedup
     /// should loop over [`SymContext::seed_and_check_z3_dedup`], which
     /// pushes on a miss, exactly as `add_constraints_raw_batch` now does.
     pub(super) fn push_assertion(&mut self, b: z3::ast::Bool) {

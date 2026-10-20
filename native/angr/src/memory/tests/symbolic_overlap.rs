@@ -150,7 +150,7 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     );
 }
 
-/// angr-9ke6b.97: the same angr-3zhl partial-overlap merge must hold on the
+/// angr-9ke6b.97: the same partial-overlap merge (angr-3zhl) must hold on the
 /// *lazy* load path. Before `load_concrete` and `load_concrete_lazy_inner`
 /// were unified behind `load_concrete_common`, the inner-overlap scan lived
 /// only in the eager copy, so `load_concrete_lazy` — the path behind every
@@ -424,8 +424,8 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
 /// a live object that no longer reaches them — and the page bitmap still said
 /// symbolic. A later load of a tail byte followed that span into an
 /// out-of-range extract and hard-failed with `SymbolicAddress`, so a readable
-/// byte became an error. Mirrors the concrete branch's angr-7qon semantics:
-/// the tail reclassifies as concrete.
+/// byte became an error. Mirrors the concrete branch's semantics: the tail
+/// reclassifies as concrete (angr-7qon).
 // Reads a symbolic span back as a concrete value through the solver
 // (angr-9ke6b.236).
 #[test]

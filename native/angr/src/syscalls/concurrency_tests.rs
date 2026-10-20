@@ -68,8 +68,8 @@ fn futex_symbolic_op_returns_error() {
 
 /// The guard threshold must match the declared `num_args()` (6), not the
 /// weaker `< 2` it used to check — a short arg list is a caller bug, and
-/// the error message has always claimed 6. Since angr-12jjk.17 the guard is
-/// `require_syscall_args!`, which reads `num_args()` / `name()` directly, so
+/// the error message claims 6. The guard is
+/// `require_syscall_args!` (angr-12jjk.17), which reads `num_args()` / `name()` directly, so
 /// this also pins the macro's message format for every handler.
 #[test]
 fn futex_rejects_short_arg_list() {
@@ -132,7 +132,7 @@ fn stub_handlers_return_fresh_symbolic_on_all_arches() {
                 "{arch} {label} successive calls must yield distinct symbols"
             );
 
-            // Solver-distinctness (regression guard for angr-8o7w): the two
+            // Solver-distinctness (regression guard, angr-8o7w): the two
             // returns must be *satisfiably unequal*, not merely distinct
             // RustBV ids. A fixed Z3 name minted twice aliases to the same
             // `new_const`, making `ret1 != ret2` unsatisfiable even though

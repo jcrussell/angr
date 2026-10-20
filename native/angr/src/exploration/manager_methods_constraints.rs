@@ -388,7 +388,7 @@ impl RustExplorationManager {
     /// heap-allocating procedures (malloc/calloc/realloc/strdup/fopen) bump
     /// this via `heap_alloc`; Python imports it on stash export so a Python
     /// fallback SimProcedure doesn't hand out an address Rust already
-    /// allocated. See bead angr-um39j.
+    /// allocated (angr-um39j).
     pub fn get_state_heap_brk(&self, state_id: u64) -> PyResult<u64> {
         self._get_state_heap_brk(state_id)
     }

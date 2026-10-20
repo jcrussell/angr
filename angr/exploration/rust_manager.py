@@ -237,9 +237,7 @@ _REJECTED_OPTION_NAMES = frozenset(
         # angr/analyses/veritesting.py (resilience= kwarg passed to nested
         # SimulationManager.run). That analysis builds its own Python
         # SimulationManager, so it never runs on the Rust engine and the
-        # option can have no effect there. (It used to be reachable only
-        # behind the EFFICIENT_STATE_MERGING raise; that option was demoted
-        # in angr-op0dn.11.6, so this comment no longer leans on it.)
+        # option can have no effect there.
         # Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
         # no-op — `resilience` bundle users carry it implicitly. Reject with
         # a warn-once rather than raise so adding `angr.options.resilience`
@@ -380,11 +378,11 @@ _REJECTED_OPTION_NAMES = frozenset(
 #
 # CGC_NON_BLOCKING_FDS is NOT promoted either: the native `fdwait`
 # (syscalls/cgc.rs NativeFdwaitSyscall) implements exactly the
-# option-is-set behavior, and since angr-op0dn.14.8 it falls back to
-# Python when the option is unset — where the Python proc's
-# unconstrained ready bits are produced. Honored in both directions.
+# option-is-set behavior, and it falls back to Python when the option is
+# unset — where the Python proc's unconstrained ready bits are produced
+# (angr-op0dn.14.8). Honored in both directions.
 #
-# TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (demoted angr-fkvt). Unlike its TRACK_*_ACTIONS siblings, it does not gate
+# TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (angr-fkvt). Unlike its TRACK_*_ACTIONS siblings, it does not gate
 # action recording — angr's heavy/actions.py only consults
 # TRACK_REGISTER_ACTIONS / TRACK_MEMORY_ACTIONS to populate
 # state.history.recent_events. TRACK_ACTION_HISTORY's only consumer in
@@ -411,7 +409,7 @@ _RAISE_OPTION_NAMES = frozenset(
         "BYPASS_ERRORED_IROP",
         "BYPASS_ERRORED_IRCCALL",
         "BYPASS_ERRORED_IRSTMT",
-        # PRODUCE_ZERODIV_SUCCESSORS (promoted angr-op0dn.14.9). Python's
+        # PRODUCE_ZERODIV_SUCCESSORS (angr-op0dn.14.9). Python's
         # zero-division path is a *lifting* one: irop.py raises
         # SimZeroDivisionException on a concrete zero divisor, the resilience
         # mixin turns that into an `Ijk_SigFPE_IntDiv` exit, and
@@ -656,9 +654,8 @@ def _apply_deterministic_z3_globals() -> None:
     ``deterministic=True``.
 
     Caveat: Z3 4.13 still reserves variable / restart heuristic latitude
-    that is not bound by these seeds. See angr-iaol.1 close-out memory
-    ``iaol1-seed-pin-empirically-broken`` for the full audit and the
-    rust_engine.rst "Deterministic mode" section for user-facing docs.
+    that is not bound by these seeds (bd memory `iaol1-seed-pin-empirically-broken`).
+    See the rust_engine.rst "Deterministic mode" section for user-facing docs.
     """
     global _z3_deterministic_applied
     if _z3_deterministic_applied:
@@ -682,8 +679,7 @@ def _warn_if_parallel_nondeterministic() -> bool:
     combination is legitimate when only the found *set* matters.
 
     Returns True when the warning fired (multi-worker + deterministic).
-    Deliberately does NOT touch Z3's parallel mode — see bd memory
-    ``avoid-z3-parallel-enable``.
+    Deliberately does NOT touch Z3's parallel mode (bd memory `avoid-z3-parallel-enable`).
 
     Enforcement-level asymmetry (intentional, not a bug): the *explicit*
     ``parallel_workers>1`` kwarg combined with ``deterministic=True`` is a
@@ -1225,8 +1221,8 @@ class RustExplorationManager(
             active_states: Optional list of initial angr SimStates.
             save_unconstrained: If True (the default, as in angr's
                 ``SimulationManager``), save states with unconstrained IP to
-                the 'unconstrained' stash instead of dropping them
-                (angr-x39ae: the old False default silently dropped them).
+                the 'unconstrained' stash instead of silently dropping them
+                (angr-x39ae).
             solver_timeout_ms: Z3 solver timeout in milliseconds (default: 30000).
             max_active_states: Maximum number of states in the active stash.
                 When reached, new forked states are pruned to the ``pruned``
@@ -1624,7 +1620,7 @@ class RustExplorationManager(
         # (the extern-object stubs). On a dynamically-linked binary loaded with
         # ``auto_load_libs=True, use_sim_procedures=True`` every libc hook lands
         # inside the loaded libc's .text, so that would send all of them to
-        # Python. On (the default since angr-gorvf.6) the native registry serves
+        # Python. On (the default; angr-gorvf.6) the native registry serves
         # those hooks too; main-object hooks still go to Python, preserving
         # ``proj.hook()`` overrides. It was off while the native string procs
         # scanned a wider symbolic window than angr's Python ones and could
@@ -1652,11 +1648,10 @@ class RustExplorationManager(
         self._stats_hook_sync_calls = 0  # _sync_hooks_before_step invocations
         self._stats_hook_sync_skips = 0  # fast-path skips (no new hooks)
         self._stats_time_in_callbacks_ns = 0  # cumulative time in callback code
-        # angr-bs71/h0dv: defensive counter for Path A (rust_solver_ctx attach)
-        # regressions. Stays at 0 in production; non-zero means a callback site
-        # forgot to attach rust_solver_ctx and Python's solver may diverge from
-        # Rust's. The legacy Path B (Rust→Python constraint AST push) was
-        # removed in angr-h0dv after a 20-bench soak proved it was dead.
+        # Defensive counter for rust_solver_ctx attach regressions. Stays at 0
+        # in production; non-zero means a callback site forgot to attach
+        # rust_solver_ctx and Python's solver may diverge from Rust's. There is
+        # no Rust→Python constraint AST push to fall back on (angr-h0dv).
         self._stats_rust_ctx_missing = 0
         # angr-ymoe: orphan-BVS fallback counters. Both paths mint a Python
         # claripy.BVS that has no Rust counterpart — measure how often they
@@ -1764,9 +1759,9 @@ class RustExplorationManager(
 
         # Maximum state cache size. Cache is bounded to the in-flight callback
         # state plus a small LRU window of recently-mutated states; root states
-        # are pinned and never count against the cap. Pre-angr-qm7w this was
-        # 500 and the cache tracked O(active_states), making it the dominant
-        # driver of Python-side memory growth.
+        # are pinned and never count against the cap. A cache that tracked
+        # O(active_states) was the dominant driver of Python-side memory
+        # growth (angr-qm7w).
         self._max_state_cache_size = 8
 
         # Track current callback state for memory access during callbacks
@@ -2002,7 +1997,7 @@ class RustExplorationManager(
                 # Park the un-advanced seed so `explore()` can route it to FOUND
                 # if the caller's find targets that address (vanilla angr's
                 # Explorer matches it at filter() time, before any step).
-                # The angr-027h phase-2 retry re-activates copies of the same
+                # The phase-2 retry (angr-027h) re-activates copies of the same
                 # seeds mid-explore; parking them again would double-report the
                 # find (angr-bdeqa), so only the original activation parks.
                 if state.addr != seed_addr and not getattr(self, "_phase2_reseeding", False):
@@ -2120,7 +2115,7 @@ class RustExplorationManager(
             ("Avoid predicate", "avoid_predicate"),
             ("Symbolic branch", "symbolic_branch"),
             ("Python VEX fallback", "vex_fallback"),
-            ("Posix inject", "posix"),  # angr-afbx
+            ("Posix inject", "posix"),  # (angr-afbx)
         ):
             count = s.get(f"callback_{key}_count", 0)
             ns = s.get(f"callback_{key}_total_ns", 0)
@@ -2205,8 +2200,8 @@ class RustExplorationManager(
         # auto-wires registration. Read directly from the module rather
         # than self._INSPECT_EVENT_BITS so this method works even before
         # __init__ has finished. The hasattr() check tolerates older .so
-        # builds. Skip events whose dispatch fires from Python (angr-xmfj —
-        # simprocedure/syscall/dirty); they have no PythonCallbacks slot
+        # builds. Skip events whose dispatch fires from Python
+        # (simprocedure/syscall/dirty; angr-xmfj); they have no PythonCallbacks slot
         # because the Rust engine never invokes them.
         from angr.exploration.rust_state_proxy import (
             _RUST_INSPECT_EVENT_BITS,
@@ -2303,8 +2298,8 @@ class RustExplorationManager(
                         # angr-ymoe: no fires across the fast-tier
                         # benches. Path is dead in practice; counter acts as a watchdog
                         # — if it ever goes non-zero, escalate to a Rust-side fresh
-                        # symbol (see angr-4pm1's _set_state_register_symbolic_ast
-                        # FFI shim for the pattern).
+                        # symbol (the _set_state_register_symbolic_ast FFI shim
+                        # shows the pattern).
                         if _DBG:
                             l.debug(f"Memory load thunk at 0x{addr:x} failed to resolve, creating symbolic")
                         val = claripy.BVS(f"mem_thunk_{addr:x}", size * 8)
@@ -2941,7 +2936,7 @@ class RustExplorationManager(
 
         Returns the RustInspectProxy after dispatch so callers can read
         back attributes the user's BP action may have mutated (value
-        injection — angr-uy32). Returns ``None`` when no BP fired (reentrancy
+        injection, angr-uy32). Returns ``None`` when no BP fired (reentrancy
         guard, bitmask race, or no live state), in which case nothing was
         mutated and the caller should keep its original value.
         """
@@ -3023,7 +3018,7 @@ class RustExplorationManager(
         """PyO3 callback target for mem_read events from Rust.
 
         Returns the possibly-mutated ``mem_read_expr`` AST when the user's
-        BP action overrode it (value injection — angr-uy32); the Rust caller
+        BP action overrode it (value injection, angr-uy32); the Rust caller
         substitutes it for the loaded value. Returns ``None`` when unchanged,
         so the original load result stands.
         """
@@ -3051,7 +3046,7 @@ class RustExplorationManager(
         """PyO3 callback target for mem_write events from Rust.
 
         Returns the possibly-mutated ``mem_write_expr`` AST when a BP_BEFORE
-        action overrode it (value injection — angr-inh0); the Rust caller
+        action overrode it (value injection, angr-inh0); the Rust caller
         substitutes it for the stored value before commit. Returns ``None``
         when unchanged (and always for ``when='after'``, post-commit), so the
         original store value stands.
@@ -3361,7 +3356,7 @@ class RustExplorationManager(
         BEFORE).
 
         Returns the possibly-mutated ``dirty_result`` when the user's BP
-        action overrode it (short-circuit / value injection — angr-uy32);
+        action overrode it (short-circuit / value injection, angr-uy32);
         `_cb_dirty_call` substitutes it for the handler's result. Returns
         ``None`` when unchanged (or no BP fired), so the original result
         stands.
@@ -3972,7 +3967,7 @@ class RustExplorationManager(
         )
 
     # Maximum concretized file size (bytes) eligible for the Rust-side
-    # symbolic-content export (angr-0xyq2 Phase 3 v1 scope gate). One RustBV
+    # symbolic-content export (the v1 scope gate; angr-0xyq2). One RustBV
     # per byte, so this bounds both export time and per-state memory.
     _FS_EXPORT_MAX_FILE_SIZE = 65536
 
@@ -4023,7 +4018,7 @@ class RustExplorationManager(
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: stdin seeding failed; native read(0)
             # mints fresh symbols, so the harness's BVS stays unconstrained on
-            # exported states (the pre-angr-mb09c behavior). Debug-logs.
+            # exported states. Debug-logs.
             l.debug("stdin seed push failed for state %d: %s: %s", state_id, type(e).__name__, e)
 
     # Caps for the initial-environment bridge (`_seed_environ_to_rust`): at most
@@ -4116,15 +4111,14 @@ class RustExplorationManager(
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: initial-environment push failed; the
             # Rust environment map stays empty, so native getenv returns NULL
-            # for vars the harness passed via entry_state(env=...) (the
-            # pre-angr-6cp06.12 behavior). Debug-logs.
+            # for vars the harness passed via entry_state(env=...). Debug-logs.
             l.debug("environ seed push failed for state %d: %s: %s", state_id, type(e).__name__, e)
 
     def _export_fs_files_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
         """Export eligible ``state.fs._files`` entries into the Rust
-        FileSystem's path-keyed symbolic-content registry (angr-0xyq2
-        Phase 3), so a native guest ``open()`` attaches the content and
-        reads are served in Rust instead of bouncing to Python.
+        FileSystem's path-keyed symbolic-content registry, so a native
+        guest ``open()`` attaches the content and reads are served in Rust
+        instead of bouncing to Python (angr-0xyq2 Phase 3).
 
         Scope gate (v1) — a file is exported iff ALL of:
 
@@ -4336,8 +4330,8 @@ class RustExplorationManager(
             l.debug("libc ctype table-ptr init push failed: %s", e)
 
         # Push the loader-resolved guest addresses of the getopt(3) extern
-        # globals (optind/optarg/optopt) so the native getopt proc (bead
-        # angr-bhk0a.2) can write the cursor/optarg/optopt back to guest
+        # globals (optind/optarg/optopt) so the native getopt proc
+        # can write the cursor/optarg/optopt back to guest
         # memory the way real getopt does. Python is the only side with
         # loader.find_symbol, so this is a Python->native init-push (mirrors
         # the ctype table-ptr channel above, not the Rust->Python posix_brk
@@ -4750,8 +4744,7 @@ class RustExplorationManager(
         ``_check_limits``) and right after a batch's steps are counted: a run
         that finds its target inside a single native batch breaks out of the
         loop without a second limit check, so without the post-batch call the
-        callback would never fire at all (angr-gorvf.15 — the SimProcedure
-        bounces that used to chop fauxware into many iterations are gone).
+        callback would never fire at all (angr-gorvf.15).
         """
         cb = getattr(self, "_progress_callback", None)
         if cb is not None:
@@ -4799,12 +4792,11 @@ class RustExplorationManager(
 
         Args:
             strategy: 'bfs' (FIFO), 'dfs' (LIFO), 'random' (uniformly-random
-                active-state selection; angr-a32jl.2 prototype), 'coverage'
-                (new-block-first; angr-m9fpp prototype), 'loop_head'
-                (round-robin over (loop-head, callstack-class) buckets;
-                angr-caplg prototype), 'directed' (CFG-distance beam search;
-                angr-a32jl.4), or 'find_directed' (novelty/CFG-distance find-first
-                dispatch under num_find=1; angr-lnzcu). All non-default strategies
+                active-state selection), 'coverage' (new-block-first),
+                'loop_head' (round-robin over (loop-head, callstack-class)
+                buckets), 'directed' (CFG-distance beam search), or
+                'find_directed' (novelty/CFG-distance find-first dispatch under
+                num_find=1). All non-default strategies
                 are opt-in only.
             seed: SplitMix64 seed for 'random' — fixes the selection stream so a
                 run is reproducible. Ignored for the other strategies.
@@ -5155,7 +5147,7 @@ class RustExplorationManager(
     def _engage_parallel_workers(self, eligible: bool) -> None:
         """Apply the programmatic ``parallel_workers=`` request for this explore.
 
-        angr-op0dn.13.5 (M5-B16). Precedence and eligibility, in order:
+        Precedence and eligibility, in order (angr-op0dn.13.5):
 
         * ``RUST_PARALLEL_WORKERS`` env set — the env value was already applied
           once in Rust ``new()`` and wins for eligible explores (benches set it
@@ -5179,8 +5171,8 @@ class RustExplorationManager(
         What keeps steady opt-in is *performance*, not correctness: it is
         net-negative on the CTF corpus and actively hurts ``num_find=1`` first-find
         explores (barrier-free speculative waste), reaching only parity on the
-        exhaustive partial-bounce workloads it targets (bd memory
-        ``steady-state-loop-opt-in-net-negative-corpus``). Auto-arming it for every
+        exhaustive partial-bounce workloads it targets
+        (bd memory `steady-state-loop-opt-in-net-negative-corpus`). Auto-arming it for every
         eligible address-based explore would regress those benches, so the kwarg
         engages the wave loop only; steady stays an explicit ``RUST_PARALLEL_STEADY``
         opt-in for the exhaustive workloads that benefit.
@@ -5934,7 +5926,7 @@ class RustExplorationManager(
     def _found_count(self) -> int:
         """Fast count of found states without triggering full state export/sync."""
         # Rust's found stash holds every find, predicate matches included
-        # (angr-hc1yj: adding _predicate_found double-counted them).
+        # (adding _predicate_found would double-count them; angr-hc1yj).
         return len(self._rust_mgr.get_state_ids("found"))
 
     # ``active`` / ``avoid`` / ``deadended`` / ``unconstrained`` / ``pruned``
@@ -6567,8 +6559,8 @@ class RustExplorationManager(
         does NOT remove the sources, so we drop them afterwards (matching the
         Python path's ``_merge_drop`` dance).
 
-        The native path never exports state, so the angr-qluof re-demotion dance
-        is unnecessary: the merged state inherits its base's demoted
+        The native path never exports state, so the symbolic-file re-demotion
+        dance is unnecessary (angr-qluof): the merged state inherits its base's demoted
         symbolic-file paths directly (no ``_export_fs_files_to_rust`` re-arms
         them). ``states_merged_native`` is surfaced Rust-side by ``merge_states``.
 
@@ -6812,8 +6804,7 @@ class RustExplorationManager(
         through a *Python* SimProcedure keeps its post-bounce symbolic values
         only in those overlays: drop them and the resumed state reads those
         addresses as unconstrained, never forks on them, and the whole
-        deferred-fork subtree below it is lost (angr-op0dn.13.14 — a serial
-        resume drained 4-6 of 8 leaves where a live run drains 8).
+        deferred-fork subtree below it is lost (angr-op0dn.13.14).
         """
         out: dict[int, dict[str, dict]] = {}
         for stash in self.stash_counts():
@@ -6876,8 +6867,7 @@ class RustExplorationManager(
                 self._rust_mgr.set_state_addr_to_ast(sid, addr, ast, size)
 
     def load_snapshot(self, path: str) -> None:
-        """Restore a stash-manager snapshot from ``path`` (opt-in,
-        angr-x04s.1.4).
+        """Restore a stash-manager snapshot from ``path`` (opt-in; angr-x04s.1.4).
 
         Inverse of :meth:`dump_snapshot`. Replaces every stash in this
         manager wholesale; manager-level configuration (find/avoid addrs,
@@ -6917,8 +6907,8 @@ class RustExplorationManager(
         self._invalidate_state_export_cache()
         self._reset_python_shadow_maps_for_restore()
         # angr-op0dn.13.12: the restored frontier — not the state this manager
-        # was constructed with — is now the exploration's root. The angr-027h
-        # phase-2 eager retry re-seeds `_initial_seed_states`, i.e. the caller's
+        # was constructed with — is now the exploration's root. The phase-2
+        # eager retry (angr-027h) re-seeds `_initial_seed_states`, i.e. the caller's
         # pre-load placeholder state (`load_from_disk` passes none at all), which
         # would restart the exploration from a path the user never asked to
         # resume and additionally flip `use_deferred_forks` off globally (on the
@@ -6931,8 +6921,8 @@ class RustExplorationManager(
     def _reset_python_shadow_maps_for_restore(self) -> None:
         """Drop the id-keyed Python shadow maps across a snapshot restore.
 
-        Python half of angr-fs8kb.89 (which cleared the Rust
-        ``ConstraintTracker``'s three per-run sets in ``load_snapshot_bytes``).
+        The Python counterpart of ``load_snapshot_bytes`` clearing the Rust
+        ``ConstraintTracker``'s per-run sets (angr-fs8kb.89).
 
         ``StashManager::from_snapshot`` rebuilds ``state_index`` from each
         state's own serialized ``state_id``, so a restore into a *live* manager
@@ -6993,8 +6983,7 @@ class RustExplorationManager(
                 :meth:`dump_snapshot` writes.
             project: angr Project matching the binary the snapshot was
                 captured against. The caller is responsible for the match
-                — there is no cross-check today (binary-hash field is a
-                planned ``angr-x04s.2`` follow-up).
+                — there is no binary-hash cross-check.
             **kwargs: Passed through to ``__init__`` so manager-level
                 configuration (``solver_timeout_ms``, ``max_active_states``,
                 ``max_history``, ``exploration_strategy``, …) can be

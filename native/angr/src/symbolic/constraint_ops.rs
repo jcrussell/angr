@@ -16,8 +16,7 @@
 //! (== `pub(in crate::symbolic)`) so this sibling module can reach them
 //! without a public API leak. The read-path caches
 //! `sat_cache`/`model_cache` and the `constraint_count`/`lineage`/`scope_path`
-//! fields were already `pub(super)` from earlier slices. See bead angr-a2br.2.4
-//! for the slice plan.
+//! fields were already `pub(super)` (angr-a2br.2.4).
 
 use super::RustBV;
 use super::SymContext;
@@ -404,9 +403,8 @@ impl SymContext {
             .into_iter()
             .map(|(ast, bv, is_true)| (ast, (bv, is_true)))
             .unzip();
-        // angr-sfp9's ptr-keyed dedup, retrofitted onto the batch path
-        // (angr-5mnx3.43): this API predates the dedup mechanism by a week
-        // and used to push/assert/count every entry unconditionally, so a
+        // The ptr-keyed dedup on the batch path (angr-sfp9, angr-5mnx3.43):
+        // without it this API would push/assert/count every entry unconditionally, so a
         // constraint already asserted (a duplicate inside this very batch,
         // or one added by an earlier `add_constraint_raw`) grew
         // `z3_assertions`, inflated `constraint_count`, and — under shared

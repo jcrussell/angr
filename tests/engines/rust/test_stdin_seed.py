@@ -3,13 +3,13 @@
 
 A harness that fills ``state.posix.stdin.content`` itself --- a ``blank_state``
 plus ``content.append((BVS, n))``, or ``entry_state(stdin=SimFileStream(...))``
---- expects the found state to solve for THAT symbol. Before angr-mb09c the
-native ``read(0, ...)`` always minted its own ``stdin_*`` bytes and ignored the
-seeded stream, so the harness's BVS stayed unconstrained: ``solver.eval(bvs)``
-returned all zeros and ``posix.dumps(0)`` prefixed a bogus 32-byte zero run
-(the un-consumed seed chunk) ahead of the injected solution bytes.
+--- expects the found state to solve for THAT symbol. A native ``read(0, ...)``
+that mints its own ``stdin_*`` bytes and ignores the seeded stream leaves the
+harness's BVS unconstrained: ``solver.eval(bvs)`` returns all zeros and
+``posix.dumps(0)`` prefixes a bogus 32-byte zero run (the un-consumed seed
+chunk) ahead of the injected solution bytes.
 
-``RustExplorationManager._seed_stdin_to_rust`` now attaches the seeded byte
+``RustExplorationManager._seed_stdin_to_rust`` attaches the seeded byte
 ASTs to fd 0 as bounded symbolic content, and ``read_stdin_symbolic``
 (``procedures/read.rs``) binds each minted stdin byte to the seeded one with an
 equality constraint --- so the path condition reaches the harness's symbol,
@@ -87,8 +87,7 @@ class TestSeededStdinSolves:
 
         Only six of the 2^W leaves are feasible: s=0 and s=4 force b[0]==0 and
         b[1]==0, which makes the accumulator a constant whose low byte can never
-        be the gate's 0xee (bd memory ``pbounce-synthetic-six-feasible-leaves``).
-        This used to assert all eight, which only held because a bounced value
+        be the gate's 0xee. All eight leaves draining would mean a bounced value
         lost its constraints and made the infeasible leaves look satisfiable
         (angr-izov2).
         """

@@ -351,10 +351,10 @@ class TestStashProxyAccessors:
         """The proxy-returning form and the SimState-returning form must
         report the same number of states in each stash after exploration.
 
-        This is the demo-both-forms test required by angr-kwpi.3
-        acceptance criteria: it exercises ``mgr.found`` (full SimState)
-        and ``mgr.found_proxies()`` (RustStateProxy) side by side and
-        confirms they agree on cardinality and on per-state addr.
+        This is the demo-both-forms test (angr-kwpi.3): it exercises
+        ``mgr.found`` (full SimState) and ``mgr.found_proxies()``
+        (RustStateProxy) side by side and confirms they agree on cardinality
+        and on per-state addr.
         """
 
         state = fauxware_project.factory.entry_state()
@@ -449,9 +449,9 @@ class TestRustExecutionErrorHierarchy:
       ``PyException`` shows up in the MRO).
     * Real-path coverage: ``pytest.raises(RustUnsupportedVexOpError,
       match="<op_name>.*<arch>")`` for a NEON op via ``execute_irsb_for_test``.
-    * Demo coverage for the syscall path (full panic-site conversion
-      lives in angr-tkbr.1): ``pytest.raises(RustUnsupportedSyscallError,
-      match="<syscall_name>")`` via the ``_raise_typed_test_error`` helper.
+    * Demo coverage for the syscall path, which has no real-path trigger:
+      ``pytest.raises(RustUnsupportedSyscallError, match="<syscall_name>")``
+      via the ``_raise_typed_test_error`` helper.
     """
 
     def test_classes_importable_from_angr_exploration(self):
@@ -524,12 +524,11 @@ class TestRustExecutionErrorHierarchy:
         """The syscall acceptance: ``pytest.raises(RustUnsupportedSyscallError,
         match="<syscall_name>")`` works.
 
-        The 48 syscall handler panic sites currently still ``panic!`` on
-        unexpected dispatcher outcomes; their conversion to typed
-        ``SyscallError`` lives in sibling bead angr-tkbr.1. This test
-        exercises the typed-exception API via ``_raise_typed_test_error``
-        — the API tkbr.1 will route into. Replace with a real-path test
-        once tkbr.1 lands.
+        Production syscall handlers return ``SyscallError`` and route to the
+        Python callback rather than raising, so there is no real-path trigger.
+        This test exercises the typed-exception API via
+        ``_raise_typed_test_error`` — the API a syscall-level typed error
+        would route into.
         """
         from angr.rustylib.vex_engine._testing import _raise_typed_test_error
 
@@ -548,16 +547,11 @@ class TestRustExecutionErrorHierarchy:
         """The NEON acceptance: ``pytest.raises(RustUnsupportedVexOpError,
         match="<op_name>.*<arch>")`` for a currently-unimplemented NEON op.
 
-        Constructs a minimal AArch64 IRSB that applies ``Iop_PwAdd32Fx2``
-        (a Binop on Ity_I64 routed through ``IROp::NeonUnimplemented``) to
-        two zero constants. Before tkbr.3 the dispatcher in ``VEXOps::binop``
-        panicked, which PyO3 surfaced as ``pyo3_runtime.PanicException``;
-        after tkbr.3 the panic is replaced with ``OpError::UnsupportedNeon``
-        and surfaces as ``RustUnsupportedVexOpError`` carrying op name + arch.
-
-        Originally targeted ``Iop_RecipEst32Ux2`` — retargeted in angr-tukg.5
-        when that op was implemented. ``Iop_PwAdd32Fx2`` (FP pairwise add) is
-        the only remaining NeonUnimplemented placeholder.
+        Constructs a minimal AArch64 IRSB that applies the still-unsupported
+        NEON shift-by-immediate ``Iop_QShlNsatSU8x8`` to two zero constants.
+        The dispatcher must surface it as ``RustUnsupportedVexOpError``
+        carrying op name + arch rather than panicking (which PyO3 would
+        surface as ``pyo3_runtime.PanicException``).
         """
 
         from angr.rustylib.vex_engine._testing import execute_irsb_for_test
@@ -565,13 +559,13 @@ class TestRustExecutionErrorHierarchy:
         from angr.exploration import RustUnsupportedVexOpError
 
         irsb = _binop_irsb("Iop_QShlNsatSU8x8", "ARM64")
-        # Iop_PwAdd32Fx2 graduated to IROp::VFPwAdd (angr-cudgw.6); use the
+        # Iop_PwAdd32Fx2 maps to IROp::VFPwAdd (angr-cudgw.6); use the
         # still-unimplemented NEON shift-by-immediate as the unsupported probe.
         with pytest.raises(RustUnsupportedVexOpError, match=r"Iop_QShlNsatSU8x8.*arm64"):
             execute_irsb_for_test(irsb, "arm64")
 
     def test_raise_unmapped_op_via_execute_irsb(self):
-        """The angr-tkbr.2 acceptance: an opcode string with NO entry in
+        """Acceptance (angr-tkbr.2): an opcode string with NO entry in
         ``parse_opcode`` (not in any ``parse_*`` table, not in
         ``parse_neon_unimplemented``) surfaces as
         ``RustUnsupportedVexOpError`` carrying the original op name +
@@ -598,7 +592,7 @@ class TestRustExecutionErrorHierarchy:
             execute_irsb_for_test(irsb, "amd64")
 
     def test_unhandled_ccall_surfaces_error_not_concrete_zero(self):
-        """The angr-ppgx acceptance: unhandled ``Iex_CCall`` in the legacy
+        """Acceptance (angr-ppgx): unhandled ``Iex_CCall`` in the legacy
         ``VEXInterpreter`` must surface as a ``RustExecutionError`` instead
         of silently returning concrete 0.
 
@@ -624,7 +618,7 @@ class TestRustExecutionErrorHierarchy:
             execute_irsb_for_test(irsb, "amd64")
 
     def test_malformed_irsb_surfaces_typed_error_with_addr(self):
-        """The angr-95up.1 acceptance: a structurally-invalid IRSB surfaces
+        """Acceptance (angr-95up.1): a structurally-invalid IRSB surfaces
         as ``RustMalformedIRSBError`` carrying the block address — not as a
         panic, ``PyValueError``, or silent fallthrough.
 
@@ -633,9 +627,8 @@ class TestRustExecutionErrorHierarchy:
         maps ``CbExecutionError::InvalidIR(reason)`` to
         ``RustExecError::MalformedIRSB { addr, reason }``.
 
-        This pins the contract ahead of the ``angr-tkbr.5`` hot-path-unwrap
-        audit, so the audit can rely on lift/IR-validation failures landing
-        in a typed class rather than panicking. The trigger here is the
+        This pins the contract that lift/IR-validation failures land in a
+        typed class rather than panicking (angr-tkbr.5). The trigger here is the
         cheapest InvalidIR site: an ``Ist_LLSC`` whose ``result`` temp index
         sits past the end of the block's ``tyenv``. Dispatch hits
         ``statements.rs::execute_llsc_statement`` line ~708 and returns
@@ -704,7 +697,7 @@ _MAPPED_X87_TRANSCENDENTALS = [
 
 # Real NEON saturating shift-left by immediate (UQSHL/SQSHL imm). The
 # vector-by-vector forms `Iop_QShl{N}x{M}` / `Iop_QSal{N}x{M}` ARE mapped
-# (angr-tukg.8 → IROp::VQShlSat); only the `*sat*` immediate variants remain.
+# to IROp::VQShlSat (angr-tukg.8); only the `*sat*` immediate variants remain.
 _UNMAPPED_NEON_QSHL_IMM = [
     "Iop_QShlNsatSU8x8",
     "Iop_QShlNsatSU16x4",
@@ -749,30 +742,29 @@ _UNMAPPED_CRYPTO_AND_POLY = [
     "Iop_SHA512",
 ]
 
-# Union of all real-name unmapped VEX ops to parametrize over. Total >=30
-# (was >=40 before angr-9ke6b.233 moved the ten x87 transcendentals to
-# _MAPPED_X87_TRANSCENDENTALS) so the acceptance target of ">=50 unsupported
-# ops/syscalls" still lands once the syscalls (>=20) are added below.
+# Union of all real-name unmapped VEX ops to parametrize over. Total >=30 (the
+# x87 transcendentals live in _MAPPED_X87_TRANSCENDENTALS instead) so the
+# acceptance target of ">=50 unsupported ops/syscalls" still lands once the
+# syscalls (>=20) are added below.
 _UNMAPPED_VEX_OPS_REAL = _UNMAPPED_NEON_QSHL_IMM + _UNMAPPED_FP_DECIMAL + _UNMAPPED_CRYPTO_AND_POLY
 
 # Currently-NeonUnimplemented (routes through OpError::UnsupportedNeon, not
 # UnsupportedVexOp, but both PyErr-map to RustUnsupportedVexOpError). Updated
 # from native/angr/src/vex/opcode_map.rs::parse_neon_unimplemented.
 #
-# Empty as of angr-cudgw.6: the last scaffold (Iop_PwAdd32Fx2) graduated to
-# IROp::VFPwAdd, so no opcode currently routes to NeonUnimplemented. The
+# Empty: Iop_PwAdd32Fx2 maps to IROp::VFPwAdd (angr-cudgw.6), so no opcode
+# currently routes to NeonUnimplemented. The
 # variant + parse_neon_unimplemented fn are kept as the scaffold point for the
 # next NEON op; add it here (and remove from _UNMAPPED_* if applicable) when one
 # lands. Still-unsupported NEON shift-by-immediate ops live in
 # _UNMAPPED_NEON_QSHL_IMM (they route to IROp::Unmapped).
 _NEON_UNIMPLEMENTED: list[str] = []
 
-# Linux syscall names that lack a native handler in native/angr/src/syscalls/
-# as of 2026-06-01 (campaigns angr-0hif.{1,5,6,7}). Production code returns
-# `SyscallError` for symbolic/unsupported and routes to the Python callback —
-# the typed-error surface exists ONLY via `_raise_typed_test_error` until the
-# tkbr.1-style conversion lands per-syscall, so this group exercises the
-# Python-facing exception API. Each entry pairs (name, num) on amd64.
+# Linux syscall names that lack a native handler in native/angr/src/syscalls/.
+# Production code returns `SyscallError` for symbolic/unsupported and routes to
+# the Python callback — the typed-error surface exists ONLY via
+# `_raise_typed_test_error`, so this group exercises the Python-facing exception
+# API. Each entry pairs (name, num) on amd64.
 _UNSUPPORTED_SYSCALLS = [
     # File path operations (0hif.1)
     ("open", 2),
@@ -902,10 +894,9 @@ class TestRustUnsupportedErrorParametrized:
         fast paths in ``vex/transcendentals.rs`` from the *string* opcode
         router, so they must execute instead of raising.
 
-        Regression guard for the dead-code window opened by angr-h0ur: with
-        no producer for ``IROp::Raw`` these all fell through to
-        ``IROp::Unmapped`` and every caller silently degraded to the Python
-        fallback.
+        Regression guard for a dead-code window: with no producer for
+        ``IROp::Raw`` these all fell through to ``IROp::Unmapped`` and every
+        caller silently degraded to the Python fallback (angr-h0ur).
         """
         from angr.rustylib.vex_engine._testing import execute_irsb_for_test
 
@@ -1121,10 +1112,9 @@ class TestDebugSolverInfo:
     (``RustExplorationManager::debug_solver_info`` ->
     ``state_api.rs::_debug_solver_info``). It has no production caller by
     design — it exists for interactive debugging — but the four keys it
-    reports are a de-facto API, and the ``push_level`` key it used to carry
-    was a permanently-dead counter for a while before angr-sqfj8.94 caught
-    it. These tests pin the key set and cross-check the two numeric fields
-    against the APIs that report the same quantities.
+    reports are a de-facto API, and a dead counter key there goes unnoticed
+    (angr-sqfj8.94). These tests pin the key set and cross-check the two
+    numeric fields against the APIs that report the same quantities.
     """
 
     @staticmethod
@@ -1181,7 +1171,7 @@ class TestDebugSolverInfo:
 class TestStashNameValidation:
     """angr-630x: warn on unknown stash names in create_state/move_state/etc.
 
-    Follow-up from the angr-9l9j PyO3 trust-model audit. A typo like
+    Part of the PyO3 trust-model boundary checks (angr-9l9j). A typo like
     ``actve`` for ``active`` previously created an invisible stash and the
     state vanished from ``mgr.active`` / ``mgr.found``. Now the first
     creation of a non-standard stash emits a ``log::warn!`` line so the typo
@@ -1323,8 +1313,8 @@ class TestStashNameValidation:
 class TestSnapshotRoundTrip:
     """Snapshot dump/load via the Python wrapper (angr-x04s.1.4).
 
-    Closes the angr-x04s.1 prototype: end-to-end round-trip on the fauxware
-    binary, plus the format-version asymmetric-mismatch error path.
+    End-to-end round-trip on the fauxware binary, plus the format-version
+    asymmetric-mismatch error path (angr-x04s.1).
     """
 
     def test_dump_load_fauxware_round_trip_preserves_stash_shape(self, fauxware_project, tmp_path):
@@ -1446,7 +1436,7 @@ class TestSnapshotRoundTrip:
         """angr-op0dn.13.12: a resumed manager must not re-seed the placeholder
         state its constructor was handed.
 
-        The angr-027h phase-2 retry re-seeds ``_initial_seed_states`` when an
+        The phase-2 retry (angr-027h) re-seeds ``_initial_seed_states`` when an
         address-based find exhausts. After ``load_snapshot`` those are the
         pre-load placeholder, not the restored frontier, so replaying them would
         explore a path the caller never asked to resume (and flip
@@ -1477,7 +1467,7 @@ class TestSnapshotRoundTrip:
         """angr-fs8kb.90: a restored state must have its callable find/avoid
         predicate evaluated again, even when its id matched before the load.
 
-        Python half of angr-fs8kb.89. ``StashManager::from_snapshot`` rebuilds
+        Python half of the restore fix (angr-fs8kb.89). ``StashManager::from_snapshot`` rebuilds
         ``state_index`` from each state's own serialized ``state_id``, so a
         restore into a live manager resurrects the *original* ids -- the one
         case the ``invariant-state-id-never-reused`` guarantee does not cover.
@@ -2132,14 +2122,14 @@ class TestProxyWriteCounters:
 
 
 class TestCgcReceiveStdinSync:
-    """Regression for angr-vx8p.3: CGC ``receive(fd=0, ...)`` symbolic bytes
+    """Regression test (angr-vx8p.3): CGC ``receive(fd=0, ...)`` symbolic bytes
     must be tracked under ``state.stdin_symbols`` so the Python-side
     ``_inject_rust_stdin`` can feed ``posix.dumps(0)``.
 
     Before the fix, ``cgc.rs::receive`` wrote fresh symbolic bytes into the
     buffer but never called ``record_stdin_symbol``, so ``posix.dumps(0)``
     over the exported state returned ``b''`` even though the binary read
-    user-controlled stdin (see bd memory cgc-receive-stdin-sync-root-cause).
+    user-controlled stdin (bd memory `cgc-receive-stdin-sync-root-cause`).
     Exercises only the buffer-overflow phase of CADET_00001 (reaches
     ``unconstrained`` in ~0.1s); the heavy easter-egg explore is deliberately
     avoided to keep the test fast and OOM-safe.
@@ -2173,7 +2163,7 @@ class TestCgcReceiveStdinSync:
 
 
 class TestCgcEndToEndNativeDispatch:
-    """Integration test for angr-isru: the CADET_00001 buffer-overflow phase
+    """Integration test (angr-isru): the CADET_00001 buffer-overflow phase
     runs end-to-end under Rust, with every syscall dispatched natively.
 
     Complements ``TestCgcReceiveStdinSync`` (which only asserts the crashing
@@ -2225,13 +2215,11 @@ class TestCgcEndToEndNativeDispatch:
 
 
 class TestCadetEasterEggStepLoop:
-    """End-to-end coverage for angr-ckdy: the CADET solve.py phase-3 idiom
+    """End-to-end coverage (angr-ckdy): the CADET solve.py phase-3 idiom
     (``while True: sm.step(); break if any active.addr == 0x804833E``) converges
     under the Rust engine.
 
-    Two opt-in flags make this work together (neither alone suffices — see bd
-    memories ``block-granular-step-mode`` and
-    ``avoid-cadet-phase3-sticky-eager-retry``):
+    Two opt-in flags make this work together (neither alone suffices):
 
     - ``set_block_granular(True)`` (angr-bmyx) — the VEX interpreter otherwise
       chains basic blocks within one ``step(n=1)`` and runs THROUGH the egg
@@ -2284,7 +2272,7 @@ class TestCadetEasterEggStepLoop:
 
 
 class TestDirectCallEntryMainResolution:
-    """Regression for angr-027h: a "thin" entry that is a direct ``call main``
+    """Regression test (angr-027h): a "thin" entry that is a direct ``call main``
     (no ``__libc_start_main`` trampoline, e.g. DECREE/CGC binaries) has no
     ``main`` symbol and no ``rdi``/``edi`` PUT for ``_resolve_main_address`` to
     parse. Before the fix it returned ``None``, so ``_step_python_to_main``'s
@@ -2338,11 +2326,10 @@ class TestRustSimOptionMatrixConsistency:
 
     rust_engine.rst is the declared single source of truth for SimOption
     compatibility, but the doc table and the Python sets drift independently
-    (angr-tfic implemented AVOID_MULTIVALUED but the row still said
-    "implement"; angr-fkvt demoted TRACK_ACTION_HISTORY but the row still
-    said "raise"). This mirrors ``TestRustInspectAllowlistConsistency``:
-    parse the doc, classify every row, and assert the classifications match
-    the code. angr-fgs3.
+    (e.g. an option implemented or demoted in code while its row still says
+    "implement" or "raise"). This mirrors
+    ``TestRustInspectAllowlistConsistency``: parse the doc, classify every
+    row, and assert the classifications match the code (angr-fgs3).
     """
 
     @staticmethod

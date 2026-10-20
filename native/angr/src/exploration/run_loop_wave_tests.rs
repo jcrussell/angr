@@ -350,7 +350,7 @@ fn all_corrupt_payloads_drop_without_routing_anything() {
     });
 }
 
-/// angr-offd5(b): folding a live session's accounting mid-explore must be safe
+/// Folding a live session's accounting mid-explore must be safe
 /// to repeat — the incremental fold at every `need_callback` return and the
 /// final fold in `finalize_steady_session` share one `ParallelShared`, so a
 /// non-destructive read would double-count every step and every `CoreCounters`

@@ -319,7 +319,7 @@ impl PyRustSimState {
     /// claripy<->Rust symbol cache, so a subregister set like
     /// `state.regs.ecx = BVS('ecx', 32)` round-trips back to the user's
     /// original symbol on export instead of minting a fresh `rcx_N`. This is
-    /// the Layer 2 fix for angr-4ju9e / angr-21vi5 — it mirrors the
+    /// the Layer 2 symbol-identity fix (angr-4ju9e, angr-21vi5) — it mirrors the
     /// identity-preserving import path that memory-sourced symbols already use
     /// (`import_symbolic_to_state`).
     pub fn set_register_symbolic_ast(
@@ -656,7 +656,7 @@ impl PyRustSimState {
 
     /// Export the complete state as a snapshot.
     ///
-    /// Flushes memory first (angr-sqfj8.71-family fix): the standalone
+    /// Flushes memory first (angr-sqfj8.71): the standalone
     /// `RustSimState` pyclass's own `export_full` pymethod was the one export
     /// path the Multi-cell-flush audit series missed — every other export
     /// surface on `RustExplorationManager` routes through

@@ -128,7 +128,7 @@ pub trait SelectionPolicy: Send + Sync {
     /// next — the pick `scheduler_worker.rs::offload_one` ships to another
     /// worker across a full Z3 detach/reattach round-trip. Offloading the
     /// state `select` was about to hand back for free is pure serde cost (the
-    /// same waste angr-faorh / angr-8shhe removed from the halving shed), so
+    /// same waste the halving shed avoids) (angr-faorh, angr-8shhe), so
     /// this is the offload-side mirror of `select`, not a second `select`.
     ///
     /// The default pops the **back**, which is the coldest end for every
@@ -212,7 +212,7 @@ impl SelectionPolicy for Lifo {
 
 /// Random-state selection (angr-a32jl.2 prototype): step a uniformly-random
 /// active state, append new forks at the tail. Deterministic under a fixed
-/// `seed` so a run is byte-reproducible — the seed knob the bead calls for.
+/// `seed` so a run is byte-reproducible.
 ///
 /// This picks uniformly; it is not KLEE random-*path*, which weights
 /// selection by fork-subtree size and would need subtree bookkeeping on the

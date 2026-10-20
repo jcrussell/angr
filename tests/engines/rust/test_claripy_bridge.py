@@ -34,9 +34,8 @@ class TestClaripyBridgeImport:
         """Reverse(x) over a symbolic leaf hits reverse_bytes' symbolic branch
         (extract-and-concat) and, pinned to a concrete value, evaluates to the
         byte-reversed word."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("rx", 32)
@@ -47,9 +46,8 @@ class TestClaripyBridgeImport:
 
     def test_reverse_symbolic_64bit(self):
         """Same symbolic branch at 64-bit width (num_bytes loop > 4)."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("rx64", 64)
@@ -68,9 +66,8 @@ class TestClaripyBridgeImport:
     def test_bools_leaf_drives_ite(self):
         """If(BoolS(...), a, b) exercises import.rs' "BoolS" arm as the ite
         condition; both branch values must be reachable."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         b = claripy.BoolS("mybool")
@@ -82,9 +79,8 @@ class TestClaripyBridgeImport:
         """The same BoolS name used in two constraints stays one symbol: an
         equality between them is satisfiable both ways (hash-lookup / name+width
         identity path in the BoolS arm), never a contradiction."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         b = claripy.BoolS("shared")
@@ -99,14 +95,14 @@ class TestClaripyBridgeImport:
         sorts), so pinning the BV to 1 must not force the Bool true.
 
         Rust models a Bool as a width-1 ``Symbolic`` and builds its Z3 constant
-        from the symbol *name*, so before angr-9ke6b.223 both leaves became the
-        same ``BV::new_const("x", 1)`` and this pair was UNSAT.  Only reachable
-        with ``explicit_name`` on both: claripy otherwise renames to
-        ``x_<counter>_1`` / ``x_<counter>_-1``, which never collide.
+        from the symbol *name*, so unless the symbol kind is part of the key both
+        leaves become the same ``BV::new_const("x", 1)`` and this pair is UNSAT
+        (angr-9ke6b.223).  Only reachable with ``explicit_name`` on both: claripy
+        otherwise renames to ``x_<counter>_1`` / ``x_<counter>_-1``, which never
+        collide.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         bv = claripy.BVS("x", 1, explicit_name=True)
@@ -125,9 +121,8 @@ class TestClaripyBridgeImport:
         """The mangled Rust name must be stable: re-importing the same
         ``BoolS`` leaf has to resolve to the same Z3 variable, or a constraint
         added in one import silently stops binding in the next."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         flag = claripy.BoolS("y", explicit_name=True)

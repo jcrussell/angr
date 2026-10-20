@@ -262,12 +262,12 @@ class TestCallStackProxy:
         """RustCallStackProxy must read frames live on every access, not
         cache them at first read.
 
-        Regression guard for angr-qwyti.10: a `RustStateProxy` view memoizes
+        Regression guard (angr-qwyti.10): a `RustStateProxy` view memoizes
         its `callstack` sub-proxy, so a cached frame list would silently
         serve pre-step call frames after the underlying Rust state advances
-        on the same state_id (the register-proxy stale-cache shape from
-        angr-4rq7). The mgr below mutates its returned stack between reads;
-        the proxy must reflect the change."""
+        on the same state_id (the register-proxy stale-cache shape, angr-4rq7).
+        The mgr below mutates its returned stack between reads; the proxy
+        must reflect the change."""
         from angr.exploration.rust_state_proxy import RustCallStackProxy
 
         class _MutatingMgr:
@@ -319,10 +319,9 @@ class TestInspectProxy:
 class TestRustInspectMarshalling:
     """Tests for the state.inspect mem_read / mem_write marshalling layer.
 
-    Covers angr-uq4n.2: the Rust → PyO3 → Python state.inspect.action()
-    round-trip. The Rust dispatch instrumentation (uq4n.3) is not yet
-    wired, so these tests invoke the Python callbacks directly with
-    synthetic event payloads — the same shape the Rust side will use.
+    Covers the Rust → PyO3 → Python state.inspect.action() round-trip
+    (angr-uq4n.2). These tests invoke the Python callbacks directly with
+    synthetic event payloads — the same shape the Rust side uses.
     """
 
     def test_callbacks_have_inspect_slots(self):
@@ -359,16 +358,10 @@ class TestRustInspectMarshalling:
         assert mgr._callbacks.get_inspect_enabled() == 0
 
     def test_inspect_proxy_accepts_constraints_and_vex_lift(self, fauxware_project):
-        """constraints + vex_lift moved into the supported set in angr-4aach.
+        """constraints + vex_lift are in the supported inspect-event set (angr-4aach).
 
-        reg_read, reg_write, instruction, irsb, exit moved into the
-        supported set in angr-d46u; call/return moved in angr-4ai9;
-        simprocedure/syscall/dirty moved in angr-xmfj; tmp_read/tmp_write
-        moved in angr-64pi; statement moved in angr-t8vf; expr moved in
-        angr-lge2; address_concretization/symbolic_variable moved in
-        angr-vfst; fork moved in angr-ysml; constraints/vex_lift moved in
-        angr-4aach. Registering a BP for the last two must no longer raise
-        and must flip their bitmask bits.
+        Registering a BP for either must not raise and must flip its
+        bitmask bit.
         """
 
         state = fauxware_project.factory.entry_state()
@@ -496,7 +489,7 @@ class TestRustInspectMarshalling:
 
     def test_mem_read_expr_override_returned(self, fauxware_project):
         """A BP that sets state.inspect.mem_read_expr surfaces the override
-        as the callback's return value (value injection — angr-uy32)."""
+        as the callback's return value, i.e. value injection (angr-uy32)."""
         from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
@@ -764,7 +757,7 @@ class TestRustInspectMarshalling:
 
     def test_mem_write_expr_override_returned(self, fauxware_project):
         """A BP_BEFORE that sets state.inspect.mem_write_expr surfaces the
-        override as the callback's return value (value injection — angr-inh0).
+        override as the callback's return value, i.e. value injection (angr-inh0).
         """
         from angr import claripy
 
@@ -1065,8 +1058,8 @@ class TestRustInspectMemWriteDispatch:
 
 
 class TestRustInspectExtendedEvents:
-    """Integration tests for the inspect events added in angr-d46u:
-    reg_read, reg_write, instruction, irsb, exit.
+    """Integration tests for the reg_read, reg_write, instruction, irsb
+    and exit inspect events (angr-d46u).
 
     Mirrors the mem_read / mem_write coverage: bitmask flips on BP add,
     callback round-trip exercises the marshalling layer, and at least
@@ -1419,7 +1412,7 @@ class TestRustInspectExtendedEvents:
         assert len(seen) >= 1, "return BP never fired during exploration"
         assert all(t > 0 for t in seen)
 
-    # ---- angr-64pi: tmp_read / tmp_write (VEX RdTmp/WrTmp) ----
+    # ---- tmp_read / tmp_write (VEX RdTmp/WrTmp) ----
 
     def test_tmp_callback_slots_exposed(self):
         """PythonCallbacks gained set_inspect_{tmp_read,tmp_write}."""
@@ -1518,7 +1511,7 @@ class TestRustInspectExtendedEvents:
         mgr.run(max_steps=3)
         assert fire_count[0] > 0, "no tmp_write events captured"
 
-    # ---- angr-t8vf: statement (per VEX IR statement) ----
+    # ---- statement (per VEX IR statement) ----
 
     def test_statement_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_statement / call_inspect_statement."""
@@ -1567,7 +1560,7 @@ class TestRustInspectExtendedEvents:
         assert len(seen_indices) > 0, "no statement events captured"
         assert min(seen_indices) == 0, f"stmt indices should start at 0, got min={min(seen_indices)}"
 
-    # ---- angr-lge2: expr (per VEX IR expression eval) ----
+    # ---- expr (per VEX IR expression eval) ----
 
     def test_expr_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_expr / call_inspect_expr."""
@@ -1623,7 +1616,7 @@ class TestRustInspectExtendedEvents:
         # of fauxware should produce dozens of events.
         assert fire_count[0] > 0, "no expr events captured"
 
-    # ---- angr-vfst: address_concretization ----
+    # ---- address_concretization ----
 
     def test_address_concretization_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_address_concretization / call_*."""
@@ -1703,7 +1696,7 @@ class TestRustInspectExtendedEvents:
         assert action == "store"
         assert result == [0x400000, 0x400004, 0x400008]
 
-    # ---- angr-vfst: symbolic_variable ----
+    # ---- symbolic_variable ----
 
     def test_symbolic_variable_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_symbolic_variable / call_*."""
@@ -1747,7 +1740,7 @@ class TestRustInspectExtendedEvents:
         assert size == 32
         assert expr is expr_ast
 
-    # ---- angr-1c88c: end-to-end Rust dispatch (not the Python relay) ----
+    # ---- end-to-end Rust dispatch (not the Python relay) ----
 
     def test_address_concretization_fires_end_to_end_from_rust(self):
         """angr-1c88c: drive the *native* dispatch site
@@ -1904,7 +1897,7 @@ class TestRustInspectExtendedEvents:
         assert isinstance(expr, claripy.ast.Base), f"expr not claripy AST: {type(expr)}"
         assert expr.size() == 64
 
-    # ---- angr-xmfj: Python-dispatched simprocedure / syscall / dirty ----
+    # ---- Python-dispatched simprocedure / syscall / dirty ----
 
     def test_python_dispatched_events_have_no_rust_slot(self):
         """simprocedure/syscall/dirty are dispatched from Python — they
@@ -1918,10 +1911,10 @@ class TestRustInspectExtendedEvents:
         assert (
             frozenset(
                 {
-                    # `constraints` left this set in angr-op0dn.14.4.1 (it also
-                    # fires natively from the fork-guard add) and `vex_lift` in
-                    # angr-op0dn.14.4.2 (it also fires from the native libVEX
-                    # lift), so both now have a `set_inspect_<event>` slot.
+                    # `constraints` (it also fires natively from the fork-guard
+                    # add) and `vex_lift` (it also fires from the native libVEX
+                    # lift) are not in this set: both have a `set_inspect_<event>`
+                    # slot (angr-op0dn.14.4.1, angr-op0dn.14.4.2).
                     "simprocedure",
                     "syscall",
                     "dirty",
@@ -2021,7 +2014,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dirty_result_override_returned(self, fauxware_project):
         """A BP that sets state.inspect.dirty_result surfaces the override
-        as _cb_inspect_dirty's return value (short-circuit — angr-uy32)."""
+        as _cb_inspect_dirty's return value, a short-circuit (angr-uy32)."""
         from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
@@ -2085,7 +2078,7 @@ class TestRustInspectExtendedEvents:
         assert names, "no simprocedure events captured during exploration"
         assert all(isinstance(n, str) for n in names)
 
-    # ---- angr-ysml: fork (deferred-fork dispatch in stepping.rs) ----
+    # ---- fork (deferred-fork dispatch in stepping.rs) ----
 
     def test_fork_callback_slot_exposed(self):
         """PythonCallbacks gained set_inspect_fork / call_inspect_fork."""
@@ -2172,9 +2165,7 @@ class TestRustInspectAllowlistConsistency:
 
         bits = [spec["bit"] for spec in _INSPECT_EVENT_SPECS.values()]
         assert len(bits) == len(set(bits)), f"duplicate bits in specs: {bits}"
-        # angr-4ai9 widened inspect_enabled from u8 to u16 to make room for
-        # call/return (8/9); angr-lge2 widened from u16 to u32 to make room
-        # for `expr` (bit 16) after `statement` filled bit 15.
+        # inspect_enabled is a u32: `statement` holds bit 15 and `expr` bit 16.
         assert all(0 <= b < 32 for b in bits), "inspect_enabled is a u32 — bits must be in 0..=31"
 
     def test_every_supported_event_has_dispatch_method(self):
@@ -2316,8 +2307,8 @@ class TestRustInspectAllowlistConsistency:
         dispatches. Assert it matches ``_RUST_INSPECT_SUPPORTED_EVENTS``
         exactly — a drift in either direction (a newly wired event missing
         from the doc, or a stale doc row for a removed event) means a user
-        reading the doc would predict the wrong behavior. angr-c4xcs.2;
-        this mirrors ``TestRustSimOptionMatrixConsistency`` in test_misc.py
+        reading the doc would predict the wrong behavior (angr-c4xcs.2).
+        This mirrors ``TestRustSimOptionMatrixConsistency`` in test_misc.py
         for the inspect-event half of rust_engine.rst."""
         from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
 
@@ -2334,9 +2325,9 @@ class TestRustInspectAllowlistConsistency:
 class TestStatePluginsProxy:
     """Tests for state.options, state.globals, and state.heap on RustStateProxy.
 
-    Regression for angr-t3l3: prior implementation returned an empty set/dict
-    that silently dropped writes (e.g., state.options.add(LAZY_SOLVES)).
-    state.heap.mmap_base was completely unsupported via the proxy.
+    Regression test: these plugins must be real views, not an empty set/dict
+    that silently drops writes (e.g., state.options.add(LAZY_SOLVES)), and
+    state.heap.mmap_base must be supported via the proxy (angr-t3l3).
     """
 
     def test_options_seeded_from_source_state(self, fauxware_project):

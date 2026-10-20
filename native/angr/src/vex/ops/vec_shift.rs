@@ -18,8 +18,8 @@
 //! stores concrete values in a `u128` (see `RustBV::concrete`), so a wider
 //! vector can only arrive as an expression; folding one anyway would shift a
 //! `u128` by up to 192 and either panic (debug) or wrap mod 128 (release).
-//! The guard became reachable with the AVX2 256-bit shift-by-immediate arms
-//! added in angr-sqfj8.118.
+//! The guard is reachable through the AVX2 256-bit shift-by-immediate arms
+//! (angr-sqfj8.118).
 
 use super::{OpError, VEXOps, VecShiftKind};
 use crate::symbolic::{RustBV, SymContext};

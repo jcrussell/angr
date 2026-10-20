@@ -42,7 +42,7 @@
 //! `pub(crate)`, and the list is the only place in the crate that constructs
 //! it, so an unregistered procedure trips rustc's `dead_code` lint
 //! ("struct `NativeFoo` is never constructed") — an error under CI's clippy
-//! `-D warnings` gate. Verified empirically in angr-12jjk.6; a trait `impl`
+//! `-D warnings` gate (verified empirically, angr-12jjk.6); a trait `impl`
 //! does not count as a construction, so the lint sees through the macro.
 
 #[macro_export]

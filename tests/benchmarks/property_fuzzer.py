@@ -455,9 +455,8 @@ def _solver_trial_child(trial_seeds, mem_limit_mb, n_eval):
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
 
-    from angr.rustylib.vex_engine import RustSolverContext
-
     from angr import claripy
+    from angr.rustylib.vex_engine import RustSolverContext
 
     out = []
     for trial_seed in trial_seeds:

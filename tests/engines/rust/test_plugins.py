@@ -29,15 +29,14 @@ pytestmark = pytest.mark.skipif(
 
 
 class TestPluginMutationAcrossCallbacks:
-    """Regressions for angr-qm7w lazy ``_state_cache`` populate/evict.
+    """Regressions for the lazy ``_state_cache`` populate/evict (angr-qm7w).
 
     A SimProcedure / Python hook callback may mutate a plugin (most commonly
     ``state.globals`` / ``state.posix``); a second callback that fires on the
-    *same* state must observe the mutation. Pre-qm7w this was implicitly
-    guaranteed because the callback exit wrote ``_state_cache[sid] = succ_state``
-    and the next callback re-used the same SimState instance. The lazy-cache
-    refactor evicts entries between callbacks to bound cache size, so the
-    plugin-mutation chain has to survive the eviction explicitly.
+    *same* state must observe the mutation. The lazy cache evicts entries
+    between callbacks to bound cache size, so the next callback does not simply
+    re-use the same SimState instance: the plugin-mutation chain has to survive
+    the eviction explicitly.
     """
 
     def _hook_two_addrs(self, proj, addr_a, addr_b, hook_a, hook_b):
@@ -141,9 +140,9 @@ class TestPluginMutationAcrossCallbacks:
 
 
 class TestStateCacheSizeBound:
-    """Regressions for angr-qm7w lazy ``_state_cache`` populate/evict.
+    """Regressions for the lazy ``_state_cache`` populate/evict (angr-qm7w).
 
-    The acceptance criterion says the cache size at any moment during a
+    The cache size at any moment during a
     1000-state exploration is bounded by ``concurrent_callbacks`` (typically
     ≤ 2) plus a small fixed overhead for root states. We approximate this with
     a heavy fork-rate run and assert the cache stays well below the old
@@ -182,14 +181,14 @@ class TestStateCacheSizeBound:
 
 
 class TestPluginTemplateSelection:
-    """Regressions for angr-2k64: ``_restore_plugins_to_state`` must never
-    pick a plugin template from an arbitrary cached state.
+    """``_restore_plugins_to_state`` must never pick a plugin template from an
+    arbitrary cached state (angr-2k64).
 
-    Before the fix, the function fell back to ``next(iter(_state_cache.values()))``
-    when the tracked root for a given ``state_id`` was not cached. That arbitrary
-    pick could land on a forked descendant whose plugin state held mutations
-    (open fds, heap allocations, fs entries) belonging to an unrelated path —
-    silently cross-pollinating exploration branches. The fix walks
+    Falling back to ``next(iter(_state_cache.values()))`` when the tracked root
+    for a given ``state_id`` is not cached could land on a forked descendant
+    whose plugin state holds mutations (open fds, heap allocations, fs entries)
+    belonging to an unrelated path — silently cross-pollinating exploration
+    branches. The function instead walks
     ``state_id → snapshot.parent_id → tracked root → any cached root`` and
     refuses to fall through to a non-root descendant.
     """
@@ -412,9 +411,9 @@ class TestAdversarial:
     def test_set_registers_bulk_is_atomic_on_unknown_name(self):
         """A bad name mid-dict must leave every register untouched.
 
-        Regression for angr-0jh0j.49: ``set_registers_bulk`` used to apply
-        each entry as it walked the dict, so the entries *before* the failing
-        one stayed written while the caller saw a clean exception.
+        Regression test (angr-0jh0j.49): ``set_registers_bulk`` must not apply
+        each entry as it walks the dict, or the entries *before* the failing
+        one stay written while the caller sees a clean exception.
         """
         state = RustSimState("amd64")
         state.set_register("rax", 1)
@@ -524,16 +523,13 @@ class TestAdversarial:
     def test_solver_contradictory_constraints(self):
         """UNSAT detection: x==5 && x==10 is correctly reported unsatisfiable.
 
-        Characterization (see bd memory characterization-vs-fix-pattern): the
-        Rust solver routes equality constraints through Z3, which detects the
-        contradiction, so ``satisfiable()`` returns False. An earlier docstring
-        claimed add_constraint_ast might NOT preserve == semantics — that is no
-        longer the observed behavior. This assertion pins the current contract
-        so a regression back to "spuriously SAT" is caught.
+        Characterization: the Rust solver routes equality constraints through
+        Z3, which detects the contradiction, so ``satisfiable()`` returns False.
+        This assertion pins that contract so a regression to "spuriously SAT"
+        is caught.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -543,9 +539,8 @@ class TestAdversarial:
 
     def test_solver_wide_bitvector(self):
         """Wide bitvector (256-bit) should work."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("wide", 256)
@@ -567,9 +562,8 @@ class TestAdversarial:
         The empty bitvector has exactly one inhabitant, so the width-0
         symbolic leaf collapses to that value rather than erroring.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         # claripy BVS import through claripy_bridge::import.
         ctx = RustSolverContext()
@@ -582,9 +576,8 @@ class TestAdversarial:
         Python int reconstructed from big-endian bytes. The low byte
         constraint must be reflected in the evaluated value.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("wide1k", 1024)
@@ -600,17 +593,17 @@ class TestAdversarial:
         loudly, not silently truncate to its low 128 bits.
 
         ``RustBV::Concrete`` stores its value in a u128, so importing
-        ``BVV(1 << 200, 256)`` used to wrap to 0. extract_int_value now
+        ``BVV(1 << 200, 256)`` must not wrap to 0. extract_int_value
         rejects it with a ValueError (BridgeError::InvalidArgs maps to
-        PyValueError per angr-ghwsd.2). The import path is exercised here via
+        PyValueError, angr-ghwsd.2). The import path is exercised here via
         ``min`` (which propagates the conversion error; ``eval``/
         ``add_constraint_ast`` take Z3-export fast paths that bypass the u128
         import).
         """
         import pytest
-        from angr.rustylib.vex_engine import RustSolverContext
 
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         with pytest.raises(ValueError):
@@ -626,9 +619,8 @@ class TestAdversarial:
         128-bit BVs still return a real extremum (range is exactly
         [0, u128::MAX]); only widths strictly above 128 are unknown.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("xwide", 256)

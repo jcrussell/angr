@@ -1,4 +1,4 @@
-//! Unit tests for the SI-B shadow probe (angr-9ke6b.63 / .64).
+//! Unit tests for the SI-B shadow probe (angr-9ke6b.63/.64).
 //!
 //! Included as the `#[cfg(test)] mod tests` body of `shadow_probe.rs` via
 //! `test_submod!`, so `super::*` resolves to that module. The macro supplies

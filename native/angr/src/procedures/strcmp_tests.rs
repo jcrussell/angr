@@ -490,9 +490,9 @@ fn compare_unterminated_buffers<P: NativeSimProcedure>(
 
 /// `strncmp(a, b, 4096)` over two byte-identical buffers with no terminator
 /// anywhere in range returns 0 — the window is the caller's whole compare, so
-/// exhausting it is the answer, not a shortfall. Before angr-fs8kb.36 the
-/// `max_len >= MAX_STRCMP_LEN` test treated this exactly like unbounded strcmp
-/// and bailed to Python.
+/// exhausting it is the answer, not a shortfall, so the
+/// `max_len >= MAX_STRCMP_LEN` test must not treat it like unbounded strcmp
+/// and bail to Python (angr-fs8kb.36).
 #[test]
 fn test_strncmp_at_max_window_returns_zero_without_terminator() {
     let result = compare_unterminated_buffers(

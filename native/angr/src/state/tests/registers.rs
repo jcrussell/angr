@@ -7,13 +7,12 @@
 //! freshly-forked state, which surfaced as `Lift error at 0x0` even though
 //! `get_register("rip")` read back correctly.
 //!
-//! Until angr-5mnx3.37 that branch had no direct test: every `set_register`
-//! call site in the crate's tests wrote `rax`/`rbx`/`fs_const`/`gs_const`, and
-//! the IP sync was only ever reached indirectly through `set_ip`/`set_pc`.
+//! This file tests that branch directly, rather than only indirectly through
+//! `set_ip`/`set_pc` (angr-5mnx3.37).
 
 use super::super::*;
 
-/// The canonical angr-4rq7 shape: `state.regs.ip = target` arrives here as
+/// The canonical shape (angr-4rq7): `state.regs.ip = target` arrives here as
 /// `set_register("rip", ...)` on a forked state whose `pc` is still the
 /// parent's, and must move `pc` with it.
 #[test]

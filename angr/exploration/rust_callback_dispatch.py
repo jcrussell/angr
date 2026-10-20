@@ -2521,8 +2521,8 @@ class RustCallbackDispatchMixin:
             else:
                 _cb_rust_ctx = getattr(state.scratch, "rust_solver_ctx", None)
                 if _cb_rust_ctx is None:
-                    # angr-bs71/h0dv: counter should stay at 0 across the
-                    # benchmark suite. Non-zero readings here mean every
+                    # This counter should stay at 0 across the benchmark
+                    # suite (angr-bs71, angr-h0dv). Non-zero readings here mean every
                     # solver attach path (bundle, borrow, fork) failed for
                     # this callback state and Python's solver may diverge
                     # from Rust's.
@@ -2625,8 +2625,8 @@ class RustCallbackDispatchMixin:
     def _install_callback_memory_proxy(self, state, state_id):
         """Swap ``state.memory`` for a ``RustMemoryProxy`` bound to ``state_id``.
 
-        angr-4scu step 3. Caller has already copied the cached state, so
-        replacing the plugin here only affects this callback frame.
+        Caller has already copied the cached state, so replacing the plugin
+        here only affects this callback frame (angr-4scu step 3).
         """
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
@@ -2648,8 +2648,8 @@ class RustCallbackDispatchMixin:
     def _install_callback_register_proxy(self, state, state_id):
         """Swap ``state.registers`` for a ``RustRegisterProxy`` bound to ``state_id``.
 
-        angr-qj30 (write-through .2). Caller has already copied the cached
-        state, so replacing the plugin here only affects this callback frame.
+        Caller has already copied the cached state, so replacing the plugin
+        here only affects this callback frame (angr-qj30).
         ``state.regs`` (the SimRegNameView) delegates to ``state.registers``
         via ``load(name)`` / ``store(name, val)``, so installing the proxy
         under the ``"registers"`` key is sufficient — no separate swap of
@@ -2664,8 +2664,8 @@ class RustCallbackDispatchMixin:
     def _install_callback_solver_proxy(self, state, state_id):
         """Swap ``state.solver`` for a ``RustSolverProxyPlugin`` bound to ``state_id``.
 
-        angr-8oiw (write-through .3). Caller has already copied the cached
-        state, so replacing the plugin here only affects this callback frame.
+        Caller has already copied the cached state, so replacing the plugin
+        here only affects this callback frame (angr-8oiw).
         The proxy routes ``state.solver.add`` through to the underlying Rust
         state's solver (no parallel Python claripy solver), and
         ``constraints`` / ``eval`` / ``satisfiable`` read through Rust.
@@ -2679,9 +2679,8 @@ class RustCallbackDispatchMixin:
     def _install_callback_callstack_proxy(self, state, state_id):
         """Swap ``state.callstack`` for a ``RustCallStackProxyPlugin`` bound to ``state_id``.
 
-        angr-6o9p (write-through .4). Caller has already copied the cached
-        state, so replacing the plugin here only affects this callback
-        frame. The proxy reads frames live from Rust by ``state_id`` via
+        Caller has already copied the cached state, so replacing the plugin
+        here only affects this callback frame (angr-6o9p). The proxy reads frames live from Rust by ``state_id`` via
         ``get_state_call_stack`` — no Python-side mirror.
         """
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin

@@ -197,7 +197,7 @@ fn assert_send_sync<T: Send + Sync>() {}
 
 // Compile-time proof the profiling accumulator is `Send + Sync`, so the
 // persistent worker pool can `Arc`-share one across all workers for a wave
-// (angr-vh834 Phase 6 / Work Item 2). All fields are `AtomicU64`, so this holds;
+// (angr-vh834). All fields are `AtomicU64`, so this holds;
 // the assertion fails the build (not a run) if a non-`Send`/`Sync` field lands.
 const _: fn() = || {
     assert_send_sync::<ParallelProfiling>();
@@ -358,7 +358,7 @@ pub(crate) struct CoreCtx<'a> {
     pub(crate) native_procs: &'a NativeProcedureRegistry,
     pub(crate) native_syscalls: &'a NativeSyscallRegistry,
     /// Python callbacks, for the inspect BPs the post-step core fires itself
-    /// (currently `constraints`, from the fork-guard add — angr-op0dn.14.4.1).
+    /// (currently `constraints`, from the fork-guard add) (angr-op0dn.14.4.1).
     /// `None` in the Rust-only unit tests, which have no Python side.
     pub(crate) callbacks: Option<&'a PythonCallbacks>,
 }

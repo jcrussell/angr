@@ -27,7 +27,7 @@ fn test_counts() {
     }
 }
 
-/// Regression guard for angr-9ke6b.197: every terminal counter must be
+/// Regression guard (angr-9ke6b.197): every terminal counter must be
 /// driven by the `STASH_*` constant, not by a copy of its string value.
 ///
 /// The table below is keyed on the constants themselves, so if a future

@@ -35,8 +35,8 @@ crate::declare_proc! {
         }
         let bytes = scan_concrete_until_null(state, string, MAX_STRING_SCAN, "perror string")?;
         // A refusal means fd 2 was rebound (dup2) onto a bounded-symbolic-
-        // content fd, now demoted — bounce to Python (angr-0xyq2 Phase 2
-        // choke point; see FileSystem::write).
+        // content fd, now demoted — bounce to Python at the write choke point
+        // (angr-0xyq2 Phase 2; see FileSystem::write).
         if !state.write_fd(STDERR_FD, &bytes) {
             return Err(ProcedureError::Other(
                 "perror to stderr with symbolic content falls back to Python (demoted)"

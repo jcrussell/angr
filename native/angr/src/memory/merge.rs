@@ -267,8 +267,8 @@ impl SymbolicMemory {
                 // other-only wide object symbolic in the page bitmap but
                 // unresolvable through either sidecar, so a load of `addr + 1`
                 // fell through to the page's concrete placeholder — the same
-                // adopt-the-bitmap-forget-the-sidecar shape as angr-c7xno.50,
-                // one map over (angr-91vj9.3).
+                // adopt-the-bitmap-forget-the-sidecar shape as `multi_objects`,
+                // one map over (angr-c7xno.50, angr-91vj9.3).
                 self.symbolic_spans.insert(addr, (addr, width));
                 for i in 1..byte_count {
                     // overflow-ok: `Address` arithmetic is wrapping (see above).
@@ -329,8 +329,8 @@ impl SymbolicMemory {
             }
         }
 
-        // Merge pending writes with merge-condition guards (M3-2b,
-        // angr-op0dn.11.2.2). A deferred symbolic store is arm-specific, so a
+        // Merge pending writes with merge-condition guards
+        // (M3-2b; angr-op0dn.11.2.2). A deferred symbolic store is arm-specific, so a
         // blind `extend` would let `other`'s writes fire on `self`'s paths (and
         // leaves `self`'s own writes firing on `other`'s paths). Guard each
         // arm's writes so a write only materializes on the path that issued it:

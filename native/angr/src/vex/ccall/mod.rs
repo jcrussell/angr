@@ -677,7 +677,7 @@ fn handle_x86_eflags_c(
                 // ways that are equally easy to get subtly wrong
                 // (angr-9ke6b.219). Listed exhaustively so a new
                 // `OpCategory` fails to compile instead of falling back to
-                // Python (far slower wall-clock, measured on angr-9ke6b.88).
+                // Python (far slower wall-clock; angr-9ke6b.88).
                 OpCategory::Adc
                 | OpCategory::Sbb
                 | OpCategory::Shl
@@ -736,8 +736,8 @@ fn handle_x86_eflags_all(
             // CC_OP_COPY: result = cc_dep1 & flags_mask
             // Mirror the concrete calculate_eflags_all COPY path: mask in
             // O|S|Z|P|C|A via the same named constants (hand-deriving the
-            // literal twice is how 0xD5 drifted, dropping the O bit — see
-            // angr-36vvn.1).
+            // literal twice is how 0xD5 drifted, dropping the O bit)
+            // (angr-36vvn.1).
             let flags_mask: u128 = (flag_mask::G_CC_MASK_O
                 | flag_mask::G_CC_MASK_S
                 | flag_mask::G_CC_MASK_Z
@@ -756,11 +756,9 @@ fn handle_x86_eflags_all(
 
         // Symbolic eflags computation. Route every non-Copy category
         // through the shared `SymFlags` builder rather than enumerating a
-        // handful here — same reuse as the eflags_c branch above. Before
-        // angr-0jh0j.71 this covered only Sub/Add/Logic, so a PUSHF/LAHF
-        // after a symbolic ADC/SBB/shift/rotate/multiply fell back to the
-        // Python ccall (far slower wall-clock, measured on angr-9ke6b.88) even
-        // though `sym_flags_for_category` already handled the category.
+        // handful here — same reuse as the eflags_c branch above — so a
+        // PUSHF/LAHF after a symbolic ADC/SBB/shift/rotate/multiply does not
+        // fall back to the far slower Python ccall (angr-0jh0j.71, angr-9ke6b.88).
         // Copy is unreachable here: the only cc_op mapping to it is 0,
         // returned above.
         let arch = CcArch::from_ccall_name(name);

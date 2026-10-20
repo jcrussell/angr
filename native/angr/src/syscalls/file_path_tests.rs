@@ -1,7 +1,7 @@
 //! `open` / `openat` / `close` / `access` / `faccessat` path-resolution tests.
 //!
 //! angr-7hwz pattern: extracted out of `file_path.rs`'s former in-file
-//! `mod tests`; split further by handler family in angr-5mnx3.70. Declared as
+//! `mod tests` and split by handler family (angr-5mnx3.70). Declared as
 //! a direct child of `file_path` so `use super::*` reaches its private items.
 
 use super::*;
@@ -12,8 +12,7 @@ use crate::symbolic::{RustBV, SymContext};
 use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
 
-// angr-0hif.1 stub-sweep deleted — every file_path stub has now
-// been promoted: faccessat (angr-6009), lstat/newfstatat (angr-poao),
+// Every file_path handler is native: faccessat (angr-6009), lstat/newfstatat (angr-poao),
 // readlink/readlinkat (angr-wv38). Per-handler semantics are pinned
 // by the dedicated tests below.
 

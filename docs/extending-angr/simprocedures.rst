@@ -417,7 +417,7 @@ If your procedure caps how many bytes it will walk or copy, express the
 bail-out as ``check_max(n, MAX_WHATEVER)?`` (``procedures/mod.rs``) rather
 than hand-rolling the compare: it fixes the variant at ``MaxIterations``
 and the payload at the *offending* value, the two things the hand-rolled
-call sites had started to disagree about before angr-12jjk.24. Only bail-outs that
+call sites had started to disagree about (angr-12jjk.24). Only bail-outs that
 aren't a plain ``n > max`` compare — a scan that ran to exhaustion, a
 "is this prefix result conclusive?" check — should build the error
 directly.
@@ -871,9 +871,9 @@ Things to take away from this example:
   heap without bound. The ``?`` returns ``ProcedureError::MaxIterations``,
   which the dispatcher treats as a clean deferral to the Python
   ``SimProcedure`` — the oversized case is *handed off*, not failed.
-  Every allocator-shaped procedure in the file (``calloc`` after its
-  ``checked_mul``, ``realloc``, ``memalign``, ``posix_memalign``) caps the
-  same way; ``malloc`` was the lone hole until angr-03vl4.53.
+  Every allocator-shaped procedure in the file (``malloc``, ``calloc``
+  after its ``checked_mul``, ``realloc``, ``memalign``, ``posix_memalign``)
+  caps the same way (angr-03vl4.53).
 * ``free`` (in the same file) just calls ``state.heap_free`` and
   returns ``Ok(None)``. The bump allocator can't actually reclaim
   memory; ``heap_free`` exists for bookkeeping.
@@ -932,7 +932,7 @@ handles them differently:
   fresh unconstrained BVs, which is faithful for a symbolic *stream*
   (``scanf``/``fscanf``) but would make impossible paths feasible here.
   Rather than reimplement scanf's matching engine natively, the whole call
-  defers to Python's ``format_parser.py``. See ``angr-8onrp`` and the
+  defers to Python's ``format_parser.py`` (``angr-8onrp``); see the
   ``NativeSscanf`` doc comment.
 
 Things to take away from this example:

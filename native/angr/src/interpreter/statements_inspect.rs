@@ -26,7 +26,7 @@ impl<'a> VEXInterpreter<'a> {
     /// the interpreter stack so a user BP error cannot halt exploration.
     ///
     /// Returns `Some(bv)` when the user's BP_BEFORE action overrode
-    /// `state.inspect.mem_write_expr` (value injection — angr-inh0); the
+    /// `state.inspect.mem_write_expr` (value injection; angr-inh0); the
     /// caller substitutes it for the stored value. Returns `None` when
     /// unchanged (and always for `when='after'`, post-commit), so the
     /// original store value stands.
@@ -56,7 +56,7 @@ impl<'a> VEXInterpreter<'a> {
             )
             .ok()??;
         // The user injected a new value via state.inspect.mem_write_expr
-        // (only meaningful for when='before', pre-store — angr-inh0).
+        // (only meaningful for when='before', pre-store; angr-inh0).
         // Convert it back to a RustBV; reject a width mismatch defensively
         // so a bad override can't silently corrupt the store.
         let bv = Python::attach(|py| {

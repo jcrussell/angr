@@ -541,8 +541,8 @@ impl AddressConcretizer {
                 // consumers a truncated set they treat as exhaustive — the ITE
                 // load builder's default arm, the store disjunction hoist and
                 // `invalidate_code_for_concretization` all assume the listed
-                // addresses are the only feasible ones (angr-03vl4.77, same
-                // hazard angr-lf108 fixed for the stride grid). With no bound
+                // addresses are the only feasible ones (the same hazard the
+                // stride grid's completeness gate closes) (angr-03vl4.77). With no bound
                 // from `range_seeded` there is no honest `TooLarge` min/max to
                 // report either — an under-approximated range would under-
                 // invalidate the block cache — so report `Failed`, which every
@@ -610,7 +610,7 @@ impl AddressConcretizer {
     /// `limit` or because enumeration overflowed `max_solutions`.
     ///
     /// Tries the stride abstraction first (`try_detect_stride` carries the
-    /// angr-lf108 completeness gate, so a grid it returns really does cover
+    /// completeness gate (angr-lf108), so a grid it returns really does cover
     /// every feasible address), else reports `TooLarge` so consumers take the
     /// fully symbolic path instead of an incomplete address list.
     fn unenumerable(

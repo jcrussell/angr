@@ -170,18 +170,14 @@ macro_rules! test_submod {
 }
 
 /// Take a fallible value's success payload, or log the failure and fall back to
-/// `$default` — the one-line spelling of the `SILENT(cat-x)` convention.
+/// `$default`.
 ///
-/// The silent-fallback rules (`tools/audit_silent_fallback.py`, which gates
-/// them in CI) say a site that discards an error and
-/// continues with a degraded result must carry a `// SILENT(cat-a|b|c)` tag,
-/// and that `cat-c` (wrong-answer risk) must *also* `log::warn!`. Writing that
-/// out by hand is four lines of `unwrap_or_else` boilerplate, so the tempting
-/// silent form (`.unwrap_or(0)`, `let _ = ...`) keeps winning (angr-91vj9.6).
-/// This macro makes the
-/// correct form the shorter one: the category picks the log level, and the
-/// invocation itself is the greppable tag (`tools/audit_silent_fallback.py`
-/// accepts `silent_default!(cat_x, ...)` in place of the comment).
+/// A site that discards an error and continues with a degraded result should
+/// say so in the log, and one that risks a wrong answer should log at `warn`.
+/// Writing that out by hand is four lines of `unwrap_or_else` boilerplate, so
+/// the tempting silent form (`.unwrap_or(0)`, `let _ = ...`) keeps winning
+/// (angr-91vj9.6). This macro makes the correct form the shorter one: the
+/// category picks the log level, and the invocation itself is greppable.
 ///
 /// `cat_b` logs at `debug` (fallback with loss), `cat_c` at `warn`
 /// (wrong-answer risk). There is deliberately no `cat_a` arm: expected control
@@ -420,7 +416,7 @@ use pyo3::prelude::*;
 /// routing them through this generic helper documents the decision in ONE place
 /// and collapses the 7 scattered per-fn `#[allow]`s into this single site.
 /// The lone `#[allow]` below is the single, deliberate suppression that
-/// replaces the former per-call-site cluster. See bd bead angr-inieg.1.
+/// replaces the former per-call-site cluster (angr-inieg.1).
 #[allow(clippy::arc_with_non_send_sync)]
 #[inline]
 pub(crate) fn arc_shared<T>(value: T) -> std::sync::Arc<T> {

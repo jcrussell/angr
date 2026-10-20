@@ -7,11 +7,11 @@
 //! to `arch().bits()` when it writes the return register, so every constant
 //! here is the 64-bit two's-complement pattern regardless of the guest arch.
 //!
-//! These lived as per-file `const NEG_*` definitions in `file_path.rs`,
+//! One home for the `NEG_*` constants `file_path.rs`,
 //! `file_descriptor.rs`, `directory.rs`, `sigaction.rs` and `sim_time.rs`
-//! until angr-0jh0j.60. Values never diverged, but each new failure mode
-//! had no existing constant to reach for and minted another one-off; add
-//! the missing errno here instead (`neg` keeps that a one-liner).
+//! share, so a new failure mode reaches for an existing constant instead of
+//! minting another one-off; add the missing errno here (`neg` keeps that a
+//! one-liner; angr-0jh0j.60).
 
 /// The 64-bit two's-complement pattern for `-errno`.
 const fn neg(errno: u32) -> u64 {

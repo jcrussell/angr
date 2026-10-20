@@ -140,9 +140,8 @@ fn find_wins_over_avoid_at_the_same_address() {
 
 /// The regression proper: `step_one` (pre-step, popped from ACTIVE) and
 /// `route_successor` (post-step, a fresh successor) must land an
-/// overlapping-address state in the SAME stash. Before angr-03vl4.14 the two
-/// disagreed — AVOID vs FOUND — with nothing user-visible selecting between
-/// them.
+/// overlapping-address state in the SAME stash, not AVOID in one and FOUND in
+/// the other with nothing user-visible selecting between them (angr-03vl4.14).
 #[test]
 fn pre_step_and_post_step_routing_agree_on_an_overlapping_address() {
     Python::initialize();

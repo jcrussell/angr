@@ -12,7 +12,7 @@ use rustc_hash::FxHashMap;
 
 /// Reason for returning to Python.
 ///
-/// `#[non_exhaustive]` per angr-irwe: new callback reasons land in
+/// `#[non_exhaustive]` (angr-irwe): new callback reasons land in
 /// minor versions as more event-flow paths emerge; match sites must
 /// include a wildcard arm.
 #[non_exhaustive]

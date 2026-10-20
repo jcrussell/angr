@@ -1,6 +1,6 @@
 //! Unit tests for the shared `Clz`/`Ctz` concrete-fold helpers.
 //!
-//! The regression these exist for is angr-0jh0j.9: the copy of the `Clz`
+//! The regression these exist for (angr-0jh0j.9): the copy of the `Clz`
 //! adjustment in `claripy_bridge::export::rustbv_to_claripy_memo` computed
 //! `leading_zeros() - (128 - width)`, which underflows for `width > 128`.
 //! Widths above 128 are ordinary here — a page-sized memory chunk or the
@@ -24,7 +24,7 @@ fn test_concrete_clz_narrow_widths() {
 
 #[test]
 fn test_concrete_clz_width_above_128_does_not_underflow() {
-    // The angr-0jh0j.9 case. Old spelling: `leading_zeros() - (128 - width)`
+    // The regression case. Old spelling: `leading_zeros() - (128 - width)`
     // with `width = 256` underflows `128 - width` to 4294967168.
     assert_eq!(concrete_clz(1, 256), 255);
     assert_eq!(concrete_clz(0, 256), 256);

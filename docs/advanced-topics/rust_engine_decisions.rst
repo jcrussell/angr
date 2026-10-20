@@ -3,7 +3,7 @@ Rust engine: decisions record
 
 Alternatives that were tried, measured and rejected while building the
 Rust engine, kept so they are not re-tried without new evidence. Each
-entry names the bead that holds the data; the numbers themselves are
+entry cites the tracker issue that holds the data; the numbers themselves are
 deliberately not repeated here, because they describe one host on one
 day. Design notes that are still live are in :doc:`rust_z3_sharing`,
 :doc:`rust_parallel_design`, :doc:`rust_lazy_memory_design`,
@@ -12,10 +12,9 @@ day. Design notes that are still live are in :doc:`rust_z3_sharing`,
 Solver
 ------
 
-**Shared-lineage Z3 solver stays opt-in** (``angr-v5a5``, ``angr-3ms1``,
-``angr-v5ht``, ``angr-0dgq``, ``angr-op0dn.9.3``). Sharing one Z3 solver
-across a forked lineage, switching scopes with push/pop instead of
-materializing a solver per fork, was expected to recover the
+**Shared-lineage Z3 solver stays opt-in** (angr-v5a5, angr-3ms1, angr-v5ht, angr-0dgq, angr-op0dn.9.3).
+Sharing one Z3 solver across a forked lineage, switching scopes with
+push/pop instead of materializing a solver per fork, was expected to recover the
 materialize cost. Under BFS exploration the siblings interleave, so the
 switch cache stays cold and the ``switch_to`` push/pop plus the
 sat/model-cache invalidation it forces cost more than the materialize
@@ -33,8 +32,8 @@ benches raised ``IndexError`` / ``KeyError`` / ``AngrCallableError`` from
 Z3-Unknown results no consumer was prepared for. Re-enabling it would
 mean auditing every solver consumer for ``Unknown`` handling first.
 
-**Pinning Z3's random seeds does not give model stability**
-(``angr-iaol.1``). Setting ``smt.random_seed`` / ``sat.random_seed``
+**Pinning Z3's random seeds does not give model stability** (``angr-iaol.1``).
+Setting ``smt.random_seed`` / ``sat.random_seed``
 through ``Z3_solver_set_params`` corrupts models (the solver returns
 witnesses that violate asserted constraints); the unprefixed
 ``random_seed`` is accepted but produces *more* variation across fresh
@@ -134,8 +133,8 @@ in :doc:`rust_engine`.
 Lifting
 -------
 
-**Link-time libVEX bindings replaced by runtime resolution**
-(``angr-z087y``, ``angr-mx00p.33``). The native lifter first bound
+**Link-time libVEX bindings replaced by runtime resolution** (``angr-z087y``, ``angr-mx00p.33``).
+The native lifter first bound
 libVEX at build time: a ``libvex-ffi`` cargo feature ran ``bindgen`` over a
 cffi cdef vendored from pyvex, linked ``-lpyvex`` with an rpath into the
 venv, and generated the enum-name tables from the same header. Every pyvex
@@ -150,8 +149,8 @@ tags are now checked against pyvex's cffi library by
 ``tests/engines/rust/test_native_lift_parity.py``; see
 :doc:`rust_libvex_ffi`.
 
-**JSON IRSB bridge replaced by reading pyvex objects** (``angr-mx00p.33``,
-``angr-mx00p.44``). The Python ``lift_block`` callback used to serialize
+**JSON IRSB bridge replaced by reading pyvex objects** (``angr-mx00p.33``, ``angr-mx00p.44``).
+The Python ``lift_block`` callback used to serialize
 ``block.vex`` to JSON, which ``serde`` decoded on the Rust side against a
 hand-kept schema. The serializer and the schema drifted apart on every shape
 libVEX itself never produces: a Python-built ``U1`` holds an int, a Spotter's
@@ -164,8 +163,8 @@ native lifter's field conventions; see :doc:`rust_libvex_ffi`.
 Architecture and ABI tables
 ---------------------------
 
-**Register tables are not loaded from archinfo at run time**
-(``angr-mx00p.34``). Passing archinfo's register table into Rust when the
+**Register tables are not loaded from archinfo at run time** (``angr-mx00p.34``).
+Passing archinfo's register table into Rust when the
 manager is built, and deleting ``arch/*.rs``'s ``CANONICAL`` / ``ALIASES``,
 was the original plan. The engine needs the tables before any manager
 exists: the seed state is built standalone, snapshots rebuild an arch from

@@ -401,8 +401,8 @@ impl PythonCallbacks {
             // concretized candidate. Gating this on `data.is_symbolic()` (the
             // old behavior) let concrete data fall through to a
             // first-address-only fallback that silently dropped stores to
-            // addrs[1..] — the angr-ph300.64 divergent-memory bug for
-            // `table[x]=const` with 17+ concretizations.
+            // addrs[1..] — a divergent-memory bug for `table[x]=const` with
+            // 17+ concretizations (angr-ph300.64).
             //
             // With `_full` unwired the callee hard-errors (module invariant 1,
             // `avoid-silent-no-op-callback-fallbacks`) and that error is this

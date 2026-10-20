@@ -38,7 +38,7 @@ fn concretize_cached_read_short_circuits_concrete_addr() {
 
 #[test]
 fn concretize_cached_read_applies_any_fallback_on_cached_toolarge() {
-    // angr-1c88c gap 6/7: cache-HIT TooLarge -> read_fallback_any (eval).
+    // angr-1c88c: cache-HIT TooLarge -> read_fallback_any (eval).
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
@@ -92,7 +92,7 @@ fn concretize_cached_read_keeps_toolarge_when_fallback_disabled() {
 
 #[test]
 fn concretize_cached_write_applies_max_fallback_on_cached_toolarge() {
-    // angr-1c88c gap 5/7: cache-HIT TooLarge -> write_fallback_max (range.max).
+    // angr-1c88c: cache-HIT TooLarge -> write_fallback_max (range.max).
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
@@ -249,7 +249,7 @@ fn write_does_not_reuse_a_read_range_multiple() {
     }
 }
 
-/// The converse direction of angr-360gt: a store's Max-collapsed `Single` also
+/// The converse direction of the read/write crossover above (angr-360gt): a store's Max-collapsed `Single` also
 /// lives in its own namespace, so a later load re-runs its own chain. That is
 /// still consistent — `pin_fallback_addr` asserted `addr == max` when the write
 /// fallback fired, so the fresh read concretization sees one solution — but the

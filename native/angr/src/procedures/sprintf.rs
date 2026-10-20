@@ -235,8 +235,8 @@ impl NativeSimProcedure for NativeSnprintf {
 /// Reading the `va_list` properly is arch-specific (x86-64 SysV
 /// `reg_save_area`/`gp_offset`) and unmodeled by angr, so a "real" formatter
 /// here would diverge from the Python engine and explore different symbolic
-/// states — violating the faithful-reimplementation invariant. See bd memory
-/// `avoid-vsnprintf-real-formatting`.
+/// states — violating the faithful-reimplementation invariant
+/// (bd memory `avoid-vsnprintf-real-formatting`).
 pub(crate) struct NativeVsnprintf;
 
 impl NativeSimProcedure for NativeVsnprintf {

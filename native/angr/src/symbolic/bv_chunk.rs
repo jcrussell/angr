@@ -3,8 +3,8 @@
 //! `RustBV::Concrete` is backed by a `u128`, so a single concrete BV round-trips
 //! at most **16 bytes**. Every memory entry point that moves a `&[u8]` in or out
 //! of the engine therefore has to split the range into `<= 16`-byte chunks. That
-//! loop was hand-copied into five call sites across two layers before
-//! angr-9ke6b.230 landed it here.
+//! loop lives here once rather than hand-copied across call sites
+//! (angr-9ke6b.230).
 //!
 //! This module lives next to [`RustBV`] rather than in `exploration/helpers.rs`
 //! because the constraint it encodes belongs to `RustBV`, and because both
@@ -31,8 +31,8 @@ pub const MAX_CONCRETE_CHUNK: usize = 16;
 /// `u32::MAX` bytes. 16 MiB is four thousand pages — orders of magnitude past
 /// any real read (a buffer, a string, a stack frame, a segment) — while still
 /// refusing the ~4 GiB request that would OOM or hang the host regardless of
-/// whether the range is even mapped (angr-0jh0j.11, same DoS class as
-/// angr-c7xno.67/.80/.81/.94).
+/// whether the range is even mapped
+/// (angr-0jh0j.11, angr-c7xno.67/.80/.81/.94).
 pub const MAX_CONCRETE_LOAD_BYTES: u32 = 0x100_0000;
 
 /// Reject a memory-read byte count above [`MAX_CONCRETE_LOAD_BYTES`], naming
@@ -101,8 +101,8 @@ where
 /// payload: at `i >= 16` the shift amount reaches 128, which panics under
 /// `overflow-checks` (the `release-checked` profile CI runs `cargo test` with)
 /// and otherwise wraps mod 128, repeating the low bytes in a 16-byte cycle —
-/// the memory-corruption shape of angr-5aj8 and the register shape of
-/// angr-0jh0j.1/.2. Zero is the *correct* answer there, not a fallback: a
+/// a memory-corruption shape (angr-5aj8) and a register shape
+/// (angr-0jh0j.1/.2). Zero is the *correct* answer there, not a fallback: a
 /// `Concrete` wider than 128 bits stores only these low bits and the ones above
 /// them are implicitly zero (see `value_ops::bits_beyond_storage`).
 pub fn u128_le_byte(val: u128, i: usize) -> u8 {
@@ -129,8 +129,8 @@ pub fn u128_to_le_bytes(val: u128, size: usize) -> Vec<u8> {
 /// exist is the same `u128` width: `as_u128()` / [`u128_to_le_bytes`] only
 /// round-trip 16 bytes, so a single wider load either truncates the tail, wraps
 /// mod 128 into a repeating 16-byte pattern, or (for a fully concrete region)
-/// fails as "symbolic" because `as_u128()` returns `None` (angr-ph300.19,
-/// angr-ph300.53). The source closure abstracts the only divergence between
+/// fails as "symbolic" because `as_u128()` returns `None`
+/// (angr-ph300.19, angr-ph300.53). The source closure abstracts the only divergence between
 /// call sites: which memory API to read through and how to map its failure. It
 /// is called once per chunk with `(chunk_addr, chunk_size)` and must return
 /// exactly `chunk_size` bytes; the first error propagates and the partial

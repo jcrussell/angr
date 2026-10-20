@@ -11,7 +11,7 @@
 //! Same pattern as `ProfilingCollector` / `ConstraintSolver`: `pub(crate)`
 //! direct field access by design — callers read/write inner fields through
 //! a thin delegation. Do NOT add helper methods as a separate cleanup; the
-//! parent angr-4j5u was deferred multiple times for cosmetic gains.
+//! cosmetic gain does not pay for the churn.
 
 use std::sync::Arc;
 

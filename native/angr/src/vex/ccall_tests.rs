@@ -560,9 +560,9 @@ fn diff_fuzz_sym_flags_dec() {
     }
 }
 
-// angr-9ke6b.219: Shl/Shr/Rol/Ror/Umul/Smul had no symbolic builder, so after
-// angr-9ke6b.88 tightened the fallback they routed every symbolic crossing to
-// Python. Same masking invariant as `diff_fuzz_sym_flags_sub`.
+// angr-9ke6b.219: Shl/Shr/Rol/Ror/Umul/Smul each have a symbolic builder, so
+// a symbolic crossing does not route to Python (angr-9ke6b.88). Same masking
+// invariant as `diff_fuzz_sym_flags_sub`.
 
 #[test]
 fn diff_fuzz_sym_flags_shl() {
@@ -697,9 +697,9 @@ fn diff_fuzz_sym_flags_unmasked_inputs() {
     }
 }
 
-/// Hand-checked instance of the `sign_extend_to_i64` half of angr-0jh0j.69:
-/// with the sign bit clear the non-negative branch used to return `val`
-/// verbatim, so an 8-bit operand of 0 spelled `0x100` multiplied as 256.
+/// Hand-checked instance of the `sign_extend_to_i64` fix (angr-0jh0j.69):
+/// with the sign bit clear the non-negative branch must not return `val`
+/// verbatim, or an 8-bit operand of 0 spelled `0x100` multiplies as 256.
 #[test]
 fn sign_extend_to_i64_drops_bits_above_the_width() {
     assert_eq!(sign_extend_to_i64(0x100, 8), 0);
@@ -759,7 +759,7 @@ fn sym_flags_wide_mul_roundtrips_through_z3() {
     }
 }
 
-/// Regression for angr-g6dg: `amd64g_calculate_rflags_c` for INC/DEC
+/// Regression (angr-g6dg): `amd64g_calculate_rflags_c` for INC/DEC
 /// cc_ops must derive the carry from cc_ndep (CF is preserved by INC/DEC),
 /// even when the concrete fast-path declines because cc_dep1 is symbolic.
 /// Before the fix this category fell through to a fresh unconstrained
@@ -1566,8 +1566,7 @@ fn diff_fuzz_arm_flags_nzcv_symbolic_matches_concrete() {
 }
 
 /// AF (bit 4) must be computed and packed for every arithmetic category, with
-/// the true half-carry value — not the structural 0 it was before
-/// angr-5mnx3.59.
+/// the true half-carry value — not a structural 0 (angr-5mnx3.59).
 ///
 /// The `diff_fuzz_sym_flags_*` and `diff_fuzz_eflags_all_symbolic_*` tests
 /// compare the two Rust paths against each other, so they pin AF's

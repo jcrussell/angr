@@ -28,10 +28,10 @@ pub(crate) const MAX_TRACKED_WORKERS: usize = 32;
 /// ([`SchedulerStats`]) and the [`snapshot_stats`] fn that loads one into the
 /// other.
 ///
-/// Before angr-12jjk.1 these were three hand-maintained parallel field lists;
-/// adding a counter to the first two but forgetting the third produced a stat
-/// permanently stuck at zero with no compile error. Now a new counter is one
-/// line here, and omitting it is not expressible.
+/// As three hand-maintained parallel field lists, adding a counter to the
+/// first two but forgetting the third would produce a stat permanently stuck
+/// at zero with no compile error (angr-12jjk.1). A new counter is one line
+/// here, and omitting it is not expressible.
 ///
 /// Each field is `<vis> <name>: <kind>`, where `<vis>` is the visibility on the
 /// *atomic* struct (the POD mirror is always `pub`) and `<kind>` is one of:
@@ -77,8 +77,8 @@ macro_rules! scheduler_counters {
         /// atomics, read back into a [`SchedulerStats`] after the pool joins.
         ///
         /// `pub(crate)` so the coordinator's duplex-protocol `RunSession`
-        /// (scheduler_pool.rs) can own one directly (angr-vh834 steady-state
-        /// redesign, Phase 1); run_loop_steady.rs's `SteadySession` reaches it
+        /// (scheduler_pool.rs) can own one directly (angr-vh834 Phase 1);
+        /// run_loop_steady.rs's `SteadySession` reaches it
         /// through an `Arc<RunSession>`. The scheduler still constructs and
         /// reads it here, so every *field* stays `pub(super)`.
         #[derive(Default)]
@@ -182,8 +182,8 @@ scheduler_counters! {
     /// itself raise the cancel (`!request_cancel`). Because both worker loops
     /// re-check `cancel` at the top of every iteration, this captures exactly
     /// the in-flight steps that were committed before the cancel became
-    /// visible: the wasted work the find-aware dispatch bead (angr-1ilq.9)
-    /// aims to eliminate. 0 until the first find raises a cancel.
+    /// visible: the wasted work find-aware dispatch aims to eliminate
+    /// (angr-1ilq.9). 0 until the first find raises a cancel.
     pub(super) post_cancel_steps: count,
     /// Dispatches per worker id (angr-op0dn.13.9): the load-balance column the
     /// S7 find-all gate needs (`max/min dispatched per worker`). Indexed by
@@ -215,7 +215,7 @@ scheduler_counters! {
     /// `step_ns` to form the serde budget that gates Trigger A offloads
     /// (`worker::offload_is_affordable`, angr-8shhe). Surfaced on the snapshot so
     /// a migration-dominated frontier is diagnosable from the wave log rather
-    /// than from a flamegraph (angr-faorh/8shhe).
+    /// than from a flamegraph (angr-faorh, angr-8shhe).
     pub(super) serde_ns: nanos,
     /// Nanoseconds all workers spent inside the step function itself — the useful
     /// work the serde is a tax on.

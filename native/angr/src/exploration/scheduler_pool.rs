@@ -24,8 +24,8 @@ use super::*;
 
 /// Downstream control message: coordinator -> persistent worker.
 ///
-/// The unified channel enum for both scheduling modes (angr-nkoct steady-state
-/// Phase B; absorbs the former `WaveMsg`). `Wave` drives the level-synchronous
+/// The unified channel enum for both scheduling modes (angr-nkoct Phase B).
+/// `Wave` drives the level-synchronous
 /// wave loop verbatim; `Run` enters (or re-enters — it doubles as the idempotent
 /// wake ping for a parked session worker) the steady-state session loop.
 ///

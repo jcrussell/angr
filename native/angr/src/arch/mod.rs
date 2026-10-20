@@ -136,8 +136,8 @@ pub trait Arch: Send + Sync {
     /// arch-table integrity sweeps:
     ///
     /// - `registry_tests::register_names_all_resolve_and_fit_in_u128`
-    /// - `registry_tests::exported_register_names_reverse_resolve` (angr-9ke6b.9:
-    ///   catches two `CANONICAL` rows at one offset)
+    /// - `registry_tests::exported_register_names_reverse_resolve` (catches two
+    ///   `CANONICAL` rows at one offset; angr-9ke6b.9)
     /// - `registry_tests::vex_bookkeeping_fields_resolve_on_every_arch`
     /// - `calling_conventions_tests::test_cc_arg_registers_resolve_to_expected_register_names`
     ///   and `..::test_link_register_set_on_link_register_abis`, which turn a
@@ -159,10 +159,9 @@ pub trait Arch: Send + Sync {
     /// `register_names` is derived from, and what `arch_register_info` and
     /// the big-endian containment table read.
     ///
-    /// `register_names` used to be a hand-kept copy of this table, and an
-    /// entry missing from the copy was silently unexported: X86's
-    /// `sseround` survived the angr-9ke6b.6 sweep that way (angr-sqfj8.1/.6).
-    /// Deriving the export list makes that unrepresentable (angr-mx00p.34).
+    /// `register_names` is derived from this table rather than hand-kept, so
+    /// an entry cannot be silently left out of the export list (a hand-kept
+    /// copy once dropped X86's `sseround`) (angr-sqfj8.1/.6, angr-mx00p.34).
     fn canonical_registers(&self) -> &[RegEntry];
 
     /// The arch's `ALIASES` table: the overlapping spellings (sub-registers,
@@ -199,10 +198,9 @@ pub trait Arch: Send + Sync {
     /// the `little_endian` override in `with_solver_endian`; read that instead
     /// when the answer has to be correct for a big-endian target.
     ///
-    /// (angr-9ke6b.218 item 7: `CallingConvention::endness` used to duplicate
-    /// this same hardcoded answer and was deleted rather than kept, because a
-    /// dead accessor that returns `Little` unconditionally hands its first
-    /// real caller a wrong answer on exactly those two families.)
+    /// There is deliberately no `CallingConvention::endness` duplicate of this
+    /// hardcoded answer: a dead accessor that returns `Little` unconditionally
+    /// hands its first real caller a wrong answer on exactly those two families.
     fn is_little_endian(&self) -> bool;
 }
 
@@ -324,16 +322,16 @@ pub(crate) use impl_arch_registers;
 /// (`#[serde(try_from = ...)]`): an unrecognized `arch_name` is rejected with
 /// [`UnknownRegisterFileArch`], see [`RegisterFileData`]. Symbolic overlay AST caches are rebuilt
 /// inside the active thread-local Z3 context per the [`RustBV`] serde
-/// shape (see `snapshot-rustbv-shadow-type-pattern` bd memory).
+/// shape (bd memory `snapshot-rustbv-shadow-type-pattern`).
 ///
 /// ## Merge coverage (angr-91vj9.13)
 ///
 /// `RustSimState` labels `registers` `#[merge_policy = "delegate"]`, which ends
 /// the top-level derive's guarantee at this struct's boundary — and, exactly as
 /// with [`crate::memory::SymbolicMemory`], the "field-added-without-a-merge-line"
-/// bug family recurred one level deeper (angr-c7xno.1: [`Self::merge`]'s
+/// bug family recurred one level deeper ([`Self::merge`]'s
 /// concrete-diff chunk scan shadowed an already-merged unaligned sub-register
-/// overlay). Deriving [`angr_macros::MergePolicy`] here extends the guarantee:
+/// overlay; angr-c7xno.1). Deriving [`angr_macros::MergePolicy`] here extends the guarantee:
 /// a new field does not compile until it declares how [`Self::merge`] treats it.
 ///
 /// [`Self::merge`] mutates `self` in place rather than building a new struct, so

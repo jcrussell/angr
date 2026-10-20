@@ -56,8 +56,8 @@ use crate::vex::{Endness, VEX_MAX_BYTES};
 /// Each cached `IRSB` is Arc-shared, so this caps unique IRSBs simultaneously
 /// resident across an interpreter's lifetime. 4096 covers the working set of
 /// every tracked bench in `baseline_timings.json`; adjust only with a counter
-/// dump showing eviction churn (`mgr.stats()` does not expose hit/miss today;
-/// see angr-l4bs).
+/// dump showing eviction churn (`mgr.stats()` does not expose
+/// hit/miss; angr-l4bs).
 pub(crate) const BLOCK_CACHE_CAPACITY: usize = 4096;
 
 /// [`BLOCK_CACHE_CAPACITY`] pre-validated as the `NonZeroUsize` every
@@ -549,8 +549,8 @@ impl<'a> VEXInterpreter<'a> {
     /// or another unmapped low address.
     ///
     /// The oracle is `python_has_page`, NOT the `python_can_serve_page` set
-    /// from angr-gorvf.4.6 — those answer different questions, and using the
-    /// latter here is a silent-corruption bug (it briefly was one). A page
+    /// (angr-gorvf.4.6) — those answer different questions, and using the
+    /// latter here is a silent-corruption bug. A page
     /// holding symbolic bytes is *declined* for a whole-page concrete fetch
     /// yet serves a load fine, so gating on fetch-servability synthesizes
     /// fillers over real data.

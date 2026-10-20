@@ -221,7 +221,7 @@ fn getrlimit_rlim_near_u64_max_wraps_max_field() {
     assert!(state.memory_load(0, 8).expect("loadable").is_symbolic());
 }
 
-/// Harness 6 boundary sweep for angr-03vl4.66: every value in the shared
+/// Harness 6 boundary sweep (angr-03vl4.66): every value in the shared
 /// `test_boundary_values` table, not just the single `u64::MAX - 7` pivot
 /// above, must complete without panicking and — whenever both touched pages
 /// are mapped — must land `rlim_max` at the exact wrapped address

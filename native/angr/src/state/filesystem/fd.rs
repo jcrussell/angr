@@ -63,10 +63,10 @@ pub struct FileDescriptor {
     /// mint fresh symbolic bytes natively (the stdin model) instead of
     /// falling back to Python. Models an fd backed by a symbolic stream
     /// (`SimPackets`), like stdin — NOT a bounded symbolic *file* with a
-    /// finite size (that EOF-aware case is `content_sym` below, angr-0xyq2;
-    /// reads on a symbolic-stream fd never hit EOF). Defaults false; `#[serde(default)]`
-    /// keeps pre-angr-11djq.6.1 snapshots loadable (reconstitutes to a
-    /// concrete-only fd, the prior behavior). Set only via `open_symbolic`.
+    /// finite size (that EOF-aware case is `content_sym` below; reads on a
+    /// symbolic-stream fd never hit EOF; angr-0xyq2). Defaults false; `#[serde(default)]`
+    /// keeps older snapshots loadable (reconstitutes to a
+    /// concrete-only fd; angr-11djq.6.1). Set only via `open_symbolic`.
     #[serde(default)]
     pub symbolic: bool,
     /// Bounded symbolic file content: one 8-bit `RustBV` per byte (concrete
@@ -80,7 +80,7 @@ pub struct FileDescriptor {
     /// symbolic-stream and bounded-file models have conflicting EOF
     /// semantics, see [`FileSystem::open_symbolic`]). Served natively by
     /// [`FileSystem::read_sym`] / [`FileSystem::read_sym_at`]
-    /// (angr-0xyq2 Phase 2). `#[serde(default)]` keeps pre-angr-0xyq2
+    /// (angr-0xyq2 Phase 2). `#[serde(default)]` keeps older
     /// snapshots loadable (reconstitutes to `None`).
     /// Serialized via serde's `rc` feature: the `Arc<T>` goes on the wire
     /// as `T` and each load rebuilds a fresh `Arc`, so Arc *sharing*
@@ -115,7 +115,7 @@ pub struct FileDescriptor {
     ///
     /// `None` for descriptors minted outside the `open` family (the three
     /// std fds, pipe ends, the write-side auto-vivified fds) and for
-    /// pre-angr-9ke6b.120 snapshots; `FileSystem::fd_norm_name` falls
+    /// older snapshots (angr-9ke6b.120); `FileSystem::fd_norm_name` falls
     /// back to normalizing `name` in that case, which is exact for the
     /// absolute pseudo-paths those descriptors carry.
     #[serde(default)]
@@ -152,7 +152,7 @@ pub struct FileDescriptor {
     /// before — which missed a guest `open("/dev/stdin")` + `dup2(fd, 0)`,
     /// whose clone keeps that very name (angr-tqw60).
     ///
-    /// `#[serde(default)]` keeps pre-angr-tqw60 snapshots loadable; their fd 0
+    /// `#[serde(default)]` keeps older snapshots loadable; their fd 0
     /// reconstitutes as `false`, i.e. reported as dup2'd, so native stdin
     /// readers bounce to Python. That is the conservative direction — the
     /// Python path is the reference implementation, so a stale snapshot pays

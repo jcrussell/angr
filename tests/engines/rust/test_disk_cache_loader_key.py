@@ -2,7 +2,7 @@
 
 The cached payload embeds pages and post-relocation section patches for every
 ``loader.all_objects`` entry, so the shared-library set must be part of the
-cache key — see angr-uv7z5 and ``_loader_identity_digest``. Pure bookkeeping
+cache key (see ``_loader_identity_digest``) (angr-uv7z5). Pure bookkeeping
 over a fake loader; needs neither the Rust extension nor a project.
 """
 

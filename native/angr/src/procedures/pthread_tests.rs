@@ -45,7 +45,7 @@ fn test_metadata() {
     assert_eq!(NativePthreadMutexUnlock.num_args(), 1);
 }
 
-// --- pthread_once (native sub-call, bead xxukz) ------------------------------
+// --- pthread_once (native sub-call) ------------------------------------------
 
 const ONCE_CONTROL: u64 = 0x2000;
 const ONCE_FUNC: u64 = 0x0040_1000;

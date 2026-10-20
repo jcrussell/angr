@@ -160,8 +160,8 @@ impl RustSimState {
     /// Flush this state's memory (Multi cells + any queued lazy-write ITEs)
     /// and return proof of it, for any caller about to build a
     /// snapshot/export or otherwise read `symbolic_objects`/pages directly
-    /// and that must see fully-materialized memory (angr-sqfj8.71,
-    /// angr-sqfj8.26, angr-sqfj8.52). Mirrors [`Self::flush_and_export_full`]'s
+    /// and that must see fully-materialized memory
+    /// (angr-sqfj8.71, angr-sqfj8.26, angr-sqfj8.52). Mirrors [`Self::flush_and_export_full`]'s
     /// flush step.
     pub(crate) fn flush_memory(&mut self) -> crate::memory::MultiFlushed {
         let ctx = self.solver.borrow();
@@ -332,7 +332,7 @@ impl RustSimState {
     /// minor variant churn without a breaking change.
     #[allow(
         clippy::expect_used,
-        reason = "`serde_json::to_vec` over `RustSimStateSnapshot`, whose derived `Serialize` has no fallible arm and writes into a `Vec` (so no io error). Left as a panic rather than propagated because `to_serialized` returns `Vec<u8>` across the PyO3 surface and the migration payload path; widening it to `Result` would ripple into every caller — out of scope for angr-9ke6b.212"
+        reason = "`serde_json::to_vec` over `RustSimStateSnapshot`, whose derived `Serialize` has no fallible arm and writes into a `Vec` (so no io error). Left as a panic rather than propagated because `to_serialized` returns `Vec<u8>` across the PyO3 surface and the migration payload path; widening it to `Result` would ripple into every caller — out of scope here (angr-9ke6b.212)"
     )]
     pub fn to_serialized(&mut self) -> Vec<u8> {
         let snap = self.to_snapshot();
@@ -371,7 +371,7 @@ impl RustSimState {
         Self::from_snapshot(snap)
     }
 
-    /// angr-t3l5o Phase 0a bench hook: serde-json decode a snapshot byte
+    /// Bench hook (angr-t3l5o Phase 0a): serde-json decode a snapshot byte
     /// buffer into the [`RustSimStateSnapshot`] struct (no `from_snapshot`
     /// rebuild), isolating the serde-decode cost. Uses the same
     /// `disable_recursion_limit` as [`Self::from_serialized`].
@@ -387,7 +387,7 @@ impl RustSimState {
         serde::Deserialize::deserialize(&mut de).map_err(|e| SnapshotError::Decode(e.to_string()))
     }
 
-    /// angr-t3l5o Phase 0a bench hook: round-trip just the symbolic-memory
+    /// Bench hook (angr-t3l5o Phase 0a): round-trip just the symbolic-memory
     /// pages through `to_snapshot` / `from_snapshot`, isolating the
     /// memory-page copy cost. Returns the rebuilt page count so the result
     /// cannot be optimized away.

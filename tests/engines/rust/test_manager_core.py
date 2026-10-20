@@ -281,9 +281,9 @@ class TestRustExplorationManagerUnit:
         """RUST_PARALLEL_WORKERS=2 runs the real work-stealing wave loop.
 
         Drives the high-level manager on fauxware twice — once single-threaded
-        (default) and once with 2 real workers. The wave loop (angr-vh834
-        Phase 5) finds the same number of FOUND solutions and exposes real
-        scheduler counters.
+        (default) and once with 2 real workers. The wave loop (angr-vh834 Phase 5)
+        finds the same number of FOUND solutions and exposes real scheduler
+        counters.
 
         NOTE: full ``stash_counts()`` parity is intentionally NOT asserted. By
         design the parallel path records dead paths (deadended / pruned /
@@ -932,7 +932,7 @@ class TestRustExplorationManagerUnit:
         Python can handle the call instead. Locks the contract documented
         in ``procedures/mod.rs`` (**Dispatch priority** step 2): a Python
         override always wins over the native implementation regardless of
-        registration order. angr-o0vm regression.
+        registration order (angr-o0vm).
         """
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
@@ -1413,8 +1413,8 @@ class TestRustExplorationPython:
         )
 
     def test_concrete_syscall_num_still_uses_native_dispatch(self):
-        """Sanity check that the angr-gffd `Option<u64>` plumbing did not
-        regress the concrete-syscall fast path. A concrete ``rax = 60`` (exit
+        """Sanity check that the `Option<u64>` syscall-number plumbing (angr-gffd)
+        did not regress the concrete-syscall fast path. A concrete ``rax = 60`` (exit
         on amd64) must dispatch through ``NativeExitSyscall`` without bumping
         the Python fallback counter."""
         import angr
@@ -1518,8 +1518,8 @@ class TestRustExplorationPython:
 
     def test_keep_ip_symbolic_propagates_to_rust(self, fauxware_project):
         """A SimState with KEEP_IP_SYMBOLIC option should flip the Rust
-        state's keep_ip_symbolic flag automatically — mirrors angr-yl5n's
-        propagation test for NO_IP_CONCRETIZATION."""
+        state's keep_ip_symbolic flag automatically — mirrors the
+        propagation test for NO_IP_CONCRETIZATION (angr-yl5n)."""
         from angr import sim_options as o
 
         # No option → flag stays off.
@@ -1635,9 +1635,9 @@ class TestRustExplorationPython:
     def test_solver_stats_populated(self, fauxware_project):
         """mgr.get_solver_stats() returns populated counters after exploration.
 
-        Verifies the observability surface for angr-2usz: per-process Z3 query
+        Verifies the solver observability surface: per-process Z3 query
         counters (sat/unsat/timeout, total time, per-site breakdown) reach
-        Python via the instance method.
+        Python via the instance method (angr-2usz).
         """
 
         state = fauxware_project.factory.entry_state()
@@ -2070,7 +2070,7 @@ class TestRustExplorationPython:
 
         With limit=1, fauxware's symbolic strcmp branches must produce at
         least one pruned state — otherwise the limit is being silently
-        ignored (the bug fixed by angr-jmiz).
+        ignored (angr-jmiz).
         """
 
         state = fauxware_project.factory.entry_state()
@@ -2124,8 +2124,8 @@ class TestRustExplorationPython:
     def test_progress_callback_deadended_count(self, fauxware_project):
         """deadended_count in the progress payload must match the actual stash.
 
-        Regression for angr-8mln: the payload read counts.get("deadened", 0)
-        but the Rust stash key is "deadended", so deadended_count was always 0.
+        Regression test: the payload must read the Rust stash key "deadended",
+        not "deadened", or deadended_count is always 0 (angr-8mln).
         """
         progress_reports = []
 
@@ -2188,7 +2188,7 @@ class TestRustEdgeCases:
     def test_load_shellcode_blob_in_binary_control_flow(self):
         """In-blob jump targets in a load_shellcode/blob must resolve, not deadend.
 
-        Regression for angr-1lzq. The Blob main object produced by
+        Regression test (angr-1lzq). The Blob main object produced by
         ``load_shellcode`` has ``binary is None`` (stream-backed, no file path),
         so ``_load_binary_regions`` skipped it and the Rust engine received zero
         concrete regions. With no region, ``is_in_binary`` was false for every
@@ -2215,7 +2215,7 @@ class TestRustEdgeCases:
     def test_load_shellcode_blob_conditional_loop_cold_flags(self):
         """A cold conditional loop in a blob must run to completion, not deadend.
 
-        Regression for angr-g6dg. In a blank_state-backed blob, ``dec``'s VEX
+        Regression test (angr-g6dg). In a blank_state-backed blob, ``dec``'s VEX
         calls ``amd64g_calculate_rflags_c`` to preserve the carry in cc_ndep.
         For the INC/DEC cc_op category the carry is preserved from cc_ndep, but
         the Rust ccall layer only handled Copy/Sub/Add/Logic and fell through to
@@ -2244,7 +2244,7 @@ class TestRustEdgeCases:
     def test_block_granular_step_observes_mid_chain_address(self):
         """Block-granular stepping makes a chained-through block boundary observable.
 
-        Regression for angr-bmyx. The VEX interpreter chains basic blocks within
+        Regression test (angr-bmyx). The VEX interpreter chains basic blocks within
         one ``step(n=1)``, so a state runs THROUGH an interior block boundary
         without ever stopping there — which breaks bare step-loop idioms like
         CADET solve.py phase 3 (``while True: sm.step(); break if any active.addr
@@ -2296,7 +2296,7 @@ class TestRustEdgeCases:
     def test_materialize_unconstrained_forks_toggle(self):
         """The unconstrained-fork materialization flag round-trips (angr-ckdy).
 
-        Materialization (the default since angr-x39ae) keeps the loop-exit
+        Materialization (the default; angr-x39ae) keeps the loop-exit
         deferred forks alive at an ``UnconstrainedJump`` (instead of dropping
         them in deferred mode) so a bare step-loop that bypasses ``explore()``
         (CADET solve.py phase 3) keeps progressing toward a target behind a
@@ -2308,7 +2308,7 @@ class TestRustEdgeCases:
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=0x1000)])
 
-        # Default on (angr-x39ae: dropping the forks lost paths).
+        # Default on: dropping the forks loses paths (angr-x39ae).
         assert mgr._rust_mgr.materialize_unconstrained_forks() is True
         # Setter returns the prior value and flips the flag.
         assert mgr.set_materialize_unconstrained_forks(False) is True
@@ -2341,9 +2341,8 @@ class TestRustEdgeCases:
 
     def test_many_symbolic_variables(self):
         """Solver with >50 symbolic variables and constraints."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         symbols = []
@@ -2364,9 +2363,8 @@ class TestRustEdgeCases:
 
     def test_solver_push_pop(self):
         """Push/pop preserves solver state correctly."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -2390,9 +2388,8 @@ class TestRustEdgeCases:
         so this round-trips the dunder ASTs through the slow path and checks
         the Rust solver matches claripy's unsigned semantics.
         """
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         x = claripy.BVS("x", 32)
 
@@ -2465,10 +2462,9 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_returns_single_value(self):
         """RustSolverProxy.eval() returns a single value, not a tuple."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -2488,10 +2484,9 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_upto_returns_tuple(self):
         """RustSolverProxy.eval_upto() returns a tuple."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -2510,10 +2505,9 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_cast_to_bytes(self):
         """RustSolverProxy.eval() with cast_to=bytes works."""
-        from angr.rustylib.vex_engine import RustSolverContext
-
         from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxy
+        from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)

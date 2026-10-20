@@ -301,8 +301,8 @@ fn census_counts_parked_bounces_identically_before_and_after_a_flush() {
 /// just to the stashes.
 ///
 /// A parked state is in NO stash (see `stash_counts_censuses_every_stash_...`
-/// above), so the stash loop cannot reach it. Before angr-sqfj8.32 a flip made
-/// while a SimProcedure/syscall callback was outstanding left that state — and
+/// above), so the stash loop cannot reach it (angr-sqfj8.32). Otherwise a flip made
+/// while a SimProcedure/syscall callback was outstanding would leave that state — and
 /// every deferred fork later materialized from its `pre_callback_snapshot` /
 /// `fork_snapshots` — on the old witness-selection mode, silently and forever
 /// (nothing re-applies the flag on resume).

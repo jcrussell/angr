@@ -93,7 +93,7 @@ crate::declare_proc! {
         }
         let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_FORMAT_LEN);
         // A refusal means the fd carried bounded symbolic content (now
-        // demoted) — bounce to Python (angr-0xyq2 Phase 2 choke point).
+        // demoted) — bounce to Python at the choke point (angr-0xyq2 Phase 2).
         if !state.write_fd(fd as u32, &buf) {
             return Err(crate::procedures::ProcedureError::Other(format!(
                 "fprintf to fd={fd} with symbolic content falls back to Python (demoted)"

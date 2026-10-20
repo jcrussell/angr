@@ -462,7 +462,7 @@ fn resume_after_error_deferred_fork_not_dropped() {
 /// / branch consumers — deliberately does NOT materialize them (find/avoid
 /// pendings are built via `PendingCallback::lightweight`, hardcoded empty). If a
 /// future refactor ever routes a fork-carrying pending here it would silently
-/// prune the unexplored branch, the exact bug class of angr-4xaga.5. The `assert!`
+/// prune the unexplored branch (angr-4xaga.5). The `assert!`
 /// in the consumer trips loudly instead; this test pins that it fires. Real
 /// `assert!` (not `debug_assert!`) because the CI/ralph gate runs
 /// `cargo test --release`, where debug assertions are compiled out.
@@ -769,7 +769,7 @@ fn multi_pending_entries_resume_independently() {
 
 /// angr-pwu71: `fold_scheduler_dispatch_stats` must land the worker-summarized
 /// `Avoided` split on `sm.avoided_count`, alongside the three dispositions
-/// angr-op0dn.13.15 already folded. Without it, a fork successor whose pc hits
+/// already folded (angr-op0dn.13.15). Without it, a fork successor whose pc hits
 /// an avoid address inside a worker is invisible to `stats()["avoided_count"]`.
 #[test]
 fn fold_scheduler_dispatch_stats_folds_avoided_split() {
@@ -794,8 +794,8 @@ fn fold_scheduler_dispatch_stats_folds_avoided_split() {
 }
 
 // ---------------------------------------------------------------------------
-// record_migration_sample — the modelled work-stealing scheduler (angr-panhl.1,
-// angr-9ke6b.79). Counters only, so the whole model is exercised directly:
+// record_migration_sample — the modelled work-stealing scheduler
+// (angr-panhl.1, angr-9ke6b.79). Counters only, so the whole model is exercised directly:
 // push N-1 states onto the active stash, seed sticky homes in
 // `parallel_worker_of`, and hand the Nth id in as the just-dispatched state.
 // ---------------------------------------------------------------------------
@@ -945,7 +945,7 @@ fn migration_sample_buckets_width_before_early_return() {
     );
 }
 
-// --- angr-c7xno.29: advance_sp_past_return_addr ---
+// --- advance_sp_past_return_addr ---
 
 /// The concrete happy path: one pointer popped off the stack.
 #[test]

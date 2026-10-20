@@ -8,16 +8,16 @@
 //! `z3_assertion_count`).
 //!
 //! The `transaction_begin` / `transaction_commit` / `transaction_rollback`
-//! lifecycle (plus `current_push_level` / `in_transaction`) was removed in
-//! angr-ph300.44 — it had zero callers and a latent corruption bug
+//! lifecycle (plus `current_push_level` / `in_transaction`) was removed
+//! (angr-ph300.44) — it had zero callers and a latent corruption bug
 //! (`transaction_commit` popped only one of the three aux stacks and never released the Z3 frame).
-//! Its last vestige here, the `push_level` counter, was deleted in
-//! angr-c7xno.75: nothing had incremented it since that removal, yet `fork()`
+//! Its last vestige here, the `push_level` counter, was deleted too
+//! (angr-c7xno.75): nothing had incremented it since that removal, yet `fork()`
 //! still read it as its "is a scope open?" gate and so never took the preserve
 //! branch. A second, independent copy survived one round longer in
 //! `VEXInterpreter` (mirrored into every `DeferredFork` and read back only
 //! through a `#[pyo3(get)]` getter Python never called); it was likewise
-//! always zero and went in angr-03vl4.6.
+//! always zero and went too (angr-03vl4.6).
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! the scope-bookkeeping fields it mutates (`solver`, `timeout_ms`) are
@@ -25,8 +25,7 @@
 //! `pub(super)` (== `pub(in crate::symbolic)`) so this sibling module can reach
 //! them without a public API leak. The caches `sat_cache`/`model_cache` and the
 //! `constraint_count`/`local_constraints`/`constraint_trackers` fields were
-//! already `pub(super)` from earlier slices. See bead angr-a2br.2.4
-//! for the slice plan.
+//! already `pub(super)` (angr-a2br.2.4).
 
 use super::SymContext;
 
@@ -57,8 +56,8 @@ impl SymContext {
     /// Save solver state for temporary constraints.
     ///
     /// Dispatches the Z3-side scope save through
-    /// `scope_savepoint_push` (angr-v5a5
-    /// slice 4b.2): in the None lineage branch this is the previous
+    /// `scope_savepoint_push`
+    /// (angr-v5a5 slice 4b.2): in the None lineage branch this is the previous
     /// `self.solver().push()`; in the Some (shared-lineage) branch it
     /// records the current `scope_path` length onto `scope_savepoints`
     /// and defers the Z3-side maintenance to the lazy `switch_to` in
@@ -76,8 +75,8 @@ impl SymContext {
     /// Restore solver state.
     ///
     /// Dispatches the Z3-side scope restore through
-    /// `scope_savepoint_pop` (angr-v5a5
-    /// slice 4b.3): in the None lineage branch this is the previous
+    /// `scope_savepoint_pop`
+    /// (angr-v5a5 slice 4b.3): in the None lineage branch this is the previous
     /// `self.solver().pop(1)`; in the Some (shared-lineage) branch it
     /// pops the most-recent savepoint off `scope_savepoints` and
     /// truncates `scope_path` back to that length. Cache invalidation

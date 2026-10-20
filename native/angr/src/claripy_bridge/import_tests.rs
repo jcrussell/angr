@@ -123,9 +123,10 @@ fn test_check_same_width_refuses_mismatched_operands() {
 }
 
 /// angr-fs8kb.80: the `And` / `Or` arms folded their operand list by reaching
-/// `RustBV::and` / `RustBV::or` directly, so the angr-6cp06.81 sweep that gave
-/// every other multi-operand arm a [`check_same_width`] call never touched
-/// them. Both now fold through `import_nary_op`, which performs the check.
+/// `RustBV::and` / `RustBV::or` directly, so the sweep that gave every other
+/// multi-operand arm a [`check_same_width`] call never touched them
+/// (angr-6cp06.81). Both now fold through `import_nary_op`, which performs the
+/// check.
 #[test]
 fn test_bool_fold_refuses_mismatched_operand_widths() {
     Python::initialize();

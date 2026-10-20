@@ -96,8 +96,7 @@ def drain_solver_graveyard() -> int:
     :func:`_release_owned_ctx`). Entries owned by a different thread are put
     back in the graveyard untouched, so a later drain from the actual owner
     thread can handle them; absent that, they fall back to pyo3's leak-safe
-    cross-thread drop refusal when the reference is finally released — the
-    same fate worker-owned forks had before angr-87e56.
+    cross-thread drop refusal when the reference is finally released.
     """
     with _SOLVER_GRAVEYARD_LOCK:
         if not _SOLVER_GRAVEYARD:
@@ -336,7 +335,7 @@ class _ProxyStatePluginMixin:
         pass
 
     def merge(self, _others, _merge_conditions, _common_ancestor=None):
-        # angr-8dop.2-style gap: cross-state_id merge is out of scope for the
+        # Cross-state_id merge is out of scope for the
         # callback-install gate. Signal "no merge happened" (False).
         return False
 
@@ -642,8 +641,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
 
     Installed as ``state.solver`` on SimProcedure callback states under the
     ``use_callback_solver_proxy`` gate on ``RustExplorationManager``
-    (angr-8oiw, write-through .3). Mirrors the angr-4scu (memory) /
-    angr-qj30 (registers) install pattern.
+    (angr-8oiw). Mirrors the memory and register proxies' install pattern.
 
     Write-through model:
       * ``add(constraint)`` routes immediately into the underlying Rust
@@ -1318,8 +1316,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         ``state`` set) of the same type. The underlying Rust state is
         shared by ``state_id`` — the proxy does not own a CoW copy;
         ``copy()`` is only meaningful here as part of ``SimState.copy()``
-        plugin walk. True per-state CoW lives in angr-d1dr
-        (RustStateProxy.copy()).
+        plugin walk. True per-state CoW lives in ``RustStateProxy.copy()``.
         """
         return RustRegisterProxy(self._mgr, self._state_id, self._arch, python_mgr=self._python_mgr)
 
@@ -1332,9 +1329,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
     Implements the minimum ``SimMemory`` plugin protocol (``id``, ``endness``,
     ``category``, ``state``, ``set_state``, ``copy``) so that the proxy can be
-    installed as ``state.memory`` on a real SimState (angr-4scu step 3: every
-    SimProcedure callback state gets one, see
-    ``_install_callback_memory_proxy``).
+    installed as ``state.memory`` on a real SimState (every SimProcedure
+    callback state gets one, see ``_install_callback_memory_proxy``).
     """
 
     SUPPORTS_CONCRETE_LOAD: bool = False
@@ -1414,7 +1410,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         ``state`` set) of the same type. The underlying Rust state is shared
         by ``state_id`` — the proxy does not own a CoW copy; ``copy()`` is
         only meaningful here as part of ``SimState.copy()`` plugin walk.
-        True per-state CoW lives in angr-d1dr (RustStateProxy.copy()).
+        True per-state CoW lives in ``RustStateProxy.copy()``.
         """
         return RustMemoryProxy(
             self._mgr,
@@ -1711,7 +1707,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # was concretized-and-pinned at setup) so the Multi path saw too
             # many or zero satisfying solutions. Rather than raise
             # NotImplementedError and let the SimProcedure callback die
-            # (dropping a corpus find — angr-ijwp0),
+            # (dropping a corpus find; angr-ijwp0),
             # concretize the address to a single satisfiable value and store
             # there, mirroring angr's ``DefaultMemory`` write concretization.
             if self._python_mgr is not None:
@@ -1826,9 +1822,9 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         Rust's ``memory_store`` errors ``Unmapped`` for a page outside every
         lazy region, which for a callback state's proxy is the *only*
         memory a SimProcedure sees — so the bare ``ValueError`` escaped into
-        ``proc.execute()`` and errored the state (angr-ijwp0: it timed out
+        ``proc.execute()`` and errored the state (it timed out
         ``unmapped_analysis``, whose whole point is a strncpy through a garbage
-        pointer). Reproduce what angr's ``DefaultMemory`` would have done:
+        pointer; angr-ijwp0). Reproduce what angr's ``DefaultMemory`` would have done:
 
         * STRICT_PAGE_ACCESS set → raise ``SimSegfaultException`` so the state
           lands in ``errored`` with the segfault angr users match on, not an
@@ -2199,8 +2195,8 @@ class RustHistoryProxy:
     # Tail length used when materializing recent_bbl_addrs. Matches the
     # spirit of angr's SimStateHistory.recent_bbl_addrs ("most recent" rather
     # than the full lineage chain). Long-running benches accumulate 100k+ bbl
-    # entries; cloning the full Vec across FFI was the regression risk
-    # called out in angr-kwpi.1.
+    # entries; cloning the full Vec across FFI would be a regression risk
+    # (angr-kwpi.1).
     _RECENT_TAIL_DEFAULT = 256
 
     def __init__(self, rust_mgr, state_id):
@@ -2243,8 +2239,8 @@ class RustPosixProxy:
         self._state_id = state_id
         self._stdin_vars = stdin_vars or []  # list of (claripy BVS, offset) for stdin
         # Accumulated stdout bytes when the caller captured them; None means
-        # read the state's live Rust buffer on each dumps(1) (angr-hc1yj —
-        # every caller defaulted to b"", so stdout predicates never matched).
+        # read the state's live Rust buffer on each dumps(1) (defaulting to
+        # b"" would make stdout predicates never match; angr-hc1yj).
         self._stdout_data = stdout_data
         # angr-yodz: shared-context getter from the parent RustStateProxy so
         # dumps(0) honors constraints added via the same proxy's
@@ -2306,8 +2302,8 @@ class RustPosixProxy:
         """``dumps(0)`` from the stdin symbols native reads created in Rust.
 
         Same evaluation ``_inject_rust_stdin_inner`` uses for a materialized
-        state: each symbol at its recorded width, little-endian (angr-hc1yj —
-        without ``stdin_vars`` the proxy returned ``b""``).
+        state: each symbol at its recorded width, little-endian, so the proxy
+        does not return ``b""`` without ``stdin_vars`` (angr-hc1yj).
         """
         try:
             if not self._mgr.has_state_stdin_symbols(self._state_id):
@@ -2395,8 +2391,8 @@ class _RustCallStackFramesMixin:
     ``RustStateProxy`` view memoizes its ``callstack`` sub-proxy
     (``self._callstack_proxy``), so caching frames here would silently serve
     pre-step call frames if the view is held across a Rust step
-    (angr-qwyti.10 — the same state_id-keyed stale-cache shape as the
-    register-proxy read cache in angr-4rq7). The plugin has the same
+    (the same state_id-keyed stale-cache shape as a register-proxy read
+    cache would have; angr-qwyti.10). The plugin has the same
     requirement for concurrent Rust-side pushes during a callback.
 
     Iteration, indexing, ``top`` and ``next`` stay on the subclasses: the
@@ -2499,9 +2495,8 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
 
     Installed as ``state.callstack`` on SimProcedure callback states under
     the ``use_callback_callstack_proxy`` gate on
-    ``RustExplorationManager`` (angr-6o9p, write-through .4). Mirrors the
-    angr-4scu (memory) / angr-qj30 (registers) / angr-8oiw (solver)
-    install pattern.
+    ``RustExplorationManager`` (angr-6o9p). Mirrors the memory, register
+    and solver proxies' install pattern.
 
     Read-through model:
       * Iteration / indexing / ``len()`` route through
@@ -2726,14 +2721,12 @@ _COPY_NEEDS_MANAGER_MSG = (
 # Bits 0..=5 mirror `crate::state::InspectEvent` ordering; bit 4 (fork) is
 # reserved for future wiring; bits 6 and 7 are custom (instruction / irsb)
 # with no InspectionManager enum slot in Rust; bits 8 and 9 are custom for
-# call / return (angr-4ai9 widened the bitmask from u8 to u16 to make
-# room — the InspectEvent enum is unchanged). Bits 10..=12 are
-# Python-dispatched (simprocedure / syscall / dirty) — angr-xmfj wired
-# them from the existing Python callback handlers in
-# `rust_callback_dispatch.py` / `rust_manager._cb_dirty_call`.
+# call / return (the InspectEvent enum has no slot for them). Bits 10..=12
+# are Python-dispatched (simprocedure / syscall / dirty), fired from the
+# existing Python callback handlers in `rust_callback_dispatch.py` /
+# `rust_manager._cb_dirty_call`.
 #
-# Wiring a new Rust-origin event requires (mirror the angr-d46u 5-touchpoint
-# pattern):
+# Wiring a new Rust-origin event requires (angr-d46u):
 #   1. Add a row here with a unique bit, attrs, when_fired.
 #   2. Add a PythonCallbacks slot + setter + dispatch helper in
 #      native/angr/src/callbacks.rs and the interpreter dispatch
@@ -2923,9 +2916,8 @@ _INSPECT_EVENT_SPECS: dict = {
     # statement runs. The only attr is `statement` (the integer index into
     # `irsb.statements`) — matches Python's `SimInspectMixin._handle_vex_stmt`
     # BP_BEFORE call signature. BP_AFTER is not wired (same MVP gap as
-    # `instruction` BP_AFTER). Bit 15 is the LAST free slot in the
-    # `AtomicU16` bitmask; the companion `expr` event widened
-    # `inspect_enabled` to `AtomicU32` in angr-lge2.
+    # `instruction` BP_AFTER). `inspect_enabled` is an `AtomicU32`, so the
+    # companion `expr` event takes a bit past 15 (angr-lge2).
     "statement": {
         "bit": 15,
         "attrs": ("statement",),

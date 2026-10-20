@@ -170,8 +170,8 @@ class TestInitCacheUserSymbolicGate:
     def test_concrete_input_digest_differentiates_argv(self, fauxware_project):
         """Two entry_states differing only in concrete argv (same length) yield
         different init keys; identical argv yields identical keys. Guards the
-        angr-gxaht collision where a warm run silently replayed the prior run's
-        argv/env because the key was keyed only by binary hash."""
+        init-key collision where a warm run silently replays the prior run's
+        argv/env because the key covers only the binary hash (angr-gxaht)."""
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
 

@@ -1,12 +1,11 @@
 """The four non-``symbolic``-bundle divergence-risk SimOptions (angr-op0dn.14.9).
 
-After angr-op0dn.14.7 drained the ``symbolic`` bundle, four silent options
-remained, all riding bundles a user reaches only by passing ``mode=``:
-``AVOID_MULTIVALUED_READS`` / ``AVOID_MULTIVALUED_WRITES`` (``fastpath``) and
-``PRODUCE_ZERODIV_SUCCESSORS`` / ``ZERO_FILL_UNCONSTRAINED_REGISTERS``
-(``tracing``). Three needed no work — Rust was already doing what they ask —
-and only ``PRODUCE_ZERODIV_SUCCESSORS`` is a real gap, so it is promoted to
-raise and the dispatcher routes it to Python.
+With the ``symbolic`` bundle drained, four silent options ride bundles a user
+reaches only by passing ``mode=``: ``AVOID_MULTIVALUED_READS`` /
+``AVOID_MULTIVALUED_WRITES`` (``fastpath``) and ``PRODUCE_ZERODIV_SUCCESSORS``
+/ ``ZERO_FILL_UNCONSTRAINED_REGISTERS`` (``tracing``). Rust already does what
+three of them ask; only ``PRODUCE_ZERODIV_SUCCESSORS`` is a real gap, so it
+raises and the dispatcher routes it to Python.
 """
 
 from __future__ import annotations
@@ -83,8 +82,8 @@ class TestAvoidMultivalued:
     def test_honored_not_a_divergence_in_the_census(self, name):
         """Honored options sit in the docs' Honored table, outside the
         divergence matrix the census ranks, so they are neither exonerated nor
-        silent (angr-s39uo: commit e3c8fb245 moved them there and the census
-        rejects an exoneration for an option the matrix no longer lists)."""
+        silent; the census rejects an exoneration for an option the matrix
+        does not list (angr-s39uo)."""
         census = _census()
         assert name not in {o["option"] for o in census["options"]}
         assert name not in census["exonerated_options"]

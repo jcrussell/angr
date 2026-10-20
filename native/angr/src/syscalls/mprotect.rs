@@ -102,7 +102,7 @@ impl NativeSyscall for NativeMprotectSyscall {
         // the step after the final page — silently, since `[profile.release]`
         // sets no overflow-checks — and resumed scanning from low memory,
         // turning a legitimate mprotect of the last page into a -1 (or, with
-        // low memory densely mapped, a ~2^52-iteration hang). angr-fs8kb.49.
+        // low memory densely mapped, a ~2^52-iteration hang) (angr-fs8kb.49).
         let memory = state.memory();
         if PageIndex::range_covering(addr, length)
             // `.get()` is the one boundary crossing: `page_permissions` is part
