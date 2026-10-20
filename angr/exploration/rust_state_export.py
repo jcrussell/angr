@@ -630,7 +630,7 @@ class RustStateExportMixin:
             # place rebinds its register proxy to `state_id`, so every sibling
             # id reading the same object would report THIS state's pc.
             if getattr(state.scratch, "rust_mirror_id", state_id) != state_id:
-                state = state.copy()
+                state = self._copy_bound_to(state, state_id)
                 state.scratch.rust_fully_synced = False
                 state.scratch.rust_mirror_id = state_id
                 self._state_cache[state_id] = state
@@ -649,7 +649,7 @@ class RustStateExportMixin:
                 # absence is normal for entry / unparented states.
                 root = None
         if root is not None and root in self._state_cache:
-            state = self._state_cache[root].copy()
+            state = self._copy_bound_to(self._state_cache[root], state_id)
             self._sync_cached_state(state, state_id)
             # Cache the copy so it stays alive (prevents weakref death
             # during chained attribute access like sm.active[1].posix.dumps()).
@@ -660,7 +660,7 @@ class RustStateExportMixin:
         # Currently-stepping-state copy
         stepping_id = getattr(self, "_current_stepping_state_id", None)
         if stepping_id is not None and stepping_id in self._state_cache:
-            state = self._state_cache[stepping_id].copy()
+            state = self._copy_bound_to(self._state_cache[stepping_id], state_id)
             self._sync_cached_state(state, state_id)
             self._state_cache[state_id] = state
             self._finalize_materialized_state(state)
@@ -696,6 +696,57 @@ class RustStateExportMixin:
             l.warning("Failed to materialize state %d: %s", state_id, e)
             raise
 
+    @staticmethod
+    def _rebind_callback_proxies(state, state_id: int) -> None:
+        """Point callback-installed solver/register proxies at ``state_id``.
+
+        A materialized state copied from a cached callback frame (or from a
+        parent root's copy) inherits that frame's ``RustSolverProxyPlugin`` /
+        ``RustRegisterProxy``, whose ``copy()`` keeps the SOURCE ``_state_id``.
+        Once Rust retires that id (the parallel scheduler does so freely),
+        every read through the proxy raises ``state N not found``; before
+        that, reads come from the wrong state. Rebind both to the id being
+        materialized and drop what was cached for the old one (angr-mx00p.86).
+        No-op for a frame already bound to ``state_id``.
+        """
+        from angr.exploration.rust_state_proxy import RustRegisterProxy, RustSolverProxyPlugin
+
+        solver = state.plugins.get("solver")
+        if isinstance(solver, RustSolverProxyPlugin) and solver._state_id != state_id:
+            object.__setattr__(solver, "_state_id", state_id)
+            # A fork of the old state's solver; a copy() never carries it, so
+            # dropping the reference leaves the original's cache alone.
+            object.__setattr__(solver, "_rust_ctx_cache", None)
+            object.__setattr__(solver, "_rust_ctx_cache_owner", None)
+        regs = state.plugins.get("registers")
+        if isinstance(regs, RustRegisterProxy) and getattr(regs, "_state_id", None) != state_id:
+            object.__setattr__(regs, "_state_id", state_id)
+            cache = getattr(regs, "_cache", None)
+            if cache:
+                cache.clear()
+
+    @classmethod
+    def _copy_bound_to(cls, source, state_id: int):
+        """``source.copy()`` with its callback proxies bound to ``state_id``.
+
+        ``SimState.copy`` runs every plugin's ``init_state``, and history's
+        reads the pc through the copied register proxy, so the copy must
+        already point at a live id: the source's own id may have been retired
+        (angr-mx00p.86). The source's binding is restored afterwards, because
+        it can be a frame shared by sibling ids (angr-ibx8j).
+        """
+        saved = {
+            name: getattr(plugin, "_state_id", None)
+            for name in ("solver", "registers")
+            if (plugin := source.plugins.get(name)) is not None and hasattr(plugin, "_state_id")
+        }
+        cls._rebind_callback_proxies(source, state_id)
+        try:
+            return source.copy()
+        finally:
+            for name, old in saved.items():
+                object.__setattr__(source.plugins[name], "_state_id", old)
+
     def _sync_cached_state(self, state, state_id: int) -> None:
         """Run the heavy plugin restore + register/memory/callstack sync.
 
@@ -703,6 +754,7 @@ class RustStateExportMixin:
         sentinel is cleared by ``_invalidate_state_export_cache`` whenever
         Rust takes another step.
         """
+        self._rebind_callback_proxies(state, state_id)
         self._restore_plugins_to_state(state, state_id)
         self._inject_rust_stdout(state, state_id)
         self._inject_rust_stdin(state, state_id)

@@ -1030,6 +1030,50 @@ class TestCallbackSolverProxyGate:
         assert dict(cb_state.solver.get_variables("test"))[("test", "k1")] is sym
 
 
+class TestCallbackProxyRebind:
+    """A materialized state copied from a cached callback frame must not keep
+    that frame's proxy binding: once Rust retires the frame's id (the parallel
+    scheduler does), reads raise ``state N not found`` (angr-mx00p.86)."""
+
+    @staticmethod
+    def _proxies(state_id):
+        import archinfo
+
+        from angr.exploration.rust_state_proxy import RustRegisterProxy, RustSolverProxyPlugin
+
+        solver = RustSolverProxyPlugin(None, state_id)
+        object.__setattr__(solver, "_rust_ctx_cache", object())
+        regs = RustRegisterProxy(None, state_id, archinfo.ArchAMD64())
+        regs._cache["rax"] = 1
+        return solver, regs
+
+    def test_rebind_points_both_proxies_at_the_target(self):
+        from angr.exploration.rust_state_export import RustStateExportMixin
+
+        solver, regs = self._proxies(15)
+        state = types.SimpleNamespace(plugins={"solver": solver, "registers": regs})
+        RustStateExportMixin._rebind_callback_proxies(state, 23)
+        assert solver._state_id == 23 and solver._rust_ctx_cache is None
+        assert regs._state_id == 23 and not regs._cache
+
+    def test_copy_sees_the_target_and_restores_a_shared_source(self):
+        from angr.exploration.rust_state_export import RustStateExportMixin
+
+        solver, regs = self._proxies(15)
+        seen = {}
+
+        class Source:
+            plugins = {"solver": solver, "registers": regs}
+
+            def copy(self):
+                seen["ids"] = (solver._state_id, regs._state_id)
+                return "copy"
+
+        assert RustStateExportMixin._copy_bound_to(Source(), 23) == "copy"
+        assert seen["ids"] == (23, 23), "SimState.copy reads the pc through the proxy: it must see the live id"
+        assert (solver._state_id, regs._state_id) == (15, 15), "a frame shared by sibling ids keeps its binding"
+
+
 class TestCallbackCallStackProxyGate:
     """angr-6o9p write-through .4: ``use_callback_callstack_proxy`` gate
     controls whether ``RustCallStackProxyPlugin`` is installed as
