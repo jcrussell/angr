@@ -1404,6 +1404,11 @@ class RustStateExportMixin:
             snapshot.state_id,
             snapshot_parent_id=snapshot.parent_id,
         )
+        # The posix streams the Rust state read and wrote: without them a
+        # caller that steps or solves this state sees an empty stdin, so
+        # nothing it derives is tied to the input (angr-mx00p.89).
+        self._inject_rust_stdout(state, snapshot.state_id)
+        self._inject_rust_stdin(state, snapshot.state_id)
         # Eval/min/max/satisfiable defer to the Rust solver — required because
         # _apply_symbolic_constraints no longer pre-pins recovered symbols
         # (pre-pinning was UNSAT-prone, see constraint-export-no-pre-pin memo).

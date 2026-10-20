@@ -1002,6 +1002,13 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
                 yield reverse_mapping[var]
 
 
+def _concrete_int(value):
+    """``value`` as an int when it is a concrete claripy bitvector, else as is."""
+    if isinstance(value, claripy.ast.BV) and not value.symbolic:
+        return value.concrete_value
+    return value
+
+
 class RustRegisterProxy(_ProxyStatePluginMixin):
     """
     Provides `state.regs.rax`-style access by delegating to Rust.
@@ -1256,6 +1263,10 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         """
         if isinstance(reg_name_or_offset, str):
             return getattr(self, reg_name_or_offset)
+        # The engine passes offsets and sizes as concrete bitvectors too
+        # (SimRegisters accepts them); a symbolic one has no register.
+        reg_name_or_offset = _concrete_int(reg_name_or_offset)
+        size = _concrete_int(size)
         if isinstance(reg_name_or_offset, int):
             if size is None:
                 size = self._arch.bytes
@@ -1280,6 +1291,8 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         if isinstance(addr, str):
             setattr(self, addr, data)
             return
+        addr = _concrete_int(addr)
+        size = _concrete_int(size)
         if isinstance(addr, int):
             if size is None:
                 # When size is omitted, infer it from the data width

@@ -1432,6 +1432,35 @@ class TestSnapshotPageByteOrder:
         assert got == want
 
 
+class TestExportByIdCarriesPosixAndBvOffsets:
+    """``get_state_by_id`` must hand back a state a caller can step and solve:
+    with the stdin it read (angr-mx00p.89), and with a register proxy that
+    accepts the concrete-bitvector offsets angr's engine passes."""
+
+    FAUXWARE_ACCEPTED = 0x4006ED
+
+    def test_exported_found_state_dumps_its_stdin(self, fauxware_project):
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.explore(find=self.FAUXWARE_ACCEPTED)
+        sid = next(iter(mgr._rust_mgr.get_state_ids("found")))
+        state = mgr.get_state_by_id(sid)
+        assert b"SOSNEAKY" in state.posix.dumps(0)
+
+    def test_register_proxy_takes_concrete_bv_offsets(self, fauxware_project):
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
+
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+        arch = fauxware_project.arch
+        proxy = RustRegisterProxy(mgr._rust_mgr, sid, arch)
+        off, size = arch.registers["rsp"]
+        by_int = proxy.load(off, size)
+        by_bv = proxy.load(claripy.BVV(off, 64), claripy.BVV(size, 64))
+        assert by_bv is by_int or (by_bv == by_int).is_true()
+        with pytest.raises(TypeError):
+            proxy.load(claripy.BVS("off", 64), size)
+
+
 class TestWideConcreteMemoryRoundTrip:
     """Python-boundary regression for the >16-byte concrete load corruption
     fixed in commit df4bb4cd3 (bd angr-tk7yv).
