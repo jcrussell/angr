@@ -9,7 +9,7 @@ import re
 from collections import ChainMap, OrderedDict, defaultdict
 from collections.abc import Iterable, MutableMapping
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, Self, cast, overload
 
 import cxxheaderparser.errors
 import cxxheaderparser.simple
@@ -133,7 +133,7 @@ class SimType:
         # alignment any ABI defines and which divides by zero wherever an offset is rounded up.
         return max(1, self.size // self._arch.byte_width)
 
-    def with_arch(self, arch: Arch | None, memo: dict[str, SimType] | None = None) -> SimType:
+    def with_arch(self, arch: Arch | None, memo: dict[str, SimType] | None = None) -> Self:
         if arch is None:
             return self
         if self._arch is not None and self._arch == arch:
@@ -141,7 +141,7 @@ class SimType:
         memo = memo if memo is not None else {}
         return self._with_arch(arch, memo=memo)
 
-    def _with_arch(self, arch, *, memo: dict[str, SimType]):  # pylint: disable=unused-argument
+    def _with_arch(self, arch, *, memo: dict[str, SimType]) -> Self:  # pylint: disable=unused-argument
         cp = copy.copy(self)
         cp._arch = arch
         return cp
@@ -230,7 +230,7 @@ class SimType:
         cls = IDENT_TO_CLS.get(d["_t"])  # pylint: disable=redefined-outer-name
         assert cls is not None, f"Unknown SimType class identifier {d['_t']}"
         if getattr(cls, "from_json", SimType.from_json) is not SimType.from_json:
-            t = cls.from_json(d)
+            t = cls.from_json(d, type_collection=type_collection, memo=memo, decoded=decoded)
             if isinstance(t, SimTypeRef) and t.name is not None:
                 if t.name in decoded:
                     return decoded[t.name]
@@ -2895,7 +2895,10 @@ class SimTypeRef(SimType):
 
     @staticmethod
     def from_json(
-        d: dict[str, Any], type_collection: SimTypeCollection | None = None, memo: set[str] | None = None
+        d: dict[str, Any],
+        type_collection: SimTypeCollection | None = None,
+        memo: set[str] | None = None,
+        decoded: dict[str, SimType] | None = None,
     ) -> SimTypeRef:
         if "ot" not in d:
             raise ValueError("Missing original type for SimTypeRef")

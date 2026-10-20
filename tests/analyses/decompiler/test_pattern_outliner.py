@@ -64,6 +64,7 @@ class TestPatternOutliner(unittest.TestCase):
         proj, cfg, func = _load()
         dec = proj.analyses.Decompiler(func, cfg=cfg.model)
         assert dec.codegen is not None
+        assert dec.codegen.text is not None
         m = re.search(r'puts\("String is empty."\);\n +fflush\(stdout\);\n +return 0xffffffff;\n', dec.codegen.text)
         assert m is not None
         pattern = PatternGenerator(dec.codegen, dec.ail_graph).generate_pattern(m.start(), m.end(), "PatternErrorsOut")
@@ -72,6 +73,7 @@ class TestPatternOutliner(unittest.TestCase):
         proj2.kb.patterns.add(pattern)
         dec2 = proj2.analyses.Decompiler(func2, cfg=cfg2.model)
         assert dec2.codegen is not None and dec2.ail_graph is not None
+        assert dec2.codegen.text is not None
         text = dec2.codegen.text
 
         calls = re.findall(r'return PatternErrorsOut\("([^"]*)"\);', text)
@@ -104,6 +106,7 @@ class TestPatternOutliner(unittest.TestCase):
         dec = proj2.analyses.Decompiler(func2, cfg=cfg2.model)
 
         assert dec.codegen is not None and dec.ail_graph is not None
+        assert dec.codegen.text is not None
         assert "my_idiom(" in dec.codegen.text, "the occurrence must decompile as a call to the pattern"
         assert graph_problems(dec.ail_graph, func2.addr) == []
 
@@ -116,6 +119,7 @@ class TestPatternOutliner(unittest.TestCase):
         dec = proj2.analyses.Decompiler(func2, cfg=cfg2.model)
 
         assert dec.codegen is not None and baseline.codegen is not None
+        assert dec.codegen.text is not None
         assert "my_idiom(" not in dec.codegen.text
 
     def test_similarity_alone_can_be_enough(self):
@@ -252,12 +256,13 @@ class TestErrorExitPatternSerialization(unittest.TestCase):
 _DISCOVERY = AlignParams(min_size=4, min_score=12.0, min_anchors=1, k=4, min_identity=0.6)
 
 
-def _scoped(rel_path: str, func_addr: int, include_plt: bool):
+def _scoped(rel_path: str, func_addr: int, include_plt: bool, expand_call_tree: bool = True):
     proj, cfg = load_project_with_scoped_cfg(
         os.path.join(BIN_PATH, rel_path),
         func_addr,
         project_kwargs={"auto_load_libs": False},
         include_plt=include_plt,
+        expand_call_tree=expand_call_tree,
     )
     return proj, cfg, cfg.functions[func_addr]
 
@@ -289,7 +294,9 @@ class TestDiscoveredPatternsAcrossProjects(unittest.TestCase):
         return editor.pattern
 
     def _discover_outline_and_reuse(self, rel_path: str, func_addr: int, include_plt: bool, min_size: int):
-        proj, cfg, func = _scoped(rel_path, func_addr, include_plt)
+        # the search never leaves this one function, and the scoped CFG's call-tree rounds cost
+        # more than all three decompilations below, so the callees are left uncovered here
+        proj, cfg, func = _scoped(rel_path, func_addr, include_plt, expand_call_tree=False)
         pattern = self._longest_family_pattern(proj, cfg, func, min_size)
 
         # outlined in this project, and never by dropping a value the region defines for later: the
@@ -314,7 +321,7 @@ class TestDiscoveredPatternsAcrossProjects(unittest.TestCase):
         assert loaded.pattern == pattern
 
         # the same function in a fresh project outlines the same copies
-        proj3, cfg3, func3 = _scoped(rel_path, func_addr, include_plt)
+        proj3, cfg3, func3 = _scoped(rel_path, func_addr, include_plt, expand_call_tree=False)
         proj3.kb.patterns.store(loaded)
         with self.assertNoLogs("angr.analyses.outliner.outliner", level="ERROR"):
             dec3 = proj3.analyses.Decompiler(func3, cfg=cfg3.model)
@@ -452,7 +459,7 @@ class TestDiscoveredPatternsAcrossProjects(unittest.TestCase):
         proj, cfg, func = _scoped("x86_64/true", 0x404290, include_plt=True)
         dec = proj.analyses.Decompiler(func, cfg=cfg.model)
         assert dec.codegen is not None and dec.ail_graph is not None
-        entry = next(b for b in dec.ail_graph if b.addr == func.addr and b.idx is None)
+        entry = next(b for b in dec.ail_graph if b.addr == func.addr and b.idx == 0)
         stream = tokenize_for_templates(dec.ail_graph, entry, kb=proj.kb)
         blocks = {(b.addr, b.idx): b for b in stream.blocks}
         stmts = [blocks[loc.block_loc].statements[loc.stmt_idx] for loc in stream.locs]
