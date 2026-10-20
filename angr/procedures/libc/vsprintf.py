@@ -11,12 +11,10 @@ class vsprintf(angr.SimProcedure):
     # pylint:disable=arguments-differ,unused-argument
 
     def run(self, dst_ptr, fmt, ap):
-        # va_list (`ap`) is unmodeled, so — consistent with the vprintf/vfprintf
-        # raw-write family — we copy the raw format string into the destination
-        # buffer (NUL-terminated) without %-substitution rather than reading
-        # garbage va_list args via the sprintf core (which would explore
-        # divergent symbolic states; see bd memory `avoid-vsnprintf-real-formatting`).
-        # Reuses strcpy (copy + NUL) and strlen (return length) — DRY.
+        # va_list (`ap`) is unmodeled, so, as in vprintf/vfprintf, we copy the
+        # raw format string into the destination buffer (NUL-terminated)
+        # without %-substitution rather than formatting garbage arguments
+        # read through the sprintf core.
         strcpy = angr.SIM_PROCEDURES["libc"]["strcpy"]
         self.inline_call(strcpy, dst_ptr, fmt)
         strlen = angr.SIM_PROCEDURES["libc"]["strlen"]

@@ -12,10 +12,8 @@ class vprintf(angr.SimProcedure):
 
     def run(self, fmt, ap):
         # va_list (`ap`) is arch-specific (x86-64 SysV reg_save_area) and
-        # unmodeled by angr, so — like the native printf core — we do NOT
-        # perform %-substitution; we write the raw format string. This keeps
-        # vprintf byte-for-byte identical to the native `vprintf = printf`
-        # alias (`NativePrintf` in native/angr/src/procedures/printf.rs).
+        # unmodeled by angr, so we do NOT perform %-substitution: we write the
+        # raw format string, which is exact for formats without conversions.
         stdout = self.state.posix.get_fd(1)
         if stdout is None:
             return -1

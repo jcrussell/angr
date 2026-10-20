@@ -7,14 +7,16 @@ import os
 import unittest
 
 import angr
+from tests.common import bin_location
+
+test_location = os.path.join(bin_location, "tests")
 
 
 class TestSscanf(unittest.TestCase):
     def test_sscanf_p_spec(self):
         # Regression for the scanf interpret() path: %p reads a hex pointer and
         # must parse like %x (base 16) instead of raising SimProcedureError.
-        # Binary-free: drive the sscanf SimProcedure directly. See commit
-        # 2f8deb4ca (xmllint cross-engine characterization, bead angr-6d3l).
+        # Binary-free: drive the sscanf SimProcedure directly.
         p = angr.load_shellcode(b"\x90", arch="amd64")
         state = p.factory.blank_state()
         src, fmt, out = 0x100000, 0x200000, 0x300000
@@ -32,8 +34,7 @@ class TestSscanf(unittest.TestCase):
         # Regression for the scanf interpret() path: %o reads an octal integer and
         # must parse like the scanf-inject path (base 8) instead of raising
         # SimProcedureError. %o was recognized everywhere except interpret().
-        # Binary-free: drive the sscanf SimProcedure directly. Bead angr-4jufb,
-        # mirrors the %p fix in commit 2f8deb4ca (bead angr-6d3l).
+        # Binary-free: drive the sscanf SimProcedure directly. Mirrors the %p fix.
         p = angr.load_shellcode(b"\x90", arch="amd64")
         state = p.factory.blank_state()
         src, fmt, out = 0x100000, 0x200000, 0x300000
@@ -52,7 +53,7 @@ class TestSscanf(unittest.TestCase):
         # recognized by _match_spec (basic_spec/int_sign) but was unhandled at
         # the dispatch sites — the non-SimPackets interpret() path raised
         # SimProcedureError and the SimPackets path mis-parsed it as base 10.
-        # Must parse like %x (base 16). Binary-free. Bead angr-vp1dg.
+        # Must parse like %x (base 16). Binary-free.
         p = angr.load_shellcode(b"\x90", arch="amd64")
         state = p.factory.blank_state()
         src, fmt, out = 0x100000, 0x200000, 0x300000
@@ -70,10 +71,9 @@ class TestSscanf(unittest.TestCase):
         # Regression for the OTHER interpret() dispatch site: the SimPackets
         # (stdin packet stream) path constrains input digits in base x/o/else
         # but lacked %p, so a scanf("%p") from stdin parsed the pointer as
-        # base 10 instead of base 16. The addr-based path got %p in 2f8deb4ca;
+        # base 10 instead of base 16. The addr-based path already handled %p;
         # this covers the SimPackets path. Binary-free: feed concrete stdin
         # "10" with %2p -> base 16 yields 0x10 (16), base 10 would yield 10.
-        # Bead angr-rgcfx; see format-parser-three-dispatch-sites memory.
         from angr import claripy
 
         p = angr.load_shellcode(b"\x90", arch="amd64")
@@ -90,11 +90,11 @@ class TestSscanf(unittest.TestCase):
         assert state.satisfiable()
 
     def test_sprintf_hex_octal_no_digit_strip(self):
-        # Regression for the printf replace() path: commit 129bd9e645 refactored
+        # Regression for the printf replace() path: #5661 refactored
         # hex(c_val)[2:] -> f"{c_val:x}"[2:] (and the octal analog). hex()/oct()
         # carry a 2-char prefix that [2:] stripped, but the f-string forms have
         # no prefix, so [2:] silently dropped the first two significant digits
-        # (0xFF -> ""). Also covers the new %X spec. Binary-free. Bead angr-vp1dg.
+        # (0xFF -> ""). Also covers the new %X spec. Binary-free.
         from angr import claripy
 
         p = angr.load_shellcode(b"\x90", arch="amd64")
@@ -114,9 +114,6 @@ class TestSscanf(unittest.TestCase):
             assert data == expected + b"\x00", (spec, data)
 
     def test_sscanf(self):
-        from tests.common import bin_location
-
-        test_location = os.path.join(bin_location, "tests")
         test_bin = os.path.join(test_location, "x86_64", "sscanf_test")
         b = angr.Project(test_bin, auto_load_libs=False)
         pg = b.factory.simulation_manager()

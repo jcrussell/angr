@@ -15,9 +15,8 @@ class DirectedSearch(ExplorationTechnique):
     back in. With the default ``beam_width=1`` this is a greedy best-first search; larger
     widths trade breadth for robustness against CFG-distance estimation error.
 
-    This is a pure-Python prototype (DS-spike.2) used to justify or kill a native
-    implementation. It reuses the DS-spike.1 distance helper and does **not** reimplement any
-    CFG recovery or distance logic.
+    It recovers nothing itself: distances come from the supplied CFG via
+    :func:`~angr.exploration_techniques.cfg_distance.build_cfg_distance_map`.
 
     States whose PC is not in the CFG, or from which the target is unreachable, are treated as
     infinitely far and sink to the back of every ordering.

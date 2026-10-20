@@ -15,7 +15,7 @@ test_location = os.path.join(bin_location, "tests")
 
 
 class TestCFGDistance(unittest.TestCase):
-    """Unit tests for the directed-search CFG-distance metric helper (DS-spike.1)."""
+    """Unit tests for the CFG-distance metric DirectedSearch ranks states by."""
 
     @classmethod
     def setUpClass(cls):

@@ -15,7 +15,7 @@ test_location = os.path.join(bin_location, "tests")
 
 
 class TestDirectedSearch(unittest.TestCase):
-    """Unit tests for the DS-spike.2 directed-search exploration technique."""
+    """Unit tests for the DirectedSearch exploration technique."""
 
     @classmethod
     def setUpClass(cls):
