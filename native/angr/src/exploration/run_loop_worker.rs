@@ -143,7 +143,7 @@ impl ParallelShared {
 ///   loose-condition boundary).
 #[allow(
     clippy::expect_used,
-    reason = "poison-guard invariants: the ParallelShared root_map/kind_map/counters locks only poison if a thread unwound while holding them, which panic=abort forecloses — see the module Panic policy header"
+    reason = "poison-guard invariants: the ParallelShared root_map/kind_map/counters locks only poison after an earlier panic while one was held, which already failed that step — see the module Panic policy header"
 )]
 pub(crate) fn parallel_process_state(
     mut state: RustSimState,

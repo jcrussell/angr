@@ -17,7 +17,7 @@ static COUNTERS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 #[allow(
     clippy::expect_used,
-    reason = "`COUNTERS` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, and the crate ships with `panic = \"abort\"` (workspace `Cargo.toml`, angr-1cue), so no unwind is possible"
+    reason = "`COUNTERS` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`, angr-1cue)"
 )]
 fn counters() -> MutexGuard<'static, HashMap<String, u64>> {
     COUNTERS

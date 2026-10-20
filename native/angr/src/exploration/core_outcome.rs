@@ -131,7 +131,7 @@ impl ParallelProfiling {
     /// off, and the always-on cache hit/miss counters must still accumulate.
     #[allow(
         clippy::expect_used,
-        reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`ParallelProfiling::step_stats` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
     )]
     pub(crate) fn accumulate_step(&self, step_stats: &ExecutionStats) {
         self.step_stats
@@ -145,7 +145,7 @@ impl ParallelProfiling {
     /// unconditionally is byte-identical to the gated legacy increments.
     #[allow(
         clippy::expect_used,
-        reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`ParallelProfiling::step_stats` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
     )]
     pub(crate) fn fold_into(&self, stats: &mut ExecutionStats) {
         stats.solver_fork_time_ns += self.solver_fork_time_ns.load(Ordering::Relaxed);
@@ -172,7 +172,7 @@ impl ParallelProfiling {
     /// byte-identical to `fold_into` (the wave's accumulator dies right after).
     #[allow(
         clippy::expect_used,
-        reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`ParallelProfiling::step_stats` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
     )]
     pub(crate) fn drain_into(&self, stats: &mut ExecutionStats) {
         stats.solver_fork_time_ns += self.solver_fork_time_ns.swap(0, Ordering::Relaxed);

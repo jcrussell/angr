@@ -167,9 +167,9 @@ pub(super) static UNIVERSE_POISON_WARNED: std::sync::atomic::AtomicBool =
 /// Report — at most once per snapshot per process — that a page-set lock is
 /// poisoned, i.e. a thread panicked while holding its write side.
 ///
-/// Poison is impossible in a production wheel (`panic = "abort"`, workspace
-/// `Cargo.toml`) but reachable in an unwinding test build, and nothing else on
-/// these paths would ever reveal it — hence the warning.
+/// Poison needs an unwinding build (`cargo test`, or any build without the
+/// fork's `panic = "abort"` release profile), and nothing else on these paths
+/// would ever reveal it — hence the warning.
 ///
 /// Latched via `warned` because the reader ([`page_set_contains`]) sits in the
 /// per-candidate-page prefetch loop (`prefetch::fetch_page` and

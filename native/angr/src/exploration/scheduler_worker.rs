@@ -47,7 +47,7 @@ use std::time::Instant;
 #[allow(clippy::significant_drop_tightening)]
 #[allow(
     clippy::expect_used,
-    reason = "`job.results` and (under `#[cfg(test)]`) `job.summaries` poison guards: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the parent scheduler module Panic policy"
+    reason = "`job.results` and (under `#[cfg(test)]`) `job.summaries` poison guards: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the parent scheduler module Panic policy"
 )]
 pub(super) fn worker_loop(
     worker_id: usize,
@@ -298,7 +298,7 @@ fn drain_local_with(
 /// alongside the materialized terminals.
 #[allow(
     clippy::expect_used,
-    reason = "`job.results` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the parent scheduler module Panic policy"
+    reason = "`job.results` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the parent scheduler module Panic policy"
 )]
 fn drain_local_into_results(job: &WaveJob, local: &mut VecDeque<RustSimState>) {
     if local.is_empty() {

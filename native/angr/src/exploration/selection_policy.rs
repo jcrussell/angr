@@ -241,7 +241,7 @@ impl RandomSelection {
     /// crate pulled in for a prototype policy.
     #[allow(
         clippy::expect_used,
-        reason = "`RandomSelection::rng` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`RandomSelection::rng` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
     )]
     fn next_u64(&self) -> u64 {
         let mut state = self.rng.lock().expect("RandomSelection rng poisoned");
@@ -317,7 +317,7 @@ impl SelectionPolicy for CoverageGuided {
     // insert — the guard cannot be tightened without dropping correctness.
     #[allow(
         clippy::expect_used,
-        reason = "`CoverageGuided::seen` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
+        reason = "`CoverageGuided::seen` poison guard plus the index-after-`is_empty()` guards: the poison state follows only an earlier panic that already failed the step, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
     )]
     #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
@@ -435,7 +435,7 @@ impl SelectionPolicy for LoopHeadRoundRobin {
     // and count bump — no tighter scope is correct here.
     #[allow(
         clippy::expect_used,
-        reason = "`LoopHeadRoundRobin::{key_cache, dispatched}` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
+        reason = "`LoopHeadRoundRobin::{key_cache, dispatched}` poison guard plus the index-after-`is_empty()` guards: the poison state follows only an earlier panic that already failed the step, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
     )]
     #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
@@ -502,7 +502,7 @@ impl SelectionPolicy for LoopHeadRoundRobin {
     // `bucket_key` call, exactly like a state that was never cached yet.
     #[allow(
         clippy::expect_used,
-        reason = "`LoopHeadRoundRobin::key_cache` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`LoopHeadRoundRobin::key_cache` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
     )]
     fn on_state_removed(&self, state_id: u64) {
         self.key_cache
@@ -588,7 +588,7 @@ impl SelectionPolicy for DirectedCfgDistance {
     #[allow(clippy::significant_drop_tightening)]
     #[allow(
         clippy::expect_used,
-        reason = "`DirectedCfgDistance::dispatched` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, `beam` is a non-empty prefix of `ranked` (`beam_width.min(len)` with `len > 0`), and `pick` indexes the same deque the `len == 0` early return above already checked — see the module Panic policy header"
+        reason = "`DirectedCfgDistance::dispatched` poison guard plus the index-after-`is_empty()` guards: the poison state follows only an earlier panic that already failed the step, `beam` is a non-empty prefix of `ranked` (`beam_width.min(len)` with `len > 0`), and `pick` indexes the same deque the `len == 0` early return above already checked — see the module Panic policy header"
     )]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         let len = active.len();
@@ -709,7 +709,7 @@ impl SelectionPolicy for FindDirected {
     // insert — both halves need the lock, so it cannot be tightened.
     #[allow(
         clippy::expect_used,
-        reason = "`FindDirected::seen` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
+        reason = "`FindDirected::seen` poison guard plus the index-after-`is_empty()` guards: the poison state follows only an earlier panic that already failed the step, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
     )]
     #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {

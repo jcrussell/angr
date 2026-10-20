@@ -29,7 +29,7 @@ use std::sync::{Mutex, OnceLock};
 /// at most), so the persistent leak is acceptable.
 #[allow(
     clippy::expect_used,
-    reason = "`INTERN` poison guard: poison requires an unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    reason = "`INTERN` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
 )]
 fn intern_unmapped_op(op_str: &str) -> &'static str {
     static INTERN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();

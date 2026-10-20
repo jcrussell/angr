@@ -51,12 +51,15 @@
 //! clippy::expect_used)]`. Three consequences follow, and the per-module
 //! "Panic policy" notes point here rather than restating them:
 //!
-//! - **Mutex poisoning is unreachable in the shipped build.** A lock is
-//!   poisoned only when a thread *unwinds* out of a live `MutexGuard`; under
-//!   `panic = "abort"` there is no unwind, so every
-//!   `.lock().expect("… poisoned")` is an invariant label, not an error path.
-//!   For the same reason a worker thread cannot "die" mid-wave: a panic
-//!   aborts the whole process.
+//! - **A poisoned lock always follows an earlier panic.** A lock is poisoned
+//!   only when a thread *unwinds* out of a live `MutexGuard`, i.e. after a
+//!   panic that has already failed its step. Under the shipped
+//!   `panic = "abort"` that first panic ends the process, so every
+//!   `.lock().expect("… poisoned")` is an invariant label, not an error path,
+//!   and a worker thread cannot "die" mid-wave. In a `panic = "unwind"` build
+//!   (cargo's default, and upstream's) the `expect` turns the poison into a
+//!   second panic, which pyo3 raises as `PanicException`: still loud, still
+//!   never a silent wrong answer.
 //! - **A genuine bug surfaces as a process abort, by design.** There is no
 //!   "surface as a Python exception" path to build for those guards. A site
 //!   that *is* fallible on real input returns a domain error (`ProcedureError`,

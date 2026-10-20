@@ -294,7 +294,7 @@ impl WaveJob {
     /// coordinator, which reads `summaries` separately (or ignores them).
     #[allow(
         clippy::expect_used,
-        reason = "`results` poison guard: poison requires a thread to unwind out of a live guard, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`results` poison guard: poison requires an earlier panic while the guard was held, which already failed that step (and ends the process under the shipped `panic = \"abort\"`) — see the module Panic policy header"
     )]
     pub(crate) fn take_results(&self) -> Vec<StateMigrationPayload> {
         std::mem::take(&mut *self.results.lock().expect("results mutex poisoned"))
