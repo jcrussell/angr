@@ -1415,6 +1415,23 @@ class TestStateManagement:
         assert amd64_mgr.stats()["drop_terminal_states"] is False
 
 
+class TestSnapshotPageByteOrder:
+    """``get_state_by_id`` rebuilds a SimState from the Rust snapshot's pages;
+    each page must land in memory order. A page stored as one little-endian
+    bitvector came back byte-reversed, so code, ``.rodata`` and every concrete
+    byte read as the mirrored offset (angr-mx00p.90)."""
+
+    def test_exported_rodata_matches_the_loader(self, fauxware_project):
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        mgr.explore(max_steps=3)
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+        state = mgr.get_state_by_id(sid)
+        rodata = next(s for s in fauxware_project.loader.main_object.sections if s.name == ".rodata")
+        want = fauxware_project.loader.memory.load(rodata.vaddr, 32)
+        got = state.solver.eval(state.memory.load(rodata.vaddr, 32), cast_to=bytes)
+        assert got == want
+
+
 class TestWideConcreteMemoryRoundTrip:
     """Python-boundary regression for the >16-byte concrete load corruption
     fixed in commit df4bb4cd3 (bd angr-tk7yv).

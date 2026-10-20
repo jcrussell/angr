@@ -1470,9 +1470,10 @@ class RustStateExportMixin:
                 continue
             page_addr, data, _perms, symbolic_offsets = page
             try:
-                state.memory.store(
-                    page_addr, claripy.BVV(data, len(data) * 8), endness=arch.memory_endness, inspect=False
-                )
+                # Rust's page bytes are in memory order: store them as bytes.
+                # A BVV stored with the arch's (little) endness would reverse
+                # the whole page (angr-mx00p.90).
+                state.memory.store(page_addr, bytes(data), inspect=False)
                 if not symbolic_offsets:
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
