@@ -8,7 +8,7 @@
 //! round-trip (angr-mx00p.33) whose serializer and serde schema drifted apart
 //! on Python-built statements (angr-mx00p.44).
 //!
-//! Field conventions match [`super::libvex_lifter`], so a block reads the same
+//! Field conventions match [`crate::vex::libvex_lifter`], so a block reads the same
 //! whichever path lifted it (`test_native_lift_parity.py`): an `IRTemp_INVALID`
 //! temp is `None`, `IRCallee.addr` is 0, and a `None` that libVEX would have
 //! written as 0 (a Spotter-built `Dirty`'s `mSize` / `nFxState`) reads as 0.
@@ -17,11 +17,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use super::ir::{
+use crate::vex::ir::{
     DirtyFx, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IRRegArray, IRSB, IRStmt, IRType,
     MBusEvent, TypeEnv, VexArch,
 };
-use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type_or_log};
+use crate::vex::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type_or_log};
 
 /// VEX's `IRTemp_INVALID` sentinel, as pyvex leaves it in `CAS.oldHi` and
 /// `Dirty.tmp`.
@@ -29,7 +29,7 @@ const IRTEMP_INVALID: u32 = 0xFFFF_FFFF;
 
 /// Read a pyvex `IRSB` into a Rust [`IRSB`]. Errors name the pyvex class or
 /// field that did not read.
-pub fn read_irsb(irsb: &Bound<'_, PyAny>) -> PyResult<IRSB> {
+pub(crate) fn read_irsb(irsb: &Bound<'_, PyAny>) -> PyResult<IRSB> {
     let arch_name: String = irsb.getattr("arch")?.getattr("name")?.extract()?;
     let arch = parse_arch(&arch_name)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported IRSB arch {arch_name:?}")))?;

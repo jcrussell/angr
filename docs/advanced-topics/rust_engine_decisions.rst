@@ -156,7 +156,7 @@ hand-kept schema. The serializer and the schema drifted apart on every shape
 libVEX itself never produces: a Python-built ``U1`` holds an int, a Spotter's
 ``Dirty`` leaves ``mSize`` as ``None``, and the serializer never emitted
 ``MBE.event``. So Spotter blocks and fence blocks failed to decode whenever
-they came through the callback. ``vex/pyvex_reader.rs`` now reads the live
+they came through the callback. ``callbacks/pyvex_reader.rs`` now reads the live
 objects over PyO3 with the GIL the callback already holds, using the
 native lifter's field conventions; see :doc:`rust_libvex_ffi`.
 

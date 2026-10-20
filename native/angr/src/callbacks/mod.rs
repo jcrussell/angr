@@ -142,6 +142,7 @@ mod events;
 mod inspect;
 mod inspect_bits;
 mod inspect_test_entries;
+pub(crate) mod pyvex_reader;
 
 // Shared `defs`/`obj`/`recorder` plumbing for the `callbacks/` test modules
 // (angr-5mnx3.7). Lives here, one level above `dispatch_tests` /

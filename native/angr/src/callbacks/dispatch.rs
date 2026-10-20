@@ -455,7 +455,7 @@ impl PythonCallbacks {
             if irsb.is_none() {
                 return Ok(LiftBlockOutcome::Unliftable);
             }
-            Ok(match crate::vex::pyvex_reader::read_irsb(irsb) {
+            Ok(match crate::callbacks::pyvex_reader::read_irsb(irsb) {
                 Ok(irsb) => LiftBlockOutcome::Lifted(irsb),
                 Err(e) => LiftBlockOutcome::Malformed(e.to_string()),
             })

@@ -102,7 +102,7 @@ pub(crate) fn execute_irsb_for_test(
         .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {arch_name}")))?;
     let vex_arch = arch.vex_arch();
 
-    let irsb = crate::vex::pyvex_reader::read_irsb(irsb)?;
+    let irsb = crate::callbacks::pyvex_reader::read_irsb(irsb)?;
 
     let ctx = SymContext::new_mock();
     let callbacks = PythonCallbacks::new();
@@ -405,7 +405,7 @@ pub(crate) fn native_lift_debug_for_test(
 #[pyfunction]
 #[pyo3(signature = (irsb, pretty = true))]
 pub(crate) fn irsb_debug_for_test(irsb: &Bound<'_, PyAny>, pretty: bool) -> PyResult<String> {
-    let irsb = crate::vex::pyvex_reader::read_irsb(irsb)?;
+    let irsb = crate::callbacks::pyvex_reader::read_irsb(irsb)?;
     Ok(if pretty {
         format!("{irsb:#?}")
     } else {

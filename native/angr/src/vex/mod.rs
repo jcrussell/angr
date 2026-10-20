@@ -18,7 +18,6 @@ pub mod opcode_map;
 pub(crate) mod opcode_map_float;
 pub(crate) mod opcode_map_vector;
 pub mod ops;
-pub mod pyvex_reader;
 pub mod transcendentals;
 
 /// pyvex `_lift`'s `max_bytes` default (`pyvex/lifting/libvex.py`): the largest
