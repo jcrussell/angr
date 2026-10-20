@@ -20,7 +20,7 @@ import os
 import pytest
 
 import angr
-from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, RustExplorationManager
+from tests.engines.conftest import FORK_TREE_8_PATH, RUST_EXPLORATION_AVAILABLE, RustExplorationManager
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration engine not built")
 
@@ -69,8 +69,7 @@ class TestReturnThroughSymbolicAddress:
         assert len(mgr.unconstrained) == 1, {k: len(v) for k, v in mgr.stashes.items() if v}
 
     def test_cow_fork_scaling_leaves_are_unconstrained(self):
-        here = os.path.dirname(os.path.abspath(__file__))
-        binary = os.path.join(here, "..", "..", "benchmarks", "synthetic_examples", "cow_fork_scaling", "fork_tree_8")
+        binary = FORK_TREE_8_PATH
         if not os.path.exists(binary):
             pytest.skip("fork_tree_8 not present")
         from angr import claripy

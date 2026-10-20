@@ -15,6 +15,7 @@ import angr
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
+    CADET_00001_PATH,
     EXAMPLES_DIR,
     RUST_EXPLORATION_AVAILABLE,
     ExplorationEvent,
@@ -31,7 +32,7 @@ pytestmark = pytest.mark.skipif(
     reason="Rust exploration not available",
 )
 
-_CADET_PATH = os.path.join(EXAMPLES_DIR, "CADET_00001", "CADET_00001")
+_CADET_PATH = CADET_00001_PATH
 
 
 def _load_cadet():

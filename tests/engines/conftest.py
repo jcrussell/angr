@@ -58,24 +58,46 @@ BIN_LOCATION = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "
 # Honors ANGR_EXAMPLES_DIR (set by CI), else the default checkout location.
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 
+# The fork's own bench tree, which carries the synthetic programs' sources.
+_SYNTHETIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmarks", "synthetic_examples"
+)
+
+
+def _binary(*candidates: str) -> str:
+    """The first candidate path that exists, else the first one (so a skip
+    message names where the binary is expected). angr/binaries comes first."""
+    return next((p for p in candidates if os.path.exists(p)), candidates[0])
+
+
 # angr/binaries' x86_64 fauxware, else angr-examples' byte-identical copy.
-_FAUXWARE_CANDIDATES = [
+FAUXWARE_PATH = _binary(
     os.path.join(BIN_LOCATION, "tests", "x86_64", "fauxware"),
     os.path.join(EXAMPLES_DIR, "fauxware", "fauxware"),
-]
-FAUXWARE_PATH = next((p for p in _FAUXWARE_CANDIDATES if os.path.exists(p)), _FAUXWARE_CANDIDATES[0])
+)
 TEST_BINARIES_DIR = os.path.dirname(FAUXWARE_PATH)
+
+# Eight independent symbolic branches on stdin (256 leaves).
+FORK_TREE_8_PATH = _binary(
+    os.path.join(BIN_LOCATION, "tests", "x86_64", "fork_tree_8"),
+    os.path.join(_SYNTHETIC_DIR, "cow_fork_scaling", "fork_tree_8"),
+)
+CADET_00001_PATH = _binary(
+    os.path.join(BIN_LOCATION, "tests", "cgc", "CADET_00001"),
+    os.path.join(EXAMPLES_DIR, "CADET_00001", "CADET_00001"),
+)
+HOWTOUSE_DLL_PATH = _binary(
+    os.path.join(BIN_LOCATION, "tests", "i386", "windows", "howtouse.dll"),
+    os.path.join(EXAMPLES_DIR, "mma_howtouse", "howtouse.dll"),
+)
 
 # The bounded exhaustive find-all synthetic: 2^W = 8 leaves, one
 # ``read(0, b, 32)``, a ``trap_point(x) -> x`` bounce site and a
 # ``reach_target`` find address.
 PBOUNCE_NAME = "fork_solve_pbounce_W3_S2_M8_B1"
-PBOUNCE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "benchmarks",
-    "synthetic_examples",
-    PBOUNCE_NAME,
-    PBOUNCE_NAME,
+PBOUNCE_PATH = _binary(
+    os.path.join(BIN_LOCATION, "tests", "x86_64", PBOUNCE_NAME),
+    os.path.join(_SYNTHETIC_DIR, PBOUNCE_NAME, PBOUNCE_NAME),
 )
 PBOUNCE_SEED_BYTES = 32
 

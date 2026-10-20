@@ -29,12 +29,12 @@ import angr
 
 # Availability guard and examples-dir resolution live in conftest (angr-7gdp).
 from tests.engines.conftest import (
-    EXAMPLES_DIR,
+    HOWTOUSE_DLL_PATH,
     RUST_EXPLORATION_AVAILABLE,
     RustFactoryPatch,
 )
 
-HOWTOUSE_DLL = os.path.join(EXAMPLES_DIR, "mma_howtouse", "howtouse.dll")
+HOWTOUSE_DLL = HOWTOUSE_DLL_PATH
 HOWTOUSE_BASE_ADDR = 0x10000000
 HOWTOUSE_FUNC_ADDR = 0x10001130
 EXPECTED_FLAG = "MMA{fc7d90ca001fc8712497d88d9ee7efa9e9b32ed8}"
