@@ -102,13 +102,21 @@ def make_rules(bead_root: str) -> tuple[list[tuple[re.Pattern[str], str]], re.Pa
             ),
             r"\1",
         ),
+        # 3a. a whole "See angr-x." sentence after another sentence
+        (re.compile(rf"(?<=[.!?])\s+[Ss]ee (?:also )?(?:bd )?{bead}(?:\s*(?:,|and)\s*{bead})*\."), ""),
         # 3b. a trailing "see angr-x" closing a sentence
         (re.compile(rf"\s*(?:—|--|;|,)?\s*\b[Ss]ee (?:also )?(?:bd )?{bead}(?:\s*(?:,|and)\s*{bead})*(?=\.?\s*$)"), ""),
         # 4. audit-gate markers
         (re.compile(r"SILENT\(cat-[abc]\)\s*:?\s*"), ""),
         (re.compile(r"\b(?:overflow-ok|page-shift-ok|sp-default-ok|rm-ignored|satresult-exempt):\s*"), ""),
-        # 5. memory citations
-        (re.compile(r"\s*\((?:see )?(?:the )?bd memor(?:y|ies) `[a-z0-9-]+`(?:\s*(?:,|and)\s*`[a-z0-9-]+`)*\)"), ""),
+        # 5. memory citations: parenthesized, or a sentence-final "see bd memory"
+        (
+            re.compile(
+                r"\s*\((?:see )?(?:the )?bd memor(?:y|ies) ``?[a-z0-9-]+``?(?:\s*(?:,|and)\s*``?[a-z0-9-]+``?)*\)"
+            ),
+            "",
+        ),
+        (re.compile(r"\s*(?:—|--|;|,)?\s*\b[Ss]ee (?:the )?bd memor(?:y|ies) ``?[a-z0-9-]+``?(?=\.?\s*$)"), ""),
     ]
     leftover = re.compile(
         rf"{bead_root}{SUFFIX}|\bbd memor|\bbd (?:recall|remember|show|create)\b|\bbeads?\b|SILENT\(|-ok:"
@@ -252,7 +260,9 @@ def rewrite_text(path: str, src: str) -> tuple[str, list[tuple[int, str]]]:
             # (`//!   (angr-x).` -> `//!   .`): move it onto the previous
             # line, and drop the line if nothing else is left.
             m = re.match(r"^(\s*(?://[/!]?|#)?\s*)([.,;:])(\s*)(.*)$", new)
-            if m and out and m.group(1).strip() and out[-1].strip().startswith(m.group(1).strip()):
+            prose_file = suffix in (".rst", ".md", ".txt") or in_doc is not None
+            marker = m.group(1).strip() if m else ""
+            if m and out and out[-1].strip() and (prose_file or (marker and out[-1].strip().startswith(marker))):
                 prev = out[-1].rstrip("\n")
                 out[-1] = prev + m.group(2) + out[-1][len(prev) :]
                 if not m.group(4):
@@ -283,12 +293,8 @@ SELF_TESTS: list[tuple[str, str, str, bool]] = [
     ("a.rs", "    // (angr-ab12c)\n    let x = 1;\n", "    let x = 1;\n", False),
     ("a.rs", "    // see angr-ab12c for why\n", "    // see angr-ab12c for why\n", True),
     ("a.rs", '    let s = "angr-ab12c"; // keep\n', '    let s = "angr-ab12c"; // keep\n', False),
-    (
-        "a.rs",
-        "// see bd memory `invariant-x` (angr-ab12c, angr-de45f Phase 2)\n",
-        "// see bd memory `invariant-x`\n",
-        True,
-    ),
+    ("a.rs", "// see bd memory `invariant-x` (angr-ab12c, angr-de45f Phase 2)\n", "", False),
+    ("a.rs", "// see bd memory `invariant-x` for the full\n", "// see bd memory `invariant-x` for the full\n", True),
     ("a.rs", "// held off (bd memory `invariant-x`).\n", "// held off.\n", False),
     ("a.py", "    x = 1  # cat ok (angr-ab12c.3)\n", "    x = 1  # cat ok\n", False),
     (
@@ -318,9 +324,28 @@ SELF_TESTS: list[tuple[str, str, str, bool]] = [
     ("a.rs", "/// angr-v5a5 slice 4c.2b: sibling isolation\n", "/// sibling isolation\n", False),
     ("a.rs", "/// angr-sqfj8.113 / .118: the shift families\n", "/// the shift families\n", False),
     ("a.py", "    # the angr-side has len(raw) + 1 entries\n", "    # the angr-side has len(raw) + 1 entries\n", False),
-    ("a.rs", "//! * `%p` sign-folds pointers\n//!   (angr-3i88a).\n//! * next\n", "//! * `%p` sign-folds pointers.\n//! * next\n", False),
-    ("a.rs", "//!   - `pread64(fd)`\n//!     (angr-dbb1) mirror `pread64.py`: positioned\n", "//!   - `pread64(fd)`\n//!     mirror `pread64.py`: positioned\n", False),
-    ("a.rs", "//!   `store_multi`; and **Phase 2**\n//!   (angr-qh5u): end-to-end install\n", "//!   `store_multi`; and **Phase 2**:\n//!   end-to-end install\n", False),
+    (
+        "a.rs",
+        "//! * `%p` sign-folds pointers\n//!   (angr-3i88a).\n//! * next\n",
+        "//! * `%p` sign-folds pointers.\n//! * next\n",
+        False,
+    ),
+    (
+        "a.rs",
+        "//!   - `pread64(fd)`\n//!     (angr-dbb1) mirror `pread64.py`: positioned\n",
+        "//!   - `pread64(fd)`\n//!     mirror `pread64.py`: positioned\n",
+        False,
+    ),
+    (
+        "a.rs",
+        "//!   `store_multi`; and **Phase 2**\n//!   (angr-qh5u): end-to-end install\n",
+        "//!   `store_multi`; and **Phase 2**:\n//!   end-to-end install\n",
+        False,
+    ),
+    ("a.rs", "/// instead of panicking. See angr-abora.\n", "/// instead of panicking.\n", False),
+    ("a.rst", "the pin holds\n(``angr-iaol.1``).\n", "the pin holds.\n", False),
+    ("a.py", "    # same rule (bd memory ``inv-x``).\n", "    # same rule.\n", False),
+    ("a.rs", "// the rule holds; see bd memory `inv-x`.\n", "// the rule holds.\n", False),
 ]
 
 
