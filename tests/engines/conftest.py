@@ -82,8 +82,9 @@ FORK_TREE_8_PATH = _binary(
     os.path.join(BIN_LOCATION, "tests", "x86_64", "fork_tree_8"),
     os.path.join(_SYNTHETIC_DIR, "cow_fork_scaling", "fork_tree_8"),
 )
+# angr/binaries carries the CGC CADET_00001 sample as sc1_0b32aa01_01.
 CADET_00001_PATH = _binary(
-    os.path.join(BIN_LOCATION, "tests", "cgc", "CADET_00001"),
+    os.path.join(BIN_LOCATION, "tests", "cgc", "sc1_0b32aa01_01"),
     os.path.join(EXAMPLES_DIR, "CADET_00001", "CADET_00001"),
 )
 HOWTOUSE_DLL_PATH = _binary(
