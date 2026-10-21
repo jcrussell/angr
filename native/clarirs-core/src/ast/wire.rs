@@ -6,17 +6,37 @@
 //! of the expanded tree. [`WireDag::decode`] rebuilds the nodes in a context
 //! with [`AstFactory::make_ast_exact`], annotations included, so decoding into
 //! the context the ASTs came from yields the very same interned nodes.
+//!
+//! The format is meant for data this process or a peer built from the same
+//! source, not for untrusted input. Decoding checks indices, arities and
+//! sorts, but an `AnnotationType::Unknown` carries a pickled Python object
+//! that the claripy layer unpickles, and widths are not checked for overflow.
+//! Self-describing serde formats such as JSON identify ops by name. Positional
+//! ones such as postcard identify them by their place in [`WireOp`], which
+//! changes whenever an op is added, so bump [`WIRE_VERSION`] with any change
+//! to the op lists below.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use clarirs_num::{BitVec, FPRM, FSort, Float};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
+/// The format version [`WireDag::encode`] writes and [`WireDag::decode`] accepts.
+pub const WIRE_VERSION: u32 = 1;
+
+fn first_version() -> u32 {
+    1
+}
+
 /// ASTs flattened into a child-first node list. See the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireDag {
+    /// Payloads written before the field existed are version 1.
+    #[serde(default = "first_version")]
+    version: u32,
     nodes: Vec<WireNode>,
     roots: Vec<u32>,
 }
@@ -24,10 +44,13 @@ pub struct WireDag {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct WireNode {
     op: WireOp,
+    // Always serialized: a positional format cannot tell an omitted field from
+    // the next one. `default` only lets older JSON payloads, which omitted
+    // empty lists, still decode.
     /// Indices of earlier nodes, in the op's child order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     children: Vec<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     annotations: Vec<Annotation>,
 }
 
@@ -40,7 +63,7 @@ macro_rules! wire_ops {
         nary: [$($nary:ident),* $(,)?],
         unary: [$($un:ident $({ $($unp:ident: $unt:ty),* })?),* $(,)?],
         binary: [$($bin:ident $({ $($binp:ident: $bint:ty),* })?),* $(,)?],
-        ternary: [$($ter:ident),* $(,)?] $(,)?
+        ternary: [$($ter:ident $({ $($terp:ident: $tert:ty),* })?),* $(,)?] $(,)?
     ) => {
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         #[allow(clippy::upper_case_acronyms, reason = "variant names mirror AstOp's")]
@@ -56,13 +79,7 @@ macro_rules! wire_ops {
             $($nary,)*
             $($un $({ $($unp: $unt),* })?,)*
             $($bin $({ $($binp: $bint),* })?,)*
-            $($ter,)*
-            // Ops added after the wire format shipped, appended by hand so
-            // the postcard variant index of every earlier op stays put.
-            FpMin,
-            FpMax,
-            FpFma { rm: FPRM },
-            FpRoundToIntegral { rm: FPRM },
+            $($ter $({ $($terp: $tert),* })?,)*
         }
 
         impl WireOp {
@@ -79,11 +96,7 @@ macro_rules! wire_ops {
                     $(AstOp::$nary(..) => WireOp::$nary,)*
                     $(AstOp::$un(_ $($(, $unp)*)?) => WireOp::$un $({ $($unp: *$unp),* })?,)*
                     $(AstOp::$bin(_, _ $($(, $binp)*)?) => WireOp::$bin $({ $($binp: *$binp),* })?,)*
-                    $(AstOp::$ter(..) => WireOp::$ter,)*
-                    AstOp::FpMin(..) => WireOp::FpMin,
-                    AstOp::FpMax(..) => WireOp::FpMax,
-                    AstOp::FpFma(.., rm) => WireOp::FpFma { rm: *rm },
-                    AstOp::FpRoundToIntegral(_, rm) => WireOp::FpRoundToIntegral { rm: *rm },
+                    $(AstOp::$ter(_, _, _ $($(, $terp)*)?) => WireOp::$ter $({ $($terp: *$terp),* })?,)*
                 }
             }
 
@@ -146,26 +159,10 @@ macro_rules! wire_ops {
                         arity(2)?;
                         AstOp::$bin(c(0), c(1) $($(, $binp)*)?)
                     })*
-                    $(WireOp::$ter => {
+                    $(WireOp::$ter $({ $($terp),* })? => {
                         arity(3)?;
-                        AstOp::$ter(c(0), c(1), c(2))
+                        AstOp::$ter(c(0), c(1), c(2) $($(, $terp)*)?)
                     })*
-                    WireOp::FpMin => {
-                        arity(2)?;
-                        AstOp::FpMin(c(0), c(1))
-                    }
-                    WireOp::FpMax => {
-                        arity(2)?;
-                        AstOp::FpMax(c(0), c(1))
-                    }
-                    WireOp::FpFma { rm } => {
-                        arity(3)?;
-                        AstOp::FpFma(c(0), c(1), c(2), rm)
-                    }
-                    WireOp::FpRoundToIntegral { rm } => {
-                        arity(1)?;
-                        AstOp::FpRoundToIntegral(c(0), rm)
-                    }
                 })
             }
         }
@@ -180,15 +177,15 @@ wire_ops! {
         FpToUBV { size: u32, rm: FPRM }, FpToSBV { size: u32, rm: FPRM }, FpNeg, FpAbs,
         FpSqrt { rm: FPRM }, FpToFp { sort: FSort, rm: FPRM }, BvToFp { sort: FSort },
         BvToFpSigned { sort: FSort, rm: FPRM }, BvToFpUnsigned { sort: FSort, rm: FPRM },
-        FpIsNan, FpIsInf, StrIsDigit, BVToStr,
+        FpIsNan, FpIsInf, StrIsDigit, BVToStr, FpRoundToIntegral { rm: FPRM },
     ],
     binary: [
         Eq, Neq, ULT, ULE, UGT, UGE, SLT, SLE, SGT, SGE, FpLt, FpLeq, FpGt, FpGeq,
         StrContains, StrPrefixOf, StrSuffixOf, Sub, UDiv, SDiv, URem, SRem, ShL, LShR, AShR,
         RotateLeft, RotateRight, Widen, FpAdd { rm: FPRM }, FpSub { rm: FPRM },
-        FpMul { rm: FPRM }, FpDiv { rm: FPRM }, StrConcat,
+        FpMul { rm: FPRM }, FpDiv { rm: FPRM }, StrConcat, FpMin, FpMax,
     ],
-    ternary: [ITE, StrIndexOf, FpFP, StrSubstr, StrReplace],
+    ternary: [ITE, StrIndexOf, FpFP, StrSubstr, StrReplace, FpFma { rm: FPRM }],
 }
 
 impl WireDag {
@@ -201,13 +198,13 @@ impl WireDag {
             // Iterative post-order: a node is emitted once all its children are.
             let mut stack: Vec<(AstRef<'c>, bool)> = vec![(root.clone(), false)];
             while let Some((node, expanded)) = stack.pop() {
-                if index.contains_key(&std::sync::Arc::as_ptr(&node)) {
+                if index.contains_key(&Arc::as_ptr(&node)) {
                     continue;
                 }
                 if !expanded {
                     stack.push((node.clone(), true));
                     for child in node.op().child_iter() {
-                        if !index.contains_key(&std::sync::Arc::as_ptr(&child)) {
+                        if !index.contains_key(&Arc::as_ptr(&child)) {
                             stack.push((child, false));
                         }
                     }
@@ -216,7 +213,7 @@ impl WireDag {
                 let children = node
                     .op()
                     .child_iter()
-                    .map(|child| index[&std::sync::Arc::as_ptr(&child)])
+                    .map(|child| index[&Arc::as_ptr(&child)])
                     .collect();
                 let id = u32::try_from(nodes.len()).expect("more than u32::MAX AST nodes");
                 nodes.push(WireNode {
@@ -224,11 +221,12 @@ impl WireDag {
                     children,
                     annotations: node.annotations().iter().cloned().collect(),
                 });
-                index.insert(std::sync::Arc::as_ptr(&node), id);
+                index.insert(Arc::as_ptr(&node), id);
             }
-            root_indices.push(index[&std::sync::Arc::as_ptr(root)]);
+            root_indices.push(index[&Arc::as_ptr(root)]);
         }
         WireDag {
+            version: WIRE_VERSION,
             nodes,
             roots: root_indices,
         }
@@ -236,6 +234,12 @@ impl WireDag {
 
     /// Rebuilds the encoded roots in `ctx`, in the order they were encoded.
     pub fn decode<'c>(&self, ctx: &'c Context<'c>) -> Result<Vec<AstRef<'c>>, ClarirsError> {
+        if self.version != WIRE_VERSION {
+            return Err(ClarirsError::InvalidArguments(format!(
+                "wire format version {} is not {WIRE_VERSION}",
+                self.version
+            )));
+        }
         let mut built: Vec<AstRef<'c>> = Vec::with_capacity(self.nodes.len());
         let lookup = |built: &[AstRef<'c>], i: u32| {
             built.get(i as usize).cloned().ok_or_else(|| {

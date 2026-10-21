@@ -433,6 +433,7 @@ dependencies = [
  "clarirs-num",
  "num-bigint",
  "num-traits",
+ "postcard",
  "serde",
  "serde_json",
  "smallvec",
