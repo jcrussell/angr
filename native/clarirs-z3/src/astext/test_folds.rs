@@ -229,13 +229,10 @@ fn string_folds_match_z3() {
             rng.pick(&[0, 1, 2, 9, u64::MAX]),
         );
         let width = rng.pick(&[64, 128]);
-        // A length of u64::MAX is left out: the str.substr fold's start + length overflows
-        if length != u64::MAX {
-            check(
-                ctx.str_substr(&x, index(start, width), index(length, width))
-                    .unwrap(),
-            );
-        }
+        check(
+            ctx.str_substr(&x, index(start, width), index(length, width))
+                .unwrap(),
+        );
         // str_index_of is not checked here: from_z3 cannot read back the
         // int2bv(ite ...) term Z3 simplifies str.indexof to
     }
