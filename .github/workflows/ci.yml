@@ -127,6 +127,15 @@ jobs:
         run: |
           python3 tools/audit_sp_default_zero.py --self-test
           python3 tools/audit_sp_default_zero.py
+      # angr-vmi2l.208: a cargo test cannot import the `angr` package, so a
+      # test guarded on `py.import("angr.…")` returns before its assertions
+      # and passes in every lane. Tests get claripy from
+      # `claripy_bridge::claripy_module` instead. No baseline: the site set
+      # is empty and must stay so.
+      - name: Rust test angr-import guard audit
+        run: |
+          python3 tools/audit_test_import_guard.py --self-test
+          python3 tools/audit_test_import_guard.py
       # angr-03vl4 round-4 retrospective: integer overflow/wraparound on
       # guest-controlled or Z3-derived address/size values was the dominant
       # bug class (3 P1s, 6 subsystems) -- [profile.release] has no

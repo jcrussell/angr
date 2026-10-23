@@ -20,10 +20,11 @@
 //!    propagating when the export fails.
 //!
 //! Only `call_inspect_constraints` touches claripy, and only on the *wired*
-//! path. The cargo-test interpreter has no claripy installed, so the two tests
-//! for invariant 5 hand `fire_constraints_bp` a stand-in module object
-//! (`CLARIPY_STUBS`) instead of going through the `py.import("angr.rustylib.claripy")` in
-//! `call_inspect_constraints`; nothing here needs the real package.
+//! path. The test binary builds claripy in-process
+//! (`claripy_bridge::claripy_module`), so the wired path runs the real export.
+//! The failure test for invariant 5 hands `fire_constraints_bp` a stand-in
+//! module (`CLARIPY_STUBS`) whose `BVV` raises, because no real guard shape
+//! fails to export.
 
 use super::*;
 use crate::callbacks::test_support::{defs, obj, recorder};
@@ -309,40 +310,25 @@ fn inspect_errors_from_the_bp_action_propagate() {
     });
 }
 
-/// Stand-in `claripy` modules for the two `fire_constraints_bp` tests below.
+/// Stand-in `claripy` module for `constraints_export_failure_drops_the_event`.
 ///
-/// `good` is the smallest object `assumed_guard_to_claripy` accepts: a `BVV`
-/// factory whose result carries a `.length` (so the 1-bit-BV branch is taken)
-/// and an `__eq__` that builds the `guard == BVV(bit, 1)` comparison. `boom`
-/// raises out of `BVV`, which is the only claripy call a `Concrete` guard
-/// makes — that is how the export is driven into failure without needing a
-/// real (unexportable) guard shape.
+/// `boom` raises out of `BVV`, which is the only claripy call a `Concrete`
+/// guard makes. That is how the export is driven into failure without needing
+/// a real (unexportable) guard shape.
 const CLARIPY_STUBS: &std::ffi::CStr = c"_calls = []
 def bp(state_id, when, added):
-    _calls.append((state_id, when, [a.tag for a in added]))
-
-class _Ast:
-    def __init__(self, tag, length):
-        self.tag = tag
-        self.length = length
-    def __eq__(self, other):
-        return _Ast(('eq', self.tag, other.tag), None)
-
-class _Good:
-    def BVV(self, value, width):
-        return _Ast(('BVV', int(value), width), width)
+    _calls.append((state_id, when, [str(a) for a in added]))
 
 class _Boom:
     def BVV(self, value, width):
         raise ValueError('export exploded')
 
-good = _Good()
 boom = _Boom()
 ";
 
 /// Positive control for `constraints_export_failure_drops_the_event`: with a
-/// claripy that exports cleanly, the BP *is* called with the materialized
-/// one-element `added_constraints` list. Without this the failure test could
+/// the real claripy, the BP *is* called with the materialized one-element
+/// `added_constraints` list. Without this the failure test could
 /// pass for the wrong reason (a stub that never reaches the export at all).
 #[test]
 fn constraints_bp_fires_with_the_exported_guard() {
@@ -352,12 +338,13 @@ fn constraints_bp_fires_with_the_exported_guard() {
         let mut cb = PythonCallbacks::new();
         cb.set_inspect_constraints(obj(&globals, "bp"));
         let guard = crate::symbolic::RustBV::concrete(1, 1);
-        let claripy = globals.get_item("good").unwrap().unwrap();
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
+        let claripy = claripy.as_any();
 
         PythonCallbacks::fire_constraints_bp(
             py,
             &obj(&globals, "bp"),
-            &claripy,
+            claripy,
             7,
             "before",
             &guard,
@@ -370,12 +357,9 @@ fn constraints_bp_fires_with_the_exported_guard() {
         let call = calls.get_item(0).unwrap();
         assert_eq!(call.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
         assert_eq!(call.get_item(1).unwrap().extract::<String>().unwrap(), "before");
-        // One constraint, and it is the `guard == BVV(1, 1)` comparison
-        // `assumed_guard_to_claripy` builds for a 1-bit BV guard.
-        let tags = call.get_item(2).unwrap();
-        assert_eq!(tags.len().unwrap(), 1);
-        let tag = format!("{}", tags.get_item(0).unwrap());
-        assert!(tag.contains("eq") && tag.contains("BVV"), "got {tag}");
+        // One constraint: the exported guard.
+        let added = call.get_item(2).unwrap();
+        assert_eq!(added.len().unwrap(), 1, "got {added}");
     });
 }
 
@@ -423,11 +407,6 @@ struct InspectDispatchCase {
     /// Call `call_inspect_<event>` with placeholder arguments, discarding any
     /// value-injection return — the test only observes *whether* it fired.
     invoke: fn(&PythonCallbacks) -> PyResult<()>,
-    /// `call_inspect_constraints` imports claripy *after* its slot check, and
-    /// the cargo-test interpreter has no claripy (see the module doc), so a
-    /// wired constraints slot is observable as an `Err` rather than as a BP
-    /// fire. `true` makes an error count as "this slot was read".
-    may_err_when_wired: bool,
 }
 
 /// Every Rust-dispatched `state.inspect` event, paired with the slot its
@@ -445,7 +424,6 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
             cb.call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE")
                 .map(drop)
         },
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "mem_write",
@@ -454,79 +432,66 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
             cb.call_inspect_mem_write(1, "before", 0x1000, 4, None, "Iend_LE")
                 .map(drop)
         },
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "reg_read",
         set: PythonCallbacks::set_inspect_reg_read,
         invoke: |cb| cb.call_inspect_reg_read(1, "before", 16, 8, None),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "reg_write",
         set: PythonCallbacks::set_inspect_reg_write,
         invoke: |cb| cb.call_inspect_reg_write(1, "before", 16, 8, None),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "fork",
         set: PythonCallbacks::set_inspect_fork,
         invoke: |cb| cb.call_inspect_fork(1, "after"),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "exit",
         set: PythonCallbacks::set_inspect_exit,
         invoke: |cb| cb.call_inspect_exit(1, "before", 0x1000, "Ijk_Boring", None),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "instruction",
         set: PythonCallbacks::set_inspect_instruction,
         invoke: |cb| cb.call_inspect_instruction(1, "before", 0x1000),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "irsb",
         set: PythonCallbacks::set_inspect_irsb,
         invoke: |cb| cb.call_inspect_irsb(1, "before", 0x1000),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "call",
         set: PythonCallbacks::set_inspect_call,
         invoke: |cb| cb.call_inspect_call(1, "before", 0x1000),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "return",
         set: PythonCallbacks::set_inspect_return,
         invoke: |cb| cb.call_inspect_return(1, "after", 0x1000),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "tmp_read",
         set: PythonCallbacks::set_inspect_tmp_read,
         invoke: |cb| cb.call_inspect_tmp_read(1, "after", 3, None),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "tmp_write",
         set: PythonCallbacks::set_inspect_tmp_write,
         invoke: |cb| cb.call_inspect_tmp_write(1, "after", 3, None),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "statement",
         set: PythonCallbacks::set_inspect_statement,
         invoke: |cb| cb.call_inspect_statement(1, "before", 0),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "expr",
         set: PythonCallbacks::set_inspect_expr,
         invoke: |cb| cb.call_inspect_expr(1, "after", None),
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "address_concretization",
@@ -537,7 +502,6 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
                 cb.call_inspect_address_concretization(1, "after", "load", &addr, Some(vec![0x1000]))
             })
         },
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "symbolic_variable",
@@ -548,7 +512,6 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
                 cb.call_inspect_symbolic_variable(1, "after", "mem_1000", 64, &expr)
             })
         },
-        may_err_when_wired: false,
     },
     InspectDispatchCase {
         event: "constraints",
@@ -557,13 +520,11 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
             let guard = crate::symbolic::RustBV::concrete(1, 1);
             cb.call_inspect_constraints(1, "before", &guard, true)
         },
-        may_err_when_wired: true,
     },
     InspectDispatchCase {
         event: "vex_lift",
         set: PythonCallbacks::set_inspect_vex_lift,
         invoke: |cb| cb.call_inspect_vex_lift(-1, "before", 0x1000, None, Some(&[0x90])),
-        may_err_when_wired: false,
     },
 ];
 
@@ -593,9 +554,11 @@ fn each_call_inspect_dispatches_only_its_own_slot() {
 
             for called in INSPECT_DISPATCH_CASES {
                 let before = fired.len();
-                let res = (called.invoke)(&cb);
+                (called.invoke)(&cb).unwrap_or_else(|e| {
+                    panic!("call_inspect_{} with inspect_{} wired: {e}", called.event, wired.event)
+                });
                 let observed =
-                    fired.len() > before || (called.may_err_when_wired && res.is_err());
+                    fired.len() > before;
                 assert_eq!(
                     observed,
                     wired.event == called.event,

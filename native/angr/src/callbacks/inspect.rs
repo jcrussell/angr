@@ -108,9 +108,8 @@ impl PythonCallbacks {
     /// known-wired and `claripy` is in hand.
     ///
     /// Split out so a test can drive the export-failure arm below with a
-    /// stand-in `claripy` module: the cargo-test interpreter has no claripy,
-    /// so going through `call_inspect_constraints` would fail at the `import`
-    /// and never reach the arm (angr-0jh0j.5). Production has exactly one
+    /// stand-in `claripy` module whose `BVV` raises, since no real guard
+    /// shape fails to export (angr-0jh0j.5). Production has exactly one
     /// caller.
     fn fire_constraints_bp(
         py: Python<'_>,

@@ -171,11 +171,8 @@ pub(crate) fn claripy_to_rustbv(
 /// (see `rustbv_to_claripy`'s doc comment), so real trees bottom out at a
 /// few dozen levels, not thousands.
 ///
-/// `pub(super)` because `export::MAX_EXPORT_RECURSION_DEPTH` is *defined as*
-/// this constant rather than repeating the literal (angr-6cp06.83) — its
-/// smaller measured per-frame footprint is dominated by the padding above, so
-/// the two bounds are meant to move together. Revising the calibration here
-/// revises both; re-check that dominance claim in `export.rs` when you do.
+/// Export has no twin bound: it is a single `Base::from_ast` with no
+/// recursion.
 pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = crate::symbolic::z3_lower::MAX_LOWER_DEPTH;
 
 /// Depth-guarded recursive implementation of [`claripy_to_rustbv`]. See that

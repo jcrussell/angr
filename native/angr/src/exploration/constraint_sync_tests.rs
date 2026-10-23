@@ -39,9 +39,7 @@ fn constraint_list<'py>(
 fn sync_constraints_typed_convert_binds_constraint() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
-            return; // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 
@@ -74,9 +72,7 @@ fn sync_constraints_typed_convert_binds_constraint() {
 fn sync_constraints_unsat_returns_false_for_pruning() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
-            return;
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 
@@ -153,9 +149,7 @@ fn sync_constraints_wide_literal_imported_by_the_typed_tier() {
 fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
-            return;
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 
@@ -203,9 +197,7 @@ fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
 fn sync_constraints_partial_failure_unsat_is_pruned() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
-            return;
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 

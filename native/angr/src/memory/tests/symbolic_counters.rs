@@ -166,9 +166,11 @@ fn test_concretize_counters_fire_on_symbolic_store() {
 }
 
 /// angr-0nme Phase 0: direct calls to `record_mem_ite_depth` increment the
-/// cumulative total and lift the max watermark monotonically. A 0-depth
-/// call is a no-op. Verified via deltas because the underlying atomics
-/// are process-global and may be touched by other parallel tests.
+/// cumulative total and lift the max watermark monotonically. Verified via
+/// lower-bound deltas because the underlying atomics are process-global and
+/// other parallel tests record into them. That also rules out asserting
+/// that a 0-depth call leaves the total unchanged: a concurrent recorder can
+/// move it in between, so the 0-depth early return is not pinned here.
 #[test]
 fn test_record_mem_ite_depth_helper() {
     use crate::symbolic::{get_solver_stats, record_mem_ite_depth};
@@ -176,14 +178,6 @@ fn test_record_mem_ite_depth_helper() {
     let baseline = get_solver_stats();
     let base_total = baseline.get("mem_ite_depth_total").copied().unwrap_or(0);
     let base_max = baseline.get("mem_ite_depth_max").copied().unwrap_or(0);
-
-    record_mem_ite_depth(0); // no-op
-    let after_zero = get_solver_stats();
-    assert_eq!(
-        after_zero.get("mem_ite_depth_total").copied().unwrap_or(0),
-        base_total,
-        "record_mem_ite_depth(0) must not change the total"
-    );
 
     record_mem_ite_depth(5);
     record_mem_ite_depth(8);

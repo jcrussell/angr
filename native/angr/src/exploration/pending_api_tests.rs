@@ -250,9 +250,6 @@ fn export_pending_state_flushes_multi_cells() {
 fn pending_memory_load_symbolic_page_flushes_multi_cells() {
     Python::initialize();
     Python::attach(|py| {
-        if py.import("angr.rustylib.claripy").is_err() {
-            return; // claripy not importable in this env — skip
-        }
         let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = pending_state_with_multi_cell_store(0xCAFE_BABE);
         let state_id = state.state_id();

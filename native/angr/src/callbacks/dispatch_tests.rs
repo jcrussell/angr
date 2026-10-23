@@ -13,7 +13,7 @@
 //!    callback rather than dropping the work.
 //!
 //! Nothing here needs claripy: every assertion is on a path that returns
-//! before `rustbv_to_claripy` / `py.import("angr.rustylib.claripy")`.
+//! before `rustbv_to_claripy` / `claripy_bridge::claripy_module`.
 
 use super::*;
 use crate::callbacks::test_support::{defs, obj, recorder};

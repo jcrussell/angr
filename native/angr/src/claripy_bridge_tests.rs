@@ -42,10 +42,7 @@ fn test_extract_int_value_above_128_bits_errors() {
 fn test_export_and_of_two_bools_keeps_both_operands() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return, // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "x", 32);
         let y = RustBV::symbolic(&ctx, "y", 32);
@@ -63,9 +60,11 @@ fn test_export_and_of_two_bools_keeps_both_operands() {
             2,
             "And(Eq,Eq) export must reference both operands' variables"
         );
-        // And of two 1-bit BVs is itself a 1-bit BV.
-        let length: Option<u32> = ast.getattr("length").ok().and_then(|l| l.extract().ok());
-        assert_eq!(length, Some(1), "And of two Bool->BV(1) is a 1-bit BV");
+        // And of two comparisons exports as a claripy Bool.
+        assert!(
+            ast.is_instance_of::<crate::claripy::ast::bool::Bool>(),
+            "And(Eq,Eq) must export as a Bool, got {ast}"
+        );
     });
 }
 
@@ -77,10 +76,7 @@ fn test_export_and_of_two_bools_keeps_both_operands() {
 fn test_export_eq_with_bool_operand_not_rebuilt_as_add() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "x", 32);
         let inner = x.eq(&RustBV::concrete(5, 32), &ctx); // 1-bit Eq (Bool on export)
@@ -110,10 +106,7 @@ fn test_export_symbolic_bitcount_is_sound() {
     use crate::symbolic::BVOp;
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
         let width: u32 = 8;
 
@@ -126,18 +119,6 @@ fn test_export_symbolic_bitcount_is_sound() {
             let res = s.call_method1("eval", (ast, 1u32)).unwrap();
             res.get_item(0).unwrap().extract().unwrap()
         };
-        // Pull the single BVS leaf out of an exported encoding.
-        let bvs_leaf = |ast: &Bound<'_, PyAny>| -> Py<PyAny> {
-            let leaves = ast.call_method0("leaf_asts").unwrap();
-            for leaf in leaves.try_iter().unwrap() {
-                let leaf = leaf.unwrap();
-                let op: String = leaf.getattr("op").unwrap().extract().unwrap();
-                if op == "BVS" {
-                    return leaf.unbind();
-                }
-            }
-            panic!("no BVS leaf found in exported encoding");
-        };
 
         for op in [BVOp::Clz, BVOp::Ctz, BVOp::Popcount] {
             let x = RustBV::symbolic(&ctx, "x", width);
@@ -149,7 +130,9 @@ fn test_export_symbolic_bitcount_is_sound() {
             };
             let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
             let ast = ast.bind(py);
-            let leaf = bvs_leaf(ast);
+            // Export the leaf itself: it is the same clarirs node the
+            // encoding references.
+            let leaf = rustbv_to_claripy(py, &x, claripy.as_any()).unwrap();
             let leaf = leaf.bind(py);
             for v in [0u128, 1, 2, 0x80, 0x0F, 0xF0, 0xAA, 0xFF] {
                 let got = eval_with(ast, leaf, v);
@@ -180,10 +163,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
     use crate::symbolic::{FloatOpKind, FloatPrec};
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
 
         // popcount (sound encoding path)
@@ -217,10 +197,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
 fn test_roundtrip_import_export_preserves_semantics() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return, // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
 
         // export bv -> claripy AST -> import back to a fresh RustBV
@@ -327,10 +304,7 @@ fn test_roundtrip_import_export_preserves_semantics() {
 fn test_roundtrip_concrete_value_exact() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return,
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
         for (val, width) in [
             (0u128, 8u32),
@@ -364,10 +338,7 @@ fn test_roundtrip_concrete_value_exact() {
 fn test_import_floordiv_mod_are_unsigned() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return, // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
 
         // Symbolic operand v, pinned to 0xFFFF_FFFE (== -2 as signed i32).
@@ -401,9 +372,8 @@ fn test_import_floordiv_mod_are_unsigned() {
 }
 
 /// angr-2a3i9: a long, non-shared claripy AST chain (repeated `ZeroExt`, no
-/// common subexpressions) gets zero benefit from `AST_CACHE` — every node
-/// has a distinct claripy hash — so it recurses to full tree depth in
-/// `claripy_to_rustbv`. Before the depth guard this class of input was the
+/// common subexpressions) gets no help from the per-call import memo, so it
+/// recurses to full tree depth in `claripy_to_rustbv`. Before the depth guard this class of input was the
 /// reachable trigger for a raw-SIGSEGV failure mode (angr-2a3i9), mirroring
 /// the real worker-thread crash (angr-h92bx) but on the
 /// *unguarded* main thread. Build a chain well past
@@ -432,44 +402,21 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
         .stack_size(256 * 1024 * 1024)
         .spawn(|| {
             Python::attach(|py| {
-                let claripy = match py.import("angr.rustylib.claripy") {
-                    Ok(m) => m,
-                    Err(_) => return, // claripy not importable in this env — skip
-                };
                 let ctx = SymContext::new_mock();
 
-                // Chain depth intentionally well past MAX_IMPORT_RECURSION_DEPTH
-                // (4096). `ZeroExt` was chosen over `__add__`/`__xor__`/`Concat`:
-                // claripy const-folds and *flattens* those associative ops into a
-                // single n-ary node regardless of call count (e.g. 50 chained
-                // `__add__`s collapses to `depth == 2` — one `__add__` node over
-                // the BVS leaf and a folded constant, confirmed via `ast.depth`),
-                // which would make this test pass vacuously without ever
-                // exercising deep recursion. `ZeroExt` has no such flattening:
-                // each wrap is a genuinely new node one level deeper than the
-                // last.
-                //
-                // Built via the raw `claripy.ast.bv.BV` constructor rather than
-                // the `claripy.ZeroExt()` convenience function: the latter routes
-                // through `operations.py::_op`, which runs a *recursive*
-                // simplifier (`simplifications.py::zeroext_simplifier`) on every
-                // call — O(depth) work per node, O(depth^2) total, and it hits
-                // *Python's* own default recursion limit (1000) long before 4096.
-                // Both are claripy-internal concerns, orthogonal to the bug this
-                // test guards against (claripy_to_rustbv's pure-Rust descent,
-                // invisible to CPython's recursion-limit counter either way). The
-                // raw constructor skips simplification and produces the exact
-                // same `(op, args, length)`-shaped AST our bridge introspects.
-                let bv_cls = py.import("angr.rustylib.claripy.ast.bv").unwrap().getattr("BV").unwrap();
-                let mut ast = claripy.call_method1("BVS", ("chain", 8u32)).unwrap();
-                for _ in 0..4300i64 {
-                    let length: u32 = ast.getattr("length").unwrap().extract().unwrap();
-                    let kwargs = pyo3::types::PyDict::new(py);
-                    kwargs.set_item("length", length + 1).unwrap();
-                    ast = bv_cls
-                        .call(("ZeroExt", (1u32, &ast)), Some(&kwargs))
-                        .unwrap();
+                // Chain depth intentionally well past MAX_IMPORT_RECURSION_DEPTH.
+                // `ZeroExt` because clarirs flattens associative ops (`Add`,
+                // `Xor`, `Concat`) into one n-ary node, which would make the
+                // chain shallow and the test vacuous. Built in clarirs and
+                // wrapped with `claripy_object` so the Python-side simplifier
+                // never sees the chain.
+                use crate::claripy::ast::GLOBAL_CONTEXT;
+                use clarirs_core::prelude::*;
+                let mut node = GLOBAL_CONTEXT.bvs("chain", 8).expect("BVS");
+                for _ in 0..4300 {
+                    node = GLOBAL_CONTEXT.zero_ext(&node, 1).expect("ZeroExt");
                 }
+                let ast = crate::claripy_bridge::claripy_object(py, node);
 
                 let err = claripy_to_rustbv(py, &ast, &ctx).expect_err(
                     "a claripy AST chain deeper than MAX_IMPORT_RECURSION_DEPTH must return an \
@@ -478,61 +425,6 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
                 assert!(
                     matches!(err, BridgeError::RecursionLimit(_)),
                     "expected BridgeError::RecursionLimit, got {err:?}"
-                );
-            });
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
-/// angr-2a3i9: the export-direction twin of
-/// `test_claripy_to_rustbv_long_chain_hits_depth_guard`. Builds a long,
-/// non-shared `RustBV::Expression` chain directly in Rust (no claripy
-/// import needed to construct it) and asserts `rustbv_to_claripy` returns a
-/// catchable `PyErr` (mapped to Python's `RecursionError`) instead of
-/// overflowing the native stack in `rustbv_to_claripy_memo`. Runs on an
-/// explicit 8 MiB thread for the same reason as the import-direction test
-/// above.
-#[test]
-fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
-    pyo3::Python::initialize();
-    std::thread::Builder::new()
-        // 256 MiB, not 8: the MAX_*_RECURSION_DEPTH=4096 guard was calibrated
-        // against release frame sizes, which fit 4096 frames in 8 MiB (this test
-        // passes in release at 8 MiB). A debug build's frames are several times
-        // larger — the import direction's especially — so `cargo test` (debug)
-        // overflowed 8 MiB *before* reaching the guard. The
-        // reservation is virtual: only the ~4096 frames actually descended
-        // commit. Sizing for the debug frame lets the guard fire (returning
-        // RecursionLimit) in both profiles; the test still proves the guard,
-        // not the stack (angr-rk5tw).
-        .stack_size(256 * 1024 * 1024)
-        .spawn(|| {
-            Python::attach(|py| {
-                let claripy = match py.import("angr.rustylib.claripy") {
-                    Ok(m) => m,
-                    Err(_) => return, // claripy not importable in this env — skip
-                };
-                let ctx = SymContext::new_mock();
-
-                // Chain depth intentionally well past MAX_EXPORT_RECURSION_DEPTH
-                // (4096). Every `.add()` call allocates a fresh `Expression` node
-                // whose operands `Arc` keeps the whole preceding chain alive, so
-                // this is a genuine unshared linear DAG, not a cycle collapsed by
-                // pointer-identity memoization.
-                let mut bv = RustBV::symbolic(&ctx, "chain", 32);
-                for i in 0..4300u128 {
-                    bv = bv.add(&RustBV::concrete(i, 32), &ctx);
-                }
-
-                let err = rustbv_to_claripy(py, &bv, claripy.as_any()).expect_err(
-                    "a RustBV chain deeper than MAX_EXPORT_RECURSION_DEPTH must return an \
-                     error, not overflow the native stack",
-                );
-                assert!(
-                    err.is_instance_of::<pyo3::exceptions::PyRecursionError>(py),
-                    "expected PyRecursionError, got {err:?}"
                 );
             });
         })
@@ -554,10 +446,7 @@ fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
 fn test_bvs_width1_and_bools_same_name_do_not_alias() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return, // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
 
         // `explicit_name` is what makes the collision reachable: without it
@@ -606,10 +495,7 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 fn test_rust_minted_leaf_exports_under_its_rust_name() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return, // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
 
         // A leaf that never came from claripy, e.g. `stdin_<n>_<i>` from the
@@ -659,25 +545,21 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
 fn test_assumed_guard_to_claripy_all_four_branches() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("angr.rustylib.claripy") {
-            Ok(m) => m,
-            Err(_) => return, // claripy not importable in this env — skip
-        };
+        let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
         let x = RustBV::symbolic(&ctx, "c7xno20_x", 32);
 
-        // A comparison exports as a claripy Bool (`length is None`); a 1-bit
+        // A comparison exports as a claripy Bool (no `.length`); a 1-bit
         // Extract exports as a 1-bit BV. Those are the two shapes the
         // `.length` probe in `assumed_guard_to_claripy` discriminates.
+        use crate::claripy::ast::bool::Bool;
         let bool_guard = x.eq(&RustBV::concrete(5, 32), &ctx);
         let bv_guard = x.extract(0, 0, &ctx);
         assert!(
             rustbv_to_claripy(py, &bool_guard, claripy.as_any())
                 .unwrap()
                 .bind(py)
-                .getattr("length")
-                .unwrap()
-                .is_none(),
+                .is_instance_of::<Bool>(),
             "precondition: an eq guard must export as a Bool"
         );
         assert!(
@@ -709,12 +591,9 @@ fn test_assumed_guard_to_claripy_all_four_branches() {
                 .unwrap_or_else(|e| panic!("{label}: conversion failed: {e}"));
             let out = out.bind(py);
 
-            // The NotImplemented singleton is not an AST: it has no `.length`.
-            // Every branch must produce a claripy Bool instead.
-            let length = out
-                .getattr("length")
-                .unwrap_or_else(|e| panic!("{label}: result is not an AST ({e})"));
-            assert!(length.is_none(), "{label}: result must be a Bool, not a BV");
+            // Every branch must produce a claripy Bool, never the
+            // NotImplemented singleton or a BV.
+            assert!(out.is_instance_of::<Bool>(), "{label}: result must be a Bool, got {out}");
 
             let op: String = out.getattr("op").unwrap().extract().unwrap();
             assert!(
