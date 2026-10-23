@@ -72,8 +72,12 @@
 
 set -e
 export PATH="$HOME/.cargo/bin:$PATH"
+# .venv-up layers upstream's dependencies (e.g. the protobuf runtime that
+# angr/protos needs) over .venv; prefer it where it exists.
+VENV=/home/ubuntu/repos/angr/.venv-up
+[ -f "$VENV/bin/activate" ] || VENV=/home/ubuntu/repos/angr/.venv
 # shellcheck disable=SC1091
-. /home/ubuntu/repos/angr/.venv/bin/activate
+. "$VENV/bin/activate"
 # z3-sys must link and version-detect the venv's z3-solver wheel (the libz3
 # Python loads), not a system Z3 found via pkg-config -- see the *Build
 # layout* section of docs/advanced-topics/rust_build.rst. Same three exports
@@ -81,6 +85,9 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export Z3_NO_PKG_CONFIG="${Z3_NO_PKG_CONFIG:-1}"
 export Z3_LIBRARY_PATH_OVERRIDE="${Z3_LIBRARY_PATH_OVERRIDE:-$(python -c 'import os, z3; print(os.path.join(os.path.dirname(z3.__file__), "lib"))')}"
 export Z3_SYS_Z3_VERSION="${Z3_SYS_Z3_VERSION:-$(python -c 'import z3; print(z3.get_version_string())')}"
+# clarirs-z3's build.rs (upstream-owned) sets no rpath, so its test binary
+# cannot find the wheel's libz3 at load time without this.
+export LD_LIBRARY_PATH="$Z3_LIBRARY_PATH_OVERRIDE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 echo "== ralph gate [1/2]: cargo test --profile release-checked =="
 : "${CARGO_TEST_TIMEOUT_SECS:=600}"
