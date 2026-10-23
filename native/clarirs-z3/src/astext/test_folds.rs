@@ -130,12 +130,9 @@ fn bitvector_folds_match_z3() {
                 check(ctx.udiv(&x, &y).unwrap());
                 check(ctx.sdiv(&x, &y).unwrap());
             }
-            // Shifts at 64 bits and up are left out: their folds misread amounts of 2^32 and more
-            if width < 64 {
-                check(ctx.shl(&x, &y).unwrap());
-                check(ctx.lshr(&x, &y).unwrap());
-                check(ctx.ashr(&x, &y).unwrap());
-            }
+            check(ctx.shl(&x, &y).unwrap());
+            check(ctx.lshr(&x, &y).unwrap());
+            check(ctx.ashr(&x, &y).unwrap());
             check(ctx.rotate_left(&x, &y).unwrap());
             check(ctx.rotate_right(&x, &y).unwrap());
             check(ctx.and2(&x, &y).unwrap());
@@ -235,9 +232,8 @@ fn string_folds_match_z3() {
             rng.pick(&[0, 1, 2, 9, u64::MAX]),
         );
         let width = rng.pick(&[64, 128]);
-        // Left out: to_usize reads an index wider than 64 bits as None, and the
-        // str.substr fold's start + length overflows for a length of u64::MAX
-        if width == 64 && length != u64::MAX {
+        // A length of u64::MAX is left out: the str.substr fold's start + length overflows
+        if length != u64::MAX {
             check(
                 ctx.str_substr(&x, index(start, width), index(length, width))
                     .unwrap(),
