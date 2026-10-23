@@ -13,6 +13,13 @@ use super::AstExtZ3;
 use crate::{Z3_CONTEXT, rc::RcAst};
 
 const ITERATIONS: usize = 200;
+const MODES: [FPRM; 5] = [
+    FPRM::NearestTiesToEven,
+    FPRM::NearestTiesToAway,
+    FPRM::TowardPositive,
+    FPRM::TowardNegative,
+    FPRM::TowardZero,
+];
 
 /// A xorshift generator, so failures reproduce.
 struct Rng(u64);
@@ -73,6 +80,16 @@ impl Rng {
             (true, 2) => Float::F32(f32::from_bits(bits as u32)),
             (true, _) => Float::F32(f as f32),
             (false, _) => Float::F64(f),
+        }
+    }
+
+    /// `f` with some of its low bits flipped: a value a few ulps away, so
+    /// that subtracting the two cancels.
+    fn near(&mut self, f: Float) -> Float {
+        let flip = self.next() % 8;
+        match f {
+            Float::F32(v) => Float::F32(f32::from_bits(v.to_bits() ^ flip as u32)),
+            Float::F64(v) => Float::F64(f64::from_bits(v.to_bits() ^ flip)),
         }
     }
 
@@ -167,17 +184,23 @@ fn bitvector_folds_match_z3() {
 fn float_folds_match_z3() {
     let ctx = Context::new();
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
-    let rne = FPRM::NearestTiesToEven;
     for fsort in [FSort::f32(), FSort::f64()] {
         for _ in 0..ITERATIONS {
-            let (a, b) = (rng.float(fsort), rng.float(fsort));
+            let a = rng.float(fsort);
+            let b = if rng.next().is_multiple_of(4) {
+                rng.near(a)
+            } else {
+                rng.float(fsort)
+            };
             let (x, y) = (ctx.fpv(a).unwrap(), ctx.fpv(b).unwrap());
             let check = |term| assert_folds_like_z3(&ctx, term);
-            check(ctx.fp_add(&x, &y, rne).unwrap());
-            check(ctx.fp_sub(&x, &y, rne).unwrap());
-            check(ctx.fp_mul(&x, &y, rne).unwrap());
-            check(ctx.fp_div(&x, &y, rne).unwrap());
-            check(ctx.fp_sqrt(&x, rne).unwrap());
+            for rm in MODES {
+                check(ctx.fp_add(&x, &y, rm).unwrap());
+                check(ctx.fp_sub(&x, &y, rm).unwrap());
+                check(ctx.fp_mul(&x, &y, rm).unwrap());
+                check(ctx.fp_div(&x, &y, rm).unwrap());
+                check(ctx.fp_sqrt(&x, rm).unwrap());
+            }
             check(ctx.fp_neg(&x).unwrap());
             check(ctx.fp_abs(&x).unwrap());
             check(ctx.fp_eq(&x, &y).unwrap());
@@ -195,10 +218,32 @@ fn float_folds_match_z3() {
             // Out-of-range conversions to an integer are unspecified
             let v = a.to_f64().unwrap();
             if v.is_finite() && v.abs() < 2f64.powi(62) {
-                check(ctx.fp_to_sbv(&x, 64, rne).unwrap());
-                if v >= 0.0 {
-                    check(ctx.fp_to_ubv(&x, 64, rne).unwrap());
+                for rm in MODES {
+                    check(ctx.fp_to_sbv(&x, 64, rm).unwrap());
+                    if v >= 0.0 {
+                        check(ctx.fp_to_ubv(&x, 64, rm).unwrap());
+                    }
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn conversion_folds_match_z3() {
+    let ctx = Context::new();
+    let mut rng = Rng(0x0fed_cba9_8765_4321);
+    for _ in 0..ITERATIONS {
+        let x = ctx.fpv(rng.float(FSort::f64())).unwrap();
+        let narrow = ctx.fpv(rng.float(FSort::f32())).unwrap();
+        let int = ctx.bvv(rng.bv(64)).unwrap();
+        let check = |term| assert_folds_like_z3(&ctx, term);
+        for rm in MODES {
+            check(ctx.fp_to_fp(&x, FSort::f32(), rm).unwrap());
+            check(ctx.fp_to_fp(&narrow, FSort::f64(), rm).unwrap());
+            for fsort in [FSort::f32(), FSort::f64()] {
+                check(ctx.bv_to_fp_signed(&int, fsort, rm).unwrap());
+                check(ctx.bv_to_fp_unsigned(&int, fsort, rm).unwrap());
             }
         }
     }
