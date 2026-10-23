@@ -24,7 +24,8 @@ How the gate handles them
   output diverge from the Python engine, so output parity is not
   checked.
 * The PR-time gate passes ``--skip-bimodal`` so CI does not flap; the
-  nightly run keeps them, tracking drift without expecting stability.
+  ``--full`` run in ``rust-nightly.yml::benchmark_regression`` keeps
+  them, tracking drift without expecting stability.
 * ``COUNT_EXEMPT`` is a separate frozenset: the bimodal benches whose
   ``--check-counts`` baselines are non-zero are exempted from count
   comparison, while a bimodal bench with all-zero count baselines needs

@@ -23,8 +23,10 @@ loop is armed by the ``RustExplorationManager(parallel_workers=N)``
 kwarg or the ``RUST_PARALLEL_WORKERS`` environment variable (which
 overrides the kwarg), and the steady-state loop only by the separate
 ``RUST_PARALLEL_STEADY`` env flag. Found-set invariance of the parallel
-path across worker counts is gated nightly by
-``tests/benchmarks/run_findall_gate.py``.
+path across worker counts is gated by
+``tests/benchmarks/run_findall_gate.py`` in
+``rust-nightly.yml::findall_worker_invariance`` (see the CI gates table
+in :doc:`rust_build`).
 
 For **user-facing** documentation of those flags, and of which
 SimOptions / exploration techniques are safe under them, read
@@ -418,7 +420,7 @@ increment taught something that redirected the next one.
   break-even. Where it does win is wide-and-slow find-all workloads;
   the synthetic ``fork_solve_*`` benches exist to exercise that shape.
   The parallel path's correctness contract is therefore set-equality of
-  the found-set across worker counts, gated nightly by
+  the found-set across worker counts, gated in ``rust-nightly.yml`` by
   ``tests/benchmarks/run_findall_gate.py`` (``make gate-findall``), not a
   timing. The steady loop stays an explicit opt-in because it
   over-collects the found stash for ``num_find > 1`` relative to the
@@ -475,7 +477,7 @@ module header of ``selection_policy.rs`` states that contract and the
 contract does **not** extend to the parallel path: steal order is
 design-nondeterministic, so what is gated there is set-equality of the
 found-set across worker counts
-(``tests/benchmarks/run_findall_gate.py``, nightly).
+(``tests/benchmarks/run_findall_gate.py``, in ``rust-nightly.yml``).
 
 
 Distributed (cross-machine) migration — measured KILL

@@ -79,7 +79,7 @@ Usage
     # Quick smoke test (~30s)
     python tests/benchmarks/property_fuzzer.py --trials 8 --seed 0
 
-    # Full nightly sweep (~30min, 50 trials)
+    # Full sweep, as rust-nightly.yml::property_fuzzer runs it
     python tests/benchmarks/property_fuzzer.py --trials 50 --seed 0 --report fuzz.json
 
     # Stress run on a single example (path-order coverage)

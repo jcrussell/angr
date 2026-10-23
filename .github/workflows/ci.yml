@@ -72,7 +72,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       # Every static gate below runs `--self-test` ahead of its real check: a
       # lint that has never been seen to fire is indistinguishable from one
-      # that cannot (same reasoning as the nightly valgrind gate).
+      # that cannot (same reasoning as rust-nightly.yml's valgrind gate).
       - name: Silent-fallback tagging audit
         run: |
           python3 tools/audit_silent_fallback.py --self-test
@@ -110,7 +110,7 @@ jobs:
       # spelling of "unused"), so the symbolic and concrete paths can silently
       # disagree on RZ/RU/RD (angr-c7xno.85 / f64_to_f32_rm). Baseline-gated
       # like the three checks above; the baseline is empty and should stay so.
-      # `--self-test` runs first, same reasoning as the nightly valgrind gate:
+      # `--self-test` runs first, same reasoning as rust-nightly.yml's valgrind gate:
       # a lint that has never been seen to fire is indistinguishable from one
       # that cannot. It classifies a synthetic threaded/dropped/exempt trio.
       - name: VEX rounding-mode threading audit
@@ -290,8 +290,8 @@ jobs:
         #   `avoid-update-baseline-without-verification`).
         # peak_memory_mb: the RSS regression check is on by default and now
         #   hard-fails the PR gate too (angr-iwmp). It soaked warn-only on this
-        #   fast path while the nightly gate hard-failed; the soak stayed clean,
-        #   so --memory-warn-only was dropped. The 0.5 (50%) --memory-threshold
+        #   fast path while the full (rust-nightly.yml) gate hard-failed;
+        #   the soak stayed clean, so --memory-warn-only was dropped. The 0.5 (50%) --memory-threshold
         #   default keeps allocator/page-cache RSS variance from false-flagging;
         #   if a future RSS-heavy change proves noisy, raise that threshold
         #   rather than re-adding warn-only (see bd angr-iwmp / angr-wcxi).
@@ -310,13 +310,14 @@ jobs:
         timeout-minutes: 8
 
   property_fuzzer_quick:
-    # PR-time smoke for tests/benchmarks/property_fuzzer.py — the nightly
-    # gate (nightly-ci.yml::property_fuzzer) runs 50 trials, but a PR
+    # PR-time smoke for tests/benchmarks/property_fuzzer.py — the full
+    # gate (rust-nightly.yml::property_fuzzer) runs 50 trials, but a PR
     # introducing a Rust↔Python output divergence would otherwise sit
-    # broken until the next cron. 10 trials × ~5s ≈ 50-60s wall plus the
+    # broken until that workflow next runs. 10 trials × ~5s ≈ 50-60s wall plus the
     # Rust build; --seed 1 keeps the failure surface reproducible.
-    # Nightly-only gates let a breaking PR merge before the next cron, so
-    # every nightly gate keeps a smaller PR-time variant like this one.
+    # rust-nightly.yml does not run on pull requests, so a breaking PR can
+    # merge before it runs; a smaller PR-time variant like this one closes
+    # that gap for the cheap-enough gates.
     name: Property Fuzzer (PR smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 15  # Rust build dominates (~5-7m cold); fuzzer step capped at 5m below
@@ -340,8 +341,8 @@ jobs:
         env:
           ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
         # --strict fails on any new (example, strategy) divergence not on
-        # the rust_only/bimodal allow-list. Nightly still runs 50 trials
-        # for broader coverage; this PR-time job catches the obvious case.
+        # the rust_only/bimodal allow-list. rust-nightly.yml still runs 50
+        # trials for broader coverage; this PR-time job catches the obvious case.
         run: |
           uv run python tests/benchmarks/property_fuzzer.py \
             --trials 10 --seed 1 --strict \
@@ -356,20 +357,19 @@ jobs:
           if-no-files-found: warn
 
   rss_leak_check_smoke:
-    # PR-time smoke for tests/benchmarks/run_leak_check.py — the nightly
-    # gate (nightly-ci.yml::rss_leak_check) runs --iters 10 / --threshold 1.5
+    # PR-time smoke for tests/benchmarks/run_leak_check.py — the full
+    # gate (rust-nightly.yml::rss_leak_check) runs --iters 10 / --threshold 1.5
     # under a 4 GB RLIMIT_AS, codifying the 9maq bisection method (the
     # pre-293aa8163 Callable leak was ~6.6x in mma_howtouse). A PR that
-    # re-introduces that leak class would otherwise sit broken until the
-    # next nightly cron.
+    # re-introduces that leak class would otherwise sit broken until
+    # rust-nightly.yml next runs.
     #
-    # N=3 is ~15s of bench-execution. The threshold is tighter than nightly
-    # (1.3x vs 1.5x) because warmup happens entirely in iter1; iters 2-3
-    # should be flat on healthy main. Steady-state variance still belongs
-    # to the nightly N=10 run. Like the fuzzer smoke above, this PR-time
-    # variant exists because a nightly-only gate lets a breaking PR merge
-    # before the next cron. See the run_leak_check.py docstring for
-    # threshold notes.
+    # N=3 is ~15s of bench-execution. The threshold is tighter than the
+    # full gate (1.3x vs 1.5x) because warmup happens entirely in iter1;
+    # iters 2-3 should be flat on healthy main. Steady-state variance still
+    # belongs to the N=10 run. Like the fuzzer smoke above, this PR-time
+    # variant exists because rust-nightly.yml does not run on pull requests.
+    # See the run_leak_check.py docstring for threshold notes.
     name: RSS Leak Check (PR smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 15  # Rust build dominates (~5-7m cold); leak step capped at 5m below

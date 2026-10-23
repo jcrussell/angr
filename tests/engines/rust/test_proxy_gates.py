@@ -1271,8 +1271,8 @@ class TestExportCallStackProxyGate:
 
         state = fauxware_project.factory.blank_state(addr=0x40071D)  # no init prefix: empty stack
         # Explicit kwarg=False pins the eager (off) path regardless of any
-        # ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1 (nightly proxy_gates_on
-        # soak) — kwarg beats env in _resolve_env_flag.
+        # ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1 (rust-nightly.yml
+        # proxy_gates_on soak) — kwarg beats env in _resolve_env_flag.
         mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=False)
         assert mgr._use_export_callstack_proxy is False
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
@@ -1348,7 +1348,7 @@ class TestExportCallStackProxyGate:
         from angr.state_plugins.callstack import CallStack
 
         state = fauxware_project.factory.entry_state()
-        # Explicit kwarg=False pins the eager chain path under the nightly
+        # Explicit kwarg=False pins the eager chain path under the rust-nightly.yml
         # proxy_gates_on soak (ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1).
         mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=False)
         assert mgr._use_export_callstack_proxy is False
@@ -1376,7 +1376,7 @@ class TestExportMemoryProxyGate:
         from angr.exploration.rust_state_proxy import RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        # Explicit kwarg=False pins the eager writeback path under the nightly
+        # Explicit kwarg=False pins the eager writeback path under the rust-nightly.yml
         # proxy_gates_on soak (ambient ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1).
         mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=False)
         assert mgr._use_export_memory_proxy is False

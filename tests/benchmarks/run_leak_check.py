@@ -4,7 +4,8 @@ fail if peak RSS grows beyond ``--threshold * peak_after_iter_1``.
 
 Codifies the bisection pattern from the ``9maq-bisect-method`` bd memory
 (used to find the 286 MB -> 1888 MB Callable leak fixed in 293aa8163) into a
-nightly CI gate. The idea is simple: a healthy implementation runs the same
+CI gate: ``rust-nightly.yml::rss_leak_check`` runs the defaults and
+``ci.yml::rss_leak_check_smoke`` a short PR-time variant. The idea is simple: a healthy implementation runs the same
 Callable workload N times and peak RSS stays roughly flat. A regression that
 leaks Z3 contexts, AST refs, Python state metadata, etc. shows up as ratio
 ``peak_rss(iter_N) / peak_rss(iter_1) >> 1``.
@@ -24,7 +25,7 @@ Threshold tuning (this docstring is the authority; the docs point here):
 * A healthy ratio sits just above 1.0 — Z3 and claripy caches warm up but
   do not grow without bound. The default 1.5x is large enough to absorb
   that warmup and small enough to catch a roughly 2x regression on the
-  first nightly after it lands.
+  first ``rust-nightly.yml`` run after it lands.
 * If a legitimate change pushes the healthy ratio up (a larger steady-state
   cache), raise the threshold incrementally; do not lower it below ~1.2x
   without first ruling out warmup variance.

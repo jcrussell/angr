@@ -9,7 +9,8 @@ Two layers, mirroring ``test_memory_gate.py``'s split:
   harness fail, otherwise a green gate proves nothing.
 * the **real gate** actually runs N repeats of fast non-bimodal benches in
   memory-capped subprocesses with strict mode on. It costs ~a minute, so it is
-  opt-in via ``ANGR_REPEAT_EQUALITY_GATE=1`` (set it in the nightly CI job);
+  opt-in via ``ANGR_REPEAT_EQUALITY_GATE=1`` (``rust-nightly.yml::repeat_run_equality``
+  sets it);
   a plain ``pytest tests/benchmarks/`` stays fast.
 
 No test here asserts anything about wall clock — timing variance is explicitly

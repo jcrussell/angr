@@ -3,7 +3,7 @@
 The sibling ``test_default_engine_flag.py`` pins the flag's behavior from a
 *stock* process (env unset) — it opts individual projects in via
 ``Project(engine="rust")``. This module pins the other half: the whole-process
-regime the nightly ``default_engine_parity`` job runs the stock test subset
+regime the ``rust-nightly.yml::default_engine_parity`` job runs the stock test subset
 under, where every new ``Project`` defaults to the Rust manager.
 
 The invariant that job exists to protect: raising the *default* must not weaken
@@ -35,7 +35,7 @@ pytestmark = [
     ),
     pytest.mark.skipif(
         os.environ.get("ANGR_DEFAULT_ENGINE", "").strip().lower() != "rust",
-        reason="requires ANGR_DEFAULT_ENGINE=rust (nightly default_engine_parity job)",
+        reason="requires ANGR_DEFAULT_ENGINE=rust (rust-nightly.yml default_engine_parity job)",
     ),
 ]
 

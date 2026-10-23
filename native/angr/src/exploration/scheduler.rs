@@ -9,8 +9,8 @@
 //! released around the Rust-pure inner work and re-acquired for Python
 //! callbacks. Why it is shaped this way — and what each increment on the way
 //! here measured — is in `docs/advanced-topics/rust_parallel_design.rst`
-//! ("Where it landed"); the nightly `run_findall_gate.py` lane is its
-//! correctness contract (same found-set across worker counts).
+//! ("Where it landed"); the `run_findall_gate.py` lane in `rust-nightly.yml` is
+//! its correctness contract (same found-set across worker counts).
 //!
 //! # Transport invariant (anti-migration)
 //!

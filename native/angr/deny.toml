@@ -1,10 +1,9 @@
 # cargo-deny configuration for the `angr` native crate (rustylib).
 #
-# Consumed by the nightly-only `cargo_deny` job in
-# .github/workflows/nightly-ci.yml. Nightly rather than PR-time because the
-# RustSec advisory-DB is a moving target (a new advisory can redden a green
-# tree without any code change) and the icicle-emu git deps make for a slow
-# cold build -- it is a drift signal, not a PR blocker.
+# Consumed by the `cargo_deny` job in .github/workflows/rust-nightly.yml, which
+# passes it with `--config`. Not PR-time because the RustSec advisory-DB is a
+# moving target (a new advisory can redden a green tree without any code
+# change) -- it is a drift signal, not a PR blocker.
 #
 # Schema: cargo-deny v2 (version = 2). See https://embarkstudios.github.io/cargo-deny/
 
@@ -19,8 +18,8 @@ ignore = []
 [licenses]
 version = 2
 # Best-effort allow-list of the permissive licenses common in the dependency
-# graph. This is a nightly signal: a first-run miss reddens the nightly (not a
-# PR) and the fix is to append the missing SPDX id here. Copyleft/unknown
+# graph. This is a drift signal: a miss reddens rust-nightly.yml (not a PR) and
+# the fix is to append the missing SPDX id here. Copyleft/unknown
 # licenses are denied by omission.
 allow = [
     "MIT",
@@ -50,6 +49,6 @@ wildcards = "allow"
 
 [sources]
 unknown-registry = "deny"
-# The icicle-fuzzing / icicle-vm / libafl / libafl_bolts / pcode deps are
-# git-pinned behind the default-off `fuzzer` feature; allow git sources.
+# The icicle-fuzzing / icicle-vm / pcode deps are git-pinned in
+# native/angr/Cargo.toml; allow git sources.
 unknown-git = "allow"

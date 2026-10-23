@@ -34,8 +34,9 @@ point here):
 * ``--update`` never overwrites a ``PINNED_RUST_TIMES`` entry (see that
   table): those pins are deliberately pessimistic and a single refresh run
   must not demote them. A held-back pin prints ``pinned baseline kept:``.
-* ``--skip-bimodal`` drops ``BIMODAL_BENCHMARKS`` (the PR-time gate); the
-  nightly run keeps them and runs ``--full`` so ``MEDIUM_SUITE`` is covered.
+* ``--skip-bimodal`` drops ``BIMODAL_BENCHMARKS`` (the PR-time gate in
+  ``ci.yml``); ``rust-nightly.yml::benchmark_regression`` keeps them and runs
+  ``--full`` so ``MEDIUM_SUITE`` is covered.
 * On a timing regression the gate emits a ``bench_diff`` table against
   ``baseline_counters.json`` (refresh with ``--update-counters``); a missing
   file just suppresses the diff.
@@ -87,8 +88,8 @@ BASELINE_COUNTERS_FILE = os.path.join(os.path.dirname(__file__), "baseline_count
 
 # Tracked metrics beyond timing. Each entry: (key_in_stats, key_in_baseline, regression_threshold_pct)
 # A regression is flagged when the metric INCREASES by more than threshold_pct.
-# Only fires under --check-counts (off by default historically; nightly + PR
-# gate now pass it — see ci.yml / nightly-ci.yml). The baseline_val > 0 guard
+# Only fires under --check-counts (off by default; both
+# ci.yml::benchmark_regression and rust-nightly.yml::benchmark_regression pass it). The baseline_val > 0 guard
 # in the gate body skips any metric whose baseline is 0, so the many corpus
 # entries that legitimately record 0 (the *_branch synthetic arches,
 # flareon2015_2, etc.) are no-ops rather than false alarms. ``state_creations``
@@ -1193,8 +1194,8 @@ def main():
                             print(f"  FAST-PATH REGRESSION: {ctr} 0 vs baseline {baseline_val}")
                             failures.append(f"{name}: {ctr} collapsed to 0 (baseline {baseline_val})")
 
-            # Check peak-RSS regression. Distinct from the nightly leak
-            # check (run_leak_check.py), which gates iterative growth on a
+            # Check peak-RSS regression. Distinct from the leak check
+            # (run_leak_check.py), which gates iterative growth on a
             # single bench — this catches a one-shot allocation blowup on
             # any bench before it reaches hard OOM under the RLIMIT_AS cap.
             # ru_maxrss is a process-wide high-water mark, so the threshold

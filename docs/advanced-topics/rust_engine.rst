@@ -1726,7 +1726,8 @@ new SimOption lands, add a row here and either wire detection into
 option ledgers in ``rust_manager.py`` (``_RAISE_OPTION_NAMES``,
 ``_REJECTED_OPTION_NAMES``, ``_REQUIRED_OPTION_NAMES``) and this matrix
 are cross-checked by ``tests/benchmarks/parity_census.py`` in the
-nightly lane, which fails on drift between them.
+``rust-nightly.yml::parity_census`` job, which fails on drift between
+them (see the CI gates table in :doc:`rust_build`).
 
 state.inspect dispatch
 ----------------------

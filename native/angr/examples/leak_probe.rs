@@ -1,4 +1,5 @@
-//! Deterministic allocator-churn probe for the nightly valgrind memcheck gate.
+//! Deterministic allocator-churn probe for the valgrind memcheck gate
+//! (`rust-nightly.yml::valgrind_leak_check`).
 //!
 //! Runs a fixed number of self-contained iterations over the core Rust
 //! engine primitives (SymContext + solver, RustBV, SymbolicMemory,

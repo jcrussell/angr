@@ -105,7 +105,7 @@ Running tests
 .. code-block:: bash
 
    make test                     # tests/engines/rust/ (the canonical fast tier)
-   make test-fuzzer              # icicle/libafl fuzzer unit tests (--features fuzzer)
+   make test-fuzzer              # icicle/libafl fuzzer unit tests (cargo test --lib fuzzer)
    make test-python-baseline     # vanilla Python-engine regression subset (needs ../binaries)
    make test-full                # the whole angr suite (long)
    cargo test --profile release-checked   # Rust unit + integration suite with overflow-checks on
@@ -155,7 +155,12 @@ CI gates
 ~~~~~~~~
 
 Each row names the workflow job and the script whose docstring holds
-the details and tuning notes.
+the details and tuning notes. ``ci.yml`` runs on every pull request.
+The slow gates live in the fork-owned ``rust-nightly.yml``, never in
+upstream's ``nightly-ci.yml``, which is kept verbatim so an upstream
+merge cannot delete them (angr-vmi2l.303). Its header comment explains
+the trigger: a push to ``upstream-prep`` is what gates that branch,
+because a ``schedule`` fires only from the default branch.
 
 .. list-table::
    :header-rows: 1
@@ -165,29 +170,59 @@ the details and tuning notes.
      - Where it runs
      - Script
    * - Bench correctness (each bench's ``test()`` under the Rust engine, bimodal benches included; ``--correctness``)
-     - ``ci.yml::benchmark_regression`` (fast tier), ``nightly-ci.yml::benchmark_regression`` (``--full``)
+     - ``ci.yml::benchmark_regression`` (fast tier), ``rust-nightly.yml::benchmark_regression`` (``--full``)
      - ``tests/benchmarks/run_regression.py`` (``run_correctness_pass``)
    * - Benchmark regression (fast tier, ``--skip-bimodal``, 15 %)
      - ``ci.yml::benchmark_regression``
      - ``tests/benchmarks/run_regression.py``
-   * - Benchmark regression (``--full``, bimodal benches tracked)
-     - ``nightly-ci.yml::benchmark_regression``
+   * - Benchmark regression (``--full --check-counts``, bimodal benches tracked; uploads the ``bench-history-*`` artifact ``perf-dashboard.yml`` aggregates)
+     - ``rust-nightly.yml::benchmark_regression``
      - same; auto-emits a ``bench_diff`` table against ``baseline_counters.json`` on a timing failure
    * - Find-all worker-count invariance (same found-set across ``RUST_PARALLEL_WORKERS``)
-     - ``nightly-ci.yml::findall_worker_invariance`` / ``make gate-findall``
+     - ``rust-nightly.yml::findall_worker_invariance`` / ``make gate-findall``
      - ``tests/benchmarks/run_findall_gate.py``
    * - RSS leak check (peak RSS ratio across N in-process runs)
-     - ``nightly-ci.yml::rss_leak_check``
+     - ``ci.yml::rss_leak_check_smoke`` (short), ``rust-nightly.yml::rss_leak_check``
      - ``tests/benchmarks/run_leak_check.py``
    * - Valgrind leak check (memcheck slope on the pure-Rust ``leak_probe``)
-     - ``nightly-ci.yml::valgrind_leak_check``
+     - ``rust-nightly.yml::valgrind_leak_check``
      - ``tests/benchmarks/run_valgrind_leak_check.py``
-   * - SimOption / native-bridge parity census
-     - ``nightly-ci.yml`` parity census job
+   * - SimOption / native-bridge parity census (and the checked-in ``parity_census.json`` is current)
+     - ``rust-nightly.yml::parity_census``
      - ``tests/benchmarks/parity_census.py``
+   * - Repeat-run result equality (fast-corpus gate test, medium-tier sweep)
+     - ``rust-nightly.yml::repeat_run_equality``
+     - ``tests/benchmarks/test_repeat_run_equality.py``, ``tests/benchmarks/repeat_run_equality.py``
+   * - Rust/Python differential property fuzzer
+     - ``ci.yml::property_fuzzer_quick`` (short), ``rust-nightly.yml::property_fuzzer``
+     - ``tests/benchmarks/property_fuzzer.py``
+   * - Default-engine parity (stock tests under ``ANGR_DEFAULT_ENGINE=rust``)
+     - ``rust-nightly.yml::default_engine_parity``
+     - ``tests/engines/rust/test_default_engine_env_parity.py``, ``tests/engines/rust/test_default_engine_flag.py``
+   * - Default-off write-through proxy gates forced on
+     - ``rust-nightly.yml::proxy_gates_on``
+     - ``tests/engines/rust/`` (the gate list is the job's ``env``)
+   * - Showcase demos still run
+     - ``rust-nightly.yml::showcase_smoke``
+     - ``tests/benchmarks/show_all.py``
+   * - Dependency advisories and licenses
+     - ``rust-nightly.yml::cargo_deny``
+     - ``native/angr/deny.toml``
    * - Static source audits (line citations, silent fallbacks, SatResult, rounding mode, SP default, overflow, page shift)
      - ``ci.yml::rust_check``
      - ``tools/check_line_citations.py``, ``tools/audit_*.py`` — see the gates table in the repo-root ``AGENTS.md``
+
+Retired lanes, not restored when the gates moved to ``rust-nightly.yml``,
+because the axis they tested no longer exists:
+
+* ``rust_feature_flags`` (the ``cargo check``/``cargo test`` matrix over
+  ``--no-default-features`` subsets): the feature axes it crossed were
+  deleted (angr-mx00p.72).
+* ``libvex_ffi_tests`` (the ``libvex-ffi`` feature's lifter and corpus
+  tests): the feature was deleted (angr-mx00p.33).
+* ``fuzzer_feature_tests`` (the ``fuzzer`` feature's unit tests): the
+  fuzzer is no longer feature-gated, so its tests run in every
+  ``cargo test`` lane, ``ci.yml::rust_test`` included.
 
 A gate that has never been seen to fail is indistinguishable from one
 that cannot, so every static-audit script defines a ``--self-test`` mode

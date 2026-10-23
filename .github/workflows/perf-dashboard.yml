@@ -1,11 +1,15 @@
 name: Perf Dashboard
 
 on:
-  # Run after every nightly so the dashboard advances ~daily.
+  # Run after every Rust Nightly run (rust-nightly.yml), whose
+  # benchmark_regression job uploads the bench-history-<sha> artifacts this
+  # workflow aggregates. workflow_run only fires from the copy of this file on
+  # the default branch, but it matches runs of "Rust Nightly" on any branch,
+  # including the push-triggered upstream-prep runs.
   workflow_run:
-    workflows: ["Nightly CI"]
+    workflows: ["Rust Nightly"]
     types: [completed]
-  # Manual refresh — useful if the nightly succeeded but the dashboard
+  # Manual refresh — useful if the run succeeded but the dashboard
   # publish failed, or to backfill after a workflow change.
   workflow_dispatch:
   # Lightweight rebuild on dashboard source changes (e.g. dashboard.js
@@ -32,7 +36,7 @@ jobs:
   build:
     name: Aggregate history + build site
     runs-on: ubuntu-latest
-    # If we were triggered by workflow_run, only proceed when the nightly
+    # If we were triggered by workflow_run, only proceed when Rust Nightly
     # itself succeeded. (workflow_dispatch / push events bypass this.)
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
@@ -47,12 +51,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _bench_history
-          # Find the most recent ~60 nightly runs (success), grab their
+          # Find the most recent ~60 Rust Nightly runs (success), grab their
           # bench-history-* artifact if present. gh CLI gives us pagination
           # for free and respects $GH_TOKEN. We use 60 to oversample the
           # 50-point dashboard window in case some runs failed to upload.
           gh run list \
-            --workflow="Nightly CI" \
+            --workflow=rust-nightly.yml \
             --status=success \
             --limit=60 \
             --json databaseId,headSha \
