@@ -12,7 +12,7 @@
 //! sorts, but an `AnnotationType::Unknown` carries a pickled Python object
 //! that the claripy layer unpickles, and widths are not checked for overflow.
 //! Self-describing serde formats such as JSON identify ops by name. Positional
-//! ones such as postcard identify them by their place in [`WireOp`], which
+//! ones such as postcard identify them by their place in `WireOp`, which
 //! changes whenever an op is added, so bump [`WIRE_VERSION`] with any change
 //! to the op lists below.
 
