@@ -180,11 +180,8 @@ fn float_folds_match_z3() {
             check(ctx.fp_sqrt(&x, rne).unwrap());
             check(ctx.fp_neg(&x).unwrap());
             check(ctx.fp_abs(&x).unwrap());
-            // Left out: compare_fp folds fpEQ(+0, -0) to false, where fp.eq gives true
-            if !(a.is_zero() && b.is_zero() && a.sign() != b.sign()) {
-                check(ctx.fp_eq(&x, &y).unwrap());
-                check(ctx.fp_neq(&x, &y).unwrap());
-            }
+            check(ctx.fp_eq(&x, &y).unwrap());
+            check(ctx.fp_neq(&x, &y).unwrap());
             check(ctx.fp_lt(&x, &y).unwrap());
             check(ctx.fp_leq(&x, &y).unwrap());
             check(ctx.fp_gt(&x, &y).unwrap());
