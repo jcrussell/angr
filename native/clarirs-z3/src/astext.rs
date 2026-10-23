@@ -13,6 +13,8 @@ mod test_bv;
 #[cfg(test)]
 mod test_float;
 #[cfg(test)]
+mod test_folds;
+#[cfg(test)]
 mod test_string;
 
 fn child(children: &[RcAst], index: usize) -> Result<&RcAst, ClarirsError> {
