@@ -3,10 +3,17 @@ use std::sync::Arc;
 use super::*;
 use crate::ast::AnnotationType;
 
+/// Round-trips through JSON (self-describing) and postcard (positional), and
+/// checks both decode to the same nodes.
 fn round_trip<'c>(ctx: &'c Context<'c>, roots: &[AstRef<'c>]) -> Vec<AstRef<'c>> {
-    let json = serde_json::to_string(&WireDag::encode(roots)).unwrap();
-    let dag: WireDag = serde_json::from_str(&json).unwrap();
-    dag.decode(ctx).unwrap()
+    let dag = WireDag::encode(roots);
+    let json: WireDag = serde_json::from_str(&serde_json::to_string(&dag).unwrap()).unwrap();
+    let bytes: WireDag = postcard::from_bytes(&postcard::to_stdvec(&dag).unwrap()).unwrap();
+    assert_eq!(json, dag);
+    assert_eq!(bytes, dag);
+    let decoded = bytes.decode(ctx).unwrap();
+    assert_same_nodes(&json.decode(ctx).unwrap(), &decoded);
+    decoded
 }
 
 fn assert_same_nodes<'c>(original: &[AstRef<'c>], decoded: &[AstRef<'c>]) {
@@ -146,4 +153,35 @@ fn malformed_input_is_an_error_not_a_panic() {
     let root: WireDag =
         serde_json::from_str(r#"{"nodes":[{"op":{"BoolV":true}}],"roots":[3]}"#).unwrap();
     assert!(root.decode(&ctx).is_err());
+}
+
+#[test]
+fn json_without_the_version_or_empty_lists_still_decodes() -> Result<(), ClarirsError> {
+    // Payloads written before the version field, which also left out empty
+    // children and annotations.
+    let ctx = Context::new();
+    let x = ctx.bvs("x", 8)?;
+    let e = ctx.add(&x, &ctx.bvv(BitVec::from((1, 8)))?)?;
+    let mut value = serde_json::to_value(WireDag::encode(std::slice::from_ref(&e))).unwrap();
+    let object = value.as_object_mut().unwrap();
+    object.remove("version");
+    for node in object["nodes"].as_array_mut().unwrap() {
+        let node = node.as_object_mut().unwrap();
+        node.retain(|_, v| v.as_array().is_none_or(|a| !a.is_empty()));
+    }
+    let dag: WireDag = serde_json::from_value(value).unwrap();
+    assert_same_nodes(&[e], &dag.decode(&ctx)?);
+    Ok(())
+}
+
+#[test]
+fn another_version_is_rejected() -> Result<(), ClarirsError> {
+    let ctx = Context::new();
+    let mut dag = WireDag::encode(&[ctx.bvs("x", 8)?]);
+    dag.version = WIRE_VERSION + 1;
+    assert!(matches!(
+        dag.decode(&ctx),
+        Err(ClarirsError::InvalidArguments(_))
+    ));
+    Ok(())
 }
