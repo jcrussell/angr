@@ -985,7 +985,9 @@ class TestCallbackSolverConcretizationFallback:
                 # Spy: flip a flag if the Python claripy frontend's min is hit.
                 # claripy solvers are native objects whose methods cannot be
                 # reassigned, so swap in a forwarding wrapper instead.
-                py_frontend = self.state.solver._solver
+                # Under the solver proxy plugin there is no Python frontend
+                # at all; the spy then just stays unconsulted.
+                py_frontend = getattr(self.state.solver, "_solver", None)
 
                 class _SpyFrontend:
                     def __getattr__(self, name):
