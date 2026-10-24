@@ -403,6 +403,59 @@ The shipped contract is in :doc:`rust_engine` ("RustStateProxy
 write-through contract").
 
 
+Copy semantics
+--------------
+
+A SimState whose plugins are Rust proxies (``RustMemoryProxy``,
+``RustRegisterProxy``, ``RustSolverProxyPlugin``,
+``RustCallStackProxyPlugin``) must copy like an angr state: the copy reads
+the source as it was when copied, and a write to either side reaches
+neither the other nor a sibling copy. A proxy therefore holds a
+``RustStateBinding`` (``angr/exploration/rust_state_binding.py``) rather than
+a raw state id. ``SimState.copy()`` hands every proxy plugin of the copy the
+same new binding through the copy memo, so the copy's memory, registers and
+solver keep naming one Rust state (``angr-mx00p.112``).
+
+* **Lazy.** A copied binding is *virtual*: it reads through its parent and
+  costs nothing until something writes. A write through a virtual binding
+  materializes it with ``RustSimState::fork`` (``fork_state_to_stash``) of
+  what it reads; a write through a binding with virtual children first moves
+  them onto a snapshot fork. A callback that never copies its state, or
+  copies it without writing, forks nothing.
+* **Owners.** Who mints and releases forks is the binding's owner. A
+  ``CallbackForkScope`` owns the bindings of one SimProcedure, syscall or
+  Python-VEX-fallback callback state; its forks live in the ``_cb_forks``
+  stash. The lazy read-through is exact there because Rust does not step the
+  pending state while Python runs the callback. Outside a callback the
+  manager's ``CopyStashForkOwner`` owns them: forks go to ``_copies`` and are
+  dropped when their binding is garbage collected, the lifetime
+  ``RustStateProxy.copy()`` already has.
+* **Successors.** When a callback returns, the dispatcher's
+  ``_settle_callback_successors`` (``rust_callback_dispatch.py``) gives each
+  successor its own Rust state before anything writes the pending state
+  directly. The first successor resumes the pending callback: either it
+  still reads the pending state unchanged and simply becomes it, or the fork
+  it owns is adopted into the pending slot
+  (``adopt_pending_callback_state``). Every other successor is finished from
+  its own fork by ``resume_forked_successor``, which shares the resume
+  payload logic with the pending state's own resume, so its constraints are
+  the pending state's plus its own guard, never a sibling's
+  (``angr-vmi2l.294``).
+* **Release.** Every binding no successor claimed is released when the
+  successors settle, and the scope drops its fork; whatever is still parked
+  when the handler exits is dropped by ``CallbackForkScope.close``. A read
+  or write through a released binding raises ``RustStateReleasedError``; it
+  never falls through to another state's data.
+
+Exported states take the same mechanism with a different owner. An exported
+state whose proxies are live views has a binding owned by the manager, so
+``found.copy()`` is already a virtual child that forks on its first write.
+What the callback scope gets for free, a parent that does not change behind
+the copy's back, an export owner has to provide itself: Rust steps a stash
+state without going through any binding, so before it steps a state that
+has virtual copies the owner must materialize them (or fork eagerly at copy
+time), and it must release the bindings of a state Rust drops.
+
 References
 ----------
 
@@ -419,6 +472,8 @@ References
   * ``angr/exploration/rust_callback_dispatch.py`` — sync_back call site.
   * ``angr/exploration/rust_state_proxy.py`` (``RustRegisterProxy``,
     ``RustMemoryProxy``) — the proxies that now write through.
+  * ``angr/exploration/rust_state_binding.py`` — the copy-on-write
+    bindings behind them (*Copy semantics* above).
   * ``native/angr/src/exploration/state_api.rs`` —
     ``_set_state_register_symbolic_ast`` and
     ``_state_memory_store_symbolic_multi``, the existing

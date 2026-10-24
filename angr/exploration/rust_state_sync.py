@@ -1093,7 +1093,7 @@ class RustStateSyncMixin:
                 snapshot[reg_name] = (True, None, offset, size)
         return snapshot
 
-    def _extract_register_changes(self, old_state, new_state: angr.SimState) -> list:
+    def _extract_register_changes(self, old_state, new_state: angr.SimState, symbolic_target_id=None) -> list:
         """Extract register changes between states.
 
         Handles both concrete and symbolic register values. For symbolic
@@ -1105,6 +1105,10 @@ class RustStateSyncMixin:
                        _snapshot_registers(). Using a snapshot avoids the
                        cost of state.copy() for non-memory-writing callbacks.
             new_state: The successor SimState after callback execution.
+            symbolic_target_id: Rust state a symbolic register is written to;
+                       ``None`` means the pending callback state. An extra
+                       callback successor passes its own fork
+                       (``_fork_register_changes``, angr-mx00p.112).
 
         Returns:
             List of (offset, size, data_bytes) tuples for concrete changes.
@@ -1184,7 +1188,10 @@ class RustStateSyncMixin:
                     ):
                         continue
                     try:
-                        self._sync_symbolic_register_to_rust(reg_name, new_val)
+                        if symbolic_target_id is None:
+                            self._sync_symbolic_register_to_rust(reg_name, new_val)
+                        else:
+                            self._sync_symbolic_register_to_rust(reg_name, new_val, symbolic_target_id)
                         if _DBG:
                             l.debug(f"Synced symbolic register {reg_name} to Rust")
                     except Exception as e:
@@ -1234,12 +1241,16 @@ class RustStateSyncMixin:
             return False
         return old_ast.hash() != new_val.hash()
 
-    def _sync_symbolic_register_to_rust(self, reg_name: str, value):
+    def _sync_symbolic_register_to_rust(self, reg_name: str, value, state_id=None):
         """Sync a symbolic register value to Rust pending state.
 
         Syncs the claripy AST directly; if the manager lacks that method, the
-        AST is registered as a handle for later retrieval.
+        AST is registered as a handle for later retrieval. ``state_id`` names
+        a non-pending target (an extra successor's fork).
         """
+        if state_id is not None:
+            self._rust_mgr.set_state_register_symbolic_ast(state_id, reg_name, value)
+            return
         try:
             # Best approach: directly sync claripy AST to Rust
             if hasattr(self._rust_mgr, "set_pending_register_symbolic_ast"):

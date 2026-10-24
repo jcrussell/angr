@@ -5,6 +5,13 @@ diffed and pushed back to Rust, while memory writes land in Rust
 immediately through the callback-memory proxy (the tracked write lists
 are discarded on return); see ``docs/advanced-topics/rust_proxy_writes_design.rst``
 and the write-through contract in ``docs/advanced-topics/rust_engine.rst``.
+
+Every callback state's proxies share one copy-on-write binding owned by a
+``CallbackForkScope`` (``rust_state_binding``, angr-mx00p.112): a successor
+copied from the callback state gets its own Rust state, the first successor
+resumes the pending callback and each extra one is finished from its own
+fork (``_settle_callback_successors``). The scoped handler wrappers
+(``_run_callback_scoped``) close the scope however the handler exits.
 """
 
 from __future__ import annotations
@@ -17,7 +24,8 @@ import time
 from typing import TYPE_CHECKING
 
 from angr import claripy
-from angr.errors import SimUnsatError
+from angr.errors import SimStateError, SimUnsatError
+from angr.exploration.rust_state_binding import CALLBACK_FORK_STASH, CallbackForkScope
 from angr.exploration.rust_state_export import (
     POSIX_SYNC_FDS,
     _concrete_stream_bytes,
@@ -703,7 +711,52 @@ class RustCallbackDispatchMixin:
 
     _SIMPROC_NO_RET_TERMINAL = {"exit", "_exit", "abort", "__stack_chk_fail"}
 
+    def _run_callback_scoped(self, inner, event: _ExplorationEvent):
+        """Run a callback handler body, closing its fork scope however it exits.
+
+        ``_create_state_for_callback`` opens the scope; closing it releases
+        every copy of the callback state that no successor claimed and drops
+        its Rust fork (angr-mx00p.112). The previous scope is restored so a
+        handler that re-enters dispatch cannot close its caller's.
+        """
+        outer = getattr(self, "_callback_fork_scope", None)
+        self._callback_fork_scope = None
+        try:
+            return inner(event)
+        finally:
+            scope = self._callback_fork_scope
+            self._callback_fork_scope = outer
+            if scope is not None:
+                scope.close()
+
+    def _settle_callback_successors(self, event: _ExplorationEvent, all_succs) -> tuple[int, list[int]]:
+        """Give every callback successor its own Rust state (angr-mx00p.112).
+
+        Returns ``(resumed_id, extra_ids)``. The first successor becomes the
+        state the pending callback resumes: when it owns a fork rather than
+        the pending state itself, the fork is adopted into the pending slot
+        here, so the diff-and-push payload and the resume that follow land on
+        it. ``extra_ids[i]`` is the fork ``all_succs[i + 1]`` is finished from
+        (``_add_forked_state``). Must run before anything writes the pending
+        state directly; see ``CallbackForkScope.settle``.
+        """
+        scope = getattr(self, "_callback_fork_scope", None)
+        if scope is None or scope.pending_id != event.callback_state_id:
+            raise SimStateError(
+                f"no copy-on-write scope for callback state {event.callback_state_id}: its successors "
+                "have no Rust state of their own"
+            )
+        resumed_id, extra_ids = scope.settle(all_succs)
+        if resumed_id != event.callback_state_id:
+            self._rust_mgr.adopt_pending_callback_state(event.callback_state_id, resumed_id, CALLBACK_FORK_STASH)
+            scope.consumed(resumed_id)
+        return resumed_id, extra_ids
+
     def _handle_simprocedure_callback(self, event: _ExplorationEvent):
+        """Handle a SimProcedure callback; see ``_handle_simprocedure_callback_inner``."""
+        return self._run_callback_scoped(self._handle_simprocedure_callback_inner, event)
+
+    def _handle_simprocedure_callback_inner(self, event: _ExplorationEvent):
         """Handle SimProcedure callback from Rust.
 
         This handles the full SimProcedure lifecycle:
@@ -1190,6 +1243,12 @@ class RustCallbackDispatchMixin:
         succ_ip_symbolic = first_succ.regs._ip.symbolic
         succ_addr_matches = not succ_ip_symbolic and first_succ.addr == addr
         skip_hook_addr = addr if (is_zero_length_hook and succ_addr_matches) else None
+        # Read before settling: settling releases the copies no successor
+        # claimed, and ``orig_state`` may be one of them.
+        orig_sp = (
+            self._snapshot_sp(orig_state) if getattr(first_succ.history, "jumpkind", None) == "Ijk_Call" else None
+        )
+        resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
         self._resume_with_state(
             first_succ,
             orig_state,
@@ -1197,11 +1256,22 @@ class RustCallbackDispatchMixin:
             skip_hook_addr=skip_hook_addr,
             orig_constraints=orig_constraints,
             orig_constraint_count=orig_constraint_count,
+            resumed_id=resumed_id,
+            orig_sp=orig_sp,
         )
 
-        # Additional successors are added as new active states
-        for succ in all_succs[1:]:
-            self._add_forked_state(succ, event)
+        # Additional successors are finished from their own forks.
+        for succ, fork_id in zip(all_succs[1:], extra_ids):
+            self._add_forked_state(
+                succ,
+                fork_id,
+                lambda s: self._extract_new_constraints(
+                    s if isinstance(orig_state, dict) else orig_state,
+                    s,
+                    orig_constraints=orig_constraints,
+                    orig_constraint_count=orig_constraint_count,
+                ),
+            )
         return False
 
     def _handle_callback_no_successors(
@@ -1310,6 +1380,8 @@ class RustCallbackDispatchMixin:
         skip_hook_addr: int | None = None,
         orig_constraints: set | None = None,
         orig_constraint_count: int | None = None,
+        resumed_id: int | None = None,
+        orig_sp: int | None = None,
     ):
         """Resume Rust execution with a successor state.
 
@@ -1323,7 +1395,13 @@ class RustCallbackDispatchMixin:
             skip_hook_addr: If set, tells Rust to skip the hook at this address
                            for the next step (prevents infinite loops with
                            zero-length hooks).
+            resumed_id: The id the resumed state carries once routed: the
+                        pending id, or the fork ``_settle_callback_successors``
+                        adopted (angr-mx00p.112).
+            orig_sp: The pre-callback stack pointer, read before settling.
         """
+        if resumed_id is None:
+            resumed_id = event.callback_state_id
         # Handle symbolic IP: pick first concrete solution if symbolic
         new_pc = self._resolve_next_pc(succ_state)
 
@@ -1367,7 +1445,6 @@ class RustCallbackDispatchMixin:
         # re-decremented sp.
         if getattr(succ_state.history, "jumpkind", None) == "Ijk_Call":
             try:
-                orig_sp = self._snapshot_sp(orig_state)
                 sp_ast = succ_state.regs.sp
                 if orig_sp is not None and not sp_ast.symbolic:
                     succ_sp = succ_state.solver.eval(sp_ast)
@@ -1394,7 +1471,9 @@ class RustCallbackDispatchMixin:
         # state's solver, so syncing them again would double-add.
         rust_ctx = getattr(succ_state.scratch, "rust_solver_ctx", None)
         using_shared_solver = rust_ctx is not None and hasattr(rust_ctx, "is_shared") and rust_ctx.is_shared()
-        if using_shared_solver:
+        if using_shared_solver or getattr(self, "_use_callback_solver_proxy", False):
+            # The solver proxy wrote every constraint through to the
+            # successor's own Rust state already.
             new_constraints = []
         else:
             # When orig_state is a snapshot, rely on orig_constraint_count fast path
@@ -1441,7 +1520,7 @@ class RustCallbackDispatchMixin:
         # the markers and stores the symbolic objects for VEX loads.
         # Use import_symbolic_to_state (by state_id) since pending_callback
         # was consumed by resume_after_simprocedure.
-        state_id = event.callback_state_id
+        state_id = resumed_id
         all_sym_imports = symbolic_imports
 
         for addr, ast in all_sym_imports:
@@ -1457,7 +1536,6 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
 
         # Update cache for future callbacks
-        state_id = event.callback_state_id
         if state_id is not None:
             self._cache_state_mirror(state_id, succ_state)
 
@@ -1646,142 +1724,48 @@ class RustCallbackDispatchMixin:
 
         return new_constraints
 
-    def _add_forked_state(self, succ_state: angr.SimState, event: _ExplorationEvent):
-        """Add a forked state from a SimProcedure to Rust active stash.
+    def _add_forked_state(self, succ_state: angr.SimState, fork_id: int, new_constraints_of) -> None:
+        """Finish an extra callback successor from its own Rust fork.
 
-        When a SimProcedure creates multiple successors (e.g., fork on
-        symbolic condition), additional states are added to Rust for
-        continued exploration.
-
-        Two paths controlled by the ``use_simproc_fork_via_rust`` gate
-        (angr-t3mr, write-through boundary):
-
-        - **Gate on** (write-through): fork the parent Rust state directly
-          via ``fork_state_to_stash(parent_id, 'active')`` and apply any
-          path-specific constraints via ``add_constraints_to_state(new_id,
-          ...)``. No Python-side ``_add_rust_state`` push and no
-          ``add_constraints_to_pending`` write to the parent.
-
-        - **Gate off** (legacy diff-and-push, default): re-push every
-          register / memory page / constraint from ``succ_state`` via
-          ``_add_rust_state('active', succ_state)``, then add the path
-          constraints back to the pending state.
+        ``fork_id`` is the fork ``_settle_callback_successors`` handed this
+        successor: the pending state as of the copy plus every write the
+        successor made through its proxies, constraints included
+        (angr-mx00p.112, angr-vmi2l.294). What has not reached Rust yet is
+        applied to that fork, never to the pending state: the PC, and, while
+        the register / solver proxies are gated off, the register diff
+        against the fork's own registers and ``new_constraints_of(succ)``.
+        ``resume_forked_successor`` then routes it (or prunes it if unsat).
         """
-        if getattr(self, "_use_simproc_fork_via_rust", False):
-            self._add_forked_state_via_rust(succ_state, event)
-            return
-
-        # Try to fork the pending solver context for this state
-        # This ensures the forked state inherits all constraints
-        try:
-            forked_solver = self._rust_mgr.fork_pending_solver(event.callback_state_id)
-            # Attach forked solver to the state
-            succ_state.scratch.rust_solver_ctx = forked_solver
-            if _DBG:
-                l.debug(
-                    f"Forked solver context for additional successor ({forked_solver.num_constraints()} constraints)"
-                )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: solver-context fork for additional
-            # successor failed; the forked state inherits no Rust constraints.
-            # Debug-logs.
-            if _DBG:
-                l.debug(f"Could not fork solver for additional successor: {e}")
-
-        # Extract any constraints specific to this fork path
-        # These may differ from the main successor due to branching conditions
-        fork_constraints = []
-        if hasattr(succ_state, "scratch") and hasattr(succ_state.scratch, "rust_solver_ctx"):
-            # cat-(b) FALLBACK WITH LOSS: per-fork constraint extraction failed;
-            # the forked state syncs no path-specific constraints to Rust.
-            with contextlib.suppress(Exception):
-                # If the state has path-specific constraints, extract them
-                if hasattr(succ_state.solver, "constraints"):
-                    fork_constraints = list(succ_state.solver.constraints)
-
-        # Create a new Rust state for this successor
-        new_sid = self._add_rust_state("active", succ_state)
-
-        # Lineage-aware demotion (angr-qluof pt2): _add_rust_state's
-        # _export_fs_files_to_rust re-registers eligible SimFiles, re-arming
-        # any symbolic-file path the parent lineage's native write had demoted.
-        # Re-apply from the parent so the forked guest keeps seeing the
-        # content-identical Python fallback.
-        self._reapply_demoted_paths(self._rust_mgr, event.callback_state_id, new_sid)
-
-        # If we have fork-specific constraints, sync them to the new Rust state
-        if fork_constraints:
-            try:
-                # The state was just added, so sync constraints to the pending/active state
-                self._rust_mgr.add_constraints_to_pending(event.callback_state_id, fork_constraints)
-                if _DBG:
-                    l.debug(f"Synced {len(fork_constraints)} fork constraints to Rust state")
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: add_constraints_to_pending failed
-                # for the forked state; constraints stay only on the Python side.
-                # Debug-logs.
-                if _DBG:
-                    l.debug(f"Could not sync fork constraints: {e}")
-
+        new_pc = self._resolve_next_pc(succ_state)
+        reg_changes = None
+        if not getattr(self, "_use_callback_register_proxy", False):
+            reg_changes = self._fork_register_changes(fork_id, succ_state)
+        new_constraints = None
+        if not getattr(self, "_use_callback_solver_proxy", False):
+            new_constraints = new_constraints_of(succ_state)
+        self._sync_state_heap_to_rust(succ_state, fork_id)
+        self._sync_state_posix_to_rust(succ_state, fork_id)
+        self._sync_state_posix_fds_to_rust(succ_state, fork_id)
+        self._rust_mgr.resume_forked_successor(
+            fork_id, CALLBACK_FORK_STASH, new_pc, reg_changes or None, None, new_constraints or None
+        )
+        self._callback_fork_scope.consumed(fork_id)
         if _DBG:
-            l.debug(f"Added forked state at PC 0x{succ_state.addr:x}")
+            l.debug(f"Finished forked successor {fork_id} at PC 0x{new_pc:x}")
 
-    def _add_forked_state_via_rust(self, succ_state: angr.SimState, event: _ExplorationEvent) -> None:
-        """Write-through fork: ask Rust to fork the parent state directly.
+    def _fork_register_changes(self, fork_id: int, succ_state: angr.SimState) -> list:
+        """Register diff of a Python-register successor against its own fork.
 
-        Used when ``use_simproc_fork_via_rust`` is on (angr-t3mr). The
-        parent state is the pending callback state (``event.callback_state_id``
-        — ``find_state`` looks through the pending callback when the ID is
-        not yet in a stash, so the fork sees the constraints/registers/
-        memory that the SimProcedure has just written via the proxy
-        plugins). Any path-specific constraints the SimProcedure added to
-        ``succ_state.solver`` are pushed onto the new fork via
-        ``add_constraints_to_state`` so per-fork branch conditions land on
-        the fork's own solver instead of the pending one.
+        With the register proxy off a successor's register writes stay in its
+        Python ``SimRegisters``; its fork still holds the pending state's
+        registers as of the copy, which is the baseline to diff against.
+        Symbolic registers are written to the fork directly.
         """
-        parent_id = event.callback_state_id
-        if parent_id is None:
-            # cat-(b) FALLBACK WITH LOSS: no parent ID on the event — the
-            # callback was already torn down. Skip the fork.
-            if _DBG:
-                l.debug("_add_forked_state_via_rust: no callback_state_id, skipping fork")
-            return
-
-        try:
-            new_id = self._rust_mgr.fork_state_to_stash(parent_id, "active")
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: Rust-owned fork failed; this
-            # successor is silently dropped. Debug-logs.
-            if _DBG:
-                l.debug(f"fork_state_to_stash({parent_id}) failed: {e}")
-            return
-
-        # Path-specific constraints from succ_state. The fork already
-        # carries every constraint the parent had (Rust forked the parent
-        # state, including its solver), so add_constraints_to_state will
-        # mostly re-assert duplicates that Z3 dedups — but it also lands
-        # any branch conditions the SimProc added to this successor's
-        # claripy solver (when the callback solver proxy is off and the
-        # parallel claripy solver carries them).
-        try:
-            if hasattr(succ_state.solver, "constraints"):
-                fork_constraints = list(succ_state.solver.constraints)
-                if fork_constraints:
-                    self._rust_mgr.add_constraints_to_state(new_id, fork_constraints)
-                    if _DBG:
-                        l.debug(
-                            f"fork_state_to_stash: added {len(fork_constraints)} fork constraints to state {new_id}"
-                        )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: constraint sync onto the new fork
-            # failed; the fork inherits only the parent's constraints.
-            if _DBG:
-                l.debug(f"add_constraints_to_state({new_id}) failed: {e}")
-
-        if _DBG:
-            l.debug(
-                f"_add_forked_state_via_rust: forked parent {parent_id} -> state {new_id} at PC 0x{succ_state.addr:x}"
-            )
+        arch = self._project.arch
+        names = self._get_arch_register_names(arch)
+        values = self._rust_mgr.get_state_registers_batch(fork_id, list(names))
+        snapshot = self._snapshot_registers_from_bundle(dict(zip(names, values)), arch)
+        return self._extract_register_changes(snapshot, succ_state, symbolic_target_id=fork_id)
 
     def _handle_syscall_callback(self, event: _ExplorationEvent):
         """Handle syscall callback from Rust.
@@ -1796,7 +1780,7 @@ class RustCallbackDispatchMixin:
         """
         _sc_total_start = time.perf_counter_ns()
         try:
-            self._handle_syscall_callback_inner(event)
+            self._run_callback_scoped(self._handle_syscall_callback_inner, event)
         finally:
             self._perf_stats.record_syscall_call(time.perf_counter_ns() - _sc_total_start)
 
@@ -1815,6 +1799,10 @@ class RustCallbackDispatchMixin:
             pc = self._rust_mgr.get_pending_register(state_id, "rip") or 0
             self._rust_mgr.resume_after_syscall(state_id, pc + 1, None, None)
             return
+
+        # The pc to skip to if the syscall fails, read now: once the
+        # successors settle, ``state``'s own proxies may be released.
+        syscall_pc = state.addr
 
         # Run the syscall
         try:
@@ -1888,8 +1876,10 @@ class RustCallbackDispatchMixin:
 
             all_succs = successors.all_successors
             if all_succs:
-                # First successor continues in Rust
+                # First successor continues in Rust; every successor gets its
+                # own Rust state first (angr-mx00p.112).
                 succ_state = all_succs[0]
+                resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
 
                 # Handle symbolic IP: pick first concrete solution if symbolic
                 new_pc = self._resolve_next_pc(succ_state)
@@ -1907,7 +1897,11 @@ class RustCallbackDispatchMixin:
                 # at PC+1 with every change discarded (angr-89w70).
                 mem_changes, symbolic_imports = self._extract_memory_changes(state, succ_state)
                 mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
-                new_constraints = self._extract_new_constraints(state, succ_state)
+                new_constraints = (
+                    []
+                    if getattr(self, "_use_callback_solver_proxy", False)
+                    else self._extract_new_constraints(state, succ_state)
+                )
 
                 # Resume BEFORE the symbolic imports: apply_changes writes
                 # concrete witnesses that clear symbolic page markers, so the
@@ -1919,7 +1913,7 @@ class RustCallbackDispatchMixin:
 
                 for sym_addr, ast in symbolic_imports:
                     try:
-                        self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
+                        self._rust_mgr.import_symbolic_to_state(resumed_id, sym_addr, ast)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: Rust loses the symbolic
                         # relationship at this address — downstream loads see
@@ -1928,16 +1922,13 @@ class RustCallbackDispatchMixin:
                             l.debug(f"Could not import symbolic syscall memory at 0x{sym_addr:x}: {e}")
 
                 # Update cache
-                state_id = event.callback_state_id
-                if state_id is not None:
-                    self._cache_state_mirror(state_id, succ_state)
+                self._cache_state_mirror(resumed_id, succ_state)
 
-                # Handle additional successors
-                for succ in all_succs[1:]:
-                    self._add_forked_state(succ, event)
+                # Additional successors are finished from their own forks.
+                for succ, fork_id in zip(all_succs[1:], extra_ids):
+                    self._add_forked_state(succ, fork_id, lambda s: self._extract_new_constraints(state, s))
             else:
-                pc = state.addr + 1
-                self._rust_mgr.resume_after_syscall(state_id, pc, None, None)
+                self._rust_mgr.resume_after_syscall(state_id, syscall_pc + 1, None, None)
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: syscall execution raised; we resume
@@ -1946,8 +1937,7 @@ class RustCallbackDispatchMixin:
             # hit this path is identifiable from stats() (angr-89w70).
             self._perf_stats.record_syscall_error()
             l.warning(f"Syscall execution error: {e}")
-            pc = state.addr + 1
-            self._rust_mgr.resume_after_syscall(state_id, pc, None, None)
+            self._rust_mgr.resume_after_syscall(state_id, syscall_pc + 1, None, None)
         finally:
             # Clear callback state to avoid stale references
             self._set_callback_state(None)
@@ -2325,6 +2315,14 @@ class RustCallbackDispatchMixin:
         state_id = event.callback_state_id
         state = None
 
+        # Every Rust proxy plugin of the callback state shares this scope's
+        # root binding, so ``state.copy()`` gives the copy one copy-on-write
+        # Rust state for all of them (angr-mx00p.112).
+        scope = None
+        if state_id is not None:
+            scope = CallbackForkScope(self, state_id)
+            self._callback_fork_scope = scope
+
         # Use cached state if available - this preserves symbolic memory
         # For forked states, follow the ancestry chain to find cached state
         cached_state = None
@@ -2374,6 +2372,8 @@ class RustCallbackDispatchMixin:
             self._stats_state_creations += 1
             _sc_copy_start = time.perf_counter_ns()
             state = cached_state.copy()
+            if scope is not None:
+                self._bind_inherited_proxies(state, scope.root)
             self._perf_stats.add_state_create_subphase("copy", time.perf_counter_ns() - _sc_copy_start)
 
             # Use the callback bundle API to get registers + solver + history
@@ -2524,14 +2524,16 @@ class RustCallbackDispatchMixin:
             # Initialize history to prevent IndexError in hooks
             self._init_callback_history(state, event)
 
+            binding = scope.root if scope is not None else None
+
             # ``state.callstack`` reads the Rust call frames live by state_id
             # (angr-6o9p). It is installed before ``_init_callback_callstack``
             # because the continuation ``procedure_data`` restored there lives
             # on the plugin itself; installing it afterwards would drop that
             # data and a ``self.call()`` continuation would refuse to run
             # (angr-mx00p.61).
-            if event.callback_state_id is not None:
-                self._install_callback_callstack_proxy(state, event.callback_state_id)
+            if binding is not None:
+                self._install_callback_callstack_proxy(state, binding)
 
             # Initialize callstack for SimProcedure continuations
             self._init_callback_callstack(state, event)
@@ -2556,8 +2558,8 @@ class RustCallbackDispatchMixin:
             # monkey-patched closure path. The proxy writes through to the
             # Rust state's solver by state_id (no parallel Python claripy
             # solver). Skip the closure install entirely in that mode.
-            if getattr(self, "_use_callback_solver_proxy", False) and event.callback_state_id is not None:
-                self._install_callback_solver_proxy(state, event.callback_state_id)
+            if getattr(self, "_use_callback_solver_proxy", False) and binding is not None:
+                self._install_callback_solver_proxy(state, binding)
             else:
                 _cb_rust_ctx = getattr(state.scratch, "rust_solver_ctx", None)
                 if _cb_rust_ctx is None:
@@ -2582,8 +2584,8 @@ class RustCallbackDispatchMixin:
             # angr-4scu step 3: install RustMemoryProxy as ``state.memory``, so
             # every load/store the SimProc issues routes directly into Rust by
             # state_id and nothing needs replaying at end-of-callback.
-            if event.callback_state_id is not None:
-                self._install_callback_memory_proxy(state, event.callback_state_id)
+            if binding is not None:
+                self._install_callback_memory_proxy(state, binding)
 
             # angr-qj30 (write-through .2): gated install of
             # ``RustRegisterProxy`` as ``state.registers``. When on, every
@@ -2593,8 +2595,8 @@ class RustCallbackDispatchMixin:
             # ``_extract_register_changes`` diff-and-push. The matching site
             # in ``_handle_simprocedure_callback`` forces ``reg_changes=[]``
             # so the resume path skips the apply.
-            if getattr(self, "_use_callback_register_proxy", False) and event.callback_state_id is not None:
-                self._install_callback_register_proxy(state, event.callback_state_id)
+            if getattr(self, "_use_callback_register_proxy", False) and binding is not None:
+                self._install_callback_register_proxy(state, binding)
 
             # angr-op0dn.14.1.3: seed Rust's break pointers into the heap plugin
             # the first time the bounced proc touches it.
@@ -2610,6 +2612,31 @@ class RustCallbackDispatchMixin:
                 self._inject_rust_fds(state, event.callback_state_id)
 
         return state
+
+    @staticmethod
+    def _bind_inherited_proxies(state, root):
+        """Point Rust proxy plugins the template frame carried at ``root``.
+
+        A cached frame can hold proxies no callback installer replaces, e.g.
+        the ``RustRegisterProxy`` an export with symbolic registers gets
+        (``_recover_symbolic_registers_from_snapshot``). Copied into the
+        callback state they would keep reading and writing the frame's old
+        Rust state; rebound, they name the pending state like every other
+        proxy of the callback state (angr-mx00p.112).
+        """
+        from angr.exploration.rust_state_binding import RustStateBinding
+
+        for name in ("registers", "solver", "memory", "callstack"):
+            plugin = state.plugins.get(name)
+            if plugin is None or not isinstance(plugin.__dict__.get("_binding"), RustStateBinding):
+                continue
+            object.__setattr__(plugin, "_binding", root)
+            cache = plugin.__dict__.get("_cache")
+            if cache:
+                cache.clear()
+            if "_rust_ctx_cache" in plugin.__dict__:
+                object.__setattr__(plugin, "_rust_ctx_cache", None)
+                object.__setattr__(plugin, "_rust_ctx_cache_owner", None)
 
     def _install_lazy_heap_sync(self, state, state_id):
         """Seed Rust's heap_brk / mmap_base into ``state.heap`` on first access.
@@ -2654,6 +2681,10 @@ class RustCallbackDispatchMixin:
 
     def _install_callback_memory_proxy(self, state, state_id):
         """Swap ``state.memory`` for a ``RustMemoryProxy`` bound to ``state_id``.
+
+        ``state_id`` is a raw id or the callback scope's root
+        ``RustStateBinding``; the same goes for the register, solver and
+        callstack installers below.
 
         Caller has already copied the cached state, so replacing the plugin
         here only affects this callback frame (angr-4scu step 3).
@@ -2817,7 +2848,7 @@ class RustCallbackDispatchMixin:
         """
         _vf_total_start = time.perf_counter_ns()
         try:
-            self._handle_python_vex_fallback_inner(event)
+            self._run_callback_scoped(self._handle_python_vex_fallback_inner, event)
         finally:
             self._perf_stats.record_vex_fallback_call(time.perf_counter_ns() - _vf_total_start)
 
@@ -2857,8 +2888,13 @@ class RustCallbackDispatchMixin:
                 self._rust_mgr.deadend_pending_callback(state_id)
                 return
 
-            # Use the first successor as the primary result
+            # Use the first successor as the primary result. Every successor
+            # is a copy of ``state`` (the engine copies before stepping), so
+            # each gets its own Rust state here (angr-mx00p.112).
             succ = all_succs[0]
+            solver_proxy = getattr(self, "_use_callback_solver_proxy", False)
+            orig_constraints = None if solver_proxy else set(state.solver.constraints)
+            resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
             new_pc = succ.addr
 
             # Extract register changes
@@ -2873,9 +2909,10 @@ class RustCallbackDispatchMixin:
             # Extract memory changes (returns concrete_changes, symbolic_imports)
             mem_changes, _symbolic_imports = self._extract_memory_changes(state, succ)
 
-            # Extract new constraints
-            orig_constraints = set(state.solver.constraints)
-            new_constraints = [c for c in succ.solver.constraints if c not in orig_constraints]
+            # Extract new constraints (the solver proxy wrote them through).
+            new_constraints = (
+                [] if solver_proxy else [c for c in succ.solver.constraints if c not in orig_constraints]
+            )
 
             # Resume Rust with the first successor
             self._rust_mgr.resume_after_simprocedure(
@@ -2883,11 +2920,15 @@ class RustCallbackDispatchMixin:
             )
 
             # Additional successors (symbolic branches in the fallback block)
-            # are forked into new Rust active states so the convergent path
-            # isn't silently dropped.
-            for extra_succ in all_succs[1:]:
+            # are finished from their own forks so the convergent path isn't
+            # silently dropped.
+            for extra_succ, fork_id in zip(all_succs[1:], extra_ids):
                 try:
-                    self._add_forked_state(extra_succ, event)
+                    self._add_forked_state(
+                        extra_succ,
+                        fork_id,
+                        lambda s: [c for c in s.solver.constraints if c not in orig_constraints],
+                    )
                 except Exception as fork_err:
                     # cat-(b) FALLBACK WITH LOSS: forking an additional VEX-fallback
                     # successor failed; that branch is silently dropped. Already warns.

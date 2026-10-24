@@ -327,6 +327,47 @@ impl RustSimState {
         copy
     }
 
+    /// Fold `ancestor`'s removal tombstones into this fork's.
+    ///
+    /// [`Self::fork`] starts the child with empty tombstones because a fork is
+    /// a fresh divergence point. A fork that is later *adopted* as the
+    /// continuation of its ancestor (a copy-on-write callback successor that
+    /// replaces the pending state, angr-mx00p.112) is the same branch, so it
+    /// keeps every removal the ancestor recorded, except for an item the fork
+    /// itself re-added since the fork point (present in its live set again).
+    pub fn carry_tombstones_from(&mut self, ancestor: &RustSimState) {
+        fn fold<T: Clone + Eq + std::hash::Hash>(
+            own: &mut Arc<HashSet<T>>,
+            inherited: &HashSet<T>,
+            still_present: impl Fn(&T) -> bool,
+        ) {
+            let carried: Vec<T> = inherited
+                .iter()
+                .filter(|item| !own.contains(*item) && !still_present(item))
+                .cloned()
+                .collect();
+            if !carried.is_empty() {
+                Arc::make_mut(own).extend(carried);
+            }
+        }
+        let hooks = Arc::clone(&self.hooks);
+        fold(&mut self.removed_hooks, &ancestor.removed_hooks, |h| {
+            hooks.contains(h)
+        });
+        let options = Arc::clone(&self.sim_options);
+        fold(
+            &mut self.removed_sim_options,
+            &ancestor.removed_sim_options,
+            |o| options.contains(o),
+        );
+        let env = Arc::clone(&self.environment);
+        fold(
+            &mut self.removed_env_keys,
+            &ancestor.removed_env_keys,
+            |k| env.contains_key(k),
+        );
+    }
+
     /// Fork with a constraint on the true branch.
     pub fn fork_true(&self, condition: &RustBV) -> Self {
         self.fork_with(

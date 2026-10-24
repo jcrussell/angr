@@ -23,6 +23,18 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 
 
+def _bound_to(plugin, state_id: int) -> bool:
+    """Whether a proxy plugin's own binding names ``state_id`` directly.
+
+    A copied (virtual) binding that merely reads ``state_id`` through its
+    parent, or a released one, does not count: rebinding it gives the plugin
+    a root binding for ``state_id`` (angr-mx00p.112).
+    """
+    binding = plugin.__dict__.get("_binding")
+    return binding is not None and not binding.is_virtual and binding._released is None and binding.raw_id == state_id
+
+
+
 class _RustOwnedSimStateHistory(SimStateHistory):
     """SimStateHistory variant that warns once per process when user code reads
     ``state.history.actions`` or ``state.history.events``.
@@ -712,14 +724,14 @@ class RustStateExportMixin:
         from angr.exploration.rust_state_proxy import RustRegisterProxy, RustSolverProxyPlugin
 
         solver = state.plugins.get("solver")
-        if isinstance(solver, RustSolverProxyPlugin) and solver._state_id != state_id:
+        if isinstance(solver, RustSolverProxyPlugin) and not _bound_to(solver, state_id):
             object.__setattr__(solver, "_state_id", state_id)
             # A fork of the old state's solver; a copy() never carries it, so
             # dropping the reference leaves the original's cache alone.
             object.__setattr__(solver, "_rust_ctx_cache", None)
             object.__setattr__(solver, "_rust_ctx_cache_owner", None)
         regs = state.plugins.get("registers")
-        if isinstance(regs, RustRegisterProxy) and getattr(regs, "_state_id", None) != state_id:
+        if isinstance(regs, RustRegisterProxy) and not _bound_to(regs, state_id):
             object.__setattr__(regs, "_state_id", state_id)
             cache = getattr(regs, "_cache", None)
             if cache:
@@ -735,17 +747,24 @@ class RustStateExportMixin:
         (angr-mx00p.86). The source's binding is restored afterwards, because
         it can be a frame shared by sibling ids (angr-ibx8j).
         """
+        # Save and restore the bindings themselves, not ids: the source's
+        # binding may be released (reading its id raises) or shared with the
+        # source's other proxies (angr-mx00p.112).
         saved = {
-            name: getattr(plugin, "_state_id", None)
+            name: plugin.__dict__["_binding"]
             for name in ("solver", "registers")
-            if (plugin := source.plugins.get(name)) is not None and hasattr(plugin, "_state_id")
+            if (plugin := source.plugins.get(name)) is not None and "_binding" in plugin.__dict__
         }
         cls._rebind_callback_proxies(source, state_id)
         try:
-            return source.copy()
+            copied = source.copy()
         finally:
             for name, old in saved.items():
-                object.__setattr__(source.plugins[name], "_state_id", old)
+                object.__setattr__(source.plugins[name], "_binding", old)
+        # The copy *is* the state for ``state_id``, not a copy-on-write child
+        # of it: bind its proxies to ``state_id`` directly.
+        cls._rebind_callback_proxies(copied, state_id)
+        return copied
 
     def _sync_cached_state(self, state, state_id: int) -> None:
         """Run the heavy plugin restore + register/memory/callstack sync.
@@ -855,7 +874,7 @@ class RustStateExportMixin:
             #      SimProcedure wrote through the proxy) — clearing the cache
             #      is sufficient because the proxy already reads through to
             #      Rust on a cache miss.
-            if getattr(regs_plugin, "_state_id", None) != state_id:
+            if not _bound_to(regs_plugin, state_id):
                 object.__setattr__(regs_plugin, "_state_id", state_id)
             cache = getattr(regs_plugin, "_cache", None)
             if cache:

@@ -176,6 +176,7 @@ module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
 - **Python side** (`angr/exploration/`): `rust_manager.py` (the
   `RustExplorationManager` wrapper and the SimOption ledgers; its module
   docstring holds the cross-mixin invariants), `rust_state_proxy.py`,
+  `rust_state_binding.py` (copy-on-write proxy bindings),
   `rust_state_export.py`, `rust_state_sync.py`, `rust_callback_dispatch.py`,
   `rust_techniques.py`,
   `rust_perf_tracker.py`, `rust_state_cache.py`,

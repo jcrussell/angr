@@ -276,3 +276,137 @@ fn route_resume_successors_routes_find_and_plain_states() {
     assert_eq!(mgr.get_state_ids(crate::stash::STASH_FOUND), vec![hit_id]);
     assert_eq!(mgr.get_state_ids(STASH_ACTIVE), vec![plain_id]);
 }
+
+/// A parked SimProcedure callback with no deferred forks, for the
+/// copy-on-write successor entry points (angr-mx00p.112).
+fn plain_pending(state: RustSimState) -> PendingCallback {
+    PendingCallback {
+        state,
+        pre_callback_snapshot: None,
+        reason: CallbackReason::SimProcedure {
+            addr: BRANCH_ADDR,
+            name: "hook".to_string(),
+            num_args: 0,
+            return_addr: 0x40_1004,
+        },
+        jumpkind: None,
+        deferred_forks: Vec::new(),
+        stored_conditions: FxHashMap::default(),
+        fork_snapshots: FxHashMap::default(),
+    }
+}
+
+const COW_STASH: &str = "_cb_forks";
+
+/// angr-mx00p.112: a first successor that owns a fork resumes as that fork.
+/// The pending callback keeps its key, the fork leaves the holding stash, the
+/// state routed to active is the fork (carrying the fork's own register
+/// write, not the pending state's), and the replaced pending state is gone.
+#[test]
+fn adopted_fork_is_the_state_the_pending_callback_resumes() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(BRANCH_ADDR);
+    assert!(state.set_register("rax", RustBV::concrete(0x111, 64)));
+    let sid = park(&mut mgr, plain_pending(state));
+
+    let fork_id = mgr._fork_state_to_stash(sid, COW_STASH).expect("fork");
+    {
+        let fork = mgr.find_state_mut(fork_id).expect("fork is findable");
+        assert!(fork.set_register("rax", RustBV::concrete(0x222, 64)));
+    }
+    mgr._adopt_pending_callback_state(sid, fork_id, COW_STASH)
+        .expect("adopt");
+    assert_eq!(mgr.stash_count(COW_STASH), 0, "fork left the holding stash");
+
+    Python::attach(|py| {
+        mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None)
+            .expect("resume");
+    });
+    assert!(mgr.pending_callbacks.is_empty());
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].state_id(), fork_id);
+    assert_eq!(active[0].pc(), 0x40_1004);
+    assert_eq!(
+        active[0].get_register("rax").and_then(|v| v.as_u64()),
+        Some(0x222)
+    );
+    assert!(mgr.find_state(sid).is_none(), "the replaced state was dropped");
+}
+
+/// Adopting needs both halves: an unknown pending id or a fork outside the
+/// named stash is an error, never a silent no-op.
+#[test]
+fn adopt_rejects_unknown_pending_or_fork() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state = RustSimState::new("amd64").expect("state");
+    let sid = park(&mut mgr, plain_pending(state));
+    let fork_id = mgr._fork_state_to_stash(sid, COW_STASH).expect("fork");
+
+    assert!(mgr._adopt_pending_callback_state(sid + 1_000_000, fork_id, COW_STASH).is_err());
+    assert!(mgr._adopt_pending_callback_state(sid, fork_id, "elsewhere").is_err());
+    // Neither failed attempt consumed anything.
+    assert_eq!(mgr.stash_count(COW_STASH), 1);
+    assert!(mgr.pending_callbacks.contains_key(&StateId::new(sid)));
+}
+
+/// angr-mx00p.112 / angr-vmi2l.294: an extra successor is finished from its
+/// own fork. It lands in active at its own pc with the fork's writes and the
+/// pending state's lineage root, and leaves the pending callback untouched.
+/// A successor whose constraints are unsat goes to pruned, not active.
+#[test]
+fn forked_successor_routes_from_its_own_fork() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let (mut state, cond) = state_and_condition();
+    state.set_pc(BRANCH_ADDR);
+    let sid = park(&mut mgr, plain_pending(state));
+
+    let live = mgr._fork_state_to_stash(sid, COW_STASH).expect("fork");
+    let dead = mgr._fork_state_to_stash(sid, COW_STASH).expect("fork");
+    {
+        let fork = mgr.find_state_mut(live).expect("live fork");
+        assert!(fork.set_register("rax", RustBV::concrete(0x333, 64)));
+    }
+    {
+        // x == 0 and x != 0: this successor's guard contradicts the path.
+        let fork = mgr.find_state(dead).expect("dead fork");
+        let solver = fork.solver();
+        let ctx = solver.borrow();
+        ctx.assume_true(&cond);
+        ctx.assume_false(&cond);
+    }
+
+    Python::attach(|py| {
+        mgr._resume_forked_successor(py, live, COW_STASH, 0x40_3000, None, None, None)
+            .expect("resume live fork");
+        mgr._resume_forked_successor(py, dead, COW_STASH, 0x40_4000, None, None, None)
+            .expect("resume dead fork");
+    });
+
+    assert_eq!(mgr.stash_count(COW_STASH), 0);
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].state_id(), live);
+    assert_eq!(active[0].pc(), 0x40_3000);
+    assert_eq!(
+        active[0].get_register("rax").and_then(|v| v.as_u64()),
+        Some(0x333)
+    );
+    assert_eq!(mgr.get_state_root(live), Some(sid));
+    assert_eq!(mgr.stash_count(STASH_PRUNED), 1, "unsat successor is pruned");
+    assert!(
+        mgr.pending_callbacks.contains_key(&StateId::new(sid)),
+        "the pending callback is not consumed by an extra successor"
+    );
+    Python::attach(|py| {
+        assert!(
+            mgr._resume_forked_successor(py, live, COW_STASH, 0, None, None, None)
+                .is_err(),
+            "a fork already routed is not in the holding stash any more"
+        );
+    });
+}

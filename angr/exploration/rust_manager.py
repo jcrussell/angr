@@ -79,6 +79,7 @@ I10. RustExplorationManager exposes `stats` as a @property
 from __future__ import annotations
 
 import contextlib
+import functools
 import gc
 import logging
 import os
@@ -5229,11 +5230,22 @@ class RustExplorationManager(
         self._py_state_globals[state_id] = glb
         return glb
 
-    def fork_state_for_copy(self, source_state_id: int) -> int:
+    @functools.cached_property
+    def _copy_stash_fork_owner(self):
+        """Fork owner for proxy bindings outside a callback scope.
+
+        See ``rust_state_binding.CopyStashForkOwner`` (angr-mx00p.112).
+        """
+        from angr.exploration.rust_state_binding import CopyStashForkOwner
+
+        return CopyStashForkOwner(self)
+
+    def fork_state_for_copy(self, source_state_id: int, stash: str = "_copies") -> int:
         """Rust-side CoW fork backing ``RustStateProxy.copy()``.
 
         Mints a new state by forking ``source_state_id`` into the dedicated
-        ``_copies`` stash. The new state's Python-side metadata (options set,
+        ``_copies`` stash (or ``stash``: the copy-on-write proxy bindings of a
+        callback state fork into ``_cb_forks``, angr-mx00p.112). The new state's Python-side metadata (options set,
         globals dict) is seeded from the source's current metadata — NOT the
         lineage root — so a caller that has mutated the source between fork
         time and copy time sees those mutations on the copy. The forked state
@@ -5249,7 +5261,7 @@ class RustExplorationManager(
         proxy. There is no automatic GC — that would require a back-reference
         from the proxy to the manager, which today is intentionally weak.
         """
-        new_id = self._rust_mgr.fork_state_to_stash(source_state_id, "_copies")
+        new_id = self._rust_mgr.fork_state_to_stash(source_state_id, stash)
         src_opts = self._py_state_options.get(source_state_id)
         if src_opts is not None:
             self._py_state_options[new_id] = set(src_opts)
@@ -5261,9 +5273,9 @@ class RustExplorationManager(
             tracker[new_id] = tracker[source_state_id]
         return new_id
 
-    def drop_copy(self, copy_state_id: int) -> bool:
+    def drop_copy(self, copy_state_id: int, stash: str = "_copies") -> bool:
         """Drop a clone produced by ``fork_state_for_copy`` from ``_copies``
-        (angr-yhe0).
+        (angr-yhe0), or from the ``stash`` it was forked into.
 
         Removes the Rust-side state from the ``_copies`` stash, clears the
         per-state Python metadata (options set, globals dict, stdout tracker
@@ -5280,7 +5292,7 @@ class RustExplorationManager(
         reference.
         """
         try:
-            dropped = self._rust_mgr.drop_state_from_stash(copy_state_id, "_copies")
+            dropped = self._rust_mgr.drop_state_from_stash(copy_state_id, stash)
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: state may already be gone (e.g.
             # double-drop) or the Rust manager torn down. drop_copy is

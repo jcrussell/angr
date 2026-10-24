@@ -37,39 +37,15 @@ impl RustExplorationManager {
             .remove(&StateId::new(state_id))
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
 
-        // Apply changes
-        let mut changes = StateChanges::new();
-        changes.new_pc = Some(new_pc);
-
-        if let Some(reg_changes) = register_changes {
-            changes.register_writes = reg_changes;
-        }
-
-        if let Some(mem_changes) = memory_changes {
-            changes.memory_writes = mem_changes;
-        }
-
         let mut state = pending.state;
-        state.apply_changes(&changes);
-        // The procedure ran in Python: no Ijk_Ret popped its frame here.
-        state.return_from_procedure(new_pc);
-
-        // Sync constraints from Python back to Rust
-        // This ensures constraints added by SimProcedures (e.g., strcmp return conditions)
-        // are properly reflected in the Rust solver state
-        //
-        // Track if state becomes UNSAT after constraint sync
-        let mut main_state_unsat = false;
-        if let Some(constraints) = new_constraints {
-            let is_sat = self.sync_constraints_from_python(py, &state, constraints)?;
-            if !is_sat {
-                log::debug!(
-                    "State {} became UNSAT after constraint sync in resume_after_simprocedure.",
-                    state.state_id()
-                );
-                main_state_unsat = true;
-            }
-        }
+        let main_state_unsat = self.apply_callback_resume(
+            py,
+            &mut state,
+            new_pc,
+            register_changes,
+            memory_changes,
+            new_constraints,
+        )?;
 
         // NOTE: deferred forks whose condition_id is absent from stored_conditions
         // are NOT dropped — the materialization loop below creates a
@@ -185,6 +161,142 @@ impl RustExplorationManager {
         // Apply native techniques (LengthLimiter, Timeout, LoopBound)
         self.apply_native_techniques();
 
+        Ok(())
+    }
+
+    /// Apply one callback successor's resume payload to `state`: the
+    /// register / memory writes and the new PC, the procedure-return
+    /// bookkeeping, then the constraints the Python side added. Returns
+    /// `true` when the constraint sync left the state unsatisfiable.
+    ///
+    /// Shared by the pending state's own resume
+    /// ([`Self::_resume_after_simprocedure`]) and every extra successor of the
+    /// same callback ([`Self::_resume_forked_successor`]), so a successor is
+    /// finished identically whichever slot it came out of.
+    pub(crate) fn apply_callback_resume(
+        &self,
+        py: Python<'_>,
+        state: &mut RustSimState,
+        new_pc: u64,
+        register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
+        memory_changes: Option<Vec<(u64, Vec<u8>)>>,
+        new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+    ) -> PyResult<bool> {
+        let mut changes = StateChanges::new();
+        changes.new_pc = Some(new_pc);
+        if let Some(reg_changes) = register_changes {
+            changes.register_writes = reg_changes;
+        }
+        if let Some(mem_changes) = memory_changes {
+            changes.memory_writes = mem_changes;
+        }
+        state.apply_changes(&changes);
+        // The procedure ran in Python: no Ijk_Ret popped its frame here.
+        state.return_from_procedure(new_pc);
+
+        // Sync the constraints the SimProcedure added on the Python side
+        // (e.g. strcmp return conditions) into the Rust solver.
+        if let Some(constraints) = new_constraints {
+            let is_sat = self.sync_constraints_from_python(py, state, constraints)?;
+            if !is_sat {
+                log::debug!(
+                    "State {} became UNSAT after constraint sync on callback resume.",
+                    state.state_id()
+                );
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Inner body of the pymethods-exposed `adopt_pending_callback_state`.
+    ///
+    /// Copy-on-write callback successors (angr-mx00p.112): a SimProcedure /
+    /// syscall / VEX-fallback successor that was copied from the callback
+    /// state and then written owns a fork parked in `stash`. When that fork
+    /// is the *first* successor it becomes the state the pending callback
+    /// resumes: it replaces `pending.state`, and the pending callback's
+    /// deferred forks and pre-callback snapshot stay where they are. The
+    /// replaced state (the callback state as the procedure found it) is
+    /// dropped. The fork keeps its own id; the caller resumes through
+    /// `pending_id` as before.
+    ///
+    /// The fork declared a fresh divergence point when it was minted, so the
+    /// removal tombstones the replaced state carried are folded back in
+    /// (`RustSimState::carry_tombstones_from`): the adopted fork continues the
+    /// same branch, not a sibling.
+    pub(crate) fn _adopt_pending_callback_state(
+        &mut self,
+        pending_id: u64,
+        fork_id: u64,
+        stash: &str,
+    ) -> PyResult<()> {
+        if !self
+            .pending_callbacks
+            .contains_key(&StateId::new(pending_id))
+        {
+            return Err(PyRuntimeError::new_err(format!(
+                "adopt_pending_callback_state: no pending callback for state {pending_id}"
+            )));
+        }
+        let mut fork = self.sm.take_state_from(fork_id, stash).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "adopt_pending_callback_state: state {fork_id} not found in stash {stash:?}"
+            ))
+        })?;
+        let pending = self
+            .pending_callbacks
+            .get_mut(&StateId::new(pending_id))
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state"))?;
+        fork.carry_tombstones_from(&pending.state);
+        let replaced = std::mem::replace(&mut pending.state, fork);
+        drop(replaced);
+        Ok(())
+    }
+
+    /// Inner body of the pymethods-exposed `resume_forked_successor`.
+    ///
+    /// Finishes an extra successor of a callback (angr-mx00p.112,
+    /// angr-vmi2l.294). The successor's own Rust state is the fork its
+    /// copy-on-write binding claimed, parked in `stash`: it already carries
+    /// the pending state's constraints, memory and registers as of the copy
+    /// plus every write the successor made through its proxies. This applies
+    /// the remaining payload with [`Self::apply_callback_resume`] and routes
+    /// the state like a resumed one: live successors through
+    /// [`Self::route_resume_successors`], unsatisfiable ones to the pruned
+    /// stash.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors resume_after_simprocedure's payload plus the fork's id and stash"
+    )]
+    pub(crate) fn _resume_forked_successor(
+        &mut self,
+        py: Python<'_>,
+        fork_id: u64,
+        stash: &str,
+        new_pc: u64,
+        register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
+        memory_changes: Option<Vec<(u64, Vec<u8>)>>,
+        new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+    ) -> PyResult<()> {
+        let mut state = self.sm.take_state_from(fork_id, stash).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "resume_forked_successor: state {fork_id} not found in stash {stash:?}"
+            ))
+        })?;
+        let unsat = self.apply_callback_resume(
+            py,
+            &mut state,
+            new_pc,
+            register_changes,
+            memory_changes,
+            new_constraints,
+        )?;
+        if unsat || !state.survives_sat_prune(self.constraint_solver.lazy_solves) {
+            self.push_or_drop_terminal(STASH_PRUNED, state);
+        } else {
+            self.route_resume_successors(vec![state]);
+        }
         Ok(())
     }
 

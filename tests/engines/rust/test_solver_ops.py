@@ -1495,10 +1495,13 @@ class TestExplorationIntegration:
 
         forked_calls = []
 
-        def _record_fork(succ, evt):
-            forked_calls.append(succ)
+        def _record_fork(succ, fork_id, _new_constraints_of):
+            forked_calls.append((succ, fork_id))
 
         mgr._add_forked_state = _record_fork  # type: ignore[assignment]
+        # The successors are plain SimStates with no copy-on-write scope;
+        # hand each extra one a stand-in fork id (angr-mx00p.112).
+        mgr._settle_callback_successors = lambda evt, succs: (evt.callback_state_id, [900 + i for i in range(1, len(succs))])  # type: ignore[assignment]
 
         try:
             mgr._handle_python_vex_fallback(event)
@@ -1512,7 +1515,7 @@ class TestExplorationIntegration:
         assert len(forked_calls) == len(all_succs) - 1, (
             f"Expected {len(all_succs) - 1} forked successors, got {len(forked_calls)} — extras were dropped (the bug)"
         )
-        assert forked_calls[0] is succ_b, (
+        assert forked_calls[0] == (succ_b, 901), (
             "The forked successor identity does not match all_succs[1]; wrong state was passed to _add_forked_state."
         )
 

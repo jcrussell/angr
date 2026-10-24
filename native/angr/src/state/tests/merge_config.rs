@@ -256,3 +256,57 @@ fn test_merge_reinstated_hook_option_env_survives_own_removal_tombstone() {
         "re-setenv after unsetenv must clear the tombstone"
     );
 }
+
+/// angr-mx00p.112: a fork adopted as its ancestor's continuation (a
+/// copy-on-write callback successor replacing the pending state) keeps the
+/// removals the ancestor recorded since *its* fork point. Without
+/// `carry_tombstones_from` the adopted fork starts with empty tombstones, and a
+/// later merge with a sibling that still holds the hook / option / env var
+/// resurrects what the ancestor had removed. A removal the fork itself undid
+/// (re-added after the fork) is not carried.
+#[test]
+fn test_adopted_fork_carries_ancestor_tombstones_into_merge() {
+    let mut root = RustSimState::new("amd64").unwrap();
+    root.add_hook(0x400000);
+    root.add_hook(0x500000);
+    root.set_option("SHORT_READS", true);
+    root.setenv(b"PATH".to_vec(), b"/a".to_vec());
+
+    let mut pending = root.fork();
+    let sibling = root.fork();
+    pending.remove_hook(0x400000);
+    pending.remove_hook(0x500000);
+    pending.set_option("SHORT_READS", false);
+    pending.unsetenv(b"PATH");
+
+    let mut adopted = pending.fork();
+    // Re-added after the copy: this removal must not survive the adoption.
+    adopted.add_hook(0x500000);
+    adopted.carry_tombstones_from(&pending);
+
+    let (m0, m1) = {
+        let s = adopted.solver().borrow();
+        (
+            RustBV::symbolic(&s, "adopt_m0", 1),
+            RustBV::symbolic(&s, "adopt_m1", 1),
+        )
+    };
+    let merged = adopted.merge(&[&sibling], &[m0, m1]);
+
+    assert!(
+        !merged.is_hooked(0x400000),
+        "the ancestor's remove_hook must survive adoption and the merge"
+    );
+    assert!(
+        merged.is_hooked(0x500000),
+        "a hook the adopted fork re-added must not be tombstoned by the carry"
+    );
+    assert!(
+        !merged.has_option("SHORT_READS"),
+        "the ancestor's set_option(false) must survive adoption and the merge"
+    );
+    assert!(
+        merged.environment().get(b"PATH".as_slice()).is_none(),
+        "the ancestor's unsetenv must survive adoption and the merge"
+    );
+}

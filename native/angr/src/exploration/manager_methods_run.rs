@@ -75,6 +75,57 @@ impl RustExplorationManager {
         )
     }
 
+    /// Make the fork `fork_id` (parked in `stash`) the state the pending
+    /// callback `pending_id` resumes. See
+    /// `resume::_adopt_pending_callback_state` for the body.
+    #[pyo3(signature = (pending_id, fork_id, stash))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "swaps the state inside one state_id-scoped pending callback for a fork the \
+                  same callback minted; does not mutate exploration config or the active stash."
+    )]
+    pub fn adopt_pending_callback_state(
+        &mut self,
+        pending_id: u64,
+        fork_id: u64,
+        stash: &str,
+    ) -> PyResult<()> {
+        self._adopt_pending_callback_state(pending_id, fork_id, stash)
+    }
+
+    /// Finish an extra successor of a callback whose Rust state is the fork
+    /// `fork_id` parked in `stash`, and route it. See
+    /// `resume::_resume_forked_successor` for the body.
+    #[pyo3(signature = (fork_id, stash, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "routes one callback successor like resume_after_simprocedure routes the \
+                  pending state; drives the bounce/resume protocol, does not mutate exploration \
+                  config."
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors resume_after_simprocedure's payload plus the fork's id and stash"
+    )]
+    pub fn resume_forked_successor(
+        &mut self,
+        py: Python<'_>,
+        fork_id: u64,
+        stash: &str,
+        new_pc: u64,
+        register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
+        memory_changes: Option<Vec<(u64, Vec<u8>)>>,
+        new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+    ) -> PyResult<()> {
+        self._resume_forked_successor(
+            py,
+            fork_id,
+            stash,
+            new_pc,
+            register_changes,
+            memory_changes,
+            new_constraints,
+        )
+    }
+
     /// Resume after a syscall callback.
     #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
     #[angr_macros::steady_guard_exempt(

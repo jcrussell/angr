@@ -1131,11 +1131,15 @@ class TestCallbackProxyRebind:
 
             def copy(self):
                 seen["ids"] = (solver._state_id, regs._state_id)
-                return "copy"
+                return types.SimpleNamespace(plugins={"solver": solver.copy(), "registers": regs.copy()})
 
-        assert RustStateExportMixin._copy_bound_to(Source(), 23) == "copy"
+        copied = RustStateExportMixin._copy_bound_to(Source(), 23)
         assert seen["ids"] == (23, 23), "SimState.copy reads the pc through the proxy: it must see the live id"
         assert (solver._state_id, regs._state_id) == (15, 15), "a frame shared by sibling ids keeps its binding"
+        # The copy is the materialized state for 23 itself, not a
+        # copy-on-write child of it (angr-mx00p.112).
+        for plugin in copied.plugins.values():
+            assert not plugin._binding.is_virtual and plugin._binding.raw_id == 23
 
 
 class TestCallbackCallStackProxy:
@@ -1585,15 +1589,11 @@ class TestExportMemoryProxyGate:
 
 
 class TestSimProcForkViaRustGate:
-    """angr-t3mr write-through boundary: ``use_simproc_fork_via_rust`` gate
-    controls how additional SimProcedure successors are added to the Rust
-    active stash. Default off keeps the eager
-    ``_add_rust_state('active', succ_state)`` push live (re-syncs every
-    register / memory page / constraint from the post-callback Python state);
-    on routes ``_add_forked_state`` through
-    ``fork_state_to_stash(parent_id, 'active')`` (Rust-owned fork of the
-    pending callback state) plus ``add_constraints_to_state(new_id, ...)``
-    for path-specific constraints — no Python-side state push.
+    """angr-t3mr write-through boundary: the Rust fork API behind additional
+    SimProcedure successors. Every extra successor is now finished from its
+    own copy-on-write fork whatever ``use_simproc_fork_via_rust`` says
+    (angr-mx00p.112); the per-successor behaviour is pinned against the
+    Python engine in ``test_callback_copy_on_write.py``.
     """
 
     def test_fork_state_to_stash_pending(self, fauxware_project):
@@ -1629,89 +1629,6 @@ class TestSimProcForkViaRustGate:
         mgr = RustExplorationManager(fauxware_project, [state])
         with pytest.raises(ValueError, match=r"state .* not found"):
             mgr._rust_mgr.fork_state_to_stash(99999, "active")
-
-    def test_add_forked_state_dispatch_off(self, fauxware_project, monkeypatch):
-        """Gate off: ``_add_forked_state`` calls the legacy
-        ``_add_rust_state`` path (the only Python-patchable hook on the
-        manager — the Rust pyclass methods are read-only and not
-        monkey-patchable). Verifies that the routing IS the legacy path."""
-
-        state = fauxware_project.factory.entry_state()
-        # use_simproc_fork_via_rust=False explicitly so the legacy-dispatch
-        # path is exercised even under a gates-on CI env (kwarg=False beats
-        # the ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST env var).
-        mgr = RustExplorationManager(fauxware_project, [state], use_simproc_fork_via_rust=False)
-        assert mgr._use_simproc_fork_via_rust is False
-
-        calls = {"add_rust_state": 0}
-
-        orig_add = mgr._add_rust_state
-
-        def fake_add(stash, st):
-            calls["add_rust_state"] += 1
-            return orig_add(stash, st)
-
-        monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
-
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        event = types.SimpleNamespace(callback_state_id=seed_id)
-        succ = fauxware_project.factory.entry_state()
-        mgr._add_forked_state(succ, event)
-        assert calls["add_rust_state"] == 1
-
-    def test_add_forked_state_dispatch_on(self, fauxware_project, monkeypatch):
-        """Gate on: ``_add_forked_state`` routes through the Rust fork API
-        (no ``_add_rust_state`` call). Stash count still grows by one
-        because the Rust-side fork lands a new state in 'active'."""
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_simproc_fork_via_rust=True)
-        assert mgr._use_simproc_fork_via_rust is True
-
-        calls = {"add_rust_state": 0}
-
-        orig_add = mgr._add_rust_state
-
-        def fake_add(stash, st):
-            calls["add_rust_state"] += 1
-            return orig_add(stash, st)
-
-        monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
-
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        before = len(mgr._rust_mgr.get_state_ids("active"))
-        event = types.SimpleNamespace(callback_state_id=seed_id)
-        succ = fauxware_project.factory.entry_state()
-        mgr._add_forked_state(succ, event)
-        after = len(mgr._rust_mgr.get_state_ids("active"))
-        assert calls["add_rust_state"] == 0
-        # Rust-owned fork lands a new state in 'active'.
-        assert after == before + 1
-
-    def test_add_forked_state_dispatch_on_none_state_id(self, fauxware_project, monkeypatch):
-        """Gate on: ``callback_state_id is None`` is a no-op (the callback
-        is already torn down; the fork would have no parent). No
-        ``_add_rust_state`` call and stash count unchanged."""
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_simproc_fork_via_rust=True)
-
-        calls = {"add_rust_state": 0}
-        orig_add = mgr._add_rust_state
-
-        def fake_add(stash, st):
-            calls["add_rust_state"] += 1
-            return orig_add(stash, st)
-
-        monkeypatch.setattr(mgr, "_add_rust_state", fake_add)
-
-        before = len(mgr._rust_mgr.get_state_ids("active"))
-        event = types.SimpleNamespace(callback_state_id=None)
-        succ = fauxware_project.factory.entry_state()
-        mgr._add_forked_state(succ, event)
-        after = len(mgr._rust_mgr.get_state_ids("active"))
-        assert calls["add_rust_state"] == 0
-        assert after == before
 
     def test_explore_end_to_end_gate_on(self, fauxware_project):
         """End-to-end smoke: ``explore`` completes with the same ``found``

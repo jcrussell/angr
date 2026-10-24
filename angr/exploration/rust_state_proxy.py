@@ -23,6 +23,7 @@ import logging
 import threading
 
 from angr import claripy
+from angr.exploration.rust_state_binding import RustStateBinding, unscoped_binding
 
 l = logging.getLogger(__name__)
 
@@ -313,12 +314,32 @@ class _ProxyStatePluginMixin:
     / ``init_state`` / ``merge`` / ``widen`` bodies byte-for-byte identical, so
     they live here once instead of being hand-copied per class (angr-hv4lt.6).
 
+    The plugins hold a :class:`RustStateBinding` rather than a raw id, so
+    ``copy()`` is copy-on-write: see ``rust_state_binding`` (angr-mx00p.112).
+
     Subclasses keep the members that genuinely differ — ``STRONGREF_STATE``,
     ``category``, ``copy()`` and (memory) ``SUPPORTS_CONCRETE_LOAD`` /
     ``permissions`` / ``compare``. A subclass that ever implements real
     cross-``state_id`` coordination overrides ``merge`` / ``widen``; none do
     today. The surface is intentionally public API (angr-qj30).
     """
+
+    # Copy-on-write binding (angr-mx00p.112). ``_binding`` names the Rust
+    # state; ``_state_id`` is the id reads go to and ``_write_state_id`` the
+    # id a write goes to (it materializes a copied plugin's own fork first).
+    # Assigning ``_state_id`` rebinds the plugin to a fresh root binding, the
+    # shape the export side's rebinding (``_rebind_callback_proxies``) uses.
+    @property
+    def _state_id(self):
+        return self.__dict__["_binding"].state_id
+
+    @_state_id.setter
+    def _state_id(self, state_id):
+        object.__setattr__(self, "_binding", unscoped_binding(self.__dict__.get("_python_mgr"), state_id))
+
+    @property
+    def _write_state_id(self):
+        return self.__dict__["_binding"].writable_id()
 
     def set_state(self, state):
         """SimStatePlugin hook — invoked on plugin install / copy.
@@ -519,8 +540,9 @@ class RustSolverProxyBase(_SolutionCountMixin):
     @property
     def timeout(self):
         """Z3 solver timeout in milliseconds for this state's solver context."""
+        state_id = self._state_id
         try:
-            return self._mgr.get_state_solver_timeout(self._state_id)
+            return self._mgr.get_state_solver_timeout(state_id)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: state may have been GC'd or backend
             # lacks Z3 — return 0 as default. (No log: this property is read
@@ -538,7 +560,7 @@ class RustSolverProxyBase(_SolutionCountMixin):
         if value is None:
             return
         timeout_ms = int(value)
-        self._mgr.set_state_solver_timeout(self._state_id, timeout_ms)
+        self._mgr.set_state_solver_timeout(self._write_state_id, timeout_ms)
         ctx = self._forked_ctx()
         if ctx is not None:
             ctx.set_timeout(timeout_ms)
@@ -577,6 +599,12 @@ class RustSolverProxy(RustSolverProxyBase):
         # ``self.constraints`` (== state constraints) can't recover them for
         # the ``min``/``max`` big-int fallback. Track them here instead.
         self._added_constraints = []
+
+    @property
+    def _write_state_id(self):
+        # A standalone proxy names its state directly; there is no copy to
+        # materialize (``RustSolverProxyBase.timeout``'s setter uses this).
+        return self._state_id
 
     def _ensure_solver(self):
         if self._solver_ctx is None:
@@ -691,18 +719,19 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     Plugin protocol surface (``id`` / ``state`` / ``set_state`` / ``copy`` /
     ``init_state`` / ``merge`` / ``widen``) matches the ``RustRegisterProxy`` /
     ``RustMemoryProxy`` shape: ``STRONGREF_STATE = False``, ``copy()`` returns
-    an unbound proxy bound to the same Rust state_id.
+    an unbound proxy on a copy-on-write binding of the same Rust state
+    (``rust_state_binding``, angr-mx00p.112).
     """
 
     STRONGREF_STATE: bool = False
 
     def __init__(self, rust_mgr, state_id, python_mgr=None):
         object.__setattr__(self, "_mgr", rust_mgr)
-        object.__setattr__(self, "_state_id", state_id)
         # angr-7jv5: optional reference to the Python wrapper so write paths
         # can bump ``_stats_proxy_*`` counters. ``rust_mgr`` is the PyO3
         # builtin and has no Python attributes; only the wrapper does.
         object.__setattr__(self, "_python_mgr", python_mgr)
+        object.__setattr__(self, "_binding", state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id))
         # Lazy Rust solver fork — created on first eval/satisfiable/min/max.
         # Invalidated on add() so the next solve picks up the new constraint.
         object.__setattr__(self, "_rust_ctx_cache", None)
@@ -735,8 +764,13 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
-        """Return a new proxy bound to the same Rust state."""
-        clone = RustSolverProxyPlugin(self._mgr, self._state_id, python_mgr=self._python_mgr)
+        """Return a new proxy on a copy-on-write binding of this state.
+
+        The copy reads this state as of the copy; its first ``add`` forks its
+        own Rust state (``RustStateBinding.writable_id``), so a successor's
+        guard never lands on a sibling's solver (angr-mx00p.112).
+        """
+        clone = RustSolverProxyPlugin(self._mgr, self._binding.copy(_memo), python_mgr=self._python_mgr)
         # Carry over variable-tracking dicts — SimSolver.copy() does the
         # same so SimProc state.copy() preserves register_variable refs.
         clone.all_variables = list(self.all_variables)
@@ -857,8 +891,9 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # angr-4aach: fire the ``constraints`` inspect event around the
         # write-through, matching Python's SimSolver.add. BP_BEFORE may
         # replace ``added_constraints``; re-read it before installing.
+        state_id = self._write_state_id
         if self._python_mgr is not None:
-            overridden = self._python_mgr._cb_inspect_constraints(self._state_id, "before", added_constraints=filtered)
+            overridden = self._python_mgr._cb_inspect_constraints(state_id, "before", added_constraints=filtered)
             if overridden is not None and overridden is not filtered:
                 filtered = list(overridden)
                 if not filtered:
@@ -866,7 +901,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         try:
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_solver_adds += len(filtered)
-            self._mgr.add_constraints_to_state(self._state_id, filtered)
+            self._mgr.add_constraints_to_state(state_id, filtered)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: write-through failed; the Rust
             # state's solver did not get the constraint. Subsequent eval()
@@ -875,12 +910,12 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
             # would mask the divergence.
             l.warning(
                 "RustSolverProxyPlugin.add: write-through failed for state %d: %s",
-                self._state_id,
+                state_id,
                 e,
             )
             raise
         if self._python_mgr is not None:
-            self._python_mgr._cb_inspect_constraints(self._state_id, "after")
+            self._python_mgr._cb_inspect_constraints(state_id, "after")
         # Invalidate the cached fork so the next eval picks up the new
         # constraint (the fork was cloned from the pre-add solver state).
         # angr-87e56: release the superseded fork on the owning thread instead
@@ -1097,11 +1132,11 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         # first attribute assignment below would try to look up self._mgr
         # before it exists.
         object.__setattr__(self, "_mgr", rust_mgr)
-        object.__setattr__(self, "_state_id", state_id)
         object.__setattr__(self, "_arch", arch)
         object.__setattr__(self, "_cache", {})  # name -> claripy BVV/BVS
         # angr-7jv5: optional Python-wrapper handle for counter bumps.
         object.__setattr__(self, "_python_mgr", python_mgr)
+        object.__setattr__(self, "_binding", state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id))
         # SimMemory plugin protocol surface — stored via object.__setattr__
         # so our overridden __setattr__ does not route them through to Rust.
         object.__setattr__(self, "id", "reg")
@@ -1117,8 +1152,9 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         # to the real register. Mirror __getattr__/__setattr__, which both
         # canonicalize via _canonical_name before touching Rust.
         canonical_names = [self._canonical_name(name) for name in names]
+        state_id = self._state_id
         try:
-            values = self._mgr.get_state_registers_batch(self._state_id, canonical_names)
+            values = self._mgr.get_state_registers_batch(state_id, canonical_names)
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: prefetch is a best-effort
             # optimization; missing prefetch falls back to per-register
@@ -1140,15 +1176,18 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         if name in self._cache:
             return self._cache[name]
         canonical = self._canonical_name(name)
+        # Resolved outside the try: a released binding must raise, not read
+        # as "no such register" (angr-mx00p.112).
+        state_id = self._state_id
         try:
-            val = self._mgr.get_state_register(self._state_id, canonical)
+            val = self._mgr.get_state_register(state_id, canonical)
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: re-raise as AttributeError so callers
             # using hasattr()/getattr() see "no such register". Note: this
             # masks transient FFI errors as missing-attribute — log debug so
             # they're visible under --debug.
             l.debug(
-                "get_state_register(sid=%d, name=%r) failed; reporting as AttributeError", self._state_id, canonical
+                "get_state_register(sid=%d, name=%r) failed; reporting as AttributeError", state_id, canonical
             )
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(canonical)
@@ -1173,8 +1212,9 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         do we fall back to the orphan BVS — same loss-of-identity behavior as
         before, but at least with a debug log so the gap is visible.
         """
+        state_id = self._state_id
         try:
-            ast = self._mgr.get_state_register_ast(self._state_id, name)
+            ast = self._mgr.get_state_register_ast(state_id, name)
         except (RuntimeError, ValueError, KeyError, AttributeError):
             # cat-(b) FALLBACK WITH LOSS: AST recovery failed; we mint
             # an orphan BVS below. Solver writes through that BVS will
@@ -1268,7 +1308,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         ast = self._coerce_to_ast(value, width)
         if self._python_mgr is not None:
             self._python_mgr._stats_proxy_reg_writes += 1
-        self._mgr.set_state_register_symbolic_ast(self._state_id, canonical, ast)
+        self._mgr.set_state_register_symbolic_ast(self._write_state_id, canonical, ast)
         # angr-yxar: invalidate cached aliases whose (offset, size) overlaps
         # the write. A partial write like ``state.regs.eax = sym32`` must
         # drop any cached ``rax`` / ``ax`` / ``al`` / ``ah`` entry so a later
@@ -1384,15 +1424,14 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
     # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
-        """Return a new proxy bound to the same Rust state.
+        """Return a new proxy on a copy-on-write binding of this state.
 
         Mirrors ``SimMemoryMixin.copy``: returns an unbound plugin (no
-        ``state`` set) of the same type. The underlying Rust state is
-        shared by ``state_id`` — the proxy does not own a CoW copy;
-        ``copy()`` is only meaningful here as part of ``SimState.copy()``
-        plugin walk. True per-state CoW lives in ``RustStateProxy.copy()``.
+        ``state`` set) of the same type. The copy reads this state as of the
+        copy and forks its own Rust state on its first write
+        (``rust_state_binding``, angr-mx00p.112).
         """
-        return RustRegisterProxy(self._mgr, self._state_id, self._arch, python_mgr=self._python_mgr)
+        return RustRegisterProxy(self._mgr, self._binding.copy(_memo), self._arch, python_mgr=self._python_mgr)
 
 
 class RustMemoryProxy(_ProxyStatePluginMixin):
@@ -1422,7 +1461,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         addr_witness_cache=None,
     ):
         self._mgr = rust_mgr
-        self._state_id = state_id
+        self._binding = state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id)
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
         # angr-pxq0i: owning thread id of ``_solver_ctx``, captured on the
@@ -1478,17 +1517,17 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
     # _ProxyStatePluginMixin.
 
     def copy(self, _memo=None):
-        """Return a new proxy bound to the same Rust state.
+        """Return a new proxy on a copy-on-write binding of this state.
 
         Mirrors ``SimMemoryMixin.copy``: returns an unbound plugin (no
-        ``state`` set) of the same type. The underlying Rust state is shared
-        by ``state_id`` — the proxy does not own a CoW copy; ``copy()`` is
-        only meaningful here as part of ``SimState.copy()`` plugin walk.
-        True per-state CoW lives in ``RustStateProxy.copy()``.
+        ``state`` set) of the same type. The copy reads this state as of the
+        copy and forks its own Rust state on its first store, so a callback
+        successor's writes never reach the pending state or a sibling
+        (``rust_state_binding``, angr-mx00p.112).
         """
         return RustMemoryProxy(
             self._mgr,
-            self._state_id,
+            self._binding.copy(_memo),
             self._arch,
             endness=self.endness,
             python_mgr=self._python_mgr,
@@ -1592,12 +1631,13 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         which are the only place this proxy stands in for ``state.memory``.
         """
         pin = addr == conc
+        state_id = self._write_state_id
         try:
-            self._mgr.add_constraints_to_state(self._state_id, [pin])
+            self._mgr.add_constraints_to_state(state_id, [pin])
         except Exception as e:
             l.debug(
                 "RustMemoryProxy._pin_addr_witness: state pin failed for state %d: %s",
-                self._state_id,
+                state_id,
                 e,
             )
         # Also pin the concretization solver the proxy itself evals against —
@@ -1801,7 +1841,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
         if isinstance(addr, claripy.ast.Base) and not addr.concrete:
             data_ast = self._data_to_ast(data, size, endness)
-            ok = self._mgr.state_memory_store_symbolic_multi(self._state_id, addr, data_ast)
+            ok = self._mgr.state_memory_store_symbolic_multi(self._write_state_id, addr, data_ast)
             if ok:
                 return
             # angr-p1s02: the lazy Multi-cell path could not route this
@@ -1849,8 +1889,9 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # garbage unconstrained pointer that nobody reads. We still swallow a
             # residual failure and drop the store rather than kill the
             # SimProcedure state (p1s02 keep-alive semantics).
+            state_id = self._write_state_id
             with contextlib.suppress(Exception):
-                self._mgr.set_state_memory_ast_automap(self._state_id, conc, data_ast)
+                self._mgr.set_state_memory_ast_automap(state_id, conc, data_ast)
             return
 
         if isinstance(addr, claripy.ast.Base):
@@ -1904,21 +1945,23 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
     def _store_concrete(self, addr, payload):
         """``set_state_memory_concrete`` with angr's unmapped-write semantics."""
+        state_id = self._write_state_id
         try:
-            self._mgr.set_state_memory_concrete(self._state_id, addr, payload)
+            self._mgr.set_state_memory_concrete(state_id, addr, payload)
         except ValueError as exc:
             if not self._is_unmapped_store(addr, exc):
                 raise
-            self._mgr.set_state_memory_concrete_automap(self._state_id, addr, payload)
+            self._mgr.set_state_memory_concrete_automap(state_id, addr, payload)
 
     def _store_ast(self, addr, ast):
         """``set_state_memory_ast`` with angr's unmapped-write semantics."""
+        state_id = self._write_state_id
         try:
-            self._mgr.set_state_memory_ast(self._state_id, addr, ast)
+            self._mgr.set_state_memory_ast(state_id, addr, ast)
         except ValueError as exc:
             if not self._is_unmapped_store(addr, exc):
                 raise
-            self._mgr.set_state_memory_ast_automap(self._state_id, addr, ast)
+            self._mgr.set_state_memory_ast_automap(state_id, addr, ast)
 
     def _is_unmapped_store(self, addr, exc):
         """Classify a failed Rust store; True means "retry with auto-map".
@@ -2626,7 +2669,8 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
     Rust-side stack. Plugin protocol (``id`` / ``state`` /
     ``set_state`` / ``copy`` / ``init_state`` / ``merge`` / ``widen``)
     matches the existing proxy plugins: ``STRONGREF_STATE = False``,
-    ``copy()`` returns an unbound proxy bound to the same Rust state_id.
+    ``copy()`` returns an unbound proxy on a copy-on-write binding of the
+    same Rust state (``rust_state_binding``, angr-mx00p.112).
     """
 
     STRONGREF_STATE: bool = False
@@ -2635,7 +2679,8 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         import collections as _collections
 
         self._mgr = rust_mgr
-        self._state_id = state_id
+        # Read-only: a copy never writes, so its binding never forks.
+        self._binding = state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(None, state_id)
         # SimStatePlugin protocol attrs.
         self.id = "callstack"
         self.state = None
@@ -2661,7 +2706,7 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
     def copy(self, _memo=None):
         import collections as _collections
 
-        clone = RustCallStackProxyPlugin(self._mgr, self._state_id)
+        clone = RustCallStackProxyPlugin(self._mgr, self._binding.copy(_memo))
         clone.block_counter = _collections.Counter(self.block_counter)
         clone.procedure_data = self.procedure_data
         clone.locals = dict(self.locals)
