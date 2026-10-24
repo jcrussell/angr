@@ -1035,7 +1035,10 @@ class RustCallbackDispatchMixin:
         for succ in all_succs:
             try:
                 cs = succ.callstack
-                top = cs.top if cs else None
+                # ``is not None``, not truthiness: the callstack proxy's
+                # ``__len__`` counts Rust frames, and a state with no Rust
+                # frame still carries the plugin-level ``procedure_data``.
+                top = cs.top if cs is not None else None
                 if top is None:
                     continue
 
@@ -2494,6 +2497,15 @@ class RustCallbackDispatchMixin:
             # Initialize history to prevent IndexError in hooks
             self._init_callback_history(state, event)
 
+            # ``state.callstack`` reads the Rust call frames live by state_id
+            # (angr-6o9p). It is installed before ``_init_callback_callstack``
+            # because the continuation ``procedure_data`` restored there lives
+            # on the plugin itself; installing it afterwards would drop that
+            # data and a ``self.call()`` continuation would refuse to run
+            # (angr-mx00p.61).
+            if event.callback_state_id is not None:
+                self._install_callback_callstack_proxy(state, event.callback_state_id)
+
             # Initialize callstack for SimProcedure continuations
             self._init_callback_callstack(state, event)
 
@@ -2556,16 +2568,6 @@ class RustCallbackDispatchMixin:
             # so the resume path skips the apply.
             if getattr(self, "_use_callback_register_proxy", False) and event.callback_state_id is not None:
                 self._install_callback_register_proxy(state, event.callback_state_id)
-
-            # angr-6o9p (write-through .4): gated install of
-            # ``RustCallStackProxyPlugin`` as ``state.callstack``. When on,
-            # ``state.callstack`` iteration / top-frame attribute access
-            # reads frames live from Rust by ``state_id`` — replacing the
-            # cached-state's empty entry-state callstack with a live view
-            # of the Rust call frames. Off keeps the cached state's plugin
-            # untouched (callbacks see whatever was on the entry state).
-            if getattr(self, "_use_callback_callstack_proxy", False) and event.callback_state_id is not None:
-                self._install_callback_callstack_proxy(state, event.callback_state_id)
 
             # angr-op0dn.14.1.3: seed Rust's break pointers into the heap plugin
             # the first time the bounced proc touches it.

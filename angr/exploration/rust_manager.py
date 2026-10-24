@@ -1005,7 +1005,6 @@ class RustExplorationManager(
         deterministic: bool = False,
         use_callback_register_proxy: bool | None = None,
         use_callback_solver_proxy: bool | None = None,
-        use_callback_callstack_proxy: bool | None = None,
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
         use_simproc_fork_via_rust: bool | None = None,
@@ -1073,16 +1072,6 @@ class RustExplorationManager(
                 otherwise off. Off keeps the existing
                 ``_install_rust_solver_on_callback_state`` monkey-patch path
                 live (which maintains a parallel Python claripy solver).
-            use_callback_callstack_proxy: If True, install
-                ``RustCallStackProxyPlugin`` as ``state.callstack`` on
-                SimProcedure callback states so iteration / top-frame
-                attribute access reads frames live from Rust by ``state_id``
-                via ``get_state_call_stack`` (angr-6o9p, write-through .4).
-                When ``None`` (default), the env var
-                ``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles it on;
-                otherwise off. Off leaves the cached state's (typically
-                entry-state) ``CallStack`` plugin untouched at callback
-                time.
             use_export_callstack_proxy: If True, install
                 ``RustCallStackProxyPlugin`` as ``state.callstack`` on
                 materialized states returned from Rust (stash exports /
@@ -1207,7 +1196,6 @@ class RustExplorationManager(
             use_shared_lineage_solver,
             use_callback_register_proxy,
             use_callback_solver_proxy,
-            use_callback_callstack_proxy,
             use_export_callstack_proxy,
             use_export_memory_proxy,
             use_simproc_fork_via_rust,
@@ -1318,7 +1306,6 @@ class RustExplorationManager(
         use_shared_lineage_solver,
         use_callback_register_proxy,
         use_callback_solver_proxy,
-        use_callback_callstack_proxy,
         use_export_callstack_proxy,
         use_export_memory_proxy,
         use_simproc_fork_via_rust,
@@ -1360,19 +1347,6 @@ class RustExplorationManager(
         # the kwarg is left at its default ``None``.
         self._use_callback_solver_proxy = _resolve_env_flag(
             use_callback_solver_proxy, "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY"
-        )
-
-        # angr-6o9p (write-through .4): gate for installing
-        # ``RustCallStackProxyPlugin`` as ``state.callstack`` on
-        # SimProcedure callback states. Default off leaves the cached
-        # state's CallStack plugin untouched at callback time. When on,
-        # ``_create_state_for_callback`` installs the proxy so iteration
-        # / top-frame attribute access reads frames live from Rust by
-        # ``state_id`` via ``get_state_call_stack``. Env var
-        # ``ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY=1`` toggles default-on
-        # when the kwarg is left at its default ``None``.
-        self._use_callback_callstack_proxy = _resolve_env_flag(
-            use_callback_callstack_proxy, "ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY"
         )
 
         # angr-yk2g (write-through boundary): gate for installing

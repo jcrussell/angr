@@ -485,7 +485,6 @@ class TestProxyMemoryFind:
 # matching Test*Gate class below.
 _GATE_TOGGLES = [
     ("use_callback_solver_proxy", "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "_use_callback_solver_proxy"),
-    ("use_callback_callstack_proxy", "ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY", "_use_callback_callstack_proxy"),
     ("use_export_callstack_proxy", "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "_use_export_callstack_proxy"),
     ("use_export_memory_proxy", "ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "_use_export_memory_proxy"),
     ("use_simproc_fork_via_rust", "ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "_use_simproc_fork_via_rust"),
@@ -1099,23 +1098,20 @@ class TestCallbackProxyRebind:
         assert (solver._state_id, regs._state_id) == (15, 15), "a frame shared by sibling ids keeps its binding"
 
 
-class TestCallbackCallStackProxyGate:
-    """angr-6o9p write-through .4: ``use_callback_callstack_proxy`` gate
-    controls whether ``RustCallStackProxyPlugin`` is installed as
-    ``state.callstack`` on SimProcedure callback states. Default off
-    leaves the cached state's CallStack plugin untouched; on routes
-    iteration / top-frame attribute access through Rust by ``state_id``
-    via ``get_state_call_stack``.
+class TestCallbackCallStackProxy:
+    """angr-6o9p write-through .4: every SimProcedure callback state gets a
+    ``RustCallStackProxyPlugin`` as ``state.callstack``, so iteration /
+    top-frame attribute access reads the Rust frames by ``state_id`` via
+    ``get_state_call_stack``.
     """
 
     def test_install_swaps_state_callstack(self, fauxware_project):
-        """When the gate is on, ``_install_callback_callstack_proxy``
-        replaces ``state.callstack`` with a
-        ``RustCallStackProxyPlugin``."""
+        """``_install_callback_callstack_proxy`` replaces ``state.callstack``
+        with a ``RustCallStackProxyPlugin``."""
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -1130,7 +1126,7 @@ class TestCallbackCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -1152,7 +1148,7 @@ class TestCallbackCallStackProxyGate:
         frame)."""
 
         state = fauxware_project.factory.blank_state(addr=0x40071D)
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -1174,7 +1170,7 @@ class TestCallbackCallStackProxyGate:
         from angr.exploration.rust_state_proxy import RustCallStackFrameProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         sid = mgr._rust_mgr.get_state_ids("found")[0]
@@ -1252,10 +1248,10 @@ class TestCallbackCallStackProxyGate:
 
     def test_merge_widen_return_false(self, fauxware_project):
         """``merge`` / ``widen`` return False on the proxy plugin —
-        cross-state_id callstack merge is out of scope for the gate."""
+        cross-state_id callstack merge is out of scope for the proxy."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -1268,7 +1264,7 @@ class TestCallbackCallStackProxyGate:
         practice."""
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_callstack_proxy(cb_state, seed_id)
@@ -1277,6 +1273,66 @@ class TestCallbackCallStackProxyGate:
         assert proxy.pop() is proxy
         assert proxy.call(0, 0) is proxy
         assert proxy.ret() is proxy
+
+    def test_self_call_continuation_runs(self, fauxware_project):
+        """A SimProcedure's ``self.call()`` continuation must resume with its
+        saved locals (angr-mx00p.61).
+
+        Two ways the proxy lost the continuation's ``procedure_data``: it was
+        installed after ``_init_callback_callstack`` restored the data, so it
+        replaced the plugin holding it and angr refused the continuation
+        ("inapplicable stack frame"); and ``_capture_continuation_data``
+        tested the plugin's truthiness, which is its Rust frame count, so a
+        state with no Rust frame never stashed the caller's locals.
+        """
+        from angr import claripy
+
+        proj = fauxware_project
+        hook, callee, done = 0x4008C0, 0x4008D0, 0x4008E0
+        seen = []
+
+        class Caller(angr.SimProcedure):
+            local_vars = ("marker",)
+
+            def run(self):
+                self.marker = 0x1234
+                self.call(callee, [], "after", prototype="void x()")
+
+            def after(self):
+                seen.append(self.marker)
+                self.jump(done)
+
+        class Callee(angr.SimProcedure):
+            def run(self):
+                return 7
+
+        class Done(angr.SimProcedure):
+            NO_RET = True
+
+            def run(self):
+                seen.append("done")
+                self.exit(0)
+
+        try:
+            proj.hook(hook, Caller(), replace=True)
+            proj.hook(callee, Callee(), replace=True)
+            proj.hook(done, Done(), replace=True)
+            state = proj.factory.blank_state(
+                addr=hook,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.regs.rsp = claripy.BVV(0x7FFF0000, 64)
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=20)
+        finally:
+            for addr in (hook, callee, done):
+                proj.unhook(addr)
+
+        assert seen == [0x1234, "done"], f"continuation did not resume with its locals: {seen}"
+        assert mgr.stash_counts()["errored"] == 0
 
 
 class TestExportCallStackProxyGate:

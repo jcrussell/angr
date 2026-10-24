@@ -2545,10 +2545,11 @@ class RustCallStackProxy(_RustCallStackFramesMixin):
 class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin):
     """SimStatePlugin-shaped proxy that reads frames from Rust on demand.
 
-    Installed as ``state.callstack`` on SimProcedure callback states under
-    the ``use_callback_callstack_proxy`` gate on
-    ``RustExplorationManager`` (angr-6o9p). Mirrors the memory, register
-    and solver proxies' install pattern.
+    Installed as ``state.callstack`` on every SimProcedure, syscall and
+    VEX-fallback callback state by
+    ``RustCallbackDispatchMixin._install_callback_callstack_proxy``
+    (angr-6o9p). Mirrors the memory, register and solver proxies' install
+    pattern.
 
     Read-through model:
       * Iteration / indexing / ``len()`` route through

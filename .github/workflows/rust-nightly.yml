@@ -135,7 +135,6 @@ jobs:
         # that is fixed.
         env:
           ANGR_RUST_USE_CALLBACK_SOLVER_PROXY: "1"
-          ANGR_RUST_USE_CALLBACK_CALLSTACK_PROXY: "1"
           ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST: "1"
           ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY: "1"
           ANGR_RUST_USE_EXPORT_MEMORY_PROXY: "1"
