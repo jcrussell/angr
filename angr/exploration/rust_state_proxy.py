@@ -1458,6 +1458,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         shared_ctx_getter=None,
         fallback_memory=None,
         addr_witness_cache=None,
+        pin_state_witness=False,
     ):
         self._mgr = rust_mgr
         self._binding = state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id)
@@ -1486,6 +1487,9 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # setup and never synced to Rust at the concretized address — survive,
         # matching DefaultMemory semantics.
         self._fallback_memory = fallback_memory
+        # Whether a symbolic-address load pins its witness onto the Rust state
+        # (``_pin_addr_witness``): only for a callback state's memory.
+        self._pin_state_witness = pin_state_witness
         # angr-yodz: shared-context getter from the parent RustStateProxy so
         # symbolic-addr concretization honors constraints added via the same
         # proxy's add_constraints. None for standalone construction.
@@ -1532,6 +1536,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             python_mgr=self._python_mgr,
             fallback_memory=self._fallback_memory,
             addr_witness_cache=dict(self._addr_witness_cache),
+            pin_state_witness=self._pin_state_witness,
         )
 
     # ---------------------------------------------------------------
@@ -1610,7 +1615,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                 self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
                 self._solver_ctx_owner = threading.get_ident()
 
-    def _pin_addr_witness(self, addr, conc):
+    def _pin_addr_witness(self, addr, conc, *, on_state=True):
         """Pin a symbolic address to its chosen concretization on the STATE solver.
 
         Distinct addresses built on one unconstrained base symbol (e.g.
@@ -1626,19 +1631,25 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         concretization. This is NOT export-time pre-pinning of a recovered
         model (bd constraint-export-no-pre-pin): we are committing to a write
         address we ourselves chose, on a scratch stack pointer that is not part
-        of any goal constraint. Confined to SimProcedure callback states,
-        which are the only place this proxy stands in for ``state.memory``.
+        of any goal constraint.
+
+        ``on_state=False`` pins only the proxy's own concretization solver. A
+        *load* passes it unless the proxy stands in for a callback state's
+        ``state.memory`` (``pin_state_witness``): a read through a view or an
+        exported state must not change the Rust state's constraints
+        (angr-vmi2l.259). A store always pins the state: it writes there.
         """
         pin = addr == conc
-        state_id = self._write_state_id
-        try:
-            self._mgr.add_constraints_to_state(state_id, [pin])
-        except Exception as e:
-            l.debug(
-                "RustMemoryProxy._pin_addr_witness: state pin failed for state %d: %s",
-                state_id,
-                e,
-            )
+        if on_state:
+            state_id = self._write_state_id
+            try:
+                self._mgr.add_constraints_to_state(state_id, [pin])
+            except Exception as e:
+                l.debug(
+                    "RustMemoryProxy._pin_addr_witness: state pin failed for state %d: %s",
+                    state_id,
+                    e,
+                )
         # Also pin the concretization solver the proxy itself evals against —
         # add_constraints_to_state lands on the STATE solver (what native
         # execution uses), but the proxy concretizes symbolic addresses via
@@ -1701,7 +1712,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                     # this and every later ebp-relative concretization — both in
                     # the proxy and in native execution. Also cache it so a
                     # repeat load of the identical AST is stable.
-                    self._pin_addr_witness(orig_addr, resolved)
+                    self._pin_addr_witness(orig_addr, resolved, on_state=self._pin_state_witness)
                     self._addr_witness_cache[orig_addr.hash()] = resolved
                     addr = resolved
 

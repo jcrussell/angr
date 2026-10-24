@@ -2010,8 +2010,15 @@ class RustCallbackDispatchMixin:
         # concretized address, so a proxy load that Rust can't satisfy falls
         # back here — matching DefaultMemory semantics.
         prev_memory = getattr(state, "memory", None)
+        # ``pin_state_witness``: a SimProcedure's symbolic-address load commits
+        # the callback state to its witness, as angr's memory does (angr-5rjbq).
         proxy = RustMemoryProxy(
-            self._rust_mgr, state_id, self._project.arch, python_mgr=self, fallback_memory=prev_memory
+            self._rust_mgr,
+            state_id,
+            self._project.arch,
+            python_mgr=self,
+            fallback_memory=prev_memory,
+            pin_state_witness=True,
         )
         proxy.set_state(state)
         # ``SimState.register_plugin`` would re-run ``set_state`` and update
