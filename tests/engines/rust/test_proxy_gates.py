@@ -5,7 +5,6 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
-import types
 
 import pytest
 
@@ -476,70 +475,6 @@ class TestProxyMemoryFind:
 
         with pytest.raises(NotImplementedError, match="char_size"):
             proxy.memory.find(fauxware_project.entry, b"x", 16, char_size=2)
-
-
-# Gate-toggle parametrization table (angr-evu3): each SimProc-callback /
-# export-pipeline proxy gate shares the same 4-way precedence contract —
-# default off, kwarg on, env var on, explicit kwarg beats env var. Adding a
-# gate is a one-line entry here; per-gate behavioral tests live in the
-# matching Test*Gate class below.
-_GATE_TOGGLES = [
-    ("use_export_callstack_proxy", "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "_use_export_callstack_proxy"),
-    ("use_export_memory_proxy", "ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "_use_export_memory_proxy"),
-]
-
-
-@pytest.mark.parametrize(
-    ("kwarg", "env_var", "attr"),
-    _GATE_TOGGLES,
-    ids=[g[0] for g in _GATE_TOGGLES],
-)
-class TestProxyGateToggles:
-    """angr-evu3: the SimProc-callback and export-pipeline proxy gates share
-    an identical 4-way precedence contract — default off, ``kwarg=True`` on,
-    ``ANGR_RUST_USE_*=1`` env var on, and an explicit ``kwarg=False`` beating
-    the env var. This consolidates the former 6 gates x 4 toggle tests (once
-    duplicated verbatim across the Test*Gate classes) into one parametrized
-    table; the per-gate behavioral tests stay in their own classes. The
-    ``ids`` name each gate so a failure reads ``...[use_export_memory_proxy]``.
-    """
-
-    def test_gate_default_off(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
-        """Without the kwarg or env var, the gate is off.
-
-        Clears the gate's env var so the test is hermetic under a
-        gates-on CI job (nightly-ci.yml::proxy_gates_on sets the four
-        clean gates process-wide; this test asserts the *default*, which
-        must be measured with the ambient env removed).
-        """
-
-        monkeypatch.delenv(env_var, raising=False)
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert getattr(mgr, attr) is False
-
-    def test_gate_kwarg_on(self, fauxware_project, kwarg, env_var, attr):
-        """Explicit ``kwarg=True`` enables the gate."""
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], **{kwarg: True})
-        assert getattr(mgr, attr) is True
-
-    def test_gate_env_var_on(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
-        """``ANGR_RUST_USE_*=1`` toggles the default on."""
-
-        monkeypatch.setenv(env_var, "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-        assert getattr(mgr, attr) is True
-
-    def test_gate_kwarg_beats_env_var(self, fauxware_project, monkeypatch, kwarg, env_var, attr):
-        """An explicit ``kwarg=False`` beats the env var."""
-
-        monkeypatch.setenv(env_var, "1")
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], **{kwarg: False})
-        assert getattr(mgr, attr) is False
 
 
 class TestCallbackMemoryProxyInstall:
@@ -1094,47 +1029,37 @@ class TestCallbackProxyRebind:
     that frame's proxy binding: once Rust retires the frame's id (the parallel
     scheduler does), reads raise ``state N not found`` (angr-mx00p.86)."""
 
-    @staticmethod
-    def _proxies(state_id):
-        import archinfo
+    def test_bind_export_points_every_proxy_at_one_binding(self, fauxware_project):
+        from angr.exploration.rust_state_proxy import RustRegisterProxy
 
-        from angr.exploration.rust_state_proxy import RustRegisterProxy, RustSolverProxyPlugin
-
-        solver = RustSolverProxyPlugin(None, state_id)
-        object.__setattr__(solver, "_rust_ctx_cache", object())
-        regs = RustRegisterProxy(None, state_id, archinfo.ArchAMD64())
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        target = fauxware_project.factory.entry_state()
+        regs = RustRegisterProxy(mgr._rust_mgr, 10**9, target.arch, python_mgr=mgr)
         regs._cache["rax"] = 1
-        return solver, regs
+        target.register_plugin("registers", regs)
+        mgr._bind_export(target, sid)
+        bindings = {id(target.plugins[n]._binding) for n in ("memory", "registers", "solver", "callstack")}
+        assert len(bindings) == 1
+        assert regs._state_id == sid and not regs._cache
 
-    def test_rebind_points_both_proxies_at_the_target(self):
-        from angr.exploration.rust_state_export import RustStateExportMixin
-
-        solver, regs = self._proxies(15)
-        state = types.SimpleNamespace(plugins={"solver": solver, "registers": regs})
-        RustStateExportMixin._rebind_callback_proxies(state, 23)
-        assert solver._state_id == 23 and solver._rust_ctx_cache is None
-        assert regs._state_id == 23 and not regs._cache
-
-    def test_copy_sees_the_target_and_restores_a_shared_source(self):
-        from angr.exploration.rust_state_export import RustStateExportMixin
-
-        solver, regs = self._proxies(15)
-        seen = {}
-
-        class Source:
-            plugins = {"solver": solver, "registers": regs}
-
-            def copy(self):
-                seen["ids"] = (solver._state_id, regs._state_id)
-                return types.SimpleNamespace(plugins={"solver": solver.copy(), "registers": regs.copy()})
-
-        copied = RustStateExportMixin._copy_bound_to(Source(), 23)
-        assert seen["ids"] == (23, 23), "SimState.copy reads the pc through the proxy: it must see the live id"
-        assert (solver._state_id, regs._state_id) == (15, 15), "a frame shared by sibling ids keeps its binding"
-        # The copy is the materialized state for 23 itself, not a
+    def test_copy_sees_the_target_and_restores_a_shared_source(self, fauxware_project):
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        source = fauxware_project.factory.entry_state()
+        mgr._bind_export(source, sid)
+        old = source.memory._binding
+        old._released = "retired by the scheduler"
+        copied = mgr._copy_bound_to(source, sid)
+        assert source.memory._binding is old, "a frame shared by sibling ids keeps its binding"
+        # The copy is the materialized state for ``sid`` itself, not a
         # copy-on-write child of it (angr-mx00p.112).
-        for plugin in copied.plugins.values():
-            assert not plugin._binding.is_virtual and plugin._binding.raw_id == 23
+        for name in ("memory", "solver", "callstack"):
+            binding = copied.plugins[name]._binding
+            assert not binding.is_virtual and binding.raw_id == sid
+        assert copied.solver._state_id == sid
 
 
 class TestCallbackCallStackProxy:
@@ -1374,213 +1299,30 @@ class TestCallbackCallStackProxy:
         assert mgr.stash_counts()["errored"] == 0
 
 
-class TestExportCallStackProxyGate:
-    """angr-yk2g write-through boundary: ``use_export_callstack_proxy``
-    gate controls whether ``_sync_rust_callstack_to_state`` installs a
-    ``RustCallStackProxyPlugin`` as ``state.callstack`` (read-through to
-    Rust) on materialized states, or rebuilds a ``CallStack`` linked-list
-    chain via ``register_plugin`` (eager reconstruction). Default off
-    keeps the eager path live; on routes ``state.callstack`` reads
-    through Rust by ``state_id`` via ``get_state_call_stack`` — matching
-    the write-through model used for memory / registers / solver.
-    """
+class TestExportProxies:
+    """An exported state's memory and call stack are live views of its Rust
+    state (angr-yk2g, angr-ul4k, angr-mx00p.61); the lifetime and copy
+    contract is pinned in ``test_export_live_views.py``."""
 
-    def test_sync_off_empty_stack_no_op(self, fauxware_project):
-        """Gate off, empty Rust stack: ``_sync_rust_callstack_to_state``
-        early-returns and leaves ``state.callstack`` as the template
-        ``CallStack`` (not a proxy)."""
-        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
-
-        state = fauxware_project.factory.blank_state(addr=0x40071D)  # no init prefix: empty stack
-        # Explicit kwarg=False pins the eager (off) path regardless of any
-        # ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1 (rust-nightly.yml
-        # proxy_gates_on soak) — kwarg beats env in _resolve_env_flag.
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=False)
-        assert mgr._use_export_callstack_proxy is False
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        assert mgr._rust_mgr.get_state_call_stack(seed_id) == []
-        target = fauxware_project.factory.entry_state()
-        original_callstack = target.callstack
-        mgr._sync_rust_callstack_to_state(target, seed_id)
-        # Eager path: empty frames → no register_plugin call.
-        assert target.callstack is original_callstack
-        assert not isinstance(target.callstack, RustCallStackProxyPlugin)
-
-    def test_sync_on_installs_proxy(self, fauxware_project):
-        """Gate on: ``_sync_rust_callstack_to_state`` installs a
-        ``RustCallStackProxyPlugin`` bound to ``state_id``."""
-        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
+    def test_found_state_reads_rust_through_proxies(self, fauxware_project):
+        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin, RustMemoryProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        target = fauxware_project.factory.entry_state()
-        mgr._sync_rust_callstack_to_state(target, seed_id)
-        assert isinstance(target.callstack, RustCallStackProxyPlugin)
-        assert target.callstack._state_id == seed_id
-        assert target.callstack.state is target
-        assert target.callstack.id == "callstack"
-        assert target.callstack.category == "callstack"
-
-    def test_sync_on_empty_rust_stack_installs_proxy(self, fauxware_project):
-        """Gate on: empty Rust call stack still installs the proxy —
-        unlike the eager path which is a no-op on empty frames, the
-        proxy install short-circuits the FFI read entirely. The
-        installed proxy reports len 0."""
-        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
-
-        state = fauxware_project.factory.blank_state(addr=0x40071D)  # no init prefix: empty stack
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        target = fauxware_project.factory.entry_state()
-        # Sanity: seed state has no Rust frames yet.
-        assert mgr._rust_mgr.get_state_call_stack(seed_id) == []
-        mgr._sync_rust_callstack_to_state(target, seed_id)
-        # Gate on: proxy is installed regardless of empty stack.
-        assert isinstance(target.callstack, RustCallStackProxyPlugin)
-        assert len(target.callstack) == 0
-
-    def test_export_pipeline_uses_proxy_when_gated(self, fauxware_project):
-        """End-to-end: after explore(), materialized states from the
-        ``found`` stash carry a ``RustCallStackProxyPlugin`` instead of
-        a ``CallStack`` linked-list when the gate is on."""
-        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         mgr.explore(find=0x4006ED)
         assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
         found = mgr.found[0]
-        assert isinstance(found.callstack, RustCallStackProxyPlugin)
-        # Top-frame attribute access reads frames live from Rust.
         sid = mgr._rust_mgr.get_state_ids("found")[0]
+        assert isinstance(found.memory, RustMemoryProxy)
+        assert found.memory._state_id == sid
+        assert isinstance(found.callstack, RustCallStackProxyPlugin)
         raw = mgr._rust_mgr.get_state_call_stack(sid)
-        assert len(found.callstack) == len(raw)
         # find=0x4006ed is inside main, so the stack must be non-empty;
         # an empty exported stack is a real regression.
         assert raw, "exported call stack must be non-empty at find=0x4006ed"
-        expected = raw[-1]
-        assert found.callstack.func_addr == expected[1]
-        assert found.callstack.ret_addr == expected[2]
-
-    def test_export_pipeline_uses_chain_when_off(self, fauxware_project):
-        """End-to-end: gate off keeps the eager ``CallStack`` chain
-        reconstruction on materialized states from ``found``."""
-        from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
-        from angr.state_plugins.callstack import CallStack
-
-        state = fauxware_project.factory.entry_state()
-        # Explicit kwarg=False pins the eager chain path under the rust-nightly.yml
-        # proxy_gates_on soak (ambient ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1).
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_callstack_proxy=False)
-        assert mgr._use_export_callstack_proxy is False
-        mgr.explore(find=0x4006ED)
-        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
-        found = mgr.found[0]
-        assert isinstance(found.callstack, CallStack)
-        assert not isinstance(found.callstack, RustCallStackProxyPlugin)
-
-
-class TestExportMemoryProxyGate:
-    """angr-ul4k write-through boundary: ``use_export_memory_proxy`` gate
-    controls whether ``_sync_rust_memory_to_state`` installs a
-    ``RustMemoryProxy`` as ``state.memory`` (read-through to Rust) on
-    materialized states, or pushes Rust pages back into the SimState's
-    claripy memory via ``state.memory.store(...)`` (eager writeback).
-    Default off keeps the eager path live; on routes ``state.memory.load``
-    through Rust by ``state_id`` — matching the write-through model used
-    for callstack / registers / solver.
-    """
-
-    def test_sync_off_uses_eager_writeback(self, fauxware_project):
-        """Gate off: ``_sync_rust_memory_to_state`` keeps the SimState's
-        original claripy memory plugin (no ``RustMemoryProxy`` install)."""
-        from angr.exploration.rust_state_proxy import RustMemoryProxy
-
-        state = fauxware_project.factory.entry_state()
-        # Explicit kwarg=False pins the eager writeback path under the rust-nightly.yml
-        # proxy_gates_on soak (ambient ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1).
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=False)
-        assert mgr._use_export_memory_proxy is False
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        target = fauxware_project.factory.entry_state()
-        original_memory = target.memory
-        mgr._sync_rust_memory_to_state(target, seed_id)
-        # Eager path: no proxy install; the original claripy memory plugin
-        # stays in place (possibly mutated by store() calls, but identity
-        # is preserved).
-        assert target.memory is original_memory
-        assert not isinstance(target.memory, RustMemoryProxy)
-
-    def test_sync_on_installs_proxy(self, fauxware_project):
-        """Gate on: ``_sync_rust_memory_to_state`` installs a
-        ``RustMemoryProxy`` bound to ``state_id`` and skips the page-by-page
-        writeback entirely."""
-        from angr.exploration.rust_state_proxy import RustMemoryProxy
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=True)
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        target = fauxware_project.factory.entry_state()
-        mgr._sync_rust_memory_to_state(target, seed_id)
-        assert isinstance(target.memory, RustMemoryProxy)
-        assert target.memory._state_id == seed_id
-        assert target.memory.state is target
-        assert target.memory.id == "mem"
-        assert target.memory.category == "mem"
-
-    def test_sync_on_skips_symbolic_object_export(self, fauxware_project, monkeypatch):
-        """Gate on: the eager pull path is short-circuited — neither the
-        page export nor the follow-on
-        ``_sync_rust_symbolic_objects_to_state`` call runs. We monkey-patch
-        the Python-side symbolic-objects helper (the Rust FFI methods on
-        ``_rust_mgr`` are read-only PyO3 attributes) to assert it never
-        fires under the gate."""
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=True)
-        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
-        target = fauxware_project.factory.entry_state()
-        calls: list[int] = []
-
-        def _spy(self, _state, sid):
-            calls.append(sid)
-
-        monkeypatch.setattr(type(mgr), "_sync_rust_symbolic_objects_to_state", _spy)
-        mgr._sync_rust_memory_to_state(target, seed_id)
-        # Proxy install short-circuits before the symbolic-AST helper runs.
-        assert calls == []
-
-    def test_export_pipeline_uses_proxy_when_gated(self, fauxware_project):
-        """End-to-end: after explore(), materialized states from the
-        ``found`` stash carry a ``RustMemoryProxy`` instead of the original
-        claripy memory plugin when the gate is on."""
-        from angr.exploration.rust_state_proxy import RustMemoryProxy
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=True)
-        mgr.explore(find=0x4006ED)
-        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
-        found = mgr.found[0]
-        assert isinstance(found.memory, RustMemoryProxy)
-
-    def test_export_pipeline_uses_eager_when_off(self, fauxware_project):
-        """End-to-end: gate off keeps the eager page writeback on
-        materialized states from ``found`` (no ``RustMemoryProxy``).
-
-        Passes ``use_export_memory_proxy=False`` explicitly so the off-path
-        is exercised even under a gates-on CI env (kwarg=False beats the env
-        var in the 4-way precedence contract).
-        """
-        from angr.exploration.rust_state_proxy import RustMemoryProxy
-
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_export_memory_proxy=False)
-        assert mgr._use_export_memory_proxy is False
-        mgr.explore(find=0x4006ED)
-        assert mgr.found, "explore(find=0x4006ed) must reach target on fauxware — find regression"
-        found = mgr.found[0]
-        assert not isinstance(found.memory, RustMemoryProxy)
+        assert len(found.callstack) == len(raw)
+        assert found.callstack.func_addr == raw[-1][1]
+        assert found.callstack.ret_addr == raw[-1][2]
 
 
 class TestSimProcForkViaRustGate:

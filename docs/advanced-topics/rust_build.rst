@@ -199,9 +199,6 @@ because a ``schedule`` fires only from the default branch.
    * - Default-engine parity (stock tests under ``ANGR_DEFAULT_ENGINE=rust``)
      - ``rust-nightly.yml::default_engine_parity``
      - ``tests/engines/rust/test_default_engine_env_parity.py``, ``tests/engines/rust/test_default_engine_flag.py``
-   * - Default-off write-through proxy gates forced on
-     - ``rust-nightly.yml::proxy_gates_on``
-     - ``tests/engines/rust/`` (the gate list is the job's ``env``)
    * - Showcase demos still run
      - ``rust-nightly.yml::showcase_smoke``
      - ``tests/benchmarks/show_all.py``

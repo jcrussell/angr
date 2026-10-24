@@ -901,8 +901,8 @@ impl SymbolicMemory {
     ///
     /// Phase 2 (angr-qh5u): also flushes Multi cells installed by the
     /// lazy STORE path (`install_multi_for_candidates_safe`). Each Multi
-    /// byte collapses to a 1-byte symbolic_object so the existing
-    /// `_sync_rust_symbolic_objects_to_state` exporter picks it up.
+    /// byte collapses to a 1-byte symbolic_object so a snapshot export
+    /// (`_load_snapshot_pages` in `rust_state_export.py`) picks it up.
     /// Without this step Multi bytes would be invisible to Python on
     /// state export — their pages would be exported as if the bytes
     /// were concrete.

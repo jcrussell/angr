@@ -327,8 +327,9 @@ class _ProxyStatePluginMixin:
     # Copy-on-write binding (angr-mx00p.112). ``_binding`` names the Rust
     # state; ``_state_id`` is the id reads go to and ``_write_state_id`` the
     # id a write goes to (it materializes a copied plugin's own fork first).
-    # Assigning ``_state_id`` rebinds the plugin to a fresh root binding, the
-    # shape the export side's rebinding (``_rebind_callback_proxies``) uses.
+    # Assigning ``_state_id`` rebinds the plugin to a fresh root binding of
+    # its own; ``_rebind`` points it at a binding its state's other proxies
+    # share (``RustStateExportMixin._bind_export``).
     @property
     def _state_id(self):
         return self.__dict__["_binding"].state_id
@@ -340,6 +341,18 @@ class _ProxyStatePluginMixin:
     @property
     def _write_state_id(self):
         return self.__dict__["_binding"].writable_id()
+
+    def _rebind(self, binding):
+        """Point this plugin at ``binding`` and drop what it cached for the old state."""
+        object.__setattr__(self, "_binding", binding)
+        self._drop_state_caches()
+
+    def _drop_state_caches(self):
+        """Forget per-state caches (register values, solver forks).
+
+        Run whenever the Rust state behind the plugin changes under it: a
+        rebinding, or Rust stepping the state the plugin names.
+        """
 
     def set_state(self, state):
         """SimStatePlugin hook — invoked on plugin install / copy.
@@ -725,8 +738,11 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
 
     STRONGREF_STATE: bool = False
 
-    def __init__(self, rust_mgr, state_id, python_mgr=None):
+    def __init__(self, rust_mgr, state_id, python_mgr=None, fork_timeout_ms=None):
         object.__setattr__(self, "_mgr", rust_mgr)
+        # Z3 timeout applied to every solver fork this plugin queries; an
+        # exported state sets it (post-exploration solves run long).
+        object.__setattr__(self, "_fork_timeout_ms", fork_timeout_ms)
         # angr-7jv5: optional reference to the Python wrapper so write paths
         # can bump ``_stats_proxy_*`` counters. ``rust_mgr`` is the PyO3
         # builtin and has no Python attributes; only the wrapper does.
@@ -770,7 +786,9 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         own Rust state (``RustStateBinding.writable_id``), so a successor's
         guard never lands on a sibling's solver (angr-mx00p.112).
         """
-        clone = RustSolverProxyPlugin(self._mgr, self._binding.copy(_memo), python_mgr=self._python_mgr)
+        clone = RustSolverProxyPlugin(
+            self._mgr, self._binding.copy(_memo), python_mgr=self._python_mgr, fork_timeout_ms=self._fork_timeout_ms
+        )
         # Carry over variable-tracking dicts — SimSolver.copy() does the
         # same so SimProc state.copy() preserves register_variable refs.
         clone.all_variables = list(self.all_variables)
@@ -931,13 +949,17 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
 
     def _get_rust_ctx(self):
         if self._rust_ctx_cache is None:
-            object.__setattr__(
-                self,
-                "_rust_ctx_cache",
-                self._mgr.fork_state_solver(self._state_id),
-            )
+            ctx = self._mgr.fork_state_solver(self._state_id)
+            if self._fork_timeout_ms is not None:
+                ctx.set_timeout(self._fork_timeout_ms)
+            object.__setattr__(self, "_rust_ctx_cache", ctx)
             object.__setattr__(self, "_rust_ctx_cache_owner", threading.get_ident())
         return self._rust_ctx_cache
+
+    def _drop_state_caches(self):
+        _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"), self.__dict__.get("_rust_ctx_cache_owner"))
+        object.__setattr__(self, "_rust_ctx_cache", None)
+        object.__setattr__(self, "_rust_ctx_cache_owner", None)
 
     # Context-access hooks for ``RustSolverProxyBase``: the plugin caches its
     # fork in ``_rust_ctx_cache`` (invalidated on ``add``).
@@ -1141,6 +1163,9 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         object.__setattr__(self, "id", "reg")
         object.__setattr__(self, "endness", getattr(arch, "register_endness", "Iend_LE"))
         object.__setattr__(self, "state", None)
+
+    def _drop_state_caches(self):
+        self.__dict__["_cache"].clear()
 
     def prefetch(self, names):
         """Batch-fetch multiple registers in one FFI call and cache them."""
@@ -1513,6 +1538,13 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
     @property
     def category(self):
         return "mem"
+
+    def _drop_state_caches(self):
+        # The symbolic-address concretization fork was taken of the old state.
+        if self.__dict__.get("_shared_ctx_getter") is None:
+            _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
+        self._solver_ctx = None
+        self._solver_ctx_owner = None
 
     STRONGREF_STATE = False
 
@@ -2702,6 +2734,10 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         self.locals = {}
         self.invoke_return_variable = None
         self.jumpkind = "Ijk_Call"
+        # Set on an exported state's call stack (``_bind_export``): when the
+        # Python engine steps the state, ``_manage`` swaps in a plain
+        # ``CallStack`` of the Rust frames and lets it push or pop.
+        self.detach_on_step = False
 
     @property
     def category(self):
@@ -2721,6 +2757,7 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         clone.procedure_data = self.procedure_data
         clone.locals = dict(self.locals)
         clone.invoke_return_variable = self.invoke_return_variable
+        clone.detach_on_step = self.detach_on_step
         return clone
 
     # ---------------------------------------------------------------
@@ -2811,14 +2848,32 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         return self
 
     def _manage(self):
-        """No-op stub for ``CallStack._manage``.
+        """``CallStack._manage``, called by ``add_successor`` after a step.
 
-        Called by ``angr.engines.successors.add_successor`` to push /
-        pop frames based on the state's jumpkind. The Rust interpreter
-        already maintains the canonical call stack; mirroring the
-        push/pop on the Python proxy would diverge state, so this is
-        intentionally inert.
+        On a callback state it is inert: the Rust interpreter maintains the
+        canonical call stack, and mirroring the push/pop on the proxy would
+        diverge it. On an exported state the Python engine is stepping
+        (``detach_on_step``), the successor gets a plain ``CallStack`` of the
+        Rust frames, which then pushes or pops for the step's jumpkind; the
+        no-op would leave its frames behind the step (angr-mx00p.61).
         """
+        if not self.detach_on_step or self.state is None:
+            return None
+        from angr.state_plugins.callstack import CallStack  # pylint: disable=import-outside-toplevel
+
+        chain = CallStack()
+        for call_site, func, ret_addr, sp in reversed(self._frames):
+            chain = CallStack(
+                call_site_addr=call_site,
+                func_addr=func,
+                stack_ptr=sp,
+                ret_addr=ret_addr,
+                jumpkind="Ijk_Call",
+                next_frame=chain,
+            )
+        state = self.state
+        state.register_plugin("callstack", chain)
+        chain._manage()
         return None
 
     def stack_suffix(self, context_sensitivity_level):

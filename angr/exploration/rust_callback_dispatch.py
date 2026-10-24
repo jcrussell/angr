@@ -1943,13 +1943,7 @@ class RustCallbackDispatchMixin:
             plugin = state.plugins.get(name)
             if plugin is None or not isinstance(plugin.__dict__.get("_binding"), RustStateBinding):
                 continue
-            object.__setattr__(plugin, "_binding", root)
-            cache = plugin.__dict__.get("_cache")
-            if cache:
-                cache.clear()
-            if "_rust_ctx_cache" in plugin.__dict__:
-                object.__setattr__(plugin, "_rust_ctx_cache", None)
-                object.__setattr__(plugin, "_rust_ctx_cache_owner", None)
+            plugin._rebind(root)
 
     def _install_lazy_heap_sync(self, state, state_id):
         """Seed Rust's heap_brk / mmap_base into ``state.heap`` on first access.
@@ -2010,6 +2004,11 @@ class RustCallbackDispatchMixin:
         # concretized address, so a proxy load that Rust can't satisfy falls
         # back here — matching DefaultMemory semantics.
         prev_memory = getattr(state, "memory", None)
+        if isinstance(prev_memory, RustMemoryProxy):
+            # A cached frame that was itself a callback state or an export:
+            # its proxy reads the same Rust state, so fall back to the Python
+            # memory behind it rather than stacking one proxy per callback.
+            prev_memory = prev_memory._fallback_memory
         # ``pin_state_witness``: a SimProcedure's symbolic-address load commits
         # the callback state to its witness, as angr's memory does (angr-5rjbq).
         proxy = RustMemoryProxy(

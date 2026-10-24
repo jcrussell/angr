@@ -97,7 +97,7 @@ from pyvex.errors import PyVEXError
 
 from angr import claripy
 from angr.claripy.errors import ClaripyError
-from angr.errors import SimEngineError, SimError, SimSolverError
+from angr.errors import SimEngineError, SimError, SimSolverError, SimStateError
 from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
@@ -105,6 +105,7 @@ from angr.exploration.rust_callback_dispatch import (
     _unconstrained_stub_spec,
 )
 from angr.exploration.rust_perf_tracker import PerformanceTracker
+from angr.exploration.rust_state_binding import binding_of
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_state_export import RustStateExportMixin
 from angr.exploration.rust_state_sync import RustStateSyncMixin, _ultrapage_bytes
@@ -979,8 +980,6 @@ class RustExplorationManager(
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
-        use_export_callstack_proxy: bool | None = None,
-        use_export_memory_proxy: bool | None = None,
         prefer_native_library_hooks: bool | None = None,
         use_native_lift: bool = True,
         parallel_workers: int = 1,
@@ -1026,26 +1025,6 @@ class RustExplorationManager(
                 inherit it (so descendants opt in transparently). Inert
                 in this slice — slice-1c will be the first consumer of
                 the flag at fork time.
-            use_export_callstack_proxy: If True, install
-                ``RustCallStackProxyPlugin`` as ``state.callstack`` on
-                materialized states returned from Rust (stash exports /
-                ``found`` / ``active`` / etc.) instead of reconstructing a
-                ``CallStack`` linked-list via ``register_plugin`` at export
-                time (angr-yk2g, write-through boundary). When ``None``
-                (default), the env var
-                ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles it on;
-                otherwise off. Off keeps the eager
-                ``_sync_rust_callstack_to_state`` reconstruction path live.
-            use_export_memory_proxy: If True, install ``RustMemoryProxy``
-                as ``state.memory`` on materialized states returned from
-                Rust (stash exports / ``found`` / ``active`` / etc.)
-                instead of pulling Rust pages back into the SimState's
-                claripy memory via ``state.memory.store(...)`` at export
-                time (angr-ul4k, write-through boundary). When ``None``
-                (default), the env var
-                ``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles it on;
-                otherwise off. Off keeps the eager
-                ``_sync_rust_memory_to_state`` writeback path live.
             prefer_native_library_hooks: If True (default), let native
                 procedures serve ``use_sim_procedures`` hooks whose address
                 lands inside a *non-main* loaded object (libc &c. under
@@ -1137,8 +1116,6 @@ class RustExplorationManager(
         )
         self._phase_config(
             use_shared_lineage_solver,
-            use_export_callstack_proxy,
-            use_export_memory_proxy,
             prefer_native_library_hooks,
         )
         # Pre-existing symlinks to seed into the Rust FileSystem at
@@ -1244,8 +1221,6 @@ class RustExplorationManager(
     def _phase_config(
         self,
         use_shared_lineage_solver,
-        use_export_callstack_proxy,
-        use_export_memory_proxy,
         prefer_native_library_hooks,
     ):
         """Phase 2 (config): gate flags, counters/caches, callbacks + simprocedures."""
@@ -1255,33 +1230,6 @@ class RustExplorationManager(
         # solver context. Default off keeps slice-1c's gate inert (and
         # the v5a5-spike baby-re BFS-thrash regression out of CI).
         self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
-
-        # angr-yk2g (write-through boundary): gate for installing
-        # ``RustCallStackProxyPlugin`` as ``state.callstack`` on every
-        # materialized state returned from a Rust stash (instead of
-        # rebuilding a ``CallStack`` linked-list via ``register_plugin`` in
-        # ``_sync_rust_callstack_to_state``). Default off keeps the eager
-        # reconstruction path live; when on, the export pipeline installs
-        # the proxy and ``state.callstack`` reads frames live from Rust by
-        # ``state_id`` via ``get_state_call_stack``. Env var
-        # ``ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY=1`` toggles default-on
-        # when the kwarg is left at its default ``None``.
-        self._use_export_callstack_proxy = _resolve_env_flag(
-            use_export_callstack_proxy, "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY"
-        )
-
-        # angr-ul4k (write-through boundary): gate for installing
-        # ``RustMemoryProxy`` as ``state.memory`` on every materialized
-        # state returned from a Rust stash (instead of writing Rust pages
-        # back into the SimState's claripy memory via
-        # ``state.memory.store(...)`` in ``_sync_rust_memory_to_state``).
-        # Default off keeps the eager writeback path live; when on, the
-        # export pipeline installs the proxy and ``state.memory.load(...)``
-        # reads bytes live from Rust by ``state_id`` via the existing
-        # ``get_state_memory_ast`` FFI. Env var
-        # ``ANGR_RUST_USE_EXPORT_MEMORY_PROXY=1`` toggles default-on when
-        # the kwarg is left at its default ``None``.
-        self._use_export_memory_proxy = _resolve_env_flag(use_export_memory_proxy, "ANGR_RUST_USE_EXPORT_MEMORY_PROXY")
 
         # angr-a8epx / angr-gorvf.3.2: native-dispatch gate for library hooks.
         # Off, native procedures fire only for hooks OUTSIDE every loaded object
@@ -3738,6 +3686,18 @@ class RustExplorationManager(
         for _scratch_attr in ("rust_mgr", "rust_found_state_id"):
             if hasattr(caller_state.scratch, _scratch_attr):
                 setattr(angr_state.scratch, _scratch_attr, getattr(caller_state.scratch, _scratch_attr))
+        # An exported state (this manager's or another's) is a live view of a
+        # Rust state: the sync below reads Python plugins, so give the copy
+        # its own first. Its solver then carries the cross-manager transfer
+        # attributes for the state it read (``RustSolverFallback.attach``).
+        binding = binding_of(angr_state)
+        if binding is not None:
+            exporter = getattr(binding.owner, "manager", None)
+            if exporter is None:
+                raise SimStateError(
+                    f"cannot add {caller_state!r}: it is a view of a Rust state whose manager is gone"
+                )
+            exporter._detach_export_proxies(angr_state, binding.state_id)
 
         # Concretize stack-relative registers for Rust compatibility
         self._concretize_stack_registers(angr_state)
@@ -4631,6 +4591,7 @@ class RustExplorationManager(
                 result = self._explore_with_addresses(num_find, until, timeout, max_steps)
         finally:
             restore_veritesting()
+            self._release_gone_exports()
 
         # angr-bdeqa: an address-based find that came up empty may be targeting
         # an address strictly inside the Python init prefix, which Rust never
@@ -5454,6 +5415,7 @@ class RustExplorationManager(
             else:
                 steps_taken += 1
 
+        self._release_gone_exports()
         self._drain_solver_graveyard()
         return self
 
@@ -6007,7 +5969,9 @@ class RustExplorationManager(
             Self, for chaining.
         """
         if filter_func is None:
-            # Drop all states from the stash
+            # Drop all states from the stash. An export of a dropped state
+            # keeps reading it as it was (``CopyStashForkOwner.preserve``).
+            self._copy_stash_fork_owner.preserve(self._rust_mgr.get_state_ids(stash))
             try:
                 self._rust_mgr.clear_stash(stash)
             except AttributeError:
@@ -6148,6 +6112,8 @@ class RustExplorationManager(
                 with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(sid, stash, "_merge_drop")
         if merged_any:
+            # An export of a merged-away state keeps reading it as it was.
+            self._copy_stash_fork_owner.preserve(self._rust_mgr.get_state_ids("_merge_drop"))
             # cat-(a) EXPECTED CONTROL FLOW: intermediate stash never created.
             with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.clear_stash("_merge_drop")
@@ -6187,11 +6153,11 @@ class RustExplorationManager(
             for sid in state_ids:
                 py_state = self.get_state_by_id(sid)
                 if py_state is not None:
-                    # The merged result is re-imported after the _merge_drop
-                    # below removes ``sid``, so it needs a register file of its
-                    # own rather than a lazy proxy bound to ``sid``
-                    # (angr-vmi2l.314).
-                    self._detach_register_proxy(py_state, sid)
+                    # Python merges it and the result is re-imported after the
+                    # _merge_drop below removes ``sid``, so it needs plugins of
+                    # its own rather than proxies bound to ``sid``
+                    # (angr-vmi2l.314, angr-mx00p.61).
+                    self._detach_export_proxies(py_state, sid)
                     py_states.append(py_state)
                     sid_by_state_key[id(py_state)] = sid
                     try:
@@ -6257,6 +6223,8 @@ class RustExplorationManager(
                 # cat-(a) EXPECTED CONTROL FLOW: source stash entry already moved.
                 with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(sid, stash, "_merge_drop")
+            # An export of a merged-away state keeps reading it as it was.
+            self._copy_stash_fork_owner.preserve(self._rust_mgr.get_state_ids("_merge_drop"))
             # cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop
             # stash failed (already empty / never created).
             with contextlib.suppress(RuntimeError, KeyError):

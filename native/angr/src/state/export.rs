@@ -89,7 +89,7 @@ pub struct ExplorationStateSnapshot {
 //   registers from `get_registers_named` + `get_symbolic_register_names`; the
 //   flat buffer is only read by the Rust/pytest arch-offset parity tests)
 //   (angr-9ke6b.5).
-//   The Python sync helpers (`_sync_rust_callstack_to_state`,
+//   The Python sync helpers (`_detach_export_proxies`,
 //   `_sync_rust_heap_brk_to_state`, `_sync_state_posix_fds_to_rust`, ...) read
 //   the LIVE `rust_mgr.get_state_*` accessors instead of a materialized
 //   snapshot, so these duplicate that data at snapshot granularity. Retained

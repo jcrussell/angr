@@ -24,6 +24,13 @@ Rust engine: proxy-backed SimState writes — design comparison
    replayed on return (``angr-mx00p.28``). See :doc:`rust_engine` for the shipped
    contract, and *Copy semantics* below for what ``state.copy()`` does.
 
+   **And for exported states (angr-mx00p.61).** A ``SimState`` the manager
+   hands out is built the same way: its memory, call stack and solver are
+   proxies of the Rust state, and nothing is written back into Python
+   plugins at export time. The user contract is :doc:`rust_engine`
+   "Exported states are live views"; *Copy semantics* below covers the
+   bindings behind it.
+
    The "proposed proxy-plugin design" section is now
    historical reading — the proxy uses an immediate write-through
    model, not the queued-mutation plugin substitution this doc
@@ -44,27 +51,36 @@ control across the PyO3 boundary and the SimProcedure mutates an
 angr ``SimState`` via the standard plugin API (``state.regs.rax = …``,
 ``state.memory.store(…)``, ``state.solver.add(…)``). When the
 SimProcedure returns, those mutations have to be reflected in the
-Rust canonical state. The design-time mechanism was a diff-and-push pass:
+Rust canonical state. The design-time mechanism was a diff-and-push pass
+(every helper named here has since been deleted):
 
-#. **Before** the callback runs, the manager snapshots register
+#. **Before** the callback ran, the manager snapshotted register
    values into a lightweight dict (or, for memory-writing procedures,
-   takes a full ``state.copy()``) — see
-   ``rust_state_sync.py::_snapshot_registers``.
-#. The Python SimProcedure mutates the snapshotted state directly
+   took a full ``state.copy()``).
+#. The Python SimProcedure mutated the snapshotted state directly
    through angr's plugin paths.
-#. **After** the callback returns, ``_extract_register_changes``
-   walks every named register, compares to the snapshot, and emits
-   ``(offset, size, data_bytes)`` tuples. ``_extract_memory_changes``
-   walks ``new_state.memory.changed_bytes(old_state.memory)`` to
-   collect concrete and symbolic deltas. New constraints are
-   extracted by length-comparing the constraint list.
-#. The aggregate diff is pushed back through
+#. **After** the callback returned, a register diff walked every named
+   register, compared it to the snapshot, and emitted
+   ``(offset, size, data_bytes)`` tuples; a memory diff walked
+   ``new_state.memory.changed_bytes(old_state.memory)`` to collect
+   concrete and symbolic deltas; new constraints were extracted by
+   length-comparing the constraint list.
+#. The aggregate diff was pushed back through
    ``resume_after_simprocedure(addr, reg_changes, mem_changes,
    new_constraints)``.
 
-This works (Rust stays canonical because every delta is reliably
-reflected) but is O(num_registers) per callback plus the changed-bytes
-scan over any modified pages, plus per-symbolic-value AST re-export.
+That worked (Rust stayed canonical because every delta was reflected)
+but cost O(num_registers) per callback plus the changed-bytes scan over
+any modified pages, plus per-symbolic-value AST re-export.
+
+What replaced it: the callback state's ``memory``, ``registers``,
+``solver`` and ``callstack`` plugins are Rust proxies on one binding
+(``_create_state_for_callback`` in ``rust_callback_dispatch.py``). A
+write lands in the Rust state when it is made, a ``state.copy()`` forks
+its own Rust state on its first write (*Copy semantics*), and the resume
+carries only the next pc plus the heap break and posix output the
+proxies do not cover (``_sync_state_heap_to_rust``,
+``_sync_state_posix_to_rust``).
 
 The hypothesis under test was that we could eliminate the
 diff-and-push pass by giving the callback ``SimState`` proxy-backed
@@ -134,9 +150,8 @@ variant for callbacks would have extended them.
 Pros
 ~~~~
 
-* **Eliminates the diff scan.** Removes
-  ``_extract_register_changes`` / ``_extract_memory_changes`` from
-  the callback hot path entirely, recovering the whole per-callback
+* **Eliminates the diff scan.** Removes the register and memory
+  diffs from the callback hot path entirely, recovering the whole per-callback
   sync-back cost measured above.
 * **Aligns with the already-proxy solver path.** Constraints
   already write through immediately via ``_rust_add``. Registers
@@ -168,8 +183,8 @@ Cons
   already handles, but is slower than a concrete store).
 * **Memory write granularity.** angr's
   ``state.memory.store(addr, bvv)`` writes can be 1 to 64+ bytes
-  at a time. The diff-and-push path groups contiguous bytes into
-  regions via ``rust_state_sync.py::_group_changed_bytes``.
+  at a time. The diff-and-push path grouped contiguous changed bytes
+  into regions.
   A naive proxy that proxies each byte individually loses this
   batching; one that proxies each ``store()`` call preserves it.
 * **Plugin contract risk.** Replacing ``SimRegisters`` /
@@ -359,12 +374,11 @@ Rationale:
 #. **The risk asymmetry is real.** Option A's plugin substitution
    is exactly the class of refactor that produces silent
    correctness regressions. A prior similar attempt to skip
-   ``state.copy()`` for extern SimProcedures left
-   ``_extract_register_changes`` diffing the state against itself
-   (the procedure mutates it in place), so register sync broke
-   silently and regressed ais3 badly before it was caught; skipping
-   the copy is only safe with a register snapshot taken before
-   execution, the dict form ``_extract_register_changes`` accepts.
+   ``state.copy()`` for extern SimProcedures left the register diff
+   comparing the state against itself (the procedure mutates it in
+   place), so register sync broke silently and regressed ais3 badly
+   before it was caught; skipping the copy was only safe with a
+   register snapshot taken before execution.
    The diff-and-push path's debug history is worth a
    lot.
 #. **Option B is cheap but redundant.** The ``tracked_writes``
@@ -449,14 +463,40 @@ solver keep naming one Rust state (``angr-mx00p.112``).
   or write through a released binding raises ``RustStateReleasedError``; it
   never falls through to another state's data.
 
-Exported states take the same mechanism with a different owner. An exported
-state whose proxies are live views has a binding owned by the manager, so
-``found.copy()`` is already a virtual child that forks on its first write.
-What the callback scope gets for free, a parent that does not change behind
-the copy's back, an export owner has to provide itself: Rust steps a stash
-state without going through any binding, so before it steps a state that
-has virtual copies the owner must materialize them (or fork eagerly at copy
-time), and it must release the bindings of a state Rust drops.
+Exported states take the same mechanism with a different owner, the
+manager's ``CopyStashForkOwner``: ``_bind_export`` (``rust_state_export.py``)
+gives an export's proxies one root binding, so ``found.copy()`` is a virtual
+child that forks on its first write. What the callback scope gets for free,
+a parent that does not change behind the copy's back, this owner provides
+itself, because Rust steps and drops stash states without going through any
+binding:
+
+* **Before Rust steps.** ``_invalidate_state_export_cache``, which every
+  Python entry into the run loop (``step``, ``run``, ``explore``) already
+  calls, runs ``CopyStashForkOwner.detach_views``. A root that gained
+  virtual copies since the last call shelters them on a snapshot fork, and
+  a snapshot export (``found_states``, ``get_state_by_id``) moves onto a
+  fork of its own. The owner learns of copies as they are made
+  (``on_copy``), so a step with no new copies forks nothing. A stash
+  mirror itself is not moved: it is the stash entry, and follows its state.
+  The hook is on the Python side because the bindings are Python objects
+  and Rust only ever steps between those entry points; within a run, Python
+  code only sees callback states, whose copies the callback scope settles.
+* **Lifetime.** An export binding holds the Python manager
+  (``_keepalive``), so an export keeps its manager and Rust state alive.
+  States the manager drops on request (``drop()``, a merge) first move their
+  exports onto forks (``CopyStashForkOwner.preserve``). When ``step`` or
+  ``explore`` returns, ``release_gone`` releases every export root whose
+  state Rust dropped while it ran, so a read raises
+  ``RustStateReleasedError`` instead of failing on a missing id.
+* **Detaching.** A proxy's ``callstack`` push/pop and ``memory`` merge are
+  stubs, so a state Python steps or merges itself gets plain plugins first
+  (``_detach_export_proxies``: the snapshot's pages, a ``CallStack`` of the
+  Rust frames, and a Python solver that queries Rust through
+  ``RustSolverFallback``). The ``step_state`` hook path, the Python merge
+  path and ``_add_rust_state`` (an export handed back to a manager) do so;
+  an export's call stack also detaches itself the first time the Python
+  engine steps it (``RustCallStackProxyPlugin._manage``).
 
 References
 ----------

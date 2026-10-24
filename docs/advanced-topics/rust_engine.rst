@@ -253,6 +253,52 @@ need the full ``RustSimulationManagerProxy`` wrapper. Use the full
 needs full ``SimState`` plugins (``posix.dumps(0)``, ``simgr.explore``
 seeding, claripy AST round-trips).
 
+Exported states are live views
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A ``SimState`` the manager hands out (``mgr.found[0]``, any stash entry,
+``mgr.found_states``, ``mgr.get_state_by_id``) does not copy the Rust state
+into Python. Its ``memory``, ``callstack`` and ``solver`` plugins (and
+``registers``, when a register is symbolic) are proxies of one Rust state:
+reads go to it, writes go through to it, and ``solver.constraints`` lists its
+path constraints. The plugins Rust does not own (``posix``, ``libc``,
+``heap``, ``fs``) are copied from the nearest cached ancestor as before.
+
+* **Lifetime.** An export keeps its manager, and so its Rust state, alive:
+  ``s = mgr.found[0]; del mgr`` leaves ``s`` fully usable. If exploration
+  itself drops the state (a native merge, the parallel scheduler retiring
+  an id, a technique replacing it), a later access raises
+  ``RustStateReleasedError`` naming the state. It never reads another
+  state's data. States the manager drops on request (``mgr.drop()``,
+  ``mgr.merge()``) keep their exports readable: they are moved onto a
+  private fork first.
+* **Stash entries follow their state.** ``mgr.active[i]`` names a Rust state
+  id. After ``mgr.step()`` the same entry, and the plugins read from it,
+  show the stepped state, so ``mgr.active[0] is mgr.active[0]`` holds across
+  reads. This differs from the Python engine, where a ``SimState`` held
+  across ``step()`` is the pre-step state.
+* **Copies are snapshots.** ``state.copy()`` is copy-on-write: the copy reads
+  the state as of the copy, and its first write forks a Rust state of its
+  own. A write to either side never reaches the other. Before Rust next steps
+  the original, the copy is moved onto a snapshot fork, so it never sees the
+  step. ``mgr.found_states`` and ``mgr.get_state_by_id`` return snapshot
+  exports, kept as of the call the same way. A fork costs nothing until
+  something writes or Rust steps, and is dropped with the last copy that
+  reads it.
+* **Stepping or merging an export in Python.** The proxies'
+  ``memory.merge`` is a stub and the call stack is only mirrored on a
+  step, so techniques that step exports themselves (``step_state`` hooks
+  such as ``Veritesting``) and the Python merge path are given
+  self-contained plugins first, built from a snapshot of the state; a state
+  passed back to a manager (``RustExplorationManager(proj, [found])``) is
+  detached the same way. A state handed straight to the Python engine
+  (``proj.factory.simgr(found)``) keeps its proxies: its call stack turns
+  into a plain ``CallStack`` on its first step, and its memory stores go
+  through ``RustMemoryProxy.store``.
+
+The mechanism (bindings, owners, where forks live) is described in
+:doc:`rust_proxy_writes_design` ("Copy semantics").
+
 RustStateProxy write-through contract
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -3335,17 +3381,12 @@ shifts the whole envelope's ids above the local watermark before
 deserializing. Names — and so Z3 identity — are untouched, so replayed
 constraints still bind to the same variables.
 
-When inspecting a restored state, read its constraints through
-``mgr._rust_mgr.export_state_constraints(state_id)`` (or a
-:class:`RustStateProxy`), **not** through the claripy list on an
-exported ``SimState`` mirror. A mirror materialized via the
-full-export path is built from ``project.factory.blank_state()`` and
-never receives a claripy copy of the Rust constraint set: eval / min /
-max / satisfiable are routed into the Rust solver by
-``_attach_rust_solver_fallback`` instead, because re-importing the
-constraints into claripy is expensive and identity-lossy. So an empty
-``mirror.solver.constraints`` after a load is the design, not a lost
-constraint set (angr-wuyo9).
+A restored state's constraints read like any export's: an exported
+``SimState``'s ``solver`` is a proxy of the Rust state, so
+``solver.constraints`` lists the Rust constraint set (through
+``export_state_constraints``) and eval / min / max / satisfiable run on
+the Rust solver ("Exported states are live views" above; angr-wuyo9,
+angr-vmi2l.262).
 
 Reading the engine version
 --------------------------

@@ -108,34 +108,6 @@ jobs:
         run: uv run python tests/benchmarks/show_all.py --quick
         timeout-minutes: 10
 
-  proxy_gates_on:
-    name: Write-Through Proxy Gates On
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-        with:
-          repository: angr/binaries
-          path: binaries
-      - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
-      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
-      - name: Sync dependencies
-        run: uv sync -p 3.12
-      - name: Build Rust extension
-        run: uv run pip install -e . --no-build-isolation --no-deps
-      - name: Run Rust exploration tests with proxy gates on
-        # The default-OFF write-through gates below are behaviorally clean when
-        # forced on, so this job keeps their proxy paths from rotting while
-        # disabled (angr-rpqk, bd memory
-        # write-through-gate-promotion-keep-off-verdict; the export gates
-        # joined in angr-5x6la). The per-gate semantics are in the
-        # RustExplorationManager docstring in angr/exploration/rust_manager.py.
-        env:
-          ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY: "1"
-          ANGR_RUST_USE_EXPORT_MEMORY_PROXY: "1"
-        run: uv run pytest tests/engines/rust/ --tb=short
-        timeout-minutes: 10
-
   rss_leak_check:
     name: RSS Leak Check (mma_howtouse)
     runs-on: ubuntu-latest

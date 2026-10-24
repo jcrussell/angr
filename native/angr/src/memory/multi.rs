@@ -322,8 +322,8 @@ impl SymbolicMemory {
     }
 
     /// Materialize every Multi cell into a `symbolic_objects` entry so the
-    /// state export pipeline (`_sync_rust_symbolic_objects_to_state` in
-    /// `rust_state_export.py`) sees the lazy alternatives.
+    /// snapshot export (`_load_snapshot_pages` in `rust_state_export.py`)
+    /// sees the lazy alternatives.
     ///
     /// Phase 2 (angr-qh5u): flips the default symbolic-address store to
     /// install Multi cells. Multi bytes are tracked in a parallel

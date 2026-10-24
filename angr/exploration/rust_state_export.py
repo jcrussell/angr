@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from angr import claripy
 from angr.errors import SimUnsatError
+from angr.exploration.rust_state_binding import RustStateBinding
 from angr.state_plugins.history import SimStateHistory
 
 if TYPE_CHECKING:
@@ -23,16 +24,38 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 
 
-def _bound_to(plugin, state_id: int) -> bool:
-    """Whether a proxy plugin's own binding names ``state_id`` directly.
+#: The ``state.plugins`` names a Rust proxy plugin can be installed under.
+_PROXY_PLUGIN_NAMES = ("memory", "registers", "solver", "callstack")
 
-    A copied (virtual) binding that merely reads ``state_id`` through its
-    parent, or a released one, does not count: rebinding it gives the plugin
-    a root binding for ``state_id`` (angr-mx00p.112).
+#: Z3 timeout for the solver forks an exported state queries. The default 30s
+#: is too short for post-exploration solving (asisctf).
+_EXPORT_SOLVER_TIMEOUT_MS = 120000
+
+
+def _root_binding_of(state) -> RustStateBinding | None:
+    """The root binding ``state``'s proxies share, or ``None``.
+
+    ``None`` when any proxy plugin is virtual, released, or bound apart from
+    the others: such a state is rebound as a whole.
     """
-    binding = plugin.__dict__.get("_binding")
-    return binding is not None and not binding.is_virtual and binding._released is None and binding.raw_id == state_id
+    found = None
+    for name in _PROXY_PLUGIN_NAMES:
+        plugin = state.plugins.get(name)
+        binding = plugin.__dict__.get("_binding") if plugin is not None else None
+        if not isinstance(binding, RustStateBinding):
+            continue
+        if binding.is_virtual or binding._released is not None or (found is not None and binding is not found):
+            return None
+        found = binding
+    return found
 
+
+def _rebind_proxies(state, binding: RustStateBinding) -> None:
+    """Point every Rust proxy plugin of ``state`` at ``binding``."""
+    for name in _PROXY_PLUGIN_NAMES:
+        plugin = state.plugins.get(name)
+        if plugin is not None and isinstance(plugin.__dict__.get("_binding"), RustStateBinding):
+            plugin._rebind(binding)
 
 
 class _RustOwnedSimStateHistory(SimStateHistory):
@@ -548,14 +571,42 @@ class RustStateExportMixin:
     def _invalidate_state_export_cache(self) -> None:
         """Clear the per-state `rust_fully_synced` sentinel on every cached state.
 
-        Called when exploration resumes (`step`, `run`). After Rust takes
-        further steps, the cached Python mirror is stale until re-synced by
-        the next `_get_stash_states` visit.
+        Called when exploration resumes (`step`, `run`, `explore`): every
+        Python entry that hands control to Rust goes through here, so it is
+        also where the exported views Rust must not move are detached first
+        (``CopyStashForkOwner.detach_views``). After Rust takes further steps,
+        the cached Python mirror is stale until re-synced by the next
+        `_get_stash_states` visit.
         """
+        self._copy_stash_fork_owner.detach_views()
         for state in self._state_cache.values():
             scratch = getattr(state, "scratch", None)
             if scratch is not None and getattr(scratch, "rust_fully_synced", False):
                 scratch.rust_fully_synced = False
+            # A mirror's proxies follow their state: what they cached of it
+            # (solver forks, register values) is about to be stale, also for
+            # a plugin the caller holds on to.
+            plugins = getattr(state, "plugins", None)
+            if plugins is None:
+                continue
+            for name in _PROXY_PLUGIN_NAMES:
+                plugin = plugins.get(name)
+                if plugin is not None and isinstance(plugin.__dict__.get("_binding"), RustStateBinding):
+                    plugin._drop_state_caches()
+
+    def _release_gone_exports(self) -> None:
+        """Release the exports of states Rust dropped while it ran.
+
+        Called when ``step`` / ``explore`` hand control back to Python. A read
+        through a released export raises ``RustStateReleasedError`` naming the
+        state, rather than a missing-id error from the FFI.
+        """
+        rust_mgr = self._rust_mgr
+        # A live parallel session holds frontier states in its workers, in
+        # no stash; they are back once it finalizes.
+        if rust_mgr.parallel_session_active():
+            return
+        self._copy_stash_fork_owner.release_gone(lambda sid: rust_mgr.get_state_pc_by_id(sid) is not None)
 
     def _cache_state_mirror(self, state_id: int, state) -> None:
         """Cache a mid-run Python mirror of Rust state ``state_id`` (angr-ibx8j).
@@ -686,12 +737,7 @@ class RustStateExportMixin:
             l.warning("export_state failed for state %d: %s", state_id, e)
             raise
         try:
-            angr_state = self._snapshot_to_angr(snapshot)
-            self._inject_rust_stdout(angr_state, snapshot.state_id)
-            self._inject_rust_stdin(angr_state, snapshot.state_id)
-            self._sync_rust_memory_to_state(angr_state, snapshot.state_id)
-            self._sync_rust_registers_to_state(angr_state, snapshot.state_id)
-            self._sync_rust_callstack_to_state(angr_state, snapshot.state_id)
+            angr_state = self._snapshot_to_angr(snapshot, mirror=True)
             self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
             self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
             self._sync_rust_heap_brk_to_state(angr_state, snapshot.state_id)
@@ -707,82 +753,109 @@ class RustStateExportMixin:
             l.warning("Failed to materialize state %d: %s", state_id, e)
             raise
 
-    @staticmethod
-    def _rebind_callback_proxies(state, state_id: int) -> None:
-        """Point callback-installed solver/register proxies at ``state_id``.
+    def _bind_export(self, state, state_id: int, *, snapshot: bool = False, binding=None) -> None:
+        """Make ``state`` a live view of Rust state ``state_id``.
 
-        A materialized state copied from a cached callback frame (or from a
-        parent root's copy) inherits that frame's ``RustSolverProxyPlugin`` /
-        ``RustRegisterProxy``, whose ``copy()`` keeps the SOURCE ``_state_id``.
-        Once Rust retires that id (the parallel scheduler does so freely),
-        every read through the proxy raises ``state N not found``; before
-        that, reads come from the wrong state. Rebind both to the id being
-        materialized and drop what was cached for the old one (angr-mx00p.86).
-        No-op for a frame already bound to ``state_id``.
+        Every Rust proxy plugin ``state`` carries (a cached callback frame
+        brings registers, solver, memory and callstack proxies) is pointed at
+        one root binding, and ``memory`` / ``callstack`` / ``solver`` become
+        proxies if they are not yet: reads go to the Rust state, writes go
+        through to it, and ``state.copy()`` is a copy-on-write child. The
+        binding keeps the manager alive. A ``snapshot`` export keeps the
+        state as of the export; otherwise ``state`` is the stash mirror of
+        ``state_id`` and follows it. The contract is in
+        ``docs/advanced-topics/rust_engine.rst`` ("Exported states are live
+        views"); the mechanism in ``rust_state_binding``.
         """
-        from angr.exploration.rust_state_proxy import RustRegisterProxy, RustSolverProxyPlugin
+        from angr.exploration.rust_state_proxy import (
+            RustCallStackProxyPlugin,
+            RustMemoryProxy,
+            RustSolverProxyPlugin,
+        )
 
+        if binding is None:
+            binding = _root_binding_of(state)
+            if (
+                snapshot
+                or binding is None
+                or binding.owner is not self._copy_stash_fork_owner
+                or binding._owned
+                or binding.raw_id != state_id
+            ):
+                binding = self._copy_stash_fork_owner.export_binding(state_id, snapshot=snapshot)
+        _rebind_proxies(state, binding)
+        memory = state.plugins.get("memory")
+        if not isinstance(memory, RustMemoryProxy):
+            # The Python memory the state held stays behind the proxy for the
+            # bytes Rust never had (the export used to write Rust's pages over
+            # it, so those bytes survived there too).
+            state.register_plugin(
+                "memory",
+                RustMemoryProxy(self._rust_mgr, binding, state.arch, python_mgr=self, fallback_memory=memory),
+            )
+        else:
+            # A cached callback frame's memory proxy pinned its loads' witnesses
+            # on the state; a read through an export must not (angr-vmi2l.259).
+            memory._pin_state_witness = False
+        callstack = state.plugins.get("callstack")
+        if not isinstance(callstack, RustCallStackProxyPlugin):
+            callstack = RustCallStackProxyPlugin(self._rust_mgr, binding)
+            state.register_plugin("callstack", callstack)
+        callstack.detach_on_step = True
         solver = state.plugins.get("solver")
-        if isinstance(solver, RustSolverProxyPlugin) and not _bound_to(solver, state_id):
-            object.__setattr__(solver, "_state_id", state_id)
-            # A fork of the old state's solver; a copy() never carries it, so
-            # dropping the reference leaves the original's cache alone.
-            object.__setattr__(solver, "_rust_ctx_cache", None)
-            object.__setattr__(solver, "_rust_ctx_cache_owner", None)
-        regs = state.plugins.get("registers")
-        if isinstance(regs, RustRegisterProxy) and not _bound_to(regs, state_id):
-            object.__setattr__(regs, "_state_id", state_id)
-            cache = getattr(regs, "_cache", None)
-            if cache:
-                cache.clear()
+        if isinstance(solver, RustSolverProxyPlugin):
+            object.__setattr__(solver, "_fork_timeout_ms", _EXPORT_SOLVER_TIMEOUT_MS)
+        else:
+            proxy = RustSolverProxyPlugin(
+                self._rust_mgr, binding, python_mgr=self, fork_timeout_ms=_EXPORT_SOLVER_TIMEOUT_MS
+            )
+            if solver is not None:
+                # The variables the Python solver tracked (stdin, files).
+                proxy.all_variables = list(getattr(solver, "all_variables", ()))
+                proxy.temporal_tracked_variables = dict(getattr(solver, "temporal_tracked_variables", {}))
+                proxy.eternal_tracked_variables = dict(getattr(solver, "eternal_tracked_variables", {}))
+            state.register_plugin("solver", proxy)
 
-    @classmethod
-    def _copy_bound_to(cls, source, state_id: int):
-        """``source.copy()`` with its callback proxies bound to ``state_id``.
+    def _copy_bound_to(self, source, state_id: int):
+        """``source.copy()`` as the export of ``state_id``.
 
         ``SimState.copy`` runs every plugin's ``init_state``, and history's
         reads the pc through the copied register proxy, so the copy must
-        already point at a live id: the source's own id may have been retired
-        (angr-mx00p.86). The source's binding is restored afterwards, because
-        it can be a frame shared by sibling ids (angr-ibx8j).
+        already read a live id: the source's own may have been retired
+        (angr-mx00p.86). The source's bindings are restored afterwards,
+        because it can be a frame shared by sibling ids (angr-ibx8j). The copy
+        *is* the export of ``state_id``, not a copy-on-write child of it.
         """
-        # Save and restore the bindings themselves, not ids: the source's
-        # binding may be released (reading its id raises) or shared with the
-        # source's other proxies (angr-mx00p.112).
-        saved = {
-            name: plugin.__dict__["_binding"]
-            for name in ("solver", "registers")
-            if (plugin := source.plugins.get(name)) is not None and "_binding" in plugin.__dict__
-        }
-        cls._rebind_callback_proxies(source, state_id)
+        binding = self._copy_stash_fork_owner.export_binding(state_id)
+        saved = {}
+        for name in _PROXY_PLUGIN_NAMES:
+            plugin = source.plugins.get(name)
+            if plugin is not None and isinstance(plugin.__dict__.get("_binding"), RustStateBinding):
+                saved[name] = plugin.__dict__["_binding"]
+                object.__setattr__(plugin, "_binding", binding)
         try:
             copied = source.copy()
         finally:
             for name, old in saved.items():
                 object.__setattr__(source.plugins[name], "_binding", old)
-        # The copy *is* the state for ``state_id``, not a copy-on-write child
-        # of it: bind its proxies to ``state_id`` directly.
-        cls._rebind_callback_proxies(copied, state_id)
+        self._bind_export(copied, state_id, binding=binding)
         return copied
 
     def _sync_cached_state(self, state, state_id: int) -> None:
-        """Run the heavy plugin restore + register/memory/callstack sync.
+        """Re-bind a cached state's proxies to ``state_id`` and resync the rest.
 
-        Sets ``state.scratch.rust_fully_synced = True`` on success. The
-        sentinel is cleared by ``_invalidate_state_export_cache`` whenever
-        Rust takes another step.
+        Memory, call stack, solver (and symbolic registers) are live proxies
+        (``_bind_export``); plugins Rust does not own are restored from the
+        nearest cached ancestor, and concrete registers and the break pointers
+        are pulled across. Sets ``state.scratch.rust_fully_synced = True`` on
+        success. The sentinel is cleared by ``_invalidate_state_export_cache``
+        whenever Rust takes another step.
         """
-        self._rebind_callback_proxies(state, state_id)
+        self._bind_export(state, state_id)
         self._restore_plugins_to_state(state, state_id)
         self._inject_rust_stdout(state, state_id)
         self._inject_rust_stdin(state, state_id)
-        # Attach Rust solver fallback BEFORE constraint sync. The Rust solver
-        # has the correct constraints from exploration; constraint sync is
-        # expensive and often causes identity mismatches.
-        self._attach_rust_solver_fallback(state, state_id)
-        self._sync_rust_memory_to_state(state, state_id)
         self._sync_rust_registers_to_state(state, state_id)
-        self._sync_rust_callstack_to_state(state, state_id)
         self._sync_rust_mmap_base_to_state(state, state_id)
         self._sync_rust_posix_brk_to_state(state, state_id)
         self._sync_rust_heap_brk_to_state(state, state_id)
@@ -840,44 +913,14 @@ class RustStateExportMixin:
         are only in Rust's state. This exports named registers and overwrites
         the Python state's values for registers that are concrete in Rust.
         """
-        # angr-qj30 (write-through .2): when ``state.registers`` is a
-        # ``RustRegisterProxy``, every read already routes live into Rust
-        # by state_id — pushing the snapshot's concrete values onto the
-        # proxy via setattr would overwrite any SYMBOLIC register the
-        # SimProcedure just wrote through the proxy (e.g. a symbolic
-        # return value), clobbering it with BVV(0) from
-        # ``get_registers_named()`` (which returns the concrete portion
-        # of Rust's register file only). Skip the sync entirely.
+        # A ``RustRegisterProxy`` (symbolic registers, or a cached callback
+        # frame's) reads Rust live and ``_bind_export`` already rebound it and
+        # dropped its read cache. Pushing the snapshot's concrete values onto
+        # it would clobber a symbolic register with the BVV(0) placeholder
+        # ``get_registers_named()`` reports for it (angr-qj30, angr-4rq7).
         from angr.exploration.rust_state_proxy import RustRegisterProxy
 
-        regs_plugin = getattr(state, "registers", None)
-        if isinstance(regs_plugin, RustRegisterProxy):
-            # angr-4rq7: a materialized state that inherits a callback
-            # ``RustRegisterProxy`` (either the live frame cached in
-            # ``_state_cache`` or a ``.copy()`` of a parent-root state) carries
-            # the proxy's per-name read ``_cache``, which is NEVER invalidated
-            # when Rust steps the state. So ``state.addr`` (via
-            # ``regs.ip`` -> ``proxy.load('ip')`` -> ``__getattr__('ip')``)
-            # returns the value cached at callback time, while the
-            # ``RustStateProxy`` accessor reads the LIVE pc via
-            # ``get_state_pc_by_id``. That stale cache is the source of the
-            # full-export-vs-proxy ``addr`` divergence that blocks promoting
-            # the register-proxy write-through gate. Two repairs, both no-ops
-            # for a freshly-bound live frame:
-            #   1. ``RustRegisterProxy.copy()`` preserves the SOURCE
-            #      ``_state_id``; rebind to the id we are materializing so
-            #      reads route to the correct Rust state.
-            #   2. Drop the stale read cache so every subsequent read goes
-            #      live. We deliberately do NOT push the concrete snapshot via
-            #      setattr (that would clobber a symbolic register the
-            #      SimProcedure wrote through the proxy) — clearing the cache
-            #      is sufficient because the proxy already reads through to
-            #      Rust on a cache miss.
-            if not _bound_to(regs_plugin, state_id):
-                object.__setattr__(regs_plugin, "_state_id", state_id)
-            cache = getattr(regs_plugin, "_cache", None)
-            if cache:
-                cache.clear()
+        if isinstance(getattr(state, "registers", None), RustRegisterProxy):
             return
         try:
             snapshot = self._rust_mgr.export_state(state_id)
@@ -1121,225 +1164,6 @@ class RustStateExportMixin:
                 # does not reach Rust; a later native op on it falls back.
                 l.debug("fd %d registration into Rust state %d failed: %s", fd, state_id, e)
 
-    def _sync_rust_callstack_to_state(self, state: angr.SimState, state_id: int):
-        """Sync Rust-tracked call frames into state.callstack.
-
-        Rust's call_stack (push order, outermost first) is the source of truth
-        for any call/ret that happened during Rust execution.
-
-        Two modes:
-
-        * **Eager reconstruction** (default). The Python state was forked from
-          a template before exploration, so its CallStack plugin does not
-          reflect Rust-side push/pop. This rebuilds state.callstack as a
-          linked list (top = most recent Rust call) and replaces the plugin
-          via register_plugin. No-op if Rust has zero frames (preserves the
-          template's empty CallStack so we don't clobber pre-Rust call
-          history for forks made from non-entry states).
-        * **Proxy install** (when ``self._use_export_callstack_proxy`` is
-          on). Installs ``RustCallStackProxyPlugin`` bound to ``state_id``
-          instead (angr-yk2g) — iteration / top-frame attribute access reads
-          frames live from Rust via ``get_state_call_stack``. No eager FFI
-          read or chain reconstruction. Matches the write-through model used
-          for memory / registers / solver.
-        """
-        if getattr(self, "_use_export_callstack_proxy", False):
-            from angr.exploration.rust_state_proxy import RustCallStackProxyPlugin
-
-            try:
-                proxy = RustCallStackProxyPlugin(self._rust_mgr, state_id)
-                proxy.set_state(state)
-                state.register_plugin("callstack", proxy)
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: proxy install failed; state
-                # keeps its pre-Rust CallStack plugin.
-                l.debug(
-                    "RustCallStackProxyPlugin install failed for %d: %s",
-                    state_id,
-                    e,
-                )
-            return
-
-        try:
-            frames = self._rust_mgr.get_state_call_stack(state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: state.callstack stays at the
-            # template's pre-Rust history. Downstream callers reading
-            # callstack will see fewer frames than Rust observed.
-            l.debug("get_state_call_stack(%d) failed: %s", state_id, e)
-            return
-
-        if not frames:
-            return
-
-        from angr.state_plugins.callstack import CallStack
-
-        chain = CallStack()
-        for call_site, func, ret_addr, sp in frames:
-            chain = CallStack(
-                call_site_addr=call_site,
-                func_addr=func,
-                stack_ptr=sp,
-                ret_addr=ret_addr,
-                jumpkind="Ijk_Call",
-                next_frame=chain,
-            )
-
-        try:
-            state.register_plugin("callstack", chain)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: register_plugin failed; the
-            # state keeps its pre-Rust callstack plugin. Downstream
-            # consumers that depend on Rust-tracked frames will see
-            # incomplete history.
-            l.debug("register_plugin('callstack') failed for %d: %s", state_id, e)
-
-    def _sync_rust_memory_to_state(self, state: angr.SimState, state_id: int):
-        """Sync memory from Rust state to Python state.
-
-        Two modes:
-
-        * **Eager writeback** (default). After Rust executes code, the
-          materialized SimState's claripy memory has whatever bytes were on
-          the template at fork time. This method exports the Rust state's
-          memory pages and symbolic expressions, and pushes them into
-          ``state.memory`` via ``store(...)`` so ``state.memory.load()``
-          returns current values.
-        * **Proxy install** (when ``self._use_export_memory_proxy`` is on).
-          Installs ``RustMemoryProxy`` bound to ``state_id`` as
-          ``state.memory`` instead (angr-ul4k) — every ``load`` / ``store`` after that
-          routes directly into Rust by ``state_id`` (loads use
-          ``get_state_memory_ast`` for symbolic-AST round-trip). No FFI
-          page export and no writeback into the SimState. Matches the
-          write-through model used for callstack / registers / solver.
-        """
-        if getattr(self, "_use_export_memory_proxy", False):
-            from angr.exploration.rust_state_proxy import RustMemoryProxy
-
-            try:
-                proxy = RustMemoryProxy(self._rust_mgr, state_id, state.arch)
-                state.register_plugin("memory", proxy)
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: proxy install failed; the
-                # state keeps its pre-Rust claripy memory. Downstream
-                # consumers that read addresses Rust wrote will see stale
-                # template bytes.
-                l.debug(
-                    "RustMemoryProxy install failed for %d: %s",
-                    state_id,
-                    e,
-                )
-            # Symbolic-AST sync (_sync_rust_symbolic_objects_to_state) is
-            # for pushing Rust-computed claripy ASTs into Python memory; the
-            # proxy reads them live via get_state_memory_ast so it would be
-            # a no-op duplicate at best. Skipped under the gate.
-            return
-
-        try:
-            # Use flushed export to materialize any pending symbolic writes
-            # (and Multi cells) before exporting memory pages to Python.
-            # The plain ``export_state`` flushes too, so there is no unflushed
-            # fallback to retry with (angr-9ke6b.101).
-            snapshot = self._rust_mgr.export_state_flushed(state_id)
-        except Exception as e_flushed:
-            # cat-(c) WRONG-ANSWER RISK: the export failed. Python
-            # state.memory will return zeros (or stale data) for any
-            # address Rust wrote.
-            l.warning(
-                "export_state_flushed(%d) failed (%s) — Python memory will be stale",
-                state_id,
-                e_flushed,
-            )
-            return  # State may not be in Rust stashes anymore
-
-        for i in range(snapshot.page_count()):
-            page = snapshot.get_page(i)
-            if page is None:
-                continue
-            page_addr, data, _perms, symbolic_offsets = page
-            if symbolic_offsets:
-                # Write concrete byte ranges while preserving symbolic regions.
-                # symbolic_offsets are byte positions within the page where Python
-                # has BVS values — writing zeros there would corrupt them.
-                sym_set = set(symbolic_offsets)
-                # Find contiguous concrete runs
-                start = None
-                for j in range(len(data) + 1):
-                    if j < len(data) and j not in sym_set:
-                        if start is None:
-                            start = j
-                    else:
-                        if start is not None:
-                            chunk = data[start:j]
-                            try:
-                                state.memory.store(
-                                    page_addr + start,
-                                    claripy.BVV(chunk, len(chunk) * 8),
-                                    endness="Iend_BE",
-                                    inspect=False,
-                                    disable_actions=True,
-                                )
-                            except Exception as e:
-                                # cat-(c) WRONG-ANSWER RISK: a concrete
-                                # byte range from Rust failed to write into
-                                # Python memory. state.memory.load() of
-                                # this region will return whatever the
-                                # Python state held pre-exploration (often
-                                # zero or a stale BVS).
-                                l.warning("Failed to sync concrete chunk to 0x%x: %s", page_addr + start, e)
-                            start = None
-            else:
-                try:
-                    # Raw bytes from Rust are in memory order; use Iend_BE so angr
-                    # stores them as-is without byte-reversing.
-                    state.memory.store(
-                        page_addr,
-                        claripy.BVV(data, len(data) * 8),
-                        endness="Iend_BE",
-                        inspect=False,
-                        disable_actions=True,
-                    )
-                except Exception as e:
-                    # cat-(c) WRONG-ANSWER RISK: full-page sync failed.
-                    # All addresses on this page in Python memory are
-                    # stale.
-                    l.warning("Failed to sync page at 0x%x: %s", page_addr, e)
-
-        # Export Rust-computed symbolic expressions to Python memory.
-        # These are Expression values computed by the Rust VEX interpreter
-        # (e.g., flag computations in asisctf). Python-imported BVS values
-        # are excluded — they already have proper claripy identity in Python.
-        self._sync_rust_symbolic_objects_to_state(state, state_id)
-
-    def _sync_rust_symbolic_objects_to_state(self, state: angr.SimState, state_id: int):
-        """Export Rust-computed symbolic expressions as claripy ASTs into Python memory."""
-        try:
-            sym_asts = self._rust_mgr.get_state_symbolic_asts(state_id)
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: Rust-computed symbolic objects
-            # are not exported to Python memory. state.memory.load() of
-            # those addresses will see concrete bytes (or template BVS),
-            # not the symbolic expression Rust computed.
-            l.warning("get_state_symbolic_asts(%d) failed: %s — Rust-side symbolic memory not synced", state_id, e)
-            return
-
-        for addr, claripy_ast, _width_bits in sym_asts:
-            try:
-                # Store using the architecture's endianness to match VEX IR
-                # store operations (STle for x86-64, etc.)
-                state.memory.store(
-                    addr,
-                    claripy_ast,
-                    endness=state.arch.memory_endness,
-                    inspect=False,
-                    disable_actions=True,
-                )
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: per-AST store failed. The
-                # other ASTs on this state still get synced, but this one
-                # is missing — Python sees concrete bytes for the address.
-                l.debug("Failed to sync symbolic object at 0x%x: %s", addr, e)
-
     def _attach_rust_solver_fallback(self, state, state_id):
         """Wrap state.solver so eval/min/max/satisfiable defer to the Rust solver.
 
@@ -1392,19 +1216,18 @@ class RustStateExportMixin:
             l.warning(f"Failed to get state {state_id}: {e}")
             return None
 
-    def _snapshot_to_angr(self, snapshot) -> angr.SimState:
-        """Convert a Rust state snapshot to an angr SimState.
+    def _snapshot_to_angr(self, snapshot, *, mirror: bool = False) -> angr.SimState:
+        """Convert a Rust state snapshot to an exported angr SimState.
 
-        Creates an angr SimState from the snapshot data, including:
-        - Register values
-        - Memory contents
-        - Basic state metadata
-
-        Note: Symbolic values are evaluated using the Rust solver context
-        since the Z3 constraints cannot be directly transferred.
+        A blank state with the snapshot's registers and the plugins Rust does
+        not own, made a live view of the snapshot's state (``_bind_export``):
+        memory, call stack and solver read the Rust state. ``mirror`` makes
+        it the stash mirror of that state (it follows the state); otherwise it
+        is a snapshot export, kept as of the export.
 
         Args:
             snapshot: The state snapshot from Rust.
+            mirror: Whether the result is cached as the stash mirror.
 
         Returns:
             An angr SimState.
@@ -1412,7 +1235,6 @@ class RustStateExportMixin:
         state = self._project.factory.blank_state(addr=snapshot.pc)
 
         self._load_snapshot_registers(state, snapshot)
-        self._load_snapshot_pages(state, snapshot, self._project.arch)
 
         state.scratch.rust_state_id = snapshot.state_id
         state.scratch.rust_parent_id = snapshot.parent_id
@@ -1427,18 +1249,13 @@ class RustStateExportMixin:
         # nothing it derives is tied to the input (angr-mx00p.89).
         self._inject_rust_stdout(state, snapshot.state_id)
         self._inject_rust_stdin(state, snapshot.state_id)
-        # The call stack and the jumpkind that led here: analyses that step
-        # the state themselves key on both (Veritesting builds its CFG from
-        # ``(addr, jumpkind)`` and returns through the frames; angr-mx00p.89).
-        self._sync_rust_callstack_to_state(state, snapshot.state_id)
+        # The jumpkind that led here: analyses that step the state themselves
+        # key on it (Veritesting builds its CFG from ``(addr, jumpkind)``;
+        # angr-mx00p.89). The call stack is the live proxy below.
         detailed = snapshot.get_detailed_history_str()
         if detailed:
             state.history.jumpkind = detailed[-1][1]
-        # Eval/min/max/satisfiable defer to the Rust solver — required because
-        # _apply_symbolic_constraints no longer pre-pins recovered symbols
-        # (pre-pinning was UNSAT-prone, see constraint-export-no-pre-pin memo).
-        # Idempotent: re-attach is a no-op via the _ATTACH_FLAG guard.
-        self._attach_rust_solver_fallback(state, snapshot.state_id)
+        self._bind_export(state, snapshot.state_id, snapshot=not mirror)
         return state
 
     def _load_snapshot_registers(self, state: angr.SimState, snapshot):
@@ -1450,12 +1267,63 @@ class RustStateExportMixin:
 
         A ``step_state`` hook (Veritesting) steps ``state`` in its own
         SimulationManager and returns successors that are re-imported into
-        Rust (angr-mx00p.89). That needs a register file of the state's own
-        (:meth:`_detach_register_proxy`) and stdin as the symbols Rust read,
+        Rust (angr-mx00p.89). That needs plugins of the state's own
+        (:meth:`_detach_export_proxies`) and stdin as the symbols Rust read,
         marked consumed (:meth:`_symbolic_rust_stdin`).
         """
-        self._detach_register_proxy(state, state_id)
+        self._detach_export_proxies(state, state_id)
         self._symbolic_rust_stdin(state, state_id)
+
+    def _detach_export_proxies(self, state: angr.SimState, state_id: int) -> None:
+        """Give ``state`` plugins of its own in place of its Rust proxies.
+
+        An export is a live view (``_bind_export``), which is right for a
+        state the caller reads and wrong for one Python steps or merges
+        itself: the proxies' ``push``/``pop``/``merge`` are stubs, so a
+        Veritesting step ran its call stack away (angr-mx00p.61), and a
+        re-import (``_add_rust_state``) rebuilds Rust memory from Python
+        pages. Each proxy becomes the plain plugin a snapshot of
+        ``state_id`` fills: registers (:meth:`_detach_register_proxy`),
+        memory (the snapshot's pages over the Python memory behind the
+        proxy), the call stack, and a Python solver whose queries go to the
+        Rust solver (``RustSolverFallback``), so the Rust path constraints
+        stay out of Python. No-op for plugins that are already plain.
+        """
+        from angr.exploration.rust_state_proxy import (
+            RustCallStackProxyPlugin,
+            RustMemoryProxy,
+            RustSolverProxyPlugin,
+        )
+        from angr.state_plugins.callstack import CallStack
+
+        self._detach_register_proxy(state, state_id)
+        memory = state.plugins.get("memory")
+        if isinstance(memory, RustMemoryProxy):
+            base = memory._fallback_memory
+            if base is None or isinstance(base, RustMemoryProxy):
+                base = self._project.factory.blank_state().memory
+            state.register_plugin("memory", base.copy({}))
+            self._load_snapshot_pages(state, self._rust_mgr.export_state(state_id), state.arch)
+        if isinstance(state.plugins.get("callstack"), RustCallStackProxyPlugin):
+            chain = CallStack()
+            for call_site, func, ret_addr, sp in self._rust_mgr.get_state_call_stack(state_id):
+                chain = CallStack(
+                    call_site_addr=call_site,
+                    func_addr=func,
+                    stack_ptr=sp,
+                    ret_addr=ret_addr,
+                    jumpkind="Ijk_Call",
+                    next_frame=chain,
+                )
+            state.register_plugin("callstack", chain)
+        solver = state.plugins.get("solver")
+        if isinstance(solver, RustSolverProxyPlugin):
+            plain = state.plugin_preset.request_plugin("solver")()
+            plain.all_variables = list(solver.all_variables)
+            plain.temporal_tracked_variables = dict(solver.temporal_tracked_variables)
+            plain.eternal_tracked_variables = dict(solver.eternal_tracked_variables)
+            state.register_plugin("solver", plain)
+            self._attach_rust_solver_fallback(state, state_id)
 
     def _symbolic_rust_stdin(self, state: angr.SimState, state_id: int) -> None:
         """Replace the evaluated stdin packet on ``state`` with the symbols Rust read.

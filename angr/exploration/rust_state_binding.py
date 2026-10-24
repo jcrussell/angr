@@ -24,10 +24,15 @@ Who mints and releases the forks is the binding's *owner*:
   successors are known, :meth:`CallbackForkScope.settle` gives each successor
   its own Rust state, and :meth:`CallbackForkScope.close` drops every fork no
   successor claimed.
-* :class:`CopyStashForkOwner` owns bindings outside a callback (a proxy
-  constructed from a bare state id, or a successor binding after its callback
-  closed). Its forks live in the ``_copies`` stash and are dropped when the
-  binding that owns them is garbage collected.
+* :class:`CopyStashForkOwner` owns bindings outside a callback: a proxy
+  constructed from a bare state id, a successor binding after its callback
+  closed, and every exported SimState. Its forks live in the ``_copies``
+  stash and are dropped when the binding that owns them is garbage
+  collected. Rust steps a stash state without going through any binding, so
+  this owner also detaches the views that must not follow it
+  (:meth:`CopyStashForkOwner.detach_views`, run before Rust next steps) and
+  releases the views of a state Rust dropped
+  (:meth:`CopyStashForkOwner.release_gone`).
 
 The design and its extension to exported states are described in
 ``docs/advanced-topics/rust_proxy_writes_design.rst`` ("Copy semantics").
@@ -66,7 +71,7 @@ class RustStateBinding:
     goes to, materializing a virtual binding first. See the module doc.
     """
 
-    __slots__ = ("__weakref__", "_children", "_id", "_owner", "_parent", "_released")
+    __slots__ = ("__weakref__", "_children", "_id", "_keepalive", "_owned", "_owner", "_parent", "_released")
 
     def __init__(self, owner, state_id: int | None, parent: RustStateBinding | None = None):
         self._owner = owner
@@ -74,6 +79,10 @@ class RustStateBinding:
         self._parent = parent
         self._children: weakref.WeakSet | None = None
         self._released: str | None = None
+        # True once ``_id`` is a fork this binding owns (dropped with it).
+        self._owned = False
+        # The Python manager an export keeps alive (``export_binding``).
+        self._keepalive = None
 
     # ------------------------------------------------------------------
     # Reads and writes
@@ -151,6 +160,7 @@ class RustStateBinding:
         if self._children is None:
             self._children = weakref.WeakSet()
         self._children.add(child)
+        self._owner.on_copy(self)
         return child
 
     # ------------------------------------------------------------------
@@ -237,6 +247,9 @@ class _NoForkOwner:
     def retrack(self, old, new):
         pass
 
+    def on_copy(self, parent):
+        pass
+
 
 _NO_FORK_OWNER = _NoForkOwner()
 
@@ -254,10 +267,34 @@ class CopyStashForkOwner:
     ``RustExplorationManager.fork_state_for_copy`` and are dropped when the
     binding owning them is garbage collected, the same lifetime as
     ``RustStateProxy.copy()``.
+
+    It also owns the bindings of exported SimStates (``export_binding``),
+    which name a state in the manager's stashes. Rust steps and drops those
+    states without going through a binding, so the owner keeps two weak
+    registries the manager drives (``docs/advanced-topics/rust_engine.rst``,
+    "Exported states are live views"):
+
+    * :meth:`detach_views` runs before Rust steps: a snapshot export is moved
+      onto a fork of its own, and the copies of every other export onto a
+      snapshot fork, so neither sees the step.
+    * :meth:`release_gone` runs after Rust ran: a view of a state Rust no
+      longer holds is released, so a read raises instead of failing on a
+      missing id.
     """
 
     def __init__(self, python_mgr):
         self._mgr_ref = weakref.ref(python_mgr)
+        # Export roots naming a stash state, for release_gone.
+        self._roots: weakref.WeakSet = weakref.WeakSet()
+        # Snapshot exports not yet moved onto a fork of their own.
+        self._snapshots: weakref.WeakSet = weakref.WeakSet()
+        # Roots that gained a virtual child since the last detach_views.
+        self._with_copies: weakref.WeakSet = weakref.WeakSet()
+
+    @property
+    def manager(self):
+        """The Python manager, or ``None`` once it is gone."""
+        return self._mgr_ref()
 
     def fork(self, source_id):
         mgr = self._mgr_ref()
@@ -266,10 +303,92 @@ class CopyStashForkOwner:
         return mgr.fork_state_for_copy(source_id)
 
     def track(self, binding):
+        binding._owned = True
         weakref.finalize(binding, _drop_copy, self._mgr_ref, binding._id)
 
     def retrack(self, old, new):  # pragma: no cover - only callback scopes invert edges
         raise AssertionError("CopyStashForkOwner bindings are never taken over")
+
+    def on_copy(self, parent):
+        holder = parent._holder()
+        if not holder._owned and holder._released is None:
+            self._with_copies.add(holder)
+
+    # Exports ------------------------------------------------------------
+
+    def export_binding(self, state_id: int, *, snapshot: bool = False) -> RustStateBinding:
+        """A root binding for an exported SimState of ``state_id``.
+
+        The binding holds the Python manager, so an export keeps its manager
+        (and with it the Rust state) alive. A ``snapshot`` export keeps the
+        state as of the export: :meth:`detach_views` moves it onto a fork of
+        its own before Rust next steps. A non-snapshot export is the stash
+        mirror of ``state_id`` and follows it.
+        """
+        binding = RustStateBinding(self, state_id)
+        self.adopt(binding)
+        if snapshot:
+            self._snapshots.add(binding)
+        return binding
+
+    def adopt(self, binding: RustStateBinding) -> None:
+        """Take over a root binding that names a stash state."""
+        binding._owner = self
+        binding._keepalive = self._mgr_ref()
+        if binding._parent is None and not binding._owned:
+            self._roots.add(binding)
+
+    def detach_views(self) -> int:
+        """Detach the views Rust must not move, before it steps any state.
+
+        Returns the number of forks made. Costs nothing when no export was
+        taken as a snapshot and no export was copied since the last call.
+        """
+        forks = 0
+        for binding in list(self._snapshots):
+            if binding._released is None and binding._parent is None and not binding._owned:
+                binding._id = self.fork(binding._id)
+                self.track(binding)
+                self._roots.discard(binding)
+                forks += 1
+        self._snapshots = weakref.WeakSet()
+        for binding in list(self._with_copies):
+            if binding._released is None and binding._parent is None and not binding._owned and binding._children:
+                binding._shelter_children()
+                forks += 1
+        self._with_copies = weakref.WeakSet()
+        return forks
+
+    def preserve(self, state_ids) -> None:
+        """Move the views of ``state_ids`` onto forks before they are dropped.
+
+        For a drop the manager makes itself (``drop()``, a merge): every
+        export of a dropped state keeps reading it as it was.
+        """
+        doomed = set(state_ids)
+        if not doomed:
+            return
+        for binding in list(self._roots):
+            if binding._released is None and binding._parent is None and not binding._owned and binding._id in doomed:
+                binding._id = self.fork(binding._id)
+                self.track(binding)
+                self._roots.discard(binding)
+                self._snapshots.discard(binding)
+
+    def release_gone(self, is_live) -> None:
+        """Release every export root whose Rust state ``is_live`` rejects."""
+        for binding in list(self._roots):
+            if binding._released is not None or binding._parent is not None or binding._owned:
+                self._roots.discard(binding)
+                continue
+            state_id = binding._id
+            if not is_live(state_id):
+                binding._release(
+                    f"Rust state {state_id} is no longer in the manager: exploration dropped, merged or "
+                    "pruned it after this state was exported"
+                )
+                self._roots.discard(binding)
+                self._snapshots.discard(binding)
 
 
 def unscoped_binding(python_mgr, state_id: int) -> RustStateBinding:
@@ -345,6 +464,11 @@ class CallbackForkScope:
         state_id = new._id
         if self._forks.get(state_id) is old:
             self._forks[state_id] = new
+
+    def on_copy(self, parent: RustStateBinding) -> None:
+        # The pending state is frozen while the callback runs; settle() and
+        # close() release every copy no successor claimed.
+        pass
 
     # Successors ---------------------------------------------------------
 
@@ -469,8 +593,13 @@ class CallbackForkScope:
             self._claimed.pop(state_id)._release(reason)
             self._drop(state_id)
         self._unconsumed.clear()
-        owner = getattr(self._mgr, "_copy_stash_fork_owner", None) or _NO_FORK_OWNER
+        owner = getattr(self._mgr, "_copy_stash_fork_owner", None)
         for binding in self._claimed.values():
-            binding._owner = owner
+            if owner is None:
+                binding._owner = _NO_FORK_OWNER
+            else:
+                # A claimed binding names a live stash state: the manager's
+                # owner tracks it like an export from here on.
+                owner.adopt(binding)
         self._forks.clear()
         self._claimed.clear()
