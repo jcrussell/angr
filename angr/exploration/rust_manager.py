@@ -968,31 +968,6 @@ class RustExplorationManager(
     # Python recycles ids across short-lived projects.
     _loader_pages_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
-    # SimProcedures known to write memory (need full state.copy() for changed_bytes)
-    _MEMORY_WRITING_PROCS = frozenset(
-        {
-            "read",
-            "recv",
-            "fgets",
-            "scanf",
-            "__isoc99_scanf",
-            "fread",
-            "gets",
-            "getchar",
-            "fgetc",
-            "getc",
-            "strncpy",
-            "strcpy",
-            "memcpy",
-            "memmove",
-            "memset",
-            "strcat",
-            "strncat",
-            "sprintf",
-            "snprintf",
-        }
-    )
-
     def __init__(
         self,
         project: angr.Project,

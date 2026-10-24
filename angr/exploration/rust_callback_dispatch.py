@@ -639,14 +639,9 @@ class RustCallbackDispatchMixin:
             return
         self._perf_stats.add_simprocedure_phase("state_create", time.perf_counter_ns() - _sp_state_create_start)
 
-        # Snapshot original state (full copy / register snapshot / no copy)
-        # for change extraction after the SimProcedure runs.
-        _sp_copy_start = time.perf_counter_ns()
-        orig_state = self._snapshot_orig_state(state, proc, name, is_zero_length_hook)
-        self._perf_stats.add_simprocedure_phase("state_copy", time.perf_counter_ns() - _sp_copy_start)
-
-        # Constraints need no snapshot: ``state.solver`` is a
-        # ``RustSolverProxyPlugin`` that writes every ``add`` through.
+        # Nothing needs a pre-call snapshot: the callback state's memory,
+        # registers and solver are Rust proxies that write every change
+        # through (``_create_state_for_callback``).
 
         # state.inspect simprocedure BEFORE (angr-xmfj). The proc may be a
         # class or instance; pass the raw object so user BPs can introspect.
@@ -716,7 +711,6 @@ class RustCallbackDispatchMixin:
                     addr_int,
                     event,
                     state,
-                    orig_state,
                     is_zero_length_hook,
                     _sp_total_start,
                 )
@@ -729,7 +723,6 @@ class RustCallbackDispatchMixin:
                     addr,
                     event,
                     state,
-                    orig_state,
                     is_zero_length_hook,
                 )
 
@@ -838,24 +831,6 @@ class RustCallbackDispatchMixin:
         self._procedure_times[_proc_name]["count"] += 1
         return True
 
-    def _snapshot_orig_state(self, state, proc, name: str | None, is_zero_length_hook: bool):
-        """Snapshot the pre-callback state for later change extraction.
-
-        Returns one of three things:
-        - state.copy() for memory-writing procs and UserHooks (need full memory diff)
-        - register snapshot dict for non-memory-writing zero-length hooks
-          (built from bundle registers if available, else read from state)
-        - the state itself for the remaining case (no copy needed; the caller
-          will diff registers/memory directly against the post-execution state)
-        """
-        is_user_hook = proc.__class__.__name__ == "UserHook"
-        needs_full_copy = is_user_hook or name in self._MEMORY_WRITING_PROCS
-        if needs_full_copy:
-            return state.copy()
-        if is_zero_length_hook:
-            return self._snapshot_registers(state)
-        return state
-
     def _capture_stdin_from_successors(self, all_succs, name: str | None) -> None:
         """Track stdin packets added by SimProcedures (fgets/read/etc.).
 
@@ -956,7 +931,6 @@ class RustCallbackDispatchMixin:
         addr_int: int | None,
         event: _ExplorationEvent,
         state,
-        orig_state,
         is_zero_length_hook: bool,
         _sp_total_start: int,
     ) -> bool:
@@ -1001,16 +975,14 @@ class RustCallbackDispatchMixin:
         first_succ = all_succs[0]
 
         # When a SimProcedure uses self.call() (Ijk_Call), angr's
-        # ``cc.setup_callsite`` pushes the continuation return address onto the
-        # stack and decrements sp. The sp decrement rides back to Rust via
-        # ``reg_changes``, but the PUSHED BYTES are recovered separately in
-        # ``_resume_with_state`` (the Ijk_Call stack-region capture) because
-        # ``call()`` runs ``setup_callsite`` on a *copy* of the executing
-        # state, whose stores never reach Rust. Do
-        # NOT manually re-push here: the former ``_push_continuation_address``
-        # (removed iter35) also re-decremented sp, leaving the callee's stack
-        # 8 bytes low so its ``ret`` popped garbage and deadended (angr-aca6y,
-        # xmllint's hooked pthread_once continuation).
+        # ``cc.setup_callsite`` pushes the continuation return address onto
+        # the copy of the state it returns as the successor. That copy's
+        # memory proxy forks its own Rust state on the push, and the fork is
+        # what the successor resumes from, so the pushed bytes are already in
+        # Rust. Do NOT re-push here: the former ``_push_continuation_address``
+        # also re-decremented sp, leaving the callee's stack 8 bytes low so its
+        # ``ret`` popped garbage and deadended (angr-aca6y, xmllint's hooked
+        # pthread_once continuation).
 
         # For zero-length hooks where the successor stays at the same
         # address, the hook just modified state — continue at the same
@@ -1019,19 +991,12 @@ class RustCallbackDispatchMixin:
         succ_ip_symbolic = first_succ.regs._ip.symbolic
         succ_addr_matches = not succ_ip_symbolic and first_succ.addr == addr
         skip_hook_addr = addr if (is_zero_length_hook and succ_addr_matches) else None
-        # Read before settling: settling releases the copies no successor
-        # claimed, and ``orig_state`` may be one of them.
-        orig_sp = (
-            self._snapshot_sp(orig_state) if getattr(first_succ.history, "jumpkind", None) == "Ijk_Call" else None
-        )
         resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
         self._resume_with_state(
             first_succ,
-            orig_state,
             event,
             skip_hook_addr=skip_hook_addr,
             resumed_id=resumed_id,
-            orig_sp=orig_sp,
         )
 
         # Additional successors are finished from their own forks.
@@ -1046,7 +1011,6 @@ class RustCallbackDispatchMixin:
         addr: int,
         event: _ExplorationEvent,
         state,
-        orig_state,
         is_zero_length_hook: bool,
     ) -> None:
         """Handle the path where a SimProcedure produced no successors.
@@ -1077,7 +1041,7 @@ class RustCallbackDispatchMixin:
             return
 
         if is_zero_length_hook:
-            self._resume_with_skip_hook(addr, state, orig_state, event)
+            self._resume_with_skip_hook(addr, state, event)
             return
 
         # Non-zero-length, non-terminal: check NO_RET as fallback
@@ -1116,35 +1080,22 @@ class RustCallbackDispatchMixin:
                     return fallback_addr
                 raise
 
-    @staticmethod
-    def _filter_symbolic_addrs(mem_changes, symbolic_imports):
-        """Drop concrete ``mem_changes`` at any addr covered by a symbolic import.
-
-        Prevents ``apply_changes`` from overwriting symbolic imports with
-        concrete values.
-        """
-        all_symbolic_addrs = {addr for addr, _ in symbolic_imports}
-        if all_symbolic_addrs:
-            return [(addr, data) for addr, data in mem_changes if addr not in all_symbolic_addrs]
-        return mem_changes
-
     def _resume_with_state(
         self,
         succ_state: angr.SimState,
-        orig_state: angr.SimState,
         event: _ExplorationEvent,
         skip_hook_addr: int | None = None,
         resumed_id: int | None = None,
-        orig_sp: int | None = None,
     ):
         """Resume Rust execution with a successor state.
 
-        Extracts register, memory, and constraint changes, syncs them to Rust,
-        and updates the state cache for future callbacks.
+        The successor's memory, register and constraint writes already landed
+        in its Rust state through the proxies, so the resume carries only the
+        next pc; the heap and posix write-backs push what the proxies do not
+        cover. Updates the state cache for future callbacks.
 
         Args:
             succ_state: The successor state after callback execution.
-            orig_state: The original state before callback.
             event: The exploration event that triggered the callback.
             skip_hook_addr: If set, tells Rust to skip the hook at this address
                            for the next step (prevents infinite loops with
@@ -1152,67 +1103,11 @@ class RustCallbackDispatchMixin:
             resumed_id: The id the resumed state carries once routed: the
                         pending id, or the fork ``_settle_callback_successors``
                         adopted (angr-mx00p.112).
-            orig_sp: The pre-callback stack pointer, read before settling.
         """
         if resumed_id is None:
             resumed_id = event.callback_state_id
         # Handle symbolic IP: pick first concrete solution if symbolic
         new_pc = self._resolve_next_pc(succ_state)
-
-        # Extract changes
-        is_snapshot = isinstance(orig_state, dict)
-        # Register writes landed in Rust through the register proxy.
-        reg_changes = None
-
-        # Skip memory extraction when orig_state is a register snapshot
-        # (non-memory-writing extern SimProcedures don't modify memory)
-        _sb_memdiff_start = time.perf_counter_ns()
-        if is_snapshot:
-            mem_changes = []
-            symbolic_imports = []
-        else:
-            mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, succ_state)
-        self._perf_stats.add_sync_back_subphase("memdiff", time.perf_counter_ns() - _sb_memdiff_start)
-
-        # Capture the stack region pushed by a self.call() continuation
-        # (Ijk_Call). angr's ``SimProcedure.call()`` runs ``cc.setup_callsite``
-        # on a *copy* of the executing state, so the continuation return
-        # address it pushes never goes through the callback state's
-        # ``RustMemoryProxy``. In register-snapshot
-        # mode ``_extract_memory_changes`` is skipped too, so without this the
-        # pushed continuation never reaches Rust: the callee's frame keeps a
-        # stale word and its ``ret`` jumps to garbage (angr-aca6y, xmllint's
-        # hooked pthread_once). The sp decrement itself rides in via
-        # ``reg_changes``; only the pushed bytes are missing here. We read the
-        # grown region [succ_sp, orig_sp) straight from the successor. Note:
-        # this is the correct, non-double-counting replacement for the former
-        # ``_push_continuation_address`` (removed iter35), which re-pushed AND
-        # re-decremented sp.
-        if getattr(succ_state.history, "jumpkind", None) == "Ijk_Call":
-            try:
-                sp_ast = succ_state.regs.sp
-                if orig_sp is not None and not sp_ast.symbolic:
-                    succ_sp = succ_state.solver.eval(sp_ast)
-                    grew = orig_sp - succ_sp
-                    if 0 < grew <= 256:
-                        region = succ_state.solver.eval(
-                            succ_state.memory.load(succ_sp, grew, endness="Iend_BE")
-                        ).to_bytes(grew, "big")
-                        covered = {a for a, _ in mem_changes}
-                        if not any((succ_sp + off) in covered for off in range(grew)):
-                            mem_changes.append((succ_sp, region))
-            except Exception as _e:
-                # cat-(b) FALLBACK WITH LOSS: capturing the continuation push
-                # failed; the callee may resume with a stale return slot.
-                if _DBG:
-                    l.debug(f"continuation stack capture failed: {_e!r}")
-
-        # Exclude symbolic-import addresses from concrete memory changes so
-        # apply_changes can't overwrite them with concrete values.
-        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
-
-        # Constraints were written through the solver proxy to the
-        # successor's own Rust state.
 
         # For zero-length hooks, tell Rust to skip the hook on next step
         if skip_hook_addr is not None:
@@ -1232,55 +1127,29 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(succ_state, event.callback_state_id)
 
-        # Resume Rust with the changes and any new constraints.
-        # IMPORTANT: This must happen BEFORE symbolic imports, because
-        # apply_changes writes concrete data which clears symbolic page markers.
-        # Importing symbolic values after resume re-sets the markers correctly.
         _sb_resume_start = time.perf_counter_ns()
-        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, reg_changes, mem_changes or None, None)
+        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
         self._perf_stats.add_sync_back_subphase("resume", time.perf_counter_ns() - _sb_resume_start)
 
-        # Import symbolic memory to Rust AFTER resume.
-        # The resume's apply_changes writes concrete witnesses which clear
-        # symbolic page markers. Re-importing symbolic values here restores
-        # the markers and stores the symbolic objects for VEX loads.
-        # Use import_symbolic_to_state (by state_id) since pending_callback
-        # was consumed by resume_after_simprocedure.
-        state_id = resumed_id
-        all_sym_imports = symbolic_imports
-
-        for addr, ast in all_sym_imports:
-            try:
-                self._rust_mgr.import_symbolic_to_state(state_id, addr, ast)
-                if _DBG:
-                    l.debug(f"Imported symbolic memory at 0x{addr:x} to state {state_id}")
-            except Exception as e:
-                # cat-(c) WRONG-ANSWER RISK: import_symbolic_to_state failed; Rust
-                # loses the symbolic relationship at this address — downstream
-                # loads see concrete witnesses only. Debug-logs.
-                if _DBG:
-                    l.debug(f"Could not import symbolic memory at 0x{addr:x}: {e}")
-
         # Update cache for future callbacks
-        if state_id is not None:
-            self._cache_state_mirror(state_id, succ_state)
+        if resumed_id is not None:
+            self._cache_state_mirror(resumed_id, succ_state)
 
     def _resume_with_skip_hook(
         self,
         addr: int,
         state: angr.SimState,
-        orig_state: angr.SimState,
         event: _ExplorationEvent,
     ):
         """Resume Rust execution after a zero-length hook with no successors.
 
-        This handles hooks that modify state in-place without creating successor
-        states. We need to extract all state changes and sync them to Rust.
+        This handles hooks that modify state in-place without creating
+        successor states. The hook's writes already reached Rust through the
+        proxies; only the next pc and the heap / posix write-backs remain.
 
         Args:
             addr: Original hook address (used for skip_hook).
             state: The modified state after hook execution.
-            orig_state: The original state before hook execution.
             event: The exploration event.
         """
         # Tell Rust to skip the hook at this address for the next step
@@ -1290,8 +1159,8 @@ class RustCallbackDispatchMixin:
             if _DBG:
                 l.debug(f"Set skip_hook_addr to 0x{addr:x}")
         except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed; same as
-            # 942 — next step may re-trigger the hook. Debug-logs.
+            # cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed; the next
+            # step may re-trigger the hook. Debug-logs.
             if _DBG:
                 l.debug(f"Could not set skip_hook_addr: {e}")
 
@@ -1302,48 +1171,13 @@ class RustCallbackDispatchMixin:
         if new_pc != addr and _DBG:
             l.debug(f"Hook modified IP from 0x{addr:x} to 0x{new_pc:x}")
 
-        # Hook writes to ``state.regs.<name>`` landed in Rust through the
-        # register proxy; there is no register diff to push.
-        is_snapshot = isinstance(orig_state, dict)
-        reg_changes = None
-
-        # Skip memory extraction when orig_state is a register snapshot
-        # (non-memory-writing extern SimProcedures don't modify memory)
-        if is_snapshot:
-            mem_changes = []
-            symbolic_imports = []
-        else:
-            mem_changes, symbolic_imports = self._extract_memory_changes(orig_state, state)
-
-        # Exclude symbolic-import addresses from concrete memory changes so
-        # apply_changes can't overwrite them with concrete values.
-        mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
-
-        # Constraints were written through the solver proxy.
-
         # Push back any heap bump the hook made (see _resume_with_state).
         self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
 
-        # Resume Rust with all extracted changes.
-        # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
-        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, reg_changes, mem_changes or None, None)
-
-        # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
+        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
         state_id = event.callback_state_id
-        all_sym_imports = symbolic_imports
-
-        for sym_addr, ast in all_sym_imports:
-            try:
-                self._rust_mgr.import_symbolic_to_state(state_id, sym_addr, ast)
-                if _DBG:
-                    l.debug(f"Imported symbolic memory at 0x{sym_addr:x} to state {state_id}")
-            except Exception as e:
-                # cat-(c) WRONG-ANSWER RISK: import_symbolic_to_state failed in the
-                # zero-length-hook path; same divergence as 973. Debug-logs.
-                if _DBG:
-                    l.debug(f"Could not import symbolic memory at 0x{sym_addr:x}: {e}")
 
         # Update cache with modified state for future callbacks
         if state_id is not None:
@@ -1487,32 +1321,9 @@ class RustCallbackDispatchMixin:
                 # Handle symbolic IP: pick first concrete solution if symbolic
                 new_pc = self._resolve_next_pc(succ_state)
 
-                # Syscall register writes landed in Rust through the
-                # register proxy.
-                reg_changes = None
-                # ``_extract_memory_changes`` returns (concrete, symbolic);
-                # passing the 2-tuple straight to ``resume_after_syscall``
-                # raised inside PyO3 and the except-swallow below then resumed
-                # at PC+1 with every change discarded (angr-89w70).
-                mem_changes, symbolic_imports = self._extract_memory_changes(state, succ_state)
-                mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
-
-                # Resume BEFORE the symbolic imports: apply_changes writes
-                # concrete witnesses that clear symbolic page markers, so the
-                # imports must re-set them afterwards (mirrors
-                # ``_resume_with_state``).
-                # Constraints were written through the solver proxy.
-                self._rust_mgr.resume_after_syscall(state_id, new_pc, reg_changes, mem_changes or None, None)
-
-                for sym_addr, ast in symbolic_imports:
-                    try:
-                        self._rust_mgr.import_symbolic_to_state(resumed_id, sym_addr, ast)
-                    except Exception as e:
-                        # cat-(c) WRONG-ANSWER RISK: Rust loses the symbolic
-                        # relationship at this address — downstream loads see
-                        # the concrete witness only.
-                        if _DBG:
-                            l.debug(f"Could not import symbolic syscall memory at 0x{sym_addr:x}: {e}")
+                # Register, memory and constraint writes landed in the
+                # successor's Rust state through the proxies.
+                self._rust_mgr.resume_after_syscall(state_id, new_pc, None, None, None)
 
                 # Update cache
                 self._cache_state_mirror(resumed_id, succ_state)
@@ -2396,16 +2207,9 @@ class RustCallbackDispatchMixin:
             resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
             new_pc = succ.addr
 
-            # VEX fallback register writes landed in Rust through the
-            # register proxy.
-            reg_changes = None
-
-            # Extract memory changes (returns concrete_changes, symbolic_imports)
-            mem_changes, _symbolic_imports = self._extract_memory_changes(state, succ)
-
-            # Resume Rust with the first successor
-            # Constraints were written through the solver proxy.
-            self._rust_mgr.resume_after_simprocedure(state_id, new_pc, reg_changes, mem_changes or None, None)
+            # Register, memory and constraint writes landed in the
+            # successor's Rust state through the proxies.
+            self._rust_mgr.resume_after_simprocedure(state_id, new_pc, None, None, None)
 
             # Additional successors (symbolic branches in the fallback block)
             # are finished from their own forks so the convergent path isn't

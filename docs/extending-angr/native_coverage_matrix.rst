@@ -688,9 +688,9 @@ independent model", not "the two engines disagree".
    * - ``UserHook``, ``my_scanf``, ``get_flag``, ``readline_hook``,
        ``strtol_hook``
      - User-supplied Python hooks (CTF ``solve.py`` procs). Python by
-       definition on both engines. ``_snapshot_orig_state`` hands any
-       ``UserHook`` a full ``state.copy()``, so everything it writes is
-       diffed back across the resume FFI.
+       definition on both engines. The callback state's memory and
+       registers are Rust proxies, so everything a hook writes lands in
+       the Rust state as it is written.
    * - ``operator new(unsigned long)``, ``operator delete(void*)``
      - Resolve to angr's ``malloc`` / ``free`` procs. Parity is
        inherited from those rows: the bounced heap bump round-trips (``angr-op0dn.14.1.3``),

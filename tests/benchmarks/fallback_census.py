@@ -97,8 +97,8 @@ NAME_SEMANTICS: dict[str, tuple[str, str]] = {
     # RustMemoryProxy) and/or a return register. Both reach Rust.
     "strcmp": (SILENT, "reads synced memory, returns a BV in a synced register; no plugin state touched"),
     "strncmp": (SILENT, "reads synced memory, returns a BV in a synced register; no plugin state touched"),
-    "strncpy": (SILENT, "memory-only; on rust_manager._MEMORY_WRITING_PROCS so it gets a full copy+diff"),
-    "memmove": (SILENT, "memory-only; on rust_manager._MEMORY_WRITING_PROCS so it gets a full copy+diff"),
+    "strncpy": (SILENT, "memory-only; its stores write through the callback state's RustMemoryProxy"),
+    "memmove": (SILENT, "memory-only; its stores write through the callback state's RustMemoryProxy"),
     "__ctype_b_loc": (
         SILENT,
         "writes its table through state.memory.store (the RustMemoryProxy) and returns a pointer in a synced register",
@@ -147,8 +147,8 @@ NAME_SEMANTICS: dict[str, tuple[str, str]] = {
     "read": (
         SILENT,
         "witnessed by the file_read_kernel bench (angr-w5llj): the pre-seeded file IS readable "
-        "through the Python fallback and the bench reaches found. read is on _MEMORY_WRITING_PROCS, "
-        "so the buffer it fills crosses the resume FFI",
+        "through the Python fallback and the bench reaches found. The buffer it fills is "
+        "written through the callback state's RustMemoryProxy",
     ),
     # --- env/time: read-only against angr's own plugin defaults, which the
     # Rust side has no independent copy of.
@@ -158,10 +158,9 @@ NAME_SEMANTICS: dict[str, tuple[str, str]] = {
     "pthread_once": (SILENT, "angr models it as a call-once stub; no Rust-side pthread state exists"),
     "pthread_mutex_lock": (SILENT, "angr models it as a no-op returning 0; no Rust-side lock state"),
     "pthread_mutex_unlock": (SILENT, "angr models it as a no-op returning 0; no Rust-side lock state"),
-    # --- user hooks: a CTF solve.py hook. Always Python by design, and
-    # _snapshot_orig_state gives any UserHook a full state.copy(), so its
-    # memory writes are diffed back in full.
-    "UserHook": (SILENT, "user-supplied Python hook; gets a full state.copy() snapshot by design"),
+    # --- user hooks: a CTF solve.py hook. Always Python by design; its
+    # memory and register writes go through the callback state's proxies.
+    "UserHook": (SILENT, "user-supplied Python hook; its writes go through the callback state's proxies"),
     "my_scanf": (SILENT, "solve.py UserHook (defcon2016quals_baby-re) that injects symbolic stdin"),
     "get_flag": (SILENT, "solve.py UserHook (whitehatvn2015_re400)"),
     "readline_hook": (SILENT, "solve.py UserHook (cmu_binary_bomb_partial) that injects a symbolic line"),
@@ -171,7 +170,7 @@ NAME_SEMANTICS: dict[str, tuple[str, str]] = {
 # Syscall numbers observed nonzero, keyed by the number the counter reports.
 #
 # Every syscall fallback used to be flip-blocking: `_handle_syscall_callback_inner`
-# passed the 2-tuple returned by `_extract_memory_changes` straight to
+# passed the 2-tuple returned by the former memory diff straight to
 # `resume_after_syscall` (every other caller unpacks it), so the PyO3 conversion
 # raised, the enclosing `except Exception` swallowed it, and the state resumed at
 # `state.addr + 1` with ALL register and memory changes discarded. Fixed in

@@ -87,10 +87,10 @@ Current diff-and-push model
 ---------------------------
 
 Nothing at the callback boundary takes it any more (see the status note
-above): the register and constraint diff helpers are gone, and the memory
-diff is inert because a callback state's memory has no ``changed_bytes``. The options below
-are written against the full diff-and-push model that existed at design
-time.
+above): the register, memory and constraint diff helpers and the pre-call
+snapshot they diffed against are deleted, and a resume carries only the
+next pc. The options below are written against the full diff-and-push
+model that existed at design time.
 
 
 Option A — Proxy-backed plugins for callback SimStates
@@ -469,9 +469,8 @@ References
   boundary; Option A would emit at each write.
 * Code involved:
 
-  * ``angr/exploration/rust_state_sync.py`` (``_extract_memory_changes``)
-    — what is left of the diff-and-push implementation.
-  * ``angr/exploration/rust_callback_dispatch.py`` — sync_back call site.
+  * ``angr/exploration/rust_callback_dispatch.py`` — the resume paths
+    (``_resume_with_state`` and siblings) that once carried the diff.
   * ``angr/exploration/rust_state_proxy.py`` (``RustRegisterProxy``,
     ``RustMemoryProxy``) — the proxies that now write through.
   * ``angr/exploration/rust_state_binding.py`` — the copy-on-write

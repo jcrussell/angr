@@ -858,7 +858,7 @@ class TestPythonSyscallFallbackSyncsChanges:
     register/memory writes back into the Rust state.
 
     ``_handle_syscall_callback_inner`` used to hand the
-    ``(concrete, symbolic)`` 2-tuple from ``_extract_memory_changes``
+    ``(concrete, symbolic)`` 2-tuple from the former memory diff
     straight to ``resume_after_syscall`` (whose PyO3 signature takes only
     the concrete half). PyO3 raised, the enclosing ``except Exception``
     swallowed it, and the state resumed at ``addr + 1`` with *every*
