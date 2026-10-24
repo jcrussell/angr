@@ -18,7 +18,7 @@ from angr.knowledge_base import KnowledgeBase
 
 from .analyses.analysis import AnalysesHub, AnalysesHubWithDefault
 from .engines.pcode.lifter import PcodeBasicBlockLifter
-from .errors import AngrNoPluginError, AngrValueError
+from .errors import AngrError, AngrNoPluginError, AngrValueError
 from .factory import AngrObjectFactory
 from .llm_client import LLMClient
 from .procedures import SIM_LIBRARIES, SIM_PROCEDURES
@@ -82,6 +82,26 @@ _SIM_LIBRARY_COMPATIBILITY_ALIASES = {"wsock32.dll": "ws2_32.dll"}
 _UNSET = object()
 
 
+def _resolve_rust_default(engine) -> bool:
+    """Whether ``factory.simulation_manager()`` calls that name no engine may run on the Rust engine.
+
+    True for ``engine="rust"``, and for any project built while ``ANGR_DEFAULT_ENGINE=rust`` is set (a SimEngine
+    class does not turn the variable off: it picks the SimEngine, the variable picks the manager).
+    """
+    if isinstance(engine, str):
+        if engine != "rust":
+            raise AngrError(
+                f"Unknown engine {engine!r}. The only string accepted for `engine` is 'rust'; anything else must be a "
+                "SimEngine subclass."
+            )
+        return True
+    try:
+        from angr.exploration import rust_default_engine_env
+    except ImportError:
+        return False
+    return rust_default_engine_env()
+
+
 class Project:
     """
     This is the main class of the angr module. It is meant to contain a set of binaries and the relationships between
@@ -98,12 +118,12 @@ class Project:
     :param exclude_sim_procedures_list: A list of functions to *not* wrap with simprocedures.
     :param arch:                        The target architecture (auto-detected otherwise).
     :param simos:                       a SimOS class to use for this project.
-    :param engine:                      The SimEngine class to use for this project, or the string ``"rust"`` to make
-                                        ``factory.simulation_manager()`` default to auto engine dispatch (Rust where the
-                                        workload is eligible, Python otherwise). ``"rust"`` swaps the *manager*, not the
-                                        SimEngine that ``block()`` / CFG / lifting use. Equivalent to setting
-                                        ``ANGR_DEFAULT_ENGINE=rust`` in the environment. See
-                                        docs/advanced-topics/rust_engine.rst.
+    :param engine:                      The SimEngine class to use for this project, or the string ``"rust"``: every
+                                        ``factory.simulation_manager()`` call that names no engine then runs on the Rust
+                                        engine when the workload is eligible and on the Python engine otherwise.
+                                        ``"rust"`` swaps the *manager*, not the SimEngine that ``block()`` / CFG /
+                                        lifting use. ``ANGR_DEFAULT_ENGINE=rust`` in the environment makes it the default
+                                        for every project. See docs/advanced-topics/rust_engine.rst.
     :param bool translation_cache:      If True, cache translated basic blocks rather than re-translating them.
     :param selfmodifying_code:          Whether we aggressively support self-modifying code. When enabled, emulation
                                         will try to read code from the current state instead of the original memory,
@@ -254,6 +274,10 @@ class Project:
 
         # Step 5: Set up the project's hubs
         # Step 5.1 Factory
+        self._rust_default = _resolve_rust_default(engine)
+        if isinstance(engine, str):
+            # "rust" picks the simulation manager, not a SimEngine: block()/CFG/lifting keep the default engine.
+            engine = None
         self.factory = AngrObjectFactory(self, default_engine=engine)
 
         # Step 5.2: Analyses
@@ -872,6 +896,7 @@ class Project:
     def __setstate__(self, s):
         self.__dict__.update(s)
         self.__dict__.setdefault("_go_version_range", _UNSET)
+        self.__dict__.setdefault("_rust_default", False)
         self._llm_client = _UNSET
         self._pcode_block_lifter = None
         try:

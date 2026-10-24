@@ -10,7 +10,7 @@ The invariant that job exists to protect: raising the *default* must not weaken
 the eligibility gate. An ineligible workload (the canonical case being a
 ``TRACK_MEMORY_ACTIONS`` state, which needs SimActions the native engine does
 not record) has to route back to Python transparently — no exception, no
-test edits, and observably so via ``mgr.dispatch_reason``.
+test edits, and observably so via the factory's debug log.
 
 Skipped unless the env var is actually set, so a normal local run is a no-op::
 
@@ -19,6 +19,7 @@ Skipped unless the env var is actually set, so a normal local run is a no-op::
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
@@ -46,24 +47,30 @@ def env_project():
     return load_fauxware()
 
 
-def test_eligible_workload_routes_to_rust(env_project):
-    mgr = env_project.factory.simulation_manager(env_project.factory.entry_state())
+def _routing_log(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records if r.name == "angr.factory")
+
+
+def test_eligible_workload_routes_to_rust(env_project, caplog):
+    with caplog.at_level(logging.DEBUG, logger="angr.factory"):
+        mgr = env_project.factory.simulation_manager(env_project.factory.entry_state())
     assert isinstance(mgr, RustExplorationManager)
-    assert "rust engine supports this project" in mgr.dispatch_reason
+    assert "rust engine supports this project" in _routing_log(caplog)
 
 
-def test_track_memory_actions_routes_back_to_python(env_project):
+def test_track_memory_actions_routes_back_to_python(env_project, caplog):
     """The acceptance case: an ineligible state falls back silently, not loudly."""
     state = env_project.factory.entry_state(add_options={o.TRACK_MEMORY_ACTIONS})
-    mgr = env_project.factory.simulation_manager(state)
+    with caplog.at_level(logging.DEBUG, logger="angr.factory"):
+        mgr = env_project.factory.simulation_manager(state)
     assert type(mgr) is SimulationManager
-    assert "TRACK_MEMORY_ACTIONS" in mgr.dispatch_reason
+    assert "TRACK_MEMORY_ACTIONS" in _routing_log(caplog)
 
 
-def test_explicit_false_still_wins(env_project):
-    mgr = env_project.factory.simulation_manager(env_project.factory.entry_state(), use_rust_engine=False)
-    assert type(mgr) is SimulationManager
-    assert mgr.dispatch_reason == "explicit use_rust_engine=False"
+def test_explicit_rust_stays_loud(env_project):
+    state = env_project.factory.entry_state(add_options={o.TRACK_MEMORY_ACTIONS})
+    with pytest.raises(NotImplementedError, match="TRACK_MEMORY_ACTIONS"):
+        env_project.factory.simulation_manager(state, engine="rust")
 
 
 def test_default_engine_factory_untouched(env_project):

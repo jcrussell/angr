@@ -578,7 +578,7 @@ class TestCallableStepFunc:
         assert len(mgr.active) == active_before, "no state should have been dropped"
 
     def test_callable_with_rust_engine(self, fauxware_project):
-        """Full Callable flow works with use_rust_engine=True.
+        """Full Callable flow works with engine="rust".
 
         This tests the complete Callable pipeline:
         1. factory.callable() creates the callable
@@ -590,7 +590,6 @@ class TestCallableStepFunc:
         original_sm = fauxware_project.factory.simulation_manager
 
         def rust_sm(thing=None, **kwargs):
-            kwargs.pop("use_rust_engine", None)
             kwargs.pop("techniques", None)  # RustExplorationManager doesn't take techniques
             if thing is None:
                 thing = [fauxware_project.factory.entry_state()]
@@ -957,7 +956,7 @@ class TestNativeTechniques:
     def test_length_limiter_via_use_technique(self, fauxware_project):
         """Test LengthLimiter registered through use_technique()."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LengthLimiter
 
@@ -971,7 +970,7 @@ class TestNativeTechniques:
     def test_length_limiter_cuts_long_paths(self, fauxware_project):
         """Test that LengthLimiter actually moves states to 'cut' stash."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LengthLimiter
 
@@ -987,7 +986,7 @@ class TestNativeTechniques:
     def test_timeout_via_use_technique(self, fauxware_project):
         """Test Timeout registered through use_technique()."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import Timeout
 
@@ -1007,7 +1006,7 @@ class TestNativeTechniques:
     def test_remove_technique_disarms_length_limiter(self, fauxware_project):
         """remove_technique undoes the native effect, not just the dispatch (angr-w9zce)."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LengthLimiter
 
@@ -1025,7 +1024,7 @@ class TestNativeTechniques:
     def test_remove_technique_rearms_survivors(self, fauxware_project):
         """Removing one native technique leaves the others armed (angr-w9zce)."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LengthLimiter, Timeout
 
@@ -1045,7 +1044,7 @@ class TestNativeTechniques:
     def test_remove_technique_disarms_uniqueness_filter(self, fauxware_project):
         """CheckUniqueness removal clears the native register filter (angr-w9zce)."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import ExplorationTechnique
 
@@ -1062,7 +1061,7 @@ class TestNativeTechniques:
     def test_remove_unregistered_technique_is_noop(self, fauxware_project):
         """Removing a never-registered technique returns False and disarms nothing."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LengthLimiter
 
@@ -1073,7 +1072,7 @@ class TestNativeTechniques:
     def test_loop_seer_via_use_technique(self, fauxware_project):
         """LoopSeer(bound=N) routes to the native register_loop_bound."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LoopSeer
 
@@ -1083,7 +1082,7 @@ class TestNativeTechniques:
     def test_local_loop_seer_via_use_technique(self, fauxware_project):
         """LocalLoopSeer(bound=N) routes to the native register_loop_bound."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LocalLoopSeer
 
@@ -1093,7 +1092,7 @@ class TestNativeTechniques:
     def test_loop_seer_no_bound_no_native(self, fauxware_project):
         """A bound-less LoopSeer has nothing to enforce, so no native technique."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LoopSeer
 
@@ -1103,7 +1102,7 @@ class TestNativeTechniques:
     def test_loop_seer_bound_reached_callback_skips_native(self, fauxware_project):
         """A bound_reached callback can't run in Rust, so we skip the native bound."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import LoopSeer
 
@@ -1123,7 +1122,7 @@ class TestNativeTechniques:
         from angr.exploration_techniques import LocalLoopSeer
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         mgr.use_technique(LocalLoopSeer(bound=2))
         assert mgr._rust_mgr.native_technique_count() == 1
@@ -1176,7 +1175,7 @@ class TestTechniqueFilterReevaluation:
                 return None
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         tech = _SecondSightTagger()
         mgr.use_technique(tech)
         # Step one block at a time so a filter sweep runs after each step (run()
@@ -1216,7 +1215,7 @@ class TestTechniqueFilterReevaluation:
                 return None
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         tech = CheckUniqueness()
         mgr.use_technique(tech)
 
@@ -1255,7 +1254,7 @@ class TestExplorationTechniqueStepHookDispatch:
     def test_step_hook_dispatched_during_run(self, fauxware_project):
         """step() runs at least once per Rust batch under run()."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         tech = self._step_counting_tech()
         mgr.use_technique(tech)
 
@@ -1268,7 +1267,7 @@ class TestExplorationTechniqueStepHookDispatch:
         from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         tech = self._step_counting_tech()
         mgr.use_technique(tech)
 
@@ -1279,7 +1278,7 @@ class TestExplorationTechniqueStepHookDispatch:
     def test_step_hook_dispatched_during_step(self, fauxware_project):
         """step() dispatches through the explicit mgr.step(n) path too."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         tech = self._step_counting_tech()
         mgr.use_technique(tech)
 
@@ -1304,7 +1303,7 @@ class TestExplorationTechniqueStepHookDispatch:
                 order.append(("exit", self.name))
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         mgr.use_technique(_Recorder("first"))
         mgr.use_technique(_Recorder("second"))
 
@@ -1328,7 +1327,7 @@ class TestExplorationTechniqueStepHookDispatch:
                 raise RuntimeError("technique step intentionally raised")
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         mgr.use_technique(_Raiser())
 
         # No exception escapes; exploration completes.
@@ -1350,7 +1349,7 @@ class TestExplorationTechniqueStepHookDispatch:
                 return None
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         mgr.use_technique(_FilterOnly())
 
         assert not mgr._has_technique_step_hooks()
@@ -1360,7 +1359,7 @@ class TestExplorationTechniqueStepHookDispatch:
         from angr.exploration_techniques import DFS
 
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         mgr.use_technique(DFS())
 
         # DFS overrides step() in Python, but we shadow it natively in the
@@ -1431,7 +1430,7 @@ class TestVexOptLevel:
     def test_opt_level_with_exploration(self, fauxware_project):
         """Test that opt_level doesn't break exploration."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         # Set opt_level 0 (no optimization) and verify exploration still works
         mgr._rust_mgr.set_vex_opt_level(0)
@@ -1557,7 +1556,7 @@ class TestManualMergepointNative:
         """ManualMergepoint(addr) registers exactly one native technique and
         flags itself as natively handled."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
 
         from angr.exploration_techniques import ManualMergepoint
 

@@ -3144,7 +3144,7 @@ class _StaticFrameOwner:
 _INSPECT_NOT_IMPLEMENTED_MSG = (
     "state.inspect breakpoints are not dispatched by the Rust symex engine. "
     "Registering a breakpoint here would silently never fire. "
-    "Switch to the Python engine (use_rust_engine=False) for breakpoint-driven "
+    "Switch to the Python engine (a plain SimulationManager) for breakpoint-driven "
     "analyses. See docs/advanced-topics/rust_engine.rst for details."
 )
 
@@ -3509,7 +3509,7 @@ def _format_unsupported_event_msg(event_type: str) -> str:
     return (
         f"Rust engine inspect dispatches {supported} events; "
         f"got event_type={event_type!r}. "
-        "Drop to use_rust_engine=False for full state.inspect coverage."
+        "Use the Python engine (a plain SimulationManager) for full state.inspect coverage."
     )
 
 
@@ -3990,7 +3990,7 @@ _STEP_BUCKET_TO_STASH = {"flat": None}
 _SUCCESSOR_FUNC_MSG = (
     "successor_func is not supported by RustSimulationManagerProxy.step_state() "
     "— the Rust engine steps states natively and never builds a SimSuccessors "
-    "object for a Python callable to consume. Use use_rust_engine=False for "
+    "object for a Python callable to consume. Use the Python engine for "
     "techniques that pass successor_func."
 )
 
@@ -4134,7 +4134,7 @@ class RustSimulationManagerProxy:
           — the engine steps natively and never materializes a
           ``SimSuccessors`` for a Python callable to post-process. Techniques
           that need it must run on the Python engine
-          (``use_rust_engine=False``).
+          (a plain ``SimulationManager``).
         * Successors are RETURNED, never auto-pushed into a stash. They park
           in the Rust ``_step_out`` quarantine stash (which also keeps them
           alive for the returned SimStates' Rust-solver fallback); the caller
@@ -4179,7 +4179,7 @@ class RustSimulationManagerProxy:
         raise NotImplementedError(
             "successors() is not supported by RustSimulationManagerProxy "
             "(would require a Python-side re-run). Use step_state() for the "
-            "successor-dict contract, or use_rust_engine=False if a registered "
+            "successor-dict contract, or the Python engine if a registered "
             "ExplorationTechnique needs a SimSuccessors object."
         )
 

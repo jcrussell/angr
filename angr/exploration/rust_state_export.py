@@ -92,7 +92,7 @@ class _RustOwnedSimStateHistory(SimStateHistory):
             "TRACK_*_ACTIONS option that ships in the default `symbolic` bundle "
             "and therefore cannot raise — has no effect under "
             "RustExplorationManager. Use the Python engine (drop "
-            "use_rust_engine=True) for action-stream-driven analyses. See "
+            "engine='rust') for action-stream-driven analyses. See "
             "docs/advanced-topics/rust_engine.rst.",
             UserWarning,
             stacklevel=3,

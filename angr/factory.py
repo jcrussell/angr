@@ -35,21 +35,6 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 
 
-class _EngineDefault:
-    """Sentinel for ``simulation_manager(use_rust_engine=...)`` left unset.
-
-    Distinct from ``False`` (explicit Python) and ``None`` (explicit auto) so the
-    project-level default — ``Project(engine="rust")`` / ``ANGR_DEFAULT_ENGINE=rust``
-    — can apply only when the caller expressed no preference.
-    """
-
-    def __repr__(self):
-        return "<project default>"
-
-
-_ENGINE_DEFAULT = _EngineDefault()
-
-
 class AngrObjectFactory:
     """
     This factory provides access to important analysis elements.
@@ -63,14 +48,8 @@ class AngrObjectFactory:
     # We use thread local storage to cache engines on a per-thread basis
     _tls: threading.local
 
-    def __init__(self, project, default_engine: type[SimEngine] | str | None = None):
+    def __init__(self, project, default_engine: type[SimEngine] | None = None):
         self._tls = threading.local()
-
-        self._rust_default = self._resolve_rust_default(default_engine)
-        if isinstance(default_engine, str):
-            # "rust" is a manager-level sentinel, not a SimEngine: block()/CFG/lifting
-            # keep resolving to UberEngine below.
-            default_engine = None
 
         if default_engine is None:
             if isinstance(project.arch, archinfo.ArchPcode) and UberEnginePcode is not None:
@@ -89,35 +68,11 @@ class AngrObjectFactory:
         self._default_cc = None
         self.procedure_engine = ProcedureEngine(project)
 
-    @staticmethod
-    def _resolve_rust_default(default_engine) -> bool:
-        """Whether ``simulation_manager()`` defaults to auto engine dispatch for this project.
-
-        Two ways in, both opt-in and both equivalent: the ``engine="rust"``
-        string sentinel on :class:`angr.Project`, and ``ANGR_DEFAULT_ENGINE=rust``
-        in the environment. Passing a real SimEngine class does not turn it off —
-        the Rust flip swaps the *manager*, not the SimEngine that ``block()`` /
-        CFG / lifting use.
-        """
-        if isinstance(default_engine, str):
-            if default_engine.lower() != "rust":
-                raise AngrError(
-                    f"Unknown engine {default_engine!r}. The only string accepted for `engine` is 'rust' "
-                    "(default the simulation_manager() to auto engine dispatch); anything else must be a "
-                    "SimEngine subclass."
-                )
-            return True
-        try:
-            from angr.exploration import rust_default_engine_env
-        except ImportError:
-            return False
-        return rust_default_engine_env()
-
     def __getstate__(self):
-        return self.project, self.default_engine_factory, self.procedure_engine, self._default_cc, self._rust_default
+        return self.project, self.default_engine_factory, self.procedure_engine, self._default_cc
 
     def __setstate__(self, state):
-        self.project, self.default_engine_factory, self.procedure_engine, self._default_cc, self._rust_default = state
+        self.project, self.default_engine_factory, self.procedure_engine, self._default_cc = state
         self._tls = threading.local()
 
     @property
@@ -246,27 +201,19 @@ class AngrObjectFactory:
         return self.project.simos.state_call(addr, *args, **kwargs)
 
     def simulation_manager(
-        self,
-        thing: list[SimState] | SimState | None = None,
-        use_rust_engine: bool | _EngineDefault | None = _ENGINE_DEFAULT,
-        **kwargs,
+        self, thing: list[SimState] | SimState | None = None, *, engine: str | None = None, **kwargs
     ) -> SimulationManager:
         """
         Constructs a new simulation manager.
 
         :param thing:           What to put in the new SimulationManager's active stash (either a SimState or a list of
                                 SimStates).
-        :param use_rust_engine: Engine selection. True returns a RustExplorationManager (raising if this
-                                project/state/kwargs combination is one the Rust engine cannot honor); False returns a
-                                plain SimulationManager. None means *auto*: use the Rust engine when it can run this
-                                workload faithfully and the Python engine otherwise, never raising and never diverging.
-                                Auto only ever selects Rust once auto-dispatch is switched on
-                                (``angr.exploration.set_rust_auto_dispatch(True)`` or ``ANGR_RUST_AUTO=1``); until then
-                                it is identical to False. The routing decision is recorded on the returned manager as
-                                ``dispatch_reason``.
-                                Left unset, the project default applies: False, unless the project was built with
-                                ``Project(..., engine="rust")`` or under ``ANGR_DEFAULT_ENGINE=rust``, which makes the
-                                unset default *auto* without needing the global auto-dispatch switch.
+        :param engine:          ``"rust"`` builds a :class:`~angr.exploration.RustExplorationManager`, raising when this
+                                project, state or kwargs combination is one the Rust engine cannot honor. Left unset,
+                                the project decides: a project built with ``Project(..., engine="rust")`` (or under
+                                ``ANGR_DEFAULT_ENGINE=rust``) runs on the Rust engine whenever it can run the workload
+                                faithfully and on the Python engine otherwise; any other project builds a plain
+                                SimulationManager. See docs/advanced-topics/rust_engine.rst.
         :param kwargs:          Any additional keyword arguments will be passed to the SimulationManager constructor
         :returns:               The new SimulationManager
         :rtype:                 angr.sim_manager.SimulationManager
@@ -279,6 +226,9 @@ class AngrObjectFactory:
         * If a list is passed in, the list must contain only SimStates and the whole list will be used to seed the
           SimulationManager.
         """
+        if engine is not None and engine != "rust":
+            raise AngrError(f"Unknown engine {engine!r}. The only engine simulation_manager() accepts is 'rust'.")
+
         if thing is None:
             thing = [self.entry_state()]
         elif isinstance(thing, (list, tuple)):
@@ -289,61 +239,38 @@ class AngrObjectFactory:
         else:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
 
-        if isinstance(use_rust_engine, _EngineDefault):
-            if self._rust_default:
-                use_rust_engine, reason = self._auto_engine_choice(thing, kwargs, project_default=True)
-            else:
-                use_rust_engine, reason = False, "project default engine is python"
-        elif use_rust_engine is None:
-            use_rust_engine, reason = self._auto_engine_choice(thing, kwargs)
-        else:
-            reason = f"explicit use_rust_engine={use_rust_engine}"
+        if engine is None and not (self.project._rust_default and self._rust_eligible(thing, kwargs)):
+            return SimulationManager(self.project, active_states=thing, **kwargs)
 
-        if use_rust_engine:
-            from angr.exploration import RustExplorationManager, unsupported_rust_manager_kwargs
+        from angr.exploration import RustExplorationManager, unsupported_rust_manager_kwargs
 
-            unsupported = unsupported_rust_manager_kwargs(kwargs)
-            if unsupported:
-                names = ", ".join(unsupported)
-                raise NotImplementedError(
-                    f"simulation_manager(use_rust_engine=True) cannot honor {{{names}}}. "
-                    "These are SimulationManager-only constructor arguments; the Rust "
-                    "engine would silently drop them. Drop use_rust_engine=True to run "
-                    "them on the Python engine. See docs/advanced-topics/rust_engine.rst."
-                )
-            mgr = RustExplorationManager(self.project, active_states=thing, **kwargs)
-        else:
-            mgr = SimulationManager(self.project, active_states=thing, **kwargs)
+        unsupported = unsupported_rust_manager_kwargs(kwargs)
+        if unsupported:
+            names = ", ".join(unsupported)
+            raise NotImplementedError(
+                f"simulation_manager(engine='rust') cannot honor {{{names}}}. "
+                "These are SimulationManager-only constructor arguments; the Rust "
+                "engine would silently drop them. Drop engine='rust' to run "
+                "them on the Python engine. See docs/advanced-topics/rust_engine.rst."
+            )
+        return RustExplorationManager(self.project, active_states=thing, **kwargs)
 
-        mgr.dispatch_reason = reason
-        return mgr
+    def _rust_eligible(self, states: list[SimState], kwargs: dict) -> bool:
+        """Whether a ``Project(engine="rust")`` project runs this ``simulation_manager()`` call on the Rust engine.
 
-    def _auto_engine_choice(
-        self, states: list[SimState], kwargs: dict, project_default: bool = False
-    ) -> tuple[bool, str]:
-        """Pick the engine for ``simulation_manager(use_rust_engine=None)``.
-
-        Returns ``(use_rust, reason)``. Never raises and never selects the Rust
-        engine for a workload it would refuse, warn about, or silently execute
-        differently — an ineligible workload is simply a Python one. Auto mode
-        constructs the manager single-threaded: the Rust parallel pool has a
-        known lost-fork bug (angr-ype54) and stays opt-in.
-
-        *project_default* marks the ``engine="rust"`` / ``ANGR_DEFAULT_ENGINE=rust``
-        route: opting a project in is itself the switch, so it does not also
-        require the global ``set_rust_auto_dispatch`` / ``ANGR_RUST_AUTO`` gate.
+        Never raises and never selects the Rust engine for a workload it would refuse, warn about, or silently
+        execute differently: an ineligible workload is simply a Python one. The decision and its reason are logged
+        at debug level.
         """
         try:
-            from angr.exploration import rust_auto_dispatch_enabled, rust_engine_eligible
+            from angr.exploration import rust_engine_eligible
         except ImportError:
-            return False, "rust extension not built"
-
-        if not project_default and not rust_auto_dispatch_enabled():
-            return False, "auto engine dispatch is off (set_rust_auto_dispatch / ANGR_RUST_AUTO)"
+            l.debug("simulation_manager: python engine (rust extension not built)")
+            return False
 
         eligible, reason = rust_engine_eligible(self.project, states, kwargs)
-        l.debug("simulation_manager auto-dispatch: %s (%s)", "rust" if eligible else "python", reason)
-        return eligible, reason
+        l.debug("simulation_manager: %s engine (%s)", "rust" if eligible else "python", reason)
+        return eligible
 
     def simgr(self, *args, **kwargs):
         """

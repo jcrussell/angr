@@ -1,23 +1,24 @@
-"""The config-gated ``default_engine="rust"`` flip (angr-op0dn.14.6).
+"""The ``engine="rust"`` project default (angr-op0dn.14.6, angr-mx00p.62).
 
-Two opt-in doors onto the auto-dispatch mechanism (angr-op0dn.14.5):
-``angr.Project(binary, engine="rust")`` and ``ANGR_DEFAULT_ENGINE=rust``. Both
-make ``factory.simulation_manager()`` — called with *no* ``use_rust_engine``
-argument — route through the eligibility predicate instead of unconditionally
-building a Python ``SimulationManager``.
+``engine="rust"`` is the one engine-selection knob. On ``Project(binary,
+engine="rust")`` (or for every project, ``ANGR_DEFAULT_ENGINE=rust``) it makes
+``factory.simulation_manager()`` calls that name no engine route through the
+eligibility predicate (``test_auto_dispatch.py``) instead of unconditionally
+building a Python ``SimulationManager``. On ``simulation_manager(...,
+engine="rust")`` it demands the Rust engine and raises when it cannot honor
+the workload.
 
 The invariants this file pins:
 
 * **Flag off = zero diff.** A stock project still builds a plain
-  ``SimulationManager`` for an unset ``use_rust_engine``.
+  ``SimulationManager``.
 * **The flip swaps the manager, not the SimEngine.** ``engine="rust"`` must
   leave ``default_engine_factory`` on ``UberEngine`` — ``block()``, the CFG, and
   every lifting path keep using it.
-* **Explicit always wins.** ``use_rust_engine=True/False`` overrides the project
-  default in both directions.
-* **The predicate still governs.** An ineligible workload under the flag routes
-  to Python transparently, exactly as ``use_rust_engine=None`` does; the flag
-  raises the *default*, it does not weaken the eligibility gate.
+* **Naming the engine stays loud.** ``simulation_manager(engine="rust")``
+  raises on an opted-in project exactly as on a stock one.
+* **Removed knobs fail loudly.** ``use_rust_engine=`` is an unknown keyword and
+  ``ANGR_RUST_AUTO`` set is an error, never a silently ignored setting.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import pytest
 
 from angr.engines import UberEngine
 from angr.errors import AngrError
-from angr.exploration import RustExplorationManager, rust_auto_dispatch_enabled
+from angr.exploration import RustExplorationManager
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
 
@@ -42,20 +43,15 @@ def rust_project():
 
 
 class TestFlagOff:
-    """Default until GO: nothing changes."""
+    """Default: nothing changes."""
 
     def test_stock_project_defaults_to_python(self, fauxware_project):
         mgr = fauxware_project.factory.simulation_manager(fauxware_project.factory.entry_state())
         assert type(mgr) is SimulationManager
-        assert mgr.dispatch_reason == "project default engine is python"
+        assert "dispatch_reason" not in vars(mgr)
 
     def test_stock_project_is_not_rust_default(self, fauxware_project):
-        assert fauxware_project.factory._rust_default is False
-
-    def test_global_auto_switch_is_still_off(self):
-        """The flip is per-project opt-in; it must not flip the process-wide gate."""
-        load_fauxware(engine="rust")
-        assert rust_auto_dispatch_enabled() is False
+        assert fauxware_project._rust_default is False
 
 
 class TestProjectEngineSentinel:
@@ -66,10 +62,10 @@ class TestProjectEngineSentinel:
         # ...and the lifting path it drives still works.
         assert rust_project.factory.block(rust_project.entry).size > 0
 
-    def test_unset_use_rust_engine_selects_rust(self, rust_project):
+    def test_unset_engine_selects_rust(self, rust_project):
+        assert rust_project._rust_default is True
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
         assert isinstance(mgr, RustExplorationManager)
-        assert "rust engine supports this project" in mgr.dispatch_reason
 
     def test_no_seed_state_selects_rust(self, rust_project):
         """The entry_state() the factory seeds for itself is routed too."""
@@ -83,59 +79,71 @@ class TestProjectEngineSentinel:
         mgr.step()
         assert mgr.active
 
-    def test_no_global_auto_switch_needed(self, rust_project):
-        """Opting the project in IS the switch — ANGR_RUST_AUTO stays irrelevant."""
-        assert rust_auto_dispatch_enabled() is False
-        assert isinstance(rust_project.factory.simulation_manager(), RustExplorationManager)
-
-    def test_unknown_engine_string_raises(self):
+    @pytest.mark.parametrize("engine", ["pcode", "python", "Rust"])
+    def test_unknown_engine_string_raises(self, engine):
         with pytest.raises(AngrError, match="Unknown engine"):
-            load_fauxware(engine="pcode")
+            load_fauxware(engine=engine)
+
+    @pytest.mark.parametrize("engine", ["pcode", "python", "Rust", UberEngine])
+    def test_unknown_per_call_engine_raises(self, fauxware_project, engine):
+        with pytest.raises(AngrError, match="Unknown engine"):
+            fauxware_project.factory.simulation_manager(engine=engine)
 
     def test_simengine_class_still_accepted(self):
         proj = load_fauxware(engine=UberEngine)
         assert proj.factory.default_engine_factory is UberEngine
-        assert proj.factory._rust_default is False
+        assert proj._rust_default is False
         assert type(proj.factory.simulation_manager()) is SimulationManager
 
 
-class TestExplicitOverridesTheDefault:
-    def test_explicit_false_stays_python(self, rust_project):
-        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), use_rust_engine=False)
-        assert type(mgr) is SimulationManager
-        assert mgr.dispatch_reason == "explicit use_rust_engine=False"
-
-    def test_explicit_true_keeps_its_loud_contract(self, rust_project):
-        """The flag must not soften the explicit opt-in's raise."""
+class TestNamingTheEngineStaysLoud:
+    def test_explicit_rust_keeps_its_loud_contract(self, rust_project):
+        """The project default must not soften the per-call opt-in's raise."""
         with pytest.raises(NotImplementedError, match="resilience"):
-            rust_project.factory.simulation_manager(
-                rust_project.factory.entry_state(), use_rust_engine=True, resilience=True
-            )
+            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", resilience=True)
 
-
-class TestPredicateStillGoverns:
-    """Under the flag, an ineligible workload is still a Python workload."""
-
-    def test_raise_option_routes_to_python(self, rust_project):
-        state = rust_project.factory.entry_state(add_options={"TRACK_MEMORY_ACTIONS"})
-        mgr = rust_project.factory.simulation_manager(state)
+    def test_python_on_a_rust_project_is_a_plain_simulation_manager(self, rust_project):
+        """The per-call way back to Python is the stock constructor."""
+        mgr = SimulationManager(rust_project, active_states=[rust_project.factory.entry_state()])
         assert type(mgr) is SimulationManager
-        assert "TRACK_MEMORY_ACTIONS" in mgr.dispatch_reason
 
-    def test_unsupported_kwarg_routes_to_python(self, rust_project):
-        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), resilience=True)
-        assert type(mgr) is SimulationManager
-        assert "resilience" in mgr.dispatch_reason
 
-    def test_unimplemented_arch_routes_to_python(self, rust_project, monkeypatch):
-        monkeypatch.setattr("angr.exploration.rust_manager.rust_supports_arch", lambda _name: False)
-        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
-        assert type(mgr) is SimulationManager
-        assert "not implemented" in mgr.dispatch_reason
+class TestRemovedKnobs:
+    """The fork-only selection API is gone outright; using it fails loudly (angr-mx00p.62)."""
+
+    @pytest.mark.parametrize("value", [True, False, None])
+    def test_use_rust_engine_is_an_unknown_kwarg(self, fauxware_project, value):
+        with pytest.raises(TypeError, match="use_rust_engine"):
+            fauxware_project.factory.simulation_manager(use_rust_engine=value)
+
+    def test_use_rust_engine_is_unknown_on_a_rust_project(self, rust_project):
+        """Unsupported kwarg → ineligible → the Python constructor rejects it."""
+        with pytest.raises(TypeError, match="use_rust_engine"):
+            rust_project.factory.simulation_manager(use_rust_engine=True)
+
+    def test_use_rust_engine_with_engine_rust_raises(self, fauxware_project):
+        with pytest.raises(NotImplementedError, match="use_rust_engine"):
+            fauxware_project.factory.simulation_manager(engine="rust", use_rust_engine=True)
+
+    @pytest.mark.parametrize("value", ["1", "0", "true"])
+    def test_angr_rust_auto_set_raises_at_project_construction(self, monkeypatch, value):
+        monkeypatch.setenv("ANGR_RUST_AUTO", value)
+        with pytest.raises(AngrError, match="ANGR_RUST_AUTO"):
+            load_fauxware()
+
+    def test_angr_rust_auto_empty_is_unset(self, monkeypatch):
+        monkeypatch.setenv("ANGR_RUST_AUTO", "")
+        assert load_fauxware()._rust_default is False
+
+    @pytest.mark.parametrize("name", ["set_rust_auto_dispatch", "rust_auto_dispatch_enabled"])
+    def test_python_switch_is_gone(self, name):
+        import angr.exploration
+
+        assert not hasattr(angr.exploration, name)
 
 
 class TestEnvGate:
-    """``ANGR_DEFAULT_ENGINE=rust`` is the process-wide equivalent of the sentinel.
+    """``ANGR_DEFAULT_ENGINE=rust`` is the process-wide default of ``Project(engine=...)``.
 
     Read at project-construction time (not import), so the variable can be set
     by a test/CI job without reloading angr.
@@ -144,18 +152,18 @@ class TestEnvGate:
     def test_env_rust_defaults_new_projects_to_rust(self, monkeypatch):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust")
         proj = load_fauxware()
-        assert proj.factory._rust_default is True
+        assert proj._rust_default is True
         assert isinstance(proj.factory.simulation_manager(), RustExplorationManager)
 
     def test_env_is_case_insensitive(self, monkeypatch):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "RuSt")
-        assert load_fauxware().factory._rust_default is True
+        assert load_fauxware()._rust_default is True
 
     @pytest.mark.parametrize("value", ["", "python", "0"])
     def test_other_env_values_leave_the_default_alone(self, monkeypatch, value):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", value)
         proj = load_fauxware()
-        assert proj.factory._rust_default is False
+        assert proj._rust_default is False
         assert type(proj.factory.simulation_manager()) is SimulationManager
 
     def test_env_applies_even_with_an_explicit_simengine_class(self, monkeypatch):
@@ -205,14 +213,3 @@ class TestParityUnderTheFlag:
         assert routed_kind is SimulationManager
         assert py_kind is SimulationManager
         assert routed_addr == py_addr
-
-
-class TestFactoryPickle:
-    """``_rust_default`` survives the factory's own __getstate__/__setstate__."""
-
-    def test_roundtrip_preserves_the_flag(self, rust_project):
-        import pickle
-
-        restored = pickle.loads(pickle.dumps(rust_project.factory))
-        assert restored._rust_default is True
-        assert restored.default_engine_factory is UberEngine

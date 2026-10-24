@@ -13,7 +13,7 @@ Quick start::
     state = proj.factory.entry_state()
 
     # Create the Rust-backed exploration manager
-    mgr = proj.factory.simulation_manager(state, use_rust_engine=True)
+    mgr = proj.factory.simulation_manager(state, engine="rust")
 
     # Or directly:
     from angr.exploration import RustExplorationManager
@@ -44,13 +44,11 @@ from angr.rustylib.vex_engine import (
 from .rust_manager import (
     RustErrorRecord,
     RustExplorationManager,
-    rust_auto_dispatch_enabled,
     rust_default_engine_env,
     rust_engine_eligible,
     rust_missing_required_options,
     rust_supports_arch,
     rust_unsupported_options,
-    set_rust_auto_dispatch,
     state_requires_python_engine,
     unsupported_rust_manager_kwargs,
 )
@@ -65,13 +63,11 @@ __all__ = [
     "RustUnsupportedVexOpError",
     "RustZ3Error",
     "__rust_engine_version__",
-    "rust_auto_dispatch_enabled",
     "rust_default_engine_env",
     "rust_engine_eligible",
     "rust_missing_required_options",
     "rust_supports_arch",
     "rust_unsupported_options",
-    "set_rust_auto_dispatch",
     "state_requires_python_engine",
     "unsupported_rust_manager_kwargs",
 ]

@@ -1,10 +1,10 @@
-"""Property test: ``factory.simulation_manager(use_rust_engine=True, **kwargs)``
+"""Property test: ``factory.simulation_manager(engine="rust", **kwargs)``
 never *silently drops* a kwarg.
 
 The contract: every kwarg the Python ``SimulationManager`` accepts either
 reaches the Rust manager built by
 :meth:`angr.factory.AngrObjectFactory.simulation_manager` or raises loudly, so
-``simulation_manager(state, use_rust_engine=True, resilience=True)`` never
+``simulation_manager(state, engine="rust", resilience=True)`` never
 constructs a manager that quietly ignores ``resilience`` (angr-op0dn.14.5.1).
 """
 
@@ -65,7 +65,7 @@ class TestFactoryKwargsAreNeverDropped:
         value = _SENTINELS[name]
         state = fauxware_project.factory.entry_state()
         try:
-            fauxware_project.factory.simulation_manager(state, use_rust_engine=True, **{name: value})
+            fauxware_project.factory.simulation_manager(state, engine="rust", **{name: value})
         except NotImplementedError as exc:
             # Loud refusal is the accepted outcome for SimulationManager-only kwargs.
             assert name in str(exc)
@@ -78,7 +78,7 @@ class TestFactoryKwargsAreNeverDropped:
     def test_save_unconstrained_still_reaches_the_manager(self, fauxware_project):
         """The one kwarg the old code did forward keeps working."""
         state = fauxware_project.factory.entry_state()
-        mgr = fauxware_project.factory.simulation_manager(state, use_rust_engine=True, save_unconstrained=True)
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust", save_unconstrained=True)
         assert isinstance(mgr, RustExplorationManager)
         # Attribute access on a manager falls through to the stash lookup, so
         # read the private field the constructor actually stores.
@@ -88,7 +88,7 @@ class TestFactoryKwargsAreNeverDropped:
         """A RustExplorationManager-native kwarg survives the factory."""
         state = fauxware_project.factory.entry_state()
         mgr = fauxware_project.factory.simulation_manager(
-            state, use_rust_engine=True, exploration_strategy="dfs", deterministic=True
+            state, engine="rust", exploration_strategy="dfs", deterministic=True
         )
         assert isinstance(mgr, RustExplorationManager)
         assert mgr._deterministic is True
@@ -96,7 +96,7 @@ class TestFactoryKwargsAreNeverDropped:
     def test_unknown_kwarg_raises_rather_than_dropping(self, fauxware_project):
         state = fauxware_project.factory.entry_state()
         with pytest.raises(NotImplementedError, match="totally_bogus_kwarg"):
-            fauxware_project.factory.simulation_manager(state, use_rust_engine=True, totally_bogus_kwarg=1)
+            fauxware_project.factory.simulation_manager(state, engine="rust", totally_bogus_kwarg=1)
 
     def test_python_path_unaffected(self, fauxware_project):
         """Zero behavior change for the Python engine: kwargs still flow through."""

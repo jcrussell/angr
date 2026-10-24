@@ -97,7 +97,7 @@ from pyvex.errors import PyVEXError
 
 from angr import claripy
 from angr.claripy.errors import ClaripyError
-from angr.errors import SimEngineError, SimError, SimSolverError, SimStateError
+from angr.errors import AngrError, SimEngineError, SimError, SimSolverError, SimStateError
 from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
@@ -303,46 +303,40 @@ def unsupported_rust_manager_kwargs(kwargs) -> list[str]:
     return sorted(name for name in kwargs if name not in accepted)
 
 
-# --- Auto engine dispatch (angr-op0dn.14.5.2) ---------------------------------
+# --- Engine dispatch (angr-op0dn.14.5.2, angr-mx00p.62) ----------------------
 #
-# `factory.simulation_manager(use_rust_engine=None)` asks "run this on Rust if
-# Rust can run it, else Python". The routing decision is computed here so it is
-# testable without a factory, and so the raise-option list stays a single source
-# of truth (`rust_unsupported_options`).
-#
-# Auto mode is OFF by default: with the flag off, `use_rust_engine=None` behaves
-# exactly like `use_rust_engine=False` (plain SimulationManager), so the default
-# flip (angr-op0dn.14.6) is a one-line policy change, not a behavior rewrite.
-_AUTO_DISPATCH_ENABLED = os.environ.get("ANGR_RUST_AUTO", "").lower() not in ("", "0", "false", "no")
+# A project built with `engine="rust"` (or under ANGR_DEFAULT_ENGINE=rust) asks
+# `factory.simulation_manager()` to "run this on Rust if Rust can run it, else
+# Python". The routing decision is computed here so it is testable without a
+# factory, and so the raise-option list stays a single source of truth
+# (`rust_unsupported_options`).
 
-
-def set_rust_auto_dispatch(enabled: bool) -> None:
-    """Enable/disable auto engine selection for ``simulation_manager()``.
-
-    Only consulted when the caller leaves ``use_rust_engine`` unset (``None``).
-    Explicit ``True``/``False`` always wins. Also settable process-wide via the
-    ``ANGR_RUST_AUTO`` environment variable (read once at import).
-    """
-    global _AUTO_DISPATCH_ENABLED
-    _AUTO_DISPATCH_ENABLED = bool(enabled)
-
-
-def rust_auto_dispatch_enabled() -> bool:
-    """True when ``use_rust_engine=None`` may select the Rust engine."""
-    return _AUTO_DISPATCH_ENABLED
+# Environment variables an earlier selection API read. Each one set is a hard
+# error at project construction rather than a silently ignored setting.
+_REMOVED_ENGINE_ENV_VARS = {
+    "ANGR_RUST_AUTO": "build the project with engine='rust' (or set ANGR_DEFAULT_ENGINE=rust for every project) "
+    "to run its simulation managers on the Rust engine where the workload is eligible",
+}
 
 
 def rust_default_engine_env() -> bool:
     """True when ``ANGR_DEFAULT_ENGINE=rust`` asks new projects to default to the Rust engine.
 
-    The process-wide equivalent of ``Project(..., engine="rust")``: a project
-    built while this is set routes ``simulation_manager()`` calls that leave
-    ``use_rust_engine`` unset through the auto-dispatch predicate
-    (:func:`rust_engine_eligible`), the same way the explicit sentinel does.
+    The process-wide default of ``Project(..., engine="rust")``: a project
+    built while this is set routes ``simulation_manager()`` calls that name no
+    engine through the eligibility predicate (:func:`rust_engine_eligible`).
     Read at *project construction* time (not at import), so a test can set the
     variable and build a project without reloading the module. Any other value
     (including ``python``) leaves the default alone.
+
+    Raises:
+        AngrError: a removed engine-selection variable (``_REMOVED_ENGINE_ENV_VARS``)
+            is set. Ignoring it would run the workload on the Python engine
+            while its owner believes it runs on Rust.
     """
+    for name, replacement in _REMOVED_ENGINE_ENV_VARS.items():
+        if os.environ.get(name, ""):
+            raise AngrError(f"The {name} environment variable was removed: unset it and {replacement}.")
     return os.environ.get("ANGR_DEFAULT_ENGINE", "").strip().lower() == "rust"
 
 
@@ -366,7 +360,7 @@ def rust_supports_arch(arch_name) -> bool:
 def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
     """Decide whether *project* / *states* / *kwargs* can run on the Rust engine.
 
-    The eligibility predicate behind ``simulation_manager(use_rust_engine=None)``.
+    The eligibility predicate behind ``simulation_manager()`` on a ``Project(engine="rust")`` project.
     Every ineligible answer names a signal the Rust engine would otherwise turn
     into a raise, a warning, or a silent divergence — routing to Python instead
     makes the whole loud surface transparent.
@@ -377,9 +371,8 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
         kwargs: The SimulationManager constructor kwargs the caller passed.
 
     Returns:
-        ``(eligible, reason)``. *reason* is a short human-readable string
-        recorded on the returned manager as ``dispatch_reason`` and logged at
-        debug level, so the route is always observable.
+        ``(eligible, reason)``. *reason* is a short human-readable string the
+        factory logs at debug level, so the route is always observable.
     """
     if not RUST_EXPLORATION_AVAILABLE:
         return False, "rust extension not built"
@@ -3351,7 +3344,7 @@ class RustExplorationManager(
         names = ", ".join(offending)
         raise NotImplementedError(
             f"SimOption setting(s) {{{names}}} request behavior the Rust "
-            "engine cannot provide. Drop use_rust_engine=True (or fix these "
+            "engine cannot provide. Drop engine='rust' (or fix these "
             "options on state.options) and rerun with the Python "
             "engine. See docs/advanced-topics/rust_engine.rst for the "
             "full matrix."

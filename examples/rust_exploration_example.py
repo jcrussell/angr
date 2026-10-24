@@ -30,7 +30,7 @@ def example_address_find(binary_path):
     state = proj.factory.entry_state()
 
     # Create Rust-backed simulation manager via factory
-    simgr = proj.factory.simulation_manager(state, use_rust_engine=True)
+    simgr = proj.factory.simulation_manager(state, engine="rust")
 
     # Explore with address-based find/avoid
     simgr.explore(find=0x400844, avoid=0x40084E)  # "Welcome" vs "Go away"
@@ -49,7 +49,7 @@ def example_callable_predicate(binary_path):
     proj = angr.Project(binary_path, auto_load_libs=False)
     state = proj.factory.entry_state()
 
-    simgr = proj.factory.simulation_manager(state, use_rust_engine=True)
+    simgr = proj.factory.simulation_manager(state, engine="rust")
 
     # Callable predicates: check state properties dynamically
     simgr.explore(
@@ -70,7 +70,7 @@ def example_with_techniques(binary_path):
     proj = angr.Project(binary_path, auto_load_libs=False)
     state = proj.factory.entry_state()
 
-    simgr = proj.factory.simulation_manager(state, use_rust_engine=True)
+    simgr = proj.factory.simulation_manager(state, engine="rust")
 
     # LengthLimiter: bound exploration depth
     from angr.exploration_techniques import LengthLimiter

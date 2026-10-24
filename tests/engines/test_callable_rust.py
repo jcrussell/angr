@@ -10,8 +10,9 @@ invokes the first few entries and checks them against the known flag
 ``MMA{fc7d90ca001fc8712497d88d9ee7efa9e9b32ed8}``.
 
 ``Callable.perform_call()`` builds its own SimulationManager internally via
-``project.factory.simulation_manager(...)`` without threading a
-``use_rust_engine`` kwarg through, so the test monkey-patches the factory
+``project.factory.simulation_manager(...)`` without naming an engine (and
+its ``techniques=`` kwarg makes the workload ineligible even on a
+``Project(engine="rust")`` project), so the test monkey-patches the factory
 method to return a :class:`RustExplorationManager` — the same hook
 ``tests/benchmarks/run_single.py`` installs when invoking the bench under
 the Rust engine.

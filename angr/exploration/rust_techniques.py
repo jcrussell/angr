@@ -591,7 +591,7 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
             l.warning(
                 "Technique %s overrides successors(), which is not dispatched by "
                 "the Rust manager. The per-successor hook will silently no-op. "
-                "Drop to use_rust_engine=False if you need it.",
+                "Run it on the Python engine (a plain SimulationManager) if you need it.",
                 tech_name,
             )
         if technique._is_overridden("step_state"):

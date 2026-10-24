@@ -1,14 +1,14 @@
-"""Contract test: ``use_rust_engine`` on ``factory.simulation_manager()`` is
+"""Contract test: ``engine="rust"`` on ``factory.simulation_manager()`` is
 a per-call selector and is **not** inherited by subsequent calls or by
 internal-analysis SM constructions.
 
 This pins the inheritance contract documented in
 ``docs/advanced-topics/rust_engine.rst`` under
 "Analyses compatibility > Inheritance contract". Any future change that
-introduces a project-level Rust-engine default (e.g. setting an attribute
-on the project or factory) needs to update either this contract or the
-table of per-analysis verdicts so the safer default cannot regress
-silently.
+introduces an implicit project-level Rust-engine default (beyond the
+explicit ``Project(engine="rust")`` opt-in, ``test_default_engine_flag.py``)
+needs to update either this contract or the table of per-analysis verdicts
+so the safer default cannot regress silently.
 
 The test does **not** drive an analysis end-to-end — it inspects the
 return type of ``factory.simulation_manager(...)`` (and the
@@ -46,8 +46,9 @@ def proj():
 
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestFactoryRustInheritance:
-    """``factory.simulation_manager(use_rust_engine=...)`` chooses per-call;
-    omitting the kwarg always lands on the Python ``SimulationManager``.
+    """``factory.simulation_manager(engine="rust")`` chooses per-call;
+    omitting the kwarg on a stock project always lands on the Python
+    ``SimulationManager``.
     """
 
     def test_default_returns_python_manager(self, proj):
@@ -56,26 +57,20 @@ class TestFactoryRustInheritance:
         assert isinstance(sm, SimulationManager)
         assert not isinstance(sm, RustExplorationManager)
 
-    def test_use_rust_engine_true_returns_rust_manager(self, proj):
+    def test_engine_rust_returns_rust_manager(self, proj):
         """Explicit opt-in → ``RustExplorationManager``."""
-        sm = proj.factory.simulation_manager(use_rust_engine=True)
+        sm = proj.factory.simulation_manager(engine="rust")
         assert isinstance(sm, RustExplorationManager)
-
-    def test_use_rust_engine_false_returns_python_manager(self, proj):
-        """Explicit opt-out (kwarg=False) → Python ``SimulationManager``."""
-        sm = proj.factory.simulation_manager(use_rust_engine=False)
-        assert isinstance(sm, SimulationManager)
-        assert not isinstance(sm, RustExplorationManager)
 
     def test_rust_choice_does_not_persist_across_calls(self, proj):
         """Constructing a Rust manager once must not bias later calls.
 
         Pins the "no project-level toggle" half of the contract: if any
-        future change stored ``use_rust_engine`` on ``proj`` or
+        future change stored a per-call ``engine`` on ``proj`` or
         ``proj.factory``, this test would fail when the second call
         unexpectedly returned a Rust manager.
         """
-        rust_sm = proj.factory.simulation_manager(use_rust_engine=True)
+        rust_sm = proj.factory.simulation_manager(engine="rust")
         assert isinstance(rust_sm, RustExplorationManager)
 
         default_sm = proj.factory.simulation_manager()
@@ -91,7 +86,7 @@ class TestFactoryRustInheritance:
         assert isinstance(default_simgr, SimulationManager)
         assert not isinstance(default_simgr, RustExplorationManager)
 
-        rust_simgr = proj.factory.simgr(use_rust_engine=True)
+        rust_simgr = proj.factory.simgr(engine="rust")
         assert isinstance(rust_simgr, RustExplorationManager)
 
     def test_default_engine_is_not_rust_after_rust_manager(self, proj):
@@ -104,8 +99,8 @@ class TestFactoryRustInheritance:
         """
         from angr.engines.vex.heavy.heavy import HeavyVEXMixin
 
-        mgr = proj.factory.simulation_manager(use_rust_engine=True)
-        # Pin the precondition: if ``use_rust_engine=True`` silently fell
+        mgr = proj.factory.simulation_manager(engine="rust")
+        # Pin the precondition: if ``engine="rust"`` silently fell
         # back to a Python ``SimulationManager``, the test's premise
         # ("after a RustExplorationManager has been built") would be false
         # and the assertion below would pass vacuously.

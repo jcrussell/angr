@@ -211,10 +211,10 @@ class RustFactoryPatch:
             ``False`` (default — the callable smoke-test behavior), every call
             is routed to the Rust engine.
 
-    Both behaviors strip the ``techniques`` / ``use_rust_engine`` kwargs that
+    Both behaviors strip the ``techniques`` kwarg that
     :meth:`Callable.perform_call` passes but ``RustExplorationManager`` does
-    not accept; this is a harmless superset for the integration path (those
-    kwargs are absent there).
+    not accept; this is harmless for the integration path (the kwarg is
+    absent there).
     """
 
     def __init__(self, fallback_to_python: bool = False):
@@ -240,7 +240,6 @@ class RustFactoryPatch:
             # Callable passes techniques=...; RustExplorationManager doesn't
             # accept it — strip silently for the smoke test.
             kwargs.pop("techniques", None)
-            kwargs.pop("use_rust_engine", None)
             if thing is None:
                 states = [factory_self.entry_state()]
             elif isinstance(thing, (list, tuple)):
