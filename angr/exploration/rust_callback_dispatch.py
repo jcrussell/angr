@@ -328,7 +328,11 @@ class RustCallbackDispatchMixin:
         # _with_extra_constraints lives in rust_state_proxy (extracted there by
         # the 24pv4.4 dedup refactor); import here to keep the closures below
         # from raising NameError on every eval/satisfiable/eval_upto call.
-        from angr.exploration.rust_state_proxy import _signed_extremum, _with_extra_constraints
+        from angr.exploration.rust_state_proxy import (
+            _cast_eval_result,
+            _signed_extremum,
+            _with_extra_constraints,
+        )
 
         original_eval = state.solver.eval
         original_satisfiable = state.solver.satisfiable
@@ -338,18 +342,27 @@ class RustCallbackDispatchMixin:
         original_add = state.solver.add
         state.scratch._rust_solver_installed = True
 
+        # angr-vmi2l.293: each query runs, together with its unsat check,
+        # inside one ``_with_extra_constraints`` scope on the Rust context, and
+        # every Python fallback forwards ``extra_constraints``. An unsat answer
+        # raises SimUnsatError, as SimSolver does: the path constraints live in
+        # Rust, so the Python solver would answer an infeasible query with an
+        # arbitrary value. Mirrors ``RustSolverFallback.eval`` / ``eval_upto``
+        # (``invariant-rust-solver-fallback-class``).
         def _rust_eval(expr, cast_to=None, **kwargs):
             _ctx = state.scratch.rust_solver_ctx
             kwargs.pop("exact", None)
             extra = kwargs.pop("extra_constraints", ())
+
+            def query():
+                result = _ctx.eval(expr)
+                return result, result is None and not _ctx.satisfiable()
+
+            unsat = False
             try:
-                result = _with_extra_constraints(_ctx, _ctx.eval, expr, extra=extra)
-                if result is None:
-                    return original_eval(expr, cast_to=cast_to, **kwargs)
-                if cast_to == bytes:
-                    nbytes = (expr.length + 7) // 8
-                    return result.to_bytes(nbytes, "big")
-                return result
+                result, unsat = _with_extra_constraints(_ctx, query, extra=extra)
+                if result is not None:
+                    return _cast_eval_result(expr, result, cast_to)
             except claripy.errors.UnsatError:
                 # cat-(a) EXPECTED CONTROL FLOW: claripy UnsatError must propagate
                 # so the caller sees the constraint conflict — re-raise.
@@ -358,7 +371,10 @@ class RustCallbackDispatchMixin:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver eval failed; fall back
                 # to Python's claripy solver. The two solvers may diverge on
                 # satisfying value selection.
-                return original_eval(expr, cast_to=cast_to, **kwargs)
+                unsat = False
+            if unsat:
+                raise SimUnsatError("Rust solver context is unsat (callback eval)")
+            return original_eval(expr, cast_to=cast_to, extra_constraints=extra, **kwargs)
 
         def _rust_satisfiable(**kwargs):
             _ctx = state.scratch.rust_solver_ctx
@@ -370,7 +386,7 @@ class RustCallbackDispatchMixin:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver satisfiable() raised;
                 # fall back to Python claripy. May report sat/unsat differently
                 # from Rust.
-                return original_satisfiable(**kwargs)
+                return original_satisfiable(extra_constraints=extra, **kwargs)
 
         def _rust_extremum(kind, expr, kwargs):
             # angr-mm5sw: honour ``extra_constraints`` and ``signed`` like the
@@ -422,15 +438,26 @@ class RustCallbackDispatchMixin:
             _ctx = state.scratch.rust_solver_ctx
             kwargs.pop("exact", None)
             extra = kwargs.pop("extra_constraints", ())
+
+            def query():
+                found = _ctx.eval_upto(expr, n)
+                return found, not found and not _ctx.satisfiable()
+
+            unsat = False
             try:
-                results = _with_extra_constraints(_ctx, _ctx.eval_upto, expr, n, extra=extra)
-                if cast_to is not None:
-                    results = tuple(cast_to(r) for r in results)
-                return results
+                results, unsat = _with_extra_constraints(_ctx, query, extra=extra)
+                if results:
+                    # angr-vmi2l.225: cast as SimSolver._cast_to does (bytes is
+                    # the big-endian encoding, not ``bytes(value)``) and
+                    # return a list, as SimSolver.eval_upto does.
+                    return [_cast_eval_result(expr, r, cast_to) for r in results]
             except Exception:
                 # cat-(b) FALLBACK WITH LOSS: Rust solver eval_upto() raised; fall
                 # back to Python claripy. Returned solution sets may differ.
-                return original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
+                unsat = False
+            if unsat:
+                raise SimUnsatError("Rust solver context is unsat (callback eval_upto)")
+            return original_eval_upto(expr, n, cast_to=cast_to, extra_constraints=extra, **kwargs)
 
         def _rust_add(*constraints):
             _ctx = state.scratch.rust_solver_ctx
