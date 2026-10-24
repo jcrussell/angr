@@ -7,7 +7,11 @@ The working tree is clean. Your job: drain one task from the bd queue.
 1. `bd prime` — load the current memory / context dump.
 2. Read `.ralph/state/session.md` for the previous session's handoff notes.
 3. Check for in-flight work: `bd list --status=in_progress`.
-4. If something is in_progress, continue it. Otherwise: `bd ready` and pick
+4. If something is in_progress, continue it. Otherwise: run
+   `bd ready --label upstream-path` first. These are the bugs and tasks that
+   block the next upstream PR chunks, so an actionable leaf there wins over
+   any other row, whatever its priority. Only when it yields no actionable
+   leaf, fall back to plain `bd ready`. Either way, pick
    the highest-priority unblocked **leaf** task (lowest P-number). **Skip
    `[epic]` rows** — epics are containers, not drainable work, and `bd ready`
    lists them *above* leaves in the same priority band. If a candidate still has
