@@ -11,6 +11,7 @@ import contextlib
 import logging
 import threading
 import warnings
+import weakref
 from typing import TYPE_CHECKING
 
 from angr import claripy
@@ -505,16 +506,28 @@ class _LazySimStateRef:
     delegates the lookup to the materialized SimState.
 
     Identity is preserved across repeated stash reads via the per-manager
-    ``_lazy_state_refs`` cache (one wrapper per Rust state id).
+    ``_lazy_state_refs`` cache (one wrapper per Rust state id), until Rust
+    next runs. A wrapper still referenced outside that cache when Rust is
+    about to step, merge or drop its state is *pinned*
+    (``RustStateExportMixin._detach_held_entries``): it keeps the SimState
+    it showed, moved onto a snapshot fork, as a Python-engine ``SimState``
+    held across ``step()`` would. The cache entry is dropped either way, so
+    the next stash read hands out a fresh wrapper.
     """
 
-    __slots__ = ("_lazy_mgr", "_lazy_state_id")
+    __slots__ = ("__weakref__", "_lazy_mgr", "_lazy_pinned", "_lazy_state_id")
 
     def __init__(self, mgr, state_id):
         object.__setattr__(self, "_lazy_mgr", mgr)
         object.__setattr__(self, "_lazy_state_id", state_id)
+        # The detached SimState once pinned; ``None`` while the wrapper
+        # names the stash state.
+        object.__setattr__(self, "_lazy_pinned", None)
 
     def _materialize(self):
+        pinned = self._lazy_pinned
+        if pinned is not None:
+            return pinned
         return self._lazy_mgr._materialize_single_state(self._lazy_state_id)
 
     # SimState internals that angr core calls on user-provided states —
@@ -534,7 +547,10 @@ class _LazySimStateRef:
         if (
             name.startswith("_")
             and name not in self._MATERIALIZING_PRIVATE
-            and (name.startswith("__") or self._lazy_state_id not in self._lazy_mgr._state_cache)
+            and (
+                name.startswith("__")
+                or (self._lazy_pinned is None and self._lazy_state_id not in self._lazy_mgr._state_cache)
+            )
         ):
             raise AttributeError(name)
         return getattr(self._materialize(), name)
@@ -546,13 +562,18 @@ class _LazySimStateRef:
         setattr(self._materialize(), name, value)
 
     def __repr__(self):
-        return f"<_LazySimStateRef state_id={self._lazy_state_id}>"
+        pinned = " pinned" if self._lazy_pinned is not None else ""
+        return f"<_LazySimStateRef state_id={self._lazy_state_id}{pinned}>"
 
     def __hash__(self):
         return hash(("_LazySimStateRef", self._lazy_state_id))
 
     def __eq__(self, other):
         if isinstance(other, _LazySimStateRef):
+            if self._lazy_pinned is not None or other._lazy_pinned is not None:
+                # A pinned wrapper is its own pre-step state, not the stash
+                # entry that kept the id.
+                return self is other
             return self._lazy_state_id == other._lazy_state_id
         return NotImplemented
 
@@ -568,16 +589,21 @@ class RustStateExportMixin:
     - self._lazy_state_refs: Dict[int, _LazySimStateRef]
     """
 
-    def _invalidate_state_export_cache(self) -> None:
+    def _invalidate_state_export_cache(self, *, detach_held: bool = True) -> None:
         """Clear the per-state `rust_fully_synced` sentinel on every cached state.
 
         Called when exploration resumes (`step`, `run`, `explore`): every
         Python entry that hands control to Rust goes through here, so it is
-        also where the exported views Rust must not move are detached first
-        (``CopyStashForkOwner.detach_views``). After Rust takes further steps,
-        the cached Python mirror is stale until re-synced by the next
-        `_get_stash_states` visit.
+        also where the exported views Rust must not move are detached first:
+        held stash entries (``_detach_held_entries``), then copies and
+        snapshot exports (``CopyStashForkOwner.detach_views``). After Rust
+        takes further steps, the cached Python mirror is stale until re-synced
+        by the next `_get_stash_states` visit. ``detach_held=False`` is for a
+        caller that does not hand control to Rust next (the Rust states were
+        already replaced, or only states were added).
         """
+        if detach_held:
+            self._detach_held_entries(list(self._lazy_state_refs))
         self._copy_stash_fork_owner.detach_views()
         for state in self._state_cache.values():
             scratch = getattr(state, "scratch", None)
@@ -593,6 +619,81 @@ class RustStateExportMixin:
                 plugin = plugins.get(name)
                 if plugin is not None and isinstance(plugin.__dict__.get("_binding"), RustStateBinding):
                     plugin._drop_state_caches()
+
+    def _detach_held_entries(self, state_ids, *, doomed: bool = False) -> int:
+        """Pin every stash entry of ``state_ids`` that is still held.
+
+        Run before Rust steps, merges or drops those states (angr-qm87h). A stash entry
+        (``_LazySimStateRef``) is held when something besides
+        ``_lazy_state_refs`` references it. The wrapper is popped from the
+        cache and probed through a weak reference: it holds only the manager
+        and an id, so with no outside reference it is freed on the pop and
+        costs nothing more. A held one is pinned to its SimState, which moves
+        onto a snapshot fork (``_pin_held_entry``), so it keeps showing the
+        state as it is now. ``doomed`` states are about to be dropped: their
+        mirror is not kept for the next stash read. Returns the number of
+        entries pinned. Contract: ``docs/advanced-topics/rust_engine.rst``
+        ("Exported states are live views").
+        """
+        refs = self._lazy_state_refs
+        held = []
+        for sid in state_ids:
+            if sid not in refs:
+                continue
+            probe = weakref.ref(refs.pop(sid))
+            ref = probe()
+            if ref is not None and ref._lazy_pinned is None:
+                held.append(ref)
+            ref = None
+        rust_mgr = self._rust_mgr
+        pinned = 0
+        for ref in held:
+            if rust_mgr.get_state_pc_by_id(ref._lazy_state_id) is None:
+                # The state is already gone (Rust dropped it while it last
+                # ran): there is nothing to pin, and the wrapper raises
+                # RustStateReleasedError on its next read.
+                continue
+            self._pin_held_entry(ref, keep_mirror=not doomed)
+            pinned += 1
+        return pinned
+
+    def _pin_held_entry(self, ref, *, keep_mirror: bool) -> None:
+        """Pin ``ref`` to its SimState, moved onto a snapshot fork.
+
+        With ``keep_mirror`` the stash mirror the manager caches for the next
+        stash read becomes a fresh copy bound to the stash state, so the
+        pinned SimState leaves the cache and only ``ref`` keeps it (and its
+        fork) alive.
+        """
+        sid = ref._lazy_state_id
+        state = self._materialize_single_state(sid)
+        cache = self._state_cache
+        aliases = [k for k, v in cache.items() if v is state]
+        if keep_mirror:
+            fresh = self._copy_bound_to(state, sid)
+            fresh.scratch.rust_fully_synced = False
+            fresh.scratch.rust_mirror_id = sid
+            for k in aliases:
+                cache[k] = fresh
+        else:
+            for k in aliases:
+                del cache[k]
+        binding = _root_binding_of(state)
+        if binding is None or binding.owner is not self._copy_stash_fork_owner or binding.raw_id != sid:
+            raise AssertionError(f"stash mirror of Rust state {sid} is not bound to it: {binding!r}")
+        self._copy_stash_fork_owner.detach(binding)
+        object.__setattr__(ref, "_lazy_pinned", state)
+
+    def _preserve_exports(self, state_ids) -> None:
+        """Keep every export of ``state_ids`` readable across a drop.
+
+        For a drop the manager makes itself (``drop()``, a merge): held stash
+        entries are pinned, then every other export root of those states
+        moves onto a fork (``CopyStashForkOwner.preserve``).
+        """
+        state_ids = list(state_ids)
+        self._detach_held_entries(state_ids, doomed=True)
+        self._copy_stash_fork_owner.preserve(state_ids)
 
     def _release_gone_exports(self) -> None:
         """Release the exports of states Rust dropped while it ran.
@@ -1415,8 +1516,14 @@ class RustStateExportMixin:
             return
         from angr.exploration.rust_state_proxy import RustRegisterProxy
 
+        # Share the binding the state's other proxies already hold: a
+        # register proxy bound apart from them would copy, fork and detach
+        # separately from the memory it belongs with.
+        binding = _root_binding_of(state)
+        if binding is None or binding.owner is not self._copy_stash_fork_owner or binding.raw_id != state_id:
+            binding = state_id
         try:
-            proxy = RustRegisterProxy(self._rust_mgr, state_id, state.arch, python_mgr=self)
+            proxy = RustRegisterProxy(self._rust_mgr, binding, state.arch, python_mgr=self)
             state.register_plugin("registers", proxy)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: proxy install failed; the symbolic

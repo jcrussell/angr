@@ -276,7 +276,9 @@ class CopyStashForkOwner:
 
     * :meth:`detach_views` runs before Rust steps: a snapshot export is moved
       onto a fork of its own, and the copies of every other export onto a
-      snapshot fork, so neither sees the step.
+      snapshot fork, so neither sees the step. The manager first moves the
+      held stash entries itself (:meth:`detach`); it alone knows which are
+      held.
     * :meth:`release_gone` runs after Rust ran: a view of a state Rust no
       longer holds is released, so a read raises instead of failing on a
       missing id.
@@ -347,9 +349,7 @@ class CopyStashForkOwner:
         forks = 0
         for binding in list(self._snapshots):
             if binding._released is None and binding._parent is None and not binding._owned:
-                binding._id = self.fork(binding._id)
-                self.track(binding)
-                self._roots.discard(binding)
+                self.detach(binding)
                 forks += 1
         self._snapshots = weakref.WeakSet()
         for binding in list(self._with_copies):
@@ -358,6 +358,21 @@ class CopyStashForkOwner:
                 forks += 1
         self._with_copies = weakref.WeakSet()
         return forks
+
+    def detach(self, binding: RustStateBinding) -> None:
+        """Move an export root onto a fork of the state it names.
+
+        From here on ``binding`` reads and writes its own snapshot of the
+        state as it is now, and Rust stepping or dropping the stash state no
+        longer reaches it. The fork is dropped with the binding.
+        """
+        if binding._released is not None or binding._parent is not None or binding._owned:
+            raise AssertionError(f"detach needs a live, unforked export root, got {binding!r}")
+        binding._id = self.fork(binding._id)
+        self.track(binding)
+        self._roots.discard(binding)
+        self._snapshots.discard(binding)
+        self._with_copies.discard(binding)
 
     def preserve(self, state_ids) -> None:
         """Move the views of ``state_ids`` onto forks before they are dropped.
@@ -370,10 +385,7 @@ class CopyStashForkOwner:
             return
         for binding in list(self._roots):
             if binding._released is None and binding._parent is None and not binding._owned and binding._id in doomed:
-                binding._id = self.fork(binding._id)
-                self.track(binding)
-                self._roots.discard(binding)
-                self._snapshots.discard(binding)
+                self.detach(binding)
 
     def release_gone(self, is_live) -> None:
         """Release every export root whose Rust state ``is_live`` rejects."""

@@ -272,11 +272,19 @@ path constraints. The plugins Rust does not own (``posix``, ``libc``,
   state's data. States the manager drops on request (``mgr.drop()``,
   ``mgr.merge()``) keep their exports readable: they are moved onto a
   private fork first.
-* **Stash entries follow their state.** ``mgr.active[i]`` names a Rust state
-  id. After ``mgr.step()`` the same entry, and the plugins read from it,
-  show the stepped state, so ``mgr.active[0] is mgr.active[0]`` holds across
-  reads. This differs from the Python engine, where a ``SimState`` held
-  across ``step()`` is the pre-step state.
+* **A held stash entry keeps its state, as under the Python engine.**
+  ``mgr.active[i]`` names a Rust state id, and reading the stash again
+  before Rust next runs returns the same object. When ``step``, ``run`` or
+  ``explore`` hands control to Rust, or ``drop`` / ``merge`` is about to
+  remove the state, an entry that is still referenced (``a =
+  mgr.active[0]``) is detached onto a snapshot fork: ``a`` keeps showing the
+  state as it was (address, registers, memory, ``solver.constraints``), a
+  write to it stays on it, and it keeps working if Rust later drops the
+  state. The next stash read returns fresh entries for the new states, so
+  ``mgr.active[0] is not a``. An entry nobody holds any more costs nothing,
+  and the fork of a held one is dropped when the entry is garbage
+  collected. A plugin kept without its entry (``m = mgr.active[0].memory``)
+  is not an entry: it reads the stash state and follows it (angr-qm87h).
 * **Copies are snapshots.** ``state.copy()`` is copy-on-write: the copy reads
   the state as of the copy, and its first write forks a Rust state of its
   own. A write to either side never reaches the other. Before Rust next steps

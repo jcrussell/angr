@@ -4412,7 +4412,7 @@ class RustExplorationManager(
             self._add_rust_state("found", seed_state)
             routed = True
         if routed:
-            self._invalidate_state_export_cache()
+            self._invalidate_state_export_cache(detach_held=False)
 
     def _replay_preinit_prefix_for_find(self, find_addrs: list[int], avoid_addrs: list[int]) -> None:
         """Re-run the skipped Python init prefix, matching find addresses inside it.
@@ -4470,7 +4470,7 @@ class RustExplorationManager(
                 self._add_rust_state("found", hit)
                 routed = True
         if routed:
-            self._invalidate_state_export_cache()
+            self._invalidate_state_export_cache(detach_held=False)
 
     def explore(
         self,
@@ -5971,7 +5971,7 @@ class RustExplorationManager(
         if filter_func is None:
             # Drop all states from the stash. An export of a dropped state
             # keeps reading it as it was (``CopyStashForkOwner.preserve``).
-            self._copy_stash_fork_owner.preserve(self._rust_mgr.get_state_ids(stash))
+            self._preserve_exports(self._rust_mgr.get_state_ids(stash))
             try:
                 self._rust_mgr.clear_stash(stash)
             except AttributeError:
@@ -6113,7 +6113,7 @@ class RustExplorationManager(
                     self._rust_mgr.move_state(sid, stash, "_merge_drop")
         if merged_any:
             # An export of a merged-away state keeps reading it as it was.
-            self._copy_stash_fork_owner.preserve(self._rust_mgr.get_state_ids("_merge_drop"))
+            self._preserve_exports(self._rust_mgr.get_state_ids("_merge_drop"))
             # cat-(a) EXPECTED CONTROL FLOW: intermediate stash never created.
             with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.clear_stash("_merge_drop")
@@ -6224,7 +6224,7 @@ class RustExplorationManager(
                 with contextlib.suppress(RuntimeError, KeyError):
                     self._rust_mgr.move_state(sid, stash, "_merge_drop")
             # An export of a merged-away state keeps reading it as it was.
-            self._copy_stash_fork_owner.preserve(self._rust_mgr.get_state_ids("_merge_drop"))
+            self._preserve_exports(self._rust_mgr.get_state_ids("_merge_drop"))
             # cat-(a) EXPECTED CONTROL FLOW: clear of intermediate _merge_drop
             # stash failed (already empty / never created).
             with contextlib.suppress(RuntimeError, KeyError):
@@ -6425,7 +6425,7 @@ class RustExplorationManager(
         # The post-restore Rust state_ids are the original ones (snapshot
         # preserves them), so external state-export caches indexed by id
         # must be flushed.
-        self._invalidate_state_export_cache()
+        self._invalidate_state_export_cache(detach_held=False)
         self._reset_python_shadow_maps_for_restore()
         # angr-op0dn.13.12: the restored frontier — not the state this manager
         # was constructed with — is now the exploration's root. The phase-2

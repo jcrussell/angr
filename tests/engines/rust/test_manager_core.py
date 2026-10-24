@@ -1939,9 +1939,14 @@ class TestRustExplorationPython:
 
         # step() invalidates: cached mirror is now stale until next read.
         # Observe the sentinel via the cached SimState directly; reading it
-        # through the wrapper would re-trigger materialization.
+        # through the wrapper would re-trigger materialization. ``first`` is
+        # held across the step, so it keeps its SimState (pinned) and the
+        # cache gets a fresh mirror of the stepped state.
+        sid = first._lazy_state_id
         mgr.step(n=1)
-        assert not getattr(cached_state.scratch, "rust_fully_synced", False), (
+        assert first._lazy_pinned is cached_state
+        assert mgr._state_cache[sid] is not cached_state
+        assert not getattr(mgr._state_cache[sid].scratch, "rust_fully_synced", False), (
             "step() must clear rust_fully_synced on cached SimStates"
         )
 
@@ -1952,8 +1957,11 @@ class TestRustExplorationPython:
         cached_wrapper = mgr2.active[0]
         # Force materialization to seed the cache + set the sentinel.
         assert getattr(cached_wrapper.scratch, "rust_fully_synced", False)
-        mgr2_cached = mgr2._state_cache[cached_wrapper._lazy_state_id]
+        sid2 = cached_wrapper._lazy_state_id
+        mgr2_cached = mgr2._state_cache[sid2]
+        del cached_wrapper
         mgr2.explore(max_steps=1)
+        assert mgr2._state_cache[sid2] is mgr2_cached, "an unheld entry's mirror stays cached"
         assert not getattr(mgr2_cached.scratch, "rust_fully_synced", False), (
             "explore() must clear rust_fully_synced on cached SimStates"
         )

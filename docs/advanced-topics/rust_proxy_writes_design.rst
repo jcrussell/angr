@@ -477,15 +477,23 @@ binding:
   virtual copies since the last call shelters them on a snapshot fork, and
   a snapshot export (``found_states``, ``get_state_by_id``) moves onto a
   fork of its own. The owner learns of copies as they are made
-  (``on_copy``), so a step with no new copies forks nothing. A stash
-  mirror itself is not moved: it is the stash entry, and follows its state.
-  The hook is on the Python side because the bindings are Python objects
+  (``on_copy``), so a step with no new copies forks nothing. Before that,
+  ``_detach_held_entries`` (``rust_state_export.py``) pops every stash entry
+  (``_LazySimStateRef``) from ``_lazy_state_refs`` and probes it through a
+  weak reference. The wrapper holds only the manager and an id, so one
+  nobody else references is freed by the pop and costs nothing; a live one
+  is pinned to its SimState, which moves onto a fork
+  (``CopyStashForkOwner.detach``), while the cache gets a fresh copy bound
+  to the stash state for the next read. The probe is on the wrapper because
+  a SimState sits in reference cycles: whether anything besides the cache
+  holds it cannot be told without a ``gc`` pass. The hook is on the Python side because the bindings are Python objects
   and Rust only ever steps between those entry points; within a run, Python
   code only sees callback states, whose copies the callback scope settles.
 * **Lifetime.** An export binding holds the Python manager
   (``_keepalive``), so an export keeps its manager and Rust state alive.
-  States the manager drops on request (``drop()``, a merge) first move their
-  exports onto forks (``CopyStashForkOwner.preserve``). When ``step`` or
+  States the manager drops on request (``drop()``, a merge) first pin their
+  held entries the same way and move their other exports onto forks
+  (``_preserve_exports``, ``CopyStashForkOwner.preserve``). When ``step`` or
   ``explore`` returns, ``release_gone`` releases every export root whose
   state Rust dropped while it ran, so a read raises
   ``RustStateReleasedError`` instead of failing on a missing id.
