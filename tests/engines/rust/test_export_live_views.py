@@ -452,3 +452,83 @@ class TestHeldStashEntries:
         assert binding_of(copied) is not binding
         assert (copied.solver.eval(copied.regs.rax), _load_u64(copied)) == (9, 1)
         assert state.solver.eval(state.regs.rax) == 1
+
+
+# cmp rax, 4 ; jb +2 ; jmp $
+# 0x400008: movzx ebx, byte [rax + 0x600000] ; cmp bl, 3 ; je +2 ; jmp $ ; jmp $
+_TABLE_CODE = bytes.fromhex("4883f804" + "7202" + "ebfe" + "0fb69800006000" + "80fb03" + "7402" + "ebfe" + "ebfe")
+_TABLE_LOOKUP = 0x400008
+
+
+class TestHandedToThePythonEngine:
+    """An export the Python engine steps gets plugins of its own first
+    (``RustMemoryProxy.detach_for_python_engine``), so the run matches a
+    Python-only one (angr-vmi2l.260)."""
+
+    @staticmethod
+    def _found(code, find, setup):
+        proj = _project(code)
+        state = proj.factory.blank_state(addr=0x400000)
+        x = claripy.BVS("x", 64)
+        setup(state, x)
+        py = proj.factory.simgr(state.copy())
+        py.explore(find=find)
+        mgr = RustExplorationManager(proj, [state.copy()])
+        mgr.explore(find=find)
+        assert len(py.found) == len(mgr.found) == 1
+        return proj, py.found[0], mgr, x
+
+    @staticmethod
+    def _table(state, x):
+        state.regs.rax = x
+        state.memory.store(0x600000, b"\x01\x02\x03\x04")
+
+    @staticmethod
+    def _summary(sm, x):
+        return sorted((s.addr, tuple(sorted(s.solver.eval_upto(x, 5)))) for s in sm.active)
+
+    @pytest.mark.parametrize("which", ["found_states", "copy"])
+    def test_step_matches_a_python_run(self, which):
+        proj, py_found, mgr, x = self._found(_TABLE_CODE, _TABLE_LOOKUP, self._table)
+        export = mgr.found_states[0] if which == "found_states" else mgr.found[0].copy()
+        ref = proj.factory.simgr(py_found.copy())
+        ref.step()
+        sm = proj.factory.simgr(export)
+        sm.step()
+        # A symbolic-address load through a proxy concretized x to one value
+        # and lost the bl == 3 branch.
+        assert self._summary(sm, x) == self._summary(ref, x) == [(0x400014, (0, 1, 3)), (0x400016, (2,))]
+        from angr.exploration.rust_state_binding import binding_of
+
+        for succ in sm.active:
+            assert binding_of(succ) is None, "a Python-stepped successor has plugins of its own"
+            assert succ.solver.constraints, "it carries the Rust path constraints"
+        assert binding_of(export) is not None, "the export itself stays a view"
+        assert export.addr == _TABLE_LOOKUP
+
+    def test_merge_after_a_python_step(self):
+        def setup(state, x):
+            state.regs.rdi = x
+
+        proj, py_found, mgr, x = self._found(_JOIN_CODE, 0x400000, setup)
+        results = []
+        for start in (py_found.copy(), mgr.found[0].copy()):
+            sm = proj.factory.simgr(start)
+            while [s.addr for s in sm.active] != [_JOIN, _JOIN]:
+                sm.step()
+            sm.merge()
+            assert len(sm.active) == 1
+            merged = sm.active[0]
+            results.append(
+                (
+                    sorted(merged.solver.eval_upto(merged.regs.rax, 3)),
+                    merged.solver.eval(merged.regs.rax, extra_constraints=[x == 9]),
+                )
+            )
+        assert results[0] == results[1] == ([1, 2], 2)
+
+    def test_merging_views_raises(self):
+        mgr, _x = _explore_cmp()
+        a, b = mgr.found[0].copy(), mgr.found[0].copy()
+        with pytest.raises(NotImplementedError, match="cannot merge Rust states"):
+            a.merge(b)

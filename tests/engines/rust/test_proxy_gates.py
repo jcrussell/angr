@@ -837,6 +837,15 @@ class TestRustMemoryProxyPluginGapStubs:
         cb_state = self._install_proxy(fauxware_project)
         assert cb_state.memory.merge([], [], None) is False
 
+    def test_merge_with_others_raises(self, fauxware_project):
+        """A proxy cannot merge Rust states; it never keeps one side silently
+        (angr-vmi2l.260)."""
+        cb_state = self._install_proxy(fauxware_project)
+        with pytest.raises(NotImplementedError, match="cannot merge Rust states"):
+            cb_state.memory.merge([cb_state.memory], [angr.claripy.true()], None)
+        with pytest.raises(NotImplementedError, match="cannot widen"):
+            cb_state.memory.widen([cb_state.memory])
+
     def test_widen_returns_false(self, fauxware_project):
         cb_state = self._install_proxy(fauxware_project)
         assert cb_state.memory.widen([]) is False

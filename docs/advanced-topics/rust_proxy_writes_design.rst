@@ -502,9 +502,13 @@ binding:
   (``_detach_export_proxies``: the snapshot's pages, a ``CallStack`` of the
   Rust frames, and a Python solver that queries Rust through
   ``RustSolverFallback``). The ``step_state`` hook path, the Python merge
-  path and ``_add_rust_state`` (an export handed back to a manager) do so;
-  an export's call stack also detaches itself the first time the Python
-  engine steps it (``RustCallStackProxyPlugin._manage``).
+  path and ``_add_rust_state`` (an export handed back to a manager) do so,
+  and the Python engine does it on every copy it steps
+  (``SuccessorsMixin.process`` → ``RustMemoryProxy.detach_for_python_engine``
+  → ``_detach_for_python_engine``, whose solver takes the Rust path
+  constraints because the successors never return to Rust). The hook skips
+  a callback state: the Python-VEX fallback steps it precisely so that its
+  writes reach the pending Rust state (angr-vmi2l.260).
 
 References
 ----------

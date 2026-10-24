@@ -902,7 +902,6 @@ class RustStateExportMixin:
         if not isinstance(callstack, RustCallStackProxyPlugin):
             callstack = RustCallStackProxyPlugin(self._rust_mgr, binding)
             state.register_plugin("callstack", callstack)
-        callstack.detach_on_step = True
         solver = state.plugins.get("solver")
         if isinstance(solver, RustSolverProxyPlugin):
             object.__setattr__(solver, "_fork_timeout_ms", _EXPORT_SOLVER_TIMEOUT_MS)
@@ -1363,19 +1362,35 @@ class RustStateExportMixin:
         """Restore register values from snapshot using Rust's named register export."""
         self._write_named_registers(state, snapshot)
 
-    def _prepare_for_python_step(self, state: angr.SimState, state_id: int) -> None:
-        """Make an export of ``state_id`` safe for a Python technique to step and hand back.
+    def _prepare_for_python_step(self, state: angr.SimState, state_id: int, *, rust_solver: bool = True) -> None:
+        """Make an export of ``state_id`` safe for the Python engine to step.
 
         A ``step_state`` hook (Veritesting) steps ``state`` in its own
         SimulationManager and returns successors that are re-imported into
         Rust (angr-mx00p.89). That needs plugins of the state's own
         (:meth:`_detach_export_proxies`) and stdin as the symbols Rust read,
-        marked consumed (:meth:`_symbolic_rust_stdin`).
+        marked consumed (:meth:`_symbolic_rust_stdin`). ``rust_solver=False``
+        is for a state that stays with the Python engine
+        (:meth:`_detach_for_python_engine`): its solver holds the Rust path
+        constraints itself.
         """
-        self._detach_export_proxies(state, state_id)
+        self._detach_export_proxies(state, state_id, rust_solver=rust_solver)
         self._symbolic_rust_stdin(state, state_id)
 
-    def _detach_export_proxies(self, state: angr.SimState, state_id: int) -> None:
+    def _detach_for_python_engine(self, state: angr.SimState, state_id: int) -> None:
+        """Give an export the Python engine is about to step plugins of its own.
+
+        ``SuccessorsMixin.process`` calls this (through
+        ``RustMemoryProxy.detach_for_python_engine``) on the copy it steps, so
+        ``proj.factory.simgr(export).step()`` runs on angr's own memory, call
+        stack and solver and matches a Python-only run: a proxy concretizes a
+        symbolic-address load to one witness, and its ``merge`` is a stub
+        (angr-vmi2l.260). The solver gets the Rust path constraints, since the
+        successors never return to Rust.
+        """
+        self._prepare_for_python_step(state, state_id, rust_solver=False)
+
+    def _detach_export_proxies(self, state: angr.SimState, state_id: int, *, rust_solver: bool = True) -> None:
         """Give ``state`` plugins of its own in place of its Rust proxies.
 
         An export is a live view (``_bind_export``), which is right for a
@@ -1388,7 +1403,9 @@ class RustStateExportMixin:
         memory (the snapshot's pages over the Python memory behind the
         proxy), the call stack, and a Python solver whose queries go to the
         Rust solver (``RustSolverFallback``), so the Rust path constraints
-        stay out of Python. No-op for plugins that are already plain.
+        stay out of Python; with ``rust_solver=False`` the Python solver
+        holds those constraints instead. No-op for plugins that are already
+        plain.
         """
         from angr.exploration.rust_state_proxy import (
             RustCallStackProxyPlugin,
@@ -1419,12 +1436,16 @@ class RustStateExportMixin:
             state.register_plugin("callstack", chain)
         solver = state.plugins.get("solver")
         if isinstance(solver, RustSolverProxyPlugin):
+            constraints = None if rust_solver else list(self._rust_mgr.export_state_constraints(state_id))
             plain = state.plugin_preset.request_plugin("solver")()
             plain.all_variables = list(solver.all_variables)
             plain.temporal_tracked_variables = dict(solver.temporal_tracked_variables)
             plain.eternal_tracked_variables = dict(solver.eternal_tracked_variables)
             state.register_plugin("solver", plain)
-            self._attach_rust_solver_fallback(state, state_id)
+            if rust_solver:
+                self._attach_rust_solver_fallback(state, state_id)
+            elif constraints:
+                plain.add(*constraints)
 
     def _symbolic_rust_stdin(self, state: angr.SimState, state_id: int) -> None:
         """Replace the evaluated stdin packet on ``state`` with the symbols Rust read.

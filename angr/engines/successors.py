@@ -535,6 +535,13 @@ class SuccessorsEngine(SimEngine[HeavyState, SimSuccessors]):
 
         # make a copy of the initial state for actual processing, if needed
         new_state = state.copy() if not inline and o.COPY_STATES in state.options else state
+        # A state exported by the Rust engine reads its memory, registers and
+        # solver from a Rust state; it gets plugins of its own before Python
+        # executes it (docs/advanced-topics/rust_engine.rst, "Exported states
+        # are live views").
+        detach = getattr(new_state.plugins.get("memory"), "detach_for_python_engine", None)
+        if detach is not None:
+            detach()
         # enforce this distinction
         old_state = state
         del state

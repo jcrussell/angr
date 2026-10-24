@@ -422,13 +422,24 @@ class _ProxyStatePluginMixin:
         # ``RustSimState`` is already populated by the engine.
         pass
 
-    def merge(self, _others, _merge_conditions, _common_ancestor=None):
-        # Cross-state_id merge is out of scope for the
-        # callback-install gate. Signal "no merge happened" (False).
-        return False
+    def merge(self, others, _merge_conditions, common_ancestor=None):
+        # A proxy cannot merge Rust states (angr-vmi2l.260): with nothing to
+        # merge it says so (False); otherwise it raises rather than keep one
+        # side. The manager's own merge paths detach the states first
+        # (_detach_export_proxies); a Python step does too, so merge the
+        # successors of a step instead.
+        del common_ancestor
+        if not others:
+            return False
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot merge Rust states; step the exported states in the Python engine "
+            "first (its successors have plugins of their own), or merge them with RustExplorationManager.merge()"
+        )
 
-    def widen(self, _others):
-        return False
+    def widen(self, others):
+        if not others:
+            return False
+        raise NotImplementedError(f"{type(self).__name__} cannot widen Rust states")
 
 
 class RustSolverProxyBase(_SolutionCountMixin):
@@ -1589,6 +1600,29 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
     @property
     def category(self):
         return "mem"
+
+    def detach_for_python_engine(self):
+        """Hook ``SuccessorsMixin.process`` calls on the state the Python engine is about to step.
+
+        An exported state (bound through the manager's
+        ``CopyStashForkOwner``) is given plugins of its own first
+        (``RustStateExportMixin._detach_for_python_engine``). A callback
+        state is left alone: its writes must reach the pending Rust state,
+        which is what the Python-VEX fallback steps it for.
+        """
+        from angr.exploration.rust_state_binding import CopyStashForkOwner
+
+        binding = self._binding
+        owner = binding.owner
+        if not isinstance(owner, CopyStashForkOwner):
+            return
+        mgr = owner.manager
+        state = self.state
+        if mgr is None or state is None:
+            from angr.errors import SimStateError
+
+            raise SimStateError(f"cannot step {state!r} in the Python engine: its Rust manager is gone")
+        mgr._detach_for_python_engine(state, binding.state_id)
 
     def _drop_state_caches(self):
         # The symbolic-address concretization fork was taken of the old state.
@@ -2960,10 +2994,6 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         self.locals = {}
         self.invoke_return_variable = None
         self.jumpkind = "Ijk_Call"
-        # Set on an exported state's call stack (``_bind_export``): when the
-        # Python engine steps the state, ``_manage`` swaps in a plain
-        # ``CallStack`` of the Rust frames and lets it push or pop.
-        self.detach_on_step = False
 
     @property
     def category(self):
@@ -2983,7 +3013,6 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         clone.procedure_data = self.procedure_data
         clone.locals = dict(self.locals)
         clone.invoke_return_variable = self.invoke_return_variable
-        clone.detach_on_step = self.detach_on_step
         return clone
 
     # ---------------------------------------------------------------
@@ -3076,30 +3105,12 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
     def _manage(self):
         """``CallStack._manage``, called by ``add_successor`` after a step.
 
-        On a callback state it is inert: the Rust interpreter maintains the
-        canonical call stack, and mirroring the push/pop on the proxy would
-        diverge it. On an exported state the Python engine is stepping
-        (``detach_on_step``), the successor gets a plain ``CallStack`` of the
-        Rust frames, which then pushes or pops for the step's jumpkind; the
-        no-op would leave its frames behind the step (angr-mx00p.61).
+        Inert: the Rust interpreter maintains the canonical call stack, and
+        mirroring the push/pop on the proxy would diverge it. The Python
+        engine never steps a state with this proxy: an exported state gets a
+        plain ``CallStack`` first (``RustMemoryProxy.detach_for_python_engine``)
+        and a callback state's successors resume in Rust.
         """
-        if not self.detach_on_step or self.state is None:
-            return None
-        from angr.state_plugins.callstack import CallStack  # pylint: disable=import-outside-toplevel
-
-        chain = CallStack()
-        for call_site, func, ret_addr, sp in reversed(self._frames):
-            chain = CallStack(
-                call_site_addr=call_site,
-                func_addr=func,
-                stack_ptr=sp,
-                ret_addr=ret_addr,
-                jumpkind="Ijk_Call",
-                next_frame=chain,
-            )
-        state = self.state
-        state.register_plugin("callstack", chain)
-        chain._manage()
         return None
 
     def stack_suffix(self, context_sensitivity_level):

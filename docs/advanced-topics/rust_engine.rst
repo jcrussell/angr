@@ -293,16 +293,23 @@ path constraints. The plugins Rust does not own (``posix``, ``libc``,
   exports, kept as of the call the same way. A fork costs nothing until
   something writes or Rust steps, and is dropped with the last copy that
   reads it.
-* **Stepping or merging an export in Python.** The proxies'
-  ``memory.merge`` is a stub and the call stack is only mirrored on a
-  step, so techniques that step exports themselves (``step_state`` hooks
-  such as ``Veritesting``) and the Python merge path are given
-  self-contained plugins first, built from a snapshot of the state; a state
-  passed back to a manager (``RustExplorationManager(proj, [found])``) is
-  detached the same way. A state handed straight to the Python engine
-  (``proj.factory.simgr(found)``) keeps its proxies: its call stack turns
-  into a plain ``CallStack`` on its first step, and its memory stores go
-  through ``RustMemoryProxy.store``.
+* **Stepping or merging an export in Python.** The proxies cannot merge,
+  push or pop, and a proxy concretizes a symbolic-address load to one
+  witness where angr's memory returns every candidate. So whenever Python
+  steps or merges an export, the state it works on is first given plugins of
+  its own, built from a snapshot of the Rust state: techniques that step
+  exports themselves (``step_state`` hooks such as ``Veritesting``), the
+  Python merge path, and a state passed back to a manager
+  (``RustExplorationManager(proj, [found])``) do it explicitly, and the
+  Python engine does it for every step (``SuccessorsMixin.process`` calls
+  ``RustMemoryProxy.detach_for_python_engine`` on the copy it steps). A
+  state handed straight to the Python engine
+  (``proj.factory.simgr(found)``) therefore runs exactly as a Python state:
+  its successors have angr's own memory, call stack and solver, the solver
+  holding the Rust path constraints. The export itself stays a view.
+  Merging two views directly (``found.merge(other)``) raises
+  ``NotImplementedError``; merge the successors of a step instead
+  (angr-vmi2l.260).
 
 The mechanism (bindings, owners, where forks live) is described in
 :doc:`rust_proxy_writes_design` ("Copy semantics").
