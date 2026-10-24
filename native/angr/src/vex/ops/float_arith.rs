@@ -8,7 +8,7 @@
 //! `vec_float_lane_op`) and the rounding-mode variants.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, RustBV, SymContext, VexRm};
 use crate::vex::ir::IRType;
 use num_traits::Float;
 
@@ -269,21 +269,20 @@ impl RoundTiesEven for f64 {
     }
 }
 
-/// Apply a VEX rounding mode to a concrete float: 0=nearest (ties to even),
-/// 1=down (-inf), 2=up (+inf), 3=zero (truncate).
-///
-/// Callers pass the raw mode word; only its low two bits select the mode, so
-/// the two `_` arms below are mode 0 and nothing else.
-pub(super) fn apply_rounding<T: RoundTiesEven>(f: T, rm: u32) -> T {
-    match rm & 0x3 {
-        1 => f.floor(),
-        2 => f.ceil(),
-        3 => f.trunc(),
+/// Round a concrete float to an integral value under a decoded VEX rounding
+/// mode (`VexRm::decode` is the only way to get one from a mode operand).
+pub(super) fn apply_rounding<T: RoundTiesEven>(f: T, rm: VexRm) -> T {
+    match rm {
+        VexRm::TowardNegative => f.floor(),
+        VexRm::TowardPositive => f.ceil(),
+        VexRm::TowardZero => f.trunc(),
+        // `round` is IEEE roundToIntegralTiesToAway (angr-vmi2l.56).
+        VexRm::NearestAway => f.round(),
         // A NaN keeps `round`'s handling, which quiets a signaling NaN (as a
         // guest FRINTN / ROUNDSS does); `f32::round_ties_even` returns an f32
         // sNaN unquieted on x86-64 (angr-mx00p.31).
-        _ if f.is_nan() => f.round(),
-        _ => f.round_ties_even(),
+        VexRm::NearestEven if f.is_nan() => f.round(),
+        VexRm::NearestEven => f.round_ties_even(),
     }
 }
 

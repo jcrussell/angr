@@ -71,7 +71,10 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
         | OpError::TypeMismatch { .. }
         | OpError::OperandWidthMismatch { .. }
         | OpError::InvalidFloatType(_)
-        | OpError::RawOpcode(_)) => RustExecError::Other(e.to_string()),
+        | OpError::RawOpcode(_)
+        // angr-vmi2l.56: an rm `VexRm::decode` rejects. Like a width
+        // mismatch it is not an op name, so `Other` carries the message.
+        | OpError::UnsupportedRoundingMode(_)) => RustExecError::Other(e.to_string()),
     }
 }
 

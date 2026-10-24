@@ -381,6 +381,9 @@ doesn't know it yet. The end-to-end recipe:
    round-to-nearest-ties-to-even for every guest rounding mode — the
    exact regression ``qop_with_rm`` was added to fix (angr-03vl4.30),
    and what ``vex/ops/tests_rounding_mode_sweep.rs`` exists to catch.
+   Decode a concrete rm with ``VexRm::decode`` (``symbolic/value.rs``),
+   never by masking its low bits: its type doc holds the mapping and why
+   every other value is an ``OpError``.
    Prefer the ``width_unop!`` / ``width_binop!`` macros for shapes where
    the op is a one-liner on ``RustBV``; promote to a named helper when the
    logic doesn't fit on a single line. If both a concrete and a

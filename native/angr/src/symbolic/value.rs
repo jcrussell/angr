@@ -142,7 +142,7 @@ pub enum FloatOpKind {
     /// avoid building `CmpEq(v, v)` with the operand cloned twice.
     IsNaN,
     /// Round to integer with rounding mode.
-    /// operand\[0\] = rm BV (32-bit, VEX rounding mode 0..3),
+    /// operand\[0\] = rm BV (32-bit, a [`VexRm`] encoding),
     /// operand\[1\] = value BV (prec.bits()).
     RoundToInt,
     /// Convert int (signed/unsigned 2's complement) BV to FP at `prec`.
@@ -181,7 +181,7 @@ pub enum FloatOpKind {
         src_prec: FloatPrec,
     },
     /// Binary FP arithmetic with explicit rounding mode.
-    /// operand\[0\] = rm BV (32-bit, VEX rm low-2-bits 0..3),
+    /// operand\[0\] = rm BV (32-bit, a [`VexRm`] encoding),
     /// operand\[1\] = a BV at prec.bits(), operand\[2\] = b BV at prec.bits().
     AddRm,
     SubRm,
@@ -191,7 +191,7 @@ pub enum FloatOpKind {
     /// operand\[0\] = rm BV (32-bit), operand\[1\] = a BV at prec.bits().
     SqrtRm,
     /// Ternary fused multiply-add / multiply-sub with explicit rounding mode.
-    /// operand\[0\] = rm BV (32-bit, VEX rm low-2-bits 0..3), operands
+    /// operand\[0\] = rm BV (32-bit, a [`VexRm`] encoding), operands
     /// \[1\]/\[2\]/\[3\] = a/b/c BVs at prec.bits(). VEX delivers FMA as a Qop
     /// `(rm, a, b, c)`; the rm-less `Fma`/`Fms` above are the RNE forms.
     FmaRm,
@@ -254,6 +254,74 @@ impl FloatOpKind {
             FloatOpKind::ConvertFtoI { dst_bits, .. }
             | FloatOpKind::ConvertFtoIRm { dst_bits, .. } => *dst_bits as u32,
             _ => prec.bits(),
+        }
+    }
+}
+
+/// A VEX `IRRoundingMode` (`libvex_ir.h`), decoded once for every consumer:
+/// the concrete folds in `vex::ops`, the `*_with_rm` round-to-nearest fast
+/// paths and the symbolic lowering in `value_clarirs::with_vex_rm`.
+///
+/// The mapping mirrors the Python engine's `irop.py::translate_rm` exactly:
+/// the whole operand value selects the mode, 0..=4 as below, and every other
+/// value is an [`UnsupportedRoundingMode`] error, the analogue of Python's
+/// `UnsupportedIROpError`. That covers 5..=7 (libVEX's PREPARE_SHORTER /
+/// AWAY_FROM_ZERO / NEAREST_TIE_TOWARD_0, which no supported front end
+/// emits) and the AVX-512 embedded-rounding encodings 8..=11, which Python
+/// rejects too. There is no silent fallback to a default mode: a wrong guess
+/// would be a silently wrong value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VexRm {
+    /// `Irrm_NEAREST` (0): round to nearest, ties to even.
+    NearestEven,
+    /// `Irrm_NegINF` (1): toward negative infinity.
+    TowardNegative,
+    /// `Irrm_PosINF` (2): toward positive infinity.
+    TowardPositive,
+    /// `Irrm_ZERO` (3): toward zero.
+    TowardZero,
+    /// `Irrm_NEAREST_TIE_AWAY_0` (4): round to nearest, ties away from zero
+    /// (AArch64 FCVTAS/FCVTAU, FRINTA's rounding).
+    NearestAway,
+}
+
+/// A concrete VEX rounding-mode operand outside the modes [`VexRm`] decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("unsupported VEX rounding mode {0}")]
+pub struct UnsupportedRoundingMode(pub u128);
+
+impl VexRm {
+    /// Every decodable mode, in encoding order.
+    pub const ALL: [VexRm; 5] = [
+        VexRm::NearestEven,
+        VexRm::TowardNegative,
+        VexRm::TowardPositive,
+        VexRm::TowardZero,
+        VexRm::NearestAway,
+    ];
+
+    /// Decode a concrete VEX rounding-mode operand (see the type doc).
+    #[inline]
+    pub fn decode(mode: u128) -> Result<Self, UnsupportedRoundingMode> {
+        match mode {
+            0 => Ok(VexRm::NearestEven),
+            1 => Ok(VexRm::TowardNegative),
+            2 => Ok(VexRm::TowardPositive),
+            3 => Ok(VexRm::TowardZero),
+            4 => Ok(VexRm::NearestAway),
+            other => Err(UnsupportedRoundingMode(other)),
+        }
+    }
+
+    /// The `IRRoundingMode` value that decodes to this mode.
+    #[inline]
+    pub const fn encoding(self) -> u32 {
+        match self {
+            VexRm::NearestEven => 0,
+            VexRm::TowardNegative => 1,
+            VexRm::TowardPositive => 2,
+            VexRm::TowardZero => 3,
+            VexRm::NearestAway => 4,
         }
     }
 }

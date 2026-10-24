@@ -42,7 +42,7 @@
 //    (RNE-only) sibling. This is the section that would catch a
 //    caller-picks-wrong-method regression.
 // 3. `test_symbolic_rm_dispatch_matches_concrete_rm` — Family B only.
-//    Exercises `dispatch_symbolic_rm` (`symbolic/value_z3.rs`), the branch
+//    Exercises `with_vex_rm` (`symbolic/value_clarirs.rs`), the branch
 //    `binop_with_rm`/`unop_with_rm`/`qop_with_rm` take when the rm OPERAND
 //    ITSELF is symbolic (as opposed to section 1's symbolic-VALUE/
 //    concrete-rm legs) — never exercised before this section, since
@@ -76,12 +76,23 @@
 // cannot tell whether the rounding math itself agrees with Z3.
 
 use super::*;
+use crate::symbolic::VexRm;
 use crate::vex::ir::IRType;
 
-/// The 4 VEX rounding modes (low 2 bits of the rm operand), per the doc
-/// comments in conversions.rs (`round_f32_to_int_with_mode` et al.):
-/// 0=nearest (RNE), 1=down/-inf (RD), 2=up/+inf (RU), 3=zero/truncate (RZ).
-const VEX_ROUNDING_MODES: [u32; 4] = [0, 1, 2, 3];
+/// Every VEX rounding mode `VexRm::decode` accepts, by encoding: 0=nearest
+/// (RNE), 1=down/-inf (RD), 2=up/+inf (RU), 3=zero/truncate (RZ),
+/// 4=nearest, ties away from zero (RNA; angr-vmi2l.56).
+const VEX_ROUNDING_MODES: [u32; 5] = [
+    VexRm::NearestEven.encoding(),
+    VexRm::TowardNegative.encoding(),
+    VexRm::TowardPositive.encoding(),
+    VexRm::TowardZero.encoding(),
+    VexRm::NearestAway.encoding(),
+];
+
+/// Concrete rm operands `VexRm::decode` rejects: libVEX's 5..=7, the AVX-512
+/// embedded-rounding 8..=11, and values whose low bits alone would decode.
+const UNSUPPORTED_ROUNDING_MODES: [u128; 9] = [5, 6, 7, 8, 9, 10, 11, 0xFFFF_FFFC, 1 << 32];
 
 /// One non-rm operand of a candidate test case: its raw bit pattern plus its
 /// width, so the sweep can build the right-width `RustBV` for it without the
@@ -150,6 +161,13 @@ fn f32_bits(v: f32) -> u128 {
 }
 fn f64_bits(v: f64) -> u128 {
     v.to_bits() as u128
+}
+
+/// The exact midpoint of 1.0f32 and its successor, as an f64: RNE and RD/RZ
+/// give 1.0 (even mantissa), RU and RNA the successor.
+fn f64_to_f32_tie(sign: f64) -> f64 {
+    let lo = 1.0f32;
+    sign * (f64::from(lo) + f64::from(lo.next_up())) / 2.0
 }
 
 /// F64→F32 boundary value straddling two adjacent f32s at the 0.75-fraction
@@ -280,6 +298,8 @@ fn all_rm_ops() -> Vec<RmOpEntry> {
             vec![
                 f64_bits(f64_to_f32_straddle(1.0)),
                 f64_bits(f64_to_f32_straddle(-1.0)),
+                f64_bits(f64_to_f32_tie(1.0)),
+                f64_bits(f64_to_f32_tie(-1.0)),
             ],
         ),
         family_a(
@@ -311,6 +331,30 @@ fn all_rm_ops() -> Vec<RmOpEntry> {
         family_a("F64toI32U", IROp::F64toI32U, 64, vec![f64_bits(2.5)]),
         family_a("F32toI64U", IROp::F32toI64U, 32, vec![f32_bits(2.5)]),
         family_a("F64toI64U", IROp::F64toI64U, 64, vec![f64_bits(2.5)]),
+        // Int-to-float: 2^p + 1 is the tie between 2^p and 2^p + 2 when the
+        // destination has a p-bit significand (24 for F32, 53 for F64), so
+        // RNE/RD/RZ and RU/RNA land on different neighbours.
+        family_a(
+            "I32StoF32",
+            IROp::I32StoF32,
+            32,
+            vec![(1 << 24) + 1, (-(1i32 << 24) - 1) as u32 as u128],
+        ),
+        family_a("I32UtoF32", IROp::I32UtoF32, 32, vec![(1 << 24) + 1]),
+        family_a(
+            "I64StoF32",
+            IROp::I64StoF32,
+            64,
+            vec![(1 << 24) + 1, (-(1i64 << 24) - 1) as u64 as u128],
+        ),
+        family_a("I64UtoF32", IROp::I64UtoF32, 64, vec![(1 << 24) + 1]),
+        family_a(
+            "I64StoF64",
+            IROp::I64StoF64,
+            64,
+            vec![(1 << 53) + 1, (-(1i64 << 53) - 1) as u64 as u128],
+        ),
+        family_a("I64UtoF64", IROp::I64UtoF64, 64, vec![(1 << 53) + 1]),
         // -- Family B: `binop_with_rm` arms (rm + 2 operands). --
         binop_with_rm_entry(
             "FAdd(F32)",
@@ -502,7 +546,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
             // computes RNE.
             assert!(
                 !must_be_mode_sensitive || mode_results.iter().any(|&r| r != mode_results[0]),
-                "{}: case {case:?} is not mode-sensitive — all 4 VEX rounding modes gave \
+                "{}: case {case:?} is not mode-sensitive — every VEX rounding mode gave \
                  {:#x}; pick a different boundary operand",
                 entry.name,
                 mode_results[0]
@@ -629,16 +673,16 @@ fn eval_through_interpreter(
 #[test]
 fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
     // RNE (mode 0) takes the identical native fast path in both `*_with_rm`
-    // and its rm-less sibling (the `m & 0x3 == 0` short-circuit every
+    // and its rm-less sibling (the `VexRm::NearestEven` short-circuit every
     // `*_with_rm` opens with — see e.g. `binop_with_rm` in `ops/mod.rs`), so
-    // it cannot distinguish correct dispatch from the bug shape. RD/RU/RZ
-    // are the candidates where the historical bug could diverge — but not
-    // every case's *_with_rm answer differs from RNE at every one of those
-    // three (e.g. FAdd(F32)'s tie case happens to round the same way under
-    // RU as under RNE), so a mode is only asserted on when it actually is
+    // it cannot distinguish correct dispatch from the bug shape. The other
+    // modes are the candidates where the historical bug could diverge — but
+    // not every case's *_with_rm answer differs from RNE at every one of them
+    // (e.g. FAdd(F32)'s tie case happens to round the same way under RU as
+    // under RNE), so a mode is only asserted on when it actually is
     // divergent for this case; the non-vacuousness check after the mode
     // loop requires at least one to be.
-    let non_rne_modes: [u32; 3] = [1, 2, 3];
+    let non_rne_modes = &VEX_ROUNDING_MODES[1..];
 
     for entry in all_rm_ops() {
         if entry.kind == RmDispatchKind::FamilyA {
@@ -651,7 +695,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
                 .collect();
             let mut divergent_modes_checked = 0;
 
-            for &rm in &non_rne_modes {
+            for &rm in non_rne_modes {
                 let ctx = SymContext::new_mock();
                 let rm_bv = RustBV::concrete(rm as u128, 32);
 
@@ -714,7 +758,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
 
             assert!(
                 divergent_modes_checked > 0,
-                "{}: case {case:?} is not mode-sensitive vs RNE under ANY of RD/RU/RZ, so it \
+                "{}: case {case:?} is not mode-sensitive vs RNE under ANY non-RNE mode, so it \
                  cannot distinguish correct interpreter dispatch from the rm-dropping bug \
                  shape; pick a different operand case",
                 entry.name
@@ -731,7 +775,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
 /// (`RustBV::symbolic`, not `RustBV::concrete`) to each VEX mode via a Z3
 /// equality constraint, forcing `binop_with_rm`/`unop_with_rm`/`qop_with_rm`
 /// past their `rm.as_u128()` concrete fast path into `build_float_expr` ->
-/// `dispatch_symbolic_rm` (`symbolic/value_z3.rs`) — the ITE-over-4-modes
+/// `with_vex_rm` (`symbolic/value_clarirs.rs`) — the ITE-over-`VexRm::ALL`
 /// branch that section 1's `RustBV::concrete(rm, ...)` rm never reaches.
 /// Asserts the path-constrained symbolic-rm answer matches the
 /// fully-concrete-rm answer for the same mode.
@@ -767,7 +811,7 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 // Symbolic rm, path-constrained to the same mode via a Z3
                 // equality — this is what makes `rm.as_u128()` return `None`
                 // inside `binop_with_rm`/`unop_with_rm`/`qop_with_rm`,
-                // routing through `dispatch_symbolic_rm` instead of the
+                // routing through `with_vex_rm` instead of the
                 // concrete fast path.
                 let rm_sym = RustBV::symbolic(&ctx, "rm_sym", 32);
                 let pin = rm_sym
@@ -792,9 +836,48 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 assert_eq!(
                     concrete_bits, symbolic_bits,
                     "{}: concrete-rm/symbolic-rm mismatch at rm={rm} for case {case:?} — \
-                     dispatch_symbolic_rm likely disagrees with the concrete-rm fast path",
+                     with_vex_rm likely disagrees with the concrete-rm fast path",
                     entry.name
                 );
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Section 4: unsupported concrete rounding modes are errors (both families).
+// =============================================================================
+
+/// Every `*_rm` entry point rejects a concrete rm `VexRm::decode` does not
+/// accept with `OpError::UnsupportedRoundingMode`, as the Python engine's
+/// `translate_rm` raises `UnsupportedIROpError`, whether the value operands
+/// are concrete (the native fold) or symbolic (the lowering it would build).
+/// Masking the mode to its low bits used to turn 4 into RNE (angr-vmi2l.56).
+#[test]
+fn test_unsupported_rounding_mode_is_an_error() {
+    for entry in all_rm_ops() {
+        let case = &entry.cases[0];
+        for &bad in &UNSUPPORTED_ROUNDING_MODES {
+            let ctx = SymContext::new_mock();
+            let concrete: Vec<RustBV> = case
+                .iter()
+                .map(|&(bits, width)| RustBV::concrete(bits, width))
+                .collect();
+            let symbolic: Vec<RustBV> = case
+                .iter()
+                .enumerate()
+                .map(|(i, &(_, width))| RustBV::symbolic(&ctx, format!("operand{i}"), width))
+                .collect();
+            for (label, operands) in [("concrete", &concrete), ("symbolic", &symbolic)] {
+                let rm = RustBV::concrete(bad, 64);
+                match (entry.call)(rm, operands, &ctx) {
+                    Err(OpError::UnsupportedRoundingMode(e)) => assert_eq!(e.0, bad),
+                    other => panic!(
+                        "{}: rm={bad:#x} with {label} operands must be \
+                         UnsupportedRoundingMode, got {other:?}",
+                        entry.name
+                    ),
+                }
             }
         }
     }

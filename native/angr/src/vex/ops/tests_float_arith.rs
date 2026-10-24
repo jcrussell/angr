@@ -164,8 +164,8 @@ fn test_float_div_with_rm_rd_f32() {
 }
 
 /// FDiv with symbolic rm: constraining result == 0x3DCCCCCC forces rm
-/// low-2-bits ∈ {1, 3} (RD or RZ); 0x3DCCCCCD forces rm low-2-bits ∈
-/// {0, 2}. Exercises the 4-way ITE built by `build_fp_arith_rm_cached`.
+/// ∈ {1, 3} (RD or RZ); 0x3DCCCCCD is what RNE, RU and ties-away give.
+/// Exercises the `VexRm` ITE built by `value_clarirs::with_vex_rm`.
 #[test]
 fn test_float_div_with_symbolic_rm_f32() {
     let ctx = SymContext::new_mock();
@@ -180,11 +180,10 @@ fn test_float_div_with_symbolic_rm_f32() {
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT for div(1,10) == 0x3DCCCCCC");
 
-    let model_rm = ctx.eval(&rm).expect("eval(rm) returned None") as u32;
-    let low2 = model_rm & 0x3;
+    let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
     assert!(
-        low2 == 1 || low2 == 3,
-        "expected rm low2 ∈ {{1, 3}} (RD/RZ), got {low2}"
+        model_rm == 1 || model_rm == 3,
+        "expected rm ∈ {{1, 3}} (RD/RZ), got {model_rm}"
     );
 }
 
@@ -355,8 +354,8 @@ fn test_qop_with_rm_fmsub_rz_f64() {
     assert_eq!(bits, u128::from(1.0f64.to_bits()));
 }
 
-/// A symbolic rm builds the 4-way ITE: pinning the result to the RZ answer
-/// forces the rm low-2-bits away from RNE.
+/// A symbolic rm builds the `VexRm` ITE: pinning the result to the RZ answer
+/// forces rm to RD or RZ (ties-away rounds this positive tie up).
 #[test]
 fn test_qop_with_rm_symbolic_rm_f64() {
     let ctx = SymContext::new_mock();
@@ -373,7 +372,7 @@ fn test_qop_with_rm_symbolic_rm_f64() {
             .eq(RustBV::concrete(u128::from(1.0f64.to_bits()), 64).to_z3_ast()),
     );
     assert!(ctx.is_sat(), "the RZ/RD answer must be reachable");
-    let rm_val = ctx.eval(&rm_sym).expect("eval failed") & 0x3;
+    let rm_val = ctx.eval(&rm_sym).expect("eval failed");
     assert!(
         rm_val == 1 || rm_val == 3,
         "only RD/RZ truncate the 1.5ulp sum, got rm={rm_val}"
@@ -495,6 +494,7 @@ fn test_max_num_symbolic_constraint() {
 #[test]
 fn test_apply_rounding_nearest_edge_cases() {
     use super::float_arith::apply_rounding;
+    use crate::symbolic::VexRm;
     let f64_cases: &[(f64, f64)] = &[
         (0.5, 0.0),
         (1.5, 2.0),
@@ -514,7 +514,7 @@ fn test_apply_rounding_nearest_edge_cases() {
         (f64::NEG_INFINITY, f64::NEG_INFINITY),
     ];
     for &(input, want) in f64_cases {
-        let got = apply_rounding(input, 0);
+        let got = apply_rounding(input, VexRm::NearestEven);
         assert_eq!(got.to_bits(), want.to_bits(), "f64 RNE({input:e})");
     }
     let f32_cases: &[(f32, f32)] = &[
@@ -529,22 +529,50 @@ fn test_apply_rounding_nearest_edge_cases() {
         (f32::NEG_INFINITY, f32::NEG_INFINITY),
     ];
     for &(input, want) in f32_cases {
-        let got = apply_rounding(input, 0);
+        let got = apply_rounding(input, VexRm::NearestEven);
         assert_eq!(got.to_bits(), want.to_bits(), "f32 RNE({input:e})");
     }
     // A quiet NaN comes back a NaN with its payload intact.
     let qnan = f64::from_bits(0x7ff8_0000_0000_1234);
-    assert_eq!(apply_rounding(qnan, 0).to_bits(), qnan.to_bits());
+    assert_eq!(apply_rounding(qnan, VexRm::NearestEven).to_bits(), qnan.to_bits());
     let qnan32 = f32::from_bits(0x7fc0_1234);
-    assert_eq!(apply_rounding(qnan32, 0).to_bits(), qnan32.to_bits());
+    assert_eq!(apply_rounding(qnan32, VexRm::NearestEven).to_bits(), qnan32.to_bits());
     // A signaling NaN comes back quieted, payload kept: the hand-rolled RNE
     // fell through to `round` for NaN, and std `f32::round_ties_even` alone
     // would return the f32 sNaN unchanged.
-    assert_eq!(apply_rounding(f32::from_bits(0x7f80_0001), 0).to_bits(), 0x7fc0_0001);
+    assert_eq!(apply_rounding(f32::from_bits(0x7f80_0001), VexRm::NearestEven).to_bits(), 0x7fc0_0001);
     assert_eq!(
-        apply_rounding(f64::from_bits(0x7ff0_0000_0000_0001), 0).to_bits(),
+        apply_rounding(f64::from_bits(0x7ff0_0000_0000_0001), VexRm::NearestEven).to_bits(),
         0x7ff8_0000_0000_0001
     );
+}
+
+/// `VexRm::NearestAway` (libVEX mode 4, AArch64 FCVTAS/FCVTAU) rounds ties
+/// away from zero and everything else to nearest, keeping the sign of zero
+/// (angr-vmi2l.56).
+#[test]
+fn test_apply_rounding_nearest_away() {
+    use super::float_arith::apply_rounding;
+    use crate::symbolic::VexRm;
+    for &(input, want) in &[
+        (0.5f64, 1.0f64),
+        (1.5, 2.0),
+        (2.5, 3.0),
+        (-0.5, -1.0),
+        (-2.5, -3.0),
+        (2.4999999999999996, 2.0),
+        (-0.3, -0.0),
+        (-0.0, -0.0),
+        (4_503_599_627_370_495.5, 4_503_599_627_370_496.0),
+        (f64::INFINITY, f64::INFINITY),
+    ] {
+        let got = apply_rounding(input, VexRm::NearestAway);
+        assert_eq!(got.to_bits(), want.to_bits(), "f64 RNA({input:e})");
+    }
+    for &(input, want) in &[(2.5f32, 3.0f32), (-2.5, -3.0), (0.5, 1.0), (8_388_606.5, 8_388_607.0)] {
+        let got = apply_rounding(input, VexRm::NearestAway);
+        assert_eq!(got.to_bits(), want.to_bits(), "f32 RNA({input:e})");
+    }
 }
 
 /// The implicit-RNE float-to-int conversions saturate out-of-range results

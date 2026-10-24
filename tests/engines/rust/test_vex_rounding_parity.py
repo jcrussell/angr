@@ -93,3 +93,32 @@ def test_round_to_int_keeps_negative_zero(insn):
     python, rust = _run_both(code, arch, setup, out_reg)
     assert python == [NEG_ZERO]
     assert rust == python
+
+
+# --- VEX rounding mode 4, ties away from zero (angr-vmi2l.56) ----------------
+
+# pyvex lifts FCVTAS / FCVTAU (scalar, X from D) to F64toI64{S,U}(0x4, d0):
+# libVEX's Irrm_NEAREST_TIE_AWAY_0.
+FCVTA_CASES = {
+    "fcvtas_2.5": (0x9E640000, 2.5, 3),
+    "fcvtas_-2.5": (0x9E640000, -2.5, -3 & 0xFFFFFFFFFFFFFFFF),
+    "fcvtas_0.5": (0x9E640000, 0.5, 1),
+    "fcvtas_-0.5": (0x9E640000, -0.5, -1 & 0xFFFFFFFFFFFFFFFF),
+    "fcvtau_2.5": (0x9E650000, 2.5, 3),
+    "fcvtau_0.5": (0x9E650000, 0.5, 1),
+}
+
+
+@pytest.mark.parametrize("symbolic", [False, True], ids=["concrete", "symbolic"])
+@pytest.mark.parametrize("case", FCVTA_CASES)
+def test_fcvta_rounds_ties_away_like_python(case, symbolic):
+    word, value, expected = FCVTA_CASES[case]
+    code = struct.pack("<I", word) + A64_B_SELF
+    bits = _f64_bits(value)
+
+    def setup(state):
+        state.regs.d0 = bits
+
+    python, rust = _run_both(code, "aarch64", setup, "x0", ("d0", 64, bits) if symbolic else None)
+    assert python == [expected]
+    assert rust == python

@@ -4,6 +4,7 @@
 //! so the public path stays `vex::ops::OpError` and the `use super::OpError`
 //! imports in the sibling modules keep resolving.
 
+use crate::symbolic::UnsupportedRoundingMode;
 use crate::vex::ir::{IROp, IRType};
 
 /// Errors from VEX operation execution.
@@ -78,6 +79,13 @@ pub enum OpError {
     /// wrong width.
     #[error("unmapped VEX opcode: {op_name}")]
     UnsupportedVexOp { op_name: String },
+    /// A concrete rounding-mode operand `VexRm::decode` rejects (see its
+    /// type doc): the Rust analogue of the Python engine's
+    /// `UnsupportedIROpError` from `irop.py::translate_rm`. It takes the
+    /// generic arm of `VEXInterpreter::vex_op_fallback`: the errored stash for
+    /// concrete operands, the Python engine (which raises too) otherwise.
+    #[error(transparent)]
+    UnsupportedRoundingMode(#[from] UnsupportedRoundingMode),
     /// Raw/unimplemented opcode.
     #[error("raw/unimplemented opcode: {0}")]
     RawOpcode(u32),

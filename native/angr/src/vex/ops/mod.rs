@@ -30,7 +30,7 @@
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext, VexRm};
 
 use super::ir::IROp;
 use super::transcendentals;
@@ -649,8 +649,8 @@ impl VEXOps {
             IROp::RoundF32toInt => Self::round_f32_to_int_with_mode(left, right, ctx),
             IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right, ctx),
 
-            // Float conversions that take a rounding mode as the first arg.
-            // VEX rounding modes: 0=nearest, 1=down, 2=up, 3=zero (truncate).
+            // Float conversions that take a rounding mode as the first arg,
+            // decoded by `VexRm::decode`.
             IROp::F64toF32 => Self::f64_to_f32_rm(left, right, ctx),
             IROp::F32toI32S => Self::f32_to_i32s_rm(left, right, ctx),
             IROp::F64toI32S => Self::f64_to_i32s_rm(left, right, ctx),
@@ -1105,7 +1105,7 @@ impl VEXOps {
         // RNE concrete: keep the native-f{32,64} `mul_add` fast path, same
         // reasoning as `binop_with_rm`.
         if let Some(m) = rm.as_u128()
-            && m & 0x3 == 0
+            && VexRm::decode(m)? == VexRm::NearestEven
         {
             return Self::qop(op, a, b, c, ctx);
         }
@@ -1120,7 +1120,7 @@ impl VEXOps {
 
     /// Binary FP arithmetic with explicit VEX rounding mode. Used by the
     /// Triop dispatch to honor the rm operand on `Iop_AddF{32,64}`,
-    /// `Iop_SubF*`, `Iop_MulF*`, `Iop_DivF*`. Concrete RNE (rm low-2-bits == 0)
+    /// `Iop_SubF*`, `Iop_MulF*`, `Iop_DivF*`. Concrete RNE (`VexRm::NearestEven`)
     /// keeps the existing native-f32/f64 fast path; non-RNE concrete or
     /// symbolic rm builds a Z3 FP expression with the explicit rm so the
     /// rm-aware fold in `build_fp_arith_rm_cached` produces the right value.
@@ -1168,9 +1168,10 @@ impl VEXOps {
 
         // RNE concrete: keep the native-f{32,64} fast path. Most code uses
         // RNE; routing through Z3 here would be a measurable regression on
-        // FP-heavy benchmarks.
+        // FP-heavy benchmarks. Decoding also rejects an unsupported mode
+        // before it reaches the symbolic lowering.
         if let Some(m) = rm.as_u128()
-            && m & 0x3 == 0
+            && VexRm::decode(m)? == VexRm::NearestEven
         {
             return Self::binop(op, left, right, ctx);
         }
@@ -1195,7 +1196,7 @@ impl VEXOps {
         };
 
         if let Some(m) = rm.as_u128()
-            && m & 0x3 == 0
+            && VexRm::decode(m)? == VexRm::NearestEven
         {
             return Self::unop(op, arg, ctx);
         }

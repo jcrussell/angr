@@ -8,7 +8,7 @@
 
 use super::float_arith::apply_rounding;
 use super::{OpError, VEXOps, build_float_expr};
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext, VexRm};
 
 /// Generate concrete float-to-float conversion stubs.
 macro_rules! define_float_to_float {
@@ -101,14 +101,15 @@ impl VEXOps {
         dst_prec: FloatPrec,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("int_to_float_rm arg", arg.width(), src_bits)?;
-        if let (Some(mode), Some(v)) = (rm.as_u128(), arg.as_u128()) {
+        let mode = rm.as_u128().map(VexRm::decode).transpose()?;
+        if let (Some(mode), Some(v)) = (mode, arg.as_u128()) {
             let value = if signed {
                 Self::sign_extend_low_to_i128(v, src_bits)
             } else {
                 (v & Self::low_bit_mask_u128(src_bits)) as i128
             };
             return Ok(RustBV::concrete(
-                Self::int_to_float_bits_rm(value, dst_prec, mode as u32),
+                Self::int_to_float_bits_rm(value, dst_prec, mode),
                 dst_prec.bits(),
             ));
         }
@@ -122,23 +123,43 @@ impl VEXOps {
         ))
     }
 
-    /// `value` as IEEE bits at `prec`, rounded by VEX mode `mode` (0 nearest
-    /// ties-to-even, 1 toward -inf, 2 toward +inf, 3 toward zero). Rust's
-    /// int-to-float cast rounds to nearest; when that is inexact and the mode
-    /// points the other way, the answer is the adjacent float.
-    fn int_to_float_bits_rm(value: i128, prec: FloatPrec, mode: u32) -> u128 {
+    /// `value` as IEEE bits at `prec`, rounded by VEX mode `mode`. Rust's
+    /// int-to-float cast rounds to nearest, ties to even; when that is
+    /// inexact and the mode points the other way, the answer is the adjacent
+    /// float. Ties away from zero differs from it only on an exact tie, where
+    /// it takes the neighbour of larger magnitude.
+    fn int_to_float_bits_rm(value: i128, prec: FloatPrec, mode: VexRm) -> u128 {
         macro_rules! directed {
             ($f:ty) => {{
                 let near = value as $f;
                 // Exact: |value| < 2^64, so `near` is an integer of at most
                 // 2^64 in magnitude and fits i128.
                 let back = near as i128;
-                let rounded = match mode & 0x3 {
-                    1 if back > value => near.next_down(),
-                    2 if back < value => near.next_up(),
-                    3 if value >= 0 && back > value => near.next_down(),
-                    3 if value < 0 && back < value => near.next_up(),
-                    _ => near,
+                let rounded = match mode {
+                    VexRm::TowardNegative if back > value => near.next_down(),
+                    VexRm::TowardPositive if back < value => near.next_up(),
+                    VexRm::TowardZero if value >= 0 && back > value => near.next_down(),
+                    VexRm::TowardZero if value < 0 && back < value => near.next_up(),
+                    VexRm::NearestAway if back != value => {
+                        let other = if back > value {
+                            near.next_down()
+                        } else {
+                            near.next_up()
+                        };
+                        // Both neighbours are integers within 2^64 + 1 ulp of
+                        // `value`, so the distances are exact in i128.
+                        let tie = (back - value).abs() == (other as i128 - value).abs();
+                        if tie && other.abs() > near.abs() {
+                            other
+                        } else {
+                            near
+                        }
+                    }
+                    VexRm::NearestEven
+                    | VexRm::TowardNegative
+                    | VexRm::TowardPositive
+                    | VexRm::TowardZero
+                    | VexRm::NearestAway => near,
                 };
                 rounded.to_bits() as u128
             }};
@@ -278,18 +299,19 @@ impl VEXOps {
 
     /// Round F32 to integer using specified rounding mode (binop version).
     /// left = rounding mode (U32), right = value (F32)
-    /// VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)
+    /// The mode is decoded by `VexRm::decode`.
     pub(super) fn round_f32_to_int_with_mode(
         mode: RustBV,
         value: RustBV,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
+        let m = mode.as_u128().map(VexRm::decode).transpose()?;
+        if let (Some(m), Some(v)) = (m, value.as_u128()) {
             let f = f32::from_bits(v as u32);
             // IEEE roundToIntegral keeps the sign of zero, as do the
             // symbolic branch (`FloatOpKind::RoundToInt`) and the Python
             // engine's `fpRoundToIntegral` (angr-vmi2l.57).
-            let result = apply_rounding(f, m as u32).to_bits();
+            let result = apply_rounding(f, m).to_bits();
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Ok(build_float_expr(
@@ -306,12 +328,13 @@ impl VEXOps {
         value: RustBV,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
+        let m = mode.as_u128().map(VexRm::decode).transpose()?;
+        if let (Some(m), Some(v)) = (m, value.as_u128()) {
             let f = f64::from_bits(v as u64);
             // IEEE roundToIntegral keeps the sign of zero, as do the
             // symbolic branch (`FloatOpKind::RoundToInt`) and the Python
             // engine's `fpRoundToIntegral` (angr-vmi2l.57).
-            let result = apply_rounding(f, m as u32).to_bits();
+            let result = apply_rounding(f, m).to_bits();
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Ok(build_float_expr(
@@ -322,8 +345,7 @@ impl VEXOps {
     }
 
     // =========================================================================
-    // Rounding-mode aware float-to-int conversions
-    // VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)
+    // Rounding-mode aware float-to-int conversions (modes per `VexRm`)
     // =========================================================================
 
     /// Float-to-int conversion with explicit rounding mode (binop). Routes
@@ -334,11 +356,12 @@ impl VEXOps {
         src_prec: FloatPrec,
         dst_bits: u32,
         signed: bool,
-        concrete: fn(u128, u32) -> u128,
+        concrete: fn(u128, VexRm) -> u128,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("float_to_int_rm arg", arg.width(), src_prec.bits())?;
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            return Ok(RustBV::concrete(concrete(v, rm_val as u32), dst_bits));
+        let mode = rm.as_u128().map(VexRm::decode).transpose()?;
+        if let (Some(mode), Some(v)) = (mode, arg.as_u128()) {
+            return Ok(RustBV::concrete(concrete(v, mode), dst_bits));
         }
         Ok(build_float_expr(
             FloatOpKind::ConvertFtoIRm {
@@ -357,14 +380,12 @@ impl VEXOps {
         arg: RustBV,
         src_prec: FloatPrec,
         dst_prec: FloatPrec,
-        concrete: fn(u128, u32) -> u128,
+        concrete: fn(u128, VexRm) -> u128,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("float_to_float_rm arg", arg.width(), src_prec.bits())?;
-        if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
-            return Ok(RustBV::concrete(
-                concrete(v, rm_val as u32),
-                dst_prec.bits(),
-            ));
+        let mode = rm.as_u128().map(VexRm::decode).transpose()?;
+        if let (Some(mode), Some(v)) = (mode, arg.as_u128()) {
+            return Ok(RustBV::concrete(concrete(v, mode), dst_prec.bits()));
         }
         Ok(build_float_expr(
             FloatOpKind::ConvertFtoFRm { src_prec },
@@ -376,25 +397,42 @@ impl VEXOps {
     /// Narrow an f64 to f32 under an explicit VEX rounding mode.
     ///
     /// Rust's `as f32` cast is hard-wired to round-nearest-ties-to-even, so it
-    /// only implements `rm & 0x3 == 0`. For the directed modes we start from
-    /// that nearest result and, when it landed on the wrong side of the exact
-    /// value, step one ULP toward the requested direction. `next_up`/
+    /// only implements `VexRm::NearestEven`. For the directed modes we start
+    /// from that nearest result and, when it landed on the wrong side of the
+    /// exact value, step one ULP toward the requested direction. `next_up`/
     /// `next_down` also give the IEEE-754 overflow behaviour for free
     /// (`+inf.next_down() == f32::MAX`, so RZ/RD saturate rather than
     /// overflowing to infinity) and the underflow behaviour (`0.0.next_up()`
     /// is the smallest subnormal, so RU on a tiny positive value does not
-    /// flush to zero).
-    fn narrow_f64_to_f32_rm(v: f64, rm: u32) -> f32 {
+    /// flush to zero). Ties away from zero differs from the cast only on an
+    /// exact tie, which is the midpoint of two adjacent f32s and so exact in
+    /// f64; a tie past `f32::MAX` already rounds to infinity in both modes.
+    fn narrow_f64_to_f32_rm(v: f64, rm: VexRm) -> f32 {
         let nearest = v as f32;
         // NaN and exactly-representable values are rounding-mode independent.
         // `f64::from(nearest) == v` also covers infinities.
-        if rm & 0x3 == 0 || v.is_nan() || f64::from(nearest) == v {
+        if rm == VexRm::NearestEven || v.is_nan() || f64::from(nearest) == v {
             return nearest;
         }
-        let toward_neg_inf = match rm & 0x3 {
-            1 => true,    // toward -infinity
-            2 => false,   // toward +infinity
-            _ => v > 0.0, // toward zero: down when positive, up when negative
+        let toward_neg_inf = match rm {
+            VexRm::TowardNegative => true,
+            VexRm::TowardPositive => false,
+            // Toward zero: down when positive, up when negative.
+            VexRm::TowardZero => v > 0.0,
+            VexRm::NearestEven => return nearest,
+            VexRm::NearestAway => {
+                let other = if f64::from(nearest) > v {
+                    nearest.next_down()
+                } else {
+                    nearest.next_up()
+                };
+                let midpoint = (f64::from(nearest) + f64::from(other)) / 2.0;
+                return if midpoint == v && other.abs() > nearest.abs() {
+                    other
+                } else {
+                    nearest
+                };
+            }
         };
         if toward_neg_inf {
             if f64::from(nearest) > v {

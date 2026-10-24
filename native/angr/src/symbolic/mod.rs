@@ -18,7 +18,7 @@
 //!
 //! | File | Holds |
 //! |------|-------|
-//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Ast`) plus `BVOp`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
+//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Ast`) plus `BVOp`, `FloatPrec`, `FloatOpKind`, the VEX rounding-mode decoder `VexRm`, and the constructor / accessor `impl` block. |
 //! | `value_ops.rs` | Slice .2: arithmetic, bitwise, shift/rotate, comparison and structural (`extract` / `concat` / `reverse` / extend) ops, and the construction-time canonicalization rules they run. |
 //! | `value_clarirs.rs` | `RustBV::to_clarirs`: the clarirs term a value denotes, with the Bool and bitcount encodings its Z3 lowering uses. |
 //! | `value_shape.rs` | `RustBV::node`: the op and operands of a compound value, read off a clarirs `Ast` term in `BVOp` vocabulary, plus `leaf_var`. |
@@ -121,7 +121,7 @@ pub use stats::{
     reset_solver_stats,
 };
 pub use symbol_kind::SymbolKind;
-pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
+pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV, UnsupportedRoundingMode, VexRm};
 // Used by the claripy export.
 pub(crate) use value_clarirs::bool_inside;
 pub(crate) use value_shape::Node;

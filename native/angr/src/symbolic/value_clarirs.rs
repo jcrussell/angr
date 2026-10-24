@@ -17,7 +17,7 @@
 use clarirs_core::prelude::{AstFactory, AstOp, AstRef, BitVec, ClarirsError, FPRM, FSort};
 use num_bigint::BigUint;
 
-use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV};
+use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV, VexRm};
 use crate::claripy::ast::GLOBAL_CONTEXT;
 
 type Term = AstRef<'static>;
@@ -146,33 +146,48 @@ fn fsort(prec: FloatPrec) -> FSort {
     }
 }
 
-/// A VEX rounding mode (its low two bits) as a clarirs one, the mapping
-/// `value_z3::vex_rm_to_z3` uses.
-fn vex_rm(mode: u128) -> FPRM {
-    match mode & 0x3 {
-        0 => FPRM::NearestTiesToEven,
-        1 => FPRM::TowardNegative,
-        2 => FPRM::TowardPositive,
-        _ => FPRM::TowardZero,
+/// A decoded VEX rounding mode as a clarirs one.
+fn vex_rm(mode: VexRm) -> FPRM {
+    match mode {
+        VexRm::NearestEven => FPRM::NearestTiesToEven,
+        VexRm::TowardNegative => FPRM::TowardNegative,
+        VexRm::TowardPositive => FPRM::TowardPositive,
+        VexRm::TowardZero => FPRM::TowardZero,
+        VexRm::NearestAway => FPRM::NearestTiesToAway,
     }
 }
 
-/// `build` under the VEX rounding mode `rm` holds: one term for a concrete
-/// mode, otherwise an `ite` over all four on `rm`'s low two bits, nested as
-/// `value_z3::dispatch_symbolic_rm` nests them.
+/// `build` under the VEX rounding mode `rm` holds. A concrete mode is decoded
+/// by `VexRm::decode` (the `vex::ops` callers have already rejected an
+/// unsupported one with an `OpError`, so the error here is defensive) and
+/// builds one term. A symbolic mode builds an `ite` over the whole operand
+/// value, one arm per `VexRm::ALL` mode in encoding order with the last mode
+/// as the final else. An `ite` cannot raise, so a symbolic operand outside
+/// the decodable modes lands on that last arm; the front ends only ever
+/// compute a symbolic rm as a 0..=3 MXCSR/FPCR field, and the Python engine
+/// does not decode a symbolic rm at all (`translate_rm` warns and uses its
+/// default).
 fn with_vex_rm(
     rm: &RustBV,
     build: impl Fn(FPRM) -> Result<Term, ClarirsError>,
 ) -> Result<Term, ClarirsError> {
     if let Some(mode) = rm.as_u128() {
+        let mode =
+            VexRm::decode(mode).map_err(|e| ClarirsError::InvalidArguments(e.to_string()))?;
         return build(vex_rm(mode));
     }
     let gc = &*GLOBAL_CONTEXT;
-    let low = gc.extract(rm.to_clarirs()?, 1, 0)?;
-    let is = |mode: u128| gc.eq_(low.clone(), bvv(mode, 2)?);
-    let pick23 = gc.ite(is(2)?, build(vex_rm(2))?, build(vex_rm(3))?)?;
-    let pick123 = gc.ite(is(1)?, build(vex_rm(1))?, pick23)?;
-    gc.ite(is(0)?, build(vex_rm(0))?, pick123)
+    let rm_term = rm.to_clarirs()?;
+    let [rest @ .., last] = VexRm::ALL;
+    let mut term = build(vex_rm(last))?;
+    for &mode in rest.iter().rev() {
+        let is_mode = gc.eq_(
+            rm_term.clone(),
+            bvv(u128::from(mode.encoding()), rm.width())?,
+        )?;
+        term = gc.ite(is_mode, build(vex_rm(mode))?, term)?;
+    }
+    Ok(term)
 }
 
 /// A float op over IEEE bit patterns, as `value_z3::build_fp_z3_ast_cached`

@@ -6,13 +6,14 @@ use super::*;
 // FP edge cases (angr-io1t)
 // =========================================================================
 
-/// RoundF32toInt with symbolic rm: value=-2.5f32, target=-3.0f32 forces
-/// rm low-2-bits == 1 (round toward -inf). Exercises the 4-way ITE built
-/// by build_fp_round_to_int_cached.
+/// RoundF32toInt with symbolic rm in 0..=4: value=-2.5f32, target=-3.0f32
+/// forces rm to 1 (toward -inf) or 4 (ties away from zero). Exercises the
+/// `VexRm` ITE built by `value_clarirs::with_vex_rm`.
 #[test]
 fn test_round_f32_to_int_symbolic_rm() {
     let ctx = SymContext::new_mock();
     let rm = RustBV::symbolic(&ctx, "rm_f32", 32);
+    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32), &ctx));
     let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
 
     let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
@@ -22,20 +23,19 @@ fn test_round_f32_to_int_symbolic_rm() {
     assert!(ctx.is_sat(), "expected SAT for round(-2.5)==-3.0");
 
     let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
-    assert_eq!(
-        (model_rm as u32) & 0x3,
-        1,
-        "expected rm low2 bits == 1 (round toward -inf), got {}",
-        model_rm & 0x3
+    assert!(
+        model_rm == 1 || model_rm == 4,
+        "expected rm 1 (toward -inf) or 4 (ties away), got {model_rm}"
     );
 }
 
-/// RoundF64toInt with symbolic rm: value=2.5f64, target=3.0f64 forces
-/// rm low-2-bits == 2 (round toward +inf). RNE on 2.5 ties to even (2).
+/// RoundF64toInt with symbolic rm in 0..=4: value=2.5f64, target=3.0f64
+/// forces rm to 2 (toward +inf) or 4 (ties away). RNE on 2.5 ties to even (2).
 #[test]
 fn test_round_f64_to_int_symbolic_rm() {
     let ctx = SymContext::new_mock();
     let rm = RustBV::symbolic(&ctx, "rm_f64", 32);
+    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32), &ctx));
     let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
 
     let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
@@ -45,11 +45,9 @@ fn test_round_f64_to_int_symbolic_rm() {
     assert!(ctx.is_sat(), "expected SAT for round(2.5)==3.0");
 
     let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
-    assert_eq!(
-        (model_rm as u32) & 0x3,
-        2,
-        "expected rm low2 bits == 2 (round toward +inf), got {}",
-        model_rm & 0x3
+    assert!(
+        model_rm == 2 || model_rm == 4,
+        "expected rm 2 (toward +inf) or 4 (ties away), got {model_rm}"
     );
 }
 

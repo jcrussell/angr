@@ -6,7 +6,7 @@
 //! These cover this surface directly, not only *transitively* through
 //! the VEX-op layer (`vex/ops/tests_float_arith.rs` and friends) (angr-c7xno.74). A regression
 //! confined to the Z3-emission layer — a swapped operand order inside an
-//! `unsafe { Z3_mk_fpa_* }` call, a wrong `vex_rm_to_z3` selector mapping, a
+//! `unsafe { Z3_mk_fpa_* }` call, a wrong `value_clarirs::vex_rm` selector mapping, a
 //! rounding mode dropped on the way to a builder — would only have been caught
 //! if some VEX op happened to exercise that exact combination.
 //!
@@ -21,7 +21,7 @@
 //! by bit pattern: `Z3_mk_fpa_to_ieee_bv` leaves the NaN payload unspecified.
 
 use super::*;
-use crate::symbolic::{FloatOpKind, FloatPrec, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, SymContext, UnsupportedRoundingMode, VexRm};
 
 // ---------------------------------------------------------------------------
 // Builders / decoders
@@ -268,16 +268,21 @@ fn test_fp_arith_producing_infinity() {
 // RoundToInt (concrete + symbolic rounding mode)
 // ---------------------------------------------------------------------------
 
-/// All four VEX rounding-mode selectors, on a value where each mode gives a
-/// distinct answer. Catches a permuted `vex_rm_to_z3` mapping, which the
-/// arithmetic tests above (RNE only) cannot see.
+/// Every decodable VEX rounding-mode selector (`VexRm::ALL`), on values
+/// where each mode gives a distinct answer. Catches a permuted
+/// `value_clarirs::vex_rm` mapping, which the arithmetic tests above (RNE
+/// only) cannot see.
 #[test]
 fn test_fp_round_to_int_all_modes() {
     let ctx = SymContext::new();
-    // 0 = nearest-even, 1 = -inf, 2 = +inf, 3 = zero.
+    // 0 = nearest-even, 1 = -inf, 2 = +inf, 3 = zero, 4 = nearest-away.
     for (vex_rm, v, expected) in [
         (0u8, 2.5f64, 2.0f64), // ties to even
         (0, 3.5, 4.0),
+        (4, 2.5, 3.0), // ties away from zero (angr-vmi2l.56)
+        (4, -2.5, -3.0),
+        (4, 0.5, 1.0),
+        (4, 2.4, 2.0),
         (1, 2.7, 2.0),
         (1, -2.2, -3.0),
         (2, 2.2, 3.0),
@@ -294,35 +299,45 @@ fn test_fp_round_to_int_all_modes() {
     }
 }
 
-/// Only the low 2 bits of the rm operand select the mode; VEX passes a full
-/// 32-bit value whose high bits carry other state.
+/// The whole rm operand selects the mode, as in the Python engine's
+/// `translate_rm`: 0..=4 decode, everything else (5..=7, the EVEX 8..=11, a
+/// value with high bits set) is unsupported rather than masked to its low
+/// bits (angr-vmi2l.56).
 #[test]
-fn test_fp_round_to_int_ignores_high_rm_bits() {
-    let ctx = SymContext::new();
-    let e = fp_expr(
-        FloatOpKind::RoundToInt,
-        FloatPrec::F64,
-        vec![RustBV::concrete(0xFFFF_FFFC, 32), bv64(2.7)],
-    );
-    // 0xFFFF_FFFC & 3 == 0 -> nearest.
-    assert_eq!(eval_f64(&ctx, &e), 3.0);
+fn test_vex_rm_decode_is_exact() {
+    for mode in VexRm::ALL {
+        assert_eq!(VexRm::decode(u128::from(mode.encoding())), Ok(mode));
+    }
+    for bad in [5u128, 6, 7, 8, 9, 10, 11, 0xFFFF_FFFC, 1 << 32] {
+        assert_eq!(VexRm::decode(bad), Err(UnsupportedRoundingMode(bad)), "rm={bad:#x}");
+    }
 }
 
-/// A symbolic rm operand routes through `dispatch_symbolic_rm`, which builds
-/// all four arms and ITEs on the low 2 bits. Constraining the symbol to each
-/// selector must reproduce the concrete-rm answers exactly.
+/// A symbolic rm operand routes through `value_clarirs::with_vex_rm`, which
+/// builds one arm per `VexRm::ALL` mode and ITEs on the operand value.
+/// Constraining the symbol to each selector must reproduce the concrete-rm
+/// answers exactly; 2.5 separates the two nearest modes.
 #[test]
 fn test_fp_round_to_int_symbolic_rm_matches_concrete() {
-    for (vex_rm, expected) in [(0u8, 3.0f64), (1, 2.0), (2, 3.0), (3, 2.0)] {
+    for (vex_rm, v, expected) in [
+        (0u8, 2.7f64, 3.0f64),
+        (1, 2.7, 2.0),
+        (2, 2.7, 3.0),
+        (3, 2.7, 2.0),
+        (0, 2.5, 2.0),
+        (4, 2.5, 3.0),
+    ] {
         let ctx = SymContext::new();
         let rm_sym = RustBV::symbolic(&ctx, "rm", 32);
         ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32), &ctx));
         let e = fp_expr(
             FloatOpKind::RoundToInt,
             FloatPrec::F64,
-            vec![rm_sym, bv64(2.7)],
+            vec![rm_sym, bv64(v)],
         );
-        assert_eq!(eval_f64(&ctx, &e), expected, "symbolic rm={vex_rm}");
+        assert_eq!(eval_f64(&ctx, &e), expected, "symbolic rm={vex_rm} value={v}");
+        let concrete = fp_expr(FloatOpKind::RoundToInt, FloatPrec::F64, vec![rm(vex_rm), bv64(v)]);
+        assert_eq!(eval_f64(&ctx, &concrete), expected, "concrete rm={vex_rm} value={v}");
     }
 }
 
