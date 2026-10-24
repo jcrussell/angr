@@ -1351,6 +1351,56 @@ fn diff_fuzz_arm64_sym_flags() {
     }
 }
 
+/// Hand-derived ADC/SBC carry oracle (angr-vmi2l.76). The twin-vs-twin
+/// diff-fuzz above cannot see a semantic error both twins share, so these
+/// cases are worked out by hand from the VEX definition, where the carry-in
+/// is `cc_dep3` (oldC in the LSB): SBC computes `argL - argR - !oldC` and sets
+/// C when no borrow occurs; ADC computes `argL + argR + oldC` and sets C on
+/// unsigned carry-out. The `argL == argR` SBC rows are the ones where keying
+/// the comparison off `cc_dep2` gives the wrong answer.
+#[test]
+fn test_arm64_adc_sbc_carry_oracle() {
+    use arm64_cc_op::*;
+    let ctx = crate::symbolic::SymContext::new_mock();
+    // (cc_op, argL, argR, oldC, expected C)
+    let cases: &[(u64, u64, u64, u64, u64)] = &[
+        // SBC: 5 - 5 - 1 borrows; 0 - 0 - 0 does not.
+        (ARM64G_CC_OP_SBC64, 5, 5, 0, 0),
+        (ARM64G_CC_OP_SBC64, 0, 0, 1, 1),
+        (ARM64G_CC_OP_SBC32, 5, 5, 0, 0),
+        (ARM64G_CC_OP_SBC32, 0, 0, 1, 1),
+        (ARM64G_CC_OP_SBC64, 3, 2, 0, 1),
+        (ARM64G_CC_OP_SBC64, 2, 3, 1, 0),
+        // SBC32 ignores the high halves of the operands.
+        (ARM64G_CC_OP_SBC32, 0x1_0000_0005, 0x2_0000_0005, 0, 0),
+        (ARM64G_CC_OP_SBC32, 0x7_0000_0000, 0x3_0000_0000, 1, 1),
+        // ADC: carry-out of argL + argR + oldC.
+        (ARM64G_CC_OP_ADC64, 5, 0, 0, 0),
+        (ARM64G_CC_OP_ADC64, u64::MAX, 0, 1, 1),
+        (ARM64G_CC_OP_ADC64, u64::MAX, u64::MAX, 0, 1),
+        (ARM64G_CC_OP_ADC64, 1, u64::MAX - 1, 0, 0),
+        (ARM64G_CC_OP_ADC32, 0xFFFF_FFFF, 0, 1, 1),
+        (ARM64G_CC_OP_ADC32, 5, 0, 0, 0),
+    ];
+    for &(cc_op, a, b, old_c, want) in cases {
+        let msg = format!("cc_op={cc_op} argL={a:#x} argR={b:#x} oldC={old_c}");
+        assert_eq!(arm64g_calc_flag_c(cc_op, a, b, old_c), Some(want), "concrete C {msg}");
+        let nzcv = arm64g_calculate_flags_nzcv(cc_op, a, b, old_c).expect("nzcv");
+        assert_eq!((nzcv >> arm_flag_shift::SHIFT_C) & 1, want, "nzcv C {msg}");
+        let hs = (arm_cond::ARM_COND_HS << 4) | cc_op;
+        assert_eq!(arm64g_calculate_condition(hs, a, b, old_c), Some(want), "HS {msg}");
+
+        let bv1 = RustBV::concrete(u128::from(a), 64);
+        let bv2 = RustBV::concrete(u128::from(b), 64);
+        let bv3 = RustBV::concrete(u128::from(old_c), 64);
+        let sym = arm64_sym_flag_c(cc_op, &bv1, &bv2, &bv3, &ctx).expect("sym C");
+        assert_eq!(sym.as_u64(), Some(want), "symbolic C {msg}");
+        let sym_hs = arm64_sym_calculate_condition(arm_cond::ARM_COND_HS, cc_op, &bv1, &bv2, &bv3, &ctx)
+            .expect("sym HS");
+        assert_eq!(sym_hs.as_u64().map(|v| v & 1), Some(want), "symbolic HS {msg}");
+    }
+}
+
 // ============================================================
 // x86g_use_seg_selector — segmented-address linearization.
 //

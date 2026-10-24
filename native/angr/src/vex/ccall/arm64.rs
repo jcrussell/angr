@@ -10,11 +10,6 @@ use super::*;
 // The condition encoding is identical to 32-bit ARM (ARM64Cond* == ARMCond*),
 // so we reuse `arm_cond` and `arm_flag_shift`. The cc_op set differs: each
 // arithmetic op has explicit 32- and 64-bit variants.
-//
-// NOTE: where the Python reference and VEX hardware semantics diverge (the
-// ADC/SBC carry-in is keyed off `cc_dep2 != 0` in Python rather than the
-// carry dep), we follow Python so the diff-fuzz against the Python engine
-// matches.
 
 /// AArch64 CC_OP values (from VEX's libvex_guest_arm64.h / angr ccall.py).
 pub(super) mod arm64_cc_op {
@@ -103,17 +98,18 @@ pub(super) fn arm64g_calc_flag_c(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Optio
             u64::from(res < a)
         }
         Arm64Op::Sub => u64::from(a >= b),
+        // The carry-in is cc_dep3 (oldC in the LSB), as in VEX and
+        // `ccall.py::arm64g_calculate_flag_c` (angr-vmi2l.76).
         Arm64Op::Adc => {
             let res = a.wrapping_add(b).wrapping_add(d3) & mask;
-            // Python keys the comparison off cc_dep2 (b), not the carry-in.
-            if b != 0 {
+            if d3 & mask != 0 {
                 u64::from(res <= a)
             } else {
                 u64::from(res < a)
             }
         }
         Arm64Op::Sbc => {
-            if b != 0 {
+            if d3 & mask != 0 {
                 u64::from(a >= b)
             } else {
                 u64::from(a > b)
@@ -301,24 +297,25 @@ pub(super) fn arm64_sym_flag_c(
             res.ult(&d1, ctx)
         }
         Arm64Op::Sub => d1.uge(&d2, ctx),
+        // The carry-in is cc_dep3, as in the concrete twin (angr-vmi2l.76).
         Arm64Op::Adc => {
             let d3 = extract_to_nbits(dep3, nb, ctx);
             let res = d1.add(&d2, ctx).add(&d3, ctx);
-            // Python keys this off cc_dep2 (d2), not the carry-in.
-            let d2_nz = d2.eq(&zero, ctx).not(ctx);
+            let d3_nz = d3.eq(&zero, ctx).not(ctx);
             let when_nz = res.ule(&d1, ctx);
             let when_z = res.ult(&d1, ctx);
-            d2_nz
+            d3_nz
                 .and(&when_nz, ctx)
-                .or(&d2_nz.not(ctx).and(&when_z, ctx), ctx)
+                .or(&d3_nz.not(ctx).and(&when_z, ctx), ctx)
         }
         Arm64Op::Sbc => {
-            let d2_nz = d2.eq(&zero, ctx).not(ctx);
+            let d3 = extract_to_nbits(dep3, nb, ctx);
+            let d3_nz = d3.eq(&zero, ctx).not(ctx);
             let when_nz = d1.uge(&d2, ctx);
             let when_z = d1.ugt(&d2, ctx);
-            d2_nz
+            d3_nz
                 .and(&when_nz, ctx)
-                .or(&d2_nz.not(ctx).and(&when_z, ctx), ctx)
+                .or(&d3_nz.not(ctx).and(&when_z, ctx), ctx)
         }
         Arm64Op::Logic => RustBV::concrete(0, 1),
     })
