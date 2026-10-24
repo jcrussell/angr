@@ -451,9 +451,10 @@ pub enum IROp {
         count: u8,
     },
 
-    /// NEON binary narrow (Iop_NarrowBin{N}to{N/2}x{M}): (lo, hi) -> vec.
+    /// Binary narrow (Iop_NarrowBin{N}to{N/2}x{M}): (hi, lo) -> vec.
     /// Binop. `count` is the result lane count; each input has `count/2` lanes
-    /// of width `from`. Result has `count` lanes of width `from.bits()/2`.
+    /// of width `from`. Result has `count` lanes of width `from.bits()/2`, the
+    /// left operand's in the high half (`libvex_ir.h`, NARROWING (binary)).
     VNarrowBin {
         from: IRType,
         count: u8,
@@ -470,9 +471,10 @@ pub enum IROp {
         dst_signed: bool,
     },
 
-    /// NEON binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}).
-    /// Binop variant of VQNarrowUn; `count` is total result lanes (each input
-    /// contributes `count/2` lanes).
+    /// Binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}):
+    /// (hi, lo) -> vec. Binop variant of VQNarrowUn; `count` is total result
+    /// lanes (each input contributes `count/2` lanes), the left operand's in
+    /// the high half, as for `VNarrowBin`.
     VQNarrowBin {
         from: IRType,
         count: u8,

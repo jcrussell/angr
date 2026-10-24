@@ -94,9 +94,10 @@ impl VEXOps {
         )
     }
 
-    /// NEON binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}).
-    /// Saturating analog of `vec_narrow_bin` — `left` fills the low half,
-    /// `right` the high half, via the shared `narrow_lanes` driver.
+    /// Binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}, e.g.
+    /// the amd64 PACKSS*/PACKUS*). Saturating analog of
+    /// `vec_narrow_bin` — `left` fills the high half, `right` the low half
+    /// (angr-vmi2l.55), via the shared `narrow_lanes` driver.
     pub(super) fn vec_qnarrow_bin(
         left: RustBV,
         right: RustBV,
@@ -116,7 +117,7 @@ impl VEXOps {
             from_width * per_input,
         )?;
         Ok(Self::narrow_lanes(
-            &[&left, &right],
+            &[&right, &left],
             from_width,
             to_width,
             per_input,

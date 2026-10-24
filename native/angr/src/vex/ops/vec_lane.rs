@@ -216,7 +216,9 @@ impl VEXOps {
     /// `from_width`; output lanes (width `to_width`) are emitted low-to-high in
     /// operand order, giving `inputs.len() * per_input` total lanes. Unary
     /// narrow passes one operand with `per_input = count`; binary narrow passes
-    /// two with `per_input = count / 2` (left → low half, right → high half).
+    /// `[right, left]` with `per_input = count / 2`, because libVEX
+    /// (`libvex_ir.h`, NARROWING (binary)) takes the high half of the result
+    /// from the left operand.
     ///
     /// `concrete_lane` maps one `from_width`-masked input lane to its
     /// `to_width`-bit output bit pattern (concrete fast path); `symbolic_lane`
@@ -290,9 +292,10 @@ impl VEXOps {
         ))
     }
 
-    /// NEON binary narrow (Iop_NarrowBin{N}to{N/2}x{M}). Each input has
-    /// `count/2` lanes of width `from`; result has `count` lanes of width
-    /// `from/2` with `left` providing the low half and `right` the high half.
+    /// Binary narrow (Iop_NarrowBin{N}to{N/2}x{M}). Each input has `count/2`
+    /// lanes of width `from`; result has `count` lanes of width `from/2` with
+    /// `left` providing the high half and `right` the low half, as libVEX
+    /// defines it and the Python engine computes it (angr-vmi2l.55).
     pub(super) fn vec_narrow_bin(
         left: RustBV,
         right: RustBV,
@@ -311,7 +314,7 @@ impl VEXOps {
         )?;
         let to_mask = Self::low_bit_mask_u128(to_width);
         Ok(Self::narrow_lanes(
-            &[&left, &right],
+            &[&right, &left],
             from_width,
             to_width,
             per_input,

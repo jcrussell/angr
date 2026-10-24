@@ -37,8 +37,9 @@ fn test_vnarrow_un_16to8x8_concrete() {
 #[test]
 fn test_vnarrow_bin_16to8x16_concrete() {
     let ctx = SymContext::new_mock();
-    // Each input is V128 with 8 lanes of I16. left lanes -> output lanes 0..8;
-    // right lanes -> output lanes 8..16.
+    // Each input is V128 with 8 lanes of I16. libVEX puts the left operand in
+    // the high half: right lanes -> output lanes 0..8, left lanes -> 8..16
+    // (angr-vmi2l.55).
     let lanes_l: [u16; 8] = [
         0x0011, 0x0022, 0x0033, 0x0044, 0x0055, 0x0066, 0x0077, 0x0088,
     ];
@@ -65,13 +66,13 @@ fn test_vnarrow_bin_16to8x16_concrete() {
     .unwrap();
     assert_eq!(res.width(), 128);
     let out = res.as_u128().unwrap();
-    for (i, &lane) in lanes_l.iter().enumerate() {
-        let got = (out >> (i * 8)) & 0xFF;
-        assert_eq!(got, (lane & 0xFF) as u128, "left lane {i}");
-    }
     for (i, &lane) in lanes_r.iter().enumerate() {
-        let got = (out >> ((8 + i) * 8)) & 0xFF;
+        let got = (out >> (i * 8)) & 0xFF;
         assert_eq!(got, (lane & 0xFF) as u128, "right lane {i}");
+    }
+    for (i, &lane) in lanes_l.iter().enumerate() {
+        let got = (out >> ((8 + i) * 8)) & 0xFF;
+        assert_eq!(got, (lane & 0xFF) as u128, "left lane {i}");
     }
 }
 
@@ -184,18 +185,71 @@ fn test_vqnarrow_bin_16sto8sx16_two_inputs() {
     .unwrap();
     assert_eq!(res.width(), 128);
     let out = res.as_u128().unwrap();
-    // Left lane 0 -> output byte 0: 127.
-    assert_eq!((out & 0xFF) as u8, 127, "left lane 0 sat to 127");
-    // Left lane 1 -> output byte 1: 50.
-    assert_eq!(((out >> 8) & 0xFF) as u8, 50, "left lane 1 unchanged");
-    // Right lane 0 -> output byte 8: 5.
-    assert_eq!(((out >> 64) & 0xFF) as u8, 5, "right lane 0 unchanged");
-    // Right lane 7 -> output byte 15: -128.
-    assert_eq!(
-        ((out >> (15 * 8)) & 0xFF) as u8,
-        0x80,
-        "right lane 7 sat to -128"
-    );
+    // The left operand fills the high half (angr-vmi2l.55).
+    // Right lane 0 -> output byte 0: 5.
+    assert_eq!((out & 0xFF) as u8, 5, "right lane 0 unchanged");
+    // Right lane 7 -> output byte 7: -128.
+    assert_eq!(((out >> (7 * 8)) & 0xFF) as u8, 0x80, "right lane 7 sat to -128");
+    // Left lane 0 -> output byte 8: 127.
+    assert_eq!(((out >> 64) & 0xFF) as u8, 127, "left lane 0 sat to 127");
+    // Left lane 1 -> output byte 9: 50.
+    assert_eq!(((out >> 72) & 0xFF) as u8, 50, "left lane 1 unchanged");
+}
+
+/// The symbolic path of both binary narrows lays the halves out like the
+/// concrete one, left operand high (angr-vmi2l.55): operands pinned to the
+/// concrete inputs by a constraint evaluate to the concrete result, for the
+/// V128 and the MMX (I64) shapes.
+#[test]
+fn test_narrow_bin_symbolic_matches_concrete_layout() {
+    let ops = [
+        (IROp::VNarrowBin { from: IRType::I16, count: 16 }, 128),
+        (
+            IROp::VQNarrowBin {
+                from: IRType::I16,
+                count: 16,
+                src_signed: true,
+                dst_signed: false,
+            },
+            128,
+        ),
+        (
+            IROp::VQNarrowBin {
+                from: IRType::I32,
+                count: 4,
+                src_signed: true,
+                dst_signed: true,
+            },
+            64,
+        ),
+    ];
+    for (op, width) in ops {
+        let ctx = SymContext::new_mock();
+        let mask = if width == 128 { u128::MAX } else { (1u128 << width) - 1 };
+        let l = 0x0102_0304_0506_0708_8090_A0B0_0C0D_0E0Fu128 & mask;
+        let r = 0x1112_1314_1516_1718_F1F2_F3F4_0405_0607u128 & mask;
+        let concrete =
+            VEXOps::binop(op, RustBV::concrete(l, width), RustBV::concrete(r, width), &ctx)
+                .unwrap()
+                .as_u128()
+                .unwrap();
+        let sym_l = RustBV::symbolic(&ctx, "narrow_l", width);
+        let sym_r = RustBV::symbolic(&ctx, "narrow_r", width);
+        ctx.add_constraint(sym_l.to_z3_ast().eq(RustBV::concrete(l, width).to_z3_ast()));
+        ctx.add_constraint(sym_r.to_z3_ast().eq(RustBV::concrete(r, width).to_z3_ast()));
+        let symbolic = VEXOps::binop(op, sym_l, sym_r, &ctx).unwrap();
+        assert!(symbolic.is_symbolic(), "{op:?}: expected a symbolic result");
+        assert_eq!(ctx.eval(&symbolic), Some(concrete), "{op:?}: symbolic layout");
+        // The low half is the right operand's narrowed lanes.
+        let half = width / 2;
+        let low = |v: u128| v & ((1u128 << half) - 1);
+        let right_only =
+            VEXOps::binop(op, RustBV::concrete(0, width), RustBV::concrete(r, width), &ctx)
+                .unwrap()
+                .as_u128()
+                .unwrap();
+        assert_eq!(low(concrete), low(right_only), "{op:?}: right operand -> low half");
+    }
 }
 
 #[test]
