@@ -321,12 +321,19 @@ Supported writes (all immediate, no queueing):
   ``set_state_register_symbolic_ast``. ``value`` may be a claripy AST
   (concrete or symbolic), a Python ``int``, or ``bytes``. Ints/bytes
   are wrapped in a ``BVV`` at the register's native width.
-* ``proxy.memory.store(addr, data, endness=None, size=None)`` —
+* ``proxy.memory.store(addr, data, size=None, *, condition=None, endness=None)`` —
   forwards to ``set_state_memory_concrete`` (concrete data) or
-  ``set_state_memory_ast`` (symbolic data). ``addr`` must be concrete
-  (``int`` or concrete claripy AST). Symbolic-data writes route through
-  the shared symbol cache so reads return the same Z3 AST that Rust is
-  tracking.
+  ``set_state_memory_ast`` (symbolic data). Symbolic-data writes route
+  through the shared symbol cache so reads return the same Z3 AST that
+  Rust is tracking. ``RustMemoryProxy`` (this proxy's memory, and every
+  callback state's and export's ``state.memory``) honours the keywords as
+  angr's ``DefaultMemory`` does: ``size`` truncates, a symbolic ``size``
+  writes byte ``i`` only where ``i < size``, ``condition`` guards the
+  write, ``load(..., condition=, fallback=)`` yields the fallback where
+  the guard is false, a symbolic load size loads its maximum, and
+  ``inspect`` fires ``mem_read`` / ``mem_write`` breakpoints. ``action``
+  and unknown keywords raise ``NotImplementedError``, as does a guarded or
+  symbolic-size store to a symbolic address (angr-vmi2l.260).
 * ``proxy.solver.add(...)`` / ``proxy.add_constraints(...)`` — adds the
   constraint to a single forked Rust solver context **shared** by the
   proxy's ``solver``, ``memory``, and ``posix`` sub-proxies (angr-yodz).

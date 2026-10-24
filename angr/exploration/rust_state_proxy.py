@@ -24,6 +24,7 @@ import threading
 
 from angr import claripy
 from angr.exploration.rust_state_binding import RustStateBinding, unscoped_binding
+from angr.state_plugins.sim_action_object import _raw_ast
 
 l = logging.getLogger(__name__)
 
@@ -221,6 +222,50 @@ def _with_extra_constraints(ctx, fn, *args, extra=(), **kwargs):
     return fn(*args, **kwargs)
 
 
+def _refuse_unhonoured(op, action, kwargs):
+    """Raise for the ``SimMemory`` keywords ``RustMemoryProxy`` cannot honour.
+
+    Dropping one silently would make the proxy behave unlike angr's memory
+    (angr-vmi2l.260).
+    """
+    if action is not None:
+        raise NotImplementedError(f"RustMemoryProxy.{op}: action= is not supported; the proxy records no SimAction")
+    if kwargs:
+        raise NotImplementedError(f"RustMemoryProxy.{op}: unsupported keyword argument(s) {sorted(kwargs)}")
+
+
+def _to_bv(thing, size, arch_bits):
+    """``DataNormalizationMixin._convert_to_ast``: the store data (or load fallback) as a BV.
+
+    ``size`` is in bytes; a bare ``int`` without a concrete ``size`` is an
+    arch word, as in angr.
+    """
+    if isinstance(thing, claripy.ast.BV):
+        return thing
+    if isinstance(size, int):
+        bits = size * 8
+    elif isinstance(size, claripy.ast.Base) and size.concrete:
+        bits = size.concrete_value * 8
+    else:
+        bits = None
+    if isinstance(thing, str):
+        thing = thing.encode("utf-8")
+    if isinstance(thing, (bytes, bytearray, memoryview)):
+        return claripy.BVV(bytes(thing))
+    if isinstance(thing, bool) or not isinstance(thing, (int, float)):
+        raw_to_bv = getattr(thing, "raw_to_bv", None)
+        if raw_to_bv is None:
+            raise TypeError(f"memory store expects claripy AST, int, or bytes; got {type(thing).__name__}")
+        return raw_to_bv()
+    if isinstance(thing, int):
+        return claripy.BVV(thing, bits if bits is not None else arch_bits)
+    if bits == 32:
+        return claripy.FPV(thing, claripy.FSORT_FLOAT).raw_to_bv()
+    if bits == 64:
+        return claripy.FPV(thing, claripy.FSORT_DOUBLE).raw_to_bv()
+    raise TypeError(f"memory store of a float needs a 4- or 8-byte size, got {size!r}")
+
+
 def _signed_extremum(value, expr, signed):
     """Convert a ``RustSolverContext.min``/``max`` result to angr's convention.
 
@@ -267,13 +312,13 @@ def _resolve_none_extremum(kind, expr, constraints, extra_constraints, signed, s
     return solver.min(expr, signed=signed) if kind == "min" else solver.max(expr, signed=signed)
 
 
-
 @functools.cache
 def _heap_region() -> tuple[int, int]:
     """``(start, size)`` of the Rust state's lazy heap region (``RustSimState.HEAP_REGION``)."""
     from angr.rustylib.vex_engine import RustSimState  # pylint: disable=import-outside-toplevel
 
     return RustSimState.HEAP_REGION
+
 
 class _SolutionCountMixin:
     """Shared solution-count wrappers for the two solver proxies.
@@ -747,7 +792,11 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # can bump ``_stats_proxy_*`` counters. ``rust_mgr`` is the PyO3
         # builtin and has no Python attributes; only the wrapper does.
         object.__setattr__(self, "_python_mgr", python_mgr)
-        object.__setattr__(self, "_binding", state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id))
+        object.__setattr__(
+            self,
+            "_binding",
+            state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id),
+        )
         # Lazy Rust solver fork — created on first eval/satisfiable/min/max.
         # Invalidated on add() so the next solve picks up the new constraint.
         object.__setattr__(self, "_rust_ctx_cache", None)
@@ -1157,7 +1206,11 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         object.__setattr__(self, "_cache", {})  # name -> claripy BVV/BVS
         # angr-7jv5: optional Python-wrapper handle for counter bumps.
         object.__setattr__(self, "_python_mgr", python_mgr)
-        object.__setattr__(self, "_binding", state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id))
+        object.__setattr__(
+            self,
+            "_binding",
+            state_id if isinstance(state_id, RustStateBinding) else unscoped_binding(python_mgr, state_id),
+        )
         # SimMemory plugin protocol surface — stored via object.__setattr__
         # so our overridden __setattr__ does not route them through to Rust.
         object.__setattr__(self, "id", "reg")
@@ -1210,9 +1263,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             # using hasattr()/getattr() see "no such register". Note: this
             # masks transient FFI errors as missing-attribute — log debug so
             # they're visible under --debug.
-            l.debug(
-                "get_state_register(sid=%d, name=%r) failed; reporting as AttributeError", state_id, canonical
-            )
+            l.debug("get_state_register(sid=%d, name=%r) failed; reporting as AttributeError", state_id, canonical)
             raise AttributeError(f"register '{name}' not found")
         width = self._get_register_width(canonical)
         result = self._recover_symbolic_register_ast(canonical, width) if val is None else claripy.BVV(val, width)
@@ -1647,7 +1698,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                 self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
                 self._solver_ctx_owner = threading.get_ident()
 
-    def _pin_addr_witness(self, addr, conc, *, on_state=True):
+    def _pin_addr_witness(self, addr, conc, *, on_state=True, condition=None):
         """Pin a symbolic address to its chosen concretization on the STATE solver.
 
         Distinct addresses built on one unconstrained base symbol (e.g.
@@ -1670,8 +1721,12 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         ``state.memory`` (``pin_state_witness``): a read through a view or an
         exported state must not change the Rust state's constraints
         (angr-vmi2l.259). A store always pins the state: it writes there.
+        A guarded load (``condition``) pins only where the guard holds, as
+        angr's address concretization does.
         """
         pin = addr == conc
+        if condition is not None:
+            pin = claripy.Or(claripy.Not(condition), pin)
         if on_state:
             state_id = self._write_state_id
             try:
@@ -1693,7 +1748,84 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             with contextlib.suppress(Exception):
                 self._solver_ctx.add_constraint_ast(pin)
 
-    def load(self, addr, size=None, endness=None, **kwargs):
+    def load(
+        self,
+        addr,
+        size=None,
+        *,
+        condition=None,
+        fallback=None,
+        endness=None,
+        inspect=True,
+        disable_actions=False,
+        action=None,
+        **kwargs,
+    ):
+        """``SimMemory.load`` over the Rust state (angr-vmi2l.260).
+
+        The keyword arguments mean what they mean to angr's ``DefaultMemory``:
+        a symbolic ``size`` loads its maximum, ``condition`` with
+        ``fallback`` returns ``If(condition, loaded, fallback)``, and
+        ``inspect`` fires the state's ``mem_read`` breakpoints. A keyword the
+        proxy cannot honour (``action``, anything unknown) raises
+        ``NotImplementedError``. ``disable_actions`` is honoured trivially:
+        the proxy records no ``SimAction``.
+        """
+        _refuse_unhonoured("load", action, kwargs)
+        addr, size, condition, fallback = _raw_ast(addr), _raw_ast(size), _raw_ast(condition), _raw_ast(fallback)
+        if isinstance(size, claripy.ast.Base) and not size.concrete:
+            size = self._max_of(size, "load size")
+        state = self.state
+        if not (inspect and state is not None and state.supports_inspect):
+            return self._load_guarded(addr, size, condition, fallback, endness)
+        from angr.state_plugins.inspect import BP_AFTER, BP_BEFORE
+
+        state._inspect(
+            "mem_read",
+            BP_BEFORE,
+            mem_read_address=addr,
+            mem_read_length=size,
+            mem_read_condition=condition,
+            mem_read_endness=endness,
+            mem_read_expr=None,
+        )
+        r = state._inspect_getattr("mem_read_expr", None)
+        addr = state._inspect_getattr("mem_read_address", addr)
+        size = state._inspect_getattr("mem_read_length", size)
+        condition = state._inspect_getattr("mem_read_condition", condition)
+        endness = state._inspect_getattr("mem_read_endness", endness)
+        if r is None:
+            r = self._load_guarded(addr, size, condition, fallback, endness)
+        state._inspect(
+            "mem_read",
+            BP_AFTER,
+            mem_read_expr=r,
+            mem_read_address=addr,
+            mem_read_length=size,
+            mem_read_condition=condition,
+            mem_read_endness=endness,
+        )
+        return state._inspect_getattr("mem_read_expr", r)
+
+    def _load_guarded(self, addr, size, condition, fallback, endness):
+        """``ConditionalMixin.load``: a guarded load yields its fallback when the guard is false."""
+        res = self._load(addr, size, endness, condition)
+        if condition is not None and fallback is not None:
+            if size is None:
+                size = self._arch.bytes
+            fallback = _to_bv(fallback, size, self._arch.bits)
+            res = claripy.If(condition, res, fallback)
+        return res
+
+    def _max_of(self, expr, what):
+        """The maximum of a symbolic ``expr`` under the state's constraints."""
+        self._ensure_solver()
+        value = self._solver_ctx.max(expr)
+        if value is None:
+            raise claripy.errors.UnsatError(f"symbolic {what} has no maximum (unsat state or width > 128)")
+        return value
+
+    def _load(self, addr, size, endness, condition=None):
         """Load memory from the Rust state.
 
         Concrete addresses (int or concrete claripy AST) issue a direct
@@ -1744,7 +1876,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                     # this and every later ebp-relative concretization — both in
                     # the proxy and in native execution. Also cache it so a
                     # repeat load of the identical AST is stable.
-                    self._pin_addr_witness(orig_addr, resolved, on_state=self._pin_state_witness)
+                    self._pin_addr_witness(orig_addr, resolved, on_state=self._pin_state_witness, condition=condition)
                     self._addr_witness_cache[orig_addr.hash()] = resolved
                     addr = resolved
 
@@ -1844,13 +1976,42 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
         return SimSegfaultException(addr - (addr % self.PAGE_SIZE), "unmapped")
 
-    def store(self, addr, data, endness=None, **kwargs):
-        """Write-through memory store to the Rust state (angr-j28e, angr-4scu).
+    def store(
+        self,
+        addr,
+        data,
+        size=None,
+        *,
+        condition=None,
+        endness=None,
+        inspect=True,
+        disable_actions=False,
+        action=None,
+        **kwargs,
+    ):
+        """``SimMemory.store`` through to the Rust state (angr-j28e, angr-4scu, angr-vmi2l.260).
 
-        ``proxy.memory.store(addr, value)`` from a state.inspect callback,
-        find/avoid predicate, or external user code is forwarded immediately
-        to the Rust state. Rust is the single source of truth — there is no
-        Python-side shadow store.
+        ``proxy.memory.store(addr, value)`` from a SimProcedure, a
+        state.inspect callback, a find/avoid predicate or user code is
+        forwarded immediately to the Rust state. Rust is the single source
+        of truth: there is no Python-side shadow store.
+
+        The keyword arguments mean what they mean to angr's
+        ``DefaultMemory``:
+
+        * ``size`` (bytes) truncates the data to its first ``size`` bytes in
+          memory order. A symbolic ``size`` writes byte ``i`` as
+          ``If(i < size, new, old)`` up to the data width; angr's
+          ``SizeConcretizationMixin`` samples up to 256 concrete sizes and
+          writes the same bytes for each sampled one.
+        * ``condition`` writes ``If(condition, data, old)``; a concretely
+          false condition writes nothing and maps no page.
+        * ``endness`` defaults to ``Iend_BE``, as for angr's ``memory.store``
+          of raw data; pass ``Iend_LE`` to mirror VEX.
+        * ``inspect`` fires the state's ``mem_write`` breakpoints.
+          ``disable_actions`` is honoured trivially: the proxy records no
+          ``SimAction``. ``action`` and unknown keywords raise
+          ``NotImplementedError``.
 
         Address handling:
 
@@ -1858,31 +2019,123 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         * Symbolic claripy AST → routed through the lazy Multi-cell path
           (``state_memory_store_symbolic_multi``). Single-solution addrs
           short-circuit to the eager concrete store; Multiple/Strided
-          concretization installs per-byte Multi alternatives. TooLarge
-          or Failed concretization (e.g. unconstrained symbolic addr,
-          unsat constraints) raises ``NotImplementedError`` with the
-          SimProcedure-hook workaround surfaced (angr-4scu step 2).
-
-        Value handling:
-
-        * ``int`` → wrapped in a ``BVV`` at ``size * 8`` bits (caller must
-          pass ``size``).
-        * ``bytes`` / ``bytearray`` → wrapped at ``len(value) * 8`` bits.
-        * concrete claripy ``BVV`` → fast path through the concrete-bytes
-          FFI shim.
-        * symbolic claripy AST → routes through ``set_state_memory_ast``
-          so the symbol is registered in the shared cache.
-
-        Endianness defaults to ``Iend_BE`` (matches angr's ``memory.store``
-        default for raw bytes); pass ``endness='Iend_LE'`` to mirror VEX's
-        little-endian convention.
+          concretization installs per-byte Multi alternatives. An address
+          the Multi path cannot route is concretized to one witness
+          (angr-p1s02). A guarded or symbolic-size store to a symbolic
+          address raises ``NotImplementedError``.
         """
-        size = kwargs.pop("size", None)
+        _refuse_unhonoured("store", action, kwargs)
+        addr, data, size, condition = _raw_ast(addr), _raw_ast(data), _raw_ast(size), _raw_ast(condition)
+        state = self.state
+        if not (inspect and state is not None and state.supports_inspect):
+            self._store_guarded(addr, data, size, condition, endness)
+            return
+        from angr.state_plugins.inspect import BP_AFTER, BP_BEFORE
+
+        state._inspect(
+            "mem_write",
+            BP_BEFORE,
+            mem_write_address=addr,
+            mem_write_length=size,
+            mem_write_expr=data,
+            mem_write_condition=condition,
+            mem_write_endness=endness,
+        )
+        addr = state._inspect_getattr("mem_write_address", addr)
+        size = state._inspect_getattr("mem_write_length", size)
+        data = state._inspect_getattr("mem_write_expr", data)
+        condition = state._inspect_getattr("mem_write_condition", condition)
+        endness = state._inspect_getattr("mem_write_endness", endness)
+        self._store_guarded(addr, data, size, condition, endness)
+        state._inspect(
+            "mem_write",
+            BP_AFTER,
+            mem_write_address=addr,
+            mem_write_length=size,
+            mem_write_expr=data,
+            mem_write_condition=condition,
+            mem_write_endness=endness,
+        )
+
+    def _store_guarded(self, addr, data, size, condition, endness):
+        """Apply ``size`` and ``condition`` the way ``DefaultMemory`` does, then store.
+
+        The data is brought into memory order (byte 0 at the MSB, as an
+        ``Iend_BE`` store lays it out) so truncation and the per-byte guard
+        are endness-free; :meth:`_store_bytes` writes the result.
+        """
         if endness is None:
             endness = "Iend_BE"
+        data = _to_bv(data, size, self._arch.bits)
+        if data.size() % 8:
+            from angr.errors import SimMemoryError
 
+            raise SimMemoryError("Attempting to store non-byte data to memory")
+        layout = data.reversed if endness == "Iend_LE" and data.size() > 8 else data
+        nbytes = layout.size() // 8
+        byte_guard = None
+        if isinstance(size, claripy.ast.Base) and not size.concrete:
+            byte_guard = self._symbolic_size_guard(size, nbytes)
+        elif size is not None:
+            n = size.concrete_value if isinstance(size, claripy.ast.Base) else int(size)
+            if n > nbytes:
+                from angr.errors import SimMemoryError
+
+                raise SimMemoryError("Not enough data for store")
+            if n == 0:
+                return
+            if n < nbytes:
+                layout = layout[layout.size() - 1 : layout.size() - n * 8]
+                nbytes = n
+        if condition is not None and not isinstance(condition, bool):
+            if condition.is_true():
+                condition = None
+            elif condition.is_false():
+                return
+        elif condition is not None:
+            if not condition:
+                return
+            condition = None
+        if condition is None and byte_guard is None:
+            self._store_bytes(addr, layout)
+            return
         if isinstance(addr, claripy.ast.Base) and not addr.concrete:
-            data_ast = self._data_to_ast(data, size, endness)
+            raise NotImplementedError(
+                "RustMemoryProxy.store: a guarded or symbolic-size store to a symbolic address "
+                f"({addr!r}) is not supported; the Rust Multi-cell store has no per-byte guard"
+            )
+        old = self._load(addr, nbytes, "Iend_BE")
+        if byte_guard is None:
+            layout = claripy.If(condition, layout, old)
+        else:
+            parts = []
+            for i, guard in enumerate(byte_guard):
+                if condition is not None:
+                    guard = claripy.And(condition, guard)
+                hi = layout.size() - 1 - i * 8
+                parts.append(claripy.If(guard, layout[hi : hi - 7], old[hi : hi - 7]))
+            layout = claripy.Concat(*parts) if len(parts) > 1 else parts[0]
+        self._store_bytes(addr, layout)
+
+    def _symbolic_size_guard(self, size, nbytes):
+        """Per-byte write guards for a store of ``nbytes`` bytes with a symbolic ``size``.
+
+        Byte ``i`` is written where ``i < size`` and ``size`` fits the data,
+        the sizes ``SizeConcretizationMixin`` keeps; a ``size`` that can
+        never fit raises its ``SimMemoryError``.
+        """
+        fits = claripy.ULE(size, claripy.BVV(nbytes, size.size()))
+        self._ensure_solver()
+        if not _with_extra_constraints(self._solver_ctx, self._solver_ctx.satisfiable, extra=[fits]):
+            from angr.errors import SimMemoryError
+
+            raise SimMemoryError("Not enough data for store")
+        return [claripy.And(fits, claripy.ULT(claripy.BVV(i, size.size()), size)) for i in range(nbytes)]
+
+    def _store_bytes(self, addr, data):
+        """Store ``data``, a BV in memory order (byte 0 at its MSB), at ``addr``."""
+        if isinstance(addr, claripy.ast.Base) and not addr.concrete:
+            data_ast = self._data_to_ast(data, None, "Iend_BE")
             ok = self._mgr.state_memory_store_symbolic_multi(self._write_state_id, addr, data_ast)
             if ok:
                 return
@@ -1942,10 +2195,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         if isinstance(data, claripy.ast.Base):
             width_bits = data.length if hasattr(data, "length") else data.size()
             if data.concrete:
-                value = data.concrete_value
-                nbytes = width_bits // 8
-                byteorder = "little" if endness == "Iend_LE" else "big"
-                payload = value.to_bytes(nbytes, byteorder)
+                payload = data.concrete_value.to_bytes(width_bits // 8, "big")
                 if self._python_mgr is not None:
                     self._python_mgr._stats_proxy_mem_concrete_writes += 1
                 self._store_concrete(addr, payload)
@@ -1956,34 +2206,10 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # ``_data_to_ast`` and the inverse of ``load`` (angr-c8mda).
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_mem_ast_writes += 1
-            self._store_ast(addr, self._data_to_ast(data, size, endness))
+            self._store_ast(addr, self._data_to_ast(data, None, "Iend_BE"))
             return
 
-        if isinstance(data, (bytes, bytearray)):
-            payload = bytes(data)
-            if endness == "Iend_LE":
-                payload = payload[::-1]
-            if self._python_mgr is not None:
-                self._python_mgr._stats_proxy_mem_concrete_writes += 1
-            self._store_concrete(addr, payload)
-            return
-
-        if isinstance(data, int):
-            # angr's SimMemory.store infers a bare ``int``'s width from the
-            # arch word size (e.g. asprintf writes a malloc'd pointer back via
-            # ``memory.store(strp, dst, endness=memory_endness)`` with no
-            # explicit size). Mirror that default so the proxy matches
-            # angr's own store.
-            if size is None:
-                size = self._arch.bytes
-            byteorder = "little" if endness == "Iend_LE" else "big"
-            payload = data.to_bytes(size, byteorder)
-            if self._python_mgr is not None:
-                self._python_mgr._stats_proxy_mem_concrete_writes += 1
-            self._store_concrete(addr, payload)
-            return
-
-        raise TypeError(f"memory store expects claripy AST, int, or bytes; got {type(data).__name__}")
+        raise TypeError(f"memory store expects a claripy BV; got {type(data).__name__}")
 
     def _store_concrete(self, addr, payload):
         """``set_state_memory_concrete`` with angr's unmapped-write semantics."""
