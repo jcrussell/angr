@@ -872,6 +872,33 @@ class TestRustMemoryProxyPluginGapStubs:
         result = cb_state.memory.permissions(fauxware_project.entry, 5)
         assert result.concrete_value == 7
 
+    def test_map_region_inside_rust_heap_is_accepted(self, fauxware_project):
+        """A bounced heap growth (``SimHeapBase._ensure_mapped``) maps inside
+        the Rust lazy heap region, which Rust already covers (angr-vmi2l.314)."""
+        from angr import claripy
+        from angr.rustylib.vex_engine import RustSimState
+
+        start, size = RustSimState.HEAP_REGION
+        cb_state = self._install_proxy(fauxware_project)
+        cb_state.memory.map_region(start, 0x1000, 3)
+        cb_state.memory.map_region(claripy.BVV(start + size - 0x1000, 64), claripy.BVV(0x1000, 64), 3)
+
+    def test_map_region_outside_rust_heap_raises(self, fauxware_project):
+        """Outside the heap region the mapping (e.g. a bounced anonymous
+        ``mmap``'s zero fill) would be dropped, so the stub fails loud rather
+        than letting later reads see the wrong bytes."""
+        from angr import claripy
+        from angr.rustylib.vex_engine import RustSimState
+
+        start, size = RustSimState.HEAP_REGION
+        cb_state = self._install_proxy(fauxware_project)
+        with pytest.raises(NotImplementedError, match="outside the Rust heap region"):
+            cb_state.memory.map_region(0x7F00_0000_0000, 0x1000, 3)
+        with pytest.raises(NotImplementedError, match="outside the Rust heap region"):
+            cb_state.memory.map_region(start + size - 0x1000, 0x2000, 3)
+        with pytest.raises(NotImplementedError, match="symbolic range"):
+            cb_state.memory.map_region(claripy.BVS("a", 64), 0x1000, 3)
+
     def test_merge_returns_false(self, fauxware_project):
         """``merge`` reports 'no merge happened' (False) — matches the
         register / solver proxy stubs."""

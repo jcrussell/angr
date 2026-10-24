@@ -18,6 +18,7 @@ Writes through a proxy (``proxy.regs.<name> = v``, ``proxy.memory.store``,
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import threading
 
@@ -264,6 +265,14 @@ def _resolve_none_extremum(kind, expr, constraints, extra_constraints, signed, s
         solver.add(cons)
     return solver.min(expr, signed=signed) if kind == "min" else solver.max(expr, signed=signed)
 
+
+
+@functools.cache
+def _heap_region() -> tuple[int, int]:
+    """``(start, size)`` of the Rust state's lazy heap region (``RustSimState.HEAP_REGION``)."""
+    from angr.rustylib.vex_engine import RustSimState  # pylint: disable=import-outside-toplevel
+
+    return RustSimState.HEAP_REGION
 
 class _SolutionCountMixin:
     """Shared solution-count wrappers for the two solver proxies.
@@ -1462,19 +1471,34 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         return claripy.BVV(7, 3)
 
     def map_region(self, addr, length, permissions, **_kwargs):
-        """``state.memory.map_region(addr, length, permissions)`` stub.
+        """``state.memory.map_region(addr, length, permissions)`` on a callback state.
 
-        Accepted without an FFI call. The caller that reaches it is a bounced
-        SimProcedure growing the heap plugin's mapped extent
-        (``SimHeapBase._ensure_mapped``); Rust already covers the whole heap
-        range with a lazy region (``RustSimState::new_state_memory``), and
-        :meth:`store` maps on write through
-        ``set_state_memory_concrete_automap``, so the bytes the caller then
-        writes land either way. As with :meth:`permissions`, page permissions
-        stay Rust's concern. Without this the bounce raised AttributeError and
-        the state went to ``errored`` (angr-vmi2l.314).
+        Accepted without an FFI call only inside the heap range every Rust
+        state registers as a lazy region (``RustSimState.HEAP_REGION``): there
+        :meth:`store` maps pages on write through
+        ``set_state_memory_concrete_automap``, and unwritten pages read with
+        the same symbolic fill a Python ``map_region`` would give. The caller
+        that reaches it is a bounced SimProcedure growing the heap plugin's
+        mapped extent (``SimHeapBase._ensure_mapped``) (angr-vmi2l.314).
+
+        Any other range raises: a bounced ``mmap`` / ``VirtualAlloc`` /
+        ``allocate`` asks for a mapping (zero-filled, for ``init_zero``) that
+        Rust would not make, and dropping it would let later reads see the
+        wrong bytes.
         """
-        del addr, length, permissions
+        del permissions
+        start, size = _heap_region()
+        try:
+            lo = int(addr.concrete_value if hasattr(addr, "concrete_value") else addr)
+            hi = lo + int(length.concrete_value if hasattr(length, "concrete_value") else length)
+        except (TypeError, AttributeError) as e:
+            raise NotImplementedError(f"RustMemoryProxy.map_region: symbolic range ({addr!r}, {length!r})") from e
+        if start <= lo and hi <= start + size:
+            return
+        raise NotImplementedError(
+            f"RustMemoryProxy.map_region({lo:#x}, {hi - lo:#x}) is outside the Rust heap region "
+            f"[{start:#x}, {start + size:#x}); the mapping cannot be applied to the Rust state"
+        )
 
     # merge / widen: see _ProxyStatePluginMixin.
 

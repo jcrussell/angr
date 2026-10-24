@@ -27,6 +27,19 @@ impl PyRustSimState {
         Ok(PyRustSimState { inner })
     }
 
+    /// `(start, size)` of the heap range every state registers as a lazy
+    /// region (`RustSimState::new_state_memory`). Python reads it to tell a
+    /// `map_region` that Rust already covers from one it would drop
+    /// (`RustMemoryProxy.map_region`).
+    #[classattr]
+    #[allow(non_snake_case, reason = "Python class constant")]
+    fn HEAP_REGION() -> (u64, u64) {
+        (
+            RustSimState::HEAP_REGION_START,
+            RustSimState::HEAP_REGION_SIZE,
+        )
+    }
+
     /// Get the state ID.
     #[getter]
     pub fn state_id(&self) -> u64 {

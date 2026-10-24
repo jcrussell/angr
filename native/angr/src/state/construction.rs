@@ -31,8 +31,8 @@ impl RustSimState {
     /// Unwritten heap pages stay unmapped, so reads of uninitialized heap still
     /// surface `Unmapped` and fall back to Python — preserving angr's
     /// symbolic-fill semantics rather than reading a zero page.
-    const HEAP_REGION_START: u64 = 0xC000_0000;
-    const HEAP_REGION_SIZE: u64 = 0x0100_0000; // [0xC0000000, 0xC1000000) == [heap_base, mmap_base)
+    pub(crate) const HEAP_REGION_START: u64 = 0xC000_0000;
+    pub(crate) const HEAP_REGION_SIZE: u64 = 0x0100_0000; // [0xC0000000, 0xC1000000) == [heap_base, mmap_base)
 
     /// Build a fresh `SymbolicMemory` with the heap registered as a lazy region.
     /// Shared by every `RustSimState` constructor so the heap fast path is
