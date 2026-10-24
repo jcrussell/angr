@@ -10,8 +10,10 @@
 //!
 //! The `inspect_events!` table below declares (variant, bit, event name)
 //! once; [`InspectBit`] is generated from it and is the only type
-//! [`PythonCallbacks::inspect_event_enabled`] accepts, so a dispatch site
-//! now names its event instead of its bit.
+//! [`EngineHost::inspect_event_enabled`] accepts, so a dispatch site
+//! now names its event instead of its bit. It lives in the interpreter, next
+//! to [`EngineHost`], because the interpreter is what gates on it; the PyO3
+//! shell's `PythonCallbacks` holds the mask (angr-mx00p.75).
 //!
 //! The bit numbers mirror the Python-side `_INSPECT_EVENT_SPECS` table in
 //! `angr/exploration/rust_state_proxy.py`, which is what actually builds the
@@ -21,7 +23,8 @@
 //! `_INSPECT_EVENT_SPECS`). The first six bits additionally coincide with
 //! `crate::state::InspectEvent`, which `inspect_bits_tests` asserts.
 //!
-//! [`PythonCallbacks::inspect_event_enabled`]: super::PythonCallbacks::inspect_event_enabled
+//! [`EngineHost`]: super::EngineHost
+//! [`EngineHost::inspect_event_enabled`]: super::EngineHost::inspect_event_enabled
 
 /// Generate [`InspectBit`] from a `(variant, bit, event name)` table.
 ///

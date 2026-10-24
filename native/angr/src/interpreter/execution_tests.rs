@@ -2,7 +2,7 @@
 // Split out per rust-module-root-split-recipe; included via #[cfg(test)] #[path].
 use super::*;
 use crate::callbacks::PythonCallbacks;
-use crate::callbacks::{ErrorRoute, RunErrorKind};
+use crate::interpreter::{ErrorRoute, RunErrorKind};
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
     VEXInterpreter::new(VexArch::AMD64, ctx)

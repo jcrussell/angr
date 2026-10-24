@@ -37,7 +37,7 @@ fn run_mips_movd_lo_copy(is_le: bool) -> u64 {
     let mut interp = VEXInterpreter::with_config_endian(
         VexArch::MIPS32,
         &ctx,
-        crate::callbacks::ExecutionConfig::default(),
+        crate::interpreter::ExecutionConfig::default(),
         is_le,
     );
     let f0 = interp.registers.arch().register_offset("f0").unwrap();

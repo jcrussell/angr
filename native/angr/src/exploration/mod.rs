@@ -36,9 +36,10 @@ use crate::arch::{
     AddrOrSymbolic, ExtractionError, MAX_EXTRACT_ARGS, ReturnExtension, arch_from_name,
     default_cc_for_arch,
 };
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
+use crate::callbacks::PythonCallbacks;
 use crate::claripy_bridge::{ast_export_err, ast_import_err, claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter::{DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON};
+use crate::interpreter::{DeferredFork, ExecutionConfig, RunResult};
 use crate::memory::Permission;
 use crate::procedures::{NativeProcedureRegistry, ProcOutcome, ProcedureError};
 use crate::solver::RustSolverContext;

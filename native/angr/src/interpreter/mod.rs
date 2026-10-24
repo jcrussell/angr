@@ -18,6 +18,13 @@
 //! [`CbExecutionError`]/[`FallbackStrategy`] taxonomy plus its reason markers
 //! in [`execution_error`], and the [`BlockResult`]/`StmtResult`/
 //! `ConcretizedJump` control-flow results in [`block_result`].
+//!
+//! **Host boundary (angr-mx00p.75):** [`host`] holds the [`EngineHost`]
+//! trait the interpreter calls out through, and the value types that cross it
+//! sit beside it: [`InspectBit`] in [`inspect_bits`], [`RunResult`] /
+//! [`RunErrorKind`] / [`ErrorRoute`] in [`run_result`], and
+//! [`ExecutionConfig`] / [`DeferredFork`] in [`config`]. None of them holds a
+//! Python type; the PyO3 shell implements the trait in `callbacks/`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
@@ -31,7 +38,6 @@ use crate::arch::{
     AddrOrSymbolic, RegisterFile, arch_from_vex, calling_conventions::CallingConvention,
     default_cc_for_arch,
 };
-use crate::callbacks::{DeferredFork, ExecutionConfig, InspectBit, LiftBlockOutcome, RunResult};
 use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{
@@ -111,6 +117,7 @@ pub(crate) mod bv_utils;
 mod code_invalidation;
 mod concrete_memory;
 mod concretize_cache;
+mod config;
 mod execution;
 mod execution_error;
 mod execution_stats;
@@ -121,8 +128,10 @@ mod expressions_inspect;
 mod expressions_loads;
 mod fork_state;
 mod host;
+mod inspect_bits;
 mod pending_store;
 mod prefetch;
+mod run_result;
 mod simprocedures;
 mod statements;
 mod statements_cas;
@@ -143,12 +152,15 @@ use pending_store::PendingStoreBuffer;
 
 pub(crate) use block_result::BlockResult;
 pub(crate) use concrete_memory::ConcreteMemoryRegion;
+pub(crate) use config::{DeferredFork, ExecutionConfig};
 pub(crate) use execution_error::{
     CbExecutionError, DCAS_UNSUPPORTED_REASON, DISPATCH_FABRICATE_REASON, FallbackStrategy,
     VECRET_GSPTR_REASON,
 };
 pub(crate) use execution_stats::ExecutionStats;
-pub(crate) use host::{EngineHost, HostLoad, HostPage};
+pub(crate) use host::{EngineHost, HostLoad, HostPage, LiftBlockOutcome};
+pub(crate) use inspect_bits::InspectBit;
+pub(crate) use run_result::{ErrorRoute, RunErrorKind, RunResult};
 pub(crate) use simprocedures::SimProcedureInfo;
 
 /// Re-exported from `state`, which owns it: `RustSimState::fork_from_snapshot`

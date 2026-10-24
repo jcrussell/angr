@@ -436,7 +436,7 @@ fn twin_resume_fork_keeps_the_frame_the_main_successor_popped() {
             COND_ID,
             RustBV::symbolic(&state.solver().borrow(), "subcall_guard", 1),
         );
-        let deferred = vec![crate::callbacks::DeferredFork {
+        let deferred = vec![crate::interpreter::DeferredFork {
             branch_addr: SubcallTestProc::GUEST_TARGET + 4,
             path_taken: true,
             unexplored_target: unexplored,

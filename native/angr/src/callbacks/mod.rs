@@ -40,7 +40,7 @@
 //!    `drop_terminal_states` MUST be `False`. This is enforced in
 //!    `angr.exploration.RustExplorationManager` (Python) and is invisible
 //!    to Rust, but the predicate callback paths in this module
-//!    ([`RunResult::SymbolicBranch`] forks, and find/avoid predicate
+//!    ([`RunResult::SymbolicBranch`](crate::interpreter::RunResult::SymbolicBranch) forks, and find/avoid predicate
 //!    dispatch in `exploration/run_loop.rs`) assume the Python side
 //!    keeps stdout-carrying exit() states alive until predicate
 //!    evaluation runs. Examples like `sym-write` produce zero found
@@ -93,12 +93,10 @@
 //! submodules are all private, with the few cross-crate names re-exported
 //! below.
 //!
-//! - [`config`] — [`ExecutionConfig`] and [`DeferredFork`], the non-callback
-//!   knobs the engine reads per step.
+//! - [`config`] — [`PyExecutionConfig`], the `ExecutionConfig` Python class
+//!   over the interpreter's [`ExecutionConfig`](crate::interpreter::ExecutionConfig).
 //! - [`dispatch`] — the `call_*` methods that hard-error when their slot is
 //!   unset (module invariant 1 above).
-//! - [`events`] — [`RunResult`] / [`RunErrorKind`] / [`ErrorRoute`], the
-//!   outcome types a dispatch hands back.
 //! - [`inspect`] — the `call_inspect_*` breakpoint dispatches (`mem_read` /
 //!   `mem_write` / `reg_read` / `reg_write` / `instruction` / `irsb` / `exit` /
 //!   `call` / `return` / `tmp_read` / `tmp_write` / `statement` / `expr` /
@@ -106,14 +104,19 @@
 //!   `vex_lift`), whose unset arm is a documented no-op. Each one's body and
 //!   the slot field it reads are derived from a single ident by
 //!   [`angr_macros::inspect_dispatch`].
-//! - [`inspect_bits`] — [`InspectBit`], the atomic enabled-event bitmask that
-//!   normally keeps the engine from reaching an `inspect` slot at all.
 //! - [`inspect_test_entries`] — Python-visible test entry points onto that
 //!   dispatch family; no engine path reaches them.
 //! - `test_support` (`#[cfg(test)]`) — the shared `defs`/`obj`/`recorder`
 //!   plumbing both `dispatch_tests` and `inspect_tests` build their Python
 //!   snippets with. Not linked: a cfg(test) module does not exist in a
 //!   `cargo doc` build.
+//!
+//! The engine-facing types these callbacks serve (`RunResult`,
+//! `RunErrorKind`, `ErrorRoute`, `DeferredFork`, `ExecutionConfig`,
+//! `InspectBit`, `LiftBlockOutcome`) live in the interpreter, next to the
+//! [`EngineHost`](crate::interpreter::EngineHost) trait `PythonCallbacks`
+//! implements (`host_impl`), so the interpreter imports nothing from here
+//! (angr-mx00p.75).
 //!
 //! This file keeps the [`PythonCallbacks`] struct itself: the slot list
 //! (`with_callback_fields!`), the generated setters, the GC
@@ -138,10 +141,8 @@ pub(crate) type BatchLoadEntry = (Vec<u8>, bool, Option<Py<PyAny>>);
 
 mod config;
 mod dispatch;
-mod events;
 mod host_impl;
 mod inspect;
-mod inspect_bits;
 mod inspect_test_entries;
 pub(crate) mod pyvex_reader;
 
@@ -150,11 +151,8 @@ pub(crate) mod pyvex_reader;
 // `inspect_tests`, because those two sit under different parents.
 test_submod!(test_support);
 
-pub(crate) use config::{DeferredFork, ExecutionConfig};
-pub(crate) use dispatch::LiftBlockOutcome;
-pub(crate) use events::{ErrorRoute, RunErrorKind, RunResult};
+pub(crate) use config::PyExecutionConfig;
 pub(crate) use inspect::note_inspect_error;
-pub(crate) use inspect_bits::InspectBit;
 
 /// Bind a callback slot, or bail with the standard
 /// `"<slot> callback not set"` [`pyo3::exceptions::PyRuntimeError`].
@@ -587,7 +585,7 @@ impl PythonCallbacks {
     ///
     /// That layout is a reader's summary, not the source of truth — the
     /// canonical table is the `inspect_events!` invocation defining
-    /// `InspectBit` in `callbacks/inspect_bits.rs`; extend this comment
+    /// `InspectBit` in `interpreter/inspect_bits.rs`; extend this comment
     /// whenever a row is added there.
     #[pyo3(name = "set_inspect_enabled")]
     pub fn py_set_inspect_enabled(&self, mask: u32) {

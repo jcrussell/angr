@@ -29,7 +29,7 @@
 
 use super::*;
 
-use crate::callbacks::{DeferredFork, RunErrorKind, RunResult};
+use crate::interpreter::{DeferredFork, RunErrorKind, RunResult};
 use crate::exploration::RustExplorationManager;
 use crate::procedures::NativeProcedureRegistry;
 use crate::stash::STASH_ACTIVE;

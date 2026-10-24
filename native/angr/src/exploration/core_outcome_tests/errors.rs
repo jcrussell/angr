@@ -94,7 +94,7 @@ fn error_fatal_kind_routes_to_errored() {
 
 /// angr-91vj9.9: a `Fatal` reported at pc 0 is deadended, not errored —
 /// `ErrorRoute::NullAddressDeadend`. Pins the routing behaviour behind the
-/// named variant (the classifier itself is unit-tested in `callbacks/events.rs`).
+/// named variant (the classifier itself is unit-tested in `interpreter/run_result_tests.rs`).
 #[test]
 fn error_fatal_at_null_addr_routes_to_deadended() {
     pyo3::Python::initialize();

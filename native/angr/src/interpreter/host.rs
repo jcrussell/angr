@@ -9,9 +9,24 @@
 //!
 //! Errors are the host's message as a `String`: the interpreter only wraps
 //! them in `CbExecutionError::Callback`, never inspects them.
+//!
+//! The value types on the two sides of this boundary live in the interpreter
+//! too: [`LiftBlockOutcome`] here, `InspectBit` in `inspect_bits`, the
+//! run-loop results in `run_result` and the execution knobs in `config`.
 
-use crate::callbacks::{InspectBit, LiftBlockOutcome};
+use super::InspectBit;
 use crate::symbolic::{RustBV, SymContext};
+
+/// What the host's lift produced ([`EngineHost::lift_block`]).
+#[derive(Debug)]
+pub(crate) enum LiftBlockOutcome {
+    /// No lifter can produce a block here (no bytes, a lifter error).
+    Unliftable,
+    /// The lifted block.
+    Lifted(crate::vex::ir::IRSB),
+    /// The host's lifter returned something it could not read as a block.
+    Malformed(String),
+}
 
 /// One load the host served.
 pub(crate) struct HostLoad {

@@ -423,7 +423,7 @@ fn resume_after_error_deferred_fork_not_dropped() {
             jumpkind: None,
             // condition_id 999 absent from stored_conditions -> only the
             // conservative arm keeps this fork alive.
-            deferred_forks: vec![crate::callbacks::DeferredFork {
+            deferred_forks: vec![crate::interpreter::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
                 unexplored_target: 0x40_2000,
@@ -483,7 +483,7 @@ fn find_predicate_pending_with_deferred_fork_trips_canary() {
             pre_callback_snapshot: None,
             reason: CallbackReason::FindPredicate { addr: 0x40_1000 },
             jumpkind: None,
-            deferred_forks: vec![crate::callbacks::DeferredFork {
+            deferred_forks: vec![crate::interpreter::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
                 unexplored_target: 0x40_2000,
@@ -516,7 +516,7 @@ fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
             pre_callback_snapshot: None,
             reason: CallbackReason::AvoidPredicate { addr: 0x40_1000 },
             jumpkind: None,
-            deferred_forks: vec![crate::callbacks::DeferredFork {
+            deferred_forks: vec![crate::interpreter::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
                 unexplored_target: 0x40_2000,
@@ -556,7 +556,7 @@ fn deadend_pending_callback_conservative_fork_not_dropped() {
             jumpkind: None,
             // condition_id 999 is absent from stored_conditions, so the
             // conservative arm is the only path that keeps this fork alive.
-            deferred_forks: vec![crate::callbacks::DeferredFork {
+            deferred_forks: vec![crate::interpreter::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
                 unexplored_target: 0x40_2000,
@@ -639,7 +639,7 @@ fn resume_symbolic_branch_deferred_fork_uses_pre_callback_snapshot() {
                 false_target: 0x40_1200,
             },
             jumpkind: None,
-            deferred_forks: vec![crate::callbacks::DeferredFork {
+            deferred_forks: vec![crate::interpreter::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true, // unexplored side is x != 0
                 unexplored_target: 0x40_2000,

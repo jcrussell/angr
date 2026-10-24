@@ -193,7 +193,7 @@ impl<'a> VEXInterpreter<'a> {
                             addr = irsb.addr
                         ),
                         addr: irsb.addr,
-                        kind: crate::callbacks::RunErrorKind::Fatal,
+                        kind: crate::interpreter::RunErrorKind::Fatal,
                     },
                     blocks_executed,
                     forks,
@@ -240,7 +240,7 @@ impl<'a> VEXInterpreter<'a> {
                                             jumpkind.ijk_name()
                                         ),
                                         addr: next_addr,
-                                        kind: crate::callbacks::RunErrorKind::Fatal,
+                                        kind: crate::interpreter::RunErrorKind::Fatal,
                                     },
                                     blocks_executed,
                                     forks,

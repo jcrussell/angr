@@ -21,6 +21,7 @@
 use angr_macros::inspect_dispatch;
 
 use super::*;
+use crate::interpreter::InspectBit;
 
 /// Materialize an optional claripy AST argument for a breakpoint call.
 ///

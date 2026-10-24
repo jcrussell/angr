@@ -285,7 +285,7 @@ fn eval_next_addr_multivalued_returns_unsupported() {
 fn exit_nondeferred_symbolic_guard_uses_eval_next_addr_for_fallthrough() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
-    let cfg = crate::callbacks::ExecutionConfig {
+    let cfg = crate::interpreter::ExecutionConfig {
         use_deferred_forks: false,
         ..Default::default()
     };

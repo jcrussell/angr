@@ -28,6 +28,7 @@
 
 use super::*;
 use crate::callbacks::test_support::{defs, obj, recorder};
+use crate::interpreter::InspectBit;
 
 /// The enabled-mask is the O(1) gate in front of every inspect crossing; an
 /// off-by-one in the shift silently disables (or worse, spuriously enables) a

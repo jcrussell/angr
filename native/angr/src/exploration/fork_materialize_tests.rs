@@ -19,8 +19,8 @@ fn state_with_x_eq_zero() -> (RustSimState, RustBV) {
     (state, cond)
 }
 
-fn deferred_fork(condition_id: u64, path_taken: bool) -> crate::callbacks::DeferredFork {
-    crate::callbacks::DeferredFork {
+fn deferred_fork(condition_id: u64, path_taken: bool) -> crate::interpreter::DeferredFork {
+    crate::interpreter::DeferredFork {
         branch_addr: 0x40_0500,
         path_taken,
         unexplored_target: 0x40_2000,

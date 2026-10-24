@@ -17,6 +17,7 @@
 
 use super::*;
 use crate::callbacks::test_support::{defs, obj, recorder};
+use crate::interpreter::LiftBlockOutcome;
 use pyo3::types::PyList;
 
 /// Every dispatch callback with no legitimate degraded mode must surface a

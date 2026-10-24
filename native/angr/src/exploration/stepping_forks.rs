@@ -93,7 +93,7 @@ impl RustExplorationManager {
         };
         // Fork = bit 4 (reserved slot mirrored in
         // `_INSPECT_EVENT_SPECS["fork"]`).
-        if !cb.inspect_event_enabled(crate::callbacks::InspectBit::Fork) {
+        if !cb.inspect_event_enabled(crate::interpreter::InspectBit::Fork) {
             return;
         }
         // call_inspect_fork self-attaches the GIL (angr-vh834 Phase 4), so no

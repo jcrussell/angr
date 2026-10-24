@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{ExecutionConfig, PythonCallbacks};
+use crate::callbacks::PythonCallbacks;
 use crate::errors::RustExecError;
 use crate::interpreter::CbExecutionError;
 use crate::solver::RustSolverContext;
@@ -109,7 +109,7 @@ pub(crate) fn execute_irsb_for_test(
     let mut interp = crate::interpreter::VEXInterpreter::with_config_endian(
         vex_arch,
         &ctx,
-        crate::callbacks::ExecutionConfig::default(),
+        crate::interpreter::ExecutionConfig::default(),
         little_endian,
     );
 
@@ -458,7 +458,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PythonCallbacks>()?;
     m.add_class::<RustSolverContext>()?;
     // Deferred fork types (`DeferredFork` itself is Rust-internal) (angr-03vl4.6)
-    m.add_class::<ExecutionConfig>()?;
+    m.add_class::<crate::callbacks::PyExecutionConfig>()?;
     // Rust-first state
     m.add_class::<crate::state_bridge::PyRustSimState>()?;
     // State snapshot for exploration export

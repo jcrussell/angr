@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::claripy_bridge::{claripy_module, claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
-use crate::interpreter::{EngineHost, HostLoad, HostPage};
+use crate::interpreter::{EngineHost, HostLoad, HostPage, InspectBit, LiftBlockOutcome};
 use crate::symbolic::{RustBV, SymContext};
 
 /// `value` as a claripy AST, or `None` when the export fails (the breakpoint

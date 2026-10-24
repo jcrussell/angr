@@ -8,8 +8,8 @@ use crate::exploration::test_support::mgr_and_state;
 use pyo3::types::PyDict;
 use rustc_hash::FxHashMap;
 
-fn deferred_fork() -> crate::callbacks::DeferredFork {
-    crate::callbacks::DeferredFork {
+fn deferred_fork() -> crate::interpreter::DeferredFork {
+    crate::interpreter::DeferredFork {
         branch_addr: 0x40_0500,
         path_taken: true,
         unexplored_target: 0x40_2000,

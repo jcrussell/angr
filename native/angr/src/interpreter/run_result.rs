@@ -1,7 +1,8 @@
 //! Run-loop wire types: [`RunResult`] and the [`RunErrorKind`] /
 //! [`ErrorRoute`] pair that classifies and routes its error variant.
 //!
-//! Split out of `callbacks.rs` (god-module decomposition, angr-zel8z.2).
+//! Split out of `callbacks.rs` (god-module decomposition, angr-zel8z.2) and
+//! moved next to the interpreter that produces them (angr-mx00p.75).
 
 use crate::vex::ir::JumpKind;
 
@@ -102,7 +103,7 @@ pub(crate) enum RunResult {
     /// Never constructed in production: the interpreter's own
     /// `BlockResult::BlockEnd` is consumed inside `run_until_event`, which
     /// loops to the next block instead of surfacing a `RunResult`. Only
-    /// `callbacks_tests` / `events_tests` build it (angr-9ke6b.214).
+    /// `callbacks_tests` / `run_result_tests` build it (angr-9ke6b.214).
     #[cfg_attr(not(test), allow(dead_code))]
     BlockEnd {
         next_addr: u64,
@@ -175,4 +176,4 @@ pub(crate) enum RunResult {
     },
 }
 
-test_submod!("events_tests.rs" => events_tests);
+test_submod!("run_result_tests.rs" => run_result_tests);

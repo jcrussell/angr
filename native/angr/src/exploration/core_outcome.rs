@@ -56,8 +56,9 @@ use std::time::Instant;
 
 use rustc_hash::FxHashMap;
 
-use crate::callbacks::{DeferredFork, ErrorRoute, PythonCallbacks, RunResult};
+use crate::callbacks::PythonCallbacks;
 use crate::interpreter::{BranchSnapshot, ExecutionStats};
+use crate::interpreter::{DeferredFork, ErrorRoute, RunResult};
 use crate::procedures::{NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome};
 use crate::stash::STASH_DEADENDED;
 use crate::state::RustSimState;

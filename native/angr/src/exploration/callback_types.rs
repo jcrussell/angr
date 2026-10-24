@@ -4,7 +4,7 @@
 //! *why* the Rust loop handed control back to Python; `PendingCallback` holds
 //! the state (and deferred-fork bookkeeping) parked while that callback runs.
 
-use crate::callbacks::DeferredFork;
+use crate::interpreter::DeferredFork;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::vex::ir::JumpKind;
@@ -71,7 +71,7 @@ pub(crate) struct SimProcCall {
     pub(crate) return_addr: u64,
 }
 
-/// A syscall exit: the payload of [`crate::callbacks::RunResult::Syscall`],
+/// A syscall exit: the payload of [`crate::interpreter::RunResult::Syscall`],
 /// bundled for `handle_syscall_core` like [`SimProcCall`].
 pub(crate) struct SyscallExit {
     /// The syscall number, `None` when its register is symbolic.

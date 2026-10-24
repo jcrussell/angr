@@ -36,7 +36,7 @@ fn add_fork_guard_constraint(
     is_true: bool,
 ) {
     let cb =
-        callbacks.filter(|c| c.inspect_event_enabled(crate::callbacks::InspectBit::Constraints));
+        callbacks.filter(|c| c.inspect_event_enabled(crate::interpreter::InspectBit::Constraints));
     let state_id = state.state_id() as i64;
     if let Some(c) = cb
         && let Err(e) = c.call_inspect_constraints(state_id, "before", guard, is_true)

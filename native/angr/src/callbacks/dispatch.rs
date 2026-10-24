@@ -30,6 +30,7 @@
 use super::*;
 // Shared with the interpreter store paths — the byte-identical private copy
 // this file used to carry inherited every bug fixed there (angr-03vl4.4).
+use crate::interpreter::LiftBlockOutcome;
 use crate::interpreter::bv_utils::bv_to_bytes;
 
 /// Decode a `(bytes, is_symbolic, symbolic_ast?)` tuple returned by a Python
@@ -260,17 +261,6 @@ fn page_set_contains(
             true
         }
     }
-}
-
-/// What the Python `lift_block` callback produced.
-#[derive(Debug)]
-pub(crate) enum LiftBlockOutcome {
-    /// `None`: no lifter can produce a block here (no bytes, a pyvex error).
-    Unliftable,
-    /// The pyvex `IRSB`, read into Rust.
-    Lifted(crate::vex::ir::IRSB),
-    /// An object `pyvex_reader::read_irsb` could not read.
-    Malformed(String),
 }
 
 impl PythonCallbacks {

@@ -12,7 +12,7 @@
 //! leaves the matching counter permanently 0 — which is exactly what happened
 //! to `DCAS_UNSUPPORTED_REASON` (angr-fs8kb.59).
 
-use crate::callbacks::RunErrorKind;
+use crate::interpreter::RunErrorKind;
 use crate::memory::MemoryError;
 use crate::vex::ops::OpError;
 
