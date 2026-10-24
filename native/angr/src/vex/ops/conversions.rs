@@ -286,10 +286,10 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f32::from_bits(v as u32);
-            let rounded = apply_rounding(f, m as u32);
-            // Normalize -0.0 to +0.0 to match Python VEX behavior
-            let normalized = if rounded == 0.0 { 0.0f32 } else { rounded };
-            let result = normalized.to_bits();
+            // IEEE roundToIntegral keeps the sign of zero, as do the
+            // symbolic branch (`FloatOpKind::RoundToInt`) and the Python
+            // engine's `fpRoundToIntegral` (angr-vmi2l.57).
+            let result = apply_rounding(f, m as u32).to_bits();
             return Ok(RustBV::concrete(result as u128, 32));
         }
         Ok(build_float_expr(
@@ -308,10 +308,10 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f64::from_bits(v as u64);
-            let rounded = apply_rounding(f, m as u32);
-            // Normalize -0.0 to +0.0 to match Python VEX behavior
-            let normalized = if rounded == 0.0 { 0.0f64 } else { rounded };
-            let result = normalized.to_bits();
+            // IEEE roundToIntegral keeps the sign of zero, as do the
+            // symbolic branch (`FloatOpKind::RoundToInt`) and the Python
+            // engine's `fpRoundToIntegral` (angr-vmi2l.57).
+            let result = apply_rounding(f, m as u32).to_bits();
             return Ok(RustBV::concrete(result as u128, 64));
         }
         Ok(build_float_expr(

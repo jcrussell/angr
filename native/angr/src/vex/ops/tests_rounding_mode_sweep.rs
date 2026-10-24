@@ -131,6 +131,11 @@ struct RmOpEntry {
     /// differently under different VEX modes, so the equivalence check below
     /// is non-vacuous.
     cases: Vec<Vec<Operand>>,
+    /// Operand tuples every mode rounds identically (the sign of zero:
+    /// `RoundF{32,64}toInt(-0.0)` is `-0.0` in every mode). Section 1 checks
+    /// them for concrete/symbolic agreement but exempts them from the
+    /// mode-sensitivity check, which they would fail by construction.
+    mode_invariant_cases: Vec<Vec<Operand>>,
     call: Box<RmDispatchFn>,
     /// The `IROp` this entry dispatches, for sections 2/3's interpreter- and
     /// rm-less-sibling calls, which need the concrete `IROp` value rather
@@ -166,6 +171,7 @@ fn family_a(name: &'static str, op: IROp, src_bits: u32, values: Vec<u128>) -> R
     RmOpEntry {
         name,
         cases: values.into_iter().map(|v| vec![(v, src_bits)]).collect(),
+        mode_invariant_cases: Vec::new(),
         call: Box::new(move |rm, operands, ctx| VEXOps::binop(op, rm, operands[0].clone(), ctx)),
         op,
         kind: RmDispatchKind::FamilyA,
@@ -178,6 +184,7 @@ fn binop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOp
     RmOpEntry {
         name,
         cases: vec![case],
+        mode_invariant_cases: Vec::new(),
         call: Box::new(move |rm, operands, ctx| {
             VEXOps::binop_with_rm(op, rm, operands[0].clone(), operands[1].clone(), ctx)
         }),
@@ -191,6 +198,7 @@ fn unop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOpE
     RmOpEntry {
         name,
         cases: vec![case],
+        mode_invariant_cases: Vec::new(),
         call: Box::new(move |rm, operands, ctx| {
             VEXOps::unop_with_rm(op, rm, operands[0].clone(), ctx)
         }),
@@ -204,6 +212,7 @@ fn qop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOpEn
     RmOpEntry {
         name,
         cases: vec![case],
+        mode_invariant_cases: Vec::new(),
         call: Box::new(move |rm, operands, ctx| {
             VEXOps::qop_with_rm(
                 op,
@@ -243,18 +252,27 @@ fn all_rm_ops() -> Vec<RmOpEntry> {
         // operand is the rm). Ties (±2.5) reused from
         // tests_conversions.rs's `test_round_f32_to_int_symbolic_rm` /
         // `test_round_f64_to_int_symbolic_rm`.
-        family_a(
-            "RoundF32toInt",
-            IROp::RoundF32toInt,
-            32,
-            vec![f32_bits(2.5), f32_bits(-2.5)],
-        ),
-        family_a(
-            "RoundF64toInt",
-            IROp::RoundF64toInt,
-            64,
-            vec![f64_bits(2.5), f64_bits(-2.5)],
-        ),
+        // -0.3 rounds to -0.0 under every mode but RD: IEEE roundToIntegral
+        // keeps the sign of zero, which the concrete path once dropped
+        // (angr-vmi2l.57). -0.0 itself is mode-invariant.
+        RmOpEntry {
+            mode_invariant_cases: vec![vec![(f32_bits(-0.0), 32)]],
+            ..family_a(
+                "RoundF32toInt",
+                IROp::RoundF32toInt,
+                32,
+                vec![f32_bits(2.5), f32_bits(-2.5), f32_bits(-0.3)],
+            )
+        },
+        RmOpEntry {
+            mode_invariant_cases: vec![vec![(f64_bits(-0.0), 64)]],
+            ..family_a(
+                "RoundF64toInt",
+                IROp::RoundF64toInt,
+                64,
+                vec![f64_bits(2.5), f64_bits(-2.5), f64_bits(-0.3)],
+            )
+        },
         family_a(
             "F64toF32",
             IROp::F64toF32,
@@ -405,7 +423,9 @@ fn all_rm_ops() -> Vec<RmOpEntry> {
 #[test]
 fn test_rounding_mode_concrete_symbolic_equivalence() {
     for entry in all_rm_ops() {
-        for case in &entry.cases {
+        let sensitive = entry.cases.iter().map(|case| (case, true));
+        let invariant = entry.mode_invariant_cases.iter().map(|case| (case, false));
+        for (case, must_be_mode_sensitive) in sensitive.chain(invariant) {
             let mut mode_results = Vec::with_capacity(VEX_ROUNDING_MODES.len());
 
             for &rm in &VEX_ROUNDING_MODES {
@@ -481,7 +501,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
             // *_rm implementation that silently ignores rm and always
             // computes RNE.
             assert!(
-                mode_results.iter().any(|&r| r != mode_results[0]),
+                !must_be_mode_sensitive || mode_results.iter().any(|&r| r != mode_results[0]),
                 "{}: case {case:?} is not mode-sensitive — all 4 VEX rounding modes gave \
                  {:#x}; pick a different boundary operand",
                 entry.name,
