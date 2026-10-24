@@ -3,8 +3,6 @@
 //! statement-level coverage lives in the per-submodule `*_tests.rs` siblings.
 
 use super::*;
-use pyo3::prelude::*;
-use crate::callbacks::PythonCallbacks;
 
 #[test]
 fn test_interpreter_creation() {
@@ -65,13 +63,10 @@ fn run_mips_movd_lo_copy(is_le: bool) -> u64 {
         data: IRExpr::RdTmp(0),
     });
 
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        interp
-            .execute_block(&callbacks, &irsb)
-            .expect("mov.d block executes");
-    });
+    let callbacks = TestHost::default();
+    interp
+        .execute_block(&callbacks, &irsb)
+        .expect("mov.d block executes");
     interp.registers.get_reg("f0", &ctx).unwrap().as_u64().unwrap()
 }
 

@@ -14,8 +14,6 @@
 //! `statements_cas_tests.rs`'s `cas_stmt`.
 
 use super::*;
-use pyo3::prelude::*;
-use crate::callbacks::PythonCallbacks;
 use crate::vex::ir::IRType;
 
 pub(super) fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
@@ -35,12 +33,11 @@ pub(super) fn make_irsb_with_temps(addr: u64, temp_types: &[IRType]) -> IRSB {
     irsb
 }
 
-/// Initialize Python once for tests that need to call `execute_stmt_with_callbacks`.
-pub(super) fn with_python<F, R>(f: F) -> R
+/// Run `f` against a default [`TestHost`], for tests that need to call
+/// `execute_stmt_with_callbacks`.
+pub(super) fn with_test_host<F, R>(f: F) -> R
 where
     F: FnOnce(&dyn EngineHost) -> R,
 {
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| f(&callbacks))
+    f(&TestHost::default())
 }

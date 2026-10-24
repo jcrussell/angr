@@ -4,7 +4,6 @@
 //! convention to keep the implementation file focused. GIL-free: no PyO3.
 
 use super::*;
-use crate::callbacks::PythonCallbacks;
 use crate::vex::ir::Endness;
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
@@ -152,8 +151,7 @@ fn get_eager_prefetch_list_falls_back_to_main_page_without_rust_memory() {
 /// doc comment stops being true.
 #[test]
 fn fetch_paths_decline_without_a_fetch_page_callback() {
-    pyo3::Python::initialize();
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     interp.set_rust_memory(SymbolicMemory::new(Endness::Little));

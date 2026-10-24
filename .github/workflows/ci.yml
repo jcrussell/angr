@@ -136,6 +136,15 @@ jobs:
         run: |
           python3 tools/audit_test_import_guard.py --self-test
           python3 tools/audit_test_import_guard.py
+      # angr-mx00p.75: the engine core (arch/memory/symbolic/vex/interpreter/
+      # state) holds no PyO3, tests included, so it can become a crate with
+      # no pyo3 dependency (angr-mx00p.51). A batch `cargo test` hides a test
+      # that starts Python; this catches it statically. No baseline: only
+      # the upstream-owned files in the script's ALLOWED map are exempt.
+      - name: Engine core PyO3-free audit
+        run: |
+          python3 tools/audit_core_pyo3_free.py --self-test
+          python3 tools/audit_core_pyo3_free.py
       # angr-03vl4 round-4 retrospective: integer overflow/wraparound on
       # guest-controlled or Z3-derived address/size values was the dominant
       # bug class (3 P1s, 6 subsystems) -- [profile.release] has no

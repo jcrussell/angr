@@ -8,7 +8,7 @@
 //! `statements_tests_support.rs`.
 
 use super::*;
-use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_python};
+use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_test_host};
 use crate::vex::ir::IRType;
 
 /// angr-c7xno.44: a dirty helper that neither Rust nor Python models must
@@ -38,8 +38,8 @@ fn unmodelled_dirty_call_routes_to_python_not_fabricate() {
         nFxState: 0,
         args: vec![],
     };
-    with_python(|cb| {
-        // `with_python` builds a bare PythonCallbacks: no dirty_call callback,
+    with_test_host(|cb| {
+        // `with_test_host` builds a bare TestHost: no dirty_call callback,
         // which is the branch under test (production always registers one via
         // rust_manager.py::_setup_callbacks).
         assert!(!cb.has_dirty_call());
@@ -90,7 +90,7 @@ fn dirty_call_result_tmp_missing_from_tyenv_is_invalid_ir() {
         nFxState: 0,
         args: vec![],
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb);
         match &res {
             Err(CbExecutionError::InvalidIR(msg)) => {
@@ -141,7 +141,7 @@ fn dirty_call_with_false_guard_defines_result_tmp() {
         nFxState: 0,
         args: vec![],
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb);
         assert!(
             matches!(res, Ok(StmtResult::Continue)),
@@ -205,7 +205,7 @@ fn dirty_call_with_false_guard_declines_a_v256_result_tmp() {
         nFxState: 0,
         args: vec![],
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb);
         match &res {
             Err(CbExecutionError::NeedPythonFallback(msg)) => assert!(
@@ -245,7 +245,7 @@ fn dirty_call_with_false_guard_and_no_result_tmp_just_continues() {
         nFxState: 0,
         args: vec![],
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb);
         assert!(
             matches!(res, Ok(StmtResult::Continue)),

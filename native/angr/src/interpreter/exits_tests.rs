@@ -4,8 +4,6 @@
 //! (bd memory `rust-module-root-split-recipe`).
 
 use super::*;
-use pyo3::prelude::*;
-use crate::callbacks::PythonCallbacks;
 use crate::state::CallStackEntry;
 use crate::vex::ir::IRType;
 
@@ -213,14 +211,11 @@ fn eval_next_addr_concrete_returns_literal() {
     let mut irsb = IRSB::new(0x1000, VexArch::AMD64);
     irsb.next = IRExpr::Const(IRConst::U64(0x4000));
 
-    Python::initialize();
-    Python::attach(|_py| {
-        let cb = PythonCallbacks::new();
-        let addr = interp
-            .eval_next_addr(&cb, &irsb)
-            .expect("concrete next address");
-        assert_eq!(addr, 0x4000);
-    });
+    let cb = TestHost::default();
+    let addr = interp
+        .eval_next_addr(&cb, &irsb)
+        .expect("concrete next address");
+    assert_eq!(addr, 0x4000);
 }
 
 /// Symbolic next constrained to a single value: `eval_next_addr` concretizes to
@@ -242,14 +237,11 @@ fn eval_next_addr_single_concretization_returns_target() {
     interp.temps.resize(1, None);
     interp.temps[0] = Some(sym);
 
-    Python::initialize();
-    Python::attach(|_py| {
-        let cb = PythonCallbacks::new();
-        let addr = interp
-            .eval_next_addr(&cb, &irsb)
-            .expect("single-valued symbolic next address");
-        assert_eq!(addr, 0x9000);
-    });
+    let cb = TestHost::default();
+    let addr = interp
+        .eval_next_addr(&cb, &irsb)
+        .expect("single-valued symbolic next address");
+    assert_eq!(addr, 0x9000);
 }
 
 /// Multi-valued symbolic next: an unconstrained 64-bit symbol concretizes to
@@ -268,14 +260,11 @@ fn eval_next_addr_multivalued_returns_unsupported() {
     interp.temps.resize(1, None);
     interp.temps[0] = Some(sym);
 
-    Python::initialize();
-    Python::attach(|_py| {
-        let cb = PythonCallbacks::new();
-        let err = interp
-            .eval_next_addr(&cb, &irsb)
-            .expect_err("multi-valued symbolic next must be unsupported");
-        assert!(matches!(err, CbExecutionError::Unsupported(_)));
-    });
+    let cb = TestHost::default();
+    let err = interp
+        .eval_next_addr(&cb, &irsb)
+        .expect_err("multi-valued symbolic next must be unsupported");
+    assert!(matches!(err, CbExecutionError::Unsupported(_)));
 }
 
 /// Drive the actual call site: a symbolic guard in non-deferred fork mode takes
@@ -308,27 +297,24 @@ fn exit_nondeferred_symbolic_guard_uses_eval_next_addr_for_fallthrough() {
         offsIP: 184,
     };
 
-    Python::initialize();
-    Python::attach(|_py| {
-        let cb = PythonCallbacks::new();
-        let res = interp
-            .execute_stmt_with_callbacks(&cb, &stmt, &irsb)
-            .expect("symbolic exit");
-        match res {
-            StmtResult::SymbolicBranch {
-                true_target,
-                false_target,
-                ..
-            } => {
-                assert_eq!(true_target, 0x9000, "branch-taken target is the dst");
-                assert_eq!(
-                    false_target, 0x4000,
-                    "fallthrough came from eval_next_addr on irsb.next"
-                );
-            }
-            _ => panic!("expected SymbolicBranch from non-deferred symbolic guard"),
+    let cb = TestHost::default();
+    let res = interp
+        .execute_stmt_with_callbacks(&cb, &stmt, &irsb)
+        .expect("symbolic exit");
+    match res {
+        StmtResult::SymbolicBranch {
+            true_target,
+            false_target,
+            ..
+        } => {
+            assert_eq!(true_target, 0x9000, "branch-taken target is the dst");
+            assert_eq!(
+                false_target, 0x4000,
+                "fallthrough came from eval_next_addr on irsb.next"
+            );
         }
-    });
+        _ => panic!("expected SymbolicBranch from non-deferred symbolic guard"),
+    }
 }
 
 #[test]

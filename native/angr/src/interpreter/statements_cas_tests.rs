@@ -15,7 +15,7 @@
 //! Shared helpers live in `statements_tests_support.rs`.
 
 use super::*;
-use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_python};
+use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_test_host};
 use crate::vex::ir::{Endness, IRType};
 
 
@@ -87,7 +87,7 @@ fn cas_single_match_swaps_and_writes_old_lo() {
         0xdead_beef,
         Endness::Little,
     );
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("single CAS");
@@ -120,7 +120,7 @@ fn cas_single_mismatch_leaves_memory_untouched() {
         0xdead_beef,
         Endness::Little,
     );
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("single CAS");
@@ -153,7 +153,7 @@ fn cas_dcas_match_swaps_both_halves() {
         0xdead_beef,
         Endness::Little,
     );
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("DCAS");
@@ -181,7 +181,7 @@ fn cas_dcas_high_half_mismatch_stores_neither_half() {
         0xdead_beef,
         Endness::Little,
     );
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("DCAS");
@@ -207,7 +207,7 @@ fn cas_mixed_some_none_operands_are_invalid_ir() {
         cas_stmt(None, 0, 0x5000, None, 1, Some(4), 2, Endness::Little),
         cas_stmt(Some(1), 0, 0x5000, Some(3), 1, None, 2, Endness::Little),
     ];
-    with_python(|cb| {
+    with_test_host(|cb| {
         for stmt in &mixed {
             let mut interp = interp_with_words(&ctx, &[(0x5000, 0x1111_1111)]);
             // `StmtResult` has no `Debug`, so unwrap the error by hand
@@ -242,7 +242,7 @@ fn cas_big_endian_dcas_is_unsupported() {
         0xdead_beef,
         Endness::Big,
     );
-    with_python(|cb| {
+    with_test_host(|cb| {
         let Err(err) = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb) else {
             panic!("BE DCAS must defer to Python rather than guess a layout");
         };
@@ -287,7 +287,7 @@ fn cas_single_big_endian_still_swaps() {
         0xdead_beef,
         Endness::Big,
     );
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("single BE CAS must not hit the DCAS-only BE rejection");

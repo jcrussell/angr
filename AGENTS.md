@@ -83,7 +83,7 @@ the baselines marked *empty* must stay empty. CI runs every script with
 indistinguishable from one that cannot. The newer scripts
 (`audit_silent_fallback_test_pairing.py`, `audit_rounding_mode_threading.py`,
 `audit_sp_default_zero.py`, `audit_overflow_wraparound.py`,
-`audit_page_shift.py`, `audit_test_import_guard.py`) import comment blanking, test-file filtering and
+`audit_page_shift.py`, `audit_test_import_guard.py`, `audit_core_pyo3_free.py`) import comment blanking, test-file filtering and
 `fn`-name resolution from `tools/rust_source_utils.py` — add helpers there;
 `check_line_citations.py`, `audit_silent_fallback.py` and
 `audit_satresult.py` predate that module and keep their own scanners.
@@ -99,6 +99,7 @@ indistinguishable from one that cannot. The newer scripts
 | `tools/audit_sp_default_zero.py` | an SP / return-address accessor chained to `.unwrap_or(0)` / `.unwrap_or_default()` (empty baseline) | `sp-default-ok: <why>` on the line above, or as the site's trailing comment | `AddrOrSymbolic::or_log` in `arch/mod.rs` — the typed accessors have no `Default`/`From<u64>`, `.concrete()` is the only escape hatch |
 | `tools/audit_overflow_wraparound.py` | a bare `+`/`-`/`+=`/`-=` on an address/size/offset/count-shaped operand in `native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/` (empty baseline) | `overflow-ok: <why>` on the flagged line or either of the two above (for a multi-line expression the flagged line is the continuation carrying the operator) | address arithmetic wraps, sizes and identities refuse: `invariant-rust-concrete-arith-must-wrap`, `invariant-proc-address-arith-wrapping`, `invariant-overflow-fix-refuse-not-saturate-identities`; `cargo test --profile release-checked` has overflow-checks on but is a runtime net only |
 | `tools/audit_page_shift.py` | an open-coded page shift (`>> 12`, `PageIndex::SHIFT`) or a `0x1000`/`4096`/`0xFFF`/`4095` literal next to an address/page-shaped operand, all of `native/angr/src/` (empty baseline) | `page-shift-ok: <why>` on the flagged line or either of the two above | `Address::{page_num, page_base, page_offset}`, `PageIndex::{of, base_addr, range_covering}`, `PAGE_SIZE`/`PAGE_MASK` in `memory/page.rs` |
+| `tools/audit_core_pyo3_free.py` | any PyO3 token in code (`pyo3`, `Python::initialize` / `attach`, `Py<…>`, `#[pyclass]`, …) in any file, test or prod, under `native/angr/src/{arch,memory,symbolic,vex,interpreter,state}/` (no baseline; the set is empty) | only the upstream-owned files in the script's `ALLOWED` map, each with its reason | `interpreter::EngineHost` and its test double `interpreter::TestHost`; `state::HostAst`; the shell's `state_bridge`, `callbacks`, `claripy_bridge` |
 | `tools/audit_test_import_guard.py` | a `py.import("angr.…")` in Rust test code: `cargo test` cannot import `angr`, so the guarded test returns early and passes (no baseline; the set is empty) | `import-guard-ok: <why>` on the line or the one above | `claripy_bridge::claripy_module` / `claripy_object` in `claripy_bridge/mod.rs` |
 
 Preferred fix order for the "invariant upheld at some call sites but not

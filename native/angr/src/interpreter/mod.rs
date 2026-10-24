@@ -146,6 +146,13 @@ mod statements_store;
 // (angr-fs8kb.96).
 test_submod!("statements_tests_support.rs" => statements_tests_support);
 
+// The plain-Rust `EngineHost` every interpreter test runs against, so none of
+// them starts Python (angr-mx00p.75). Re-exported for the `vex::ops` sweep,
+// which drives the interpreter's op dispatch too.
+test_submod!(test_host);
+#[cfg(test)]
+pub(crate) use test_host::{SymbolicValueStore, TestHost};
+
 use block_result::{ConcretizedJump, StmtResult};
 use bv_utils::bytes_to_bv;
 use pending_store::PendingStoreBuffer;

@@ -1,7 +1,6 @@
 // Unit tests for interpreter/execution.rs (VEXInterpreter block exec / memory / cache).
 // Split out per rust-module-root-split-recipe; included via #[cfg(test)] #[path].
 use super::*;
-use crate::callbacks::PythonCallbacks;
 use crate::interpreter::{ErrorRoute, RunErrorKind};
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
@@ -226,7 +225,7 @@ fn trap_jumpkind_block_end_errors_instead_of_continuing() {
         interp.cache_block(0x1000, irsb);
         interp.set_pc(0x1000);
 
-        let callbacks = PythonCallbacks::new();
+        let callbacks = TestHost::default();
         let (result, _blocks, _forks) =
             interp.run_until_event(&callbacks, 4, &std::collections::HashSet::new(), false);
         match result {
@@ -266,7 +265,7 @@ fn noredir_jumpkind_is_not_treated_as_a_trap() {
     interp.cache_block(0x1000, irsb);
     interp.set_pc(0x1000);
 
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let (result, _blocks, _forks) =
         interp.run_until_event(&callbacks, 1, &std::collections::HashSet::new(), false);
     assert!(
@@ -292,7 +291,7 @@ fn self_targeting_nodecode_block_errors_instead_of_livelocking() {
     interp.cache_block(0x1000, irsb);
     interp.set_pc(0x1000);
 
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let (result, blocks, _forks) =
         interp.run_until_event(&callbacks, 16, &std::collections::HashSet::new(), false);
     match result {
@@ -360,7 +359,7 @@ fn emfail_and_mapfail_block_ends_error_but_emwarn_continues() {
         interp.cache_block(0x1000, irsb);
         interp.set_pc(0x1000);
 
-        let callbacks = PythonCallbacks::new();
+        let callbacks = TestHost::default();
         let (result, _blocks, _forks) =
             interp.run_until_event(&callbacks, 4, &std::collections::HashSet::new(), false);
         match result {
@@ -388,7 +387,7 @@ fn emfail_and_mapfail_block_ends_error_but_emwarn_continues() {
     irsb.jumpkind = JumpKind::EmWarn;
     interp.cache_block(0x1000, irsb);
     interp.set_pc(0x1000);
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let (result, _blocks, _forks) =
         interp.run_until_event(&callbacks, 1, &std::collections::HashSet::new(), false);
     assert!(

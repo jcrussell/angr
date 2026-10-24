@@ -77,7 +77,6 @@
 
 use super::*;
 use crate::vex::ir::IRType;
-use pyo3::prelude::*;
 
 /// The 4 VEX rounding modes (low 2 bits of the rm operand), per the doc
 /// comments in conversions.rs (`round_f32_to_int_with_mode` et al.):
@@ -559,8 +558,7 @@ fn eval_through_interpreter(
     case: &[Operand],
     ctx: &SymContext,
 ) -> Result<RustBV, String> {
-    use crate::callbacks::PythonCallbacks;
-    use crate::interpreter::VEXInterpreter;
+    use crate::interpreter::{TestHost, VEXInterpreter};
     use crate::vex::ir::{IRExpr, TypeEnv, VexArch};
 
     let rm_expr = IRExpr::Const(crate::vex::ir::IRConst::U32(rm));
@@ -569,41 +567,38 @@ fn eval_through_interpreter(
         .map(|&(bits, width)| IRExpr::Const(irconst_for(bits, width)))
         .collect();
 
-    Python::initialize();
-    Python::attach(|_py| {
-        let callbacks = PythonCallbacks::new();
-        let mut interp = VEXInterpreter::new(VexArch::AMD64, ctx);
-        let env = TypeEnv::new();
-        let result = match kind {
-            RmDispatchKind::BinopToUnopWithRm => {
-                interp.eval_binop(&callbacks, op, &rm_expr, &operand_exprs[0], &env)
-            }
-            RmDispatchKind::TriopWithRm => interp.eval_triop(
-                &callbacks,
-                op,
+    let callbacks = TestHost::default();
+    let mut interp = VEXInterpreter::new(VexArch::AMD64, ctx);
+    let env = TypeEnv::new();
+    let result = match kind {
+        RmDispatchKind::BinopToUnopWithRm => {
+            interp.eval_binop(&callbacks, op, &rm_expr, &operand_exprs[0], &env)
+        }
+        RmDispatchKind::TriopWithRm => interp.eval_triop(
+            &callbacks,
+            op,
+            &rm_expr,
+            &operand_exprs[0],
+            &operand_exprs[1],
+            &env,
+        ),
+        RmDispatchKind::QopWithRm => interp.eval_qop(
+            &callbacks,
+            op,
+            [
                 &rm_expr,
                 &operand_exprs[0],
                 &operand_exprs[1],
-                &env,
-            ),
-            RmDispatchKind::QopWithRm => interp.eval_qop(
-                &callbacks,
-                op,
-                [
-                    &rm_expr,
-                    &operand_exprs[0],
-                    &operand_exprs[1],
-                    &operand_exprs[2],
-                ],
-                &env,
-            ),
-            RmDispatchKind::FamilyA => unreachable!(
-                "eval_through_interpreter is Family-B only; callers must filter FamilyA"
-            ),
-        };
-        result.map_err(|e| format!("{e:?}"))
-    })
-}
+                &operand_exprs[2],
+            ],
+            &env,
+        ),
+        RmDispatchKind::FamilyA => unreachable!(
+            "eval_through_interpreter is Family-B only; callers must filter FamilyA"
+        ),
+    };
+    result.map_err(|e| format!("{e:?}"))
+    }
 
 /// Section 2 (see module doc comment): drives evaluation through the real
 /// interpreter dispatch entry points and cross-checks the result against

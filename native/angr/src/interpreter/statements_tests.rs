@@ -5,10 +5,9 @@
 //! (end-to-end `IRStmt::CAS` dispatch). Helpers used by more than one of the
 //! three live in `statements_tests_support.rs` (angr-fs8kb.96).
 use super::*;
-use pyo3::prelude::*;
-use crate::callbacks::PythonCallbacks;
-use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_python};
+use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_test_host};
 use crate::memory::PAGE_SIZE;
+use crate::symbolic::Node;
 use crate::vex::ir::{Endness, IRType, MBusEvent};
 
 /// An interpreter whose concretizer has `SYMBOLIC_WRITE_ADDRESSES` on, so
@@ -30,7 +29,7 @@ fn noop_returns_continue() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     let irsb = make_irsb_with_temps(0x1000, &[]);
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp
             .execute_stmt_with_callbacks(cb, &IRStmt::NoOp, &irsb)
             .expect("noop");
@@ -43,7 +42,7 @@ fn imark_updates_current_insn() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     let irsb = make_irsb_with_temps(0x2000, &[]);
-    with_python(|cb| {
+    with_test_host(|cb| {
         let stmt = IRStmt::IMark {
             addr: 0x2004,
             len: 4,
@@ -64,7 +63,7 @@ fn imark_at_hooked_address_returns_exit() {
     let mut interp = new_interp(&ctx);
     interp.add_hook(0x3000);
     let irsb = make_irsb_with_temps(0x3000, &[]);
-    with_python(|cb| {
+    with_test_host(|cb| {
         let stmt = IRStmt::IMark {
             addr: 0x3000,
             len: 1,
@@ -93,7 +92,7 @@ fn abihint_is_no_op() {
         len: 0,
         nia: Box::new(IRExpr::Const(IRConst::U64(0x1004))),
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("abihint");
@@ -107,7 +106,7 @@ fn mbe_fence_is_continue() {
     let mut interp = new_interp(&ctx);
     let irsb = make_irsb_with_temps(0x1000, &[]);
     let stmt = IRStmt::MBE(MBusEvent::Fence);
-    with_python(|cb| {
+    with_test_host(|cb| {
         // MBE may fall through to default arm but should not error.
         let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(res.is_ok(), "MBE should not error");
@@ -124,7 +123,7 @@ fn put_concrete_writes_register() {
         offset: 16,
         data: IRExpr::Const(IRConst::U64(0xcafe)),
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("put");
@@ -143,7 +142,7 @@ fn wrtmp_concrete_writes_temp() {
         tmp: 0,
         data: IRExpr::Const(IRConst::U32(0x1234)),
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("wrtmp");
@@ -162,7 +161,7 @@ fn wrtmp_unknown_temp_errors() {
         tmp: 5,
         data: IRExpr::Const(IRConst::U32(0)),
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(res.is_err(), "should error on unknown temp");
         if let Err(err) = res {
@@ -191,7 +190,7 @@ fn loadg_unknown_temp_errors() {
         cvt: IRLoadGOp::Identity,
         endness: Endness::Little,
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(
             matches!(res, Err(CbExecutionError::UnknownTemp(5))),
@@ -211,7 +210,7 @@ fn exit_with_concrete_false_guard_continues() {
         jk: JumpKind::Boring,
         offsIP: 184,
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("exit");
@@ -230,7 +229,7 @@ fn exit_with_concrete_true_guard_takes_branch() {
         jk: JumpKind::Boring,
         offsIP: 184,
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("exit");
@@ -255,7 +254,7 @@ fn store_to_concrete_addr_buffers_pending_store() {
         data: IRExpr::Const(IRConst::U32(0xdead_beef)),
         endness: Endness::Little,
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("store should buffer without erroring");
@@ -282,64 +281,42 @@ fn store_to_concrete_addr_buffers_pending_store() {
 /// `memory_store_symbolic_value(a_i, ite)` once per address.
 #[test]
 fn build_ite_store_invokes_per_addr_ite_callbacks() {
-    use pyo3::types::{PyDict, PyList};
-
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     // Site is below the use_rust_memory gate's fallback; the test default is
     // already callback-mode, but assert it to document the precondition.
     assert!(!interp.use_rust_memory);
 
-    Python::initialize();
-    Python::attach(|py| {
+    let cb = TestHost {
+        symbolic_value_store: SymbolicValueStore::Accept,
+        serve_zero_loads: true,
+        ..TestHost::default()
+    };
+    assert!(cb.has_memory_store_symbolic_value());
 
-        let globals = PyDict::new(py);
-        py.run(
-            c"_rec = []
-def store_cb(addr, ast):
-    _rec.append((addr, ast.op, ast.size()))
-def load_batch(loads):
-    return [(bytes(sz), False, None) for (_a, sz) in loads]
-",
-            Some(&globals),
-            None,
-        )
-        .expect("define recorder callbacks");
+    let addr_expr = RustBV::symbolic(&ctx, "store_addr", 64);
+    let data_val = RustBV::symbolic(&ctx, "store_data", 64);
+    let addrs = [0x1000u64, 0x2000u64];
 
-        let store_cb = globals.get_item("store_cb").unwrap().unwrap();
-        let load_batch = globals.get_item("load_batch").unwrap().unwrap();
+    interp
+        .build_ite_store_from_callbacks(&cb, &addrs, &addr_expr, &data_val)
+        .expect("build_ite_store_from_callbacks");
 
-        let mut cb = PythonCallbacks::new();
-        cb.set_memory_store_symbolic_value(store_cb.unbind());
-        cb.set_memory_load_batch(load_batch.unbind());
-        assert!(cb.has_memory_store_symbolic_value());
+    let rec = cb.symbolic_value_stores.borrow();
+    assert_eq!(rec.len(), 2, "one symbolic-value store per candidate addr");
 
-        let addr_expr = RustBV::symbolic(&ctx, "store_addr", 64);
-        let data_val = RustBV::symbolic(&ctx, "store_data", 64);
-        let addrs = [0x1000u64, 0x2000u64];
-
-        interp
-            .build_ite_store_from_callbacks(&cb, &addrs, &addr_expr, &data_val)
-            .expect("build_ite_store_from_callbacks");
-
-        let rec = globals.get_item("_rec").unwrap().unwrap();
-        let rec = rec.cast::<PyList>().unwrap();
-        assert_eq!(rec.len(), 2, "one symbolic-value store per candidate addr");
-
-        let mut seen_addrs = Vec::new();
-        for item in rec.iter() {
-            let tup = item.cast::<pyo3::types::PyTuple>().unwrap();
-            let addr: u64 = tup.get_item(0).unwrap().extract().unwrap();
-            let op: String = tup.get_item(1).unwrap().extract().unwrap();
-            let size: u32 = tup.get_item(2).unwrap().extract().unwrap();
-            // Each stored value is the in-Rust ITE chain marshalled to claripy.
-            assert_eq!(op, "If", "stored value must be the ITE chain");
-            assert_eq!(size, 64, "ITE store width matches the data width");
-            seen_addrs.push(addr);
-        }
-        seen_addrs.sort_unstable();
-        assert_eq!(seen_addrs, vec![0x1000, 0x2000]);
-    });
+    let mut seen_addrs = Vec::new();
+    for (addr, value) in rec.iter() {
+        // Each stored value is the in-Rust ITE chain.
+        assert!(
+            matches!(value.node(), Some(Node { op: BVOp::Ite, .. })),
+            "stored value must be the ITE chain, got {value:?}"
+        );
+        assert_eq!(value.width(), 64, "ITE store width matches the data width");
+        seen_addrs.push(*addr);
+    }
+    seen_addrs.sort_unstable();
+    assert_eq!(seen_addrs, vec![0x1000, 0x2000]);
 }
 
 #[test]
@@ -357,7 +334,7 @@ fn loadg_unknown_cvt_surfaces_invalid_ir() {
         cvt: IRLoadGOp::Unknown,
         endness: Endness::Little,
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         // An unrecognized cvt must error rather than silently load+Identity.
         assert!(
@@ -377,7 +354,7 @@ fn put_at_high_offset_does_not_overflow_dirty_mask() {
         offset: 600,
         data: IRExpr::Const(IRConst::U8(0xaa)),
     };
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
         assert!(res.is_ok(), "high-offset Put should not overflow");
     });
@@ -476,8 +453,8 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
     let data_bv = RustBV::symbolic(&ctx, "cas_data", 32);
     let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
-    with_python(|cb| {
-        // Bare `PythonCallbacks::new()` has no memory_store_symbolic_value, so
+    with_test_host(|cb| {
+        // Bare `TestHost::default()` has no memory_store_symbolic_value, so
         // the store itself must hard-error rather than zero-fill (angr-9ke6b.19,
         // asserted by `cas_symbolic_store_without_callback_errors_not_zero_fills`
         // below). Invalidation happens before that dispatch and still applies.
@@ -510,7 +487,7 @@ fn cas_symbolic_store_without_callback_errors_not_zero_fills() {
     let data_bv = RustBV::symbolic(&ctx, "cas_sym", 32);
     let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         assert!(!cb.has_memory_store_symbolic_value());
         let err = interp
             .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
@@ -547,7 +524,7 @@ fn cas_concrete_store_without_callback_buffers_bytes_only() {
     let data_bv = RustBV::concrete(0xdead_beef, 32);
     let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         assert!(!cb.has_memory_store_symbolic_value());
         interp
             .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
@@ -595,10 +572,10 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     let data_bv = RustBV::symbolic(&ctx, "cas_sym_data", 32);
     let call_irsb = make_irsb_with_temps(0x2010, &[]);
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb);
         // No memory_store_symbolic_full callback is registered on this bare
-        // PythonCallbacks::new(), so the store dispatch itself errors out --
+        // TestHost::default(), so the store dispatch itself errors out --
         // but invalidation must already have happened before that point.
         assert!(res.is_err());
     });
@@ -666,7 +643,7 @@ fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
     assert!(interp.has_cached_block(0x5100));
 
     let data_val = RustBV::symbolic(&ctx, "store_data", 32);
-    with_python(|cb| {
+    with_test_host(|cb| {
         // No memory_store_symbolic_value/_full callback registered, so the
         // store dispatch itself errors out -- but invalidation must already
         // have happened before that point (mirrors the CAS symbolic-addr
@@ -722,7 +699,7 @@ fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
     assert!(interp.has_cached_block(0x6100));
 
     let data_val = RustBV::symbolic(&ctx, "store_data_multi", 32);
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = interp.handle_symbolic_store(cb, &addr, &data_val, 4);
         assert!(res.is_err());
     });
@@ -767,7 +744,7 @@ fn loadg_sees_pending_store_from_same_block() {
         endness: Endness::Little,
     };
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &store, &irsb)
             .expect("store should buffer");
@@ -814,7 +791,7 @@ fn loadg_sees_rust_memory_store_from_same_block() {
         endness: Endness::Little,
     };
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &store, &irsb)
             .expect("store into rust memory");
@@ -865,7 +842,7 @@ fn loadg_single_concretization_sees_rust_memory_store() {
         endness: Endness::Little,
     };
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &store, &irsb)
             .expect("store into rust memory");
@@ -892,51 +869,32 @@ fn loadg_single_concretization_sees_rust_memory_store() {
 /// now fail loudly instead, and must not touch memory at all.
 #[test]
 fn symbolic_store_fallback_errors_instead_of_zero_filling_when_eval_fails() {
-    use pyo3::types::{PyDict, PyList};
-
     let ctx = SymContext::new_mock();
     // X86 (32-bit, non-stack address) is the only configuration that arms the
     // `memory_store_symbolic_value` path in `handle_concrete_store`.
     let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
 
-    Python::initialize();
-    Python::attach(|py| {
-        let globals = PyDict::new(py);
-        py.run(
-            c"_rec = []
-def sym_store_cb(addr, ast):
-    raise RuntimeError('symbolic store unavailable')
-def store_cb(addr, data):
-    _rec.append((addr, bytes(data)))
-",
-            Some(&globals),
-            None,
-        )
-        .expect("define callbacks");
+    let cb = TestHost {
+        symbolic_value_store: SymbolicValueStore::Fail,
+        accept_stores: true,
+        ..TestHost::default()
+    };
 
-        let mut cb = PythonCallbacks::new();
-        cb.set_memory_store_symbolic_value(
-            globals.get_item("sym_store_cb").unwrap().unwrap().unbind(),
-        );
-        cb.set_memory_store(globals.get_item("store_cb").unwrap().unwrap().unbind());
+    // 256 bits = 32 bytes > MAX_CONCRETE_CHUNK, so no u128 witness exists.
+    let data_val = RustBV::symbolic(&ctx, "wide_store_data", 256);
+    let err = interp
+        .handle_concrete_store(&cb, 0x10_0000, data_val, 32)
+        .expect_err("unconcretizable symbolic store must fail, not zero-fill");
+    assert!(
+        matches!(err, CbExecutionError::Callback(_)),
+        "the original symbolic-store callback error is propagated, got {err:?}"
+    );
 
-        // 256 bits = 32 bytes > MAX_CONCRETE_CHUNK, so no u128 witness exists.
-        let data_val = RustBV::symbolic(&ctx, "wide_store_data", 256);
-        let err = interp
-            .handle_concrete_store(&cb, 0x10_0000, data_val, 32)
-            .expect_err("unconcretizable symbolic store must fail, not zero-fill");
-        assert!(
-            matches!(err, CbExecutionError::Callback(_)),
-            "the original symbolic-store callback error is propagated, got {err:?}"
-        );
-
-        let rec = globals.get_item("_rec").unwrap().unwrap();
-        assert_eq!(
-            rec.cast::<PyList>().unwrap().len(),
-            0,
-            "no byte-level store may reach memory when concretization failed"
-        );
-    });
+    assert_eq!(
+        cb.stores.borrow().len(),
+        0,
+        "no byte-level store may reach memory when concretization failed"
+    );
 }
 
 /// Converse of the test above: when the value *is* concretizable, the fallback
@@ -948,97 +906,52 @@ def store_cb(addr, data):
 /// through `eval` (angr-c7xno.100).
 #[test]
 fn symbolic_store_fallback_writes_concretized_bytes_when_eval_succeeds() {
-    use pyo3::types::{PyDict, PyList};
-
     let ctx = SymContext::new_mock();
     let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
 
     let data_val = RustBV::symbolic(&ctx, "store_data", 32);
     ctx.assume_true(&data_val.eq(&RustBV::concrete(0xdead_beef, 32), &ctx));
 
-    Python::initialize();
-    Python::attach(|py| {
-        let globals = PyDict::new(py);
-        py.run(
-            c"_rec = []
-def sym_store_cb(addr, ast):
-    raise RuntimeError('symbolic store unavailable')
-def store_cb(addr, data):
-    _rec.append((addr, bytes(data)))
-",
-            Some(&globals),
-            None,
-        )
-        .expect("define callbacks");
+    let cb = TestHost {
+        symbolic_value_store: SymbolicValueStore::Fail,
+        accept_stores: true,
+        ..TestHost::default()
+    };
 
-        let mut cb = PythonCallbacks::new();
-        cb.set_memory_store_symbolic_value(
-            globals.get_item("sym_store_cb").unwrap().unwrap().unbind(),
-        );
-        cb.set_memory_store(globals.get_item("store_cb").unwrap().unwrap().unbind());
+    interp
+        .handle_concrete_store(&cb, 0x10_0000, data_val, 4)
+        .expect("concretizable symbolic store falls back cleanly");
 
-        interp
-            .handle_concrete_store(&cb, 0x10_0000, data_val, 4)
-            .expect("concretizable symbolic store falls back cleanly");
-
-        let rec = globals.get_item("_rec").unwrap().unwrap();
-        let rec = rec.cast::<PyList>().unwrap();
-        assert_eq!(rec.len(), 1, "exactly one byte-level fallback store");
-        let tup = rec.get_item(0).unwrap();
-        let tup = tup.cast::<pyo3::types::PyTuple>().unwrap();
-        let addr: u64 = tup.get_item(0).unwrap().extract().unwrap();
-        let data: Vec<u8> = tup.get_item(1).unwrap().extract().unwrap();
-        assert_eq!(addr, 0x10_0000);
-        assert_eq!(
-            data,
-            vec![0xef, 0xbe, 0xad, 0xde],
-            "little-endian concretization"
-        );
-    });
+    let rec = cb.stores.borrow();
+    assert_eq!(rec.len(), 1, "exactly one byte-level fallback store");
+    let (addr, data) = &rec[0];
+    assert_eq!(*addr, 0x10_0000);
+    assert_eq!(
+        *data,
+        vec![0xef, 0xbe, 0xad, 0xde],
+        "little-endian concretization"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // angr-5mnx3.23: every `memory_store_symbolic_value` dispatch must buffer.
 // ---------------------------------------------------------------------------
 
-/// Callbacks in the production configuration: the
-/// `memory_store_symbolic_value` slot is wired to a Python function that does
-/// nothing — exactly what `rust_manager.py::_cb_memory_store_symbolic_value`
-/// is when the callback state's memory is a `RustMemoryProxy` (`state.memory`
-/// *is* Rust memory, so the callback deliberately declines to re-enter it).
-/// A dispatch that reaches this callback without first calling
-/// `buffer_store_for_rust_memory` therefore lands nowhere at all.
-///
-/// Marshalling a `RustBV` to the callback needs claripy; skip when it is not
-/// importable, mirroring `build_ite_store_invokes_per_addr_ite_callbacks`.
-fn with_proxy_callbacks<F: FnOnce(&PythonCallbacks)>(f: F) {
-    use pyo3::types::PyDict;
-
-    Python::initialize();
-    Python::attach(|py| {
-        let globals = PyDict::new(py);
-        py.run(
-            c"def proxy_noop_store(addr, ast):
-    pass
-def load_batch(loads):
-    return [(bytes(sz), False, None) for (_a, sz) in loads]
-def load_cb(addr, size):
-    return (bytes(size), False, None)
-",
-            Some(&globals),
-            None,
-        )
-        .expect("define proxy no-op callbacks");
-        let store_cb = globals.get_item("proxy_noop_store").unwrap().unwrap();
-        let load_batch = globals.get_item("load_batch").unwrap().unwrap();
-
-        let mut cb = PythonCallbacks::new();
-        cb.set_memory_store_symbolic_value(store_cb.unbind());
-        cb.set_memory_load_batch(load_batch.unbind());
-        cb.set_memory_load(globals.get_item("load_cb").unwrap().unwrap().unbind());
-        assert!(cb.has_memory_store_symbolic_value());
-        f(&cb);
-    });
+/// A host in the production configuration: `memory_store_symbolic_value`
+/// exists and absorbs the store — exactly what
+/// `rust_manager.py::_cb_memory_store_symbolic_value` does when the callback
+/// state's memory is a `RustMemoryProxy` (`state.memory` *is* Rust memory, so
+/// the callback deliberately declines to re-enter it). A dispatch that
+/// reaches this service without first calling `buffer_store_for_rust_memory`
+/// therefore lands nowhere at all.
+fn with_proxy_callbacks<F: FnOnce(&TestHost)>(f: F) {
+    let cb = TestHost {
+        symbolic_value_store: SymbolicValueStore::Accept,
+        serve_zero_loads: true,
+        ..TestHost::default()
+    };
+    assert!(cb.has_memory_store_symbolic_value());
+    f(&cb);
 }
 
 /// Build an interpreter that owns its memory (the production configuration —
@@ -1169,7 +1082,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_concrete_lower_layer() {
         },
     };
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &load, &irsb)
             .expect("partially buffered load should resolve");
@@ -1205,7 +1118,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
         },
     };
 
-    with_python(|cb| {
+    with_test_host(|cb| {
         interp
             .execute_stmt_with_callbacks(cb, &load, &irsb)
             .expect("partially buffered load should resolve");
@@ -1275,8 +1188,7 @@ fn mv_write_addr(ctx: &SymContext, name: &str) -> RustBV {
 /// backer survives. With the option off the same store lands.
 #[test]
 fn try_rust_memory_store_drops_the_write_under_avoid_multivalued_writes() {
-    pyo3::Python::initialize();
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let ctx = SymContext::new_mock();
     let backer: u128 = 0xDEAD_BEEF_CAFE_BABE;
     let stored: u128 = 0x0102_0304_0506_0708;
@@ -1328,7 +1240,7 @@ fn handle_symbolic_store_drops_the_write_under_avoid_multivalued_writes() {
     let mut off = new_interp(&ctx);
     off.set_concretizer(mv_write_concretizer(false));
     let off_addr = mv_write_addr(&ctx, "mvhs_off");
-    with_python(|cb| {
+    with_test_host(|cb| {
         let res = off.handle_symbolic_store(cb, &off_addr, &stored, 4);
         assert!(
             res.is_err(),
@@ -1339,7 +1251,7 @@ fn handle_symbolic_store_drops_the_write_under_avoid_multivalued_writes() {
     let mut on = new_interp(&ctx);
     on.set_concretizer(mv_write_concretizer(true));
     let on_addr = mv_write_addr(&ctx, "mvhs_on");
-    with_python(|cb| {
+    with_test_host(|cb| {
         on.handle_symbolic_store(cb, &on_addr, &stored, 4)
             .expect("option on: the dropped store must report success, not an error");
     });

@@ -3,7 +3,6 @@
 //! eval_expr, the load ladder, the op dispatchers).
 
 use super::*;
-use pyo3::prelude::*;
 use crate::interpreter::expressions_arith::fabricated_result_width;
 use crate::vex::ir::{Endness, IRCallee, IRType};
 
@@ -176,45 +175,37 @@ fn eval_unop_concrete_unsupported_propagates_error_not_zero() {
     // angr-sa3j: a concrete-arg op that VEXOps rejects must surface the
     // typed OpError (so the engine raises RustUnsupportedVexOpError /
     // routes to Python fallback) instead of silently fabricating 0.
-    use crate::callbacks::PythonCallbacks;
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        let ctx = SymContext::new_mock();
-        let mut interp = new_interp(&ctx);
-        let env = TypeEnv::new();
-        // Dispatch a binary op through the unary path: VEXOps::unop
-        // returns OpError::NotUnary. Arg is concrete, so the pre-fix
-        // code would have returned Ok(concrete 0).
-        let arg = IRExpr::Const(IRConst::U64(0x1234));
-        let res = interp.eval_unop(&callbacks, IROp::Add(IRType::I64), &arg, &env);
-        assert!(
-            matches!(res, Err(CbExecutionError::Op(OpError::NotUnary(_)))),
-            "concrete unsupported unop must propagate OpError, got {res:?}"
-        );
-    });
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let env = TypeEnv::new();
+    // Dispatch a binary op through the unary path: VEXOps::unop
+    // returns OpError::NotUnary. Arg is concrete, so the pre-fix
+    // code would have returned Ok(concrete 0).
+    let arg = IRExpr::Const(IRConst::U64(0x1234));
+    let res = interp.eval_unop(&callbacks, IROp::Add(IRType::I64), &arg, &env);
+    assert!(
+        matches!(res, Err(CbExecutionError::Op(OpError::NotUnary(_)))),
+        "concrete unsupported unop must propagate OpError, got {res:?}"
+    );
 }
 
 #[test]
 fn eval_binop_concrete_unsupported_propagates_error_not_zero() {
     // angr-sa3j (binop arm): concrete-arg unsupported binop must propagate.
-    use crate::callbacks::PythonCallbacks;
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        let ctx = SymContext::new_mock();
-        let mut interp = new_interp(&ctx);
-        let env = TypeEnv::new();
-        // Dispatch a unary op through the binary path: VEXOps::binop
-        // returns OpError::NotBinary.
-        let left = IRExpr::Const(IRConst::U64(0x1));
-        let right = IRExpr::Const(IRConst::U64(0x2));
-        let res = interp.eval_binop(&callbacks, IROp::Not(IRType::I64), &left, &right, &env);
-        assert!(
-            matches!(res, Err(CbExecutionError::Op(OpError::NotBinary(_)))),
-            "concrete unsupported binop must propagate OpError, got {res:?}"
-        );
-    });
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let env = TypeEnv::new();
+    // Dispatch a unary op through the binary path: VEXOps::binop
+    // returns OpError::NotBinary.
+    let left = IRExpr::Const(IRConst::U64(0x1));
+    let right = IRExpr::Const(IRConst::U64(0x2));
+    let res = interp.eval_binop(&callbacks, IROp::Not(IRType::I64), &left, &right, &env);
+    assert!(
+        matches!(res, Err(CbExecutionError::Op(OpError::NotBinary(_)))),
+        "concrete unsupported binop must propagate OpError, got {res:?}"
+    );
 }
 
 #[test]
@@ -224,31 +215,27 @@ fn eval_binop_symbolic_unsupported_routes_to_python_not_fabricate() {
     // unconstrained symbolic (which silently diverges — both branches of any
     // downstream condition explored unconstrained). Default behavior with
     // ANGR_RUST_FABRICATE_UNSUPPORTED_IROP unset.
-    use crate::callbacks::PythonCallbacks;
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        let ctx = SymContext::new_mock();
-        let mut interp = new_interp(&ctx);
-        // Stash a symbolic value in a temp so the operand is symbolic.
-        interp.temps.resize(2, None);
-        interp.temps[0] = Some(RustBV::symbolic(&ctx, "sym_in", 64));
-        let env = TypeEnv::new();
-        // Dispatch a unary op through the binary path: VEXOps::binop returns
-        // OpError::NotBinary, and the (symbolic) operand takes the fallback arm.
-        let left = IRExpr::RdTmp(0);
-        let right = IRExpr::RdTmp(0);
-        let res = interp.eval_binop(&callbacks, IROp::Not(IRType::I64), &left, &right, &env);
-        assert!(
-            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
-            "symbolic unsupported binop must route to Python, got {res:?}"
-        );
-        // The fabricate BYPASS must NOT have fired on the default path.
-        assert_eq!(
-            interp.stats.vex_bypass_fabricate_count, 0,
-            "symbolic unsupported op fabricated instead of routing to Python"
-        );
-    });
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    // Stash a symbolic value in a temp so the operand is symbolic.
+    interp.temps.resize(2, None);
+    interp.temps[0] = Some(RustBV::symbolic(&ctx, "sym_in", 64));
+    let env = TypeEnv::new();
+    // Dispatch a unary op through the binary path: VEXOps::binop returns
+    // OpError::NotBinary, and the (symbolic) operand takes the fallback arm.
+    let left = IRExpr::RdTmp(0);
+    let right = IRExpr::RdTmp(0);
+    let res = interp.eval_binop(&callbacks, IROp::Not(IRType::I64), &left, &right, &env);
+    assert!(
+        matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+        "symbolic unsupported binop must route to Python, got {res:?}"
+    );
+    // The fabricate BYPASS must NOT have fired on the default path.
+    assert_eq!(
+        interp.stats.vex_bypass_fabricate_count, 0,
+        "symbolic unsupported op fabricated instead of routing to Python"
+    );
 }
 
 #[test]
@@ -259,33 +246,29 @@ fn eval_binop_dispatch_fabricate_family_counts_as_python_fallback() {
     // counters the ordinary unsupported-binop arm does, or capacity analysis
     // built on those counters silently undercounts exactly these
     // families. The fabricate BYPASS is a different thing and stays 0.
-    use crate::callbacks::PythonCallbacks;
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        let ctx = SymContext::new_mock();
-        let mut interp = new_interp(&ctx);
-        let env = TypeEnv::new();
-        let left = IRExpr::Const(IRConst::U64(0x1));
-        let right = IRExpr::Const(IRConst::U64(0x2));
-        let res = interp.eval_binop(&callbacks, IROp::Crc32C, &left, &right, &env);
-        assert!(
-            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
-            "dispatch-fabricate family must route to Python, got {res:?}"
-        );
-        assert_eq!(
-            interp.stats.python_vex_binop_fallback_count, 1,
-            "dispatch-fabricate fallback did not bump the per-op binop counter"
-        );
-        assert_eq!(
-            interp.stats.python_vex_op_fallback_count, 1,
-            "dispatch-fabricate fallback did not bump the aggregate op counter"
-        );
-        assert_eq!(
-            interp.stats.vex_bypass_fabricate_count, 0,
-            "dispatch-fabricate family must not take the fabricate BYPASS"
-        );
-    });
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let env = TypeEnv::new();
+    let left = IRExpr::Const(IRConst::U64(0x1));
+    let right = IRExpr::Const(IRConst::U64(0x2));
+    let res = interp.eval_binop(&callbacks, IROp::Crc32C, &left, &right, &env);
+    assert!(
+        matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+        "dispatch-fabricate family must route to Python, got {res:?}"
+    );
+    assert_eq!(
+        interp.stats.python_vex_binop_fallback_count, 1,
+        "dispatch-fabricate fallback did not bump the per-op binop counter"
+    );
+    assert_eq!(
+        interp.stats.python_vex_op_fallback_count, 1,
+        "dispatch-fabricate fallback did not bump the aggregate op counter"
+    );
+    assert_eq!(
+        interp.stats.vex_bypass_fabricate_count, 0,
+        "dispatch-fabricate family must not take the fabricate BYPASS"
+    );
 }
 
 #[test]
@@ -295,33 +278,29 @@ fn eval_ccall_unsupported_cond_routes_to_python_not_fabricate() {
     // symbolic. The result of `*_calculate_condition` IS a branch guard, so an
     // unconstrained stand-in explores both directions regardless of the real
     // flag semantics. Same policy (and same opt-in gate) as `vex_op_fallback`.
-    use crate::callbacks::PythonCallbacks;
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        let ctx = SymContext::new_mock();
-        let mut interp = new_interp(&ctx);
-        interp.temps.resize(1, None);
-        interp.temps[0] = Some(RustBV::concrete(0, 64));
-        let env = TypeEnv::new();
-        let cee = IRCallee {
-            // Matches the is_cond_ccall name test, but with too few args for
-            // `handle_ccall_with_ctx` (which wants 5), so it returns None.
-            name: "amd64g_calculate_condition".to_string(),
-            addr: 0,
-            mcx_mask: 0,
-        };
-        let args = [IRExpr::RdTmp(0)];
-        let res = interp.eval_ccall(&callbacks, &cee, IRType::I64, &args, &env);
-        assert!(
-            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
-            "unhandled cond-CCall must route to Python, got {res:?}"
-        );
-        assert_eq!(
-            interp.stats.vex_bypass_fabricate_count, 0,
-            "unhandled cond-CCall fabricated a symbol instead of routing to Python"
-        );
-    });
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.temps.resize(1, None);
+    interp.temps[0] = Some(RustBV::concrete(0, 64));
+    let env = TypeEnv::new();
+    let cee = IRCallee {
+        // Matches the is_cond_ccall name test, but with too few args for
+        // `handle_ccall_with_ctx` (which wants 5), so it returns None.
+        name: "amd64g_calculate_condition".to_string(),
+        addr: 0,
+        mcx_mask: 0,
+    };
+    let args = [IRExpr::RdTmp(0)];
+    let res = interp.eval_ccall(&callbacks, &cee, IRType::I64, &args, &env);
+    assert!(
+        matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+        "unhandled cond-CCall must route to Python, got {res:?}"
+    );
+    assert_eq!(
+        interp.stats.vex_bypass_fabricate_count, 0,
+        "unhandled cond-CCall fabricated a symbol instead of routing to Python"
+    );
 }
 
 #[test]
@@ -495,54 +474,50 @@ fn symbolic_overlap_load_misses_when_not_fully_covered() {
 // itself, not just `evict_overlapping_symbolic_stores` in isolation.
 #[test]
 fn handle_concrete_store_symbolic_data_evicts_overlapping_symbolic_shadow() {
-    use crate::callbacks::PythonCallbacks;
-    Python::initialize();
-    let callbacks = PythonCallbacks::new();
-    Python::attach(|_py| {
-        let ctx = SymContext::new_mock();
-        let mut interp = new_interp(&ctx);
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
 
-        let store_a = RustBV::symbolic(&ctx, "store_a", 64); // [0x6000, 0x6008)
-        let store_b = RustBV::symbolic(&ctx, "store_b", 64); // [0x6004, 0x600c) -- overlaps A
+    let store_a = RustBV::symbolic(&ctx, "store_a", 64); // [0x6000, 0x6008)
+    let store_b = RustBV::symbolic(&ctx, "store_b", 64); // [0x6004, 0x600c) -- overlaps A
 
-        interp
-            .handle_concrete_store(&callbacks, 0x6000, store_a, 8)
-            .expect("store A");
-        interp
-            .handle_concrete_store(&callbacks, 0x6004, store_b, 8)
-            .expect("store B (overlaps A, more recent)");
+    interp
+        .handle_concrete_store(&callbacks, 0x6000, store_a, 8)
+        .expect("store A");
+    interp
+        .handle_concrete_store(&callbacks, 0x6004, store_b, 8)
+        .expect("store B (overlaps A, more recent)");
 
-        // The stale, fully-shadowed entry for A must be gone -- only B remains.
-        assert_eq!(
-            interp.pending_symbolic_stores.len(),
-            1,
-            "store B must evict the overlapping shadow left by store A"
-        );
-        assert!(!interp.pending_symbolic_stores.contains_key(&0x6000));
-        assert!(interp.pending_symbolic_stores.contains_key(&0x6004));
+    // The stale, fully-shadowed entry for A must be gone -- only B remains.
+    assert_eq!(
+        interp.pending_symbolic_stores.len(),
+        1,
+        "store B must evict the overlapping shadow left by store A"
+    );
+    assert!(!interp.pending_symbolic_stores.contains_key(&0x6000));
+    assert!(interp.pending_symbolic_stores.contains_key(&0x6004));
 
-        // A 2-byte load at 0x6006 overlaps both A's and B's original ranges,
-        // so pre-fix this hit the FxHashMap-iteration-order bug. With only B
-        // left in the map, the overlap fallback in `symbolic_store_load` must
-        // resolve deterministically to bits [16:31] of B (not A, and not a
-        // value that flips depending on hash-iteration order).
-        let loaded = interp
-            .symbolic_store_load(&interp.pending_symbolic_stores, 0x6006, 2)
-            .expect("load overlapping the surviving store B");
-        assert_eq!(loaded.width(), 16);
-        let operand_debug = format!(
-            "{:?}",
-            loaded.node().expect("extract operand").operands[0]
-        );
-        assert!(
-            operand_debug.contains("store_b"),
-            "load must be extracted from the most recent store B, got {operand_debug}"
-        );
-        assert!(
-            !operand_debug.contains("store_a"),
-            "load must not read the stale, evicted store A, got {operand_debug}"
-        );
-    });
+    // A 2-byte load at 0x6006 overlaps both A's and B's original ranges,
+    // so pre-fix this hit the FxHashMap-iteration-order bug. With only B
+    // left in the map, the overlap fallback in `symbolic_store_load` must
+    // resolve deterministically to bits [16:31] of B (not A, and not a
+    // value that flips depending on hash-iteration order).
+    let loaded = interp
+        .symbolic_store_load(&interp.pending_symbolic_stores, 0x6006, 2)
+        .expect("load overlapping the surviving store B");
+    assert_eq!(loaded.width(), 16);
+    let operand_debug = format!(
+        "{:?}",
+        loaded.node().expect("extract operand").operands[0]
+    );
+    assert!(
+        operand_debug.contains("store_b"),
+        "load must be extracted from the most recent store B, got {operand_debug}"
+    );
+    assert!(
+        !operand_debug.contains("store_a"),
+        "load must not read the stale, evicted store A, got {operand_debug}"
+    );
 }
 
 /// angr-sqfj8.68: `dispatch_multi_load` must apply the same [`MAX_ITE_ADDRS`]
@@ -556,68 +531,42 @@ fn handle_concrete_store_symbolic_data_evicts_overlapping_symbolic_shadow() {
 /// enumerate.
 #[test]
 fn dispatch_multi_load_caps_ite_chain_and_defers_to_python() {
-    use crate::callbacks::PythonCallbacks;
-    use pyo3::types::PyDict;
-    Python::initialize();
-    Python::attach(|py| {
-        let globals = PyDict::new(py);
-        py.run(
-            c"loads = []
-fulls = []
-def memory_load(addr, size):
-    loads.append((addr, size))
-    return (b'\\x00' * size, False, None)
-def load_full(addr_ast, size):
-    fulls.append(size)
-    return None
-",
-            Some(&globals),
-            None,
-        )
-        .expect("define test callbacks");
-        let get = |name: &str| {
-            globals
-                .get_item(name)
-                .unwrap()
-                .unwrap_or_else(|| panic!("{name} not defined"))
-        };
-        let recorder_len = |name: &str| get(name).len().expect("recorder is a list");
+    let cb = TestHost {
+        serve_zero_loads: true,
+        serve_symbolic_full_loads: true,
+        ..TestHost::default()
+    };
 
-        let mut cb = PythonCallbacks::new();
-        cb.set_memory_load(get("memory_load").unbind());
-        cb.set_memory_load_symbolic_full(get("load_full").unbind());
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    let addr_bv = RustBV::symbolic(&ctx, "multi_load_addr", 64);
 
-        let ctx = SymContext::new_mock();
-        let interp = new_interp(&ctx);
-        let addr_bv = RustBV::symbolic(&ctx, "multi_load_addr", 64);
+    // At the cap: resolved in Rust, one host load per candidate address.
+    let addrs: Vec<u64> = (0..MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
+    let val = interp
+        .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
+        .expect("at-cap load resolves in Rust");
+    assert_eq!(val.width(), 32);
+    assert_eq!(cb.loads.borrow().len(), MAX_ITE_ADDRS);
+    assert_eq!(
+        cb.symbolic_full_loads.borrow().len(),
+        0,
+        "an at-cap load must not reach the full symbolic-load service"
+    );
 
-        // At the cap: resolved in Rust, one Python load per candidate address.
-        let addrs: Vec<u64> = (0..MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
-        let val = interp
-            .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
-            .expect("at-cap load resolves in Rust");
-        assert_eq!(val.width(), 32);
-        assert_eq!(recorder_len("loads"), MAX_ITE_ADDRS);
-        assert_eq!(
-            recorder_len("fulls"),
-            0,
-            "an at-cap load must not reach the full symbolic-load callback"
-        );
-
-        // One over: handed to Python's memory model instead, with no per-address
-        // loads issued from Rust.
-        let addrs: Vec<u64> = (0..=MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
-        let val = interp
-            .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
-            .expect("over-cap load defers to Python");
-        assert_eq!(val.width(), 32);
-        assert_eq!(recorder_len("fulls"), 1);
-        assert_eq!(
-            recorder_len("loads"),
-            MAX_ITE_ADDRS,
-            "the over-cap load must not issue per-address loads from Rust"
-        );
-    });
+    // One over: handed to the host's memory model instead, with no
+    // per-address loads issued from Rust.
+    let addrs: Vec<u64> = (0..=MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
+    let val = interp
+        .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
+        .expect("over-cap load defers to the host");
+    assert_eq!(val.width(), 32);
+    assert_eq!(cb.symbolic_full_loads.borrow().len(), 1);
+    assert_eq!(
+        cb.loads.borrow().len(),
+        MAX_ITE_ADDRS,
+        "the over-cap load must not issue per-address loads from Rust"
+    );
 }
 
 /// The cap yields when the full symbolic-load callback isn't wired up: the
@@ -625,32 +574,20 @@ def load_full(addr_ast, size):
 /// out would be a regression against the pre-cap behavior.
 #[test]
 fn dispatch_multi_load_over_cap_without_full_callback_still_builds_ite() {
-    use crate::callbacks::PythonCallbacks;
-    use pyo3::types::PyDict;
-    Python::initialize();
-    Python::attach(|py| {
-        let globals = PyDict::new(py);
-        py.run(
-            c"def memory_load(addr, size):
-    return (b'\\x00' * size, False, None)
-",
-            Some(&globals),
-            None,
-        )
-        .expect("define test callbacks");
-        let mut cb = PythonCallbacks::new();
-        cb.set_memory_load(globals.get_item("memory_load").unwrap().unwrap().unbind());
-        assert!(!cb.has_memory_load_symbolic_full());
+    let cb = TestHost {
+        serve_zero_loads: true,
+        ..TestHost::default()
+    };
+    assert!(!cb.has_memory_load_symbolic_full());
 
-        let ctx = SymContext::new_mock();
-        let interp = new_interp(&ctx);
-        let addr_bv = RustBV::symbolic(&ctx, "uncapped_addr", 64);
-        let addrs: Vec<u64> = (0..64u64).map(|i| 0x5000 + i * 8).collect();
-        let val = interp
-            .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
-            .expect("over-cap load without the full callback falls back to the ITE chain");
-        assert_eq!(val.width(), 32);
-    });
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    let addr_bv = RustBV::symbolic(&ctx, "uncapped_addr", 64);
+    let addrs: Vec<u64> = (0..64u64).map(|i| 0x5000 + i * 8).collect();
+    let val = interp
+        .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
+        .expect("over-cap load without the full callback falls back to the ITE chain");
+    assert_eq!(val.width(), 32);
 }
 
 /// `regarray_offset` computes the rotating window offset for a well-formed
@@ -722,9 +659,7 @@ fn fabricated_result_width_falls_back_to_the_widest_operand() {
 /// arm, so only an oversized one distinguishes the two dispositions.
 #[test]
 fn oversized_load_falls_back_to_python_rather_than_erroring() {
-    use crate::callbacks::PythonCallbacks;
-    pyo3::Python::initialize();
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     interp.set_rust_memory(SymbolicMemory::new(Endness::Little));
@@ -771,9 +706,7 @@ fn pinned_symbolic_addr(ctx: &SymContext, name: &str, addr: u64) -> RustBV {
 /// value without consulting the concrete-memory cache at all.
 #[test]
 fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
-    use crate::callbacks::PythonCallbacks;
-    pyo3::Python::initialize();
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let ctx = SymContext::new_mock();
     let backer: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
@@ -813,9 +746,7 @@ fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
 /// skipping the call — not a different result.
 #[test]
 fn try_rust_memory_load_short_circuits_under_avoid_multivalued_reads() {
-    use crate::callbacks::PythonCallbacks;
-    pyo3::Python::initialize();
-    let callbacks = PythonCallbacks::new();
+    let callbacks = TestHost::default();
     let ctx = SymContext::new_mock();
     let backer: u128 = 0xDEAD_BEEF_CAFE_BABE;
 
