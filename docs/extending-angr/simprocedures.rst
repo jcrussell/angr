@@ -312,7 +312,7 @@ The Python SimProcedure machinery above is the right tool for almost every
 hook you'll write. But for a small set of very-hot libc functions (``strlen``,
 ``memcpy``, ``strcmp``, ``malloc``, …) the cost of crossing the FFI boundary
 on every call dominates the work the procedure actually does. The Rust
-engine (``use_rust_engine=True`` on
+engine (``engine="rust"`` on
 ``proj.factory.simulation_manager(...)``) ships with **native** versions of
 those procedures written in Rust against the engine's internal
 ``RustSimState``. They never enter Python, never marshal arguments through

@@ -89,7 +89,7 @@ _STRUCTURAL_GAPS = [
         "bead": "angr-op0dn.14.4.2",
     },
     {
-        "item": "engine dispatch (tri-state use_rust_engine)",
+        "item": "engine dispatch (simulation_manager(engine='rust'))",
         "tier": "raise",
         "why": "factory.simulation_manager raises on Rust-ineligible kwargs/options rather than "
         "falling back. Correct today (opt-in), fatal after a flip: the raise IS the regression.",

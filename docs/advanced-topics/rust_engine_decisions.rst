@@ -130,6 +130,31 @@ memory onto the proxy by default; registers and constraints keep
 diff-and-push at the callback boundary. The write-through contract is
 in :doc:`rust_engine`.
 
+Engine selection
+----------------
+
+**One knob, ``engine="rust"``** (``angr-mx00p.62``). The engine used to be
+selectable four ways: a tri-state ``use_rust_engine=True/False/None`` on
+``simulation_manager()``, ``Project(engine="rust")``,
+``ANGR_DEFAULT_ENGINE=rust``, and an auto-dispatch switch
+(``angr.exploration.set_rust_auto_dispatch()`` / ``ANGR_RUST_AUTO``) that
+only gated ``use_rust_engine=None``. The last and the project setting ran
+the same eligibility predicate, so they were two doors onto one heuristic.
+What remains is ``engine="rust"``: per call it demands the Rust engine and
+raises, on a project it routes through the predicate, and
+``ANGR_DEFAULT_ENGINE=rust`` is only the process-wide default of the project
+setting. A loud project setting was rejected: angr's own analyses build
+managers without naming an engine (the jump-table resolver passes
+``resilience=True``), so ``CFGFast`` would raise on every opted-in project.
+The removed names never shipped in a released angr, so they were dropped
+without shims, but none is ignored silently: ``use_rust_engine=`` is an
+unknown keyword (``TypeError``), and building a project while
+``ANGR_RUST_AUTO`` is set raises ``AngrError``. A warning was rejected for
+the variable because a CI job that sets it would scroll past the warning and
+pass on the Python engine. The routing decision is logged rather than stored
+as ``mgr.dispatch_reason``, so a plain ``SimulationManager`` carries no
+fork-only attribute.
+
 Lifting
 -------
 

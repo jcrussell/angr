@@ -4,9 +4,9 @@ Rust symbolic execution engine
 angr ships a Rust-native symbolic-execution engine
 (``RustExplorationManager``) that runs the VEX interpreter, memory
 model, and Z3 solver in Rust while still cooperating with the Python
-project, claripy ASTs, and SimProcedures via PyO3. It is enabled by
-passing ``use_rust_engine=True`` to ``proj.factory.simulation_manager()``
-or by building the project with ``engine="rust"`` (see *Auto dispatch*
+project, claripy ASTs, and SimProcedures via PyO3. It is selected with
+``engine="rust"``, per call on ``proj.factory.simulation_manager()`` or
+for a whole project on ``angr.Project()`` (see *Selecting the engine*
 below).
 
 This page is the reference for *using* the engine: which
@@ -123,7 +123,7 @@ Usage
 -----
 
 Construct a ``RustExplorationManager`` directly, or pass
-``use_rust_engine=True`` to ``proj.factory.simulation_manager()``:
+``engine="rust"`` to ``proj.factory.simulation_manager()``:
 
 .. code-block:: python
 
@@ -139,7 +139,7 @@ Construct a ``RustExplorationManager`` directly, or pass
    for found in mgr.found:
        print(f"Found at {hex(found.addr)}")
 
-The ``proj.factory.simulation_manager(state, use_rust_engine=True)``
+The ``proj.factory.simulation_manager(state, engine="rust")``
 form returns a wrapper that exposes the same interface as the standard
 ``SimulationManager`` (``explore``, ``step``, ``found``, ``avoid``,
 etc.) while running the Rust engine underneath.
@@ -161,15 +161,34 @@ are kept. ``set_materialize_unconstrained_forks(False)`` drops them instead,
 which is faster but loses those paths unless an address-based ``explore()``'s
 eager retry happens to re-derive them.
 
-Auto dispatch and the ``engine="rust"`` project default
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Selecting the engine
+~~~~~~~~~~~~~~~~~~~~
 
-``use_rust_engine`` is tri-state. ``True`` demands the Rust engine and
-raises when the workload is one it cannot honor; ``False`` demands the
-Python engine; ``None`` means *auto* — run on Rust when the workload is
-eligible and on Python when it is not, never raising and never
-diverging. The routing decision is always readable afterwards on
-``mgr.dispatch_reason``.
+``engine="rust"`` is the one knob, in two places:
+
+.. code-block:: python
+
+   # Per call: this manager runs on the Rust engine, or the call raises.
+   mgr = proj.factory.simulation_manager(state, engine="rust")
+
+   # Per project: every simulation_manager() call that names no engine,
+   # including the ones angr's own analyses make, runs on the Rust engine
+   # when the workload is eligible and on the Python engine otherwise.
+   proj = angr.Project("/path/to/binary", engine="rust")
+   mgr = proj.factory.simulation_manager(state)      # Rust if eligible
+
+   # Every project in the process, without editing the script:
+   #    $ ANGR_DEFAULT_ENGINE=rust python your_script.py
+
+Per call, ``engine="rust"`` raises (``NotImplementedError``) when the
+workload is one the engine cannot honor. On a project it never raises
+and never diverges: an ineligible workload is a Python one. That is
+what lets angr's analyses, which build their managers without naming an
+engine, keep working on a ``Project(engine="rust")`` project. The
+per-call way back to Python on such a project is the stock
+``SimulationManager(proj, active_states=[...])`` constructor.
+``ANGR_DEFAULT_ENGINE=rust`` is the process-wide default of the project
+setting, read when each ``Project`` is built.
 
 A workload is ineligible (and so routes to Python) when any of these
 hold: the Rust extension is not built; the architecture is not one
@@ -185,37 +204,21 @@ already has a breakpoint on an ``inspect`` event the Rust engine does not
 dispatch. The predicate is
 :func:`angr.exploration.rust_manager.rust_engine_eligible`; it shares
 its option sets with the manager's own construction guard, so the two
-cannot drift. The decision is logged at debug level and recorded on the
-returned manager as ``mgr.dispatch_reason``.
-
-Auto mode is **opt-in**. The doors, in increasing scope:
-
-.. code-block:: python
-
-   # 1. Per-call: ask for auto on one manager (needs the global switch, below).
-   angr.exploration.set_rust_auto_dispatch(True)     # or ANGR_RUST_AUTO=1
-   mgr = proj.factory.simulation_manager(state, use_rust_engine=None)
-
-   # 2. Per-project: every simulation_manager() call that does not name an
-   #    engine routes through the predicate. No global switch needed.
-   proj = angr.Project("/path/to/binary", engine="rust")
-   mgr = proj.factory.simulation_manager(state)      # Rust if eligible
-
-   # 3. Process-wide: same as (2), for every project built while it is set.
-   #    $ ANGR_DEFAULT_ENGINE=rust python your_script.py
+cannot drift. The decision and its reason are logged on the
+``angr.factory`` logger at debug level.
 
 ``engine="rust"`` swaps the **manager**, not the ``SimEngine``:
 ``factory.default_engine_factory`` stays ``UberEngine``, so ``block()``,
-the CFG, and every other lifting/analysis path are untouched. An explicit
-``use_rust_engine=True``/``False`` always overrides the project default,
-in both directions — including keeping ``True``'s loud raise.
+the CFG, and every other lifting/analysis path are untouched.
 
-With every door shut (the default), ``simulation_manager()`` builds a
-plain Python ``SimulationManager``, exactly as it always has.
+With neither set (the default), ``simulation_manager()`` builds a
+plain Python ``SimulationManager``, exactly as it always has. Why there
+is one knob, and what became of the others, is in
+:doc:`rust_engine_decisions` (*Engine selection*).
 
 .. note::
 
-   Timing under auto dispatch is not comparable run-to-run for the
+   Timing on a ``Project(engine="rust")`` project is not comparable run-to-run for the
    bimodal-Z3 benchmarks (``BIMODAL_BENCHMARKS`` in
    ``tests/benchmarks/run_regression.py``) — the Rust engine inherits their solver-path
    variance, which is a permanent property of the workloads, not a
@@ -417,8 +420,8 @@ cooperate through PyO3:
 * **Shared Z3 context:** Python and Rust load the same ``libz3.so`` and
   share the Z3 context so claripy ASTs round-trip without
   re-serialization.
-* **Feature flag:** ``use_rust_engine=True`` on
-  ``proj.factory.simulation_manager()``.
+* **Feature flag:** ``engine="rust"`` on
+  ``proj.factory.simulation_manager()`` or ``angr.Project()``.
 
 State merge policy (the ``MergePolicy`` derive)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -665,7 +668,8 @@ contract for them is *loud failure, then fall back to Python*:
   callers and the next arch port.
 
 To run one of these architectures, use the **Python engine** (omit
-``use_rust_engine=True``). Adding Rust support means writing a new
+``engine="rust"``; a ``Project(engine="rust")`` project routes them to
+Python on its own). Adding Rust support means writing a new
 ``Arch`` implementor plus a calling convention and following the
 Skeleton → Experimental → Supported promotion path above.
 
@@ -1266,7 +1270,7 @@ SimOption coverage matrix
 This section documents which ``angr.sim_options`` flags the Rust
 symbolic-execution engine actually honors. Anything not listed as
 **Honored** or **Inherited** is a **silent no-op** when running under
-``use_rust_engine=True`` — the option may be set on the SimState and
+the Rust engine — the option may be set on the SimState and
 visible to Python introspection, but the Rust interpreter / memory
 model / solver does not consult it.
 
@@ -1466,7 +1470,7 @@ vs. Python.
    (``TRACK_CONSTRAINT_ACTIONS``, ``TRACK_MEMORY_MAPPING``) — warning on
    every ``entry_state()`` would be noise the user did not ask for. The
    **(c)** rows raise ``NotImplementedError`` at manager construction via
-   ``_RAISE_OPTION_NAMES``; under the auto dispatcher that raise is a
+   ``_RAISE_OPTION_NAMES``; on a ``Project(engine="rust")`` project that raise is a
    *routing signal* and the workload transparently gets a Python
    ``SimulationManager``. For the action-tracking family, Rust will not
    grow native ``SimAction`` recording (``SimAction``\ s wrap claripy
@@ -2146,8 +2150,8 @@ hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
   silently no-op'ing. Registration is still permitted (no exception at
   ``use_technique`` time), but the per-successor hook never fires;
   ``use_technique()`` emits a ``logging.WARNING`` flagging the
-  overridden hook. Drop to ``use_rust_engine=False`` if your workflow
-  needs it.
+  overridden hook. Use the Python engine (a plain
+  ``SimulationManager``) if your workflow needs it.
 
 Caveats specific to ``step()`` dispatch:
 
@@ -2288,7 +2292,7 @@ registered returns ``False`` and disarms nothing.
        and siblings) do not inherit from ``SimError`` and do not
        carry ``executed_instruction_count`` / ``ins_addr``, so the
        existing catch + ``_delayed_oppology`` flow would still need
-       a rewrite. Drop to ``use_rust_engine=False`` if you need
+       a rewrite. Use the Python engine if you need
        unicorn-fallback for unsupported VEX ops.
    * - ``Tracer``
      - **Incompatible — silently declines (no loud failure)**
@@ -2306,7 +2310,7 @@ registered returns ``False`` and disarms nothing.
        place")``) and the state is likewise advanced natively. Either
        way the failure mode is *silent divergence*, not a
        ``NotImplementedError`` — do not rely on a hard failure. Use
-       ``use_rust_engine=False`` for trace replay.
+       the Python engine for trace replay.
    * - ``Director``
      - **Step hook dispatched, stash assignment honored**
      - Goal-prioritisation ``step()`` runs (``angr-rqvq``) and the
@@ -2426,8 +2430,8 @@ Analyses compatibility
 Inheritance contract
 ~~~~~~~~~~~~~~~~~~~~
 
-The ``use_rust_engine=True`` kwarg on
-``proj.factory.simulation_manager(state, use_rust_engine=True)`` is a
+The ``engine="rust"`` kwarg on
+``proj.factory.simulation_manager(state, engine="rust")`` is a
 **per-call selector**. It is not stored on the project, the factory,
 or any thread-local state — every call to
 ``proj.factory.simulation_manager(...)`` (or its ``factory.simgr``
@@ -2436,13 +2440,14 @@ in at that call site.
 
 Consequences:
 
-* **Default is Python.** Any call site that omits the kwarg gets a
-  plain ``SimulationManager``, even if the same caller previously
-  constructed a ``RustExplorationManager`` against the same project.
+* **Default is Python.** On a stock project, any call site that omits
+  the kwarg gets a plain ``SimulationManager``, even if the same caller
+  previously constructed a ``RustExplorationManager`` against the same
+  project.
 * **The project default is explicit.** ``angr.Project(engine="rust")``
   (or ``ANGR_DEFAULT_ENGINE=rust``) routes ``simulation_manager()``
   calls that do not name an engine through the eligibility predicate
-  — see *Auto dispatch*. Merely attaching a ``RustExplorationManager``
+  — see *Selecting the engine*. Merely attaching a ``RustExplorationManager``
   to a project changes nothing for later ``factory.simulation_manager()``
   calls.
 * **``factory.successors(state, ...)`` always dispatches to the
@@ -2450,13 +2455,14 @@ Consequences:
   which is wired to ``UberEngine`` / ``UberEnginePcode`` at factory
   construction time and is not influenced by Rust manager
   configuration.
-* **Internal analyses always use Python.** Every analysis under
-  ``angr/analyses/`` that constructs an internal SimulationManager
-  goes through ``proj.factory.simulation_manager(...)`` without
-  threading a ``use_rust_engine`` kwarg, and every analysis that
-  steps states directly does so via ``proj.factory.successors(...)``.
-  Both paths land on the Python engine regardless of how the user
-  invoked the surrounding analysis.
+* **Internal analyses use Python on a stock project.** Every analysis
+  under ``angr/analyses/`` that constructs an internal SimulationManager
+  goes through ``proj.factory.simulation_manager(...)`` without naming
+  an engine, and every analysis that steps states directly does so via
+  ``proj.factory.successors(...)``. On a stock project both paths land
+  on the Python engine regardless of how the user invoked the
+  surrounding analysis; on a ``Project(engine="rust")`` project the
+  first follows the eligibility predicate.
 
 This is a **safety default**: opting an internal analysis into Rust
 execution requires either an in-tree port (verdict marked
@@ -2509,7 +2515,7 @@ the verdict for running it against a project that has had a
    * - ``CFGEmulated``
      - **Unsupported (v1.0)**
      - Builds internal ``SimulationManager`` instances at indirect-
-       jump resolution (``cfg_emulated.py``). Has no ``use_rust_engine`` plumbing — those
+       jump resolution (``cfg_emulated.py``). Has no ``engine`` plumbing — those
        internal SMs always dispatch to the Python engine, so a
        ``RustExplorationManager`` attached to the project is unused.
        Beyond the SM bypass, the analysis also reads
@@ -2588,7 +2594,7 @@ the verdict for running it against a project that has had a
 An analysis that builds its manager through
 ``proj.factory.simulation_manager()`` follows the project default, so
 ``Project(engine="rust")`` / ``ANGR_DEFAULT_ENGINE=rust`` route it (see
-*Auto dispatch and the* ``engine="rust"`` *project default* above). One
+*Selecting the engine* above). One
 that constructs ``SimulationManager`` directly stays on the Python
 engine; to force Rust semantics there, monkey-patch
 ``AngrObjectFactory.simulation_manager`` to return a
@@ -2956,7 +2962,7 @@ to techniques (the method on :class:`RustSimulationManagerProxy`
 raises ``NotImplementedError``), so the recovery hook never runs —
 the typed ``Rust*Error`` propagates straight out of ``mgr.run(...)``
 as if no technique were installed. Resolution: use
-``use_rust_engine=False`` for the unicorn-fallback workflow. See
+the Python engine for the unicorn-fallback workflow. See
 the *Exploration technique compatibility* table above (``angr-v4qi``)
 for the full chain of issues (dispatch, exception inheritance,
 ``executed_instruction_count`` attribute) that would each need to be

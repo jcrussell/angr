@@ -1,7 +1,7 @@
 Native SimProcedure and syscall coverage matrix
 ===============================================
 
-The Rust engine (``use_rust_engine=True``) ships with two parallel
+The Rust engine (``engine="rust"``) ships with two parallel
 registries that short-circuit angr's Python dispatch for ubiquitous
 calls:
 

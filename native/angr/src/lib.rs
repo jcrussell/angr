@@ -7,10 +7,10 @@
 //! but produces a library named `rustylib` so the Python import path works.)
 //!
 //! Python drives it through `angr.exploration.RustExplorationManager` (or
-//! `use_rust_engine=True`); the Rust side then lifts, interprets and solves
-//! without returning to the interpreter per basic block. Z3 is shared with
-//! claripy — the same `libz3.so` is loaded by both sides so ASTs pass through
-//! by handle rather than being re-parsed.
+//! `factory.simulation_manager(engine="rust")`); the Rust side then lifts,
+//! interprets and solves without returning to the interpreter per basic block.
+//! Z3 is shared with claripy — the same `libz3.so` is loaded by both sides so
+//! ASTs pass through by handle rather than being re-parsed.
 //!
 //! # Entry points
 //!
