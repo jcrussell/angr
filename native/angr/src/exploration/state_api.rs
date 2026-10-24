@@ -505,7 +505,7 @@ impl RustExplorationManager {
     pub(crate) fn _export_state(
         &mut self,
         state_id: u64,
-    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    ) -> PyResult<crate::state_bridge::ExplorationStateSnapshot> {
         self._export_state_flushed(state_id)
     }
 
@@ -522,27 +522,29 @@ impl RustExplorationManager {
     pub(crate) fn _export_state_flushed(
         &mut self,
         state_id: u64,
-    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    ) -> PyResult<crate::state_bridge::ExplorationStateSnapshot> {
         // find_state_mut mirrors find_state's pending-callback-first lookup,
         // so this covers states parked in `pending_callbacks` too.
-        self.with_state_mut(state_id, |state| Ok(state.flush_and_export_full()))
+        self.with_state_mut(state_id, |state| Ok(state.flush_and_export_full().into()))
     }
 
     pub(crate) fn _export_stash(
         &mut self,
         stash: &str,
-    ) -> Vec<crate::state::ExplorationStateSnapshot> {
+    ) -> Vec<crate::state_bridge::ExplorationStateSnapshot> {
         self.sm
             .get_mut(stash)
             .map(|s| {
                 s.iter_mut()
-                    .map(super::super::state::RustSimState::flush_and_export_full)
+                    .map(|state| state.flush_and_export_full().into())
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    pub(crate) fn _export_found_states(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
+    pub(crate) fn _export_found_states(
+        &mut self,
+    ) -> Vec<crate::state_bridge::ExplorationStateSnapshot> {
         self._export_stash(STASH_FOUND)
     }
 
@@ -659,7 +661,7 @@ impl RustExplorationManager {
     ///   (`angr/exploration/rust_state_proxy.py`), the stand-in for angr's
     ///   `state.regs`. angr's `arch.registers` is a strict superset of the
     ///   names Rust's `RegisterFile` models — see invariant I5 on
-    ///   `RustSimState::set_registers_bulk` in `state/pymethods.rs` for the
+    ///   `PyRustSimState::set_registers_bulk` in `state_bridge/pymethods.rs` for the
     ///   list (`cr0..8`, `ymm0..15`, `fs_seg`, `fpreg`, ...). Raising here
     ///   would turn every `state.regs.ymm0` read into an `AttributeError`;
     ///   answering `None` lets the proxy fall back to an unconstrained BVS,

@@ -12,9 +12,10 @@
 //! `angr/exploration/rust_manager.py` module docstring. Rust-local facts for
 //! the ones enforced here:
 //!
-//! - **I5 (register filter)** — `set_registers_bulk` (this module) returns
-//!   `PyValueError("unknown register: ...")` for a name the Rust arch does
-//!   not model; the Python caller filters first.
+//! - **I5 (register filter)** — `set_registers_bulk` (the PyO3 shell's
+//!   `state_bridge::pymethods`) returns `PyValueError("unknown register:
+//!   ...")` for a name the Rust arch does not model; the Python caller
+//!   filters first.
 //! - **I7 (`max()` field sync)** — Rust owns `mmap_base` and `posix_brk`
 //!   (this module); the setters here accept any value, and the
 //!   directionality is enforced at the Python export site.
@@ -82,10 +83,6 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-// Only for the `PyRustSimState` wrapper below, which moves to the PyO3 shell
-// with the rest of the state's Python surface (angr-mx00p.75 item 5).
-use pyo3::prelude::*;
-
 // Called by the `merge_field_*` bodies `#[derive(angr_macros::MergePolicy)]`
 // generates for every `warn_on_diverge` field below; the derive emits a bare
 // call, so the name has to be in scope here.
@@ -110,7 +107,6 @@ mod memory;
 mod migration;
 mod options;
 mod process;
-mod pymethods;
 mod registers;
 mod snapshot;
 mod solver_access;
@@ -121,6 +117,7 @@ pub use filesystem::*;
 pub use inspection::*;
 pub use migration::StateMigrationPayload;
 pub use options::SYMBOLIC_INITIAL_VALUES;
+pub(crate) use options::state_flag_list;
 pub use snapshot::*;
 pub use types::*;
 
@@ -678,6 +675,12 @@ impl RustSimState {
         self.concretizer = concretizer;
     }
 
+    /// The address concretization strategy, for reconfiguring it in place
+    /// (`PyRustSimState::configure_concretization_strategies`).
+    pub fn concretizer_mut(&mut self) -> &mut AddressConcretizer {
+        &mut self.concretizer
+    }
+
     /// Set whether to track history.
     pub fn set_track_history(&mut self, track: bool) {
         self.track_history = track;
@@ -713,22 +716,6 @@ impl RustSimState {
     /// private `max_history` field directly (angr-9ke6b.124).
     pub fn max_history(&self) -> usize {
         self.max_history
-    }
-}
-
-/// Python-facing wrapper for RustSimState.
-///
-/// This provides the PyO3 interface for creating and manipulating
-/// Rust-native simulation states from Python.
-#[pyclass(name = "RustSimState", unsendable)]
-pub struct PyRustSimState {
-    inner: RustSimState,
-}
-
-impl PyRustSimState {
-    /// Get access to the inner state (for Rust-side use).
-    pub fn inner(&self) -> &RustSimState {
-        &self.inner
     }
 }
 

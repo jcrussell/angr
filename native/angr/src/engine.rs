@@ -460,9 +460,9 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Deferred fork types (`DeferredFork` itself is Rust-internal) (angr-03vl4.6)
     m.add_class::<ExecutionConfig>()?;
     // Rust-first state
-    m.add_class::<crate::state::PyRustSimState>()?;
+    m.add_class::<crate::state_bridge::PyRustSimState>()?;
     // State snapshot for exploration export
-    m.add_class::<crate::state::ExplorationStateSnapshot>()?;
+    m.add_class::<crate::state_bridge::ExplorationStateSnapshot>()?;
     // Exploration manager
     crate::exploration::register_exploration(m)?;
     // Z3 global parameters

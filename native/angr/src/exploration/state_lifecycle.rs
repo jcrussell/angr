@@ -81,7 +81,7 @@ impl RustExplorationManager {
         Ok(state_id)
     }
 
-    pub(crate) fn _add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
+    pub(crate) fn _add_state(&mut self, stash: &str, state: &crate::state_bridge::PyRustSimState) {
         // Fork the state to get our own copy
         let mut forked = state.inner().fork();
         let state_id = forked.state_id();

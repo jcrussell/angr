@@ -8,7 +8,7 @@ use super::super::*;
 use super::helpers::build_populated_state;
 
 // =============================================================================
-// export.rs — ExplorationStateSnapshot / RustSimState::export_full coverage
+// export.rs — StateExport / RustSimState::export_full coverage
 // (angr-n0irt.17). state/export.rs is the single choke point every
 // found/errored/exported state crosses. These pin its branches:
 // the named-vs-symbolic register split (angr-4ju9e), memory_load page-boundary

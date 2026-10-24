@@ -8,7 +8,8 @@
 //!
 //! The PyO3-facing memory methods (the `#[pymethods]` `map_memory`,
 //! `map_memory_data`, `map_memory_batch`, `memory_load`, `memory_store`
-//! wrappers) stay in `mod.rs` with the rest of the `#[pymethods]` block.
+//! wrappers) live with the rest of the `#[pymethods]` block in the PyO3
+//! shell's `state_bridge::pymethods`.
 
 use super::*;
 

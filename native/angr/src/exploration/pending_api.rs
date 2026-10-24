@@ -458,9 +458,9 @@ impl RustExplorationManager {
     pub(crate) fn _export_pending_state(
         &mut self,
         state_id: u64,
-    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    ) -> PyResult<crate::state_bridge::ExplorationStateSnapshot> {
         self.with_pending_mut(state_id, |pending| {
-            Ok(pending.state.flush_and_export_full())
+            Ok(pending.state.flush_and_export_full().into())
         })
     }
 

@@ -189,7 +189,6 @@ fn delegate_heap_metadata_unions_allocation_records_across_branches() {
 /// AND removal, on both hooks/options/env at once).
 #[test]
 fn joint_config_like_fields_union_additions_and_respect_removal_tombstones() {
-    Python::initialize();
     let mut ancestor = RustSimState::new("amd64").unwrap();
     ancestor.add_hook(0x400000);
     ancestor.set_option("SHORT_READS", true);
@@ -248,7 +247,6 @@ fn joint_config_like_fields_union_additions_and_respect_removal_tombstones() {
 /// this field lives in `merge_heap.rs`.
 #[test]
 fn joint_cgc_sinkholes_intersects_freed_regions_across_branches() {
-    Python::initialize();
     let mut ancestor = RustSimState::new("amd64").unwrap();
     ancestor.cgc_add_sinkhole(0x9000, 0x100);
     let mut a = ancestor.fork();
@@ -314,7 +312,6 @@ fn joint_py_ast_overlay_maps_union_with_self_priority_on_conflict() {
 /// fd-drop-warn coverage lives in `merge_multi_state.rs`.
 #[test]
 fn joint_fs_keeps_the_longest_stdout_branch() {
-    Python::initialize();
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
     assert!(a.write_stdout(b"hi"));
@@ -333,7 +330,6 @@ fn joint_fs_keeps_the_longest_stdout_branch() {
 /// since the union is set-like over a `Vec` keyed by name, not a bool OR.
 #[test]
 fn manual_stdin_symbols_unions_by_name_dedup_self_first() {
-    Python::initialize();
     let mut ancestor = RustSimState::new("amd64").unwrap();
     ancestor.record_stdin_symbol("shared".to_string(), 8);
     let a = ancestor.fork();

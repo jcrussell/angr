@@ -1,7 +1,9 @@
-//! Python export snapshot (`ExplorationStateSnapshot`).
+//! Plain-data state export ([`StateExport`]).
 //!
-//! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
-//! policy in `lib.rs`).
+//! The Python face, the `ExplorationStateSnapshot` pyclass wrapping a
+//! [`StateExport`], is `state_bridge::snapshot` in the PyO3 shell
+//! (angr-mx00p.75). Its getters take caller-supplied sizes, so this module
+//! keeps `unwrap`/`expect` denied (angr-qwyti.11; panic policy in `lib.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
@@ -18,26 +20,20 @@ type PageData = (u64, Vec<u8>, u8, Vec<u16>);
 ///
 /// This contains all information needed to reconstruct an angr SimState
 /// from a Rust execution state.
-#[pyclass(name = "ExplorationStateSnapshot")]
-pub struct ExplorationStateSnapshot {
+pub struct StateExport {
     /// Unique state identifier.
-    #[pyo3(get)]
     pub state_id: u64,
     /// Parent state ID (for fork tracking).
-    #[pyo3(get)]
     pub parent_id: Option<u64>,
     /// Program counter.
-    #[pyo3(get)]
     pub pc: u64,
     /// Architecture name.
-    #[pyo3(get)]
     pub arch_name: String,
     /// Raw register bytes.
     registers_raw: Vec<u8>,
     /// Memory pages: (addr, data, permissions, symbolic_offsets).
     memory_pages: Vec<PageData>,
     /// Number of constraints in the solver.
-    #[pyo3(get)]
     pub constraint_count: usize,
     /// Basic block history.
     history: Vec<u64>,
@@ -63,11 +59,12 @@ pub struct ExplorationStateSnapshot {
     /// Inspection event counts per type.
     inspection_counts: Vec<(String, u64)>,
     /// Inspection enabled bitmask.
-    #[pyo3(get)]
     pub inspection_enabled: u8,
 }
 
-// ExplorationStateSnapshot pymethod surface (angr-hv4lt.11).
+// The `ExplorationStateSnapshot` pymethod surface (angr-hv4lt.11). Each
+// accessor below is mirrored one-for-one by a pymethod of the same name in
+// `state_bridge::snapshot`.
 //
 // Two tiers, kept intentionally so future contributors don't assume the whole
 // surface is load-bearing:
@@ -95,8 +92,7 @@ pub struct ExplorationStateSnapshot {
 //   snapshot, so these duplicate that data at snapshot granularity. Retained
 //   as a stable Rust-side introspection API (exercised by
 //   `state/tests/export.rs`; angr-n0irt.17) — not dead, just not on the materialization hot path.
-#[pymethods]
-impl ExplorationStateSnapshot {
+impl StateExport {
     /// Get raw register bytes.
     pub fn get_registers_raw(&self) -> Vec<u8> {
         self.registers_raw.clone()
@@ -252,7 +248,7 @@ impl RustSimState {
     /// Does **not** flush deferred symbolic stores — see the note at the
     /// memory-page export below. Prefer [`Self::flush_and_export_full`]
     /// unless the pending queue is known to be empty.
-    pub fn export_full(&self) -> ExplorationStateSnapshot {
+    pub fn export_full(&self) -> StateExport {
         // Export registers
         let registers_raw = self.get_registers_raw();
 
@@ -280,13 +276,13 @@ impl RustSimState {
         // Pending writes are NOT flushed before the memory pages below:
         // `SymbolicMemory::flush_pending_writes` needs `&mut`, and this method
         // takes `&self`. Nor does the snapshot advertise the shortfall —
-        // `ExplorationStateSnapshot` has no pending-write count, so a deferred
+        // `StateExport` has no pending-write count, so a deferred
         // store that never got materialized is simply missing from the
         // exported pages with nothing to signal it.
         //
         // The mitigation is therefore at the call sites, not here: every
         // production export path goes through `flush_and_export_full`
-        // instead — `state::pymethods::PyRustSimState::export_full`,
+        // instead — `state_bridge::pymethods::PyRustSimState::export_full`,
         // `exploration::state_api`, `exploration::pending_api` (angr-sqfj8.27)
         // and `exploration::stepping`. Call `export_full` directly only when
         // the pending queue is known to be empty.
@@ -319,7 +315,7 @@ impl RustSimState {
             .map(|e| (e.addr, e.jumpkind, e.jump_target))
             .collect();
 
-        ExplorationStateSnapshot {
+        StateExport {
             state_id: self.state_id,
             parent_id: self.parent_id,
             pc: self.pc,
@@ -364,7 +360,7 @@ impl RustSimState {
 
     /// Flush pending writes and then export.
     /// This materializes any deferred symbolic stores before creating the snapshot.
-    pub fn flush_and_export_full(&mut self) -> ExplorationStateSnapshot {
+    pub fn flush_and_export_full(&mut self) -> StateExport {
         // Flush pending writes using the current solver context
         {
             let ctx = self.solver.borrow();

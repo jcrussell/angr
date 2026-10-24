@@ -50,7 +50,7 @@ fn state_with_multi_cell_store(value: u32) -> RustSimState {
 }
 
 /// `symbolic_offsets` of the snapshot page starting at `page_addr`.
-fn symbolic_offsets_at(snap: &crate::state::ExplorationStateSnapshot, page_addr: u64) -> Vec<u16> {
+fn symbolic_offsets_at(snap: &crate::state_bridge::ExplorationStateSnapshot, page_addr: u64) -> Vec<u16> {
     let index = snap
         .page_addresses()
         .iter()

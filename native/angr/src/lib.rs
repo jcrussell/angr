@@ -29,7 +29,9 @@
 //! - [`vex`] / `interpreter` — IRSB lifting and VEX statement/expression
 //!   execution
 //! - [`state`] / [`memory`] / [`stash`] — simulation state, the lazy
-//!   copy-on-write memory model, and the exploration stashes
+//!   copy-on-write memory model, and the exploration stashes;
+//!   `state_bridge` is the state's PyO3 face (`RustSimState`,
+//!   `ExplorationStateSnapshot`)
 //! - [`symbolic`] / `solver` / `claripy_bridge` — the Z3 context, constraint
 //!   solving, and AST import/export across the Python boundary
 //! - `procedures` / `syscalls` — native SimProcedures and syscall handlers,
@@ -375,6 +377,7 @@ pub(crate) mod procedures;
 pub(crate) mod solver;
 pub mod stash;
 pub mod state;
+pub(crate) mod state_bridge;
 pub mod symbolic;
 pub(crate) mod syscalls;
 pub mod vex;

@@ -70,7 +70,7 @@ impl RustExplorationManager {
     pub fn export_state(
         &mut self,
         state_id: u64,
-    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    ) -> PyResult<crate::state_bridge::ExplorationStateSnapshot> {
         self._export_state(state_id)
     }
 
@@ -92,7 +92,7 @@ impl RustExplorationManager {
         &mut self,
         state_id: u64,
         extra_stop_points: Option<Vec<u64>>,
-    ) -> PyResult<HashMap<String, Vec<crate::state::ExplorationStateSnapshot>>> {
+    ) -> PyResult<HashMap<String, Vec<crate::state_bridge::ExplorationStateSnapshot>>> {
         self._step_state(state_id, extra_stop_points)
     }
 
@@ -104,7 +104,7 @@ impl RustExplorationManager {
     pub fn export_state_flushed(
         &mut self,
         state_id: u64,
-    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    ) -> PyResult<crate::state_bridge::ExplorationStateSnapshot> {
         self._export_state_flushed(state_id)
     }
 
@@ -117,7 +117,7 @@ impl RustExplorationManager {
         reason = "exports the found stash's states (flushing each one's own deferred writes \
                   first); does not mutate exploration config or the active stash."
     )]
-    pub fn export_found_states(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
+    pub fn export_found_states(&mut self) -> Vec<crate::state_bridge::ExplorationStateSnapshot> {
         self._export_found_states()
     }
 

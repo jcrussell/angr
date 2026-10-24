@@ -419,7 +419,7 @@ impl RustExplorationManager {
         &mut self,
         state_id: u64,
         extra_stop_points: Option<Vec<u64>>,
-    ) -> PyResult<HashMap<String, Vec<crate::state::ExplorationStateSnapshot>>> {
+    ) -> PyResult<HashMap<String, Vec<crate::state_bridge::ExplorationStateSnapshot>>> {
         let callbacks = self
             .callbacks
             .as_ref()
@@ -479,13 +479,13 @@ impl RustExplorationManager {
         };
         buckets.extend(terminals);
 
-        let mut snapshots: HashMap<String, Vec<crate::state::ExplorationStateSnapshot>> =
+        let mut snapshots: HashMap<String, Vec<crate::state_bridge::ExplorationStateSnapshot>> =
             HashMap::new();
         for (bucket, mut state) in buckets {
             snapshots
                 .entry(bucket)
                 .or_default()
-                .push(state.flush_and_export_full());
+                .push(state.flush_and_export_full().into());
             let id = state.state_id();
             self.index_state(id, STASH_STEP_OUT);
             self.sm.ensure_stash(STASH_STEP_OUT).push_back(state);

@@ -70,8 +70,6 @@ fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
 // than a value one of the arms already observed.
 #[test]
 fn test_tsc_counter_forks_and_merges_as_watermark() {
-    Python::initialize();
-
     let mut a = RustSimState::new("amd64").unwrap();
     assert_eq!(
         a.tsc_counter(),
@@ -116,8 +114,6 @@ fn test_tsc_counter_forks_and_merges_as_watermark() {
 // to `self`'s value.
 #[test]
 fn test_merge_takes_symbolic_max_of_last_time() {
-    Python::initialize();
-
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = a.fork();
     a.set_last_time(RustBV::concrete(100, 64));

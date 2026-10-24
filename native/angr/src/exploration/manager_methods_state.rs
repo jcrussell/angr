@@ -27,7 +27,7 @@ impl RustExplorationManager {
     /// See `state_lifecycle::_add_state` for the body.
     #[pyo3(signature = (stash, state))]
     #[angr_macros::steady_guarded]
-    pub fn add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
+    pub fn add_state(&mut self, stash: &str, state: &crate::state_bridge::PyRustSimState) {
         self._add_state(stash, state)
     }
 

@@ -13,8 +13,6 @@ use super::super::*;
 // (file offsets/writes) is a detectable warn condition (its state is lost).
 #[test]
 fn test_merge_filesystem_keeps_longest_stdout_branch() {
-    Python::initialize();
-
     let mut a = RustSimState::new("amd64").unwrap();
     let mut b = RustSimState::new("amd64").unwrap();
 

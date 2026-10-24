@@ -31,46 +31,13 @@ macro_rules! state_flag_write {
     };
 }
 
-/// Emit the Python-facing half of a flag, or nothing for a `rust_only` one.
-/// See `state_flags!`.
-macro_rules! state_flag_export {
-    (rust_only, $setter:ident, $getter:ident) => {};
-    (python, $setter:ident, $getter:ident) => {
-        #[pymethods]
-        impl PyRustSimState {
-            #[doc = concat!(
-                                "Python binding for [`RustSimState::", stringify!($setter), "`]."
-                            )]
-            pub fn $setter(&mut self, enabled: bool) {
-                self.inner.$setter(enabled);
-            }
-
-            #[doc = concat!(
-                                "Python binding for [`RustSimState::", stringify!($getter), "`]."
-                            )]
-            pub fn $getter(&self) -> bool {
-                self.inner.$getter()
-            }
-        }
-    };
-}
-
-/// Declare the boolean state flags — both layers of each — in one place.
-///
-/// Every entry expands to the inherent `set_x` / `x` pair on [`RustSimState`]
-/// *and*, unless it is marked `rust_only`, the matching `#[pymethods]` block
-/// on `PyRustSimState` exposing them to Python under the same names, so a
-/// flag cannot be added here and forgotten in `state/pymethods.rs`, silently
-/// unreachable from Python (angr-12jjk.13). Adding a flag is a single entry
-/// below.
+/// Emit the inherent `set_x` / `x` pair on [`RustSimState`] for every entry
+/// of `state_flag_list!`.
 ///
 /// `$storage` says where the bit lives: `field` for a plain `RustSimState`
 /// field named after the getter, `memory` for one owned by `self.memory`
-/// (whose accessors share the flag's names).
-///
-/// `use_shared_lineage_solver` is deliberately *not* in this list: it takes
-/// `&self` rather than `&mut self` (the bit lives behind `self.solver`), so
-/// it keeps its hand-written pair — and its hand-written `#[pyo3]` wrappers in `state/pymethods.rs`.
+/// (whose accessors share the flag's names). `$export` is read only by the
+/// PyO3 shell's half (`state_bridge::pymethods`).
 macro_rules! state_flags {
     ($(
         $storage:ident, $export:ident {
@@ -93,84 +60,104 @@ macro_rules! state_flags {
                 }
             )*
         }
-
-        $( state_flag_export!($export, $setter, $getter); )*
     };
 }
 
-state_flags! {
-    memory, python {
-        /// Enable or disable strict memory permission enforcement.
-        /// Mirrors angr's STRICT_PAGE_ACCESS option. Default off.
-        fn set_enforce_permissions(bool);
-        /// Whether strict memory permission enforcement is enabled.
-        fn enforce_permissions() -> bool;
-    }
+/// The boolean state flags, declared once and expanded by `$callback`.
+///
+/// Two macros consume the list: `state_flags!` here emits the inherent
+/// `set_x` / `x` pair on [`RustSimState`], and the PyO3 shell's
+/// `py_state_flags!` (`state_bridge::pymethods`) emits the matching
+/// `#[pymethods]` block on `PyRustSimState` for every entry not marked
+/// `rust_only`, under the same names. So a flag cannot be added at one layer
+/// and forgotten at the other, silently unreachable from Python
+/// (angr-12jjk.13), and `state` holds no PyO3 code (angr-mx00p.75). Adding a
+/// flag is a single entry below.
+///
+/// `use_shared_lineage_solver` is deliberately *not* in this list: it takes
+/// `&self` rather than `&mut self` (the bit lives behind `self.solver`), so
+/// it keeps its hand-written pair, and hand-written pymethods in
+/// `state_bridge::pymethods`.
+macro_rules! state_flag_list {
+    ($callback:ident) => {
+        $callback! {
+            memory, python {
+                /// Enable or disable strict memory permission enforcement.
+                /// Mirrors angr's STRICT_PAGE_ACCESS option. Default off.
+                fn set_enforce_permissions(bool);
+                /// Whether strict memory permission enforcement is enabled.
+                fn enforce_permissions() -> bool;
+            }
 
-    memory, python {
-        /// Enable or disable non-executable page enforcement on instruction
-        /// fetch. Mirrors angr's ENABLE_NX option. The X check fires only when
-        /// this AND `enforce_permissions` (STRICT_PAGE_ACCESS) are both on,
-        /// matching Python's heavy VEX engine. Default off.
-        fn set_enforce_nx(bool);
-        /// Whether non-executable page enforcement is enabled.
-        fn enforce_nx() -> bool;
-    }
+            memory, python {
+                /// Enable or disable non-executable page enforcement on instruction
+                /// fetch. Mirrors angr's ENABLE_NX option. The X check fires only when
+                /// this AND `enforce_permissions` (STRICT_PAGE_ACCESS) are both on,
+                /// matching Python's heavy VEX engine. Default off.
+                fn set_enforce_nx(bool);
+                /// Whether non-executable page enforcement is enabled.
+                fn enforce_nx() -> bool;
+            }
 
-    field, python {
-        /// Enable or disable IP concretization at block boundaries.
-        /// Mirrors angr's NO_IP_CONCRETIZATION option. When true, a symbolic
-        /// jump target routes the state to the unconstrained stash without
-        /// warning (matches `engines/successors.py`, the
-        /// `NO_IP_CONCRETIZATION` branch of `_categorize_successor`).
-        /// Default off.
-        fn set_no_ip_concretization(bool);
-        /// Whether IP concretization is suppressed for symbolic jump targets.
-        fn no_ip_concretization() -> bool;
-    }
+            field, python {
+                /// Enable or disable IP concretization at block boundaries.
+                /// Mirrors angr's NO_IP_CONCRETIZATION option. When true, a symbolic
+                /// jump target routes the state to the unconstrained stash without
+                /// warning (matches `engines/successors.py`, the
+                /// `NO_IP_CONCRETIZATION` branch of `_categorize_successor`).
+                /// Default off.
+                fn set_no_ip_concretization(bool);
+                /// Whether IP concretization is suppressed for symbolic jump targets.
+                fn no_ip_concretization() -> bool;
+            }
 
-    field, python {
-        /// Enable or disable resolution of symbolic jump targets.
-        /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION option. When true, any
-        /// symbolic jump target routes the state to the unconstrained stash
-        /// instead of enumerating concretizations (matches
-        /// `engines/successors.py`, the `NO_SYMBOLIC_JUMP_RESOLUTION` branch
-        /// of `_eval_target_jumptable`'s caller). Default off.
-        fn set_no_symbolic_jump_resolution(bool);
-        /// Whether symbolic jump targets are routed to unconstrained without
-        /// enumeration.
-        fn no_symbolic_jump_resolution() -> bool;
-    }
+            field, python {
+                /// Enable or disable resolution of symbolic jump targets.
+                /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION option. When true, any
+                /// symbolic jump target routes the state to the unconstrained stash
+                /// instead of enumerating concretizations (matches
+                /// `engines/successors.py`, the `NO_SYMBOLIC_JUMP_RESOLUTION` branch
+                /// of `_eval_target_jumptable`'s caller). Default off.
+                fn set_no_symbolic_jump_resolution(bool);
+                /// Whether symbolic jump targets are routed to unconstrained without
+                /// enumeration.
+                fn no_symbolic_jump_resolution() -> bool;
+            }
 
-    field, python {
-        /// Enable or disable preservation of the symbolic IP after
-        /// concretization. Mirrors angr's KEEP_IP_SYMBOLIC option. When true,
-        /// the engine still concretizes the next pc, but the IP register on
-        /// each successor is left holding the original symbolic expression and
-        /// no narrowing constraint is added (matches `engines/successors.py`,
-        /// the `KEEP_IP_SYMBOLIC` branches of `_categorize_successor`).
-        /// Default off.
-        fn set_keep_ip_symbolic(bool);
-        /// Whether the IP register should be kept symbolic across block
-        /// boundaries.
-        fn keep_ip_symbolic() -> bool;
-    }
+            field, python {
+                /// Enable or disable preservation of the symbolic IP after
+                /// concretization. Mirrors angr's KEEP_IP_SYMBOLIC option. When true,
+                /// the engine still concretizes the next pc, but the IP register on
+                /// each successor is left holding the original symbolic expression and
+                /// no narrowing constraint is added (matches `engines/successors.py`,
+                /// the `KEEP_IP_SYMBOLIC` branches of `_categorize_successor`).
+                /// Default off.
+                fn set_keep_ip_symbolic(bool);
+                /// Whether the IP register should be kept symbolic across block
+                /// boundaries.
+                fn keep_ip_symbolic() -> bool;
+            }
 
-    field, rust_only {
-        /// angr-027h: force eager (immediate) forking for this state
-        /// regardless of the manager's `use_deferred_forks` setting. Set on
-        /// loop-exit forks resumed at an UnconstrainedJump so they BFS to the
-        /// find target instead of recursively re-deferring. Cloned on fork.
-        ///
-        /// `rust_only`: the sole caller is
-        /// `exploration::core_outcome_handlers`, and no Python-side knob wants
-        /// to override that heuristic per state.
-        fn set_force_eager_forks(bool);
-        /// Whether this state forces eager forking.
-        /// See [`RustSimState::set_force_eager_forks`].
-        fn force_eager_forks() -> bool;
-    }
+            field, rust_only {
+                /// angr-027h: force eager (immediate) forking for this state
+                /// regardless of the manager's `use_deferred_forks` setting. Set on
+                /// loop-exit forks resumed at an UnconstrainedJump so they BFS to the
+                /// find target instead of recursively re-deferring. Cloned on fork.
+                ///
+                /// `rust_only`: the sole caller is
+                /// `exploration::core_outcome_handlers`, and no Python-side knob wants
+                /// to override that heuristic per state.
+                fn set_force_eager_forks(bool);
+                /// Whether this state forces eager forking.
+                /// See [`RustSimState::set_force_eager_forks`].
+                fn force_eager_forks() -> bool;
+            }
+        }
+    };
 }
+pub(crate) use state_flag_list;
+
+state_flag_list!(state_flags);
 
 /// angr's `SYMBOLIC_INITIAL_VALUES` SimOption string (angr-c7xno.61).
 ///
