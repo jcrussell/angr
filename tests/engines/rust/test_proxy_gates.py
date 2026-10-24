@@ -1020,9 +1020,11 @@ class TestCallbackSolverProxyGate:
         assert cb_state.solver.max(wide) == (1 << 160) - 1
 
     def test_proxy_min_unsat_still_raises(self, fauxware_project):
-        """angr-fjhk9: a genuinely unsat plugin ctx still raises
-        ``claripy.errors.UnsatError`` (proxy-wide exception-type convention)."""
+        """angr-fjhk9: a genuinely unsat plugin ctx still raises. The plugin
+        stands in for ``state.solver``, so it raises ``SimUnsatError`` as
+        ``SimSolver`` does (angr-mx00p.61)."""
         from angr import claripy
+        from angr.errors import SimUnsatError
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
@@ -1033,10 +1035,48 @@ class TestCallbackSolverProxyGate:
         u = claripy.BVS("plugin_unsat", 32)
         cb_state.solver.add(u == 1)
         cb_state.solver.add(u == 2)  # contradictory -> unsat
-        with pytest.raises(claripy.errors.UnsatError):
+        with pytest.raises(SimUnsatError):
             cb_state.solver.min(u)
-        with pytest.raises(claripy.errors.UnsatError):
+        with pytest.raises(SimUnsatError):
             cb_state.solver.max(u)
+        with pytest.raises(SimUnsatError):
+            cb_state.solver.eval(u)
+
+    def test_proxy_unsat_extra_constraints_raise(self, fauxware_project):
+        """Infeasible ``extra_constraints`` raise ``SimUnsatError`` from
+        ``eval`` and ``eval_upto`` rather than an empty answer, and stay
+        scoped to the query (angr-vmi2l.293)."""
+        from angr import claripy
+        from angr.errors import SimUnsatError
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        x = claripy.BVS("plugin_extra_x", 32)
+        cb_state.solver.add(x.ULT(5))
+        with pytest.raises(SimUnsatError):
+            cb_state.solver.eval(x, extra_constraints=[x == 7])
+        with pytest.raises(SimUnsatError):
+            cb_state.solver.eval_upto(x, 3, extra_constraints=[x == 7])
+        assert cb_state.solver.satisfiable(extra_constraints=[x == 7]) is False
+        assert sorted(cb_state.solver.eval_upto(x, 10)) == [0, 1, 2, 3, 4]
+
+    def test_proxy_eval_accepts_python_values(self, fauxware_project):
+        """``SimSolver.eval`` returns a plain Python value unchanged; heap
+        allocators eval an int size. The plugin answered unsat for it, so a
+        bounced calloc/malloc errored the state (angr-mx00p.61)."""
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_solver_proxy(cb_state, seed_id)
+
+        assert cb_state.solver.eval(0x30) == 0x30
+        assert cb_state.solver.eval_upto(0x30, 2) == [0x30]
+        assert cb_state.heap.allocate(0x30) >= 0
 
     def test_proxy_bvs_delegates_to_claripy(self, fauxware_project):
         """``BVS`` / ``BVV`` delegate to claripy and accept the tracking key."""

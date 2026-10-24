@@ -645,6 +645,25 @@ class RustSolverProxy(RustSolverProxyBase):
                 _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
 
 
+def _sim_unsat(f):
+    """Re-raise claripy's ``UnsatError`` from ``f`` as angr's ``SimUnsatError``.
+
+    The ``SimSolver.error_converter`` contract for the solver plugin that
+    replaces ``state.solver`` on callback states.
+    """
+
+    @functools.wraps(f)
+    def wrapped(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except claripy.errors.UnsatError as e:
+            from angr.errors import SimUnsatError  # pylint: disable=import-outside-toplevel
+
+            raise SimUnsatError("Got an unsat result") from e
+
+    return wrapped
+
+
 class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     """SimSolver-shaped plugin that routes constraint ops through Rust.
 
@@ -808,6 +827,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     # plugin arrives from a SimProcedure, so unwrap before handing it to Rust.
     _prepare_expr = _unwrap_constraint
 
+    @_sim_unsat
     def add(self, *constraints):
         """Add constraint(s) to the underlying Rust state's solver.
 
@@ -901,6 +921,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         with contextlib.suppress(Exception):
             _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"), self.__dict__.get("_rust_ctx_cache_owner"))
 
+    @_sim_unsat
     def eval(self, expr, n_or_cast=None, cast_to=None, extra_constraints=(), exact=None, **kwargs):
         """``state.solver.eval(expr[, cast_to=bytes])``.
 
@@ -910,17 +931,48 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         """
         if cast_to is None and n_or_cast is not None and not isinstance(n_or_cast, int):
             cast_to = n_or_cast
+        expr = self._unwrap_constraint(expr)
+        if not isinstance(expr, claripy.ast.Base):
+            # SimSolver.eval accepts a plain Python value and returns it
+            # (heap_base._conc_alloc_size evals an int size). The Rust context
+            # cannot convert one and answered None, which read as unsat
+            # (angr-mx00p.61).
+            return self._cast_result(expr, expr, cast_to)
         return self._eval_one(expr, cast_to, extra_constraints)
 
+    @_sim_unsat
     def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), exact=None, **kwargs):
+        expr = self._unwrap_constraint(expr)
+        if not isinstance(expr, claripy.ast.Base):
+            return [self._cast_result(expr, expr, cast_to)]
         ctx = self._get_rust_ctx()
-        if hasattr(expr, "concrete") and expr.concrete:
+        if expr.concrete:
             val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
             return [self._cast_result(expr, val, cast_to)]
-        results = _with_extra_constraints(ctx, ctx.eval_upto, expr, n, extra=extra_constraints)
+
+        def query():
+            found = ctx.eval_upto(expr, n)
+            return found, not found and not ctx.satisfiable()
+
+        # angr-vmi2l.293: no solution under the extras is unsat, as SimSolver
+        # reports it, not an empty answer.
+        results, unsat = _with_extra_constraints(ctx, query, extra=extra_constraints)
+        if unsat:
+            raise claripy.errors.UnsatError("unsat")
         if cast_to is not None:
             results = [self._cast_result(expr, r, cast_to) for r in results]
         return list(results)
+
+    # SimSolver reports an unsat query as SimUnsatError (its ``error_converter``);
+    # angr callers that recover from a dead state catch that class, not
+    # claripy's. The shared queries raise claripy's, so convert at this
+    # plugin's surface only (the standalone ``RustSolverProxy`` view keeps
+    # claripy's, see ``_resolve_none_extremum``).
+    min = _sim_unsat(RustSolverProxyBase.min)
+    max = _sim_unsat(RustSolverProxyBase.max)
+    eval_one = _sim_unsat(RustSolverProxyBase.eval_one)
+    eval_exact = _sim_unsat(RustSolverProxyBase.eval_exact)
+    eval_atleast = _sim_unsat(RustSolverProxyBase.eval_atleast)
 
     # is_true / is_false / solution come from ``RustSolverProxyBase`` — the
     # ``SimActionObject`` unwrap they need is supplied by ``_prepare_expr``.
@@ -944,8 +996,8 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     # int-only convenience. Installed only on the plugin (the callback
     # ``state.solver``); the standalone ``RustSolverProxy`` keeps its prior
     # surface and does not expose them.
-    min_int = RustSolverProxyBase.min
-    max_int = RustSolverProxyBase.max
+    min_int = min
+    max_int = max
 
     # ---------------------------------------------------------------
     # Symbol creation (delegate to claripy — no solver interaction)
