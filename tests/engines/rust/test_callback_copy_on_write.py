@@ -32,7 +32,6 @@ GATES = {
     "proxies_on": {
         "use_callback_register_proxy": True,
         "use_callback_solver_proxy": True,
-        "use_simproc_fork_via_rust": True,
     },
 }
 

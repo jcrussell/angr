@@ -487,7 +487,6 @@ _GATE_TOGGLES = [
     ("use_callback_solver_proxy", "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "_use_callback_solver_proxy"),
     ("use_export_callstack_proxy", "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "_use_export_callstack_proxy"),
     ("use_export_memory_proxy", "ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "_use_export_memory_proxy"),
-    ("use_simproc_fork_via_rust", "ANGR_RUST_USE_SIMPROC_FORK_VIA_RUST", "_use_simproc_fork_via_rust"),
 ]
 
 
@@ -1590,10 +1589,9 @@ class TestExportMemoryProxyGate:
 
 class TestSimProcForkViaRustGate:
     """angr-t3mr write-through boundary: the Rust fork API behind additional
-    SimProcedure successors. Every extra successor is now finished from its
-    own copy-on-write fork whatever ``use_simproc_fork_via_rust`` says
-    (angr-mx00p.112); the per-successor behaviour is pinned against the
-    Python engine in ``test_callback_copy_on_write.py``.
+    SimProcedure successors. Every extra successor is finished from its own
+    copy-on-write fork (angr-mx00p.112); the per-successor behaviour is
+    pinned against the Python engine in ``test_callback_copy_on_write.py``.
     """
 
     def test_fork_state_to_stash_pending(self, fauxware_project):
@@ -1629,25 +1627,6 @@ class TestSimProcForkViaRustGate:
         mgr = RustExplorationManager(fauxware_project, [state])
         with pytest.raises(ValueError, match=r"state .* not found"):
             mgr._rust_mgr.fork_state_to_stash(99999, "active")
-
-    def test_explore_end_to_end_gate_on(self, fauxware_project):
-        """End-to-end smoke: ``explore`` completes with the same ``found``
-        outcome when the gate is on as with the default off path."""
-
-        # Baseline: default off
-        s_off = fauxware_project.factory.entry_state()
-        mgr_off = RustExplorationManager(fauxware_project, [s_off])
-        mgr_off.explore(find=0x4006ED)
-        found_off = len(mgr_off.found)
-
-        # Gate on
-        s_on = fauxware_project.factory.entry_state()
-        mgr_on = RustExplorationManager(fauxware_project, [s_on], use_simproc_fork_via_rust=True)
-        mgr_on.explore(find=0x4006ED)
-        found_on = len(mgr_on.found)
-
-        assert found_off >= 1, "explore(find=0x4006ed) must reach target on fauxware — find regression"
-        assert found_on == found_off
 
 
 class TestProxyWriteThrough:
