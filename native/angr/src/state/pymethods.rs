@@ -237,15 +237,16 @@ impl PyRustSimState {
     ///
     /// **Invariant I5 (cross-mixin):** the caller — Python's
     /// `rust_state_sync.py` — must pre-filter the dict to
-    /// `_supported_register_names` for the active architecture. The disk
-    /// init cache pickles ALL `arch.register_names.values()` (cr0..8,
-    /// ymm0..15, fs_seg, ds_seg, cmstart, cmlen, fpreg, ...), but only a
-    /// subset has a slot in `RegisterFile` for amd64/x86/arm/etc. If an
+    /// `_supported_register_names` for the active architecture. archinfo
+    /// names many registers (cr0..8, ymm0..15, fs_seg, ds_seg, cmstart,
+    /// cmlen, fpreg, ...), but only a subset has a slot in `RegisterFile`
+    /// for amd64/x86/arm/etc. If an
     /// unsupported name leaks through, this method returns
     /// `PyValueError("unknown register: <name>")` rather than silently
     /// dropping the write. Do NOT "fix" by extending `arch/amd64.rs`
     /// unless the interpreter actually consumes the new register. See
-    /// module-level invariant I5 in this file.
+    /// invariant I5 in the `angr/exploration/rust_manager.py` module
+    /// docstring.
     ///
     /// **Atomic on failure (angr-0jh0j.49):** every entry is validated and
     /// staged before *any* write lands, so a bad name in the middle of the

@@ -12,41 +12,24 @@ Cross-mixin invariants
 ======================
 
 The manager class composes several mixins (RustStateCacheMixin,
-RustStateExportMixin, RustStateSyncMixin, RustCallbackDispatchMixin,
-RustDiskCacheManager) plus helpers in this module. The invariants below cut
-across those boundaries —
-breaking any one of them tends to produce silent correctness bugs (cache
-poisoning, lost state, infinite loops) rather than loud failures, so they
-are documented here and pinned by the named regression tests.
-
-I1-I3. Disk-cache key axes, init pipeline phases, user-symbolic gate
-    Owned by the ``RustDiskCacheManager`` mixin; stated in full in the
-    ``rust_disk_cache.py`` module docstring ("Invariants"). In one line
-    each: the cache key's version constants, filename hash and memo tuple
-    move together; ``_run_python_init_if_needed`` is the single init
-    orchestrator and the disk-load phases do not mix I/O, construction
-    and side effects; both init caches are suppressed for states holding
-    user-symbolic data.
-
-I4. `_apply_state_metadata` is an allow-list
-    On a cached/disk-loaded init state, `_apply_state_metadata` copies
-    constraints, globals, and an allow-list of SimOptions from the source
-    (its own docstring enumerates them; the engine-flag mirrors and
-    `TRACK_ACTION_HISTORY` are on it, the raise-listed options are not).
-    Every other option is silently dropped on the cache-hit path. To check
-    user-set options reliably, do it on the user-supplied state in
-    `__init__` BEFORE `_run_python_init_if_needed` runs, not on the
-    post-init state in `_add_rust_state`.
+RustStateExportMixin, RustStateSyncMixin, RustCallbackDispatchMixin)
+plus helpers in this module. The invariants below cut across those
+boundaries — breaking any one of them tends to produce silent correctness
+bugs (lost state, infinite loops) rather than loud failures, so they are
+documented here and pinned by the named regression tests. The numbers are stable
+identifiers cited from other files (``native/angr/src/stash.rs``,
+``native/angr/src/syscalls/mmap.rs``), so a retired invariant leaves a gap
+rather than renumbering the rest.
 
 I5. Register filter at the FFI boundary
-    The disk init cache pickles ALL archinfo registers (cr0..8, ymm0..15,
-    fs_seg, ds_seg, cmstart, cmlen, fpreg, ...) via
-    `arch.register_names.values()`. The Rust engine only models a subset
-    (rax-r15+rip on amd64). When passing the cached dict to Rust via
-    `set_registers_bulk`, you MUST filter to `_supported_register_names`
+    archinfo defines registers (cr0..8, ymm0..15, fs_seg, ds_seg, cmstart,
+    cmlen, fpreg, ...) the Rust engine does not model; it models a subset
+    (rax-r15+rip on amd64). Any register dict passed to Rust via
+    `set_registers_bulk` MUST be filtered to `_supported_register_names`
     in rust_state_sync.py, otherwise PyValueError 'unknown register: cr0'.
     Do not "fix" by adding cr0 etc. to amd64.rs unless the interpreter
-    actually consumes them — it doesn't, and the slow path skips them too.
+    actually consumes them — it doesn't, and `_sync_registers_to_rust`
+    skips them too.
 
 I6. State-cache pinning and the metadata-clear contract
     Owned by `_cleanup_state_cache`'s docstring (what is pinned, the LRU
@@ -120,7 +103,6 @@ from angr.exploration.rust_callback_dispatch import (
     _simproc_dispatch_name,
     _unconstrained_stub_spec,
 )
-from angr.exploration.rust_disk_cache import RustDiskCacheManager
 from angr.exploration.rust_perf_tracker import PerformanceTracker
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_state_export import RustStateExportMixin
@@ -952,7 +934,6 @@ class RustExplorationManager(
     RustStateSyncMixin,
     RustStateCacheMixin,
     RustStateExportMixin,
-    RustDiskCacheManager,
 ):
     """Python wrapper for Rust-native exploration manager.
 
@@ -974,17 +955,6 @@ class RustExplorationManager(
         for state in mgr.found:
             print(state.solver.eval(state.posix.dumps(0)))
     """
-
-    # Class-level cache for Python init results per binary
-    _init_cache: dict[str, angr.SimState] = {}
-    _init_cache_max = 10
-
-    # ``_disk_key_cache`` (MD5-of-binary memo) is provided by RustDiskCacheManager.
-
-    # Class-level cache for blank_state objects keyed by (binary_path, addr).
-    # blank_state() pays plugin initialization; caching + copy() is far cheaper.
-    _blank_state_cache: dict[tuple, angr.SimState] = {}
-    _blank_state_cache_max = 10
 
     # Class-level cache for loader-pages output keyed (weakly) by the
     # cle.Loader instance. The output is a pure function of loader state,
@@ -1676,12 +1646,6 @@ class RustExplorationManager(
         # Lazy RustInspectProxy instance (one per manager, shared across proxies).
         self._inspect_proxy: RustInspectProxy | None = None
 
-        # Cached memory layout from disk cache for fast _sync_memory_to_rust
-        self._mem_cache: dict | None = None
-
-        # Pre-computed register dict from disk cache for fast register sync
-        self._precomputed_regs: dict | None = None
-
         # Track stdin BVS variables for state export.
         # List of (claripy_bvs, size_ast) tuples from SimPacketsStream.content.
         # Populated during SimProcedure callbacks that read from stdin (fgets, read, etc.).
@@ -1751,10 +1715,8 @@ class RustExplorationManager(
                 if hasattr(state, "options"):
                     # Hard-fail on options the Rust engine cannot honor
                     # before doing any further work; warn-once on the rest.
-                    # The post-Python-init state passed to _add_rust_state
-                    # may come from a cached path that strips options down
-                    # to LAZY_SOLVES + STRICT_PAGE_ACCESS via
-                    # _apply_state_metadata.
+                    # This runs on the user-supplied state, before
+                    # _run_python_init_if_needed steps it to main.
                     self._check_raise_options(state.options)
                     self._warn_rejected_options(state.options)
                     try:
@@ -3370,38 +3332,6 @@ class RustExplorationManager(
         if stubs:
             self._rust_mgr.register_unconstrained_stubs(list(stubs.items()))
 
-    # =========================================================================
-    # Persistent disk cache for Python init results
-    #
-    # The full disk-cache subsystem — both the save path (``_disk_cache_dir``
-    # / ``_disk_cache_key`` / ``_save_init_to_disk_cache`` + module-level
-    # ``_extract_*`` helpers) and the load path (``_load_init_from_disk_cache``
-    # / ``_load_init_pickle`` / ``_deserialize_init_state`` /
-    # ``_apply_init_side_effects`` + the ``_state_has_user_symbolic`` guard) —
-    # lives in the RustDiskCacheManager mixin (``rust_disk_cache.py``).
-    # ``_get_cached_blank_state`` stays here because it owns the host-class
-    # ``_blank_state_cache`` pool; the mixin reaches it via ``self``.
-    # =========================================================================
-
-    def _get_cached_blank_state(self, addr: int) -> angr.SimState:
-        """Get a blank state, using class-level cache when possible.
-
-        blank_state() is expensive due to plugin initialization.
-        Caching + copy() is far cheaper.
-        """
-        binary_path = getattr(self._project.loader.main_object, "binary", None) or ""
-        cache_key = (binary_path, addr)
-        cached = RustExplorationManager._blank_state_cache.get(cache_key)
-        if cached is not None:
-            return cached.copy()
-        state = self._project.factory.blank_state(addr=addr)
-        if (
-            binary_path
-            and len(RustExplorationManager._blank_state_cache) < RustExplorationManager._blank_state_cache_max
-        ):
-            RustExplorationManager._blank_state_cache[cache_key] = state.copy()
-        return state
-
     def _extract_continuation_data(self, state: angr.SimState):
         """Extract SimProcedure continuation data from a state's callstack.
 
@@ -3439,33 +3369,7 @@ class RustExplorationManager(
         """
         main_obj = self._project.loader.main_object
         addr = state.addr
-        cache_key = getattr(main_obj, "binary", None) or ""
-        # Digest the concrete argv/env surface once and thread it into both
-        # keys so a warm run with different concrete args/env misses the cache
-        # instead of replaying the prior run's inputs (angr-gxaht).
-        #
-        # Compute it *lazily*: both key functions discard the digest (return "")
-        # when caching is ineligible — no binary path, or user-symbolic data
-        # that blank_state can't round-trip. The digest's full-page
-        # ``solver.eval(cast_to=bytes)`` resolves default-fill symbolic bytes
-        # and costs a full-page solve plus its RSS on a state that never caches
-        # (cmu_binary_bomb seeds symbolic stdin -> _state_has_user_symbolic
-        # True -> caching off). Gate on the same cheap conditions the key
-        # functions use so we only pay for the digest when it can matter
-        # (angr-gxaht follow-up).
-        input_digest = None
-        if cache_key and not self._state_has_user_symbolic(state):
-            input_digest = self._concrete_input_digest(state)
-        mem_key = self._compute_mem_init_key(state, cache_key, input_digest)
-        disk_key = self._compute_disk_init_key(state, cache_key, input_digest)
-
         if addr == self._project.entry:
-            cached = self._try_in_memory_init_cache(state, mem_key)
-            if cached is not None:
-                return cached
-            cached = self._try_disk_init_cache(state, disk_key)
-            if cached is not None:
-                return cached
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
             obj = self._project.loader.find_object_containing(addr)
@@ -3474,160 +3378,16 @@ class RustExplorationManager(
             if addr not in self._project._sim_procedures:
                 return state  # Not a SimProcedure (e.g., LinuxLoader), don't pre-run
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
-            cached = self._try_disk_init_cache(state, disk_key)
-            if cached is not None:
-                return cached
 
         try:
             main_addr = self._resolve_main_address()
-            return self._step_python_to_main(state, main_addr, mem_key, disk_key, main_obj)
+            return self._step_python_to_main(state, main_addr, main_obj)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: Python init step failed; original
             # state is used unmodified, so init-side-effects (constructors,
             # .init_array) may not have run. Already warns.
             l.warning(f"Python init failed: {e}, using original state")
             return state
-
-    def _apply_state_metadata(self, src_state: angr.SimState, dst_state: angr.SimState) -> None:
-        """Copy constraints, globals, and LAZY_SOLVES / STRICT_PAGE_ACCESS /
-        ENABLE_NX / NO_IP_CONCRETIZATION / NO_SYMBOLIC_JUMP_RESOLUTION /
-        KEEP_IP_SYMBOLIC / TRACK_ACTION_HISTORY / ZERO_FILL_UNCONSTRAINED_* /
-        SYMBOL_FILL_UNCONSTRAINED_* options from src to dst.
-
-        Options are mirrored — added when src has them, removed when src
-        doesn't. The remove half matters for the in-memory init cache: a
-        cached state populated from a prior STRICT_PAGE_ACCESS run on the
-        same binary would otherwise leak that option to a subsequent caller
-        that didn't request it (and downstream `set_enforce_permissions(True)`
-        would then surface spurious permission errors). Same reasoning for
-        ENABLE_NX → `set_enforce_nx(True)`, NO_IP_CONCRETIZATION →
-        `set_no_ip_concretization(True)`, NO_SYMBOLIC_JUMP_RESOLUTION →
-        `set_no_symbolic_jump_resolution(True)`, and KEEP_IP_SYMBOLIC →
-        `set_keep_ip_symbolic(True)`. TRACK_ACTION_HISTORY is mirrored
-        for preconstrainer.py compatibility (angr-fkvt) — it
-        is a metadata flag consulted by preconstrainer's clear/restore
-        pattern and must survive the init cache round-trip so AEG
-        workloads see it on the seed state.
-        """
-        for c in src_state.solver.constraints:
-            dst_state.solver.add(c)
-        if "globals" in src_state.plugins:
-            for k, v in src_state.globals.items():
-                dst_state.globals[k] = v
-        try:
-            from angr import sim_options as o
-
-            for opt in (
-                o.LAZY_SOLVES,
-                o.STRICT_PAGE_ACCESS,
-                o.ENABLE_NX,
-                o.NO_IP_CONCRETIZATION,
-                o.NO_SYMBOLIC_JUMP_RESOLUTION,
-                o.KEEP_IP_SYMBOLIC,
-                o.TRACK_ACTION_HISTORY,
-                # angr-z21g0: the unconstrained-fill policy. The init-cache
-                # dst_state is a blank_state, whose default options do NOT
-                # include these. Without the mirror, every Python-side load of
-                # an unmapped byte during a SimProcedure callback mints a fresh
-                # `mem_*` BVS instead of a zero — those symbolic bytes flow back
-                # into Rust and fork-storm the exploration (xmllint/libxml2:
-                # 1 state -> 60+ actives at step 27).
-                o.ZERO_FILL_UNCONSTRAINED_MEMORY,
-                o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
-                o.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-                o.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
-                # angr-kzjv6: symex-relevant options that native SimProcedures
-                # consult via RustSimState.has_option (e.g. SHORT_READS). Without
-                # this they get stripped here before `_add_rust_state` mirrors
-                # them onto the Rust state. _NATIVE_SIMOPTIONS holds the raw
-                # option-name strings, which `state.options` accepts directly.
-                *_NATIVE_SIMOPTIONS,
-            ):
-                if opt in src_state.options:
-                    dst_state.options.add(opt)
-                else:
-                    dst_state.options.discard(opt)
-        except (ImportError, AttributeError):
-            # cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or one
-            # of the listed option names not present in this angr build;
-            # without it the option-mirror step is skipped.
-            pass
-
-    def _compute_disk_init_key(self, state: angr.SimState, cache_key: str, input_digest: str | None = None) -> str:
-        """Compute disk init cache key. Empty string means caching is disabled
-        (no binary path, or state has user symbolic data that blank_state can't
-        round-trip).
-
-        The concrete argv/env surface is mixed in via ``input_digest`` so a
-        second run of the same binary with different concrete args/env lands
-        at a distinct key instead of silently replaying the first run's inputs
-        (angr-gxaht). Pass a precomputed digest to avoid re-evaluating the
-        stack page; ``None`` computes it here.
-        """
-        if not cache_key:
-            return ""
-        if self._state_has_user_symbolic(state):
-            return ""
-        if input_digest is None:
-            input_digest = self._concrete_input_digest(state)
-        arch_name = getattr(self._project.arch, "name", "") or ""
-        # The cached payload embeds pages/section patches for every loader
-        # object, so the shared-library set has to be a key axis too — keying
-        # on the main binary alone replays stale libc pages and GOT fixups
-        # after a library upgrade or an auto_load_libs change (angr-uv7z5).
-        loader_digest = self._loader_identity_digest(self._project.loader)
-        base = self._disk_cache_key(cache_key, arch_name, loader_digest)
-        if not base:
-            return ""
-        return f"{base}-{input_digest}" if input_digest else base
-
-    def _compute_mem_init_key(self, state: angr.SimState, cache_key: str, input_digest: str | None = None) -> str:
-        """In-memory init cache key. Returns '' (caching disabled) when the
-        state has user-created symbolic data, mirroring _compute_disk_init_key.
-        Without this gate, a user-symbolic store on the input state survives
-        through Python init and ends up in the cached post-init state. Later
-        callers that hit the cache via .copy() inherit those stores while
-        their own stores are silently lost — _apply_state_metadata copies
-        constraints/options but not memory pages.
-
-        The concrete argv/env digest (``input_digest``) is appended for the
-        same reason as ``_compute_disk_init_key``: distinct concrete inputs
-        must not collide on the per-process cache (angr-gxaht).
-        """
-        if not cache_key:
-            return ""
-        if self._state_has_user_symbolic(state):
-            return ""
-        if input_digest is None:
-            input_digest = self._concrete_input_digest(state)
-        return f"{cache_key}:{input_digest}" if input_digest else cache_key
-
-    def _try_in_memory_init_cache(self, state: angr.SimState, cache_key: str) -> angr.SimState | None:
-        """Try the per-process init cache (skips the Python init). Returns ready state or None."""
-        if not cache_key or cache_key not in RustExplorationManager._init_cache:
-            return None
-        cached = RustExplorationManager._init_cache[cache_key]
-        l.info(f"Init cache hit for {cache_key}, copying state at 0x{cached.addr:x}")
-        new_state = cached.copy()
-        self._apply_state_metadata(state, new_state)
-        return new_state
-
-    def _try_disk_init_cache(self, state: angr.SimState, disk_key: str) -> angr.SimState | None:
-        """Try the persistent disk init cache. Returns ready state or None.
-
-        Note: only safe when the source state has no user symbolic data —
-        blank_state from cache can't preserve symbolic arguments (e.g., argv BVS).
-        Caller must enforce that via _compute_disk_init_key.
-        """
-        if not disk_key:
-            return None
-        disk_state, mem_cache = self._load_init_from_disk_cache(disk_key)
-        if disk_state is None:
-            return None
-        self._apply_state_metadata(state, disk_state)
-        self._extract_continuation_data(disk_state)
-        self._mem_cache = mem_cache  # For fast _sync_memory_to_rust
-        return disk_state
 
     def _resolve_main_address(self) -> int | None:
         """Find main function address; for stripped binaries, parse _start's PUT(rdi)."""
@@ -3682,17 +3442,8 @@ class RustExplorationManager(
             l.debug(f"Could not extract main from _start: {e}")
         return None
 
-    def _save_init_state_to_caches(self, result: angr.SimState, cache_key: str, disk_key: str) -> None:
-        """Persist a freshly-built init state to in-memory and disk caches."""
-        if cache_key and len(RustExplorationManager._init_cache) < RustExplorationManager._init_cache_max:
-            RustExplorationManager._init_cache[cache_key] = result.copy()
-        if disk_key:
-            self._save_init_to_disk_cache(disk_key, result)
-
-    def _step_python_to_main(
-        self, state: angr.SimState, main_addr: int | None, cache_key: str, disk_key: str, main_obj
-    ) -> angr.SimState:
-        """Run Python SimulationManager until reaching main, then cache+return."""
+    def _step_python_to_main(self, state: angr.SimState, main_addr: int | None, main_obj) -> angr.SimState:
+        """Run Python SimulationManager until reaching main, then return that state."""
         # Init-only addresses we never want to land on as "main"
         init_addrs = {self._project.entry}
         for obj in self._project.loader.all_objects:
@@ -3717,7 +3468,6 @@ class RustExplorationManager(
                     l.info(f"Python init complete: state reached main at 0x{main_addr:x} after {step} steps")
                     result = at_main[0]
                     self._extract_continuation_data(result)
-                    self._save_init_state_to_caches(result, cache_key, disk_key)
                     return result
 
             # No main symbol: pick the first state inside the main binary that
@@ -3734,7 +3484,6 @@ class RustExplorationManager(
                     l.info(f"Python init complete: state at 0x{in_main[0].addr:x} after {step} steps")
                     result = in_main[0]
                     self._extract_continuation_data(result)
-                    self._save_init_state_to_caches(result, cache_key, disk_key)
                     return result
 
             sm.step()
@@ -4241,11 +3990,9 @@ class RustExplorationManager(
             # native getopt proc will defer to Python. Debug-logs.
             l.debug("getopt extern-addr init push failed: %s", e)
 
-        # Sync registers (use precomputed dict from disk cache when available)
+        # Sync registers
         _t_reg = time.perf_counter_ns()
-        precomputed = self._precomputed_regs
-        self._precomputed_regs = None  # Consume once
-        self._sync_registers_to_rust(angr_state, rust_state, precomputed_regs=precomputed)
+        self._sync_registers_to_rust(angr_state, rust_state)
         self._perf_stats.add_init_phase("register_sync", time.perf_counter_ns() - _t_reg)
 
         # Map memory regions
@@ -4853,8 +4600,8 @@ class RustExplorationManager(
         """Re-run the skipped Python init prefix, matching find addresses inside it.
 
         ``_run_python_init_if_needed`` fast-forwards an entry-point seed to
-        ``main`` in Python (often straight out of a cache, without stepping at
-        all), so an address the prefix traverses — inside ``__libc_csu_init``,
+        ``main`` in Python without matching any find address on the way, so
+        an address the prefix traverses — inside ``__libc_csu_init``,
         ``frame_dummy``, a ``.init_array`` ctor — is never a PC Rust sees, and
         ``explore(find=<that addr>)`` would run to exhaustion (angr-bdeqa).
         Vanilla angr's ``Explorer`` matches it during those first steps.
@@ -6575,6 +6322,11 @@ class RustExplorationManager(
             for sid in state_ids:
                 py_state = self.get_state_by_id(sid)
                 if py_state is not None:
+                    # The merged result is re-imported after the _merge_drop
+                    # below removes ``sid``, so it needs a register file of its
+                    # own rather than a lazy proxy bound to ``sid``
+                    # (angr-vmi2l.314).
+                    self._detach_register_proxy(py_state, sid)
                     py_states.append(py_state)
                     sid_by_state_key[id(py_state)] = sid
                     try:

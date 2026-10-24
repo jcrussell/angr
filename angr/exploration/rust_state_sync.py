@@ -149,46 +149,20 @@ class RustStateSyncMixin:
     def _supported_register_names(arch) -> list:
         """Registers that the Rust engine models for `arch`.
 
-        The engine's exported register list (``rust_register_table``). Used by
-        both the slow sync path and the disk-cache fast path so they agree on
-        which registers cross the FFI boundary. archinfo defines many registers
-        (cr0..8, ymm0..15, fs_seg, cmstart, ...) the Rust engine does not
-        model; the Rust list excludes them, so `set_registers_bulk` will
-        not raise ValueError on the names returned here.
+        The engine's exported register list (``rust_register_table``), the
+        filter applied to every register dict that crosses the FFI boundary.
+        archinfo defines many registers (cr0..8, ymm0..15, fs_seg, cmstart, ...)
+        the Rust engine does not model; the Rust list excludes them, so
+        `set_registers_bulk` will not raise ValueError on the names returned
+        here.
         """
         table = rust_register_table(arch)
         return list(table["exported"]) if table is not None else []
 
-    def _sync_registers_to_rust(
-        self, angr_state: angr.SimState, rust_state: _RustSimState, precomputed_regs: dict | None = None
-    ):
-        """Sync registers from angr state to Rust state.
-
-        Args:
-            precomputed_regs: Optional dict of {reg_name: concrete_value}.
-                When provided (e.g. from disk cache), skips reading registers
-                from the SimState, skipping the angr register plugin overhead.
-                The disk cache extractor skips symbolic registers, so the
-                caller (RustExplorationManager._compute_disk_init_key /
-                _state_has_user_symbolic) must invalidate the cache key when
-                the state holds any user-set symbolic register — otherwise
-                Rust would see the cached concrete value instead of the
-                user's symbolic. See angr-g9hy.
-        """
+    def _sync_registers_to_rust(self, angr_state: angr.SimState, rust_state: _RustSimState):
+        """Sync registers from angr state to Rust state."""
         arch = angr_state.arch
         reg_names = self._supported_register_names(arch)
-
-        if precomputed_regs is not None:
-            # Fast path: use pre-computed concrete register values directly.
-            # Filter to registers Rust actually models — the disk cache stores
-            # everything in arch.register_names but Rust only knows the subset
-            # in _supported_register_names.
-            supported = set(reg_names)
-            filtered = {name: val for name, val in precomputed_regs.items() if name in supported}
-            if filtered:
-                rust_state.set_registers_bulk(filtered)
-            return
-
         regs = angr_state.regs
 
         # Build dict of all register values, then send in single FFI call.
@@ -242,9 +216,6 @@ class RustStateSyncMixin:
         Strategy: map pages for each loaded segment (not the entire address
         space). Uses the Python state's memory for relocations/initialized data.
         """
-        if self._try_fast_memory_sync(rust_state):
-            return
-
         page_size = PAGE_SIZE
         arch = self._project.arch
 
@@ -271,32 +242,6 @@ class RustStateSyncMixin:
         if symbolic_regions:
             self._pending_symbolic_imports = symbolic_regions
             l.debug(f"Found {len(symbolic_regions)} symbolic regions for import")
-
-    def _try_fast_memory_sync(self, rust_state: _RustSimState) -> bool:
-        """Apply cached memory layout from disk init cache. Returns True if used."""
-        if self._mem_cache is None:
-            return False
-        mem = self._mem_cache
-        self._mem_cache = None  # Consume once
-        try:
-            if mem.get("batch_pages"):
-                rust_state.map_memory_batch(mem["batch_pages"])
-            for addr, patch_bytes in mem.get("section_patches", []):
-                rust_state.map_memory_data(addr, patch_bytes, 7)
-            if mem.get("stack_page"):
-                sp_page, page_bytes = mem["stack_page"]
-                rust_state.map_memory_data(sp_page, page_bytes, 6)
-            for start, size in mem.get("lazy_regions", []):
-                rust_state.add_lazy_region(start, size)
-            l.debug(f"Fast memory sync from cache: {len(mem.get('batch_pages', []))} pages")
-            return True
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: fast memory sync from disk cache
-            # failed (e.g. cache version skew, FFI mismatch). The slow path
-            # in _sync_memory_to_rust then runs from scratch; result is
-            # correct but cold-init latency is paid.
-            l.debug(f"Fast memory sync failed, falling back: {e}")
-            return False
 
     def _find_user_symbolic_pages(self, angr_state: angr.SimState, page_size: int) -> set:
         """Find pages that contain user-written symbolic data.
@@ -400,8 +345,8 @@ class RustStateSyncMixin:
         """Map pages for each loaded object's segments via a single FFI batch.
 
         Returns (mapped_page_addrs, pages_mapped). Skips pages already in
-        symbolic_pages so callbacks can serve them. Reads the cached
-        `_extract_loader_pages` output (built on first construction per
+        symbolic_pages so callbacks can serve them. Reads the
+        `_get_loader_pages_cache` entry (built on first construction per
         project) to avoid re-loading loader pages on every Callable spawn.
         """
         entry = self._get_loader_pages_cache(page_size)

@@ -20,30 +20,13 @@
 //! ## Python-side counterparts
 //!
 //! The Python `RustExplorationManager` maintains an orthogonal set of
-//! caches (in-memory `_init_cache`, disk init cache, `_mem_cache`,
-//! `_state_cache`). Per-state metadata is NOT among them — it lives on
-//! the Rust `RustSimState` and is freed when Rust drops the state. None of these
-//! are documented here; see the cross-mixin invariants **I3**, **I4**,
-//! **I5**, **I6** in the `angr/exploration/rust_manager.py` module
-//! docstring for the cross-FFI rules and the invariants
-//! `invariant-init-cache-plugin-coverage` (what the init cache does and
-//! does not carry; the option allow-list is a *mirror*, not additive),
-//! `invariant-apply-state-metadata-option-allowlist` (value-changing
-//! SimOptions must be on that list),
-//! `invariant-init-cache-concrete-input-digest` (argv/env in the key),
-//! `disk-init-cache-symbolic-reg-invariant` (the user-symbolic
-//! cache-disable gate), `disk-cache-register-filter`,
-//! `invariant-state-cache-mirror-id`, and
-//! `invariant-lazy-region-auto-map` for the full rationale.
-//!
-//! `_mem_cache` has no memory of its own (the former citation here named
-//! a key that never existed, angr-sqfj8.16): it is **consume-once**, set
-//! by `RustExplorationManager._load_init_from_disk_cache`'s caller and
-//! taken — then reset to `None` — by `_try_fast_memory_sync` on the
-//! first `_sync_memory_to_rust`, so it is a one-shot hand-off, not a
-//! cache that can go stale. `invariant-state-id-cache-epoch-audit`
-//! records it under that classification alongside the other Python-side
-//! caches that are *not* the stale-serve-after-Rust-steps shape.
+//! caches (`_state_cache`, the per-loader `_loader_pages_cache`).
+//! Per-state metadata is NOT among them — it lives on the Rust
+//! `RustSimState` and is freed when Rust drops the state. None of these
+//! are documented here; see the cross-mixin invariants **I5** and **I6**
+//! in the `angr/exploration/rust_manager.py` module docstring for the
+//! cross-FFI rules, and the invariants `invariant-state-cache-mirror-id`
+//! and `invariant-lazy-region-auto-map` for the full rationale.
 
 use pyo3::prelude::*;
 

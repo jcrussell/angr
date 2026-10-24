@@ -2567,9 +2567,8 @@ class TestSeedAtFindAddress:
 class TestFindInsideInitPrefix:
     """angr-bdeqa: a find address strictly INSIDE the Python init prefix.
 
-    ``_run_python_init_if_needed`` steps the entry seed to ``main`` in Python
-    (or restores a cached state without stepping at all), so addresses the
-    prefix traverses — ``__libc_csu_init``, ``frame_dummy``, ``.init_array``
+    ``_run_python_init_if_needed`` steps the entry seed to ``main`` in Python,
+    so addresses the prefix traverses — ``__libc_csu_init``, ``frame_dummy``, ``.init_array``
     ctors — are never PCs the Rust engine sees. Vanilla angr's ``Explorer``
     matches them during those first steps, so ``explore()`` must too.
     """

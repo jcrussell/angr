@@ -1,14 +1,10 @@
 """Formal Python->Rust->Python state round-trip identity tests.
 
-The cross-mixin invariants I1-I7 documented in the
+The cross-mixin invariants documented in the
 ``angr/exploration/rust_manager.py`` module docstring are otherwise only
-implicitly exercised by the benchmark corpus. This module pins the ones
-that govern state-export *identity* with explicit assertions:
+implicitly exercised by the benchmark corpus. This module pins the one
+that governs state-export *identity* with explicit assertions:
 
-* I3 — init-cache user-symbolic gate (``_compute_mem_init_key`` /
-  ``_compute_disk_init_key`` return ``''`` for user-symbolic states).
-* I4 — ``_apply_state_metadata`` is an allow-list (constraints + globals +
-  a fixed option set are mirrored; everything else is dropped).
 * I5 — register filter at the FFI boundary (``_supported_register_names``
   excludes the archinfo registers the Rust engine does not model, so a
   full-register bulk set never raises ``unknown register``).
@@ -27,9 +23,6 @@ Python<->Rust state boundary.
 from __future__ import annotations
 
 import pytest
-
-from angr import claripy
-from angr import sim_options as o
 
 # Rust availability guard + RustExplorationManager live in
 # tests/engines/conftest.py; the module-scoped ``fauxware_project`` fixture is
@@ -149,175 +142,3 @@ class TestRegisterPcRoundTripIdentity:
             assert rebuilt.solver.eval(reg) == named[name][0], f"{name}: rebuilt state != snapshot 0x{named[name][0]:x}"
             checked += 1
         assert checked > 0, "expected at least one concrete register to compare"
-
-
-class TestInitCacheUserSymbolicGate:
-    """I3: init caches are suppressed when the input state holds user-created
-    symbolic data that a blank_state round-trip cannot reproduce."""
-
-    def test_concrete_state_allows_mem_init_key(self, fauxware_project):
-        """A purely concrete entry_state yields a non-empty in-memory init
-        key — caching is permitted. The key carries the concrete-input digest
-        (``dummy_key:<hex>``) so distinct args don't collide (angr-gxaht)."""
-        proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
-
-        key = mgr._compute_mem_init_key(state, "dummy_key")
-        assert key.startswith("dummy_key:")
-        assert key != "dummy_key"  # a non-empty digest was appended
-
-    def test_concrete_input_digest_differentiates_argv(self, fauxware_project):
-        """Two entry_states differing only in concrete argv (same length) yield
-        different init keys; identical argv yields identical keys. Guards the
-        init-key collision where a warm run silently replays the prior run's
-        argv/env because the key covers only the binary hash (angr-gxaht)."""
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        state_a = proj.factory.entry_state(args=["prog", "AAAAAAAA"])
-        state_a2 = proj.factory.entry_state(args=["prog", "AAAAAAAA"])
-        state_b = proj.factory.entry_state(args=["prog", "BBBBBBBB"])
-
-        mem_a = mgr._compute_mem_init_key(state_a, "dummy_key")
-        mem_a2 = mgr._compute_mem_init_key(state_a2, "dummy_key")
-        mem_b = mgr._compute_mem_init_key(state_b, "dummy_key")
-        assert mem_a == mem_a2  # deterministic for identical inputs
-        assert mem_a != mem_b  # distinct concrete argv -> distinct key
-
-        # Disk keys hash the real binary bytes, so use the actual path.
-        bin_path = proj.loader.main_object.binary
-        disk_a = mgr._compute_disk_init_key(state_a, bin_path)
-        disk_a2 = mgr._compute_disk_init_key(state_a2, bin_path)
-        disk_b = mgr._compute_disk_init_key(state_b, bin_path)
-        assert disk_a and disk_a == disk_a2
-        assert disk_a != disk_b
-
-    def test_user_symbolic_register_suppresses_keys(self, fauxware_project):
-        """A user-set symbolic register (state.regs.rdi = BVS) makes both the
-        in-memory and disk init keys empty, suppressing load AND save so the
-        symbolic identity is never lost to a cached blank_state."""
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        sym_state = proj.factory.entry_state()
-        sym_state.regs.rdi = claripy.BVS("user_arg", 64)
-
-        assert mgr._compute_mem_init_key(sym_state, "dummy_key") == ""
-        assert mgr._compute_disk_init_key(sym_state, "dummy_key") == ""
-
-    def test_empty_cache_key_stays_empty(self, fauxware_project):
-        """An empty cache_key (no binary path) short-circuits to '' regardless
-        of symbolic content."""
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-        state = proj.factory.entry_state()
-
-        assert mgr._compute_mem_init_key(state, "") == ""
-        assert mgr._compute_disk_init_key(state, "") == ""
-
-    def test_user_inserted_simfile_suppresses_keys(self, fauxware_project):
-        """A user-inserted SimFile (state.fs.insert) makes both init keys
-        empty. The init-cache state is built from a blank_state with an empty
-        filesystem and _apply_state_metadata does not carry the fs plugin, so
-        a cache hit would hand fopen an empty filesystem — minting a fresh
-        symbolic-size file and exploding fread (asisctffinals2015_license
-        TIMEOUT; angr-ql3ja)."""
-        import angr
-
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        fs_state = proj.factory.entry_state()
-        content = claripy.Concat(*[claripy.BVS(f"license_byte_{i}", 8) for i in range(34)])
-        fs_state.fs.insert("/home/user/license", angr.storage.file.SimFile("license", content))
-
-        assert mgr._compute_mem_init_key(fs_state, "dummy_key") == ""
-        assert mgr._compute_disk_init_key(fs_state, "dummy_key") == ""
-
-
-class TestApplyStateMetadataAllowList:
-    """I4: _apply_state_metadata copies constraints + globals + a fixed option
-    allow-list, and drops everything else."""
-
-    def test_constraints_and_globals_copied(self, fauxware_project):
-        """Constraints and globals on the source state are mirrored onto the
-        destination — the metadata carried across the init-cache copy."""
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        src = proj.factory.entry_state()
-        x = claripy.BVS("x", 32)
-        src.solver.add(x == 0x41)
-        src.globals["marker"] = 0xABCD
-
-        dst = proj.factory.blank_state()
-        n_before = len(dst.solver.constraints)
-        mgr._apply_state_metadata(src, dst)
-
-        assert len(dst.solver.constraints) == n_before + 1
-        assert dst.globals["marker"] == 0xABCD
-
-    def test_allowlisted_option_mirrored_both_ways(self, fauxware_project):
-        """An allow-listed option (LAZY_SOLVES) is ADDED when the source has
-        it and REMOVED when the source lacks it — the mirror contract that
-        stops a cached option leaking to a later caller."""
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        # Add half: src has it, dst doesn't -> dst gains it.
-        src = proj.factory.blank_state(add_options={o.LAZY_SOLVES})
-        dst = proj.factory.blank_state(remove_options={o.LAZY_SOLVES})
-        mgr._apply_state_metadata(src, dst)
-        assert o.LAZY_SOLVES in dst.options
-
-        # Remove half: src lacks it, dst has it -> dst loses it.
-        src2 = proj.factory.blank_state(remove_options={o.LAZY_SOLVES})
-        dst2 = proj.factory.blank_state(add_options={o.LAZY_SOLVES})
-        mgr._apply_state_metadata(src2, dst2)
-        assert o.LAZY_SOLVES not in dst2.options
-
-    def test_fill_policy_options_mirrored(self, fauxware_project):
-        """The unconstrained-fill options survive the init-cache copy (angr-z21g0).
-
-        The destination is a blank_state, whose defaults lack ZERO_FILL_*. If
-        the fill policy is dropped here, every Python-side load of an unmapped
-        byte during a SimProcedure callback mints a fresh ``mem_*`` BVS instead
-        of a zero; those symbolic bytes flow back into Rust and fork-storm the
-        exploration (xmllint/libxml2 went 1 active -> 60+ at step 27).
-        """
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        fill_opts = {
-            o.ZERO_FILL_UNCONSTRAINED_MEMORY,
-            o.ZERO_FILL_UNCONSTRAINED_REGISTERS,
-            o.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-            o.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
-        }
-        src = proj.factory.entry_state(add_options=fill_opts)
-        dst = proj.factory.blank_state(remove_options=fill_opts)
-        mgr._apply_state_metadata(src, dst)
-        for opt in fill_opts:
-            assert opt in dst.options
-
-        # Mirror contract: a source without the fill policy strips it from dst.
-        src2 = proj.factory.blank_state(remove_options=fill_opts)
-        dst2 = proj.factory.blank_state(add_options=fill_opts)
-        mgr._apply_state_metadata(src2, dst2)
-        for opt in fill_opts:
-            assert opt not in dst2.options
-
-    def test_non_allowlisted_option_not_copied(self, fauxware_project):
-        """An option outside the allow-list (TRACK_MEMORY_ACTIONS) on the
-        source is NOT propagated to the destination — proves the copy is a
-        positive allow-list, not a full options union."""
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-
-        src = proj.factory.blank_state(add_options={o.TRACK_MEMORY_ACTIONS})
-        dst = proj.factory.blank_state(remove_options={o.TRACK_MEMORY_ACTIONS})
-        assert o.TRACK_MEMORY_ACTIONS not in dst.options
-
-        mgr._apply_state_metadata(src, dst)
-        assert o.TRACK_MEMORY_ACTIONS not in dst.options

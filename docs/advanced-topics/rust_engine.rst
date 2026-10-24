@@ -1252,8 +1252,7 @@ Honored options
    * - ``LAZY_SOLVES``
      - ``rust_manager.py::_phase_activate`` (re-checked at ``explore()`` time)
      - Calls ``set_lazy_solves(True)``; Rust skips per-block satisfiability
-       checks. Also propagated through ``_apply_state_metadata`` on
-       disk-cache reuse.
+       checks.
    * - ``ZERO_FILL_UNCONSTRAINED_MEMORY``
      - ``rust_manager.py::_phase_activate``
      - Calls ``set_zero_fill_unconstrained(True)``; uninitialized memory
@@ -1271,14 +1270,12 @@ Honored options
        Rust permits multi-valued symbolic write targets instead of
        forcing concretization.
    * - ``STRICT_PAGE_ACCESS``
-     - ``rust_manager.py::_add_rust_state`` (per-state, also propagated through
-       ``_apply_state_metadata`` on disk-cache reuse)
+     - ``rust_manager.py::_add_rust_state`` (per-state)
      - Calls ``RustSimState::set_enforce_permissions(True)``; loads/stores
        violating per-page R/W bits raise ``SimSegfaultError``. Preserved
        across forks via ``SymbolicMemory::fork``.
    * - ``ENABLE_NX``
-     - ``rust_manager.py::_add_rust_state`` (also propagated through
-       ``_apply_state_metadata`` on cache reuse)
+     - ``rust_manager.py::_add_rust_state``
      - Calls ``RustSimState::set_enforce_nx(True)``; instruction fetches
        from mapped non-X pages raise ``SimSegfaultError`` at
        ``VEXInterpreter::get_or_lift_block``. Matches Python: the X
@@ -1286,8 +1283,7 @@ Honored options
        both set (``HeavyVEXMixin.process_successors`` in
        ``angr/engines/vex/heavy/heavy.py``).
    * - ``NO_IP_CONCRETIZATION``
-     - ``rust_manager.py::_add_rust_state`` (also propagated through
-       ``_apply_state_metadata`` on cache reuse)
+     - ``rust_manager.py::_add_rust_state``
      - Calls ``RustSimState::set_no_ip_concretization(True)``; at block
        boundaries with a symbolic jump target the state routes to the
        ``unconstrained`` stash silently instead of being enumerated. The
@@ -1296,8 +1292,7 @@ Honored options
        ``engines/successors.py::_categorize_successor`` behavior
        (``max_targets=0`` with ``skip_max_targets_warning=True``).
    * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
-     - ``rust_manager.py::_add_rust_state`` (also propagated through
-       ``_apply_state_metadata`` on cache reuse)
+     - ``rust_manager.py::_add_rust_state``
      - Calls ``RustSimState::set_no_symbolic_jump_resolution(True)``;
        OR'd with ``no_ip_concretization`` at the
        ``eval_next_addr_concretized`` short-circuit, so a symbolic jump
@@ -1316,8 +1311,7 @@ Honored options
        the option from ``state.options`` and either enumerates concrete
        syscalls or routes to the unknown-syscall stub.
    * - ``KEEP_IP_SYMBOLIC``
-     - ``rust_manager.py::_add_rust_state`` (also propagated through
-       ``_apply_state_metadata`` on cache reuse)
+     - ``rust_manager.py::_add_rust_state``
      - Calls ``RustSimState::set_keep_ip_symbolic(True)``; after a symbolic
        jump target is concretized to one-or-more concrete pc values, each
        successor keeps its IP register set to the original symbolic
@@ -3191,8 +3185,7 @@ ever sees it — ``rust_manager.py::_run_python_init_if_needed``. The
 loader stubs, ``__libc_csu_init``, ``_init``, ``frame_dummy`` and the
 ``.init_array`` constructors are too much for the Rust engine to execute
 faithfully, so they run on the Python engine and only the resulting
-state at ``main`` is handed over (usually straight out of the in-memory
-or on-disk init cache, without stepping at all).
+state at ``main`` is handed over.
 
 The consequence for exploration: **no address the init prefix traverses
 is ever a PC that Rust's pre-step ``find_addrs`` / ``avoid_addrs`` check

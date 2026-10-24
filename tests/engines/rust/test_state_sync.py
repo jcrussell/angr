@@ -411,13 +411,15 @@ class TestHeapBrkSync:
         """
         proj = fauxware_project
         state = proj.factory.entry_state()
-        starting = state.heap.heap_location
-        assert isinstance(starting, int)
 
         mgr = RustExplorationManager(proj, [state])
         active_ids = mgr._rust_mgr.get_state_ids("active")
         assert len(active_ids) == 1
         sid = active_ids[0]
+        # The Python init prefix may already have allocated (libc ctype
+        # tables), so the base is the post-init state's heap_location.
+        starting = mgr._state_cache[sid].heap.heap_location
+        assert isinstance(starting, int)
         assert mgr._rust_mgr.get_state_heap_brk(sid) == starting
 
         # Simulate what heap_alloc does on a native malloc: bump the per-state
@@ -442,7 +444,6 @@ class TestHeapBrkSync:
         outpaced Rust must not be reverted."""
         proj = fauxware_project
         state = proj.factory.entry_state()
-        starting = state.heap.heap_location
 
         mgr = RustExplorationManager(proj, [state])
         active_ids = mgr._rust_mgr.get_state_ids("active")
@@ -450,6 +451,7 @@ class TestHeapBrkSync:
 
         # Python advanced heap_location; Rust still at base.
         cached = mgr._state_cache[sid]
+        starting = cached.heap.heap_location
         higher = starting + 0x6000
         cached.heap.heap_location = higher
         assert mgr._rust_mgr.get_state_heap_brk(sid) == starting

@@ -54,23 +54,6 @@ class TestEntryStateEnvironSeed:
         mgr, sid = seeded_mgr
         assert mgr._rust_mgr.seed_environment(sid, [(b"NEVER_SET_BY_HARNESS", b"x")]) == 1
 
-    def test_warm_disk_cache_hit_keeps_environ(self):
-        """A warm disk init-cache hit must not drop the environment.
-
-        ``_deserialize_init_state`` rebuilds a *blank* state from the pickle, so
-        every ``state.posix`` pointer --- including the ``envp`` array pointer
-        the seed bridge walks --- used to be lost on a warm hit even though the
-        string table itself is inside the cached stack page. Clearing the
-        in-memory ``_init_cache`` forces the disk path.
-        """
-        project = load_pbounce()
-        # Cold run: populates both the in-memory and the disk init cache.
-        RustExplorationManager(project, [project.factory.entry_state(env=_ENV)])
-        RustExplorationManager._init_cache.clear()
-        mgr = RustExplorationManager(project, [project.factory.entry_state(env=_ENV)])
-        sid = mgr._rust_mgr.get_state_ids("active")[0]
-        assert mgr._rust_mgr.seed_environment(sid, [(b"FLAG_CHECK", b"1")]) == 0
-
     def test_no_env_seeds_nothing(self):
         """A default ``entry_state()`` has an empty envp array --- nothing to seed."""
         project = load_pbounce()

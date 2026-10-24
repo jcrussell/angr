@@ -149,20 +149,6 @@ class TestEdgeCases:
     store/load roundtrip on the same symbolic address.
     """
 
-    @pytest.fixture(autouse=True)
-    def _isolate_class_caches(self):
-        """RustExplorationManager._init_cache is class-level and caches the
-        post-init state, including user stores added before manager construction.
-        Without this clear, user stores from one test bleed into the next via
-        the cached state, breaking memory.load assertions. _apply_state_metadata
-        copies constraints/options but not memory pages, so the bleed is silent.
-        """
-        from angr.exploration.rust_manager import RustExplorationManager
-
-        RustExplorationManager._init_cache.clear()
-        yield
-        RustExplorationManager._init_cache.clear()
-
     def test_no_branches_single_basic_block_expression_store(self, fauxware_project):
         """Storing an Expression (not a leaf BVS or BVV) into memory and
         loading it back must roundtrip correctly without forking, even when

@@ -455,9 +455,9 @@ directly.
 
    **Exposing a SimOption to native code.** ``RustSimState::has_option``
    reads the state's ``sim_options`` set, mirrored from Python by
-   ``_add_rust_state`` for every name in ``_NATIVE_SIMOPTIONS``; that
-   same list feeds ``_apply_state_metadata``'s allow-list, so adding a
-   name there is the one change needed. Pick the Rust-side *default* in
+   ``_add_rust_state`` for every name in ``_NATIVE_SIMOPTIONS``, and that
+   mirror is the list's only consumer, so adding a name there is the one
+   Python-side change needed. Pick the Rust-side *default* in
    the fail-open direction: ``has_option`` cannot tell "option absent"
    from "mirror never ran", so an option whose absent branch prunes paths
    (returns a concrete value where Python would mint a symbol) is seeded

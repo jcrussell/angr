@@ -51,9 +51,9 @@
     "callback_count": 5,
     "peak_memory_mb": 170.6,
     "python_time": null,
-    "rust_time": 0.256,
+    "rust_time": 0.52,
     "state_creations": 5,
-    "steps": 2
+    "steps": 6
   },
   "cmu_binary_bomb_partial": {
     "callback_count": 2,
@@ -283,7 +283,7 @@
     "callback_count": 0,
     "peak_memory_mb": 363.4,
     "python_time": 3.84,
-    "rust_time": 3.315,
+    "rust_time": 3.86,
     "state_creations": 0,
     "steps": 22
   }

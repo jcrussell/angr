@@ -13,7 +13,7 @@ to the register tables.
 
 Tests that are *genuinely* arch-specific — x86 segment selectors, the amd64
 ``gs_const``/``sseround`` collision, the AArch64 NEON MLA blob, the AArch64
-concrete-flag ccall, the MIPS32 disk init-cache regression — stay hand-written
+concrete-flag ccall, the MIPS32 symbolic-register accumulator — stay hand-written
 below the sweeps rather than being bent into table columns.
 """
 
@@ -1281,21 +1281,14 @@ class TestMultiArchSupport:
         # The doubled input must equal 84, so the input must be 42.
         assert found.solver.eval(x0) == 42, f"Expected x0==42 (so 2*x0==84) to reach found, got {found.solver.eval(x0)}"
 
-    def test_mips32_symbolic_register_survives_disk_init_cache(self, tmp_path):
-        """User-set symbolic registers must survive the disk init cache (angr-g9hy).
+    def test_mips32_symbolic_register_survives_accumulator_chain(self, tmp_path):
+        """A user-set symbolic register stays symbolic across many MIPS blocks (angr-g9hy).
 
-        Bug: `_state_has_user_symbolic` only scanned memory, so a user mutation
-        like ``state.regs.a0 = claripy.BVS("a0", 32)`` did not invalidate the
-        cache. The cached blank_state replaced the user's state, dropping the
-        symbolic ``a0`` — Rust saw concrete 0 for every read. The chain
-        ``$t0 = $t0 + $a0`` over many MIPS blocks then collapsed ``$t0`` to
-        concrete 0, the comparator BEQ became concrete-false, and the test
-        binary never reached its FOUND address.
-
-        Reproduces by running the failing-before-fix multi-block accumulator
-        layout: N=30 blocks each doing ``ADDU $t0,$t0,$a0; B +1; NOP`` followed
-        by a comparator ``BEQ $t0, N*5``. Before the fix, FOUND was empty for
-        N>=30 (deterministic).
+        ``state.regs.a0 = claripy.BVS("a0", 32)`` feeds the chain
+        ``$t0 = $t0 + $a0`` over N=30 blocks, each ``ADDU $t0,$t0,$a0; B +1;
+        NOP``, followed by a comparator ``BEQ $t0, N*5``. If anything on the
+        way into Rust replaces ``a0`` with a concrete value, ``$t0`` collapses
+        to a constant, the BEQ becomes concrete-false and FOUND stays empty.
         """
         from angr import claripy
 
@@ -1331,7 +1324,7 @@ class TestMultiArchSupport:
 
         code_bytes = struct.pack("<" + "I" * len(code), *code)
         spec = spec_for("mips32")
-        # The little-endian MIPS32 row; the cache bug is endness-independent.
+        # The little-endian MIPS32 row; the property is endness-independent.
         variant = next(v for v in spec.variants if v.little)
         elf_bytes, entry = build_elf(spec, variant, code_bytes)
         elf_path = tmp_path / "mips32_accum.elf"

@@ -110,7 +110,7 @@ EXAMPLE_CATALOG = {
     "0ctf_momo_3": {"tier": "very_slow", "rust_ok": None, "notes": "Both engines timeout >60s"},
     "csgames2018": {"tier": "fast", "rust_ok": True, "notes": "Callable predicates, stdout check"},
     "unmapped_analysis": {"tier": "fast", "rust_ok": True, "notes": "STRICT_PAGE_ACCESS, DivModU128to64 fix"},
-    "hitcon2017_sakura": {"tier": "very_slow", "rust_ok": True, "notes": "Multi-stage explore, disk cache fix"},
+    "hitcon2017_sakura": {"tier": "very_slow", "rust_ok": True, "notes": "Multi-stage explore"},
     "strcpy_find": {
         "tier": "fast",
         "rust_ok": True,

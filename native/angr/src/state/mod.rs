@@ -66,14 +66,6 @@
 //!   `hooks` / `environment` / `fs.fds`, `for x in &self.field` becomes
 //!   `for x in self.field.iter()`. Compiler errors are obvious (E0277
 //!   "is not an iterator") but easy to miss in review.
-//! - **`invariant-apply-state-metadata-option-allowlist`** (also a live bd
-//!   memory key) — `RustExplorationManager._apply_state_metadata` (Python)
-//!   copies only an allow-list of SimOptions (its docstring enumerates them)
-//!   from the source state to a cached/disk-loaded init state. Code that reads
-//!   `angr_state.options` from inside `_add_rust_state` on a cached-init path
-//!   therefore may not see an option the user set unless it is on that list;
-//!   read user-set options from `__init__` on the user-supplied state, before
-//!   `_run_python_init_if_needed` runs.
 //! - **`arc-make-mut-fresh-context`** — On a freshly constructed
 //!   `SymContext` (no other Arc refs yet), `Arc::make_mut(&mut field)`
 //!   returns a unique `&mut` without cloning (refcount==1). `merge()`
@@ -475,12 +467,6 @@ pub struct RustSimState {
     /// jump targets are NOT enumerated via solver — the state routes to the
     /// unconstrained stash without warning. See engines/successors.py:292-296.
     /// Cloned on fork.
-    ///
-    /// See module-level `invariant-apply-state-metadata-option-allowlist`: this field is
-    /// NOT in the `_apply_state_metadata` allow-list, so it must be set on
-    /// the user-supplied state in Python `__init__` BEFORE the init pipeline
-    /// hits the disk cache — otherwise the cached-init path will silently
-    /// reset it to the default on a cache hit.
     #[merge_policy = "union"]
     no_ip_concretization: bool,
     /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION SimOption. When true, any
@@ -490,9 +476,6 @@ pub struct RustSimState {
     /// (both short-circuit `eval_next_addr_concretized` for symbolic IPs);
     /// they are separate flags to preserve Python option semantics. Cloned
     /// on fork.
-    ///
-    /// See module-level `invariant-apply-state-metadata-option-allowlist` — same caveat
-    /// as `no_ip_concretization`.
     #[merge_policy = "union"]
     no_symbolic_jump_resolution: bool,
     /// Mirrors angr's KEEP_IP_SYMBOLIC SimOption. When true, after a symbolic
@@ -502,9 +485,6 @@ pub struct RustSimState {
     /// added per fork. The engine still uses the concrete `pc` value to drive
     /// the next block lift. See engines/successors.py:297-307,326-331.
     /// Cloned on fork.
-    ///
-    /// See module-level `invariant-apply-state-metadata-option-allowlist` — same caveat
-    /// as `no_ip_concretization`.
     #[merge_policy = "union"]
     keep_ip_symbolic: bool,
     /// angr-027h: per-state override that forces EAGER forking (immediate
@@ -543,11 +523,6 @@ pub struct RustSimState {
     /// copy-on-write via `Arc::make_mut` on `set_option`; option sets are
     /// configured once at construction in typical workloads, so most forks pay
     /// only an `Arc` refcount bump.
-    ///
-    /// See module-level `invariant-apply-state-metadata-option-allowlist`: like the other
-    /// option mirrors, this is NOT in the `_apply_state_metadata` allow-list,
-    /// so it must be set on the Rust state during `_add_rust_state` rather than
-    /// relying on the cached-init path to preserve it.
     #[merge_policy = "joint"]
     sim_options: Arc<HashSet<String>>,
     /// SimOption names explicitly disabled (`set_option(name, false)`) since

@@ -1461,6 +1461,21 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         del addr, permissions
         return claripy.BVV(7, 3)
 
+    def map_region(self, addr, length, permissions, **_kwargs):
+        """``state.memory.map_region(addr, length, permissions)`` stub.
+
+        Accepted without an FFI call. The caller that reaches it is a bounced
+        SimProcedure growing the heap plugin's mapped extent
+        (``SimHeapBase._ensure_mapped``); Rust already covers the whole heap
+        range with a lazy region (``RustSimState::new_state_memory``), and
+        :meth:`store` maps on write through
+        ``set_state_memory_concrete_automap``, so the bytes the caller then
+        writes land either way. As with :meth:`permissions`, page permissions
+        stay Rust's concern. Without this the bounce raised AttributeError and
+        the state went to ``errored`` (angr-vmi2l.314).
+        """
+        del addr, length, permissions
+
     # merge / widen: see _ProxyStatePluginMixin.
 
     def compare(self, _other):

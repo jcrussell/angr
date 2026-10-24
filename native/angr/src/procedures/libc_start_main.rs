@@ -13,8 +13,8 @@
 //! ais3_crackme — and on any other bench that completes main multiple times.
 //!
 //! If the Python init was somehow bypassed and the entry-point case (`run`)
-//! were hit here, the state would be lost. The init cache path makes that
-//! unreachable in practice, but the conservative fallback for any future
+//! were hit here, the state would be lost. `_run_python_init_if_needed`
+//! makes that unreachable in practice, but the conservative fallback for any future
 //! flow that needs the init side-effects is to disable this native via
 //! `set_python_override("__libc_start_main")`.
 

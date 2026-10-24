@@ -577,8 +577,8 @@
     },
     "site_classes": {
       "flip-blocking": 63,
-      "logged-degraded": 210,
-      "silent-equivalent": 80
+      "logged-degraded": 199,
+      "silent-equivalent": 71
     },
     "unclassified": [],
     "unlogged_degraded_sites": [
@@ -605,12 +605,6 @@
       "angr/exploration/rust_callback_dispatch.py:2197",
       "angr/exploration/rust_callback_dispatch.py:2223",
       "angr/exploration/rust_callback_dispatch.py:2619",
-      "angr/exploration/rust_disk_cache.py:144",
-      "angr/exploration/rust_disk_cache.py:172",
-      "angr/exploration/rust_disk_cache.py:202",
-      "angr/exploration/rust_disk_cache.py:285",
-      "angr/exploration/rust_disk_cache.py:461",
-      "angr/exploration/rust_disk_cache.py:477",
       "angr/exploration/rust_manager.py:197",
       "angr/exploration/rust_manager.py:1317",
       "angr/exploration/rust_manager.py:1680",
@@ -1267,168 +1261,6 @@
       "semantics": "logged-degraded"
     },
     {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: arch lists a register the SimState",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_register_snapshot",
-      "line": 77,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: SP is symbolic or stack page can't",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_stack_page",
-      "line": 99,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: per-page loader read failed (e.g.",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_loader_pages",
-      "line": 136,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: per-object iteration failed (loader",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_loader_pages",
-      "line": 144,
-      "logs": false,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: section overlay extraction failed;",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_section_patches",
-      "line": 172,
-      "logs": false,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: extra (non-loader) page extraction",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_extra_pages",
-      "line": 202,
-      "logs": false,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: continuation addr in procedure_data",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_extract_callstack_snapshot",
-      "line": 229,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: cannot read binary for hash; disk",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_disk_cache_key",
-      "line": 285,
-      "logs": false,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: disk cache write failed (e.g., OOM,",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_save_init_to_disk_cache",
-      "line": 331,
-      "logs": true,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: state has no fs plugin or it",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_state_has_user_symbolic",
-      "line": 377,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: stack-page probe for user symbolic",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_state_has_user_symbolic",
-      "line": 390,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: per-page symbolic-data scan hit",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_state_has_user_symbolic",
-      "line": 408,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: registers storage lacks _pages",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_state_has_user_symbolic",
-      "line": 430,
-      "logs": false,
-      "semantics": "silent-equivalent"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: disk cache read failed / corrupt;",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_load_init_pickle",
-      "line": 446,
-      "logs": true,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: per-register restore failed; that",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_deserialize_init_state",
-      "line": 461,
-      "logs": false,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_deserialize_init_state",
-      "line": 477,
-      "logs": false,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: callstack restoration failed; the",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_deserialize_init_state",
-      "line": 501,
-      "logs": true,
-      "semantics": "logged-degraded"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: pickle deserialization succeeded but",
-      "file": "angr/exploration/rust_disk_cache.py",
-      "function": "_load_init_from_disk_cache",
-      "line": 544,
-      "logs": true,
-      "semantics": "logged-degraded"
-    },
-    {
       "category": "cat-b",
       "comment": "cat-(b) FALLBACK WITH LOSS: Rust extension not built; the manager",
       "file": "angr/exploration/rust_manager.py",
@@ -1967,15 +1799,6 @@
       "line": 3267,
       "logs": true,
       "semantics": "flip-blocking"
-    },
-    {
-      "category": "cat-a",
-      "comment": "cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or one",
-      "file": "angr/exploration/rust_manager.py",
-      "function": "_apply_state_metadata",
-      "line": 3321,
-      "logs": false,
-      "semantics": "silent-equivalent"
     },
     {
       "category": "cat-b",
@@ -3128,15 +2951,6 @@
       "line": 212,
       "logs": true,
       "semantics": "flip-blocking"
-    },
-    {
-      "category": "cat-b",
-      "comment": "cat-(b) FALLBACK WITH LOSS: fast memory sync from disk cache",
-      "file": "angr/exploration/rust_state_sync.py",
-      "function": "_try_fast_memory_sync",
-      "line": 274,
-      "logs": true,
-      "semantics": "logged-degraded"
     },
     {
       "category": "cat-b",
