@@ -1087,17 +1087,16 @@ class TestErrorRecovery:
         with pytest.raises(RuntimeError, match="unexpected fetch bug"):
             mgr._cb_fetch_page(0x1000)
 
-    def test_rust_ctx_missing_counter_starts_at_zero(self):
-        """angr-h0dv: defensive `rust_ctx_missing` counter on a fresh
-        manager. The legacy Path B
-        constraint-sync counters (cb_sync_calls, cb_sync_constraints,
-        cb_sync_failures, pending_ast_sync_calls) are retired and must not
-        reappear."""
+    def test_retired_constraint_sync_counters_stay_gone(self):
+        """angr-h0dv: the legacy constraint-sync counters (cb_sync_calls,
+        cb_sync_constraints, cb_sync_failures, pending_ast_sync_calls) and the
+        defensive ``rust_ctx_missing`` counter, which nothing incremented once
+        every callback solver became a proxy (angr-mx00p.61), are retired and
+        must not reappear."""
         mgr, _ = self._build_load_store_manager()
         stats = mgr.stats
-        assert stats["rust_ctx_missing"] == 0
-        # Retired counters must not reappear in stats.
         for retired in (
+            "rust_ctx_missing",
             "cb_sync_calls",
             "cb_sync_constraints",
             "cb_sync_failures",

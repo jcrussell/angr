@@ -1316,11 +1316,6 @@ class RustExplorationManager(
         self._stats_hook_sync_calls = 0  # _sync_hooks_before_step invocations
         self._stats_hook_sync_skips = 0  # fast-path skips (no new hooks)
         self._stats_time_in_callbacks_ns = 0  # cumulative time in callback code
-        # Defensive counter for rust_solver_ctx attach regressions. Stays at 0
-        # in production; non-zero means a callback site forgot to attach
-        # rust_solver_ctx and Python's solver may diverge from Rust's. There is
-        # no Rust→Python constraint AST push to fall back on (angr-h0dv).
-        self._stats_rust_ctx_missing = 0
         # angr-ymoe: orphan-BVS fallback counters. Both paths mint a Python
         # claripy.BVS that has no Rust counterpart — measure how often they
         # fire to decide between hard-error / Rust-side fresh symbol / delete.
@@ -5627,10 +5622,6 @@ class RustExplorationManager(
                     callback_total_ns += val
         result["python_callback_count"] = callback_total_count
         result["python_callback_dispatch_us"] = callback_total_ns // 1000
-        # angr-h0dv: defensive counter for Path A (rust_solver_ctx attach)
-        # regressions. The other legacy constraint-sync counters were retired
-        # after a 20-bench soak proved Path B was dead code.
-        result["rust_ctx_missing"] = self._stats_rust_ctx_missing
         # angr-ymoe: orphan-BVS fallback counters
         result["orphan_bvs_mem_thunk"] = self._stats_orphan_bvs_mem_thunk
         result["orphan_bvs_sym_load_full_fail"] = self._stats_orphan_bvs_sym_load_full_fail
