@@ -130,9 +130,6 @@ jobs:
         # write-through-gate-promotion-keep-off-verdict; the export gates
         # joined in angr-5x6la). The per-gate semantics are in the
         # RustExplorationManager docstring in angr/exploration/rust_manager.py.
-        # ANGR_RUST_USE_CALLBACK_REGISTER_PROXY is absent: the suite is green
-        # with it, but it makes multi-successor callbacks share register writes
-        # (angr-mx00p.112), which the suite does not cover.
         env:
           ANGR_RUST_USE_CALLBACK_SOLVER_PROXY: "1"
           ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY: "1"

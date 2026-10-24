@@ -1115,9 +1115,8 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
     Also implements the minimum ``SimMemory`` plugin protocol (``id``,
     ``category``, ``state``, ``set_state``, ``copy``, ``init_state``,
     ``merge``, ``widen``) so that the proxy can be installed as
-    ``state.registers`` on a real SimState (angr-qj30 write-through .2,
-    under the ``use_callback_register_proxy`` gate on
-    ``RustExplorationManager``).
+    ``state.registers`` on a real SimState: every SimProcedure, syscall and
+    VEX-fallback callback state gets one (angr-qj30, angr-mx00p.112).
     """
 
     # SimMemory plugin protocol: registers never carry a strong ref back

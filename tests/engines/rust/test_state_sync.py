@@ -1546,49 +1546,44 @@ class TestWideConcreteMemoryRoundTrip:
 class TestSymbolicRegisterSync:
     """angr-5rjbq: a callback that assigns a *symbolic* value to a non-return
     register (e.g. ``state.regs.ecx = ebp - 0x70004``, as flareon2015_5's hooks
-    do) must have that AST synced to Rust. It used to be dropped: only return
-    registers (eax/rax) took the symbolic-sync path, so Rust kept executing with
-    the stale pre-callback register value."""
+    do) must reach Rust. The callback state's ``RustRegisterProxy`` writes it
+    straight to the pending state (angr-mx00p.112); it used to ride a
+    post-callback register diff that dropped non-return registers."""
 
     @staticmethod
-    def _mgr(fauxware_project):
-        proj = fauxware_project
-        state = proj.factory.entry_state()
-        return RustExplorationManager(proj, [state]), proj
+    def _run_hook(hookable_project, write):
+        proj = hookable_project
+        seen = {}
 
-    def _capture(self, monkeypatch, fauxware_project, reg, make_new_val):
-        mgr, proj = self._mgr(fauxware_project)
-        old_state = proj.factory.blank_state(addr=proj.entry)
-        new_state = old_state.copy()
-        setattr(new_state.regs, reg, make_new_val(old_state))
+        class Writer(angr.SimProcedure):
+            def run(self):  # pylint: disable=arguments-differ
+                seen["value"] = write(self.state)
+                return 0
 
-        synced = {}
-        monkeypatch.setattr(mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value))
-        concrete = mgr._extract_register_changes(old_state, new_state)
-        return synced, concrete
+        addr = 0x4008C0
+        proj.hook(addr, Writer())
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=addr)])
+        mgr.run(max_steps=1)
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active") + mgr._rust_mgr.get_state_ids("deadended")))
+        return mgr, sid, seen["value"]
 
-    def test_symbolic_nonreturn_register_is_synced(self, monkeypatch, fauxware_project):
-        """rdi := (rbp - 0x70004) — a symbolic address expression — reaches Rust."""
-        synced, _ = self._capture(monkeypatch, fauxware_project, "rdi", lambda s: s.regs.rbp - 0x70004)
-        assert "rdi" in synced, f"symbolic write to non-return register rdi was dropped; synced={list(synced)}"
-        assert synced["rdi"].symbolic
+    def test_symbolic_nonreturn_register_is_synced(self, hookable_project):
+        """rdi := (sym - 0x70004) — a symbolic address expression — reaches Rust."""
 
-    def test_unchanged_symbolic_register_is_not_resynced(self, monkeypatch, fauxware_project):
-        """An already-symbolic register the callback never touched must not be
-        re-exported on every callback (that would thrash the AST bridge)."""
-        mgr, proj = self._mgr(fauxware_project)
-        state = proj.factory.blank_state(addr=proj.entry)
-        assert state.regs.rdi.symbolic, "precondition: blank_state rdi is unconstrained"
+        def write(state):
+            state.regs.rdi = claripy.BVS("ebp_like", 64) - 0x70004
+            return state.regs.rdi
 
-        synced = {}
-        monkeypatch.setattr(mgr, "_sync_symbolic_register_to_rust", lambda name, value: synced.__setitem__(name, value))
-        mgr._extract_register_changes(state, state.copy())
-        assert "rdi" not in synced, "untouched symbolic register was needlessly re-synced"
+        mgr, sid, value = self._run_hook(hookable_project, write)
+        got = mgr._rust_mgr.get_state_register_ast(sid, "rdi")
+        assert got is not None and got.symbolic
+        assert got.hash() == value.hash()
 
-    def test_concrete_register_change_still_concrete(self, monkeypatch, fauxware_project):
-        """The concrete diff path is unaffected: rdi := 0x1234 stays a concrete change."""
-        synced, concrete = self._capture(monkeypatch, fauxware_project, "rdi", lambda s: 0x1234)
-        assert "rdi" not in synced, "concrete value took the symbolic-AST path"
-        assert any(int.from_bytes(data, "little") == 0x1234 for (_off, _sz, data) in concrete), (
-            f"concrete rdi change missing from diff: {concrete}"
-        )
+    def test_concrete_register_change_still_concrete(self, hookable_project):
+        """rdi := 0x1234 lands as a concrete register value."""
+
+        def write(state):
+            state.regs.rdi = 0x1234
+
+        mgr, sid, _ = self._run_hook(hookable_project, write)
+        assert mgr._rust_mgr.get_state_register(sid, "rdi") == 0x1234

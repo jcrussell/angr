@@ -416,7 +416,7 @@ class TestStashProxyAccessors:
         read paths agree.
         """
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_register_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         mgr.run(max_steps=200)
 
         checked = 0

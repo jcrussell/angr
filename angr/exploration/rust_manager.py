@@ -1004,7 +1004,6 @@ class RustExplorationManager(
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
-        use_callback_register_proxy: bool | None = None,
         use_callback_solver_proxy: bool | None = None,
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
@@ -1053,14 +1052,6 @@ class RustExplorationManager(
                 inherit it (so descendants opt in transparently). Inert
                 in this slice — slice-1c will be the first consumer of
                 the flag at fork time.
-            use_callback_register_proxy: If True, install ``RustRegisterProxy``
-                as ``state.registers`` on SimProcedure callback states so
-                ``state.regs.<name>`` reads/writes route directly into Rust
-                instead of going through the bundle apply + post-callback
-                ``_extract_register_changes`` diff-and-push (angr-qj30, write-
-                through .2). When ``None`` (default), the env var
-                ``ANGR_RUST_USE_CALLBACK_REGISTER_PROXY=1`` toggles it on;
-                otherwise off. Off keeps the existing diff-and-push path live.
             use_callback_solver_proxy: If True, install
                 ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
                 callback states so ``state.solver.add(constraint)`` routes
@@ -1183,7 +1174,6 @@ class RustExplorationManager(
         )
         self._phase_config(
             use_shared_lineage_solver,
-            use_callback_register_proxy,
             use_callback_solver_proxy,
             use_export_callstack_proxy,
             use_export_memory_proxy,
@@ -1292,7 +1282,6 @@ class RustExplorationManager(
     def _phase_config(
         self,
         use_shared_lineage_solver,
-        use_callback_register_proxy,
         use_callback_solver_proxy,
         use_export_callstack_proxy,
         use_export_memory_proxy,
@@ -1305,21 +1294,6 @@ class RustExplorationManager(
         # solver context. Default off keeps slice-1c's gate inert (and
         # the v5a5-spike baby-re BFS-thrash regression out of CI).
         self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
-
-        # angr-qj30 (write-through .2): gate for installing
-        # ``RustRegisterProxy`` as ``state.registers`` on SimProcedure
-        # callback states. Default off keeps the existing bundle-apply +
-        # ``_extract_register_changes`` diff-and-push path live. When on,
-        # ``_create_state_for_callback`` skips the bundle register apply
-        # and installs the proxy so every ``state.regs.<name>`` read/write
-        # routes directly into Rust by state_id, and the matching site in
-        # ``_handle_simprocedure_callback`` skips ``reg_changes``
-        # extraction (writes already landed in Rust). Env var
-        # ``ANGR_RUST_USE_CALLBACK_REGISTER_PROXY=1`` toggles default-on
-        # when the kwarg is left at its default ``None``.
-        self._use_callback_register_proxy = _resolve_env_flag(
-            use_callback_register_proxy, "ANGR_RUST_USE_CALLBACK_REGISTER_PROXY"
-        )
 
         # angr-8oiw (write-through .3): gate for installing
         # ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
@@ -1515,10 +1489,6 @@ class RustExplorationManager(
         # Track current callback state for memory access during callbacks
         # This allows memory_load callback to access the correct symbolic state
         self._callback_state: angr.SimState | None = None
-
-        # Cache bundle register values from _create_state_for_callback for
-        # reuse as register snapshot (avoids reading registers back from state)
-        self._last_bundle_registers: dict | None = None
 
         # Per-state metadata (symbolic_pages / hook_symbolic_memory /
         # addr_to_ast) is now stored on the Rust side in `RustSimState`. Access

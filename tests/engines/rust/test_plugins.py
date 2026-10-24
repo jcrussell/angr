@@ -703,15 +703,17 @@ class TestBlankStateFallback:
     the three branches are pinned explicitly:
 
     1. happy path — a forked Rust solver lands on ``scratch.rust_solver_ctx``
-       and registers are synced from the live pending Rust state;
+       (the callback state reads registers through its register proxy);
     2. ``fork_pending_solver`` raising still yields a usable (non-None) state;
     3. ``blank_state`` raising yields ``None``.
     """
 
-    def test_fallback_forks_solver_and_syncs_registers(self, fauxware_project):
+    def test_fallback_forks_solver(self, fauxware_project):
         """Happy path: drive a real callback so a live pending Rust state
         exists, then call the fallback directly and assert it forked the
-        pending solver onto ``scratch`` and synced ``rsp`` from Rust.
+        pending solver onto ``scratch``. Registers are not copied into the
+        fallback state: the callback installs a ``RustRegisterProxy`` over
+        it, which reads them from the pending state (angr-mx00p.112).
 
         ``_create_blank_state_fallback`` ignores its ``event`` argument
         entirely (it rebuilds from the live pending state), so passing
@@ -737,7 +739,7 @@ class TestBlankStateFallback:
                 captured["ctx"] = ctx
                 if ctx is not None:
                     captured["num_constraints"] = ctx.num_constraints()
-                captured["fb_rsp"] = fb_state.solver.eval(fb_state.regs.rsp)
+            captured["cb_rsp"] = state.solver.eval(state.regs.rsp)
 
         proj.hook(addr, hook=hook, length=0)
         try:
@@ -754,8 +756,8 @@ class TestBlankStateFallback:
         assert isinstance(captured.get("num_constraints"), int)
         assert captured["num_constraints"] >= 0
         if captured["rust_rsp"] is not None:
-            assert captured["fb_rsp"] == captured["rust_rsp"], (
-                "fallback state rsp does not match the live pending Rust rsp"
+            assert captured["cb_rsp"] == captured["rust_rsp"], (
+                "callback state rsp does not match the live pending Rust rsp"
             )
 
     def test_fallback_survives_solver_fork_failure(self, fauxware_project):

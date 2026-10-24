@@ -30,7 +30,6 @@ pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exp
 GATES = {
     "default": {},
     "proxies_on": {
-        "use_callback_register_proxy": True,
         "use_callback_solver_proxy": True,
     },
 }
