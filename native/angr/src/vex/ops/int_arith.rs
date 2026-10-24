@@ -137,7 +137,12 @@ impl VEXOps {
                 let r = dvd_i.wrapping_rem(dvs_i) as u128 & half_mask;
                 (q, r)
             } else {
-                (dvd / dvs, dvd % dvs)
+                // libVEX guards only a zero divisor, so the quotient can
+                // overflow `divisor_w` (amd64 `div` would raise #DE). Keep
+                // its low half, like the symbolic arm's extract and the
+                // Python engine, so it cannot OR into the remainder half
+                // (angr-vmi2l.58).
+                ((dvd / dvs) & half_mask, dvd % dvs)
             };
 
             let result = quotient | (remainder << divisor_w);

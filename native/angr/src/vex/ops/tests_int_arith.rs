@@ -27,24 +27,103 @@ fn test_divmod_u64_to_32_concrete() {
     assert_eq!((v >> 32) & 0xFFFF_FFFF, 2, "remainder");
 }
 
+/// Evaluate `op` with one operand symbolic but pinned by a constraint to the
+/// given value, and with both concrete; the two must agree (angr-vmi2l.58:
+/// the concrete arm once leaked an overflowing quotient into the remainder).
+/// Returns the agreed packed `remainder:quotient`.
+fn divmod_concrete_matches_pinned_symbolic(
+    op: IROp,
+    (dvd, dividend_w): (u128, u32),
+    (dvs, divisor_w): (u128, u32),
+    symbolic_dividend: bool,
+) -> u128 {
+    let ctx = SymContext::new_mock();
+    let concrete = VEXOps::binop(
+        op,
+        RustBV::concrete(dvd, dividend_w),
+        RustBV::concrete(dvs, divisor_w),
+        &ctx,
+    )
+    .unwrap()
+    .as_u128()
+    .expect("concrete arm must fold");
+
+    let pin = |name: &str, v: u128, w: u32| {
+        let sym = RustBV::symbolic(&ctx, name, w);
+        ctx.add_constraint(sym.to_z3_ast().eq(RustBV::concrete(v, w).to_z3_ast()));
+        sym
+    };
+    let (left, right) = if symbolic_dividend {
+        (pin("dvd", dvd, dividend_w), RustBV::concrete(dvs, divisor_w))
+    } else {
+        (RustBV::concrete(dvd, dividend_w), pin("dvs", dvs, divisor_w))
+    };
+    let symbolic = VEXOps::binop(op, left, right, &ctx).unwrap();
+    assert_eq!(symbolic.width(), dividend_w);
+    assert!(symbolic.is_symbolic(), "{op:?}: symbolic arm must not fold");
+    let symbolic = ctx.eval(&symbolic).expect("pinned operands must be sat");
+    assert_eq!(
+        concrete, symbolic,
+        "{op:?}: concrete {concrete:#x} != pinned symbolic {symbolic:#x}"
+    );
+    concrete
+}
+
 #[test]
 fn test_divmod_u64_to_32_symbolic_dividend() {
-    let ctx = SymContext::new_mock();
-    let dvd = RustBV::symbolic(&ctx, "dvd", 64);
-    let dvs = RustBV::concrete(7, 32);
-    let result = VEXOps::binop(IROp::DivModU64to32, dvd, dvs, &ctx).unwrap();
-    assert_eq!(result.width(), 64);
-    assert!(result.is_symbolic());
+    // 100 / 7 = 14 rem 2.
+    let v = divmod_concrete_matches_pinned_symbolic(
+        IROp::DivModU64to32,
+        (100, 64),
+        (7, 32),
+        true,
+    );
+    assert_eq!(v, 14 | (2 << 32));
 }
 
 #[test]
 fn test_divmod_s64_to_32_symbolic_divisor() {
-    let ctx = SymContext::new_mock();
-    let dvd = RustBV::concrete(0xFFFF_FFFF_FFFF_FF9C, 64); // -100 as i64
-    let dvs = RustBV::symbolic(&ctx, "dvs", 32);
-    let result = VEXOps::binop(IROp::DivModS64to32, dvd, dvs, &ctx).unwrap();
-    assert_eq!(result.width(), 64);
-    assert!(result.is_symbolic());
+    // -100 / 7 = -14 rem -2 (truncating).
+    let v = divmod_concrete_matches_pinned_symbolic(
+        IROp::DivModS64to32,
+        (0xFFFF_FFFF_FFFF_FF9C, 64),
+        (7, 32),
+        false,
+    );
+    assert_eq!(v, ((-14i32) as u32 as u128) | (((-2i32) as u32 as u128) << 32));
+}
+
+/// An overflowing unsigned quotient: libVEX guards only a zero divisor, so
+/// amd64 `div ecx` with rdx=1, rax=0, rcx=1 reaches the op with quotient
+/// 2^32. Both arms truncate it to 0 and the remainder half stays 0, as in the
+/// Python engine (angr-vmi2l.58).
+#[test]
+fn test_divmod_overflowing_quotient_matches_pinned_symbolic() {
+    for symbolic_dividend in [true, false] {
+        let v = divmod_concrete_matches_pinned_symbolic(
+            IROp::DivModU64to32,
+            (1 << 32, 64),
+            (1, 32),
+            symbolic_dividend,
+        );
+        assert_eq!(v, 0, "DivModU64to32(2^32, 1)");
+        let v = divmod_concrete_matches_pinned_symbolic(
+            IROp::DivModU128to64,
+            ((0x77 << 64) | 0x1234, 128),
+            (0x10, 64),
+            symbolic_dividend,
+        );
+        let q = (((0x77u128 << 64) | 0x1234) / 0x10) & u128::from(u64::MAX);
+        assert_eq!(v, q | (4 << 64), "DivModU128to64 overflow");
+        let v = divmod_concrete_matches_pinned_symbolic(
+            IROp::DivModS64to32,
+            (5 << 32, 64),
+            (2, 32),
+            symbolic_dividend,
+        );
+        // (5 << 32) / 2 = 0x2_8000_0000: the low half 0x8000_0000, rem 0.
+        assert_eq!(v, 0x8000_0000, "DivModS64to32((5 << 32) / 2)");
+    }
 }
 
 #[test]
@@ -79,12 +158,14 @@ fn test_divmod_s128_to_64_int_min_by_neg_one() {
 
 #[test]
 fn test_divmod_u128_to_64_symbolic() {
-    let ctx = SymContext::new_mock();
-    let dvd = RustBV::symbolic(&ctx, "dvd128", 128);
-    let dvs = RustBV::concrete(7, 64);
-    let result = VEXOps::binop(IROp::DivModU128to64, dvd, dvs, &ctx).unwrap();
-    assert_eq!(result.width(), 128);
-    assert!(result.is_symbolic());
+    // 1000 / 7 = 142 rem 6.
+    let v = divmod_concrete_matches_pinned_symbolic(
+        IROp::DivModU128to64,
+        (1000, 128),
+        (7, 64),
+        true,
+    );
+    assert_eq!(v, 142 | (6 << 64));
 }
 
 #[test]

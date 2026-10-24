@@ -487,3 +487,97 @@ fn boundary_div_mod_by_zero_is_total() {
         assert_eq!(d(IROp::ModS(t), neg), neg, "x %s 0 == x w={w}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// DivMod{U,S}{64to32,128to64}: quotient and remainder truncated to the
+// divisor's width (angr-vmi2l.58)
+// ---------------------------------------------------------------------------
+
+/// The double-to-single DivMod ops with their (dividend, divisor) widths and
+/// signedness.
+const DIVMOD_OPS: [(IROp, u32, u32, bool); 4] = [
+    (IROp::DivModU64to32, 64, 32, false),
+    (IROp::DivModS64to32, 64, 32, true),
+    (IROp::DivModU128to64, 128, 64, false),
+    (IROp::DivModS128to64, 128, 64, true),
+];
+
+/// Independent reference for a non-zero divisor: divide at the dividend's
+/// width (in i128/u128), then keep the low `divisor_w` bits of the quotient
+/// and of the remainder, packed `remainder:quotient`. That is the
+/// libVEX/Python truncation, so an overflowing quotient loses its high bits
+/// instead of leaking them into the remainder. The one i128 overflow,
+/// `i128::MIN / -1`, wraps to `(i128::MIN, 0)` as Z3 `bvsdiv`/`bvsrem` do.
+fn divmod_double_reference(dvd: u128, dvs: u128, dividend_w: u32, divisor_w: u32, signed: bool) -> u128 {
+    let half = mask(divisor_w);
+    let (q, r) = if signed {
+        let a = to_signed(dvd, dividend_w);
+        let b = to_signed(dvs, divisor_w);
+        match (a.checked_div(b), a.checked_rem(b)) {
+            (Some(q), Some(r)) => (q as u128, r as u128),
+            _ => (i128::MIN as u128, 0),
+        }
+    } else {
+        let a = dvd & mask(dividend_w);
+        let b = dvs & half;
+        (a / b, a % b)
+    };
+    (q & half) | ((r & half) << divisor_w)
+}
+
+#[quickcheck]
+fn prop_divmod_double_to_single_matches_truncating_reference(
+    dvd: u128,
+    dvs: u128,
+    hi_shift: u8,
+    op_seed: u8,
+) -> bool {
+    let ctx = SymContext::new_mock();
+    let (op, dividend_w, divisor_w, signed) = DIVMOD_OPS[(op_seed % 4) as usize];
+    let dvs = dvs & mask(divisor_w);
+    if dvs == 0 {
+        // Zero divisors have their own Z3-total tests in tests_int_arith.rs.
+        return true;
+    }
+    // Skew the dividend's high half toward overflow: shifting it right by a
+    // random amount keeps small-quotient cases while many dividends still
+    // carry a high half >= the divisor (an overflowing quotient).
+    let dvd = dvd & mask(dividend_w);
+    let high = (dvd >> divisor_w) >> (u32::from(hi_shift) % divisor_w);
+    let dvd = (high << divisor_w) | (dvd & mask(divisor_w));
+    let got = val(&VEXOps::binop(
+        op,
+        RustBV::concrete(dvd, dividend_w),
+        RustBV::concrete(dvs, divisor_w),
+        &ctx,
+    )
+    .unwrap());
+    got == divmod_double_reference(dvd, dvs, dividend_w, divisor_w, signed)
+}
+
+/// Deterministic overflow sweep: the quickcheck property above can miss a
+/// regression on an unlucky run; these always overflow the quotient.
+#[test]
+fn test_divmod_double_to_single_overflowing_quotients() {
+    let ctx = SymContext::new_mock();
+    for (op, dividend_w, divisor_w, signed) in DIVMOD_OPS {
+        let cases: [(u128, u128); 4] = [
+            // amd64 `div ecx` / `div rcx` with rdx=1, rax=0, rcx=1.
+            (1u128 << divisor_w, 1),
+            ((0x77u128 << divisor_w) | 0x1234, 0x10),
+            (mask(dividend_w) >> 1, 3),
+            ((5u128 << divisor_w) | 7, 2),
+        ];
+        for (dvd, dvs) in cases {
+            let got = val(&VEXOps::binop(
+                op,
+                RustBV::concrete(dvd, dividend_w),
+                RustBV::concrete(dvs, divisor_w),
+                &ctx,
+            )
+            .unwrap());
+            let want = divmod_double_reference(dvd, dvs, dividend_w, divisor_w, signed);
+            assert_eq!(got, want, "{op:?} {dvd:#x} / {dvs:#x}");
+        }
+    }
+}
