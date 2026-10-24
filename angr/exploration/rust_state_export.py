@@ -188,10 +188,9 @@ class RustSolverFallback:
     inline closures; the ``_rust_fallback_attached`` flag on state.solver
     guards against double-patching (which would cause infinite recursion
     since the second wrapper's "originals" would be the first wrapper's
-    bound methods). Per-callback solver attachment is the parallel path
-    in ``_install_rust_solver_on_callback_state``
-    (rust_callback_dispatch.py); both paths must stay in sync if a new
-    FFI solver entry point is added.
+    bound methods). A callback state's solver is the
+    ``RustSolverProxyPlugin`` (rust_state_proxy.py); both must stay in sync
+    if a new FFI solver entry point is added.
     """
 
     _ATTACH_FLAG = "_rust_fallback_attached"

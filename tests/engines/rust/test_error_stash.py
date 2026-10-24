@@ -1089,10 +1089,7 @@ class TestErrorRecovery:
 
     def test_rust_ctx_missing_counter_starts_at_zero(self):
         """angr-h0dv: defensive `rust_ctx_missing` counter on a fresh
-        manager. Path A (rust_solver_ctx attach in
-        rust_callback_dispatch.py::_install_rust_solver_on_callback_state)
-        covers every live callback site; non-zero here signals a callback
-        site forgot to attach the Rust solver context. The legacy Path B
+        manager. The legacy Path B
         constraint-sync counters (cb_sync_calls, cb_sync_constraints,
         cb_sync_failures, pending_ast_sync_calls) are retired and must not
         reappear."""

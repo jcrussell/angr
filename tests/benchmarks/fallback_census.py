@@ -71,8 +71,7 @@ BLOCKING = "flip-blocking"
 # SURFACE the proc touches, not by what it computes:
 #
 #   regs / memory / constraints / new BVS  -> written through the callback
-#       state's Rust proxies, or carried by the resume FFI
-#       (`_extract_new_constraints`)                        -> silent-equivalent.
+#       state's Rust proxies                               -> silent-equivalent.
 #   heap plugin (malloc/calloc bump)  -> `_ensure_critical_plugins` copies only
 #       `posix` and `libc` from a template state, and the heap/brk push
 #       (`rust_state_export._sync_rust_heap_brk_to_state`) runs only on the

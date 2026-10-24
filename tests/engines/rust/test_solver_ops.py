@@ -1495,7 +1495,7 @@ class TestExplorationIntegration:
 
         forked_calls = []
 
-        def _record_fork(succ, fork_id, _new_constraints_of):
+        def _record_fork(succ, fork_id):
             forked_calls.append((succ, fork_id))
 
         mgr._add_forked_state = _record_fork  # type: ignore[assignment]

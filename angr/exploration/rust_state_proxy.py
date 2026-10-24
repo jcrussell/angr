@@ -695,9 +695,9 @@ def _sim_unsat(f):
 class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     """SimSolver-shaped plugin that routes constraint ops through Rust.
 
-    Installed as ``state.solver`` on SimProcedure callback states under the
-    ``use_callback_solver_proxy`` gate on ``RustExplorationManager``
-    (angr-8oiw). Mirrors the memory and register proxies' install pattern.
+    Installed as ``state.solver`` on every SimProcedure, syscall and
+    VEX-fallback callback state (angr-8oiw). Mirrors the memory and register
+    proxies' install pattern.
 
     Write-through model:
       * ``add(constraint)`` routes immediately into the underlying Rust

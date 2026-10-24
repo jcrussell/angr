@@ -131,7 +131,6 @@ jobs:
         # joined in angr-5x6la). The per-gate semantics are in the
         # RustExplorationManager docstring in angr/exploration/rust_manager.py.
         env:
-          ANGR_RUST_USE_CALLBACK_SOLVER_PROXY: "1"
           ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY: "1"
           ANGR_RUST_USE_EXPORT_MEMORY_PROXY: "1"
         run: uv run pytest tests/engines/rust/ --tb=short

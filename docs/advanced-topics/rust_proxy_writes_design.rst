@@ -12,15 +12,15 @@ Rust engine: proxy-backed SimState writes — design comparison
    :doc:`rust_engine` "RustStateProxy write-through contract" for the
    shipped behavior.
 
-   **Further superseded for memory (angr-grji4) and registers
-   (angr-mx00p.112).** At the **SimProcedure callback boundary**
-   (Python full ``SimState`` mutates → Rust syncs back on return),
-   the diff-and-push path described below now governs only
-   **constraints**. Memory and registers are always proxy
-   write-through: every callback state's ``state.memory`` is a
-   ``RustMemoryProxy`` and its ``state.registers`` a ``RustRegisterProxy``,
-   so a Python SimProcedure's ``state.memory.store(…)`` or
-   ``state.regs.rax = …`` lands in Rust immediately and nothing is
+   **Further superseded for memory (angr-grji4), registers and
+   constraints (angr-mx00p.112).** At the **SimProcedure callback
+   boundary** (Python full ``SimState`` mutates → Rust syncs back on
+   return) nothing takes the diff-and-push path described below any more.
+   Every callback state's ``state.memory`` is a ``RustMemoryProxy``, its
+   ``state.registers`` a ``RustRegisterProxy`` and its ``state.solver`` a
+   ``RustSolverProxyPlugin``, so a Python SimProcedure's
+   ``state.memory.store(…)``, ``state.regs.rax = …`` or
+   ``state.solver.add(…)`` lands in Rust immediately and nothing is
    replayed on return (``angr-mx00p.28``). See :doc:`rust_engine` for the shipped
    contract, and *Copy semantics* below for what ``state.copy()`` does.
 
@@ -86,9 +86,9 @@ callback-heavy benches is state creation, not sync-back (``angr-9maq``).
 Current diff-and-push model
 ---------------------------
 
-Constraints still take the diff-and-push path described under *Why this
-work* (``_extract_new_constraints``). Memory and registers no longer do
-(see the status note above): their diff helpers are gone. The options below
+Nothing at the callback boundary takes it any more (see the status note
+above): the register and constraint diff helpers are gone, and the memory
+diff is inert because a callback state's memory has no ``changed_bytes``. The options below
 are written against the full diff-and-push model that existed at design
 time.
 
@@ -399,8 +399,8 @@ callback boundary memory moved to the proxy by default
 (``angr-grji4``) once re-syncing whole pages per callback was measured
 to cost more than the proxy writes do. Registers followed once a copied
 callback state got its own Rust state (*Copy semantics*, ``angr-mx00p.112``)
-and the register proxy measured no slower on the bench gate. Constraints
-keep diff-and-push.
+and the register and solver proxies measured no slower on the bench gate;
+the monkey-patched callback solver went with them.
 The shipped contract is in :doc:`rust_engine` ("RustStateProxy
 write-through contract").
 
@@ -469,9 +469,8 @@ References
   boundary; Option A would emit at each write.
 * Code involved:
 
-  * ``angr/exploration/rust_state_sync.py`` (``_extract_memory_changes``,
-    ``_extract_new_constraints`` in ``rust_callback_dispatch.py``) — what is
-    left of the diff-and-push implementation.
+  * ``angr/exploration/rust_state_sync.py`` (``_extract_memory_changes``)
+    — what is left of the diff-and-push implementation.
   * ``angr/exploration/rust_callback_dispatch.py`` — sync_back call site.
   * ``angr/exploration/rust_state_proxy.py`` (``RustRegisterProxy``,
     ``RustMemoryProxy``) — the proxies that now write through.

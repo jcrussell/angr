@@ -83,8 +83,8 @@ class TestSolverFallbackKwargs:
 
 
 class TestCallbackSolverKwargs:
-    """The per-callback twin (``_install_rust_solver_on_callback_state``) must
-    honour the same kwargs (``invariant-rust-solver-fallback-class``)."""
+    """The per-callback twin (the callback state's ``RustSolverProxyPlugin``)
+    must honour the same kwargs (``invariant-rust-solver-fallback-class``)."""
 
     def _callback_state(self):
         proj = angr.load_shellcode(b"\x90\xc3", arch="amd64")
@@ -95,9 +95,7 @@ class TestCallbackSolverKwargs:
         sid = mgr._rust_mgr.get_state_ids("active")[0]
         mgr._rust_mgr.add_constraints_to_state(sid, [x.UGT(100)])
         cb_state = proj.factory.blank_state(addr=proj.entry)
-        ctx = mgr._rust_mgr.fork_state_solver(sid)
-        cb_state.scratch.rust_solver_ctx = ctx  # what the callback sites do before installing
-        mgr._install_rust_solver_on_callback_state(cb_state, ctx)
+        mgr._install_callback_solver_proxy(cb_state, sid)  # what every callback site installs
         return cb_state, x
 
     def test_min_max_honour_extra_constraints(self):

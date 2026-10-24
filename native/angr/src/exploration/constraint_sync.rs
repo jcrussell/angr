@@ -18,10 +18,9 @@ impl RustExplorationManager {
     ///
     /// Python SimProcedures may add new constraints (e.g., strcmp conditions);
     /// this method syncs those new constraints BACK to Rust after the callback.
-    /// The reverse direction (Rust→Python) is handled by attaching a
-    /// `RustSolverContext` to the Python state in
-    /// `rust_callback_dispatch._install_rust_solver_on_callback_state`, so
-    /// constraints never need to be replayed across the FFI.
+    /// The reverse direction (Rust→Python) needs no replay: a callback
+    /// state's `RustSolverProxyPlugin` (`rust_state_proxy.py`) reads the
+    /// Rust state's solver directly.
     ///
     /// Without this, constraints added by SimProcedures would be lost when
     /// Rust resumes execution, leading to incorrect symbolic evaluation.

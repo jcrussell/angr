@@ -484,7 +484,6 @@ class TestProxyMemoryFind:
 # gate is a one-line entry here; per-gate behavioral tests live in the
 # matching Test*Gate class below.
 _GATE_TOGGLES = [
-    ("use_callback_solver_proxy", "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY", "_use_callback_solver_proxy"),
     ("use_export_callstack_proxy", "ANGR_RUST_USE_EXPORT_CALLSTACK_PROXY", "_use_export_callstack_proxy"),
     ("use_export_memory_proxy", "ANGR_RUST_USE_EXPORT_MEMORY_PROXY", "_use_export_memory_proxy"),
 ]
@@ -915,22 +914,19 @@ class TestRustMemoryProxyPluginGapStubs:
 
 
 class TestCallbackSolverProxyGate:
-    """angr-8oiw write-through .3: ``use_callback_solver_proxy`` gate controls
-    whether ``RustSolverProxyPlugin`` is installed as ``state.solver`` on
-    SimProcedure callback states. Default off keeps the
-    ``_install_rust_solver_on_callback_state`` monkey-patch path live (which
-    maintains a parallel Python claripy solver); on routes
-    ``state.solver.add`` directly to Rust by ``state_id`` and
-    ``state.solver.constraints`` reads through Rust.
+    """angr-8oiw: ``RustSolverProxyPlugin`` is installed as ``state.solver``
+    on every SimProcedure callback state; ``state.solver.add`` routes
+    directly to Rust by ``state_id`` and ``state.solver.constraints`` reads
+    through Rust.
     """
 
     def test_proxy_install_swaps_state_solver(self, fauxware_project):
-        """When the gate is on, ``_install_callback_solver_proxy`` replaces
+        """``_install_callback_solver_proxy`` replaces
         ``state.solver`` with a ``RustSolverProxyPlugin``."""
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -945,7 +941,7 @@ class TestCallbackSolverProxyGate:
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -960,7 +956,7 @@ class TestCallbackSolverProxyGate:
         from angr import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -979,7 +975,7 @@ class TestCallbackSolverProxyGate:
         from angr import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -1006,7 +1002,7 @@ class TestCallbackSolverProxyGate:
         from angr import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -1026,7 +1022,7 @@ class TestCallbackSolverProxyGate:
         from angr.errors import SimUnsatError
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -1049,7 +1045,7 @@ class TestCallbackSolverProxyGate:
         from angr.errors import SimUnsatError
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -1068,7 +1064,7 @@ class TestCallbackSolverProxyGate:
         allocators eval an int size. The plugin answered unsat for it, so a
         bounced calloc/malloc errored the state (angr-mx00p.61)."""
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)
@@ -1082,7 +1078,7 @@ class TestCallbackSolverProxyGate:
         from angr import claripy
 
         state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
         seed_id = mgr._rust_mgr.get_state_ids("active")[0]
         cb_state = fauxware_project.factory.entry_state()
         mgr._install_callback_solver_proxy(cb_state, seed_id)

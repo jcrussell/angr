@@ -1,10 +1,10 @@
 """Mixin for Callback dispatch and SimProcedure handling for Rust exploration.
 
-At the SimProcedure callback boundary registers and constraints are
-diffed and pushed back to Rust, while memory writes land in Rust
-immediately through the callback-memory proxy (the tracked write lists
-are discarded on return); see ``docs/advanced-topics/rust_proxy_writes_design.rst``
-and the write-through contract in ``docs/advanced-topics/rust_engine.rst``.
+At the SimProcedure callback boundary memory, register and constraint
+writes land in Rust immediately through the callback state's proxy
+plugins, so nothing is diffed and pushed back on return; see
+``docs/advanced-topics/rust_proxy_writes_design.rst`` and the write-through
+contract in ``docs/advanced-topics/rust_engine.rst``.
 
 Every callback state's proxies share one copy-on-write binding owned by a
 ``CallbackForkScope`` (``rust_state_binding``, angr-mx00p.112): a successor
@@ -282,209 +282,6 @@ class RustCallbackDispatchMixin:
             # failed; future self.call() inside this procedure may crash on
             # missing fields. Debug-logs.
             l.debug(f"Could not initialize callstack procedure_data: {e}")
-
-    def _install_rust_solver_on_callback_state(self, state: angr.SimState, rust_ctx):
-        """Make the Rust solver the single source of truth for callback states.
-
-        Instead of syncing constraints from Rust to Python (which can create
-        UNSAT due to variable identity mismatches across the FFI boundary),
-        this method monkey-patches the Python state's solver to delegate all
-        solving operations to the forked Rust solver context.
-
-        Contract (angr-ye2n): the caller MUST pass a non-None ``rust_ctx``
-        AND attach the same context to ``state.scratch.rust_solver_ctx``
-        before calling. The installed closures re-read
-        ``state.scratch.rust_solver_ctx`` on every invocation so the manager
-        only needs to update that one attribute between callbacks; no
-        separate solver-handle scratchpad (formerly ``_rust_solver_ref``) is
-        required. If a fork path failed and no context is available, the
-        caller MUST skip the install rather than passing ``None`` —
-        previously this method silently no-op'd when scratch had no
-        ``rust_solver_ctx``, which let Python's solver diverge from Rust's
-        without raising.
-
-        This covers:
-        - state.solver.eval() — used by SimProcedures and concretization strategies
-        - state.solver.satisfiable() — used by concretization and feasibility checks
-        - state.solver.min()/max() — used by concretization strategies
-        - state.solver.eval_upto() — used by concretization strategies
-        - state.solver.add() — forwards constraints to both Python and Rust
-
-        Sibling helper to ``RustSolverFallback`` (rust_state_export.py): both
-        attach Rust-backed eval/satisfiable/min/max/eval_upto onto a Python
-        ``state.solver``. The fallback class handles post-exploration stash
-        states (with the ``_rust_fallback_attached`` double-patch guard);
-        this method handles per-callback states. Any new FFI solver entry
-        point should be considered for both wiring sites — see Rust
-        ``callbacks.rs`` module invariant 5
-        (``invariant-rust-solver-fallback-class``).
-        """
-        # Explicit non-None contract (angr-ye2n)
-        assert rust_ctx is not None, (
-            "_install_rust_solver_on_callback_state requires a non-None "
-            "rust_ctx: callers must pass the solver context explicitly"
-        )
-
-        # Idempotency: closures read state.scratch.rust_solver_ctx on every
-        # call, so a re-install would just rewrap our own closures as the
-        # "originals" — an infinite-recursion footgun. Guard with a per-
-        # state flag.
-        if getattr(state.scratch, "_rust_solver_installed", False):
-            return
-
-        # First time: save real originals and create closures once.
-        # _with_extra_constraints lives in rust_state_proxy (extracted there by
-        # the 24pv4.4 dedup refactor); import here to keep the closures below
-        # from raising NameError on every eval/satisfiable/eval_upto call.
-        from angr.exploration.rust_state_proxy import (
-            _cast_eval_result,
-            _signed_extremum,
-            _with_extra_constraints,
-        )
-
-        original_eval = state.solver.eval
-        original_satisfiable = state.solver.satisfiable
-        original_min = state.solver.min
-        original_max = state.solver.max
-        original_eval_upto = state.solver.eval_upto
-        original_add = state.solver.add
-        state.scratch._rust_solver_installed = True
-
-        # angr-vmi2l.293: each query runs, together with its unsat check,
-        # inside one ``_with_extra_constraints`` scope on the Rust context, and
-        # every Python fallback forwards ``extra_constraints``. An unsat answer
-        # raises SimUnsatError, as SimSolver does: the path constraints live in
-        # Rust, so the Python solver would answer an infeasible query with an
-        # arbitrary value. Mirrors ``RustSolverFallback.eval`` / ``eval_upto``
-        # (``invariant-rust-solver-fallback-class``).
-        def _rust_eval(expr, cast_to=None, **kwargs):
-            _ctx = state.scratch.rust_solver_ctx
-            kwargs.pop("exact", None)
-            extra = kwargs.pop("extra_constraints", ())
-
-            def query():
-                result = _ctx.eval(expr)
-                return result, result is None and not _ctx.satisfiable()
-
-            unsat = False
-            try:
-                result, unsat = _with_extra_constraints(_ctx, query, extra=extra)
-                if result is not None:
-                    return _cast_eval_result(expr, result, cast_to)
-            except claripy.errors.UnsatError:
-                # cat-(a) EXPECTED CONTROL FLOW: claripy UnsatError must propagate
-                # so the caller sees the constraint conflict — re-raise.
-                raise
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: Rust solver eval failed; fall back
-                # to Python's claripy solver. The two solvers may diverge on
-                # satisfying value selection.
-                unsat = False
-            if unsat:
-                raise SimUnsatError("Rust solver context is unsat (callback eval)")
-            return original_eval(expr, cast_to=cast_to, extra_constraints=extra, **kwargs)
-
-        def _rust_satisfiable(**kwargs):
-            _ctx = state.scratch.rust_solver_ctx
-            kwargs.pop("exact", None)
-            extra = kwargs.pop("extra_constraints", ())
-            try:
-                return _with_extra_constraints(_ctx, _ctx.satisfiable, extra=extra)
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: Rust solver satisfiable() raised;
-                # fall back to Python claripy. May report sat/unsat differently
-                # from Rust.
-                return original_satisfiable(extra_constraints=extra, **kwargs)
-
-        def _rust_extremum(kind, expr, kwargs):
-            # angr-mm5sw: honour ``extra_constraints`` and ``signed`` like the
-            # export-side twin (``RustSolverFallback._extremum``); both used
-            # to be dropped here.
-            kwargs.pop("exact", None)
-            extra = kwargs.pop("extra_constraints", ())
-            signed = kwargs.pop("signed", False)
-            _ctx = state.scratch.rust_solver_ctx
-            bound = _ctx.min if kind == "min" else _ctx.max
-
-            def query():
-                result = bound(expr, signed=signed)
-                # Rust returned no bound (None). Two disjoint causes
-                # (solving_ops.rs min()/max()): the ctx is unsat, or expr width
-                # > 128.
-                #  - unsat: the state is dead; claripy would only re-derive the
-                #    same unsat and raise. Raise SimUnsatError now rather than
-                #    waste a full Python solve to reach the identical failure.
-                #    satisfiable() is cached by the bound call, so it's free.
-                #  - width > 128: the u128 result can't hold the extremum, but
-                #    claripy's big-int solver can — fall through to it (below).
-                return result, result is None and not _ctx.satisfiable()
-
-            try:
-                result, unsat = _with_extra_constraints(_ctx, query, extra=extra)
-                if result is not None:
-                    return _signed_extremum(result, expr, signed)
-            except claripy.errors.UnsatError:
-                # cat-(a) EXPECTED CONTROL FLOW: propagate a genuine unsat.
-                raise
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: Rust solver min()/max() raised;
-                # fall back to Python claripy. Concretization strategies may
-                # pick a different bound than Rust would.
-                unsat = False
-            if unsat:
-                raise SimUnsatError(f"Rust solver context is unsat (callback {kind})")
-            original = original_min if kind == "min" else original_max
-            return original(expr, extra_constraints=extra, signed=signed, **kwargs)
-
-        def _rust_min(expr, **kwargs):
-            return _rust_extremum("min", expr, kwargs)
-
-        def _rust_max(expr, **kwargs):
-            return _rust_extremum("max", expr, kwargs)
-
-        def _rust_eval_upto(expr, n, cast_to=None, **kwargs):
-            _ctx = state.scratch.rust_solver_ctx
-            kwargs.pop("exact", None)
-            extra = kwargs.pop("extra_constraints", ())
-
-            def query():
-                found = _ctx.eval_upto(expr, n)
-                return found, not found and not _ctx.satisfiable()
-
-            unsat = False
-            try:
-                results, unsat = _with_extra_constraints(_ctx, query, extra=extra)
-                if results:
-                    # angr-vmi2l.225: cast as SimSolver._cast_to does (bytes is
-                    # the big-endian encoding, not ``bytes(value)``) and
-                    # return a list, as SimSolver.eval_upto does.
-                    return [_cast_eval_result(expr, r, cast_to) for r in results]
-            except Exception:
-                # cat-(b) FALLBACK WITH LOSS: Rust solver eval_upto() raised; fall
-                # back to Python claripy. Returned solution sets may differ.
-                unsat = False
-            if unsat:
-                raise SimUnsatError("Rust solver context is unsat (callback eval_upto)")
-            return original_eval_upto(expr, n, cast_to=cast_to, extra_constraints=extra, **kwargs)
-
-        def _rust_add(*constraints):
-            _ctx = state.scratch.rust_solver_ctx
-            # Forward to both Rust and Python solvers
-            for c in constraints:
-                # cat-(b) FALLBACK WITH LOSS: forwarding constraint to Rust solver
-                # failed; the Python solver still has it (added below), but Rust
-                # may produce different sat/values until the next callback
-                # re-attaches rust_solver_ctx.
-                with contextlib.suppress(Exception):
-                    _ctx.add_constraint_ast(c)
-            original_add(*constraints)
-
-        state.solver.eval = _rust_eval
-        state.solver.satisfiable = _rust_satisfiable
-        state.solver.min = _rust_min
-        state.solver.max = _rust_max
-        state.solver.eval_upto = _rust_eval_upto
-        state.solver.add = _rust_add
 
     def _inject_rust_stdout(self, state, state_id):
         """Inject Rust-side fd output buffers into the state's posix plugin.
@@ -848,18 +645,8 @@ class RustCallbackDispatchMixin:
         orig_state = self._snapshot_orig_state(state, proc, name, is_zero_length_hook)
         self._perf_stats.add_simprocedure_phase("state_copy", time.perf_counter_ns() - _sp_copy_start)
 
-        # Save original constraint COUNT before hook execution.
-        # Building set(constraints) is expensive (hashes every constraint AST per call).
-        # Save just the count; only build the full set if count changes after callback.
-        # When using a register snapshot (no full state copy), eagerly capture
-        # constraints since we can't access orig_state.solver.constraints later.
-        orig_constraint_count = len(state.solver.constraints) if hasattr(state, "solver") else 0
-        if isinstance(orig_state, dict):
-            # Snapshot mode: capture constraints eagerly for the rare case
-            # where a non-memory-writing proc adds constraints
-            orig_constraints = set(state.solver.constraints) if hasattr(state, "solver") else set()
-        else:
-            orig_constraints = None  # Deferred — only built if needed
+        # Constraints need no snapshot: ``state.solver`` is a
+        # ``RustSolverProxyPlugin`` that writes every ``add`` through.
 
         # state.inspect simprocedure BEFORE (angr-xmfj). The proc may be a
         # class or instance; pass the raw object so user BPs can introspect.
@@ -931,8 +718,6 @@ class RustCallbackDispatchMixin:
                     state,
                     orig_state,
                     is_zero_length_hook,
-                    orig_constraints,
-                    orig_constraint_count,
                     _sp_total_start,
                 )
                 if handled_early:
@@ -946,8 +731,6 @@ class RustCallbackDispatchMixin:
                     state,
                     orig_state,
                     is_zero_length_hook,
-                    orig_constraints,
-                    orig_constraint_count,
                 )
 
         except TypeError as e:
@@ -1175,8 +958,6 @@ class RustCallbackDispatchMixin:
         state,
         orig_state,
         is_zero_length_hook: bool,
-        orig_constraints,
-        orig_constraint_count,
         _sp_total_start: int,
     ) -> bool:
         """Handle the success path when the SimProcedure produced successors.
@@ -1249,24 +1030,13 @@ class RustCallbackDispatchMixin:
             orig_state,
             event,
             skip_hook_addr=skip_hook_addr,
-            orig_constraints=orig_constraints,
-            orig_constraint_count=orig_constraint_count,
             resumed_id=resumed_id,
             orig_sp=orig_sp,
         )
 
         # Additional successors are finished from their own forks.
         for succ, fork_id in zip(all_succs[1:], extra_ids):
-            self._add_forked_state(
-                succ,
-                fork_id,
-                lambda s: self._extract_new_constraints(
-                    s if isinstance(orig_state, dict) else orig_state,
-                    s,
-                    orig_constraints=orig_constraints,
-                    orig_constraint_count=orig_constraint_count,
-                ),
-            )
+            self._add_forked_state(succ, fork_id)
         return False
 
     def _handle_callback_no_successors(
@@ -1278,8 +1048,6 @@ class RustCallbackDispatchMixin:
         state,
         orig_state,
         is_zero_length_hook: bool,
-        orig_constraints,
-        orig_constraint_count,
     ) -> None:
         """Handle the path where a SimProcedure produced no successors.
 
@@ -1309,14 +1077,7 @@ class RustCallbackDispatchMixin:
             return
 
         if is_zero_length_hook:
-            self._resume_with_skip_hook(
-                addr,
-                state,
-                orig_state,
-                event,
-                orig_constraints,
-                orig_constraint_count=orig_constraint_count,
-            )
+            self._resume_with_skip_hook(addr, state, orig_state, event)
             return
 
         # Non-zero-length, non-terminal: check NO_RET as fallback
@@ -1373,8 +1134,6 @@ class RustCallbackDispatchMixin:
         orig_state: angr.SimState,
         event: _ExplorationEvent,
         skip_hook_addr: int | None = None,
-        orig_constraints: set | None = None,
-        orig_constraint_count: int | None = None,
         resumed_id: int | None = None,
         orig_sp: int | None = None,
     ):
@@ -1452,25 +1211,8 @@ class RustCallbackDispatchMixin:
         # apply_changes can't overwrite them with concrete values.
         mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
 
-        # Extract any new constraints added during callback.
-        # Skip when using shared solver — constraints go directly to the pending
-        # state's solver, so syncing them again would double-add.
-        rust_ctx = getattr(succ_state.scratch, "rust_solver_ctx", None)
-        using_shared_solver = rust_ctx is not None and hasattr(rust_ctx, "is_shared") and rust_ctx.is_shared()
-        if using_shared_solver or getattr(self, "_use_callback_solver_proxy", False):
-            # The solver proxy wrote every constraint through to the
-            # successor's own Rust state already.
-            new_constraints = []
-        else:
-            # When orig_state is a snapshot, rely on orig_constraint_count fast path
-            new_constraints = self._extract_new_constraints(
-                succ_state if is_snapshot else orig_state,
-                succ_state,
-                orig_constraints=orig_constraints,
-                orig_constraint_count=orig_constraint_count,
-            )
-            if new_constraints and _DBG:
-                l.debug(f"Extracted {len(new_constraints)} new constraints from callback")
+        # Constraints were written through the solver proxy to the
+        # successor's own Rust state.
 
         # For zero-length hooks, tell Rust to skip the hook on next step
         if skip_hook_addr is not None:
@@ -1495,9 +1237,7 @@ class RustCallbackDispatchMixin:
         # apply_changes writes concrete data which clears symbolic page markers.
         # Importing symbolic values after resume re-sets the markers correctly.
         _sb_resume_start = time.perf_counter_ns()
-        self._rust_mgr.resume_after_simprocedure(
-            event.callback_state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
-        )
+        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, reg_changes, mem_changes or None, None)
         self._perf_stats.add_sync_back_subphase("resume", time.perf_counter_ns() - _sb_resume_start)
 
         # Import symbolic memory to Rust AFTER resume.
@@ -1531,8 +1271,6 @@ class RustCallbackDispatchMixin:
         state: angr.SimState,
         orig_state: angr.SimState,
         event: _ExplorationEvent,
-        orig_constraints: set | None = None,
-        orig_constraint_count: int | None = None,
     ):
         """Resume Rust execution after a zero-length hook with no successors.
 
@@ -1544,7 +1282,6 @@ class RustCallbackDispatchMixin:
             state: The modified state after hook execution.
             orig_state: The original state before hook execution.
             event: The exploration event.
-            orig_constraints: Original constraints before callback (for constraint sync).
         """
         # Tell Rust to skip the hook at this address for the next step
         # This prevents infinite loops when resuming at a zero-length hook address
@@ -1582,31 +1319,7 @@ class RustCallbackDispatchMixin:
         # apply_changes can't overwrite them with concrete values.
         mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
 
-        # Extract new constraints added during hook execution
-        new_constraints = None
-        if hasattr(state, "solver"):
-            try:
-                current_count = len(state.solver.constraints)
-                # Fast path: if count unchanged, skip expensive set construction
-                if orig_constraint_count is not None and current_count == orig_constraint_count:
-                    pass  # No new constraints
-                elif orig_constraints is not None:
-                    current_constraints = set(state.solver.constraints)
-                    new_constraints = list(current_constraints - orig_constraints)
-                    if new_constraints and _DBG:
-                        l.debug(f"Extracted {len(new_constraints)} constraints from hook")
-                elif orig_constraint_count is not None and not is_snapshot:
-                    # Count changed — need full diff (only when orig_state is a real state)
-                    prior = set(orig_state.solver.constraints)
-                    current_constraints = set(state.solver.constraints)
-                    new_constraints = list(current_constraints - prior)
-                    if new_constraints and _DBG:
-                        l.debug(f"Extracted {len(new_constraints)} constraints from hook")
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: constraint extraction raised; new
-                # constraints from the hook are not synced to Rust. Debug-logs.
-                if _DBG:
-                    l.debug(f"Could not extract constraints: {e}")
+        # Constraints were written through the solver proxy.
 
         # Push back any heap bump the hook made (see _resume_with_state).
         self._sync_state_heap_to_rust(state, event.callback_state_id)
@@ -1615,9 +1328,7 @@ class RustCallbackDispatchMixin:
 
         # Resume Rust with all extracted changes.
         # IMPORTANT: This must happen BEFORE symbolic imports (same as _resume_with_state).
-        self._rust_mgr.resume_after_simprocedure(
-            event.callback_state_id, new_pc, reg_changes or None, mem_changes or None, new_constraints or None
-        )
+        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, reg_changes, mem_changes or None, None)
 
         # Import symbolic memory AFTER resume (see _resume_with_state for rationale)
         state_id = event.callback_state_id
@@ -1638,93 +1349,22 @@ class RustCallbackDispatchMixin:
         if state_id is not None:
             self._cache_state_mirror(state_id, state)
 
-    def _extract_new_constraints(
-        self,
-        orig_state: angr.SimState,
-        new_state: angr.SimState,
-        orig_constraints: set | None = None,
-        orig_constraint_count: int | None = None,
-    ) -> list:
-        """Extract constraints added during callback execution.
-
-        Compares constraint sets between original and successor states,
-        returning any new constraints that were added during the callback.
-
-        Args:
-            orig_constraints: Pre-captured set of constraints from before the
-                callback. Use this instead of orig_state.solver.constraints
-                when orig_state may alias the successor (no copy was made).
-            orig_constraint_count: Fast-path: just the count before callback.
-                If count hasn't changed, skip expensive set construction.
-        """
-        new_constraints = []
-
-        # Extract constraints from Python's claripy solver
-        try:
-            new_constraint_list = new_state.solver.constraints
-
-            # Fast path: if constraint count hasn't changed, no new constraints
-            # were added. Skip expensive set construction.
-            if orig_constraint_count is not None and orig_constraints is None:
-                if len(new_constraint_list) == orig_constraint_count:
-                    # No new constraints — skip the expensive set diff
-                    pass
-                else:
-                    # Count changed — build sets and diff
-                    prior = set(orig_state.solver.constraints)
-                    state_constraints = set(new_constraint_list)
-                    python_added = state_constraints - prior
-                    if python_added:
-                        if _DBG:
-                            l.debug(f"Callback added {len(python_added)} new Python constraints")
-                        new_constraints.extend(python_added)
-            elif orig_constraints is not None:
-                prior = orig_constraints
-                state_constraints = set(new_constraint_list)
-                python_added = state_constraints - prior
-                if python_added:
-                    if _DBG:
-                        l.debug(f"Callback added {len(python_added)} new Python constraints")
-                    new_constraints.extend(python_added)
-            else:
-                prior = set(orig_state.solver.constraints)
-                state_constraints = set(new_constraint_list)
-                python_added = state_constraints - prior
-                if python_added:
-                    if _DBG:
-                        l.debug(f"Callback added {len(python_added)} new Python constraints")
-                    new_constraints.extend(python_added)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: constraint set diff raised; treat as
-            # 'no new constraints' rather than crashing. Debug-logs.
-            if _DBG:
-                l.debug(f"Could not extract Python constraints: {e}")
-
-        if new_constraints and _DBG:
-            l.debug(f"Total new constraints to sync: {len(new_constraints)}")
-
-        return new_constraints
-
-    def _add_forked_state(self, succ_state: angr.SimState, fork_id: int, new_constraints_of) -> None:
+    def _add_forked_state(self, succ_state: angr.SimState, fork_id: int) -> None:
         """Finish an extra callback successor from its own Rust fork.
 
         ``fork_id`` is the fork ``_settle_callback_successors`` handed this
         successor: the pending state as of the copy plus every write the
         successor made through its proxies, constraints included
-        (angr-mx00p.112, angr-vmi2l.294). What has not reached Rust yet is
-        applied to that fork, never to the pending state: the PC and, while
-        the solver proxy is gated off, ``new_constraints_of(succ)``.
-        ``resume_forked_successor`` then routes it (or prunes it if unsat).
+        (angr-mx00p.112, angr-vmi2l.294). Only the PC has not reached Rust
+        yet; it is applied to that fork, never to the pending state, and
+        ``resume_forked_successor`` routes it (or prunes it if unsat).
         """
         new_pc = self._resolve_next_pc(succ_state)
-        new_constraints = None
-        if not getattr(self, "_use_callback_solver_proxy", False):
-            new_constraints = new_constraints_of(succ_state)
         self._sync_state_heap_to_rust(succ_state, fork_id)
         self._sync_state_posix_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)
         self._rust_mgr.resume_forked_successor(
-            fork_id, CALLBACK_FORK_STASH, new_pc, None, None, new_constraints or None
+            fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None
         )
         self._callback_fork_scope.consumed(fork_id)
         if _DBG:
@@ -1856,19 +1496,13 @@ class RustCallbackDispatchMixin:
                 # at PC+1 with every change discarded (angr-89w70).
                 mem_changes, symbolic_imports = self._extract_memory_changes(state, succ_state)
                 mem_changes = self._filter_symbolic_addrs(mem_changes, symbolic_imports)
-                new_constraints = (
-                    []
-                    if getattr(self, "_use_callback_solver_proxy", False)
-                    else self._extract_new_constraints(state, succ_state)
-                )
 
                 # Resume BEFORE the symbolic imports: apply_changes writes
                 # concrete witnesses that clear symbolic page markers, so the
                 # imports must re-set them afterwards (mirrors
                 # ``_resume_with_state``).
-                self._rust_mgr.resume_after_syscall(
-                    state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
-                )
+                # Constraints were written through the solver proxy.
+                self._rust_mgr.resume_after_syscall(state_id, new_pc, reg_changes, mem_changes or None, None)
 
                 for sym_addr, ast in symbolic_imports:
                     try:
@@ -1885,7 +1519,7 @@ class RustCallbackDispatchMixin:
 
                 # Additional successors are finished from their own forks.
                 for succ, fork_id in zip(all_succs[1:], extra_ids):
-                    self._add_forked_state(succ, fork_id, lambda s: self._extract_new_constraints(state, s))
+                    self._add_forked_state(succ, fork_id)
             else:
                 self._rust_mgr.resume_after_syscall(state_id, syscall_pc + 1, None, None)
 
@@ -2442,41 +2076,12 @@ class RustCallbackDispatchMixin:
             # Set callback state for memory access during this callback
             self._set_callback_state(state)
 
-            # Make the Rust solver the single source of truth for this callback.
-            # Instead of syncing constraints (which can create UNSAT due to
-            # variable identity mismatches), delegate solver operations to the
-            # forked Rust solver context.
-            # angr-ye2n: the implicit-contract check formerly hidden inside
-            # _install_rust_solver_on_callback_state is now explicit here.
-            # If every prior fork/borrow attempt failed (see warnings above),
-            # we have no Rust context to hand to the install — increment the
-            # defensive counter and skip the install. This leaves Python's
-            # solver untouched (no closures installed; the cached_state's
-            # prior closures, if any, still route to the latest
-            # state.scratch.rust_solver_ctx).
-            # angr-8oiw (write-through .3): when the solver-proxy gate is
-            # on, install ``RustSolverProxyPlugin`` instead of the
-            # monkey-patched closure path. The proxy writes through to the
-            # Rust state's solver by state_id (no parallel Python claripy
-            # solver). Skip the closure install entirely in that mode.
-            if getattr(self, "_use_callback_solver_proxy", False) and binding is not None:
+            # angr-8oiw: ``RustSolverProxyPlugin`` as ``state.solver``: every
+            # ``add`` writes through to the Rust state behind the shared
+            # binding and every query reads it, so there is no parallel
+            # claripy solver and nothing to diff at the end of the callback.
+            if binding is not None:
                 self._install_callback_solver_proxy(state, binding)
-            else:
-                _cb_rust_ctx = getattr(state.scratch, "rust_solver_ctx", None)
-                if _cb_rust_ctx is None:
-                    # This counter should stay at 0 across the benchmark
-                    # suite (angr-bs71, angr-h0dv). Non-zero readings here mean every
-                    # solver attach path (bundle, borrow, fork) failed for
-                    # this callback state and Python's solver may diverge
-                    # from Rust's.
-                    self._stats_rust_ctx_missing += 1
-                    l.warning(
-                        "rust_solver_ctx not attached to callback state at 0x%x; "
-                        "skipping solver install — Python solver may diverge from Rust",
-                        event.callback_addr or 0,
-                    )
-                else:
-                    self._install_rust_solver_on_callback_state(state, _cb_rust_ctx)
 
             # Phase 3 Fix: Ensure critical plugins are present
             # Some scripts assume posix/libc plugins exist - restore if missing
@@ -2788,8 +2393,6 @@ class RustCallbackDispatchMixin:
             # is a copy of ``state`` (the engine copies before stepping), so
             # each gets its own Rust state here (angr-mx00p.112).
             succ = all_succs[0]
-            solver_proxy = getattr(self, "_use_callback_solver_proxy", False)
-            orig_constraints = None if solver_proxy else set(state.solver.constraints)
             resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
             new_pc = succ.addr
 
@@ -2800,26 +2403,16 @@ class RustCallbackDispatchMixin:
             # Extract memory changes (returns concrete_changes, symbolic_imports)
             mem_changes, _symbolic_imports = self._extract_memory_changes(state, succ)
 
-            # Extract new constraints (the solver proxy wrote them through).
-            new_constraints = (
-                [] if solver_proxy else [c for c in succ.solver.constraints if c not in orig_constraints]
-            )
-
             # Resume Rust with the first successor
-            self._rust_mgr.resume_after_simprocedure(
-                state_id, new_pc, reg_changes, mem_changes or None, new_constraints or None
-            )
+            # Constraints were written through the solver proxy.
+            self._rust_mgr.resume_after_simprocedure(state_id, new_pc, reg_changes, mem_changes or None, None)
 
             # Additional successors (symbolic branches in the fallback block)
             # are finished from their own forks so the convergent path isn't
             # silently dropped.
             for extra_succ, fork_id in zip(all_succs[1:], extra_ids):
                 try:
-                    self._add_forked_state(
-                        extra_succ,
-                        fork_id,
-                        lambda s: [c for c in s.solver.constraints if c not in orig_constraints],
-                    )
+                    self._add_forked_state(extra_succ, fork_id)
                 except Exception as fork_err:
                     # cat-(b) FALLBACK WITH LOSS: forking an additional VEX-fallback
                     # successor failed; that branch is silently dropped. Already warns.

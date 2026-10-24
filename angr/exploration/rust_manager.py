@@ -1004,7 +1004,6 @@ class RustExplorationManager(
         exploration_strategy: str = "bfs",
         use_shared_lineage_solver: bool = False,
         deterministic: bool = False,
-        use_callback_solver_proxy: bool | None = None,
         use_export_callstack_proxy: bool | None = None,
         use_export_memory_proxy: bool | None = None,
         prefer_native_library_hooks: bool | None = None,
@@ -1052,17 +1051,6 @@ class RustExplorationManager(
                 inherit it (so descendants opt in transparently). Inert
                 in this slice — slice-1c will be the first consumer of
                 the flag at fork time.
-            use_callback_solver_proxy: If True, install
-                ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
-                callback states so ``state.solver.add(constraint)`` routes
-                directly into the underlying Rust state's solver, and
-                ``constraints`` / ``eval`` / ``satisfiable`` / ``min`` /
-                ``max`` read through Rust (angr-8oiw, write-through .3). When
-                ``None`` (default), the env var
-                ``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles it on;
-                otherwise off. Off keeps the existing
-                ``_install_rust_solver_on_callback_state`` monkey-patch path
-                live (which maintains a parallel Python claripy solver).
             use_export_callstack_proxy: If True, install
                 ``RustCallStackProxyPlugin`` as ``state.callstack`` on
                 materialized states returned from Rust (stash exports /
@@ -1174,7 +1162,6 @@ class RustExplorationManager(
         )
         self._phase_config(
             use_shared_lineage_solver,
-            use_callback_solver_proxy,
             use_export_callstack_proxy,
             use_export_memory_proxy,
             prefer_native_library_hooks,
@@ -1282,7 +1269,6 @@ class RustExplorationManager(
     def _phase_config(
         self,
         use_shared_lineage_solver,
-        use_callback_solver_proxy,
         use_export_callstack_proxy,
         use_export_memory_proxy,
         prefer_native_library_hooks,
@@ -1294,21 +1280,6 @@ class RustExplorationManager(
         # solver context. Default off keeps slice-1c's gate inert (and
         # the v5a5-spike baby-re BFS-thrash regression out of CI).
         self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
-
-        # angr-8oiw (write-through .3): gate for installing
-        # ``RustSolverProxyPlugin`` as ``state.solver`` on SimProcedure
-        # callback states. Default off keeps the existing
-        # ``_install_rust_solver_on_callback_state`` monkey-patch path live
-        # (which mirrors constraints into a parallel Python claripy solver).
-        # When on, ``_create_state_for_callback`` skips the monkey-patch
-        # install and installs the proxy so every ``state.solver.add`` goes
-        # straight to Rust by state_id, and reads come from the Rust state
-        # directly (no parallel claripy solver). Env var
-        # ``ANGR_RUST_USE_CALLBACK_SOLVER_PROXY=1`` toggles default-on when
-        # the kwarg is left at its default ``None``.
-        self._use_callback_solver_proxy = _resolve_env_flag(
-            use_callback_solver_proxy, "ANGR_RUST_USE_CALLBACK_SOLVER_PROXY"
-        )
 
         # angr-yk2g (write-through boundary): gate for installing
         # ``RustCallStackProxyPlugin`` as ``state.callstack`` on every

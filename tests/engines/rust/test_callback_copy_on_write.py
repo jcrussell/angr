@@ -5,8 +5,7 @@ Every successor of a bounced SimProcedure, syscall or Python-VEX-fallback
 block is a ``SimState.copy()`` of the callback state. Its Rust proxies hold a
 copy-on-write ``RustStateBinding`` (``angr/exploration/rust_state_binding.py``):
 the copy reads the callback state as of the copy and its first write forks
-its own Rust state. These tests pin that against the Python engine, with the
-callback proxy gates both at their defaults and forced on.
+its own Rust state. These tests pin that against the Python engine.
 """
 
 from __future__ import annotations
@@ -24,15 +23,6 @@ from angr.exploration.rust_state_binding import (
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, RustExplorationManager
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration engine not built")
-
-# The gates a multi-successor callback used to break (angr-mx00p.61): run
-# every parity test with them at their defaults and forced on.
-GATES = {
-    "default": {},
-    "proxies_on": {
-        "use_callback_solver_proxy": True,
-    },
-}
 
 ZERO_FILL = {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}
 
@@ -72,9 +62,8 @@ def _summary(state, sym, other_values):
     )
 
 
-@pytest.mark.parametrize("gates", list(GATES), ids=list(GATES))
 class TestTwoSuccessorHookParity:
-    def test_successors_keep_their_own_writes_and_guards(self, hookable_project, gates):
+    def test_successors_keep_their_own_writes_and_guards(self, hookable_project):
         proj = hookable_project
         sym = claripy.BVS("cow_guard", 64)
         proj.hook(HOOK_ADDR, _two_successor_proc(sym))
@@ -85,7 +74,7 @@ class TestTwoSuccessorHookParity:
         assert [e[0] for e in expected] == [TARGET_1, TARGET_2]
 
         mgr = RustExplorationManager(
-            proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)], **GATES[gates]
+            proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)]
         )
         mgr.run(max_steps=1)
         got = sorted(_summary(s, sym, (0x111, 0x222)) for s in mgr.active)
@@ -94,14 +83,14 @@ class TestTwoSuccessorHookParity:
         # Every fork the copies made was claimed or dropped.
         assert mgr._rust_mgr.stash_count(CALLBACK_FORK_STASH) == 0
 
-    def test_rust_constraints_are_per_successor(self, hookable_project, gates):
+    def test_rust_constraints_are_per_successor(self, hookable_project):
         """Each successor's own Rust solver holds its own guard and only that
         one (the gated solver proxy used to land both guards on one solver)."""
         proj = hookable_project
         sym = claripy.BVS("cow_guard", 64)
         proj.hook(HOOK_ADDR, _two_successor_proc(sym))
         mgr = RustExplorationManager(
-            proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)], **GATES[gates]
+            proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)]
         )
         mgr.run(max_steps=1)
         rust = mgr._rust_mgr
@@ -113,8 +102,7 @@ class TestTwoSuccessorHookParity:
         assert len(guards[TARGET_2]) == 1 and "0x222" in guards[TARGET_2][0]
 
 
-@pytest.mark.parametrize("gates", list(GATES), ids=list(GATES))
-def test_extra_successor_keeps_pre_bounce_path_constraints(gates):
+def test_extra_successor_keeps_pre_bounce_path_constraints():
     """angr-vmi2l.294: an extra successor is forked from the pending Rust
     state, so it keeps the constraint Rust collected before the bounce
     (``rdi < 5``). It used to be rebuilt from the Python callback state,
@@ -144,7 +132,7 @@ def test_extra_successor_keeps_pre_bounce_path_constraints(gates):
         return st
 
     expected = found_max_rdi(proj.factory.simgr(entry()).explore(find=0x40000C))
-    mgr = RustExplorationManager(proj, [entry()], **GATES[gates])
+    mgr = RustExplorationManager(proj, [entry()])
     mgr.explore(find=0x40000C)
     assert len(mgr.found) == 1
     assert found_max_rdi(mgr) == expected == (4, [2])
@@ -160,8 +148,7 @@ _VEX_TAKEN = 0x40001D
 _VEX_FALLTHROUGH = 0x40001B
 
 
-@pytest.mark.parametrize("gates", list(GATES), ids=list(GATES))
-def test_python_vex_fallback_conditional_exit_parity(gates):
+def test_python_vex_fallback_conditional_exit_parity():
     proj = angr.load_shellcode(_VEX_FALLBACK_CODE, arch="amd64", start_offset=0, load_address=0x400000)
     x = claripy.BVS("cow_vex_x", 64)
 
@@ -185,7 +172,7 @@ def test_python_vex_fallback_conditional_exit_parity(gates):
     expected = sorted(summary(s) for s in py_simgr.active)
     assert [e[0] for e in expected] == [_VEX_FALLTHROUGH, _VEX_TAKEN]
 
-    mgr = RustExplorationManager(proj, [entry()], **GATES[gates])
+    mgr = RustExplorationManager(proj, [entry()])
     mgr.run(max_steps=1)
     assert mgr._perf_stats._stats["callback_vex_fallback_count"] == 1
     got = sorted(summary(s) for s in mgr.active)
@@ -193,8 +180,7 @@ def test_python_vex_fallback_conditional_exit_parity(gates):
     assert mgr._rust_mgr.stash_count(CALLBACK_FORK_STASH) == 0
 
 
-@pytest.mark.parametrize("gates", list(GATES), ids=list(GATES))
-def test_copy_reads_parent_as_of_copy_and_unclaimed_copy_is_released(hookable_project, gates):
+def test_copy_reads_parent_as_of_copy_and_unclaimed_copy_is_released(hookable_project):
     """A copy sees the callback state as it was when copied, the callback
     state does not see the copy's writes, and a copy that is not a successor
     is released when the callback finishes: reading it raises instead of
@@ -225,7 +211,7 @@ def test_copy_reads_parent_as_of_copy_and_unclaimed_copy_is_released(hookable_pr
     proj.hook(HOOK_ADDR, Copier())
     st = proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)
     st.regs.rdi = claripy.BVS("cow_rdi", 64)
-    mgr = RustExplorationManager(proj, [st], **GATES[gates])
+    mgr = RustExplorationManager(proj, [st])
     mgr.run(max_steps=1)
 
     assert seen["snapshot"] == (0, 0)
