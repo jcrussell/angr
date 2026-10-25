@@ -125,9 +125,9 @@ fn test_fprintf_chk_drops_flag_and_writes_fd() {
 }
 
 #[test]
-fn test_vsnprintf_chk_drops_flag_slen_forwards_to_stub() {
-    // __vsnprintf_chk(dest, maxlen, flag, slen, fmt, ap) forwards to the
-    // degenerate vsnprintf stub: maxlen>0 → single NUL at dest, returns 1.
+fn test_vsnprintf_chk_drops_flag_slen_forwards_maxlen() {
+    // __vsnprintf_chk(dest, maxlen, flag, slen, fmt, ap) forwards maxlen as
+    // vsnprintf's size: the raw format is copied truncated to maxlen - 1.
     let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
     state.map_memory_data(0x1000, b"val=%d\x00", Permission::RWX);
     state
@@ -148,13 +148,15 @@ fn test_vsnprintf_chk_drops_flag_slen_forwards_to_stub() {
         )
         .unwrap();
 
-    assert_eq!(result.unwrap().as_u64(), Some(1));
-    let byte = state.memory_load(0x2000, 1).unwrap();
-    assert_eq!(byte.as_u64().unwrap() as u8, 0); // NUL written over the 'A'
+    assert_eq!(result.unwrap().as_u64(), Some(6)); // strlen("val=%d")
+    for (i, &expected) in b"val\x00".iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert_eq!(byte.as_u64().unwrap() as u8, expected);
+    }
 }
 
 #[test]
-fn test_vsnprintf_chk_zero_maxlen_returns_zero() {
+fn test_vsnprintf_chk_zero_maxlen_returns_length() {
     let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
     state.map_memory_data(0x1000, b"x\x00", Permission::RWX);
 
@@ -172,7 +174,7 @@ fn test_vsnprintf_chk_zero_maxlen_returns_zero() {
         )
         .unwrap();
 
-    assert_eq!(result.unwrap().as_u64(), Some(0));
+    assert_eq!(result.unwrap().as_u64(), Some(1)); // strlen("x"), nothing written
 }
 
 #[test]

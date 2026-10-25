@@ -498,10 +498,10 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
-    def test_vsnprintf_stub_returns_one(self, fauxware_project):
-        """vsnprintf(str, size, fmt, ap) is a no-op stub (va_list unmodeled):
-        size>0 stores a single NUL at str and returns 1, matching Python
-        vsnprintf.py."""
+    def test_vsnprintf_copies_raw_format_truncated(self, fauxware_project):
+        """vsnprintf(str, size, fmt, ap) copies the raw format (va_list is
+        unmodeled) truncated to size - 1 bytes plus a NUL, and returns the
+        untruncated length, matching Python vsnprintf.py."""
         proj = fauxware_project
         dst = self.BUF_ADDR + 0x40
         try:
@@ -509,18 +509,18 @@ class TestSymbolicLibcProcedures:
             state.memory.store(self.BUF_ADDR, b"hello\x00")
             state.regs.rdi = dst
             state.regs.rsi = 5  # size > 0
-            state.regs.rdx = self.BUF_ADDR  # format (unused by the stub)
+            state.regs.rdx = self.BUF_ADDR  # format
             state.regs.rcx = 0  # va_list
             s = self._run_one_step(proj, state)
-            assert s.solver.min(s.regs.rax) == 1
-            assert s.solver.max(s.regs.rax) == 1
+            assert s.solver.eval_upto(s.regs.rax, 2) == [5]
+            assert s.solver.eval(s.memory.load(dst, 5), cast_to=bytes) == b"hell\x00"
         finally:
             proj.unhook(self.HOOK_ADDR)
 
     def test_vsnprintf_chk_forwards_maxlen_to_vsnprintf(self, fauxware_project):
         """__vsnprintf_chk(dest, maxlen, flag, slen, fmt, ap) drops flag+slen and
-        forwards maxlen as the vsnprintf size; maxlen>0 yields the stub return 1
-        (rax), matching Python __vsnprintf_chk -> vsnprintf."""
+        forwards maxlen as the vsnprintf size, matching Python
+        __vsnprintf_chk -> vsnprintf."""
         proj = fauxware_project
         dst = self.BUF_ADDR + 0x40
         try:
@@ -530,11 +530,11 @@ class TestSymbolicLibcProcedures:
             state.regs.rsi = 5  # maxlen > 0
             state.regs.rdx = 1  # flag (dropped)
             state.regs.rcx = 8  # slen (dropped)
-            state.regs.r8 = self.BUF_ADDR  # format (unused by the stub)
+            state.regs.r8 = self.BUF_ADDR  # format
             state.regs.r9 = 0  # va_list
             s = self._run_one_step(proj, state)
-            assert s.solver.min(s.regs.rax) == 1
-            assert s.solver.max(s.regs.rax) == 1
+            assert s.solver.eval_upto(s.regs.rax, 2) == [5]
+            assert s.solver.eval(s.memory.load(dst, 5), cast_to=bytes) == b"hell\x00"
         finally:
             proj.unhook(self.HOOK_ADDR)
 

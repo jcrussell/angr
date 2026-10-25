@@ -477,59 +477,56 @@ fn test_sprintf_multiple_args() {
     assert_eq!(&out, b"1+2=3");
 }
 
-// --- vsnprintf: matches Python's no-op stub (no %-substitution) ---
+// --- vsnprintf: raw format copy bounded by size (va_list unmodeled) ---
 
-#[test]
-fn test_vsnprintf_stub_writes_nul_returns_one() {
+/// Runs `NativeVsnprintf` with the format `fmt` at 0x1000 and the
+/// destination at 0x2000 pre-filled with `X`s, returning the result.
+fn run_vsnprintf(fmt: &[u8], size: u128) -> (RustSimState, Option<u64>) {
     let mut state = setup_state();
-    // Pre-fill the destination so we can confirm only a single NUL lands.
-    state.map_memory_data(0x2000, b"XXXX\x00", Permission::RWX);
-
+    state.map_memory_data(0x1000, fmt, Permission::RWX);
+    state.map_memory_data(0x2000, b"XXXXXXXXXXXXXXXX", Permission::RWX);
     let result = NativeVsnprintf
         .call(
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64), // str
-                RustBV::concrete(16, 64),     // size != 0
-                RustBV::concrete(0x1000, 64), // format (ignored)
+                RustBV::concrete(size, 64),   // size
+                RustBV::concrete(0x1000, 64), // format
                 RustBV::concrete(0, 64),      // va_list (ignored)
             ],
         )
         .unwrap();
+    (state, result.and_then(|r| r.as_u64()))
+}
 
-    // Stub returns 1 and stores exactly one NUL byte at str[0].
-    assert_eq!(result.unwrap().as_u64(), Some(1));
-    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), 0);
-    // Byte after the terminator is untouched (no formatting occurred).
-    assert_eq!(
-        state.memory_load(0x2001, 1).unwrap().as_u64().unwrap(),
-        b'X' as u64
-    );
+fn dest_bytes(state: &mut RustSimState, len: u64) -> Vec<u8> {
+    (0..len)
+        .map(|i| state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8)
+        .collect()
 }
 
 #[test]
-fn test_vsnprintf_zero_size_returns_zero() {
-    let mut state = setup_state();
-    state.map_memory_data(0x2000, b"XXXX\x00", Permission::RWX);
+fn test_vsnprintf_copies_raw_format_when_it_fits() {
+    // No %-substitution: `%d` is copied verbatim, like Python's vsnprintf.py.
+    let (mut state, ret) = run_vsnprintf(b"val=%d\x00", 16);
+    assert_eq!(ret, Some(6));
+    assert_eq!(dest_bytes(&mut state, 8), b"val=%d\x00X");
+}
 
-    let result = NativeVsnprintf
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64), // size == 0
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0, 64),
-            ],
-        )
-        .unwrap();
+#[test]
+fn test_vsnprintf_truncates_to_size_minus_one() {
+    // Writes size - 1 bytes plus a NUL and returns the untruncated length.
+    let (mut state, ret) = run_vsnprintf(b"hello\x00", 5);
+    assert_eq!(ret, Some(5));
+    assert_eq!(dest_bytes(&mut state, 6), b"hell\x00X");
+}
 
-    // size == 0: returns 0 and writes nothing.
-    assert_eq!(result.unwrap().as_u64(), Some(0));
-    assert_eq!(
-        state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(),
-        b'X' as u64
-    );
+#[test]
+fn test_vsnprintf_zero_size_writes_nothing() {
+    // size == 0 writes nothing but still returns the format's length.
+    let (mut state, ret) = run_vsnprintf(b"hello\x00", 0);
+    assert_eq!(ret, Some(5));
+    assert_eq!(dest_bytes(&mut state, 1), b"X");
 }
 
 // --- vsprintf: raw format write, no %-substitution (va_list unmodeled) ---
@@ -1083,8 +1080,7 @@ fn test_sprintf_star_precision_after_width_or_flag_falls_back() {
 //
 // `read_format_string` is shared, so these are transitively covered by
 // `test_asprintf_symbolic_format_falls_back`. They exist so a reader auditing
-// one entry point in isolation finds direct evidence of its behavior — and
-// because `vsnprintf` is the one member that does *not* share the path.
+// one entry point in isolation finds direct evidence of its behavior.
 
 #[test]
 fn test_sprintf_symbolic_format_falls_back() {
@@ -1163,26 +1159,22 @@ fn test_vsprintf_symbolic_format_falls_back() {
 }
 
 #[test]
-fn test_vsnprintf_symbolic_format_is_ignored() {
-    // The odd one out: `NativeVsnprintf` never calls `read_format_string` at
-    // all — it mirrors Python's no-op `vsnprintf` stub (one NUL, return 1), so
-    // a symbolic format byte is simply never read and the call still succeeds.
-    // Deferring here would diverge from the engine we mirror.
+fn test_vsnprintf_symbolic_format_falls_back() {
+    // vsnprintf copies the raw format, so a symbolic byte defers to Python.
     let mut state = state_with_symbolic_format_byte();
-    state.map_memory_data(0x2000, b"XXXX\x00", Permission::RWX);
 
-    let result = NativeVsnprintf
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64), // str
-                RustBV::concrete(16, 64),     // size != 0
-                RustBV::concrete(0x1000, 64), // format (symbolic first byte)
-                RustBV::concrete(0, 64),      // va_list (ignored)
-            ],
-        )
-        .unwrap();
-
-    assert_eq!(result.unwrap().as_u64(), Some(1));
-    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), 0);
+    let result = NativeVsnprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64), // str
+            RustBV::concrete(16, 64),     // size
+            RustBV::concrete(0x1000, 64), // format (symbolic first byte)
+            RustBV::concrete(0, 64),      // va_list (ignored)
+        ],
+    );
+    assert!(
+        matches!(&result, Err(ProcedureError::SymbolicArgument(msg))
+                 if msg.contains("format string byte")),
+        "symbolic format in vsnprintf should fall back to Python, got {result:?}"
+    );
 }

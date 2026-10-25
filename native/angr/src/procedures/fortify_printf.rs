@@ -156,10 +156,8 @@ impl NativeSimProcedure for NativeFprintfChk {
 ///                      const char *format, va_list ap)`.
 ///
 /// Forwards to native `vsnprintf`, dropping the injected `flag` and `slen`
-/// (matches Python angr's `__vsnprintf_chk`). The base `vsnprintf` is the
-/// degenerate stub (size==0 → 0, else writes a single NUL and returns 1), so
-/// only `s` and `maxlen` are consumed — the `format`/`va_list` words are
-/// passed through but unused.
+/// (matches Python angr's `__vsnprintf_chk`); `maxlen` becomes vsnprintf's
+/// `size`.
 pub(crate) struct NativeVsnprintfChk;
 
 impl NativeSimProcedure for NativeVsnprintfChk {

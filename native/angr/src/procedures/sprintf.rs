@@ -229,14 +229,12 @@ impl NativeSimProcedure for NativeSnprintf {
 /// int vsnprintf(char *str, size_t size, const char *format, va_list ap);
 /// ```
 ///
-/// This deliberately does **not** format. It matches Python angr's
-/// `procedures/libc/vsnprintf.py`, which is a no-op stub: `size == 0`
-/// returns 0; otherwise it stores a single NUL byte at `str` and returns 1.
-/// Reading the `va_list` properly is arch-specific (x86-64 SysV
-/// `reg_save_area`/`gp_offset`) and unmodeled by angr, so a "real" formatter
-/// here would diverge from the Python engine and explore different symbolic
-/// states — violating the faithful-reimplementation invariant
-/// (bd memory `avoid-vsnprintf-real-formatting`).
+/// Mirrors `procedures/libc/vsnprintf.py`: the `va_list` is unmodeled, so the
+/// raw format is copied without %-substitution (see [`NativeVsprintf`]).
+/// Like snprintf, at most `size - 1` bytes are written plus a NUL, nothing is
+/// written when `size == 0`, and the return is the untruncated length. A
+/// symbolic format byte or `size` defers to Python, which concretizes `size`
+/// and copies a symbolic-length format.
 pub(crate) struct NativeVsnprintf;
 
 impl NativeSimProcedure for NativeVsnprintf {
@@ -245,7 +243,7 @@ impl NativeSimProcedure for NativeVsnprintf {
     }
 
     fn num_args(&self) -> usize {
-        4 // str + size + format + va_list (format/va_list unused by the stub)
+        4 // str + size + format + va_list (va_list unused by the raw-write impl)
     }
 
     fn call(
@@ -255,14 +253,16 @@ impl NativeSimProcedure for NativeVsnprintf {
     ) -> Result<Option<RustBV>, ProcedureError> {
         let dest = extract_concrete_arg(&args[0], "str")?;
         let size = extract_concrete_arg(&args[1], "size")?;
+        let fmt_addr = extract_concrete_arg(&args[2], "format")?;
 
-        if size == 0 {
-            return Ok(Some(arch_word(state, 0u64)));
+        // Raw format string, no %-substitution (va_list is unmodeled).
+        let fmt = read_format_string(state, fmt_addr)?;
+        if let Some(room) = size.checked_sub(1) {
+            let write_len = fmt.len().min(usize::try_from(room).unwrap_or(usize::MAX));
+            write_cstr(state, dest, &fmt[..write_len])?;
         }
 
-        // Match the Python stub: a single NUL terminator at `str`, return 1.
-        write_cstr(state, dest, &[])?;
-        Ok(Some(arch_word(state, 1u64)))
+        Ok(Some(arch_word(state, fmt.len() as u64)))
     }
 }
 
