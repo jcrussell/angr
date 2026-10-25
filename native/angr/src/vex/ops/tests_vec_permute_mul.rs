@@ -162,7 +162,7 @@ fn test_vec_reverse_double_apply_is_identity() {
         let twice = VEXOps::unop(op, once, &ctx).unwrap();
         // Assert there is no satisfying assignment where twice != arg.
         ctx.push();
-        ctx.add_constraint(twice.to_z3_ast().eq(arg.to_z3_ast()).not());
+        ctx.add_constraint(twice.to_z3_ast().unwrap().eq(arg.to_z3_ast().unwrap()).not());
         assert!(
             !ctx.is_sat(),
             "double-apply must equal identity for sub_width={sub_width} elem={elem:?} count={count}"
@@ -208,7 +208,7 @@ fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
     );
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VReverse 32sIn64_x2 must match the Python reference Concat pattern"
@@ -439,7 +439,7 @@ fn test_vec_mull_16sx4_symbolic_matches_reference() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VMull 16Sx4 must match the per-lane sign-extended product reference"
@@ -490,7 +490,7 @@ fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VMull even 32Sx4 must select only even lanes (0,2) and match the \
@@ -622,7 +622,7 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
         let rebuilt = VEXOps::concat_le_elements(lanes, &ctx);
 
         ctx.push();
-        ctx.add_constraint(full.to_z3_ast().eq(rebuilt.to_z3_ast()).not());
+        ctx.add_constraint(full.to_z3_ast().unwrap().eq(rebuilt.to_z3_ast().unwrap()).not());
         assert!(
             !ctx.is_sat(),
             "VMulHi {elem:?}x{count} (signed={signed}) must be the high half of the VMull product"
@@ -738,7 +738,7 @@ fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
     let reference = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VQDMull 32Sx2 must match the doubled sign-extended saturated product"
@@ -839,7 +839,7 @@ fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
     assert_eq!(twice.width(), 128);
 
     ctx.push();
-    ctx.add_constraint(twice.to_z3_ast().eq(arg.to_z3_ast()).not());
+    ctx.add_constraint(twice.to_z3_ast().unwrap().eq(arg.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VPwBitMtxXpose applied twice must be the identity"
@@ -857,7 +857,7 @@ fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
     let got = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
 
     ctx.push();
-    ctx.add_constraint(arg.to_z3_ast().eq(RustBV::concrete(v, 128).to_z3_ast()));
+    ctx.add_constraint(arg.to_z3_ast().unwrap().eq(RustBV::concrete(v, 128).to_z3_ast().unwrap()));
     assert!(ctx.is_sat());
     let evaluated = ctx.eval(&got).expect("pinned operand must evaluate");
     ctx.pop();
@@ -1058,8 +1058,8 @@ fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
     let pinned = RustBV::concrete(pack(&PSHUFB_CTL, 8), 128);
     let want = RustBV::concrete(pack(&perm_ref(&table, &PSHUFB_CTL, 8), 8), 128);
     ctx.push();
-    ctx.add_constraint(ctl.to_z3_ast().eq(pinned.to_z3_ast()));
-    ctx.add_constraint(got.to_z3_ast().eq(want.to_z3_ast()).not());
+    ctx.add_constraint(ctl.to_z3_ast().unwrap().eq(pinned.to_z3_ast().unwrap()));
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(want.to_z3_ast().unwrap()).not());
     assert!(!ctx.is_sat(), "symbolic-control VPerm disagrees with the reference");
     ctx.pop();
 }
@@ -1100,7 +1100,7 @@ fn test_vec_perm_32x8_symbolic_table_matches_python_ref() {
             t.extract(j * 32 + 31, j * 32, &ctx)
         };
         ctx.push();
-        ctx.add_constraint(lane.to_z3_ast().eq(want.to_z3_ast()).not());
+        ctx.add_constraint(lane.to_z3_ast().unwrap().eq(want.to_z3_ast().unwrap()).not());
         assert!(!ctx.is_sat(), "Perm32x8 lane {i} disagrees with the reference");
         ctx.pop();
     }

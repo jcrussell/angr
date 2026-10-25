@@ -32,7 +32,7 @@ fn test_vec_shl_n_symbolic_shift() {
 
     // Constrain shift == 4.
     let four = RustBV::concrete(4, 8);
-    let eq = shift.to_z3_ast().eq(four.to_z3_ast());
+    let eq = shift.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
 
@@ -74,7 +74,7 @@ fn test_vec_shr_n_symbolic_shift() {
     .unwrap();
 
     let eight = RustBV::concrete(8, 8);
-    let eq = shift.to_z3_ast().eq(eight.to_z3_ast());
+    let eq = shift.to_z3_ast().unwrap().eq(eight.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after constraining shift == 8");
 
@@ -116,7 +116,7 @@ fn test_vec_sar_n_symbolic_shift() {
     .unwrap();
 
     let four = RustBV::concrete(4, 8);
-    let eq = shift.to_z3_ast().eq(four.to_z3_ast());
+    let eq = shift.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
 
@@ -364,7 +364,7 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
     }
     let py = VEXOps::concat_le_elements(lanes, &ctx);
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
     ctx.pop();
     assert!(
@@ -401,7 +401,7 @@ fn test_vsar_8x16_symbolic_matches_python_ref() {
     }
     let py = VEXOps::concat_le_elements(lanes, &ctx);
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
     ctx.pop();
     assert!(

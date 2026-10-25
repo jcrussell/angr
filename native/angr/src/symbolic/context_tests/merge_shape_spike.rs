@@ -103,7 +103,7 @@ fn cow_merge(arms: &[&SymContext], merge_conditions: &[RustBV]) -> (SymContext, 
     // Guard ONLY the divergent local suffixes.
     let mut flags = Vec::with_capacity(merge_conditions.len());
     for (arm, cond) in arms.iter().zip(merge_conditions.iter()) {
-        let cond_bool = cond.to_z3_bool();
+        let cond_bool = cond.to_z3_bool().unwrap();
         let not_cond = cond_bool.not();
         flags.push(cond_bool);
         let local = arm.local_constraints.lock();

@@ -126,8 +126,8 @@ fn a_comparison_bit_lowers_to_the_native_comparison() {
     let y = ctx().bvs("ast_cmp_y", 32).unwrap();
     let bit = RustBV::from_clarirs(ctx().ult(x, y).unwrap()).unwrap();
     let native = BV::new_const("ast_cmp_x", 32).bvult(BV::new_const("ast_cmp_y", 32));
-    assert_eq!(bit.to_z3_bool(), native);
+    assert_eq!(bit.to_z3_bool().unwrap(), native);
     // A bit with no comparison under it is `bit != 0`, which still decides.
     let flag = RustBV::from_clarirs(ctx().bools("ast_cmp_flag").unwrap()).unwrap();
-    assert_eq!(flag.to_z3_bool(), z3::ast::Bool::new_const("ast_cmp_flag"));
+    assert_eq!(flag.to_z3_bool().unwrap(), z3::ast::Bool::new_const("ast_cmp_flag"));
 }

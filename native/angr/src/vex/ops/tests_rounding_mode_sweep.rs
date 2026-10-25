@@ -504,8 +504,8 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                     .map(|(i, &(bits, width))| {
                         let sym = RustBV::symbolic(&ctx, format!("operand{i}"), width);
                         let pin = sym
-                            .to_z3_ast()
-                            .eq(RustBV::concrete(bits, width).to_z3_ast());
+                            .to_z3_ast().unwrap()
+                            .eq(RustBV::concrete(bits, width).to_z3_ast().unwrap());
                         ctx.add_constraint(pin);
                         sym
                     })
@@ -815,8 +815,8 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 // concrete fast path.
                 let rm_sym = RustBV::symbolic(&ctx, "rm_sym", 32);
                 let pin = rm_sym
-                    .to_z3_ast()
-                    .eq(RustBV::concrete(rm as u128, 32).to_z3_ast());
+                    .to_z3_ast().unwrap()
+                    .eq(RustBV::concrete(rm as u128, 32).to_z3_ast().unwrap());
                 ctx.add_constraint(pin);
                 let symbolic_result = (entry.call)(rm_sym, &operands, &ctx).unwrap_or_else(|e| {
                     panic!("{}: symbolic-rm call failed rm={rm}: {e:?}", entry.name)

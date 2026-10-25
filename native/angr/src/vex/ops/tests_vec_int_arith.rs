@@ -119,6 +119,6 @@ fn test_vec_int_max_symbolic_signed() {
     // Constrain result == [7, 7, 7, 7]; this only requires l <= 7 per lane,
     // so the constraint must remain SAT.
     let exp = RustBV::concrete(rv, 128);
-    ctx.add_constraint(result.to_z3_ast().eq(exp.to_z3_ast()));
+    ctx.add_constraint(result.to_z3_ast().unwrap().eq(exp.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT after constraining max == 7");
 }

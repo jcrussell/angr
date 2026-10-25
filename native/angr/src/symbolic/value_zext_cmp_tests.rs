@@ -59,7 +59,7 @@ fn test_zext_eq_collapse_solver_consistency() {
     let x = RustBV::symbolic(&ctx, "x", 8);
     let zx = x.zero_extend(16, &ctx);
     let eq = zx.eq(&RustBV::concrete(0x42, 16), &ctx);
-    ctx.add_constraint(eq.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(eq.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     assert_eq!(ctx.eval(&x), Some(0x42));
     // Also verify the wider zext expression evaluates to the constant.
     assert_eq!(ctx.eval(&zx), Some(0x42));
@@ -206,15 +206,15 @@ fn z3_already_dedupes_structurally_equal_rustbv_trees() {
     // Two structurally-identical add(x, 5) trees built independently.
     let p1 = x.clone().add_into(RustBV::concrete(5, 32), &ctx);
     let p2 = x.add_into(RustBV::concrete(5, 32), &ctx);
-    let p1_ptr = p1.to_z3_ast().get_z3_ast().as_ptr();
-    let p2_ptr = p2.to_z3_ast().get_z3_ast().as_ptr();
+    let p1_ptr = p1.to_z3_ast().unwrap().get_z3_ast().as_ptr();
+    let p2_ptr = p2.to_z3_ast().unwrap().get_z3_ast().as_ptr();
     assert_eq!(p1_ptr, p2_ptr, "Z3 should canonicalize add(x,5)");
 
     // Two structurally-identical mul(add(x,5), y) trees, depth 2.
     let q1 = p1.mul(&y, &ctx);
     let q2 = p2.mul(&y, &ctx);
-    let q1_ptr = q1.to_z3_ast().get_z3_ast().as_ptr();
-    let q2_ptr = q2.to_z3_ast().get_z3_ast().as_ptr();
+    let q1_ptr = q1.to_z3_ast().unwrap().get_z3_ast().as_ptr();
+    let q2_ptr = q2.to_z3_ast().unwrap().get_z3_ast().as_ptr();
     assert_eq!(q1_ptr, q2_ptr, "Z3 should canonicalize mul(add(x,5),y)");
 }
 
@@ -237,8 +237,8 @@ fn commutative_ops_canonicalize_operand_order() {
     let r1 = x.clone().add_into(y.clone(), &ctx);
     let r2 = y.clone().add_into(x.clone(), &ctx);
     assert_eq!(
-        r1.to_z3_ast().get_z3_ast().as_ptr(),
-        r2.to_z3_ast().get_z3_ast().as_ptr(),
+        r1.to_z3_ast().unwrap().get_z3_ast().as_ptr(),
+        r2.to_z3_ast().unwrap().get_z3_ast().as_ptr(),
         "add(x,y) and add(y,x) should canonicalize to the same Z3 AST"
     );
 
@@ -247,8 +247,8 @@ fn commutative_ops_canonicalize_operand_order() {
     let r3 = x.clone().add_into(c.clone(), &ctx);
     let r4 = c.add_into(x.clone(), &ctx);
     assert_eq!(
-        r3.to_z3_ast().get_z3_ast().as_ptr(),
-        r4.to_z3_ast().get_z3_ast().as_ptr(),
+        r3.to_z3_ast().unwrap().get_z3_ast().as_ptr(),
+        r4.to_z3_ast().unwrap().get_z3_ast().as_ptr(),
         "add(x,c) and add(c,x) should canonicalize to the same Z3 AST"
     );
     // Verify concrete is in operand[1] after canonicalization.
@@ -272,8 +272,8 @@ fn commutative_ops_canonicalize_operand_order() {
         let lhs = build(x.clone(), y.clone(), &ctx);
         let rhs = build(y.clone(), x.clone(), &ctx);
         assert_eq!(
-            lhs.to_z3_ast().get_z3_ast().as_ptr(),
-            rhs.to_z3_ast().get_z3_ast().as_ptr(),
+            lhs.to_z3_ast().unwrap().get_z3_ast().as_ptr(),
+            rhs.to_z3_ast().unwrap().get_z3_ast().as_ptr(),
             "{name}(x,y) and {name}(y,x) should canonicalize to the same Z3 AST"
         );
     }

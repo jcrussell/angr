@@ -916,7 +916,7 @@ fn test_every_float_op_kind_builds_at_declared_width() {
             let e = fp_expr(kind, prec, operands);
             let expected_width = kind.result_bits(prec);
             assert_eq!(e.width(), expected_width, "{kind:?} @ {prec:?}");
-            let ast = e.to_z3_ast();
+            let ast = e.to_z3_ast().unwrap();
             assert_eq!(
                 ast.get_size(),
                 expected_width,

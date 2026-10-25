@@ -93,8 +93,8 @@ fn test_vec_cmp_eq_symbolic_i32x4() {
 
     let l = RustBV::symbolic(&ctx, "vcmpeq_l", 128);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
     );
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
 
@@ -128,8 +128,8 @@ fn test_vec_cmp_gt_signed_symbolic_i32x4() {
 
     let l = RustBV::symbolic(&ctx, "vcmpgt_l", 128);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
     );
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
 
@@ -233,8 +233,8 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
 
     let l = RustBV::symbolic(&ctx, "vcmpgtu_l", 128);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
     );
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
 

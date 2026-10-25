@@ -154,8 +154,8 @@ fn test_vec_interleave_lo_16x8_symbolic() {
 
     let l = RustBV::symbolic(&ctx, "vinterleave_l", 128);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 16), 128).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 16), 128).to_z3_ast().unwrap()),
     );
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 16), 128);
 

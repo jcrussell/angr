@@ -72,7 +72,7 @@ fn test_float_add_symbolic_constraint() {
 
     // Constrain: sum's IEEE bits == bits(5.0).
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-    let eq = sum.to_z3_ast().eq(five.to_z3_ast());
+    let eq = sum.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after FAdd symbolic constraint");
 
@@ -93,7 +93,7 @@ fn test_float_sqrt_symbolic_constraint() {
     let sqrt_x = VEXOps::unop(IROp::FSqrt(IRType::F64), x.clone(), &ctx).unwrap();
 
     let four = RustBV::concrete(4.0f64.to_bits() as u128, 64);
-    let eq = sqrt_x.to_z3_ast().eq(four.to_z3_ast());
+    let eq = sqrt_x.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after FSqrt symbolic constraint");
 
@@ -176,7 +176,7 @@ fn test_float_div_with_symbolic_rm_f32() {
     let result =
         VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm.clone(), one, ten, &ctx).unwrap();
     let target = RustBV::concrete(0x3DCCCCCC, 32);
-    let eq = result.to_z3_ast().eq(target.to_z3_ast());
+    let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT for div(1,10) == 0x3DCCCCCC");
 
@@ -276,8 +276,8 @@ fn test_float_add_symbolic_operand_with_rm_rz_f32() {
     // If `result` were a fresh unconstrained symbolic, eval would not be
     // pinned to the RZ-truncated sum.
     ctx.add_constraint(
-        a.to_z3_ast()
-            .eq(RustBV::concrete(0x3F800001, 32).to_z3_ast()),
+        a.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(0x3F800001, 32).to_z3_ast().unwrap()),
     );
     assert!(ctx.is_sat(), "pinned symbolic operand must keep ctx SAT");
 
@@ -368,8 +368,8 @@ fn test_qop_with_rm_symbolic_rm_f64() {
 
     ctx.add_constraint(
         result
-            .to_z3_ast()
-            .eq(RustBV::concrete(u128::from(1.0f64.to_bits()), 64).to_z3_ast()),
+            .to_z3_ast().unwrap()
+            .eq(RustBV::concrete(u128::from(1.0f64.to_bits()), 64).to_z3_ast().unwrap()),
     );
     assert!(ctx.is_sat(), "the RZ/RD answer must be reachable");
     let rm_val = ctx.eval(&rm_sym).expect("eval failed");
@@ -474,7 +474,7 @@ fn test_max_num_symbolic_constraint() {
 
     let m = VEXOps::binop(IROp::FMaxNum(IRType::F32), x.clone(), two, &ctx).unwrap();
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-    ctx.add_constraint(m.to_z3_ast().eq(five.to_z3_ast()));
+    ctx.add_constraint(m.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT after FMaxNum symbolic constraint");
 
     let model_x = ctx.eval(&x).expect("eval(x) returned None");

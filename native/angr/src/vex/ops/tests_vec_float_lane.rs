@@ -165,7 +165,7 @@ fn test_vec_float_neg_symbolic_f32x2() {
 
     let target = pack_lanes_f32(&[1.5f32, -4.0]);
     let v = RustBV::symbolic(&ctx, "vfneg_v", 64);
-    ctx.add_constraint(v.to_z3_ast().eq(RustBV::concrete(target, 64).to_z3_ast()));
+    ctx.add_constraint(v.to_z3_ast().unwrap().eq(RustBV::concrete(target, 64).to_z3_ast().unwrap()));
 
     let result = VEXOps::unop(
         IROp::VFNeg {
@@ -240,8 +240,8 @@ fn test_vec_float_add_symbolic_f32x4() {
     let lv_target = pack_lanes_f32(&[1.0f32; 4]);
     let l = RustBV::symbolic(&ctx, "vfadd_l", 128);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(lv_target, 128).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(lv_target, 128).to_z3_ast().unwrap()),
     );
 
     let result = VEXOps::binop(

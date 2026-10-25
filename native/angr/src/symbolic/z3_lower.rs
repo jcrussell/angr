@@ -41,7 +41,7 @@ use z3::ast::{Ast, Dynamic};
 
 /// Why a clarirs term could not be lowered.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum LowerError {
+pub enum LowerError {
     /// An op with no Z3 counterpart here (strings, the VSA ops).
     UnsupportedOp(String),
     /// Malformed operands for an op.

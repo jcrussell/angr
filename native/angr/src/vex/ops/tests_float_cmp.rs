@@ -248,7 +248,7 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     assert_eq!(res.width(), 128);
     let lo32 = res.extract(31, 0, &ctx);
     let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
-    ctx.add_constraint(lo32.to_z3_ast().eq(true_mask.to_z3_ast()));
+    ctx.add_constraint(lo32.to_z3_ast().unwrap().eq(true_mask.to_z3_ast().unwrap()));
     assert!(
         ctx.is_sat(),
         "expected SAT after FCmpScalarLane Eq mask=all1s"
@@ -310,7 +310,7 @@ fn test_fcom_cc_symbolic_lt() {
     let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five, &ctx).unwrap();
     assert_eq!(res.width(), 32);
     let want = RustBV::concrete(0x01, 32);
-    ctx.add_constraint(res.to_z3_ast().eq(want.to_z3_ast()));
+    ctx.add_constraint(res.to_z3_ast().unwrap().eq(want.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT for FComCC(x, 5.0) == LT");
     let model_x = ctx.eval(&x).expect("eval(x) None");
     let xf = f64::from_bits(model_x as u64);
@@ -546,7 +546,7 @@ fn test_fcmp_packed_lt_32fx4_symbolic() {
     assert_eq!(res.width(), 128);
     let lane0_mask = res.extract(31, 0, &ctx);
     let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
-    ctx.add_constraint(lane0_mask.to_z3_ast().eq(true_mask.to_z3_ast()));
+    ctx.add_constraint(lane0_mask.to_z3_ast().unwrap().eq(true_mask.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT for lane0 LT");
     let model = ctx.eval(&l).expect("eval(l) None");
     let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);

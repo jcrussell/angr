@@ -83,11 +83,11 @@ fn test_smtlib2_constraint_round_trip() {
         .get_model()
         .expect("sat solver must produce model");
     let new_x_val = new_model
-        .eval(&x.to_z3_ast(), true)
+        .eval(&x.to_z3_ast().unwrap(), true)
         .and_then(|bv| bv.as_u64())
         .expect("model should evaluate x");
     let new_y_val = new_model
-        .eval(&y.to_z3_ast(), true)
+        .eval(&y.to_z3_ast().unwrap(), true)
         .and_then(|bv| bv.as_u64())
         .expect("model should evaluate y");
     assert_eq!(
@@ -161,7 +161,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
         .get_model()
         .expect("sat solver must produce model");
     let new_v0 = new_model
-        .eval(&vars[0].to_z3_ast(), true)
+        .eval(&vars[0].to_z3_ast().unwrap(), true)
         .and_then(|bv| bv.as_u64())
         .expect("model should evaluate v0");
     // Note: models from independent solver checks need not be identical.
@@ -233,7 +233,7 @@ fn test_smtlib2_cross_context_round_trip() {
     // cross-context). Cast to `usize` here so we can move them across the
     // `Send + Sync` bound of `with_z3_config` (Z3 raw pointers wrap
     // `NonNull` which isn't `Send`).
-    let original_x_ast_usize = x.to_z3_ast().get_z3_ast().as_ptr() as usize;
+    let original_x_ast_usize = x.to_z3_ast().unwrap().get_z3_ast().as_ptr() as usize;
     let original_ctx_usize = z3::Context::thread_local().get_z3_context().as_ptr() as usize;
 
     let serialize_start = Instant::now();
@@ -717,7 +717,7 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
     let original_simplified: Vec<z3::ast::Bool> = pre
         .iter()
         .map(|(cond, is_true)| {
-            let b = cond.to_z3_bool();
+            let b = cond.to_z3_bool().unwrap();
             let b = if *is_true { b } else { b.not() };
             b.simplify()
         })
@@ -742,7 +742,7 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
     // structurally identical (after simplify) to the original — proves
     // the AST cache rebuild followed the original tree shape.
     for (i, (cond, is_true)) in post.iter().enumerate() {
-        let restored_bool = cond.to_z3_bool();
+        let restored_bool = cond.to_z3_bool().unwrap();
         let restored_bool = if *is_true {
             restored_bool
         } else {
@@ -784,8 +784,8 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
     // add_constraint_raw — mirrors `_add_constraints_to_state`'s
     // Z3-ptr fast path when claripy_to_rustbv fails to translate.
     let raw_bool = {
-        let x_z3 = x.to_z3_ast();
-        let twenty_z3 = twenty.to_z3_ast();
+        let x_z3 = x.to_z3_ast().unwrap();
+        let twenty_z3 = twenty.to_z3_ast().unwrap();
         x_z3.bvult(&twenty_z3)
     };
     ctx.add_constraint_raw(raw_bool);
@@ -974,7 +974,7 @@ fn test_snapshot_tracked_residual_roundtrip() {
     let target = RustBV::concrete(0x2000, 32);
     // Exactly what solver.rs's `add_constraint_tracked_ast` fast path does for
     // an AST `claripy_to_rustbv` rejects: assert-and-track, then log residual.
-    let constraint = x.eq(&target, &ctx).to_z3_bool();
+    let constraint = x.eq(&target, &ctx).to_z3_bool().unwrap();
     let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
     ctx.push_residual_assertion(constraint);
     assert_eq!(idx, 0, "first tracked constraint gets tracker index 0");
@@ -1019,8 +1019,8 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
     ctx.assume_true(&x.ugt(&ten, &ctx));
     // raw: x < 20 (no RustBV form recorded)
     let raw_bool = {
-        let xz = x.to_z3_ast();
-        let tw = twenty.to_z3_ast();
+        let xz = x.to_z3_ast().unwrap();
+        let tw = twenty.to_z3_ast().unwrap();
         xz.bvult(&tw)
     };
     ctx.add_constraint_raw(raw_bool);

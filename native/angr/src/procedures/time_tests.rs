@@ -70,7 +70,7 @@ fn test_two_calls_are_solver_distinct() {
         .expect("ok")
         .expect("value");
     let solver = z3::Solver::new();
-    solver.assert(r1.to_z3_ast().eq(r2.to_z3_ast()).not());
+    solver.assert(r1.to_z3_ast().unwrap().eq(r2.to_z3_ast().unwrap()).not());
     assert_eq!(
         solver.check(),
         z3::SatResult::Sat,

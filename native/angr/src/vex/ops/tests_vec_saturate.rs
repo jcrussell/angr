@@ -235,8 +235,8 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
                 .unwrap();
         let sym_l = RustBV::symbolic(&ctx, "narrow_l", width);
         let sym_r = RustBV::symbolic(&ctx, "narrow_r", width);
-        ctx.add_constraint(sym_l.to_z3_ast().eq(RustBV::concrete(l, width).to_z3_ast()));
-        ctx.add_constraint(sym_r.to_z3_ast().eq(RustBV::concrete(r, width).to_z3_ast()));
+        ctx.add_constraint(sym_l.to_z3_ast().unwrap().eq(RustBV::concrete(l, width).to_z3_ast().unwrap()));
+        ctx.add_constraint(sym_r.to_z3_ast().unwrap().eq(RustBV::concrete(r, width).to_z3_ast().unwrap()));
         let symbolic = VEXOps::binop(op, sym_l, sym_r, &ctx).unwrap();
         assert!(symbolic.is_symbolic(), "{op:?}: expected a symbolic result");
         assert_eq!(ctx.eval(&symbolic), Some(concrete), "{op:?}: symbolic layout");
@@ -273,14 +273,14 @@ fn test_vqnarrow_un_symbolic_saturates() {
     let out_lane0 = res.extract(7, 0, &ctx);
     ctx.add_constraint(
         out_lane0
-            .to_z3_ast()
-            .eq(RustBV::concrete(127, 8).to_z3_ast()),
+            .to_z3_ast().unwrap()
+            .eq(RustBV::concrete(127, 8).to_z3_ast().unwrap()),
     );
     let src_lane0 = arg.extract(15, 0, &ctx);
     ctx.add_constraint(
         src_lane0
-            .to_z3_ast()
-            .eq(RustBV::concrete(200, 16).to_z3_ast()),
+            .to_z3_ast().unwrap()
+            .eq(RustBV::concrete(200, 16).to_z3_ast().unwrap()),
     );
     assert!(
         ctx.is_sat(),
@@ -313,8 +313,8 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
     let src_lane0 = arg.extract(15, 0, &ctx);
     ctx.add_constraint(
         src_lane0
-            .to_z3_ast()
-            .eq(RustBV::concrete(0xFF80, 16).to_z3_ast()),
+            .to_z3_ast().unwrap()
+            .eq(RustBV::concrete(0xFF80, 16).to_z3_ast().unwrap()),
     );
     let out_lane0 = res.extract(7, 0, &ctx);
     // With the fix out_lane0 == 0x80; require it to be equal (SAT) and the
@@ -322,15 +322,15 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
     ctx.push();
     ctx.add_constraint(
         out_lane0
-            .to_z3_ast()
-            .eq(RustBV::concrete(0x80, 8).to_z3_ast()),
+            .to_z3_ast().unwrap()
+            .eq(RustBV::concrete(0x80, 8).to_z3_ast().unwrap()),
     );
     assert!(ctx.is_sat(), "dest-min -128 must pass through to 0x80");
     ctx.pop();
     ctx.add_constraint(
         out_lane0
-            .to_z3_ast()
-            .eq(RustBV::concrete(0x81, 8).to_z3_ast()),
+            .to_z3_ast().unwrap()
+            .eq(RustBV::concrete(0x81, 8).to_z3_ast().unwrap()),
     );
     assert!(
         !ctx.is_sat(),
@@ -379,12 +379,12 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_symbolic() {
     let ctx = SymContext::new_mock();
     let lane = RustBV::symbolic(&ctx, "sat_us_sd_lane", 8);
     let res = VEXOps::saturate_lane_symbolic(lane.clone(), 8, 4, false, true, &ctx);
-    ctx.add_constraint(lane.to_z3_ast().eq(RustBV::concrete(5, 8).to_z3_ast()));
+    ctx.add_constraint(lane.to_z3_ast().unwrap().eq(RustBV::concrete(5, 8).to_z3_ast().unwrap()));
     ctx.push();
-    ctx.add_constraint(res.to_z3_ast().eq(RustBV::concrete(5, 4).to_z3_ast()));
+    ctx.add_constraint(res.to_z3_ast().unwrap().eq(RustBV::concrete(5, 4).to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "unsigned 5 into a signed 4-bit dest stays 5");
     ctx.pop();
-    ctx.add_constraint(res.to_z3_ast().eq(RustBV::concrete(0x8, 4).to_z3_ast()));
+    ctx.add_constraint(res.to_z3_ast().unwrap().eq(RustBV::concrete(0x8, 4).to_z3_ast().unwrap()));
     assert!(
         !ctx.is_sat(),
         "unsigned 5 must NOT be clamped to the signed destination minimum"
@@ -584,7 +584,7 @@ fn test_vqadd_8sx8_symbolic_matches_python_ref() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VQAdd 8Sx8 must match the claripy QAdd reference for all 64-bit inputs"
@@ -985,7 +985,7 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
     }
     let py = VEXOps::concat_le_elements(lanes, &ctx);
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
     ctx.pop();
     assert!(
@@ -1037,7 +1037,7 @@ fn test_vqsal_16x4_symbolic_universal_signed() {
     }
     let py = VEXOps::concat_le_elements(lanes, &ctx);
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
     ctx.pop();
     assert!(

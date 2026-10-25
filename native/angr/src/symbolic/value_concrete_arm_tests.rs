@@ -206,7 +206,7 @@ fn test_sdiv_by_zero_concrete_matches_z3() {
 
         let d = RustBV::symbolic(&ctx, "sdiv_dvd", 64);
         let pinned = d.eq(&RustBV::concrete(dividend, 64), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
         let symbolic = d.sdiv(&RustBV::concrete(0, 64), &ctx);
         assert_eq!(
             Some(folded),
@@ -224,7 +224,7 @@ fn test_udiv_srem_urem_by_zero_concrete_matches_z3() {
         let ctx = SymContext::new_mock();
         let d = RustBV::symbolic(&ctx, "dvd0", 64);
         let pinned = d.eq(&RustBV::concrete(dividend, 64), &ctx);
-        ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+        ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
         let zero = RustBV::concrete(0, 64);
         let c = RustBV::concrete(dividend, 64);
 
@@ -277,7 +277,7 @@ fn test_sdiv_srem_min_by_neg_one_width_128() {
     // to MIN, evaluated through Z3, must agree with the concrete fold.
     let d = RustBV::symbolic(&ctx, "sdiv128_min", 128);
     let pinned = d.eq(&RustBV::concrete(min, 128), &ctx);
-    ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     assert_eq!(
         sdiv.as_u128(),
         ctx.eval(&d.sdiv(&b, &ctx)),

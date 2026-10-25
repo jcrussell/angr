@@ -140,7 +140,7 @@ fn stub_handlers_return_fresh_symbolic_on_all_arches() {
             // so each mint is a distinct Z3 term.
 
             let solver = z3::Solver::new();
-            solver.assert(ret.to_z3_ast().eq(ret2.to_z3_ast()).not());
+            solver.assert(ret.to_z3_ast().unwrap().eq(ret2.to_z3_ast().unwrap()).not());
             assert_eq!(
                 solver.check(),
                 z3::SatResult::Sat,

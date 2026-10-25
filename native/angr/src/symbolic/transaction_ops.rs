@@ -188,7 +188,11 @@ impl SymContext {
         let mut trackers = Vec::with_capacity(assumed.len());
         let mut guarded: HashSet<z3::ast::Bool> = HashSet::with_capacity(assumed.len());
         for (idx, (bv, is_true)) in assumed.iter().enumerate() {
-            let cond = self.assumed_pair_to_z3_bool(bv, *is_true);
+            // A pair with no Z3 form never reached the live solver either
+            // (`assume`), so the core goes without it too.
+            let Some(cond) = self.assumed_pair_to_z3_bool(bv, *is_true) else {
+                continue;
+            };
             let tracker = z3::ast::Bool::new_const(format!("__core_{idx}").as_str());
             solver.assert(tracker.implies(&cond));
             guarded.insert(cond);
@@ -250,15 +254,17 @@ impl SymContext {
     /// becomes a Bool directly; a wider BV is a C-style truth test (`bv != 0`).
     /// `is_true == false` negates. The concrete fast paths in `assume_*` are
     /// deliberately NOT replicated — a concrete guard round-trips through Z3 as
-    /// a constant Bool, which the solver folds away.
-    fn assumed_pair_to_z3_bool(&self, bv: &super::RustBV, is_true: bool) -> z3::ast::Bool {
+    /// a constant Bool, which the solver folds away. `None` (after a warn)
+    /// for a pair with no Z3 form.
+    fn assumed_pair_to_z3_bool(&self, bv: &super::RustBV, is_true: bool) -> Option<z3::ast::Bool> {
         let cond = if bv.width() == 1 {
             bv.to_z3_bool()
         } else {
             let zero = super::RustBV::concrete(0, bv.width());
             bv.ne(&zero, self).to_z3_bool()
         };
-        if is_true { cond } else { cond.not() }
+        let cond = super::lowered_or_warn(cond, "unsat_core")?;
+        Some(if is_true { cond } else { cond.not() })
     }
 
     /// Get all solver assertions as strings.

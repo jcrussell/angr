@@ -36,7 +36,7 @@ use z3::ast::Ast;
 fn cond_bool(ctx: &SymContext, name: &str, value: u64) -> (z3::ast::Bool, usize) {
     let x = RustBV::symbolic(ctx, name, 8);
     let cond = x.eq(&RustBV::concrete(u128::from(value), 8), ctx);
-    let b = cond.to_z3_bool();
+    let b = cond.to_z3_bool().unwrap();
     let ptr = b.get_z3_ast().as_ptr() as usize;
     (b, ptr)
 }

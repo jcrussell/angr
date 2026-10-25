@@ -581,9 +581,11 @@ impl RustBV {
     /// IEEE bits (`fpToIEEEBV`). A literal that fits a `u128` folds to
     /// [`RustBV::Concrete`]. Strings have no `RustBV` form and are refused.
     ///
-    /// With Z3 the term is lowered here, which both warms the memo and refuses
-    /// what has no Z3 form (strings nested in a bitvector, the VSA ops), so
-    /// `to_z3_ast` on the result cannot fail.
+    /// The term is lowered here, which both warms the memo and refuses what
+    /// has no Z3 form (strings nested in a bitvector, the VSA ops, a term
+    /// deeper than `z3_lower::MAX_LOWER_DEPTH`) at the boundary. Terms the ops
+    /// build later over the result can still outgrow that depth, which is why
+    /// `to_z3_ast` returns a `Result` (angr-mx00p.116.2).
     pub fn from_clarirs(ast: AstRef<'static>) -> Result<Self, ClarirsError> {
         let ctx = &*GLOBAL_CONTEXT;
         let ast = match ast.ast_type() {

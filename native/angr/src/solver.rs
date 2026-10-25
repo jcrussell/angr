@@ -344,7 +344,11 @@ impl RustSolverContext {
             // assume_true's symbolic path (BV width 1 → bool via to_z3_bool;
             // wider BV → ne(0) bool) — see `bool_constraint_bv`.
             let bv = claripy_to_rustbv(py, ast, &ctx)?;
-            let constraint = bool_constraint_bv(&bv, &ctx).to_z3_bool();
+            // A constraint with no Z3 form raises (a RecursionError when too
+            // deep), rather than being tracked as something it is not.
+            let constraint = bool_constraint_bv(&bv, &ctx)
+                .to_z3_bool()
+                .map_err(BridgeError::from)?;
             let idx = ctx.add_constraint_tracked_indexed(constraint);
             ctx.assumed_constraints_push(bv, true);
             Ok(idx)

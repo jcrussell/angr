@@ -109,8 +109,8 @@ fn test_vfpwadd_32fx2_symbolic() {
     let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, 6.0]), 64);
     let l = RustBV::symbolic(&ctx, "vfpwadd_l", 64);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast().unwrap()),
     );
     let result = VEXOps::binop(
         IROp::VFPwAdd {
@@ -195,8 +195,8 @@ fn test_vfpwmin_32fx2_symbolic() {
     let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, -6.0]), 64);
     let l = RustBV::symbolic(&ctx, "vfpwmin_l", 64);
     ctx.add_constraint(
-        l.to_z3_ast()
-            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast()),
+        l.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast().unwrap()),
     );
     let result = VEXOps::binop(
         IROp::VFPwMin {
@@ -338,7 +338,7 @@ fn test_vpwaddl_64ux2_symbolic_universal() {
     let reference = lo.add_into(hi, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VPwAddL 64Ux2 must match the zero-extended 128-bit sum"
@@ -447,7 +447,7 @@ fn test_vpwadd_16x4_matches_spec_replay() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VPwAdd 16x4 must match the spec-replay reference for all 64-bit inputs"
@@ -484,7 +484,7 @@ fn test_vpwaddl_16sx4_matches_spec_replay() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VPwAddL 16Sx4 must match the spec-replay sign-extend reference"
@@ -525,7 +525,7 @@ fn test_vpwmin_16sx4_matches_spec_replay() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VPwMin 16Sx4 must match the spec-replay signed-min reference"
@@ -915,7 +915,7 @@ fn test_vavg_16ux4_symbolic_universal_unsigned() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VAvg 16Ux4 must match the unsigned spec-replay reference"
@@ -955,7 +955,7 @@ fn test_vavg_8sx8_symbolic_universal_signed() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VAvg 8Sx8 must match the signed spec-replay reference"

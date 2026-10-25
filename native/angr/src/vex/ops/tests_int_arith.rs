@@ -50,7 +50,7 @@ fn divmod_concrete_matches_pinned_symbolic(
 
     let pin = |name: &str, v: u128, w: u32| {
         let sym = RustBV::symbolic(&ctx, name, w);
-        ctx.add_constraint(sym.to_z3_ast().eq(RustBV::concrete(v, w).to_z3_ast()));
+        ctx.add_constraint(sym.to_z3_ast().unwrap().eq(RustBV::concrete(v, w).to_z3_ast().unwrap()));
         sym
     };
     let (left, right) = if symbolic_dividend {
@@ -206,7 +206,7 @@ fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u3
 
     let dvs = RustBV::symbolic(&ctx, "dvs_zero", divisor_w);
     let pinned = dvs.eq(&RustBV::concrete(0, divisor_w), &ctx);
-    ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     let symbolic = VEXOps::binop(op, RustBV::concrete(dividend, dividend_w), dvs, &ctx).unwrap();
     assert!(symbolic.is_symbolic(), "symbolic arm must not fold");
     let symbolic_v = ctx.eval(&symbolic).expect("symbolic result must be sat");

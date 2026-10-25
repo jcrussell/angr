@@ -626,8 +626,12 @@ impl SymContext {
         {
             return; // Tautology — skip Z3
         }
-        // Falls through to add False constraint (UNSAT)
-        let ast = bv.to_z3_ast();
+        // Falls through to add False constraint (UNSAT). A term with no Z3
+        // form cannot reach the solver: the constraint is dropped with a warn,
+        // as `assume` drops one (angr-mx00p.116.2).
+        let Some(ast) = super::lowered_or_warn(bv.to_z3_ast(), "add_bv_constraint") else {
+            return;
+        };
         let val_ast = super::bv_codec::make_bv_const(value, bv.width());
         let constraint = ast.eq(&val_ast);
         // angr-t3l5o Phase 1: residual sink #2 (address concretization).
@@ -683,7 +687,19 @@ impl SymContext {
         // Use to_z3_bool() to produce a native Z3 Bool for comparison ops,
         // avoiding the ITE(cmp, BV(1,1), BV(0,1)).eq(BV(1,1)) round-trip; the
         // false polarity negates that bool directly.
-        let bool_ast = cond.to_z3_bool();
+        //
+        // A cond with no Z3 form (deeper than `z3_lower::MAX_LOWER_DEPTH`)
+        // cannot reach the solver. It stays in the `assumed` export log, but
+        // the solver goes without it, with a warn: the state is
+        // under-constrained, never pruned, the side a Z3 Unknown errs on
+        // (`invariant-z3-unknown-not-unsat`, angr-mx00p.116.2).
+        let Some(bool_ast) = super::lowered_or_warn(cond.to_z3_bool(), "assume") else {
+            self.local_constraints
+                .lock()
+                .assumed
+                .push((cond.clone(), want_true));
+            return;
+        };
         let constraint = if want_true { bool_ast } else { bool_ast.not() };
         // angr-1joc measurement: sampled simplify-skip check.
         sample_simplify_skip(&constraint);

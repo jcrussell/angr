@@ -387,7 +387,7 @@ fn test_vdup_symbolic_arg() {
     )
     .unwrap();
     let target = RustBV::concrete(0x4242_4242_4242_4242u128, 64);
-    ctx.add_constraint(res.to_z3_ast().eq(target.to_z3_ast()));
+    ctx.add_constraint(res.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT for dup to 0x42 broadcast");
     let model_arg = ctx.eval(&arg).expect("eval(arg) None");
     assert_eq!(model_arg, 0x42);
@@ -413,7 +413,7 @@ fn test_vget_elem_symbolic_idx() {
     assert_eq!(res.width(), 8);
     // Constrain result to 0x66 → solver must pick idx == 5.
     let target = RustBV::concrete(0x66, 8);
-    ctx.add_constraint(res.to_z3_ast().eq(target.to_z3_ast()));
+    ctx.add_constraint(res.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT for lane==0x66");
     let model_idx = ctx.eval(&sym_idx).expect("eval(idx) None");
     // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).

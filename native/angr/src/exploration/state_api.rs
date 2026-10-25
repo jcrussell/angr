@@ -339,6 +339,10 @@ impl RustExplorationManager {
                             let zero = RustBV::concrete(0, bv.width());
                             bv.ne(&zero, ctx_ref).to_z3_bool()
                         };
+                        // Same wrong-answer risk as a failed conversion
+                        // below, so it raises too (a RecursionError when the
+                        // term is too deep).
+                        let cond = cond.map_err(crate::claripy_bridge::BridgeError::from)?;
                         extra.push(cond);
                     }
                     Err(e) => {

@@ -66,14 +66,14 @@ fn test_set_v128_lo64_symbolic() {
     // Low 64 of result must equal the inserted value.
     let res_lo = result.extract(63, 0, &ctx);
     let inserted = RustBV::concrete(0x0102_0304_0506_0708u128, 64);
-    let eq_lo = res_lo.to_z3_ast().eq(inserted.to_z3_ast());
+    let eq_lo = res_lo.to_z3_ast().unwrap().eq(inserted.to_z3_ast().unwrap());
     ctx.add_constraint(eq_lo);
     assert!(ctx.is_sat(), "low 64 must equal inserted value");
 
     // Upper 64 of result must equal upper 64 of the symbolic input (passthrough).
     let upper_in = vec.extract(127, 64, &ctx);
     let upper_out = result.extract(127, 64, &ctx);
-    let eq_upper = upper_in.to_z3_ast().eq(upper_out.to_z3_ast());
+    let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
     ctx.add_constraint(eq_upper);
     assert!(ctx.is_sat(), "upper-64 passthrough must hold");
 }
@@ -92,25 +92,25 @@ fn test_set_v128_lo32_symbolic() {
 
     let res_lo = result.extract(31, 0, &ctx);
     let inserted = RustBV::concrete(0xCAFE_F00Du128, 32);
-    let eq_lo = res_lo.to_z3_ast().eq(inserted.to_z3_ast());
+    let eq_lo = res_lo.to_z3_ast().unwrap().eq(inserted.to_z3_ast().unwrap());
     ctx.add_constraint(eq_lo);
     assert!(ctx.is_sat(), "low 32 must equal inserted value");
 
     let upper_in = vec.extract(127, 32, &ctx);
     let upper_out = result.extract(127, 32, &ctx);
-    let eq_upper = upper_in.to_z3_ast().eq(upper_out.to_z3_ast());
+    let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
     ctx.add_constraint(eq_upper);
     assert!(ctx.is_sat(), "upper-96 passthrough must hold");
 
     // Negative check: a model where upper bits diverge must be UNSAT.
     let bad = upper_out
-        .to_z3_ast()
-        .eq(RustBV::concrete(0, 96).to_z3_ast());
+        .to_z3_ast().unwrap()
+        .eq(RustBV::concrete(0, 96).to_z3_ast().unwrap());
     // Only pin the symbolic input's upper to a nonzero value first so bad=0 is
     // genuinely contradictory rather than vacuously satisfiable.
     let pin = upper_in
-        .to_z3_ast()
-        .eq(RustBV::concrete(0x7777_7777_7777_7777_7777_7777u128, 96).to_z3_ast());
+        .to_z3_ast().unwrap()
+        .eq(RustBV::concrete(0x7777_7777_7777_7777_7777_7777u128, 96).to_z3_ast().unwrap());
     ctx.add_constraint(pin);
     ctx.add_constraint(bad);
     assert!(

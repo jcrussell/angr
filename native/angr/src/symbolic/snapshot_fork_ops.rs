@@ -404,7 +404,9 @@ impl SymContext {
     /// Lets the micro-bench populate the `raw_fraction` axis.
     #[doc(hidden)]
     pub fn bench_add_constraint_raw_from_bool(&self, pred: &RustBV) {
-        self.add_constraint_raw(pred.to_z3_bool());
+        if let Some(pred) = super::lowered_or_warn(pred.to_z3_bool(), "bench_add_constraint_raw") {
+            self.add_constraint_raw(pred);
+        }
     }
 
     // =========================================================================
@@ -874,8 +876,12 @@ impl SymContext {
 
         for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
             // Compute NOT(cond) up front so cond_bool can be moved into
-            // all_z3_conditions without cloning the Z3 AST.
-            let cond_bool = cond.to_z3_bool();
+            // all_z3_conditions without cloning the Z3 AST. A cond with no Z3
+            // form becomes an unconstrained Bool, so the arm's constraints are
+            // only optional, never forced: the under-constrained side `assume`
+            // takes for such a cond (angr-mx00p.116.2).
+            let cond_bool = super::lowered_or_warn(cond.to_z3_bool(), "merge")
+                .unwrap_or_else(|| z3::ast::Bool::fresh_const("unlowerable_merge_cond"));
             let not_cond = cond_bool.not();
             all_z3_conditions.push(cond_bool);
 

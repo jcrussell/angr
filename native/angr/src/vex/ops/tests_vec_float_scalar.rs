@@ -66,7 +66,7 @@ fn test_vec_float_scalar_add_symbolic() {
     // Constrain low 32 bits of result to bits(5.0).
     let res_lo = result.extract(31, 0, &ctx);
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().eq(five.to_z3_ast());
+    let eq = res_lo.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(
         ctx.is_sat(),
@@ -83,7 +83,7 @@ fn test_vec_float_scalar_add_symbolic() {
     // Verify upper 96 bits of result equal upper 96 bits of xmm0 (passthrough).
     let upper_in = xmm0.extract(127, 32, &ctx);
     let upper_out = result.extract(127, 32, &ctx);
-    let eq_upper = upper_in.to_z3_ast().eq(upper_out.to_z3_ast());
+    let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
     ctx.add_constraint(eq_upper);
     assert!(ctx.is_sat(), "expected upper-bits passthrough to hold");
 }
@@ -99,7 +99,7 @@ fn test_vec_float_scalar_sqrt_symbolic() {
 
     let res_lo = result.extract(31, 0, &ctx);
     let four = RustBV::concrete(4.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().eq(four.to_z3_ast());
+    let eq = res_lo.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(
         ctx.is_sat(),
@@ -130,7 +130,7 @@ fn test_vec_float_scalar_max_symbolic() {
 
     let res_lo = result.extract(31, 0, &ctx);
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().eq(five.to_z3_ast());
+    let eq = res_lo.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after VFMaxS == 5.0");
 
@@ -156,7 +156,7 @@ fn test_vec_float_scalar_min_symbolic() {
 
     let res_lo = result.extract(31, 0, &ctx);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().eq(one.to_z3_ast());
+    let eq = res_lo.to_z3_ast().unwrap().eq(one.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT after VFMinS == 1.0");
 

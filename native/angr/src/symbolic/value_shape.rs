@@ -66,12 +66,13 @@ impl RustBV {
         }
     }
 
-    /// Wrap a bitvector-sorted term known to lower: a literal that fits a
-    /// `u128` as `Concrete`, anything else as an `Ast` lowered on demand. A
-    /// subterm of a lowered term qualifies (lowering the parent lowered it),
-    /// and so does a term the constructors build over lowerable operands with
-    /// the ops `value_clarirs::build_term` emits, so the lazy lowering cannot
-    /// fail.
+    /// Wrap a bitvector-sorted term the ops have a Z3 form for: a literal that
+    /// fits a `u128` as `Concrete`, anything else as an `Ast` lowered on
+    /// demand. A subterm of a lowered term qualifies, and so does a term the
+    /// constructors build over such operands with the ops
+    /// `value_clarirs::build_term` emits. The lazy lowering can still refuse
+    /// a term that grew deeper than `z3_lower::MAX_LOWER_DEPTH`, and
+    /// `to_z3_ast` reports that as an error (angr-mx00p.116.2).
     pub(crate) fn from_clarirs_lowerable(ast: Term) -> RustBV {
         if let AstOp::BVV(value) = ast.op()
             && let Ok(v) = u128::try_from(&value.to_biguint())

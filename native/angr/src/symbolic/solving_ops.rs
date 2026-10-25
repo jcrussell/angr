@@ -30,6 +30,7 @@ use super::RustBV;
 use super::SymContext;
 
 use super::bv_codec::*;
+use super::lowered_or_warn;
 use super::query_class;
 use super::solver_build::*;
 use super::stats::*;
@@ -63,6 +64,15 @@ impl<T> Enumeration<T> {
         Self {
             values,
             undecided: false,
+        }
+    }
+
+    /// An enumeration that could not run at all (its term has no Z3 form),
+    /// reported as undecided so no caller reads it as a complete set.
+    fn unrunnable() -> Self {
+        Self {
+            values: Vec::new(),
+            undecided: true,
         }
     }
 }
@@ -117,7 +127,8 @@ fn eval_all_in_model(model: &z3::Model, bvs: &[RustBV]) -> Option<Vec<u128>> {
             values.push(v);
             continue;
         }
-        let result = model.eval(&bv.to_z3_ast(), true)?;
+        let ast = lowered_or_warn(bv.to_z3_ast(), "eval_many")?;
+        let result = model.eval(&ast, true)?;
         values.push(extract_bv_value(&result)?);
     }
     Some(values)
@@ -388,8 +399,11 @@ impl SymContext {
         let _class = query_class::scope(|| {
             query_class::classify_bool(cond, &self.get_assumed_constraints())
         });
-        // Use native Bool to avoid ITE wrapping overhead
-        let bool_ast = cond.to_z3_bool();
+        // Use native Bool to avoid ITE wrapping overhead. A cond with no Z3
+        // form is undecided, so neither branch is pruned (as on Unknown).
+        let Some(bool_ast) = lowered_or_warn(cond.to_z3_bool(), "check_branch_feasibility") else {
+            return (true, true);
+        };
 
         // All three branches share one solver lock acquisition via
         // with_z3_solver. The push/pop pairs are balanced inside the
@@ -512,14 +526,14 @@ impl SymContext {
             return self.min(bv, false);
         }
 
+        let ast = lowered_or_warn(bv.to_z3_ast(), "eval")?;
         // Try to use cached model first (avoids re-checking SAT)
         {
             let cache = self.model_cache.borrow();
-            if let Some(ref model) = *cache {
-                let ast = bv.to_z3_ast();
-                if let Some(result) = model.eval(&ast, true) {
-                    return extract_bv_value(&result);
-                }
+            if let Some(ref model) = *cache
+                && let Some(result) = model.eval(&ast, true)
+            {
+                return extract_bv_value(&result);
             }
         }
 
@@ -547,7 +561,6 @@ impl SymContext {
             }
 
             let model = solver.get_model()?;
-            let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
             let value = extract_bv_value(&result);
             *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
@@ -699,13 +712,13 @@ impl SymContext {
             return self.min_wide(bv);
         }
 
+        let ast = lowered_or_warn(bv.to_z3_ast(), "eval_wide")?;
         {
             let cache = self.model_cache.borrow();
-            if let Some(ref model) = *cache {
-                let ast = bv.to_z3_ast();
-                if let Some(result) = model.eval(&ast, true) {
-                    return extract_bv_value_wide(&result, width);
-                }
+            if let Some(ref model) = *cache
+                && let Some(result) = model.eval(&ast, true)
+            {
+                return extract_bv_value_wide(&result, width);
             }
         }
 
@@ -723,7 +736,6 @@ impl SymContext {
             }
 
             let model = solver.get_model()?;
-            let ast = bv.to_z3_ast();
             let result = model.eval(&ast, true)?;
             let value = extract_bv_value_wide(&result, width);
             *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
@@ -768,8 +780,8 @@ impl SymContext {
             let symbolic: Vec<(z3::ast::BV, u32)> = bvs
                 .iter()
                 .filter(|bv| bv.as_u128().is_none())
-                .map(|bv| (bv.to_z3_ast(), bv.width()))
-                .collect();
+                .map(|bv| Some((lowered_or_warn(bv.to_z3_ast(), "eval_many")?, bv.width())))
+                .collect::<Option<_>>()?;
             let mins = if symbolic.is_empty() {
                 Vec::new()
             } else {
@@ -846,7 +858,9 @@ impl SymContext {
             return self.eval_upto_ascending(bv, n);
         }
 
-        let ast = bv.to_z3_ast();
+        let Some(ast) = lowered_or_warn(bv.to_z3_ast(), "eval_upto") else {
+            return Enumeration::unrunnable();
+        };
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
@@ -947,7 +961,7 @@ impl SymContext {
     /// (angr-cxw7). Minimizing the big-endian bytes most-significant-first is
     /// exactly minimizing the value, and each byte fits `bsearch_min`'s u128.
     fn min_wide(&self, bv: &RustBV) -> Option<Vec<u8>> {
-        let ast = bv.to_z3_ast();
+        let ast = lowered_or_warn(bv.to_z3_ast(), "min_wide")?;
         let mut parts = Vec::with_capacity(bv.width().div_ceil(8) as usize);
         let mut hi = bv.width();
         while hi > 0 {
@@ -988,7 +1002,9 @@ impl SymContext {
     /// history-dependent seed is precisely the nondeterminism being removed).
     fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         let width = bv.width();
-        let ast = bv.to_z3_ast();
+        let Some(ast) = lowered_or_warn(bv.to_z3_ast(), "eval_upto") else {
+            return Enumeration::unrunnable();
+        };
         let max_val = max_val_for_width(width);
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
@@ -1065,7 +1081,9 @@ impl SymContext {
             return Enumeration::decided(vec![]);
         }
 
-        let ast = bv.to_z3_ast();
+        let Some(ast) = lowered_or_warn(bv.to_z3_ast(), "eval_upto_wide") else {
+            return Enumeration::unrunnable();
+        };
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
@@ -1131,7 +1149,7 @@ impl SymContext {
             return None;
         }
 
-        let ast = bv.to_z3_ast();
+        let ast = lowered_or_warn(bv.to_z3_ast(), "min/max")?;
         let width = bv.width();
 
         // The binary search below tracks bounds in a u128. For widths above 128
@@ -1281,7 +1299,7 @@ impl SymContext {
             return None;
         }
 
-        let ast = bv.to_z3_ast();
+        let ast = lowered_or_warn(bv.to_z3_ast(), "range")?;
         let width = bv.width();
 
         // Same u128-bound guard `min` and `max` carry: the two binary searches
@@ -1347,7 +1365,11 @@ impl SymContext {
             return v == value;
         }
 
-        let ast = bv.to_z3_ast();
+        // No Z3 form: `value` cannot be shown feasible, the answer a timeout
+        // gives below.
+        let Some(ast) = lowered_or_warn(bv.to_z3_ast(), "solution") else {
+            return false;
+        };
         let width = bv.width();
 
         let val_ast = make_bv_const(value, width);

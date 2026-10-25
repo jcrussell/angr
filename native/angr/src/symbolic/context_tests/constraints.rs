@@ -252,7 +252,7 @@ fn test_add_constraint_sibling_isolation() {
 /// single-shot `add_constraint_raw` path: a width-1 RustBV's Z3 Bool.
 fn raw_entry(cond: &RustBV) -> z3::ast::Bool {
     debug_assert_eq!(cond.width(), 1);
-    cond.to_z3_bool()
+    cond.to_z3_bool().unwrap()
 }
 
 /// angr-v5a5 slice 4c.2: with no lineage attached, `add_constraint_raw`
@@ -559,7 +559,7 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     let ten = RustBV::concrete(10, 8);
 
     // Tracked constraint 1: x == 5.
-    let c1 = x.eq(&five, &ctx).to_z3_bool();
+    let c1 = x.eq(&five, &ctx).to_z3_bool().unwrap();
     let idx1 = ctx.add_constraint_tracked_indexed(c1);
     assert_eq!(idx1, 0, "first tracker registered at index 0");
 
@@ -575,7 +575,7 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     assert!(!ctx.solution(&x, 6));
 
     // Tracked constraint 2: x == 10 (deliberately UNSAT against c1).
-    let c2 = x.eq(&ten, &ctx).to_z3_bool();
+    let c2 = x.eq(&ten, &ctx).to_z3_bool().unwrap();
     let idx2 = ctx.add_constraint_tracked_indexed(c2);
     assert_eq!(idx2, 1, "second tracker registered at index 1");
 
@@ -608,7 +608,7 @@ fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
 
     let x = RustBV::symbolic(&ctx, "test_act_indexed_some_x", 8);
     let five = RustBV::concrete(5, 8);
-    let constraint = x.eq(&five, &ctx).to_z3_bool();
+    let constraint = x.eq(&five, &ctx).to_z3_bool().unwrap();
     let idx = ctx.add_constraint_tracked_indexed(constraint);
     assert_eq!(
         idx, 0,
@@ -649,7 +649,7 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
     // Sibling A adds tracked x == 5.
     let x_a = RustBV::symbolic(&sibling_a, "test_act_indexed_sibling_x", 8);
     let five = RustBV::concrete(5, 8);
-    let constraint = x_a.eq(&five, &sibling_a).to_z3_bool();
+    let constraint = x_a.eq(&five, &sibling_a).to_z3_bool().unwrap();
     let _ = sibling_a.add_constraint_tracked_indexed(constraint);
     assert_eq!(sibling_a.scope_path_len(), 1);
     assert_eq!(sibling_b.scope_path_len(), 0);
@@ -693,11 +693,11 @@ fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
 
     // First Z3-touching call on `child` — its solver is still `None`,
     // forcing `install_constraint`'s cold-start replay path.
-    let c1 = x.eq(&five, &child).to_z3_bool();
+    let c1 = x.eq(&five, &child).to_z3_bool().unwrap();
     let idx1 = child.add_constraint_tracked_indexed(c1);
     assert_eq!(idx1, 0);
 
-    let c2 = x.eq(&ten, &child).to_z3_bool();
+    let c2 = x.eq(&ten, &child).to_z3_bool().unwrap();
     let idx2 = child.add_constraint_tracked_indexed(c2);
     assert_eq!(idx2, 1);
 
@@ -818,7 +818,7 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
         } else {
             x.ult(&rhs, &ctx)
         };
-        ctx.add_constraint_raw(guard.to_z3_bool());
+        ctx.add_constraint_raw(guard.to_z3_bool().unwrap());
         ctx.assumed_constraints_push(guard, true);
     }
 

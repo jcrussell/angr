@@ -217,7 +217,7 @@ fn serde_roundtrip_register_file_symbolic() {
         let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
         let ctx2 = SymContext::new();
         let bv = restored.get_reg("rdi", &ctx2).unwrap();
-        (bv.leaf_var(), bv.to_z3_ast().to_string())
+        (bv.leaf_var(), bv.to_z3_ast().unwrap().to_string())
     });
 
     assert_eq!(restored_leaf, original, "restored register must be the same leaf");
@@ -518,19 +518,19 @@ fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
 
     let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
     assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(rax_off, 8, &ctx).to_z3_ast();
+    let got = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
 
     // cond == 1 selects other's whole 64-bit rax.
     ctx.push();
-    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
-    ctx.add_constraint(got.eq(rax.to_z3_ast()).not());
+    ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(got.eq(rax.to_z3_ast().unwrap()).not());
     assert!(!ctx.is_sat(), "cond=1 must select other's `rax`");
     ctx.pop();
 
     // cond == 0 selects self's two bytes over its own (zero) high bytes.
-    let expected = ah.to_z3_ast().concat(al.to_z3_ast()).zero_ext(48);
+    let expected = ah.to_z3_ast().unwrap().concat(al.to_z3_ast().unwrap()).zero_ext(48);
     ctx.push();
-    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(0, 1)));
+    ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(0, 1)));
     ctx.add_constraint(got.eq(expected).not());
     assert!(
         !ctx.is_sat(),
@@ -604,19 +604,19 @@ fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
     b.put(rax_off, RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
     b.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
 
-    let self_expected = a.get(rax_off, 8, &ctx).to_z3_ast();
-    let other_expected = b.get(rax_off, 8, &ctx).to_z3_ast();
+    let self_expected = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
+    let other_expected = b.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
 
     let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
     assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(rax_off, 8, &ctx).to_z3_ast();
+    let got = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
 
     for (bit, expected, what) in [
         (1u64, other_expected, "other's `ah`-composed value"),
         (0u64, self_expected, "self's concrete value"),
     ] {
         ctx.push();
-        ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(bit, 1)));
+        ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(bit, 1)));
         ctx.add_constraint(got.eq(expected).not());
         assert!(!ctx.is_sat(), "cond={bit} must select {what}");
         ctx.pop();
@@ -730,14 +730,14 @@ fn merge_short_tail_chunk_selects_each_path_under_solver() {
 
     let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
     assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(tail_off, 4, &ctx).to_z3_ast();
+    let got = a.get(tail_off, 4, &ctx).to_z3_ast().unwrap();
 
     for (bit, expected, what) in [
         (1u64, 0x2222_2222u64, "other's tail bytes"),
         (0u64, 0x1111_1111u64, "self's tail bytes"),
     ] {
         ctx.push();
-        ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(bit, 1)));
+        ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(bit, 1)));
         ctx.add_constraint(got.eq(z3::ast::BV::from_u64(expected, 32)).not());
         assert!(!ctx.is_sat(), "cond={bit} must select {what}");
         ctx.pop();
@@ -763,20 +763,20 @@ fn merge_width_mismatch_selects_each_path_under_solver() {
 
     let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
     assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(rax_off, 8, &ctx).to_z3_ast();
+    let got = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
 
     // cond == 1 selects other's 64-bit value.
     ctx.push();
-    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
-    ctx.add_constraint(got.eq(wide.to_z3_ast()).not());
+    ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(got.eq(wide.to_z3_ast().unwrap()).not());
     assert!(!ctx.is_sat(), "cond=1 must select other's `wide` value");
     ctx.pop();
 
     // cond == 0 selects self's 32-bit value zero-extended over its own
     // concrete (zero) high half.
     ctx.push();
-    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(0, 1)));
-    ctx.add_constraint(got.eq(narrow.to_z3_ast().zero_ext(32)).not());
+    ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(0, 1)));
+    ctx.add_constraint(got.eq(narrow.to_z3_ast().unwrap().zero_ext(32)).not());
     assert!(!ctx.is_sat(), "cond=0 must select self's `narrow` value");
     ctx.pop();
 }

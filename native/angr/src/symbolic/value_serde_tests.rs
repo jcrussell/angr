@@ -49,7 +49,7 @@ fn serde_roundtrip_symbolic() {
     // The lazily-rebuilt AST must be usable: it should produce a Z3 AST
     // pointer (sanity check that the lowering succeeds under the active
     // thread-local context).
-    let _ptr = back.to_z3_ast().get_z3_ast().as_ptr();
+    let _ptr = back.to_z3_ast().unwrap().get_z3_ast().as_ptr();
 }
 
 #[test]
@@ -126,12 +126,12 @@ fn test_expression_memo_no_stale_context_leak() {
     let expr = raw_extract_node(RustBV::concrete(0x11223344, 32), 7, 0);
 
     // First conversion in the default thread-local context populates the memo.
-    let ast1 = expr.to_z3_ast();
+    let ast1 = expr.to_z3_ast().unwrap();
     let default_ctx = ast1.get_ctx().get_z3_context().as_ptr() as usize;
 
     // Second conversion in the SAME context is served from the memo and must
     // still belong to that context.
-    let ast1b = expr.to_z3_ast();
+    let ast1b = expr.to_z3_ast().unwrap();
     assert_eq!(
         ast1b.get_ctx().get_z3_context().as_ptr() as usize,
         default_ctx,
@@ -145,7 +145,7 @@ fn test_expression_memo_no_stale_context_leak() {
         let expr = shared.get();
         (
             Context::thread_local().get_z3_context().as_ptr() as usize,
-            expr.to_z3_ast().get_ctx().get_z3_context().as_ptr() as usize,
+            expr.to_z3_ast().unwrap().get_ctx().get_z3_context().as_ptr() as usize,
         )
     });
     assert_ne!(
@@ -159,7 +159,7 @@ fn test_expression_memo_no_stale_context_leak() {
 
     // Back in the default context the guard rejects the now-new-context memo
     // and rebuilds against the default context again.
-    let ast3 = expr.to_z3_ast();
+    let ast3 = expr.to_z3_ast().unwrap();
     assert_eq!(
         ast3.get_ctx().get_z3_context().as_ptr() as usize,
         default_ctx,

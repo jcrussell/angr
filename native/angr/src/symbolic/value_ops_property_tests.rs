@@ -165,7 +165,7 @@ fn div_rem_matches_z3(
 
     let d = RustBV::symbolic(&ctx, "dvd", w);
     let pinned = d.eq(&bv(a, w), &ctx);
-    ctx.add_constraint(pinned.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     let sym = op(&d, &bv(b, w), &ctx);
     match ctx.eval(&sym) {
         Some(z) => z == folded,
@@ -470,11 +470,11 @@ fn prop_zext_const_cmp_fold_matches_z3(
     let cbv = RustBV::concrete(c & mask(total), total);
 
     // Folded RustBV result (goes through try_zext_const_cmp_fold).
-    let folded_bv = rust_cmp(op, &zx, &cbv, zext_left, &ctx).to_z3_ast();
+    let folded_bv = rust_cmp(op, &zx, &cbv, zext_left, &ctx).to_z3_ast().unwrap();
 
     // Unfolded Z3 reference over the same symbolic `x`.
-    let zx_z3 = zx.to_z3_ast();
-    let c_z3 = cbv.to_z3_ast();
+    let zx_z3 = zx.to_z3_ast().unwrap();
+    let c_z3 = cbv.to_z3_ast().unwrap();
     let (za, zb) = if zext_left {
         (&zx_z3, &c_z3)
     } else {

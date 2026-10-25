@@ -1,13 +1,16 @@
 //! Z3 lowering for [`RustBV`]: `to_z3_ast` / `to_z3_ast_cached`,
 //! `to_z3_bool` / `to_z3_bool_cached`. A value is a
 //! `Concrete` (a Z3 numeral) or a clarirs term, lowered through
-//! `claripy_bridge::z3_lower` and memoized on the value.
+//! `symbolic::z3_lower` and memoized on the value. Lowering can fail (a term
+//! deeper than `z3_lower::MAX_LOWER_DEPTH`, angr-mx00p.116.2), so each
+//! conversion returns a [`LowerError`] for its query to fail on.
 //!
 //! The `deny` below follows the crate [Panic policy](crate#panic-policy)
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::value::RustBV;
+use super::z3_lower::LowerError;
 
 impl RustBV {
     // =========================================================================
@@ -15,7 +18,7 @@ impl RustBV {
     // =========================================================================
 
     /// Convert this RustBV to a Z3 AST, lowering a clarirs term on first use.
-    pub fn to_z3_ast(&self) -> z3::ast::BV {
+    pub fn to_z3_ast(&self) -> Result<z3::ast::BV, LowerError> {
         super::stats::record_z3_ast_build();
         let mut cache = std::collections::HashMap::new();
         self.to_z3_ast_cached(&mut cache)
@@ -27,11 +30,11 @@ impl RustBV {
     pub fn to_z3_ast_cached(
         &self,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-    ) -> z3::ast::BV {
+    ) -> Result<z3::ast::BV, LowerError> {
         let cache_key = self as *const RustBV as usize;
         if let Some(cached) = cache.get(&cache_key) {
             super::stats::record_z3_ast_cache_hit();
-            return cached.clone();
+            return Ok(cached.clone());
         }
         super::stats::record_z3_ast_cache_miss();
         let result = match self {
@@ -46,23 +49,14 @@ impl RustBV {
                     super::stats::record_z3_ast_memo_hit();
                     bv
                 } else {
-                    let built = Self::lower_clarirs(ast);
+                    let built = super::z3_lower::lower_bv(ast)?;
                     *memo.borrow_mut() = Some(built.clone());
                     built
                 }
             }
         };
         cache.insert(cache_key, result.clone());
-        result
-    }
-
-    /// Lower a [`RustBV::Ast`] term into the thread-local context.
-    #[expect(
-        clippy::expect_used,
-        reason = "closed-world invariant: an `Ast` is built by `RustBV::from_clarirs`, which lowered the node, or by `from_clarirs_lowerable`, whose node is a subterm of one that was lowered or one `value_clarirs::build_term` built over such terms; lowering is a pure function of the node"
-    )]
-    fn lower_clarirs(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::BV {
-        super::z3_lower::lower_bv(ast).expect("from_clarirs lowered this node once already")
+        Ok(result)
     }
 
     /// Convert a 1-bit RustBV to a native Z3 Bool, avoiding ITE wrapping.
@@ -78,7 +72,7 @@ impl RustBV {
     /// `assume_true_ast` and `add_constraint_from_ast` do). See
     /// `to_z3_bool_cached` for why a multi-bit input would be silently
     /// mis-converted instead of rejected.
-    pub fn to_z3_bool(&self) -> z3::ast::Bool {
+    pub fn to_z3_bool(&self) -> Result<z3::ast::Bool, LowerError> {
         debug_assert_eq!(
             self.width(),
             1,
@@ -110,14 +104,14 @@ impl RustBV {
     pub fn to_z3_bool_cached(
         &self,
         _cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-    ) -> z3::ast::Bool {
+    ) -> Result<z3::ast::Bool, LowerError> {
         debug_assert_eq!(
             self.width(),
             1,
             "to_z3_bool_cached expects a 1-bit RustBV; narrow with ne(0) first"
         );
         match self {
-            RustBV::Concrete { value, .. } => z3::ast::Bool::from_bool(*value != 0),
+            RustBV::Concrete { value, .. } => Ok(z3::ast::Bool::from_bool(*value != 0)),
             // A clarirs term: the Bool its bit stands for, lowered natively,
             // so `ite(cmp, 1, 0)` reaches Z3 as `cmp`.
             RustBV::Ast { ast, .. } => Self::lower_clarirs_bool(ast),
@@ -126,13 +120,12 @@ impl RustBV {
 
     /// Lower the Bool a 1-bit [`RustBV::Ast`] term stands for: the `c` of the
     /// `ite(c, 1, 0)` encoding, or `bit != 0`.
-    #[expect(
-        clippy::expect_used,
-        reason = "closed-world invariant: the Bool is a subterm of a lowered `Ast` (or `bit != 0` over one), and building `0` or `!=` over a 1-bit term cannot fail"
-    )]
-    fn lower_clarirs_bool(ast: &clarirs_core::prelude::AstRef<'static>) -> z3::ast::Bool {
-        let cond = super::value_clarirs::bool_of(ast).expect("a 1-bit term has a Bool view");
-        super::z3_lower::lower_bool(&cond).expect("a subterm of a lowered term lowers")
+    fn lower_clarirs_bool(
+        ast: &clarirs_core::prelude::AstRef<'static>,
+    ) -> Result<z3::ast::Bool, LowerError> {
+        let cond = super::value_clarirs::bool_of(ast)
+            .map_err(|err| LowerError::InvalidArgs(format!("no Bool view: {err}")))?;
+        super::z3_lower::lower_bool(&cond)
     }
 }
 
@@ -140,3 +133,16 @@ impl RustBV {
 // builds them and lowered through clarirs. `z3` gating because every test
 // drives `SymContext::eval`.
 test_submod!("value_z3_fp_tests.rs" => value_z3_fp_tests);
+
+/// `lowered`'s Z3 term, or `None` after a warn naming the `query` that must
+/// go without it. A term with no Z3 form (one deeper than
+/// `z3_lower::MAX_LOWER_DEPTH`) fails the query it was lowered for, the way a
+/// Z3 Unknown does, instead of aborting the process (angr-mx00p.116.2).
+pub(crate) fn lowered_or_warn<T>(lowered: Result<T, LowerError>, query: &str) -> Option<T> {
+    silent_default!(
+        cat_c,
+        lowered.map(Some),
+        None,
+        |err| "{query}: the term has no Z3 form ({err}); the query fails"
+    )
+}

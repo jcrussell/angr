@@ -87,7 +87,7 @@ fn test_z3_same_name_different_create() {
 
     // Check using x2 - should have the same constraint if same variable
     // If they're different variables, x2 wouldn't have the constraint
-    let ast2 = x2.to_z3_ast();
+    let ast2 = x2.to_z3_ast().unwrap();
 
     // Try to find if x2 can be 5 (should be UNSAT if same as x1)
     ctx.push();
@@ -242,7 +242,7 @@ fn test_min_max_no_cached_model_still_correct() {
 /// `RustSolverContext::add_constraints_ast` fast path does with claripy ASTs.
 fn batch_entry(cond: &RustBV) -> (z3::ast::Bool, RustBV, bool) {
     debug_assert_eq!(cond.width(), 1);
-    (cond.to_z3_bool(), cond.clone(), true)
+    (cond.to_z3_bool().unwrap(), cond.clone(), true)
 }
 
 #[test]
@@ -1791,4 +1791,41 @@ fn test_bitcount_ops_above_64_bits_on_zero_operand() {
         .eval(&x.popcount(&ctx))
         .expect("popcount must be evaluable");
     assert_eq!(pc, 0, "popcount of an all-zero operand must be 0");
+}
+
+/// A term deeper than `z3_lower::MAX_LOWER_DEPTH` has no Z3 form. The ops
+/// build it without complaint; lowering it is an error, and every query on
+/// it fails the way a Z3 Unknown does instead of aborting (angr-mx00p.116.2).
+#[test]
+fn test_term_past_the_lowering_depth_fails_its_queries() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "deep_x", 32);
+    let y = RustBV::symbolic(&ctx, "deep_y", 32);
+    let mut deep = x.clone();
+    for _ in 0..=super::super::z3_lower::MAX_LOWER_DEPTH {
+        deep = deep.add_into(y.clone(), &ctx);
+    }
+    assert!(deep.to_clarirs().unwrap().depth() > super::super::z3_lower::MAX_LOWER_DEPTH);
+    assert!(matches!(deep.to_z3_ast(), Err(crate::symbolic::LowerError::RecursionLimit(_))));
+    let cond = deep.eq(&RustBV::concrete(7, 32), &ctx);
+    assert!(matches!(cond.to_z3_bool(), Err(crate::symbolic::LowerError::RecursionLimit(_))));
+
+    // Value queries fail rather than answer without the term.
+    assert_eq!(ctx.eval(&deep), None);
+    assert_eq!(ctx.eval_wide(&deep), None);
+    assert_eq!(ctx.eval_many(&[x.clone(), deep.clone()]), None);
+    assert_eq!(ctx.min(&deep, false), None);
+    assert_eq!(ctx.max(&deep, false), None);
+    let upto = ctx.eval_upto_checked(&deep, 4);
+    assert!(upto.undecided && upto.values.is_empty());
+    assert!(!ctx.solution(&deep, 7));
+
+    // A branch on it is undecided, so neither side is pruned; assuming it
+    // leaves the solver without it but keeps the export log whole.
+    assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
+    let before = ctx.get_assumed_constraints().len();
+    ctx.assume_true(&cond);
+    assert_eq!(ctx.get_assumed_constraints().len(), before + 1);
+    assert!(ctx.is_sat());
+    assert!(ctx.eval(&x).is_some(), "the rest of the context still solves");
 }

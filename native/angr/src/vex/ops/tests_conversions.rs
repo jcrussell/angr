@@ -18,7 +18,7 @@ fn test_round_f32_to_int_symbolic_rm() {
 
     let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
     let target = RustBV::concrete((-3.0f32).to_bits() as u128, 32);
-    let eq = result.to_z3_ast().eq(target.to_z3_ast());
+    let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT for round(-2.5)==-3.0");
 
@@ -40,7 +40,7 @@ fn test_round_f64_to_int_symbolic_rm() {
 
     let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
     let target = RustBV::concrete(3.0f64.to_bits() as u128, 64);
-    let eq = result.to_z3_ast().eq(target.to_z3_ast());
+    let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
     assert!(ctx.is_sat(), "expected SAT for round(2.5)==3.0");
 

@@ -95,7 +95,7 @@ fn test_vgetmsbs_8x16_symbolic_universal() {
     let py = VEXOps::concat_le_elements(bits, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VGetMSBs 8x16 must match the per-byte-MSB reference"
@@ -213,10 +213,10 @@ fn test_vclz_64x2_symbolic_matches_concrete() {
     let input: u128 = 0x0001_0000;
     let expected: u128 = 47 | (64u128 << 64);
     ctx.push();
-    ctx.add_constraint(a.to_z3_ast().eq(RustBV::concrete(input, 128).to_z3_ast()));
+    ctx.add_constraint(a.to_z3_ast().unwrap().eq(RustBV::concrete(input, 128).to_z3_ast().unwrap()));
     ctx.add_constraint(
-        got.to_z3_ast()
-            .eq(RustBV::concrete(expected, 128).to_z3_ast())
+        got.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(expected, 128).to_z3_ast().unwrap())
             .not(),
     );
     assert!(
@@ -386,7 +386,7 @@ fn test_vcnt_8x8_symbolic_universal() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VCnt 8x8 must match the spec-replay reference"
@@ -429,7 +429,7 @@ fn test_vclz_8x8_symbolic_universal() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VClz 8x8 must match the spec-replay reference"
@@ -478,7 +478,7 @@ fn test_vpolynomial_mul_8x8_symbolic_universal() {
     let py = VEXOps::concat_le_elements(lanes, &ctx);
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(py.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VPolynomialMul 8x8 must match the spec-replay reference"
@@ -623,7 +623,7 @@ fn test_vcls_8x8_symbolic_universal() {
     .unwrap();
 
     ctx.push();
-    ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not());
+    ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
     assert!(
         !ctx.is_sat(),
         "VCls 8x8 must match clz(x ^ asr(x, 7)) - 1 for every input"
@@ -656,10 +656,10 @@ fn test_vcls_64x2_symbolic_matches_concrete() {
     let input: u128 = 0xFF | (u128::from(u64::MAX) << 64);
     let expected: u128 = 55 | (63u128 << 64);
     ctx.push();
-    ctx.add_constraint(a.to_z3_ast().eq(RustBV::concrete(input, 128).to_z3_ast()));
+    ctx.add_constraint(a.to_z3_ast().unwrap().eq(RustBV::concrete(input, 128).to_z3_ast().unwrap()));
     ctx.add_constraint(
-        got.to_z3_ast()
-            .eq(RustBV::concrete(expected, 128).to_z3_ast())
+        got.to_z3_ast().unwrap()
+            .eq(RustBV::concrete(expected, 128).to_z3_ast().unwrap())
             .not(),
     );
     assert!(
