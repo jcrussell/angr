@@ -61,16 +61,15 @@ impl<K: Hash + Eq, V: Clone> Cache<K, V> for GenericCache<K, V> {
 /// this cache stores weak references to the AST nodes; the value is a
 /// `Weak<AstNode>`.
 ///
-/// The map is split into `AST_CACHE_SHARDS` independently locked shards,
-/// chosen by the key's high bits. Every node that is built takes a write lock
-/// to insert itself and, when it dies, another to evict itself, so with a
-/// single lock, threads building unrelated terms serialize on it.
+/// The map is split into `AST_CACHE_SHARDS` independently locked shards, so
+/// threads building unrelated terms don't serialize on one lock.
 pub struct AstCache<'c> {
     shards: Box<[Shard<'c>]>,
 }
 
-/// Number of shards in an [`AstCache`]; a power of two.
-pub(crate) const AST_CACHE_SHARDS: usize = 64;
+/// Number of shards in an [`AstCache`].
+const AST_CACHE_SHARDS: usize = 64;
+const _: () = assert!(AST_CACHE_SHARDS.is_power_of_two() && AST_CACHE_SHARDS > 1);
 
 /// One shard, aligned so neighbouring locks do not share a cache line.
 #[derive(Debug, Default)]
@@ -94,8 +93,7 @@ impl std::fmt::Debug for AstCache<'_> {
 }
 
 impl<'c> AstCache<'c> {
-    /// The shard holding `key`. Keys are structural hashes, so their high
-    /// bits are well mixed; the shard's own map hashes the full key.
+    /// The shard holding `key`, picked by its high bits.
     fn shard(&self, key: u64) -> &RwLock<HashMap<u64, Weak<AstNode<'c>>>> {
         &self.shards[(key >> (u64::BITS - AST_CACHE_SHARDS.trailing_zeros())) as usize].0
     }
@@ -151,39 +149,12 @@ impl<'c> Cache<u64, AstRef<'c>> for AstCache<'c> {
     }
 
     fn insert(&self, key: u64, value: &AstRef<'c>) {
-        // Declared before the guard so it drops after it: an upgraded entry can
-        // be the last strong reference by the time the check is done, and
-        // dropping that node runs `remove_if_expired`, which takes this lock.
-        #[cfg(feature = "panic-on-hash-collision")]
-        let existing;
         let mut inner = self.shard(key).write().unwrap();
-
-        // A different live value under this hash means two distinct ASTs collide.
-        #[cfg(feature = "panic-on-hash-collision")]
-        {
-            existing = inner.get(&key).and_then(Weak::upgrade);
-            if let Some(existing) = &existing
-                && existing != value
-            {
-                drop(inner);
-                panic!(
-                    "Hash collision detected! Hash: {key}, Existing: {existing:?}, New: {value:?}"
-                );
-            }
-        }
-
         inner.insert(key, Arc::downgrade(value));
     }
 
-    // The derived get-then-insert is not atomic: two threads that miss on the
-    // same term would each build a node, the later insert would replace the
-    // earlier one's entry, and one term would live as two nodes, so
-    // `Arc::ptr_eq` would call equal terms different. Build outside the lock
-    // (building can be expensive), then re-check under the write lock and
-    // adopt a live node that won the race. The losing duplicate is dropped
-    // only after the lock is released: its `Drop` calls `remove_if_expired`,
-    // which takes this shard's lock.
-    #[cfg(not(feature = "panic-on-hash-collision"))]
+    // Re-check under the write lock so concurrent builds of one term intern
+    // one node.
     fn get_or_insert<E>(
         &self,
         key: u64,
@@ -192,31 +163,15 @@ impl<'c> Cache<u64, AstRef<'c>> for AstCache<'c> {
         if let Some(live) = self.get(&key) {
             return Ok(live);
         }
+        // Declared before the guard so a losing duplicate drops after the
+        // lock is released: its `Drop` takes the lock.
         let built = value_cv()?;
-        let winner = {
-            let mut inner = self.shard(key).write().unwrap();
-            match inner.get(&key).and_then(Weak::upgrade) {
-                Some(live) => Some(live),
-                None => {
-                    inner.insert(key, Arc::downgrade(&built));
-                    None
-                }
-            }
-        };
-        Ok(winner.unwrap_or(built))
-    }
-
-    // Collision detection must recompute and compare on every call, even a cache
-    // hit, which the derived get-then-insert cannot express.
-    #[cfg(feature = "panic-on-hash-collision")]
-    fn get_or_insert<E>(
-        &self,
-        key: u64,
-        value_cv: impl FnOnce() -> Result<AstRef<'c>, E>,
-    ) -> Result<AstRef<'c>, E> {
-        let arc = value_cv()?;
-        self.insert(key, &arc);
-        Ok(arc)
+        let mut inner = self.shard(key).write().unwrap();
+        if let Some(live) = inner.get(&key).and_then(Weak::upgrade) {
+            return Ok(live);
+        }
+        inner.insert(key, Arc::downgrade(&built));
+        Ok(built)
     }
 }
 
@@ -225,7 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(feature = "panic-on-hash-collision"))]
     fn test_ast_cache_basic() -> Result<(), ClarirsError> {
         let ctx = crate::context::Context::new();
         let cache = AstCache::default();
@@ -241,26 +195,6 @@ mod tests {
         let result2 = cache.get_or_insert::<ClarirsError>(hash1, || {
             panic!("Should not compute new value when cached")
         })?;
-        assert_eq!(result1, result2);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "panic-on-hash-collision")]
-    fn test_ast_cache_basic_collision_mode() -> Result<(), ClarirsError> {
-        let ctx = crate::context::Context::new();
-        let cache = AstCache::default();
-
-        // Create a simple AST
-        let ast1 = ctx.bvv(BitVec::from((42, 64)))?;
-        let hash1 = 12345u64; // Arbitrary hash for testing
-
-        // Insert into cache
-        let result1 = cache.get_or_insert::<ClarirsError>(hash1, || Ok(ast1.clone()))?;
-
-        // In collision mode, it will always recompute, so provide a valid computation
-        let ast2 = ctx.bvv(BitVec::from((42, 64)))?;
-        let result2 = cache.get_or_insert::<ClarirsError>(hash1, || Ok(ast2.clone()))?;
         assert_eq!(result1, result2);
         Ok(())
     }
@@ -282,7 +216,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "panic-on-hash-collision"))]
     fn test_ast_cache_weak_reference_cleanup() -> Result<(), ClarirsError> {
         let ctx = crate::context::Context::new();
         let cache = AstCache::default();
@@ -310,76 +243,6 @@ mod tests {
         Ok(())
     }
 
-    // Test for collision detection mode
-    #[test]
-    #[cfg(feature = "panic-on-hash-collision")]
-    #[should_panic(expected = "Hash collision detected")]
-    fn test_hash_collision_detection_panics() {
-        let ctx = crate::context::Context::new();
-        let cache = AstCache::default();
-        let hash = 777u64;
-
-        // Insert first value
-        let ast1 = ctx.bvv(BitVec::from((42, 64))).unwrap();
-        let _ = cache
-            .get_or_insert::<ClarirsError>(hash, || Ok(ast1.clone()))
-            .unwrap();
-
-        // Try to insert different value with same hash - should panic
-        let ast2 = ctx.bvv(BitVec::from((99, 64))).unwrap();
-        let _ = cache
-            .get_or_insert::<ClarirsError>(hash, || Ok(ast2.clone()))
-            .unwrap();
-    }
-
-    #[test]
-    #[cfg(feature = "panic-on-hash-collision")]
-    fn test_hash_collision_same_value_ok() -> Result<(), ClarirsError> {
-        let ctx = crate::context::Context::new();
-        let cache = AstCache::default();
-        let hash = 888u64;
-
-        // Insert first value
-        let ast1 = ctx.bvv(BitVec::from((42, 64)))?;
-        let result1 = cache.get_or_insert::<ClarirsError>(hash, || Ok(ast1.clone()))?;
-
-        // Insert same value with same hash - should be fine
-        let ast2 = ctx.bvv(BitVec::from((42, 64)))?;
-        let result2 = cache.get_or_insert::<ClarirsError>(hash, || Ok(ast2.clone()))?;
-
-        assert_eq!(result1, result2);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "panic-on-hash-collision")]
-    fn test_always_computes_in_collision_mode() {
-        let ctx = crate::context::Context::new();
-        let cache = AstCache::default();
-        let hash = 999u64;
-
-        // Insert first value
-        let ast1 = ctx.bvv(BitVec::from((42, 64))).unwrap();
-        let _ = cache
-            .get_or_insert::<ClarirsError>(hash, || Ok(ast1.clone()))
-            .unwrap();
-
-        // This should always compute, even though the value is in cache
-        let mut computed = false;
-        let ast2 = ctx.bvv(BitVec::from((42, 64))).unwrap();
-        let _ = cache
-            .get_or_insert::<ClarirsError>(hash, || {
-                computed = true;
-                Ok(ast2.clone())
-            })
-            .unwrap();
-
-        assert!(
-            computed,
-            "Should always compute in collision detection mode"
-        );
-    }
-
     #[test]
     fn test_ast_cache_entry_removed_on_drop() -> Result<(), ClarirsError> {
         let ctx = crate::context::Context::new();
@@ -394,8 +257,6 @@ mod tests {
     }
 
     #[test]
-    // Collision mode recomputes on every call, so a hit builds a fresh node.
-    #[cfg(not(feature = "panic-on-hash-collision"))]
     fn test_ast_cache_hit_reuses_entry() -> Result<(), ClarirsError> {
         let ctx = crate::context::Context::new();
         let a = ctx.bvv(BitVec::from((7, 64)))?;
@@ -429,11 +290,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "panic-on-hash-collision"))]
     fn test_concurrent_builds_of_one_term_intern_one_node() {
-        // Threads that miss on the same term at the same moment must still
-        // end up holding one node: interning is what makes `Arc::ptr_eq`
-        // mean structural equality.
         const THREADS: usize = 8;
         const TERMS: u64 = 2000;
         let ctx = crate::context::Context::new();
@@ -466,10 +323,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "panic-on-hash-collision"))]
-    fn test_ast_cache_keys_in_different_shards() -> Result<(), ClarirsError> {
-        // The lowest and highest keys land in the first and last shard; both
-        // must be found there, and `len` must count across shards.
+    fn test_ast_cache_extreme_keys() -> Result<(), ClarirsError> {
         let ctx = crate::context::Context::new();
         let cache = AstCache::default();
         let a = ctx.bvv(BitVec::from((1, 64)))?;
@@ -478,11 +332,6 @@ mod tests {
         cache.insert(u64::MAX, &b);
         assert!(Arc::ptr_eq(&cache.get(&0).unwrap(), &a));
         assert!(Arc::ptr_eq(&cache.get(&u64::MAX).unwrap(), &b));
-        assert!(std::ptr::eq(cache.shard(0), &cache.shards[0].0));
-        assert!(std::ptr::eq(
-            cache.shard(u64::MAX),
-            &cache.shards[AST_CACHE_SHARDS - 1].0
-        ));
         assert_eq!(cache.len(), 2);
         Ok(())
     }

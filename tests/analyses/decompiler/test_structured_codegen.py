@@ -42,6 +42,7 @@ from angr.sim_type import (
     SimTypeArray,
     SimTypeBottom,
     SimTypeChar,
+    SimTypeDouble,
     SimTypeFloat,
     SimTypeFunction,
     SimTypeInt,
@@ -586,6 +587,43 @@ class TestSimpleCastQualification(unittest.TestCase):
         assert not qualifies_for_simple_cast(longlong, sizeless)
 
 
+class TestCommonType(unittest.TestCase):
+    def test_a_floating_point_operand_makes_the_result_floating_point(self):
+        # C11 6.3.1.8. SimTypeFloat reports signed=True, so the integer rules alone would type (unsigned int, float)
+        # as unsigned int
+        arch = archinfo.ArchX86()
+        uint = SimTypeInt(signed=False).with_arch(arch)
+        sint = SimTypeInt().with_arch(arch)
+        ulonglong = SimTypeLongLong(signed=False).with_arch(arch)
+        flt = SimTypeFloat().with_arch(arch)
+        dbl = SimTypeDouble().with_arch(arch)
+        cases = [
+            (uint, flt, flt),
+            (flt, uint, flt),
+            (sint, flt, flt),
+            (flt, sint, flt),
+            (ulonglong, flt, flt),
+            (flt, dbl, dbl),
+            (dbl, flt, dbl),
+            (dbl, uint, dbl),
+        ]
+        for lhs, rhs, expected in cases:
+            common = CBinaryOp.compute_common_type("Mul", lhs, rhs)
+            assert common is expected, (lhs, rhs, common)
+        assert CBinaryOp.compute_common_type("Mul", uint, sint) is uint
+
+    def test_a_double_minus_an_integer_is_stored_as_a_double(self):
+        # restore_fx subtracts an operand typed unsigned long long from the double g_acc and stores the difference
+        # back; an integer type for the difference would write the store through *(unsigned long long *)&g_acc
+        proj = angr.Project(os.path.join(test_location, "decompiler_fp", "x87_env_amd64"), auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(normalize=True)
+        dec = proj.analyses.Decompiler(cfg.functions["restore_fx"], cfg=cfg.model)
+        assert dec.codegen is not None and dec.codegen.text is not None
+        text = dec.codegen.text
+        assert "\n    g_acc = g_acc - " in text, text
+        assert "*(unsigned long long *)&g_acc" not in text, text
+
+
 class TestTypeLayoutKey(unittest.TestCase):
     """
     type_layout_key() keys a type by its memory layout so that struct definitions are emitted in an order that is
@@ -691,9 +729,10 @@ class TestArrayReturnType(unittest.TestCase):
         ty = SimTypeArray(SimTypeInt(signed=False)).with_arch(self.arch)
         assert c_return_type(ty).c_repr(name="") == "unsigned int *"
 
-    def test_a_recovered_array_return_type_renders_as_a_pointer(self):
-        # sub_141e0 fills a 24-byte stack slot with 8-byte handles and returns it, and type
-        # inference gives its return variable HANDLE[3]. Nothing here injects the type.
+    def test_a_handle_out_parameter_slot_is_returned_by_value(self):
+        # sub_141e0 passes a 24-byte stack slot to ObOpenObjectByPointer as its PHANDLE out-parameter and returns
+        # the handle it received. The slot used to be typed HANDLE[3] (and the function rendered as returning
+        # HANDLE *); the out-parameter's pointee types the slot as one HANDLE. Nothing here injects the type.
         proj = angr.Project(os.path.join(test_location, "x86_64", "windows", "dirtymoe.sys"), auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
         proj.analyses.CompleteCallingConventions(recover_variables=True, cfg=cfg.model)
@@ -703,11 +742,14 @@ class TestArrayReturnType(unittest.TestCase):
         assert dec.codegen is not None
         prototype = func.prototype
         assert prototype is not None
-        assert isinstance(prototype.returnty, SimTypeArray)
+        assert not isinstance(prototype.returnty, SimTypeArray)
 
         text = dec.codegen.text or ""
         signature = next(line for line in text.splitlines() if "sub_141e0(" in line)
-        assert signature.startswith("HANDLE * sub_141e0(")
+        assert signature.startswith("HANDLE sub_141e0("), signature
+        m = re.search(r"HANDLE (\w+);  // \[bp-0x18\]", text)
+        assert m is not None, text
+        assert f"return {m.group(1)};" in text, text
 
 
 class TestPointerStepInCommaExpression(unittest.TestCase):

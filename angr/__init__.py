@@ -1,7 +1,7 @@
 # pylint: disable=wrong-import-position
 from __future__ import annotations
 
-__version__ = "10.0.5.dev0"
+__version__ = "10.0.6.dev0"
 
 if bytes is str:
     raise Exception("""
@@ -199,7 +199,7 @@ from .exploration import RustExecutionError, RustExplorationManager
 from .exploration_techniques import ExplorationTechnique
 from .go import analyses as go_analyses
 from .go import knowledge_plugins as go_knowledge_plugins
-from .knowledge_base import KnowledgeBase
+from .knowledge_base import KnowledgeBase, KnowledgeBaseSnapshot
 from .llm_client import LLMClient
 from .procedures import SIM_LIBRARIES, SIM_PROCEDURES, SIM_TYPE_COLLECTIONS, SimProcedures
 from .procedures.definitions import load_external_definitions
@@ -295,6 +295,7 @@ __all__ = (
     "EmulatorStopReason",
     "ExplorationTechnique",
     "KnowledgeBase",
+    "KnowledgeBaseSnapshot",
     "LLMClient",
     "PTChunk",
     "PathUnreachableError",

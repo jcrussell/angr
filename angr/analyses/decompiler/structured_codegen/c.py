@@ -2562,6 +2562,15 @@ class CBinaryOp(CExpression, BinaryOpNode):
             # uh oh!
             return SimTypeLength().with_arch(rhs_ty._arch)
 
+        # a floating-point operand makes the result floating point (the wider one if both are); the integer rules
+        # below would treat a float as a signed integer and could return the integer type
+        lhs_fp = isinstance(unpack_typeref(lhs_ty), SimTypeFloat)
+        rhs_fp = isinstance(unpack_typeref(rhs_ty), SimTypeFloat)
+        if lhs_fp and (not rhs_fp or lhs_ty.size >= rhs_ty.size):  # type: ignore[operator]
+            return lhs_ty
+        if rhs_fp:
+            return rhs_ty
+
         if lhs_ty == rhs_ty:
             return lhs_ty
 
@@ -4935,7 +4944,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis, Serializab
             return CExpressionStatement(void, tags=stmt.tags, codegen=self)
         if (
             isinstance(stmt.dst, Expr.VirtualVariable)
-            and stmt.dst.was_stack
+            and (stmt.dst.was_stack or stmt.dst.was_reg)
             and self._variable_map.variable(stmt.dst) is not None
             and isinstance(stmt.src, Expr.Insert)
             and isinstance(stmt.src.offset, Expr.Const)
@@ -5433,10 +5442,21 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis, Serializab
             offset = self._variable_map.variable_offset(expr) or 0
 
             assert type(offset) is int  # I refuse to deal with the alternative
-            return self._access_constant_offset(CUnaryOp("Reference", cvar, codegen=self), offset, ty, False, negotiate)
+            result = self._access_constant_offset(
+                CUnaryOp("Reference", cvar, codegen=self), offset, ty, False, negotiate
+            )
+        else:
+            addr_expr = self._handle(expr.addr)
+            result = self._access(addr_expr, ty, False, negotiate)
+        return self._tagged_load(result, expr)
 
-        addr_expr = self._handle(expr.addr)
-        return self._access(addr_expr, ty, False, negotiate)
+    @staticmethod
+    def _tagged_load(result: CExpression, expr: Expr.Load) -> CExpression:
+        # a field access consumes the pointer arithmetic that carried the instruction address; keep the load's
+        # address on the access itself. variables are shared objects and are mapped separately
+        if "ins_addr" in expr.tags and not isinstance(result, CVariable) and "ins_addr" not in result.tags:
+            result.tags = {**result.tags, **expr.tags}
+        return result
 
     def _handle_Expr_Tmp(self, expr: Tmp, **kwargs):
         l.warning("FIXME: Leftover Tmp expressions are found.")

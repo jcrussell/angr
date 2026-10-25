@@ -37,6 +37,7 @@ from angr.ailment.expression import (
 from angr.analyses.analysis import Analysis, register_analysis
 from angr.analyses.calling_convention.fact_collector import FactCollector
 from angr.analyses.cfg.cfg_base import CFGBase
+from angr.analyses.cfg.indirect_jump_resolvers.jumptable import has_niche_decoded_index
 from angr.analyses.decompiler.block_simplifier import BlockSimplifier, PeepholeOptimizationBundle
 from angr.analyses.decompiler.callsite_maker import CallSiteMaker
 from angr.analyses.decompiler.optimization_pass_registry import name_to_pass, pass_to_name
@@ -59,6 +60,7 @@ from angr.calling_conventions import (
     SimRegArg,
     SimStackArg,
     SimStructArg,
+    default_cc_for_project,
     is_stack_probe,
 )
 from angr.code_location import ExternalCodeLocation
@@ -439,6 +441,7 @@ class Clinic(Analysis, Serializable):
         force_loop_single_exit: bool = True,
         refine_loops_with_single_successor: bool = False,
         expose_loop_head_backedges: bool = False,
+        force_single_loop_entry: bool = False,
         typehoon_cls=Typehoon,
         max_ail_statements: int = DEFAULT_MAX_AIL_STATEMENTS,
         max_type_constraints: int = 100_000,
@@ -573,6 +576,7 @@ class Clinic(Analysis, Serializable):
         self._force_loop_single_exit = force_loop_single_exit
         self._refine_loops_with_single_successor = refine_loops_with_single_successor
         self._expose_loop_head_backedges = expose_loop_head_backedges
+        self._force_single_loop_entry = force_single_loop_entry
 
         self._register_save_areas_removed: bool = False
         self.edges_to_remove: list[tuple[ailment.Address, ailment.Address]] = []
@@ -2726,6 +2730,7 @@ class Clinic(Analysis, Serializable):
                 force_loop_single_exit=self._force_loop_single_exit,
                 refine_loops_with_single_successor=self._refine_loops_with_single_successor,
                 expose_loop_head_backedges=self._expose_loop_head_backedges,
+                force_single_loop_entry=self._force_single_loop_entry,
                 fold_expressions=self._fold_expressions,
                 stack_pointer_tracker=stack_pointer_tracker,
                 notes=self.notes,
@@ -3139,11 +3144,15 @@ class Clinic(Analysis, Serializable):
         """
         Work on each return statement and fill in its return expressions.
         """
-        if self.function.calling_convention is None:
-            # unknown calling convention. cannot do much about return expressions.
-            return ail_graph
+        cc = self.function.calling_convention
+        if cc is None:
+            # unknown calling convention: fall back to the platform default so returns still carry a value
+            cc_cls = default_cc_for_project(self.project)
+            if cc_cls is None:
+                return ail_graph
+            cc = cc_cls(self.project.arch)
 
-        ReturnMaker(self._ail_manager, self.project.arch, self.function, ail_graph, flavor=self.flavor)
+        ReturnMaker(self._ail_manager, self.project.arch, self.function, ail_graph, flavor=self.flavor, cc=cc)
 
         return ail_graph
 
@@ -4718,6 +4727,9 @@ class Clinic(Analysis, Serializable):
                         ^ isinstance(jump_stmt.false_target, ailment.expression.Const)
                     ):
                         continue
+                    # the dispatch block decodes a niche-encoded index itself; its predecessors are not bounds checks
+                    if has_niche_decoded_index(self.project.factory.block(block_addr).vex):
+                        continue
                     # found it
                     candidates.append(block_node)
 
@@ -6209,6 +6221,7 @@ class Clinic(Analysis, Serializable):
         msg._register_save_areas_removed = self._register_save_areas_removed
         msg._rewrite_ites_to_diamond_max_cases = self._rewrite_ites_to_diamond_max_cases
         msg._expose_loop_head_backedges = self._expose_loop_head_backedges
+        msg._force_single_loop_entry = self._force_single_loop_entry
         msg._constrain_callee_prototypes = self._constrain_callee_prototypes
         msg._save_unoptimized_graph = self._save_unoptimized_graph
 
@@ -6356,6 +6369,7 @@ class Clinic(Analysis, Serializable):
         clinic._register_save_areas_removed = msg._register_save_areas_removed
         clinic._rewrite_ites_to_diamond_max_cases = msg._rewrite_ites_to_diamond_max_cases
         clinic._expose_loop_head_backedges = msg._expose_loop_head_backedges
+        clinic._force_single_loop_entry = msg._force_single_loop_entry
         clinic._constrain_callee_prototypes = msg._constrain_callee_prototypes
         clinic._save_unoptimized_graph = msg._save_unoptimized_graph
 

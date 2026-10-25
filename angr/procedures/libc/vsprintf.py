@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-import logging
-
 import angr
 
-l = logging.getLogger(name=__name__)
+from .vprintf import as_return, unmodeled_format_length
 
 
 class vsprintf(angr.SimProcedure):
     # pylint:disable=arguments-differ,unused-argument
 
     def run(self, dst_ptr, fmt, ap):
-        # va_list (`ap`) is unmodeled, so, as in vprintf/vfprintf, we copy the
-        # raw format string into the destination buffer (NUL-terminated)
-        # without %-substitution rather than formatting garbage arguments
-        # read through the sprintf core.
-        strcpy = angr.SIM_PROCEDURES["libc"]["strcpy"]
-        self.inline_call(strcpy, dst_ptr, fmt)
-        strlen = angr.SIM_PROCEDURES["libc"]["strlen"]
-        return self.inline_call(strlen, dst_ptr).ret_expr
+        length = unmodeled_format_length(self, fmt)
+        memcpy = angr.SIM_PROCEDURES["libc"]["memcpy"]
+        self.inline_call(memcpy, dst_ptr, fmt, length + 1)
+        return as_return(self, length)
+
+
+class __vsprintf_chk(vsprintf):
+    def run(self, dst_ptr, flag, slen, fmt, ap):  # type:ignore[reportIncompatibleMethodOverride] # pylint:disable=arguments-differ,unused-argument
+        return super().run(dst_ptr, fmt, ap)

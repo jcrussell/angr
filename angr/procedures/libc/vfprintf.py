@@ -1,28 +1,26 @@
 from __future__ import annotations
 
-import logging
-
 from cle.backends.externs.simdata.io_file import io_file_data_for_arch
 
 import angr
 
-l = logging.getLogger(name=__name__)
+from .vprintf import as_return, unmodeled_format_length
 
 
 class vfprintf(angr.SimProcedure):
     # pylint:disable=arguments-differ,unused-argument
 
     def run(self, file_ptr, fmt, ap):
-        # va_list (`ap`) is unmodeled, so, as in vprintf, we write the raw
-        # format string with no %-substitution. Stream/fd resolution mirrors
-        # fprintf.
         fd_offset = io_file_data_for_arch(self.state.arch)["fd"]
         fileno = self.state.mem[file_ptr + fd_offset :].int.resolved
         simfd = self.state.posix.get_fd(fileno)
         if simfd is None:
             return -1
-
-        strlen = angr.SIM_PROCEDURES["libc"]["strlen"]
-        length = self.inline_call(strlen, fmt).ret_expr
+        length = unmodeled_format_length(self, fmt)
         simfd.write(fmt, length)
-        return length
+        return as_return(self, length)
+
+
+class __vfprintf_chk(vfprintf):
+    def run(self, file_ptr, flag, fmt, ap):  # type:ignore[reportIncompatibleMethodOverride] # pylint:disable=arguments-differ,unused-argument
+        return super().run(file_ptr, fmt, ap)

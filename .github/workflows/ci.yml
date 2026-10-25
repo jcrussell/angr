@@ -51,6 +51,7 @@ jobs:
           components: clippy, rustfmt
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo fmt --all -- --check
+<<<<<<< ours
       # Rustdoc intra-doc links (angr-9ke6b.225). Broken links render as plain
       # text, so a stale `[`Foo::bar`]` citation silently loses its
       # cross-reference instead of failing loudly. Count is zero as of this
@@ -167,6 +168,11 @@ jobs:
         run: |
           python3 tools/audit_page_shift.py --self-test
           python3 tools/audit_page_shift.py
+=======
+      - run: cargo doc --no-deps --all-features --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+>>>>>>> theirs
 
   rust_test:
     strategy:

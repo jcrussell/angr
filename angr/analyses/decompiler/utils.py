@@ -91,6 +91,48 @@ def update_conditional_jump_target(stmt: ailment.Stmt.ConditionalJump, old_addr:
     return patched
 
 
+def update_jump_target_idx(block: ailment.Block, addr: int, old_idx: int | None, new_idx: int) -> bool:
+    """
+    Retarget the last statement of ``block`` (a Jump or ConditionalJump) from block (``addr``, ``old_idx``) to block
+    (``addr``, ``new_idx``). ``old_idx`` of None matches any index. Call it whenever an edge is redirected to a copy of
+    its target block, or the jump keeps naming the original block. Returns True if a target was updated.
+
+    The statement is replaced, not mutated: graph copies share statement objects, and a pass whose result is discarded
+    must not leave the retargeted jump behind in the original graph.
+    """
+    if not block.statements:
+        return False
+    stmt = block.statements[-1]
+    if isinstance(stmt, ailment.Stmt.Jump):
+        target = stmt.target
+        if (
+            isinstance(target, ailment.Expr.Const)
+            and target.value == addr
+            and (old_idx is None or stmt.target_idx == old_idx)
+        ):
+            block.statements[-1] = ailment.Stmt.Jump(stmt.idx, target, target_idx=new_idx, **stmt.tags)
+            return True
+    elif isinstance(stmt, ailment.Stmt.ConditionalJump):
+        tt, ft = stmt.true_target, stmt.false_target
+        true_idx, false_idx = stmt.true_target_idx, stmt.false_target_idx
+        if isinstance(tt, ailment.Expr.Const) and tt.value == addr and (old_idx is None or true_idx == old_idx):
+            true_idx = new_idx
+        if isinstance(ft, ailment.Expr.Const) and ft.value == addr and (old_idx is None or false_idx == old_idx):
+            false_idx = new_idx
+        if (true_idx, false_idx) != (stmt.true_target_idx, stmt.false_target_idx):
+            block.statements[-1] = ailment.Stmt.ConditionalJump(
+                stmt.idx,
+                stmt.condition,
+                tt,
+                ft,
+                true_target_idx=true_idx,
+                false_target_idx=false_idx,
+                **stmt.tags,
+            )
+            return True
+    return False
+
+
 def set_conditional_jump_targets(stmt: ailment.Stmt.ConditionalJump, true_addr: int, false_addr: int) -> None:
     """
     Point the branches of a ConditionalJump (with constant targets) at ``true_addr`` and ``false_addr``.
@@ -366,7 +408,40 @@ def switch_extract_switch_expr_from_jump_target(target: ailment.Expr.Expression)
     return target if found_load else None
 
 
-def switch_extract_bitwiseand_jumptable_info(last_stmt: ailment.Stmt.Jump) -> tuple[Any, int, int] | None:
+def _is_niche_decoded_index(expr) -> bool:
+    """
+    Match ``(x >> (bits - 1)) ? x ^ SIGN_BIT : C`` (or the ``x < 0`` form), the jump table index that rustc computes from
+    a niche-encoded enum discriminant.
+    """
+    if not isinstance(expr, ailment.Expr.ITE) or not isinstance(expr.iffalse, ailment.Expr.Const):
+        return False
+    iftrue = expr.iftrue
+    if not (isinstance(iftrue, ailment.Expr.BinaryOp) and iftrue.op == "Xor"):
+        return False
+    x, mask = iftrue.operands
+    if isinstance(x, ailment.Expr.Const):
+        x, mask = mask, x
+    if not (isinstance(mask, ailment.Expr.Const) and mask.value == 1 << (iftrue.bits - 1)):
+        return False
+    cond = expr.cond
+    if isinstance(cond, ailment.Expr.Convert) and cond.to_bits == 1:
+        cond = cond.operand
+    if isinstance(cond, ailment.Expr.BinaryOp) and cond.op == "Shr":
+        return (
+            isinstance(cond.operands[1], ailment.Expr.Const)
+            and cond.operands[1].value == x.bits - 1
+            and cond.operands[0].likes(x)
+        )
+    if isinstance(cond, ailment.Expr.BinaryOp) and cond.op == "CmpLT" and cond.signed:
+        return (
+            isinstance(cond.operands[1], ailment.Expr.Const)
+            and cond.operands[1].value == 0
+            and cond.operands[0].likes(x)
+        )
+    return False
+
+
+def switch_extract_bitwiseand_jumptable_info(last_stmt: ailment.Stmt.Jump) -> tuple[Any, int, int | None] | None:
     """
     Check the last statement of the switch-case header node (whose address is loaded from a jump table and computed
     using an index) and extract necessary information for rebuilding the switch-case construct.
@@ -386,6 +461,9 @@ def switch_extract_bitwiseand_jumptable_info(last_stmt: ailment.Stmt.Jump) -> tu
     selects one of two entries. Keep the bounded expression intact, including any calls it contains.
 
     :param last_stmt:   The last statement of the switch-case header node.
+    A niche-decoded index (see ``_is_niche_decoded_index``) is bounded only by the jump table itself, so its upper bound
+    is None.
+
     :return:            A tuple of ``(index expression, lower bound, upper bound)``, or None.
     """
 
@@ -487,6 +565,10 @@ def switch_extract_bitwiseand_jumptable_info(last_stmt: ailment.Stmt.Jump) -> tu
                 expr = expr.operand
             else:
                 return None
+        elif _is_niche_decoded_index(expr):
+            if coeff is None:
+                return None
+            return expr, 0, None
         else:
             break
 

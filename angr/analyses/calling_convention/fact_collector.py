@@ -241,15 +241,16 @@ class SimEngineFactCollectorVEX(
 
     def _expr(self, expr):
         r = super()._expr(expr)
-        if (
-            r is not None
-            and r[0] == KIND_REG
-            and not (
-                isinstance((stmt := self.block.vex.statements[self.stmt_idx]), pyvex.stmt.WrTmp) and stmt.data is expr
-            )
-        ):
-            # don't count wrtmp datas
-            self.seen_reg_uses[r[1]] += 1
+        if r is not None and r[0] == KIND_REG:
+            stmt = self.block.vex.statements[self.stmt_idx]
+            if isinstance(stmt, pyvex.stmt.WrTmp) and stmt.data is expr:
+                # don't count wrtmp datas
+                pass
+            elif isinstance(stmt, pyvex.stmt.Put) and stmt.data is expr and stmt.offset == r[1] and r[2] == 0:
+                # restoring a register's own entry value (pop after push) is not a use
+                pass
+            else:
+                self.seen_reg_uses[r[1]] += 1
         return r
 
     def _handle_conversion(self, from_size: int, to_size: int, signed: bool, operand: pyvex.expr.IRExpr):
@@ -619,6 +620,11 @@ class FactCollector(Analysis):
                                 pushed_args.append(val)
                     if pushed_args:
                         self.pushed_arg_callsites[state.ins_addr] = (func, pushed_args)
+                if (func.calling_convention is None or self._callee_proto(func) is None) and not func.is_syscall:
+                    # the callee's prototype is unknown, so use the default cc
+                    default_cc_cls = default_cc_for_project(self.project)
+                    if default_cc_cls is not None:
+                        self._clobber_caller_saved_regs(state, default_cc_cls(self.project.arch))
                 if func.returning is False or retnode is None:
                     # the function call does not return
                     end_states.append(state)
@@ -822,9 +828,9 @@ class FactCollector(Analysis):
                     self._seen_reg_uses[val[1]] += 1
                 self.callsites[state.ins_addr][1].append(val)
 
-        # clobber caller-saved regs; FP argument and return registers are volatile under every ABI, so a read of
-        # xmm0 after the call is the callee's result, not an input of this function
-        cc = func.calling_convention
+        self._clobber_caller_saved_regs(state, func.calling_convention)
+
+    def _clobber_caller_saved_regs(self, state: FactCollectorState, cc) -> None:
         spans = list(_caller_saved_reg_spans(self.project.arch, cc.CALLER_SAVED_REGS))
         fp_regs = list(cc.FP_ARG_REGS)
         if isinstance(cc.FP_RETURN_VAL, SimRegArg):

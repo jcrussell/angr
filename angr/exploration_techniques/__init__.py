@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from .base import ExplorationTechnique
 from .bucketizer import Bucketizer
-from .cfg_distance import build_cfg_distance_map, cfg_distance
 from .dfs import DFS
 from .directed_search import DirectedSearch
 from .director import CallFunctionGoal, Director, ExecuteAddressGoal
@@ -53,6 +52,4 @@ __all__ = (
     "Tracer",
     "UniqueSearch",
     "Veritesting",
-    "build_cfg_distance_map",
-    "cfg_distance",
 )

@@ -100,13 +100,6 @@ lru = "0.12"
 # Work-stealing deque for the parallel exploration scheduler (angr-1ilq.3).
 crossbeam-deque = "0.8"
 
-# Not used from Rust: this is how the extension configures the Z3 that clarirs-z3 links against.
-# Windows links against an import library — only a name-to-DLL mapping — and the z3-solver wheel
-# ships none, so take the one from Z3's own release of the same version. setup.py points the other
-# platforms at the wheel, and angr/_z3.py loads the wheel's libz3 at runtime everywhere.
-[target.'cfg(windows)'.dependencies]
-z3-sys = { version = "0.13", features = ["gh-release"] }
-
 [dev-dependencies]
 tempfile = "3.27.0"
 quickcheck = "1.0"

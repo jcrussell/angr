@@ -8,12 +8,11 @@ import networkx
 from angr import ailment
 from angr.ailment import AILBlockRewriter, Block
 from angr.ailment.expression import Const, Phi, VirtualVariable
-from angr.ailment.statement import Assignment, ConditionalJump, Jump, Label, Return
-from angr.analyses.decompiler.condition_processor import ConditionProcessor, EmptyBlockNotice
+from angr.ailment.statement import Assignment, Jump, Label, Return
 from angr.analyses.decompiler.region_identifier import RegionIdentifier
 from angr.analyses.decompiler.region_overlay import RegionOverlay
 from angr.analyses.decompiler.structurer_nodes import ConditionNode, MultiNode
-from angr.analyses.decompiler.utils import calls_in_graph, remove_labels, to_ail_supergraph
+from angr.analyses.decompiler.utils import calls_in_graph, remove_labels, to_ail_supergraph, update_jump_target_idx
 from angr.utils.ail import is_phi_assignment
 
 _l = logging.getLogger(name=__name__)
@@ -99,10 +98,15 @@ class ReturnDuplicatorBase:
         self.vvar_id_start = vvar_id_start
         self._max_func_blocks = max_func_blocks
 
-    def next_node_idx(self) -> int:
-        node_idx = self.scratch.get("returndup_node_idx", 0) + 1
-        self.scratch["returndup_node_idx"] = node_idx
-        return node_idx
+    def next_node_idx(self, addr: int, graph: networkx.DiGraph) -> int:
+        # skip indices that other passes (e.g. SSA edge splitting) already gave to blocks at this address: a copy with
+        # the same (addr, idx) would alias the existing block in the graph
+        used = {node.idx for node in graph if node.addr == addr}
+        while True:
+            node_idx = self.scratch.get("returndup_node_idx", 0) + 1
+            self.scratch["returndup_node_idx"] = node_idx
+            if node_idx not in used:
+                return node_idx
 
     #
     # must implement these methods
@@ -234,45 +238,13 @@ class ReturnDuplicatorBase:
                 if node is region_head:
                     node_copy = self._copy_node_and_update_phi_variables(node_copy, pred)
                 node_copy = self._use_fresh_virtual_variables(node_copy, vvar_mapping)
-                node_copy.idx = self.next_node_idx()
+                node_copy.idx = self.next_node_idx(node.addr, graph)
                 self._fix_copied_node_labels(node_copy)
                 copies[node] = node_copy
 
             # modify Jump.target_idx and ConditionalJump.{true,false}_target_idx accordingly
             graph.add_edge(pred, node_copy)
-            try:
-                last_stmt = ConditionProcessor.get_last_statement(pred)
-                if isinstance(last_stmt, Jump):
-                    if isinstance(last_stmt.target, Const) and last_stmt.target.value == node_copy.addr:
-                        updated_last_stmt = Jump(
-                            last_stmt.idx, last_stmt.target, target_idx=node_copy.idx, **last_stmt.tags
-                        )
-                        pred.statements[-1] = updated_last_stmt
-                elif isinstance(last_stmt, ConditionalJump):
-                    if isinstance(last_stmt.true_target, Const) and last_stmt.true_target.value == node_copy.addr:
-                        updated_last_stmt = ConditionalJump(
-                            last_stmt.idx,
-                            last_stmt.condition,
-                            last_stmt.true_target,
-                            last_stmt.false_target,
-                            true_target_idx=node_copy.idx,
-                            false_target_idx=last_stmt.false_target_idx,
-                            **last_stmt.tags,
-                        )
-                        pred.statements[-1] = updated_last_stmt
-                    elif isinstance(last_stmt.false_target, Const) and last_stmt.false_target.value == node_copy.addr:
-                        updated_last_stmt = ConditionalJump(
-                            last_stmt.idx,
-                            last_stmt.condition,
-                            last_stmt.true_target,
-                            last_stmt.false_target,
-                            true_target_idx=last_stmt.true_target_idx,
-                            false_target_idx=node_copy.idx,
-                            **last_stmt.tags,
-                        )
-                        pred.statements[-1] = updated_last_stmt
-            except EmptyBlockNotice:
-                pass
+            update_jump_target_idx(pred, node_copy.addr, None, node_copy.idx)
 
             for succ in region.successors(node):
                 queue.append((node_copy, succ))
