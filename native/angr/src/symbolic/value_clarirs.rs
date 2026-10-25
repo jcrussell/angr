@@ -190,8 +190,7 @@ fn with_vex_rm(
     Ok(term)
 }
 
-/// A float op over IEEE bit patterns, as `value_z3::build_fp_z3_ast_cached`
-/// lowers it: each float operand is reinterpreted from its bits
+/// A float op over IEEE bit patterns: each float operand is reinterpreted from its bits
 /// (`bv_to_fp`), the result is converted back to bits (`fp_to_ieeebv`), and
 /// a comparison is the 1-bit `ite(cmp, 1, 0)`. The ops without a rounding
 /// operand round to nearest, ties to even; for the `*Rm` ops operand 0 is the
@@ -299,7 +298,7 @@ fn float_term(
 }
 
 /// Accumulator width for a bitcount over `width` bits: enough for the value
-/// `width`, the same as `value_z3::bitcount_acc_width`.
+/// `width`.
 fn bitcount_acc_width(width: u32) -> u32 {
     (u32::BITS - width.leading_zeros()).min(width)
 }

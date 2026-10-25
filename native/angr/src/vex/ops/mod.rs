@@ -1122,8 +1122,8 @@ impl VEXOps {
     /// Triop dispatch to honor the rm operand on `Iop_AddF{32,64}`,
     /// `Iop_SubF*`, `Iop_MulF*`, `Iop_DivF*`. Concrete RNE (`VexRm::NearestEven`)
     /// keeps the existing native-f32/f64 fast path; non-RNE concrete or
-    /// symbolic rm builds a Z3 FP expression with the explicit rm so the
-    /// rm-aware fold in `build_fp_arith_rm_cached` produces the right value.
+    /// symbolic rm builds the clarirs float term with the explicit rm
+    /// (`value_clarirs::with_vex_rm`), so the term rounds as the rm says.
     #[inline]
     pub fn binop_with_rm(
         op: IROp,

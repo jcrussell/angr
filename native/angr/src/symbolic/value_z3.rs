@@ -79,18 +79,9 @@ impl RustBV {
             "to_z3_bool expects a 1-bit RustBV; narrow with ne(0) first"
         );
         super::stats::record_z3_ast_build();
-        // Bracket the conversion with the node counters so the Bool path's
-        // built-vs-memo-reused split is attributable (angr-op0dn.9.6): only
-        // the nodes still being *built* here are what a Bool memo (M1.d)
-        // (angr-op0dn.9.4) could remove.
-        let (miss0, memo0) = super::stats::ast_node_counters();
+        super::stats::record_z3_bool_build();
         let mut cache = std::collections::HashMap::new();
-        let result = self.to_z3_bool_cached(&mut cache);
-        let (miss1, memo1) = super::stats::ast_node_counters();
-        let reused = memo1.saturating_sub(memo0);
-        let built = (miss1.saturating_sub(miss0)).saturating_sub(reused);
-        super::stats::record_z3_bool_build(built, reused);
-        result
+        self.to_z3_bool_cached(&mut cache)
     }
 
     /// Cached worker behind `to_z3_bool` — same 1-bit precondition.

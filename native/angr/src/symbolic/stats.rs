@@ -96,32 +96,9 @@ pub(crate) static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// `z3_ast_cache_hit`, which only dedups shared subtrees *within* one call.
 pub(crate) static Z3_AST_MEMO_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of top-level `to_z3_bool()` calls — the native-Bool half of
-/// `z3_ast_build` (angr-op0dn.9.6).
-///
-/// The `Ast` memo (`z3_ast_memo_hit`) only covers the *BV* path: a repeat
-/// `to_z3_bool()` of the same term does not consult it, because the memo
-/// holds a `z3::ast::BV` and has nowhere to cache a `z3::ast::Bool`. These
-/// counters size what a Bool memo (angr-op0dn.9.4) could actually save.
+/// `z3_ast_build` (angr-op0dn.9.6). The Bool path lowers through
+/// `z3_lower` directly and never consults the per-value BV memo.
 pub(crate) static Z3_BOOL_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Z3 nodes genuinely *constructed* across all top-level `to_z3_bool()` calls.
-///
-/// Measured per call as `Δz3_ast_cache_miss − Δz3_ast_memo_hit`: a miss is a
-/// unique RustBV node visited in the call, and a memo hit is a node whose
-/// compound tree was returned by refcount bump instead of rebuilt. The
-/// difference is the work a Bool memo would remove on a repeat conversion —
-/// the numerator for M1.d's payoff.
-pub(crate) static Z3_BOOL_BUILD_NODES: AtomicU64 = AtomicU64::new(0);
-/// Z3 nodes served from the persistent BV memo during top-level
-/// `to_z3_bool()` calls (the `Δz3_ast_memo_hit` half of the same split).
-pub(crate) static Z3_BOOL_MEMO_REUSED_NODES: AtomicU64 = AtomicU64::new(0);
-/// Top-level `to_z3_bool()` calls whose operand subtrees came entirely from
-/// the BV memo, so the only Z3 node built was the comparison itself
-/// (`reused > 0 && built <= 1`).
-///
-/// These are exactly the calls a Bool memo turns into a refcount bump, and it
-/// saves ~1 node each. A high share here means M1.d's ceiling is ~1 Z3 node
-/// per call, not a tree rebuild.
-pub(crate) static Z3_BOOL_MEMOIZED_SUBTREE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Sat.
 pub(crate) static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Unsat.
@@ -487,9 +464,6 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
     ("z3_ast_cache_miss", &Z3_AST_CACHE_MISS_COUNT),
     ("z3_ast_memo_hit", &Z3_AST_MEMO_HIT_COUNT),
     ("z3_bool_build", &Z3_BOOL_BUILD_COUNT),
-    ("z3_bool_build_nodes", &Z3_BOOL_BUILD_NODES),
-    ("z3_bool_memo_reused_nodes", &Z3_BOOL_MEMO_REUSED_NODES),
-    ("z3_bool_memoized_subtree", &Z3_BOOL_MEMOIZED_SUBTREE_COUNT),
     ("z3_sat_count", &Z3_SAT_COUNT),
     ("z3_unsat_count", &Z3_UNSAT_COUNT),
     ("z3_timeout_count", &Z3_TIMEOUT_COUNT),
@@ -742,31 +716,10 @@ pub(super) fn record_z3_ast_memo_hit() {
     Z3_AST_MEMO_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Read the (cache_miss, memo_hit) node counters, for bracketing one top-level
-/// conversion (angr-op0dn.9.6).
+/// Record one top-level `to_z3_bool()` conversion (angr-op0dn.9.6).
 #[inline]
-pub(crate) fn ast_node_counters() -> (u64, u64) {
-    (
-        Z3_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
-        Z3_AST_MEMO_HIT_COUNT.load(Ordering::Relaxed),
-    )
-}
-
-/// Record one top-level `to_z3_bool()` conversion, split into the Z3 nodes it
-/// built versus the ones the persistent BV memo served (angr-op0dn.9.6).
-///
-/// The split is derived from process-wide counter deltas, so a concurrent
-/// conversion on another engine thread can leak into a bracket. Census runs
-/// are single-threaded; treat the numbers as approximate under the parallel
-/// scheduler.
-#[inline]
-pub(crate) fn record_z3_bool_build(built: u64, reused: u64) {
+pub(crate) fn record_z3_bool_build() {
     Z3_BOOL_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
-    Z3_BOOL_BUILD_NODES.fetch_add(built, Ordering::Relaxed);
-    Z3_BOOL_MEMO_REUSED_NODES.fetch_add(reused, Ordering::Relaxed);
-    if reused > 0 && built <= 1 {
-        Z3_BOOL_MEMOIZED_SUBTREE_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 // -----------------------------------------------------------------------------

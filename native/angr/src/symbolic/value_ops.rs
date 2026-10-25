@@ -676,11 +676,9 @@ impl RustBV {
     /// rejects a misaligned width with `BridgeError::InvalidArgs` before
     /// reaching here). The width is nonetheless *handled* rather than assumed:
     /// a misaligned width returns the operand unchanged, in every profile. That
-    /// is the same answer the Z3 lowering already produces for this case
-    /// (`value_z3.rs`'s `BVOp::Reverse` arm falls through to the bare operand
-    /// when `!w.is_multiple_of(8)`), so concrete and symbolic stay in
-    /// agreement, and no `Reverse` node is built for a width whose claripy
-    /// export would raise. The previous code was a `debug_assert!` — compiled
+    /// is the answer the symbolic arm gives too, so concrete and symbolic stay
+    /// in agreement, and no `Reverse` node is built for a width whose claripy
+    /// export would raise (and which `z3_lower` refuses to lower). The previous code was a `debug_assert!` — compiled
     /// out of release per this module's `debug_assert!` policy, which is
     /// justified by "a bad width hits a Z3 sort error anyway", a backstop the
     /// concrete fold never reaches. Release therefore ran the swap loop over
@@ -1116,12 +1114,8 @@ impl RustBV {
 
     /// The single implementation of Extract: run the rules 1-5 canonicalization
     /// through the generic [`drive_extract`] driver against the RustBV-rebuilding
-    /// [`RustBVExtractTarget`].
-    ///
-    /// That driver is shared with the Z3 emitter (`emit_extract_z3_cached`) —
-    /// the RustBV target reconstructs Extract/Concat/Reverse/Zero nodes, the Z3
-    /// target emits z3 AST. It used to be ~90 LOC duplicated line-for-line in
-    /// two places (angr-ph300.81).
+    /// [`RustBVExtractTarget`], which reconstructs Extract/Concat/Reverse/Zero
+    /// nodes (angr-ph300.81).
     ///
     /// All three public entry points (`extract`, `extract_into`,
     /// `extract_no_ctx`) route through here, so none of them can hand back a
@@ -1689,20 +1683,14 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> Option<u128> {
 // =============================================================================
 
 /// Sink for the `Extract(high, low, inner)` canonicalization rules driven by
-/// [`drive_extract`]. Two implementations exist:
+/// [`drive_extract`]. Its one implementation, [`RustBVExtractTarget`], rebuilds
+/// `RustBV` nodes (construction-time folding in [`RustBV::extract_into`]); Z3
+/// sees the result only through `z3_lower`.
 ///
-/// - [`RustBVExtractTarget`] rebuilds `RustBV` nodes (construction-time folding
-///   in [`RustBV::extract_into`]).
-/// - the Z3 target in `value_z3.rs` emits `z3::ast::BV` directly.
-///
-/// The Rules 1-5 dispatch (Extract/Concat/Reverse/ZeroExt/SignExt) is identical
-/// for both; only the terminal actions differ. Crucially, `recurse` routes the
-/// recursion **back through `drive_extract`**, not through `to_z3` of a
-/// reconstructed node — the latter infinite-loops for the Z3 target (a rebuilt
-/// `RustBV::Extract` re-enters the emitter with the same operands). See bd
-/// memory `emit-extract-z3-recursion-hazard`.
+/// The Rules 1-5 dispatch (Extract/Concat/Reverse/ZeroExt/SignExt) lives in
+/// the driver; a target supplies only the terminal actions.
 pub(super) trait ExtractTarget {
-    /// What this target produces (a `RustBV` or a `z3::ast::BV`).
+    /// What this target produces.
     type Output;
     /// Recurse into `inner`, extracting bits `[low..=high]`.
     fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> Self::Output;
@@ -1721,14 +1709,14 @@ pub(super) trait ExtractTarget {
 }
 
 /// Apply the Extract canonicalization rules once, threading terminal actions
-/// through `target`. The single source of truth for both the RustBV builder and
-/// the Z3 emitter (angr-ph300.81).
+/// through `target`. The single source of truth for the Extract rules
+/// (angr-ph300.81).
 ///
 /// Ordering note: the concrete fast-path is checked before the identity rule so
 /// a full-width extract of a literal folds to a fresh constant — matching the
 /// RustBV construction-time builders. Only a `Concrete` inner takes the fast
 /// path, and for it the two orders agree, so the ordering is
-/// behavior-preserving on both targets.
+/// behavior-preserving.
 pub(super) fn drive_extract<T: ExtractTarget>(
     target: &mut T,
     inner: &RustBV,

@@ -96,19 +96,6 @@ impl FloatPrec {
             FloatPrec::F64 => 64,
         }
     }
-
-    /// Owned Z3 floating-point `Sort` for this precision.
-    ///
-    /// Callers must bind the returned wrapper to a local before calling
-    /// `get_z3_sort()` on it: the raw `Z3_sort` handle is only valid while the
-    /// owned wrapper stays alive across subsequent unsafe Z3 calls.
-    #[inline]
-    pub fn z3_sort(&self) -> z3::Sort {
-        match self {
-            FloatPrec::F32 => z3::Sort::float32(),
-            FloatPrec::F64 => z3::Sort::double(),
-        }
-    }
 }
 
 /// Kinds of symbolic float operations expressible via Z3 FP.
@@ -378,9 +365,9 @@ pub enum RustBV {
 /// conversions of one value (eval→min→max, address concretization) reuse the
 /// lowering instead of rebuilding it.
 ///
-/// `RefCell<Option<BV>>` under Z3 (single-threaded engine — the state graph is
-/// `Rc<RefCell<SymContext>>`, so interior mutability is sound), `()` otherwise
-/// so constructors can write `memo: Default::default()` without a `#[cfg]`.
+/// A `RefCell` because the engine is single-threaded (the state graph is
+/// `Rc<RefCell<SymContext>>`, so interior mutability is sound); it starts
+/// empty (`memo: Default::default()`).
 /// Excluded from serde, `PartialEq`, `Debug` and every identity key.
 type ExprMemo = std::cell::RefCell<Option<z3::ast::BV>>;
 

@@ -57,7 +57,7 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, ty.bits()));
         }
 
-        // Symbolic: build a Z3 FP expression so constraints propagate.
+        // Symbolic: build the clarirs float term so constraints propagate.
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         Ok(build_float_expr(FloatOpKind::Sqrt, prec, vec![arg]))
     }

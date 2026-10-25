@@ -1,24 +1,22 @@
-//! Direct unit tests for the floating-point Z3-AST builders in `value_z3.rs`
-//! (`build_fp_z3_ast_cached` and its `build_fp_round_to_int_cached` /
-//! `build_fp_arith_rm_cached` / `build_fp_i_to_f_cached` /
-//! `build_fp_f_to_i_cached` / `build_fp_f_to_f_cached` helpers).
+//! Direct unit tests for the floating-point ops as the engine builds them
+//! (`RustBV::float_node`, a clarirs float term over IEEE bit patterns) and as
+//! `z3_lower` lowers them.
 //!
 //! These cover this surface directly, not only *transitively* through
 //! the VEX-op layer (`vex/ops/tests_float_arith.rs` and friends) (angr-c7xno.74). A regression
-//! confined to the Z3-emission layer — a swapped operand order inside an
-//! `unsafe { Z3_mk_fpa_* }` call, a wrong `value_clarirs::vex_rm` selector mapping, a
-//! rounding mode dropped on the way to a builder — would only have been caught
-//! if some VEX op happened to exercise that exact combination.
+//! confined to term building or lowering — a swapped operand order, a wrong
+//! `value_clarirs::vex_rm` selector mapping, a rounding mode dropped on the
+//! way to the term — would only have been caught if some VEX op happened to
+//! exercise that exact combination.
 //!
-//! These tests build `RustBV::Expression { op: BVOp::Float { .. } }` nodes by
-//! hand and push them straight through `SymContext::eval`, so every
-//! `FloatOpKind` variant is checked at the `value_z3.rs` level with no
-//! VEX decode in between. Expectations are computed from Rust's own IEEE-754
-//! semantics (`f32`/`f64` arithmetic) so a Z3-side change that disagrees with
-//! the concrete interpreter path fails here.
+//! These tests build `BVOp::Float { .. }` terms by hand and push them
+//! straight through `SymContext::eval`, so every `FloatOpKind` variant is
+//! checked with no VEX decode in between. Expectations are computed from
+//! Rust's own IEEE-754 semantics (`f32`/`f64` arithmetic) so a Z3-side change
+//! that disagrees with the concrete interpreter path fails here.
 //!
 //! NaN *results* are asserted via `is_nan()` on the decoded value rather than
-//! by bit pattern: `Z3_mk_fpa_to_ieee_bv` leaves the NaN payload unspecified.
+//! by bit pattern: `fpToIEEEBV` leaves the NaN payload unspecified.
 
 use super::*;
 use crate::symbolic::{FloatOpKind, FloatPrec, SymContext, UnsupportedRoundingMode, VexRm};
@@ -28,8 +26,7 @@ use crate::symbolic::{FloatOpKind, FloatPrec, SymContext, UnsupportedRoundingMod
 // ---------------------------------------------------------------------------
 
 /// Build a float op the way the engine does (`RustBV::float_node`), without
-/// the VEX layer. `value_clarirs_tests::every_float_op_denotes_its_z3_lowering`
-/// checks that it lowers like the `Expression` form.
+/// the VEX layer.
 fn fp_expr(kind: FloatOpKind, prec: FloatPrec, operands: Vec<RustBV>) -> RustBV {
     RustBV::float_node(kind, prec, operands)
 }
