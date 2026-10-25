@@ -392,6 +392,24 @@ alternatives that were weighed against it, including deferring the flush
 to the next safe boundary, are compared in
 :doc:`rust_proxy_writes_design`.
 
+Rust ccalls in the Python engine
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Python engine also uses the Rust flag helpers, without any opt-in.
+``SimEngineVEX`` resolves a VEX clean call through
+``angr/engines/vex/claripy/datalayer.py``, which first offers it to
+``angr.rustylib.vex_ccall`` when its name is in ``vex_ccall.SUPPORTED``
+(the x86, amd64, ARM and AArch64 condition and flag helpers). Rust
+refuses a call it does not serve (a symbolic condition or ``cc_op``, an
+unported ``cc_op``, a non-bitvector argument) and ``ccall.py`` runs it as
+before, including the multivalued concretization of a symbolic
+``cc_op``. ``ANGR_RUST_CCALLS=0``, read at import, sends every call to
+``ccall.py``.
+
+``ccall.py`` is the oracle: ``tests/engines/vex/test_rust_ccall.py``
+runs every supported helper through both on concrete and symbolic
+operands and requires the same answer wherever ``ccall.py`` answers.
+
 Architecture
 ------------
 

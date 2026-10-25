@@ -4,7 +4,10 @@ block.
 The Rust ccalls have concrete and symbolic twins that are diff-fuzzed against
 each other, which cannot catch a semantic error the twins share. These tests
 run one block on both engines and compare the result register, concretely and
-with the inputs symbolic but pinned by a constraint.
+with the inputs symbolic but pinned by a constraint. The Python engine would
+otherwise serve these ccalls from Rust too, so its run is pinned to
+``ccall.py``; ``tests/engines/vex/test_rust_ccall.py`` compares the helpers
+one call at a time.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import pytest
 
 import angr
 from angr import claripy
+from angr.engines.vex.claripy import datalayer
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
@@ -59,8 +63,9 @@ def _sbc_state(project, vals, symbolic):
 
 @pytest.mark.parametrize("symbolic", [False, True], ids=["concrete", "symbolic"])
 @pytest.mark.parametrize("case", SBC_CASES)
-def test_arm64_sbc_u128_compare_matches_python(case, symbolic):
+def test_arm64_sbc_u128_compare_matches_python(case, symbolic, monkeypatch):
     vals, expected = SBC_CASES[case]
+    monkeypatch.setattr(datalayer, "RUST_CCALLS", False)
 
     project = angr.load_shellcode(SBC_U128_GE, arch="aarch64", load_address=BASE)
     python = project.factory.simulation_manager(_sbc_state(project, vals, symbolic))

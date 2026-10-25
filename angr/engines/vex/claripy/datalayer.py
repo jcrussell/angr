@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import struct
 
 import pyvex
@@ -8,10 +9,16 @@ import pyvex
 from angr import claripy, errors
 from angr import sim_options as o
 from angr.engines.vex.light import VEXMixin
+from angr.rustylib import vex_ccall  # pylint:disable=no-name-in-module
 
 from . import ccall, irop
 
 l = logging.getLogger(__name__)
+
+# Serve the ccalls in vex_ccall.SUPPORTED with the Rust implementations, falling back to ccall.py for every call Rust
+# refuses. ANGR_RUST_CCALLS=0 sends every call to ccall.py.
+RUST_CCALLS = os.environ.get("ANGR_RUST_CCALLS", "1") != "0"
+_RUST_CCALL_NAMES = frozenset(vex_ccall.SUPPORTED)
 zero = claripy.BVV(0, 32)
 
 
@@ -132,6 +139,10 @@ class ClaripyDataMixin(VEXMixin):
     # ccall support
 
     def _perform_vex_expr_CCall(self, func_name, ty, args, func=None):
+        if func is None and RUST_CCALLS and func_name in _RUST_CCALL_NAMES:
+            result = vex_ccall.ccall(func_name, tuple(args), pyvex.get_type_size(ty))
+            if result is not None:
+                return result
         if func is None:
             try:
                 func = getattr(ccall, func_name)
