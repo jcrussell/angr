@@ -128,7 +128,7 @@ impl VEXOps {
         let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
         let lane_bits = prec.bits();
         let upper = arg.extract(127, lane_bits, ctx);
-        let lane = RustBV::symbolic(ctx, name, lane_bits);
+        let lane = RustBV::fresh(name, lane_bits);
         Ok(upper.concat_into(lane, ctx))
     }
 
@@ -149,7 +149,7 @@ impl VEXOps {
         };
         let mut lanes: Vec<RustBV> = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            lanes.push(RustBV::symbolic(ctx, name, lane_bits));
+            lanes.push(RustBV::fresh(name, lane_bits));
         }
         Ok(Self::concat_le_elements(lanes, ctx))
     }
@@ -167,7 +167,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let mut lanes: Vec<RustBV> = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            lanes.push(RustBV::symbolic(ctx, name, lane_bits));
+            lanes.push(RustBV::fresh(name, lane_bits));
         }
         Ok(Self::concat_le_elements(lanes, ctx))
     }

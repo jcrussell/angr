@@ -559,6 +559,17 @@ impl RustBV {
         RustBV::from_parts(ctx.next_id(), Arc::from(name.as_ref()), width)
     }
 
+    /// Create a fresh symbolic bitvector variable named `{hint}_{n}`, with `n`
+    /// from [`super::names::next`]`(hint)`, so every call is its own variable,
+    /// as each `claripy.BVS(hint, width)` is. The counter is keyed by `hint`
+    /// and rides in snapshots (`names::watermarks`), so a restored state's
+    /// names are not reminted.
+    pub fn fresh(hint: &str, width: u32) -> Self {
+        let n = super::names::next(hint);
+        // The name is never empty, so `from_parts` never reads the id.
+        RustBV::from_parts(0, Arc::from(format!("{hint}_{n}")), width)
+    }
+
     /// Create a symbolic bitvector variable named `name`. A leaf is
     /// identified by its name, not by `id` (see `Self::from_parts`).
     pub fn symbolic_with_id(id: u64, name: impl AsRef<str>, width: u32) -> Self {

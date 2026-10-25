@@ -597,3 +597,50 @@ fn test_recip_rsqrt_opcode_routing() {
     // Suppress the unused-helper lint when running this test alone:
     let _ = eval_i32;
 }
+
+/// The free variable names of `bv`'s term.
+fn free_vars(bv: &RustBV) -> std::collections::BTreeSet<String> {
+    bv.to_clarirs()
+        .expect("an estimate result has a clarirs term")
+        .variables()
+        .iter()
+        .map(|v| v.to_string())
+        .collect()
+}
+
+/// Every lane of every estimate result is its own leaf, as each
+/// `claripy.BVS(hint, n)` in `irop.py` is (angr-mx00p.116.1): one shared name
+/// would make independent estimates provably equal.
+#[test]
+fn test_estimate_lanes_are_fresh_variables() {
+    let ctx = SymContext::new_mock();
+    let est = |op: IROp, arg: RustBV| VEXOps::unop(op, arg, &ctx).unwrap();
+    let packed = IROp::VFRecipEst {
+        elem: IRType::F32,
+        count: 4,
+    };
+    let a = est(packed, RustBV::concrete(1, 128));
+    let b = est(packed, RustBV::concrete(2, 128));
+    let lane0 = a.extract(31, 0, &ctx);
+    let lane1 = a.extract(63, 32, &ctx);
+    let (v0, v1) = (free_vars(&lane0), free_vars(&lane1));
+    assert_eq!(v0.len(), 1, "one leaf per lane: {v0:?}");
+    assert!(v0.is_disjoint(&v1), "two lanes share a leaf: {v0:?} {v1:?}");
+    let (va, vb) = (free_vars(&a), free_vars(&b));
+    assert_eq!(va.len(), 4, "four lanes, four leaves: {va:?}");
+    assert!(va.is_disjoint(&vb), "two calls share a leaf: {va:?} {vb:?}");
+    assert!(
+        va.iter().all(|n| n.starts_with("RecipEst_")),
+        "lane names keep irop.py's hint: {va:?}"
+    );
+    // The solver agrees: two lanes of one estimate can differ.
+    ctx.assume_true(&lane0.ne(&lane1, &ctx));
+    assert!(ctx.is_sat(), "lane0 != lane1 must be satisfiable");
+
+    // The scalar (RCPSS) and integer (URECPE) forms mint fresh lanes too.
+    let s = |arg| est(IROp::VFRecipEstS { elem: IRType::F32 }, arg);
+    let (s1, s2) = (s(RustBV::concrete(1, 128)), s(RustBV::concrete(1, 128)));
+    assert!(free_vars(&s1).is_disjoint(&free_vars(&s2)));
+    let i = est(IROp::VIRSqrtEst { count: 2 }, RustBV::concrete(0, 64));
+    assert_eq!(free_vars(&i).len(), 2, "two integer lanes, two leaves");
+}
