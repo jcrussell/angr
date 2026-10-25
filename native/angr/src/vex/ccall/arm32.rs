@@ -238,7 +238,7 @@ pub(super) fn arm_sym_flag_v(
 /// Symbolic ARM condition evaluation.
 ///
 /// Compute the four NZCV flags for the cc_op, then combine per cond.
-/// Returns a 1-bit BV (or `None` if `cond` is unknown or `cc_op` is unsupported).
+/// Returns a 1-bit BV (or `None` if `cond` is NV or `cc_op` is unsupported).
 pub(super) fn arm_sym_calculate_condition(
     cond: u64,
     cc_op: u64,
@@ -253,8 +253,9 @@ pub(super) fn arm_sym_calculate_condition(
     if cond == ARM_COND_AL {
         return Some(RustBV::concrete(1, 1));
     }
+    // NV is refused, as in the concrete `armg_calculate_condition`.
     if cond == ARM_COND_NV {
-        return Some(RustBV::concrete(0, 1));
+        return None;
     }
 
     let flag = match cond & !1 {
@@ -416,6 +417,12 @@ pub(super) fn armg_calculate_condition(
     let inv = cond & 1;
 
     use arm_cond::*;
+
+    // NV never reaches a ccall: libVEX panics on it ("Illegal instr") and
+    // ccall.py raises, so refuse rather than let `cond & !1` read it as AL.
+    if cond == ARM_COND_NV {
+        return None;
+    }
 
     let flag = match cond & !1 {
         ARM_COND_EQ => {

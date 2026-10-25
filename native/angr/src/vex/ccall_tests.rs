@@ -278,6 +278,29 @@ fn test_arm_cond_al() {
     assert_eq!(result, Some(1));
 }
 
+/// ARM32 NV is an illegal condition for a ccall (libVEX panics, ccall.py
+/// raises), so both twins refuse it; the concrete one used to read it as AL
+/// and the symbolic one as never.
+#[test]
+fn test_arm_cond_nv_refused() {
+    use arm_cc_op::*;
+    use arm_cond::*;
+    let nv = arm_cond_n_op(ARM_COND_NV, ARMG_CC_OP_SUB);
+    assert_eq!(armg_calculate_condition(nv, 1, 2, 0), None);
+    let ctx = SymContext::new();
+    let args: Vec<RustBV> = [nv, 1, 2, 0]
+        .iter()
+        .map(|&v| RustBV::concrete(v as u128, 32))
+        .collect();
+    assert!(handle_ccall_with_ctx("armg_calculate_condition", &args, 32, Some(&ctx)).is_none());
+    let sym = RustBV::symbolic(&ctx, "nv_dep1", 32);
+    let zero = RustBV::concrete(0, 32);
+    assert!(
+        arm_sym_calculate_condition(ARM_COND_NV, ARMG_CC_OP_SUB, &sym, &zero, &zero, &ctx)
+            .is_none()
+    );
+}
+
 #[test]
 fn test_arm_cond_add_eq() {
     // ADD 5+(-5) = 0, EQ should be 1
