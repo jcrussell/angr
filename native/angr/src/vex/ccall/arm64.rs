@@ -204,167 +204,124 @@ pub(super) fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64)
 /// `sym_pack_nzcv` (arm32 module — same bit positions).
 pub(super) fn arm64_sym_flags_nzcv(
     cc_op: u64,
-    d1: &RustBV,
-    d2: &RustBV,
-    d3: &RustBV,
+    d1: &Bv,
+    d2: &Bv,
+    d3: &Bv,
     ret_bits: u32,
-    ctx: &SymContext,
-) -> Option<RustBV> {
-    let n = arm64_sym_flag_n(cc_op, d1, d2, d3, ctx)?;
-    let z = arm64_sym_flag_z(cc_op, d1, d2, d3, ctx)?;
-    let c = arm64_sym_flag_c(cc_op, d1, d2, d3, ctx)?;
-    let v = arm64_sym_flag_v(cc_op, d1, d2, d3, ctx)?;
-    sym_pack_nzcv(&n, &z, &c, &v, ret_bits, ctx)
+) -> Option<Bv> {
+    let n = arm64_sym_flag_n(cc_op, d1, d2, d3)?;
+    let z = arm64_sym_flag_z(cc_op, d1, d2, d3)?;
+    let c = arm64_sym_flag_c(cc_op, d1, d2, d3)?;
+    let v = arm64_sym_flag_v(cc_op, d1, d2, d3)?;
+    sym_pack_nzcv(&n, &z, &c, &v, ret_bits)
 }
 
 /// Symbolic arm64 arithmetic result. `d1`/`d2`/`d3` must already be `nb`-wide.
-pub(super) fn arm64_sym_res(
-    op: Arm64Op,
-    d1: &RustBV,
-    d2: &RustBV,
-    d3: &RustBV,
-    ctx: &SymContext,
-) -> RustBV {
+pub(super) fn arm64_sym_res(op: Arm64Op, d1: &Bv, d2: &Bv, d3: &Bv) -> Bv {
     match op {
-        Arm64Op::Add => d1.add(d2, ctx),
-        Arm64Op::Sub => d1.sub(d2, ctx),
-        Arm64Op::Adc => d1.add(d2, ctx).add(d3, ctx),
+        Arm64Op::Add => d1.add(d2),
+        Arm64Op::Sub => d1.sub(d2),
+        Arm64Op::Adc => d1.add(d2).add(d3),
         Arm64Op::Sbc => {
-            let one = RustBV::concrete(1, d1.width());
-            d1.sub(d2, ctx).sub(&d3.xor(&one, ctx), ctx)
+            let one = Bv::concrete(1, d1.width());
+            d1.sub(d2).sub(&d3.xor(&one))
         }
         Arm64Op::Logic => d1.clone(),
     }
 }
 
-pub(super) fn arm64_sym_flag_n(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    dep3: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm64_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
-        let d1 = extract_to_nbits(dep1, 64, ctx);
-        return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N, ctx));
+        let d1 = extract_to_nbits(dep1, 64);
+        return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N));
     }
     let (op, nb) = arm64_decode(cc_op)?;
-    let d1 = extract_to_nbits(dep1, nb, ctx);
-    let d2 = extract_to_nbits(dep2, nb, ctx);
-    let d3 = extract_to_nbits(dep3, nb, ctx);
-    let res = arm64_sym_res(op, &d1, &d2, &d3, ctx);
-    Some(res.extract(nb - 1, nb - 1, ctx))
+    let d1 = extract_to_nbits(dep1, nb);
+    let d2 = extract_to_nbits(dep2, nb);
+    let d3 = extract_to_nbits(dep3, nb);
+    let res = arm64_sym_res(op, &d1, &d2, &d3);
+    Some(res.extract(nb - 1, nb - 1))
 }
 
-pub(super) fn arm64_sym_flag_z(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    dep3: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm64_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
-        let d1 = extract_to_nbits(dep1, 64, ctx);
-        return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z, ctx));
+        let d1 = extract_to_nbits(dep1, 64);
+        return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z));
     }
     let (op, nb) = arm64_decode(cc_op)?;
-    let d1 = extract_to_nbits(dep1, nb, ctx);
-    let d2 = extract_to_nbits(dep2, nb, ctx);
-    let d3 = extract_to_nbits(dep3, nb, ctx);
-    let res = arm64_sym_res(op, &d1, &d2, &d3, ctx);
-    let zero = RustBV::concrete(0, nb);
-    Some(res.eq(&zero, ctx))
+    let d1 = extract_to_nbits(dep1, nb);
+    let d2 = extract_to_nbits(dep2, nb);
+    let d3 = extract_to_nbits(dep3, nb);
+    let res = arm64_sym_res(op, &d1, &d2, &d3);
+    let zero = Bv::concrete(0, nb);
+    Some(res.eq(&zero))
 }
 
-pub(super) fn arm64_sym_flag_c(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    dep3: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm64_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
-        let d1 = extract_to_nbits(dep1, 64, ctx);
-        return Some(d1.extract(arm_flag_shift::SHIFT_C, arm_flag_shift::SHIFT_C, ctx));
+        let d1 = extract_to_nbits(dep1, 64);
+        return Some(d1.extract(arm_flag_shift::SHIFT_C, arm_flag_shift::SHIFT_C));
     }
     let (op, nb) = arm64_decode(cc_op)?;
-    let d1 = extract_to_nbits(dep1, nb, ctx);
-    let d2 = extract_to_nbits(dep2, nb, ctx);
-    let zero = RustBV::concrete(0, nb);
+    let d1 = extract_to_nbits(dep1, nb);
+    let d2 = extract_to_nbits(dep2, nb);
+    let zero = Bv::concrete(0, nb);
     Some(match op {
         Arm64Op::Add => {
-            let res = d1.add(&d2, ctx);
-            res.ult(&d1, ctx)
+            let res = d1.add(&d2);
+            res.ult(&d1)
         }
-        Arm64Op::Sub => d1.uge(&d2, ctx),
+        Arm64Op::Sub => d1.uge(&d2),
         // The carry-in is cc_dep3, as in the concrete twin (angr-vmi2l.76).
         Arm64Op::Adc => {
-            let d3 = extract_to_nbits(dep3, nb, ctx);
-            let res = d1.add(&d2, ctx).add(&d3, ctx);
-            let d3_nz = d3.eq(&zero, ctx).not(ctx);
-            let when_nz = res.ule(&d1, ctx);
-            let when_z = res.ult(&d1, ctx);
-            d3_nz
-                .and(&when_nz, ctx)
-                .or(&d3_nz.not(ctx).and(&when_z, ctx), ctx)
+            let d3 = extract_to_nbits(dep3, nb);
+            let res = d1.add(&d2).add(&d3);
+            let d3_nz = d3.eq(&zero).not();
+            let when_nz = res.ule(&d1);
+            let when_z = res.ult(&d1);
+            d3_nz.and(&when_nz).or(&d3_nz.not().and(&when_z))
         }
         Arm64Op::Sbc => {
-            let d3 = extract_to_nbits(dep3, nb, ctx);
-            let d3_nz = d3.eq(&zero, ctx).not(ctx);
-            let when_nz = d1.uge(&d2, ctx);
-            let when_z = d1.ugt(&d2, ctx);
-            d3_nz
-                .and(&when_nz, ctx)
-                .or(&d3_nz.not(ctx).and(&when_z, ctx), ctx)
+            let d3 = extract_to_nbits(dep3, nb);
+            let d3_nz = d3.eq(&zero).not();
+            let when_nz = d1.uge(&d2);
+            let when_z = d1.ugt(&d2);
+            d3_nz.and(&when_nz).or(&d3_nz.not().and(&when_z))
         }
-        Arm64Op::Logic => RustBV::concrete(0, 1),
+        Arm64Op::Logic => Bv::concrete(0, 1),
     })
 }
 
-pub(super) fn arm64_sym_flag_v(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    dep3: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm64_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
-        let d1 = extract_to_nbits(dep1, 64, ctx);
-        return Some(d1.extract(arm_flag_shift::SHIFT_V, arm_flag_shift::SHIFT_V, ctx));
+        let d1 = extract_to_nbits(dep1, 64);
+        return Some(d1.extract(arm_flag_shift::SHIFT_V, arm_flag_shift::SHIFT_V));
     }
     let (op, nb) = arm64_decode(cc_op)?;
-    let d1 = extract_to_nbits(dep1, nb, ctx);
-    let d2 = extract_to_nbits(dep2, nb, ctx);
+    let d1 = extract_to_nbits(dep1, nb);
+    let d2 = extract_to_nbits(dep2, nb);
     let top = nb - 1;
     Some(match op {
         Arm64Op::Add => {
-            let res = d1.add(&d2, ctx);
-            res.xor(&d1, ctx)
-                .and(&res.xor(&d2, ctx), ctx)
-                .extract(top, top, ctx)
+            let res = d1.add(&d2);
+            res.xor(&d1).and(&res.xor(&d2)).extract(top, top)
         }
         Arm64Op::Sub => {
-            let res = d1.sub(&d2, ctx);
-            d1.xor(&d2, ctx)
-                .and(&d1.xor(&res, ctx), ctx)
-                .extract(top, top, ctx)
+            let res = d1.sub(&d2);
+            d1.xor(&d2).and(&d1.xor(&res)).extract(top, top)
         }
         Arm64Op::Adc => {
-            let d3 = extract_to_nbits(dep3, nb, ctx);
-            let res = d1.add(&d2, ctx).add(&d3, ctx);
-            res.xor(&d1, ctx)
-                .and(&res.xor(&d2, ctx), ctx)
-                .extract(top, top, ctx)
+            let d3 = extract_to_nbits(dep3, nb);
+            let res = d1.add(&d2).add(&d3);
+            res.xor(&d1).and(&res.xor(&d2)).extract(top, top)
         }
         Arm64Op::Sbc => {
-            let one = RustBV::concrete(1, nb);
-            let d3 = extract_to_nbits(dep3, nb, ctx);
-            let res = d1.sub(&d2, ctx).sub(&d3.xor(&one, ctx), ctx);
-            d1.xor(&d2, ctx)
-                .and(&d1.xor(&res, ctx), ctx)
-                .extract(top, top, ctx)
+            let one = Bv::concrete(1, nb);
+            let d3 = extract_to_nbits(dep3, nb);
+            let res = d1.sub(&d2).sub(&d3.xor(&one));
+            d1.xor(&d2).and(&d1.xor(&res)).extract(top, top)
         }
-        Arm64Op::Logic => RustBV::concrete(0, 1),
+        Arm64Op::Logic => Bv::concrete(0, 1),
     })
 }
 
@@ -372,41 +329,40 @@ pub(super) fn arm64_sym_flag_v(
 pub(super) fn arm64_sym_calculate_condition(
     cond: u64,
     cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    dep3: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+    dep1: &Bv,
+    dep2: &Bv,
+    dep3: &Bv,
+) -> Option<Bv> {
     use arm_cond::*;
     let inv = (cond & 1) != 0;
 
     // AL (14) and NV (15) are both unconditional-true on AArch64.
     if cond & !1 == ARM_COND_AL {
-        return Some(RustBV::concrete(1, 1));
+        return Some(Bv::concrete(1, 1));
     }
 
     let flag = match cond & !1 {
-        ARM_COND_EQ => arm64_sym_flag_z(cc_op, dep1, dep2, dep3, ctx)?,
-        ARM_COND_HS => arm64_sym_flag_c(cc_op, dep1, dep2, dep3, ctx)?,
-        ARM_COND_MI => arm64_sym_flag_n(cc_op, dep1, dep2, dep3, ctx)?,
-        ARM_COND_VS => arm64_sym_flag_v(cc_op, dep1, dep2, dep3, ctx)?,
+        ARM_COND_EQ => arm64_sym_flag_z(cc_op, dep1, dep2, dep3)?,
+        ARM_COND_HS => arm64_sym_flag_c(cc_op, dep1, dep2, dep3)?,
+        ARM_COND_MI => arm64_sym_flag_n(cc_op, dep1, dep2, dep3)?,
+        ARM_COND_VS => arm64_sym_flag_v(cc_op, dep1, dep2, dep3)?,
         ARM_COND_HI => {
-            let cf = arm64_sym_flag_c(cc_op, dep1, dep2, dep3, ctx)?;
-            let zf = arm64_sym_flag_z(cc_op, dep1, dep2, dep3, ctx)?;
-            cf.and(&zf.not(ctx), ctx)
+            let cf = arm64_sym_flag_c(cc_op, dep1, dep2, dep3)?;
+            let zf = arm64_sym_flag_z(cc_op, dep1, dep2, dep3)?;
+            cf.and(&zf.not())
         }
         ARM_COND_GE => {
-            let nf = arm64_sym_flag_n(cc_op, dep1, dep2, dep3, ctx)?;
-            let vf = arm64_sym_flag_v(cc_op, dep1, dep2, dep3, ctx)?;
-            nf.xor(&vf, ctx).not(ctx)
+            let nf = arm64_sym_flag_n(cc_op, dep1, dep2, dep3)?;
+            let vf = arm64_sym_flag_v(cc_op, dep1, dep2, dep3)?;
+            nf.xor(&vf).not()
         }
         ARM_COND_GT => {
-            let nf = arm64_sym_flag_n(cc_op, dep1, dep2, dep3, ctx)?;
-            let vf = arm64_sym_flag_v(cc_op, dep1, dep2, dep3, ctx)?;
-            let zf = arm64_sym_flag_z(cc_op, dep1, dep2, dep3, ctx)?;
-            zf.or(&nf.xor(&vf, ctx), ctx).not(ctx)
+            let nf = arm64_sym_flag_n(cc_op, dep1, dep2, dep3)?;
+            let vf = arm64_sym_flag_v(cc_op, dep1, dep2, dep3)?;
+            let zf = arm64_sym_flag_z(cc_op, dep1, dep2, dep3)?;
+            zf.or(&nf.xor(&vf)).not()
         }
         _ => return None,
     };
-    Some(if inv { flag.not(ctx) } else { flag })
+    Some(if inv { flag.not() } else { flag })
 }

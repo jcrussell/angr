@@ -1,24 +1,24 @@
 //! `angr.rustylib.vex_ccall`: the Rust VEX clean-call helpers behind the
 //! Python engine's ccall dispatch (`angr/engines/vex/claripy/datalayer.py`).
 //!
-//! The helpers live in [`crate::vex::ccall`], which stays PyO3-free; this
-//! module is only the crossing. Arguments arrive as claripy ASTs and are
-//! imported with `RustBV::from_clarirs(Base::ast())`, an `Arc` clone with no
-//! tree walk. A result goes back with `Base::from_ast`. Anything the Rust
-//! helper does not serve (an unported name, a symbolic `cond`/`cc_op`, a
-//! non-bitvector argument) returns `None`, and the caller runs `ccall.py`.
+//! The helpers live in [`crate::vex::ccall`], which stays PyO3-free and works
+//! on clarirs terms; this module is only the crossing. A claripy argument's
+//! term is `Base::ast()`, an `Arc` clone, and the result goes back with
+//! `Base::from_ast`. Anything the Rust helper does not serve (an unported
+//! name, a symbolic `cond`/`cc_op`, a non-bitvector argument) returns `None`,
+//! and the caller runs `ccall.py`.
 //!
 //! [`SUPPORTED`] is the set of names [`ccall`] may serve. It leaves out the
-//! names `handle_ccall_with_ctx` accepts but cannot answer from its arguments
-//! alone: `x86g_use_seg_selector` reads the GDT/LDT from memory and the CR0
-//! state global, which `ccall.py` takes from the state.
+//! names `handle_ccall` accepts but cannot answer from its arguments alone:
+//! `x86g_use_seg_selector` reads the GDT/LDT from memory and the CR0 state
+//! global, which `ccall.py` takes from the state.
 
+use clarirs_core::prelude::AstType;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use crate::claripy::ast::base::Base;
-use crate::symbolic::{RustBV, SymContext};
-use crate::vex::ccall::handle_ccall_with_ctx;
+use crate::vex::ccall::handle_ccall;
 
 /// The VEX helper names [`ccall`] serves, as `ccall.py` spells them.
 pub(crate) const SUPPORTED: &[&str] = &[
@@ -42,12 +42,6 @@ pub(crate) const SUPPORTED: &[&str] = &[
     "arm64g_calculate_flag_v",
 ];
 
-thread_local! {
-    // The symbolic builders take a context for their node constructors; one
-    // per thread, like the engine's own.
-    static CTX: SymContext = SymContext::new();
-}
-
 /// `ccall(name, args, ret_bits)`: run the VEX helper `name` on the claripy
 /// bitvectors `args` and return a `ret_bits`-wide claripy bitvector, or
 /// `None` when Rust does not serve this call.
@@ -68,22 +62,19 @@ fn ccall(
             // SILENT(cat-a): not a claripy AST; ccall.py takes it as given.
             return Ok(None);
         };
-        let Ok(bv) = RustBV::from_clarirs(base.get().ast()) else {
+        let ast = base.get().ast();
+        if !matches!(ast.ast_type(), AstType::BitVec(_)) {
             // SILENT(cat-a): not a bitvector; ccall.py takes it as given.
             return Ok(None);
-        };
-        imported.push(bv);
+        }
+        imported.push(ast);
     }
-    let Some(result) = CTX.with(|ctx| handle_ccall_with_ctx(name, &imported, ret_bits, Some(ctx)))
-    else {
+    let Some(result) = handle_ccall(name, &imported, ret_bits) else {
         // SILENT(cat-a): Rust refuses (symbolic cond/cc_op, unported cc_op);
         // ccall.py serves the call, including the multivalued concretization.
         return Ok(None);
     };
-    let term = result
-        .to_clarirs()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    let out = Base::from_ast(py, term)?;
+    let out = Base::from_ast(py, result)?;
     Ok(Some(out.into_any().unbind()))
 }
 

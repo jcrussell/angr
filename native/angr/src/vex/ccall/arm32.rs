@@ -57,180 +57,132 @@ pub(super) mod arm_flag_shift {
 // ============================================================
 
 /// Extract `dep` to a 32-bit BV (ARM operands are 32-bit; VEX may hand us wider temps).
-pub(super) fn arm_extract32(val: &RustBV, ctx: &SymContext) -> RustBV {
-    extract_to_nbits(val, 32, ctx)
+pub(super) fn arm_extract32(val: &Bv) -> Bv {
+    extract_to_nbits(val, 32)
 }
 
 /// Symbolic ARM N flag (bit 31 of result). Returns 1-bit BV.
-pub(super) fn arm_sym_flag_n(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ndep: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
     use arm_cc_op::*;
-    let d1 = arm_extract32(dep1, ctx);
-    let d2 = arm_extract32(dep2, ctx);
-    let nd = arm_extract32(ndep, ctx);
+    let d1 = arm_extract32(dep1);
+    let d2 = arm_extract32(dep2);
+    let nd = arm_extract32(ndep);
     let res = match cc_op {
         ARMG_CC_OP_COPY => {
-            return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N, ctx));
+            return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N));
         }
-        ARMG_CC_OP_ADD => d1.add(&d2, ctx),
-        ARMG_CC_OP_SUB => d1.sub(&d2, ctx),
-        ARMG_CC_OP_ADC => d1.add(&d2, ctx).add(&nd, ctx),
+        ARMG_CC_OP_ADD => d1.add(&d2),
+        ARMG_CC_OP_SUB => d1.sub(&d2),
+        ARMG_CC_OP_ADC => d1.add(&d2).add(&nd),
         ARMG_CC_OP_SBB => {
-            let one = RustBV::concrete(1, 32);
-            d1.sub(&d2, ctx).sub(&nd.xor(&one, ctx), ctx)
+            let one = Bv::concrete(1, 32);
+            d1.sub(&d2).sub(&nd.xor(&one))
         }
         ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1,
         ARMG_CC_OP_MULL => d2,
         _ => return None,
     };
-    Some(res.extract(31, 31, ctx))
+    Some(res.extract(31, 31))
 }
 
 /// Symbolic ARM Z flag (result == 0). Returns 1-bit BV.
-pub(super) fn arm_sym_flag_z(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ndep: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
     use arm_cc_op::*;
-    let d1 = arm_extract32(dep1, ctx);
-    let d2 = arm_extract32(dep2, ctx);
-    let nd = arm_extract32(ndep, ctx);
-    let zero = RustBV::concrete(0, 32);
+    let d1 = arm_extract32(dep1);
+    let d2 = arm_extract32(dep2);
+    let nd = arm_extract32(ndep);
+    let zero = Bv::concrete(0, 32);
     let res = match cc_op {
         ARMG_CC_OP_COPY => {
-            return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z, ctx));
+            return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z));
         }
-        ARMG_CC_OP_ADD => d1.add(&d2, ctx),
-        ARMG_CC_OP_SUB => d1.sub(&d2, ctx),
-        ARMG_CC_OP_ADC => d1.add(&d2, ctx).add(&nd, ctx),
+        ARMG_CC_OP_ADD => d1.add(&d2),
+        ARMG_CC_OP_SUB => d1.sub(&d2),
+        ARMG_CC_OP_ADC => d1.add(&d2).add(&nd),
         ARMG_CC_OP_SBB => {
-            let one = RustBV::concrete(1, 32);
-            d1.sub(&d2, ctx).sub(&nd.xor(&one, ctx), ctx)
+            let one = Bv::concrete(1, 32);
+            d1.sub(&d2).sub(&nd.xor(&one))
         }
         ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1,
         // MULL: Z = (resLO | resHI) == 0
-        ARMG_CC_OP_MULL => d1.or(&d2, ctx),
+        ARMG_CC_OP_MULL => d1.or(&d2),
         _ => return None,
     };
-    Some(res.eq(&zero, ctx))
+    Some(res.eq(&zero))
 }
 
 /// Symbolic ARM C flag. ARM C for SUB is the *complement* of x86 borrow:
 /// C=1 iff dep1 >= dep2 (no borrow). Returns 1-bit BV.
-pub(super) fn arm_sym_flag_c(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ndep: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
     use arm_cc_op::*;
-    let d1 = arm_extract32(dep1, ctx);
-    let d2 = arm_extract32(dep2, ctx);
-    let nd = arm_extract32(ndep, ctx);
+    let d1 = arm_extract32(dep1);
+    let d2 = arm_extract32(dep2);
+    let nd = arm_extract32(ndep);
     match cc_op {
-        ARMG_CC_OP_COPY => Some(d1.extract(arm_flag_shift::SHIFT_C, arm_flag_shift::SHIFT_C, ctx)),
+        ARMG_CC_OP_COPY => Some(d1.extract(arm_flag_shift::SHIFT_C, arm_flag_shift::SHIFT_C)),
         ARMG_CC_OP_ADD => {
-            let res = d1.add(&d2, ctx);
-            Some(res.ult(&d1, ctx))
+            let res = d1.add(&d2);
+            Some(res.ult(&d1))
         }
-        ARMG_CC_OP_SUB => Some(d1.uge(&d2, ctx)),
+        ARMG_CC_OP_SUB => Some(d1.uge(&d2)),
         ARMG_CC_OP_ADC => {
             // C: if oldC then res<=dep1 else res<dep1
-            let res = d1.add(&d2, ctx).add(&nd, ctx);
-            let zero = RustBV::concrete(0, 32);
-            let nd_nz = nd.eq(&zero, ctx).not(ctx);
-            let when_old_c = res.ule(&d1, ctx);
-            let when_no_old_c = res.ult(&d1, ctx);
+            let res = d1.add(&d2).add(&nd);
+            let zero = Bv::concrete(0, 32);
+            let nd_nz = nd.eq(&zero).not();
+            let when_old_c = res.ule(&d1);
+            let when_no_old_c = res.ult(&d1);
             // ITE: nd_nz ? when_old_c : when_no_old_c == (nd_nz & when_old_c) | (~nd_nz & when_no_old_c)
-            Some(
-                nd_nz
-                    .and(&when_old_c, ctx)
-                    .or(&nd_nz.not(ctx).and(&when_no_old_c, ctx), ctx),
-            )
+            Some(nd_nz.and(&when_old_c).or(&nd_nz.not().and(&when_no_old_c)))
         }
         ARMG_CC_OP_SBB => {
-            let zero = RustBV::concrete(0, 32);
-            let nd_nz = nd.eq(&zero, ctx).not(ctx);
-            let when_old_c = d1.uge(&d2, ctx);
-            let when_no_old_c = d1.ugt(&d2, ctx);
-            Some(
-                nd_nz
-                    .and(&when_old_c, ctx)
-                    .or(&nd_nz.not(ctx).and(&when_no_old_c, ctx), ctx),
-            )
+            let zero = Bv::concrete(0, 32);
+            let nd_nz = nd.eq(&zero).not();
+            let when_old_c = d1.uge(&d2);
+            let when_no_old_c = d1.ugt(&d2);
+            Some(nd_nz.and(&when_old_c).or(&nd_nz.not().and(&when_no_old_c)))
         }
         ARMG_CC_OP_LOGIC => {
             // shifter_carry_out lives in dep2[0]
-            Some(d2.extract(0, 0, ctx))
+            Some(d2.extract(0, 0))
         }
         ARMG_CC_OP_MUL | ARMG_CC_OP_MULL => {
             // (ndep >> 1) & 1
-            Some(nd.extract(1, 1, ctx))
+            Some(nd.extract(1, 1))
         }
         _ => None,
     }
 }
 
 /// Symbolic ARM V flag. Returns 1-bit BV.
-pub(super) fn arm_sym_flag_v(
-    cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ndep: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn arm_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
     use arm_cc_op::*;
-    let d1 = arm_extract32(dep1, ctx);
-    let d2 = arm_extract32(dep2, ctx);
-    let nd = arm_extract32(ndep, ctx);
+    let d1 = arm_extract32(dep1);
+    let d2 = arm_extract32(dep2);
+    let nd = arm_extract32(ndep);
     match cc_op {
-        ARMG_CC_OP_COPY => Some(d1.extract(arm_flag_shift::SHIFT_V, arm_flag_shift::SHIFT_V, ctx)),
+        ARMG_CC_OP_COPY => Some(d1.extract(arm_flag_shift::SHIFT_V, arm_flag_shift::SHIFT_V)),
         ARMG_CC_OP_ADD => {
             // V = ((res ^ d1) & (res ^ d2))[31]
-            let res = d1.add(&d2, ctx);
-            Some(
-                res.xor(&d1, ctx)
-                    .and(&res.xor(&d2, ctx), ctx)
-                    .extract(31, 31, ctx),
-            )
+            let res = d1.add(&d2);
+            Some(res.xor(&d1).and(&res.xor(&d2)).extract(31, 31))
         }
         ARMG_CC_OP_SUB => {
             // V = ((d1 ^ d2) & (d1 ^ res))[31]
-            let res = d1.sub(&d2, ctx);
-            Some(
-                d1.xor(&d2, ctx)
-                    .and(&d1.xor(&res, ctx), ctx)
-                    .extract(31, 31, ctx),
-            )
+            let res = d1.sub(&d2);
+            Some(d1.xor(&d2).and(&d1.xor(&res)).extract(31, 31))
         }
         ARMG_CC_OP_ADC => {
-            let res = d1.add(&d2, ctx).add(&nd, ctx);
-            Some(
-                res.xor(&d1, ctx)
-                    .and(&res.xor(&d2, ctx), ctx)
-                    .extract(31, 31, ctx),
-            )
+            let res = d1.add(&d2).add(&nd);
+            Some(res.xor(&d1).and(&res.xor(&d2)).extract(31, 31))
         }
         ARMG_CC_OP_SBB => {
-            let one = RustBV::concrete(1, 32);
-            let res = d1.sub(&d2, ctx).sub(&nd.xor(&one, ctx), ctx);
-            Some(
-                d1.xor(&d2, ctx)
-                    .and(&d1.xor(&res, ctx), ctx)
-                    .extract(31, 31, ctx),
-            )
+            let one = Bv::concrete(1, 32);
+            let res = d1.sub(&d2).sub(&nd.xor(&one));
+            Some(d1.xor(&d2).and(&d1.xor(&res)).extract(31, 31))
         }
-        ARMG_CC_OP_LOGIC => Some(nd.extract(0, 0, ctx)), // old V
-        ARMG_CC_OP_MUL | ARMG_CC_OP_MULL => Some(nd.extract(0, 0, ctx)),
+        ARMG_CC_OP_LOGIC => Some(nd.extract(0, 0)), // old V
+        ARMG_CC_OP_MUL | ARMG_CC_OP_MULL => Some(nd.extract(0, 0)),
         _ => None,
     }
 }
@@ -242,16 +194,15 @@ pub(super) fn arm_sym_flag_v(
 pub(super) fn arm_sym_calculate_condition(
     cond: u64,
     cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ndep: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+    dep1: &Bv,
+    dep2: &Bv,
+    ndep: &Bv,
+) -> Option<Bv> {
     use arm_cond::*;
     let inv = (cond & 1) != 0;
 
     if cond == ARM_COND_AL {
-        return Some(RustBV::concrete(1, 1));
+        return Some(Bv::concrete(1, 1));
     }
     // NV is refused, as in the concrete `armg_calculate_condition`.
     if cond == ARM_COND_NV {
@@ -259,29 +210,29 @@ pub(super) fn arm_sym_calculate_condition(
     }
 
     let flag = match cond & !1 {
-        ARM_COND_EQ => arm_sym_flag_z(cc_op, dep1, dep2, ndep, ctx)?,
-        ARM_COND_HS => arm_sym_flag_c(cc_op, dep1, dep2, ndep, ctx)?,
-        ARM_COND_MI => arm_sym_flag_n(cc_op, dep1, dep2, ndep, ctx)?,
-        ARM_COND_VS => arm_sym_flag_v(cc_op, dep1, dep2, ndep, ctx)?,
+        ARM_COND_EQ => arm_sym_flag_z(cc_op, dep1, dep2, ndep)?,
+        ARM_COND_HS => arm_sym_flag_c(cc_op, dep1, dep2, ndep)?,
+        ARM_COND_MI => arm_sym_flag_n(cc_op, dep1, dep2, ndep)?,
+        ARM_COND_VS => arm_sym_flag_v(cc_op, dep1, dep2, ndep)?,
         ARM_COND_HI => {
-            let cf = arm_sym_flag_c(cc_op, dep1, dep2, ndep, ctx)?;
-            let zf = arm_sym_flag_z(cc_op, dep1, dep2, ndep, ctx)?;
-            cf.and(&zf.not(ctx), ctx)
+            let cf = arm_sym_flag_c(cc_op, dep1, dep2, ndep)?;
+            let zf = arm_sym_flag_z(cc_op, dep1, dep2, ndep)?;
+            cf.and(&zf.not())
         }
         ARM_COND_GE => {
-            let nf = arm_sym_flag_n(cc_op, dep1, dep2, ndep, ctx)?;
-            let vf = arm_sym_flag_v(cc_op, dep1, dep2, ndep, ctx)?;
-            nf.xor(&vf, ctx).not(ctx)
+            let nf = arm_sym_flag_n(cc_op, dep1, dep2, ndep)?;
+            let vf = arm_sym_flag_v(cc_op, dep1, dep2, ndep)?;
+            nf.xor(&vf).not()
         }
         ARM_COND_GT => {
-            let nf = arm_sym_flag_n(cc_op, dep1, dep2, ndep, ctx)?;
-            let vf = arm_sym_flag_v(cc_op, dep1, dep2, ndep, ctx)?;
-            let zf = arm_sym_flag_z(cc_op, dep1, dep2, ndep, ctx)?;
-            zf.or(&nf.xor(&vf, ctx), ctx).not(ctx)
+            let nf = arm_sym_flag_n(cc_op, dep1, dep2, ndep)?;
+            let vf = arm_sym_flag_v(cc_op, dep1, dep2, ndep)?;
+            let zf = arm_sym_flag_z(cc_op, dep1, dep2, ndep)?;
+            zf.or(&nf.xor(&vf)).not()
         }
         _ => return None,
     };
-    Some(if inv { flag.not(ctx) } else { flag })
+    Some(if inv { flag.not() } else { flag })
 }
 
 /// Compute ARM N (negative) flag for a given cc_op.
@@ -494,26 +445,19 @@ pub(super) fn armg_calculate_flags_nzcv(
 /// Returns `None` when `ret_bits` cannot hold bit `SHIFT_N`: the shift
 /// amounts are built at `ret_bits` and would wrap, silently yielding a wrong
 /// word rather than deferring to the Python ccall.
-pub(super) fn sym_pack_nzcv(
-    n: &RustBV,
-    z: &RustBV,
-    c: &RustBV,
-    v: &RustBV,
-    ret_bits: u32,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+pub(super) fn sym_pack_nzcv(n: &Bv, z: &Bv, c: &Bv, v: &Bv, ret_bits: u32) -> Option<Bv> {
     if ret_bits <= arm_flag_shift::SHIFT_N {
         return None;
     }
-    let shifted = |bit: &RustBV, shift: u32| {
-        bit.zero_extend(ret_bits, ctx)
-            .shl(&RustBV::concrete(u128::from(shift), ret_bits), ctx)
+    let shifted = |bit: &Bv, shift: u32| {
+        bit.zero_extend(ret_bits)
+            .shl(&Bv::concrete(u128::from(shift), ret_bits))
     };
     Some(
         shifted(n, arm_flag_shift::SHIFT_N)
-            .or(&shifted(z, arm_flag_shift::SHIFT_Z), ctx)
-            .or(&shifted(c, arm_flag_shift::SHIFT_C), ctx)
-            .or(&shifted(v, arm_flag_shift::SHIFT_V), ctx),
+            .or(&shifted(z, arm_flag_shift::SHIFT_Z))
+            .or(&shifted(c, arm_flag_shift::SHIFT_C))
+            .or(&shifted(v, arm_flag_shift::SHIFT_V)),
     )
 }
 
@@ -521,15 +465,14 @@ pub(super) fn sym_pack_nzcv(
 /// NZCV bits with `arm_sym_flag_*` and packs them via `sym_pack_nzcv`.
 pub(super) fn arm_sym_flags_nzcv(
     cc_op: u64,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ndep: &RustBV,
+    dep1: &Bv,
+    dep2: &Bv,
+    ndep: &Bv,
     ret_bits: u32,
-    ctx: &SymContext,
-) -> Option<RustBV> {
-    let n = arm_sym_flag_n(cc_op, dep1, dep2, ndep, ctx)?;
-    let z = arm_sym_flag_z(cc_op, dep1, dep2, ndep, ctx)?;
-    let c = arm_sym_flag_c(cc_op, dep1, dep2, ndep, ctx)?;
-    let v = arm_sym_flag_v(cc_op, dep1, dep2, ndep, ctx)?;
-    sym_pack_nzcv(&n, &z, &c, &v, ret_bits, ctx)
+) -> Option<Bv> {
+    let n = arm_sym_flag_n(cc_op, dep1, dep2, ndep)?;
+    let z = arm_sym_flag_z(cc_op, dep1, dep2, ndep)?;
+    let c = arm_sym_flag_c(cc_op, dep1, dep2, ndep)?;
+    let v = arm_sym_flag_v(cc_op, dep1, dep2, ndep)?;
+    sym_pack_nzcv(&n, &z, &c, &v, ret_bits)
 }

@@ -4,6 +4,12 @@
 // via `#[path]` so `use super::*;` still resolves against ccall.rs.
 use super::*;
 
+/// `handle_ccall` over `Bv` operands, for the tests below.
+fn run(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+    let terms: Option<Vec<_>> = args.iter().map(Bv::ast).collect();
+    handle_ccall(name, &terms?, ret_bits).map(Bv::from_ast)
+}
+
 #[test]
 fn test_calc_parity() {
     assert_eq!(calc_parity(0x00), 1); // 0 ones = even
@@ -287,16 +293,15 @@ fn test_arm_cond_nv_refused() {
     use arm_cond::*;
     let nv = arm_cond_n_op(ARM_COND_NV, ARMG_CC_OP_SUB);
     assert_eq!(armg_calculate_condition(nv, 1, 2, 0), None);
-    let ctx = SymContext::new();
-    let args: Vec<RustBV> = [nv, 1, 2, 0]
+    let args: Vec<Bv> = [nv, 1, 2, 0]
         .iter()
-        .map(|&v| RustBV::concrete(v as u128, 32))
+        .map(|&v| Bv::concrete(v as u128, 32))
         .collect();
-    assert!(handle_ccall_with_ctx("armg_calculate_condition", &args, 32, Some(&ctx)).is_none());
-    let sym = RustBV::symbolic(&ctx, "nv_dep1", 32);
-    let zero = RustBV::concrete(0, 32);
+    assert!(run("armg_calculate_condition", &args, 32).is_none());
+    let sym = Bv::symbolic("nv_dep1", 32);
+    let zero = Bv::concrete(0, 32);
     assert!(
-        arm_sym_calculate_condition(ARM_COND_NV, ARMG_CC_OP_SUB, &sym, &zero, &zero, &ctx)
+        arm_sym_calculate_condition(ARM_COND_NV, ARMG_CC_OP_SUB, &sym, &zero, &zero)
             .is_none()
     );
 }
@@ -353,14 +358,14 @@ fn test_arm_handle_ccall_concrete() {
     use arm_cond::*;
     let cond_n_op = arm_cond_n_op(ARM_COND_EQ, ARMG_CC_OP_SUB);
     let args = vec![
-        RustBV::concrete(cond_n_op as u128, 32),
-        RustBV::concrete(5, 32),
-        RustBV::concrete(5, 32),
-        RustBV::concrete(0, 32),
+        Bv::concrete(cond_n_op as u128, 32),
+        Bv::concrete(5, 32),
+        Bv::concrete(5, 32),
+        Bv::concrete(0, 32),
     ];
-    let result = handle_ccall("armg_calculate_condition", &args, 32);
+    let result = run("armg_calculate_condition", &args, 32);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().as_u64(), Some(1));
+    assert_eq!(result.unwrap().const_value(), Some(1));
 }
 
 /// angr-03vl4.72: `armg_calc_flag_n` used to skip the 32-bit masking its
@@ -399,13 +404,13 @@ fn test_arm_flag_n_masks_to_32_bits() {
 fn test_arm_handle_ccall_flag_n_sub_borrow() {
     use arm_cc_op::*;
     let args = vec![
-        RustBV::concrete(u128::from(ARMG_CC_OP_SUB), 32),
-        RustBV::concrete(0, 32),
-        RustBV::concrete(1, 32),
-        RustBV::concrete(0, 32),
+        Bv::concrete(u128::from(ARMG_CC_OP_SUB), 32),
+        Bv::concrete(0, 32),
+        Bv::concrete(1, 32),
+        Bv::concrete(0, 32),
     ];
-    let result = handle_ccall("armg_calculate_flag_n", &args, 32);
-    assert_eq!(result.and_then(|bv| bv.as_u64()), Some(1));
+    let result = run("armg_calculate_flag_n", &args, 32);
+    assert_eq!(result.and_then(|bv| bv.const_value()), Some(1));
 }
 
 // ============================================================
@@ -451,13 +456,12 @@ fn sym_flags_to_tuple(
     d2: u64,
     nd: u64,
 ) -> (u8, u8, u8, u8, u8, u8) {
-    let ctx = crate::symbolic::SymContext::new_mock();
-    let bv1 = RustBV::concrete(d1 as u128, 64);
-    let bv2 = RustBV::concrete(d2 as u128, 64);
-    let bvn = RustBV::concrete(nd as u128, 64);
-    let f = sym_flags_for_category(category, nbits, &bv1, &bv2, &bvn, &ctx)
+    let bv1 = Bv::concrete(d1 as u128, 64);
+    let bv2 = Bv::concrete(d2 as u128, 64);
+    let bvn = Bv::concrete(nd as u128, 64);
+    let f = sym_flags_for_category(category, nbits, &bv1, &bv2, &bvn)
         .expect("category should be supported");
-    let bit = |bv: &RustBV| bv.as_u64().expect("must be concrete") as u8;
+    let bit = |bv: &Bv| bv.const_value().expect("must be concrete") as u8;
     (
         bit(&f.cf),
         bit(&f.pf),
@@ -757,18 +761,17 @@ fn sym_flags_wide_mul_roundtrips_through_z3() {
             (OpCategory::Smul, calc_flags_smul(64, d1, d2)),
         ] {
             // Fresh context per case: the constraint pins the symbol to d1.
-            let ctx = crate::symbolic::SymContext::new_mock();
-            let sym_d1 = RustBV::symbolic(&ctx, format!("wide_mul_d1_{i}"), 64);
-            ctx.add_bv_constraint(&sym_d1, d1 as u128);
-            let d2_bv = RustBV::concrete(d2 as u128, 64);
-            let f = sym_flags_for_category(cat, 64, &sym_d1, &d2_bv, &d2_bv, &ctx)
+            let sym_d1 = Bv::symbolic(format!("wide_mul_d1_{i}"), 64);
+        let pin = (&sym_d1.clone(), d1);
+            let d2_bv = Bv::concrete(d2 as u128, 64);
+            let f = sym_flags_for_category(cat, 64, &sym_d1, &d2_bv, &d2_bv)
                 .expect("category should be supported");
             let got = (
-                ctx.eval(&f.cf),
-                ctx.eval(&f.pf),
-                ctx.eval(&f.zf),
-                ctx.eval(&f.sf),
-                ctx.eval(&f.of),
+                f.cf.eval_with(pin.0, pin.1),
+                f.pf.eval_with(pin.0, pin.1),
+                f.zf.eval_with(pin.0, pin.1),
+                f.sf.eval_with(pin.0, pin.1),
+                f.of.eval_with(pin.0, pin.1),
             );
             let want = (
                 Some(conc.cf as u128),
@@ -789,7 +792,6 @@ fn sym_flags_wide_mul_roundtrips_through_z3() {
 /// symbolic carry, poisoning later branch guards in cold blocks.
 #[test]
 fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     let cc_ops = [
         amd64_cc_op::G_CC_OP_INCB,
         amd64_cc_op::G_CC_OP_INCL,
@@ -805,14 +807,14 @@ fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
             // symbolic path. The carry must still resolve concretely from
             // the concrete cc_ndep.
             let args = vec![
-                RustBV::concrete(cc_op as u128, 64),
-                RustBV::symbolic(&ctx, "cc_dep1_sym", 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(nd as u128, 64),
+                Bv::concrete(cc_op as u128, 64),
+                Bv::symbolic("cc_dep1_sym", 64),
+                Bv::concrete(0, 64),
+                Bv::concrete(nd as u128, 64),
             ];
-            let got = handle_ccall_with_ctx("amd64g_calculate_rflags_c", &args, 64, Some(&ctx))
+            let got = run("amd64g_calculate_rflags_c", &args, 64)
                 .expect("INC/DEC rflags_c must resolve symbolically")
-                .as_u64()
+                .const_value()
                 .expect("carry is a function of the concrete cc_ndep");
             assert_eq!(got, nd & 1, "cc_op={cc_op} nd={nd:x}");
         }
@@ -827,7 +829,6 @@ fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
 /// list means a newly mapped cc_op is covered the day it lands.
 #[test]
 fn eflags_all_symbolic_covers_every_cc_op() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     for (name, arch) in [
         ("amd64g_calculate_eflags_all", CcArch::Amd64),
         ("x86g_calculate_eflags_all", CcArch::X86),
@@ -843,13 +844,13 @@ fn eflags_all_symbolic_covers_every_cc_op() {
             // A symbolic cc_dep1 declines the concrete fast path, forcing the
             // symbolic branch this test is about.
             let args = vec![
-                RustBV::concrete(cc_op as u128, 64),
-                RustBV::symbolic(&ctx, format!("{name}_d1_{cc_op}"), 64),
-                RustBV::concrete(0x5a, 64),
-                RustBV::concrete(1, 64),
+                Bv::concrete(cc_op as u128, 64),
+                Bv::symbolic(format!("{name}_d1_{cc_op}"), 64),
+                Bv::concrete(0x5a, 64),
+                Bv::concrete(1, 64),
             ];
             assert!(
-                handle_ccall_with_ctx(name, &args, 64, Some(&ctx)).is_some(),
+                run(name, &args, 64).is_some(),
                 "{name} cc_op={cc_op} ({:?}) fell back to Python",
                 info.category
             );
@@ -880,16 +881,15 @@ fn diff_fuzz_eflags_all_symbolic_matches_concrete() {
                 // it as packed flags. Keeping it in {0,1} is valid for both.
                 let nd = rng.next() & flag_mask::G_CC_MASK_C;
                 // Fresh context per case: the constraint pins the symbol to d1.
-                let ctx = crate::symbolic::SymContext::new_mock();
-                let sym_d1 = RustBV::symbolic(&ctx, "eflags_all_d1", 64);
-                ctx.add_bv_constraint(&sym_d1, d1 as u128);
+                let sym_d1 = Bv::symbolic("eflags_all_d1", 64);
+        let pin = (&sym_d1.clone(), d1);
                 let args = vec![
-                    RustBV::concrete(cc_op as u128, 64),
+                    Bv::concrete(cc_op as u128, 64),
                     sym_d1,
-                    RustBV::concrete(d2 as u128, 64),
-                    RustBV::concrete(nd as u128, 64),
+                    Bv::concrete(d2 as u128, 64),
+                    Bv::concrete(nd as u128, 64),
                 ];
-                let got = handle_ccall_with_ctx(name, &args, 64, Some(&ctx))
+                let got = run(name, &args, 64)
                     .expect("every decoded cc_op must resolve natively");
                 let want = match arch {
                     CcArch::Amd64 => calculate_eflags_all_amd64(cc_op, d1, d2, nd),
@@ -897,7 +897,7 @@ fn diff_fuzz_eflags_all_symbolic_matches_concrete() {
                 }
                 .expect("concrete reference must also decode");
                 assert_eq!(
-                    ctx.eval(&got),
+                    got.eval_with(pin.0, pin.1),
                     Some(want as u128),
                     "{name} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
                 );
@@ -920,20 +920,19 @@ fn unknown_cond_defers_to_python() {
         sf: 1,
         of: 1,
     };
-    let ctx = crate::symbolic::SymContext::new_mock();
     let sym_f = SymFlags {
-        cf: RustBV::concrete(1, 1),
-        pf: RustBV::concrete(1, 1),
-        af: RustBV::concrete(1, 1),
-        zf: RustBV::concrete(1, 1),
-        sf: RustBV::concrete(1, 1),
-        of: RustBV::concrete(1, 1),
+        cf: Bv::concrete(1, 1),
+        pf: Bv::concrete(1, 1),
+        af: Bv::concrete(1, 1),
+        zf: Bv::concrete(1, 1),
+        sf: Bv::concrete(1, 1),
+        of: Bv::concrete(1, 1),
     };
     // 16 is the first value past the 4-bit VEX condition range.
     for cond in [16u64, 17, 42, u64::MAX] {
         assert_eq!(eval_condition(cond, &f), None, "cond={cond}");
         assert!(
-            eval_sym_condition(cond, &sym_f, &ctx).is_none(),
+            eval_sym_condition(cond, &sym_f).is_none(),
             "cond={cond}"
         );
         // COPY path (flags live in cc_dep1) and the compute-flags path.
@@ -969,7 +968,6 @@ fn unknown_cond_defers_to_python() {
 #[test]
 fn diff_fuzz_eval_sym_condition() {
     use cond_type::*;
-    let ctx = crate::symbolic::SymContext::new_mock();
     let mut rng = Lcg::new(0xc0ed_d1ff);
     let conds = [
         COND_O, COND_NO, COND_B, COND_NB, COND_Z, COND_NZ, COND_BE, COND_NBE, COND_S, COND_NS,
@@ -984,18 +982,18 @@ fn diff_fuzz_eval_sym_condition() {
         let af = (rng.next() & 1) as u8;
         let f = Flags { cf, pf, af, zf, sf, of };
         let sym_f = SymFlags {
-            cf: RustBV::concrete(cf as u128, 1),
-            pf: RustBV::concrete(pf as u128, 1),
-            af: RustBV::concrete(af as u128, 1),
-            zf: RustBV::concrete(zf as u128, 1),
-            sf: RustBV::concrete(sf as u128, 1),
-            of: RustBV::concrete(of as u128, 1),
+            cf: Bv::concrete(cf as u128, 1),
+            pf: Bv::concrete(pf as u128, 1),
+            af: Bv::concrete(af as u128, 1),
+            zf: Bv::concrete(zf as u128, 1),
+            sf: Bv::concrete(sf as u128, 1),
+            of: Bv::concrete(of as u128, 1),
         };
         for &cond in &conds {
             let conc = eval_condition(cond, &f).expect("standard cond");
-            let sym = eval_sym_condition(cond, &sym_f, &ctx)
+            let sym = eval_sym_condition(cond, &sym_f)
                 .expect("standard cond")
-                .as_u64()
+                .const_value()
                 .expect("concrete");
             assert_eq!(sym, conc, "cond={cond} flags={f:?}");
         }
@@ -1006,7 +1004,6 @@ fn diff_fuzz_eval_sym_condition() {
 /// concrete BV args and verify it agrees with the concrete fast path.
 #[test]
 fn diff_fuzz_amd64_handle_ccall_symbolic_path() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     let mut rng = Lcg::new(0xa64_e2e);
     let conds = [
         cond_type::COND_O,
@@ -1045,14 +1042,14 @@ fn diff_fuzz_amd64_handle_ccall_symbolic_path() {
         // need to wrap one operand. Use sym builders directly here for sanity
         // and an end-to-end check via the dispatcher's main entry.
         let args = vec![
-            RustBV::concrete(cond as u128, 64),
-            RustBV::concrete(cc_op as u128, 64),
-            RustBV::concrete(d1 as u128, 64),
-            RustBV::concrete(d2 as u128, 64),
-            RustBV::concrete(nd as u128, 64),
+            Bv::concrete(cond as u128, 64),
+            Bv::concrete(cc_op as u128, 64),
+            Bv::concrete(d1 as u128, 64),
+            Bv::concrete(d2 as u128, 64),
+            Bv::concrete(nd as u128, 64),
         ];
-        let dispatched = handle_ccall_with_ctx("amd64g_calculate_condition", &args, 64, Some(&ctx))
-            .and_then(|bv| bv.as_u64());
+        let dispatched = run("amd64g_calculate_condition", &args, 64)
+            .and_then(|bv| bv.const_value());
         assert_eq!(
             dispatched, conc,
             "concrete-path mismatch cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
@@ -1063,7 +1060,6 @@ fn diff_fuzz_amd64_handle_ccall_symbolic_path() {
 /// ARM-side end-to-end diff-fuzz: symbolic dispatch with concrete BV inputs.
 #[test]
 fn diff_fuzz_arm_sym_calculate_condition() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     let mut rng = Lcg::new(0xa12_e2e);
     use arm_cc_op::*;
     use arm_cond::*;
@@ -1109,13 +1105,12 @@ fn diff_fuzz_arm_sym_calculate_condition() {
         let sym = arm_sym_calculate_condition(
             cond,
             cc_op,
-            &RustBV::concrete(d1 as u128, 32),
-            &RustBV::concrete(d2 as u128, 32),
-            &RustBV::concrete(nd as u128, 32),
-            &ctx,
+            &Bv::concrete(d1 as u128, 32),
+            &Bv::concrete(d2 as u128, 32),
+            &Bv::concrete(nd as u128, 32)
         )
         .expect("symbolic path should handle this cond/cc_op pair");
-        let sym_val = sym.as_u64().expect("concrete");
+        let sym_val = sym.const_value().expect("concrete");
         assert_eq!(
             sym_val, conc_val,
             "cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
@@ -1166,20 +1161,19 @@ fn test_arm64_handle_ccall_dispatch() {
     use arm64_cc_op::*;
     let n = (ARM_COND_EQ << 4) | ARM64G_CC_OP_SUB64;
     let args = vec![
-        RustBV::concrete(n as u128, 64),
-        RustBV::concrete(7, 64),
-        RustBV::concrete(7, 64),
-        RustBV::concrete(0, 64),
+        Bv::concrete(n as u128, 64),
+        Bv::concrete(7, 64),
+        Bv::concrete(7, 64),
+        Bv::concrete(0, 64),
     ];
-    let result = handle_ccall("arm64g_calculate_condition", &args, 64);
-    assert_eq!(result.and_then(|r| r.as_u64()), Some(1));
+    let result = run("arm64g_calculate_condition", &args, 64);
+    assert_eq!(result.and_then(|r| r.const_value()), Some(1));
 }
 
 /// Diff-fuzz the symbolic arm64 condition builders against the concrete
 /// path across the full (cond × cc_op × deps) cross-product. N>=1000.
 #[test]
 fn diff_fuzz_arm64_sym_calculate_condition() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     let mut rng = Lcg::new(0xa64_e2e);
     use arm_cond::*;
     use arm64_cc_op::*;
@@ -1225,13 +1219,12 @@ fn diff_fuzz_arm64_sym_calculate_condition() {
         let sym = arm64_sym_calculate_condition(
             cond,
             cc_op,
-            &RustBV::concrete(d1 as u128, 64),
-            &RustBV::concrete(d2 as u128, 64),
-            &RustBV::concrete(d3 as u128, 64),
-            &ctx,
+            &Bv::concrete(d1 as u128, 64),
+            &Bv::concrete(d2 as u128, 64),
+            &Bv::concrete(d3 as u128, 64)
         )
         .expect("symbolic path should handle this cond/cc_op pair");
-        let sym_val = sym.as_u64().expect("concrete");
+        let sym_val = sym.const_value().expect("concrete");
         assert_eq!(
             sym_val, conc_val,
             "cond={cond} cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}"
@@ -1246,7 +1239,6 @@ fn diff_fuzz_arm64_sym_calculate_condition() {
 /// automatically.
 #[test]
 fn arm32_flag_ccalls_symbolic_cover_every_cc_op() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     for name in [
         "armg_calculate_flag_n",
         "armg_calculate_flag_z",
@@ -1258,13 +1250,13 @@ fn arm32_flag_ccalls_symbolic_cover_every_cc_op() {
             // A symbolic cc_dep1 declines the concrete fast path, forcing the
             // symbolic branch this test is about.
             let args = vec![
-                RustBV::concrete(u128::from(cc_op), 32),
-                RustBV::symbolic(&ctx, format!("{name}_d1_{cc_op}"), 32),
-                RustBV::concrete(0x5a, 32),
-                RustBV::concrete(1, 32),
+                Bv::concrete(u128::from(cc_op), 32),
+                Bv::symbolic(format!("{name}_d1_{cc_op}"), 32),
+                Bv::concrete(0x5a, 32),
+                Bv::concrete(1, 32),
             ];
             assert!(
-                handle_ccall_with_ctx(name, &args, 32, Some(&ctx)).is_some(),
+                run(name, &args, 32).is_some(),
                 "{name} cc_op={cc_op} fell back to Python"
             );
         }
@@ -1295,20 +1287,19 @@ fn diff_fuzz_arm32_flag_ccalls_symbolic_matches_concrete() {
                 // as oldC:oldV. Keeping it in {0,3} is valid for both.
                 let nd = rng.next() & 3;
                 // Fresh context per case: the constraint pins the symbol to d1.
-                let ctx = crate::symbolic::SymContext::new_mock();
-                let sym_d1 = RustBV::symbolic(&ctx, "arm32_flag_d1", 32);
-                ctx.add_bv_constraint(&sym_d1, u128::from(d1));
+                let sym_d1 = Bv::symbolic("arm32_flag_d1", 32);
+        let pin = (&sym_d1.clone(), d1);
                 let args = vec![
-                    RustBV::concrete(u128::from(cc_op), 32),
+                    Bv::concrete(u128::from(cc_op), 32),
                     sym_d1,
-                    RustBV::concrete(u128::from(d2), 32),
-                    RustBV::concrete(u128::from(nd), 32),
+                    Bv::concrete(u128::from(d2), 32),
+                    Bv::concrete(u128::from(nd), 32),
                 ];
-                let got = handle_ccall_with_ctx(name, &args, 32, Some(&ctx))
+                let got = run(name, &args, 32)
                     .expect("every ARM cc_op must resolve natively");
                 let want = conc(cc_op, d1, d2, nd).expect("concrete reference must also decode");
                 assert_eq!(
-                    ctx.eval(&got),
+                    got.eval_with(pin.0, pin.1),
                     Some(u128::from(want)),
                     "{name} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
                 );
@@ -1321,7 +1312,6 @@ fn diff_fuzz_arm32_flag_ccalls_symbolic_matches_concrete() {
 /// counterpart across all cc_ops.
 #[test]
 fn diff_fuzz_arm64_sym_flags() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     let mut rng = Lcg::new(0xf1a64);
     use arm64_cc_op::*;
     let cc_ops = [
@@ -1342,31 +1332,31 @@ fn diff_fuzz_arm64_sym_flags() {
             let d1 = rng.next();
             let d2 = rng.next();
             let d3 = rng.next() & 1;
-            let bv1 = RustBV::concrete(d1 as u128, 64);
-            let bv2 = RustBV::concrete(d2 as u128, 64);
-            let bv3 = RustBV::concrete(d3 as u128, 64);
-            let check = |sym: Option<RustBV>, conc: Option<u64>, name: &str| {
-                let s = sym.expect("sym").as_u64().expect("concrete") & 1;
+            let bv1 = Bv::concrete(d1 as u128, 64);
+            let bv2 = Bv::concrete(d2 as u128, 64);
+            let bv3 = Bv::concrete(d3 as u128, 64);
+            let check = |sym: Option<Bv>, conc: Option<u64>, name: &str| {
+                let s = sym.expect("sym").const_value().expect("concrete") & 1;
                 let c = conc.expect("conc") & 1;
                 assert_eq!(s, c, "{name} cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}");
             };
             check(
-                arm64_sym_flag_n(cc_op, &bv1, &bv2, &bv3, &ctx),
+                arm64_sym_flag_n(cc_op, &bv1, &bv2, &bv3),
                 arm64g_calc_flag_n(cc_op, d1, d2, d3),
                 "n",
             );
             check(
-                arm64_sym_flag_z(cc_op, &bv1, &bv2, &bv3, &ctx),
+                arm64_sym_flag_z(cc_op, &bv1, &bv2, &bv3),
                 arm64g_calc_flag_z(cc_op, d1, d2, d3),
                 "z",
             );
             check(
-                arm64_sym_flag_c(cc_op, &bv1, &bv2, &bv3, &ctx),
+                arm64_sym_flag_c(cc_op, &bv1, &bv2, &bv3),
                 arm64g_calc_flag_c(cc_op, d1, d2, d3),
                 "c",
             );
             check(
-                arm64_sym_flag_v(cc_op, &bv1, &bv2, &bv3, &ctx),
+                arm64_sym_flag_v(cc_op, &bv1, &bv2, &bv3),
                 arm64g_calc_flag_v(cc_op, d1, d2, d3),
                 "v",
             );
@@ -1384,7 +1374,6 @@ fn diff_fuzz_arm64_sym_flags() {
 #[test]
 fn test_arm64_adc_sbc_carry_oracle() {
     use arm64_cc_op::*;
-    let ctx = crate::symbolic::SymContext::new_mock();
     // (cc_op, argL, argR, oldC, expected C)
     let cases: &[(u64, u64, u64, u64, u64)] = &[
         // SBC: 5 - 5 - 1 borrows; 0 - 0 - 0 does not.
@@ -1413,14 +1402,14 @@ fn test_arm64_adc_sbc_carry_oracle() {
         let hs = (arm_cond::ARM_COND_HS << 4) | cc_op;
         assert_eq!(arm64g_calculate_condition(hs, a, b, old_c), Some(want), "HS {msg}");
 
-        let bv1 = RustBV::concrete(u128::from(a), 64);
-        let bv2 = RustBV::concrete(u128::from(b), 64);
-        let bv3 = RustBV::concrete(u128::from(old_c), 64);
-        let sym = arm64_sym_flag_c(cc_op, &bv1, &bv2, &bv3, &ctx).expect("sym C");
-        assert_eq!(sym.as_u64(), Some(want), "symbolic C {msg}");
-        let sym_hs = arm64_sym_calculate_condition(arm_cond::ARM_COND_HS, cc_op, &bv1, &bv2, &bv3, &ctx)
+        let bv1 = Bv::concrete(u128::from(a), 64);
+        let bv2 = Bv::concrete(u128::from(b), 64);
+        let bv3 = Bv::concrete(u128::from(old_c), 64);
+        let sym = arm64_sym_flag_c(cc_op, &bv1, &bv2, &bv3).expect("sym C");
+        assert_eq!(sym.const_value(), Some(want), "symbolic C {msg}");
+        let sym_hs = arm64_sym_calculate_condition(arm_cond::ARM_COND_HS, cc_op, &bv1, &bv2, &bv3)
             .expect("sym HS");
-        assert_eq!(sym_hs.as_u64().map(|v| v & 1), Some(want), "symbolic HS {msg}");
+        assert_eq!(sym_hs.const_value().map(|v| v & 1), Some(want), "symbolic HS {msg}");
     }
 }
 
@@ -1438,21 +1427,21 @@ fn test_arm64_adc_sbc_carry_oracle() {
 /// Convenience: drive the ccall with four concrete 32-bit args.
 fn seg_selector_call(ldt: u64, gdt: u64, ss: u64, va: u64) -> Option<u64> {
     let args = vec![
-        RustBV::concrete(ldt as u128, 64),
-        RustBV::concrete(gdt as u128, 64),
-        RustBV::concrete(ss as u128, 32),
-        RustBV::concrete(va as u128, 32),
+        Bv::concrete(ldt as u128, 64),
+        Bv::concrete(gdt as u128, 64),
+        Bv::concrete(ss as u128, 32),
+        Bv::concrete(va as u128, 32),
     ];
-    handle_ccall("x86g_use_seg_selector", &args, 64).and_then(|r| r.as_u64())
+    run("x86g_use_seg_selector", &args, 64).and_then(|r| r.const_value())
 }
 
 #[test]
 fn test_use_seg_selector_arity_guard() {
     // Fewer than four args must not panic on indexing — it defers to Python.
     for n in 0..4 {
-        let args: Vec<RustBV> = (0..n).map(|_| RustBV::concrete(0, 32)).collect();
+        let args: Vec<Bv> = (0..n).map(|_| Bv::concrete(0, 32)).collect();
         assert!(
-            handle_ccall("x86g_use_seg_selector", &args, 64).is_none(),
+            run("x86g_use_seg_selector", &args, 64).is_none(),
             "arity {n} should defer"
         );
     }
@@ -1509,18 +1498,17 @@ fn test_use_seg_selector_populated_table_defers_to_python() {
 
 #[test]
 fn test_use_seg_selector_symbolic_args_defer_to_python() {
-    let ctx = crate::symbolic::SymContext::new_mock();
-    let sym = RustBV::symbolic(&ctx, "seg_sym", 32);
+    let sym = Bv::symbolic("seg_sym", 32);
     for pos in 0..4 {
         let mut args = vec![
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0x63, 32),
-            RustBV::concrete(0x14, 32),
+            Bv::concrete(0, 64),
+            Bv::concrete(0, 64),
+            Bv::concrete(0x63, 32),
+            Bv::concrete(0x14, 32),
         ];
         args[pos] = sym.clone();
         assert!(
-            handle_ccall_with_ctx("x86g_use_seg_selector", &args, 64, Some(&ctx)).is_none(),
+            run("x86g_use_seg_selector", &args, 64).is_none(),
             "symbolic arg {pos} should defer to Python"
         );
     }
@@ -1549,29 +1537,28 @@ fn test_use_seg_selector_gdt_empty_wraps_mod_2_32() {
 /// of `arm32_flag_ccalls_symbolic_cover_every_cc_op` (angr-zgd3r).
 #[test]
 fn arm_flags_nzcv_ccalls_symbolic_cover_every_cc_op() {
-    let ctx = crate::symbolic::SymContext::new_mock();
     // COPY..MULL is the whole ARMG_CC_OP_* space (libvex_guest_arm.h).
     for cc_op in arm_cc_op::ARMG_CC_OP_COPY..=arm_cc_op::ARMG_CC_OP_MULL {
         let args = vec![
-            RustBV::concrete(u128::from(cc_op), 32),
-            RustBV::symbolic(&ctx, format!("arm32_nzcv_d1_{cc_op}"), 32),
-            RustBV::concrete(0x5a, 32),
-            RustBV::concrete(1, 32),
+            Bv::concrete(u128::from(cc_op), 32),
+            Bv::symbolic(format!("arm32_nzcv_d1_{cc_op}"), 32),
+            Bv::concrete(0x5a, 32),
+            Bv::concrete(1, 32),
         ];
         assert!(
-            handle_ccall_with_ctx("armg_calculate_flags_nzcv", &args, 32, Some(&ctx)).is_some(),
+            run("armg_calculate_flags_nzcv", &args, 32).is_some(),
             "armg_calculate_flags_nzcv cc_op={cc_op} fell back to Python"
         );
     }
     for cc_op in arm64_cc_op::ARM64G_CC_OP_COPY..=arm64_cc_op::ARM64G_CC_OP_LOGIC64 {
         let args = vec![
-            RustBV::concrete(u128::from(cc_op), 64),
-            RustBV::symbolic(&ctx, format!("arm64_nzcv_d1_{cc_op}"), 64),
-            RustBV::concrete(0x5a, 64),
-            RustBV::concrete(1, 64),
+            Bv::concrete(u128::from(cc_op), 64),
+            Bv::symbolic(format!("arm64_nzcv_d1_{cc_op}"), 64),
+            Bv::concrete(0x5a, 64),
+            Bv::concrete(1, 64),
         ];
         assert!(
-            handle_ccall_with_ctx("arm64g_calculate_flags_nzcv", &args, 64, Some(&ctx)).is_some(),
+            run("arm64g_calculate_flags_nzcv", &args, 64).is_some(),
             "arm64g_calculate_flags_nzcv cc_op={cc_op} fell back to Python"
         );
     }
@@ -1591,21 +1578,20 @@ fn diff_fuzz_arm_flags_nzcv_symbolic_matches_concrete() {
             // oldC:oldV. Keeping it in {0..3} is valid for both.
             let nd = rng.next() & 3;
             // Fresh context per case: the constraint pins the symbol to d1.
-            let ctx = crate::symbolic::SymContext::new_mock();
-            let sym_d1 = RustBV::symbolic(&ctx, "arm32_nzcv_d1", 32);
-            ctx.add_bv_constraint(&sym_d1, u128::from(d1));
+            let sym_d1 = Bv::symbolic("arm32_nzcv_d1", 32);
+        let pin = (&sym_d1.clone(), d1);
             let args = vec![
-                RustBV::concrete(u128::from(cc_op), 32),
+                Bv::concrete(u128::from(cc_op), 32),
                 sym_d1,
-                RustBV::concrete(u128::from(d2), 32),
-                RustBV::concrete(u128::from(nd), 32),
+                Bv::concrete(u128::from(d2), 32),
+                Bv::concrete(u128::from(nd), 32),
             ];
-            let got = handle_ccall_with_ctx("armg_calculate_flags_nzcv", &args, 32, Some(&ctx))
+            let got = run("armg_calculate_flags_nzcv", &args, 32)
                 .expect("every ARM cc_op must resolve natively");
             let want = armg_calculate_flags_nzcv(cc_op, d1, d2, nd)
                 .expect("concrete reference must also decode");
             assert_eq!(
-                ctx.eval(&got),
+                got.eval_with(pin.0, pin.1),
                 Some(u128::from(want)),
                 "armg nzcv cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
             );
@@ -1616,21 +1602,20 @@ fn diff_fuzz_arm_flags_nzcv_symbolic_matches_concrete() {
             let d1 = rng.next();
             let d2 = rng.next();
             let d3 = rng.next() & 1;
-            let ctx = crate::symbolic::SymContext::new_mock();
-            let sym_d1 = RustBV::symbolic(&ctx, "arm64_nzcv_d1", 64);
-            ctx.add_bv_constraint(&sym_d1, u128::from(d1));
+            let sym_d1 = Bv::symbolic("arm64_nzcv_d1", 64);
+        let pin = (&sym_d1.clone(), d1);
             let args = vec![
-                RustBV::concrete(u128::from(cc_op), 64),
+                Bv::concrete(u128::from(cc_op), 64),
                 sym_d1,
-                RustBV::concrete(u128::from(d2), 64),
-                RustBV::concrete(u128::from(d3), 64),
+                Bv::concrete(u128::from(d2), 64),
+                Bv::concrete(u128::from(d3), 64),
             ];
-            let got = handle_ccall_with_ctx("arm64g_calculate_flags_nzcv", &args, 64, Some(&ctx))
+            let got = run("arm64g_calculate_flags_nzcv", &args, 64)
                 .expect("every arm64 cc_op must resolve natively");
             let want = arm64g_calculate_flags_nzcv(cc_op, d1, d2, d3)
                 .expect("concrete reference must also decode");
             assert_eq!(
-                ctx.eval(&got),
+                got.eval_with(pin.0, pin.1),
                 Some(u128::from(want)),
                 "arm64g nzcv cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}"
             );

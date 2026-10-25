@@ -305,9 +305,26 @@ impl<'a> VEXInterpreter<'a> {
             arg_vals.push(self.eval_expr_with_callbacks(callbacks, arg, tyenv)?);
         }
 
-        if let Some(result) =
-            ccall::handle_ccall_with_ctx(&cee.name, &arg_vals, retty.bits(), Some(self.ctx))
-        {
+        // All-concrete thunks stay on the `u64` helpers, so the common case
+        // builds no clarirs terms; the symbolic helpers take over when an
+        // operand is symbolic or the concrete twin declines.
+        let ret_bits = retty.bits();
+        let concrete = arg_vals
+            .iter()
+            .map(RustBV::as_u64)
+            .collect::<Option<Vec<u64>>>()
+            .and_then(|vals| ccall::ccall_concrete(&cee.name, &vals, ret_bits))
+            .map(|result| RustBV::concrete(u128::from(result), ret_bits));
+        let result = concrete.or_else(|| {
+            let terms = arg_vals
+                .iter()
+                .map(RustBV::to_clarirs)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            let term = ccall::ccall_symbolic(&cee.name, &terms, ret_bits)?;
+            RustBV::from_clarirs(term).ok()
+        });
+        if let Some(result) = result {
             return Ok(result);
         }
 
