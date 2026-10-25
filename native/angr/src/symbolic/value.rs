@@ -318,15 +318,14 @@ impl VexRm {
 /// This is the core value type for the VEX execution engine. All register
 /// and memory values are represented as `RustBV`.
 ///
-/// With z3-rs 0.19+, the Z3 context is thread-local, so we don't need
-/// lifetime parameters on the Z3 AST.
+/// A value holds no Z3 term: `to_z3_ast` lowers an `Ast` through
+/// `z3_lower`, whose per-thread cache keyed by clarirs node is the only
+/// lowering cache (angr-mx00p.116.4).
 ///
 /// ## Serialization
 ///
 /// `RustBV` implements `Serialize`/`Deserialize` via the `RustBVData`
-/// shadow type. The lazy Z3 memo on an `Ast` is skipped at serialize time
-/// and rebuilt on the first `to_z3_ast()` call after load, in whichever
-/// Z3 thread-local context is active then.
+/// shadow type.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(try_from = "RustBVData", into = "RustBVData")]
 pub enum RustBV {
@@ -356,26 +355,17 @@ pub enum RustBV {
         /// Width in bits, `ast.size()`.
         width: u32,
         ast: AstRef<'static>,
-        /// The lowered Z3 term, filled on first lowering.
-        memo: ExprMemo,
     },
 }
 
-/// Lazy Z3 AST memo carried by [`RustBV::Ast`] (angr-ovqja.3): repeat
-/// conversions of one value (eval→min→max, address concretization) reuse the
-/// lowering instead of rebuilding it.
-///
-/// A `RefCell` because the engine is single-threaded (the state graph is
-/// `Rc<RefCell<SymContext>>`, so interior mutability is sound); it starts
-/// empty (`memo: Default::default()`).
-/// Excluded from serde, `PartialEq`, `Debug` and every identity key.
-type ExprMemo = std::cell::RefCell<Option<z3::ast::BV>>;
+// Registers and memory pages hold these, so the value carries no Z3 term
+// (angr-mx00p.116.4): a `Concrete`'s `u128` sets the size.
+const _: () = assert!(std::mem::size_of::<RustBV>() <= 32);
 
 /// Serde shadow form for [`RustBV`].
 ///
 /// `Concrete` mirrors [`RustBV::Concrete`]; an `Ast` travels as a [`WireDag`]
-/// of its clarirs term, and its Z3 memo is dropped (Z3 ASTs cannot cross
-/// process boundaries) and re-lowered lazily after load.
+/// of its clarirs term.
 ///
 /// This is the snapshot/serialization format (angr-x04s).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -568,8 +558,8 @@ impl RustBV {
     /// IEEE bits (`fpToIEEEBV`). A literal that fits a `u128` folds to
     /// [`RustBV::Concrete`]. Strings have no `RustBV` form and are refused.
     ///
-    /// The term is lowered here, which both warms the memo and refuses what
-    /// has no Z3 form (strings nested in a bitvector, the VSA ops, a term
+    /// The term is lowered here, which both warms `z3_lower`'s cache and
+    /// refuses what has no Z3 form (strings nested in a bitvector, the VSA ops, a term
     /// deeper than `z3_lower::MAX_LOWER_DEPTH`) at the boundary. Terms the ops
     /// build later over the result can still outgrow that depth, which is why
     /// `to_z3_ast` returns a `Result` (angr-mx00p.116.2).
@@ -594,14 +584,11 @@ impl RustBV {
         {
             return Ok(RustBV::concrete(v, value.len()));
         }
-        let memo = std::cell::RefCell::new(Some(
-            super::z3_lower::lower_bv(&ast)
-                .map_err(|e| ClarirsError::UnsupportedOperation(e.to_string()))?,
-        ));
+        super::z3_lower::lower_bv(&ast)
+            .map_err(|e| ClarirsError::UnsupportedOperation(e.to_string()))?;
         Ok(RustBV::Ast {
             width: ast.size(),
             ast,
-            memo,
         })
     }
 

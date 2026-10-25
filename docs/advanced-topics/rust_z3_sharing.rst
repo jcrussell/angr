@@ -311,17 +311,15 @@ Counter cheat-sheet relevant to per-context solver behavior:
   is helping.
 * ``z3_ast_build`` — number of *top-level* ``to_z3_ast()`` /
   ``to_z3_bool()`` entry calls, **not** the number of ``Z3_mk_*`` FFI
-  calls: a single entry recursively builds the whole ``RustBV`` tree,
-  so one increment can cover hundreds of Z3 node constructions on a
-  deep expression. Do not read it as node-construction volume.
-* ``z3_ast_cache_miss`` / ``z3_ast_cache_hit`` / ``z3_ast_memo_hit`` —
-  per-node accounting inside ``to_z3_ast_cached``. A miss is a unique
-  ``RustBV`` pointer visited in a conversion, a hit is a subtree shared
-  *within* that conversion, and a memo hit is an ``Expression`` whose
-  Z3 AST survived from a *prior* top-level call. Nodes genuinely
-  constructed ≈ ``z3_ast_cache_miss − z3_ast_memo_hit``; that
-  difference, not ``z3_ast_build``, is the metric to use when sizing
-  raw Z3 construction volume.
+  calls: one entry lowers a whole clarirs term, so one increment can
+  cover hundreds of Z3 node constructions on a deep expression. Do not
+  read it as node-construction volume.
+* ``z3_ast_cache_miss`` / ``z3_ast_cache_hit`` — per-value accounting
+  inside ``to_z3_ast_cached``: a hit is a value its caller's per-batch
+  map already held, a miss is a value lowered. Lowering goes through
+  ``symbolic::z3_lower``, whose per-thread cache keyed by clarirs node is
+  the only cache that spans calls, so a repeat lowering of a live term
+  rebuilds no Z3 node; these counters do not measure node volume either.
 * ``z3_assume_concrete`` / ``z3_assume_symbolic`` —
   ``assume_true`` / ``assume_false`` fast-path counters.
 * ``z3_branch_*`` — per-branch evaluation breakdown.

@@ -75,7 +75,7 @@ impl From<BridgeError> for PyErr {
 /// to `assume_true` or take `.to_z3_bool()` of it.
 ///
 /// `Cow` rather than a plain `RustBV` so the (common) 1-bit case stays
-/// clone-free — cloning an `Ast` also clones its Z3 memo.
+/// clone-free.
 fn bool_constraint_bv<'a>(bv: &'a RustBV, ctx: &SymContext) -> std::borrow::Cow<'a, RustBV> {
     if bv.width() == 1 {
         std::borrow::Cow::Borrowed(bv)

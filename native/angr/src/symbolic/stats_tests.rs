@@ -201,22 +201,22 @@ fn test_saved_check_total_sums_every_family() {
     }
 }
 
-/// The sum deliberately excludes `z3_ast_memo_hit`: it saves Z3 *node
-/// construction*, not a `check()`, and is an order of magnitude larger, so
-/// folding it in would drown the check-avoidance signal the key exists to
-/// carry. Pins that exclusion so it cannot be "fixed" by accident.
+/// The sum deliberately excludes the lowering cache (`z3_ast_cache_hit`): it
+/// saves Z3 *node construction*, not a `check()`, so folding it in would drown
+/// the check-avoidance signal the key exists to carry. Pins that exclusion so
+/// it cannot be "fixed" by accident.
 #[test]
-fn test_saved_check_total_excludes_ast_memo_hit() {
+fn test_saved_check_total_excludes_ast_cache_hit() {
     let _serial = marker_guard();
-    Z3_AST_MEMO_HIT_COUNT.fetch_add(MARK, Ordering::Relaxed);
+    Z3_AST_CACHE_HIT_COUNT.fetch_add(MARK, Ordering::Relaxed);
     let total = get_solver_stats()
         .get("z3_saved_check_total")
         .copied()
         .expect("z3_saved_check_total must always be emitted");
-    undo_bump(&Z3_AST_MEMO_HIT_COUNT);
+    undo_bump(&Z3_AST_CACHE_HIT_COUNT);
     assert!(
         total < MARK,
-        "z3_ast_memo_hit must NOT be folded into z3_saved_check_total (total={total})"
+        "z3_ast_cache_hit must NOT be folded into z3_saved_check_total (total={total})"
     );
 }
 

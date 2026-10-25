@@ -3,7 +3,7 @@
 //! Despite the `*_solver_stats` function names (kept for the Python-visible
 //! API), this is the engine-wide instrumentation module, not a solver-only
 //! one. Counters declared here cover, in file order: Z3 solving (check
-//! counts/times, assume/branch/extrema model hits, AST-build and memo
+//! counts/times, assume/branch/extrema model hits, AST-build and lowering
 //! caches), symbolic-memory ITE depth, VEX op dispatch by family, memory
 //! load/store call+byte volume and lazy page faults, address-concretization
 //! fanout and disjunction hoisting, `Reverse`/`Concat`/`Extract` emissions,
@@ -86,18 +86,8 @@ pub(crate) static Z3_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Equals the count of distinct Arc-pointer subtrees materialized into Z3
 /// ASTs for that conversion.
 pub(crate) static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Number of persistent per-value memo hits in `to_z3_ast_cached`
-/// (angr-ovqja.3).
-///
-/// A hit means a `RustBV::Ast` term's `memo` already held a `z3::ast::BV`
-/// lowered in the current thread's Z3 context by a *prior* conversion
-/// (eval→min→max, `range()`, address concretize), so the cached BV was
-/// returned via a refcount bump instead of re-lowering the clarirs term. Distinct from
-/// `z3_ast_cache_hit`, which only dedups shared subtrees *within* one call.
-pub(crate) static Z3_AST_MEMO_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of top-level `to_z3_bool()` calls — the native-Bool half of
-/// `z3_ast_build` (angr-op0dn.9.6). The Bool path lowers through
-/// `z3_lower` directly and never consults the per-value BV memo.
+/// `z3_ast_build` (angr-op0dn.9.6).
 pub(crate) static Z3_BOOL_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of Z3 solver.check() calls that returned Sat.
 pub(crate) static Z3_SAT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -462,7 +452,6 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
     ("z3_ast_build", &Z3_AST_BUILD_COUNT),
     ("z3_ast_cache_hit", &Z3_AST_CACHE_HIT_COUNT),
     ("z3_ast_cache_miss", &Z3_AST_CACHE_MISS_COUNT),
-    ("z3_ast_memo_hit", &Z3_AST_MEMO_HIT_COUNT),
     ("z3_bool_build", &Z3_BOOL_BUILD_COUNT),
     ("z3_sat_count", &Z3_SAT_COUNT),
     ("z3_unsat_count", &Z3_UNSAT_COUNT),
@@ -643,8 +632,8 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     // angr-op0dn.9.5: one headline key aggregating every family that answers a
     // query WITHOUT reaching Z3's `check()`. Each summand is a check we did not
     // pay for, so they are commensurable and the sum is meaningful. Deliberately
-    // excludes `z3_ast_memo_hit`: that saves Z3 *node construction*, not a check,
-    // and it is an order of magnitude larger — folding it in would drown the
+    // excludes the lowering caches (`z3_ast_cache_hit`): those save Z3 *node
+    // construction*, not a check, and folding them in would drown the
     // check-avoidance signal this key exists to protect.
     stats.insert(
         "z3_saved_check_total".into(),
@@ -708,12 +697,6 @@ pub(super) fn record_z3_ast_cache_hit() {
 #[inline]
 pub(super) fn record_z3_ast_cache_miss() {
     Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Increment the persistent `RustBV::Ast` memo-hit counter (angr-ovqja.3).
-#[inline]
-pub(super) fn record_z3_ast_memo_hit() {
-    Z3_AST_MEMO_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Record one top-level `to_z3_bool()` conversion (angr-op0dn.9.6).

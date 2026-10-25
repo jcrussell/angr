@@ -1,7 +1,7 @@
 //! Z3 lowering for [`RustBV`]: `to_z3_ast` / `to_z3_ast_cached`,
 //! `to_z3_bool` / `to_z3_bool_cached`. A value is a
 //! `Concrete` (a Z3 numeral) or a clarirs term, lowered through
-//! `symbolic::z3_lower` and memoized on the value. Lowering can fail (a term
+//! `symbolic::z3_lower`, whose per-thread cache is the only lowering cache. Lowering can fail (a term
 //! deeper than `z3_lower::MAX_LOWER_DEPTH`, angr-mx00p.116.2), so each
 //! conversion returns a [`LowerError`] for its query to fail on.
 //!
@@ -26,7 +26,7 @@ impl RustBV {
 
     /// [`Self::to_z3_ast`] with a per-call cache keyed by value address, for
     /// callers lowering many values in one pass. A clarirs term's lowering is
-    /// also kept on the value (`memo`) and in `z3_lower`'s per-thread cache.
+    /// also kept in `z3_lower`'s per-thread cache.
     pub fn to_z3_ast_cached(
         &self,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
@@ -39,21 +39,7 @@ impl RustBV {
         super::stats::record_z3_ast_cache_miss();
         let result = match self {
             RustBV::Concrete { value, width } => super::bv_codec::make_bv_const(*value, *width),
-            RustBV::Ast { ast, memo, .. } => {
-                use z3::ast::Ast;
-                let reusable = memo.borrow().as_ref().and_then(|bv| {
-                    (bv.get_ctx().get_z3_context() == z3::Context::thread_local().get_z3_context())
-                        .then(|| bv.clone())
-                });
-                if let Some(bv) = reusable {
-                    super::stats::record_z3_ast_memo_hit();
-                    bv
-                } else {
-                    let built = super::z3_lower::lower_bv(ast)?;
-                    *memo.borrow_mut() = Some(built.clone());
-                    built
-                }
-            }
+            RustBV::Ast { ast, .. } => super::z3_lower::lower_bv(ast)?,
         };
         cache.insert(cache_key, result.clone());
         Ok(result)

@@ -82,7 +82,6 @@ impl RustBV {
         RustBV::Ast {
             width: ast.size(),
             ast,
-            memo: Default::default(),
         }
     }
 }
