@@ -8,3 +8,5 @@ pub mod smtlib;
 pub mod solver;
 pub mod solver_mixins;
 pub mod util;
+
+pub use context::GLOBAL_CONTEXT;

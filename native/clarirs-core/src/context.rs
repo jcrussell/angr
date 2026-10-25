@@ -99,6 +99,14 @@ impl PartialOrd for InternedString {
     }
 }
 
+/// The process-global context.
+///
+/// Interning makes node identity equality only within one context, so code
+/// that shares terms across components (the Python claripy bindings and any
+/// native embedder) builds them all here.
+pub static GLOBAL_CONTEXT: std::sync::LazyLock<Context<'static>> =
+    std::sync::LazyLock::new(Context::new);
+
 #[derive(Debug, Default)]
 pub struct Context<'c> {
     pub(crate) ast_cache: AstCache<'c>,
@@ -177,5 +185,17 @@ where
 {
     fn context(&self) -> &'c Context<'c> {
         self.as_ref().context()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_context_interns_across_uses() {
+        let a = GLOBAL_CONTEXT.bvs("global_x", 32).unwrap();
+        let b = GLOBAL_CONTEXT.bvs("global_x", 32).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
     }
 }
