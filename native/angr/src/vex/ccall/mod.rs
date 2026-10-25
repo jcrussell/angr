@@ -919,9 +919,8 @@ fn handle_arm64_flags_nzcv(args: &[Bv], ret_bits: u32) -> Option<Bv> {
         return None;
     }
 
-    // Symbolic path, mirroring the armg_calculate_flags_nzcv arm above —
-    // the arch-sibling parity rule from
-    // invariant-ccall-arch-sibling-symbolic-parity (angr-zgd3r).
+    // Symbolic path, mirroring the armg_calculate_flags_nzcv arm above, so
+    // the two arches serve the same symbolic calls (angr-zgd3r).
     if let Some(cc_op) = args[0].as_u64()
         && let Some(packed) = arm64_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits)
     {

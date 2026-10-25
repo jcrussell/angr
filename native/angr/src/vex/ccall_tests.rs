@@ -743,11 +743,11 @@ fn sign_extend_to_i64_drops_bits_above_the_width() {
 
 /// The 64-bit UMUL/SMUL builders widen the operands to a 128-bit product —
 /// the only place in the x86 ccall path that builds a BV wider than 64 bits.
-/// The diff-fuzz tests above feed concrete BVs, which constant-fold before Z3
-/// ever sees the wide sort, so drive it once with a genuinely symbolic operand
-/// and check the solver still agrees with the concrete reference.
+/// The diff-fuzz tests above feed concrete BVs, so drive it once with a
+/// genuinely symbolic operand and check that the term, evaluated with the
+/// operand's value, agrees with the concrete reference.
 #[test]
-fn sym_flags_wide_mul_roundtrips_through_z3() {
+fn sym_flags_wide_mul_matches_concrete() {
     for (i, (d1, d2)) in [
         (0x1_0000_0000u64, 0x1_0000_0000u64), // product needs bit 64
         (3u64, 5u64),                         // fits in the low half
@@ -760,7 +760,7 @@ fn sym_flags_wide_mul_roundtrips_through_z3() {
             (OpCategory::Umul, calc_flags_umul(64, d1, d2)),
             (OpCategory::Smul, calc_flags_smul(64, d1, d2)),
         ] {
-            // Fresh context per case: the constraint pins the symbol to d1.
+            // The symbol is replaced by d1 when the result is evaluated.
             let sym_d1 = Bv::symbolic(format!("wide_mul_d1_{i}"), 64);
         let pin = (&sym_d1.clone(), d1);
             let d2_bv = Bv::concrete(d2 as u128, 64);
@@ -861,8 +861,8 @@ fn eflags_all_symbolic_covers_every_cc_op() {
 
 /// Value half of `eflags_all_symbolic_covers_every_cc_op`: the packed symbolic
 /// answer must equal the concrete `calculate_eflags_all_*` reference for every
-/// cc_op, not merely be non-`None`. Pins cc_dep1 with a constraint so the
-/// symbolic path runs while the answer stays evaluable.
+/// cc_op, not merely be non-`None`. cc_dep1 is a symbol, replaced by its
+/// value when the answer is evaluated, so the symbolic path runs.
 #[test]
 fn diff_fuzz_eflags_all_symbolic_matches_concrete() {
     let mut rng = Lcg::new(0x0ef1_a5a1);
@@ -880,7 +880,7 @@ fn diff_fuzz_eflags_all_symbolic_matches_concrete() {
                 // ADC/SBB read cc_ndep as the incoming carry; the rotates read
                 // it as packed flags. Keeping it in {0,1} is valid for both.
                 let nd = rng.next() & flag_mask::G_CC_MASK_C;
-                // Fresh context per case: the constraint pins the symbol to d1.
+                // The symbol is replaced by d1 when the result is evaluated.
                 let sym_d1 = Bv::symbolic("eflags_all_d1", 64);
         let pin = (&sym_d1.clone(), d1);
                 let args = vec![
@@ -1265,8 +1265,8 @@ fn arm32_flag_ccalls_symbolic_cover_every_cc_op() {
 
 /// Value half of `arm32_flag_ccalls_symbolic_cover_every_cc_op`: the symbolic
 /// answer must equal the concrete `armg_calc_flag_*` reference, not merely be
-/// non-`None`. Pins cc_dep1 with a constraint so the symbolic dispatch runs
-/// while the answer stays evaluable.
+/// non-`None`. cc_dep1 is a symbol, replaced by its value when the answer is
+/// evaluated, so the symbolic dispatch runs.
 #[test]
 fn diff_fuzz_arm32_flag_ccalls_symbolic_matches_concrete() {
     let mut rng = Lcg::new(0x0a11_3200);
@@ -1286,7 +1286,7 @@ fn diff_fuzz_arm32_flag_ccalls_symbolic_matches_concrete() {
                 // ADC/SBB read cc_ndep as the incoming carry; MUL/MULL read it
                 // as oldC:oldV. Keeping it in {0,3} is valid for both.
                 let nd = rng.next() & 3;
-                // Fresh context per case: the constraint pins the symbol to d1.
+                // The symbol is replaced by d1 when the result is evaluated.
                 let sym_d1 = Bv::symbolic("arm32_flag_d1", 32);
         let pin = (&sym_d1.clone(), d1);
                 let args = vec![
@@ -1577,7 +1577,7 @@ fn diff_fuzz_arm_flags_nzcv_symbolic_matches_concrete() {
             // ADC/SBB read cc_ndep as the incoming carry; MUL/MULL read it as
             // oldC:oldV. Keeping it in {0..3} is valid for both.
             let nd = rng.next() & 3;
-            // Fresh context per case: the constraint pins the symbol to d1.
+            // The symbol is replaced by d1 when the result is evaluated.
             let sym_d1 = Bv::symbolic("arm32_nzcv_d1", 32);
         let pin = (&sym_d1.clone(), d1);
             let args = vec![
