@@ -10,13 +10,11 @@ pub mod repr;
 pub mod string;
 pub mod util;
 
-use std::sync::LazyLock;
-
 use crate::claripy::prelude::*;
 
 use super::import_submodule;
 
-pub static GLOBAL_CONTEXT: LazyLock<Context<'static>> = LazyLock::new(Context::new);
+pub use clarirs_core::GLOBAL_CONTEXT;
 
 #[pyfunction(name = "Not")]
 pub fn not<'py>(py: Python<'py>, b: Bound<'py, Base>) -> Result<Bound<'py, Base>, ClaripyError> {
