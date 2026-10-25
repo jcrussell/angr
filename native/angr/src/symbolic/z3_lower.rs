@@ -46,7 +46,7 @@ pub enum LowerError {
     UnsupportedOp(String),
     /// Malformed operands for an op.
     InvalidArgs(String),
-    /// A term deeper than [`MAX_LOWER_DEPTH`].
+    /// A term deeper than `MAX_LOWER_DEPTH`.
     RecursionLimit(String),
 }
 

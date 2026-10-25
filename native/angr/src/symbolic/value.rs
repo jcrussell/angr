@@ -560,7 +560,7 @@ impl RustBV {
     }
 
     /// Create a fresh symbolic bitvector variable named `{hint}_{n}`, with `n`
-    /// from [`super::names::next`]`(hint)`, so every call is its own variable,
+    /// from `names::next(hint)`, so every call is its own variable,
     /// as each `claripy.BVS(hint, width)` is. The counter is keyed by `hint`
     /// and rides in snapshots (`names::watermarks`), so a restored state's
     /// names are not reminted.
