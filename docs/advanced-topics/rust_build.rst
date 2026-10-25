@@ -227,6 +227,14 @@ that cannot, so every static-audit script defines a ``--self-test`` mode
 and ``ci.yml::rust_check`` runs it ahead of the real check.
 ``grep -- --self-test .github/workflows/ci.yml`` lists the live set.
 
+Each script resolves its scan roots from the repo-root ``Cargo.toml``
+workspace members through ``tools/rust_source_utils.py::scan_roots``
+(angr-mx00p.116.9). A member a gate neither scans nor excludes, a configured
+root that is missing, and a scan below the gate's ``MIN_FILES`` floor (the
+diff-based pairing audit has none) all fail the real run, so code moved into
+a new crate cannot drop out of a scan unnoticed. Adding a crate means classifying it in every gate's ``SCAN`` or
+``EXCLUDE``; each ``--self-test`` proves those failures fire.
+
 Profiling Rust benches
 ----------------------
 

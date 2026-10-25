@@ -40,11 +40,22 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import blank_noise
+from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "native" / "angr" / "src"
 CORE_DIRS = ("arch", "memory", "symbolic", "vex", "interpreter", "state")
+SCAN = {"native/angr": CORE_DIRS}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, not the engine core"}
+# Fewer files than this means the core moved out of CORE_DIRS.
+MIN_FILES = 150
+
+
+def scan_files(repo_root: Path = REPO) -> list[Path]:
+    """Every core file the real run scans; raises ScanRootError on a bad root or a low count."""
+    files = rust_files(scan_roots(repo_root, SCAN, EXCLUDE))
+    require_floor(files, MIN_FILES, "audit_core_pyo3_free")
+    return files
 
 # Files that keep PyO3 for an upstream reason, relative to SRC.
 ALLOWED = {
@@ -97,12 +108,13 @@ def self_test() -> int:
     if hits != want:
         print(f"self-test FAILED: flagged lines {hits}, want {want}", file=sys.stderr)
         return 1
-    missing = [d for d in CORE_DIRS if not (SRC / d).is_dir()]
-    if missing:
-        print(f"self-test FAILED: core directories missing: {missing}", file=sys.stderr)
+    root_failures = self_test_scan_roots(scan_files, SCAN)
+    if root_failures:
+        print(f"self-test FAILED: {root_failures}", file=sys.stderr)
         return 1
     print(
-        f"self-test OK: flagged lines {hits} (import, initialize, attach, token types, pyclass); skipped comment, string and identifier"
+        f"self-test OK: flagged lines {hits} (import, initialize, attach, token types, pyclass); "
+        "skipped comment, string and identifier; an unclassified member, a missing root and a low file count fail"
     )
     return 0
 
@@ -114,20 +126,19 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
+    try:
+        files = scan_files()
+    except ScanRootError as e:
+        print(f"audit_core_pyo3_free: {e}", file=sys.stderr)
+        return 1
     found = []
-    scanned = 0
-    for d in CORE_DIRS:
-        root = SRC / d
-        if not root.is_dir():
-            print(f"audit_core_pyo3_free: core directory {root.relative_to(REPO)} is missing", file=sys.stderr)
-            return 1
-        for path in sorted(root.rglob("*.rs")):
-            rel = path.relative_to(SRC).as_posix()
-            scanned += 1
-            if rel in ALLOWED:
-                continue
-            for line in scan(path.read_text(encoding="utf-8")):
-                found.append(f"native/angr/src/{rel}:{line}")
+    scanned = len(files)
+    for path in files:
+        rel = path.relative_to(SRC).as_posix()
+        if rel in ALLOWED:
+            continue
+        for line in scan(path.read_text(encoding="utf-8")):
+            found.append(f"native/angr/src/{rel}:{line}")
     stale = [rel for rel in ALLOWED if not (SRC / rel).is_file()]
     if stale:
         print(f"audit_core_pyo3_free: ALLOWED names files that no longer exist: {stale}", file=sys.stderr)

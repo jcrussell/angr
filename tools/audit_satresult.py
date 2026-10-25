@@ -40,8 +40,15 @@ import re
 import sys
 from pathlib import Path
 
+# The scanner below is this gate's own; only root resolution is shared.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roots, self_test_scan_roots
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
+SCAN = {"native/angr": ("",)}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, it never checks a solver"}
+# Fewer files than this means the code moved out of the scan roots.
+MIN_FILES = 400
 
 # Only the boolean-collapsing variants are banned; Unknown is fine to name.
 BANNED = re.compile(r"SatResult::(Sat|Unsat)\b")
@@ -80,9 +87,16 @@ def scan_text(path: Path, text: str, list_all: bool) -> list[tuple[Path, int, st
     return hits
 
 
+def scan_files(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Every file the real run reads; raises ScanRootError on a bad root or a low count."""
+    files = rust_files(scan_roots(repo_root, SCAN, EXCLUDE))
+    require_floor(files, MIN_FILES, "audit_satresult")
+    return files
+
+
 def scan(list_all: bool) -> list[tuple[Path, int, str]]:
     hits: list[tuple[Path, int, str]] = []
-    for path in sorted(SRC_ROOT.rglob("*.rs")):
+    for path in scan_files():
         rel = path.relative_to(REPO_ROOT)
         hits.extend(scan_text(rel, path.read_text(), list_all))
     return hits
@@ -145,6 +159,7 @@ def self_test() -> int:
         got_test = scan_text(test_path, _SELF_TEST_SRC, list_all=False)
         if got_test:
             failures.append(f"test path {test_path}: expected no hits, got {got_test}")
+    failures.extend(self_test_scan_roots(scan_files, SCAN))
 
     if failures:
         print("SELF-TEST FAILED")
@@ -153,7 +168,8 @@ def self_test() -> int:
         return 1
     print(
         "self-test OK: raw SatResult::Sat / ::Unsat flagged; satresult-exempt "
-        "(inline and lookback), SatResult::Unknown and *_tests paths pass"
+        "(inline and lookback), SatResult::Unknown and *_tests paths pass; "
+        "an unclassified member, a missing root and a low file count fail"
     )
     return 0
 
@@ -171,7 +187,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    hits = scan(list_all=args.list)
+    try:
+        hits = scan(list_all=args.list)
+    except ScanRootError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     if args.list:
         for rel, ln, code in hits:

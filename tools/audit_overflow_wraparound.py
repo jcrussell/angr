@@ -81,11 +81,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import blank_noise, enclosing_fn, is_test_file
+from rust_source_utils import (
+    ScanRootError,
+    blank_noise,
+    enclosing_fn,
+    is_test_file,
+    require_floor,
+    rust_files,
+    scan_roots,
+    self_test_scan_roots,
+)
 
 # Repo layout: this file lives at <repo>/tools/audit_overflow_wraparound.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_DIR = REPO_ROOT / "native" / "angr" / "src"
 # The 6 subsystems the round-4 retrospective named, plus exploration/ (bd
 # angr-goev1): the SP/return-address arithmetic family kept recurring there
 # (angr-sqfj8.62, angr-sqfj8.63, angr-c7xno.29, angr-0jh0j.16) with no gate in
@@ -94,7 +102,10 @@ SRC_DIR = REPO_ROOT / "native" / "angr" / "src"
 # vex/ has its own written convention (invariant-rust-concrete-arith-must-wrap)
 # and can be folded in as a later extension.
 SUBSYSTEMS = ("arch", "memory", "interpreter", "symbolic", "state", "syscalls", "procedures", "exploration")
-SCAN_DIRS = tuple(SRC_DIR / s for s in SUBSYSTEMS)
+SCAN = {"native/angr": SUBSYSTEMS}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+# Fewer non-test files than this means the code moved out of the scan roots.
+MIN_FILES = 150
 BASELINE_PATH = REPO_ROOT / "tools" / "overflow_baseline.txt"
 
 # Documented-exception marker, e.g.
@@ -168,9 +179,14 @@ COMPOUND_RE = re.compile(rf"(?P<lhs>{_TOKEN})[ \t]*(?P<op>[+-])=[ \t]*(?P<rhs>{_
 COMPOUND_NAME_COMPONENTS = NAME_COMPONENTS - {"count"}
 
 
-def _iter_source_files() -> list[Path]:
-    """Non-test Rust sources under the 6 scanned subsystem dirs."""
-    return [p for d in SCAN_DIRS if d.is_dir() for p in sorted(d.rglob("*.rs")) if not is_test_file(p)]
+def _iter_source_files(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Non-test Rust sources under the `SUBSYSTEMS` dirs.
+
+    Raises ScanRootError on a bad root or a scan below ``MIN_FILES``.
+    """
+    files = [p for p in rust_files(scan_roots(repo_root, SCAN, EXCLUDE)) if not is_test_file(p)]
+    require_floor(files, MIN_FILES, "audit_overflow_wraparound")
+    return files
 
 
 def _core_name(operand: str) -> str | None:
@@ -319,6 +335,12 @@ def self_test() -> int:
         for row in got:
             print(f"    {row}")
         return 1
+    root_failures = self_test_scan_roots(_iter_source_files, SCAN)
+    if root_failures:
+        print("SELF-TEST FAILED")
+        for f in root_failures:
+            print(f"  {f}")
+        return 1
     print(f"self-test OK: {len(got)} sites classified as expected (3 gaps, 2 documented-exempt, 6 clean controls)")
     return 0
 
@@ -366,12 +388,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    for d in SCAN_DIRS:
-        if not d.is_dir():
-            print(f"error: source dir not found: {d}", file=sys.stderr)
-            return 2
-
-    hits = scan()
+    try:
+        hits = scan()
+    except ScanRootError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     gaps = [h for h in hits if not h[4]]
 
     if args.list:

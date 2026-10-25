@@ -72,11 +72,23 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import blank_noise, enclosing_fn, is_test_file
+from rust_source_utils import (
+    ScanRootError,
+    blank_noise,
+    enclosing_fn,
+    is_test_file,
+    require_floor,
+    rust_files,
+    scan_roots,
+    self_test_scan_roots,
+)
 
 # Repo layout: this file lives at <repo>/tools/audit_page_shift.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_DIR = REPO_ROOT / "native" / "angr" / "src"
+SCAN = {"native/angr": ("",)}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+# Fewer non-test files than this means the code moved out of the scan roots.
+MIN_FILES = 200
 BASELINE_PATH = REPO_ROOT / "tools" / "page_shift_baseline.txt"
 
 # Documented-exception marker, e.g.
@@ -134,9 +146,14 @@ LITERAL_RE = re.compile(
 )
 
 
-def _iter_source_files() -> list[Path]:
-    """Non-test Rust sources under native/angr/src/."""
-    return [p for p in sorted(SRC_DIR.rglob("*.rs")) if not is_test_file(p)]
+def _iter_source_files(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Non-test Rust sources under native/angr/src/.
+
+    Raises ScanRootError on a bad root or a scan below ``MIN_FILES``.
+    """
+    files = [p for p in rust_files(scan_roots(repo_root, SCAN, EXCLUDE)) if not is_test_file(p)]
+    require_floor(files, MIN_FILES, "audit_page_shift")
+    return files
 
 
 def _is_shaped(operand: str) -> bool:
@@ -271,6 +288,12 @@ def self_test() -> int:
         for row in got:
             print(f"    {row}")
         return 1
+    root_failures = self_test_scan_roots(_iter_source_files, SCAN)
+    if root_failures:
+        print("SELF-TEST FAILED")
+        for f in root_failures:
+            print(f"  {f}")
+        return 1
     print(f"self-test OK: {len(got)} sites classified as expected (6 gaps, 1 documented-exempt, 5 clean controls)")
     return 0
 
@@ -318,11 +341,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    if not SRC_DIR.is_dir():
-        print(f"error: rust source dir not found: {SRC_DIR}", file=sys.stderr)
+    try:
+        hits = scan()
+    except ScanRootError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
-
-    hits = scan()
     gaps = [h for h in hits if not h[4]]
 
     if args.list:

@@ -38,10 +38,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import is_test_file
+from rust_source_utils import ScanRootError, is_test_file, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-SRC = REPO / "native" / "angr" / "src"
+SCAN = {"native/angr": ("",)}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: its tests never start Python"}
+# Fewer test files than this means the tests moved out of the scan roots.
+MIN_FILES = 150
+
+
+def scan_files(repo_root: Path = REPO) -> list[Path]:
+    """The Rust test files the real run scans; raises ScanRootError on a bad root or a low count."""
+    files = [p for p in rust_files(scan_roots(repo_root, SCAN, EXCLUDE)) if is_test_file(p.relative_to(repo_root))]
+    require_floor(files, MIN_FILES, "audit_test_import_guard")
+    return files
 
 IMPORT_RE = re.compile(r"""\bimport(?:_bound)?\s*\(\s*(?:py\s*,\s*)?"angr(?:\.|")""")
 EXEMPT_RE = re.compile(r"import-guard-ok:\s*\S")
@@ -108,7 +118,14 @@ def self_test() -> int:
     if not is_test_file("native/angr/src/callbacks/callbacks_tests.rs"):
         print("self-test FAILED: is_test_file rejects a *_tests.rs path", file=sys.stderr)
         return 1
-    print(f"self-test OK: flagged the three guard shapes at lines {hits}, skipped comment and exemption")
+    root_failures = self_test_scan_roots(scan_files, SCAN)
+    if root_failures:
+        print(f"self-test FAILED: {root_failures}", file=sys.stderr)
+        return 1
+    print(
+        f"self-test OK: flagged the three guard shapes at lines {hits}, skipped comment and exemption; "
+        "an unclassified member, a missing root and a low file count fail"
+    )
     return 0
 
 
@@ -119,11 +136,14 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
+    try:
+        files = scan_files()
+    except ScanRootError as e:
+        print(f"audit_test_import_guard: {e}", file=sys.stderr)
+        return 1
     found = []
-    for path in sorted(SRC.rglob("*.rs")):
+    for path in files:
         rel = path.relative_to(REPO)
-        if not is_test_file(rel):
-            continue
         for line in scan(path.read_text(encoding="utf-8")):
             found.append(f"{rel}:{line}")
     if found:
@@ -133,7 +153,7 @@ def main() -> int:
         print("Use crate::claripy_bridge::claripy_module(py) / claripy_object instead,")
         print("or mark a genuine case with `import-guard-ok: <why>`.")
         return 1
-    print("audit_test_import_guard: no angr imports in Rust test code")
+    print(f"audit_test_import_guard: no angr imports in {len(files)} Rust test files")
     return 0
 
 

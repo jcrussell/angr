@@ -101,13 +101,26 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import is_test_file
+from rust_source_utils import ScanRootError, is_test_file, scan_roots, self_test_scan_roots, workspace_members
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_PATHSPEC = "native/angr/src"
+# Same roots as audit_silent_fallback.py, the tagging audit this pairs with.
+# A diff has no file count, so there is no floor here; a missing or
+# unclassified root still fails.
+SCAN = {"native/angr": ("",)}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
+
+
+def src_prefixes(repo_root: Path = REPO_ROOT) -> list[str]:
+    """Repo-relative ``<member>/src/`` prefixes whose ``.rs`` changes the check reads.
+
+    Raises ScanRootError when the roots do not match the workspace.
+    """
+    return [root.relative_to(repo_root).as_posix().rstrip("/") + "/" for root in scan_roots(repo_root, SCAN, EXCLUDE)]
 
 # See the module docstring's "Site detection" paragraph for why these two
 # alternatives (and not a same-line `cat_b|cat_c` match) are the right shape.
@@ -185,10 +198,10 @@ def determine_range(explicit_base: str | None) -> tuple[str, str]:
     )
 
 
-def _run_diff(range_arg: str, pathspec: str | None) -> str:
+def _run_diff(range_arg: str, pathspecs: Sequence[str]) -> str:
     args = ["diff", "--unified=0", "--no-color", range_arg]
-    if pathspec:
-        args += ["--", pathspec]
+    if pathspecs:
+        args += ["--", *pathspecs]
     proc = _git(args)
     if proc.returncode != 0:
         print(f"warning: `git diff {' '.join(args)}` failed: {proc.stderr.strip()}", file=sys.stderr)
@@ -249,11 +262,11 @@ def _is_new_lossy_site(stripped: str) -> bool:
     return bool(MACRO_CALL_RE.search(stripped))
 
 
-def find_new_sites(diff_text: str) -> list[tuple[str, int, str]]:
-    """New cat_b/cat_c sites added in ``diff_text``, restricted to non-test .rs files."""
+def find_new_sites(diff_text: str, prefixes: Sequence[str]) -> list[tuple[str, int, str]]:
+    """New cat_b/cat_c sites added in ``diff_text``, restricted to non-test .rs files under ``prefixes``."""
     hits = []
     for relpath, lineno, content in parse_added_lines(diff_text):
-        if not relpath.endswith(".rs") or is_test_file(relpath):
+        if not relpath.endswith(".rs") or is_test_file(relpath) or not relpath.startswith(tuple(prefixes)):
             continue
         stripped = content.strip()
         if _is_new_lossy_site(stripped):
@@ -265,9 +278,9 @@ def has_paired_test(touched: list[str]) -> bool:
     return any(is_test_file(f) for f in touched)
 
 
-def evaluate(diff_text: str, touched: list[str]) -> tuple[int, str]:
+def evaluate(diff_text: str, touched: list[str], prefixes: Sequence[str]) -> tuple[int, str]:
     """Return (exit_code, message) for a given (site-scan diff, touched-files list)."""
-    sites = find_new_sites(diff_text)
+    sites = find_new_sites(diff_text, prefixes)
     if not sites:
         return 0, "OK: no new cat_b/cat_c silent-fallback sites in this diff."
 
@@ -392,7 +405,19 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
         ["native/angr/src/silent_default_tests.rs"],
         0,
     ),
+    (
+        "new site in a crate outside the scan roots -> PASS, not this gate's code",
+        _synthetic_diff(
+            "native/clarirs-core/src/context.rs",
+            ['    let got = silent_default!(cat_c, None::<u64>, 0, "demo");'],
+        ),
+        ["native/clarirs-core/src/context.rs"],
+        0,
+    ),
 ]
+
+# The prefixes the synthetic diffs above are evaluated against.
+_SELF_TEST_PREFIXES = ("native/angr/src/",)
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +452,12 @@ def _write_tool_copies(dest_tools_dir) -> None:
     src_dir = Path(__file__).resolve().parent
     for name in ("audit_silent_fallback_test_pairing.py", "rust_source_utils.py"):
         shutil.copy(src_dir / name, dest_tools_dir / name)
+
+
+def _write_workspace(repo) -> None:
+    """A ``Cargo.toml`` listing this repo's members, so the copy's scan roots resolve."""
+    listed = ", ".join(f'"{m}"' for m in workspace_members(REPO_ROOT))
+    (repo / "Cargo.toml").write_text(f"[workspace]\nmembers = [{listed}]\n", encoding="utf-8")
 
 
 def _init_git_repo(repo) -> None:
@@ -467,6 +498,7 @@ def _self_test_no_parent_commit_fails_loudly() -> str | None:
         repo = Path(tmp)
         _init_git_repo(repo)
         _write_tool_copies(repo / "tools")
+        _write_workspace(repo)
         (repo / "native" / "angr" / "src").mkdir(parents=True)
         (repo / "native" / "angr" / "src" / "placeholder.rs").write_text("// placeholder\n")
         _commit_all(repo, "single initial commit, no parent, no origin")
@@ -508,6 +540,7 @@ def _self_test_shallow_clone_deepens_and_succeeds() -> str | None:
         upstream.mkdir()
         _init_git_repo(upstream)
         _write_tool_copies(upstream / "tools")
+        _write_workspace(upstream)
         (upstream / "native" / "angr" / "src").mkdir(parents=True)
         (upstream / "native" / "angr" / "src" / "placeholder.rs").write_text("// placeholder v1\n")
         _commit_all(upstream, "parent commit")
@@ -566,7 +599,7 @@ _GIT_RANGE_SELF_TEST_SCENARIOS = [
 def self_test() -> int:
     failures = []
     for name, diff_text, touched, expected in _SELF_TEST_CASES:
-        got, _msg = evaluate(diff_text, touched)
+        got, _msg = evaluate(diff_text, touched, _SELF_TEST_PREFIXES)
         if got != expected:
             failures.append(f"{name}: expected exit {expected}, got {got}")
 
@@ -574,6 +607,8 @@ def self_test() -> int:
         error = scenario()
         if error:
             failures.append(f"{name}: {error}")
+
+    failures.extend(self_test_scan_roots(src_prefixes, SCAN, check_floor=False))
 
     if failures:
         print("SELF-TEST FAILED:")
@@ -583,7 +618,8 @@ def self_test() -> int:
 
     print(
         f"self-test OK: {len(_SELF_TEST_CASES)} synthetic diff scenarios + "
-        f"{len(_GIT_RANGE_SELF_TEST_SCENARIOS)} real-git determine_range() scenarios classified as expected."
+        f"{len(_GIT_RANGE_SELF_TEST_SCENARIOS)} real-git determine_range() scenarios classified as expected; "
+        "an unclassified member and a missing root fail"
     )
     return 0
 
@@ -598,10 +634,16 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
+    try:
+        prefixes = src_prefixes()
+    except ScanRootError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     if args.diff_file:
         text = sys.stdin.read() if args.diff_file == "-" else Path(args.diff_file).read_text(encoding="utf-8")
         # A pre-built diff carries every changed file; reuse it for both the
-        # site scan (filtered to native/angr/src below) and the touched-files
+        # site scan (filtered to the scan roots in find_new_sites) and the touched-files
         # check, rather than shelling out to git twice.
         site_diff_text = text
         touched = []
@@ -612,7 +654,7 @@ def main() -> int:
                 current_file = None if path == "/dev/null" else path.removeprefix("b/")
                 if current_file:
                     touched.append(current_file)
-        code, message = evaluate(site_diff_text, touched)
+        code, message = evaluate(site_diff_text, touched, prefixes)
         print(message)
         return code
 
@@ -622,9 +664,9 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     print(f"diff range: {description}", file=sys.stderr)
-    site_diff_text = _run_diff(range_arg, SRC_PATHSPEC)
+    site_diff_text = _run_diff(range_arg, prefixes)
     touched = _run_name_only(range_arg)
-    code, message = evaluate(site_diff_text, touched)
+    code, message = evaluate(site_diff_text, touched, prefixes)
     print(message)
     return code
 

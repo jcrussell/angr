@@ -53,9 +53,17 @@ import re
 import sys
 from pathlib import Path
 
+# The scanner below is this gate's own; only root resolution is shared.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roots, self_test_scan_roots
+
 # Repo layout: this file lives at <repo>/tools/audit_silent_fallback.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
+SCAN = {"native/angr": ("",)}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
+# Fewer non-test, fork-owned files than this means the code moved out of the scan roots.
+MIN_FILES = 200
 BASELINE_PATH = REPO_ROOT / "tools" / "silent_fallback_baseline.txt"
 
 # Window (lines before / after the site) scanned for a SILENT(cat-x) tag.
@@ -111,13 +119,19 @@ def _is_upstream_owned(rel: str) -> bool:
     return any(rel.startswith(e) if e.endswith("/") else rel == e for e in UPSTREAM_OWNED)
 
 
-def _iter_rs_files() -> list[Path]:
+def _iter_rs_files(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """The fork-owned production files the real run scans.
+
+    Raises ScanRootError on a bad root or a scan below ``MIN_FILES``.
+    """
     files = []
-    for p in sorted(SRC_ROOT.rglob("*.rs")):
-        rel = p.relative_to(SRC_ROOT).as_posix()
-        if _is_test_rel(rel) or _is_upstream_owned(rel):
-            continue
-        files.append(p)
+    for root in scan_roots(repo_root, SCAN, EXCLUDE):
+        for p in rust_files([root]):
+            rel = p.relative_to(root).as_posix()
+            if _is_test_rel(rel) or _is_upstream_owned(rel):
+                continue
+            files.append(p)
+    require_floor(files, MIN_FILES, "audit_silent_fallback")
     return files
 
 
@@ -254,6 +268,8 @@ def self_test() -> int:
         if _is_upstream_owned(rel) != want_upstream:
             failures.append(f"upstream-owned skip: {rel!r} expected {want_upstream}")
 
+    failures.extend(self_test_scan_roots(_iter_rs_files, SCAN))
+
     if failures:
         print("SELF-TEST FAILED")
         for f in failures:
@@ -261,7 +277,8 @@ def self_test() -> int:
         return 1
     print(
         "self-test OK: untagged return Ok(None) / .ok(); / let-tail flagged, "
-        "the same sites tagged SILENT(cat-b) pass, baseline, test-file and upstream-owned skips honoured"
+        "the same sites tagged SILENT(cat-b) pass, baseline, test-file and upstream-owned skips honoured; "
+        "an unclassified member, a missing root and a low file count fail"
     )
     return 0
 
@@ -307,11 +324,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    if not SRC_ROOT.is_dir():
-        print(f"error: source root not found: {SRC_ROOT}", file=sys.stderr)
+    try:
+        hits = scan()
+    except ScanRootError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
-
-    hits = scan()
     untagged = [h for h in hits if not h[4]]
 
     if args.list:

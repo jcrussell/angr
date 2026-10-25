@@ -64,13 +64,22 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import blank_noise, is_test_file
+from rust_source_utils import (
+    ScanRootError,
+    blank_noise,
+    is_test_file,
+    require_floor,
+    rust_files,
+    scan_roots,
+    self_test_scan_roots,
+)
 
 # Repo layout: this file lives at <repo>/tools/audit_rounding_mode_threading.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VEX_DIR = REPO_ROOT / "native" / "angr" / "src" / "vex"
-INTERP_DIR = REPO_ROOT / "native" / "angr" / "src" / "interpreter"
-SCAN_DIRS = (VEX_DIR, INTERP_DIR)
+SCAN = {"native/angr": ("vex", "interpreter")}
+EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+# Fewer non-test files than this means the code moved out of the scan roots.
+MIN_FILES = 40
 BASELINE_PATH = REPO_ROOT / "tools" / "rounding_mode_baseline.txt"
 
 # Documented-exception marker, e.g.
@@ -89,9 +98,14 @@ DISCARDED_RM_RE = re.compile(r"\blet\s+(?P<name>_(?:[A-Za-z0-9_]*_)?rm[A-Za-z0-9
 FN_NAMED_RE = re.compile(r"\bfn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[(<]")
 
 
-def _iter_source_files() -> list[Path]:
-    """Non-test Rust sources under the scanned dirs (vex/ + interpreter/)."""
-    return [p for d in SCAN_DIRS for p in sorted(d.rglob("*.rs")) if not is_test_file(p)]
+def _iter_source_files(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Non-test Rust sources under the scanned dirs (vex/ + interpreter/).
+
+    Raises ScanRootError on a bad root or a scan below ``MIN_FILES``.
+    """
+    files = [p for p in rust_files(scan_roots(repo_root, SCAN, EXCLUDE)) if not is_test_file(p)]
+    require_floor(files, MIN_FILES, "audit_rounding_mode_threading")
+    return files
 
 
 def _enclosing_fn(src: str, pos: int) -> str | None:
@@ -255,6 +269,12 @@ def self_test() -> int:
         for row in got:
             print(f"    {row}")
         return 1
+    root_failures = self_test_scan_roots(_iter_source_files, SCAN)
+    if root_failures:
+        print("SELF-TEST FAILED")
+        for f in root_failures:
+            print(f"  {f}")
+        return 1
     print(f"self-test OK: {len(got)} sites classified as expected (1 threaded, 3 gaps, 2 exempt)")
     return 0
 
@@ -301,12 +321,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    for d in SCAN_DIRS:
-        if not d.is_dir():
-            print(f"error: source dir not found: {d}", file=sys.stderr)
-            return 2
-
-    hits = scan()
+    try:
+        hits = scan()
+    except ScanRootError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     gaps = [h for h in hits if h[4] and not h[5]]
 
     if args.list:

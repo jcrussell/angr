@@ -21,7 +21,8 @@ checked-in baseline is base-ref-independent and self-documenting: existing
 citations are grandfathered once, and the baseline should only shrink as they
 get converted to symbol references.
 
-Scanned surfaces: ``//``-comments under ``native/angr/src/`` and *every* line of
+Scanned surfaces: ``//``-comments under the ``src/`` of every fork-owned
+workspace member (``rust_source_utils.scan_roots``) and *every* line of
 ``docs/**/*.rst``. The docs half was added by angr-kw5f6 after angr-sqfj8.126
 found ``docs/advanced-topics/rust_engine.rst``'s typed-exception table citing
 ``engine.rs``/``errors.rs`` line numbers that had drifted 60-95 lines with zero
@@ -46,9 +47,16 @@ import re
 import sys
 from pathlib import Path
 
+# The scanner below is this gate's own; only root resolution is shared.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roots, self_test_scan_roots
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
-DOCS_ROOT = REPO_ROOT / "docs"
+# Comment hygiene holds in every fork-owned crate.
+SCAN = {"native/angr": ("",), "native/angr-macros": ("",)}
+EXCLUDE: dict[str, str] = {}
+# Fewer Rust files than this means the code moved out of the scan roots.
+MIN_FILES = 400
 BASELINE_PATH = REPO_ROOT / "tools" / "line_citations_baseline.txt"
 
 # file.rs:123 / some/path/foo.py:45 -- cite-another-location-by-line-number.
@@ -57,13 +65,19 @@ FILE_LINE_RE = re.compile(r"[\w./-]+\.(?:rs|py):\d+")
 LINE_WORD_RE = re.compile(r"\blines?\s*~?\d+\b", re.IGNORECASE)
 
 
-def _iter_sources() -> list[Path]:
+def _iter_sources(repo_root: Path = REPO_ROOT) -> list[Path]:
     """Every file whose citations are gated, in a stable order.
 
     ``.rs`` sources are filtered down to comment lines by :func:`_is_scannable`;
-    ``.rst`` docs are scanned whole, since the entire file is prose.
+    ``.rst`` docs are scanned whole, since the entire file is prose. Raises
+    ScanRootError on a bad root or a Rust scan below ``MIN_FILES``.
     """
-    return sorted(SRC_ROOT.rglob("*.rs")) + sorted(DOCS_ROOT.rglob("*.rst"))
+    rs = rust_files(scan_roots(repo_root, SCAN, EXCLUDE))
+    require_floor(rs, MIN_FILES, "check_line_citations")
+    docs = repo_root / "docs"
+    if not docs.is_dir():
+        raise ScanRootError(f"scan root {docs} is missing")
+    return rs + sorted(docs.rglob("*.rst"))
 
 
 def _is_scannable(path: Path, stripped: str) -> bool:
@@ -155,6 +169,7 @@ def self_test() -> int:
     want = [("native/angr/src/fixture.rs", 3, "/// Mirrors the guard at line 42 of the caller.")]
     if fresh != want:
         failures.append(f"baseline: expected {want}\n  got      {fresh}")
+    failures.extend(self_test_scan_roots(_iter_sources, SCAN))
 
     if failures:
         print("SELF-TEST FAILED")
@@ -164,7 +179,8 @@ def self_test() -> int:
     print(
         f"self-test OK: {len(got)} citations flagged as expected "
         "(.rs file:NNN, .rs line NNN, .rst file:NNN, .rst lines NNN; clean controls silent), "
-        "baseline suppresses a moved grandfathered key"
+        "baseline suppresses a moved grandfathered key; "
+        "an unclassified member, a missing root and a low file count fail"
     )
     return 0
 
@@ -203,12 +219,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    for root in (SRC_ROOT, DOCS_ROOT):
-        if not root.is_dir():
-            print(f"error: scan root not found: {root}", file=sys.stderr)
-            return 2
-
-    hits = scan()
+    try:
+        hits = scan()
+    except ScanRootError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     if args.list:
         for rel, lineno, stripped in hits:
