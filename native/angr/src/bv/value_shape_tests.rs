@@ -3,12 +3,10 @@
 //! fire on those terms. Nodes are built with `RustBV::from_op`, which skips the
 //! rewrites, so each is read as built.
 
-#![allow(clippy::unwrap_used, reason = "test fixtures")]
-
 use clarirs_core::prelude::AstFactory;
 
 use super::super::value::{BVOp, RustBV};
-use crate::claripy::ast::GLOBAL_CONTEXT;
+use clarirs_core::GLOBAL_CONTEXT;
 
 fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
     RustBV::from_op(width, op, operands)
@@ -74,7 +72,10 @@ fn an_ast_reads_like_the_expression_it_came_from() {
 
     for expr in &values {
         let held = ast(expr);
-        assert!(matches!(held, RustBV::Ast { .. }), "{expr:?} converted to {held:?}");
+        assert!(
+            matches!(held, RustBV::Ast { .. }),
+            "{expr:?} converted to {held:?}"
+        );
         let (want, got) = (expr.node().unwrap(), held.node().unwrap());
         assert_eq!(want.op, got.op, "op of {expr:?}");
         assert_eq!(want.operands.len(), got.operands.len(), "arity of {expr:?}");
@@ -140,7 +141,10 @@ fn extract_rules_see_through_an_ast_operand() {
     assert_eq!(wide.extract(31, 16).as_u128(), Some(0));
     // Rule 5: extract of the low bits of a sign extension.
     let sext = ast(&raw(BVOp::SignExt(16), 32, vec![x.clone()]));
-    assert!(same(&sext.extract(7, 0), &raw(BVOp::Extract(7, 0), 8, vec![x])));
+    assert!(same(
+        &sext.extract(7, 0),
+        &raw(BVOp::Extract(7, 0), 8, vec![x])
+    ));
 }
 
 #[test]

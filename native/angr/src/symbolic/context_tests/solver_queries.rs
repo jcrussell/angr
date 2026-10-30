@@ -13,9 +13,9 @@ use super::*;
 // The instrumentation-counter tests below (`test_record_*_counters`) call
 // `stats.rs` directly; the explicit import names what they depend on rather
 // than leaning on `context`'s `use super::stats::*` glob (angr-c7xno.99).
+use crate::bv::stats::{record_bvop_concat, record_bvop_extract, record_bvop_reverse};
 use super::super::stats::{
-    VexOpFamily, get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
-    record_concretize_read, record_concretize_write, record_mem_lazy_page_fault, record_mem_load,
+    VexOpFamily, get_solver_stats, record_concretize_read, record_concretize_write, record_mem_lazy_page_fault, record_mem_load,
     record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
     record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop,
 };

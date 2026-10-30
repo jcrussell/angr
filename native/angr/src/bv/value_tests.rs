@@ -85,7 +85,6 @@ fn test_extract_high_bits_of_wide_concrete_are_zero() {
     assert_eq!(full_lo.as_u128(), Some(u128::MAX));
 }
 
-
 #[test]
 fn test_extract_canonicalizes_through_drive_extract() {
     // Every Extract entry point routes through drive_extract's rules-1-5 pass
@@ -97,19 +96,13 @@ fn test_extract_canonicalizes_through_drive_extract() {
     // Rule 2: Extract entirely within one Concat part collapses to that part.
     assert_eq!(bv_shape(&cat.extract(7, 0)), bv_shape(&b));
     assert_eq!(bv_shape(&cat.extract(15, 8)), bv_shape(&a));
-    assert_eq!(
-        bv_shape(&cat.extract(7, 0)),
-        bv_shape(&cat.extract(7, 0))
-    );
+    assert_eq!(bv_shape(&cat.extract(7, 0)), bv_shape(&cat.extract(7, 0)));
 
     // Rule 1: Extract-of-Extract folds into a single Extract of the base.
     let wide = RustBV::symbol("w", 32);
     let folded = wide.extract(23, 8).extract(7, 0);
     assert_eq!(bv_shape(&folded), bv_shape(&wide.extract(15, 8)));
-    assert_eq!(
-        bv_shape(&folded),
-        "Expr(Extract(15, 8), 8, [Leaf(w, 32)])"
-    );
+    assert_eq!(bv_shape(&folded), "Expr(Extract(15, 8), 8, [Leaf(w, 32)])");
 
     // Rule 4: Extract above a ZeroExt's original width is the zero constant.
     let top = b.zero_extend(32).extract(31, 24);
@@ -166,9 +159,7 @@ fn test_concat_balanced_concrete_value() {
 fn test_concat_balanced_depth_is_log() {
     // 8 symbolic bytes → linear chain would have depth 7; balanced
     // tree should be 3 (log2(8)).
-    let parts: Vec<RustBV> = (0..8)
-        .map(|i| RustBV::symbol(format!("b{i}"), 8))
-        .collect();
+    let parts: Vec<RustBV> = (0..8).map(|i| RustBV::symbol(format!("b{i}"), 8)).collect();
     let balanced = RustBV::concat_balanced(&parts);
     assert_eq!(balanced.width(), 64);
     assert_eq!(ast_depth(&balanced), 3);
@@ -184,9 +175,7 @@ fn test_concat_balanced_depth_is_log() {
 #[test]
 fn test_concat_balanced_odd_length() {
     // Odd length (5) should still produce ceil(log2(5))=3-deep tree.
-    let parts: Vec<RustBV> = (0..5)
-        .map(|i| RustBV::symbol(format!("o{i}"), 8))
-        .collect();
+    let parts: Vec<RustBV> = (0..5).map(|i| RustBV::symbol(format!("o{i}"), 8)).collect();
     let balanced = RustBV::concat_balanced(&parts);
     assert_eq!(balanced.width(), 40);
     assert!(ast_depth(&balanced) <= 3);
@@ -236,11 +225,7 @@ fn test_comparison_signed() {
 /// so all are covered here (angr-fs8kb.28).
 #[test]
 fn test_zero_width_symbolic_degenerates_to_concrete() {
-
-    for bv in [
-        RustBV::symbol("zw", 0),
-        RustBV::symbol("zw_id", 0),
-    ] {
+    for bv in [RustBV::symbol("zw", 0), RustBV::symbol("zw_id", 0)] {
         assert!(bv.is_concrete(), "width-0 symbolic must degenerate: {bv:?}");
         assert_eq!(bv.width(), 0);
         // The empty bitvector has exactly one inhabitant, and `concrete`'s mask

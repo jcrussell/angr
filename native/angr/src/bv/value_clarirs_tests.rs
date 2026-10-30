@@ -2,8 +2,6 @@
 //! values. Nodes are built with `RustBV::from_op`, which skips the
 //! construction-time folds, so each op is seen as built.
 
-#![allow(clippy::unwrap_used, reason = "test fixtures")]
-
 use super::super::value::{BVOp, RustBV};
 use super::bool_of;
 
@@ -50,10 +48,15 @@ fn one_bit_logic_stays_a_bool() {
     for (a, b) in [(&lt, &eq), (&lt, &flag), (&flag, &flag)] {
         for op in [BVOp::And, BVOp::Or, BVOp::Xor] {
             let v = raw(op, 1, vec![a.clone(), b.clone()]);
-            assert!(super::bool_inside(&v.to_clarirs().unwrap()).is_some(), "{v:?}");
+            assert!(
+                super::bool_inside(&v.to_clarirs().unwrap()).is_some(),
+                "{v:?}"
+            );
         }
         let not = raw(BVOp::Not, 1, vec![a.clone()]);
-        assert!(super::bool_inside(&not.to_clarirs().unwrap()).is_some(), "{not:?}");
+        assert!(
+            super::bool_inside(&not.to_clarirs().unwrap()).is_some(),
+            "{not:?}"
+        );
     }
 }
-

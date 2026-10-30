@@ -59,4 +59,11 @@ pub fn check_extract_bounds(
     Ok(())
 }
 
-test_submod!("width_guards_tests.rs" => tests);
+#[cfg(test)]
+#[path = "width_guards_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod tests;

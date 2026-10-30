@@ -148,7 +148,7 @@ class TestClaripyBridgeWidthBounds:
     — by claripy's doing, not the engine's.
     """
 
-    # Mirrors symbolic/width_guards.rs::MAX_BV_WIDTH.
+    # Mirrors width_guards.rs::MAX_BV_WIDTH.
     MAX_BV_WIDTH = 1 << 20
 
     def _ctx(self):

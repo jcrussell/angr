@@ -11,7 +11,7 @@ use clarirs_core::ast::wire::WireDag;
 use clarirs_core::prelude::{AstFactory, AstRef, AstType, BitVec, ClarirsError};
 use serde::{Deserialize, Serialize};
 
-use crate::claripy::ast::GLOBAL_CONTEXT;
+use clarirs_core::GLOBAL_CONTEXT;
 
 /// Bitvector operation type for expression tree reconstruction.
 ///
@@ -471,7 +471,7 @@ impl RustBV {
     /// the shift amount in release, and the `Concrete` payload cannot represent
     /// anything wider anyway.
     #[inline]
-    pub(super) fn all_ones_mask(width: u32) -> u128 {
+    pub fn all_ones_mask(width: u32) -> u128 {
         if width >= 128 {
             u128::MAX
         } else {
@@ -522,7 +522,7 @@ impl RustBV {
         } else {
             name
         };
-        let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
+        let gc = &*GLOBAL_CONTEXT;
         let term = match super::symbol_kind::strip_bool_symbol_name(name) {
             Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
             None => gc.bvs(name, width),
@@ -686,11 +686,67 @@ impl PartialEq for RustBV {
 // angr-5mnx3.49: split again at 2062 lines, back over the <2000-line
 // threshold, into one topical module per former section banner plus a shared
 // `value_tests_support` for the two helpers more than one of them uses.
-test_submod!("value_tests_support.rs" => value_tests_support);
-test_submod!("value_tests.rs" => value_tests);
-test_submod!("value_simplify_tests.rs" => value_simplify_tests);
-test_submod!("value_zext_cmp_tests.rs" => value_zext_cmp_tests);
-test_submod!("value_serde_tests.rs" => value_serde_tests);
-test_submod!("value_ast_tests.rs" => value_ast_tests);
-test_submod!("value_concrete_arm_tests.rs" => value_concrete_arm_tests);
-test_submod!("value_eq_debug_tests.rs" => value_eq_debug_tests);
+#[cfg(test)]
+#[path = "value_ast_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_ast_tests;
+#[cfg(test)]
+#[path = "value_concrete_arm_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_concrete_arm_tests;
+#[cfg(test)]
+#[path = "value_eq_debug_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_eq_debug_tests;
+#[cfg(test)]
+#[path = "value_serde_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_serde_tests;
+#[cfg(test)]
+#[path = "value_simplify_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_simplify_tests;
+#[cfg(test)]
+#[path = "value_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_tests;
+#[cfg(test)]
+#[path = "value_tests_support.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_tests_support;
+#[cfg(test)]
+#[path = "value_zext_cmp_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_zext_cmp_tests;

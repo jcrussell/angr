@@ -23,14 +23,14 @@ use super::value_clarirs::bit_of;
 type Term = AstRef<'static>;
 
 /// The op and operands of a compound value. See the module doc.
-pub(crate) struct Node<'a> {
-    pub(crate) op: BVOp,
-    pub(crate) operands: Cow<'a, [RustBV]>,
+pub struct Node<'a> {
+    pub op: BVOp,
+    pub operands: Cow<'a, [RustBV]>,
 }
 
 impl RustBV {
     /// The op and operands of this value, or `None` for a leaf or constant.
-    pub(crate) fn node(&self) -> Option<Node<'_>> {
+    pub fn node(&self) -> Option<Node<'_>> {
         match self {
             RustBV::Ast { ast, .. } => ast_node(ast).map(|(op, operands)| Node {
                 op,
@@ -45,7 +45,7 @@ impl RustBV {
     /// `SymbolKind::Bool` name so it never collides with a same-named `BVS`.
     /// Two leaves with the same name and width are one Z3 constant
     /// (`invariant-symbol-identity-is-by-name`).
-    pub(crate) fn leaf_var(&self) -> Option<(std::sync::Arc<str>, u32)> {
+    pub fn leaf_var(&self) -> Option<(std::sync::Arc<str>, u32)> {
         use super::symbol_kind::SymbolKind;
         use std::sync::Arc;
         match self {
@@ -73,7 +73,7 @@ impl RustBV {
     /// `value_clarirs::build_term` emits. The lazy lowering can still refuse
     /// a term that grew deeper than `z3_lower::MAX_LOWER_DEPTH`, and
     /// `to_z3_ast` reports that as an error (angr-mx00p.116.2).
-    pub(crate) fn from_clarirs_lowerable(ast: Term) -> RustBV {
+    pub fn from_clarirs_lowerable(ast: Term) -> RustBV {
         if let AstOp::BVV(value) = ast.op()
             && let Ok(v) = u128::try_from(&value.to_biguint())
         {
@@ -159,4 +159,11 @@ fn bool_node(b: &Term) -> Option<(BVOp, Vec<RustBV>)> {
     }
 }
 
-test_submod!("value_shape_tests.rs" => tests);
+#[cfg(test)]
+#[path = "value_shape_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod tests;

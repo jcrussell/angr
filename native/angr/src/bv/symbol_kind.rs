@@ -48,8 +48,15 @@ impl SymbolKind {
 /// snapshot record — so the sort survives a snapshot round-trip for free. The
 /// returned name is claripy's own, so the leaf is the very `BoolS` Python
 /// holds.
-pub(crate) fn strip_bool_symbol_name(name: &str) -> Option<&str> {
+pub fn strip_bool_symbol_name(name: &str) -> Option<&str> {
     name.strip_prefix(BOOL_NAME_PREFIX)
 }
 
-test_submod!("symbol_kind_tests.rs" => tests);
+#[cfg(test)]
+#[path = "symbol_kind_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod tests;

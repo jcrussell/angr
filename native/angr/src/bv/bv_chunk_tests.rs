@@ -1,4 +1,4 @@
-// Tests for symbolic/bv_chunk.rs — the read tests for the chunking helpers
+// Tests for bv_chunk.rs — the read tests for the chunking helpers
 // (angr-9ke6b.230). `E = String` keeps them hermetic (no Python interpreter).
 use super::*;
 
@@ -67,8 +67,14 @@ fn check_concrete_load_size_bounds_are_inclusive() {
     for oversize in [MAX_CONCRETE_LOAD_BYTES + 1, u32::MAX] {
         let err = check_concrete_load_size("get_state_memory", oversize)
             .expect_err("must refuse an over-limit read");
-        assert!(err.contains("get_state_memory"), "message names the op: {err}");
-        assert!(err.contains(&oversize.to_string()), "message names the size: {err}");
+        assert!(
+            err.contains("get_state_memory"),
+            "message names the op: {err}"
+        );
+        assert!(
+            err.contains(&oversize.to_string()),
+            "message names the size: {err}"
+        );
     }
 }
 
@@ -84,7 +90,10 @@ fn load_concrete_bytes_chunked_caps_the_up_front_reservation() {
         Err("unmapped".to_string())
     });
     assert!(res.is_err());
-    assert_eq!(calls, 1, "must fail on the first chunk, not pre-read the range");
+    assert_eq!(
+        calls, 1,
+        "must fail on the first chunk, not pre-read the range"
+    );
 }
 
 /// The cap only bounds the *reservation*: a read larger than one chunk but
@@ -137,7 +146,10 @@ fn chunked_helpers_wrap_past_the_top_of_the_address_space() {
         stored,
         vec![base, base.wrapping_add(16), base.wrapping_add(32)]
     );
-    assert!(stored[2] < base, "third chunk must have wrapped to the bottom");
+    assert!(
+        stored[2] < base,
+        "third chunk must have wrapped to the bottom"
+    );
 
     let mut loaded = Vec::new();
     load_concrete_bytes_chunked::<String, _>(base, 40, |a, n| {

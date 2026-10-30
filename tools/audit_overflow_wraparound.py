@@ -33,7 +33,7 @@ and ``tools/audit_sp_default_zero.py`` do: a heuristic detector plus a
 checked-in baseline of already-triaged sites. Only *new* sites fail.
 
 Two detectors, over any non-test ``.rs`` file under
-``native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``:
+``native/angr/src/{arch,bv,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``:
 
 1. :data:`BINOP_RE` -- a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not
    unary) whose left or right operand is a simple identifier / dotted field
@@ -101,7 +101,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # half at compile time, but the bare `sp + ptr_size` half had nothing.
 # vex/ has its own written convention (invariant-rust-concrete-arith-must-wrap)
 # and can be folded in as a later extension.
-SUBSYSTEMS = ("arch", "memory", "interpreter", "symbolic", "state", "syscalls", "procedures", "exploration")
+SUBSYSTEMS = (
+    "arch",
+    "bv",
+    "memory",
+    "interpreter",
+    "symbolic",
+    "state",
+    "syscalls",
+    "procedures",
+    "exploration",
+)
 SCAN = {"native/angr": SUBSYSTEMS}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
 # Fewer non-test files than this means the code moved out of the scan roots.

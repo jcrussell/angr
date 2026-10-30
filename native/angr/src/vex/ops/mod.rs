@@ -151,7 +151,7 @@ impl VEXOps {
     /// The *scalar* families share both properties (angr-fs8kb.95):
     /// `VEXOps::binop`/`unop` match on the opcode alone and never check an
     /// operand against the `IRType` it carries, and `RustBV`'s own guard —
-    /// `define_binop_pair!` in `symbolic/value_ops.rs` — is itself a
+    /// `define_binop_pair!` in `value_ops.rs` — is itself a
     /// `debug_assert_eq!`, so in release a mismatched `Iop_Add64` folds a
     /// `left.width()`-wide wrong constant on the `as_u128` path (or hands
     /// `RustBV::from_op` operands that disagree, which clarirs refuses,

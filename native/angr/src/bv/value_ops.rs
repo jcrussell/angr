@@ -1,6 +1,6 @@
 //! Bitvector arithmetic / bitwise / comparison / structural ops for [`RustBV`].
 //!
-//! Slice .2 of the `symbolic/value.rs` split (angr-7hwz). Carries the
+//! Slice .2 of the `value.rs` split (angr-7hwz). Carries the
 //! second `impl RustBV` block: the canonicalize helpers, integer arithmetic
 //! (`add`/`sub`/`mul`/`udiv`/`sdiv`/`urem`/`srem`/`neg`), bitwise
 //! (`and`/`or`/`xor`/`not`/`reverse`/shifts/rotates), comparisons (`eq`/`ne`
@@ -275,19 +275,24 @@ impl RustBV {
     /// constructor, the float builder and the legacy-snapshot decode turn an
     /// op into a value (angr-mx00p.12, .13). A width-0 result is the empty
     /// bitvector's only value (`invariant-rustbv-zero-width`).
-    pub(crate) fn from_op(width: u32, op: BVOp, operands: Vec<RustBV>) -> Self {
+    pub fn from_op(width: u32, op: BVOp, operands: Vec<RustBV>) -> Self {
         if width == 0 {
             return RustBV::Concrete { value: 0, width: 0 };
         }
-        silent_default!(
-            cat_c,
-            super::value_clarirs::build_term(&op, &operands, width)
-                .map(Self::from_clarirs_lowerable),
-            Self::unbuildable(width),
-            |err| "{op:?} over {} operand(s) has no clarirs term ({err}); \
-                   using a fresh {width}-bit variable",
-            operands.len()
-        )
+        match super::value_clarirs::build_term(&op, &operands, width) {
+            Ok(term) => Self::from_clarirs_lowerable(term),
+            Err(err) => {
+                // SILENT(cat-c): an op clarirs cannot build stays an
+                // unconstrained value rather than a wrong one; warn so it
+                // leaves a trail.
+                log::warn!(
+                    "{op:?} over {} operand(s) has no clarirs term ({err}); \
+                     using a fresh {width}-bit variable",
+                    operands.len()
+                );
+                Self::unbuildable(width)
+            }
+        }
     }
 
     /// The stand-in [`Self::from_op`] returns for an op it cannot build: a
@@ -304,7 +309,7 @@ impl RustBV {
     }
 
     /// Build a float op over IEEE bit patterns (see [`Self::from_op`]).
-    pub(crate) fn float_node(
+    pub fn float_node(
         kind: super::value::FloatOpKind,
         prec: super::value::FloatPrec,
         operands: Vec<RustBV>,
@@ -1314,7 +1319,7 @@ impl RustBV {
 /// bits at all; zero leading zeros is the right answer there, and unlike a
 /// size or an identity a bit *count* has no meaningful "refuse" value.
 #[inline]
-pub(crate) fn concrete_clz(value: u128, width: u32) -> u32 {
+pub fn concrete_clz(value: u128, width: u32) -> u32 {
     if value == 0 {
         return width;
     }
@@ -1330,7 +1335,7 @@ pub(crate) fn concrete_clz(value: u128, width: u32) -> u32 {
 /// same two sites, so it moves here with its sibling rather than leaving one
 /// half of the pair copy-pasted.
 #[inline]
-pub(crate) fn concrete_ctz(value: u128, width: u32) -> u32 {
+pub fn concrete_ctz(value: u128, width: u32) -> u32 {
     if value == 0 {
         width
     } else {
@@ -1815,8 +1820,22 @@ impl ExtractTarget for RustBVExtractTarget {
 // angr-ph300.1: quickcheck property tests for the concrete-folding ops above
 // and for `bv_codec`'s concrete<->Z3 round-trips. Child of `value_ops` so
 // `use super::*` reaches the private `sign_extend`/`sign_extend_to` helpers.
-test_submod!("value_ops_property_tests.rs" => value_ops_property_tests);
+#[cfg(test)]
+#[path = "value_ops_property_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_ops_property_tests;
 
 // angr-0jh0j.9: the `Clz`/`Ctz` concrete-fold helpers are plain integer math
 // with no Z3 in reach; these tests pin their width > 128 underflow.
-test_submod!("value_ops_bitcount_tests.rs" => value_ops_bitcount_tests);
+#[cfg(test)]
+#[path = "value_ops_bitcount_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod value_ops_bitcount_tests;

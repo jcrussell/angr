@@ -165,36 +165,12 @@ pub(crate) static CONCRETIZE_DISJUNCTION_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CONCRETIZE_DISJUNCTION_TERMS_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CONCRETIZE_DISJUNCTION_MAX_TERMS: AtomicU32 = AtomicU32::new(0);
 
-// AST construction (specific) — Reverse/Concat/Extract emissions. These
-// are the AST shapes most often blamed when claripy<->Rust mismatch surfaces
-// (angr-tlvl-style residuals). Counted at the public `RustBV::{reverse,
-// concat, extract}` entry points; internal recursion within `*_into` is
-// not double-counted.
-pub(crate) static BVOP_REVERSE_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static BVOP_CONCAT_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-// angr-g7nq: trivial-constraint fast path counters. Bumped from
-// `value.rs::{eq_into,ne_into,ult_into,ule_into,ugt_into,uge_into}` when
-// the `Cmp(ZeroExt(k, x), BVV)` (or commuted form) pattern is recognized
-// and either collapsed to a smaller AST (the "high bits zero" case) or
-// short-circuited to a concrete answer (the "high bits nonzero" case, an
-// unsatisfiable/tautological subexpression). Separate counts for the two
-// outcomes make it possible to attribute hits without inspecting the
-// emitted ASTs.
-pub(crate) static ZEXT_CMP_COLLAPSE_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
-
 // angr-1joc: constraint-dedup measurement counters. Three signals to decide
 // whether canonicalization/dedup at add_constraint_raw is worth implementing
 // (threshold: any >=10%).
 //
-// (a) commutative-arg-order: how often the RustBV-level
-// `canonicalize_commutative` actually swaps operands. Swap rate ≈ how often
-// the un-canonicalized RustBV order WOULD have produced a distinct Z3 AST.
-// Bumped from `value.rs::canonicalize_commutative`.
-pub(crate) static RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static RUSTBV_COMMUTATIVE_SWAP_COUNT: AtomicU64 = AtomicU64::new(0);
+// (a) commutative-arg-order: `crate::bv::stats` (the value layer's own
+// counters).
 // (b) branch-condition simplify-skip: sampled across assume_true /
 // assume_false / add_constraint_raw. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
 // increments only when Z3 simplify() returns a STRUCTURALLY-DIFFERENT AST
@@ -394,18 +370,21 @@ fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], na
 /// - trivial-constraint fast path (angr-g7nq).
 /// - constraint-dedup measurement (angr-1joc).
 pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 8] = [
-    ("zext_cmp_collapse_count", &ZEXT_CMP_COLLAPSE_COUNT),
+    (
+        "zext_cmp_collapse_count",
+        &crate::bv::stats::ZEXT_CMP_COLLAPSE_COUNT,
+    ),
     (
         "zext_cmp_trivial_decide_count",
-        &ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
+        &crate::bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
     ),
     (
         "rustbv_commutative_canonicalize_count",
-        &RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT,
+        &crate::bv::stats::RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT,
     ),
     (
         "rustbv_commutative_swap_count",
-        &RUSTBV_COMMUTATIVE_SWAP_COUNT,
+        &crate::bv::stats::RUSTBV_COMMUTATIVE_SWAP_COUNT,
     ),
     (
         "add_constraint_raw_dedup_scanned",
@@ -493,9 +472,9 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
         &CONCRETIZE_DISJUNCTION_TERMS_TOTAL,
     ),
     // AST construction.
-    ("bvop_reverse_count", &BVOP_REVERSE_COUNT),
-    ("bvop_concat_count", &BVOP_CONCAT_COUNT),
-    ("bvop_extract_count", &BVOP_EXTRACT_COUNT),
+    ("bvop_reverse_count", &crate::bv::stats::BVOP_REVERSE_COUNT),
+    ("bvop_concat_count", &crate::bv::stats::BVOP_CONCAT_COUNT),
+    ("bvop_extract_count", &crate::bv::stats::BVOP_EXTRACT_COUNT),
     // Constraint intake and simplify sampling (the sampling *phase* counter,
     // `SIMPLIFY_SAMPLE_TICKER`, is deliberately absent — see its doc comment).
     ("add_constraint_raw_total", &ADD_CONSTRAINT_RAW_TOTAL_COUNT),
@@ -639,7 +618,7 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_saved_check_total".into(),
         Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed)
             + Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed)
-            + ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed)
+            + crate::bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed)
             + Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed)
             + Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed)
             + Z3_EVAL_UPTO_MODEL_HIT_COUNT.load(Ordering::Relaxed),
@@ -839,50 +818,6 @@ pub fn record_concretize_disjunction(k: u32) {
     CONCRETIZE_DISJUNCTION_COUNT.fetch_add(1, Ordering::Relaxed);
     CONCRETIZE_DISJUNCTION_TERMS_TOTAL.fetch_add(k as u64, Ordering::Relaxed);
     CONCRETIZE_DISJUNCTION_MAX_TERMS.fetch_max(k, Ordering::Relaxed);
-}
-
-/// Record a public `RustBV::reverse` call.
-#[inline]
-pub fn record_bvop_reverse() {
-    BVOP_REVERSE_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Record a public `RustBV::concat` call.
-#[inline]
-pub fn record_bvop_concat() {
-    BVOP_CONCAT_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Record a public `RustBV::extract` call.
-#[inline]
-pub fn record_bvop_extract() {
-    BVOP_EXTRACT_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// angr-g7nq: record a `Cmp(ZeroExt(k, x), BVV)` collapse — high k bits of
-/// const are zero, so the comparison is rewritten on the W-k-bit operands.
-#[inline]
-pub fn record_zext_cmp_collapse() {
-    ZEXT_CMP_COLLAPSE_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// angr-g7nq: record a `Cmp(ZeroExt(k, x), BVV)` trivial decision — the
-/// constant has a nonzero high k-bit prefix, so the subexpression is
-/// structurally unsatisfiable (Eq) or always satisfiable (Ne) or has a
-/// constant unsigned ordering, and the result is a concrete 0/1 bool.
-#[inline]
-pub fn record_zext_cmp_trivial_decide() {
-    ZEXT_CMP_TRIVIAL_DECIDE_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// angr-1joc: record a `canonicalize_commutative` invocation. `swapped` is
-/// true when the canonical order required swapping the operand pair.
-#[inline]
-pub(super) fn record_commutative_canonicalize(swapped: bool) {
-    RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
-    if swapped {
-        RUSTBV_COMMUTATIVE_SWAP_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 /// angr-0xyq2 Phase 2: record a guest read call (read / fread / readv /

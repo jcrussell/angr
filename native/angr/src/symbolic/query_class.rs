@@ -41,8 +41,8 @@
 //! points do no IR walking at all.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::value_shape::Node;
 use super::{BVOp, RustBV};
+use crate::bv::Node;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

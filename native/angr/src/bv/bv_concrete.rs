@@ -1,7 +1,7 @@
 //! Z3-independent concrete bitvector folds.
 //!
 //! These helpers operate purely on `u128` and carry no Z3 dependency, unlike
-//! the sibling [`bv_codec`](super::bv_codec) module (angr-1yge9.14).
+//! `symbolic`'s `bv_codec`, the Z3 numeral codec (angr-1yge9.14).
 
 /// Fold a concrete `Extract(high, low)` at the u128 level, returning the
 /// extracted bits right-aligned.

@@ -31,7 +31,6 @@ fn test_partial_eq_is_reflexive_for_every_variant() {
 /// Nothing compares equal across a class boundary.
 #[test]
 fn test_partial_eq_classes_are_disjoint_and_identity_based() {
-
     // Class 1: value-based.
     let concrete = RustBV::concrete(5, 32);
     assert_eq!(concrete, RustBV::concrete(5, 32));
@@ -58,11 +57,7 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
     assert_ne!(a1, sym.add(&RustBV::concrete(2, 32)));
 
     // Cross-class: never equal, in either direction.
-    for (a, b) in [
-        (&concrete, &s1),
-        (&concrete, &a1),
-        (&s1, &a1),
-    ] {
+    for (a, b) in [(&concrete, &s1), (&concrete, &a1), (&s1, &a1)] {
         assert_ne!(a, b, "{a:?} and {b:?} are in different equality classes");
         assert_ne!(b, a, "{b:?} and {a:?} are in different equality classes");
     }

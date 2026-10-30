@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep PyO3 out of the engine core, its tests included (angr-mx00p.75).
 
-The core modules (``arch/``, ``memory/``, ``symbolic/``, ``vex/``,
+The core modules (``arch/``, ``bv/``, ``memory/``, ``symbolic/``, ``vex/``,
 ``interpreter/`` and ``state/`` under ``native/angr/src/``) are what the crate
 split (angr-mx00p.51) moves into a crate with no ``pyo3`` dependency. Their
 code reaches Python only through the PyO3 shell (``EngineHost`` for the
@@ -44,7 +44,7 @@ from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_fi
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "native" / "angr" / "src"
-CORE_DIRS = ("arch", "memory", "symbolic", "vex", "interpreter", "state")
+CORE_DIRS = ("arch", "bv", "memory", "symbolic", "vex", "interpreter", "state")
 SCAN = {"native/angr": CORE_DIRS}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, not the engine core"}
 # Fewer files than this means the core moved out of CORE_DIRS.

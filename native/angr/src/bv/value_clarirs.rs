@@ -18,7 +18,7 @@ use clarirs_core::prelude::{AstFactory, AstOp, AstRef, BitVec, ClarirsError, FPR
 use num_bigint::BigUint;
 
 use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV, VexRm};
-use crate::claripy::ast::GLOBAL_CONTEXT;
+use clarirs_core::GLOBAL_CONTEXT;
 
 type Term = AstRef<'static>;
 
@@ -27,13 +27,13 @@ fn bvv(value: u128, width: u32) -> Result<Term, ClarirsError> {
 }
 
 /// A Bool as the engine's 1-bit encoding, `ite(b, 1, 0)`.
-pub(crate) fn bit_of(b: Term) -> Result<Term, ClarirsError> {
+pub fn bit_of(b: Term) -> Result<Term, ClarirsError> {
     GLOBAL_CONTEXT.ite(b, bvv(1, 1)?, bvv(0, 1)?)
 }
 
 /// The Bool a bitvector stands for as a condition: "nonzero". Peels the
 /// `ite(c, 1, 0)` encoding back to `c`.
-pub(crate) fn bool_of(bits: &Term) -> Result<Term, ClarirsError> {
+pub fn bool_of(bits: &Term) -> Result<Term, ClarirsError> {
     if let Some(c) = bool_inside(bits) {
         return Ok(c);
     }
@@ -42,7 +42,7 @@ pub(crate) fn bool_of(bits: &Term) -> Result<Term, ClarirsError> {
 
 /// The `c` of a 1-bit `ite(c, 1, 0)`: the Bool a value holds in the engine's
 /// encoding, or `None` for any other term.
-pub(crate) fn bool_inside(bits: &Term) -> Option<Term> {
+pub fn bool_inside(bits: &Term) -> Option<Term> {
     match bits.op() {
         AstOp::ITE(c, t, e) if bits.size() == 1 && is_bvv(t, 1) && is_bvv(e, 0) => Some(c.clone()),
         _ => None,
@@ -56,7 +56,7 @@ fn is_bvv(term: &Term, value: u64) -> bool {
 impl RustBV {
     /// The clarirs term this value denotes. See the module doc for the
     /// encodings; `Err` for a float op or a zero-width value.
-    pub(crate) fn to_clarirs(&self) -> Result<Term, ClarirsError> {
+    pub fn to_clarirs(&self) -> Result<Term, ClarirsError> {
         match self {
             RustBV::Concrete { width: 0, .. } => Err(ClarirsError::InvalidArguments(
                 "a zero-width value has no clarirs term".into(),
@@ -70,7 +70,7 @@ impl RustBV {
 /// The clarirs term for `op` over `operands`, with the encodings in the
 /// module doc. Constructors call it to build a value as a clarirs node; `Err`
 /// when an operand has no term (a float op) or the op is a float op.
-pub(crate) fn build_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<Term, ClarirsError> {
+pub fn build_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<Term, ClarirsError> {
     let gc = &*GLOBAL_CONTEXT;
     let arg = |i: usize| -> Result<Term, ClarirsError> {
         operands
@@ -353,4 +353,11 @@ fn popcount(x: &Term, width: u32) -> Result<Term, ClarirsError> {
     widen(acc, acc_w, width)
 }
 
-test_submod!("value_clarirs_tests.rs" => tests);
+#[cfg(test)]
+#[path = "value_clarirs_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod tests;

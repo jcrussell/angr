@@ -422,14 +422,15 @@ cooperate through PyO3:
   dispatch for Python SimProcedures, technique support, and state
   synchronization through ``RustStateProxy``.
 * **FFI boundary:** PyO3 bindings in ``native/angr/src/lib.rs``.
-* **Symbolic values** (``RustBV``, ``symbolic/value.rs``): a value up
+* **Symbolic values** (``RustBV``, ``value.rs`` in the ``bv`` value layer,
+  which names no solver; angr-mx00p.116.7): a value up
   to 128 bits wide that is known is a ``Concrete``; anything else is a
   clarirs term (``RustBV::Ast``), the same AST type Python claripy
   wraps, so a term crosses the FFI boundary as the node itself. A named
   leaf is the clarirs variable of that name, so two leaves with the same
   name and width are one node and one Z3 constant
   (``invariant-symbol-identity-is-by-name``). Construction-time rewrites
-  live in ``symbolic/value_ops.rs`` and read operands through
+  live in ``value_ops.rs`` and read operands through
   ``RustBV::node``; terms lower to Z3 through
   ``symbolic::z3_lower``, which keeps each node's lowering while
   the node lives. Every op is built by ``RustBV::from_op``; a snapshot
@@ -1151,7 +1152,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
     ``Strided`` results are not hoisted (the strided abstraction is
     concretizer policy, not a tight constraint — A/B pending).
 
-* **AST construction** (bumped in ``symbolic/value_ops.rs`` where a
+* **AST construction** (bumped in ``value_ops.rs`` where a
   reverse, concat or extract node is built, after the construction-time
   rewrites have declined):
 

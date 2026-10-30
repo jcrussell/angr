@@ -27,7 +27,7 @@ fn counters() -> MutexGuard<'static, HashMap<String, u64>> {
 }
 
 /// The next index for names under `key`: 0, 1, 2, ... for each key on its own.
-pub(crate) fn next(key: &str) -> u64 {
+pub fn next(key: &str) -> u64 {
     let mut counters = counters();
     match counters.get_mut(key) {
         Some(n) => {
@@ -44,13 +44,13 @@ pub(crate) fn next(key: &str) -> u64 {
 }
 
 /// Every counter's next index, as a snapshot records it.
-pub(crate) fn watermarks() -> BTreeMap<String, u64> {
+pub fn watermarks() -> BTreeMap<String, u64> {
     counters().iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
 /// Raise each counter to at least its recorded next index; a counter already
 /// past it is left alone.
-pub(crate) fn reserve(watermarks: &BTreeMap<String, u64>) {
+pub fn reserve(watermarks: &BTreeMap<String, u64>) {
     let mut counters = counters();
     for (key, &mark) in watermarks {
         let n = counters.entry(key.clone()).or_insert(0);
@@ -58,4 +58,11 @@ pub(crate) fn reserve(watermarks: &BTreeMap<String, u64>) {
     }
 }
 
-test_submod!("names_tests.rs" => names_tests);
+#[cfg(test)]
+#[path = "names_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod names_tests;

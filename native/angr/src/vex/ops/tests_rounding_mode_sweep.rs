@@ -42,7 +42,7 @@
 //    (RNE-only) sibling. This is the section that would catch a
 //    caller-picks-wrong-method regression.
 // 3. `test_symbolic_rm_dispatch_matches_concrete_rm` — Family B only.
-//    Exercises `with_vex_rm` (`symbolic/value_clarirs.rs`), the branch
+//    Exercises `with_vex_rm` (`value_clarirs.rs`), the branch
 //    `binop_with_rm`/`unop_with_rm`/`qop_with_rm` take when the rm OPERAND
 //    ITSELF is symbolic (as opposed to section 1's symbolic-VALUE/
 //    concrete-rm legs) — never exercised before this section, since
@@ -774,7 +774,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
 /// (`RustBV::symbol`, not `RustBV::concrete`) to each VEX mode via a Z3
 /// equality constraint, forcing `binop_with_rm`/`unop_with_rm`/`qop_with_rm`
 /// past their `rm.as_u128()` concrete fast path into `build_float_expr` ->
-/// `with_vex_rm` (`symbolic/value_clarirs.rs`) — the ITE-over-`VexRm::ALL`
+/// `with_vex_rm` (`value_clarirs.rs`) — the ITE-over-`VexRm::ALL`
 /// branch that section 1's `RustBV::concrete(rm, ...)` rm never reaches.
 /// Asserts the path-constrained symbolic-rm answer matches the
 /// fully-concrete-rm answer for the same mode.

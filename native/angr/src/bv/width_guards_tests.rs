@@ -6,7 +6,10 @@ use super::*;
 fn test_check_bv_width_allows_zero_and_ordinary_widths() {
     // Width 0 is a supported degenerate concrete value, so it must pass.
     for w in [0, 1, 8, 64, 1024, MAX_BV_WIDTH] {
-        assert!(check_bv_width("op", w).is_ok(), "width {w} should be allowed");
+        assert!(
+            check_bv_width("op", w).is_ok(),
+            "width {w} should be allowed"
+        );
     }
 }
 
@@ -30,7 +33,8 @@ fn test_check_extract_bounds_accepts_in_range() {
 
 #[test]
 fn test_check_extract_bounds_rejects_high_past_source() {
-    let err = check_extract_bounds("op_extract", 8, 0, 8).expect_err("high == width is past the end");
+    let err =
+        check_extract_bounds("op_extract", 8, 0, 8).expect_err("high == width is past the end");
     assert!(err.contains("high=8"), "{err}");
     assert!(err.contains("width=8"), "{err}");
 }

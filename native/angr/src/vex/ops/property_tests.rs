@@ -314,7 +314,7 @@ fn boundary_sign_vs_zero_extend_diverge_on_negative() {
 /// SMT-LIB total div/mod reference at width `w`, as `(divu, divs, modu, mods)`.
 ///
 /// Division by zero is *total* in SMT-LIB (and so in Z3's `bv{u,s}{div,rem}`
-/// and the concrete folds in `symbolic/value_ops.rs`): `bvudiv x 0` is
+/// and the concrete folds in `value_ops.rs`): `bvudiv x 0` is
 /// all-ones, `bvsdiv x 0` is -1 for `x >= 0` and +1 for `x < 0`, and both
 /// remainders return the dividend unchanged.
 fn divmod_reference(a: u128, b: u128, w: u32) -> (u128, u128, u128, u128) {

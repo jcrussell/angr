@@ -5,7 +5,7 @@
 // properties that made `debug_assert_eq!` the wrong tool there:
 // `VEXOps::binop`/`unop` match on the opcode alone and never check an operand
 // against the `IRType` the opcode carries, and `RustBV`'s own guard
-// (`define_binop_pair!` in `symbolic/value_ops.rs`) is itself a
+// (`define_binop_pair!` in `value_ops.rs`) is itself a
 // `debug_assert_eq!` — so in `[profile.release]` a width-mismatched
 // `Iop_Add64` folded a wrong constant on the `as_u128` path instead of
 // failing. They now route through `VEXOps::require_operand_width` too.

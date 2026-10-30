@@ -366,6 +366,7 @@ pub mod segmentlist;
 
 // VEX Engine modules
 pub(crate) mod arch;
+pub mod bv;
 pub(crate) mod callbacks;
 pub(crate) mod claripy_bridge;
 pub mod concretize;
