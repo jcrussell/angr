@@ -66,7 +66,7 @@ fn test_qop_rejects_non_quaternary() {
 #[test]
 fn test_float_add_symbolic_constraint() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
     let sum = VEXOps::binop(IROp::FAdd(IRType::F32), x.clone(), two, &ctx).unwrap();
@@ -89,7 +89,7 @@ fn test_float_add_symbolic_constraint() {
 #[test]
 fn test_float_sqrt_symbolic_constraint() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "sqrt_x", 64);
+    let x = RustBV::symbol("sqrt_x", 64);
 
     let sqrt_x = VEXOps::unop(IROp::FSqrt(IRType::F64), x.clone(), &ctx).unwrap();
 
@@ -170,7 +170,7 @@ fn test_float_div_with_rm_rd_f32() {
 #[test]
 fn test_float_div_with_symbolic_rm_f32() {
     let ctx = SymContext::new_mock();
-    let rm = RustBV::symbolic(&ctx, "rm_div_f32", 32);
+    let rm = RustBV::symbol("rm_div_f32", 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
@@ -264,7 +264,7 @@ fn test_float_sqrt_via_binop_rne_fastpath_f64() {
 fn test_float_add_symbolic_operand_with_rm_rz_f32() {
     let ctx = SymContext::new_mock();
     let rm_rz = RustBV::concrete(3, 32);
-    let a = RustBV::symbolic(&ctx, "fadd_sym_a", 32);
+    let a = RustBV::symbol("fadd_sym_a", 32);
     let b = RustBV::concrete(0x3F800002, 32);
 
     let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a.clone(), b, &ctx).unwrap();
@@ -361,7 +361,7 @@ fn test_qop_with_rm_fmsub_rz_f64() {
 fn test_qop_with_rm_symbolic_rm_f64() {
     let ctx = SymContext::new_mock();
     let (a, b, c) = fma_tie_operands();
-    let rm_sym = RustBV::symbolic(&ctx, "fma_rm", 32);
+    let rm_sym = RustBV::symbol("fma_rm", 32);
 
     let result =
         VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_sym.clone(), a, b, c, &ctx).unwrap();
@@ -470,7 +470,7 @@ fn test_max_num_min_num_signed_zero() {
 #[test]
 fn test_max_num_symbolic_constraint() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
     let m = VEXOps::binop(IROp::FMaxNum(IRType::F32), x.clone(), two, &ctx).unwrap();

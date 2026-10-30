@@ -258,7 +258,7 @@ fn test_strncasecmp_registered() {
 /// mapped; this overwrites the byte without disturbing the rest.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, name, 8);
+    let sym = RustBV::symbol(name, 8);
     drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
@@ -293,7 +293,7 @@ fn test_strcmp_symbolic_byte_solver_evaluation_equal() {
     // Constrain symbolic byte to 'b' so strings are equal -> 0.
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'b' as u128, 8);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
 
     let proc = NativeStrcmp;
@@ -319,7 +319,7 @@ fn test_strcmp_symbolic_byte_solver_evaluation_mismatch() {
     // Constrain symbolic byte to 'c' so 'c' - 'b' = 1.
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'c' as u128, 8);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
 
     let proc = NativeStrcmp;
@@ -347,7 +347,7 @@ fn test_strncmp_symbolic_byte_within_limit_equal() {
     // Force sym == 'b'; with n=3, expecting 0 (since byte 2 is 'x' both).
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'b' as u128, 8);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
 
     let proc = NativeStrncmp;
@@ -385,7 +385,7 @@ fn symbolic_pinned_result<P: NativeSimProcedure>(
     state.map_memory_data(0x1000, s1, Permission::RWX);
     let sym = place_symbolic_byte(&mut state, sym_addr, "s1_sym");
     let ctx = state.solver().borrow();
-    let eq = sym.eq(&RustBV::concrete(pinned as u128, 8), &ctx);
+    let eq = sym.eq(&RustBV::concrete(pinned as u128, 8));
     drop(ctx);
 
     let mut args = vec![RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)];
@@ -569,9 +569,8 @@ fn test_compare_bytes_null_requirement_follows_the_unbounded_flag() {
 
         // Both compared bytes are non-null: legal for a bounded compare.
         let nonnull = {
-            let ctx = state.solver().borrow();
             let zero = RustBV::concrete(0u128, 8);
-            a0.ne(&zero, &ctx).and(&a1.ne(&zero, &ctx), &ctx)
+            a0.ne(&zero).and(&a1.ne(&zero))
         };
         state.add_constraint(nonnull);
         let ctx = state.solver().borrow();

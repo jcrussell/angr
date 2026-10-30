@@ -91,8 +91,7 @@ fn atan_concrete() {
 
 #[test]
 fn symbolic_returns_none() {
-    let ctx = crate::symbolic::SymContext::new_mock();
-    let sym = RustBV::symbolic(&ctx, "x", 64);
+    let sym = RustBV::symbol("x", 64);
     assert!(try_concrete_binop_rm(IOP_SIN_F64, &rm(), &sym).is_none());
     assert!(try_concrete_triop_rm(IOP_YL2X_F64, &rm(), &bv64(1.0), &sym).is_none());
 }
@@ -128,10 +127,10 @@ fn recip_exp_specials() {
 fn concretize_triop_rm_pins_a_joint_witness_under_deterministic_mode() {
     let ctx = crate::symbolic::SymContext::new_mock();
     ctx.set_deterministic(true);
-    let a = RustBV::symbolic(&ctx, "tz_a", 64);
-    let b = RustBV::symbolic(&ctx, "tz_b", 64);
-    let sum = a.add(&b, &ctx);
-    ctx.assume_true(&sum.eq(&RustBV::concrete(5, 64), &ctx));
+    let a = RustBV::symbol("tz_a", 64);
+    let b = RustBV::symbol("tz_b", 64);
+    let sum = a.add(&b);
+    ctx.assume_true(&sum.eq(&RustBV::concrete(5, 64)));
     assert!(
         ctx.is_sat(),
         "precondition: correlated operands are satisfiable"
@@ -185,7 +184,7 @@ fn parse_opcode_dispatch_reaches_libm_fast_paths() {
 fn concretize_binop_rm_pins_the_sampled_witness() {
     let ctx = crate::symbolic::SymContext::new_mock();
     ctx.set_deterministic(true);
-    let x = RustBV::symbolic(&ctx, "tz_x", 64);
+    let x = RustBV::symbol("tz_x", 64);
 
     let r = try_concretize_binop_rm(IOP_COS_F64, &rm(), &x, &ctx)
         .expect("symbolic operand should concretize");
@@ -196,7 +195,7 @@ fn concretize_binop_rm_pins_the_sampled_witness() {
     // longer free. Dropping the `assume_true` in `try_concretize_binop_rm`
     // leaves the result concrete but the operand unconstrained, which is the
     // path-inconsistency this asserts against.
-    ctx.assume_true(&x.ne(&bv64(0.0), &ctx));
+    ctx.assume_true(&x.ne(&bv64(0.0)));
     assert!(
         !ctx.is_sat(),
         "the sampled witness must have been pinned onto the operand"
@@ -209,8 +208,8 @@ fn concretize_binop_rm_pins_the_sampled_witness() {
 fn concretize_binop_rm_pin_agrees_with_an_existing_path_constraint() {
     let ctx = crate::symbolic::SymContext::new_mock();
     ctx.set_deterministic(true);
-    let x = RustBV::symbolic(&ctx, "tz_pc", 64);
-    ctx.assume_true(&x.eq(&bv64(0.5), &ctx));
+    let x = RustBV::symbol("tz_pc", 64);
+    ctx.assume_true(&x.eq(&bv64(0.5)));
     assert!(ctx.is_sat(), "precondition: constrained operand is satisfiable");
 
     let r = try_concretize_binop_rm(IOP_SIN_F64, &rm(), &x, &ctx)
@@ -230,7 +229,7 @@ fn concretize_binop_rm_pin_agrees_with_an_existing_path_constraint() {
 #[test]
 fn concretize_binop_rm_rejects_out_of_scope_opcodes() {
     let ctx = crate::symbolic::SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "tz_oos", 64);
+    let x = RustBV::symbol("tz_oos", 64);
     assert!(try_concretize_binop_rm(IOP_RECPEXP_F64, &rm(), &x, &ctx).is_none());
     assert!(try_concretize_binop_rm(0xdead, &rm(), &x, &ctx).is_none());
     // ...and no constraint was assumed on the way out.

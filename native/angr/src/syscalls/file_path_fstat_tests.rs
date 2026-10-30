@@ -75,7 +75,7 @@ fn fstat_symbolic_content_fd_reports_symbolic_len() {
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let bytes: Vec<RustBV> = (0..21u64)
-        .map(|i| RustBV::symbolic_with_id(0x6f000 + i, format!("fstat_sym_{i}"), 8))
+        .map(|i| RustBV::symbol(format!("fstat_sym_{i}"), 8))
         .collect();
     state
         .file_system()
@@ -302,8 +302,7 @@ fn fstat_unsupported_arch_falls_back() {
 fn fstat_symbolic_fd_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_fd = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "fd", 64)
+        RustBV::symbol("fd", 64)
     };
     let err = NativeFstatSyscall
         .call(&mut state, &[sym_fd, RustBV::concrete(0x4000, 64)])
@@ -315,8 +314,7 @@ fn fstat_symbolic_fd_falls_back() {
 fn fstat_symbolic_buf_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_buf = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "statbuf", 64)
+        RustBV::symbol("statbuf", 64)
     };
     let err = NativeFstatSyscall
         .call(&mut state, &[RustBV::concrete(0, 64), sym_buf])

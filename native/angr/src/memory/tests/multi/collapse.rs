@@ -19,17 +19,17 @@ fn test_multi_cell_load_single_byte() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "load1_addr", 64);
+    let addr_var = RustBV::symbol("load1_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
-        make_alt(&ctx, &addr_var, 0x1000, 0xAA),
-        make_alt(&ctx, &addr_var, 0x2000, 0xBB),
+        make_alt(&addr_var, 0x1000, 0xAA),
+        make_alt(&addr_var, 0x2000, 0xBB),
     ]);
     mem.set_multi_alternatives(0x1000, payload);
 
     // Constrain addr to {0x1000, 0x2000} so both alternatives are reachable.
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
     assert!(ctx.is_sat());
 
     let pre_max = get_solver_stats()
@@ -54,13 +54,13 @@ fn test_multi_cell_load_single_byte() {
 
     // Probe-fork: under addr == 0x1000, loaded == 0xAA.
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert!(probe_a.is_sat());
     assert_eq!(probe_a.eval(&loaded), Some(0xAA));
 
     // Probe-fork: under addr == 0x2000, loaded == 0xBB.
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64), &probe_b));
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64)));
     assert!(probe_b.is_sat());
     assert_eq!(probe_b.eval(&loaded), Some(0xBB));
 }
@@ -86,16 +86,16 @@ fn test_multi_cell_load_mixed_concrete() {
     mem.store_concrete(0x1003, RustBV::concrete(0x33, 8))
         .unwrap();
 
-    let addr_var = RustBV::symbolic(&ctx, "load_mix_addr", 64);
+    let addr_var = RustBV::symbol("load_mix_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
-        make_alt(&ctx, &addr_var, 0x4000, 0xAA),
-        make_alt(&ctx, &addr_var, 0x5000, 0xBB),
+        make_alt(&addr_var, 0x4000, 0xAA),
+        make_alt(&addr_var, 0x5000, 0xBB),
     ]);
     mem.set_multi_alternatives(0x1000, payload);
 
-    let eq_a = addr_var.eq(&RustBV::concrete(0x4000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x5000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x4000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x5000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
     let loaded = mem
         .load_concrete_lazy(0x1000, 4, &ctx)
@@ -103,11 +103,11 @@ fn test_multi_cell_load_mixed_concrete() {
     assert_eq!(loaded.width(), 32);
 
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x4000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x4000, 64)));
     assert_eq!(probe_a.eval(&loaded), Some(0x33_22_11_AA));
 
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x5000, 64), &probe_b));
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x5000, 64)));
     assert_eq!(probe_b.eval(&loaded), Some(0x33_22_11_BB));
 }
 
@@ -126,27 +126,27 @@ fn test_multi_cell_load_big_endian() {
     mem.store_concrete(0x1003, RustBV::concrete(0x33, 8))
         .unwrap();
 
-    let addr_var = RustBV::symbolic(&ctx, "load_be_addr", 64);
+    let addr_var = RustBV::symbol("load_be_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
-        make_alt(&ctx, &addr_var, 0x4000, 0xAA),
-        make_alt(&ctx, &addr_var, 0x5000, 0xBB),
+        make_alt(&addr_var, 0x4000, 0xAA),
+        make_alt(&addr_var, 0x5000, 0xBB),
     ]);
     mem.set_multi_alternatives(0x1000, payload);
 
-    let eq_a = addr_var.eq(&RustBV::concrete(0x4000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x5000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x4000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x5000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
     let loaded = mem
         .load_concrete_lazy(0x1000, 4, &ctx)
         .expect("BE Multi+concrete load must succeed");
 
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x4000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x4000, 64)));
     assert_eq!(probe_a.eval(&loaded), Some(0xAA_11_22_33));
 
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x5000, 64), &probe_b));
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x5000, 64)));
     assert_eq!(probe_b.eval(&loaded), Some(0xBB_11_22_33));
 }
 
@@ -163,36 +163,36 @@ fn test_multi_cell_load_multiple_multi_bytes() {
         .unwrap();
     // Last byte (offset 3) is also concrete via no-op (default 0).
 
-    let addr_var = RustBV::symbolic(&ctx, "load_multi_addr", 64);
+    let addr_var = RustBV::symbol("load_multi_addr", 64);
     mem.set_multi_alternatives(
         0x1000,
         MultiPayload::from_alternatives(vec![
-            make_alt(&ctx, &addr_var, 0x4000, 0xAA),
-            make_alt(&ctx, &addr_var, 0x5000, 0xBB),
+            make_alt(&addr_var, 0x4000, 0xAA),
+            make_alt(&addr_var, 0x5000, 0xBB),
         ]),
     );
     mem.set_multi_alternatives(
         0x1002,
         MultiPayload::from_alternatives(vec![
-            make_alt(&ctx, &addr_var, 0x4000, 0xCC),
-            make_alt(&ctx, &addr_var, 0x5000, 0xDD),
+            make_alt(&addr_var, 0x4000, 0xCC),
+            make_alt(&addr_var, 0x5000, 0xDD),
         ]),
     );
 
-    let eq_a = addr_var.eq(&RustBV::concrete(0x4000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x5000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x4000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x5000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
     let loaded = mem
         .load_concrete_lazy(0x1000, 4, &ctx)
         .expect("two-multi-byte load must succeed");
 
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x4000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x4000, 64)));
     assert_eq!(probe_a.eval(&loaded), Some(0x00_CC_11_AA));
 
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x5000, 64), &probe_b));
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x5000, 64)));
     assert_eq!(probe_b.eval(&loaded), Some(0x00_DD_11_BB));
 }
 
@@ -208,14 +208,13 @@ fn test_multi_cell_load_multiple_multi_bytes() {
 /// describes the bug where only this page bit was cleared.
 #[test]
 fn test_concrete_overwrite_clears_multi_bit() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
+    let addr_var = RustBV::symbol("addr", 64);
     mem.set_multi_alternatives(
         0x3000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x3000, 0x42)]),
     );
     {
         let page = mem.pages.get(&(0x3000 >> 12)).expect("page must exist");
@@ -240,19 +239,18 @@ fn test_concrete_overwrite_clears_multi_bit() {
 /// just stored.
 #[test]
 fn test_symbolic_overwrite_clears_multi_cell() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "sym_over_multi_addr", 64);
+    let addr_var = RustBV::symbol("sym_over_multi_addr", 64);
     mem.set_multi_alternatives(
         0x3000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x3000, 0x42)]),
     );
     assert_eq!(mem.multi_cell_count(), 1);
 
     // Ordinary store of a symbolic byte at the same address.
-    let fresh = RustBV::symbolic(&ctx, "sym_over_multi_val", 8);
+    let fresh = RustBV::symbol("sym_over_multi_val", 8);
     mem.store_concrete(0x3000, fresh).unwrap();
 
     assert!(
@@ -279,13 +277,13 @@ fn test_symbolic_overwrite_of_multi_loads_new_value() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "sovm_addr", 64);
+    let addr_var = RustBV::symbol("sovm_addr", 64);
     mem.set_multi_alternatives(
         0x3000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x3000, 0x42)]),
     );
 
-    let fresh = RustBV::symbolic(&ctx, "sovm_val", 8);
+    let fresh = RustBV::symbol("sovm_val", 8);
     mem.store_concrete(0x3000, fresh.clone()).unwrap();
 
     let loaded = mem
@@ -295,8 +293,8 @@ fn test_symbolic_overwrite_of_multi_loads_new_value() {
     // Pin the address to the Multi candidate so a surviving cell would fold
     // to 0x42, then pin the fresh symbol to a distinguishable value.
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x3000, 64), &probe));
-    probe.assume_true(&fresh.eq(&RustBV::concrete(0x77, 8), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x3000, 64)));
+    probe.assume_true(&fresh.eq(&RustBV::concrete(0x77, 8)));
     assert_eq!(
         probe.eval(&loaded),
         Some(0x77),
@@ -311,23 +309,22 @@ fn test_symbolic_overwrite_of_multi_loads_new_value() {
 /// cell would shadow every flushed symbolic store at a previously-Multi byte.
 #[test]
 fn test_import_symbolic_value_clears_multi_cell() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "imp_over_multi_addr", 64);
+    let addr_var = RustBV::symbol("imp_over_multi_addr", 64);
     mem.set_multi_alternatives(
         0x3000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x3000, 0x42)]),
     );
     mem.set_multi_alternatives(
         0x3001,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3001, 0x43)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x3001, 0x43)]),
     );
     assert_eq!(mem.multi_cell_count(), 2);
 
     // A 2-byte symbolic import covering both Multi bytes.
-    let fresh = RustBV::symbolic(&ctx, "imp_over_multi_val", 16);
+    let fresh = RustBV::symbol("imp_over_multi_val", 16);
     mem.import_symbolic_value(0x3000, fresh, None).unwrap();
 
     let page = mem.pages.get(&(0x3000 >> 12)).expect("page must exist");
@@ -356,13 +353,13 @@ fn test_import_symbolic_value_over_multi_loads_new_value() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "iovm_addr", 64);
+    let addr_var = RustBV::symbol("iovm_addr", 64);
     mem.set_multi_alternatives(
         0x3000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x3000, 0x42)]),
     );
 
-    let fresh = RustBV::symbolic(&ctx, "iovm_val", 8);
+    let fresh = RustBV::symbol("iovm_val", 8);
     mem.import_symbolic_value(0x3000, fresh.clone(), None)
         .unwrap();
 
@@ -371,8 +368,8 @@ fn test_import_symbolic_value_over_multi_loads_new_value() {
         .expect("lazy load must succeed");
 
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x3000, 64), &probe));
-    probe.assume_true(&fresh.eq(&RustBV::concrete(0x77, 8), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x3000, 64)));
+    probe.assume_true(&fresh.eq(&RustBV::concrete(0x77, 8)));
     assert_eq!(
         probe.eval(&loaded),
         Some(0x77),
@@ -397,11 +394,11 @@ fn test_load_concrete_sees_unflushed_multi_cell() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "lc_multi_addr", 64);
+    let addr_var = RustBV::symbol("lc_multi_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
 
     mem.store_symbolic_unified(
@@ -419,14 +416,14 @@ fn test_load_concrete_sees_unflushed_multi_cell() {
 
     // No flush: the value lives only in the Multi sidecar.
     let loaded = mem
-        .load_concrete(0x1000, 4, &ctx)
+        .load_concrete(0x1000, 4)
         .expect("load_concrete over a Multi range must succeed");
     assert!(
         loaded.as_u64().is_none(),
         "a Multi-covered load must be symbolic, not the placeholder concrete byte"
     );
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(
         probe.eval(&loaded),
         Some(0xDEADBEEF),
@@ -450,13 +447,13 @@ fn test_load_concrete_partial_multi_overlap() {
         .expect("concrete seed store");
 
     // Install a single Multi byte over the lowest byte only (LE byte 0).
-    let addr_var = RustBV::symbolic(&ctx, "lc_partial_addr", 64);
-    let payload = MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0xEE)]);
+    let addr_var = RustBV::symbol("lc_partial_addr", 64);
+    let payload = MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1000, 0xEE)]);
     mem.set_multi_alternatives(0x1000, payload);
 
-    let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
+    let loaded = mem.load_concrete(0x1000, 4).unwrap();
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(
         probe.eval(&loaded),
         Some(0x1122_33EE),
@@ -472,7 +469,6 @@ fn test_load_concrete_partial_multi_overlap() {
 /// instruction byte.
 #[test]
 fn test_lift_read_stops_at_multi_byte() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
     mem.store_concrete(0x1000, RustBV::concrete(0x1122_3344, 32))
@@ -487,10 +483,10 @@ fn test_lift_read_stops_at_multi_byte() {
 
     // Install a Multi cell on byte 2 — never symbolic, so only the multi
     // bitmap bit is set.
-    let addr_var = RustBV::symbolic(&ctx, "lift_multi_addr", 64);
+    let addr_var = RustBV::symbol("lift_multi_addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
-        make_alt(&ctx, &addr_var, 0x1000, 0xEE),
-        make_alt(&ctx, &addr_var, 0x2000, 0xFF),
+        make_alt(&addr_var, 0x1000, 0xEE),
+        make_alt(&addr_var, 0x2000, 0xFF),
     ]);
     mem.set_multi_alternatives(0x1002, payload);
     let page = mem.pages.get(&(0x1000 >> 12)).expect("page must exist");
@@ -528,12 +524,12 @@ fn test_multi_cell_later_store_wins_overlapping_conds() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x2000, Permission::RWX);
 
-    let a1 = RustBV::symbolic(&ctx, "later_wins_a1", 64);
-    let a2 = RustBV::symbolic(&ctx, "later_wins_a2", 64);
+    let a1 = RustBV::symbol("later_wins_a1", 64);
+    let a2 = RustBV::symbol("later_wins_a2", 64);
     for a in [&a1, &a2] {
         ctx.assume_true(
-            &a.eq(&RustBV::concrete(0x1000, 64), &ctx)
-                .or(&a.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            &a.eq(&RustBV::concrete(0x1000, 64))
+                .or(&a.eq(&RustBV::concrete(0x2000, 64))),
         );
     }
     mem.store_symbolic_unified(a1.clone(), RustBV::concrete(0x12, 8), &ctx, &concretizer)
@@ -546,8 +542,8 @@ fn test_multi_cell_later_store_wins_overlapping_conds() {
         .expect("Multi-cell load must succeed");
     let probe = |a1v: u128, a2v: u128| {
         let p = ctx.fork();
-        p.assume_true(&a1.eq(&RustBV::concrete(a1v, 64), &p));
-        p.assume_true(&a2.eq(&RustBV::concrete(a2v, 64), &p));
+        p.assume_true(&a1.eq(&RustBV::concrete(a1v, 64)));
+        p.assume_true(&a2.eq(&RustBV::concrete(a2v, 64)));
         assert!(p.is_sat());
         p.eval(&loaded)
     };
@@ -557,11 +553,11 @@ fn test_multi_cell_later_store_wins_overlapping_conds() {
     assert_eq!(probe(0x2000, 0x2000), Some(0x00), "neither store hit");
 
     // The flush/coalesce path must agree with the load-time collapse.
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
     let sym = mem.get_symbolic_object(0x1000).unwrap().clone();
     let p = ctx.fork();
-    p.assume_true(&a1.eq(&RustBV::concrete(0x1000, 64), &p));
-    p.assume_true(&a2.eq(&RustBV::concrete(0x1000, 64), &p));
+    p.assume_true(&a1.eq(&RustBV::concrete(0x1000, 64)));
+    p.assume_true(&a2.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(p.eval(&sym), Some(0x34), "flushed cell: newest wins");
 }
 
@@ -575,19 +571,19 @@ fn test_multi_cell_coalesced_flush_newest_wins() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x2000, Permission::RWX);
 
-    let a = RustBV::symbolic(&ctx, "coalesce_newest_a", 64);
+    let a = RustBV::symbol("coalesce_newest_a", 64);
     ctx.assume_true(
-        &a.eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&a.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+        &a.eq(&RustBV::concrete(0x1000, 64))
+            .or(&a.eq(&RustBV::concrete(0x2000, 64))),
     );
     mem.store_symbolic_unified(a.clone(), RustBV::concrete(0x1111_1111, 32), &ctx, &concretizer)
         .unwrap();
     mem.store_symbolic_unified(a.clone(), RustBV::concrete(0x2222_2222, 32), &ctx, &concretizer)
         .unwrap();
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
 
     let loaded = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     let p = ctx.fork();
-    p.assume_true(&a.eq(&RustBV::concrete(0x1000, 64), &p));
+    p.assume_true(&a.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(p.eval(&loaded), Some(0x2222_2222));
 }

@@ -17,27 +17,27 @@ fn test_smtlib2_constraint_round_trip() {
     // multiple assertions. Names are uniquified so we don't collide with
     // any other test in the same Z3 thread-local context.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "rt_x_9o4n", 32);
-    let y = RustBV::symbolic(&ctx, "rt_y_9o4n", 32);
+    let x = RustBV::symbol("rt_x_9o4n", 32);
+    let y = RustBV::symbol("rt_y_9o4n", 32);
 
     // 10 < x < 20 (unsigned)
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
 
     // Extract: high 16 bits of y are zero.
-    let y_high = y.extract(31, 16, &ctx);
+    let y_high = y.extract(31, 16);
     let zero16 = RustBV::concrete(0, 16);
-    ctx.assume_true(&y_high.eq(&zero16, &ctx));
+    ctx.assume_true(&y_high.eq(&zero16));
 
     // Concat: low(x,16) ++ low(y,16) == 0x000B_0007 (x=11 satisfies low(x,16)=0x000B;
     // y_low=0x0007 satisfies the concat).
-    let x_low = x.extract(15, 0, &ctx);
-    let y_low = y.extract(15, 0, &ctx);
-    let combined = x_low.concat(&y_low, &ctx);
+    let x_low = x.extract(15, 0);
+    let y_low = y.extract(15, 0);
+    let combined = x_low.concat(&y_low);
     let target = RustBV::concrete(0x000B_0007, 32);
-    ctx.assume_true(&combined.eq(&target, &ctx));
+    ctx.assume_true(&combined.eq(&target));
 
     // Sanity: original is SAT and the witness values fall in expected ranges.
     let original_sat = ctx.is_sat();
@@ -122,7 +122,7 @@ fn test_smtlib2_constraint_round_trip_scaled() {
     let ctx = SymContext::new();
     const NVARS: usize = 32;
     let vars: Vec<RustBV> = (0..NVARS)
-        .map(|i| RustBV::symbolic(&ctx, format!("rt_scaled_x{i}_9o4n"), 32))
+        .map(|i| RustBV::symbol(format!("rt_scaled_x{i}_9o4n"), 32))
         .collect();
 
     // For each var: low(x) > i, low(x) < i+100 — gives a range constraint.
@@ -130,11 +130,11 @@ fn test_smtlib2_constraint_round_trip_scaled() {
     for (i, v) in vars.iter().enumerate() {
         let lo = RustBV::concrete(i as u128, 32);
         let hi = RustBV::concrete((i + 100) as u128, 32);
-        ctx.assume_true(&v.ugt(&lo, &ctx));
-        ctx.assume_true(&v.ult(&hi, &ctx));
+        ctx.assume_true(&v.ugt(&lo));
+        ctx.assume_true(&v.ult(&hi));
     }
     for w in vars.windows(2) {
-        let neq = w[0].eq(&w[1], &ctx);
+        let neq = w[0].eq(&w[1]);
         ctx.assume_false(&neq);
     }
 
@@ -205,23 +205,23 @@ fn test_smtlib2_cross_context_round_trip() {
 
     // -------- Build constraints in the default (original) context. --------
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "xctx_x_rwzi", 32);
-    let y = RustBV::symbolic(&ctx, "xctx_y_rwzi", 32);
+    let x = RustBV::symbol("xctx_x_rwzi", 32);
+    let y = RustBV::symbol("xctx_y_rwzi", 32);
 
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
 
-    let y_high = y.extract(31, 16, &ctx);
+    let y_high = y.extract(31, 16);
     let zero16 = RustBV::concrete(0, 16);
-    ctx.assume_true(&y_high.eq(&zero16, &ctx));
+    ctx.assume_true(&y_high.eq(&zero16));
 
-    let x_low = x.extract(15, 0, &ctx);
-    let y_low = y.extract(15, 0, &ctx);
-    let combined = x_low.concat(&y_low, &ctx);
+    let x_low = x.extract(15, 0);
+    let y_low = y.extract(15, 0);
+    let combined = x_low.concat(&y_low);
     let target = RustBV::concrete(0x000B_0007, 32);
-    ctx.assume_true(&combined.eq(&target, &ctx));
+    ctx.assume_true(&combined.eq(&target));
 
     assert!(ctx.is_sat());
     let x_witness = ctx.eval(&x).expect("x evaluable");
@@ -638,9 +638,9 @@ fn test_fork_minted_lineage_seeded_with_parent_constraints() {
     parent.set_use_shared_lineage_solver(true);
 
     // Parent asserts x == 5 on its per-context solver (None branch).
-    let x = RustBV::symbolic(&parent, "fork_mint_seed_x", 8);
+    let x = RustBV::symbol("fork_mint_seed_x", 8);
     let five = RustBV::concrete(5, 8);
-    parent.assume_true(&x.eq(&five, &parent));
+    parent.assume_true(&x.eq(&five));
 
     // Fork → child gets a fresh lineage seeded with x == 5.
     let child = parent.fork();
@@ -649,7 +649,7 @@ fn test_fork_minted_lineage_seeded_with_parent_constraints() {
     // The child's lineage solver knows about x == 5: assume_true(x == 6)
     // through the lineage path produces UNSAT.
     let six = RustBV::concrete(6, 8);
-    child.assume_true(&x.eq(&six, &parent));
+    child.assume_true(&x.eq(&six));
     assert!(
         !child.is_sat(),
         "child must see parent's x == 5 (base) ∧ self-added x == 6 → UNSAT"
@@ -700,15 +700,15 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
     use z3::ast::Ast;
 
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "snap_x04s_x", 32);
-    let y = RustBV::symbolic(&ctx, "snap_x04s_y", 32);
+    let x = RustBV::symbol("snap_x04s_x", 32);
+    let y = RustBV::symbol("snap_x04s_y", 32);
     let zero = RustBV::concrete(0, 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
 
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
-    ctx.assume_false(&y.eq(&zero, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
+    ctx.assume_false(&y.eq(&zero));
 
     let pre = ctx.get_assumed_constraints();
     assert_eq!(pre.len(), 3);
@@ -776,10 +776,10 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
     let ctx = SymContext::new();
     // Mix: one assume_true (RustBV-known), one add_constraint_raw
     // (Z3-only, no RustBV form recorded).
-    let x = RustBV::symbolic(&ctx, "snap_82g6_x", 32);
+    let x = RustBV::symbol("snap_82g6_x", 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
 
     // Raw path: build a Z3 Bool directly and feed it through
     // add_constraint_raw — mirrors `_add_constraints_to_state`'s
@@ -870,14 +870,14 @@ fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
 #[test]
 fn test_snapshot_pure_assume_residual_empty() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "t3l5o_win_x", 32);
-    let y = RustBV::symbolic(&ctx, "t3l5o_win_y", 32);
+    let x = RustBV::symbol("t3l5o_win_x", 32);
+    let y = RustBV::symbol("t3l5o_win_y", 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
     let zero = RustBV::concrete(0, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
-    ctx.assume_false(&y.eq(&zero, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
+    ctx.assume_false(&y.eq(&zero));
 
     let pre_sat = ctx.is_sat();
     let pre_count = ctx.num_constraints();
@@ -917,7 +917,7 @@ fn test_snapshot_pure_assume_residual_empty() {
 #[test]
 fn test_snapshot_add_bv_constraint_roundtrip() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "t3l5o_bv_x", 32);
+    let x = RustBV::symbol("t3l5o_bv_x", 32);
     ctx.add_bv_constraint(&x, 0x1000);
 
     let pre_sat = ctx.is_sat();
@@ -971,11 +971,11 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
 #[test]
 fn test_snapshot_tracked_residual_roundtrip() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "trk_residual_x", 32);
+    let x = RustBV::symbol("trk_residual_x", 32);
     let target = RustBV::concrete(0x2000, 32);
     // Exactly what solver.rs's `add_constraint_tracked_ast` fast path does for
     // an AST `claripy_to_rustbv` rejects: assert-and-track, then log residual.
-    let constraint = x.eq(&target, &ctx).to_z3_bool().unwrap();
+    let constraint = x.eq(&target).to_z3_bool().unwrap();
     let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
     ctx.push_residual_assertion(constraint);
     assert_eq!(idx, 0, "first tracked constraint gets tracker index 0");
@@ -1013,11 +1013,11 @@ fn test_snapshot_tracked_residual_roundtrip() {
 #[test]
 fn test_snapshot_mixed_assume_raw_roundtrip() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "t3l5o_mix_x", 32);
+    let x = RustBV::symbol("t3l5o_mix_x", 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
     // assume: x > 10 (RustBV-known)
-    ctx.assume_true(&x.ugt(&ten, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
     // raw: x < 20 (no RustBV form recorded)
     let raw_bool = {
         let xz = x.to_z3_ast().unwrap();
@@ -1072,16 +1072,16 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
 #[test]
 fn test_snapshot_merge_context_roundtrip() {
     let ctx1 = SymContext::new();
-    let x = RustBV::symbolic(&ctx1, "t3l5o_merge_x", 32);
+    let x = RustBV::symbol("t3l5o_merge_x", 32);
     let five = RustBV::concrete(5, 32);
-    ctx1.assume_true(&x.ugt(&five, &ctx1)); // path 1: x > 5
+    ctx1.assume_true(&x.ugt(&five)); // path 1: x > 5
 
     let ctx2 = SymContext::new();
     let three = RustBV::concrete(3, 32);
-    ctx2.assume_true(&x.ult(&three, &ctx2)); // path 2: x < 3
+    ctx2.assume_true(&x.ult(&three)); // path 2: x < 3
 
-    let m1 = RustBV::symbolic(&ctx1, "t3l5o_merge_m1", 1);
-    let m2 = RustBV::symbolic(&ctx1, "t3l5o_merge_m2", 1);
+    let m1 = RustBV::symbol("t3l5o_merge_m1", 1);
+    let m2 = RustBV::symbol("t3l5o_merge_m2", 1);
     let merged = ctx1.merge(&[&ctx2], &[m1.clone(), m2.clone()]);
 
     let pre_sat = merged.is_sat();
@@ -1115,8 +1115,8 @@ fn test_snapshot_merge_context_roundtrip() {
     // would force x>5 AND x<3 → UNSAT.
     let zero1 = RustBV::concrete(0, 1);
     let one1 = RustBV::concrete(1, 1);
-    ctx3.assume_true(&m1.eq(&zero1, &ctx3));
-    ctx3.assume_true(&m2.eq(&one1, &ctx3));
+    ctx3.assume_true(&m1.eq(&zero1));
+    ctx3.assume_true(&m2.eq(&one1));
     assert!(
         ctx3.is_sat(),
         "x<3 (m2) branch must remain satisfiable — merge guards intact"

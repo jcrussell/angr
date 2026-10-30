@@ -82,8 +82,7 @@ impl NativeSimProcedure for NativeReturnUnconstrained {
         }
         let id = symbol_counter("unconstrained_ret");
         let sym = format!("unconstrained_ret_{}_{id}", self.name);
-        let ctx = state.solver().borrow();
-        Ok(Some(RustBV::symbolic(&ctx, &sym, self.ret_bits)))
+        Ok(Some(RustBV::symbol(&sym, self.ret_bits)))
     }
 }
 

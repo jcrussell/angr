@@ -40,7 +40,7 @@ fn dispatch_symbolic_jump(
     state.set_keep_ip_symbolic(keep_ip_symbolic);
     let sid = state.state_id();
     let bits = state.arch().bits();
-    let expr = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "jump_target", bits);
+    let expr = crate::symbolic::RustBV::symbol("jump_target", bits);
 
     let mut stored_conditions = FxHashMap::default();
     if with_expr {

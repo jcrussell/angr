@@ -29,12 +29,10 @@ fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
     b.set_mmap_base(0x50_0000);
 
     let m0 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "ph30051_m0", 1)
+        RustBV::symbol("ph30051_m0", 1)
     };
     let m1 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "ph30051_m1", 1)
+        RustBV::symbol("ph30051_m1", 1)
     };
     let merged = a.merge(&[&b], &[m0, m1]);
 
@@ -91,12 +89,10 @@ fn test_tsc_counter_forks_and_merges_as_watermark() {
     assert_ne!(child.tsc_counter(), a.tsc_counter());
 
     let m0 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "tsc173_m0", 1)
+        RustBV::symbol("tsc173_m0", 1)
     };
     let m1 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "tsc173_m1", 1)
+        RustBV::symbol("tsc173_m1", 1)
     };
     let expected = child.tsc_counter();
     let merged = a.merge(&[&child], &[m0, m1]);
@@ -120,12 +116,10 @@ fn test_merge_takes_symbolic_max_of_last_time() {
     b.set_last_time(RustBV::concrete(250, 64));
 
     let m0 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "sqfj8_88_m0", 1)
+        RustBV::symbol("sqfj8_88_m0", 1)
     };
     let m1 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "sqfj8_88_m1", 1)
+        RustBV::symbol("sqfj8_88_m1", 1)
     };
     let merged = a.merge(&[&b], &[m0, m1]);
 
@@ -194,10 +188,9 @@ fn test_call_stack_diverges_ignores_stack_ptr_noise() {
 
     // The merge itself still self-wins regardless of the diagnostic.
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "fs8kb_71_m0", 1),
-            RustBV::symbolic(&s, "fs8kb_71_m1", 1),
+            RustBV::symbol("fs8kb_71_m0", 1),
+            RustBV::symbol("fs8kb_71_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);
@@ -235,12 +228,10 @@ fn test_native_resume_stack_diverges_detects_depth_mismatch() {
     // The merge itself still self-wins regardless of divergence detection
     // (see `RustSimState::merge`'s doc) — confirm that carry survives too.
     let m0 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "sqfj8_86_m0", 1)
+        RustBV::symbol("sqfj8_86_m0", 1)
     };
     let m1 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "sqfj8_86_m1", 1)
+        RustBV::symbol("sqfj8_86_m1", 1)
     };
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(

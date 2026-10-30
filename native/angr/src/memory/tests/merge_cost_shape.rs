@@ -179,12 +179,11 @@ fn test_merge_cost_shape_divergence_proportional() {
 /// `merge_divergence.rs` asserts it against the production skip directly.
 #[test]
 fn test_merge_ite_cells_equal_divergent_bytes() {
-    let ctx = SymContext::new();
     let (mut a, b) = diamond_arms();
 
     let objs_before = a.symbolic_objects.len();
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx), "merge reports a change");
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond), "merge reports a change");
 
     let ite_cells = a.symbolic_objects.len() - objs_before;
     eprintln!(

@@ -1,7 +1,7 @@
 //! Integer widening-multiply and divmod VEX op helpers.
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -13,7 +13,6 @@ impl VEXOps {
         right: RustBV,
         ty: IRType,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_width = ty.bits();
         Self::require_operand_width("widening_mul left", left.width(), in_width)?;
@@ -21,10 +20,10 @@ impl VEXOps {
         let out_width = in_width * 2;
 
         // Extend both operands
-        let left_ext = left.extend_into(out_width, signed, ctx);
-        let right_ext = right.extend_into(out_width, signed, ctx);
+        let left_ext = left.extend_into(out_width, signed);
+        let right_ext = right.extend_into(out_width, signed);
 
-        Ok(left_ext.mul_into(right_ext, ctx))
+        Ok(left_ext.mul_into(right_ext))
     }
 
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit result.
@@ -33,11 +32,10 @@ impl VEXOps {
         dividend: RustBV,
         divisor: RustBV,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("divmod_64_to_32 dividend", dividend.width(), 64)?;
         Self::require_operand_width("divmod_64_to_32 divisor", divisor.width(), 32)?;
-        Self::divmod_double_to_single(dividend, divisor, signed, ctx)
+        Self::divmod_double_to_single(dividend, divisor, signed)
     }
 
     /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit result.
@@ -53,29 +51,27 @@ impl VEXOps {
         divisor: RustBV,
         ty: IRType,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let bits = ty.bits();
         Self::require_operand_width("divmod_same_width dividend", dividend.width(), bits)?;
         Self::require_operand_width("divmod_same_width divisor", divisor.width(), bits)?;
         let wide = 2 * bits; // overflow-ok: an IRType width, 64 at most here
         let dividend = if signed {
-            dividend.sign_extend_into(wide, ctx)
+            dividend.sign_extend_into(wide)
         } else {
-            dividend.zero_extend_into(wide, ctx)
+            dividend.zero_extend_into(wide)
         };
-        Self::divmod_double_to_single(dividend, divisor, signed, ctx)
+        Self::divmod_double_to_single(dividend, divisor, signed)
     }
 
     pub(super) fn divmod_128_to_64(
         dividend: RustBV,
         divisor: RustBV,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("divmod_128_to_64 dividend", dividend.width(), 128)?;
         Self::require_operand_width("divmod_128_to_64 divisor", divisor.width(), 64)?;
-        Self::divmod_double_to_single(dividend, divisor, signed, ctx)
+        Self::divmod_double_to_single(dividend, divisor, signed)
     }
 
     /// Generic DivMod: dividend (width = `2 * divisor.width()`) divided by
@@ -92,7 +88,6 @@ impl VEXOps {
         dividend: RustBV,
         divisor: RustBV,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let dividend_w = dividend.width();
         let divisor_w = divisor.width();
@@ -149,20 +144,20 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, dividend_w));
         }
 
-        let divisor_full = divisor.extend_into(dividend_w, signed, ctx);
+        let divisor_full = divisor.extend_into(dividend_w, signed);
         let quotient_full = if signed {
-            dividend.sdiv(&divisor_full, ctx)
+            dividend.sdiv(&divisor_full)
         } else {
-            dividend.udiv(&divisor_full, ctx)
+            dividend.udiv(&divisor_full)
         };
         let remainder_full = if signed {
-            dividend.srem(&divisor_full, ctx)
+            dividend.srem(&divisor_full)
         } else {
-            dividend.urem(&divisor_full, ctx)
+            dividend.urem(&divisor_full)
         };
-        let quotient_half = quotient_full.extract_into(divisor_w - 1, 0, ctx);
-        let remainder_half = remainder_full.extract_into(divisor_w - 1, 0, ctx);
-        Ok(remainder_half.concat_into(quotient_half, ctx))
+        let quotient_half = quotient_full.extract_into(divisor_w - 1, 0);
+        let remainder_half = remainder_full.extract_into(divisor_w - 1, 0);
+        Ok(remainder_half.concat_into(quotient_half))
     }
 
     /// Mask covering the low `width` bits of a u128.

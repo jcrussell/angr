@@ -7,7 +7,7 @@
 //! reciprocal/rsqrt estimate-and-step ops.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, RustBV};
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -20,7 +20,6 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         kind: FloatOpKind,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("vec_float_scalar_op left", left.width(), 128)?;
         Self::require_operand_width("vec_float_scalar_op right", right.width(), 128)?;
@@ -78,15 +77,11 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Self::vec_float_scalar_lane_binop(left, right, elem, kind, ctx)
+        Self::vec_float_scalar_lane_binop(left, right, elem, kind)
     }
 
     /// Scalar sqrt in vector (SQRTSS/SQRTSD).
-    pub(super) fn vec_float_scalar_sqrt(
-        arg: RustBV,
-        elem: IRType,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn vec_float_scalar_sqrt(arg: RustBV, elem: IRType) -> Result<RustBV, OpError> {
         Self::require_operand_width("vec_float_scalar_sqrt arg", arg.width(), 128)?;
 
         if let Some(v) = arg.as_u128() {
@@ -107,10 +102,10 @@ impl VEXOps {
         }
         let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
         let lane_bits = prec.bits();
-        let lo = arg.extract(lane_bits - 1, 0, ctx);
-        let upper = arg.extract(127, lane_bits, ctx);
+        let lo = arg.extract(lane_bits - 1, 0);
+        let upper = arg.extract(127, lane_bits);
         let res_lane = build_float_expr(FloatOpKind::Sqrt, prec, vec![lo]);
-        Ok(upper.concat_into(res_lane, ctx))
+        Ok(upper.concat_into(res_lane))
     }
 
     /// SSE scalar-in-vector reciprocal/rsqrt estimate (RCPSS / RSQRTSS).
@@ -122,14 +117,13 @@ impl VEXOps {
         arg: RustBV,
         elem: IRType,
         name: &str,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("vec_float_scalar_fresh arg", arg.width(), 128)?;
         let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
         let lane_bits = prec.bits();
-        let upper = arg.extract(127, lane_bits, ctx);
+        let upper = arg.extract(127, lane_bits);
         let lane = RustBV::fresh(name, lane_bits);
-        Ok(upper.concat_into(lane, ctx))
+        Ok(upper.concat_into(lane))
     }
 
     /// Packed FP fresh-symbolic per lane. Used for `VFRecipEst`/`VFRSqrtEst`
@@ -140,7 +134,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         name: &str,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let lane_bits = match elem {
             IRType::F32 => 32,
@@ -151,7 +144,7 @@ impl VEXOps {
         for _ in 0..count {
             lanes.push(RustBV::fresh(name, lane_bits));
         }
-        Ok(Self::concat_le_elements(lanes, ctx))
+        Ok(Self::concat_le_elements(lanes))
     }
 
     /// Packed integer fresh-symbolic per lane. Used for `VIRecipEst` /
@@ -163,13 +156,12 @@ impl VEXOps {
         lane_bits: u32,
         count: u8,
         name: &str,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let mut lanes: Vec<RustBV> = Vec::with_capacity(count as usize);
         for _ in 0..count {
             lanes.push(RustBV::fresh(name, lane_bits));
         }
-        Ok(Self::concat_le_elements(lanes, ctx))
+        Ok(Self::concat_le_elements(lanes))
     }
 
     /// Scalar max/min in vector (MAXSS/MAXSD/MINSS/MINSD). `is_max` picks the
@@ -181,7 +173,6 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         is_max: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::require_operand_width("vec_float_scalar_minmax left", left.width(), 128)?;
         Self::require_operand_width("vec_float_scalar_minmax right", right.width(), 128)?;
@@ -216,7 +207,7 @@ impl VEXOps {
             };
             return Ok(RustBV::concrete(result, 128));
         }
-        Self::vec_float_scalar_lane_minmax(left, right, elem, is_max, ctx)
+        Self::vec_float_scalar_lane_minmax(left, right, elem, is_max)
     }
 
     /// Symbolic fallback for SSE scalar binary float ops (Add/Sub/Mul/Div).
@@ -226,15 +217,14 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         kind: FloatOpKind,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
         let lane_bits = prec.bits();
-        let l_lo = left.extract(lane_bits - 1, 0, ctx);
-        let r_lo = right.extract(lane_bits - 1, 0, ctx);
-        let upper = left.extract(127, lane_bits, ctx);
+        let l_lo = left.extract(lane_bits - 1, 0);
+        let r_lo = right.extract(lane_bits - 1, 0);
+        let upper = left.extract(127, lane_bits);
         let res_lane = build_float_expr(kind, prec, vec![l_lo, r_lo]);
-        Ok(upper.concat_into(res_lane, ctx))
+        Ok(upper.concat_into(res_lane))
     }
 
     /// Symbolic fallback for SSE scalar MAXSS/MINSS/MAXSD/MINSD on lane 0.
@@ -246,13 +236,12 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         is_max: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
         let lane_bits = prec.bits();
-        let l_lo = left.extract(lane_bits - 1, 0, ctx);
-        let r_lo = right.extract(lane_bits - 1, 0, ctx);
-        let upper = left.extract(127, lane_bits, ctx);
+        let l_lo = left.extract(lane_bits - 1, 0);
+        let r_lo = right.extract(lane_bits - 1, 0);
+        let upper = left.extract(127, lane_bits);
         // max(l, r) = if l > r then l else r ⟺ ITE(r < l, l, r)
         // min(l, r) = if l < r then l else r ⟺ ITE(l < r, l, r)
         let (cmp_left, cmp_right) = if is_max {
@@ -261,7 +250,7 @@ impl VEXOps {
             (l_lo.clone(), r_lo.clone())
         };
         let cond = build_float_expr(FloatOpKind::CmpLt, prec, vec![cmp_left, cmp_right]);
-        let res_lane = cond.ite_into(l_lo, r_lo, ctx);
-        Ok(upper.concat_into(res_lane, ctx))
+        let res_lane = cond.ite_into(l_lo, r_lo);
+        Ok(upper.concat_into(res_lane))
     }
 }

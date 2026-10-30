@@ -508,11 +508,7 @@ impl<'a> VEXInterpreter<'a> {
 
         // The host's value, or a fresh symbol when it did not convert.
         Ok(value.unwrap_or_else(|| {
-            RustBV::symbolic(
-                self.ctx,
-                format!("sym_pyref_{addr_descr}_{size}"),
-                (size * 8) as u32,
-            )
+            RustBV::symbol(format!("sym_pyref_{addr_descr}_{size}"), (size * 8) as u32)
         }))
     }
 
@@ -598,7 +594,7 @@ impl<'a> VEXInterpreter<'a> {
 
         let name = format!("mem_{addr_concrete:x}_{size}");
         let bits = (size * 8) as u32;
-        let bv = RustBV::symbolic(self.ctx, &name, bits);
+        let bv = RustBV::symbol(&name, bits);
         self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &bv);
         Some(bv)
     }
@@ -634,7 +630,7 @@ impl<'a> VEXInterpreter<'a> {
             // Fallback: create a fresh symbolic value
             let name = format!("mem_{addr_concrete:x}_{size}");
             let bits = (size * 8) as u32;
-            let bv = RustBV::symbolic(self.ctx, &name, bits);
+            let bv = RustBV::symbol(&name, bits);
             // angr-vfst: symbolic_variable BP_AFTER for engine-internal fresh
             // BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
             // signature. The user-callable `state.solver.BVS()` path still

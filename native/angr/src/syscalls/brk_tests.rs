@@ -3,7 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 const DEFAULT_BRK: u64 = 0x1B0_0000;
 
@@ -150,8 +150,7 @@ fn brk_collision_falls_back_to_python() {
 fn symbolic_arg_falls_back() {
     let h = NativeBrkSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "new_brk", 64);
+    let sym = RustBV::symbol("new_brk", 64);
     let err = h.call(&mut state, &[sym]).expect_err("must fall back");
     match err {
         SyscallError::SymbolicArgument(msg) => assert!(

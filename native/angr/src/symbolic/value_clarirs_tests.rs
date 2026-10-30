@@ -6,7 +6,6 @@
 
 use super::super::value::{BVOp, RustBV};
 use super::bool_of;
-use crate::symbolic::SymContext;
 
 fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
     RustBV::from_op(width, op, operands)
@@ -14,9 +13,8 @@ fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
 
 #[test]
 fn reverse_of_a_narrow_or_unaligned_width_is_the_identity() {
-    let ctx = SymContext::new();
     for w in [4u32, 8, 12] {
-        let x = RustBV::symbolic(&ctx, format!("tc_rev{w}"), w);
+        let x = RustBV::symbol(format!("tc_rev{w}"), w);
         let rev = raw(BVOp::Reverse, w, vec![x.clone()]);
         assert_eq!(rev.to_clarirs().unwrap(), x.to_clarirs().unwrap());
     }
@@ -24,10 +22,9 @@ fn reverse_of_a_narrow_or_unaligned_width_is_the_identity() {
 
 #[test]
 fn bool_leaves_convert() {
-    let ctx = SymContext::new();
     // A `!bool!` leaf is a Bool constant behind the 1-bit encoding, and the
     // condition view peels it back to that constant.
-    let flag = RustBV::symbolic(&ctx, "!bool!tc_flag", 1);
+    let flag = RustBV::symbol("!bool!tc_flag", 1);
     let term = flag.to_clarirs().unwrap();
     assert!(bool_of(&term).unwrap().ast_type().is_bool());
     assert!(matches!(
@@ -45,12 +42,11 @@ fn zero_width_values_are_refused() {
 fn one_bit_logic_stays_a_bool() {
     // 1-bit And/Or/Xor/Not are built on the Bools their operands stand for,
     // so the term is `ite(c, 1, 0)` with `c` a Bool connective.
-    let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "tc_l_x", 32);
-    let y = RustBV::symbolic(&ctx, "tc_l_y", 32);
+    let x = RustBV::symbol("tc_l_x", 32);
+    let y = RustBV::symbol("tc_l_y", 32);
     let lt = raw(BVOp::Ult, 1, vec![x.clone(), y.clone()]);
     let eq = raw(BVOp::Eq, 1, vec![x.clone(), y]);
-    let flag = RustBV::symbolic(&ctx, "tc_l_flag", 1);
+    let flag = RustBV::symbol("tc_l_flag", 1);
     for (a, b) in [(&lt, &eq), (&lt, &flag), (&flag, &flag)] {
         for op in [BVOp::And, BVOp::Or, BVOp::Xor] {
             let v = raw(op, 1, vec![a.clone(), b.clone()]);

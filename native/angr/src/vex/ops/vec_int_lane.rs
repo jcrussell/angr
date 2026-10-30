@@ -9,7 +9,7 @@
 //! re-exported by `ops`) stay visible via the descendant rule.
 
 use super::{INT_LANE_OP_MAX_ARITY, IntLaneOp, OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -23,7 +23,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         op: &dyn IntLaneOp,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(args.len(), op.arity());
         let elem_width = elem.bits();
@@ -72,10 +71,10 @@ impl VEXOps {
             let hi = lo + elem_width - 1;
             lane_args.clear();
             for a in args {
-                lane_args.push(a.extract(hi, lo, ctx));
+                lane_args.push(a.extract(hi, lo));
             }
-            elements.push(op.symbolic_lane(&lane_args, elem_width, ctx));
+            elements.push(op.symbolic_lane(&lane_args, elem_width));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

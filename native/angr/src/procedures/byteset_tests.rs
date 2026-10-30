@@ -70,7 +70,7 @@ fn test_strpbrk_empty_haystack() {
 fn test_strpbrk_symbolic_addr_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "s", 64);
+    let sym = RustBV::symbol("s", 64);
     drop(ctx);
     let r = NativeStrpbrk.call(&mut state, &[sym, RustBV::concrete(0x2000, 64)]);
     assert!(matches!(r, Err(ProcedureError::SymbolicArgument(_))));
@@ -165,7 +165,7 @@ fn test_strspn_symbolic_byte_falls_back() {
     // Symbolic byte in s → SymbolicArgument.
     let mut state = setup_state(b"ab\x00", b"ab\x00");
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "b1", 8);
+    let sym = RustBV::symbol("b1", 8);
     drop(ctx);
     state.memory_store(0x1001, sym).unwrap();
     let r = NativeStrspn.call(

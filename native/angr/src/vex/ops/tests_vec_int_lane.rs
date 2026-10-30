@@ -92,7 +92,7 @@ fn test_vec_cmp_eq_symbolic_i32x4() {
     let r_lanes: [u128; 4] = [5, 9, 5, 9];
     let exp: [u128; 4] = [0xFFFF_FFFF, 0, 0xFFFF_FFFF, 0];
 
-    let l = RustBV::symbolic(&ctx, "vcmpeq_l", 128);
+    let l = RustBV::symbol("vcmpeq_l", 128);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
@@ -127,7 +127,7 @@ fn test_vec_cmp_gt_signed_symbolic_i32x4() {
     let r_lanes: [u128; 4] = [0x8000_0000, 0x7FFF_FFFF, 0x0000_0000, 0x0000_0000];
     let exp: [u128; 4] = [0xFFFF_FFFF, 0, 0, 0];
 
-    let l = RustBV::symbolic(&ctx, "vcmpgt_l", 128);
+    let l = RustBV::symbol("vcmpgt_l", 128);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
@@ -232,7 +232,7 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
     let r_lanes: [u128; 4] = [0x0000_0001, 0xFFFF_FFFF, 0x7FFF_FFFF, 0x8000_0000];
     let exp: [u128; 4] = [0xFFFF_FFFF, 0, 0xFFFF_FFFF, 0];
 
-    let l = RustBV::symbolic(&ctx, "vcmpgtu_l", 128);
+    let l = RustBV::symbol("vcmpgtu_l", 128);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
@@ -308,7 +308,7 @@ fn test_vec_cmp_avx2_256_bit_i32x8() {
                 hi |= placed;
             }
         }
-        RustBV::concrete(hi, 128).concat_into(RustBV::concrete(lo, 128), &ctx)
+        RustBV::concrete(hi, 128).concat_into(RustBV::concrete(lo, 128))
     };
     let lv = pack(&l);
     let rv = pack(&r);
@@ -343,7 +343,7 @@ fn test_vec_cmp_avx2_256_bit_i32x8() {
         // Wider than a u128, so check one lane at a time.
         for i in 0..8u32 {
             let low = i * 32;
-            let extracted = result.extract(low + 31, low, &ctx);
+            let extracted = result.extract(low + 31, low);
             let got = ctx.eval(&extracted).expect("eval(lane) returned None");
             assert_eq!(
                 got,
@@ -417,7 +417,7 @@ fn test_vec_mul_16x16_avx2_256_bit() {
         for (i, lane) in lanes.iter().enumerate() {
             halves[i / 8] |= (*lane as u128) << ((i % 8) * 16);
         }
-        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128))
     };
 
     let result = VEXOps::binop(
@@ -434,7 +434,7 @@ fn test_vec_mul_16x16_avx2_256_bit() {
 
     for i in 0..16u32 {
         let low = i * 16;
-        let extracted = result.extract(low + 15, low, &ctx);
+        let extracted = result.extract(low + 15, low);
         let got = ctx.eval(&extracted).expect("eval(lane) returned None");
         let idx = i as usize;
         // Reference is the wrapping u16 product, computed independently of the
@@ -467,7 +467,7 @@ impl IntLaneOp for OverArityLaneOp {
     fn concrete_lane(&self, lanes: &[u128], _elem_width: u32) -> u128 {
         lanes[0]
     }
-    fn symbolic_lane(&self, lanes: &[RustBV], _elem_width: u32, _ctx: &SymContext) -> RustBV {
+    fn symbolic_lane(&self, lanes: &[RustBV], _elem_width: u32) -> RustBV {
         lanes[0].clone()
     }
 }
@@ -478,13 +478,12 @@ impl IntLaneOp for OverArityLaneOp {
 /// float-side hardening (angr-5mnx3.67, angr-j60q0.2).
 #[test]
 fn test_vec_int_lane_over_arity_returns_error() {
-    let ctx = SymContext::new_mock();
     let args = [
         RustBV::concrete(0x1111_1111, 32),
         RustBV::concrete(0x2222_2222, 32),
         RustBV::concrete(0x3333_3333, 32),
     ];
-    let err = VEXOps::vec_int_lane_op(&args, IRType::I8, 4, &OverArityLaneOp, &ctx)
+    let err = VEXOps::vec_int_lane_op(&args, IRType::I8, 4, &OverArityLaneOp)
         .expect_err("over-arity op must not be dispatched");
     match err {
         OpError::UnsupportedVectorOp(msg) => {

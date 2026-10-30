@@ -95,7 +95,6 @@ impl SymbolicMemory {
         &self,
         addr: Address,
         size: u32,
-        ctx: &SymContext,
     ) -> Option<Result<RustBV, MemoryError>> {
         // A range straddling the top of the space probes page 0, matching the
         // guest's own pointer wraparound and what the store side recorded.
@@ -111,7 +110,7 @@ impl SymbolicMemory {
             if let Err(e) = self.check_perms_range(start_page, end_page, Permission::R) {
                 return Some(Err(e));
             }
-            return Some(self.assemble_load_with_multi(addr, size, ctx));
+            return Some(self.assemble_load_with_multi(addr, size));
         }
         None
     }
@@ -134,11 +133,11 @@ impl SymbolicMemory {
     /// interpreter-side ones (`interpreter/expressions_loads.rs`,
     /// `interpreter/concretize_cache.rs`) pass a VEX type width, so the clamp
     /// is defense-in-depth on both (angr-0jh0j.35).
-    pub(crate) fn unconstrained_read_value(&self, size: u32, ctx: &SymContext) -> RustBV {
+    pub(crate) fn unconstrained_read_value(&self, size: u32) -> RustBV {
         if self.zero_fill_unconstrained {
             RustBV::concrete(0, fabricate_width_bits(size))
         } else {
-            fresh_unconstrained_read_symbol(fabricate_width_bits(size), ctx)
+            fresh_unconstrained_read_symbol(fabricate_width_bits(size))
         }
     }
 
@@ -175,7 +174,7 @@ impl SymbolicMemory {
         // (`unmapped_page_error`, `assemble_load_with_multi`), not here — a
         // wrapper-level bump would double-count the Multi-cell path and miss
         // every production caller, which enters below this entry point.
-        self.load_concrete(Address(concrete_addr), size, ctx)
+        self.load_concrete(Address(concrete_addr), size)
     }
 
     /// Load from a concrete address.
@@ -191,11 +190,10 @@ impl SymbolicMemory {
         &self,
         addr: impl Into<Address>,
         size: u32,
-        ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
         record_mem_load(size as u64);
-        self.load_concrete_common(addr, size, ctx, false)
+        self.load_concrete_common(addr, size, false)
     }
 
     /// Shared body of [`SymbolicMemory::load_concrete`] and
@@ -212,7 +210,6 @@ impl SymbolicMemory {
         &self,
         addr: Address,
         size: u32,
-        ctx: &SymContext,
         lazy: bool,
     ) -> Result<RustBV, MemoryError> {
         // angr-9ke6b.99: reject a zero-size load before any of the fast paths
@@ -246,7 +243,7 @@ impl SymbolicMemory {
             let start_page = addr.page_num();
             let end_page = end_page_inclusive(addr.raw(), size as u64)?;
             self.check_perms_range(start_page, end_page, Permission::R)?;
-            return self.assemble_load_with_multi(addr, size, ctx);
+            return self.assemble_load_with_multi(addr, size);
         }
         // angr-3zhl: a later partial store that begins inside [addr+1, addr+size)
         // overwrites trailing bytes of an earlier wider object at `addr`. The
@@ -268,7 +265,7 @@ impl SymbolicMemory {
         let has_inner_overlap = !self.symbolic_objects.is_empty()
             && (1..size as u64).any(|i| self.symbolic_objects.contains_key(&(addr + i)));
         if has_inner_overlap {
-            if let Some(merged) = self.try_byte_merge_load(addr, size, ctx) {
+            if let Some(merged) = self.try_byte_merge_load(addr, size) {
                 return Ok(merged);
             }
             // Byte-merge fell through (e.g. unmapped/non-symbolic byte gap);
@@ -284,7 +281,7 @@ impl SymbolicMemory {
             // through `assemble_load_with_multi` which uses the bitmap
             // per-byte (Symbolic / Spanned / Concrete).
             if (!self.symbolic_objects.is_empty() || !self.symbolic_spans.is_empty())
-                && let Some(r) = self.try_partial_overwrite_load(addr, size, ctx)
+                && let Some(r) = self.try_partial_overwrite_load(addr, size)
             {
                 return r;
             }
@@ -308,7 +305,7 @@ impl SymbolicMemory {
                         Endness::Big => (total_bits - 1, total_bits - size * 8),
                         Endness::Little => (size * 8 - 1, 0),
                     };
-                    return Ok(sym.extract(hi, lo, ctx));
+                    return Ok(sym.extract(hi, lo));
                 }
             }
             // Check if this address falls WITHIN a wider symbolic object
@@ -338,7 +335,7 @@ impl SymbolicMemory {
                         // overflow-ok: bounded by the `range_in` guard above.
                         Endness::Little => (off_bits + size * 8 - 1, off_bits),
                     };
-                    return Ok(sym.extract(hi, lo, ctx));
+                    return Ok(sym.extract(hi, lo));
                 }
             }
         }
@@ -425,7 +422,7 @@ impl SymbolicMemory {
                         parts.push(sym.clone());
                     } else if sym.width() > 8 {
                         // Extract the relevant byte
-                        parts.push(sym.extract(7, 0, ctx));
+                        parts.push(sym.extract(7, 0));
                     } else {
                         all_found = false;
                         break;
@@ -450,7 +447,7 @@ impl SymbolicMemory {
                 // BE: byte 0 = MSB → already high-to-low.
                 // angr-kg58: balanced fold gives an O(log N) AST instead
                 // of O(N) left-skewed chain.
-                return Ok(concat_bytes_endian(parts, self.endness, ctx));
+                return Ok(concat_bytes_endian(parts, self.endness));
             }
             // angr-uwtj: spans-first containment lookup. O(1) via the
             // reverse-span index; falls back to a linear scan over
@@ -473,7 +470,7 @@ impl SymbolicMemory {
                     // overflow-ok: bounded by `containing_wider_sym`'s `range_in`.
                     Endness::Little => (off_bits + size * 8 - 1, off_bits),
                 };
-                return Ok(sym_val.extract(hi, lo, ctx));
+                return Ok(sym_val.extract(hi, lo));
             }
             // Cannot reconstruct - return error for Python fallback
             return Err(MemoryError::SymbolicAddress {
@@ -483,7 +480,7 @@ impl SymbolicMemory {
 
         // angr-24pv4.3: endianness-aware concrete byte packing, including the
         // >16-byte wide-load case that cannot fit a u128. See `bytes_to_bv`.
-        Ok(bytes_to_bv(&bytes, size, self.endness, ctx))
+        Ok(bytes_to_bv(&bytes, size, self.endness))
     }
 
     /// Classify a load that hit an unmapped page (angr-9ke6b.97).
@@ -552,7 +549,7 @@ impl SymbolicMemory {
         // unconstrained value. Mirrors Python's `_default_value(...)` branch
         // in `address_concretization_mixin.AddressConcretizationMixin.load`.
         if concretizer.should_avoid_multivalued_read(&addr) {
-            return Ok(self.unconstrained_read_value(size, ctx));
+            return Ok(self.unconstrained_read_value(size));
         }
 
         // Try to concretize the address (read mode: falls back to Any single solution)
@@ -611,7 +608,7 @@ impl SymbolicMemory {
                     RustBV::concrete(0, fabricate_width_bits(size))
                 } else {
                     // angr-03vl4.41: the name must be unique *process-wide*, not
-                    // just within one ITE-tree build. `RustBV::from_parts` lowers
+                    // just within one ITE-tree build. `RustBV::symbol` lowers
                     // the name straight to `z3::ast::BV::new_const`, which interns
                     // by name and ignores the Rust-side `.id`, so two unconstrained
                     // reads that stringify the same would literally alias in the
@@ -673,7 +670,7 @@ impl SymbolicMemory {
         // AVOID_MULTIVALUED_READS: bypass concretization and return an
         // unconstrained value.
         if concretizer.should_avoid_multivalued_read(&addr) {
-            return Ok(self.unconstrained_read_value(size, ctx));
+            return Ok(self.unconstrained_read_value(size));
         }
 
         // Try to concretize the address (read mode: falls back to Any single solution)
@@ -691,8 +688,7 @@ impl SymbolicMemory {
                     // bare `size * 8`. `check_access_size` above already
                     // refuses oversize `size`, so the clamp is defense against
                     // a future edit that bypasses or hoists that check.
-                    return Ok(RustBV::symbolic(
-                        ctx,
+                    return Ok(RustBV::symbol(
                         format!("mem_all_unmapped_{size}"),
                         fabricate_width_bits(size),
                     ));
@@ -769,7 +765,7 @@ impl SymbolicMemory {
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
-        let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
+        let base = self.load_concrete_lazy_inner(addr, size)?;
         Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
 
@@ -784,9 +780,8 @@ impl SymbolicMemory {
         &self,
         addr: Address,
         size: u32,
-        ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        self.load_concrete_common(addr, size, ctx, true)
+        self.load_concrete_common(addr, size, true)
     }
 
     /// True when any byte in `[addr, addr + size)` carries a Multi cell.
@@ -823,7 +818,6 @@ impl SymbolicMemory {
         &self,
         addr: Address,
         size: u32,
-        ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         // Phase 4.1 (angr-mmdh.1): wider-load collapse cache. When a load
         // spans the same Multi/Concrete byte mix as a previous load and
@@ -889,7 +883,7 @@ impl SymbolicMemory {
                 let depth = payload.len() as u32;
                 total_ite_depth = total_ite_depth.saturating_add(depth);
                 crate::symbolic::record_mem_ite_depth(depth);
-                payload.collapse(concrete_byte, ctx)
+                payload.collapse(concrete_byte)
             } else if page.is_symbolic(offset) {
                 if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
                     Self::extract_byte_lane(sym, 0, self.endness).ok_or_else(|| {
@@ -932,7 +926,7 @@ impl SymbolicMemory {
         // Concatenate per endianness with a balanced tree (angr-kg58):
         //   LE: byte[0] is the LSB → reverse so high byte is first.
         //   BE: byte[0] is the MSB → already high-to-low.
-        let result = concat_bytes_endian(byte_parts, self.endness, ctx);
+        let result = concat_bytes_endian(byte_parts, self.endness);
 
         // Phase 4.1: cache the assembled BV when the load is fully covered
         // by Multi + Concrete bytes (fingerprint is Some). The hit path
@@ -1007,7 +1001,7 @@ impl SymbolicMemory {
         None
     }
 
-    fn try_byte_merge_load(&self, addr: Address, size: u32, ctx: &SymContext) -> Option<RustBV> {
+    fn try_byte_merge_load(&self, addr: Address, size: u32) -> Option<RustBV> {
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
             // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
@@ -1033,7 +1027,7 @@ impl SymbolicMemory {
         // Concatenate per endianness with a balanced tree (angr-kg58):
         //   LE: byte[0] is the LSB → reverse so high byte is first.
         //   BE: byte[0] is the MSB → already high-to-low.
-        Some(concat_bytes_endian(byte_parts, self.endness, ctx))
+        Some(concat_bytes_endian(byte_parts, self.endness))
     }
 
     /// Extract the byte at `byte_offset` from a wider symbolic value,
@@ -1065,9 +1059,9 @@ impl SymbolicMemory {
             return None;
         }
         Some(match endness {
-            Endness::Little => sym.extract_no_ctx(byte_offset * 8 + 7, byte_offset * 8),
+            Endness::Little => sym.extract(byte_offset * 8 + 7, byte_offset * 8),
             // overflow-ok: `end_bit <= total_bits` above bounds both terms.
-            Endness::Big => sym.extract_no_ctx(
+            Endness::Big => sym.extract(
                 total_bits - byte_offset * 8 - 1,
                 // overflow-ok: `end_bit <= total_bits` above bounds this too.
                 total_bits - byte_offset * 8 - 8,
@@ -1081,15 +1075,11 @@ impl SymbolicMemory {
 /// fold (angr-kg58). LE: byte 0 is the LSB, so reverse to high-bits-first
 /// before folding; BE: byte 0 is the MSB, already high-to-low. `parts`
 /// must be non-empty (`concat_balanced` asserts this).
-pub(super) fn concat_bytes_endian(
-    mut parts: Vec<RustBV>,
-    endness: Endness,
-    ctx: &SymContext,
-) -> RustBV {
+pub(super) fn concat_bytes_endian(mut parts: Vec<RustBV>, endness: Endness) -> RustBV {
     if matches!(endness, Endness::Little) {
         parts.reverse();
     }
-    RustBV::concat_balanced(&parts, ctx)
+    RustBV::concat_balanced(&parts)
 }
 
 /// Pack concrete `bytes` (with `bytes[0]` at the lowest address) into a
@@ -1101,13 +1091,13 @@ pub(super) fn concat_bytes_endian(
 /// corrupting the value (e.g. a 32-byte AVX load). Those are assembled as
 /// a balanced `Concat` of per-byte concretes instead; `<=16` bytes fold
 /// into a u128 directly.
-pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness, ctx: &SymContext) -> RustBV {
+pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness) -> RustBV {
     if size as usize > 16 {
         let parts: Vec<RustBV> = bytes
             .iter()
             .map(|&b| RustBV::concrete(b as u128, 8))
             .collect();
-        return concat_bytes_endian(parts, endness, ctx);
+        return concat_bytes_endian(parts, endness);
     }
     let value = match endness {
         Endness::Little => {
@@ -1135,7 +1125,7 @@ pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness, ctx: &SymCo
 /// Z3 identity is by name (`invariant-symbol-identity-is-by-name`), so a
 /// counter per path would make two independent reads one variable
 /// (angr-mx00p.17).
-pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32, ctx: &SymContext) -> RustBV {
+pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32) -> RustBV {
     let id = crate::symbolic::names::next("symbolic_read_unconstrained");
-    RustBV::symbolic(ctx, format!("symbolic_read_unconstrained_{id}"), width_bits)
+    RustBV::symbol(format!("symbolic_read_unconstrained_{id}"), width_bits)
 }

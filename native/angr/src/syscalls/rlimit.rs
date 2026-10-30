@@ -66,10 +66,7 @@ impl NativeSyscall for NativeGetrlimitSyscall {
         if resource == RLIMIT_STACK {
             // rlim_cur (8 bytes) = 8388608, rlim_max (8 bytes) = fresh symbolic.
             let cur = RustBV::concrete(RLIMIT_STACK_CUR, 64);
-            let max = {
-                let ctx = state.solver().borrow();
-                fresh_symbolic(&ctx, "rlim_max", 64)
-            };
+            let max = { fresh_symbolic("rlim_max", 64) };
             state.memory_store(rlim, cur)?;
             // `rlim` is unchecked `extract_concrete_arg` output and release
             // builds disable overflow checks, so wrap explicitly rather than

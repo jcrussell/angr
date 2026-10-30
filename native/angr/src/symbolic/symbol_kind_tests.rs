@@ -18,7 +18,7 @@ fn rust_symbol_name_is_identity_for_bitvectors() {
 
 #[test]
 fn rust_symbol_name_separates_bool_from_same_named_bitvector() {
-    // This splits the variable `RustBV::from_parts` builds from the name
+    // This splits the variable `RustBV::symbol` builds from the name
     // (angr-9ke6b.223).
     let bv = SymbolKind::BitVector.rust_symbol_name("flag");
     let boolean = SymbolKind::Bool.rust_symbol_name("flag");
@@ -40,7 +40,7 @@ fn rust_symbol_name_is_injective_over_bool_names() {
 
 #[test]
 fn strip_bool_symbol_name_inverts_the_bool_tag() {
-    // `RustBV::from_parts` decodes the tag to decide whether to build a BoolS,
+    // `RustBV::symbol` decodes the tag to decide whether to build a BoolS,
     // so the two halves must round-trip exactly — and the recovered string
     // must be claripy's own name, the BoolS Python holds (angr-9ke6b.223).
     let tagged = SymbolKind::Bool.rust_symbol_name("flag");

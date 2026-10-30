@@ -57,12 +57,12 @@ fn test_symbolic_load_cross_page_multiple_solutions() {
     // Symbolic 64-bit address constrained to {0x1FFC, 0x2FFC} via
     // `(addr == a) | (addr == b)`. Sat solver enumeration in the
     // concretizer should expose both solutions.
-    let addr = RustBV::symbolic(&ctx, "load_addr", 64);
+    let addr = RustBV::symbol("load_addr", 64);
     let a = RustBV::concrete(0x1FFC, 64);
     let b = RustBV::concrete(0x2FFC, 64);
-    let eq_a = addr.eq(&a, &ctx);
-    let eq_b = addr.eq(&b, &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr.eq(&a);
+    let eq_b = addr.eq(&b);
+    ctx.assume_true(&eq_a.or(&eq_b));
     assert!(ctx.is_sat(), "two-solution constraint must be SAT");
 
     // Wide load with the symbolic address.
@@ -84,7 +84,7 @@ fn test_symbolic_load_cross_page_multiple_solutions() {
     // built only against page 0x2000's bytes (collapsing the cross-
     // page slice), the eval would be wrong here.
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr.eq(&RustBV::concrete(0x1FFC, 64), &probe_a));
+    probe_a.assume_true(&addr.eq(&RustBV::concrete(0x1FFC, 64)));
     assert!(probe_a.is_sat(), "addr == 0x1FFC must remain SAT");
     assert_eq!(
         probe_a.eval(&loaded),
@@ -98,7 +98,7 @@ fn test_symbolic_load_cross_page_multiple_solutions() {
     // solution were missing (e.g. permission check applied only to
     // the first concretized address), this eval would diverge.
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr.eq(&RustBV::concrete(0x2FFC, 64), &probe_b));
+    probe_b.assume_true(&addr.eq(&RustBV::concrete(0x2FFC, 64)));
     assert!(probe_b.is_sat(), "addr == 0x2FFC must remain SAT");
     assert_eq!(
         probe_b.eval(&loaded),
@@ -196,14 +196,13 @@ fn test_permission_enforcement_wide_store_three_pages_middle_readonly() {
 /// the middle page (R required, W actual).
 #[test]
 fn test_permission_enforcement_wide_load_three_pages_middle_writeonly() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::R);
     mem.map(0x2000, 0x1000, Permission::W);
     mem.map(0x3000, 0x1000, Permission::R);
     mem.set_enforce_permissions(true);
 
-    let err = mem.load_concrete(0x1FF0, 8208, &ctx).unwrap_err();
+    let err = mem.load_concrete(0x1FF0, 8208).unwrap_err();
     match err {
         MemoryError::Permission {
             addr,

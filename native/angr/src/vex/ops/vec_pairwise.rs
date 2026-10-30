@@ -10,7 +10,7 @@
 //! (Iop_Avg).
 
 use super::{FloatLaneOp, OpError, PwOp, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -23,7 +23,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -39,13 +38,13 @@ impl VEXOps {
             let hi_a = lo_a + elem_width - 1;
             let lo_b = (2 * i as u32 + 1) * elem_width;
             let hi_b = lo_b + elem_width - 1;
-            let a_lane = arg.extract(hi_a, lo_a, ctx);
-            let b_lane = arg.extract(hi_b, lo_b, ctx);
-            let a_wide = a_lane.extend_into(out_elem_width, signed, ctx);
-            let b_wide = b_lane.extend_into(out_elem_width, signed, ctx);
-            elements.push(a_wide.add_into(b_wide, ctx));
+            let a_lane = arg.extract(hi_a, lo_a);
+            let b_lane = arg.extract(hi_b, lo_b);
+            let a_wide = a_lane.extend_into(out_elem_width, signed);
+            let b_wide = b_lane.extend_into(out_elem_width, signed);
+            elements.push(a_wide.add_into(b_wide));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// NEON binary pairwise op — `Iop_PwAdd{N}x{M}` / `Iop_PwMin{N}{S/U}x{M}` /
@@ -58,7 +57,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         op: PwOp,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -76,33 +74,33 @@ impl VEXOps {
                 let hi_a = lo_a + elem_width - 1;
                 let lo_b = (2 * i as u32 + 1) * elem_width;
                 let hi_b = lo_b + elem_width - 1;
-                let a = src.extract(hi_a, lo_a, ctx);
-                let b = src.extract(hi_b, lo_b, ctx);
-                elements.push(Self::pw_combine(a, b, op, ctx));
+                let a = src.extract(hi_a, lo_a);
+                let b = src.extract(hi_b, lo_b);
+                elements.push(Self::pw_combine(a, b, op));
             }
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     #[inline]
-    fn pw_combine(a: RustBV, b: RustBV, op: PwOp, ctx: &SymContext) -> RustBV {
+    fn pw_combine(a: RustBV, b: RustBV, op: PwOp) -> RustBV {
         match op {
-            PwOp::Add => a.add_into(b, ctx),
+            PwOp::Add => a.add_into(b),
             PwOp::MinS => {
-                let cond = a.clone().sle_into(b.clone(), ctx);
-                cond.ite_into(a, b, ctx)
+                let cond = a.clone().sle_into(b.clone());
+                cond.ite_into(a, b)
             }
             PwOp::MinU => {
-                let cond = a.clone().ule_into(b.clone(), ctx);
-                cond.ite_into(a, b, ctx)
+                let cond = a.clone().ule_into(b.clone());
+                cond.ite_into(a, b)
             }
             PwOp::MaxS => {
-                let cond = a.clone().sge_into(b.clone(), ctx);
-                cond.ite_into(a, b, ctx)
+                let cond = a.clone().sge_into(b.clone());
+                cond.ite_into(a, b)
             }
             PwOp::MaxU => {
-                let cond = a.clone().uge_into(b.clone(), ctx);
-                cond.ite_into(a, b, ctx)
+                let cond = a.clone().uge_into(b.clone());
+                cond.ite_into(a, b)
             }
         }
     }
@@ -122,7 +120,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         op: &dyn FloatLaneOp,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(op.arity(), 2);
         let elem_width = elem.bits();
@@ -141,14 +138,14 @@ impl VEXOps {
                 let hi_a = lo_a + elem_width - 1;
                 let lo_b = (2 * i as u32 + 1) * elem_width;
                 let hi_b = lo_b + elem_width - 1;
-                let a = src.extract(hi_a, lo_a, ctx);
-                let b = src.extract(hi_b, lo_b, ctx);
+                let a = src.extract(hi_a, lo_a);
+                let b = src.extract(hi_b, lo_b);
                 // Reuse the single-lane FP path (count=1) so the concrete and
                 // symbolic branches match the packed op of the same kind.
-                elements.push(Self::vec_float_lane_op(&[a, b], elem, 1, op, ctx)?);
+                elements.push(Self::vec_float_lane_op(&[a, b], elem, 1, op)?);
             }
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// NEON rounding halving add — `Iop_Avg{N}{S/U}x{M}`. Per-lane:
@@ -163,7 +160,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -176,17 +172,17 @@ impl VEXOps {
         for i in 0..count as u32 {
             let lo = i * elem_width;
             let hi = lo + elem_width - 1;
-            let a_lane = left.extract(hi, lo, ctx);
-            let b_lane = right.extract(hi, lo, ctx);
-            let a_wide = a_lane.extend_into(wide, signed, ctx);
-            let b_wide = b_lane.extend_into(wide, signed, ctx);
-            let sum = a_wide.add_into(b_wide, ctx).add_into(one_wide.clone(), ctx);
-            let shifted = sum.lshr_into(RustBV::concrete(1, wide), ctx);
+            let a_lane = left.extract(hi, lo);
+            let b_lane = right.extract(hi, lo);
+            let a_wide = a_lane.extend_into(wide, signed);
+            let b_wide = b_lane.extend_into(wide, signed);
+            let sum = a_wide.add_into(b_wide).add_into(one_wide.clone());
+            let shifted = sum.lshr_into(RustBV::concrete(1, wide));
             // Truncate to elem bits — for signed, the (elem)th bit of `shifted`
             // is the original sign bit by construction, so the low `elem` bits
             // are the correct two's-complement representation.
-            elements.push(shifted.extract(elem_width - 1, 0, ctx));
+            elements.push(shifted.extract(elem_width - 1, 0));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

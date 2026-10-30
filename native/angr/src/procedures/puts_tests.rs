@@ -48,7 +48,7 @@ fn test_puts_multiple_calls() {
 fn test_puts_symbolic_addr() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "addr", 64);
+    let sym = RustBV::symbol("addr", 64);
     drop(ctx);
     let result = NativePuts.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -80,7 +80,7 @@ fn test_putchar_multiple() {
 fn test_putchar_symbolic() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "c", 32);
+    let sym = RustBV::symbol("c", 32);
     drop(ctx);
     let result = NativePutchar.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -179,7 +179,7 @@ fn test_fputc_symbolic_stream_falls_back() {
     // proc handles it (was previously serviced as stdout via the `bv` arg).
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "stream", 64);
+    let sym = RustBV::symbol("stream", 64);
     drop(ctx);
     let result = NativeFputc.call(&mut state, &[RustBV::concrete(b'A' as u128, 32), sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -192,9 +192,8 @@ fn test_fputc_symbolic_stream_falls_back() {
 fn test_fputc_content_sym_fd_demotes_and_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("fputcfile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("fputcfile_{i}"), 8))
             .collect()
     };
     state

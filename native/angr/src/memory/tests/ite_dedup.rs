@@ -23,11 +23,11 @@ fn test_ite_dedup_zero_page_load() {
 
     // Symbolic 64-bit addr constrained to {0x1000, 0x1010, 0x1020, 0x1030}
     // — four candidates, all backed by the same zero content.
-    let addr = RustBV::symbolic(&ctx, "zp_addr", 64);
-    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let addr = RustBV::symbol("zp_addr", 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64));
     for off in [0x10u64, 0x20, 0x30] {
-        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
-        clause = clause.or(&eq, &ctx);
+        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64));
+        clause = clause.or(&eq);
     }
     ctx.assume_true(&clause);
     assert!(ctx.is_sat(), "four-solution constraint must be SAT");
@@ -61,11 +61,11 @@ fn test_ite_dedup_repeated_initializer_collapses() {
             .expect("store");
     }
 
-    let addr = RustBV::symbolic(&ctx, "ri_addr", 64);
-    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let addr = RustBV::symbol("ri_addr", 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64));
     for off in [0x10u64, 0x20, 0x30] {
-        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
-        clause = clause.or(&eq, &ctx);
+        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64));
+        clause = clause.or(&eq);
     }
     ctx.assume_true(&clause);
     assert!(ctx.is_sat(), "four-solution constraint must be SAT");
@@ -95,10 +95,10 @@ fn test_ite_dedup_distinct_values_keeps_ite() {
     mem.store_concrete(0x1010, RustBV::concrete(0x22, 64))
         .expect("store b");
 
-    let addr = RustBV::symbolic(&ctx, "dv_addr", 64);
-    let eq_a = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr.eq(&RustBV::concrete(0x1010, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let addr = RustBV::symbol("dv_addr", 64);
+    let eq_a = addr.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr.eq(&RustBV::concrete(0x1010, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
     assert!(ctx.is_sat());
 
     let loaded = mem
@@ -126,11 +126,11 @@ fn test_ite_dedup_strided_zero_collapses() {
 
     // Constrain addr to a regular stride of 8 across four candidates; the
     // concretizer should classify this as Strided.
-    let addr = RustBV::symbolic(&ctx, "st_addr", 64);
-    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let addr = RustBV::symbol("st_addr", 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x1000, 64));
     for off in [0x8u64, 0x10, 0x18] {
-        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64), &ctx);
-        clause = clause.or(&eq, &ctx);
+        let eq = addr.eq(&RustBV::concrete((0x1000 + off) as u128, 64));
+        clause = clause.or(&eq);
     }
     ctx.assume_true(&clause);
     assert!(ctx.is_sat());
@@ -187,11 +187,11 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
     // Two non-strided candidates so the concretizer returns Multiple, not
     // Strided. 0x1000 and 0x1080 with a single anchor in between excludes
     // strided detection.
-    let addr = RustBV::symbolic(&ctx, "dj_addr", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x1080, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x1300, 64), &ctx);
-    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+    let addr = RustBV::symbol("dj_addr", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x1080, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x1300, 64));
+    ctx.assume_true(&a0.or(&a1).or(&a2));
     assert!(ctx.is_sat());
 
     let value = RustBV::concrete(0xCAFE_BABE, 32);
@@ -215,7 +215,7 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
 
     // After the hoist, addr is provably NOT 0x9999 (outside the candidate
     // set). Without the hoist Z3 would have permitted that branch.
-    let outside = addr.eq(&RustBV::concrete(0x9999, 64), &ctx);
+    let outside = addr.eq(&RustBV::concrete(0x9999, 64));
     assert!(
         !ctx.can_be_true(&outside),
         "addr must not be able to equal an address outside the candidate set"
@@ -229,7 +229,7 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
 #[test]
 fn test_assert_address_disjunction_empty_and_single_addr_lists_are_noops() {
     let ctx = SymContext::new_mock();
-    let addr = RustBV::symbolic(&ctx, "dj_helper_addr", 64);
+    let addr = RustBV::symbol("dj_helper_addr", 64);
 
     // Empty addrs: early return, no constraint added.
     SymbolicMemory::assert_address_disjunction(&addr, &[], &ctx);
@@ -239,8 +239,8 @@ fn test_assert_address_disjunction_empty_and_single_addr_lists_are_noops() {
 
     // addr is still completely unconstrained — both 0x1000 and 0xDEAD are
     // satisfiable values.
-    let probe_a = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let probe_b = addr.eq(&RustBV::concrete(0xDEAD, 64), &ctx);
+    let probe_a = addr.eq(&RustBV::concrete(0x1000, 64));
+    let probe_b = addr.eq(&RustBV::concrete(0xDEAD, 64));
     assert!(
         ctx.can_be_true(&probe_a),
         "addr must still be free to equal 0x1000 after a [single]-addr helper call"
@@ -276,11 +276,11 @@ fn test_assert_address_disjunction_multiple_load_hoists() {
     mem.store_concrete(0x1300, RustBV::concrete(0xDE_AD_BE_EF, 32))
         .unwrap();
 
-    let addr = RustBV::symbolic(&ctx, "dj_load", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x1080, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x1300, 64), &ctx);
-    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+    let addr = RustBV::symbol("dj_load", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x1080, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x1300, 64));
+    ctx.assume_true(&a0.or(&a1).or(&a2));
 
     let _value = mem
         .load_symbolic_unified(addr, 4, &ctx, &concretizer)
@@ -316,11 +316,11 @@ fn test_load_symbolic_unified_all_unmapped_fabricate_width() {
     // Deliberately *irregular* offsets: an arithmetic progression is
     // recognised as `ConcretizationResult::Strided` and takes the strided
     // arm instead of the Multiple one this test is aiming at.
-    let addr = RustBV::symbolic(&ctx, "unmapped_addr", 64);
-    let mut clause = addr.eq(&RustBV::concrete(0x9000, 64), &ctx);
+    let addr = RustBV::symbol("unmapped_addr", 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x9000, 64));
     for off in [0x13u64, 0x47, 0xa1] {
-        let eq = addr.eq(&RustBV::concrete(u128::from(0x9000u64 + off), 64), &ctx);
-        clause = clause.or(&eq, &ctx);
+        let eq = addr.eq(&RustBV::concrete(u128::from(0x9000u64 + off), 64));
+        clause = clause.or(&eq);
     }
     ctx.assume_true(&clause);
     assert!(ctx.is_sat(), "four-solution constraint must be SAT");

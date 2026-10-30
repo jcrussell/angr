@@ -377,7 +377,7 @@ fn test_vdup_symbolic_arg() {
     // Symbolic 8-bit value, dup to 8x8. Constrain the output to a known
     // pattern and check the solver picks the right scalar.
     let ctx = SymContext::new_mock();
-    let arg = RustBV::symbolic(&ctx, "dup_arg", 8);
+    let arg = RustBV::symbol("dup_arg", 8);
     let res = VEXOps::unop(
         IROp::VDup {
             elem: IRType::I8,
@@ -400,7 +400,7 @@ fn test_vget_elem_symbolic_idx() {
     // through a symbolic idx and constrain it to return a specific lane.
     let ctx = SymContext::new_mock();
     let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
-    let sym_idx = RustBV::symbolic(&ctx, "get_idx", 8);
+    let sym_idx = RustBV::symbol("get_idx", 8);
     let res = VEXOps::binop(
         IROp::VGetElem {
             elem: IRType::I8,

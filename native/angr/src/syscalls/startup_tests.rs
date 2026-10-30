@@ -7,7 +7,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::syscalls::tests_support::assert_over_limit;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 fn fresh_state() -> RustSimState {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
@@ -59,9 +59,8 @@ fn uname_writes_sysname_and_machine() {
 #[test]
 fn uname_symbolic_buf_falls_back() {
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let err = NativeUnameSyscall
-        .call(&mut state, &[RustBV::symbolic(&ctx, "buf", 64)])
+        .call(&mut state, &[RustBV::symbol("buf", 64)])
         .expect_err("fallback");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }
@@ -199,13 +198,12 @@ fn getrandom_buflen_at_limit_is_native() {
 #[test]
 fn getrandom_symbolic_buflen_falls_back() {
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let err = NativeGetrandomSyscall
         .call(
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
-                RustBV::symbolic(&ctx, "n", 64),
+                RustBV::symbol("n", 64),
                 RustBV::concrete(0, 64),
             ],
         )

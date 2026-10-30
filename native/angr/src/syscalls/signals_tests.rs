@@ -4,7 +4,7 @@ use super::*;
 
 /// Sweep the `stub_syscall!` handlers (kill, rt_sigreturn, pause, alarm)
 /// across every supported arch and verify they return a fresh
-/// `RustBV::symbolic` of width `arch().bits()`. Successive invocations
+/// `RustBV::symbol` of width `arch().bits()`. Successive invocations
 /// must yield distinct fresh symbols (different `RustBV::Symbolic.id`), matching
 /// `syscall_stub.py::syscall` semantics where each call gets a
 /// new `Unconstrained` BV.

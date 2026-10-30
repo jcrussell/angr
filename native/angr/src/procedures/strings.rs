@@ -21,7 +21,7 @@
 
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Shared upper bound on a concrete null-terminated string scan for the
 /// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strpbrk,
@@ -406,14 +406,13 @@ pub(crate) fn build_strlen_chain(
     bytes: &[(u64, RustBV)],
     arch_bits: u32,
     default_len: u64,
-    ctx: &SymContext,
 ) -> RustBV {
     let zero_byte = RustBV::concrete(0u128, 8);
     let mut result = RustBV::concrete(default_len as u128, arch_bits);
     for (pos, byte) in bytes.iter().rev() {
-        let is_null = byte.eq(&zero_byte, ctx);
+        let is_null = byte.eq(&zero_byte);
         let len_bv = RustBV::concrete(*pos as u128, arch_bits);
-        result = is_null.ite(&len_bv, &result, ctx);
+        result = is_null.ite(&len_bv, &result);
     }
     result
 }
@@ -442,7 +441,7 @@ pub(crate) fn build_strlen_chain(
 /// the MAX cap (angr-fs8kb.36). Callers pass an explicit
 /// flag (`strlen::scan_for_null`'s `require_null`, `strcmp::compare_bytes`'s
 /// `unbounded`); never re-derive it from the window length.
-pub(crate) fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) -> Option<RustBV> {
+pub(crate) fn null_exists_constraint(bytes: &[(u64, RustBV)]) -> Option<RustBV> {
     let zero_byte = RustBV::concrete(0u128, 8);
     let mut disjunction: Option<RustBV> = None;
     for (_, byte) in bytes {
@@ -452,9 +451,9 @@ pub(crate) fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) 
             // Concrete non-null: a false disjunct, contributes nothing.
             Some(_) => continue,
             None => {
-                let is_null = byte.eq(&zero_byte, ctx);
+                let is_null = byte.eq(&zero_byte);
                 disjunction = Some(match disjunction {
-                    Some(d) => d.or(&is_null, ctx),
+                    Some(d) => d.or(&is_null),
                     None => is_null,
                 });
             }

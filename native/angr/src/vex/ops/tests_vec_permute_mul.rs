@@ -153,7 +153,7 @@ fn test_vec_reverse_double_apply_is_identity() {
         (1, IRType::I8, 16),     // Reverse1sIn8_x16
     ] {
         let width = elem.bits() * count as u32;
-        let arg = RustBV::symbolic(&ctx, "vrev_arg", width);
+        let arg = RustBV::symbol("vrev_arg", width);
         let op = IROp::VReverse {
             sub_width,
             elem,
@@ -179,7 +179,7 @@ fn test_vec_reverse_double_apply_is_identity() {
 #[test]
 fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
-    let arg = RustBV::symbolic(&ctx, "vrev_arg", 128);
+    let arg = RustBV::symbol("vrev_arg", 128);
     let got = VEXOps::unop(
         IROp::VReverse {
             sub_width: 32,
@@ -200,12 +200,11 @@ fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
     //   bits [127:96] output ← arg[95:64]
     let py = VEXOps::concat_le_elements(
         vec![
-            arg.extract(63, 32, &ctx),
-            arg.extract(31, 0, &ctx),
-            arg.extract(127, 96, &ctx),
-            arg.extract(95, 64, &ctx),
+            arg.extract(63, 32),
+            arg.extract(31, 0),
+            arg.extract(127, 96),
+            arg.extract(95, 64),
         ],
-        &ctx,
     );
 
     ctx.push();
@@ -412,8 +411,8 @@ fn test_vec_mull_even_32ux4_concrete() {
 #[test]
 fn test_vec_mull_16sx4_symbolic_matches_reference() {
     let ctx = SymContext::new_mock();
-    let left = RustBV::symbolic(&ctx, "mull_l", 64);
-    let right = RustBV::symbolic(&ctx, "mull_r", 64);
+    let left = RustBV::symbol("mull_l", 64);
+    let right = RustBV::symbol("mull_r", 64);
     let got = VEXOps::binop(
         IROp::VMull {
             elem: IRType::I16,
@@ -433,11 +432,11 @@ fn test_vec_mull_16sx4_symbolic_matches_reference() {
     for i in 0..4u32 {
         let lo = i * 16;
         let hi = lo + 15;
-        let la = left.extract(hi, lo, &ctx).extend_into(32, true, &ctx);
-        let ra = right.extract(hi, lo, &ctx).extend_into(32, true, &ctx);
-        lanes.push(la.mul(&ra, &ctx));
+        let la = left.extract(hi, lo).extend_into(32, true);
+        let ra = right.extract(hi, lo).extend_into(32, true);
+        lanes.push(la.mul(&ra));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -461,8 +460,8 @@ fn test_vec_mull_16sx4_symbolic_matches_reference() {
 #[test]
 fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
     let ctx = SymContext::new_mock();
-    let left = RustBV::symbolic(&ctx, "mulleven_l", 128);
-    let right = RustBV::symbolic(&ctx, "mulleven_r", 128);
+    let left = RustBV::symbol("mulleven_l", 128);
+    let right = RustBV::symbol("mulleven_r", 128);
     let got = VEXOps::binop(
         IROp::VMull {
             elem: IRType::I32,
@@ -484,11 +483,11 @@ fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
     for j in 0..2u32 {
         let lo = j * 2 * 32;
         let hi = lo + 31;
-        let la = left.extract(hi, lo, &ctx).extend_into(64, true, &ctx);
-        let ra = right.extract(hi, lo, &ctx).extend_into(64, true, &ctx);
-        lanes.push(la.mul(&ra, &ctx));
+        let la = left.extract(hi, lo).extend_into(64, true);
+        let ra = right.extract(hi, lo).extend_into(64, true);
+        lanes.push(la.mul(&ra));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -576,8 +575,8 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
         [(IRType::I16, 4, true, 64), (IRType::I8, 16, false, 128)];
     for (elem, count, signed, width) in cases {
         let ctx = SymContext::new_mock();
-        let left = RustBV::symbolic(&ctx, "mulhi_l", width);
-        let right = RustBV::symbolic(&ctx, "mulhi_r", width);
+        let left = RustBV::symbol("mulhi_l", width);
+        let right = RustBV::symbol("mulhi_r", width);
         let hi = VEXOps::binop(
             IROp::VMulHi {
                 elem,
@@ -617,10 +616,10 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
         let mut lanes = Vec::with_capacity(2 * count as usize);
         for j in 0..count as u32 {
             let (l, h) = (j * bits, j * bits + bits - 1);
-            lanes.push(lo.extract(h, l, &ctx));
-            lanes.push(hi.extract(h, l, &ctx));
+            lanes.push(lo.extract(h, l));
+            lanes.push(hi.extract(h, l));
         }
-        let rebuilt = VEXOps::concat_le_elements(lanes, &ctx);
+        let rebuilt = VEXOps::concat_le_elements(lanes);
 
         ctx.push();
         ctx.add_constraint(full.to_z3_ast().unwrap().eq(rebuilt.to_z3_ast().unwrap()).not());
@@ -707,8 +706,8 @@ fn test_vec_qdmull_32sx2_concrete() {
 #[test]
 fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
     let ctx = SymContext::new_mock();
-    let left = RustBV::symbolic(&ctx, "qdmull_l", 64);
-    let right = RustBV::symbolic(&ctx, "qdmull_r", 64);
+    let left = RustBV::symbol("qdmull_l", 64);
+    let right = RustBV::symbol("qdmull_r", 64);
     let got = VEXOps::binop(
         IROp::VQDMull {
             elem: IRType::I32,
@@ -727,16 +726,16 @@ fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
     for j in 0..2u32 {
         let lo = j * 32;
         let hi = lo + 31;
-        let la = left.extract(hi, lo, &ctx).extend_into(128, true, &ctx);
-        let ra = right.extract(hi, lo, &ctx).extend_into(128, true, &ctx);
-        let prod = la.mul(&ra, &ctx);
-        let doubled = prod.add(&prod, &ctx);
+        let la = left.extract(hi, lo).extend_into(128, true);
+        let ra = right.extract(hi, lo).extend_into(128, true);
+        let prod = la.mul(&ra);
+        let doubled = prod.add(&prod);
         // clamp to [i64::MIN, i64::MAX] in 128-bit signed space, then truncate.
-        let hi_clamped = doubled.sgt(&smax, &ctx).ite(&smax, &doubled, &ctx);
-        let clamped = hi_clamped.slt(&smin, &ctx).ite(&smin, &hi_clamped, &ctx);
-        lanes.push(clamped.extract(63, 0, &ctx));
+        let hi_clamped = doubled.sgt(&smax).ite(&smax, &doubled);
+        let clamped = hi_clamped.slt(&smin).ite(&smin, &hi_clamped);
+        lanes.push(clamped.extract(63, 0));
     }
-    let reference = VEXOps::concat_le_elements(lanes, &ctx);
+    let reference = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
@@ -833,7 +832,7 @@ fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
 #[test]
 fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
     let ctx = SymContext::new_mock();
-    let arg = RustBV::symbolic(&ctx, "vgbbd_arg", 128);
+    let arg = RustBV::symbol("vgbbd_arg", 128);
     let once = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
     assert!(once.as_u128().is_none(), "operand must stay symbolic");
     let twice = VEXOps::unop(IROp::VPwBitMtxXpose, once, &ctx).unwrap();
@@ -854,7 +853,7 @@ fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
 fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
     let ctx = SymContext::new_mock();
     let v: u128 = 0xDEADBEEF_CAFEBABE_0BADF00D_5AA55AA5u128;
-    let arg = RustBV::symbolic(&ctx, "vgbbd_pinned", 128);
+    let arg = RustBV::symbol("vgbbd_pinned", 128);
     let got = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
 
     ctx.push();
@@ -893,7 +892,7 @@ fn test_vec_mulhi_16x16_avx2_256_bit() {
             for (i, lane) in lanes.iter().enumerate() {
                 halves[i / 8] |= (*lane as u128) << ((i % 8) * 16);
             }
-            RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+            RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128))
         };
 
         let result = VEXOps::binop(
@@ -911,7 +910,7 @@ fn test_vec_mulhi_16x16_avx2_256_bit() {
 
         for i in 0..16u32 {
             let low = i * 16;
-            let extracted = result.extract(low + 15, low, &ctx);
+            let extracted = result.extract(low + 15, low);
             let got = ctx.eval(&extracted).expect("eval(lane) returned None");
             let idx = i as usize;
             // Reference product computed in the wider type, independently of
@@ -1042,7 +1041,7 @@ fn test_vec_perm_rejects_mismatched_widths() {
 fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
     let ctx = SymContext::new_mock();
     let table = pshufb_table();
-    let ctl = RustBV::symbolic(&ctx, "vperm_ctl", 128);
+    let ctl = RustBV::symbol("vperm_ctl", 128);
     let got = VEXOps::binop(
         IROp::VPerm {
             elem: IRType::I8,
@@ -1070,13 +1069,13 @@ fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
 #[test]
 fn test_vec_perm_32x8_symbolic_table_matches_python_ref() {
     let ctx = SymContext::new_mock();
-    let t = RustBV::symbolic(&ctx, "vperm_table", 256);
+    let t = RustBV::symbol("vperm_table", 256);
     let ctl: [u128; 8] = [7, 0, 0x8000_0005, 2, 9, 4, 0xffff_ffff, 1];
     let ctl_bv = (0..8).rev().fold(None::<RustBV>, |acc, i| {
         let lane = RustBV::concrete(ctl[i], 32);
         Some(match acc {
             None => lane,
-            Some(hi) => hi.concat(&lane, &ctx),
+            Some(hi) => hi.concat(&lane),
         })
     });
     let got = VEXOps::binop(
@@ -1093,12 +1092,12 @@ fn test_vec_perm_32x8_symbolic_table_matches_python_ref() {
 
     for (i, &c) in ctl.iter().enumerate() {
         let i = i as u32;
-        let lane = got.extract(i * 32 + 31, i * 32, &ctx);
+        let lane = got.extract(i * 32 + 31, i * 32);
         let want = if c >> 31 == 1 {
             RustBV::concrete(0, 32)
         } else {
             let j = (c & 7) as u32;
-            t.extract(j * 32 + 31, j * 32, &ctx)
+            t.extract(j * 32 + 31, j * 32)
         };
         ctx.push();
         ctx.add_constraint(lane.to_z3_ast().unwrap().eq(want.to_z3_ast().unwrap()).not());

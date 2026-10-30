@@ -37,8 +37,8 @@ fn backed_memory() -> SymbolicMemory {
 /// `should_avoid_multivalued_{read,write}` fires, but the concretizer has
 /// exactly one solution when it does not.
 fn pinned_symbolic_addr(ctx: &SymContext, name: &str) -> RustBV {
-    let addr = RustBV::symbolic(ctx, name, 64);
-    ctx.assume_true(&addr.eq(&RustBV::concrete(ADDR as u128, 64), ctx));
+    let addr = RustBV::symbol(name, 64);
+    ctx.assume_true(&addr.eq(&RustBV::concrete(ADDR as u128, 64)));
     assert!(ctx.is_sat(), "pinning constraint must be SAT");
     assert!(
         addr.as_u64().is_none(),
@@ -193,8 +193,8 @@ fn avoid_multivalued_reads_does_not_fire_for_concrete_addresses() {
 
 /// Reads [`ADDR`] back concretely — the store paths are what is under test, so
 /// the verification read deliberately avoids them.
-fn read_back(mem: &SymbolicMemory, ctx: &SymContext) -> Option<u64> {
-    mem.load_concrete(ADDR, 8, ctx)
+fn read_back(mem: &SymbolicMemory) -> Option<u64> {
+    mem.load_concrete(ADDR, 8)
         .expect("concrete read-back must succeed")
         .as_u64()
 }
@@ -214,7 +214,7 @@ fn store_symbolic_drops_the_write_under_avoid_multivalued_writes() {
     )
     .expect("store with the option off must succeed");
     assert_eq!(
-        read_back(&off, &ctx),
+        read_back(&off),
         Some(STORED as u64),
         "option off: the pinned address must concretize and take the write"
     );
@@ -228,7 +228,7 @@ fn store_symbolic_drops_the_write_under_avoid_multivalued_writes() {
     )
     .expect("store with the option on must report success, not an error");
     assert_eq!(
-        read_back(&on, &ctx),
+        read_back(&on),
         Some(BACKER as u64),
         "option on: the write must be dropped, leaving the backer intact"
     );
@@ -253,7 +253,7 @@ fn store_symbolic_unified_reports_none_and_drops_the_write_under_avoid_multivalu
         matches!(off_result, Some(ConcretizationResult::Single(a)) if a == ADDR),
         "option off: expected Single({ADDR:#x}), got {off_result:?}"
     );
-    assert_eq!(read_back(&off, &ctx), Some(STORED as u64));
+    assert_eq!(read_back(&off), Some(STORED as u64));
 
     let mut on = backed_memory();
     let on_result = on
@@ -269,7 +269,7 @@ fn store_symbolic_unified_reports_none_and_drops_the_write_under_avoid_multivalu
         "option on: the dropped write must report no concretization, got {on_result:?}"
     );
     assert_eq!(
-        read_back(&on, &ctx),
+        read_back(&on),
         Some(BACKER as u64),
         "option on: the write must be dropped, leaving the backer intact"
     );
@@ -294,7 +294,7 @@ fn store_symbolic_unified_multi_reports_none_and_drops_the_write_under_avoid_mul
         matches!(off_result, Some(ConcretizationResult::Single(a)) if a == ADDR),
         "option off: expected Single({ADDR:#x}), got {off_result:?}"
     );
-    assert_eq!(read_back(&off, &ctx), Some(STORED as u64));
+    assert_eq!(read_back(&off), Some(STORED as u64));
 
     let mut on = backed_memory();
     let on_result = on
@@ -310,7 +310,7 @@ fn store_symbolic_unified_multi_reports_none_and_drops_the_write_under_avoid_mul
         "option on: the dropped write must report no concretization, got {on_result:?}"
     );
     assert_eq!(
-        read_back(&on, &ctx),
+        read_back(&on),
         Some(BACKER as u64),
         "option on: the write must be dropped, leaving the backer intact"
     );
@@ -329,17 +329,17 @@ fn avoid_multivalued_writes_does_not_fire_for_concrete_addresses() {
     plain
         .store_symbolic(addr(), value(), &ctx, &concretizer)
         .expect("concrete-address store must succeed");
-    assert_eq!(read_back(&plain, &ctx), Some(STORED as u64));
+    assert_eq!(read_back(&plain), Some(STORED as u64));
 
     let mut unified = backed_memory();
     unified
         .store_symbolic_unified(addr(), value(), &ctx, &concretizer)
         .expect("concrete-address unified store must succeed");
-    assert_eq!(read_back(&unified, &ctx), Some(STORED as u64));
+    assert_eq!(read_back(&unified), Some(STORED as u64));
 
     let mut multi = backed_memory();
     multi
         .store_symbolic_unified_multi(addr(), value(), &ctx, &concretizer)
         .expect("concrete-address multiwrite store must succeed");
-    assert_eq!(read_back(&multi, &ctx), Some(STORED as u64));
+    assert_eq!(read_back(&multi), Some(STORED as u64));
 }

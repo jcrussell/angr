@@ -198,8 +198,8 @@ fn test_foreign_envelope_keeps_symbol_names() {
     let leaf = {
         let solver = state.solver();
         let ctx = solver.borrow();
-        let leaf = RustBV::symbolic(&ctx, "euw28_leaf", 64);
-        ctx.assume_true(&leaf.eq(&RustBV::concrete(7, 64), &ctx));
+        let leaf = RustBV::symbol("euw28_leaf", 64);
+        ctx.assume_true(&leaf.eq(&RustBV::concrete(7, 64)));
         leaf
     };
     mgr.push(STASH_ACTIVE, state);

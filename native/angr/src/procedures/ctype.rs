@@ -28,7 +28,7 @@
 
 use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// C-locale whitespace: `' '` plus the `0x09..=0x0d` run (`\t \n \v \f \r`).
 ///
@@ -78,17 +78,17 @@ fn in_set(v: u64, members: &[u8]) -> bool {
 }
 
 /// Build `arg >= lo && arg <= hi` (unsigned, at `arg`'s own width) as a 1-bit BV.
-fn arg_in_range(arg: &RustBV, lo: u8, hi: u8, ctx: &SymContext) -> RustBV {
+fn arg_in_range(arg: &RustBV, lo: u8, hi: u8) -> RustBV {
     let width = arg.width();
     let lo_bv = RustBV::concrete(lo as u128, width);
     let hi_bv = RustBV::concrete(hi as u128, width);
-    arg.uge(&lo_bv, ctx).and(&arg.ule(&hi_bv, ctx), ctx)
+    arg.uge(&lo_bv).and(&arg.ule(&hi_bv))
 }
 
 /// Zero-extend a 1-bit predicate to arch.bits() and return it.
-fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustBV {
+fn lift_predicate(state: &RustSimState, pred: RustBV) -> RustBV {
     let bits = state.arch().bits();
-    pred.zero_extend(bits, ctx)
+    pred.zero_extend(bits)
 }
 
 /// Symbolic half of [`case_shift`]: `ITE(lo <= arg <= hi, arg + delta, arg)`,
@@ -98,11 +98,11 @@ fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustB
 /// `tolower`/`toupper` cannot drift apart (angr-6cp06.3). `delta` is
 /// sign-extended from 8 bits to `arg.width()`, which is a no-op when the
 /// caller already passes a byte.
-pub(super) fn case_shift_bv(arg: &RustBV, lo: u8, hi: u8, delta: i8, ctx: &SymContext) -> RustBV {
-    let in_range = arg_in_range(arg, lo, hi, ctx);
-    let delta_bv = RustBV::concrete(delta as u8 as u128, 8).sign_extend(arg.width(), ctx);
-    let shifted = arg.add(&delta_bv, ctx);
-    in_range.ite(&shifted, arg, ctx)
+pub(super) fn case_shift_bv(arg: &RustBV, lo: u8, hi: u8, delta: i8) -> RustBV {
+    let in_range = arg_in_range(arg, lo, hi);
+    let delta_bv = RustBV::concrete(delta as u8 as u128, 8).sign_extend(arg.width());
+    let shifted = arg.add(&delta_bv);
+    in_range.ite(&shifted, arg)
 }
 
 /// Concrete twin of [`case_shift_bv`]: if `v` is in [lo, hi], shift by
@@ -128,20 +128,13 @@ pub(super) fn case_shift_concrete(v: u64, lo: u8, hi: u8, delta: i8) -> u64 {
 /// `claripy.If(And(c >= lo, c <= hi), c + delta, c)` does in `tolower.py` /
 /// `toupper.py`. Returning the low byte instead is what corrupted `EOF` into
 /// `255` (angr-6cp06.1).
-fn case_shift(
-    state: &RustSimState,
-    arg: &RustBV,
-    lo: u8,
-    hi: u8,
-    delta: i8,
-) -> Result<Option<RustBV>, ProcedureError> {
+fn case_shift(arg: &RustBV, lo: u8, hi: u8, delta: i8) -> Result<Option<RustBV>, ProcedureError> {
     let width = arg.width();
     if let Some(c) = arg.as_u64() {
         let result = case_shift_concrete(c, lo, hi, delta);
         return Ok(Some(RustBV::concrete(u128::from(result), width)));
     }
-    let ctx = state.solver().borrow();
-    Ok(Some(case_shift_bv(arg, lo, hi, delta, &ctx)))
+    Ok(Some(case_shift_bv(arg, lo, hi, delta)))
 }
 
 /// Build a symbolic ctype predicate from a list of inclusive ranges.
@@ -161,17 +154,16 @@ fn ranges_predicate(
             bits,
         )));
     }
-    let ctx = state.solver().borrow();
     let mut pred: Option<RustBV> = None;
     for &(lo, hi) in ranges {
-        let r = arg_in_range(arg, lo, hi, &ctx);
+        let r = arg_in_range(arg, lo, hi);
         pred = Some(match pred {
             None => r,
-            Some(prev) => prev.or(&r, &ctx),
+            Some(prev) => prev.or(&r),
         });
     }
     let pred = pred.expect("ranges must be non-empty");
-    Ok(Some(lift_predicate(state, pred, &ctx)))
+    Ok(Some(lift_predicate(state, pred)))
 }
 
 /// Build a symbolic ctype predicate from an explicit set of bytes.
@@ -188,18 +180,17 @@ fn set_predicate(
     if let Some(c) = arg.as_u64() {
         return Ok(Some(RustBV::concrete(u128::from(in_set(c, members)), bits)));
     }
-    let ctx = state.solver().borrow();
     let mut pred: Option<RustBV> = None;
     for &m in members {
         let m_bv = RustBV::concrete(m as u128, arg.width());
-        let eq = arg.eq(&m_bv, &ctx);
+        let eq = arg.eq(&m_bv);
         pred = Some(match pred {
             None => eq,
-            Some(prev) => prev.or(&eq, &ctx),
+            Some(prev) => prev.or(&eq),
         });
     }
     let pred = pred.expect("set must be non-empty");
-    Ok(Some(lift_predicate(state, pred, &ctx)))
+    Ok(Some(lift_predicate(state, pred)))
 }
 
 /// Return a locale ctype table pointer as an arch-width concrete BV, or an
@@ -396,8 +387,8 @@ crate::declare_proc! {
     name = "tolower",
     struct = NativeToLower,
     args = [c: bv],
-    call |state| {
-        case_shift(state, &c, b'A', b'Z', 32)
+    call |_state| {
+        case_shift(&c, b'A', b'Z', 32)
     }
 }
 
@@ -406,8 +397,8 @@ crate::declare_proc! {
     name = "toupper",
     struct = NativeToUpper,
     args = [c: bv],
-    call |state| {
-        case_shift(state, &c, b'a', b'z', -32)
+    call |_state| {
+        case_shift(&c, b'a', b'z', -32)
     }
 }
 

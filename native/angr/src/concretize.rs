@@ -44,7 +44,7 @@ use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concret
 /// off, so "fallback" in the name means the Any/Max *strategy*, not a
 /// last-resort code path.
 pub(crate) fn pin_fallback_addr(ctx: &SymContext, addr: &RustBV, chosen: u64) {
-    let pin = addr.eq(&RustBV::concrete(chosen as u128, addr.width()), ctx);
+    let pin = addr.eq(&RustBV::concrete(chosen as u128, addr.width()));
     ctx.assume_true(&pin);
 }
 
@@ -703,7 +703,7 @@ impl AddressConcretizer {
         let base_bv = RustBV::concrete(base as u128, width);
         let stride_bv = RustBV::concrete(stride as u128, width);
         let zero = RustBV::concrete(0, width);
-        let off_grid = addr.sub(&base_bv, ctx).urem(&stride_bv, ctx).ne(&zero, ctx);
+        let off_grid = addr.sub(&base_bv).urem(&stride_bv).ne(&zero);
         ctx.can_be_true(&off_grid)
     }
 

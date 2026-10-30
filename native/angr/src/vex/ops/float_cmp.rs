@@ -52,13 +52,7 @@ impl VEXOps {
     /// by the scalar-lane and packed symbolic fallbacks. Gt(a,b) ≡ Lt(b,a) and
     /// Ge(a,b) ≡ Le(b,a) (swapped operands — Z3 has no native Gt/Ge); Un is
     /// isNaN(l) OR isNaN(r) (IsNaN is a unary primitive, so no operand clone).
-    fn fcmp_predicate_1bit(
-        kind: FCmpKind,
-        prec: FloatPrec,
-        l: RustBV,
-        r: RustBV,
-        ctx: &SymContext,
-    ) -> RustBV {
+    fn fcmp_predicate_1bit(kind: FCmpKind, prec: FloatPrec, l: RustBV, r: RustBV) -> RustBV {
         match kind {
             FCmpKind::Eq => build_float_expr(FloatOpKind::CmpEq, prec, vec![l, r]),
             FCmpKind::Lt => build_float_expr(FloatOpKind::CmpLt, prec, vec![l, r]),
@@ -68,7 +62,7 @@ impl VEXOps {
             FCmpKind::Un => {
                 let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![l]);
                 let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![r]);
-                l_nan.or_into(r_nan, ctx)
+                l_nan.or_into(r_nan)
             }
         }
     }
@@ -137,15 +131,14 @@ impl VEXOps {
         right: RustBV,
         kind: FCmpKind,
         ty: IRType,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         let lane_bits = prec.bits();
         Self::require_operand_width("vec_float_scalar_lane_cmp left", left.width(), 128)?;
         Self::require_operand_width("vec_float_scalar_lane_cmp right", right.width(), 128)?;
-        let l_lo = left.extract(lane_bits - 1, 0, ctx);
-        let r_lo = right.extract(lane_bits - 1, 0, ctx);
-        let upper = left.extract(127, lane_bits, ctx);
+        let l_lo = left.extract(lane_bits - 1, 0);
+        let r_lo = right.extract(lane_bits - 1, 0);
+        let upper = left.extract(127, lane_bits);
 
         let lane_mask = Self::low_bit_mask_u128(lane_bits);
 
@@ -157,14 +150,14 @@ impl VEXOps {
                 0
             };
             let lane = RustBV::concrete(lane_val, lane_bits);
-            return Ok(upper.concat_into(lane, ctx));
+            return Ok(upper.concat_into(lane));
         }
 
         // Symbolic path: build 1-bit compare, then sign-extend to lane_bits
         // (sign-extend turns 1 → all-1s, 0 → all-0s).
-        let cmp_1bit = Self::fcmp_predicate_1bit(kind, prec, l_lo, r_lo, ctx);
-        let lane = cmp_1bit.sign_extend_into(lane_bits, ctx);
-        Ok(upper.concat_into(lane, ctx))
+        let cmp_1bit = Self::fcmp_predicate_1bit(kind, prec, l_lo, r_lo);
+        let lane = cmp_1bit.sign_extend_into(lane_bits);
+        Ok(upper.concat_into(lane))
     }
 
     /// Packed FP compare (Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,64Fx2}).
@@ -176,7 +169,6 @@ impl VEXOps {
         kind: FCmpKind,
         elem: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -218,23 +210,18 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let l_lane = left.extract(hi, lo, ctx);
-            let r_lane = right.extract(hi, lo, ctx);
-            let cmp_1bit = Self::fcmp_predicate_1bit(kind, prec, l_lane, r_lane, ctx);
-            elements.push(cmp_1bit.sign_extend_into(elem_width, ctx));
+            let l_lane = left.extract(hi, lo);
+            let r_lane = right.extract(hi, lo);
+            let cmp_1bit = Self::fcmp_predicate_1bit(kind, prec, l_lane, r_lane);
+            elements.push(cmp_1bit.sign_extend_into(elem_width));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// x87 FCOM-style compare (Iop_CmpF32, Iop_CmpF64). Returns I32 with the
     /// VEX-defined encoding:
     ///   0x40 = EQ, 0x01 = LT, 0x00 = GT, 0x45 = UN (either operand is NaN).
-    pub(super) fn float_com_cc(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_com_cc(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         // Concrete fast path
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result: u128 = match ty {
@@ -276,7 +263,7 @@ impl VEXOps {
         // eq  = l == r                 [false if either is NaN]
         let l_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![left.clone()]);
         let r_nan = build_float_expr(FloatOpKind::IsNaN, prec, vec![right.clone()]);
-        let un = l_nan.or_into(r_nan, ctx);
+        let un = l_nan.or_into(r_nan);
         let lt = build_float_expr(FloatOpKind::CmpLt, prec, vec![left.clone(), right.clone()]);
         let eq = build_float_expr(FloatOpKind::CmpEq, prec, vec![left, right]);
 
@@ -285,8 +272,8 @@ impl VEXOps {
         let v_eq = RustBV::concrete(0x40, 32);
         let v_gt = RustBV::concrete(0x00, 32);
         // un ? 0x45 : (lt ? 0x01 : (eq ? 0x40 : 0x00))
-        let inner = eq.ite_into(v_eq, v_gt, ctx);
-        let middle = lt.ite_into(v_lt, inner, ctx);
-        Ok(un.ite_into(v_un, middle, ctx))
+        let inner = eq.ite_into(v_eq, v_gt);
+        let middle = lt.ite_into(v_lt, inner);
+        Ok(un.ite_into(v_un, middle))
     }
 }

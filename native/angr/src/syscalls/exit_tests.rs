@@ -1,6 +1,6 @@
 use super::*;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Handler advertises 0 args so the dispatcher passes an empty
 /// slice. Verifies the SymbolicArgument path is unreachable for
@@ -10,8 +10,7 @@ use crate::symbolic::{RustBV, SymContext};
 fn symbolic_arg_is_unreachable_and_ignored() {
     let h = NativeExitSyscall;
     let mut state = RustSimState::new("amd64").expect("amd64 state");
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "exit_status", 64);
+    let sym = RustBV::symbol("exit_status", 64);
     let outcome = h
         .call(&mut state, &[sym])
         .expect("exit handler ignores args, never errs");

@@ -17,9 +17,9 @@ fn test_phase3_collapse_cache_hit_after_load() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p3_hit_addr", 64);
+    let addr_var = RustBV::symbol("p3_hit_addr", 64);
     let value = RustBV::concrete(0x77, 8);
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .unwrap();
 
     // Before any load, the cache is empty.
@@ -35,7 +35,7 @@ fn test_phase3_collapse_cache_hit_after_load() {
     // directly, but the model-eval result must match).
     let second = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe.eval(&first), Some(0x77));
     assert_eq!(probe.eval(&second), Some(0x77));
 }
@@ -44,12 +44,11 @@ fn test_phase3_collapse_cache_hit_after_load() {
 /// collapse cache so the next load rebuilds the ITE.
 #[test]
 fn test_phase3_collapse_cache_invalidated_on_push() {
-    let ctx = SymContext::new_mock();
     let mut payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
         RustBV::concrete(1, 1),
         RustBV::concrete(0xAA, 8),
     )]);
-    let _ = payload.collapse(0, &ctx);
+    let _ = payload.collapse(0);
     assert!(
         payload.has_cached_collapse(),
         "collapse must populate cache"
@@ -73,13 +72,13 @@ fn test_phase3_collapse_cache_invalidated_on_push() {
 fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
     let ctx = SymContext::new_mock();
     let payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
-        RustBV::symbolic(&ctx, "p3_default_change_cond", 1),
+        RustBV::symbol("p3_default_change_cond", 1),
         RustBV::concrete(0xAA, 8),
     )]);
 
-    let collapsed_0 = payload.collapse(0x00, &ctx);
+    let collapsed_0 = payload.collapse(0x00);
     assert!(payload.has_cached_collapse());
-    let collapsed_again = payload.collapse(0x00, &ctx);
+    let collapsed_again = payload.collapse(0x00);
     assert_eq!(
         ctx.eval(&collapsed_0),
         ctx.eval(&collapsed_again),
@@ -87,13 +86,13 @@ fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
     );
 
     // A different default byte must produce a different ELSE leaf.
-    let collapsed_ff = payload.collapse(0xFF, &ctx);
+    let collapsed_ff = payload.collapse(0xFF);
     // Force the cond=false branch so the ELSE leaf is observable.
     let probe = ctx.fork();
     probe.assume_true(
         &payload.alternatives()[0]
             .cond
-            .eq(&RustBV::concrete(0, 1), &probe),
+            .eq(&RustBV::concrete(0, 1)),
     );
     assert_eq!(
         probe.eval(&collapsed_ff),
@@ -107,12 +106,11 @@ fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
 /// (the BV is referentially safe — Z3 ASTs are immutable / refcounted).
 #[test]
 fn test_phase3_collapse_cache_clones_with_payload() {
-    let ctx = SymContext::new_mock();
     let payload = MultiPayload::from_alternatives(vec![MultiAlternative::new(
         RustBV::concrete(1, 1),
         RustBV::concrete(0x33, 8),
     )]);
-    let _ = payload.collapse(0x00, &ctx);
+    let _ = payload.collapse(0x00);
     assert!(payload.has_cached_collapse());
 
     let cloned = payload.clone();
@@ -147,9 +145,9 @@ fn test_phase4_wider_load_cache_hit() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_hit_addr", 64);
+    let addr_var = RustBV::symbol("p41_hit_addr", 64);
     let value = RustBV::concrete(0xAA, 8);
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .unwrap();
 
     assert_eq!(mem.wider_load_cache_len(), 0, "cache starts empty");
@@ -161,7 +159,7 @@ fn test_phase4_wider_load_cache_hit() {
     // Second identical load: returns from cache.
     let second = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe.eval(&first), probe.eval(&second));
     assert_eq!(mem.wider_load_cache_len(), 1, "second load reuses entry");
 }
@@ -173,12 +171,11 @@ fn test_phase4_wider_load_cache_skips_size_one() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_size1_addr", 64);
+    let addr_var = RustBV::symbol("p41_size1_addr", 64);
     mem.store_concrete_multi(
         &addr_var,
         &RustBV::concrete(0x55, 8),
         &[0x1000, 0x2000],
-        &ctx,
     )
     .unwrap();
 
@@ -202,22 +199,21 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var1 = RustBV::symbolic(&ctx, "p41_inval_addr1", 64);
-    let addr_var2 = RustBV::symbolic(&ctx, "p41_inval_addr2", 64);
+    let addr_var1 = RustBV::symbol("p41_inval_addr1", 64);
+    let addr_var2 = RustBV::symbol("p41_inval_addr2", 64);
 
     // First install: byte 0x1000 gets alt (addr_var1 == 0x1000, 0xAA).
     mem.store_concrete_multi(
         &addr_var1,
         &RustBV::concrete(0xAA, 8),
         &[0x1000, 0x2000],
-        &ctx,
     )
     .unwrap();
 
     // Prime the cache under a probe where addr_var1==0x1000 (alt 0 fires
     // → result byte is 0xAA).
     let first_probe = ctx.fork();
-    first_probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x1000, 64), &first_probe));
+    first_probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x1000, 64)));
     let first = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     assert_eq!(mem.wider_load_cache_len(), 1);
     assert_eq!(first_probe.eval(&first), Some(0xAA));
@@ -228,7 +224,6 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
         &addr_var2,
         &RustBV::concrete(0xBB, 8),
         &[0x1000, 0x3000],
-        &ctx,
     )
     .unwrap();
 
@@ -239,8 +234,8 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     // If the cache returns the stale BV from the first load (which lacks
     // the alt 1 branch), eval here would NOT be 0xBB.
     let probe = ctx.fork();
-    probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x9999, 64), &probe));
-    probe.assume_true(&addr_var2.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x9999, 64)));
+    probe.assume_true(&addr_var2.eq(&RustBV::concrete(0x1000, 64)));
     let after = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     assert_eq!(
         mem.wider_load_cache_len(),
@@ -261,19 +256,18 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_sym_byte_addr", 64);
+    let addr_var = RustBV::symbol("p41_sym_byte_addr", 64);
     // One Multi byte at 0x1000…
     mem.store_concrete_multi(
         &addr_var,
         &RustBV::concrete(0xAA, 8),
         &[0x1000, 0x2000],
-        &ctx,
     )
     .unwrap();
 
     // …and a plain Symbolic byte at 0x1001 (via concrete store with a
     // symbolic value).
-    let sym_val = RustBV::symbolic(&ctx, "p41_sym_byte_val", 8);
+    let sym_val = RustBV::symbol("p41_sym_byte_val", 8);
     mem.store_concrete(0x1001, sym_val).unwrap();
 
     // A 4-byte load at 0x1000 covers both — must NOT cache.
@@ -295,13 +289,12 @@ fn test_phase4_wider_load_cache_fork_independence() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_fork_addr", 64);
+    let addr_var = RustBV::symbol("p41_fork_addr", 64);
     parent
         .store_concrete_multi(
             &addr_var,
             &RustBV::concrete(0xAA, 8),
             &[0x1000, 0x2000],
-            &ctx,
         )
         .unwrap();
     let _ = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
@@ -320,7 +313,6 @@ fn test_phase4_wider_load_cache_fork_independence() {
             &addr_var,
             &RustBV::concrete(0xBB, 8),
             &[0x1000, 0x3000],
-            &ctx,
         )
         .unwrap();
     let _ = child.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
@@ -351,7 +343,7 @@ fn test_concrete_overwrite_clears_multi_cell() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p41_overwrite_addr", 64);
+    let addr_var = RustBV::symbol("p41_overwrite_addr", 64);
     // Install Multi at 0x1000..0x1004 (4 bytes) with one candidate (0x1000)
     // and value 0xAABBCCDD. Pre-fix this leaves an orphaned `multi_objects`
     // entry that survives the concrete store below.
@@ -359,7 +351,6 @@ fn test_concrete_overwrite_clears_multi_cell() {
         &addr_var,
         &RustBV::concrete(0xAABBCCDD, 32),
         &[0x1000],
-        &ctx,
     )
     .unwrap();
     assert_eq!(mem.multi_cell_count(), 4);
@@ -388,7 +379,7 @@ fn test_concrete_overwrite_clears_multi_cell() {
     // Re-read: under the cond that previously fired the Multi alt
     // (addr_var == 0x1000), the new concrete byte 0x11 must dominate.
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     let after = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
     assert_eq!(
         probe.eval(&after),

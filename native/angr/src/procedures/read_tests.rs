@@ -214,13 +214,12 @@ fn test_read_empty_content_fd_second_read_mints_fresh_bytes() {
 /// concrete 0x41 entry, the rest symbolic) and open it. Returns the fd.
 fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..n)
             .map(|i| {
                 if i == 1 {
                     RustBV::concrete(0x41, 8)
                 } else {
-                    RustBV::symbolic(&ctx, format!("symfile_{i}"), 8)
+                    RustBV::symbol(format!("symfile_{i}"), 8)
                 }
             })
             .collect()

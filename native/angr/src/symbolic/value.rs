@@ -11,7 +11,6 @@ use clarirs_core::ast::wire::WireDag;
 use clarirs_core::prelude::{AstFactory, AstRef, AstType, BitVec, ClarirsError};
 use serde::{Deserialize, Serialize};
 
-use super::SymContext;
 use crate::claripy::ast::GLOBAL_CONTEXT;
 
 /// Bitvector operation type for expression tree reconstruction.
@@ -480,16 +479,17 @@ impl RustBV {
         }
     }
 
-    /// Build a leaf from its parts: the clarirs variable named `name`.
-    ///
-    /// Single source of truth for leaf construction shared by `symbolic` and
-    /// `symbolic_with_id`, so the two cannot drift apart.
+    /// A symbolic bitvector variable: the clarirs variable `name`, so every
+    /// call with the same name and width returns the same leaf. Identity is
+    /// the name (`invariant-symbol-identity-is-by-name`). An empty name is
+    /// given a fresh one, `unnamed_{n}` from `names::next`, so that leaf
+    /// stays its own variable.
     ///
     /// **Width 0 degenerates to `Concrete`.** Z3 has no 0-width bitvector sort,
     /// so lowering a width-0 leaf panics inside the sort constructor — and the
     /// extension builds with `panic="abort"`, making that a hard SIGABRT of the
-    /// whole process rather than a catchable Python exception. Both symbolic
-    /// leaf constructors reach this function and take a caller-chosen width
+    /// whole process rather than a catchable Python exception. The leaf
+    /// constructors take a caller-chosen width
     /// that `check_bv_width` deliberately permits to be 0 (see `width_guards`,
     /// where 0 is documented as a supported *concrete* degenerate value) — so
     /// `claripy.BVS(name, 0)` imported through `claripy_bridge::import` was a
@@ -502,41 +502,32 @@ impl RustBV {
     /// is why this returns a value instead of plumbing a `Result` through
     /// infallible signatures (same reasoning as the `w == 0` rotate arm in
     /// `value_ops`).
-    #[inline]
     #[allow(
         clippy::expect_used,
         reason = "clarirs' sort check accepts every BVS and BoolS leaf (`AstOp::validate`), and `bit_of` over a BoolS builds a well-sorted ite, so the build cannot fail"
     )]
-    pub(super) fn from_parts(id: u64, name: Arc<str>, width: u32) -> Self {
+    pub fn symbol(name: impl AsRef<str>, width: u32) -> Self {
         if width == 0 {
             // SILENT(cat-a): expected control flow — the empty bitvector's only
             // value, not a fallback for a failure.
             return RustBV::Concrete { value: 0, width: 0 };
         }
-        // A leaf is the clarirs variable of its name (angr-mx00p.12): identity
-        // is the name, as it already is in Z3
-        // (`invariant-symbol-identity-is-by-name`). A Bool-tagged name is
-        // `ite(BoolS, 1, 0)`, the encoding `from_clarirs` and `leaf_var` read
-        // back. An empty name is given one from `id`, so that leaf stays its
-        // own variable.
-        let name: Arc<str> = if name.is_empty() {
-            Arc::from(format!("unnamed_{id}"))
+        // A Bool-tagged name is `ite(BoolS, 1, 0)`, the encoding
+        // `from_clarirs` and `leaf_var` read back (angr-mx00p.12).
+        let name = name.as_ref();
+        let unnamed;
+        let name = if name.is_empty() {
+            unnamed = format!("unnamed_{}", super::names::next("unnamed"));
+            unnamed.as_str()
         } else {
             name
         };
         let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
-        let term = match super::symbol_kind::strip_bool_symbol_name(&name) {
+        let term = match super::symbol_kind::strip_bool_symbol_name(name) {
             Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
-            None => gc.bvs(&*name, width),
+            None => gc.bvs(name, width),
         };
         RustBV::from_clarirs_lowerable(term.expect("clarirs accepts every BVS / BoolS leaf"))
-    }
-
-    /// Create a symbolic bitvector variable: the clarirs variable `name`
-    /// (see `Self::from_parts`), so every call with the same name and width
-    /// returns the same leaf.
-    pub fn symbolic(ctx: &SymContext, name: impl AsRef<str>, width: u32) -> Self {
-        RustBV::from_parts(ctx.next_id(), Arc::from(name.as_ref()), width)
     }
 
     /// Create a fresh symbolic bitvector variable named `{hint}_{n}`, with `n`
@@ -545,15 +536,7 @@ impl RustBV {
     /// and rides in snapshots (`names::watermarks`), so a restored state's
     /// names are not reminted.
     pub fn fresh(hint: &str, width: u32) -> Self {
-        let n = super::names::next(hint);
-        // The name is never empty, so `from_parts` never reads the id.
-        RustBV::from_parts(0, Arc::from(format!("{hint}_{n}")), width)
-    }
-
-    /// Create a symbolic bitvector variable named `name`. A leaf is
-    /// identified by its name, not by `id` (see `Self::from_parts`).
-    pub fn symbolic_with_id(id: u64, name: impl AsRef<str>, width: u32) -> Self {
-        RustBV::from_parts(id, Arc::from(name.as_ref()), width)
+        RustBV::symbol(format!("{hint}_{}", super::names::next(hint)), width)
     }
 
     /// Wrap a clarirs AST as a [`RustBV::Ast`], in the bitvector encoding the

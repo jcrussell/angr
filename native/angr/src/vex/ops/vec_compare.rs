@@ -6,7 +6,7 @@
 //! (`ICmpEq`/`ICmpGt` in `ops/mod.rs`).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -15,9 +15,8 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        Self::vec_interleave(left, right, elem, false, ctx)
+        Self::vec_interleave(left, right, elem, false)
     }
 
     /// Vector interleave high halves.
@@ -25,9 +24,8 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         elem: IRType,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        Self::vec_interleave(left, right, elem, true, ctx)
+        Self::vec_interleave(left, right, elem, true)
     }
 
     /// Shared interleave implementation. `high` selects which half of each
@@ -39,7 +37,6 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         high: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = left.width();
@@ -83,14 +80,14 @@ impl VEXOps {
             let src_lo = (base + i) * elem_width;
             let src_hi = src_lo + elem_width - 1;
 
-            let l_elem = left.extract(src_hi, src_lo, ctx);
-            let r_elem = right.extract(src_hi, src_lo, ctx);
+            let l_elem = left.extract(src_hi, src_lo);
+            let r_elem = right.extract(src_hi, src_lo);
 
             // right goes to even positions, left to odd
             elements.push(r_elem);
             elements.push(l_elem);
         }
 
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

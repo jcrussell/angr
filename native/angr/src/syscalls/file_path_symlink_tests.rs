@@ -322,8 +322,7 @@ fn newfstatat_symbolic_flag_falls_back() {
     // unconstrained flag must defer to Python rather than assume follow.
     let mut state = state_with_path(b"/tmp/x");
     let sym_flag = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "flag", 64)
+        RustBV::symbol("flag", 64)
     };
 
     let err = NativeNewfstatatSyscall

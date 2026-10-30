@@ -19,7 +19,7 @@
 //! `state.solver.Unconstrained("syscall_stub_<name>", returnty.size, ...)`.
 //! `NativeSetuidSyscall` / `NativeSetgidSyscall` mirror that exactly:
 //! ignore the single uid_t/gid_t argument and emit a fresh
-//! `RustBV::symbolic` sized to `arch().bits()` (the C `long` return
+//! `RustBV::symbol` sized to `arch().bits()` (the C `long` return
 //! width on every supported arch). The dispatcher routes this through
 //! `SyscallOutcome::ContinueSymbolic`, matching the stub semantics
 //! bit-for-bit so binaries can fork on the return value.

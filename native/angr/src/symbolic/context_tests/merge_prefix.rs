@@ -28,9 +28,9 @@ const N_ARMS: usize = 2;
 /// as 8 distinct assertions so the prefix has measurable length).
 fn build_base() -> (SymContext, RustBV) {
     let base = SymContext::new();
-    let x = RustBV::symbolic(&base, "x_diamond", 32);
+    let x = RustBV::symbol("x_diamond", 32);
     for i in 0..SHARED_CONSTRAINTS as u128 {
-        base.assume_true(&x.ugt(&RustBV::concrete(i, 32), &base));
+        base.assume_true(&x.ugt(&RustBV::concrete(i, 32)));
     }
     (base, x)
 }
@@ -39,12 +39,12 @@ fn build_base() -> (SymContext, RustBV) {
 /// Arm A pins `x` into (150, 250); arm B into (250, 350).
 fn build_arms(base: &SymContext, x: &RustBV) -> (SymContext, SymContext) {
     let arm_a = base.fork();
-    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32), &arm_a));
-    arm_a.assume_true(&x.ult(&RustBV::concrete(250, 32), &arm_a));
+    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32)));
+    arm_a.assume_true(&x.ult(&RustBV::concrete(250, 32)));
 
     let arm_b = base.fork();
-    arm_b.assume_true(&x.ugt(&RustBV::concrete(250, 32), &arm_b));
-    arm_b.assume_true(&x.ult(&RustBV::concrete(350, 32), &arm_b));
+    arm_b.assume_true(&x.ugt(&RustBV::concrete(250, 32)));
+    arm_b.assume_true(&x.ult(&RustBV::concrete(350, 32)));
 
     (arm_a, arm_b)
 }
@@ -74,8 +74,8 @@ fn test_shared_prefix_merge_guards_divergence_only() {
         &arm_b.z3_assertions_shared.lock()
     ));
 
-    let f0 = RustBV::symbolic(&base, "merge_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "merge_flag_1", 1);
+    let f0 = RustBV::symbol("merge_flag_0", 1);
+    let f1 = RustBV::symbol("merge_flag_1", 1);
     let (_merged, guarded) = merge_measured(&arm_a, &[&arm_b], &[f0, f1]);
 
     // guarded == Σ divergent local + 1 (the flag Or), NOT Σ total + 1.
@@ -99,12 +99,12 @@ fn test_shared_prefix_merge_preserves_semantics() {
     let (base, x) = build_base();
     let (arm_a, arm_b) = build_arms(&base, &x);
 
-    let f0 = RustBV::symbolic(&base, "merge_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "merge_flag_1", 1);
+    let f0 = RustBV::symbol("merge_flag_0", 1);
+    let f1 = RustBV::symbol("merge_flag_1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
 
     assert!(merged.is_sat(), "shared-prefix merge must stay SAT");
-    let xm = RustBV::symbolic(&merged, "x_diamond", 32);
+    let xm = RustBV::symbol("x_diamond", 32);
     assert!(merged.solution(&xm, 200), "arm A value must be admissible");
     assert!(merged.solution(&xm, 300), "arm B value must be admissible");
     assert!(!merged.solution(&xm, 100), "value in neither arm rejected");
@@ -121,14 +121,14 @@ fn test_shared_prefix_merge_preserves_semantics() {
 #[test]
 fn test_no_shared_prefix_falls_back_to_full_guard() {
     let ctx_a = SymContext::new();
-    let a = RustBV::symbolic(&ctx_a, "a_indep", 32);
-    ctx_a.assume_true(&a.ugt(&RustBV::concrete(10, 32), &ctx_a));
-    ctx_a.assume_true(&a.ult(&RustBV::concrete(20, 32), &ctx_a));
+    let a = RustBV::symbol("a_indep", 32);
+    ctx_a.assume_true(&a.ugt(&RustBV::concrete(10, 32)));
+    ctx_a.assume_true(&a.ult(&RustBV::concrete(20, 32)));
 
     let ctx_b = SymContext::new();
-    let b = RustBV::symbolic(&ctx_b, "b_indep", 32);
-    ctx_b.assume_true(&b.ugt(&RustBV::concrete(100, 32), &ctx_b));
-    ctx_b.assume_true(&b.ult(&RustBV::concrete(200, 32), &ctx_b));
+    let b = RustBV::symbol("b_indep", 32);
+    ctx_b.assume_true(&b.ugt(&RustBV::concrete(100, 32)));
+    ctx_b.assume_true(&b.ult(&RustBV::concrete(200, 32)));
 
     // Their frozen prefixes are NOT ptr-equal (both empty Arcs, distinct
     // allocations — no fork tie): the fast path must NOT engage. To make the
@@ -141,8 +141,8 @@ fn test_no_shared_prefix_falls_back_to_full_guard() {
         &arm_b.z3_assertions_shared.lock()
     ));
 
-    let f0 = RustBV::symbolic(&ctx_a, "mf0", 1);
-    let f1 = RustBV::symbolic(&ctx_a, "mf1", 1);
+    let f0 = RustBV::symbol("mf0", 1);
+    let f1 = RustBV::symbol("mf1", 1);
     let (_merged, guarded) = merge_measured(&arm_a, &[&arm_b], &[f0, f1]);
 
     // No shared prefix → every constraint of every arm is guarded. Each arm
@@ -161,9 +161,9 @@ fn test_no_shared_prefix_falls_back_to_full_guard() {
 fn test_single_arm_merge_shared_prefix() {
     let (base, x) = build_base();
     let arm = base.fork();
-    arm.assume_true(&x.ugt(&RustBV::concrete(150, 32), &arm));
+    arm.assume_true(&x.ugt(&RustBV::concrete(150, 32)));
 
-    let f0 = RustBV::symbolic(&base, "solo_flag", 1);
+    let f0 = RustBV::symbol("solo_flag", 1);
     let (merged, guarded) = merge_measured(&arm, &[], &[f0]);
 
     // 1 divergent local + 1 flag Or.
@@ -182,13 +182,13 @@ fn test_merge_preserves_deterministic_and_shared_lineage_flags() {
     base.set_use_shared_lineage_solver(true);
 
     let arm_a = base.fork();
-    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32), &arm_a));
+    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32)));
     let arm_b = base.fork();
-    arm_b.assume_true(&x.ult(&RustBV::concrete(250, 32), &arm_b));
+    arm_b.assume_true(&x.ult(&RustBV::concrete(250, 32)));
 
     // Both arms inherited the flags via fork; confirm the merge OR keeps them.
-    let f0 = RustBV::symbolic(&base, "det_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "det_flag_1", 1);
+    let f0 = RustBV::symbol("det_flag_0", 1);
+    let f1 = RustBV::symbol("det_flag_1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
     assert!(
         merged.is_deterministic(),
@@ -208,8 +208,8 @@ fn test_merge_flags_or_across_arms() {
     ctx_a.set_deterministic(true);
     let ctx_b = SymContext::new(); // non-deterministic
 
-    let f0 = RustBV::symbolic(&ctx_a, "or_flag_0", 1);
-    let f1 = RustBV::symbolic(&ctx_a, "or_flag_1", 1);
+    let f0 = RustBV::symbol("or_flag_0", 1);
+    let f1 = RustBV::symbol("or_flag_1", 1);
     let merged = ctx_a.merge(&[&ctx_b], &[f0, f1]);
     assert!(
         merged.is_deterministic(),
@@ -232,14 +232,14 @@ fn test_merge_reconciles_timeout_across_arms() {
     let ctx_b = SymContext::with_timeout(1_500);
     let ctx_c = SymContext::with_timeout(4_000);
 
-    let conds = |ctx: &SymContext, tag: &str| {
+    let conds = |tag: &str| {
         (0..3)
-            .map(|i| RustBV::symbolic(ctx, format!("to_{tag}_{i}"), 1))
+            .map(|i| RustBV::symbol(format!("to_{tag}_{i}"), 1))
             .collect::<Vec<_>>()
     };
 
     // Receiver has the loosest budget: the strictest arm must still win.
-    let merged = ctx_a.merge(&[&ctx_b, &ctx_c], &conds(&ctx_a, "a"));
+    let merged = ctx_a.merge(&[&ctx_b, &ctx_c], &conds("a"));
     assert_eq!(
         merged.timeout_ms(),
         1_500,
@@ -247,7 +247,7 @@ fn test_merge_reconciles_timeout_across_arms() {
     );
 
     // Order-independence: the same arms in a different order agree.
-    let merged_rev = ctx_c.merge(&[&ctx_a, &ctx_b], &conds(&ctx_c, "c"));
+    let merged_rev = ctx_c.merge(&[&ctx_a, &ctx_b], &conds("c"));
     assert_eq!(
         merged_rev.timeout_ms(),
         merged.timeout_ms(),
@@ -262,8 +262,8 @@ fn test_snapshot_roundtrips_lineage_flags() {
     let ctx = SymContext::new();
     ctx.set_deterministic(true);
     ctx.set_use_shared_lineage_solver(true);
-    let x = RustBV::symbolic(&ctx, "snap_x", 32);
-    ctx.assume_true(&x.ugt(&RustBV::concrete(5, 32), &ctx));
+    let x = RustBV::symbol("snap_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(5, 32)));
 
     let snap = ctx.to_snapshot();
     assert!(snap.deterministic);
@@ -307,8 +307,8 @@ fn test_merge_dedups_shared_assumed_prefix() {
         SHARED_CONSTRAINTS + DIVERGENT_PER_ARM
     );
 
-    let f0 = RustBV::symbolic(&base, "amerge_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "amerge_flag_1", 1);
+    let f0 = RustBV::symbol("amerge_flag_0", 1);
+    let f1 = RustBV::symbol("amerge_flag_1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
 
     // prefix once + each arm's divergent local suffix.
@@ -338,8 +338,8 @@ fn test_nested_merge_does_not_compound_assumed_prefix() {
     let (base, x) = build_base();
     let (arm_a, arm_b) = build_arms(&base, &x);
 
-    let f0 = RustBV::symbolic(&base, "nest_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "nest_flag_1", 1);
+    let f0 = RustBV::symbol("nest_flag_0", 1);
+    let f1 = RustBV::symbol("nest_flag_1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
     let round1 = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM;
     assert_eq!(merged.assumed_constraint_count(), round1);
@@ -347,16 +347,16 @@ fn test_nested_merge_does_not_compound_assumed_prefix() {
     // Second diamond: fork the merged context twice. `fork` freezes merged's
     // local assumed into `shared`, handing both children the same Arc.
     let sub_a = merged.fork();
-    sub_a.assume_true(&x.ugt(&RustBV::concrete(180, 32), &sub_a));
+    sub_a.assume_true(&x.ugt(&RustBV::concrete(180, 32)));
     let sub_b = merged.fork();
-    sub_b.assume_true(&x.ult(&RustBV::concrete(240, 32), &sub_b));
+    sub_b.assume_true(&x.ult(&RustBV::concrete(240, 32)));
     assert!(Arc::ptr_eq(
         &sub_a.assumed_constraints_shared.lock(),
         &sub_b.assumed_constraints_shared.lock()
     ));
 
-    let g0 = RustBV::symbolic(&base, "nest_flag_2", 1);
-    let g1 = RustBV::symbolic(&base, "nest_flag_3", 1);
+    let g0 = RustBV::symbol("nest_flag_2", 1);
+    let g1 = RustBV::symbol("nest_flag_3", 1);
     let merged2 = sub_a.merge(&[&sub_b], &[g0, g1]);
 
     assert_eq!(
@@ -371,14 +371,14 @@ fn test_nested_merge_does_not_compound_assumed_prefix() {
 #[test]
 fn test_no_shared_assumed_prefix_keeps_every_arm_prefix() {
     let ctx_a = SymContext::new();
-    let a = RustBV::symbolic(&ctx_a, "a_assumed_indep", 32);
-    ctx_a.assume_true(&a.ugt(&RustBV::concrete(10, 32), &ctx_a));
-    ctx_a.assume_true(&a.ult(&RustBV::concrete(20, 32), &ctx_a));
+    let a = RustBV::symbol("a_assumed_indep", 32);
+    ctx_a.assume_true(&a.ugt(&RustBV::concrete(10, 32)));
+    ctx_a.assume_true(&a.ult(&RustBV::concrete(20, 32)));
 
     let ctx_b = SymContext::new();
-    let b = RustBV::symbolic(&ctx_b, "b_assumed_indep", 32);
-    ctx_b.assume_true(&b.ugt(&RustBV::concrete(100, 32), &ctx_b));
-    ctx_b.assume_true(&b.ult(&RustBV::concrete(200, 32), &ctx_b));
+    let b = RustBV::symbol("b_assumed_indep", 32);
+    ctx_b.assume_true(&b.ugt(&RustBV::concrete(100, 32)));
+    ctx_b.assume_true(&b.ult(&RustBV::concrete(200, 32)));
 
     // Fork freezes each arm's pairs into its OWN shared Arc — not ptr-equal.
     let arm_a = ctx_a.fork();
@@ -388,8 +388,8 @@ fn test_no_shared_assumed_prefix_keeps_every_arm_prefix() {
         &arm_b.assumed_constraints_shared.lock()
     ));
 
-    let f0 = RustBV::symbolic(&ctx_a, "amf0", 1);
-    let f1 = RustBV::symbolic(&ctx_a, "amf1", 1);
+    let f0 = RustBV::symbol("amf0", 1);
+    let f1 = RustBV::symbol("amf1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
 
     assert_eq!(

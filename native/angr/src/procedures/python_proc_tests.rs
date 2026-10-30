@@ -50,7 +50,7 @@ fn test_python_procedure_symbolic_falls_back() {
 
         let mut state = RustSimState::new("amd64").unwrap();
         let ctx = state.solver().borrow();
-        let sym = RustBV::symbolic(&ctx, "x", 64);
+        let sym = RustBV::symbol("x", 64);
         drop(ctx);
         let result = proc.call(&mut state, &[sym]);
         assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));

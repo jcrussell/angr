@@ -22,7 +22,7 @@
 //! (angr-sqfj8.118).
 
 use super::{OpError, VEXOps, VecShiftKind};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -44,7 +44,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         kind: VecShiftKind,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -92,20 +91,15 @@ impl VEXOps {
         // resize the count to the lane width and apply per-lane.  Z3
         // bvshl/bvlshr/bvashr handle a count >= the operand width the same way
         // the concrete semantics above do (0 for shl/shr, sign-fill for sar).
-        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
+        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width)?;
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let elem_val = vec.extract(hi, lo, ctx);
-            elements.push(Self::shift_lane_sym(
-                elem_val,
-                resized_shift.clone(),
-                kind,
-                ctx,
-            ));
+            let elem_val = vec.extract(hi, lo);
+            elements.push(Self::shift_lane_sym(elem_val, resized_shift.clone(), kind));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// One lane of a concrete vector shift: `a` (already masked to
@@ -166,11 +160,11 @@ impl VEXOps {
     /// already be lane-width (`resize_vec_shift_amount` for the by-immediate
     /// path, an `extract` for the by-vector one).
     #[inline]
-    fn shift_lane_sym(a: RustBV, amt: RustBV, kind: VecShiftKind, ctx: &SymContext) -> RustBV {
+    fn shift_lane_sym(a: RustBV, amt: RustBV, kind: VecShiftKind) -> RustBV {
         match kind {
-            VecShiftKind::Shl => a.shl_into(amt, ctx),
-            VecShiftKind::Shr => a.lshr_into(amt, ctx),
-            VecShiftKind::Sar => a.ashr_into(amt, ctx),
+            VecShiftKind::Shl => a.shl_into(amt),
+            VecShiftKind::Shr => a.lshr_into(amt),
+            VecShiftKind::Sar => a.ashr_into(amt),
         }
     }
 
@@ -202,14 +196,10 @@ impl VEXOps {
     /// VEX `ShlN` / `ShrN` / `SarN` take an I8 count. When the lane is wider,
     /// zero-extend so Z3's shift ops see matching widths. A wider count would
     /// require an ITE on the high bits — not seen in real VEX, so reject.
-    fn resize_vec_shift_amount(
-        shift_amt: RustBV,
-        elem_width: u32,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn resize_vec_shift_amount(shift_amt: RustBV, elem_width: u32) -> Result<RustBV, OpError> {
         match shift_amt.width().cmp(&elem_width) {
             std::cmp::Ordering::Equal => Ok(shift_amt),
-            std::cmp::Ordering::Less => Ok(shift_amt.zero_extend_into(elem_width, ctx)),
+            std::cmp::Ordering::Less => Ok(shift_amt.zero_extend_into(elem_width)),
             std::cmp::Ordering::Greater => Err(OpError::UnsupportedVectorOp(
                 "vector shift amount wider than lane".to_string(),
             )),
@@ -255,7 +245,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         kind: VecShiftKind,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -293,10 +282,10 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let a = vec.extract(hi, lo, ctx);
-            let b = amts.extract(hi, lo, ctx);
-            elements.push(Self::shift_lane_sym(a, b, kind, ctx));
+            let a = vec.extract(hi, lo);
+            let b = amts.extract(hi, lo);
+            elements.push(Self::shift_lane_sym(a, b, kind));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

@@ -36,14 +36,14 @@ const RW: Permission = Permission {
 /// Solver churn: symbolic constraints, a feasibility check, a context fork.
 fn exercise_solver(seed: u64) {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x", 64);
+    let x = RustBV::symbol("x", 64);
     let lo = RustBV::concrete(seed as u128, 64);
     let hi = RustBV::concrete(seed as u128 + 100, 64);
 
-    ctx.assume_false(&x.ult(&lo, &ctx));
-    ctx.assume_true(&x.ult(&hi, &ctx));
+    ctx.assume_false(&x.ult(&lo));
+    ctx.assume_true(&x.ult(&hi));
 
-    let probe = x.ult(&RustBV::concrete(seed as u128 + 50, 64), &ctx);
+    let probe = x.ult(&RustBV::concrete(seed as u128 + 50, 64));
     ctx.push();
     let _ = ctx.check_branch_feasibility(&probe);
     ctx.pop();
@@ -51,13 +51,12 @@ fn exercise_solver(seed: u64) {
     // Fork carries the constraint set into a fresh solver — the hot path the
     // exploration loop hits on every branch.
     let child = ctx.fork();
-    let y = RustBV::symbolic(&child, "y", 64);
-    child.assume_true(&y.ult(&hi, &child));
+    let y = RustBV::symbol("y", 64);
+    child.assume_true(&y.ult(&hi));
 }
 
 /// Memory churn: concrete + symbolic stores, loads, and a page fork.
 fn exercise_memory(seed: u64) {
-    let ctx = SymContext::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
     let base = 0x400000u64;
     mem.map(base, 0x4000, RW);
@@ -66,12 +65,12 @@ fn exercise_memory(seed: u64) {
         let addr = base + page * 0x1000;
         mem.store_concrete(addr, RustBV::concrete(seed as u128 + page as u128, 64))
             .unwrap();
-        let _ = mem.load_concrete(addr, 8, &ctx).unwrap();
+        let _ = mem.load_concrete(addr, 8).unwrap();
     }
 
-    let sym = RustBV::symbolic(&ctx, "m", 64);
+    let sym = RustBV::symbol("m", 64);
     mem.store_concrete(base + 0x2000, sym).unwrap();
-    let _ = mem.load_concrete(base + 0x2000, 8, &ctx).unwrap();
+    let _ = mem.load_concrete(base + 0x2000, 8).unwrap();
 
     let _forked = mem.fork();
 }

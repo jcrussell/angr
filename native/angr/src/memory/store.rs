@@ -466,9 +466,9 @@ impl SymbolicMemory {
         let size = value.width() / 8;
         for &candidate in addrs {
             let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
-            let cond = addr_expr.eq(&addr_const, ctx);
+            let cond = addr_expr.eq(&addr_const);
             let current = self.load_concrete_lazy(Address(candidate), size, ctx)?;
-            let conditional_value = cond.ite(value, &current, ctx);
+            let conditional_value = cond.ite(value, &current);
             self.store_concrete_lazy(candidate, conditional_value)?;
         }
         record_mem_ite_depth(addrs.len() as u32);
@@ -521,7 +521,7 @@ impl SymbolicMemory {
                 Ok(Some(result))
             }
             ConcretizationResult::Multiple(addrs) => {
-                self.install_multi_for_candidates_safe(&addr, &value, addrs, ctx)?;
+                self.install_multi_for_candidates_safe(&addr, &value, addrs)?;
                 // angr-62li: hoist the addr-domain disjunction.
                 Self::assert_address_disjunction(&addr, addrs, ctx);
                 Ok(Some(result))
@@ -533,7 +533,7 @@ impl SymbolicMemory {
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
                 let addrs = strided_addrs(base, stride, count);
-                self.install_multi_for_candidates_safe(&addr, &value, &addrs, ctx)?;
+                self.install_multi_for_candidates_safe(&addr, &value, &addrs)?;
                 Ok(Some(result))
             }
             // Return error so caller can fall back to Python's memory model,
@@ -571,7 +571,7 @@ impl SymbolicMemory {
             }
             ConcretizationResult::Multiple(addrs) => {
                 let addrs_v: Vec<u64> = addrs.clone();
-                self.install_multi_for_candidates_safe(addr, &value, &addrs_v, ctx)?;
+                self.install_multi_for_candidates_safe(addr, &value, &addrs_v)?;
                 // angr-62li: hoist the addr-domain disjunction.
                 Self::assert_address_disjunction(addr, &addrs_v, ctx);
                 Ok(())
@@ -582,7 +582,7 @@ impl SymbolicMemory {
                 count,
             } => {
                 let addrs = strided_addrs(*base, *stride, *count);
-                self.install_multi_for_candidates_safe(addr, &value, &addrs, ctx)
+                self.install_multi_for_candidates_safe(addr, &value, &addrs)
             }
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
@@ -616,7 +616,6 @@ impl SymbolicMemory {
         addr_expr: &RustBV,
         value: &RustBV,
         addrs: &[u64],
-        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
         let endness = self.endness;
@@ -657,7 +656,7 @@ impl SymbolicMemory {
         // existing alternatives.
         for &cand in addrs {
             let addr_const = RustBV::concrete(cand as u128, addr_expr.width());
-            let cond = addr_expr.eq(&addr_const, ctx);
+            let cond = addr_expr.eq(&addr_const);
             for b in 0..size {
                 // angr-03vl4.37: `cand` is a Z3 solution for a guest-supplied
                 // store pointer, so this addition is on untrusted shape. A
@@ -727,7 +726,6 @@ impl SymbolicMemory {
         addr_expr: &RustBV,
         value: &RustBV,
         addrs: &[u64],
-        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
 
@@ -770,7 +768,7 @@ impl SymbolicMemory {
             return Ok(());
         }
 
-        self.install_multi_for_candidates(addr_expr, value, &ready, ctx)
+        self.install_multi_for_candidates(addr_expr, value, &ready)
     }
 
     /// angr-62li: hoist `Or(addr == a0, ..., addr == aK)` to the top-level
@@ -805,9 +803,9 @@ impl SymbolicMemory {
         let mut disjunction: Option<RustBV> = None;
         for &cand in addrs {
             let addr_const = RustBV::concrete(cand as u128, width);
-            let eq = addr.eq(&addr_const, ctx);
+            let eq = addr.eq(&addr_const);
             disjunction = Some(match disjunction {
-                Some(prev) => prev.or(&eq, ctx),
+                Some(prev) => prev.or(&eq),
                 None => eq,
             });
         }
@@ -840,9 +838,8 @@ impl SymbolicMemory {
         addr_expr: &RustBV,
         value: &RustBV,
         candidates: &[u64],
-        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
-        self.install_multi_for_candidates(addr_expr, value, candidates, ctx)
+        self.install_multi_for_candidates(addr_expr, value, candidates)
     }
 
     /// Lazy variant of `store_symbolic_unified`. After Phase 2 (angr-qh5u)
@@ -893,7 +890,7 @@ impl SymbolicMemory {
             }
             ConcretizationResult::Multiple(addrs) => {
                 let addrs_v: Vec<u64> = addrs.clone();
-                self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
+                self.install_multi_for_candidates(&addr, &value, &addrs_v)?;
                 // angr-62li: hoist the addr-domain disjunction.
                 Self::assert_address_disjunction(&addr, &addrs_v, ctx);
                 Ok(Some(result))
@@ -905,7 +902,7 @@ impl SymbolicMemory {
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
                 let addrs_v = strided_addrs(base, stride, count);
-                self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
+                self.install_multi_for_candidates(&addr, &value, &addrs_v)?;
                 Ok(Some(result))
             }
             other => other

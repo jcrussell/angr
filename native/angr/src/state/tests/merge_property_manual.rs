@@ -33,7 +33,7 @@ use super::helpers::{base_pair, conds};
 fn computed_fields_get_fresh_identity_not_inherited_from_either_branch() {
     let (a, b) = base_pair("amd64");
 
-    let [m0, m1] = conds(&a, "computed_identity");
+    let [m0, m1] = conds("computed_identity");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert!(
@@ -56,7 +56,7 @@ fn delegate_registers_merge_preserves_a_branch_only_concrete_write() {
     let (a, mut b) = base_pair("amd64");
     b.set_register("rbx", RustBV::concrete(0x4242, 64));
 
-    let [m0, m1] = conds(&a, "reg_delegate");
+    let [m0, m1] = conds("reg_delegate");
 
     let merged_a_active = a.merge(&[&b], &[m0.clone(), m1.clone()]);
     merged_a_active.solver().borrow().assume_true(&m0);
@@ -91,7 +91,7 @@ fn delegate_memory_merge_preserves_a_branch_only_store() {
     a.map_memory_data(0x5000_0000, &[0x11], Permission::RWX);
     b.map_memory_data(0x5000_1000, &[0x22], Permission::RWX);
 
-    let [m0, m1] = conds(&a, "mem_delegate");
+    let [m0, m1] = conds("mem_delegate");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert_eq!(
@@ -121,21 +121,20 @@ fn delegate_solver_merge_preserves_each_branchs_constraint() {
     let (a, b) = base_pair("amd64");
 
     let x = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "solver_delegate_x", 32)
+        RustBV::symbol("solver_delegate_x", 32)
     };
     {
         let s = a.solver().borrow();
-        let c = x.eq(&RustBV::concrete(5, 32), &s);
+        let c = x.eq(&RustBV::concrete(5, 32));
         s.assume_true(&c);
     }
     {
         let s = b.solver().borrow();
-        let c = x.eq(&RustBV::concrete(9, 32), &s);
+        let c = x.eq(&RustBV::concrete(9, 32));
         s.assume_true(&c);
     }
 
-    let [m0, m1] = conds(&a, "solver_delegate");
+    let [m0, m1] = conds("solver_delegate");
 
     let merged_a_active = a.merge(&[&b], &[m0.clone(), m1.clone()]);
     merged_a_active.solver().borrow().assume_true(&m0);
@@ -166,7 +165,7 @@ fn delegate_heap_metadata_unions_allocation_records_across_branches() {
     let b_addr = b.heap_alloc(0x20);
     assert_ne!(a_addr, b_addr, "sanity: the two allocations must not alias");
 
-    let [m0, m1] = conds(&a, "heap_meta_delegate");
+    let [m0, m1] = conds("heap_meta_delegate");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert_eq!(
@@ -205,7 +204,7 @@ fn joint_config_like_fields_union_additions_and_respect_removal_tombstones() {
     b.set_option("OTHER_ONLY", true);
     b.setenv(b"HOME".to_vec(), b"/root".to_vec());
 
-    let [m0, m1] = conds(&a, "config_union");
+    let [m0, m1] = conds("config_union");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert!(
@@ -253,7 +252,7 @@ fn joint_cgc_sinkholes_intersects_freed_regions_across_branches() {
     let b = ancestor.fork();
     a.cgc_add_sinkhole(0xA000, 0x100); // self-only -> dropped
 
-    let [m0, m1] = conds(&a, "cgc_sinkholes");
+    let [m0, m1] = conds("cgc_sinkholes");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert_eq!(
@@ -286,7 +285,7 @@ fn joint_py_ast_overlay_maps_union_with_self_priority_on_conflict() {
     pb.insert(0x5000u64, 1i64);
     b.replace_symbolic_pages(pb);
 
-    let [m0, m1] = conds(&a, "overlay_union");
+    let [m0, m1] = conds("overlay_union");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert_eq!(
@@ -317,7 +316,7 @@ fn joint_fs_keeps_the_longest_stdout_branch() {
     assert!(a.write_stdout(b"hi"));
     assert!(b.write_stdout(b"hello!"));
 
-    let [m0, m1] = conds(&a, "fs_longest_stdout");
+    let [m0, m1] = conds("fs_longest_stdout");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(
         merged.stdout_buffer(),
@@ -337,7 +336,7 @@ fn manual_stdin_symbols_unions_by_name_dedup_self_first() {
     b.record_stdin_symbol("shared".to_string(), 8); // dup -> not re-added
     b.record_stdin_symbol("only_b".to_string(), 16);
 
-    let [m0, m1] = conds(&a, "stdin_union");
+    let [m0, m1] = conds("stdin_union");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     let names: Vec<&str> = merged
@@ -379,7 +378,7 @@ fn manual_native_resume_stack_keeps_selfs_frames_even_when_b_has_more() {
         caller_return_addr: 0x400010,
     });
 
-    let [m0, m1] = conds(&a, "native_resume");
+    let [m0, m1] = conds("native_resume");
     let merged = a.merge(&[&b], &[m0, m1]);
     let stack = merged.native_resume_stack();
     assert_eq!(
@@ -407,7 +406,7 @@ fn manual_inspection_keeps_selfs_events_and_drops_others_silently() {
     b.inspection_mut().enable(InspectEvent::MemWrite);
     b.inspect_mem_write(0x2000, 8);
 
-    let [m0, m1] = conds(&a, "inspection_drop");
+    let [m0, m1] = conds("inspection_drop");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert_eq!(
@@ -442,7 +441,7 @@ fn manual_last_time_takes_the_symbolic_max_across_branches() {
     a.set_last_time(RustBV::concrete(100, 64));
     b.set_last_time(RustBV::concrete(250, 64));
 
-    let [m0, m1] = conds(&a, "last_time_max_b_bigger");
+    let [m0, m1] = conds("last_time_max_b_bigger");
     let merged = a.merge(&[&b], &[m0, m1]);
     let last = merged.last_time().expect("last_time must survive the merge");
     let val = merged.solver().borrow().eval(last);
@@ -458,7 +457,7 @@ fn manual_last_time_takes_the_symbolic_max_across_branches() {
     a2.set_last_time(RustBV::concrete(999, 64));
     b2.set_last_time(RustBV::concrete(3, 64));
 
-    let [m0, m1] = conds(&a2, "last_time_max_a_bigger");
+    let [m0, m1] = conds("last_time_max_a_bigger");
     let merged2 = a2.merge(&[&b2], &[m0, m1]);
     let last2 = merged2
         .last_time()

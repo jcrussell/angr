@@ -93,7 +93,7 @@ fn test_memcpy_symbolic_dst() {
     let mut state = RustSimState::new("amd64").unwrap();
 
     let ctx = state.solver().borrow();
-    let sym_dst = RustBV::symbolic(&ctx, "dst", 64);
+    let sym_dst = RustBV::symbol("dst", 64);
     drop(ctx);
 
     let proc = NativeMemcpy;
@@ -171,12 +171,10 @@ fn test_memcpy_symbolic_size_pinned() {
     state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(4, 64), &ctx)
+        sym.eq(&RustBV::concrete(4, 64))
     };
     state.add_constraint(eq);
 
@@ -217,12 +215,10 @@ fn test_memcpy_symbolic_size_conditional() {
     state.map_memory_data(0x2000, &[0xFFu8; 8], Permission::RWX); // dst
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let le = {
-        let ctx = state.solver().borrow();
-        sym.ule(&RustBV::concrete(4, 64), &ctx)
+        sym.ule(&RustBV::concrete(4, 64))
     };
     state.add_constraint(le);
 
@@ -258,8 +254,7 @@ fn test_memcpy_symbolic_size_unbounded_fallback() {
     state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let proc = NativeMemcpy;
     let result = proc.call(
@@ -285,12 +280,10 @@ fn test_memmove_symbolic_size_overlap() {
     );
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(6, 64), &ctx)
+        sym.eq(&RustBV::concrete(6, 64))
     };
     state.add_constraint(eq);
 
@@ -323,12 +316,10 @@ fn test_memcpy_symbolic_dst_pinned() {
     state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
 
     let dst = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "d", 64)
+        RustBV::symbol("d", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        dst.eq(&RustBV::concrete(0x2000, 64), &ctx)
+        dst.eq(&RustBV::concrete(0x2000, 64))
     };
     state.add_constraint(eq);
 
@@ -362,12 +353,10 @@ fn test_memcpy_symbolic_src_pinned() {
     state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
 
     let src = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "s", 64)
+        RustBV::symbol("s", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        src.eq(&RustBV::concrete(0x1000, 64), &ctx)
+        src.eq(&RustBV::concrete(0x1000, 64))
     };
     state.add_constraint(eq);
 
@@ -395,14 +384,12 @@ fn test_memcpy_symbolic_dst_two_candidates() {
     state.map_memory_data(0x2000, &[0u8; 32], Permission::RWX); // dst region
 
     let dst = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "d", 64)
+        RustBV::symbol("d", 64)
     };
     let constraint = {
-        let ctx = state.solver().borrow();
-        let a = dst.eq(&RustBV::concrete(0x2000, 64), &ctx);
-        let b = dst.eq(&RustBV::concrete(0x2008, 64), &ctx);
-        a.or(&b, &ctx)
+        let a = dst.eq(&RustBV::concrete(0x2000, 64));
+        let b = dst.eq(&RustBV::concrete(0x2008, 64));
+        a.or(&b)
     };
     state.add_constraint(constraint);
 
@@ -438,17 +425,15 @@ fn test_memcpy_symbolic_src_dst_cross_product() {
     state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX); // dst
 
     let (dst, src) = {
-        let ctx = state.solver().borrow();
         (
-            RustBV::symbolic(&ctx, "d", 64),
-            RustBV::symbolic(&ctx, "s", 64),
+            RustBV::symbol("d", 64),
+            RustBV::symbol("s", 64),
         )
     };
     {
-        let ctx = state.solver().borrow();
-        let ed = dst.eq(&RustBV::concrete(0x2000, 64), &ctx);
+        let ed = dst.eq(&RustBV::concrete(0x2000, 64));
         state.add_constraint(ed);
-        let es = src.eq(&RustBV::concrete(0x1000, 64), &ctx);
+        let es = src.eq(&RustBV::concrete(0x1000, 64));
         state.add_constraint(es);
     }
 
@@ -472,8 +457,7 @@ fn test_memcpy_symbolic_addr_unbounded_fallback() {
     state.map_memory_data(0x1000, b"ABCD", Permission::RWX);
 
     let dst = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "d", 64)
+        RustBV::symbol("d", 64)
     };
     let proc = NativeMemcpy;
     let result = proc.call(
@@ -492,15 +476,13 @@ fn test_memcpy_symbolic_addr_symbolic_size_fallback() {
     state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
 
     let (dst, size) = {
-        let ctx = state.solver().borrow();
         (
-            RustBV::symbolic(&ctx, "d", 64),
-            RustBV::symbolic(&ctx, "n", 64),
+            RustBV::symbol("d", 64),
+            RustBV::symbol("n", 64),
         )
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        dst.eq(&RustBV::concrete(0x2000, 64), &ctx)
+        dst.eq(&RustBV::concrete(0x2000, 64))
     };
     state.add_constraint(eq);
 
@@ -520,12 +502,10 @@ fn test_memmove_symbolic_dst_overlap() {
     state.map_memory_data(0x1000, b"abcdefgh", Permission::RWX);
 
     let dst = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "d", 64)
+        RustBV::symbol("d", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        dst.eq(&RustBV::concrete(0x1000, 64), &ctx)
+        dst.eq(&RustBV::concrete(0x1000, 64))
     };
     state.add_constraint(eq);
 

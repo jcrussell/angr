@@ -43,7 +43,7 @@ fn concretize_cached_read_applies_any_fallback_on_cached_toolarge() {
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
 
-    let addr = RustBV::symbolic(&ctx, "read_addr", 64);
+    let addr = RustBV::symbol("read_addr", 64);
     // Seed the cache with a raw TooLarge for this address's key.
     let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp.concretize_cache.insert(
@@ -69,7 +69,7 @@ fn concretize_cached_read_keeps_toolarge_when_fallback_disabled() {
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(false, true));
 
-    let addr = RustBV::symbolic(&ctx, "read_addr_nofb", 64);
+    let addr = RustBV::symbol("read_addr_nofb", 64);
     let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp.concretize_cache.insert(
         key,
@@ -97,7 +97,7 @@ fn concretize_cached_write_applies_max_fallback_on_cached_toolarge() {
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
 
-    let addr = RustBV::symbolic(&ctx, "write_addr", 64);
+    let addr = RustBV::symbol("write_addr", 64);
     let key = VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr);
     interp.concretize_cache.insert(
         key,
@@ -122,7 +122,7 @@ fn concretize_cached_write_keeps_toolarge_when_fallback_disabled() {
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(true, false));
 
-    let addr = RustBV::symbolic(&ctx, "write_addr_nofb", 64);
+    let addr = RustBV::symbol("write_addr_nofb", 64);
     let key = VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr);
     interp.concretize_cache.insert(
         key,
@@ -163,7 +163,7 @@ fn concretize_cached_jump_keeps_toolarge_verbatim_on_cache_hit() {
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
 
-    let addr = RustBV::symbolic(&ctx, "jump_target", 64);
+    let addr = RustBV::symbol("jump_target", 64);
     let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp.concretize_cache.insert(
         key,
@@ -191,7 +191,7 @@ fn concretize_cached_jump_reuses_shared_cache_entry() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
 
-    let addr = RustBV::symbolic(&ctx, "shared_target", 64);
+    let addr = RustBV::symbol("shared_target", 64);
     let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp
         .concretize_cache
@@ -207,8 +207,7 @@ fn concretize_cached_jump_reuses_shared_cache_entry() {
 /// limits, so their cache entries must live in different namespaces.
 #[test]
 fn bv_cache_key_separates_read_and_write_namespaces() {
-    let ctx = SymContext::new_mock();
-    let addr = RustBV::symbolic(&ctx, "xover", 64);
+    let addr = RustBV::symbol("xover", 64);
     assert_ne!(
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr),
         VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr),
@@ -233,7 +232,7 @@ fn write_does_not_reuse_a_read_range_multiple() {
     concretizer.symbolic_write_addresses = true;
     interp.set_concretizer(concretizer);
 
-    let addr = RustBV::symbolic(&ctx, "xover_addr", 64);
+    let addr = RustBV::symbol("xover_addr", 64);
     // 200 candidates: inside read_range_limit=1024, outside write_range_limit=128.
     let read_side: Vec<u64> = (0..200).map(|i| 0x5000 + i).collect();
     interp.concretize_cache.insert(
@@ -261,7 +260,7 @@ fn read_does_not_reuse_a_write_namespace_entry() {
     let mut interp = new_interp(&ctx);
     interp.set_concretizer(concretizer_with_fallbacks(false, true));
 
-    let addr = RustBV::symbolic(&ctx, "write_then_read", 64);
+    let addr = RustBV::symbol("write_then_read", 64);
     interp.concretize_cache.insert(
         VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr),
         Arc::new(ConcretizationResult::Multiple(vec![0xdead, 0xbeef])),
@@ -288,14 +287,13 @@ fn read_does_not_reuse_a_write_namespace_entry() {
 /// wrong-address memory corruption.
 #[test]
 fn bv_cache_key_distinguishes_nested_leaf_symbols() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 64);
-    let y = RustBV::symbolic(&ctx, "y", 64);
+    let x = RustBV::symbol("x", 64);
+    let y = RustBV::symbol("y", 64);
     let mask = RustBV::concrete(0xf, 64);
     let off = RustBV::concrete(0x1800, 64);
 
-    let addr_x = x.and(&mask, &ctx).add(&off, &ctx);
-    let addr_y = y.and(&mask, &ctx).add(&off, &ctx);
+    let addr_x = x.and(&mask).add(&off);
+    let addr_y = y.and(&mask).add(&off);
 
     // Sanity: these are genuinely nested trees, not simplified leaves.
     assert!(addr_x.node().is_some());
@@ -314,11 +312,10 @@ fn bv_cache_key_distinguishes_nested_leaf_symbols() {
 /// disjoint bits; the fix hashes the whole op.
 #[test]
 fn bv_cache_key_distinguishes_op_payload() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 64);
+    let x = RustBV::symbol("x", 64);
 
-    let lo = x.extract(7, 0, &ctx);
-    let hi = x.extract(15, 8, &ctx);
+    let lo = x.extract(7, 0);
+    let hi = x.extract(15, 8);
     assert!(lo.node().is_some());
     assert!(hi.node().is_some());
 
@@ -338,8 +335,7 @@ fn bv_cache_key_distinguishes_op_payload() {
 /// unrelated symbol.
 #[test]
 fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
-    let ctx = SymContext::new_mock();
-    let sym = RustBV::symbolic(&ctx, "x", 64);
+    let sym = RustBV::symbol("x", 64);
     let concrete = RustBV::concrete(7, sym.width());
     assert_ne!(
         VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &sym),
@@ -367,9 +363,9 @@ fn unconstrained_read_fallback_shares_the_memory_name_counter() {
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("unexpected name {name}"))
     };
-    let before = number(&mem.unconstrained_read_value(1, &ctx));
+    let before = number(&mem.unconstrained_read_value(1));
     let fallback = number(&interp.fresh_unconstrained_read(1));
-    let after = number(&mem.unconstrained_read_value(1, &ctx));
+    let after = number(&mem.unconstrained_read_value(1));
     assert!(
         before < fallback && fallback < after,
         "fallback {fallback} must come from the memory counter ({before}, {after})"

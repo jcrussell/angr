@@ -25,7 +25,7 @@ fn test_scan_concrete_symbolic_byte() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"ab\x00", Permission::RWX);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "b", 8);
+    let sym = RustBV::symbol("b", 8);
     drop(ctx);
     state.memory_store(0x1001, sym).unwrap();
     let res = scan_concrete_until_null(&mut state, 0x1000, 4096, "s");
@@ -93,7 +93,7 @@ fn test_scan_for_null_symbolic_with_sym_byte() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"a_c\x00", Permission::RWX);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "b1", 8);
+    let sym = RustBV::symbol("b1", 8);
     drop(ctx);
     state.memory_store(0x1001, sym).unwrap();
     match scan_for_null_symbolic(&mut state, 0x1000, 4096).unwrap() {
@@ -118,7 +118,7 @@ fn test_scan_for_null_symbolic_caps_symbolic_bytes() {
     state.map_memory_data(0x2000, &vec![b'a'; 512], Permission::RWX);
     let ctx = state.solver().borrow();
     let syms: Vec<RustBV> = (0..512)
-        .map(|i| RustBV::symbolic(&ctx, format!("c{i}"), 8))
+        .map(|i| RustBV::symbol(format!("c{i}"), 8))
         .collect();
     drop(ctx);
     for (i, sym) in syms.into_iter().enumerate() {
@@ -143,7 +143,7 @@ fn test_scan_for_null_symbolic_concrete_bytes_do_not_draw_down_budget() {
     data.push(0);
     state.map_memory_data(0x3000, &data, Permission::RWX);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "head", 8);
+    let sym = RustBV::symbol("head", 8);
     drop(ctx);
     state.memory_store(0x3000, sym).unwrap();
     match scan_for_null_symbolic(&mut state, 0x3000, 4096).unwrap() {
@@ -157,53 +157,47 @@ fn test_scan_for_null_symbolic_concrete_bytes_do_not_draw_down_budget() {
 
 #[test]
 fn test_build_strlen_chain_concrete() {
-    let state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     // Bytes: [(0, 'a'), (1, '\0')]. Chain should reduce to 1.
     let bytes = vec![
         (0u64, RustBV::concrete(b'a' as u128, 8)),
         (1u64, RustBV::concrete(0u128, 8)),
     ];
-    let result = build_strlen_chain(&bytes, 64, 4096, &ctx);
+    let result = build_strlen_chain(&bytes, 64, 4096);
     assert_eq!(result.as_u64(), Some(1));
 }
 
 #[test]
 fn test_null_exists_constraint_trivially_true_with_concrete_null() {
-    let state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "b0", 8);
+    let sym = RustBV::symbol("b0", 8);
     let bytes = vec![(0u64, sym), (1u64, RustBV::concrete(0u128, 8))];
     // A concrete null in the window already proves termination.
-    assert!(null_exists_constraint(&bytes, &ctx).is_none());
+    assert!(null_exists_constraint(&bytes).is_none());
 }
 
 #[test]
 fn test_null_exists_constraint_none_when_all_concrete_nonnull() {
-    let state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let bytes = vec![
         (0u64, RustBV::concrete(b'a' as u128, 8)),
         (1u64, RustBV::concrete(b'b' as u128, 8)),
     ];
     // No symbolic byte can be null -> the assertion would be trivially false
     // and would wrongly kill the state; the helper declines instead.
-    assert!(null_exists_constraint(&bytes, &ctx).is_none());
+    assert!(null_exists_constraint(&bytes).is_none());
 }
 
 #[test]
 fn test_null_exists_constraint_prunes_unterminated_symbolic_window() {
     let state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let b0 = RustBV::symbolic(&ctx, "s0", 8);
-    let b1 = RustBV::symbolic(&ctx, "s1", 8);
+    let b0 = RustBV::symbol("s0", 8);
+    let b1 = RustBV::symbol("s1", 8);
     let bytes = vec![(0u64, b0.clone()), (1u64, b1.clone())];
-    let cons = null_exists_constraint(&bytes, &ctx).expect("expected a constraint");
+    let cons = null_exists_constraint(&bytes).expect("expected a constraint");
     ctx.assume_true(&cons);
     assert!(ctx.is_sat());
     // With both bytes forced non-null the window has no terminator: unsat.
     let nonnull = RustBV::concrete(b'x' as u128, 8);
-    ctx.assume_true(&b0.eq(&nonnull, &ctx));
-    ctx.assume_true(&b1.eq(&nonnull, &ctx));
+    ctx.assume_true(&b0.eq(&nonnull));
+    ctx.assume_true(&b1.eq(&nonnull));
     assert!(!ctx.is_sat());
 }

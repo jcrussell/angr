@@ -3,7 +3,7 @@
 //! Every value that reaches [`RustBV`](super::RustBV)'s constructors from
 //! *outside* the engine — a claripy AST imported by `claripy_bridge::import`
 //! — carries a width the caller chose. `RustBV::concrete`
-//! / `RustBV::symbolic` / the structural ops validate none of it: the only
+//! / `RustBV::symbol` / the structural ops validate none of it: the only
 //! guards downstream (`value_ops::truncate_into`, `value_ops::drive_extract`)
 //! are `debug_assert!`s, which are compiled out of the `release` profile the
 //! extension actually ships. An out-of-range `Extract` then reaches
@@ -23,7 +23,7 @@
 /// `u32::MAX`-shaped widths that would have Z3 allocate a half-gigabyte sort.
 /// Width **0** is deliberately allowed: a zero-width concrete `RustBV` is a
 /// supported degenerate value, the empty bitvector's single inhabitant (see
-/// `RustBV::symbolic`'s width-0 collapse).
+/// `RustBV::symbol`'s width-0 collapse).
 pub const MAX_BV_WIDTH: u32 = 1 << 20;
 
 /// Reject a width above [`MAX_BV_WIDTH`], naming `op` in the message.

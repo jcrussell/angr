@@ -434,7 +434,7 @@ fn twin_resume_fork_keeps_the_frame_the_main_successor_popped() {
         let mut stored_conditions = FxHashMap::default();
         stored_conditions.insert(
             COND_ID,
-            RustBV::symbolic(&state.solver().borrow(), "subcall_guard", 1),
+            RustBV::symbol("subcall_guard", 1),
         );
         let deferred = vec![crate::interpreter::DeferredFork {
             branch_addr: SubcallTestProc::GUEST_TARGET + 4,

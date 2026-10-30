@@ -30,13 +30,11 @@ fn thread_ctx_addr() -> usize {
 fn test_migrate_via_snapshot_cross_context() {
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "ilq1_rax", 64)
+        RustBV::symbol("ilq1_rax", 64)
     };
     state.set_register("rax", x.clone());
     let constraint = {
-        let s = state.solver().borrow();
-        x.eq(&RustBV::concrete(0xdead_beef, 64), &s)
+        x.eq(&RustBV::concrete(0xdead_beef, 64))
     };
     state.add_constraint(constraint);
     let sid = state.state_id();
@@ -84,11 +82,11 @@ fn test_migrate_carries_multi_cell_bytes() {
 
     let (addr_var, val_bv) = {
         let ctx = state.solver().borrow();
-        let addr_var = RustBV::symbolic(&ctx, "sqfj8_71_multi_addr", 64);
+        let addr_var = RustBV::symbol("sqfj8_71_multi_addr", 64);
         ctx.assume_true(
             &addr_var
-                .eq(&RustBV::concrete(0x1000, 64), &ctx)
-                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+                .eq(&RustBV::concrete(0x1000, 64))
+                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
         );
         (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
     };
@@ -137,12 +135,10 @@ fn test_migrate_carries_multi_cell_bytes() {
 fn test_migrate_resume_stack_roundtrip() {
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "ilq1_saved_arg", 64)
+        RustBV::symbol("ilq1_saved_arg", 64)
     };
     let constraint = {
-        let s = state.solver().borrow();
-        x.eq(&RustBV::concrete(0xCAFE_F00D_DEAD_BEEF, 64), &s)
+        x.eq(&RustBV::concrete(0xCAFE_F00D_DEAD_BEEF, 64))
     };
     state.add_constraint(constraint);
     state.push_native_resume_frame(NativeResumeFrame {
@@ -208,13 +204,11 @@ fn test_migrate_resume_stack_roundtrip() {
 fn test_migrate_preserves_py_overlays() {
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "ilq1_overlay_rax", 64)
+        RustBV::symbol("ilq1_overlay_rax", 64)
     };
     state.set_register("rax", x.clone());
     let constraint = {
-        let s = state.solver().borrow();
-        x.eq(&RustBV::concrete(0x1234_5678, 64), &s)
+        x.eq(&RustBV::concrete(0x1234_5678, 64))
     };
     state.add_constraint(constraint);
 

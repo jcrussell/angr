@@ -36,16 +36,13 @@ fn test_merge_takes_min_cgc_base_and_intersects_sinkholes() {
     c.cgc_add_sinkhole(0x5000, 0x100); // other-only -> dropped
 
     let m0 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "n0irt2_m0", 1)
+        RustBV::symbol("n0irt2_m0", 1)
     };
     let m1 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "n0irt2_m1", 1)
+        RustBV::symbol("n0irt2_m1", 1)
     };
     let m2 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "n0irt2_m2", 1)
+        RustBV::symbol("n0irt2_m2", 1)
     };
     let merged = a.merge(&[&b, &c], &[m0, m1, m2]);
 
@@ -89,10 +86,9 @@ fn test_merge_unions_heap_metadata_across_branches() {
     b.heap_free(b_shared);
 
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "n0irt3_m0", 1),
-            RustBV::symbolic(&s, "n0irt3_m1", 1),
+            RustBV::symbol("n0irt3_m0", 1),
+            RustBV::symbol("n0irt3_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);

@@ -72,7 +72,7 @@ fn test_symbolic_isdigit_returns_constrained_bv() {
     // Symbolic input should now produce a symbolic result, not a fallback error.
     let mut s = make_state();
     let ctx = s.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "c", 64);
+    let sym = RustBV::symbol("c", 64);
     drop(ctx);
     let p = NativeIsDigit;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
@@ -86,9 +86,9 @@ fn test_symbolic_isdigit_solver_evaluation() {
     // Constrain the symbolic byte to '5' and check the result solves to 1.
     let mut s = make_state();
     let ctx = s.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "c", 64);
+    let sym = RustBV::symbol("c", 64);
     let target = RustBV::concrete(b'5' as u128, 64);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
     let p = NativeIsDigit;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
@@ -102,9 +102,9 @@ fn test_symbolic_isdigit_solver_evaluation() {
 fn test_symbolic_tolower_returns_symbolic() {
     let mut s = make_state();
     let ctx = s.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "c", 64);
+    let sym = RustBV::symbol("c", 64);
     let target = RustBV::concrete(b'A' as u128, 64);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
     let p = NativeToLower;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
@@ -283,8 +283,8 @@ fn test_case_shift_preserves_out_of_range_argument() {
 fn test_symbolic_predicate_rejects_high_byte_alias() {
     let mut s = make_state();
     let ctx = s.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "c", 64);
-    let eq = sym.eq(&RustBV::concrete(0x100 + b'0' as u128, 64), &ctx);
+    let sym = RustBV::symbol("c", 64);
+    let eq = sym.eq(&RustBV::concrete(0x100 + b'0' as u128, 64));
     drop(ctx);
     let result = NativeIsDigit
         .call(&mut s, std::slice::from_ref(&sym))
@@ -301,8 +301,8 @@ fn test_symbolic_predicate_rejects_high_byte_alias() {
 fn test_symbolic_tolower_preserves_eof() {
     let mut s = make_state();
     let ctx = s.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "c", 64);
-    let eq = sym.eq(&RustBV::concrete(u64::MAX as u128, 64), &ctx);
+    let sym = RustBV::symbol("c", 64);
+    let eq = sym.eq(&RustBV::concrete(u64::MAX as u128, 64));
     drop(ctx);
     let result = NativeToLower
         .call(&mut s, std::slice::from_ref(&sym))

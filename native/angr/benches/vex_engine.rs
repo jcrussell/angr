@@ -22,51 +22,44 @@ use z3::ast::BV;
 // ---------------------------------------------------------------------------
 
 fn bench_rustbv_concrete_arithmetic(c: &mut Criterion) {
-    let ctx = SymContext::new();
     let a = RustBV::concrete(0xDEADBEEF, 64);
     let b = RustBV::concrete(0xCAFEBABE, 64);
 
     let mut group = c.benchmark_group("rustbv_concrete");
-    group.bench_function("add", |bench| bench.iter(|| black_box(a.add(&b, &ctx))));
-    group.bench_function("sub", |bench| bench.iter(|| black_box(a.sub(&b, &ctx))));
-    group.bench_function("concat", |bench| {
-        bench.iter(|| black_box(a.concat(&b, &ctx)))
-    });
+    group.bench_function("add", |bench| bench.iter(|| black_box(a.add(&b))));
+    group.bench_function("sub", |bench| bench.iter(|| black_box(a.sub(&b))));
+    group.bench_function("concat", |bench| bench.iter(|| black_box(a.concat(&b))));
     group.bench_function("extract_32", |bench| {
-        bench.iter(|| black_box(a.extract(31, 0, &ctx)))
+        bench.iter(|| black_box(a.extract(31, 0)))
     });
-    group.bench_function("reverse", |bench| bench.iter(|| black_box(a.reverse(&ctx))));
+    group.bench_function("reverse", |bench| bench.iter(|| black_box(a.reverse())));
     group.finish();
 }
 
 fn bench_rustbv_symbolic_arithmetic(c: &mut Criterion) {
-    let ctx = SymContext::new();
-    let a = RustBV::symbolic(&ctx, "x", 64);
-    let b = RustBV::symbolic(&ctx, "y", 64);
+    let a = RustBV::symbol("x", 64);
+    let b = RustBV::symbol("y", 64);
 
     let mut group = c.benchmark_group("rustbv_symbolic");
-    group.bench_function("add", |bench| bench.iter(|| black_box(a.add(&b, &ctx))));
-    group.bench_function("concat", |bench| {
-        bench.iter(|| black_box(a.concat(&b, &ctx)))
-    });
+    group.bench_function("add", |bench| bench.iter(|| black_box(a.add(&b))));
+    group.bench_function("concat", |bench| bench.iter(|| black_box(a.concat(&b))));
     group.bench_function("extract_32", |bench| {
-        bench.iter(|| black_box(a.extract(31, 0, &ctx)))
+        bench.iter(|| black_box(a.extract(31, 0)))
     });
-    group.bench_function("reverse", |bench| bench.iter(|| black_box(a.reverse(&ctx))));
+    group.bench_function("reverse", |bench| bench.iter(|| black_box(a.reverse())));
     group.finish();
 }
 
 fn bench_rustbv_build_z3_ast(c: &mut Criterion) {
-    let ctx = SymContext::new();
     // Build a moderately complex expression tree:
     // reverse(concat(extract(x, 31, 0), y) + z)
-    let x = RustBV::symbolic(&ctx, "x", 64);
-    let y = RustBV::symbolic(&ctx, "y", 32);
-    let z = RustBV::symbolic(&ctx, "z", 64);
-    let extracted = x.extract(31, 0, &ctx);
-    let concatenated = extracted.concat(&y, &ctx);
-    let sum = concatenated.add(&z, &ctx);
-    let expr = sum.reverse(&ctx);
+    let x = RustBV::symbol("x", 64);
+    let y = RustBV::symbol("y", 32);
+    let z = RustBV::symbol("z", 64);
+    let extracted = x.extract(31, 0);
+    let concatenated = extracted.concat(&y);
+    let sum = concatenated.add(&z);
+    let expr = sum.reverse();
 
     c.bench_function("rustbv_z3", |bench| {
         bench.iter(|| {
@@ -87,13 +80,12 @@ fn bench_rustbv_build_z3_ast(c: &mut Criterion) {
 /// benches quantify the raw clone cost against the full op so we can judge
 /// whether adding more `&self` ref-taking variants would move the needle.
 fn bench_rustbv_clone_overhead(c: &mut Criterion) {
-    let ctx = SymContext::new();
     let concrete = RustBV::concrete(0xDEADBEEF, 64);
-    let leaf = RustBV::symbolic(&ctx, "x", 64);
-    let leaf2 = RustBV::symbolic(&ctx, "y", 64);
+    let leaf = RustBV::symbol("x", 64);
+    let leaf2 = RustBV::symbol("y", 64);
     // Expression-variant operands (2-operand Add nodes with an empty memo).
-    let expr = leaf.add(&leaf2, &ctx);
-    let expr2 = leaf2.add(&leaf, &ctx);
+    let expr = leaf.add(&leaf2);
+    let expr2 = leaf2.add(&leaf);
 
     let mut group = c.benchmark_group("rustbv_clone");
     // Raw clone cost per variant.
@@ -103,17 +95,13 @@ fn bench_rustbv_clone_overhead(c: &mut Criterion) {
     // Full by-ref op (2 clones + node build) vs. consuming `_into` (same
     // clones, but the delta vs. a hypothetical owned-operand caller is the
     // 2 clones we pay here).
-    group.bench_function("add_byref_leaf", |b| {
-        b.iter(|| black_box(leaf.add(&leaf2, &ctx)))
-    });
+    group.bench_function("add_byref_leaf", |b| b.iter(|| black_box(leaf.add(&leaf2))));
     group.bench_function("add_into_owned_leaf", |b| {
-        b.iter(|| black_box(leaf.clone().add_into(leaf2.clone(), &ctx)))
+        b.iter(|| black_box(leaf.clone().add_into(leaf2.clone())))
     });
     // Operands are Expression nodes: clones bump the operand `Arc` + copy the
     // enum + clone the (empty) memo `RefCell`.
-    group.bench_function("add_byref_expr", |b| {
-        b.iter(|| black_box(expr.add(&expr2, &ctx)))
-    });
+    group.bench_function("add_byref_expr", |b| b.iter(|| black_box(expr.add(&expr2))));
     group.finish();
 }
 
@@ -124,11 +112,11 @@ fn bench_rustbv_clone_overhead(c: &mut Criterion) {
 fn bench_symcontext_fork(c: &mut Criterion) {
     let ctx = SymContext::new();
     // Add some constraints to make fork realistic
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let ten = RustBV::concrete(10, 32);
     let hundred = RustBV::concrete(100, 32);
-    let gt = x.ult(&ten, &ctx); // x < 10 (we'll negate via assume_false)
-    let lt = x.ult(&hundred, &ctx); // x < 100
+    let gt = x.ult(&ten); // x < 10 (we'll negate via assume_false)
+    let lt = x.ult(&hundred); // x < 100
     ctx.assume_false(&gt); // x >= 10
     ctx.assume_true(&lt); // x < 100
 
@@ -144,10 +132,10 @@ fn bench_symcontext_fork_scaling(c: &mut Criterion) {
 
     for n_constraints in [5, 20, 50] {
         let ctx = SymContext::new();
-        let x = RustBV::symbolic(&ctx, "x", 32);
+        let x = RustBV::symbol("x", 32);
         for i in 0..n_constraints {
             let bound = RustBV::concrete(i as u128 + 1000, 32);
-            let cmp = x.ult(&bound, &ctx);
+            let cmp = x.ult(&bound);
             ctx.assume_false(&cmp); // x >= bound
         }
         group.bench_function(format!("{n_constraints}_constraints"), |bench| {
@@ -159,14 +147,14 @@ fn bench_symcontext_fork_scaling(c: &mut Criterion) {
 
 fn bench_symcontext_check_branch(c: &mut Criterion) {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let bound = RustBV::concrete(50, 32);
-    let cmp = x.ult(&bound, &ctx);
+    let cmp = x.ult(&bound);
     // Constrain x to [10, 100) so both branches are feasible
     let lo = RustBV::concrete(10, 32);
     let hi = RustBV::concrete(100, 32);
-    ctx.assume_false(&x.ult(&lo, &ctx));
-    ctx.assume_true(&x.ult(&hi, &ctx));
+    ctx.assume_false(&x.ult(&lo));
+    ctx.assume_true(&x.ult(&hi));
 
     c.bench_function("symcontext_check_branch", |bench| {
         bench.iter(|| {
@@ -181,9 +169,9 @@ fn bench_symcontext_check_branch(c: &mut Criterion) {
 
 fn bench_symcontext_assume_true(c: &mut Criterion) {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let bound = RustBV::concrete(42, 32);
-    let cmp = x.ult(&bound, &ctx);
+    let cmp = x.ult(&bound);
 
     c.bench_function("symcontext_assume", |bench| {
         bench.iter(|| {
@@ -209,7 +197,6 @@ fn bench_symcontext_push_pop(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn bench_memory_concrete(c: &mut Criterion) {
-    let ctx = SymContext::new();
     let mut mem = SymbolicMemory::new(Endness::Little);
     let base = 0x400000u64;
     mem.map(
@@ -228,7 +215,7 @@ fn bench_memory_concrete(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("memory_concrete");
     group.bench_function("load_8bytes", |bench| {
-        bench.iter(|| black_box(mem.load_concrete(base, 8, &ctx).unwrap()))
+        bench.iter(|| black_box(mem.load_concrete(base, 8).unwrap()))
     });
     group.bench_function("store_8bytes", |bench| {
         let v = RustBV::concrete(0x1234567890ABCDEF, 64);
@@ -238,7 +225,7 @@ fn bench_memory_concrete(c: &mut Criterion) {
         })
     });
     group.bench_function("load_1byte", |bench| {
-        bench.iter(|| black_box(mem.load_concrete(base, 1, &ctx).unwrap()))
+        bench.iter(|| black_box(mem.load_concrete(base, 1).unwrap()))
     });
     group.finish();
 }
@@ -265,13 +252,13 @@ fn bench_memory_symbolic_load(c: &mut Criterion) {
     }
 
     // Create a symbolic address constrained to a small range
-    let addr_sym = RustBV::symbolic(&ctx, "addr", 64);
+    let addr_sym = RustBV::symbol("addr", 64);
     let lo = RustBV::concrete(base as u128, 64);
     let hi = RustBV::concrete((base + 16) as u128, 64);
     // addr >= base
-    ctx.assume_false(&addr_sym.ult(&lo, &ctx));
+    ctx.assume_false(&addr_sym.ult(&lo));
     // addr < base + 16
-    ctx.assume_true(&addr_sym.ult(&hi, &ctx));
+    ctx.assume_true(&addr_sym.ult(&hi));
 
     c.bench_function("memory_symbolic_load", |bench| {
         bench.iter(|| {
@@ -348,17 +335,14 @@ fn build_migration_state(
     state.map_memory(MEM_BASE, n_leaves * 8, Permission::RWX);
     let mut leaves = Vec::with_capacity(n_leaves as usize);
     for i in 0..n_leaves {
-        let leaf = {
-            let s = state.solver().borrow();
-            RustBV::symbolic(&s, format!("mig_mem_{i}"), 64)
-        };
+        let leaf = { RustBV::symbol(format!("mig_mem_{i}"), 64) };
         state.memory_store(MEM_BASE + i * 8, leaf.clone()).unwrap();
         leaves.push(leaf);
     }
     // Shallow per-leaf assume-class constraint (original bench shape).
     for (i, leaf) in leaves.iter().enumerate() {
         let s = state.solver().borrow();
-        let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64), &s);
+        let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64));
         drop(s);
         state.add_constraint(c);
     }
@@ -366,14 +350,13 @@ fn build_migration_state(
     let n_raw = (raw_fraction * depth_d as f64).floor() as usize;
     for d in 0..depth_d {
         let pred = {
-            let s = state.solver().borrow();
             let mut acc = leaves[d % leaves.len()].clone();
             for k in 0..32u128 {
                 let other = &leaves[(d + k as usize) % leaves.len()];
-                acc = acc.add(other, &s);
-                acc = acc.xor(&RustBV::concrete(((d as u128) << 8) | k, 64), &s);
+                acc = acc.add(other);
+                acc = acc.xor(&RustBV::concrete(((d as u128) << 8) | k, 64));
             }
-            acc.eq(&RustBV::concrete(0xABCD_0000u128 + d as u128, 64), &s)
+            acc.eq(&RustBV::concrete(0xABCD_0000u128 + d as u128, 64))
         };
         if d < n_raw {
             state
@@ -528,8 +511,8 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
         })
     });
 
-    let mul_v128_sym_l = RustBV::symbolic(&ctx, "neon_mul_l", 128);
-    let mul_v128_sym_r = RustBV::symbolic(&ctx, "neon_mul_r", 128);
+    let mul_v128_sym_l = RustBV::symbol("neon_mul_l", 128);
+    let mul_v128_sym_r = RustBV::symbol("neon_mul_r", 128);
     group.bench_function("mul8x16_symbolic", |bench| {
         bench.iter(|| {
             black_box(
@@ -589,7 +572,7 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
         })
     });
 
-    let lane_idx_sym = RustBV::symbolic(&ctx, "neon_get_idx", 8);
+    let lane_idx_sym = RustBV::symbol("neon_get_idx", 8);
     group.bench_function("get_elem8x16_symbolic_idx", |bench| {
         bench.iter(|| {
             black_box(

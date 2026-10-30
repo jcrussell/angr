@@ -262,7 +262,7 @@ impl SymContext {
             bv.to_z3_bool()
         } else {
             let zero = super::RustBV::concrete(0, bv.width());
-            bv.ne(&zero, self).to_z3_bool()
+            bv.ne(&zero).to_z3_bool()
         };
         let cond = super::lowered_or_warn(cond, "unsat_core")?;
         Some(if is_true { cond } else { cond.not() })

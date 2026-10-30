@@ -85,15 +85,15 @@ fn test_vgetmsbs_8x8_concrete() {
 #[test]
 fn test_vgetmsbs_8x16_symbolic_universal() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vgetmsbs_a", 128);
+    let a = RustBV::symbol("vgetmsbs_a", 128);
     let got = VEXOps::unop(IROp::VGetMSBs { count: 16 }, a.clone(), &ctx).unwrap();
 
     let mut bits = Vec::with_capacity(16);
     for i in 0..16u32 {
         let pos = i * 8 + 7;
-        bits.push(a.extract(pos, pos, &ctx));
+        bits.push(a.extract(pos, pos));
     }
-    let py = VEXOps::concat_le_elements(bits, &ctx);
+    let py = VEXOps::concat_le_elements(bits);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -198,7 +198,7 @@ fn test_vclz_64x2_concrete() {
 #[test]
 fn test_vclz_64x2_symbolic_matches_concrete() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vclz64_a", 128);
+    let a = RustBV::symbol("vclz64_a", 128);
     let got = VEXOps::unop(
         IROp::VClz {
             elem: IRType::I64,
@@ -371,7 +371,7 @@ fn test_vpolynomial_mull_8x8_concrete() {
 #[test]
 fn test_vcnt_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vcnt_a", 64);
+    let a = RustBV::symbol("vcnt_a", 64);
     let got = VEXOps::unop(IROp::VCnt { count: 8 }, a.clone(), &ctx).unwrap();
 
     let mut lanes = Vec::with_capacity(8);
@@ -379,12 +379,12 @@ fn test_vcnt_8x8_symbolic_universal() {
         let lo = i * 8;
         let mut acc = RustBV::concrete(0, 8);
         for b in 0..8 {
-            let bit = a.extract(lo + b, lo + b, &ctx);
-            acc = acc.add_into(bit.zero_extend_into(8, &ctx), &ctx);
+            let bit = a.extract(lo + b, lo + b);
+            acc = acc.add_into(bit.zero_extend_into(8));
         }
         lanes.push(acc);
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -400,7 +400,7 @@ fn test_vcnt_8x8_symbolic_universal() {
 #[test]
 fn test_vclz_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vclz_a", 64);
+    let a = RustBV::symbol("vclz_a", 64);
     let got = VEXOps::unop(
         IROp::VClz {
             elem: IRType::I8,
@@ -416,18 +416,18 @@ fn test_vclz_8x8_symbolic_universal() {
     for i in 0..8u32 {
         let lo = i * 8;
         let hi = lo + 7;
-        let lane = a.extract(hi, lo, &ctx);
+        let lane = a.extract(hi, lo);
         // Build claripy-style ITE chain inline.
         let mut expr = RustBV::concrete(8, 8);
         for b in 0..8u32 {
-            let bit = lane.extract(b, b, &ctx);
-            let cond = bit.eq_into(one.clone(), &ctx);
+            let bit = lane.extract(b, b);
+            let cond = bit.eq_into(one.clone());
             let then_v = RustBV::concrete((8 - b - 1) as u128, 8);
-            expr = cond.ite_into(then_v, expr, &ctx);
+            expr = cond.ite_into(then_v, expr);
         }
         lanes.push(expr);
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -443,8 +443,8 @@ fn test_vclz_8x8_symbolic_universal() {
 #[test]
 fn test_vpolynomial_mul_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vpmul_a", 64);
-    let b = RustBV::symbolic(&ctx, "vpmul_b", 64);
+    let a = RustBV::symbol("vpmul_a", 64);
+    let b = RustBV::symbol("vpmul_b", 64);
     let got = VEXOps::binop(
         IROp::VPolynomialMul {
             count: 8,
@@ -461,22 +461,22 @@ fn test_vpolynomial_mul_8x8_symbolic_universal() {
     for i in 0..8u32 {
         let lo = i * 8;
         let hi = lo + 7;
-        let a_lane = a.extract(hi, lo, &ctx);
-        let b_lane = b.extract(hi, lo, &ctx);
-        let b_wide = b_lane.zero_extend_into(16, &ctx);
+        let a_lane = a.extract(hi, lo);
+        let b_lane = b.extract(hi, lo);
+        let b_wide = b_lane.zero_extend_into(16);
         let mut acc = RustBV::concrete(0, 16);
         for bit in 0..8u32 {
-            let bit_a = a_lane.extract(bit, bit, &ctx);
-            let cond = bit_a.eq_into(one.clone(), &ctx);
+            let bit_a = a_lane.extract(bit, bit);
+            let cond = bit_a.eq_into(one.clone());
             let shifted = b_wide
                 .clone()
-                .shl_into(RustBV::concrete(bit as u128, 16), &ctx);
-            let addend = cond.ite_into(shifted, RustBV::concrete(0, 16), &ctx);
-            acc = acc.xor_into(addend, &ctx);
+                .shl_into(RustBV::concrete(bit as u128, 16));
+            let addend = cond.ite_into(shifted, RustBV::concrete(0, 16));
+            acc = acc.xor_into(addend);
         }
-        lanes.push(acc.extract(7, 0, &ctx));
+        lanes.push(acc.extract(7, 0));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -579,7 +579,7 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
 #[test]
 fn test_vcls_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vcls_a", 64);
+    let a = RustBV::symbol("vcls_a", 64);
     let got = VEXOps::unop(
         IROp::VCls {
             elem: IRType::I8,
@@ -640,7 +640,7 @@ fn test_vcls_8x8_symbolic_universal() {
 #[test]
 fn test_vcls_64x2_symbolic_matches_concrete() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vcls64_a", 128);
+    let a = RustBV::symbol("vcls64_a", 128);
     let got = VEXOps::unop(
         IROp::VCls {
             elem: IRType::I64,

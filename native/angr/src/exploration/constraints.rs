@@ -152,15 +152,12 @@ fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<z3::ast:
 
 /// Coerce a converted constraint to the width-1 form the solver's assumed log
 /// and `assume_true` both require: a wider value means "non-zero".
-fn as_bool(
-    bv: crate::symbolic::RustBV,
-    ctx: &crate::symbolic::SymContext,
-) -> crate::symbolic::RustBV {
+fn as_bool(bv: crate::symbolic::RustBV) -> crate::symbolic::RustBV {
     if bv.width() == 1 {
         bv
     } else {
         let zero = crate::symbolic::RustBV::concrete(0, bv.width());
-        bv.ne(&zero, ctx)
+        bv.ne(&zero)
     }
 }
 
@@ -194,7 +191,7 @@ pub(crate) fn import_one_constraint(
             // `SymContext::add_constraint_raw_assumed` (angr-op0dn.14.2).
             Ok(bv) => {
                 ctx.add_constraint_raw_assumed(z3_ast);
-                ctx.assumed_constraints_push(as_bool(bv, ctx), true);
+                ctx.assumed_constraints_push(as_bool(bv), true);
                 ConstraintImport::Assumed
             }
             Err(e) => {
@@ -208,7 +205,7 @@ pub(crate) fn import_one_constraint(
     // depends on.
     match claripy_to_rustbv(py, item, ctx) {
         Ok(bv) => {
-            ctx.assume_true(&as_bool(bv, ctx));
+            ctx.assume_true(&as_bool(bv));
             ConstraintImport::Assumed
         }
         Err(e) => {

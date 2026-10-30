@@ -2,7 +2,7 @@
 // Split out of sigaction.rs to keep the handler module focused (angr-2rl59).
 use super::*;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 fn fresh_state() -> RustSimState {
     RustSimState::new("amd64").expect("amd64 state")
@@ -45,8 +45,7 @@ fn signum_33_returns_neg_einval() {
 fn symbolic_signum_falls_back() {
     let h = NativeRtSigactionSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "signum", 64);
+    let sym = RustBV::symbol("signum", 64);
     let err = h
         .call(
             &mut state,
@@ -73,8 +72,7 @@ fn symbolic_signum_falls_back() {
 fn symbolic_other_args_do_not_force_fallback() {
     let h = NativeRtSigactionSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym_act = RustBV::symbolic(&ctx, "act", 64);
+    let sym_act = RustBV::symbol("act", 64);
     let outcome = h
         .call(
             &mut state,

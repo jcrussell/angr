@@ -6,7 +6,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 const DEFAULT_MMAP_BASE: u64 = 0xC100_0000;
 const ANON_FD: u64 = 0xFFFF_FFFF;
@@ -653,9 +653,8 @@ fn collision_at_mmap_base_falls_back() {
 fn symbolic_addr_falls_back() {
     let h = NativeMmapSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let mut a = args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0);
-    a[0] = RustBV::symbolic(&ctx, "addr", 64);
+    a[0] = RustBV::symbol("addr", 64);
     let err = h.call(&mut state, &a).expect_err("must fall back");
     match err {
         SyscallError::SymbolicArgument(msg) => {
@@ -670,9 +669,8 @@ fn symbolic_addr_falls_back() {
 fn symbolic_length_falls_back() {
     let h = NativeMmapSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let mut a = args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0);
-    a[1] = RustBV::symbolic(&ctx, "length", 64);
+    a[1] = RustBV::symbol("length", 64);
     let err = h.call(&mut state, &a).expect_err("must fall back");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }
@@ -681,9 +679,8 @@ fn symbolic_length_falls_back() {
 fn symbolic_flags_falls_back() {
     let h = NativeMmapSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let mut a = args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0);
-    a[3] = RustBV::symbolic(&ctx, "flags", 64);
+    a[3] = RustBV::symbol("flags", 64);
     let err = h.call(&mut state, &a).expect_err("must fall back");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }
@@ -860,9 +857,8 @@ fn old_mmap_symbolic_field_falls_back() {
         ptr,
         [0, 0x1000, 0x3, ANON_PRIVATE as u32, ANON_FD as u32, 0],
     );
-    let ctx = SymContext::new();
     state
-        .memory_store(ptr + 4, RustBV::symbolic(&ctx, "len", 32))
+        .memory_store(ptr + 4, RustBV::symbol("len", 32))
         .expect("store sym");
     let err = h
         .call(&mut state, &[RustBV::concrete(ptr as u128, 64)])
@@ -941,9 +937,8 @@ fn mmap2_file_backed_falls_back() {
 fn mmap2_symbolic_offset_falls_back() {
     let h = NativeMmap2Syscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let mut a = args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0);
-    a[5] = RustBV::symbolic(&ctx, "offset", 64);
+    a[5] = RustBV::symbol("offset", 64);
     let err = h.call(&mut state, &a).expect_err("fall back");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }

@@ -110,8 +110,7 @@ fn test_set_register_symbolic_ip_leaves_pc_unchanged() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.set_pc(0x1000);
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n0irt37_rip", 64)
+        RustBV::symbol("n0irt37_rip", 64)
     };
 
     assert!(state.set_register("rip", sym));

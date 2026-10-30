@@ -85,8 +85,7 @@ fn test_symbolic_pointer_falls_back_to_python() {
     // run loop defers to Python (matching the syscall's extract_concrete_arg).
     let mut state = fresh_state();
     let ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "tloc", 64)
+        RustBV::symbol("tloc", 64)
     };
     let result = NativeTime.call(&mut state, &[ptr]);
     assert!(

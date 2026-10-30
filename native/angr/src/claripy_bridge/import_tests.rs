@@ -274,7 +274,7 @@ fn test_native_and_attribute_walks_agree() {
             let native = claripy_to_rustbv(py, &native_obj, &ctx).expect("native walk");
             let walked = claripy_to_rustbv(py, &duck_obj, &ctx).expect("attribute walk");
             assert_eq!(native.width(), walked.width(), "{expr:?}");
-            ctx.assume_true(&native.ne(&walked, &ctx));
+            ctx.assume_true(&native.ne(&walked));
             assert!(!ctx.is_sat(), "the two walks disagree on {expr:?}");
         }
     });
@@ -309,9 +309,9 @@ fn test_shared_subterms_import_once() {
         // x == 0 takes every `up` branch.
         let x_bv = claripy_to_rustbv(py, &claripy_object(py, x), &ctx).expect("x");
         let y_bv = claripy_to_rustbv(py, &claripy_object(py, y), &ctx).expect("y");
-        ctx.assume_true(&x_bv.eq(&RustBV::concrete(0, 32), &ctx));
-        let expected = y_bv.add(&RustBV::concrete(u128::from(LEVELS), 32), &ctx);
-        ctx.assume_true(&bv.ne(&expected, &ctx));
+        ctx.assume_true(&x_bv.eq(&RustBV::concrete(0, 32)));
+        let expected = y_bv.add(&RustBV::concrete(u128::from(LEVELS), 32));
+        ctx.assume_true(&bv.ne(&expected));
         assert!(!ctx.is_sat(), "the memoized import changed the value");
     });
 }

@@ -15,15 +15,14 @@ use super::*;
 /// wiring before any load/store integration.
 #[test]
 fn test_multi_payload_round_trip() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
+    let addr_var = RustBV::symbol("addr", 64);
     let payload = MultiPayload::from_alternatives(vec![
-        make_alt(&ctx, &addr_var, 0x1000, 0xAA),
-        make_alt(&ctx, &addr_var, 0x1004, 0xBB),
-        make_alt(&ctx, &addr_var, 0x1008, 0xCC),
+        make_alt(&addr_var, 0x1000, 0xAA),
+        make_alt(&addr_var, 0x1004, 0xBB),
+        make_alt(&addr_var, 0x1008, 0xCC),
     ]);
 
     mem.set_multi_alternatives(0x1000, payload);
@@ -49,14 +48,13 @@ fn test_multi_payload_round_trip() {
 /// Empty payload clears the cell (must not be stored as a zero-length entry).
 #[test]
 fn test_multi_payload_empty_clears_cell() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
+    let addr_var = RustBV::symbol("addr", 64);
     mem.set_multi_alternatives(
         0x1000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0x11)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1000, 0x11)]),
     );
     assert_eq!(mem.multi_cell_count(), 1);
 
@@ -73,16 +71,15 @@ fn test_multi_payload_empty_clears_cell() {
 /// the parent, matching SymbolicMemory's CoW contract.
 #[test]
 fn test_multi_fork_independence() {
-    let ctx = SymContext::new_mock();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
+    let addr_var = RustBV::symbol("addr", 64);
     parent.set_multi_alternatives(
         0x1000,
         MultiPayload::from_alternatives(vec![
-            make_alt(&ctx, &addr_var, 0x1000, 0xAA),
-            make_alt(&ctx, &addr_var, 0x1004, 0xBB),
+            make_alt(&addr_var, 0x1000, 0xAA),
+            make_alt(&addr_var, 0x1004, 0xBB),
         ]),
     );
 
@@ -92,7 +89,7 @@ fn test_multi_fork_independence() {
     // Replace the child's payload with a different shape.
     child.set_multi_alternatives(
         0x1000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0xFF)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1000, 0xFF)]),
     );
 
     let p = parent
@@ -123,20 +120,19 @@ fn test_multi_fork_independence() {
 /// "Multi supersedes Symbolic" rule documented on the `multi_objects` field.
 #[test]
 fn test_multi_supersedes_existing_symbolic() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Install a single-byte symbolic value at 0x1000.
-    let sym_byte = RustBV::symbolic(&ctx, "byte", 8);
+    let sym_byte = RustBV::symbol("byte", 8);
     mem.import_symbolic_value(0x1000, sym_byte, None).unwrap();
     assert!(mem.get_symbolic_object(0x1000).is_some());
 
     // Now upgrade the same byte to Multi.
-    let addr_var = RustBV::symbolic(&ctx, "addr", 64);
+    let addr_var = RustBV::symbol("addr", 64);
     mem.set_multi_alternatives(
         0x1000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0x77)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1000, 0x77)]),
     );
 
     assert!(
@@ -183,26 +179,25 @@ fn test_multi_payload_records_ite_depth() {
     let pre = get_solver_stats();
     let pre_total = pre.get("mem_ite_depth_total").copied().unwrap_or(0);
 
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x2000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "addr_d", 64);
+    let addr_var = RustBV::symbol("addr_d", 64);
 
     // Two installs: 3 alts then 2 alts = total delta of 5; max watermark must be >= 3.
     mem.set_multi_alternatives(
         0x2000,
         MultiPayload::from_alternatives(vec![
-            make_alt(&ctx, &addr_var, 0x2000, 0x01),
-            make_alt(&ctx, &addr_var, 0x2004, 0x02),
-            make_alt(&ctx, &addr_var, 0x2008, 0x03),
+            make_alt(&addr_var, 0x2000, 0x01),
+            make_alt(&addr_var, 0x2004, 0x02),
+            make_alt(&addr_var, 0x2008, 0x03),
         ]),
     );
     mem.set_multi_alternatives(
         0x2010,
         MultiPayload::from_alternatives(vec![
-            make_alt(&ctx, &addr_var, 0x2010, 0x10),
-            make_alt(&ctx, &addr_var, 0x2014, 0x20),
+            make_alt(&addr_var, 0x2010, 0x10),
+            make_alt(&addr_var, 0x2014, 0x20),
         ]),
     );
 
@@ -236,16 +231,16 @@ fn test_multi_inside_wider_symbolic_object_retires_the_container() {
 
     // A 4-byte imported object spanning [0x1000, 0x1004), pinned to a single
     // concrete value so every byte lane is checkable by eval.
-    let wide = RustBV::symbolic(&ctx, "wide", 32);
-    ctx.assume_true(&wide.eq(&RustBV::concrete(0xDDCC_BBAA, 32), &ctx));
+    let wide = RustBV::symbol("wide", 32);
+    ctx.assume_true(&wide.eq(&RustBV::concrete(0xDDCC_BBAA, 32)));
     mem.import_symbolic_value(0x1000, wide, None).unwrap();
 
     // Multi cell on the third byte only.
-    let addr_var = RustBV::symbolic(&ctx, "mi_addr", 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1002, 64), &ctx));
+    let addr_var = RustBV::symbol("mi_addr", 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1002, 64)));
     mem.set_multi_alternatives(
         0x1002,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1002, 0x77)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1002, 0x77)]),
     );
     assert!(ctx.is_sat());
 
@@ -276,7 +271,7 @@ fn test_multi_inside_wider_symbolic_object_retires_the_container() {
 
     // Export path: after the flush every entry is a disjoint single byte, so
     // no ordering of `state.memory.store()` calls can clobber another.
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
     let mut exported: Vec<u64> = Vec::new();
     for (addr, bv) in mem.symbolic_objects_iter() {
         assert_eq!(
@@ -297,16 +292,15 @@ fn test_multi_inside_wider_symbolic_object_retires_the_container() {
 /// imported, so it stays exportable.
 #[test]
 fn test_split_lanes_inherit_imported_addrs() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    mem.import_symbolic_value(0x1000, RustBV::symbolic(&ctx, "imp", 32), None)
+    mem.import_symbolic_value(0x1000, RustBV::symbol("imp", 32), None)
         .unwrap();
-    let addr_var = RustBV::symbolic(&ctx, "ia_addr", 64);
+    let addr_var = RustBV::symbol("ia_addr", 64);
     mem.set_multi_alternatives(
         0x1001,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1001, 0x5A)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1001, 0x5A)]),
     );
 
     for byte in [0x1000u64, 0x1002, 0x1003] {
@@ -331,15 +325,15 @@ fn test_multi_on_wider_object_base_leaves_no_orphan_spans() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let wide = RustBV::symbolic(&ctx, "base_wide", 32);
-    ctx.assume_true(&wide.eq(&RustBV::concrete(0x4433_2211, 32), &ctx));
+    let wide = RustBV::symbol("base_wide", 32);
+    ctx.assume_true(&wide.eq(&RustBV::concrete(0x4433_2211, 32)));
     mem.import_symbolic_value(0x1000, wide, None).unwrap();
 
-    let addr_var = RustBV::symbolic(&ctx, "bw_addr", 64);
-    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx));
+    let addr_var = RustBV::symbol("bw_addr", 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     mem.set_multi_alternatives(
         0x1000,
-        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0x99)]),
+        MultiPayload::from_alternatives(vec![make_alt(&addr_var, 0x1000, 0x99)]),
     );
 
     assert!(mem.get_symbolic_object(0x1000).is_none());

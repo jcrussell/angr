@@ -279,7 +279,7 @@ fn test_scanf_suppressed() {
 fn test_scanf_symbolic_format() {
     let mut state = setup_state();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "fmt", 64);
+    let sym = RustBV::symbol("fmt", 64);
     drop(ctx);
 
     let result = NativeScanf.call(
@@ -302,7 +302,7 @@ fn test_scanf_symbolic_ptr() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "ptr", 64);
+    let sym = RustBV::symbol("ptr", 64);
     drop(ctx);
 
     let result = NativeScanf.call(
@@ -1242,7 +1242,7 @@ fn test_scanf_numeric_field_width_bounds_value() {
     let ctx = state.solver().borrow();
     for unreachable in [12345u128, 100, 0xffff_ff00] {
         assert!(
-            !ctx.can_be_true(&val.eq(&RustBV::concrete(unreachable, 32), &ctx)),
+            !ctx.can_be_true(&val.eq(&RustBV::concrete(unreachable, 32))),
             "%2d must not reach {unreachable:#x}"
         );
     }
@@ -1258,7 +1258,7 @@ fn test_scanf_numeric_field_width_keeps_in_range_values() {
     // 99 = 10**2 - 1 (the SLE bound), 0, and -9 = -(10**1 - 1) (the SGE bound).
     for reachable in [99u128, 0, 0xffff_fff7] {
         assert!(
-            ctx.can_be_true(&val.eq(&RustBV::concrete(reachable, 32), &ctx)),
+            ctx.can_be_true(&val.eq(&RustBV::concrete(reachable, 32))),
             "%2d must still reach {reachable:#x}"
         );
     }
@@ -1271,7 +1271,7 @@ fn test_scanf_numeric_without_field_width_is_unconstrained() {
     let (state, val) = scanf_one_int(b"%d\x00");
     let ctx = state.solver().borrow();
     assert!(
-        ctx.can_be_true(&val.eq(&RustBV::concrete(12345, 32), &ctx)),
+        ctx.can_be_true(&val.eq(&RustBV::concrete(12345, 32))),
         "plain %d must stay unconstrained"
     );
 }
@@ -1283,11 +1283,11 @@ fn test_scanf_hex_field_width_uses_base_16() {
     let (state, val) = scanf_one_int(b"%2x\x00");
     let ctx = state.solver().borrow();
     assert!(
-        ctx.can_be_true(&val.eq(&RustBV::concrete(0xff, 32), &ctx)),
+        ctx.can_be_true(&val.eq(&RustBV::concrete(0xff, 32))),
         "%2x must reach 0xff (16**2 - 1)"
     );
     assert!(
-        !ctx.can_be_true(&val.eq(&RustBV::concrete(0x100, 32), &ctx)),
+        !ctx.can_be_true(&val.eq(&RustBV::concrete(0x100, 32))),
         "%2x must not reach 0x100"
     );
 }

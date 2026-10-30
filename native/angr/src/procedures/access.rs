@@ -38,12 +38,11 @@ crate::declare_proc! {
 
         // sizeof(int) == 32 on all supported arches (matches rand.rs/system.rs).
         let constraint = {
-            let ctx = state.solver().borrow();
-            let ret = RustBV::symbolic(&ctx, &name, 32);
-            let is_ok = ret.eq(&RustBV::concrete(0, 32), &ctx);
+            let ret = RustBV::symbol(&name, 32);
+            let is_ok = ret.eq(&RustBV::concrete(0, 32));
             // -1 as a 32-bit two's-complement int.
-            let is_err = ret.eq(&RustBV::concrete(0xFFFF_FFFF, 32), &ctx);
-            let or = is_ok.or(&is_err, &ctx);
+            let is_err = ret.eq(&RustBV::concrete(0xFFFF_FFFF, 32));
+            let or = is_ok.or(&is_err);
             (ret, or)
         };
         let (ret, or) = constraint;

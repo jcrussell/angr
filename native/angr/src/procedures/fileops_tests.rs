@@ -500,14 +500,12 @@ fn test_open_symbolic_pathname_is_concretized() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"a\x00c.txt\x00", Permission::RWX);
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "path_1", 8)
+        RustBV::symbol("path_1", 8)
     };
     state.memory_store(0x1001, sym.clone()).unwrap();
     // Pin the symbolic byte so the eval'd path is deterministic.
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(b'b' as u128, 8), &ctx)
+        sym.eq(&RustBV::concrete(b'b' as u128, 8))
     };
     state.add_constraint(eq);
 

@@ -140,10 +140,10 @@ impl<'a> VEXInterpreter<'a> {
         };
 
         // Combined cmp = (current_lo == expd_lo) & (current_hi == expd_hi)?
-        let cmp_lo = current_lo.eq(&expd_lo_val, self.ctx);
+        let cmp_lo = current_lo.eq(&expd_lo_val);
         let cmp = if let Some(d) = &dcas {
-            let cmp_hi = d.current_hi.eq(&d.expd_hi_val, self.ctx);
-            cmp_lo.and(&cmp_hi, self.ctx)
+            let cmp_hi = d.current_hi.eq(&d.expd_hi_val);
+            cmp_lo.and(&cmp_hi)
         } else {
             cmp_lo
         };
@@ -263,10 +263,10 @@ impl<'a> VEXInterpreter<'a> {
                 Ok(())
             }
             None => {
-                let store_lo = cmp.ite(data_lo_val, current_lo, self.ctx);
+                let store_lo = cmp.ite(data_lo_val, current_lo);
                 self.cas_store_symbolic_data(callbacks, addr, &store_lo, irsb)?;
                 if let Some(d) = dcas {
-                    let store_hi = cmp.ite(&d.data_hi_val, &d.current_hi, self.ctx);
+                    let store_hi = cmp.ite(&d.data_hi_val, &d.current_hi);
                     self.cas_store_symbolic_data(callbacks, &d.addr_hi_expr, &store_hi, irsb)?;
                 }
                 Ok(())

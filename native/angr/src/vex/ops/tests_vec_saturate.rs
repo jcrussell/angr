@@ -234,8 +234,8 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
                 .unwrap()
                 .as_u128()
                 .unwrap();
-        let sym_l = RustBV::symbolic(&ctx, "narrow_l", width);
-        let sym_r = RustBV::symbolic(&ctx, "narrow_r", width);
+        let sym_l = RustBV::symbol("narrow_l", width);
+        let sym_r = RustBV::symbol("narrow_r", width);
         ctx.add_constraint(sym_l.to_z3_ast().unwrap().eq(RustBV::concrete(l, width).to_z3_ast().unwrap()));
         ctx.add_constraint(sym_r.to_z3_ast().unwrap().eq(RustBV::concrete(r, width).to_z3_ast().unwrap()));
         let symbolic = VEXOps::binop(op, sym_l, sym_r, &ctx).unwrap();
@@ -258,7 +258,7 @@ fn test_vqnarrow_un_symbolic_saturates() {
     // Symbolic I16 saturating to signed I8. Constrain output lane to 127
     // and require source > 127 to confirm saturation kicked in.
     let ctx = SymContext::new_mock();
-    let arg = RustBV::symbolic(&ctx, "qn_arg", 128); // 8 lanes I16
+    let arg = RustBV::symbol("qn_arg", 128); // 8 lanes I16
     let res = VEXOps::unop(
         IROp::VQNarrowUn {
             from: IRType::I16,
@@ -271,13 +271,13 @@ fn test_vqnarrow_un_symbolic_saturates() {
     )
     .unwrap();
     // Constrain output lane 0 = 127 AND source lane 0 = 200.
-    let out_lane0 = res.extract(7, 0, &ctx);
+    let out_lane0 = res.extract(7, 0);
     ctx.add_constraint(
         out_lane0
             .to_z3_ast().unwrap()
             .eq(RustBV::concrete(127, 8).to_z3_ast().unwrap()),
     );
-    let src_lane0 = arg.extract(15, 0, &ctx);
+    let src_lane0 = arg.extract(15, 0);
     ctx.add_constraint(
         src_lane0
             .to_z3_ast().unwrap()
@@ -297,7 +297,7 @@ fn test_vqnarrow_un_symbolic_saturates() {
 #[test]
 fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
     let ctx = SymContext::new_mock();
-    let arg = RustBV::symbolic(&ctx, "qn_min_arg", 128); // 8 lanes I16
+    let arg = RustBV::symbol("qn_min_arg", 128); // 8 lanes I16
     let res = VEXOps::unop(
         IROp::VQNarrowUn {
             from: IRType::I16,
@@ -311,13 +311,13 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
     .unwrap();
     // Source lane 0 = -128 (0xFF80 as sign-extended I16). It is exactly the
     // destination minimum, so it must narrow to 0x80 (-128), unchanged.
-    let src_lane0 = arg.extract(15, 0, &ctx);
+    let src_lane0 = arg.extract(15, 0);
     ctx.add_constraint(
         src_lane0
             .to_z3_ast().unwrap()
             .eq(RustBV::concrete(0xFF80, 16).to_z3_ast().unwrap()),
     );
-    let out_lane0 = res.extract(7, 0, &ctx);
+    let out_lane0 = res.extract(7, 0);
     // With the fix out_lane0 == 0x80; require it to be equal (SAT) and the
     // buggy 0x81 to be impossible (UNSAT) under this source constraint.
     ctx.push();
@@ -351,7 +351,6 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
 /// `pub(super)` helper directly.
 #[test]
 fn test_saturate_lane_symbolic_unsigned_src_signed_dst_concrete() {
-    let ctx = SymContext::new_mock();
     for lane in 0u128..=0xFF {
         let got = VEXOps::saturate_lane_symbolic(
             RustBV::concrete(lane, 8),
@@ -359,7 +358,6 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_concrete() {
             4,
             false,
             true,
-            &ctx,
         )
         .as_u128()
         .expect("a concrete lane must fold to a concrete result");
@@ -378,8 +376,8 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_concrete() {
 #[test]
 fn test_saturate_lane_symbolic_unsigned_src_signed_dst_symbolic() {
     let ctx = SymContext::new_mock();
-    let lane = RustBV::symbolic(&ctx, "sat_us_sd_lane", 8);
-    let res = VEXOps::saturate_lane_symbolic(lane.clone(), 8, 4, false, true, &ctx);
+    let lane = RustBV::symbol("sat_us_sd_lane", 8);
+    let res = VEXOps::saturate_lane_symbolic(lane.clone(), 8, 4, false, true);
     ctx.add_constraint(lane.to_z3_ast().unwrap().eq(RustBV::concrete(5, 8).to_z3_ast().unwrap()));
     ctx.push();
     ctx.add_constraint(res.to_z3_ast().unwrap().eq(RustBV::concrete(5, 4).to_z3_ast().unwrap()));
@@ -544,8 +542,8 @@ fn test_vqsub_32ux4_concrete() {
 #[test]
 fn test_vqadd_8sx8_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vqadd_a", 64);
-    let b = RustBV::symbolic(&ctx, "vqadd_b", 64);
+    let a = RustBV::symbol("vqadd_a", 64);
+    let b = RustBV::symbol("vqadd_b", 64);
     let got = VEXOps::binop(
         IROp::VQAdd {
             elem: IRType::I8,
@@ -565,24 +563,24 @@ fn test_vqadd_8sx8_symbolic_matches_python_ref() {
     for i in 0..8u32 {
         let lo = i * 8;
         let hi = lo + 7;
-        let a_lane = a.extract(hi, lo, &ctx);
-        let b_lane = b.extract(hi, lo, &ctx);
-        let res = a_lane.clone().add_into(b_lane.clone(), &ctx);
-        let top_a = a_lane.extract(7, 7, &ctx);
-        let top_b = b_lane.extract(7, 7, &ctx);
-        let top_r = res.extract(7, 7, &ctx);
+        let a_lane = a.extract(hi, lo);
+        let b_lane = b.extract(hi, lo);
+        let res = a_lane.clone().add_into(b_lane.clone());
+        let top_a = a_lane.extract(7, 7);
+        let top_b = b_lane.extract(7, 7);
+        let top_r = res.extract(7, 7);
         // ~(top_a ^ top_b) & (top_a ^ top_r) == 1
-        let signs_match = top_a.clone().xor_into(top_b, &ctx).not_into(&ctx);
-        let r_flipped = top_a.xor_into(top_r.clone(), &ctx);
+        let signs_match = top_a.clone().xor_into(top_b).not_into();
+        let r_flipped = top_a.xor_into(top_r.clone());
         let overflow = signs_match
-            .and_into(r_flipped, &ctx)
-            .eq(&RustBV::concrete(1, 1), &ctx);
+            .and_into(r_flipped)
+            .eq(&RustBV::concrete(1, 1));
         let cap = top_r
-            .eq(&RustBV::concrete(1, 1), &ctx)
-            .ite(&smax, &smin, &ctx);
-        lanes.push(overflow.ite(&cap, &res, &ctx));
+            .eq(&RustBV::concrete(1, 1))
+            .ite(&smax, &smin);
+        lanes.push(overflow.ite(&cap, &res));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -688,7 +686,7 @@ fn test_vqaddsub_8x32_avx2_256_bit() {
         for (i, lane) in lanes.iter().enumerate() {
             halves[i / 16] |= (*lane as u128) << ((i % 16) * 8);
         }
-        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128))
     };
 
     type LaneFn = fn(u8, u8) -> u8;
@@ -737,7 +735,7 @@ fn test_vqaddsub_8x32_avx2_256_bit() {
 
         for i in 0..32u32 {
             let low = i * 8;
-            let extracted = result.extract(low + 7, low, &ctx);
+            let extracted = result.extract(low + 7, low);
             let got = ctx.eval(&extracted).expect("eval(lane) returned None");
             let idx = i as usize;
             assert_eq!(
@@ -950,8 +948,8 @@ fn test_parse_vqshlsat_routing() {
 #[test]
 fn test_vqshl_16x4_symbolic_universal_unsigned() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "qshl_a_16x4", 64);
-    let b = RustBV::symbolic(&ctx, "qshl_b_16x4", 64);
+    let a = RustBV::symbol("qshl_a_16x4", 64);
+    let b = RustBV::symbol("qshl_b_16x4", 64);
     let got = VEXOps::binop(
         IROp::VQShlSat {
             elem: IRType::I16,
@@ -972,19 +970,19 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
     for i in 0..4 {
         let lo = i * 16;
         let hi = lo + 15;
-        let al = a.extract(hi, lo, &ctx);
-        let bl = b.extract(hi, lo, &ctx);
-        let shl_v = al.clone().shl_into(bl.clone(), &ctx);
-        let recovered = shl_v.clone().lshr_into(bl.clone(), &ctx);
-        let no_overflow = recovered.eq(&al, &ctx);
-        let left_branch = no_overflow.ite(&shl_v, &umax, &ctx);
-        let neg_amt = zero16.clone().sub_into(bl.clone(), &ctx);
-        let right_branch = al.clone().lshr_into(neg_amt, &ctx);
-        let amt_top = bl.extract(15, 15, &ctx);
-        let amt_is_neg = amt_top.eq(&bit_one, &ctx);
-        lanes.push(amt_is_neg.ite(&right_branch, &left_branch, &ctx));
+        let al = a.extract(hi, lo);
+        let bl = b.extract(hi, lo);
+        let shl_v = al.clone().shl_into(bl.clone());
+        let recovered = shl_v.clone().lshr_into(bl.clone());
+        let no_overflow = recovered.eq(&al);
+        let left_branch = no_overflow.ite(&shl_v, &umax);
+        let neg_amt = zero16.clone().sub_into(bl.clone());
+        let right_branch = al.clone().lshr_into(neg_amt);
+        let amt_top = bl.extract(15, 15);
+        let amt_is_neg = amt_top.eq(&bit_one);
+        lanes.push(amt_is_neg.ite(&right_branch, &left_branch));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
@@ -1000,8 +998,8 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
 #[test]
 fn test_vqsal_16x4_symbolic_universal_signed() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "qsal_a_16x4", 64);
-    let b = RustBV::symbolic(&ctx, "qsal_b_16x4", 64);
+    let a = RustBV::symbol("qsal_a_16x4", 64);
+    let b = RustBV::symbol("qsal_b_16x4", 64);
     let got = VEXOps::binop(
         IROp::VQShlSat {
             elem: IRType::I16,
@@ -1021,22 +1019,22 @@ fn test_vqsal_16x4_symbolic_universal_signed() {
     for i in 0..4 {
         let lo = i * 16;
         let hi = lo + 15;
-        let al = a.extract(hi, lo, &ctx);
-        let bl = b.extract(hi, lo, &ctx);
-        let shl_v = al.clone().shl_into(bl.clone(), &ctx);
-        let recovered = shl_v.clone().ashr_into(bl.clone(), &ctx);
-        let no_overflow = recovered.eq(&al, &ctx);
-        let a_top = al.extract(15, 15, &ctx);
-        let a_is_neg = a_top.eq(&bit_one, &ctx);
-        let cap = a_is_neg.ite(&smin, &smax, &ctx);
-        let left_branch = no_overflow.ite(&shl_v, &cap, &ctx);
-        let neg_amt = zero16.clone().sub_into(bl.clone(), &ctx);
-        let right_branch = al.clone().ashr_into(neg_amt, &ctx);
-        let amt_top = bl.extract(15, 15, &ctx);
-        let amt_is_neg = amt_top.eq(&bit_one, &ctx);
-        lanes.push(amt_is_neg.ite(&right_branch, &left_branch, &ctx));
+        let al = a.extract(hi, lo);
+        let bl = b.extract(hi, lo);
+        let shl_v = al.clone().shl_into(bl.clone());
+        let recovered = shl_v.clone().ashr_into(bl.clone());
+        let no_overflow = recovered.eq(&al);
+        let a_top = al.extract(15, 15);
+        let a_is_neg = a_top.eq(&bit_one);
+        let cap = a_is_neg.ite(&smin, &smax);
+        let left_branch = no_overflow.ite(&shl_v, &cap);
+        let neg_amt = zero16.clone().sub_into(bl.clone());
+        let right_branch = al.clone().ashr_into(neg_amt);
+        let amt_top = bl.extract(15, 15);
+        let amt_is_neg = amt_top.eq(&bit_one);
+        lanes.push(amt_is_neg.ite(&right_branch, &left_branch));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();

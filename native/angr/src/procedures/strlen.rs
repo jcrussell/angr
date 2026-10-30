@@ -56,10 +56,9 @@ fn scan_for_null(
         }
         ScanOutcome::Symbolic { bytes } => {
             let (chain, pruning) = {
-                let ctx = state.solver().borrow();
-                let chain = build_strlen_chain(&bytes, arch_bits, max_scan, &ctx);
+                let chain = build_strlen_chain(&bytes, arch_bits, max_scan);
                 let pruning = if require_null {
-                    null_exists_constraint(&bytes, &ctx)
+                    null_exists_constraint(&bytes)
                 } else {
                     None
                 };

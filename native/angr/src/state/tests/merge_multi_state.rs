@@ -38,12 +38,10 @@ fn test_merge_filesystem_keeps_longest_stdout_branch() {
     );
 
     let m0 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "ph30075_m0", 1)
+        RustBV::symbol("ph30075_m0", 1)
     };
     let m1 = {
-        let s = a.solver().borrow();
-        RustBV::symbolic(&s, "ph30075_m1", 1)
+        RustBV::symbol("ph30075_m1", 1)
     };
     let merged = a.merge(&[&b], &[m0, m1]);
 
@@ -70,10 +68,9 @@ fn test_merge_filesystem_keeps_longest_stdout_branch() {
         .open("/tmp/only_on_c".to_string(), FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     assert!(c.write_fd(c_fd, b"branch-C-only"));
     let (n0, n1) = {
-        let s = c.solver().borrow();
         (
-            RustBV::symbolic(&s, "ph30075_n0", 1),
-            RustBV::symbolic(&s, "ph30075_n1", 1),
+            RustBV::symbol("ph30075_n0", 1),
+            RustBV::symbol("ph30075_n1", 1),
         )
     };
     let merged_tie = c.merge(&[&d], &[n0, n1]);
@@ -156,11 +153,10 @@ fn test_merge_three_state_overlay_union_and_tiebreak() {
     c.record_stdin_symbol("sc".to_string(), 8);
 
     let (m0, m1, m2) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "qwyti2_m0", 1),
-            RustBV::symbolic(&s, "qwyti2_m1", 1),
-            RustBV::symbolic(&s, "qwyti2_m2", 1),
+            RustBV::symbol("qwyti2_m0", 1),
+            RustBV::symbol("qwyti2_m1", 1),
+            RustBV::symbol("qwyti2_m2", 1),
         )
     };
     let merged = a.merge(&[&b, &c], &[m0, m1, m2]);

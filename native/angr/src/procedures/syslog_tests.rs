@@ -31,9 +31,9 @@ fn test_openlog_symbolic_args_no_fallback() {
     // raw BV).
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let ident = RustBV::symbolic(&ctx, "ident", 64);
-    let option = RustBV::symbolic(&ctx, "option", 64);
-    let facility = RustBV::symbolic(&ctx, "facility", 64);
+    let ident = RustBV::symbol("ident", 64);
+    let option = RustBV::symbol("option", 64);
+    let facility = RustBV::symbol("facility", 64);
     drop(ctx);
     let result = NativeOpenlog
         .call(&mut state, &[ident, option, facility])

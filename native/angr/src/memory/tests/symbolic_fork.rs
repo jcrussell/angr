@@ -12,14 +12,13 @@ use super::super::*;
 /// back into the parent. Regression test for fork field-by-field cloning.
 #[test]
 fn test_fork_symbolic_spans_isolation() {
-    let ctx = SymContext::new_mock();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x1000, Permission::RWX);
     parent.map(0x2000, 0x1000, Permission::RWX);
 
     // Parent imports a 64-bit (8-byte) wide symbolic value at 0x1000.
     // import_symbolic_value populates symbolic_spans for bytes 1..8.
-    let parent_sym = RustBV::symbolic(&ctx, "parent_wide", 64);
+    let parent_sym = RustBV::symbol("parent_wide", 64);
     parent
         .import_symbolic_value(0x1000, parent_sym, None)
         .unwrap();
@@ -36,7 +35,7 @@ fn test_fork_symbolic_spans_isolation() {
     // Fork; then write a fresh wide symbolic in the child at a different
     // base. This must NOT add 0x2001..0x2008 to the parent's spans.
     let mut child = parent.fork();
-    let child_sym = RustBV::symbolic(&ctx, "child_wide", 64);
+    let child_sym = RustBV::symbol("child_wide", 64);
     child
         .import_symbolic_value(0x2000, child_sym, None)
         .unwrap();
@@ -65,12 +64,11 @@ fn test_fork_symbolic_spans_isolation() {
 /// child-side imports do not appear in the parent.
 #[test]
 fn test_fork_imported_addrs_isolation() {
-    let ctx = SymContext::new_mock();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x1000, Permission::RWX);
     parent.map(0x2000, 0x1000, Permission::RWX);
 
-    let parent_sym = RustBV::symbolic(&ctx, "parent_imp", 32);
+    let parent_sym = RustBV::symbol("parent_imp", 32);
     parent
         .import_symbolic_value(0x1000, parent_sym, None)
         .unwrap();
@@ -78,7 +76,7 @@ fn test_fork_imported_addrs_isolation() {
     assert!(!parent.is_imported_addr(0x2000));
 
     let mut child = parent.fork();
-    let child_sym = RustBV::symbolic(&ctx, "child_imp", 32);
+    let child_sym = RustBV::symbol("child_imp", 32);
     child
         .import_symbolic_value(0x2000, child_sym, None)
         .unwrap();
@@ -130,12 +128,11 @@ fn test_fork_perm_flag_isolation() {
 /// recorded in the child must not appear in the parent's pending list.
 #[test]
 fn test_fork_pending_writes_isolation() {
-    let ctx = SymContext::new_mock();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x1000, Permission::RWX);
 
     // Parent records one pending write.
-    let p_addr = RustBV::symbolic(&ctx, "p_addr", 64);
+    let p_addr = RustBV::symbol("p_addr", 64);
     let p_val = RustBV::concrete(0xAAAA, 16);
     parent.add_pending_write(PendingWrite {
         addr: p_addr,
@@ -153,7 +150,7 @@ fn test_fork_pending_writes_isolation() {
         "child should inherit parent's pending writes at fork time"
     );
 
-    let c_addr = RustBV::symbolic(&ctx, "c_addr", 64);
+    let c_addr = RustBV::symbol("c_addr", 64);
     let c_val = RustBV::concrete(0xBBBB, 16);
     child.add_pending_write(PendingWrite {
         addr: c_addr,
@@ -192,7 +189,7 @@ fn test_pending_write_visible_after_flush() {
     // Establish a baseline value at 0x1000.
     let baseline = RustBV::concrete(0xAAAA, 16);
     mem.store_concrete(0x1000, baseline).unwrap();
-    let pre = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    let pre = mem.load_concrete(0x1000, 2).unwrap();
     assert_eq!(pre.as_u64(), Some(0xAAAA));
 
     // Defer a new value at the same concrete address.
@@ -206,7 +203,7 @@ fn test_pending_write_visible_after_flush() {
     assert_eq!(mem.pending_writes_count(), 1);
 
     // Pre-flush: load must return the baseline (overlay is disabled).
-    let mid = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    let mid = mem.load_concrete(0x1000, 2).unwrap();
     assert_eq!(
         mid.as_u64(),
         Some(0xAAAA),
@@ -218,7 +215,7 @@ fn test_pending_write_visible_after_flush() {
     // pending list must be empty.
     mem.flush_pending_writes(&ctx, &concretizer).unwrap();
     assert_eq!(mem.pending_writes_count(), 0);
-    let post = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    let post = mem.load_concrete(0x1000, 2).unwrap();
     assert_eq!(
         post.as_u64(),
         Some(0xBBBB),
@@ -255,7 +252,7 @@ fn test_fork_pending_writes_visible_in_both_after_flush() {
     // Each half flushes independently and the materialized value must
     // be observable on a subsequent load.
     parent.flush_pending_writes(&ctx, &concretizer).unwrap();
-    let p_loaded = parent.load_concrete(0x1000, 2, &ctx).unwrap();
+    let p_loaded = parent.load_concrete(0x1000, 2).unwrap();
     assert_eq!(
         p_loaded.as_u64(),
         Some(0xBBBB),
@@ -271,7 +268,7 @@ fn test_fork_pending_writes_visible_in_both_after_flush() {
     );
 
     child.flush_pending_writes(&ctx, &concretizer).unwrap();
-    let c_loaded = child.load_concrete(0x1000, 2, &ctx).unwrap();
+    let c_loaded = child.load_concrete(0x1000, 2).unwrap();
     assert_eq!(
         c_loaded.as_u64(),
         Some(0xBBBB),
@@ -301,11 +298,11 @@ fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
     mem.store_concrete(0x1000, RustBV::concrete(0xAAAA, 16))
         .unwrap();
 
-    let addr = RustBV::symbolic(&ctx, "pw_lazy_addr", 64);
+    let addr = RustBV::symbol("pw_lazy_addr", 64);
     ctx.assume_true(
         &addr
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr.eq(&RustBV::concrete(0x2000, 64))),
     );
     mem.add_pending_write(PendingWrite {
         addr,
@@ -326,7 +323,7 @@ fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
 
     // The mapped candidate kept its real prior byte in the ITE's else arm:
     // under addr == 0x2000 the cell at 0x1000 must still read 0xAAAA, not 0.
-    let solver_check = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    let solver_check = mem.load_concrete(0x1000, 2).unwrap();
     assert!(
         solver_check.as_u64().is_none(),
         "0x1000 should now hold the materialized ITE, not a constant"
@@ -346,11 +343,11 @@ fn test_pending_write_flush_never_mapped_candidate_is_plain_unmapped() {
     mem.map(0x1000, 0x1000, Permission::RWX);
     // No add_lazy_region: 0x2000 is unmapped everywhere.
 
-    let addr = RustBV::symbolic(&ctx, "pw_nomap_addr", 64);
+    let addr = RustBV::symbol("pw_nomap_addr", 64);
     ctx.assume_true(
         &addr
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr.eq(&RustBV::concrete(0x2000, 64))),
     );
     mem.add_pending_write(PendingWrite {
         addr,

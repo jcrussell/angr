@@ -503,7 +503,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                     .iter()
                     .enumerate()
                     .map(|(i, &(bits, width))| {
-                        let sym = RustBV::symbolic(&ctx, format!("operand{i}"), width);
+                        let sym = RustBV::symbol(format!("operand{i}"), width);
                         let pin = sym
                             .to_z3_ast().unwrap()
                             .eq(RustBV::concrete(bits, width).to_z3_ast().unwrap());
@@ -773,7 +773,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
 // =============================================================================
 
 /// Section 3 (see module doc comment): pins a genuinely symbolic rm
-/// (`RustBV::symbolic`, not `RustBV::concrete`) to each VEX mode via a Z3
+/// (`RustBV::symbol`, not `RustBV::concrete`) to each VEX mode via a Z3
 /// equality constraint, forcing `binop_with_rm`/`unop_with_rm`/`qop_with_rm`
 /// past their `rm.as_u128()` concrete fast path into `build_float_expr` ->
 /// `with_vex_rm` (`symbolic/value_clarirs.rs`) — the ITE-over-`VexRm::ALL`
@@ -814,7 +814,7 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 // inside `binop_with_rm`/`unop_with_rm`/`qop_with_rm`,
                 // routing through `with_vex_rm` instead of the
                 // concrete fast path.
-                let rm_sym = RustBV::symbolic(&ctx, "rm_sym", 32);
+                let rm_sym = RustBV::symbol("rm_sym", 32);
                 let pin = rm_sym
                     .to_z3_ast().unwrap()
                     .eq(RustBV::concrete(rm as u128, 32).to_z3_ast().unwrap());
@@ -867,7 +867,7 @@ fn test_unsupported_rounding_mode_is_an_error() {
             let symbolic: Vec<RustBV> = case
                 .iter()
                 .enumerate()
-                .map(|(i, &(_, width))| RustBV::symbolic(&ctx, format!("operand{i}"), width))
+                .map(|(i, &(_, width))| RustBV::symbol(format!("operand{i}"), width))
                 .collect();
             for (label, operands) in [("concrete", &concrete), ("symbolic", &symbolic)] {
                 let rm = RustBV::concrete(bad, 64);

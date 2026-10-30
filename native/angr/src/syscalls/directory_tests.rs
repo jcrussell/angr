@@ -9,7 +9,7 @@ use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
 /// Sweep the 9 stub handlers across every supported arch and verify
-/// they return a fresh `RustBV::symbolic` of width `arch().bits()`.
+/// they return a fresh `RustBV::symbol` of width `arch().bits()`.
 /// Successive invocations must yield distinct fresh symbols.
 #[test]
 fn dir_stub_handlers_return_fresh_symbolic_on_all_arches() {
@@ -148,8 +148,7 @@ fn chdir_symbolic_path_pointer_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let bits = state.arch().bits();
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "sym_path_ptr", bits)
+        RustBV::symbol("sym_path_ptr", bits)
     };
     let err = NativeChdirSyscall.call(&mut state, &[sym]).unwrap_err();
     match err {
@@ -220,8 +219,7 @@ fn getcwd_symbolic_args_fall_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let bits = state.arch().bits();
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "sym_getcwd_arg", bits)
+        RustBV::symbol("sym_getcwd_arg", bits)
     };
     for (label, args) in [
         ("buf", [sym.clone(), RustBV::concrete(64, bits)]),
@@ -249,8 +247,7 @@ fn chdir_symbolic_byte_mid_path_falls_back() {
         .memory_store(0x1000, RustBV::concrete(b'/' as u128, 8))
         .unwrap();
     let sym_byte = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "sym_path_byte", 8)
+        RustBV::symbol("sym_path_byte", 8)
     };
     state.memory_store(0x1001, sym_byte).unwrap();
 

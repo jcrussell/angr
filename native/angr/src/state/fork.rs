@@ -428,14 +428,14 @@ impl RustSimState {
         let mut merged_regs = self.registers.fork();
         for (i, other) in others.iter().enumerate() {
             let cond = &merge_conditions[i + 1]; // skip self's condition
-            merged_regs.merge(&other.registers, cond, &merged_solver);
+            merged_regs.merge(&other.registers, cond);
         }
 
         // Start with a clone of self's memory and merge each other into it
         let mut merged_mem = self.memory.fork();
         for (i, other) in others.iter().enumerate() {
             let cond = &merge_conditions[i + 1];
-            merged_mem.merge(&other.memory, cond, &merged_solver);
+            merged_mem.merge(&other.memory, cond);
         }
 
         // Merge the FileSystem by the longest-stdout heuristic (angr-ph300.75).
@@ -642,8 +642,8 @@ impl RustSimState {
                 .iter()
                 .fold(self.last_time.clone(), |acc, o| match (acc, &o.last_time) {
                     (Some(a), Some(b)) => {
-                        let ge = a.uge(b, &merged_solver);
-                        Some(ge.ite(&a, b, &merged_solver))
+                        let ge = a.uge(b);
+                        Some(ge.ite(&a, b))
                     }
                     (None, Some(b)) => Some(b.clone()),
                     (acc, None) => acc,

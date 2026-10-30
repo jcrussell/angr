@@ -17,8 +17,7 @@ fn state_with_symbolic_format_byte() -> RustSimState {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"\x00\x00\x00\x00", Permission::RWX);
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "fmt_byte", 8)
+        RustBV::symbol("fmt_byte", 8)
     };
     state.memory_store(0x1000, sym).unwrap();
     state
@@ -316,7 +315,7 @@ fn test_snprintf_zero_size() {
 fn test_sprintf_symbolic_dest() {
     let mut state = setup_state();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "dest", 64);
+    let sym = RustBV::symbol("dest", 64);
     drop(ctx);
 
     let result = NativeSprintf.call(

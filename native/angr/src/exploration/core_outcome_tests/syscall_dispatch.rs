@@ -44,9 +44,7 @@ impl crate::syscalls::NativeSyscall for StubSyscall {
         match self.behavior {
             StubSyscallBehavior::Continue(ret) => Ok(SyscallOutcome::Continue { ret }),
             StubSyscallBehavior::ContinueSymbolic => Ok(SyscallOutcome::ContinueSymbolic {
-                ret: crate::symbolic::RustBV::symbolic(
-                    &state.solver().borrow(),
-                    "stub_syscall_ret",
+                ret: crate::symbolic::RustBV::symbol("stub_syscall_ret",
                     state.arch().bits(),
                 ),
             }),

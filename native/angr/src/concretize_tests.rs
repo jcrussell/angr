@@ -173,10 +173,10 @@ fn test_stride_grid_excludes_feasible_off_grid() {
     // Feasible set {0, 4, 8, 7}: the on-stride members {0,4,8} would tempt a
     // stride=4 grid, but 7 is off-grid (7 % 4 != 0). base = true min = 0.
     let disj = addr
-        .eq(&RustBV::concrete(0, 64), &ctx)
-        .or(&addr.eq(&RustBV::concrete(4, 64), &ctx), &ctx)
-        .or(&addr.eq(&RustBV::concrete(8, 64), &ctx), &ctx)
-        .or(&addr.eq(&RustBV::concrete(7, 64), &ctx), &ctx);
+        .eq(&RustBV::concrete(0, 64))
+        .or(&addr.eq(&RustBV::concrete(4, 64)))
+        .or(&addr.eq(&RustBV::concrete(8, 64)))
+        .or(&addr.eq(&RustBV::concrete(7, 64)));
     ctx.assume_true(&disj);
 
     assert!(
@@ -194,9 +194,9 @@ fn test_stride_grid_excludes_feasible_on_grid() {
     // Feasible set {0, 4, 8} is exactly the stride=4 grid over [0, 8]; no
     // feasible address lies off it, so the gate must not fire.
     let disj = addr
-        .eq(&RustBV::concrete(0, 64), &ctx)
-        .or(&addr.eq(&RustBV::concrete(4, 64), &ctx), &ctx)
-        .or(&addr.eq(&RustBV::concrete(8, 64), &ctx), &ctx);
+        .eq(&RustBV::concrete(0, 64))
+        .or(&addr.eq(&RustBV::concrete(4, 64)))
+        .or(&addr.eq(&RustBV::concrete(8, 64)));
     ctx.assume_true(&disj);
 
     assert!(
@@ -218,8 +218,8 @@ fn test_read_fallback_pins_address_to_single_solution() {
 
     // Constrain to a ~256MB range — far above read_range_limit (1024), so the
     // Range strategy overflows and the Any fallback fires.
-    ctx.assume_true(&addr.uge(&RustBV::concrete(0x100000, 64), &ctx));
-    ctx.assume_true(&addr.ult(&RustBV::concrete(0x10100000, 64), &ctx));
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x100000, 64)));
+    ctx.assume_true(&addr.ult(&RustBV::concrete(0x10100000, 64)));
 
     // Sanity: pre-fallback the address genuinely has many solutions.
     assert!(
@@ -248,8 +248,8 @@ fn test_write_fallback_pins_address_to_single_solution() {
     let concretizer = AddressConcretizer::new();
     let addr = ctx.new_bv("w", 64);
 
-    ctx.assume_true(&addr.uge(&RustBV::concrete(0x100000, 64), &ctx));
-    ctx.assume_true(&addr.ult(&RustBV::concrete(0x10100000, 64), &ctx));
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x100000, 64)));
+    ctx.assume_true(&addr.ult(&RustBV::concrete(0x10100000, 64)));
 
     let result = concretizer.concretize_write(&addr, &ctx);
     let chosen = match result {
@@ -279,11 +279,11 @@ fn unannotated_write_without_symbolic_write_addresses_is_max_only() {
 
     // Three satisfying addresses, well inside write_range_limit (128), so the
     // Range strategy would happily return Multiple if it were in the chain.
-    let addr = RustBV::symbolic(&ctx, "unannotated_w", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x1004, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x1008, 64), &ctx);
-    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+    let addr = RustBV::symbol("unannotated_w", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x1004, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x1008, 64));
+    ctx.assume_true(&a0.or(&a1).or(&a2));
 
     match concretizer.concretize_write(&addr, &ctx) {
         ConcretizationResult::Single(a) => {
@@ -302,11 +302,11 @@ fn multiwrite_annotated_write_keeps_the_range_strategy() {
     let ctx = SymContext::new_mock();
     let concretizer = AddressConcretizer::new();
 
-    let addr = RustBV::symbolic(&ctx, "annotated_w", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x1001, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x1003, 64), &ctx);
-    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+    let addr = RustBV::symbol("annotated_w", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x1001, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x1003, 64));
+    ctx.assume_true(&a0.or(&a1).or(&a2));
 
     // {0, 1, 3} deltas -> GCD 1, so stride detection declines and the result
     // is a genuine Multiple rather than Strided.
@@ -329,11 +329,11 @@ fn symbolic_write_addresses_on_restores_range_for_unannotated_writes() {
         ..AddressConcretizer::new()
     };
 
-    let addr = RustBV::symbolic(&ctx, "swa_on_w", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x2001, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x2003, 64), &ctx);
-    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+    let addr = RustBV::symbol("swa_on_w", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x2000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x2001, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x2003, 64));
+    ctx.assume_true(&a0.or(&a1).or(&a2));
 
     match concretizer.concretize_write(&addr, &ctx) {
         ConcretizationResult::Multiple(addrs) => {
@@ -350,10 +350,10 @@ fn max_only_write_pins_the_chosen_address() {
     let ctx = SymContext::new_mock();
     let concretizer = AddressConcretizer::new();
 
-    let addr = RustBV::symbolic(&ctx, "max_only_pin", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x4000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x4008, 64), &ctx);
-    ctx.assume_true(&a0.or(&a1, &ctx));
+    let addr = RustBV::symbol("max_only_pin", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x4000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x4008, 64));
+    ctx.assume_true(&a0.or(&a1));
 
     let chosen = match concretizer.concretize_write(&addr, &ctx) {
         ConcretizationResult::Single(a) => a,
@@ -393,8 +393,8 @@ fn test_over_max_solutions_is_too_large_not_truncated_multiple() {
     // the range path runs, but well inside read_range_limit (1024) so the
     // "manageable" branch — not the over-range one — is what fires.
     let addr = ctx.new_bv("trunc", 64);
-    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), &ctx));
-    ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64), &ctx));
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64)));
+    ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64)));
 
     match concretizer.concretize(&addr, &ctx) {
         ConcretizationResult::TooLarge { min, max, .. } => {
@@ -414,8 +414,8 @@ fn test_under_max_solutions_still_enumerates_completely() {
     concretizer.enable_stride_detection = false;
 
     let addr = ctx.new_bv("full", 64);
-    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), &ctx));
-    ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64), &ctx));
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64)));
+    ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64)));
 
     match concretizer.concretize(&addr, &ctx) {
         ConcretizationResult::Multiple(addrs) => {
@@ -453,8 +453,8 @@ fn strided_addrs_wraps_at_the_top_of_the_address_space() {
 /// over-range fallback.
 fn ranged_addr(ctx: &SymContext, name: &str) -> RustBV {
     let addr = ctx.new_bv(name, 64);
-    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), ctx));
-    ctx.assume_true(&addr.ule(&RustBV::concrete(0x103f, 64), ctx));
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64)));
+    ctx.assume_true(&addr.ule(&RustBV::concrete(0x103f, 64)));
     addr
 }
 

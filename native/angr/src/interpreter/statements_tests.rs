@@ -128,7 +128,7 @@ fn put_concrete_writes_register() {
             .execute_stmt_with_callbacks(cb, &stmt, &irsb)
             .expect("put");
     });
-    let val = interp.registers.get(16, 8, &ctx);
+    let val = interp.registers.get(16, 8);
     assert_eq!(val.as_u64(), Some(0xcafe));
 }
 
@@ -294,8 +294,8 @@ fn build_ite_store_invokes_per_addr_ite_callbacks() {
     };
     assert!(cb.has_memory_store_symbolic_value());
 
-    let addr_expr = RustBV::symbolic(&ctx, "store_addr", 64);
-    let data_val = RustBV::symbolic(&ctx, "store_data", 64);
+    let addr_expr = RustBV::symbol("store_addr", 64);
+    let data_val = RustBV::symbol("store_data", 64);
     let addrs = [0x1000u64, 0x2000u64];
 
     interp
@@ -369,10 +369,10 @@ fn evict_overlapping_symbolic_stores_drops_shadowed_entries() {
     let mut interp = new_interp(&ctx);
     interp
         .pending_symbolic_stores
-        .insert(0x2000, RustBV::symbolic(&ctx, "p", 64));
+        .insert(0x2000, RustBV::symbol("p", 64));
     interp
         .all_flushed_symbolic_stores
-        .insert(0x2000, RustBV::symbolic(&ctx, "f", 64));
+        .insert(0x2000, RustBV::symbol("f", 64));
     // 8-byte concrete store at 0x2000 fully overwrites both shadows.
     interp.evict_overlapping_symbolic_stores(0x2000, 8);
     assert!(!interp.pending_symbolic_stores.contains_key(&0x2000));
@@ -392,7 +392,7 @@ fn evict_overlapping_symbolic_stores_drops_entries_across_address_top() {
     let wrapped = u64::MAX - 3;
     interp
         .pending_symbolic_stores
-        .insert(wrapped, RustBV::symbolic(&ctx, "w", 64));
+        .insert(wrapped, RustBV::symbol("w", 64));
     // Concrete store [0x0,0x2) touches only the wrapped tail.
     interp.evict_overlapping_symbolic_stores(0x0, 2);
     assert!(
@@ -403,7 +403,7 @@ fn evict_overlapping_symbolic_stores_drops_entries_across_address_top() {
     // Mirror case: the *concrete* store is the one that wraps.
     interp
         .all_flushed_symbolic_stores
-        .insert(0x2, RustBV::symbolic(&ctx, "f", 32));
+        .insert(0x2, RustBV::symbol("f", 32));
     interp.evict_overlapping_symbolic_stores(u64::MAX - 1, 8);
     assert!(
         !interp.all_flushed_symbolic_stores.contains_key(&0x2),
@@ -418,10 +418,10 @@ fn evict_overlapping_symbolic_stores_keeps_disjoint_entries() {
     // [0x3000,0x3004) and [0x3008,0x300c).
     interp
         .pending_symbolic_stores
-        .insert(0x3000, RustBV::symbolic(&ctx, "a", 32));
+        .insert(0x3000, RustBV::symbol("a", 32));
     interp
         .pending_symbolic_stores
-        .insert(0x3008, RustBV::symbolic(&ctx, "b", 32));
+        .insert(0x3008, RustBV::symbol("b", 32));
     // Concrete store [0x3002,0x3006) overlaps only the first entry.
     interp.evict_overlapping_symbolic_stores(0x3002, 4);
     assert!(!interp.pending_symbolic_stores.contains_key(&0x3000));
@@ -450,7 +450,7 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
     assert!(interp.has_cached_block(0x1010));
 
     let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
-    let data_bv = RustBV::symbolic(&ctx, "cas_data", 32);
+    let data_bv = RustBV::symbol("cas_data", 32);
     let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
     with_test_host(|cb| {
@@ -484,7 +484,7 @@ fn cas_symbolic_store_without_callback_errors_not_zero_fills() {
     interp.add_concrete_memory(0x1000, vec![0xffu8; 0x1000]);
 
     let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
-    let data_bv = RustBV::symbolic(&ctx, "cas_sym", 32);
+    let data_bv = RustBV::symbol("cas_sym", 32);
     let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
     with_test_host(|cb| {
@@ -564,12 +564,12 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     // so this is the standard way tests inject a specific RustBV as an
     // expression's evaluated value. Constrain it to a single solution
     // (0x2010, inside the cached block) so concretization is deterministic.
-    let addr_bv = RustBV::symbolic(&ctx, "cas_sym_addr", 64);
+    let addr_bv = RustBV::symbol("cas_sym_addr", 64);
     crate::concretize::pin_fallback_addr(&ctx, &addr_bv, 0x2010);
     interp.temps = vec![Some(addr_bv)];
 
     let addr_expr = IRExpr::RdTmp(0);
-    let data_bv = RustBV::symbolic(&ctx, "cas_sym_data", 32);
+    let data_bv = RustBV::symbol("cas_sym_data", 32);
     let call_irsb = make_irsb_with_temps(0x2010, &[]);
 
     with_test_host(|cb| {
@@ -612,12 +612,12 @@ fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
     interp.add_concrete_memory(0x5000, vec![0u8; 0x2000]);
 
     // idx in {0, 1, 2} -> addr in {0x5010, 0x5020, 0x5030} (stride 0x10).
-    let idx = RustBV::symbolic(&ctx, "idx_strided", 64);
-    let bound = idx.ult(&RustBV::concrete(3, 64), &ctx);
+    let idx = RustBV::symbol("idx_strided", 64);
+    let bound = idx.ult(&RustBV::concrete(3, 64));
     ctx.assume_true(&bound);
     let stride = RustBV::concrete(0x10, 64);
     let base = RustBV::concrete(0x5010, 64);
-    let addr = base.add(&idx.mul(&stride, &ctx), &ctx);
+    let addr = base.add(&idx.mul(&stride));
 
     // Sanity-check the construction actually produces Strided, not some other
     // shape (e.g. if range/stride detection heuristics change).
@@ -642,7 +642,7 @@ fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
     interp.cache_block(0x5100, make_irsb_with_temps(0x5100, &[]));
     assert!(interp.has_cached_block(0x5100));
 
-    let data_val = RustBV::symbolic(&ctx, "store_data", 32);
+    let data_val = RustBV::symbol("store_data", 32);
     with_test_host(|cb| {
         // No memory_store_symbolic_value/_full callback registered, so the
         // store dispatch itself errors out -- but invalidation must already
@@ -673,14 +673,14 @@ fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
     let mut interp = new_interp_multiwrite(&ctx);
     interp.add_concrete_memory(0x6000, vec![0u8; 0x2000]);
 
-    let idx = RustBV::symbolic(&ctx, "idx_multiple", 64);
-    let eq0 = idx.eq(&RustBV::concrete(0, 64), &ctx);
-    let eq1 = idx.eq(&RustBV::concrete(1, 64), &ctx);
-    let eq3 = idx.eq(&RustBV::concrete(3, 64), &ctx);
-    let cond = eq0.or(&eq1, &ctx).or(&eq3, &ctx);
+    let idx = RustBV::symbol("idx_multiple", 64);
+    let eq0 = idx.eq(&RustBV::concrete(0, 64));
+    let eq1 = idx.eq(&RustBV::concrete(1, 64));
+    let eq3 = idx.eq(&RustBV::concrete(3, 64));
+    let cond = eq0.or(&eq1).or(&eq3);
     ctx.assume_true(&cond);
     let base = RustBV::concrete(0x6000, 64);
-    let addr = base.add(&idx, &ctx);
+    let addr = base.add(&idx);
 
     let pre_check = interp.concretize_cached_write(&addr);
     match &*pre_check {
@@ -698,7 +698,7 @@ fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
     interp.cache_block(0x6100, make_irsb_with_temps(0x6100, &[]));
     assert!(interp.has_cached_block(0x6100));
 
-    let data_val = RustBV::symbolic(&ctx, "store_data_multi", 32);
+    let data_val = RustBV::symbol("store_data_multi", 32);
     with_test_host(|cb| {
         let res = interp.handle_symbolic_store(cb, &addr, &data_val, 4);
         assert!(res.is_err());
@@ -824,8 +824,8 @@ fn loadg_single_concretization_sees_rust_memory_store() {
     // t0 = symbolic address constrained to exactly 0x4020.
     let irsb = make_irsb_with_temps(0x1000, &[IRType::I64, IRType::I32]);
     interp.temps.resize(2, None);
-    let sym_addr = RustBV::symbolic(&ctx, "loadg_addr", 64);
-    ctx.assume_true(&sym_addr.eq(&RustBV::concrete(0x4020, 64), &ctx));
+    let sym_addr = RustBV::symbol("loadg_addr", 64);
+    ctx.assume_true(&sym_addr.eq(&RustBV::concrete(0x4020, 64)));
     interp.temps[0] = Some(sym_addr);
 
     let store = IRStmt::Store {
@@ -881,7 +881,7 @@ fn symbolic_store_fallback_errors_instead_of_zero_filling_when_eval_fails() {
     };
 
     // 256 bits = 32 bytes > MAX_CONCRETE_CHUNK, so no u128 witness exists.
-    let data_val = RustBV::symbolic(&ctx, "wide_store_data", 256);
+    let data_val = RustBV::symbol("wide_store_data", 256);
     let err = interp
         .handle_concrete_store(&cb, 0x10_0000, data_val, 32)
         .expect_err("unconcretizable symbolic store must fail, not zero-fill");
@@ -909,8 +909,8 @@ fn symbolic_store_fallback_writes_concretized_bytes_when_eval_succeeds() {
     let ctx = SymContext::new_mock();
     let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
 
-    let data_val = RustBV::symbolic(&ctx, "store_data", 32);
-    ctx.assume_true(&data_val.eq(&RustBV::concrete(0xdead_beef, 32), &ctx));
+    let data_val = RustBV::symbol("store_data", 32);
+    ctx.assume_true(&data_val.eq(&RustBV::concrete(0xdead_beef, 32)));
 
     let cb = TestHost {
         symbolic_value_store: SymbolicValueStore::Fail,
@@ -980,7 +980,7 @@ fn storeg_symbolic_guard_buffers_for_rust_memory() {
 
     let irsb = make_irsb_with_temps(0x1000, &[IRType::I1]);
     interp.temps.resize(1, None);
-    interp.temps[0] = Some(RustBV::symbolic(&ctx, "storeg_guard", 1));
+    interp.temps[0] = Some(RustBV::symbol("storeg_guard", 1));
 
     let storeg = IRStmt::StoreG {
         addr: Box::new(IRExpr::Const(IRConst::U64(0x4010))),
@@ -1013,7 +1013,7 @@ fn cas_symbolic_writeback_buffers_for_rust_memory() {
     let mut interp = new_interp_rust_memory(&ctx);
     let irsb = make_irsb_with_temps(0x1000, &[]);
 
-    let data_bv = RustBV::symbolic(&ctx, "cas_writeback", 32);
+    let data_bv = RustBV::symbol("cas_writeback", 32);
     let addr_expr = IRExpr::Const(IRConst::U64(0x4020));
 
     with_proxy_callbacks(|cb| {
@@ -1037,8 +1037,8 @@ fn ite_store_buffers_every_candidate_for_rust_memory() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
 
-    let addr_expr = RustBV::symbolic(&ctx, "ite_store_addr", 64);
-    let data_val = RustBV::symbolic(&ctx, "ite_store_data", 32);
+    let addr_expr = RustBV::symbol("ite_store_addr", 64);
+    let data_val = RustBV::symbol("ite_store_data", 32);
     let addrs = [0x4010u64, 0x4020u64];
 
     with_proxy_callbacks(|cb| {
@@ -1103,7 +1103,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_concrete_lower_layer() {
 fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
-    let sym = RustBV::symbolic(&ctx, "flushed", 16);
+    let sym = RustBV::symbol("flushed", 16);
     interp.all_flushed_symbolic_stores.insert(0x4000, sym);
     interp.pending_stores.push(0x4000, vec![0xaa]);
 
@@ -1131,7 +1131,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
         "the uncovered high byte must remain the flushed symbol"
     );
     assert_eq!(
-        result.extract(7, 0, &ctx).as_u64(),
+        result.extract(7, 0).as_u64(),
         Some(0xaa),
         "the buffered byte must win over the symbolic lower layer"
     );
@@ -1165,10 +1165,10 @@ fn mv_write_interp<'a>(ctx: &'a SymContext, on: bool, backer: u128) -> VEXInterp
 /// Commit any buffered stores and read 0x1000 back out of `rust_memory`.
 /// Reads the memory directly rather than through an interpreter load path, so
 /// the verification never re-enters the code under test.
-fn mv_write_read_back(interp: &mut VEXInterpreter<'_>, ctx: &SymContext) -> Option<u64> {
+fn mv_write_read_back(interp: &mut VEXInterpreter<'_>) -> Option<u64> {
     interp.flush_stores_to_rust_memory();
     let mem = interp.take_rust_memory().expect("interpreter owns memory");
-    mem.load_concrete(0x1000, 8, ctx)
+    mem.load_concrete(0x1000, 8)
         .expect("read-back must succeed")
         .as_u64()
 }
@@ -1177,8 +1177,8 @@ fn mv_write_read_back(interp: &mut VEXInterpreter<'_>, ctx: &SymContext) -> Opti
 /// `should_avoid_multivalued_write` to fire, single-valued enough that with the
 /// option off the write concretizes to exactly one place.
 fn mv_write_addr(ctx: &SymContext, name: &str) -> RustBV {
-    let bv = RustBV::symbolic(ctx, name, 64);
-    ctx.assume_true(&bv.eq(&RustBV::concrete(0x1000, 64), ctx));
+    let bv = RustBV::symbol(name, 64);
+    ctx.assume_true(&bv.eq(&RustBV::concrete(0x1000, 64)));
     assert!(bv.as_u64().is_none(), "address must stay symbolic");
     bv
 }
@@ -1200,7 +1200,7 @@ fn try_rust_memory_store_drops_the_write_under_avoid_multivalued_writes() {
         .expect("store with the option off must succeed");
     assert!(handled, "option off: rust memory must handle the store");
     assert_eq!(
-        mv_write_read_back(&mut off, &ctx),
+        mv_write_read_back(&mut off),
         Some(stored as u64),
         "option off: the pinned address must concretize and take the write"
     );
@@ -1215,7 +1215,7 @@ fn try_rust_memory_store_drops_the_write_under_avoid_multivalued_writes() {
         "option on: the drop is still 'handled' — it must not fall through to Python"
     );
     assert_eq!(
-        mv_write_read_back(&mut on, &ctx),
+        mv_write_read_back(&mut on),
         Some(backer as u64),
         "option on: the write must be dropped, leaving the backer intact"
     );

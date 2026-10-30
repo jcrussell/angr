@@ -43,7 +43,7 @@ fn test_printf_empty_format() {
 fn test_printf_symbolic_addr() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "fmt", 64);
+    let sym = RustBV::symbol("fmt", 64);
     drop(ctx);
     let result = NativePrintf.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -113,7 +113,7 @@ fn test_fprintf_negative_fd_returns_minus_one() {
 fn test_fprintf_symbolic_stream_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "stream", 64);
+    let sym = RustBV::symbol("stream", 64);
     drop(ctx);
     let result = NativeFprintf.call(&mut state, &[sym, RustBV::concrete(0x1000, 64)]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -127,9 +127,8 @@ fn test_fprintf_content_sym_fd_demotes_and_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"log line\0", Permission::RWX);
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("fprintffile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("fprintffile_{i}"), 8))
             .collect()
     };
     state

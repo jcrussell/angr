@@ -15,7 +15,7 @@
 //!   fall through to `procedures/stubs/syscall_stub.py::syscall`,
 //!   which emits `state.solver.Unconstrained("syscall_stub_<name>",
 //!   returnty.size, ...)`. The native handlers mirror that via
-//!   `SyscallOutcome::ContinueSymbolic` with a fresh `RustBV::symbolic`
+//!   `SyscallOutcome::ContinueSymbolic` with a fresh `RustBV::symbol`
 //!   of width `arch().bits()` (the C `long` width on every supported
 //!   Linux arch).
 //!

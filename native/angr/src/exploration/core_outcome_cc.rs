@@ -49,11 +49,10 @@ impl CcSnapshot {
 
         let bits = ret.width();
         let (ret_val, err_val) = {
-            let ctx = state.solver().borrow();
             let errno_start_bv = RustBV::concrete(errno_start as u128, bits);
-            let error_cond = ret.uge(&errno_start_bv, &ctx);
-            let err_val = error_cond.ite(&RustBV::ones(bits), &RustBV::zero(bits), &ctx);
-            let ret_val = error_cond.ite(&ret.neg(&ctx), &ret, &ctx);
+            let error_cond = ret.uge(&errno_start_bv);
+            let err_val = error_cond.ite(&RustBV::ones(bits), &RustBV::zero(bits));
+            let ret_val = error_cond.ite(&ret.neg(), &ret);
             (ret_val, err_val)
         };
         state.set_register_by_offset(ret_reg, ret_val);

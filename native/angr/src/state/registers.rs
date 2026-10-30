@@ -11,8 +11,7 @@ use super::*;
 impl RustSimState {
     /// Get a register by name.
     pub fn get_register(&self, name: &str) -> Option<RustBV> {
-        let ctx = self.solver.borrow();
-        self.registers.get_reg(name, &ctx)
+        self.registers.get_reg(name)
     }
 
     /// Set a register by name.
@@ -34,7 +33,7 @@ impl RustSimState {
         let ok = self.registers.put_reg(name, value);
         if ok
             && is_ip
-            && let Some(v) = self.registers.get_ip(&self.solver.borrow()).as_u64()
+            && let Some(v) = self.registers.get_ip().as_u64()
         {
             self.pc = v;
         }
@@ -43,8 +42,7 @@ impl RustSimState {
 
     /// Get a register by offset.
     pub fn get_register_by_offset(&self, offset: u32, size: u32) -> RustBV {
-        let ctx = self.solver.borrow();
-        self.registers.get(offset, size, &ctx)
+        self.registers.get(offset, size)
     }
 
     /// Set a register by offset.
@@ -54,22 +52,20 @@ impl RustSimState {
 
     /// Get the instruction pointer register.
     pub fn get_ip(&self) -> RustBV {
-        let ctx = self.solver.borrow();
-        self.registers.get_ip(&ctx)
+        self.registers.get_ip()
     }
 
     /// Set the instruction pointer register.
     pub fn set_ip(&mut self, value: RustBV) {
         self.registers.set_ip(value);
-        if let Some(v) = self.registers.get_ip(&self.solver.borrow()).as_u64() {
+        if let Some(v) = self.registers.get_ip().as_u64() {
             self.pc = v;
         }
     }
 
     /// Get the stack pointer register.
     pub fn get_sp(&self) -> RustBV {
-        let ctx = self.solver.borrow();
-        self.registers.get_sp(&ctx)
+        self.registers.get_sp()
     }
 
     /// Set the stack pointer register.

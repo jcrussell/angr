@@ -47,14 +47,12 @@ pub(crate) fn mgr_and_state(pc: u64) -> (RustExplorationManager, RustSimState, u
 pub(crate) fn unsat_state_at(pc: u64) -> RustSimState {
     let mut state = state_at(pc);
     let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "unsat_x", 64)
+        RustBV::symbol("unsat_x", 64)
     };
     state.set_register("rax", x.clone());
     for witness in [1u128, 2u128] {
         let c = {
-            let s = state.solver().borrow();
-            x.eq(&RustBV::concrete(witness, 64), &s)
+            x.eq(&RustBV::concrete(witness, 64))
         };
         state.add_constraint(c);
     }

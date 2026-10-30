@@ -11,7 +11,7 @@
 /// u128 by `>= 128` is not a plain zero in Rust — it panics in debug and wraps
 /// the shift amount mod 128 in release — so both the shift (`low`) and the mask
 /// (`result_width`) must be guarded. This is the single source of truth for the
-/// concrete-extract fold shared by `RustBV::extract_into`, `extract_no_ctx`, and
+/// concrete-extract fold shared by `RustBV::extract` / `extract_into` and
 /// the Z3 emitter `emit_extract_z3_cached`; keeping one copy prevents the three
 /// sites from silently diverging (angr-ph300.36).
 #[inline]

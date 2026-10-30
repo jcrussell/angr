@@ -39,8 +39,7 @@ fn serde_roundtrip_concrete() {
 #[test]
 fn serde_roundtrip_symbolic() {
     use z3::ast::Ast as Z3AstTrait;
-    let ctx = SymContext::new_mock();
-    let bv = RustBV::symbolic(&ctx, "x_serde", 32);
+    let bv = RustBV::symbol("x_serde", 32);
     let json = serde_json::to_string(&bv).expect("serialize");
     // Deserialize under the same context (thread-local is still active).
     let back: RustBV = serde_json::from_str(&json).expect("deserialize");
@@ -54,10 +53,9 @@ fn serde_roundtrip_symbolic() {
 
 #[test]
 fn serde_roundtrip_expression_tree() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x_expr_serde", 32);
+    let x = RustBV::symbol("x_expr_serde", 32);
     let c = RustBV::concrete(7, 32);
-    let expr = x.add(&c, &ctx);
+    let expr = x.add(&c);
     // expr is Add(x, 7) after commutative canonicalization (concrete sorts
     // to the right).
     let json = serde_json::to_string(&expr).expect("serialize");

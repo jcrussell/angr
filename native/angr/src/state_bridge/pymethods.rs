@@ -548,8 +548,8 @@ impl PyRustSimState {
     ) -> PyResult<(u128, u128)> {
         let sym_addr = {
             let ctx = self.inner.solver().borrow();
-            let a = RustBV::symbolic(&ctx, "avoid_mv_probe_addr", 64);
-            let eq = a.eq(&RustBV::concrete(addr as u128, 64), &ctx);
+            let a = RustBV::symbol("avoid_mv_probe_addr", 64);
+            let eq = a.eq(&RustBV::concrete(addr as u128, 64));
             ctx.assume_true(&eq);
             a
         };

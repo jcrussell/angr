@@ -48,7 +48,6 @@ fn two_page_mem(big: bool) -> SymbolicMemory {
 /// path matches the independent reference: full-width reload, per-byte loads,
 /// and (for little-endian) an arbitrary sub-range load.
 fn check_straddle(v: u64, n_bytes: u32, k: u64, big: bool) {
-    let ctx = SymContext::new_mock();
     let v = v & mask_bytes(n_bytes);
     // addr = BOUNDARY - k, with 1 <= k <= n_bytes-1, so the range
     // [addr, addr + n_bytes) strictly crosses BOUNDARY.
@@ -60,7 +59,7 @@ fn check_straddle(v: u64, n_bytes: u32, k: u64, big: bool) {
 
     // Full-width reload round-trips the value exactly.
     let full = mem
-        .load_concrete(addr, n_bytes, &ctx)
+        .load_concrete(addr, n_bytes)
         .expect("full-width reload after straddling store");
     assert_eq!(
         full.as_u64(),
@@ -71,7 +70,7 @@ fn check_straddle(v: u64, n_bytes: u32, k: u64, big: bool) {
     // Per-byte layout matches the endianness reference across the seam.
     for i in 0..n_bytes {
         let b = mem
-            .load_concrete(addr + i as u64, 1, &ctx)
+            .load_concrete(addr + i as u64, 1)
             .expect("per-byte reload");
         assert_eq!(
             b.as_u64(),
@@ -87,7 +86,7 @@ fn check_straddle(v: u64, n_bytes: u32, k: u64, big: bool) {
         for j in 0..n_bytes {
             for m in 1..=(n_bytes - j) {
                 let sub = mem
-                    .load_concrete(addr + j as u64, m, &ctx)
+                    .load_concrete(addr + j as u64, m)
                     .expect("sub-range reload");
                 let expected = (v >> (8 * j)) & mask_bytes(m);
                 assert_eq!(
@@ -137,7 +136,6 @@ fn test_straddle_deterministic_all_offsets() {
 /// stores (and vice-versa).
 #[test]
 fn test_same_page_matches_straddle_reference() {
-    let ctx = SymContext::new_mock();
     let v: u64 = 0xdead_beef_cafe_babe;
     for &big in &[false, true] {
         let mut mem = two_page_mem(big);
@@ -145,12 +143,12 @@ fn test_same_page_matches_straddle_reference() {
         mem.store_concrete(0x1100, RustBV::concrete(v as u128, 64))
             .unwrap();
         assert_eq!(
-            mem.load_concrete(0x1100, 8, &ctx).unwrap().as_u64(),
+            mem.load_concrete(0x1100, 8).unwrap().as_u64(),
             Some(v)
         );
         for i in 0..8u32 {
             assert_eq!(
-                mem.load_concrete(0x1100 + i as u64, 1, &ctx)
+                mem.load_concrete(0x1100 + i as u64, 1)
                     .unwrap()
                     .as_u64(),
                 Some(ref_byte(v, 8, i, big)),

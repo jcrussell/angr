@@ -50,7 +50,7 @@ fn divmod_concrete_matches_pinned_symbolic(
     .expect("concrete arm must fold");
 
     let pin = |name: &str, v: u128, w: u32| {
-        let sym = RustBV::symbolic(&ctx, name, w);
+        let sym = RustBV::symbol(name, w);
         ctx.add_constraint(sym.to_z3_ast().unwrap().eq(RustBV::concrete(v, w).to_z3_ast().unwrap()));
         sym
     };
@@ -205,8 +205,8 @@ fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u3
     assert_eq!(concrete.width(), dividend_w);
     let concrete_v = concrete.as_u128().expect("concrete arm must fold");
 
-    let dvs = RustBV::symbolic(&ctx, "dvs_zero", divisor_w);
-    let pinned = dvs.eq(&RustBV::concrete(0, divisor_w), &ctx);
+    let dvs = RustBV::symbol("dvs_zero", divisor_w);
+    let pinned = dvs.eq(&RustBV::concrete(0, divisor_w));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     let symbolic = VEXOps::binop(op, RustBV::concrete(dividend, dividend_w), dvs, &ctx).unwrap();
     assert!(symbolic.is_symbolic(), "symbolic arm must not fold");
@@ -286,7 +286,7 @@ fn test_divmod_same_width_symbolic_and_width_checked() {
     };
     let r = VEXOps::binop(
         op,
-        RustBV::symbolic(&ctx, "a", 64),
+        RustBV::symbol("a", 64),
         RustBV::concrete(3, 64),
         &ctx,
     )

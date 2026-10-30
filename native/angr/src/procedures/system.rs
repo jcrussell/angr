@@ -28,11 +28,10 @@ crate::declare_proc! {
     name = "system",
     struct = NativeSystem,
     args = [_command: bv],
-    call |state| {
+    call |_state| {
         // 8-bit unconstrained return code, zero-extended to the 32-bit C int
         // width (sizeof(int) == 32 on all supported arches; matches rand.rs).
         Ok(Some(fresh_zero_extended_symbol(
-            state,
             "system_returncode",
             8,
             32,

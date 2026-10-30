@@ -116,11 +116,11 @@ fn shadow_probe_migrate_does_not_mutate_the_live_state() {
         state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
         let (addr_var, val_bv) = {
             let ctx = state.solver().borrow();
-            let addr_var = RustBV::symbolic(&ctx, "shadow_probe_multi_addr", 64);
+            let addr_var = RustBV::symbol("shadow_probe_multi_addr", 64);
             ctx.assume_true(
                 &addr_var
-                    .eq(&RustBV::concrete(0x1000, 64), &ctx)
-                    .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+                    .eq(&RustBV::concrete(0x1000, 64))
+                    .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
             );
             (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
         };

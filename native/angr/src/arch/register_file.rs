@@ -136,12 +136,7 @@ impl RegisterFile {
     /// than the overlay at its own offset sees *all* the overlays inside the
     /// range, not just one that happens to fill the remainder exactly
     /// (angr-49v03).
-    pub(super) fn compose_range(
-        &self,
-        offset: u32,
-        size: u32,
-        ctx: &crate::symbolic::SymContext,
-    ) -> RustBV {
+    pub(super) fn compose_range(&self, offset: u32, size: u32) -> RustBV {
         // A `[offset, offset + size)` range whose end does not fit in `u32`
         // names no byte range at all. `regarray_offset` (interpreter/expressions.rs)
         // rejects only a *wrapping* `base + idx * elem_size`, so a malformed IRSB
@@ -164,7 +159,7 @@ impl RegisterFile {
                     }
                     // Overlay runs past the end of the read — take the low bytes
                     // that do fit rather than falling back to stale concrete.
-                    parts.push(sub_sym.extract(end.saturating_sub(pos) * 8 - 1, 0, ctx));
+                    parts.push(sub_sym.extract(end.saturating_sub(pos) * 8 - 1, 0));
                     break;
                 }
             }
@@ -183,7 +178,7 @@ impl RegisterFile {
             return RustBV::zero(size * 8);
         };
         while let Some(part) = parts.pop() {
-            result = result.concat(&part, ctx);
+            result = result.concat(&part);
         }
         result
     }
@@ -192,8 +187,8 @@ impl RegisterFile {
     ///
     /// Mirrors the offset into storage coordinates (see
     /// [`Self::mirror_offset`]) and delegates to [`Self::get_storage`].
-    pub(crate) fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
-        self.get_storage(self.mirror_offset(offset, size), size, ctx)
+    pub(crate) fn get(&self, offset: u32, size: u32) -> RustBV {
+        self.get_storage(self.mirror_offset(offset, size), size)
     }
 
     /// [`Self::get`] in *storage* coordinates: reads the byte range
@@ -210,12 +205,7 @@ impl RegisterFile {
     /// involution property does not rescue it: the doubly-mirrored value is
     /// used as a real lookup key and bit-range reference against actual storage
     /// entries, not merely recomputed and discarded.
-    pub(super) fn get_storage(
-        &self,
-        offset: u32,
-        size: u32,
-        ctx: &crate::symbolic::SymContext,
-    ) -> RustBV {
+    pub(super) fn get_storage(&self, offset: u32, size: u32) -> RustBV {
         // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -223,7 +213,7 @@ impl RegisterFile {
             }
             // Partial read: extract low bytes from wider symbolic value
             if sym.width() > size * 8 {
-                return sym.extract(size * 8 - 1, 0, ctx);
+                return sym.extract(size * 8 - 1, 0);
             }
             // Wider read of narrower symbolic: e.g., reading ecx (32-bit) when
             // cx (16-bit) was written symbolically. Compose the symbolic low part
@@ -245,7 +235,7 @@ impl RegisterFile {
             // its own overlay. `put` keeps overlays non-overlapping, so today
             // no entry could preempt it anyway.
             if sym.width() < size * 8 {
-                return self.compose_range(offset, size, ctx);
+                return self.compose_range(offset, size);
             }
         }
 
@@ -259,7 +249,7 @@ impl RegisterFile {
             {
                 let bit_lo = offset.saturating_sub(sym_offset) * 8;
                 let bit_hi = bit_lo.saturating_add(size * 8) - 1;
-                return sym_val.extract(bit_hi, bit_lo, ctx);
+                return sym_val.extract(bit_hi, bit_lo);
             }
         }
 
@@ -274,7 +264,7 @@ impl RegisterFile {
                 && sym_offset.saturating_add(sym_size) <= offset.saturating_add(size)
             {
                 // This symbolic sub-register is contained within our read range
-                return self.compose_range(offset, size, ctx);
+                return self.compose_range(offset, size);
             }
         }
 
@@ -299,7 +289,7 @@ impl RegisterFile {
         // `None`, giving name-keyed Python callers the clean "cannot read
         // register fpreg" they already expect.
         if size as usize > MAX_CONCRETE_CHUNK {
-            return self.compose_range(offset, size, ctx);
+            return self.compose_range(offset, size);
         }
 
         RustBV::concrete(le_bytes_to_u128(&self.data[start..end]), size * 8)
@@ -311,12 +301,8 @@ impl RegisterFile {
     /// syscall-num and stack-pointer reads in the interpreter. Note this is
     /// distinct from `get_sp_value`, which reads raw concrete bytes and ignores
     /// the symbolic overlay.
-    pub(crate) fn get_offset_u64(
-        &self,
-        offset: u32,
-        ctx: &crate::symbolic::SymContext,
-    ) -> Option<u64> {
-        self.get(offset, self.arch.bytes(), ctx).as_u64()
+    pub(crate) fn get_offset_u64(&self, offset: u32) -> Option<u64> {
+        self.get(offset, self.arch.bytes()).as_u64()
     }
 
     /// Mirror a concrete `value` into the concrete backing bytes at `offset`,
@@ -372,8 +358,8 @@ impl RegisterFile {
             && wider_sym.width() > write_bits
         {
             // Writing to the LOW portion of a wider symbolic
-            let upper = wider_sym.extract_no_ctx(wider_sym.width() - 1, write_bits);
-            let composed = upper.concat_no_ctx(&value);
+            let upper = wider_sym.extract(wider_sym.width() - 1, write_bits);
+            let composed = upper.concat(&value);
             self.symbolic.insert(offset, composed);
             // Also update concrete data for the written portion if concrete
             self.mirror_concrete_bytes(offset, &value);
@@ -395,19 +381,19 @@ impl RegisterFile {
                 let mut parts: Vec<RustBV> = Vec::new();
                 // Upper portion (if any)
                 if bit_hi < sym_bits {
-                    parts.push(sym_val.extract_no_ctx(sym_bits - 1, bit_hi));
+                    parts.push(sym_val.extract(sym_bits - 1, bit_hi));
                 }
                 // The written value
                 parts.push(value.clone());
                 // Lower portion (if any)
                 if bit_lo > 0 {
-                    parts.push(sym_val.extract_no_ctx(bit_lo - 1, 0));
+                    parts.push(sym_val.extract(bit_lo - 1, 0));
                 }
 
                 // Compose: concat all parts (MSB first)
                 let mut composed = parts[0].clone();
                 for part in &parts[1..] {
-                    composed = composed.concat_no_ctx(part);
+                    composed = composed.concat(part);
                 }
                 self.symbolic.insert(sym_offset, composed);
                 // Update concrete data for the written portion if concrete
@@ -467,10 +453,10 @@ impl RegisterFile {
     }
 
     /// Read a register by name.
-    pub(crate) fn get_reg(&self, name: &str, ctx: &crate::symbolic::SymContext) -> Option<RustBV> {
+    pub(crate) fn get_reg(&self, name: &str) -> Option<RustBV> {
         let offset = self.arch.register_offset(name)?;
         let size = self.arch.register_size(name)?;
-        Some(self.get(offset, size, ctx))
+        Some(self.get(offset, size))
     }
 
     /// Write a register by name.
@@ -487,10 +473,10 @@ impl RegisterFile {
     }
 
     /// Get the instruction pointer.
-    pub(crate) fn get_ip(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
+    pub(crate) fn get_ip(&self) -> RustBV {
         let offset = self.arch.ip_offset();
         let size = self.arch.bytes();
-        self.get(offset, size, ctx)
+        self.get(offset, size)
     }
 
     /// Set the instruction pointer.
@@ -500,10 +486,10 @@ impl RegisterFile {
     }
 
     /// Get the stack pointer.
-    pub(crate) fn get_sp(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
+    pub(crate) fn get_sp(&self) -> RustBV {
         let offset = self.arch.sp_offset();
         let size = self.arch.bytes();
-        self.get(offset, size, ctx)
+        self.get(offset, size)
     }
 
     /// Get the stack pointer as a concrete u64 value (for fast checks).
@@ -600,7 +586,6 @@ impl RegisterFile {
         &mut self,
         other: &RegisterFile,
         merge_cond_other: &crate::symbolic::RustBV,
-        ctx: &crate::symbolic::SymContext,
     ) -> bool {
         use crate::symbolic::RustBV;
 
@@ -633,9 +618,9 @@ impl RegisterFile {
                                  size: u32,
                                  updates: &mut Vec<(u32, RustBV)>,
                                  widened: &mut Vec<(u32, u32)>| {
-            let self_full = this.get_storage(offset, size, ctx);
-            let other_full = other.get_storage(offset, size, ctx);
-            updates.push((offset, merge_cond_other.ite(&other_full, &self_full, ctx)));
+            let self_full = this.get_storage(offset, size);
+            let other_full = other.get_storage(offset, size);
+            updates.push((offset, merge_cond_other.ite(&other_full, &self_full)));
             widened.push((offset, size));
         };
 
@@ -648,7 +633,7 @@ impl RegisterFile {
                 (Some(sv), Some(ov)) => {
                     if sv.width() == ov.width() {
                         // Both symbolic at same width — ITE merge
-                        updates.push((offset, merge_cond_other.ite(ov, sv, ctx)));
+                        updates.push((offset, merge_cond_other.ite(ov, sv)));
                     } else {
                         // Width mismatch — widen both sides, then ITE. `get` at
                         // the wider size returns the narrower side composed with
@@ -693,8 +678,8 @@ impl RegisterFile {
                     if size > 0
                         && (offset as usize).saturating_add(size as usize) <= other.data.len()
                     {
-                        let other_full = other.get_storage(offset, size, ctx);
-                        updates.push((offset, merge_cond_other.ite(&other_full, sv, ctx)));
+                        let other_full = other.get_storage(offset, size);
+                        updates.push((offset, merge_cond_other.ite(&other_full, sv)));
                     }
                 }
                 (None, Some(ov)) => {
@@ -704,8 +689,8 @@ impl RegisterFile {
                     if size > 0
                         && (offset as usize).saturating_add(size as usize) <= self.data.len()
                     {
-                        let self_full = self.get_storage(offset, size, ctx);
-                        updates.push((offset, merge_cond_other.ite(ov, &self_full, ctx)));
+                        let self_full = self.get_storage(offset, size);
+                        updates.push((offset, merge_cond_other.ite(ov, &self_full)));
                     }
                 }
                 (None, None) => {
@@ -761,7 +746,7 @@ impl RegisterFile {
                         let width = (reg_bytes * 8) as u32;
                         let self_bv = RustBV::concrete(le_bytes_to_u128(self_slice), width);
                         let other_bv = RustBV::concrete(le_bytes_to_u128(other_slice), width);
-                        updates.push((u32_off, merge_cond_other.ite(&other_bv, &self_bv, ctx)));
+                        updates.push((u32_off, merge_cond_other.ite(&other_bv, &self_bv)));
                     }
                 }
             }

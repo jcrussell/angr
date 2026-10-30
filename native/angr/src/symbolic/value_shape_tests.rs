@@ -9,7 +9,6 @@ use clarirs_core::prelude::AstFactory;
 
 use super::super::value::{BVOp, RustBV};
 use crate::claripy::ast::GLOBAL_CONTEXT;
-use crate::symbolic::SymContext;
 
 fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
     RustBV::from_op(width, op, operands)
@@ -27,9 +26,8 @@ fn same(a: &RustBV, b: &RustBV) -> bool {
 
 #[test]
 fn an_ast_reads_like_the_expression_it_came_from() {
-    let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "shape_x", 32);
-    let y = RustBV::symbolic(&ctx, "shape_y", 32);
+    let x = RustBV::symbol("shape_x", 32);
+    let y = RustBV::symbol("shape_y", 32);
     let mut values = vec![];
     for op in [
         BVOp::Add,
@@ -88,8 +86,7 @@ fn an_ast_reads_like_the_expression_it_came_from() {
 
 #[test]
 fn literal_operands_of_an_ast_are_concrete() {
-    let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "shape_lit", 32);
+    let x = RustBV::symbol("shape_lit", 32);
     let sum = ast(&raw(BVOp::Add, 32, vec![x, RustBV::concrete(7, 32)]));
     let node = sum.node().unwrap();
     assert_eq!(node.operands[1].as_u128(), Some(7));
@@ -116,47 +113,44 @@ fn a_bool_op_under_the_bit_encoding_reads_as_the_bitwise_op() {
 
 #[test]
 fn cancelling_rewrites_see_through_an_ast_operand() {
-    let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "shape_cancel", 32);
+    let x = RustBV::symbol("shape_cancel", 32);
     let neg = ast(&raw(BVOp::Neg, 32, vec![x.clone()]));
-    assert!(same(&neg.neg(&ctx), &x));
+    assert!(same(&neg.neg(), &x));
     let not = ast(&raw(BVOp::Not, 32, vec![x.clone()]));
-    assert!(same(&not.not(&ctx), &x));
+    assert!(same(&not.not(), &x));
     let rev = ast(&raw(BVOp::Reverse, 32, vec![x.clone()]));
-    assert!(same(&rev.reverse(&ctx), &x));
+    assert!(same(&rev.reverse(), &x));
 }
 
 #[test]
 fn extract_rules_see_through_an_ast_operand() {
-    let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "shape_ex", 16);
-    let y = RustBV::symbolic(&ctx, "shape_ey", 16);
+    let x = RustBV::symbol("shape_ex", 16);
+    let y = RustBV::symbol("shape_ey", 16);
     // Rule 2: extract of a concat lands in one part.
     let cat = ast(&raw(BVOp::Concat, 32, vec![x.clone(), y.clone()]));
-    assert!(same(&cat.extract(15, 0, &ctx), &y));
-    assert!(same(&cat.extract(31, 16, &ctx), &x));
+    assert!(same(&cat.extract(15, 0), &y));
+    assert!(same(&cat.extract(31, 16), &x));
     // Rule 1: extract of an extract fuses.
     let inner = ast(&raw(BVOp::Extract(11, 4), 8, vec![x.clone()]));
-    let fused = inner.extract(3, 0, &ctx);
+    let fused = inner.extract(3, 0);
     assert!(same(&fused, &raw(BVOp::Extract(7, 4), 4, vec![x.clone()])));
     // Rule 4: extract of a zero extension is the inner value, or zero.
     let wide = ast(&raw(BVOp::ZeroExt(16), 32, vec![x.clone()]));
-    assert!(same(&wide.extract(15, 0, &ctx), &x));
-    assert_eq!(wide.extract(31, 16, &ctx).as_u128(), Some(0));
+    assert!(same(&wide.extract(15, 0), &x));
+    assert_eq!(wide.extract(31, 16).as_u128(), Some(0));
     // Rule 5: extract of the low bits of a sign extension.
     let sext = ast(&raw(BVOp::SignExt(16), 32, vec![x.clone()]));
-    assert!(same(&sext.extract(7, 0, &ctx), &raw(BVOp::Extract(7, 0), 8, vec![x])));
+    assert!(same(&sext.extract(7, 0), &raw(BVOp::Extract(7, 0), 8, vec![x])));
 }
 
 #[test]
 fn zext_compare_fold_sees_through_an_ast_operand() {
-    let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "shape_zc", 8);
+    let x = RustBV::symbol("shape_zc", 8);
     let wide = ast(&raw(BVOp::ZeroExt(24), 32, vec![x.clone()]));
     // The constant has bits the extension forces to zero: decided outright.
-    assert_eq!(wide.eq(&RustBV::concrete(0x100, 32), &ctx).as_u128(), Some(0));
+    assert_eq!(wide.eq(&RustBV::concrete(0x100, 32)).as_u128(), Some(0));
     // Otherwise the compare narrows to the inner width.
-    let narrowed = wide.eq(&RustBV::concrete(0x41, 32), &ctx);
+    let narrowed = wide.eq(&RustBV::concrete(0x41, 32));
     let node = narrowed.node().unwrap();
     assert_eq!(node.op, BVOp::Eq);
     assert!(same(&node.operands[0], &x));

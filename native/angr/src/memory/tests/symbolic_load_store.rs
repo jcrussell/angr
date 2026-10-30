@@ -26,8 +26,8 @@ fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u1
     mem.map(0x1000, 0x1000, Permission::RWX);
     let pinned: [u128; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
     for (i, &val) in pinned.iter().enumerate() {
-        let sym = RustBV::symbolic(&ctx, format!("byte{i}"), 8);
-        ctx.assume_true(&sym.eq(&RustBV::concrete(val, 8), &ctx));
+        let sym = RustBV::symbol(format!("byte{i}"), 8);
+        ctx.assume_true(&sym.eq(&RustBV::concrete(val, 8)));
         mem.store_concrete(0x1000 + i as u64, sym).unwrap();
     }
     assert!(
@@ -41,7 +41,7 @@ fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u1
 fn test_per_byte_symbolic_concat_little_endian() {
     let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Little);
     let word = mem
-        .load_concrete(0x1000, 4, &ctx)
+        .load_concrete(0x1000, 4)
         .expect("4-byte load must succeed");
     // LE: byte at addr+i is at bits [(i+1)*8-1 : i*8]
     let expected: u128 = (pinned[3] << 24) | (pinned[2] << 16) | (pinned[1] << 8) | pinned[0];
@@ -56,7 +56,7 @@ fn test_per_byte_symbolic_concat_little_endian() {
 fn test_per_byte_symbolic_concat_big_endian() {
     let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Big);
     let word = mem
-        .load_concrete(0x1000, 4, &ctx)
+        .load_concrete(0x1000, 4)
         .expect("4-byte load must succeed");
     // BE: byte at addr+i is at bits [(N-i)*8-1 : (N-i-1)*8]
     let expected: u128 = (pinned[0] << 24) | (pinned[1] << 16) | (pinned[2] << 8) | pinned[3];
@@ -77,11 +77,10 @@ fn test_per_byte_symbolic_concat_big_endian() {
 /// trace — no side-table entry, no imported-addr mark, no auto-mapped page.
 #[test]
 fn test_import_symbolic_value_rejects_non_byte_multiple_width() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
 
     for width in [1u32, 4, 12, 63] {
-        let sym = RustBV::symbolic(&ctx, format!("sub_byte_{width}"), width);
+        let sym = RustBV::symbol(format!("sub_byte_{width}"), width);
         let err = mem
             .import_symbolic_value(0x1000, sym, None)
             .expect_err("non-byte-multiple width must be rejected");
@@ -104,7 +103,7 @@ fn test_import_symbolic_value_rejects_non_byte_multiple_width() {
     assert!(!mem.pages.contains_key(&(0x1000u64 >> 12)));
 
     // The narrowest accepted width still works and marks its byte.
-    let byte_sym = RustBV::symbolic(&ctx, "byte_sqfj8_73", 8);
+    let byte_sym = RustBV::symbol("byte_sqfj8_73", 8);
     mem.import_symbolic_value(0x1000, byte_sym, None)
         .expect("byte-wide import must be accepted");
     assert_eq!(mem.symbolic_object_count(), 1);
@@ -124,10 +123,9 @@ fn test_import_symbolic_value_rejects_non_byte_multiple_width() {
 ///     which also misses, returning None.
 #[test]
 fn test_containing_wider_sym_spans_first() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
-    let wide = RustBV::symbolic(&ctx, "wide128_uwtj", 128);
+    let wide = RustBV::symbol("wide128_uwtj", 128);
     mem.import_symbolic_value(0x1000, wide, None).unwrap();
 
     // Path 1: addr inside the wider sym → spans hit.
@@ -182,18 +180,18 @@ fn test_load_concrete_slow_path_spans_first_little_endian() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
     let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
-    let wide = RustBV::symbolic(&ctx, "wide128_slow_le", 128);
-    ctx.assume_true(&wide.eq(&RustBV::concrete(pinned, 128), &ctx));
+    let wide = RustBV::symbol("wide128_slow_le", 128);
+    ctx.assume_true(&wide.eq(&RustBV::concrete(pinned, 128)));
     mem.import_symbolic_value(0x1000, wide, None).unwrap();
     // Insert an unrelated symbolic_objects entry inside the load
     // range to force has_inner_overlap=true on the load below.
-    let noise = RustBV::symbolic(&ctx, "noise8", 8);
+    let noise = RustBV::symbol("noise8", 8);
     mem.symbolic_objects.insert(Address(0x1006), noise);
     // Remove the spans entry at 0x1007 so try_byte_merge_load
     // returns None and we fall through to the slow path.
     mem.symbolic_spans.remove(&Address(0x1007));
     let word = mem
-        .load_concrete(0x1004, 4, &ctx)
+        .load_concrete(0x1004, 4)
         .expect("4-byte load must succeed via spans-first slow path");
     // LE bytes [4..8) of the wide value live at bits [63:32].
     let expected: u128 = (pinned >> 32) & 0xFFFF_FFFF;
@@ -213,14 +211,13 @@ fn test_load_concrete_slow_path_spans_first_little_endian() {
 /// unreconstructable by any load.
 #[test]
 fn test_store_concrete_rejects_non_byte_multiple_symbolic_width() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Widths that survive the ZeroSize guard (size >= 1) but are not whole
     // bytes — the class the guard exists for.
     for width in [12u32, 20, 63] {
-        let sym = RustBV::symbolic(&ctx, format!("odd_store_{width}"), width);
+        let sym = RustBV::symbol(format!("odd_store_{width}"), width);
         let err = mem
             .store_concrete(0x1000, sym)
             .expect_err("non-byte-multiple symbolic width must be rejected");
@@ -237,7 +234,7 @@ fn test_store_concrete_rejects_non_byte_multiple_symbolic_width() {
     }
 
     // Sub-byte widths still fail first on the pre-existing ZeroSize guard.
-    let tiny = RustBV::symbolic(&ctx, "odd_store_1", 1);
+    let tiny = RustBV::symbol("odd_store_1", 1);
     assert!(matches!(
         mem.store_concrete(0x1000, tiny).expect_err("width 1 must fail"),
         MemoryError::ZeroSize { addr: 0x1000 }
@@ -246,7 +243,7 @@ fn test_store_concrete_rejects_non_byte_multiple_symbolic_width() {
     // No rejected store left a trace, and the narrowest accepted width works.
     assert_eq!(mem.symbolic_object_count(), 0);
     assert!(!mem.bytes_all_marked_symbolic(Address(0x1000), 1));
-    let byte_sym = RustBV::symbolic(&ctx, "byte_03vl4_40", 8);
+    let byte_sym = RustBV::symbol("byte_03vl4_40", 8);
     mem.store_concrete(0x1000, byte_sym)
         .expect("byte-wide symbolic store must be accepted");
     assert_eq!(mem.symbolic_object_count(), 1);

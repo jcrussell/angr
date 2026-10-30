@@ -13,7 +13,7 @@ use crate::vex::ir::IRType;
 use num_traits::Float;
 
 impl VEXOps {
-    pub(super) fn float_neg(arg: RustBV, ty: IRType, ctx: &SymContext) -> Result<RustBV, OpError> {
+    pub(super) fn float_neg(arg: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         // Flip the sign bit
         let sign_bit = match ty {
             IRType::F32 => 31,
@@ -22,10 +22,10 @@ impl VEXOps {
         };
 
         let mask = RustBV::concrete(1u128 << sign_bit, arg.width());
-        Ok(arg.xor_into(mask, ctx))
+        Ok(arg.xor_into(mask))
     }
 
-    pub(super) fn float_abs(arg: RustBV, ty: IRType, ctx: &SymContext) -> Result<RustBV, OpError> {
+    pub(super) fn float_abs(arg: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         // Clear the sign bit
         let mask = match ty {
             IRType::F32 => RustBV::concrete(0x7FFFFFFF, 32),
@@ -33,7 +33,7 @@ impl VEXOps {
             _ => return Err(OpError::InvalidFloatType(ty)),
         };
 
-        Ok(arg.and_into(mask, ctx))
+        Ok(arg.and_into(mask))
     }
 
     pub(super) fn float_sqrt(

@@ -136,7 +136,7 @@ fn reserve_symbol_id_raises_but_never_lowers_the_watermark() {
 
 /// `new_bv` mints exactly one id and uses it for both halves of the value, so
 /// the display name's suffix and the `Symbolic.id` identity key agree
-/// (going via `unique_name` + `RustBV::symbolic` would draw two) (angr-sqfj8.90).
+/// (going via `unique_name` + `RustBV::symbol` would draw two) (angr-sqfj8.90).
 #[test]
 fn new_bv_name_suffix_matches_its_id() {
     let ctx = SymContext::new();

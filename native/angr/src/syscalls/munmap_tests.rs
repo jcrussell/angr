@@ -1,5 +1,4 @@
 use super::*;
-use crate::symbolic::SymContext;
 
 #[test]
 fn returns_zero_for_concrete_args() {
@@ -19,10 +18,9 @@ fn returns_zero_for_symbolic_args() {
     // should produce the same result as concrete ones — no fallback.
     let h = NativeMunmapSyscall;
     let mut state = RustSimState::new("amd64").expect("amd64 state");
-    let ctx = SymContext::new();
     let args = vec![
-        RustBV::symbolic(&ctx, "addr", 64),
-        RustBV::symbolic(&ctx, "length", 64),
+        RustBV::symbol("addr", 64),
+        RustBV::symbol("length", 64),
     ];
     let outcome = h.call(&mut state, &args).expect("ok");
     match outcome {

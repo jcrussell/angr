@@ -50,10 +50,9 @@ crate::declare_proc! {
         // Build the 8-bit fill byte. For a concrete value it is the low byte;
         // for a symbolic value it is the low 8 bits (`extract`).
         let byte_bv = {
-            let ctx = state.solver().borrow();
             match value_bv.as_u64() {
                 Some(value) => RustBV::concrete((value & 0xFF) as u128, 8),
-                None => value_bv.extract(7, 0, &ctx),
+                None => value_bv.extract(7, 0),
             }
         };
 
@@ -90,9 +89,8 @@ crate::declare_proc! {
                     RustBV::concrete(fill_8 as u128, 64)
                 }
                 None => {
-                    let ctx = state.solver().borrow();
                     let parts: [RustBV; 8] = core::array::from_fn(|_| byte_bv.clone());
-                    RustBV::concat_balanced(&parts, &ctx)
+                    RustBV::concat_balanced(&parts)
                 }
             };
 
@@ -164,17 +162,11 @@ fn memset_symbolic_addr(
 
     let width = dest_bv.width();
     for a in candidates {
-        let cond = {
-            let ctx = state.solver().borrow();
-            dest_bv.eq(&RustBV::concrete(a as u128, width), &ctx)
-        };
+        let cond = { dest_bv.eq(&RustBV::concrete(a as u128, width)) };
         for i in 0..size {
             let p = a.wrapping_add(i);
             let orig = state.memory_load(p, 1)?;
-            let stored = {
-                let ctx = state.solver().borrow();
-                cond.ite(byte_bv, &orig, &ctx)
-            };
+            let stored = { cond.ite(byte_bv, &orig) };
             state.memory_store(p, stored)?;
         }
     }

@@ -105,7 +105,7 @@ fn stored_conditions_take_and_lookup() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     // Insert a stored condition via the private map; verify take/get behaviour.
-    let cond = RustBV::symbolic(&ctx, "cond", 1);
+    let cond = RustBV::symbol("cond", 1);
     interp.stored_conditions.insert(42, cond);
     assert!(interp.get_stored_condition(42).is_some());
     let taken = interp.take_stored_conditions();
@@ -125,7 +125,7 @@ fn take_last_branch_condition_returns_none_initially() {
 fn take_last_branch_condition_returns_then_clears() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
-    let cond = RustBV::symbolic(&ctx, "b", 1);
+    let cond = RustBV::symbol("b", 1);
     interp.last_branch_condition = Some(cond);
     assert!(interp.take_last_branch_condition().is_some());
     assert!(interp.take_last_branch_condition().is_none());

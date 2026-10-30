@@ -15,7 +15,7 @@ use super::super::*;
 /// prefixes distinguish tests from each other).
 pub(super) fn sym_file_bytes(n: usize, prefix: &str) -> Vec<RustBV> {
     (0..n)
-        .map(|i| RustBV::symbolic_with_id(0x5f000 + i as u64, format!("{prefix}_{i}"), 8))
+        .map(|i| RustBV::symbol(format!("{prefix}_{i}"), 8))
         .collect()
 }
 
@@ -35,8 +35,7 @@ pub(super) fn build_populated_state() -> RustSimState {
     // Bucket B (registers): one concrete, one symbolic.
     s.set_register("rax", RustBV::concrete(0xdead_beef, 64));
     let rbx_sym = {
-        let ctx = s.solver().borrow();
-        RustBV::symbolic(&ctx, "rbx_sym", 64)
+        RustBV::symbol("rbx_sym", 64)
     };
     s.set_register("rbx", rbx_sym.clone());
 
@@ -81,9 +80,8 @@ pub(super) fn build_populated_state() -> RustSimState {
 
     // Solver constraints — `rbx > 10` must hold after restore.
     let cmp = {
-        let ctx = s.solver().borrow();
         let ten = RustBV::concrete(10, 64);
-        rbx_sym.ugt(&ten, &ctx)
+        rbx_sym.ugt(&ten)
     };
     s.solver().borrow().assume_true(&cmp);
 
@@ -107,10 +105,9 @@ pub(super) fn base_pair(arch: &str) -> (RustSimState, RustSimState) {
 /// `[cond_self, cond_other]` — a fresh pair of 1-bit symbolic merge
 /// conditions rooted in `a`'s solver, exactly as every `a.merge(&[&b], ...)`
 /// call in the two `merge_property_*` modules builds them.
-pub(super) fn conds(a: &RustSimState, tag: &str) -> [RustBV; 2] {
-    let s = a.solver().borrow();
+pub(super) fn conds(tag: &str) -> [RustBV; 2] {
     [
-        RustBV::symbolic(&s, format!("{tag}_m0"), 1),
-        RustBV::symbolic(&s, format!("{tag}_m1"), 1),
+        RustBV::symbol(format!("{tag}_m0"), 1),
+        RustBV::symbol(format!("{tag}_m1"), 1),
     ]
 }

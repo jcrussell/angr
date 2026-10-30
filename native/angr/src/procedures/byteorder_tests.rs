@@ -56,7 +56,7 @@ fn test_symbolic_htonl_returns_bv() {
     // A symbolic argument should produce a symbolic result, not a fallback.
     let mut s = make_state();
     let ctx = s.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "v", 64);
+    let sym = RustBV::symbol("v", 64);
     drop(ctx);
     let p = NativeHtonl;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();

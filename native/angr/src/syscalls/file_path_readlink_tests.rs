@@ -243,8 +243,7 @@ fn readlinkat_registered_symlink_writes_target() {
 fn readlink_symbolic_buf_on_non_symlink_returns_minus_one() {
     let mut state = state_with_path(b"/no/such/link");
     let sym_buf = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "readlink_buf", 64)
+        RustBV::symbol("readlink_buf", 64)
     };
 
     let out = NativeReadlinkSyscall
@@ -260,8 +259,7 @@ fn readlink_symbolic_buf_on_non_symlink_returns_minus_one() {
 fn readlink_symbolic_bufsiz_on_non_symlink_returns_minus_one() {
     let mut state = state_with_path(b"/no/such/link");
     let sym_bufsiz = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "readlink_bufsiz", 64)
+        RustBV::symbol("readlink_bufsiz", 64)
     };
 
     let out = NativeReadlinkSyscall
@@ -284,8 +282,7 @@ fn readlink_symbolic_buf_on_symlink_falls_back() {
         .file_system()
         .add_symlink("/link".to_string(), b"/real/destination".to_vec());
     let sym_buf = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "readlink_buf", 64)
+        RustBV::symbol("readlink_buf", 64)
     };
 
     let err = NativeReadlinkSyscall
@@ -305,8 +302,7 @@ fn readlink_symbolic_bufsiz_on_symlink_falls_back() {
         .add_symlink("/link".to_string(), b"/real/destination".to_vec());
     state.map_memory(0x3000, 0x1000, Permission::RWX);
     let sym_bufsiz = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "readlink_bufsiz", 64)
+        RustBV::symbol("readlink_bufsiz", 64)
     };
 
     let err = NativeReadlinkSyscall
@@ -334,8 +330,7 @@ fn readlink_symbolic_path_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.map_memory(0x2000, 0x1000, Permission::RWX);
     let sym_byte = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "first_path_byte", 8)
+        RustBV::symbol("first_path_byte", 8)
     };
     state.memory_store(0x2000, sym_byte).unwrap();
 
@@ -356,8 +351,7 @@ fn readlink_symbolic_path_byte_falls_back() {
 fn readlink_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeReadlinkSyscall
         .call(
@@ -501,8 +495,7 @@ fn readlinkat_empty_path_returns_minus_one() {
 fn readlinkat_symbolic_dirfd_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_dirfd = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "dirfd", 64)
+        RustBV::symbol("dirfd", 64)
     };
     let err = NativeReadlinkatSyscall
         .call(
@@ -522,8 +515,7 @@ fn readlinkat_symbolic_dirfd_falls_back() {
 fn readlinkat_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeReadlinkatSyscall
         .call(

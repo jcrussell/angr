@@ -31,9 +31,9 @@ fn test_access_constrained_to_zero_or_minus_one() {
         .unwrap()
         .unwrap();
     let ctx = state.solver().borrow();
-    let is_zero = result.eq(&RustBV::concrete(0, 32), &ctx);
-    let is_minus_one = result.eq(&RustBV::concrete(0xFFFF_FFFF, 32), &ctx);
-    let is_five = result.eq(&RustBV::concrete(5, 32), &ctx);
+    let is_zero = result.eq(&RustBV::concrete(0, 32));
+    let is_minus_one = result.eq(&RustBV::concrete(0xFFFF_FFFF, 32));
+    let is_five = result.eq(&RustBV::concrete(5, 32));
     assert!(ctx.can_be_true(&is_zero), "ret==0 must be feasible");
     assert!(ctx.can_be_true(&is_minus_one), "ret==-1 must be feasible");
     assert!(!ctx.can_be_true(&is_five), "ret==5 must be infeasible");
@@ -59,9 +59,8 @@ fn test_access_symbolic_path_no_fallback() {
     // force concretization / Python fallback (the `bv` arg kind keeps it raw).
     let mut state = RustSimState::new("amd64").unwrap();
     let (sym_path, mode) = {
-        let ctx = state.solver().borrow();
         (
-            RustBV::symbolic(&ctx, "path_ptr", 64),
+            RustBV::symbol("path_ptr", 64),
             RustBV::concrete(0, 64),
         )
     };

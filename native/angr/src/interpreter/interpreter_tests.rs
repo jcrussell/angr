@@ -67,7 +67,7 @@ fn run_mips_movd_lo_copy(is_le: bool) -> u64 {
     interp
         .execute_block(&callbacks, &irsb)
         .expect("mov.d block executes");
-    interp.registers.get_reg("f0", &ctx).unwrap().as_u64().unwrap()
+    interp.registers.get_reg("f0").unwrap().as_u64().unwrap()
 }
 
 #[test]

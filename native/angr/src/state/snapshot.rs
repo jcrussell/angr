@@ -179,7 +179,7 @@ impl RustSimState {
                     "flush_memory: pending-write flush failed ({e:?}); \
                      remaining deferred stores are not reflected in this snapshot"
                 );
-                self.memory.flush_multi_cells(&ctx)
+                self.memory.flush_multi_cells()
             }
         }
     }
@@ -393,11 +393,10 @@ impl RustSimState {
     /// cannot be optimized away.
     #[doc(hidden)]
     pub fn bench_memory_snapshot_roundtrip(&mut self) -> usize {
-        let ctx = self.solver.borrow();
-        let proof = self.memory.flush_multi_cells(&ctx);
+        let proof = self.memory.flush_multi_cells();
         let snap = self.memory.to_snapshot(&proof);
         let mut rebuilt = crate::memory::SymbolicMemory::from_snapshot(snap);
-        let rebuilt_proof = rebuilt.flush_multi_cells(&ctx);
+        let rebuilt_proof = rebuilt.flush_multi_cells();
         rebuilt.to_snapshot(&rebuilt_proof).pages.len()
     }
 }

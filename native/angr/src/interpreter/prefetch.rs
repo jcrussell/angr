@@ -208,7 +208,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `Option<u64>` isn't returned directly.
     pub(crate) fn get_stack_pointer(&self) -> AddrOrSymbolic {
         let offset = self.registers.arch().sp_offset();
-        self.registers.get_offset_u64(offset, self.ctx).into()
+        self.registers.get_offset_u64(offset).into()
     }
 
     /// [`Self::get_stack_pointer`], substituting `0` and logging when the

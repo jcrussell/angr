@@ -33,9 +33,9 @@ use z3::ast::Ast;
 /// Build a 1-bit `x == value` condition plus the exact `z3::ast::Bool` the
 /// dedup path would key on, and return it together with that Bool's Z3_ast
 /// ptr. Keeping the Bool alive in the caller is what keeps the ptr valid.
-fn cond_bool(ctx: &SymContext, name: &str, value: u64) -> (z3::ast::Bool, usize) {
-    let x = RustBV::symbolic(ctx, name, 8);
-    let cond = x.eq(&RustBV::concrete(u128::from(value), 8), ctx);
+fn cond_bool(name: &str, value: u64) -> (z3::ast::Bool, usize) {
+    let x = RustBV::symbol(name, 8);
+    let cond = x.eq(&RustBV::concrete(u128::from(value), 8));
     let b = cond.to_z3_bool().unwrap();
     let ptr = b.get_z3_ast().as_ptr() as usize;
     (b, ptr)
@@ -46,7 +46,7 @@ fn cond_bool(ctx: &SymContext, name: &str, value: u64) -> (z3::ast::Bool, usize)
 #[test]
 fn test_dedup_backing_of_ptr_sees_live_local_assertion() {
     let ctx = SymContext::new();
-    let (b, ptr) = cond_bool(&ctx, "gmad2_local_x", 5);
+    let (b, ptr) = cond_bool("gmad2_local_x", 5);
 
     let mut local = ctx.local_constraints.lock();
     assert!(
@@ -73,7 +73,7 @@ fn test_dedup_backing_of_ptr_sees_live_local_assertion() {
 #[test]
 fn test_dedup_backing_of_ptr_sees_frozen_shared_assertion() {
     let ctx = SymContext::new();
-    let (b, ptr) = cond_bool(&ctx, "gmad2_shared_x", 7);
+    let (b, ptr) = cond_bool("gmad2_shared_x", 7);
 
     // Stand in for freeze_into_shared: the assertion lives only in shared.
     *ctx.z3_assertions_shared.lock() = Arc::new(vec![b.clone()]);
@@ -100,7 +100,7 @@ fn test_dedup_backing_of_ptr_sees_frozen_shared_assertion() {
 #[test]
 fn test_dedup_backing_of_ptr_flags_stale_ptr_hit() {
     let ctx = SymContext::new();
-    let (b, ptr) = cond_bool(&ctx, "gmad2_stale_x", 9);
+    let (b, ptr) = cond_bool("gmad2_stale_x", 9);
 
     let mut local = ctx.local_constraints.lock();
     assert!(!ctx.seed_and_check_z3_dedup(&mut local, &b));
@@ -132,8 +132,8 @@ fn test_dedup_backing_of_ptr_flags_stale_ptr_hit() {
 #[test]
 fn test_dedup_backing_of_ptr_unknown_ptr_is_unbacked() {
     let ctx = SymContext::new();
-    let (asserted, _) = cond_bool(&ctx, "gmad2_unknown_a", 1);
-    let (_other, other_ptr) = cond_bool(&ctx, "gmad2_unknown_b", 2);
+    let (asserted, _) = cond_bool("gmad2_unknown_a", 1);
+    let (_other, other_ptr) = cond_bool("gmad2_unknown_b", 2);
 
     let mut local = ctx.local_constraints.lock();
     assert!(!ctx.seed_and_check_z3_dedup(&mut local, &asserted));

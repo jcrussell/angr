@@ -736,7 +736,7 @@ Both arms bump ``python_vex_op_fallback_count`` and the per-arm
 ``ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`` to any non-empty value other
 than ``0`` (read once per process; see ``fabricate_unsupported_irop`` in
 ``interpreter/expressions_arith.rs``) restores the older behaviour for
-the symbolic arm: a fresh ``RustBV::symbolic("unsup_unop_<pc>" /
+the symbolic arm: a fresh ``RustBV::symbol("unsup_unop_<pc>" /
 "unsup_binop_<pc>" / …)`` of the result width stands in for the real
 value. This is the **BYPASS**: it loses the input→output relationship
 entirely, so any downstream condition over the value explores both

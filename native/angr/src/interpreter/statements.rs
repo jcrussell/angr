@@ -701,7 +701,7 @@ impl<'a> VEXInterpreter<'a> {
                 let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
 
                 // Create ITE: if guard then loaded else alt
-                guard_val.ite(&converted, &alt_val, self.ctx)
+                guard_val.ite(&converted, &alt_val)
             }
         };
 

@@ -1,7 +1,7 @@
 //! Generic per-lane packed floating-point VEX op dispatcher.
 
 use super::{FLOAT_LANE_OP_MAX_ARITY, FloatLaneOp, OpError, VEXOps, float_prec_of};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -15,7 +15,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         op: &dyn FloatLaneOp,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         debug_assert_eq!(args.len(), op.arity());
         let elem_width = elem.bits();
@@ -79,9 +78,9 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let lane_args: Vec<RustBV> = args.iter().map(|a| a.extract(hi, lo, ctx)).collect();
-            elements.push(op.symbolic(lane_args, prec, ctx));
+            let lane_args: Vec<RustBV> = args.iter().map(|a| a.extract(hi, lo)).collect();
+            elements.push(op.symbolic(lane_args, prec));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

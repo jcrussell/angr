@@ -41,15 +41,11 @@ pub(crate) fn mint_stdin_bytes(state: &mut RustSimState, names: &[String]) -> Ve
         .unwrap_or_default();
 
     let (sym_bytes, bindings): (Vec<RustBV>, Vec<RustBV>) = {
-        let ctx = state.solver().borrow();
-        let sym_bytes: Vec<RustBV> = names
-            .iter()
-            .map(|name| RustBV::symbolic(&ctx, name, 8))
-            .collect();
+        let sym_bytes: Vec<RustBV> = names.iter().map(|name| RustBV::symbol(name, 8)).collect();
         let bindings = seeded
             .iter()
             .zip(&sym_bytes)
-            .map(|(seed, sym)| sym.eq(seed, &ctx))
+            .map(|(seed, sym)| sym.eq(seed))
             .collect();
         (sym_bytes, bindings)
     };

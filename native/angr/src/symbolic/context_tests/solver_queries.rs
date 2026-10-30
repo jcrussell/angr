@@ -26,11 +26,11 @@ fn test_z3_variable_identity() {
     let ctx = SymContext::new();
 
     // Create a symbolic variable
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
 
     // Add constraint: x > 10
     let ten = RustBV::concrete(10, 32);
-    let gt_ten = x.ugt(&ten, &ctx);
+    let gt_ten = x.ugt(&ten);
     ctx.assume_true(&gt_ten);
 
     // Verify constraint is enforced
@@ -39,7 +39,7 @@ fn test_z3_variable_identity() {
 
     // Now add constraint: x < 20
     let twenty = RustBV::concrete(20, 32);
-    let lt_twenty = x.ult(&twenty, &ctx);
+    let lt_twenty = x.ult(&twenty);
     ctx.assume_true(&lt_twenty);
 
     // Verify both constraints are enforced
@@ -54,13 +54,13 @@ fn test_min_max_constrained() {
     let ctx = SymContext::new();
 
     // Create a symbolic variable
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
 
     // Add constraints: 10 < x < 20
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
 
     // min should be 11, max should be 19
     let min_val = ctx.min(&x, false);
@@ -77,13 +77,13 @@ fn test_z3_same_name_different_create() {
 
     let ctx = SymContext::new();
 
-    // Create two RustBV::symbolic with the same name
-    let x1 = RustBV::symbolic(&ctx, "x_test", 32);
-    let x2 = RustBV::symbolic(&ctx, "x_test", 32);
+    // Create two RustBV::symbol with the same name
+    let x1 = RustBV::symbol("x_test", 32);
+    let x2 = RustBV::symbol("x_test", 32);
 
     // Add constraint using x1: x1 > 10
     let ten = RustBV::concrete(10, 32);
-    let gt_ten = x1.ugt(&ten, &ctx);
+    let gt_ten = x1.ugt(&ten);
     ctx.assume_true(&gt_ten);
 
     // Check using x2 - should have the same constraint if same variable
@@ -113,11 +113,11 @@ fn test_min_max_use_cached_model_unsigned() {
     use super::super::stats::Z3_EXTREMA_MODEL_HIT_COUNT;
 
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_min_max_cached", 32);
+    let x = RustBV::symbol("x_min_max_cached", 32);
     let lo_bound = RustBV::concrete(10, 32);
     let hi_bound = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&lo_bound, &ctx));
-    ctx.assume_true(&x.ult(&hi_bound, &ctx));
+    ctx.assume_true(&x.ugt(&lo_bound));
+    ctx.assume_true(&x.ult(&hi_bound));
 
     // Populate the model cache with an eval.
     let v = ctx.eval(&x);
@@ -151,9 +151,9 @@ fn test_min_use_cached_model_seeds_unsigned_zero_witness() {
     // If the cached witness is 0, unsigned min should short-circuit
     // (hi=0=lo) and return 0 with no binary-search SAT checks.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_min_zero_witness", 32);
+    let x = RustBV::symbol("x_min_zero_witness", 32);
     let five = RustBV::concrete(5, 32);
-    ctx.assume_true(&x.ule(&five, &ctx));
+    ctx.assume_true(&x.ule(&five));
     // Pin the model under a push frame so the constraint x==0 doesn't
     // persist into the actual min() call. The model survives the pop.
     ctx.push();
@@ -171,12 +171,12 @@ fn test_min_max_signed_with_negative_witness() {
     // signed-negative.
     use super::super::stats::Z3_EXTREMA_MODEL_HIT_COUNT;
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_signed_neg", 32);
+    let x = RustBV::symbol("x_signed_neg", 32);
     // Constrain: -20 <= x <= -5 (signed)
     let neg20 = RustBV::concrete((-20i32) as u32 as u128, 32);
     let neg5 = RustBV::concrete((-5i32) as u32 as u128, 32);
-    ctx.assume_true(&x.sge(&neg20, &ctx));
-    ctx.assume_true(&x.sle(&neg5, &ctx));
+    ctx.assume_true(&x.sge(&neg20));
+    ctx.assume_true(&x.sle(&neg5));
     // Populate cache with eval — witness must be in [-20, -5].
     let v = ctx.eval(&x).unwrap();
     // Witness's sign bit (bit 31 for width=32) must be set.
@@ -203,12 +203,12 @@ fn test_min_max_signed_with_positive_witness() {
     // Verify signed min/max are correct when the cached witness is
     // signed-positive (covers the witness_is_non_negative path in max).
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_signed_pos", 32);
+    let x = RustBV::symbol("x_signed_pos", 32);
     // Constrain: 5 <= x <= 20 (signed)
     let five = RustBV::concrete(5u128, 32);
     let twenty = RustBV::concrete(20u128, 32);
-    ctx.assume_true(&x.sge(&five, &ctx));
-    ctx.assume_true(&x.sle(&twenty, &ctx));
+    ctx.assume_true(&x.sge(&five));
+    ctx.assume_true(&x.sle(&twenty));
     // Populate cache.
     let v = ctx.eval(&x).unwrap();
     assert_eq!(
@@ -226,11 +226,11 @@ fn test_min_max_no_cached_model_still_correct() {
     // When no model is cached (e.g. fresh context after pop without prior
     // eval), min/max must still work correctly via the fallback path.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_no_model", 32);
+    let x = RustBV::symbol("x_no_model", 32);
     let lo_bound = RustBV::concrete(100, 32);
     let hi_bound = RustBV::concrete(200, 32);
-    ctx.assume_true(&x.ugt(&lo_bound, &ctx));
-    ctx.assume_true(&x.ult(&hi_bound, &ctx));
+    ctx.assume_true(&x.ugt(&lo_bound));
+    ctx.assume_true(&x.ult(&hi_bound));
     // Don't call eval. The first is_sat inside min will populate the
     // cache, so the witness path is exercised — but the seeded value is
     // whatever Z3 chose. Still must be in [101, 199].
@@ -252,15 +252,15 @@ fn test_add_constraints_raw_batch_basic() {
     // tightly as adding them one by one. Verifies semantics match the
     // unbatched path.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_batch_basic", 32);
+    let x = RustBV::symbol("x_batch_basic", 32);
     let lo = RustBV::concrete(10, 32);
     let hi = RustBV::concrete(20, 32);
     let mid = RustBV::concrete(15, 32);
 
     let entries = vec![
-        batch_entry(&x.ugt(&lo, &ctx)),
-        batch_entry(&x.ult(&hi, &ctx)),
-        batch_entry(&x.uge(&mid, &ctx)),
+        batch_entry(&x.ugt(&lo)),
+        batch_entry(&x.ult(&hi)),
+        batch_entry(&x.uge(&mid)),
     ];
     let before = ctx.num_constraints();
     ctx.add_constraints_raw_batch(entries);
@@ -287,15 +287,15 @@ fn test_add_constraints_raw_batch_drops_inconsistent_model() {
     // Populate the model cache with eval, then batch-add a constraint
     // that contradicts that model. The cache must be dropped.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_batch_model", 32);
+    let x = RustBV::symbol("x_batch_model", 32);
     // Loose constraint first; populate model.
-    ctx.assume_true(&x.ult(&RustBV::concrete(100, 32), &ctx));
+    ctx.assume_true(&x.ult(&RustBV::concrete(100, 32)));
     let first = ctx.eval(&x).unwrap();
     // Now batch-add x == new_val (forces a value distinct from `first`
     // but still within [0,99]), which invalidates the cached model.
     let new_val = u128::from(first == 0);
     let pinned = RustBV::concrete(new_val, 32);
-    let entries = vec![batch_entry(&x.eq(&pinned, &ctx))];
+    let entries = vec![batch_entry(&x.eq(&pinned))];
     ctx.add_constraints_raw_batch(entries);
     // The next eval must produce the newly-required value.
     assert_eq!(ctx.eval(&x), Some(new_val));
@@ -306,13 +306,13 @@ fn test_add_constraints_raw_batch_preserves_consistent_model() {
     // A constraint already satisfied by the cached model should leave
     // the model in place (matches the single-shot invalidate path).
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_batch_consistent", 32);
-    ctx.assume_true(&x.eq(&RustBV::concrete(7, 32), &ctx));
+    let x = RustBV::symbol("x_batch_consistent", 32);
+    ctx.assume_true(&x.eq(&RustBV::concrete(7, 32)));
     // Populate model.
     let v = ctx.eval(&x).unwrap();
     assert_eq!(v, 7);
     // Batch-add a constraint that the model already satisfies.
-    let entries = vec![batch_entry(&x.ult(&RustBV::concrete(100, 32), &ctx))];
+    let entries = vec![batch_entry(&x.ult(&RustBV::concrete(100, 32)))];
     ctx.add_constraints_raw_batch(entries);
     // Still SAT, still 7.
     assert!(ctx.is_sat());
@@ -325,10 +325,10 @@ fn test_add_constraints_raw_batch_tracks_local_assertions() {
     // export_z3_assertion_ptrs sees the same count as the per-constraint
     // path. Regression guard against forgetting to extend the vector.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_batch_export", 32);
+    let x = RustBV::symbol("x_batch_export", 32);
     let entries = vec![
-        batch_entry(&x.ugt(&RustBV::concrete(0, 32), &ctx)),
-        batch_entry(&x.ult(&RustBV::concrete(100, 32), &ctx)),
+        batch_entry(&x.ugt(&RustBV::concrete(0, 32))),
+        batch_entry(&x.ult(&RustBV::concrete(100, 32))),
     ];
     let before = ctx.export_z3_assertion_ptrs().len();
     ctx.add_constraints_raw_batch(entries);
@@ -348,11 +348,11 @@ fn test_add_constraints_raw_batch_none_branch_no_scope_path() {
     assert!(ctx.lineage_arc().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "x_batch_none", 32);
+    let x = RustBV::symbol("x_batch_none", 32);
     let entries = vec![
-        batch_entry(&x.ugt(&RustBV::concrete(10, 32), &ctx)),
-        batch_entry(&x.ult(&RustBV::concrete(20, 32), &ctx)),
-        batch_entry(&x.uge(&RustBV::concrete(15, 32), &ctx)),
+        batch_entry(&x.ugt(&RustBV::concrete(10, 32))),
+        batch_entry(&x.ult(&RustBV::concrete(20, 32))),
+        batch_entry(&x.uge(&RustBV::concrete(15, 32))),
     ];
     ctx.add_constraints_raw_batch(entries);
 
@@ -387,11 +387,11 @@ fn test_add_constraints_raw_batch_some_branch_appends_scope_frames() {
 
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "x_batch_some", 32);
+    let x = RustBV::symbol("x_batch_some", 32);
     let entries = vec![
-        batch_entry(&x.ugt(&RustBV::concrete(10, 32), &ctx)),
-        batch_entry(&x.ult(&RustBV::concrete(20, 32), &ctx)),
-        batch_entry(&x.uge(&RustBV::concrete(15, 32), &ctx)),
+        batch_entry(&x.ugt(&RustBV::concrete(10, 32))),
+        batch_entry(&x.ult(&RustBV::concrete(20, 32))),
+        batch_entry(&x.uge(&RustBV::concrete(15, 32))),
     ];
     ctx.add_constraints_raw_batch(entries);
 
@@ -427,10 +427,10 @@ fn test_add_constraints_raw_batch_sibling_isolation() {
     sibling_b.set_lineage_for_testing(Arc::clone(&lin));
 
     // Sibling A batch-adds x > 10 ∧ x < 20.
-    let x_a = RustBV::symbolic(&sibling_a, "x_batch_sibling", 32);
+    let x_a = RustBV::symbol("x_batch_sibling", 32);
     let entries = vec![
-        batch_entry(&x_a.ugt(&RustBV::concrete(10, 32), &sibling_a)),
-        batch_entry(&x_a.ult(&RustBV::concrete(20, 32), &sibling_a)),
+        batch_entry(&x_a.ugt(&RustBV::concrete(10, 32))),
+        batch_entry(&x_a.ult(&RustBV::concrete(20, 32))),
     ];
     sibling_a.add_constraints_raw_batch(entries);
     assert_eq!(sibling_a.scope_path_len(), 2);
@@ -438,7 +438,7 @@ fn test_add_constraints_raw_batch_sibling_isolation() {
 
     // Sibling B references the same named symbol but is unconstrained
     // — switch_to to B's empty scope_path must pop both of A's frames.
-    let x_b = RustBV::symbolic(&sibling_b, "x_batch_sibling", 32);
+    let x_b = RustBV::symbol("x_batch_sibling", 32);
     assert!(sibling_b.solution(&x_b, 5));
     assert!(sibling_b.solution(&x_b, 42));
 
@@ -575,16 +575,15 @@ fn test_bvop_counters_fire_on_symbolic_construction() {
     // API on symbolic inputs must bump the respective counters. Concrete
     // inputs are folded by `as_u128()` and do NOT bump (this is the
     // desired behavior — we count node emissions, not fold-throughs).
-    let ctx = SymContext::new_mock();
     let baseline = get_solver_stats();
     let base_rev = baseline.get("bvop_reverse_count").copied().unwrap_or(0);
     let base_cat = baseline.get("bvop_concat_count").copied().unwrap_or(0);
     let base_ext = baseline.get("bvop_extract_count").copied().unwrap_or(0);
 
-    let s = RustBV::symbolic(&ctx, "test_2j5v", 32);
-    let _r = s.reverse(&ctx);
-    let _c = s.concat(&s, &ctx);
-    let _e = s.extract(15, 0, &ctx);
+    let s = RustBV::symbol("test_2j5v", 32);
+    let _r = s.reverse();
+    let _c = s.concat(&s);
+    let _e = s.extract(15, 0);
 
     let stats = get_solver_stats();
     assert!(stats.get("bvop_reverse_count").copied().unwrap() > base_rev);
@@ -597,10 +596,10 @@ fn test_range_seeded_constrained_interval() {
     // range_seeded must recover the true [min, max] of a constrained BV
     // from valid seeds, leaving the Z3 scope stack balanced afterward.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_range_seeded", 32);
+    let x = RustBV::symbol("x_range_seeded", 32);
     // 10 <= x <= 200
-    ctx.assume_true(&x.uge(&RustBV::concrete(10, 32), &ctx));
-    ctx.assume_true(&x.ule(&RustBV::concrete(200, 32), &ctx));
+    ctx.assume_true(&x.uge(&RustBV::concrete(10, 32)));
+    ctx.assume_true(&x.ule(&RustBV::concrete(200, 32)));
 
     // Interior seeds (both valid solutions): min searched in [0, 50],
     // max searched in [150, 2^32-1]. Must still find the true bounds.
@@ -628,9 +627,9 @@ fn test_range_seeded_concrete_fast_path() {
 fn test_range_seeded_unsat_returns_none() {
     // An UNSAT context returns None before running either binary search.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_range_unsat", 32);
-    ctx.assume_true(&x.ugt(&RustBV::concrete(200, 32), &ctx));
-    ctx.assume_true(&x.ult(&RustBV::concrete(10, 32), &ctx));
+    let x = RustBV::symbol("x_range_unsat", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(200, 32)));
+    ctx.assume_true(&x.ult(&RustBV::concrete(10, 32)));
     assert!(!ctx.is_sat());
     assert_eq!(ctx.range_seeded(&x, 5, 5), None);
 }
@@ -643,12 +642,12 @@ fn test_range_seeded_unsat_returns_none() {
 fn test_range_seeded_above_128_bits_returns_none() {
     for width in [129u32, 192, 256] {
         let ctx = SymContext::new();
-        let x = RustBV::symbolic(&ctx, "x_range_wide", width);
+        let x = RustBV::symbol("x_range_wide", width);
         // Constrain to a narrow interval whose extrema *are* u128-representable,
         // so a missing guard would return Some((10, 200)) rather than garbage —
         // the guard is about the search space, not the answer.
-        ctx.assume_true(&x.uge(&RustBV::concrete(10, width), &ctx));
-        ctx.assume_true(&x.ule(&RustBV::concrete(200, width), &ctx));
+        ctx.assume_true(&x.uge(&RustBV::concrete(10, width)));
+        ctx.assume_true(&x.ule(&RustBV::concrete(200, width)));
         assert_eq!(
             ctx.range_seeded(&x, 50, 150),
             None,
@@ -663,9 +662,9 @@ fn test_range_seeded_above_128_bits_returns_none() {
 
     // The 128-bit boundary itself still searches normally.
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x_range_128", 128);
-    ctx.assume_true(&x.uge(&RustBV::concrete(10, 128), &ctx));
-    ctx.assume_true(&x.ule(&RustBV::concrete(200, 128), &ctx));
+    let x = RustBV::symbol("x_range_128", 128);
+    ctx.assume_true(&x.uge(&RustBV::concrete(10, 128)));
+    ctx.assume_true(&x.ule(&RustBV::concrete(200, 128)));
     assert_eq!(ctx.range_seeded(&x, 50, 150), Some((10, 200)));
 }
 
@@ -676,20 +675,20 @@ fn test_merge_guards_each_branch_under_its_condition() {
     // reject a value satisfying neither (Or(merge_conditions) forces at
     // least one branch active).
     let s1 = SymContext::new();
-    let x1 = RustBV::symbolic(&s1, "x_merge", 32);
-    s1.assume_true(&x1.eq(&RustBV::concrete(5, 32), &s1));
+    let x1 = RustBV::symbol("x_merge", 32);
+    s1.assume_true(&x1.eq(&RustBV::concrete(5, 32)));
 
     let s2 = SymContext::new();
     // Same name => same Z3 variable, mirroring forked-state identity.
-    let x2 = RustBV::symbolic(&s2, "x_merge", 32);
-    s2.assume_true(&x2.eq(&RustBV::concrete(9, 32), &s2));
+    let x2 = RustBV::symbol("x_merge", 32);
+    s2.assume_true(&x2.eq(&RustBV::concrete(9, 32)));
 
     // One 1-bit merge flag per context (self first, then others).
-    let f0 = RustBV::symbolic(&s1, "merge_flag_0", 1);
-    let f1 = RustBV::symbolic(&s1, "merge_flag_1", 1);
+    let f0 = RustBV::symbol("merge_flag_0", 1);
+    let f1 = RustBV::symbol("merge_flag_1", 1);
     let merged = s1.merge(&[&s2], &[f0, f1]);
 
-    let x = RustBV::symbolic(&merged, "x_merge", 32);
+    let x = RustBV::symbol("x_merge", 32);
     assert!(
         merged.solution(&x, 5),
         "branch s1 (x==5) must be admissible"
@@ -710,7 +709,7 @@ fn test_merge_panics_on_condition_count_mismatch() {
     let s1 = SymContext::new();
     let s2 = SymContext::new();
     // others.len() + 1 == 2, but only one condition is supplied.
-    let f0 = RustBV::symbolic(&s1, "merge_flag_bad", 1);
+    let f0 = RustBV::symbol("merge_flag_bad", 1);
     let _ = s1.merge(&[&s2], &[f0]);
 }
 
@@ -720,13 +719,13 @@ fn test_merge_panics_on_condition_count_mismatch() {
 #[test]
 fn test_eval_many_is_single_model() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x", 8);
-    let y = RustBV::symbolic(&ctx, "y", 8);
+    let x = RustBV::symbol("x", 8);
+    let y = RustBV::symbol("y", 8);
 
     // Cross-part constraint: x + y == 10 (both parts individually free).
-    let sum = x.add(&y, &ctx);
+    let sum = x.add(&y);
     let ten = RustBV::concrete(10, 8);
-    let is_ten = sum.eq(&ten, &ctx);
+    let is_ten = sum.eq(&ten);
     ctx.assume_true(&is_ten);
 
     let vals = ctx
@@ -746,11 +745,11 @@ fn test_eval_many_is_single_model() {
 #[test]
 fn test_eval_many_unsat_returns_none() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x", 8);
+    let x = RustBV::symbol("x", 8);
     let one = RustBV::concrete(1, 8);
     let two = RustBV::concrete(2, 8);
-    let is_one = x.eq(&one, &ctx);
-    let is_two = x.eq(&two, &ctx);
+    let is_one = x.eq(&one);
+    let is_two = x.eq(&two);
     ctx.assume_true(&is_one);
     ctx.assume_true(&is_two);
 
@@ -769,11 +768,11 @@ fn test_eval_upto_canonical_order() {
 
     for _ in 0..10 {
         let ctx = SymContext::new();
-        let x = RustBV::symbolic(&ctx, "x", 8);
+        let x = RustBV::symbol("x", 8);
         let lo = RustBV::concrete(5, 8);
         let hi = RustBV::concrete(10, 8);
-        let ge_lo = x.uge(&lo, &ctx);
-        let lt_hi = x.ult(&hi, &ctx);
+        let ge_lo = x.uge(&lo);
+        let lt_hi = x.ult(&hi);
         ctx.assume_true(&ge_lo);
         ctx.assume_true(&lt_hi);
 
@@ -799,9 +798,9 @@ fn test_eval_upto_wide_canonical_order() {
 
     for _ in 0..10 {
         let ctx = SymContext::new();
-        let x = RustBV::symbolic(&ctx, "x", WIDTH);
+        let x = RustBV::symbol("x", WIDTH);
         let four = RustBV::concrete(4, WIDTH);
-        let lt_four = x.ult(&four, &ctx);
+        let lt_four = x.ult(&four);
         ctx.assume_true(&lt_four);
 
         assert_eq!(ctx.eval_upto_wide(&x, 4), expected);
@@ -817,11 +816,11 @@ fn test_eval_deterministic_is_min() {
     for _ in 0..10 {
         let ctx = SymContext::new();
         ctx.set_deterministic(true);
-        let x = RustBV::symbolic(&ctx, "x", 8);
+        let x = RustBV::symbol("x", 8);
         let lo = RustBV::concrete(5, 8);
         let hi = RustBV::concrete(10, 8);
-        let ge_lo = x.uge(&lo, &ctx);
-        let lt_hi = x.ult(&hi, &ctx);
+        let ge_lo = x.uge(&lo);
+        let lt_hi = x.ult(&hi);
         ctx.assume_true(&ge_lo);
         ctx.assume_true(&lt_hi);
 
@@ -841,11 +840,11 @@ fn test_eval_upto_deterministic_truncated_prefix() {
     for _ in 0..10 {
         let ctx = SymContext::new();
         ctx.set_deterministic(true);
-        let x = RustBV::symbolic(&ctx, "x", 8);
+        let x = RustBV::symbol("x", 8);
         let lo = RustBV::concrete(5, 8);
         let hi = RustBV::concrete(10, 8);
-        let ge_lo = x.uge(&lo, &ctx);
-        let lt_hi = x.ult(&hi, &ctx);
+        let ge_lo = x.uge(&lo);
+        let lt_hi = x.ult(&hi);
         ctx.assume_true(&ge_lo);
         ctx.assume_true(&lt_hi);
 
@@ -864,9 +863,9 @@ fn test_eval_upto_deterministic_truncated_prefix() {
 fn test_eval_upto_deterministic_saturating_top() {
     let ctx = SymContext::new();
     ctx.set_deterministic(true);
-    let x = RustBV::symbolic(&ctx, "x", 8);
+    let x = RustBV::symbol("x", 8);
     let bound = RustBV::concrete(0xfe, 8);
-    let ge = x.uge(&bound, &ctx);
+    let ge = x.uge(&bound);
     ctx.assume_true(&ge);
 
     assert_eq!(ctx.eval_upto(&x, 4), vec![0xfe, 0xff]);
@@ -880,10 +879,10 @@ fn test_deterministic_flag_default_and_unsat() {
     assert!(!ctx.is_deterministic(), "flag must be opt-in");
 
     ctx.set_deterministic(true);
-    let x = RustBV::symbolic(&ctx, "x", 8);
+    let x = RustBV::symbol("x", 8);
     let three = RustBV::concrete(3, 8);
-    let lt = x.ult(&three, &ctx);
-    let gt = x.ugt(&three, &ctx);
+    let lt = x.ult(&three);
+    let gt = x.ugt(&three);
     ctx.assume_true(&lt);
     ctx.assume_true(&gt);
 
@@ -907,12 +906,12 @@ fn test_eval_many_deterministic_is_lex_min() {
         let ctx = SymContext::new();
         ctx.set_deterministic(true);
         // hi is pinned; lo is free below 4 — so only a canonical rule fixes it.
-        let hi = RustBV::symbolic(&ctx, "hi", 8);
-        let lo = RustBV::symbolic(&ctx, "lo", 8);
+        let hi = RustBV::symbol("hi", 8);
+        let lo = RustBV::symbol("lo", 8);
         let seven = RustBV::concrete(7, 8);
         let four = RustBV::concrete(4, 8);
-        let hi_eq = hi.eq(&seven, &ctx);
-        let lo_lt = lo.ult(&four, &ctx);
+        let hi_eq = hi.eq(&seven);
+        let lo_lt = lo.ult(&four);
         ctx.assume_true(&hi_eq);
         ctx.assume_true(&lo_lt);
 
@@ -932,12 +931,12 @@ fn test_eval_many_deterministic_is_lex_min() {
 fn test_eval_many_deterministic_respects_cross_part_constraint() {
     let ctx = SymContext::new();
     ctx.set_deterministic(true);
-    let a = RustBV::symbolic(&ctx, "a", 8);
-    let b = RustBV::symbolic(&ctx, "b", 8);
+    let a = RustBV::symbol("a", 8);
+    let b = RustBV::symbol("b", 8);
     let ten = RustBV::concrete(10, 8);
     // a > b, so minimizing `a` first still forces b < a — lex order matters.
-    let gt = a.ugt(&b, &ctx);
-    let a_lt = a.ult(&ten, &ctx);
+    let gt = a.ugt(&b);
+    let a_lt = a.ult(&ten);
     ctx.assume_true(&gt);
     ctx.assume_true(&a_lt);
 
@@ -957,9 +956,9 @@ fn test_eval_wide_deterministic_is_unsigned_min() {
     for _ in 0..5 {
         let ctx = SymContext::new();
         ctx.set_deterministic(true);
-        let x = RustBV::symbolic(&ctx, "x", WIDTH);
+        let x = RustBV::symbol("x", WIDTH);
         let three = RustBV::concrete(3, WIDTH);
-        let ge = x.uge(&three, &ctx);
+        let ge = x.uge(&three);
         ctx.assume_true(&ge);
 
         assert_eq!(ctx.eval_wide(&x), Some(expected.clone()));
@@ -990,11 +989,11 @@ fn test_eval_wide_deterministic_ragged_width_is_big_endian() {
     expected[16] = 0x02;
 
     let pin = |ctx: &SymContext| {
-        let x = RustBV::symbolic(ctx, "x", WIDTH);
-        let top = x.extract(WIDTH - 1, WIDTH - 1, ctx);
-        let low = x.extract(127, 0, ctx);
-        let top_eq = top.eq(&RustBV::concrete(1, 1), ctx);
-        let low_eq = low.eq(&RustBV::concrete(LOW, 128), ctx);
+        let x = RustBV::symbol("x", WIDTH);
+        let top = x.extract(WIDTH - 1, WIDTH - 1);
+        let low = x.extract(127, 0);
+        let top_eq = top.eq(&RustBV::concrete(1, 1));
+        let low_eq = low.eq(&RustBV::concrete(LOW, 128));
         ctx.assume_true(&top_eq);
         ctx.assume_true(&low_eq);
         x
@@ -1067,11 +1066,11 @@ fn pin_rlimit(ctx: &SymContext, rlimit: u32) {
 #[test]
 fn test_pin_rlimit_reaches_the_solver() {
     let ctx = SymContext::with_timeout(u32::MAX);
-    let x = RustBV::symbolic(&ctx, "rlimit_probe_x", 32);
+    let x = RustBV::symbol("rlimit_probe_x", 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
     pin_rlimit(&ctx, 1);
     // Skip min()'s is_sat gate so the bisection checks are what we observe.
     ctx.set_sat_cache(true);
@@ -1096,11 +1095,11 @@ fn test_pin_rlimit_reaches_the_solver() {
 #[test]
 fn test_is_sat_checked_reports_timeout_as_undecided() {
     let ctx = SymContext::with_timeout(u32::MAX);
-    let x = RustBV::symbolic(&ctx, "is_sat_undecided_x", 32);
+    let x = RustBV::symbol("is_sat_undecided_x", 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
-    ctx.assume_true(&x.ugt(&ten, &ctx));
-    ctx.assume_true(&x.ult(&twenty, &ctx));
+    ctx.assume_true(&x.ugt(&ten));
+    ctx.assume_true(&x.ult(&twenty));
     pin_rlimit(&ctx, 1);
 
     assert_eq!(
@@ -1155,9 +1154,9 @@ fn test_is_sat_checked_reports_timeout_as_undecided() {
 // avoid, on a much larger set of call sites.
 fn with_forced_unknown<R>(f: impl FnOnce(&SymContext) -> R) -> R {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "forced_unknown_x", 32);
-    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
-    ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+    let x = RustBV::symbol("forced_unknown_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    ctx.assume_true(&x.ult(&RustBV::concrete(20, 32)));
     pin_rlimit(&ctx, 1);
     assert_z3_timeout_occurred(|| f(&ctx))
 }
@@ -1196,7 +1195,7 @@ fn assert_z3_timeout_occurred<R>(f: impl FnOnce() -> R) -> R {
 #[test]
 fn test_eval_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert_eq!(
             ctx.eval(&x),
             None,
@@ -1209,7 +1208,7 @@ fn test_eval_returns_none_under_forced_unknown() {
 #[test]
 fn test_eval_wide_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert_eq!(
             ctx.eval_wide(&x),
             None,
@@ -1224,7 +1223,7 @@ fn test_eval_wide_returns_none_under_forced_unknown() {
 #[test]
 fn test_eval_many_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert_eq!(
             ctx.eval_many(&[x]),
             None,
@@ -1242,7 +1241,7 @@ fn test_eval_many_returns_none_under_forced_unknown() {
 fn test_eval_many_deterministic_returns_none_under_forced_unknown() {
     with_forced_unknown(|ctx| {
         ctx.set_deterministic(true);
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert_eq!(
             ctx.eval_many(&[x]),
             None,
@@ -1257,7 +1256,7 @@ fn test_eval_many_deterministic_returns_none_under_forced_unknown() {
 #[test]
 fn test_solution_is_false_under_forced_unknown() {
     with_forced_unknown(|ctx| {
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert!(
             !ctx.solution(&x, 15),
             "solution() must not claim a value is feasible when the query is undecided"
@@ -1284,9 +1283,9 @@ fn test_solution_is_false_under_forced_unknown() {
 /// the pinned rlimit.
 fn with_forced_unknown_mid_bisection<R>(f: impl FnOnce(&SymContext) -> R) -> R {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "forced_unknown_x", 32);
-    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
-    ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+    let x = RustBV::symbol("forced_unknown_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    ctx.assume_true(&x.ult(&RustBV::concrete(20, 32)));
     // Warms sat_cache (Some(true)) and model_cache while the budget is still
     // generous, so the upfront is_sat() gate in range()/range_seeded() is a
     // cache hit rather than a Z3 call.
@@ -1303,7 +1302,7 @@ fn with_forced_unknown_mid_bisection<R>(f: impl FnOnce(&SymContext) -> R) -> R {
 #[test]
 fn test_range_returns_none_under_forced_unknown() {
     with_forced_unknown_mid_bisection(|ctx| {
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert_eq!(
             ctx.range(&x),
             None,
@@ -1319,7 +1318,7 @@ fn test_range_returns_none_under_forced_unknown() {
 #[test]
 fn test_range_seeded_returns_none_under_forced_unknown() {
     with_forced_unknown_mid_bisection(|ctx| {
-        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        let x = RustBV::symbol("forced_unknown_x", 32);
         assert_eq!(
             ctx.range_seeded(&x, 12, 18),
             None,
@@ -1332,16 +1331,16 @@ fn test_range_seeded_returns_none_under_forced_unknown() {
 /// 64-bit factor `x`. The multiply is widened to 128 bits so the product does
 /// not overflow.
 fn build_hard_factoring(ctx: &SymContext) -> RustBV {
-    let x = RustBV::symbolic(ctx, "fac_x", 64);
-    let y = RustBV::symbolic(ctx, "fac_y", 64);
+    let x = RustBV::symbol("fac_x", 64);
+    let y = RustBV::symbol("fac_y", 64);
     let one = RustBV::concrete(1, 64);
-    ctx.assume_true(&x.ugt(&one, ctx));
-    ctx.assume_true(&y.ugt(&one, ctx));
-    let zx = x.zero_extend(128, ctx);
-    let zy = y.zero_extend(128, ctx);
-    let prod = zx.mul(&zy, ctx);
+    ctx.assume_true(&x.ugt(&one));
+    ctx.assume_true(&y.ugt(&one));
+    let zx = x.zero_extend(128);
+    let zy = y.zero_extend(128);
+    let prod = zx.mul(&zy);
     let n = RustBV::concrete(HARD_SEMIPRIME, 128);
-    ctx.assume_true(&prod.eq(&n, ctx));
+    ctx.assume_true(&prod.eq(&n));
     x
 }
 
@@ -1402,24 +1401,24 @@ fn test_max_aborts_to_none_on_bisection_timeout() {
 /// `cargo test` (see `pin_rlimit`). The fix stays as a defensive correctness
 /// alignment with `invariant-z3-unknown-not-unsat` (angr-ph300.43).
 fn build_hard_sign_probe(ctx: &SymContext, hard_when_negative: bool) -> RustBV {
-    let x = RustBV::symbolic(ctx, "sgn_x", 64);
-    let a = RustBV::symbolic(ctx, "sgn_a", 64);
-    let b = RustBV::symbolic(ctx, "sgn_b", 64);
+    let x = RustBV::symbol("sgn_x", 64);
+    let a = RustBV::symbol("sgn_a", 64);
+    let b = RustBV::symbol("sgn_b", 64);
     let one = RustBV::concrete(1, 64);
-    ctx.assume_true(&a.ugt(&one, ctx));
-    ctx.assume_true(&b.ugt(&one, ctx));
-    let za = a.zero_extend(128, ctx);
-    let zb = b.zero_extend(128, ctx);
-    let prod = za.mul(&zb, ctx);
+    ctx.assume_true(&a.ugt(&one));
+    ctx.assume_true(&b.ugt(&one));
+    let za = a.zero_extend(128);
+    let zb = b.zero_extend(128);
+    let prod = za.mul(&zb);
     let n = RustBV::concrete(HARD_SEMIPRIME, 128);
-    let p = prod.eq(&n, ctx); // 1-bit: hard-to-decide factoring predicate
+    let p = prod.eq(&n); // 1-bit: hard-to-decide factoring predicate
     let zero = RustBV::concrete(0, 64);
     let sign = if hard_when_negative {
-        x.slt(&zero, ctx) // x <_s 0 — the min() probe
+        x.slt(&zero) // x <_s 0 — the min() probe
     } else {
-        x.sge(&zero, ctx) // x >=_s 0 — the max() probe
+        x.sge(&zero) // x >=_s 0 — the max() probe
     };
-    ctx.assume_true(&sign.eq(&p, ctx));
+    ctx.assume_true(&sign.eq(&p));
     x
 }
 
@@ -1491,17 +1490,17 @@ fn test_max_signed_aborts_to_none_when_sign_probe_times_out() {
 #[test]
 fn test_check_branch_feasibility_keeps_branch_on_timeout() {
     let ctx = SymContext::with_timeout(1);
-    let x = RustBV::symbolic(&ctx, "cbf_x", 64);
-    let y = RustBV::symbolic(&ctx, "cbf_y", 64);
+    let x = RustBV::symbol("cbf_x", 64);
+    let y = RustBV::symbol("cbf_y", 64);
     let one = RustBV::concrete(1, 64);
-    ctx.assume_true(&x.ugt(&one, &ctx));
-    ctx.assume_true(&y.ugt(&one, &ctx));
-    let zx = x.zero_extend(128, &ctx);
-    let zy = y.zero_extend(128, &ctx);
-    let prod = zx.mul(&zy, &ctx);
+    ctx.assume_true(&x.ugt(&one));
+    ctx.assume_true(&y.ugt(&one));
+    let zx = x.zero_extend(128);
+    let zy = y.zero_extend(128);
+    let prod = zx.mul(&zy);
     let n = RustBV::concrete(HARD_SEMIPRIME, 128);
     // 1-bit condition whose feasibility is as hard as the factoring itself.
-    let cond = prod.eq(&n, &ctx);
+    let cond = prod.eq(&n);
     pin_rlimit(&ctx, HARD_FACTORING_RLIMIT);
     let (can_true, can_false) = ctx.check_branch_feasibility(&cond);
     assert!(
@@ -1529,10 +1528,10 @@ fn test_check_branch_feasibility_keeps_branch_on_timeout() {
 /// `rlimit=1` makes the cut-off deterministic instead of difficulty-dependent —
 /// `test_pin_rlimit_reaches_the_solver` is the guard that it really lands.
 fn build_warm_seed_then_stalled(ctx: &SymContext, name: &str, lo: u128, hi: u128) -> (RustBV, u128) {
-    let x = RustBV::symbolic(ctx, name, 64);
-    let a = x.eq(&RustBV::concrete(lo, 64), ctx);
-    let b = x.eq(&RustBV::concrete(hi, 64), ctx);
-    ctx.assume_true(&a.or(&b, ctx));
+    let x = RustBV::symbol(name, 64);
+    let a = x.eq(&RustBV::concrete(lo, 64));
+    let b = x.eq(&RustBV::concrete(hi, 64));
+    ctx.assume_true(&a.or(&b));
     // Warms model_cache (and sat_cache) while the budget is still generous.
     let seeded = ctx.eval(&x).expect("the two-value set is satisfiable");
     // Applied after the asserts, per `pin_rlimit`: a later solver rebuild would
@@ -1567,10 +1566,10 @@ fn test_eval_upto_checked_flags_mid_enumeration_timeout() {
 #[test]
 fn test_eval_upto_checked_not_flagged_when_decided() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "decided_enum_x", 64);
-    let a = x.eq(&RustBV::concrete(0x10, 64), &ctx);
-    let b = x.eq(&RustBV::concrete(0x20, 64), &ctx);
-    ctx.assume_true(&a.or(&b, &ctx));
+    let x = RustBV::symbol("decided_enum_x", 64);
+    let a = x.eq(&RustBV::concrete(0x10, 64));
+    let b = x.eq(&RustBV::concrete(0x20, 64));
+    ctx.assume_true(&a.or(&b));
 
     let exhausted = ctx.eval_upto_checked(&x, 8);
     assert_eq!(exhausted.values, vec![0x10, 0x20]);
@@ -1595,7 +1594,7 @@ fn test_eval_upto_checked_not_flagged_when_decided() {
 #[test]
 fn test_eval_upto_wide_checked_flags_undecided() {
     with_forced_unknown(|ctx| {
-        let wide = RustBV::symbolic(ctx, "forced_unknown_wide", 256);
+        let wide = RustBV::symbol("forced_unknown_wide", 256);
         let enumeration = ctx.eval_upto_wide_checked(&wide, 4);
         assert!(
             enumeration.values.is_empty(),
@@ -1613,10 +1612,10 @@ fn test_eval_upto_wide_checked_flags_undecided() {
 #[test]
 fn test_eval_upto_wide_checked_not_flagged_when_decided() {
     let ctx = SymContext::new();
-    let wide = RustBV::symbolic(&ctx, "decided_wide_x", 256);
-    let a = wide.eq(&RustBV::concrete(0x10, 256), &ctx);
-    let b = wide.eq(&RustBV::concrete(0x20, 256), &ctx);
-    ctx.assume_true(&a.or(&b, &ctx));
+    let wide = RustBV::symbol("decided_wide_x", 256);
+    let a = wide.eq(&RustBV::concrete(0x10, 256));
+    let b = wide.eq(&RustBV::concrete(0x20, 256));
+    ctx.assume_true(&a.or(&b));
 
     let enumeration = ctx.eval_upto_wide_checked(&wide, 8);
     assert_eq!(
@@ -1663,14 +1662,14 @@ fn test_concretize_refuses_timeout_truncated_solution_set() {
 #[test]
 fn test_clz_distinct_operands_not_aliased() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "clz_alias_x", 32);
-    let y = RustBV::symbolic(&ctx, "clz_alias_y", 32);
+    let x = RustBV::symbol("clz_alias_x", 32);
+    let y = RustBV::symbol("clz_alias_y", 32);
 
     let zero = RustBV::concrete(0, 32);
     let five = RustBV::concrete(5, 32);
     // clz(x) == 0  (top bit of x set)  &&  clz(y) == 5
-    ctx.assume_true(&x.clz(&ctx).eq(&zero, &ctx));
-    ctx.assume_true(&y.clz(&ctx).eq(&five, &ctx));
+    ctx.assume_true(&x.clz().eq(&zero));
+    ctx.assume_true(&y.clz().eq(&five));
 
     // With aliased consts this is UNSAT (one var can't be both 0 and 5); with
     // the sound operand-tied encoding it is clearly satisfiable.
@@ -1687,10 +1686,10 @@ fn test_clz_distinct_operands_not_aliased() {
 #[test]
 fn test_clz_constraint_binds_operand_eval() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "clz_bind_x", 32);
+    let x = RustBV::symbol("clz_bind_x", 32);
     let zero = RustBV::concrete(0, 32);
     // clz(x) == 0  =>  x's MSB is set  =>  x >= 0x8000_0000.
-    ctx.assume_true(&x.clz(&ctx).eq(&zero, &ctx));
+    ctx.assume_true(&x.clz().eq(&zero));
 
     let v = ctx.eval(&x).expect("x must be evaluable");
     assert_eq!(
@@ -1705,12 +1704,12 @@ fn test_clz_constraint_binds_operand_eval() {
 #[test]
 fn test_popcount_matches_concrete_when_operand_pinned() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "popcnt_x", 32);
+    let x = RustBV::symbol("popcnt_x", 32);
     let val = RustBV::concrete(0xF0F0_00FF, 32);
-    ctx.assume_true(&x.eq(&val, &ctx));
+    ctx.assume_true(&x.eq(&val));
 
     let pc = ctx
-        .eval(&x.popcount(&ctx))
+        .eval(&x.popcount())
         .expect("popcount must be evaluable");
     assert_eq!(
         pc,
@@ -1735,19 +1734,19 @@ fn test_bitcount_ops_above_64_bits_match_concrete() {
     let val: u128 = 0x0000_f0f0_0000_00ff_0000_0000_0000_0010;
 
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "wide_bitcount_x", WIDTH);
-    ctx.assume_true(&x.eq(&RustBV::concrete(val, WIDTH), &ctx));
+    let x = RustBV::symbol("wide_bitcount_x", WIDTH);
+    ctx.assume_true(&x.eq(&RustBV::concrete(val, WIDTH)));
 
     // The pinned value's high 128 bits are zero, so its leading-zero count is
     // the u128 count plus the 128 bits of headroom.
-    let clz = ctx.eval(&x.clz(&ctx)).expect("clz must be evaluable");
+    let clz = ctx.eval(&x.clz()).expect("clz must be evaluable");
     assert_eq!(
         clz,
         u128::from(WIDTH - 128) + u128::from(val.leading_zeros()),
         "256-bit clz of a pinned operand must match the concrete count"
     );
 
-    let ctz = ctx.eval(&x.ctz(&ctx)).expect("ctz must be evaluable");
+    let ctz = ctx.eval(&x.ctz()).expect("ctz must be evaluable");
     assert_eq!(
         ctz,
         u128::from(val.trailing_zeros()),
@@ -1755,7 +1754,7 @@ fn test_bitcount_ops_above_64_bits_match_concrete() {
     );
 
     let pc = ctx
-        .eval(&x.popcount(&ctx))
+        .eval(&x.popcount())
         .expect("popcount must be evaluable");
     assert_eq!(
         pc,
@@ -1776,10 +1775,10 @@ fn test_bitcount_ops_above_64_bits_on_zero_operand() {
     const WIDTH: u32 = 256;
 
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "wide_bitcount_zero_x", WIDTH);
-    ctx.assume_true(&x.eq(&RustBV::zero(WIDTH), &ctx));
+    let x = RustBV::symbol("wide_bitcount_zero_x", WIDTH);
+    ctx.assume_true(&x.eq(&RustBV::zero(WIDTH)));
 
-    for (name, bv) in [("clz", x.clz(&ctx)), ("ctz", x.ctz(&ctx))] {
+    for (name, bv) in [("clz", x.clz()), ("ctz", x.ctz())] {
         let got = ctx.eval(&bv).unwrap_or_else(|| panic!("{name} must be evaluable"));
         assert_eq!(
             got,
@@ -1789,7 +1788,7 @@ fn test_bitcount_ops_above_64_bits_on_zero_operand() {
     }
 
     let pc = ctx
-        .eval(&x.popcount(&ctx))
+        .eval(&x.popcount())
         .expect("popcount must be evaluable");
     assert_eq!(pc, 0, "popcount of an all-zero operand must be 0");
 }
@@ -1800,15 +1799,15 @@ fn test_bitcount_ops_above_64_bits_on_zero_operand() {
 #[test]
 fn test_term_past_the_lowering_depth_fails_its_queries() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "deep_x", 32);
-    let y = RustBV::symbolic(&ctx, "deep_y", 32);
+    let x = RustBV::symbol("deep_x", 32);
+    let y = RustBV::symbol("deep_y", 32);
     let mut deep = x.clone();
     for _ in 0..=super::super::z3_lower::MAX_LOWER_DEPTH {
-        deep = deep.add_into(y.clone(), &ctx);
+        deep = deep.add_into(y.clone());
     }
     assert!(deep.to_clarirs().unwrap().depth() > super::super::z3_lower::MAX_LOWER_DEPTH);
     assert!(matches!(deep.to_z3_ast(), Err(crate::symbolic::LowerError::RecursionLimit(_))));
-    let cond = deep.eq(&RustBV::concrete(7, 32), &ctx);
+    let cond = deep.eq(&RustBV::concrete(7, 32));
     assert!(matches!(cond.to_z3_bool(), Err(crate::symbolic::LowerError::RecursionLimit(_))));
 
     // Value queries fail rather than answer without the term.

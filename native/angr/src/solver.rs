@@ -77,12 +77,12 @@ impl From<BridgeError> for PyErr {
 ///
 /// `Cow` rather than a plain `RustBV` so the (common) 1-bit case stays
 /// clone-free.
-fn bool_constraint_bv<'a>(bv: &'a RustBV, ctx: &SymContext) -> std::borrow::Cow<'a, RustBV> {
+fn bool_constraint_bv<'a>(bv: &'a RustBV) -> std::borrow::Cow<'a, RustBV> {
     if bv.width() == 1 {
         std::borrow::Cow::Borrowed(bv)
     } else {
         let zero = RustBV::concrete(0, bv.width());
-        std::borrow::Cow::Owned(bv.ne(&zero, ctx))
+        std::borrow::Cow::Owned(bv.ne(&zero))
     }
 }
 
@@ -229,7 +229,7 @@ impl RustSolverContext {
         let bv = claripy_to_rustbv(py, ast, &ctx)?;
 
         {
-            ctx.assume_true(&bool_constraint_bv(&bv, &ctx));
+            ctx.assume_true(&bool_constraint_bv(&bv));
         }
 
         Ok(())
@@ -347,7 +347,7 @@ impl RustSolverContext {
             let bv = claripy_to_rustbv(py, ast, &ctx)?;
             // A constraint with no Z3 form raises (a RecursionError when too
             // deep), rather than being tracked as something it is not.
-            let constraint = bool_constraint_bv(&bv, &ctx)
+            let constraint = bool_constraint_bv(&bv)
                 .to_z3_bool()
                 .map_err(BridgeError::from)?;
             let idx = ctx.add_constraint_tracked_indexed(constraint);

@@ -224,15 +224,13 @@ pub(crate) fn arch_word(state: &RustSimState, value: u64) -> RustBV {
 /// `zero_extend` takes the latter, which is why the Python procs read
 /// `zero_extend(sizeof(int) - 8)`).
 pub(crate) fn fresh_zero_extended_symbol(
-    state: &RustSimState,
     prefix: &'static str,
     src_bits: u32,
     ext_bits: u32,
 ) -> RustBV {
     let counter = symbol_counter(prefix);
     let name = format!("{prefix}_{counter}");
-    let ctx = state.solver().borrow();
-    RustBV::symbolic(&ctx, &name, src_bits).zero_extend(ext_bits, &ctx)
+    RustBV::symbol(&name, src_bits).zero_extend(ext_bits)
 }
 
 /// Reserved SimProcedure name for the native sub-call **resume sentinel**.

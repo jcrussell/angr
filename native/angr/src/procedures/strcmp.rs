@@ -38,7 +38,7 @@ use super::strings::{
     ConcreteStep, ScanResult, null_exists_constraint, scan_concrete_then_collect,
 };
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Maximum string length before falling back to Python.
 pub(super) const MAX_STRCMP_LEN: usize = 4096;
@@ -50,8 +50,8 @@ pub(super) const MAX_STRCMP_LEN: usize = 4096;
 /// on — so `strcasecmp`'s symbolic fold and `tolower`/`toupper` cannot drift
 /// apart (angr-6cp06.3). [`case_fold_byte_concrete`] does the same for the
 /// concrete path (angr-fs8kb.38).
-fn case_fold_byte(byte: &RustBV, ctx: &SymContext) -> RustBV {
-    ctype::case_shift_bv(byte, b'A', b'Z', 32, ctx)
+fn case_fold_byte(byte: &RustBV) -> RustBV {
+    ctype::case_shift_bv(byte, b'A', b'Z', 32)
 }
 
 /// Concrete counterpart of [`case_fold_byte`], for `compare_bytes`'s
@@ -70,7 +70,6 @@ fn build_diff_chain(
     pairs: &[(RustBV, RustBV)],
     stop_at_null: bool,
     case_insensitive: bool,
-    ctx: &SymContext,
 ) -> RustBV {
     let zero32 = RustBV::concrete(0u128, 32);
     let one32 = RustBV::concrete(1u128, 32);
@@ -79,21 +78,21 @@ fn build_diff_chain(
     let mut result = zero32.clone();
     for (c1, c2) in pairs.iter().rev() {
         let (lhs, rhs) = if case_insensitive {
-            (case_fold_byte(c1, ctx), case_fold_byte(c2, ctx))
+            (case_fold_byte(c1), case_fold_byte(c2))
         } else {
             (c1.clone(), c2.clone())
         };
         // Sign, not raw difference — see the module doc (angr-u8gm8).
-        let diff = lhs.ult(&rhs, ctx).ite(&neg_one32, &one32, ctx);
-        let mismatch = lhs.ne(&rhs, ctx);
+        let diff = lhs.ult(&rhs).ite(&neg_one32, &one32);
+        let mismatch = lhs.ne(&rhs);
         if stop_at_null {
             // result = ITE(c1 != c2, diff, ITE(c1 == 0, 0, result_next))
-            let null_cond = c1.eq(&zero8, ctx);
-            let inner = null_cond.ite(&zero32, &result, ctx);
-            result = mismatch.ite(&diff, &inner, ctx);
+            let null_cond = c1.eq(&zero8);
+            let inner = null_cond.ite(&zero32, &result);
+            result = mismatch.ite(&diff, &inner);
         } else {
             // memcmp: result = ITE(c1 != c2, diff, result_next)
-            result = mismatch.ite(&diff, &result, ctx);
+            result = mismatch.ite(&diff, &result);
         }
     }
     result
@@ -197,10 +196,9 @@ pub(super) fn compare_bytes(
             let pairs: Vec<(RustBV, RustBV)> =
                 collected.into_iter().map(|(_, pair)| pair).collect();
             let (chain, pruning) = {
-                let ctx = state.solver().borrow();
-                let chain = build_diff_chain(&pairs, stop_at_null, case_insensitive, &ctx);
+                let chain = build_diff_chain(&pairs, stop_at_null, case_insensitive);
                 let pruning = if require_null {
-                    null_exists_constraint(&s1_bytes, &ctx)
+                    null_exists_constraint(&s1_bytes)
                 } else {
                     None
                 };

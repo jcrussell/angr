@@ -20,14 +20,14 @@ fn test_store_concrete_multi_le_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "smc_addr", 64);
+    let addr_var = RustBV::symbol("smc_addr", 64);
     let value = RustBV::concrete(0xDEAD_BEEF, 32);
 
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .expect("store_concrete_multi must succeed");
 
     // Multi cells were installed at every byte of both candidates.
@@ -42,14 +42,14 @@ fn test_store_concrete_multi_le_round_trip() {
         .expect("LE load at candidate B must succeed");
 
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe_a.eval(&loaded_a), Some(0xDEAD_BEEF));
     // The B cell was also written under the cond addr==B; under addr==A
     // its load should fall back to the default else (concrete 0).
     assert_eq!(probe_a.eval(&loaded_b), Some(0x0));
 
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64), &probe_b));
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64)));
     assert_eq!(probe_b.eval(&loaded_b), Some(0xDEAD_BEEF));
     assert_eq!(probe_b.eval(&loaded_a), Some(0x0));
 }
@@ -62,19 +62,19 @@ fn test_store_concrete_multi_be_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Big);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "smc_be_addr", 64);
+    let addr_var = RustBV::symbol("smc_be_addr", 64);
     let value = RustBV::concrete(0xCAFE_BABE, 32);
 
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .expect("BE store_concrete_multi must succeed");
 
     let loaded_a = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe_a.eval(&loaded_a), Some(0xCAFE_BABE));
 }
 
@@ -86,10 +86,10 @@ fn test_store_concrete_multi_fork_independence() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "smc_fork_addr", 64);
+    let addr_var = RustBV::symbol("smc_fork_addr", 64);
     let value = RustBV::concrete(0x11_22_33_44, 32);
     parent
-        .store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+        .store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .unwrap();
     let parent_count_before = parent.multi_cell_count();
     assert_eq!(parent_count_before, 8);
@@ -112,12 +112,12 @@ fn test_store_concrete_multi_fork_independence() {
     assert_eq!(child.multi_cell_count(), parent_count_before - 1);
 
     // Parent's load still sees the original Multi alts.
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
     let parent_loaded = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe.eval(&parent_loaded), Some(0x11_22_33_44));
 }
 
@@ -131,10 +131,10 @@ fn test_store_symbolic_unified_multi_multiple_round_trip() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "ssm_addr", 64);
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let addr_var = RustBV::symbol("ssm_addr", 64);
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
     let value = RustBV::concrete(0x1122_3344, 32);
     let conc_result = mem
@@ -153,7 +153,7 @@ fn test_store_symbolic_unified_multi_multiple_round_trip() {
 
     let loaded_a = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe_a.eval(&loaded_a), Some(0x1122_3344));
 }
 
@@ -182,7 +182,7 @@ fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
     );
 
     // Standard load must read the concretely-stored value.
-    let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
+    let loaded = mem.load_concrete(0x1000, 4).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xAABB_CCDD));
 }
 
@@ -202,11 +202,11 @@ fn test_phase2_gate_on_installs_multi() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_on_addr", 64);
+    let addr_var = RustBV::symbol("p2_on_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
     let value = RustBV::concrete(0xCAFEBABE, 32);
 
@@ -216,7 +216,7 @@ fn test_phase2_gate_on_installs_multi() {
 
     // Load under the addr==A constraint reads back the value.
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     let loaded = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     assert_eq!(probe.eval(&loaded), Some(0xCAFEBABE));
 }
@@ -235,11 +235,11 @@ fn test_phase2_safe_install_lazy_region_signals() {
     mem.map(0x1000, 0x1000, Permission::RWX);
     mem.add_lazy_region(0x2000, 0x1000);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_lazy_addr", 64);
+    let addr_var = RustBV::symbol("p2_lazy_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
     let value = RustBV::concrete(0x11, 8);
 
@@ -268,11 +268,11 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     // Only page 0x1000 is mapped. Page 0x2000 is unmapped and NOT lazy.
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_skip_addr", 64);
+    let addr_var = RustBV::symbol("p2_skip_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
     let value = RustBV::concrete(0xAB, 8);
 
@@ -302,11 +302,11 @@ fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
     // An unrelated mapped page keeps the memory non-empty.
     mem.map(0x5000, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_all_unmapped_addr", 64);
+    let addr_var = RustBV::symbol("p2_all_unmapped_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
     let value = RustBV::concrete(0xAB, 8);
 
@@ -335,11 +335,11 @@ fn test_multi_install_enforces_write_permission() {
     mem.map(0x2000, 0x1000, Permission::RW);
     mem.set_enforce_permissions(true);
 
-    let addr_var = RustBV::symbolic(&ctx, "perm_multi_addr", 64);
+    let addr_var = RustBV::symbol("perm_multi_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
 
     let err = mem
@@ -382,11 +382,11 @@ fn test_multi_install_permission_check_off_by_default() {
     mem.map(0x2000, 0x1000, Permission::R);
     assert!(!mem.enforce_permissions());
 
-    let addr_var = RustBV::symbolic(&ctx, "perm_off_multi_addr", 64);
+    let addr_var = RustBV::symbol("perm_off_multi_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
 
     mem.store_symbolic_unified(addr_var, RustBV::concrete(0xAB, 8), &ctx, &concretizer)
@@ -404,19 +404,17 @@ fn test_multi_install_permission_check_off_by_default() {
 /// either one must deliver.
 #[test]
 fn test_multi_install_rejects_wrapping_candidate() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     // The page a wrapped byte address would land on.
     mem.map(0x0u64, 0x1000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "wrap_multi_addr", 64);
+    let addr_var = RustBV::symbol("wrap_multi_addr", 64);
     let wrapping = u64::MAX - 1; // [u64::MAX-1, u64::MAX+2) for a 4-byte value
     let err = mem
         .store_concrete_multi(
             &addr_var,
             &RustBV::concrete(0xdead_beef, 32),
             &[0x100, wrapping],
-            &ctx,
         )
         .expect_err("a candidate whose range wraps past u64::MAX must be rejected");
     assert!(matches!(err, MemoryError::OutOfBounds { .. }));
@@ -436,16 +434,15 @@ fn test_multi_install_rejects_wrapping_candidate() {
 /// cleanly when it does not, so the guard isn't over-broad.
 #[test]
 fn install_multi_for_candidates_boundary_sweep_rejects_wrapping_candidates() {
-    let ctx = SymContext::new_mock();
     for &addr in &crate::test_boundary_values::boundary_addresses() {
         let mut mem = SymbolicMemory::new(Endness::Little);
         mem.map(0x0u64, 0x1000, Permission::RWX);
 
-        let addr_var = RustBV::symbolic(&ctx, "boundary_multi_addr", 64);
+        let addr_var = RustBV::symbol("boundary_multi_addr", 64);
         let value = RustBV::concrete(0xdead_beef, 32);
         let overflows = addr.checked_add(3).is_none();
 
-        let result = mem.store_concrete_multi(&addr_var, &value, &[addr], &ctx);
+        let result = mem.store_concrete_multi(&addr_var, &value, &[addr]);
         if overflows {
             let err = result.expect_err("wrapping candidate must be rejected");
             assert!(
@@ -479,13 +476,13 @@ fn test_phase2_flush_multi_to_symbolic_objects() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_flush_addr", 64);
+    let addr_var = RustBV::symbol("p2_flush_addr", 64);
     let value = RustBV::concrete(0xAA, 8);
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .expect("test setup install must succeed");
     assert_eq!(mem.multi_cell_count(), 2);
 
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
 
     // Multi cells are gone, symbolic_objects has 1-byte entries at each
     // flushed address.
@@ -496,7 +493,7 @@ fn test_phase2_flush_multi_to_symbolic_objects() {
     // The 1-byte symbolic_object at 0x1000 evaluates to 0xAA under
     // addr==0x1000 (because cond=(addr==0x1000) is true, picking value 0xAA).
     let probe = ctx.fork();
-    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     let sym = mem.get_symbolic_object(0x1000).unwrap();
     assert_eq!(probe.eval(sym), Some(0xAA));
 
@@ -517,11 +514,11 @@ fn test_phase2_fork_independence_via_safe_install() {
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p2_fork_addr", 64);
+    let addr_var = RustBV::symbol("p2_fork_addr", 64);
     ctx.assume_true(
         &addr_var
-            .eq(&RustBV::concrete(0x1000, 64), &ctx)
-            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            .eq(&RustBV::concrete(0x1000, 64))
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
     );
     parent
         .store_symbolic_unified(

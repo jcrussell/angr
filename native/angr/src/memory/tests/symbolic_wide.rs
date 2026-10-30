@@ -25,8 +25,8 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     // 128-bit symbolic value pinned to a known constant so we can
     // predict every byte. MSB byte = 0x10, LSB byte = 0x1F.
     let pinned: u128 = 0x10111213_14151617_18191A1B_1C1D1E1F;
-    let sym = RustBV::symbolic(&ctx, "wide128", 128);
-    ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
+    let sym = RustBV::symbol("wide128", 128);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128)));
 
     let addr = RustBV::concrete(0x1000, 64);
     mem.store_symbolic(addr, sym, &ctx, &concretizer)
@@ -35,7 +35,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
 
     // Exact 16-byte load returns the full symbolic value.
     let full = mem
-        .load_concrete(0x1000, 16, &ctx)
+        .load_concrete(0x1000, 16)
         .expect("16-byte load must succeed");
     assert_eq!(
         ctx.eval(&full),
@@ -47,7 +47,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     // (15 - i) when the value is interpreted MSB-first.
     for i in 0u64..16 {
         let byte_bv = mem
-            .load_concrete(0x1000 + i, 1, &ctx)
+            .load_concrete(0x1000 + i, 1)
             .expect("single-byte load must succeed");
         let expected: u128 = (pinned >> ((15 - i) * 8)) & 0xff;
         assert_eq!(
@@ -60,7 +60,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     // 4-byte load at offset 4 should return bytes [4..8) of the BE
     // layout (bits [95:64] of the original u128 = 0x14151617).
     let word = mem
-        .load_concrete(0x1004, 4, &ctx)
+        .load_concrete(0x1004, 4)
         .expect("4-byte load must succeed");
     let expected_word: u128 = (pinned >> 64) & 0xFFFF_FFFF;
     assert_eq!(
@@ -71,7 +71,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
 
     // 8-byte halves: high half at offset 0, low half at offset 8.
     let qhi = mem
-        .load_concrete(0x1000, 8, &ctx)
+        .load_concrete(0x1000, 8)
         .expect("hi qword load must succeed");
     let expected_qhi: u128 = (pinned >> 64) & 0xFFFF_FFFF_FFFF_FFFF;
     assert_eq!(
@@ -81,7 +81,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     );
 
     let qlo = mem
-        .load_concrete(0x1008, 8, &ctx)
+        .load_concrete(0x1008, 8)
         .expect("lo qword load must succeed");
     let expected_qlo: u128 = pinned & 0xFFFF_FFFF_FFFF_FFFF;
     assert_eq!(
@@ -111,8 +111,8 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     // 128-bit symbolic value pinned to a known constant. For LE, the
     // byte at addr+0 is the LSB (0x1F here) and addr+15 is the MSB.
     let pinned: u128 = 0x10111213_14151617_18191A1B_1C1D1E1F;
-    let sym = RustBV::symbolic(&ctx, "wide128_le", 128);
-    ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
+    let sym = RustBV::symbol("wide128_le", 128);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128)));
 
     let addr = RustBV::concrete(0x1000, 64);
     mem.store_symbolic(addr, sym, &ctx, &concretizer)
@@ -121,7 +121,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
 
     // Exact 16-byte load returns the full symbolic value.
     let full = mem
-        .load_concrete(0x1000, 16, &ctx)
+        .load_concrete(0x1000, 16)
         .expect("16-byte load must succeed");
     assert_eq!(
         ctx.eval(&full),
@@ -132,7 +132,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     // Per-byte LE layout: byte at addr+i is bits [(i+1)*8-1 : i*8].
     for i in 0u64..16 {
         let byte_bv = mem
-            .load_concrete(0x1000 + i, 1, &ctx)
+            .load_concrete(0x1000 + i, 1)
             .expect("single-byte load must succeed");
         let expected: u128 = (pinned >> (i * 8)) & 0xff;
         assert_eq!(
@@ -145,7 +145,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     // 4-byte load at offset 4 should return bits [63:32] of the
     // pinned u128 = 0x17161514.
     let word = mem
-        .load_concrete(0x1004, 4, &ctx)
+        .load_concrete(0x1004, 4)
         .expect("4-byte load must succeed");
     let expected_word: u128 = (pinned >> 32) & 0xFFFF_FFFF;
     assert_eq!(
@@ -156,7 +156,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
 
     // 8-byte halves: low half at offset 0, high half at offset 8.
     let qlo = mem
-        .load_concrete(0x1000, 8, &ctx)
+        .load_concrete(0x1000, 8)
         .expect("lo qword load must succeed");
     let expected_qlo: u128 = pinned & 0xFFFF_FFFF_FFFF_FFFF;
     assert_eq!(
@@ -166,7 +166,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     );
 
     let qhi = mem
-        .load_concrete(0x1008, 8, &ctx)
+        .load_concrete(0x1008, 8)
         .expect("hi qword load must succeed");
     let expected_qhi: u128 = (pinned >> 64) & 0xFFFF_FFFF_FFFF_FFFF;
     assert_eq!(
@@ -191,8 +191,8 @@ fn wide_linear_scan_setup(endness: Endness) -> (SymContext, SymbolicMemory, u128
     let mut mem = SymbolicMemory::new(endness);
     mem.map(0x1000, 0x1000, Permission::RWX);
     let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
-    let sym = RustBV::symbolic(&ctx, "wide128_lin", 128);
-    ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128), &ctx));
+    let sym = RustBV::symbol("wide128_lin", 128);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128)));
     // Insert directly into symbolic_objects without populating
     // symbolic_spans, then mark each byte as symbolic on the page so
     // has_symbolic flips during the byte scan.
@@ -207,7 +207,7 @@ fn test_wide_linear_scan_little_endian() {
     let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Little);
     // 4-byte load at offset 4 → LE bytes [4..8) = bits [63:32].
     let word = mem
-        .load_concrete(0x1004, 4, &ctx)
+        .load_concrete(0x1004, 4)
         .expect("4-byte load must succeed");
     let expected: u128 = (pinned >> 32) & 0xFFFF_FFFF;
     assert_eq!(
@@ -222,7 +222,7 @@ fn test_wide_linear_scan_big_endian() {
     let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Big);
     // 4-byte load at offset 4 → BE bytes [4..8) = bits [95:64].
     let word = mem
-        .load_concrete(0x1004, 4, &ctx)
+        .load_concrete(0x1004, 4)
         .expect("4-byte load must succeed");
     let expected: u128 = (pinned >> 64) & 0xFFFF_FFFF;
     assert_eq!(
@@ -242,8 +242,7 @@ fn test_wide_linear_scan_big_endian() {
 /// `checked_add`/`checked_mul`, so an unrepresentable offset is refused.
 #[test]
 fn test_extract_byte_lane_refuses_wrapping_byte_offset() {
-    let ctx = SymContext::new_mock();
-    let sym = RustBV::symbolic(&ctx, "wide64", 64);
+    let sym = RustBV::symbol("wide64", 64);
     for endness in [Endness::Little, Endness::Big] {
         // (2^29) * 8 == 2^32 → the old `(off + 1) * 8` wrapped to 0.
         let wrapped = (1u32 << 29) - 1;

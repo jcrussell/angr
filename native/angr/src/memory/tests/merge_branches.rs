@@ -34,9 +34,9 @@ fn test_merge_selects_other_vs_self_per_byte() {
         .store_concrete(0x1000, RustBV::concrete(0xBB, 8))
         .unwrap();
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    let cond = RustBV::symbol("merge_cond", 1);
     assert!(
-        self_mem.merge(&other_mem, &cond, &ctx),
+        self_mem.merge(&other_mem, &cond),
         "merge must report a change when a byte differs"
     );
 
@@ -47,7 +47,7 @@ fn test_merge_selects_other_vs_self_per_byte() {
         .clone();
 
     let t = ctx.fork();
-    t.assume_true(&cond.eq(&RustBV::concrete(1, 1), &t));
+    t.assume_true(&cond.eq(&RustBV::concrete(1, 1)));
     assert_eq!(
         t.eval(&byte),
         Some(0xBB),
@@ -55,7 +55,7 @@ fn test_merge_selects_other_vs_self_per_byte() {
     );
 
     let f = ctx.fork();
-    f.assume_true(&cond.eq(&RustBV::concrete(0, 1), &f));
+    f.assume_true(&cond.eq(&RustBV::concrete(0, 1)));
     assert_eq!(
         f.eval(&byte),
         Some(0xAA),
@@ -71,7 +71,6 @@ fn test_merge_selects_other_vs_self_per_byte() {
 /// preserving its concrete contents.
 #[test]
 fn test_merge_adopts_page_only_in_other() {
-    let ctx = SymContext::new_mock();
 
     let mut self_mem = SymbolicMemory::new(Endness::Little);
     self_mem.map(0x1000, 0x1000, Permission::RWX);
@@ -82,16 +81,16 @@ fn test_merge_adopts_page_only_in_other() {
         .store_concrete(0x2000, RustBV::concrete(0x42, 8))
         .unwrap();
 
-    let cond = RustBV::symbolic(&ctx, "c", 1);
+    let cond = RustBV::symbol("c", 1);
     assert!(
-        self_mem.merge(&other_mem, &cond, &ctx),
+        self_mem.merge(&other_mem, &cond),
         "adopting a page must count as a merge"
     );
     assert!(
         self_mem.pages.contains_key(&(0x2000 >> 12)),
         "page only in other must be adopted into self.pages"
     );
-    let v = self_mem.load_concrete(0x2000, 1, &ctx).unwrap();
+    let v = self_mem.load_concrete(0x2000, 1).unwrap();
     assert_eq!(v.as_u64(), Some(0x42), "adopted page bytes must survive");
 }
 
@@ -101,7 +100,6 @@ fn test_merge_adopts_page_only_in_other() {
 /// `symbolic_objects` and `symbolic_spans`.
 #[test]
 fn test_merge_unions_non_page_symbolic_object_from_other() {
-    let ctx = SymContext::new_mock();
 
     let mut self_mem = SymbolicMemory::new(Endness::Little);
     self_mem.map(0x1000, 0x1000, Permission::RWX);
@@ -111,12 +109,12 @@ fn test_merge_unions_non_page_symbolic_object_from_other() {
     // Insert a symbolic object WITHOUT marking the page symbolic, so
     // op.has_symbolic() stays false and the (s_data==o_data) short-circuit
     // skips the per-byte loop — leaving only the final union pass to copy it.
-    let sym = RustBV::symbolic(&ctx, "ghost_obj", 8);
+    let sym = RustBV::symbol("ghost_obj", 8);
     other_mem.symbolic_objects.insert(Address(0x1800), sym);
 
-    let cond = RustBV::symbolic(&ctx, "c", 1);
+    let cond = RustBV::symbol("c", 1);
     assert!(
-        self_mem.merge(&other_mem, &cond, &ctx),
+        self_mem.merge(&other_mem, &cond),
         "unioning a symbolic object must count as a merge"
     );
     assert!(
@@ -137,7 +135,6 @@ fn test_merge_unions_non_page_symbolic_object_from_other() {
 /// Pending writes present only in `other` extend `self.pending_writes`.
 #[test]
 fn test_merge_extends_pending_writes_from_other() {
-    let ctx = SymContext::new_mock();
 
     let mut self_mem = SymbolicMemory::new(Endness::Little);
     self_mem.map(0x1000, 0x1000, Permission::RWX);
@@ -145,16 +142,16 @@ fn test_merge_extends_pending_writes_from_other() {
     let mut other_mem = SymbolicMemory::new(Endness::Little);
     other_mem.map(0x1000, 0x1000, Permission::RWX);
     other_mem.add_pending_write(PendingWrite {
-        addr: RustBV::symbolic(&ctx, "pw_addr", 64),
+        addr: RustBV::symbol("pw_addr", 64),
         value: RustBV::concrete(0x99, 8),
         size: 1,
         condition: None,
     });
 
     assert_eq!(self_mem.pending_writes_count(), 0);
-    let cond = RustBV::symbolic(&ctx, "c", 1);
+    let cond = RustBV::symbol("c", 1);
     assert!(
-        self_mem.merge(&other_mem, &cond, &ctx),
+        self_mem.merge(&other_mem, &cond),
         "extending pending writes must count as a merge"
     );
     assert_eq!(

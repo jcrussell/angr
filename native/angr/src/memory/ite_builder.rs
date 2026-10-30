@@ -127,7 +127,7 @@ impl SymbolicMemory {
 
         // Build condition: addr <= mid_addr
         let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());
-        let cond = addr_expr.ule(&mid_const, ctx);
+        let cond = addr_expr.ule(&mid_const);
 
         // Recursively build left subtree (lo..mid) and right subtree (mid+1..hi)
         let left = self.build_strided_ite_tree(addr_expr, pattern, lo, mid, ctx)?;
@@ -140,7 +140,7 @@ impl SymbolicMemory {
         }
 
         // Build ITE: if (addr <= mid_addr) then left else right
-        Ok(cond.ite(&left, &right, ctx))
+        Ok(cond.ite(&left, &right))
     }
 
     /// Build a balanced ITE tree for arbitrary addresses.
@@ -211,9 +211,9 @@ impl SymbolicMemory {
             }
 
             let left_const = RustBV::concrete(addrs[0] as u128, addr_expr.width());
-            let cond = addr_expr.eq(&left_const, ctx);
+            let cond = addr_expr.eq(&left_const);
 
-            return Ok(cond.ite(&left_val, &right_val, ctx));
+            return Ok(cond.ite(&left_val, &right_val));
         }
 
         // Split at midpoint
@@ -222,7 +222,7 @@ impl SymbolicMemory {
 
         // Build condition: addr < mid_addr (for binary partition)
         let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());
-        let cond = addr_expr.ult(&mid_const, ctx);
+        let cond = addr_expr.ult(&mid_const);
 
         // Recursively build left (addrs < mid) and right (addrs >= mid) subtrees
         let left = self.build_ite_tree_generic(addr_expr, &addrs[..mid], size, ctx, load_leaf)?;
@@ -235,7 +235,7 @@ impl SymbolicMemory {
         }
 
         // Build ITE: if (addr < mid_addr) then left else right
-        Ok(cond.ite(&left, &right, ctx))
+        Ok(cond.ite(&left, &right))
     }
 
     /// Build a balanced ITE tree after addresses have been prepared.

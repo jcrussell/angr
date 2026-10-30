@@ -58,7 +58,7 @@ fn test_load_concrete_or_unconstrained_symbolic_distinct_names() {
 /// angr-03vl4.41: uniqueness must hold *across* independent ITE-tree builds,
 /// not just within one. The builder used to seed a fresh `counter = 0` per
 /// call, so the first unmapped leaf of every build stringified identically
-/// (`unc_mem_<addr>_1`) — and since `RustBV::from_parts` interns the Z3
+/// (`unc_mem_<addr>_1`) — and since `RustBV::symbol` interns the Z3
 /// constant **by name**, two logically-distinct unconstrained reads aliased in
 /// the solver. Two separate builds over the same unmapped address set must
 /// yield disjoint symbol names.
@@ -67,7 +67,7 @@ fn test_ite_builds_do_not_reuse_unconstrained_names() {
     let ctx = SymContext::new_mock();
     let mem = SymbolicMemory::new(Endness::Little);
     let addrs = [0x5000u64, 0x6000u64];
-    let addr_expr = RustBV::symbolic(&ctx, "ite_addr", 64);
+    let addr_expr = RustBV::symbol("ite_addr", 64);
 
     let names = |bv: &RustBV| -> Vec<String> {
         let mut out = Vec::new();

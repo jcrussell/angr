@@ -53,7 +53,7 @@ fn get_stack_pointer_or_log_substitutes_zero_for_symbolic() {
     let mut interp = new_interp(&ctx);
     interp
         .registers
-        .put_reg("rsp", RustBV::symbolic(&ctx, "sp", 64));
+        .put_reg("rsp", RustBV::symbol("sp", 64));
     assert_eq!(
         interp.get_stack_pointer().concrete(),
         None,

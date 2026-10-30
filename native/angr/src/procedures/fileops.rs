@@ -55,10 +55,7 @@ fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedu
 
     // The inline strlen Python performs asserts a terminator exists in the
     // window; mirror it so the two engines constrain the buffer identically.
-    let pruning = {
-        let ctx = state.solver().borrow();
-        null_exists_constraint(&bytes, &ctx)
-    };
+    let pruning = { null_exists_constraint(&bytes) };
     if let Some(c) = pruning {
         state.add_constraint(c);
     }

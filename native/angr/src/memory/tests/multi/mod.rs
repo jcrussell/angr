@@ -63,9 +63,9 @@ fn multi_write_concretizer() -> AddressConcretizer {
 }
 
 /// Build a Multi alternative `(addr == cand) -> byte(value)` for tests.
-fn make_alt(ctx: &SymContext, addr_var: &RustBV, cand: u64, value: u8) -> MultiAlternative {
+fn make_alt(addr_var: &RustBV, cand: u64, value: u8) -> MultiAlternative {
     let cand_const = RustBV::concrete(cand as u128, addr_var.width());
-    let cond = addr_var.eq(&cand_const, ctx);
+    let cond = addr_var.eq(&cand_const);
     let val = RustBV::concrete(value as u128, 8);
     MultiAlternative::new(cond, val)
 }

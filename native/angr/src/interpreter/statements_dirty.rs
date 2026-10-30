@@ -274,11 +274,7 @@ impl<'a> VEXInterpreter<'a> {
                 // `ret_ty_bits` is the tyenv width of exactly this temp, and
                 // `IRType::bits` never yields 0, so the 0 sentinel means
                 // "no result temp" and cannot be reached inside this arm.
-                let stub = RustBV::symbolic(
-                    self.ctx,
-                    format!("dirty_{}_stub", dirty.cee.name),
-                    ret_ty_bits,
-                );
+                let stub = RustBV::symbol(format!("dirty_{}_stub", dirty.cee.name), ret_ty_bits);
                 self.write_tmp(tmp, stub)?;
             }
             return Ok(StmtResult::Continue);
@@ -310,7 +306,7 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(tmp) = dirty.tmp {
             let result = if is_symbolic {
                 // Create a symbolic value for the result
-                RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
+                RustBV::symbol(format!("dirty_{}", dirty.cee.name), ret_ty_bits)
             } else {
                 // Convert the little-endian callback bytes to a concrete value.
                 bytes_to_bv(&data, ret_ty_bits)

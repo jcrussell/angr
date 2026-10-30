@@ -53,12 +53,11 @@ fn diamond_arms() -> (SymbolicMemory, SymbolicMemory) {
 /// real `merge` and reads the production walk counter.
 #[test]
 fn test_merge_walks_only_divergent_page() {
-    let ctx = SymContext::new();
     let (mut a, b) = diamond_arms();
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    let cond = RustBV::symbol("merge_cond", 1);
 
     merge_instrument::reset();
-    assert!(a.merge(&b, &cond, &ctx), "merge reports a change");
+    assert!(a.merge(&b, &cond), "merge reports a change");
 
     assert_eq!(
         merge_instrument::walked(),
@@ -73,13 +72,12 @@ fn test_merge_walks_only_divergent_page() {
 /// for the simulated walk, now against the real fast-path-enabled merge.
 #[test]
 fn test_merge_ite_cells_survive_skip() {
-    let ctx = SymContext::new();
     let (mut a, b) = diamond_arms();
     let objs_before = a.symbolic_objects.len();
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    let cond = RustBV::symbol("merge_cond", 1);
 
     merge_instrument::reset();
-    assert!(a.merge(&b, &cond, &ctx), "merge reports a change");
+    assert!(a.merge(&b, &cond), "merge reports a change");
 
     let ite_cells = a.symbolic_objects.len() - objs_before;
     assert_eq!(
@@ -111,7 +109,7 @@ fn test_symbolic_overlay_not_skipped() {
     let saddr = BASE + DIVERGENT_PAGE_IDX * PAGE_SIZE;
     base.store(
         &RustBV::concrete(saddr as u128, 64),
-        RustBV::symbolic(&ctx, "shared_sym", 8),
+        RustBV::symbol("shared_sym", 8),
         &ctx,
     )
     .unwrap();
@@ -143,21 +141,21 @@ fn test_symbolic_overlay_not_skipped() {
     // + symbolic_objects) — the divergence lives purely in symbolic_objects.
     a.store(
         &RustBV::concrete(saddr as u128, 64),
-        RustBV::symbolic(&ctx, "arm_a_sym", 8),
+        RustBV::symbol("arm_a_sym", 8),
         &ctx,
     )
     .unwrap();
     let mut b = b_seed;
     b.store(
         &RustBV::concrete(saddr as u128, 64),
-        RustBV::symbolic(&ctx, "arm_b_sym", 8),
+        RustBV::symbol("arm_b_sym", 8),
         &ctx,
     )
     .unwrap();
 
     merge_instrument::reset();
     let objs_before = a.symbolic_objects.len();
-    assert!(a.merge(&b, &RustBV::symbolic(&ctx, "cond", 1), &ctx));
+    assert!(a.merge(&b, &RustBV::symbol("cond", 1)));
 
     assert_eq!(
         merge_instrument::walked(),

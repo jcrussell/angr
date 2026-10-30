@@ -145,9 +145,8 @@ fn read_file_symbolic(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let read_id = symbol_counter("read");
     let sym_bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..count)
-            .map(|i| RustBV::symbolic(&ctx, format!("file_{fd}_{read_id}_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("file_{fd}_{read_id}_{i}"), 8))
             .collect()
     };
     write_bv_bytes(state, buf, sym_bytes)?;
@@ -187,10 +186,9 @@ fn read_stdin_symbolic(
     // already incurs.
     if state.has_option("SHORT_READS") {
         let real_size = {
-            let ctx = state.solver().borrow();
-            let real_size = RustBV::symbolic(&ctx, format!("read_realsize_{read_id}"), bits);
+            let real_size = RustBV::symbol(format!("read_realsize_{read_id}"), bits);
             // 0 <= real_size <= count (lower bound implicit for unsigned).
-            let bound = real_size.ule(&arch_word(state, count), &ctx);
+            let bound = real_size.ule(&arch_word(state, count));
             (real_size, bound)
         };
         let (real_size, bound) = real_size;

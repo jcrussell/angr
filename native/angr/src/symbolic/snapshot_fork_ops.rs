@@ -278,8 +278,8 @@ impl SymContext {
         self.debug_assert_no_open_scope("restore_from_snapshot");
         // angr-op0dn.13.14: raise the global id allocator past every id the
         // restored leaves already own. The ids deserialized into this
-        // context's registers / memory / constraints (an unnamed leaf is named
-        // by its id, see `RustBV::from_parts`) were minted by the SOURCE
+        // context's registers / memory / constraints (an unnamed leaf was once
+        // named by its id; `RustBV::symbol` now names it from `names`) were minted by the SOURCE
         // process's allocator, which ours never issued. Without the reserve,
         // the first symbol minted during the resume re-uses an id a restored
         // leaf holds, and every id-keyed lookup (claripy export registry,

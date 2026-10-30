@@ -7,7 +7,7 @@
 //!   `SimProcedure`; fall through to
 //!   `procedures/stubs/syscall_stub.py::syscall`, which returns a
 //!   fresh `state.solver.Unconstrained` BV. Matched here by emitting
-//!   a `RustBV::symbolic` of width `arch().bits()` and routing through
+//!   a `RustBV::symbol` of width `arch().bits()` and routing through
 //!   `SyscallOutcome::ContinueSymbolic`.
 //! * `tgkill` — Python returns concrete `claripy.BVV(0, sizeof(int))`
 //!   (see `procedures/linux_kernel/tgkill.py`). Matched here with

@@ -24,7 +24,7 @@
 use super::ctype::{is_c_space, may_continue_numeric_subject};
 use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Initial raw-scan window, and the hard cap on the *symbolic* accumulator's
 /// digit positions (the concrete path grows past it — see `MAX_SCAN_BYTES`).
@@ -303,7 +303,6 @@ fn build_symbolic_accumulator(
     start: usize,
     base: u32,
     result_bits: u32,
-    ctx: &SymContext,
 ) -> RustBV {
     let zero_acc = RustBV::concrete(0, result_bits);
     let base_bv = RustBV::concrete(base as u128, result_bits);
@@ -318,14 +317,12 @@ fn build_symbolic_accumulator(
         let byte_8 = if byte_val.width() == 8 {
             byte_val.clone()
         } else {
-            byte_val.extract(7, 0, ctx)
+            byte_val.extract(7, 0)
         };
 
         // Decimal-digit predicate: byte in ['0', '0' + min(base,10) - 1].
-        let is_dec = byte_8
-            .uge(&zero_byte, ctx)
-            .and(&byte_8.ule(&dec_high, ctx), ctx);
-        let dec_value = byte_8.sub(&zero_byte, ctx).zero_extend(result_bits, ctx);
+        let is_dec = byte_8.uge(&zero_byte).and(&byte_8.ule(&dec_high));
+        let dec_value = byte_8.sub(&zero_byte).zero_extend(result_bits);
 
         let (is_digit, digit_value) = if base > 10 {
             // overflow-ok: base > 10 is guaranteed by the enclosing `if`.
@@ -334,33 +331,23 @@ fn build_symbolic_accumulator(
             let lower_hi = RustBV::concrete((b'a' + max_alpha) as u128, 8);
             let upper_lo = RustBV::concrete(b'A' as u128, 8);
             let upper_hi = RustBV::concrete((b'A' + max_alpha) as u128, 8);
-            let in_lower = byte_8
-                .uge(&lower_lo, ctx)
-                .and(&byte_8.ule(&lower_hi, ctx), ctx);
-            let in_upper = byte_8
-                .uge(&upper_lo, ctx)
-                .and(&byte_8.ule(&upper_hi, ctx), ctx);
-            let is_alpha = in_lower.or(&in_upper, ctx);
+            let in_lower = byte_8.uge(&lower_lo).and(&byte_8.ule(&lower_hi));
+            let in_upper = byte_8.uge(&upper_lo).and(&byte_8.ule(&upper_hi));
+            let is_alpha = in_lower.or(&in_upper);
             let ten_bv = RustBV::concrete(10, result_bits);
-            let lower_v = byte_8
-                .sub(&lower_lo, ctx)
-                .zero_extend(result_bits, ctx)
-                .add(&ten_bv, ctx);
-            let upper_v = byte_8
-                .sub(&upper_lo, ctx)
-                .zero_extend(result_bits, ctx)
-                .add(&ten_bv, ctx);
-            let alpha_v = in_lower.ite(&lower_v, &upper_v, ctx);
-            let any = is_dec.or(&is_alpha, ctx);
-            let val = is_dec.ite(&dec_value, &alpha_v, ctx);
+            let lower_v = byte_8.sub(&lower_lo).zero_extend(result_bits).add(&ten_bv);
+            let upper_v = byte_8.sub(&upper_lo).zero_extend(result_bits).add(&ten_bv);
+            let alpha_v = in_lower.ite(&lower_v, &upper_v);
+            let any = is_dec.or(&is_alpha);
+            let val = is_dec.ite(&dec_value, &alpha_v);
             (any, val)
         } else {
             (is_dec, dec_value)
         };
 
-        let accum_advanced = accum.mul(&base_bv, ctx).add(&digit_value, ctx);
-        let stay = terminated.or(&is_digit.not(ctx), ctx);
-        accum = stay.ite(&accum, &accum_advanced, ctx);
+        let accum_advanced = accum.mul(&base_bv).add(&digit_value);
+        let stay = terminated.or(&is_digit.not());
+        accum = stay.ite(&accum, &accum_advanced);
         terminated = stay;
     }
     accum
@@ -454,8 +441,8 @@ fn run_strtol(
     let sym_end = bytes.len().min(prefix_end.saturating_add(MAX_DIGITS));
     let ctx_handle = state.solver().clone();
     let ctx = ctx_handle.borrow();
-    let accum = build_symbolic_accumulator(&bytes[..sym_end], prefix_end, base, bits, &ctx);
-    let result = if negative { accum.neg(&ctx) } else { accum };
+    let accum = build_symbolic_accumulator(&bytes[..sym_end], prefix_end, base, bits);
+    let result = if negative { accum.neg() } else { accum };
     // atoi returns int-width bits (Python: `val[sizeof(int)*8 - 1 : 0]`).
     // Extract the low `w` bits then zero-extend back into the return register.
     // NOTE: the symbolic accumulator itself still wraps at `bits` (Python
@@ -463,7 +450,7 @@ fn run_strtol(
     // is not implemented, so a symbolic result wraps at `bits` (angr-vu1q4,
     // axis 1, symbolic).
     let result = match ret_int_bits {
-        Some(w) if w < bits => result.extract(w - 1, 0, &ctx).zero_extend(bits, &ctx),
+        Some(w) if w < bits => result.extract(w - 1, 0).zero_extend(bits),
         _ => result,
     };
     drop(ctx);

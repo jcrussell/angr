@@ -16,6 +16,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 
 /// The op of a compound value, whichever arm holds it.
 fn op_of(bv: &RustBV) -> Option<BVOp> {
@@ -62,76 +63,66 @@ fn val(b: &RustBV) -> u128 {
 
 #[quickcheck]
 fn prop_add_commutative(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
-    val(&bv(a, w).add(&bv(b, w), &ctx)) == val(&bv(b, w).add(&bv(a, w), &ctx))
+    val(&bv(a, w).add(&bv(b, w))) == val(&bv(b, w).add(&bv(a, w)))
 }
 
 #[quickcheck]
 fn prop_add_zero_identity(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
-    val(&bv(a, w).add(&bv(0, w), &ctx)) == (a & mask(w))
+    val(&bv(a, w).add(&bv(0, w))) == (a & mask(w))
 }
 
 #[quickcheck]
 fn prop_add_matches_wrapping(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let expected = (a & mask(w)).wrapping_add(b & mask(w)) & mask(w);
-    val(&bv(a, w).add(&bv(b, w), &ctx)) == expected
+    val(&bv(a, w).add(&bv(b, w))) == expected
 }
 
 #[quickcheck]
 fn prop_sub_matches_wrapping(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let expected = (a & mask(w)).wrapping_sub(b & mask(w)) & mask(w);
-    val(&bv(a, w).sub(&bv(b, w), &ctx)) == expected
+    val(&bv(a, w).sub(&bv(b, w))) == expected
 }
 
 #[quickcheck]
 fn prop_sub_self_is_zero(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
-    val(&bv(a, w).sub(&bv(a, w), &ctx)) == 0
+    val(&bv(a, w).sub(&bv(a, w))) == 0
 }
 
 #[quickcheck]
 fn prop_mul_commutative(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
-    val(&bv(a, w).mul(&bv(b, w), &ctx)) == val(&bv(b, w).mul(&bv(a, w), &ctx))
+    val(&bv(a, w).mul(&bv(b, w))) == val(&bv(b, w).mul(&bv(a, w)))
 }
 
 #[quickcheck]
 fn prop_mul_zero_and_one(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
-    val(&bv(a, w).mul(&bv(0, w), &ctx)) == 0 && val(&bv(a, w).mul(&bv(1, w), &ctx)) == (a & mask(w))
+    val(&bv(a, w).mul(&bv(0, w))) == 0 && val(&bv(a, w).mul(&bv(1, w))) == (a & mask(w))
 }
 
 #[quickcheck]
 fn prop_mul_matches_wrapping(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let expected = (a & mask(w)).wrapping_mul(b & mask(w)) & mask(w);
-    val(&bv(a, w).mul(&bv(b, w), &ctx)) == expected
+    val(&bv(a, w).mul(&bv(b, w))) == expected
 }
 
 #[quickcheck]
 fn prop_neg_involution(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
-    val(&bv(a, w).neg(&ctx).neg(&ctx)) == (a & mask(w))
+    val(&bv(a, w).neg().neg()) == (a & mask(w))
 }
 
 #[quickcheck]
 fn prop_neg_add_is_zero(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let x = bv(a, w);
-    val(&x.add(&x.neg(&ctx), &ctx)) == 0
+    val(&x.add(&x.neg())) == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -156,18 +147,18 @@ fn div_rem_matches_z3(
     a: u128,
     b: u128,
     w: u32,
-    op: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+    op: fn(&RustBV, &RustBV) -> RustBV,
     name: &str,
 ) -> bool {
     let ctx = SymContext::new_mock();
-    let folded = op(&bv(a, w), &bv(b, w), &ctx)
+    let folded = op(&bv(a, w), &bv(b, w))
         .as_u128()
         .expect("div/rem on concrete operands must fold to Concrete");
 
-    let d = RustBV::symbolic(&ctx, "dvd", w);
-    let pinned = d.eq(&bv(a, w), &ctx);
+    let d = RustBV::symbol("dvd", w);
+    let pinned = d.eq(&bv(a, w));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
-    let sym = op(&d, &bv(b, w), &ctx);
+    let sym = op(&d, &bv(b, w));
     match ctx.eval(&sym) {
         Some(z) => z == folded,
         None => panic!("{name}: Z3 could not eval pinned {name}({a:#x}, {b:#x}) @w{w}"),
@@ -223,46 +214,42 @@ fn prop_sdiv_srem_min_over_neg1_matches_z3(ws: u8) -> bool {
 
 #[quickcheck]
 fn prop_and_absorption(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let x = bv(a, w);
     // x & x == x, x & 0 == 0, x & ones == x
-    val(&x.and(&x, &ctx)) == (a & mask(w))
-        && val(&x.and(&bv(0, w), &ctx)) == 0
-        && val(&x.and(&bv(mask(w), w), &ctx)) == (a & mask(w))
+    val(&x.and(&x)) == (a & mask(w))
+        && val(&x.and(&bv(0, w))) == 0
+        && val(&x.and(&bv(mask(w), w))) == (a & mask(w))
 }
 
 #[quickcheck]
 fn prop_or_absorption(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let x = bv(a, w);
     // x | x == x, x | 0 == x, x | ones == ones
-    val(&x.or(&x, &ctx)) == (a & mask(w))
-        && val(&x.or(&bv(0, w), &ctx)) == (a & mask(w))
-        && val(&x.or(&bv(mask(w), w), &ctx)) == mask(w)
+    val(&x.or(&x)) == (a & mask(w))
+        && val(&x.or(&bv(0, w))) == (a & mask(w))
+        && val(&x.or(&bv(mask(w), w))) == mask(w)
 }
 
 #[quickcheck]
 fn prop_xor_laws(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let x = bv(a, w);
     let y = bv(b, w);
     // x ^ x == 0, x ^ 0 == x, (x ^ y) ^ y == x, commutative
-    val(&x.xor(&x, &ctx)) == 0
-        && val(&x.xor(&bv(0, w), &ctx)) == (a & mask(w))
-        && val(&x.xor(&y, &ctx).xor(&y, &ctx)) == (a & mask(w))
-        && val(&x.xor(&y, &ctx)) == val(&y.xor(&x, &ctx))
+    val(&x.xor(&x)) == 0
+        && val(&x.xor(&bv(0, w))) == (a & mask(w))
+        && val(&x.xor(&y).xor(&y)) == (a & mask(w))
+        && val(&x.xor(&y)) == val(&y.xor(&x))
 }
 
 #[quickcheck]
 fn prop_not_involution_and_mask(a: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let x = bv(a, w);
     // !!x == x, !x == x ^ ones
-    val(&x.not(&ctx).not(&ctx)) == (a & mask(w)) && val(&x.not(&ctx)) == ((a & mask(w)) ^ mask(w))
+    val(&x.not().not()) == (a & mask(w)) && val(&x.not()) == ((a & mask(w)) ^ mask(w))
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +258,6 @@ fn prop_not_involution_and_mask(a: u128, ws: u8) -> bool {
 
 #[quickcheck]
 fn prop_shl_matches_reference(v: u128, amt: u8, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     // The amount BV is masked to `w` by concrete(), so the effective shift is
     // `amt & mask(w)`; mirror that in the reference.
@@ -282,12 +268,11 @@ fn prop_shl_matches_reference(v: u128, amt: u8, ws: u8) -> bool {
     } else {
         vm.wrapping_shl(amt_eff as u32) & mask(w)
     };
-    val(&bv(v, w).shl(&bv(amt as u128, w), &ctx)) == expected
+    val(&bv(v, w).shl(&bv(amt as u128, w))) == expected
 }
 
 #[quickcheck]
 fn prop_lshr_matches_reference(v: u128, amt: u8, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let amt_eff = (amt as u128) & mask(w);
     let vm = v & mask(w);
@@ -296,19 +281,18 @@ fn prop_lshr_matches_reference(v: u128, amt: u8, ws: u8) -> bool {
     } else {
         vm.wrapping_shr(amt_eff as u32) & mask(w)
     };
-    val(&bv(v, w).lshr(&bv(amt as u128, w), &ctx)) == expected
+    val(&bv(v, w).lshr(&bv(amt as u128, w))) == expected
 }
 
 #[quickcheck]
 fn prop_ashr_matches_reference(v: u128, amt: u8, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let amt_eff = (amt as u128) & mask(w);
     // ashr saturates the amount to w-1 (all sign bits).
     let amt_clamped = amt_eff.min((w - 1) as u128) as u32;
     let signed = sign_extend(v & mask(w), w);
     let expected = (signed >> amt_clamped) as u128 & mask(w);
-    val(&bv(v, w).ashr(&bv(amt as u128, w), &ctx)) == expected
+    val(&bv(v, w).ashr(&bv(amt as u128, w))) == expected
 }
 
 // ---------------------------------------------------------------------------
@@ -317,44 +301,40 @@ fn prop_ashr_matches_reference(v: u128, amt: u8, ws: u8) -> bool {
 
 #[quickcheck]
 fn prop_concat_extract_inverse(a: u128, b: u128, was: u8, wbs: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let (wa, wb) = (w64(was), w64(wbs));
     let hi = bv(a, wa);
     let lo = bv(b, wb);
-    let c = hi.concat(&lo, &ctx); // width wa + wb
-    let top = c.extract(wa + wb - 1, wb, &ctx); // recovers hi
-    let bot = c.extract(wb - 1, 0, &ctx); // recovers lo
+    let c = hi.concat(&lo); // width wa + wb
+    let top = c.extract(wa + wb - 1, wb); // recovers hi
+    let bot = c.extract(wb - 1, 0); // recovers lo
     val(&top) == (a & mask(wa)) && val(&bot) == (b & mask(wb))
 }
 
 #[quickcheck]
 fn prop_zero_extend_truncate_roundtrip(v: u128, ws: u8, extra: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w64(ws);
     let w2 = w + (extra % 64) as u32; // >= w, <= 127
     let x = bv(v, w);
-    let ze = x.zero_extend(w2, &ctx);
+    let ze = x.zero_extend(w2);
     // zero-extend preserves the low value, and truncating back recovers it.
-    val(&ze) == (v & mask(w)) && val(&ze.truncate(w, &ctx)) == (v & mask(w))
+    val(&ze) == (v & mask(w)) && val(&ze.truncate(w)) == (v & mask(w))
 }
 
 #[quickcheck]
 fn prop_sign_extend_matches_reference(v: u128, ws: u8, extra: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w64(ws);
     let w2 = w + (extra % 64) as u32; // >= w, <= 127
     // w2 <= 127, so the fold never declines (see `sign_extend_to`).
     let expected = sign_extend_to(v & mask(w), w, w2).expect("w2 <= 128 always folds") & mask(w2);
-    val(&bv(v, w).sign_extend(w2, &ctx)) == expected
+    val(&bv(v, w).sign_extend(w2)) == expected
 }
 
 #[quickcheck]
 fn prop_eq_matches_reference(a: u128, b: u128, ws: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let w = w128(ws);
     let want = if (a & mask(w)) == (b & mask(w)) { 1 } else { 0 };
     // eq is reflexive and its concrete result is a 1-bit 0/1.
-    val(&bv(a, w).eq(&bv(b, w), &ctx)) == want && val(&bv(a, w).eq(&bv(a, w), &ctx)) == 1
+    val(&bv(a, w).eq(&bv(b, w))) == want && val(&bv(a, w).eq(&bv(a, w))) == 1
 }
 
 // ---------------------------------------------------------------------------
@@ -428,15 +408,15 @@ const UCMPS: [UCmp; 6] = [
 
 /// Apply the RustBV comparison (the folding path) with `zext` on the left when
 /// `zext_left`, else on the right.
-fn rust_cmp(op: UCmp, zext: &RustBV, c: &RustBV, zext_left: bool, ctx: &SymContext) -> RustBV {
+fn rust_cmp(op: UCmp, zext: &RustBV, c: &RustBV, zext_left: bool) -> RustBV {
     let (a, b) = if zext_left { (zext, c) } else { (c, zext) };
     match op {
-        UCmp::Eq => a.eq(b, ctx),
-        UCmp::Ne => a.ne(b, ctx),
-        UCmp::Ult => a.ult(b, ctx),
-        UCmp::Ule => a.ule(b, ctx),
-        UCmp::Ugt => a.ugt(b, ctx),
-        UCmp::Uge => a.uge(b, ctx),
+        UCmp::Eq => a.eq(b),
+        UCmp::Ne => a.ne(b),
+        UCmp::Ult => a.ult(b),
+        UCmp::Ule => a.ule(b),
+        UCmp::Ugt => a.ugt(b),
+        UCmp::Uge => a.uge(b),
     }
 }
 
@@ -466,12 +446,12 @@ fn prop_zext_const_cmp_fold_matches_z3(
     let op = UCMPS[(op_seed % 6) as usize];
 
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", inner_width);
-    let zx = x.zero_extend(total, &ctx);
+    let x = RustBV::symbol("x", inner_width);
+    let zx = x.zero_extend(total);
     let cbv = RustBV::concrete(c & mask(total), total);
 
     // Folded RustBV result (goes through try_zext_const_cmp_fold).
-    let folded_bv = rust_cmp(op, &zx, &cbv, zext_left, &ctx).to_z3_ast().unwrap();
+    let folded_bv = rust_cmp(op, &zx, &cbv, zext_left).to_z3_ast().unwrap();
 
     // Unfolded Z3 reference over the same symbolic `x`.
     let zx_z3 = zx.to_z3_ast().unwrap();
@@ -518,14 +498,13 @@ fn boundary_values(width: u32) -> Vec<u128> {
 
 #[test]
 fn boundary_truncate_matches_mask() {
-    let ctx = SymContext::new_mock();
     for &w in &BOUNDARY_WIDTHS {
         for &to in &BOUNDARY_WIDTHS {
             if to > w {
                 continue; // truncate only narrows
             }
             for &v in &boundary_values(w) {
-                let got = val(&bv(v, w).truncate(to, &ctx));
+                let got = val(&bv(v, w).truncate(to));
                 assert_eq!(got, v & mask(to), "truncate({w}->{to}) v={v:#x}");
             }
         }
@@ -534,19 +513,18 @@ fn boundary_truncate_matches_mask() {
 
 #[test]
 fn boundary_zero_extend_preserves_low_and_zeros_high() {
-    let ctx = SymContext::new_mock();
     for &w in &BOUNDARY_WIDTHS {
         for &to in &BOUNDARY_WIDTHS {
             if to < w {
                 continue; // zero_extend only widens
             }
             for &v in &boundary_values(w) {
-                let ze = bv(v, w).zero_extend(to, &ctx);
+                let ze = bv(v, w).zero_extend(to);
                 // Low `w` bits unchanged, high bits zero => value == masked src.
                 assert_eq!(val(&ze), v & mask(w), "zext({w}->{to}) v={v:#x}");
                 // Round-trip back down recovers the source exactly.
                 assert_eq!(
-                    val(&ze.truncate(w, &ctx)),
+                    val(&ze.truncate(w)),
                     v & mask(w),
                     "zext-trunc({w}->{to}->{w}) v={v:#x}"
                 );
@@ -557,7 +535,6 @@ fn boundary_zero_extend_preserves_low_and_zeros_high() {
 
 #[test]
 fn boundary_sign_extend_matches_reference() {
-    let ctx = SymContext::new_mock();
     for &w in &BOUNDARY_WIDTHS {
         for &to in &BOUNDARY_WIDTHS {
             if to < w {
@@ -566,7 +543,7 @@ fn boundary_sign_extend_matches_reference() {
             for &v in &boundary_values(w) {
                 let want = sign_extend_to(v & mask(w), w, to).expect("to <= 128 always folds")
                     & mask(to);
-                let got = val(&bv(v, w).sign_extend(to, &ctx));
+                let got = val(&bv(v, w).sign_extend(to));
                 assert_eq!(got, want, "sext({w}->{to}) v={v:#x}");
             }
         }
@@ -582,7 +559,6 @@ fn boundary_sign_extend_matches_reference() {
 /// i128 helper (a distinct code path, correct for every `from_width < 128`).
 #[test]
 fn sign_extend_to_128_matches_i128_reference() {
-    let ctx = SymContext::new_mock();
     for &w in &BOUNDARY_WIDTHS {
         if w >= 128 {
             continue; // no widening past the u128 ceiling
@@ -592,7 +568,7 @@ fn sign_extend_to_128_matches_i128_reference() {
             // Reference: sign_extend() returns the i128 two's-complement value;
             // its bit pattern IS the 128-bit sign extension.
             let want = sign_extend(src, w) as u128;
-            let got = val(&bv(src, w).sign_extend(128, &ctx));
+            let got = val(&bv(src, w).sign_extend(128));
             assert_eq!(got, want, "sext({w}->128) v={src:#x}");
             // Spot-check the classic case directly: a negative 64-bit value must
             // gain a solid run of high ones, not zero-extend.
@@ -608,13 +584,12 @@ fn sign_extend_to_128_matches_i128_reference() {
 
 #[test]
 fn boundary_extract_single_bits_and_slices() {
-    let ctx = SymContext::new_mock();
     for &w in &BOUNDARY_WIDTHS {
         for &v in &boundary_values(w) {
             let x = bv(v, w);
             // Every individual bit position.
             for i in 0..w {
-                let got = val(&x.extract(i, i, &ctx));
+                let got = val(&x.extract(i, i));
                 assert_eq!(got, (v >> i) & 1, "extract bit {i} of w={w} v={v:#x}");
             }
             // Low slice [to-1:0] for each boundary width `to <= w`, plus the
@@ -623,9 +598,9 @@ fn boundary_extract_single_bits_and_slices() {
                 if to > w {
                     continue;
                 }
-                let low = val(&x.extract(to - 1, 0, &ctx));
+                let low = val(&x.extract(to - 1, 0));
                 assert_eq!(low, v & mask(to), "extract low {to} of w={w} v={v:#x}");
-                let hi = val(&x.extract(w - 1, w - to, &ctx));
+                let hi = val(&x.extract(w - 1, w - to));
                 assert_eq!(
                     hi,
                     (v >> (w - to)) & mask(to),
@@ -638,7 +613,6 @@ fn boundary_extract_single_bits_and_slices() {
 
 #[test]
 fn boundary_concat_recovers_operands() {
-    let ctx = SymContext::new_mock();
     // Restrict to pairs whose sum stays `as_u128`-readable (<= 128).
     for &wa in &BOUNDARY_WIDTHS {
         for &wb in &BOUNDARY_WIDTHS {
@@ -647,9 +621,9 @@ fn boundary_concat_recovers_operands() {
             }
             for &a in &boundary_values(wa) {
                 for &b in &boundary_values(wb) {
-                    let c = bv(a, wa).concat(&bv(b, wb), &ctx); // width wa+wb
-                    let top = c.extract(wa + wb - 1, wb, &ctx);
-                    let bot = c.extract(wb - 1, 0, &ctx);
+                    let c = bv(a, wa).concat(&bv(b, wb)); // width wa+wb
+                    let top = c.extract(wa + wb - 1, wb);
+                    let bot = c.extract(wb - 1, 0);
                     assert_eq!(val(&top), a & mask(wa), "concat hi wa={wa} wb={wb}");
                     assert_eq!(val(&bot), b & mask(wb), "concat lo wa={wa} wb={wb}");
                 }
@@ -714,11 +688,10 @@ fn shl_escapes_payload(v: u128, a: u128) -> bool {
 
 #[test]
 fn wide_shl_declines_the_fold_when_bits_escape_the_payload() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             for &a in &wide_shift_amounts(w) {
-                let got = bv(v, w).shl(&bv(a, w), &ctx);
+                let got = bv(v, w).shl(&bv(a, w));
                 assert_eq!(got.width(), w, "shl width w={w} v={v:#x} a={a}");
                 if a >= u128::from(w) {
                     // Every bit leaves the declared width: 0 at any width.
@@ -750,7 +723,6 @@ fn wide_shl_declines_the_fold_when_bits_escape_the_payload() {
 
 #[test]
 fn wide_lshr_clears_readable_bits_past_128() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             for &a in &wide_shift_amounts(w) {
@@ -759,7 +731,7 @@ fn wide_lshr_clears_readable_bits_past_128() {
                 } else {
                     v.wrapping_shr(a as u32)
                 };
-                let got = val(&bv(v, w).lshr(&bv(a, w), &ctx));
+                let got = val(&bv(v, w).lshr(&bv(a, w)));
                 assert_eq!(got, want, "lshr w={w} v={v:#x} a={a}");
             }
         }
@@ -768,7 +740,6 @@ fn wide_lshr_clears_readable_bits_past_128() {
 
 #[test]
 fn wide_ashr_is_logical_because_sign_bit_is_zero() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             for &a in &wide_shift_amounts(w) {
@@ -780,7 +751,7 @@ fn wide_ashr_is_logical_because_sign_bit_is_zero() {
                 } else {
                     v.wrapping_shr(a as u32)
                 };
-                let got = val(&bv(v, w).ashr(&bv(a, w), &ctx));
+                let got = val(&bv(v, w).ashr(&bv(a, w)));
                 assert_eq!(got, want, "ashr w={w} v={v:#x} a={a}");
             }
         }
@@ -789,7 +760,6 @@ fn wide_ashr_is_logical_because_sign_bit_is_zero() {
 
 #[test]
 fn wide_sign_extend_is_noop_because_source_is_nonnegative() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &to in &WIDE_WIDTHS {
             if to <= w {
@@ -798,7 +768,7 @@ fn wide_sign_extend_is_noop_because_source_is_nonnegative() {
             for &v in &wide_payloads() {
                 // Sign bit at position w-1 >= 128 is zero => sign-extend == the
                 // value itself. Must NOT overflow `1u128 << (from_width - 1)`.
-                let got = val(&bv(v, w).sign_extend(to, &ctx));
+                let got = val(&bv(v, w).sign_extend(to));
                 assert_eq!(got, v, "sext({w}->{to}) v={v:#x}");
             }
         }
@@ -807,7 +777,6 @@ fn wide_sign_extend_is_noop_because_source_is_nonnegative() {
 
 #[test]
 fn wide_zero_extend_and_truncate_roundtrip() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             // zero_extend to a larger wide width preserves the payload.
@@ -815,12 +784,12 @@ fn wide_zero_extend_and_truncate_roundtrip() {
                 if to <= w {
                     continue;
                 }
-                let ze = bv(v, w).zero_extend(to, &ctx);
+                let ze = bv(v, w).zero_extend(to);
                 assert_eq!(val(&ze), v, "zext({w}->{to}) v={v:#x}");
             }
             // truncate down to each boundary width recovers the masked payload.
             for &to in &BOUNDARY_WIDTHS {
-                let got = val(&bv(v, w).truncate(to, &ctx));
+                let got = val(&bv(v, w).truncate(to));
                 assert_eq!(got, v & mask(to), "trunc({w}->{to}) v={v:#x}");
             }
         }
@@ -829,20 +798,19 @@ fn wide_zero_extend_and_truncate_roundtrip() {
 
 #[test]
 fn wide_extract_reads_zero_past_bit_128() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             let x = bv(v, w);
             // A slice entirely at/above bit 128 is all zeros.
-            let top = x.extract(w - 1, 128, &ctx);
+            let top = x.extract(w - 1, 128);
             assert_eq!(val(&top), 0, "extract top [{}:128] w={w} v={v:#x}", w - 1);
             // The low 128 bits round-trip exactly.
-            let low = x.extract(127, 0, &ctx);
+            let low = x.extract(127, 0);
             assert_eq!(val(&low), v, "extract low [127:0] w={w} v={v:#x}");
             // A slice straddling bit 128 keeps only the in-range payload bits.
             // Needs `high < w`, so only for widths comfortably past 128.
             if w >= 136 {
-                let straddle = x.extract(135, 120, &ctx); // 16-bit slice [135:120]
+                let straddle = x.extract(135, 120); // 16-bit slice [135:120]
                 let want = (v >> 120) & mask(16);
                 assert_eq!(val(&straddle), want, "extract [135:120] w={w} v={v:#x}");
             }
@@ -853,7 +821,6 @@ fn wide_extract_reads_zero_past_bit_128() {
 // angr-03vl4.58: signed concrete fast paths at width > 128.
 #[test]
 fn wide_signed_compare_degenerates_to_unsigned() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &a in &wide_payloads() {
             for &b in &wide_payloads() {
@@ -863,10 +830,10 @@ fn wide_signed_compare_degenerates_to_unsigned() {
                 // bit 127 of a stored payload is set.
                 let (x, y) = (bv(a, w), bv(b, w));
                 let checks = [
-                    ("slt", val(&x.slt(&y, &ctx)), a < b),
-                    ("sle", val(&x.sle(&y, &ctx)), a <= b),
-                    ("sgt", val(&x.sgt(&y, &ctx)), a > b),
-                    ("sge", val(&x.sge(&y, &ctx)), a >= b),
+                    ("slt", val(&x.slt(&y)), a < b),
+                    ("sle", val(&x.sle(&y)), a <= b),
+                    ("sgt", val(&x.sgt(&y)), a > b),
+                    ("sge", val(&x.sge(&y)), a >= b),
                 ];
                 for (name, got, want) in checks {
                     assert_eq!(got, u128::from(want), "{name} w={w} a={a:#x} b={b:#x}");
@@ -879,7 +846,6 @@ fn wide_signed_compare_degenerates_to_unsigned() {
 // angr-03vl4.58: signed concrete fast paths at width > 128.
 #[test]
 fn wide_sdiv_srem_degenerate_to_unsigned() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &a in &wide_payloads() {
             for &b in &wide_payloads() {
@@ -891,7 +857,7 @@ fn wide_sdiv_srem_degenerate_to_unsigned() {
                 // fold instead — see `wide_div_by_zero_declines_the_concrete_fold`
                 // (angr-nknv1). `x % 0 == x` is representable and still folds.
                 let want_rem = if b == 0 { a } else { a % b };
-                let got_div = x.sdiv(&y, &ctx);
+                let got_div = x.sdiv(&y);
                 match a.checked_div(b) {
                     Some(q) => assert_eq!(val(&got_div), q, "sdiv w={w} a={a:#x} b={b:#x}"),
                     None => assert!(
@@ -900,7 +866,7 @@ fn wide_sdiv_srem_degenerate_to_unsigned() {
                     ),
                 }
                 assert_eq!(
-                    val(&x.srem(&y, &ctx)),
+                    val(&x.srem(&y)),
                     want_rem,
                     "srem w={w} a={a:#x} b={b:#x}"
                 );
@@ -912,13 +878,12 @@ fn wide_sdiv_srem_degenerate_to_unsigned() {
 // angr-03vl4.59: rotl/rotr concrete fast paths at width > 128.
 #[test]
 fn wide_rotate_declines_the_concrete_fold() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             for &a in &wide_shift_amounts(w) {
                 for (name, got, op) in [
-                    ("rotl", bv(v, w).rotl(&bv(a, w), &ctx), BVOp::RotL),
-                    ("rotr", bv(v, w).rotr(&bv(a, w), &ctx), BVOp::RotR),
+                    ("rotl", bv(v, w).rotl(&bv(a, w)), BVOp::RotL),
+                    ("rotr", bv(v, w).rotr(&bv(a, w)), BVOp::RotR),
                 ] {
                     assert_eq!(got.width(), w, "{name} width w={w} v={v:#x} a={a}");
                     if a % (w as u128) == 0 {
@@ -947,10 +912,9 @@ fn wide_rotate_declines_the_concrete_fold() {
 // unstorable-result shape as the wide rotate above.
 #[test]
 fn wide_reverse_declines_the_concrete_fold() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
-            let got = bv(v, w).reverse(&ctx);
+            let got = bv(v, w).reverse();
             assert_eq!(got.width(), w, "reverse width w={w} v={v:#x}");
             if !w.is_multiple_of(8) {
                 // A partial byte has no reverse at any width; the misaligned
@@ -975,7 +939,6 @@ fn wide_reverse_declines_the_concrete_fold() {
 /// amounts that straddle 0 / w / 2^32.
 #[test]
 fn narrow_rotate_matches_masked_u128_reference() {
-    let ctx = SymContext::new_mock();
     for &w in &BOUNDARY_WIDTHS {
         for &v in &boundary_values(w) {
             for &raw_a in &[0u128, 1, 7, (w - 1) as u128, w as u128, 1u128 << 32] {
@@ -994,8 +957,8 @@ fn narrow_rotate_matches_masked_u128_reference() {
                     ((v >> amt) | (v << (w - amt))) & mask(w)
                 };
                 let (x, n) = (bv(v, w), bv(a, w));
-                assert_eq!(val(&x.rotl(&n, &ctx)), want_l, "rotl w={w} v={v:#x} a={a}");
-                assert_eq!(val(&x.rotr(&n, &ctx)), want_r, "rotr w={w} v={v:#x} a={a}");
+                assert_eq!(val(&x.rotl(&n)), want_l, "rotl w={w} v={v:#x} a={a}");
+                assert_eq!(val(&x.rotr(&n)), want_r, "rotr w={w} v={v:#x} a={a}");
             }
         }
     }
@@ -1008,26 +971,25 @@ fn narrow_rotate_matches_masked_u128_reference() {
 // fold has to decline instead of emitting a smaller, wrong number.
 #[test]
 fn wide_arith_declines_the_fold_when_the_result_leaves_the_payload() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &a in &wide_payloads() {
             for &b in &wide_payloads() {
                 for (name, got, op, exact) in [
                     (
                         "add",
-                        bv(a, w).add(&bv(b, w), &ctx),
+                        bv(a, w).add(&bv(b, w)),
                         BVOp::Add,
                         a.checked_add(b),
                     ),
                     (
                         "sub",
-                        bv(a, w).sub(&bv(b, w), &ctx),
+                        bv(a, w).sub(&bv(b, w)),
                         BVOp::Sub,
                         a.checked_sub(b),
                     ),
                     (
                         "mul",
-                        bv(a, w).mul(&bv(b, w), &ctx),
+                        bv(a, w).mul(&bv(b, w)),
                         BVOp::Mul,
                         a.checked_mul(b),
                     ),
@@ -1062,15 +1024,14 @@ fn wide_arith_declines_the_fold_when_the_result_leaves_the_payload() {
 // representable, so both decline.
 #[test]
 fn wide_not_and_neg_decline_the_concrete_fold() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
-            let not = bv(v, w).not(&ctx);
+            let not = bv(v, w).not();
             assert_eq!(not.width(), w, "not width w={w} v={v:#x}");
             assert!(not.as_u128().is_none(), "not must not fold w={w} v={v:#x}");
             assert_eq!(op_of(&not), Some(BVOp::Not), "not op w={w} v={v:#x}");
 
-            let neg = bv(v, w).neg(&ctx);
+            let neg = bv(v, w).neg();
             assert_eq!(neg.width(), w, "neg width w={w} v={v:#x}");
             if v == 0 {
                 // -0 is 0 at every width and stays foldable.
@@ -1091,11 +1052,10 @@ fn wide_not_and_neg_decline_the_concrete_fold() {
 // signed op would then read as non-negative.
 #[test]
 fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
-    let ctx = SymContext::new_mock();
     for &from in &[1u32, 8, 32, 64, 127, 128] {
         for &to in &WIDE_WIDTHS {
             let neg = 1u128 << (from - 1); // sign bit set => negative source
-            let got = bv(neg, from).sign_extend(to, &ctx);
+            let got = bv(neg, from).sign_extend(to);
             assert_eq!(got.width(), to, "sext({from}->{to}) width");
             if from >= 128 {
                 // The source's own sign bit is already beyond storage, so the
@@ -1114,7 +1074,7 @@ fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
             }
             // A non-negative source is a plain zero-extend and still folds.
             let pos = neg - 1;
-            let got_pos = bv(pos, from).sign_extend(to, &ctx);
+            let got_pos = bv(pos, from).sign_extend(to);
             assert_eq!(val(&got_pos), pos, "sext({from}->{to}) v={pos:#x}");
         }
     }
@@ -1129,15 +1089,14 @@ fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
 // ceiling, and both must still fire at or below it.
 #[test]
 fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
-        let x = RustBV::symbolic(&ctx, "x", w);
+        let x = RustBV::symbol("x", w);
         let ones = bv(u128::MAX, w);
         for (name, got, op) in [
-            ("x & ones", x.and(&ones, &ctx), BVOp::And),
-            ("ones & x", ones.and(&x, &ctx), BVOp::And),
-            ("x | ones", x.or(&ones, &ctx), BVOp::Or),
-            ("ones | x", ones.or(&x, &ctx), BVOp::Or),
+            ("x & ones", x.and(&ones), BVOp::And),
+            ("ones & x", ones.and(&x), BVOp::And),
+            ("x | ones", x.or(&ones), BVOp::Or),
+            ("ones | x", ones.or(&x), BVOp::Or),
         ] {
             assert_eq!(got.width(), w, "{name} width w={w}");
             assert!(got.as_u128().is_none(), "{name} must not fold w={w}");
@@ -1147,17 +1106,17 @@ fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
     // At or below the ceiling `u128::MAX` masked to `w` really is all-ones, so
     // both simplifications must still fire.
     for &w in &[1u32, 8, 64, 127, 128] {
-        let x = RustBV::symbolic(&ctx, "x", w);
+        let x = RustBV::symbol("x", w);
         let ones = bv(u128::MAX, w);
         for (name, got) in [
-            ("x & ones", x.and(&ones, &ctx)),
-            ("ones & x", ones.and(&x, &ctx)),
+            ("x & ones", x.and(&ones)),
+            ("ones & x", ones.and(&x)),
         ] {
             assert_eq!(got.width(), w, "{name} width w={w}");
             assert!(op_of(&got).is_none() && got.is_symbolic(), "{name} w={w}");
         }
-        assert_eq!(val(&x.or(&ones, &ctx)), mask(w), "x | ones w={w}");
-        assert_eq!(val(&ones.or(&x, &ctx)), mask(w), "ones | x w={w}");
+        assert_eq!(val(&x.or(&ones)), mask(w), "x | ones w={w}");
+        assert_eq!(val(&ones.or(&x)), mask(w), "ones | x w={w}");
     }
 }
 
@@ -1166,13 +1125,12 @@ fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
 // there and let Z3's equally-total bvudiv/bvsdiv answer at the declared width.
 #[test]
 fn wide_div_by_zero_declines_the_concrete_fold() {
-    let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &a in &wide_payloads() {
             let zero = bv(0, w);
             for (name, got, op) in [
-                ("udiv", bv(a, w).udiv(&zero, &ctx), BVOp::UDiv),
-                ("sdiv", bv(a, w).sdiv(&zero, &ctx), BVOp::SDiv),
+                ("udiv", bv(a, w).udiv(&zero), BVOp::UDiv),
+                ("sdiv", bv(a, w).sdiv(&zero), BVOp::SDiv),
             ] {
                 assert_eq!(got.width(), w, "{name} width w={w} a={a:#x}");
                 assert!(
@@ -1184,14 +1142,14 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
             // A non-zero divisor still folds: both operands are logically
             // non-negative up here, so signed division degenerates to unsigned.
             let d = bv(3, w);
-            assert_eq!(val(&bv(a, w).udiv(&d, &ctx)), a / 3, "udiv w={w} a={a:#x}");
-            assert_eq!(val(&bv(a, w).sdiv(&d, &ctx)), a / 3, "sdiv w={w} a={a:#x}");
+            assert_eq!(val(&bv(a, w).udiv(&d)), a / 3, "udiv w={w} a={a:#x}");
+            assert_eq!(val(&bv(a, w).sdiv(&d)), a / 3, "sdiv w={w} a={a:#x}");
         }
     }
     // Below the ceiling all-ones is representable and `x / 0` still folds.
     for &w in &[1u32, 8, 64, 128] {
-        assert_eq!(val(&bv(1, w).udiv(&bv(0, w), &ctx)), mask(w), "udiv w={w}");
-        assert_eq!(val(&bv(1, w).sdiv(&bv(0, w), &ctx)), mask(w), "sdiv w={w}");
+        assert_eq!(val(&bv(1, w).udiv(&bv(0, w))), mask(w), "udiv w={w}");
+        assert_eq!(val(&bv(1, w).sdiv(&bv(0, w))), mask(w), "sdiv w={w}");
     }
 }
 
@@ -1214,12 +1172,11 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
 /// rotate folds to the 0-bit identity instead.
 #[test]
 fn rotate_and_reverse_boundary_widths_cross_check_shared_table() {
-    let ctx = SymContext::new_mock();
     for &w in &crate::test_boundary_values::boundary_widths() {
         for &raw_a in &[0u128, 1, w as u128, 1u128 << 32] {
             let (x, n) = (bv(u128::MAX, w), bv(raw_a, w));
-            let rl = x.rotl(&n, &ctx);
-            let rr = x.rotr(&n, &ctx);
+            let rl = x.rotl(&n);
+            let rr = x.rotr(&n);
             assert_eq!(rl.width(), w, "rotl width w={w} a={raw_a}");
             assert_eq!(rr.width(), w, "rotr width w={w} a={raw_a}");
 
@@ -1250,7 +1207,7 @@ fn rotate_and_reverse_boundary_widths_cross_check_shared_table() {
             }
         }
 
-        let rv = bv(u128::MAX, w).reverse(&ctx);
+        let rv = bv(u128::MAX, w).reverse();
         assert_eq!(rv.width(), w, "reverse width w={w}");
         if w.is_multiple_of(8) && w <= 128 {
             // Byte-reversing an all-ones value is itself all-ones.

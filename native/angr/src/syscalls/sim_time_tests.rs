@@ -4,7 +4,7 @@ use crate::symbolic::ToZ3;
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 fn fresh_state() -> RustSimState {
     RustSimState::new("amd64").expect("amd64 state")
@@ -57,8 +57,7 @@ fn gettimeofday_tz_may_be_symbolic() {
     let h = NativeGettimeofdaySyscall;
     let mut state = fresh_state();
     state.map_memory(0x4000, 0x1000, Permission::RW);
-    let ctx = SymContext::new();
-    let sym_tz = RustBV::symbolic(&ctx, "tz", 64);
+    let sym_tz = RustBV::symbol("tz", 64);
     let outcome = h
         .call(&mut state, &[RustBV::concrete(0x4000, 64), sym_tz])
         .expect("symbolic tz must not block fast path");
@@ -69,8 +68,7 @@ fn gettimeofday_tz_may_be_symbolic() {
 fn gettimeofday_symbolic_tv_falls_back() {
     let h = NativeGettimeofdaySyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym_tv = RustBV::symbolic(&ctx, "tv", 64);
+    let sym_tv = RustBV::symbol("tv", 64);
     let err = h
         .call(&mut state, &[sym_tv, RustBV::concrete(0, 64)])
         .expect_err("must fall back");
@@ -153,8 +151,7 @@ fn clock_gettime_non_realtime_falls_back() {
 fn clock_gettime_symbolic_clock_falls_back() {
     let h = NativeClockGettimeSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "which_clock", 64);
+    let sym = RustBV::symbol("which_clock", 64);
     let err = h
         .call(&mut state, &[sym, RustBV::concrete(0x4000, 64)])
         .expect_err("must fall back");
@@ -261,8 +258,7 @@ fn time_consecutive_calls_are_monotonic() {
     // Pin the first call to a concrete value to make the monotonicity
     // constraint testable: first == 100.
     let pin = {
-        let ctx = state.solver().borrow();
-        first.eq(&RustBV::concrete(100, 64), &ctx)
+        first.eq(&RustBV::concrete(100, 64))
     };
     state.add_constraint(pin);
 
@@ -282,8 +278,7 @@ fn time_consecutive_calls_are_monotonic() {
 fn time_symbolic_pointer_falls_back() {
     let h = NativeTimeSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "ptr", 64);
+    let sym = RustBV::symbol("ptr", 64);
     let err = h.call(&mut state, &[sym]).expect_err("must fall back");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }

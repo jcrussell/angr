@@ -67,7 +67,7 @@ impl<'a> VEXInterpreter<'a> {
 
             IRExpr::Get { offset, ty } => {
                 let size = ty.bytes();
-                let value = self.registers.get(*offset, size, self.ctx);
+                let value = self.registers.get(*offset, size);
                 self.dispatch_reg_read_inspect(callbacks, *offset, size, &value);
                 Ok(value)
             }
@@ -143,7 +143,7 @@ impl<'a> VEXInterpreter<'a> {
         }
         let true_val = self.eval_expr_with_callbacks(callbacks, iftrue, tyenv)?;
         let false_val = self.eval_expr_with_callbacks(callbacks, iffalse, tyenv)?;
-        Ok(cond_val.ite(&true_val, &false_val, self.ctx))
+        Ok(cond_val.ite(&true_val, &false_val))
     }
 
     /// Eagerly concretize a symbolic value via the solver and pin the choice
@@ -157,7 +157,7 @@ impl<'a> VEXInterpreter<'a> {
     pub(super) fn concretize_and_pin(&self, v: &RustBV) -> Option<u64> {
         let concrete = self.ctx.eval(v)?;
         let conc_bv = RustBV::concrete(concrete, v.width());
-        let constraint = v.eq(&conc_bv, self.ctx);
+        let constraint = v.eq(&conc_bv);
         self.ctx.assume_true(&constraint);
         Some(concrete as u64)
     }
@@ -175,7 +175,7 @@ impl<'a> VEXInterpreter<'a> {
         let (offset, elem_size) = self.regarray_offset(&descr, &ix_val, bias, "GetI")?;
 
         // Read from the register file
-        Ok(self.registers.get(offset, elem_size, self.ctx))
+        Ok(self.registers.get(offset, elem_size))
     }
 
     /// Resolve a VEX register-array access (`GetI`/`PutI`) to a flat
@@ -264,7 +264,7 @@ impl<'a> VEXInterpreter<'a> {
             IRConst::V256(v) => {
                 let high = RustBV::concrete(v[2] as u128 | ((v[3] as u128) << 64), 128);
                 let low = RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128);
-                high.concat_no_ctx(&low)
+                high.concat(&low)
             }
         }
     }
@@ -285,7 +285,7 @@ impl<'a> VEXInterpreter<'a> {
             }
             IRExpr::Get { offset, ty } => {
                 let size = ty.bytes();
-                Ok(self.registers.get(*offset, size, self.ctx))
+                Ok(self.registers.get(*offset, size))
             }
             _ => Err(CbExecutionError::Unsupported(
                 "complex expr in default exit".to_string(),

@@ -153,7 +153,7 @@ fn test_vec_interleave_lo_16x8_symbolic() {
         0xF000, 0x0000, 0xF001, 0x0001, 0xF002, 0x0002, 0xF003, 0x0003,
     ];
 
-    let l = RustBV::symbolic(&ctx, "vinterleave_l", 128);
+    let l = RustBV::symbol("vinterleave_l", 128);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 16), 128).to_z3_ast().unwrap()),
@@ -261,7 +261,7 @@ fn test_vec_interleave_lo_8x32_256_bit() {
         let lo: [u128; 16] = core::array::from_fn(|i| lanes[i]);
         let hi: [u128; 16] = core::array::from_fn(|i| lanes[i + 16]);
         RustBV::concrete(pack_lanes_uint(&hi, 8), 128)
-            .concat_into(RustBV::concrete(pack_lanes_uint(&lo, 8), 128), &ctx)
+            .concat_into(RustBV::concrete(pack_lanes_uint(&lo, 8), 128))
     };
     let lv = pack(&l);
     let rv = pack(&r);
@@ -284,7 +284,7 @@ fn test_vec_interleave_lo_8x32_256_bit() {
     for i in 0..16usize {
         for (off, exp) in [(0u32, r[i]), (1, l[i])] {
             let low = (2 * i as u32 + off) * 8;
-            let extracted = result.extract(low + 7, low, &ctx);
+            let extracted = result.extract(low + 7, low);
             let got = ctx.eval(&extracted).expect("eval(lane) returned None");
             assert_eq!(got, exp, "output lane {}", 2 * i as u32 + off);
         }

@@ -138,8 +138,7 @@ def store_cb(addr, data):
 #[test]
 fn store_symbolic_value_without_callback_errors_instead_of_zero_filling() {
     Python::initialize();
-    let ctx = crate::symbolic::SymContext::new_mock();
-    let value = RustBV::symbolic(&ctx, "sv", 16);
+    let value = RustBV::symbol("sv", 16);
     Python::attach(|py| {
         let globals = defs(
             py,

@@ -3,7 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::syscalls::tests_support::assert_over_limit;
 
 fn fresh_state_with_buf() -> RustSimState {
@@ -372,8 +372,7 @@ fn read_user_fd_count_at_limit_is_native() {
 fn symbolic_fd_falls_back() {
     let h = NativeReadSyscall;
     let mut state = fresh_state_with_buf();
-    let ctx = SymContext::new();
-    let sym_fd = RustBV::symbolic(&ctx, "fd", 64);
+    let sym_fd = RustBV::symbol("fd", 64);
     let err = h
         .call(
             &mut state,
@@ -396,8 +395,7 @@ fn symbolic_fd_falls_back() {
 fn symbolic_buf_falls_back() {
     let h = NativeReadSyscall;
     let mut state = fresh_state_with_buf();
-    let ctx = SymContext::new();
-    let sym_buf = RustBV::symbolic(&ctx, "buf", 64);
+    let sym_buf = RustBV::symbol("buf", 64);
     let err = h
         .call(
             &mut state,
@@ -411,8 +409,7 @@ fn symbolic_buf_falls_back() {
 fn symbolic_count_falls_back() {
     let h = NativeReadSyscall;
     let mut state = fresh_state_with_buf();
-    let ctx = SymContext::new();
-    let sym_count = RustBV::symbolic(&ctx, "count", 64);
+    let sym_count = RustBV::symbol("count", 64);
     let err = h
         .call(
             &mut state,
@@ -434,9 +431,8 @@ fn read_content_sym_serves_natively_and_eof_returns_zero() {
     let h = NativeReadSyscall;
     let mut state = fresh_state_with_buf();
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("sys_symfile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("sys_symfile_{i}"), 8))
             .collect()
     };
     state
@@ -508,6 +504,6 @@ fn read_stdin_binds_seeded_bytes() {
     let ctx = state.solver().clone();
     let ctx = ctx.borrow();
     let probe = ctx.fork();
-    probe.assume_true(&loaded.eq(&RustBV::concrete(u128::from(u16::from_le_bytes(*b"ab")), 16), &probe).not(&probe));
+    probe.assume_true(&loaded.eq(&RustBV::concrete(u128::from(u16::from_le_bytes(*b"ab")), 16)).not());
     assert!(!probe.is_sat(), "the read bytes are not bound to the seeded \"ab\"");
 }

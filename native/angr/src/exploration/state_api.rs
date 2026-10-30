@@ -338,7 +338,7 @@ impl RustExplorationManager {
                             bv.to_z3_bool()
                         } else {
                             let zero = RustBV::concrete(0, bv.width());
-                            bv.ne(&zero, ctx_ref).to_z3_bool()
+                            bv.ne(&zero).to_z3_bool()
                         };
                         // Same wrong-answer risk as a failed conversion
                         // below, so it raises too (a RecursionError when the
@@ -1148,7 +1148,7 @@ impl RustExplorationManager {
         // (name, sort) — a hardcoded width 8 minted a *different*, unconstrained
         // const for any non-byte stdin symbol (scanf %d/%ld record at 32/64
         // bits), so eval returned an arbitrary model value (angr-ph300.18).
-        let sym = crate::symbolic::RustBV::symbolic(&ctx, name, width.max(1));
+        let sym = crate::symbolic::RustBV::symbol(name, width.max(1));
         ctx.eval(&sym).map(|v| v as u64)
     }
 }

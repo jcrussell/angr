@@ -4,6 +4,7 @@
 use crate::symbolic::ToZ3;
 use super::value_tests_support::raw_extract_node;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::symbolic::Node;
 
 // =========================================================================
@@ -12,106 +13,97 @@ use crate::symbolic::Node;
 
 #[test]
 fn test_add_identity() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let zero = RustBV::zero(32);
     // x + 0 → x (should return symbolic, not expression)
-    let r1 = x.add(&zero, &ctx);
+    let r1 = x.add(&zero);
     assert!(r1.leaf_var().is_some());
     // 0 + x → x
-    let r2 = zero.add(&x, &ctx);
+    let r2 = zero.add(&x);
     assert!(r2.leaf_var().is_some());
 }
 
 #[test]
 fn test_sub_identity() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let zero = RustBV::zero(32);
     // x - 0 → x
-    let r = x.sub(&zero, &ctx);
+    let r = x.sub(&zero);
     assert!(r.leaf_var().is_some());
 }
 
 #[test]
 fn test_mul_identity_and_annihilator() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let zero = RustBV::zero(32);
     let one = RustBV::concrete(1, 32);
     // x * 0 → 0
-    assert_eq!(x.mul(&zero, &ctx).as_u128(), Some(0));
+    assert_eq!(x.mul(&zero).as_u128(), Some(0));
     // 0 * x → 0
-    assert_eq!(zero.mul(&x, &ctx).as_u128(), Some(0));
+    assert_eq!(zero.mul(&x).as_u128(), Some(0));
     // x * 1 → x
-    assert!(x.mul(&one, &ctx).leaf_var().is_some());
+    assert!(x.mul(&one).leaf_var().is_some());
     // 1 * x → x
-    assert!(one.mul(&x, &ctx).leaf_var().is_some());
+    assert!(one.mul(&x).leaf_var().is_some());
 }
 
 #[test]
 fn test_and_identity_and_annihilator() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
+    let x = RustBV::symbol("x", 8);
     let zero = RustBV::zero(8);
     let ones = RustBV::ones(8);
     // x & 0 → 0
-    assert_eq!(x.and(&zero, &ctx).as_u128(), Some(0));
+    assert_eq!(x.and(&zero).as_u128(), Some(0));
     // x & 0xFF → x
-    assert!(x.and(&ones, &ctx).leaf_var().is_some());
+    assert!(x.and(&ones).leaf_var().is_some());
     // 0xFF & x → x
-    assert!(ones.and(&x, &ctx).leaf_var().is_some());
+    assert!(ones.and(&x).leaf_var().is_some());
 }
 
 #[test]
 fn test_or_identity_and_annihilator() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
+    let x = RustBV::symbol("x", 8);
     let zero = RustBV::zero(8);
     let ones = RustBV::ones(8);
     // x | 0 → x
-    assert!(x.or(&zero, &ctx).leaf_var().is_some());
+    assert!(x.or(&zero).leaf_var().is_some());
     // 0 | x → x
-    assert!(zero.or(&x, &ctx).leaf_var().is_some());
+    assert!(zero.or(&x).leaf_var().is_some());
     // x | 0xFF → 0xFF
-    assert_eq!(x.or(&ones, &ctx).as_u128(), Some(0xFF));
+    assert_eq!(x.or(&ones).as_u128(), Some(0xFF));
 }
 
 #[test]
 fn test_xor_identity() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let zero = RustBV::zero(32);
     // x ^ 0 → x
-    assert!(x.xor(&zero, &ctx).leaf_var().is_some());
+    assert!(x.xor(&zero).leaf_var().is_some());
     // 0 ^ x → x
-    assert!(zero.xor(&x, &ctx).leaf_var().is_some());
+    assert!(zero.xor(&x).leaf_var().is_some());
 }
 
 #[test]
 fn test_not_double_negation() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     // not(not(x)) → x
-    let r = x.not(&ctx).not(&ctx);
+    let r = x.not().not();
     assert_eq!(r.leaf_var(), x.leaf_var(), "expected x back, got {r:?}");
 }
 
 #[test]
 fn test_neg_double_negation() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     // neg(neg(x)) → x
-    let r = x.neg(&ctx).neg(&ctx);
+    let r = x.neg().neg();
     assert_eq!(r.leaf_var(), x.leaf_var(), "expected x back, got {r:?}");
 }
 
 #[test]
 fn test_reverse_double() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     // reverse(reverse(x)) → x
-    let r = x.reverse(&ctx).reverse(&ctx);
+    let r = x.reverse().reverse();
     assert_eq!(r.leaf_var(), x.leaf_var(), "expected x back, got {r:?}");
 }
 
@@ -124,9 +116,8 @@ fn test_reverse_non_byte_aligned_width_is_identity_not_truncation() {
     // Every profile now returns the operand unchanged instead, so no bit is
     // dropped and the concrete answer matches what the Z3 lowering already
     // produces for a misaligned width.
-    let ctx = SymContext::new_mock();
     for (width, value) in [(12u32, 0xABCu128), (9, 0x1FF), (33, 0x1_2345_6789)] {
-        let rev = RustBV::concrete(value, width).reverse(&ctx);
+        let rev = RustBV::concrete(value, width).reverse();
         assert_eq!(rev.width(), width, "width {width} must be preserved");
         assert_eq!(
             rev.as_u128(),
@@ -137,13 +128,13 @@ fn test_reverse_non_byte_aligned_width_is_identity_not_truncation() {
 
     // Symbolic operands take the same no-op path, so no `Reverse` node is
     // built for a width whose claripy export would raise.
-    let sym = RustBV::symbolic(&ctx, "misaligned", 12);
-    let rev = sym.reverse(&ctx);
+    let sym = RustBV::symbol("misaligned", 12);
+    let rev = sym.reverse();
     assert!(rev.leaf_var().is_some(), "{rev:?}");
     assert_eq!(rev.width(), 12);
 
     // Byte-aligned widths still reverse normally.
-    let aligned = RustBV::concrete(0x1122, 16).reverse(&ctx);
+    let aligned = RustBV::concrete(0x1122, 16).reverse();
     assert_eq!(aligned.as_u128(), Some(0x2211));
 }
 
@@ -155,9 +146,8 @@ fn test_reverse_wide_concrete_declines_fold_instead_of_overshifting() {
     // shifts a u128 by up to `w - 8`, which aborts under `debug_assertions`
     // and silently wraps mod 128 in release. Same resolution as a non-trivial
     // wide rotate (see `define_rotate_pair`): decline the fold, stay symbolic.
-    let ctx = SymContext::new_mock();
     for width in [136u32, 192, 256] {
-        let rev = RustBV::concrete(0x1122_3344, width).reverse(&ctx);
+        let rev = RustBV::concrete(0x1122_3344, width).reverse();
         assert_eq!(rev.width(), width, "width {width} must be preserved");
         assert!(
             rev.node().is_some_and(|n| n.op == BVOp::Reverse),
@@ -166,41 +156,38 @@ fn test_reverse_wide_concrete_declines_fold_instead_of_overshifting() {
     }
 
     // The boundary width still folds concretely.
-    let at_ceiling = RustBV::concrete(0xAA, 128).reverse(&ctx);
+    let at_ceiling = RustBV::concrete(0xAA, 128).reverse();
     assert_eq!(at_ceiling.as_u128(), Some(0xAA << 120));
 }
 
 #[test]
 fn test_shift_by_zero() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let zero = RustBV::zero(32);
     // x << 0 → x
-    assert!(x.shl(&zero, &ctx).leaf_var().is_some());
+    assert!(x.shl(&zero).leaf_var().is_some());
     // x >> 0 → x
-    assert!(x.lshr(&zero, &ctx).leaf_var().is_some());
+    assert!(x.lshr(&zero).leaf_var().is_some());
     // x >>> 0 → x
-    assert!(x.ashr(&zero, &ctx).leaf_var().is_some());
+    assert!(x.ashr(&zero).leaf_var().is_some());
 }
 
 #[test]
 fn test_shift_zero_value() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let zero = RustBV::zero(32);
     // 0 << x → 0
-    assert_eq!(zero.shl(&x, &ctx).as_u128(), Some(0));
+    assert_eq!(zero.shl(&x).as_u128(), Some(0));
     // 0 >> x → 0
-    assert_eq!(zero.lshr(&x, &ctx).as_u128(), Some(0));
+    assert_eq!(zero.lshr(&x).as_u128(), Some(0));
 }
 
 #[test]
 fn test_shl_concrete_amount_rewrites_to_concat() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let four = RustBV::concrete(4, 32);
     // sym << 4 → Concat(Extract(27, 0, sym), 0^4)
-    let r = x.shl(&four, &ctx);
+    let r = x.shl(&four);
     assert_eq!(r.width(), 32);
     match r.node() {
         Some(Node {
@@ -216,28 +203,26 @@ fn test_shl_concrete_amount_rewrites_to_concat() {
     }
     // Behavior preserved when LHS happens to be concrete (still constant-folds).
     let v = RustBV::concrete(0x1234, 32);
-    assert_eq!(v.shl(&four, &ctx).as_u128(), Some(0x12340));
+    assert_eq!(v.shl(&four).as_u128(), Some(0x12340));
 }
 
 #[test]
 fn test_shl_concrete_amount_at_or_above_width_yields_zero() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     // sym << 32 → 0
-    let r = x.shl(&RustBV::concrete(32, 32), &ctx);
+    let r = x.shl(&RustBV::concrete(32, 32));
     assert_eq!(r.as_u128(), Some(0));
     // sym << 999 (oversized amount) → 0
-    let r = x.shl(&RustBV::concrete(999, 32), &ctx);
+    let r = x.shl(&RustBV::concrete(999, 32));
     assert_eq!(r.as_u128(), Some(0));
 }
 
 #[test]
 fn test_lshr_concrete_amount_rewrites_to_concat() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let eight = RustBV::concrete(8, 32);
     // sym >> 8 → Concat(0^8, Extract(31, 8, sym))
-    let r = x.lshr(&eight, &ctx);
+    let r = x.lshr(&eight);
     assert_eq!(r.width(), 32);
     match r.node() {
         Some(Node {
@@ -251,17 +236,16 @@ fn test_lshr_concrete_amount_rewrites_to_concat() {
         }
         _ => panic!("expected Concat, got {r:?}"),
     }
-    let r = x.lshr(&RustBV::concrete(32, 32), &ctx);
+    let r = x.lshr(&RustBV::concrete(32, 32));
     assert_eq!(r.as_u128(), Some(0));
 }
 
 #[test]
 fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let four = RustBV::concrete(4, 32);
     // sym >>> 4 → SignExt(4, Extract(31, 4, sym))  [extends 28-bit slice by 4 bits]
-    let r = x.ashr(&four, &ctx);
+    let r = x.ashr(&four);
     assert_eq!(r.width(), 32);
     match r.node() {
         Some(Node {
@@ -273,7 +257,7 @@ fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
         _ => panic!("expected SignExt(4), got {r:?}"),
     }
     // Beyond width: SignExt of MSB (1-bit slice extended by 31 bits).
-    let r = x.ashr(&RustBV::concrete(64, 32), &ctx);
+    let r = x.ashr(&RustBV::concrete(64, 32));
     assert_eq!(r.width(), 32);
     match r.node() {
         Some(Node {
@@ -288,11 +272,10 @@ fn test_ashr_concrete_amount_rewrites_to_sign_extend() {
 
 #[test]
 fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     let eight = RustBV::concrete(8, 32);
     // sym * 8 → sym << 3 → Concat(Extract(28, 0, sym), 0^3)
-    let r = x.mul(&eight, &ctx);
+    let r = x.mul(&eight);
     assert_eq!(r.width(), 32);
     match r.node() {
         Some(Node {
@@ -306,7 +289,7 @@ fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
         _ => panic!("expected Concat (via Shl), got {r:?}"),
     }
     // Commutative case: 8 * sym → same shape.
-    let r = eight.mul(&x, &ctx);
+    let r = eight.mul(&x);
     match r.node() {
         Some(Node {
             op: BVOp::Concat,
@@ -321,44 +304,40 @@ fn test_mul_by_power_of_two_rewrites_to_shl_then_concat() {
 
 #[test]
 fn test_mul_by_non_power_of_two_stays_as_mul() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     // sym * 3 → still Mul (no rewrite for non-pow2 constants)
-    let r = x.mul(&RustBV::concrete(3, 32), &ctx);
+    let r = x.mul(&RustBV::concrete(3, 32));
     assert_eq!(r.node().map(|n| n.op), Some(BVOp::Mul), "expected Mul, got {r:?}");
 }
 
 #[test]
 fn test_sign_extend_identity() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
+    let x = RustBV::symbol("x", 32);
     // sign_extend to same width → x
-    let r = x.sign_extend(32, &ctx);
+    let r = x.sign_extend(32);
     assert!(r.leaf_var().is_some());
     assert_eq!(r.width(), 32);
 }
 
 #[test]
 fn test_extract_zero_ext() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
-    let ext = x.zero_extend(32, &ctx); // 8-bit → 32-bit
+    let x = RustBV::symbol("x", 8);
+    let ext = x.zero_extend(32); // 8-bit → 32-bit
     // Extract low 8 bits → original x
-    let lo = ext.extract(7, 0, &ctx);
+    let lo = ext.extract(7, 0);
     assert_eq!(lo.leaf_var(), x.leaf_var(), "expected x back, got {lo:?}");
     assert_eq!(lo.width(), 8);
     // Extract high 8 bits → 0
-    let hi = ext.extract(31, 24, &ctx);
+    let hi = ext.extract(31, 24);
     assert_eq!(hi.as_u128(), Some(0));
 }
 
 #[test]
 fn test_extract_sign_ext_low_bits() {
-    let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
-    let ext = x.sign_extend(32, &ctx);
+    let x = RustBV::symbol("x", 8);
+    let ext = x.sign_extend(32);
     // Extract low 8 bits → original x
-    let lo = ext.extract(7, 0, &ctx);
+    let lo = ext.extract(7, 0);
     assert_eq!(lo.leaf_var(), x.leaf_var(), "expected x back, got {lo:?}");
     assert_eq!(lo.width(), 8);
 }
@@ -368,10 +347,10 @@ fn test_reverse_z3_emission_32bit_leaf() {
     // Reverse(x) over a symbolic leaf should produce byte-reversed value
     // through the Z3 emission path.
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
-    let rev = x.reverse(&ctx); // Expression { Reverse, [x] }
+    let x = RustBV::symbol("x", 32);
+    let rev = x.reverse(); // Expression { Reverse, [x] }
     // Pin x = 0x11223344; expect Reverse(x) = 0x44332211
-    let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+    let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     assert_eq!(ctx.eval(&rev), Some(0x44332211));
 }
@@ -379,9 +358,9 @@ fn test_reverse_z3_emission_32bit_leaf() {
 #[test]
 fn test_reverse_z3_emission_64bit_leaf() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 64);
-    let rev = x.reverse(&ctx);
-    let pinned = x.eq(&RustBV::concrete(0x0123456789ABCDEF, 64), &ctx);
+    let x = RustBV::symbol("x", 64);
+    let rev = x.reverse();
+    let pinned = x.eq(&RustBV::concrete(0x0123456789ABCDEF, 64));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     assert_eq!(ctx.eval(&rev), Some(0xEFCDAB8967452301));
 }
@@ -389,9 +368,9 @@ fn test_reverse_z3_emission_64bit_leaf() {
 #[test]
 fn test_reverse_z3_emission_16bit_leaf() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 16);
-    let rev = x.reverse(&ctx);
-    let pinned = x.eq(&RustBV::concrete(0xAABB, 16), &ctx);
+    let x = RustBV::symbol("x", 16);
+    let rev = x.reverse();
+    let pinned = x.eq(&RustBV::concrete(0xAABB, 16));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     assert_eq!(ctx.eval(&rev), Some(0xBBAA));
 }
@@ -403,18 +382,18 @@ fn test_reverse_z3_emission_concat_of_bytes() {
     // be Concat(b7, b6, ..., b0) — the byte-reversed value.
     let ctx = SymContext::new_mock();
     let bytes: Vec<RustBV> = (0..8u32)
-        .map(|i| RustBV::symbolic(&ctx, format!("b{i}"), 8))
+        .map(|i| RustBV::symbol(format!("b{i}"), 8))
         .collect();
     // Build claripy-style Concat(b0, b1, ..., b7) with b0 as high.
     let mut concat = bytes[0].clone();
     for b in &bytes[1..] {
-        concat = concat.concat(b, &ctx);
+        concat = concat.concat(b);
     }
-    let rev = concat.reverse(&ctx);
+    let rev = concat.reverse();
     // Pin each byte to a distinct value and verify byte-reversed result.
     let vals: [u64; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
     for (b, v) in bytes.iter().zip(vals.iter()) {
-        let pin = b.eq(&RustBV::concrete(*v as u128, 8), &ctx);
+        let pin = b.eq(&RustBV::concrete(*v as u128, 8));
         ctx.add_constraint(pin.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     }
     // concat = 0x1122334455667788; reverse → 0x8877665544332211
@@ -429,13 +408,13 @@ fn test_pre_z3_extract_over_reverse_byte_aligned() {
     // Extract a single byte from Reverse(x). With the rewrite pass the
     // Reverse should be eliminated entirely from the Z3 AST.
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
-    let rev = x.reverse(&ctx);
+    let x = RustBV::symbol("x", 32);
+    let rev = x.reverse();
     // Bypass extract_into via the raw-node helper: pretend this Extract was
     // built by truncate_into after the Reverse existed.
     // Reverse(x) byte 0 ([7:0]) is byte 3 ([31:24]) of x.
     let lo_byte = raw_extract_node(rev, 7, 0);
-    let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+    let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     assert_eq!(ctx.eval(&lo_byte), Some(0x11));
 }
@@ -445,11 +424,11 @@ fn test_pre_z3_extract_over_reverse_crossing_byte() {
     // Two-byte extract across a byte boundary on Reverse — still
     // byte-aligned (high % 8 == 7, low % 8 == 0), should be rewritten.
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
-    let rev = x.reverse(&ctx);
+    let x = RustBV::symbol("x", 32);
+    let rev = x.reverse();
     // Reverse(x)[15:0] = bytes 0,1 of reverse = bytes 3,2 of x = top half reversed.
     let lower16 = raw_extract_node(rev, 15, 0);
-    let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+    let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     // Reverse(0x11223344) = 0x44332211; low 16 bits = 0x2211
     assert_eq!(ctx.eval(&lower16), Some(0x2211));
@@ -460,18 +439,18 @@ fn test_pre_z3_extract_over_concat_within_low() {
     // Extract entirely within the low (right) part of a Concat — should
     // delegate to that operand alone.
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "a", 16);
-    let b = RustBV::symbolic(&ctx, "b", 16);
-    let cat = a.concat(&b, &ctx); // a:high, b:low
+    let a = RustBV::symbol("a", 16);
+    let b = RustBV::symbol("b", 16);
+    let cat = a.concat(&b); // a:high, b:low
     // Extract [15:0] of cat = entirely within b.
     let lo = raw_extract_node(cat, 15, 0);
     ctx.add_constraint(
-        a.eq(&RustBV::concrete(0xAAAA, 16), &ctx)
+        a.eq(&RustBV::concrete(0xAAAA, 16))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
     ctx.add_constraint(
-        b.eq(&RustBV::concrete(0xBBBB, 16), &ctx)
+        b.eq(&RustBV::concrete(0xBBBB, 16))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -481,18 +460,18 @@ fn test_pre_z3_extract_over_concat_within_low() {
 #[test]
 fn test_pre_z3_extract_over_concat_within_high() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "a", 16);
-    let b = RustBV::symbolic(&ctx, "b", 16);
-    let cat = a.concat(&b, &ctx);
+    let a = RustBV::symbol("a", 16);
+    let b = RustBV::symbol("b", 16);
+    let cat = a.concat(&b);
     // Extract [31:16] of cat = entirely within a.
     let hi = raw_extract_node(cat, 31, 16);
     ctx.add_constraint(
-        a.eq(&RustBV::concrete(0xAAAA, 16), &ctx)
+        a.eq(&RustBV::concrete(0xAAAA, 16))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
     ctx.add_constraint(
-        b.eq(&RustBV::concrete(0xBBBB, 16), &ctx)
+        b.eq(&RustBV::concrete(0xBBBB, 16))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -503,18 +482,18 @@ fn test_pre_z3_extract_over_concat_within_high() {
 fn test_pre_z3_extract_over_concat_crossing() {
     // Crosses the a/b boundary in the middle — distribute Extract to both.
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "a", 16);
-    let b = RustBV::symbolic(&ctx, "b", 16);
-    let cat = a.concat(&b, &ctx);
+    let a = RustBV::symbol("a", 16);
+    let b = RustBV::symbol("b", 16);
+    let cat = a.concat(&b);
     // Extract [23:8] = high 8 bits of b ([15:8]) concat with low 8 bits of a ([7:0]).
     let mid = raw_extract_node(cat, 23, 8);
     ctx.add_constraint(
-        a.eq(&RustBV::concrete(0x1234, 16), &ctx)
+        a.eq(&RustBV::concrete(0x1234, 16))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
     ctx.add_constraint(
-        b.eq(&RustBV::concrete(0x5678, 16), &ctx)
+        b.eq(&RustBV::concrete(0x5678, 16))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -525,12 +504,12 @@ fn test_pre_z3_extract_over_concat_crossing() {
 #[test]
 fn test_pre_z3_extract_over_extract_fused() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 64);
-    let mid = x.extract(47, 16, &ctx); // width 32, = bits 16..=47 of x
+    let x = RustBV::symbol("x", 64);
+    let mid = x.extract(47, 16); // width 32, = bits 16..=47 of x
     // Build outer Extract WITHOUT going through extract_into.
     let outer = raw_extract_node(mid, 23, 8); // mid[23:8] = bits [39:24] of x
     ctx.add_constraint(
-        x.eq(&RustBV::concrete(0x0011_2233_4455_6677, 64), &ctx)
+        x.eq(&RustBV::concrete(0x0011_2233_4455_6677, 64))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -542,12 +521,12 @@ fn test_pre_z3_extract_over_extract_fused() {
 #[test]
 fn test_pre_z3_extract_over_zero_ext_low_bits() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
-    let zx = x.zero_extend(32, &ctx); // width 32
+    let x = RustBV::symbol("x", 8);
+    let zx = x.zero_extend(32); // width 32
     // Extract [7:0] entirely within original x.
     let lo = raw_extract_node(zx, 7, 0);
     ctx.add_constraint(
-        x.eq(&RustBV::concrete(0xAB, 8), &ctx)
+        x.eq(&RustBV::concrete(0xAB, 8))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -557,12 +536,12 @@ fn test_pre_z3_extract_over_zero_ext_low_bits() {
 #[test]
 fn test_pre_z3_extract_over_zero_ext_extended_bits() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
-    let zx = x.zero_extend(32, &ctx);
+    let x = RustBV::symbol("x", 8);
+    let zx = x.zero_extend(32);
     // Extract [31:24] is entirely in the zero-extended region.
     let top = raw_extract_node(zx, 31, 24);
     ctx.add_constraint(
-        x.eq(&RustBV::concrete(0xFF, 8), &ctx)
+        x.eq(&RustBV::concrete(0xFF, 8))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -577,11 +556,11 @@ fn test_pre_z3_extract_over_zero_ext_extended_bits() {
 #[test]
 fn test_extract_over_reverse_multibyte_construction() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
-    let rev = x.reverse(&ctx);
+    let x = RustBV::symbol("x", 32);
+    let rev = x.reverse();
     // Use the normal extract (which now goes through the fixed Rule 3).
-    let lower16 = rev.extract(15, 0, &ctx);
-    let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
+    let lower16 = rev.extract(15, 0);
+    let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
     // Reverse(0x11223344) = 0x44332211; low 16 = 0x2211.
     assert_eq!(ctx.eval(&lower16), Some(0x2211));
@@ -591,12 +570,12 @@ fn test_extract_over_reverse_multibyte_construction() {
 fn test_extract_over_reverse_single_byte_construction() {
     // Single-byte case: rule reduces to plain Extract from x.
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 32);
-    let rev = x.reverse(&ctx);
+    let x = RustBV::symbol("x", 32);
+    let rev = x.reverse();
     // Byte 0 of reverse = byte 3 of x.
-    let b0 = rev.extract(7, 0, &ctx);
+    let b0 = rev.extract(7, 0);
     ctx.add_constraint(
-        x.eq(&RustBV::concrete(0x11223344, 32), &ctx)
+        x.eq(&RustBV::concrete(0x11223344, 32))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );
@@ -606,11 +585,11 @@ fn test_extract_over_reverse_single_byte_construction() {
 #[test]
 fn test_pre_z3_extract_over_sign_ext_low_bits() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "x", 8);
-    let sx = x.sign_extend(32, &ctx);
+    let x = RustBV::symbol("x", 8);
+    let sx = x.sign_extend(32);
     let lo = raw_extract_node(sx, 7, 0);
     ctx.add_constraint(
-        x.eq(&RustBV::concrete(0x80, 8), &ctx)
+        x.eq(&RustBV::concrete(0x80, 8))
             .to_z3_ast().unwrap()
             .eq(z3::ast::BV::from_u64(1, 1)),
     );

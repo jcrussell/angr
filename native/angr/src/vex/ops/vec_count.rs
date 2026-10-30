@@ -7,7 +7,7 @@
 //! zeros / count-leading-sign-bits (Iop_Clz{N}x{M} / Iop_Cls{N}x{M}).
 
 use super::{LaneCountKind, OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -15,7 +15,7 @@ impl VEXOps {
     /// is replaced by the count of set bits in that lane (0..=8). Result
     /// width equals input width (8 * count bits). Symbolic fast-path: each
     /// bit of the lane is zero-extended to 8 bits and summed.
-    pub(super) fn vec_cnt(arg: RustBV, count: u8, ctx: &SymContext) -> Result<RustBV, OpError> {
+    pub(super) fn vec_cnt(arg: RustBV, count: u8) -> Result<RustBV, OpError> {
         let total = 8u32 * count as u32;
         Self::require_operand_width("vec_cnt arg", arg.width(), total)?;
 
@@ -36,24 +36,20 @@ impl VEXOps {
             let lane_lo = i * 8;
             let mut acc = RustBV::concrete(0, 8);
             for b in 0..8 {
-                let bit = arg.extract(lane_lo + b, lane_lo + b, ctx);
-                let bit_ext = bit.zero_extend_into(8, ctx);
-                acc = acc.add_into(bit_ext, ctx);
+                let bit = arg.extract(lane_lo + b, lane_lo + b);
+                let bit_ext = bit.zero_extend_into(8);
+                acc = acc.add_into(bit_ext);
             }
             elements.push(acc);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// SSE byte-mask extract — `Iop_GetMSBs8x{8,16}` (x86 PMOVMSKB). Reduces a
     /// vector of `count` bytes (8 * count bits) to a `count`-bit integer whose
     /// bit `i` is the most-significant bit (bit 7) of input byte `i`. Used by
     /// glibc's SSE strlen/memchr; see angr-75mc.
-    pub(super) fn vec_get_msbs(
-        arg: RustBV,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn vec_get_msbs(arg: RustBV, count: u8) -> Result<RustBV, OpError> {
         let total = 8u32 * count as u32;
         Self::require_operand_width("vec_get_msbs arg", arg.width(), total)?;
 
@@ -72,9 +68,9 @@ impl VEXOps {
         let mut bits: Vec<RustBV> = Vec::with_capacity(count as usize);
         for i in 0..count as u32 {
             let msb_pos = i * 8 + 7;
-            bits.push(arg.extract(msb_pos, msb_pos, ctx));
+            bits.push(arg.extract(msb_pos, msb_pos));
         }
-        Ok(Self::concat_le_elements(bits, ctx))
+        Ok(Self::concat_le_elements(bits))
     }
 
     /// NEON per-lane Clz/Cls — `Iop_Clz{N}x{M}` / `Iop_Cls{N}x{M}`. Each
@@ -91,7 +87,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         kind: LaneCountKind,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total = elem_width * count as u32;
@@ -142,26 +137,26 @@ impl VEXOps {
         for i in 0..count as u32 {
             let lane_lo = i * elem_width;
             let lane_hi = lane_lo + elem_width - 1;
-            let lane = arg.extract(lane_hi, lane_lo, ctx);
+            let lane = arg.extract(lane_hi, lane_lo);
             let res = match kind {
-                LaneCountKind::Clz => Self::clz_chain(lane, elem_width, ctx),
-                LaneCountKind::Cls => Self::cls_chain(lane, elem_width, ctx),
+                LaneCountKind::Clz => Self::clz_chain(lane, elem_width),
+                LaneCountKind::Cls => Self::cls_chain(lane, elem_width),
             };
             elements.push(res);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// Build an ITE chain that returns clz of an `n`-bit lane in `n` bits.
     /// Mirrors `_op_generic_Clz` in `angr/engines/vex/claripy/irop.py`.
-    fn clz_chain(lane: RustBV, n: u32, ctx: &SymContext) -> RustBV {
+    fn clz_chain(lane: RustBV, n: u32) -> RustBV {
         let mut expr = RustBV::concrete(n as u128, n);
         let one = RustBV::concrete(1, 1);
         for a in 0..n {
-            let bit = lane.extract(a, a, ctx);
-            let cond = bit.eq_into(one.clone(), ctx);
+            let bit = lane.extract(a, a);
+            let cond = bit.eq_into(one.clone());
             let then_v = RustBV::concrete((n - a - 1) as u128, n);
-            expr = cond.ite_into(then_v, expr, ctx);
+            expr = cond.ite_into(then_v, expr);
         }
         expr
     }
@@ -170,14 +165,14 @@ impl VEXOps {
     /// the MSB) of an `n`-bit lane in `n` bits. Default value is `n-1` (all
     /// bits below the MSB match the MSB); the chain returns `n - 2 - a` for
     /// the highest non-MSB position `a` whose bit differs from the MSB.
-    fn cls_chain(lane: RustBV, n: u32, ctx: &SymContext) -> RustBV {
-        let sign = lane.extract(n - 1, n - 1, ctx);
+    fn cls_chain(lane: RustBV, n: u32) -> RustBV {
+        let sign = lane.extract(n - 1, n - 1);
         let mut expr = RustBV::concrete((n - 1) as u128, n);
         for a in 0..(n - 1) {
-            let bit = lane.extract(a, a, ctx);
-            let cond = bit.ne_into(sign.clone(), ctx);
+            let bit = lane.extract(a, a);
+            let cond = bit.ne_into(sign.clone());
             let then_v = RustBV::concrete((n - 2 - a) as u128, n);
-            expr = cond.ite_into(then_v, expr, ctx);
+            expr = cond.ite_into(then_v, expr);
         }
         expr
     }

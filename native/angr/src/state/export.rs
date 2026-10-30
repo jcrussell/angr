@@ -255,10 +255,9 @@ impl RustSimState {
         // Export named registers: read each GP register by name
         let mut named_registers = Vec::new();
         let mut symbolic_register_names = Vec::new();
-        let ctx = self.solver.borrow();
         for &name in self.arch.register_names() {
             if let Some(size) = self.arch.register_size(name) {
-                let bv = self.registers.get_reg(name, &ctx);
+                let bv = self.registers.get_reg(name);
                 if let Some(bv) = bv {
                     if let Some(val) = bv.as_u128() {
                         named_registers.push((name.to_string(), val, size * 8));

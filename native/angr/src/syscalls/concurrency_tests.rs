@@ -2,7 +2,6 @@
 // Extracted from the inline `mod tests` block; see that module's siblings.
 use crate::symbolic::ToZ3;
 use super::*;
-use crate::symbolic::SymContext;
 
 fn fresh_state() -> RustSimState {
     RustSimState::new("amd64").expect("amd64 state")
@@ -60,9 +59,8 @@ fn futex_symbolic_op_returns_error() {
     let h = NativeFutexSyscall;
     let mut state = fresh_state();
     let bits = state.arch().bits();
-    let ctx = SymContext::new();
     let mut args: Vec<RustBV> = (0..6).map(|_| RustBV::concrete(0, bits)).collect();
-    args[1] = RustBV::symbolic(&ctx, "op_sym", bits);
+    args[1] = RustBV::symbol("op_sym", bits);
     let err = h.call(&mut state, &args).expect_err("must error");
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }

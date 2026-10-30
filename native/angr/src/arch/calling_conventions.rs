@@ -28,7 +28,7 @@ use super::x86::offsets as x86_off;
 /// when the stack portion of the argument list cannot be read.
 ///
 /// Argument extraction previously relied on silent fabrication (it would mint
-/// a fresh `RustBV::symbolic("stack_arg_N", …)` whenever the stack load
+/// a fresh `RustBV::symbol("stack_arg_N", …)` whenever the stack load
 /// failed). That made real stack-setup bugs indistinguishable from intentional
 /// symbolic input. Returning an explicit error variant forces callers to
 /// decide policy.
@@ -274,9 +274,9 @@ pub(crate) trait CallingConvention: Send + Sync {
             // A link-register ABI that has not named its LR gets `None`, never
             // a stack read: `[sp]` holds no return address there.
             let lr = self.link_register()?;
-            return regs.get(lr, ptr_size, ctx).as_u64();
+            return regs.get(lr, ptr_size).as_u64();
         }
-        let sp = regs.get(regs.arch().sp_offset(), ptr_size, ctx);
+        let sp = regs.get(regs.arch().sp_offset(), ptr_size);
         let sp_val = sp.as_u64()?;
 
         if let Some(mem) = memory

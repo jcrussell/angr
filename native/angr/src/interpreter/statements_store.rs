@@ -307,7 +307,7 @@ impl<'a> VEXInterpreter<'a> {
         kind: GuardedStoreAddr,
     ) -> Result<(), CbExecutionError> {
         let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
-        let ite_result = guard_val.ite(data_val, &current, self.ctx);
+        let ite_result = guard_val.ite(data_val, &current);
         // The ITE captured `current`; now that we're about to overwrite this
         // range, invalidate stale cached code and evict overlapping symbolic
         // shadows (angr-myzjx.26).

@@ -163,7 +163,7 @@ fn dispatch_hook_seeded(
         SpSeed::Default => {}
         SpSeed::Concrete(sp) => state.set_sp(crate::symbolic::RustBV::concrete(sp as u128, bits)),
         SpSeed::Symbolic => {
-            let sym = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "sym_sp", bits);
+            let sym = crate::symbolic::RustBV::symbol("sym_sp", bits);
             state.set_sp(sym);
         }
     }
@@ -173,7 +173,7 @@ fn dispatch_hook_seeded(
     let mut stored_conditions = FxHashMap::default();
     let mut fork_snapshots = FxHashMap::default();
     let condition = fork.map(|seed| {
-        let guard = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "hook_guard", 1);
+        let guard = crate::symbolic::RustBV::symbol("hook_guard", 1);
         stored_conditions.insert(FORK_COND_ID, guard.clone());
         if seed.with_snapshot {
             // Taken before the guard is assumed and before the proc runs, like

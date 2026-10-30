@@ -148,7 +148,7 @@ fn test_memcmp_with_nulls() {
 /// mapped; this overwrites the byte without disturbing the rest.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, name, 8);
+    let sym = RustBV::symbol(name, 8);
     drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
@@ -188,7 +188,7 @@ fn test_memcmp_symbolic_byte_solver_evaluation() {
     // 4 - 2 = 2 (angr-u8gm8).
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(4u128, 8);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
 
     let proc = NativeMemcmp;
@@ -219,7 +219,7 @@ fn test_memcmp_symbolic_byte_equal_solution() {
     // Constrain sym == 2 -> result == 0.
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(2u128, 8);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
 
     let proc = NativeMemcmp;

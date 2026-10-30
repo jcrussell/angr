@@ -83,7 +83,6 @@ fn bounded_value_cap_is_inclusive() {
 
 #[test]
 fn extract_bounded_concrete_arg_bounds_and_still_falls_back_on_symbolic() {
-    let ctx = crate::symbolic::SymContext::new();
 
     assert_eq!(
         extract_bounded_concrete_arg(&RustBV::concrete(0x1000, 64), "probe", MAX_MAP_SIZE)
@@ -103,7 +102,7 @@ fn extract_bounded_concrete_arg_bounds_and_still_falls_back_on_symbolic() {
     // A symbolic arg is neither Within nor Exceeds — the cap must not turn a
     // Python fallback into a silent refusal.
     match extract_bounded_concrete_arg(
-        &RustBV::symbolic(&ctx, "probe_sym", 64),
+        &RustBV::symbol("probe_sym", 64),
         "probe",
         MAX_MAP_SIZE,
     ) {

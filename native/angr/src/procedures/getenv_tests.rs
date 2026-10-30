@@ -140,7 +140,7 @@ fn test_putenv_no_equals() {
 fn test_getenv_symbolic_name() {
     let mut state = setup_state();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "name", 64);
+    let sym = RustBV::symbol("name", 64);
     drop(ctx);
 
     let result = NativeGetenv.call(&mut state, &[sym]);
@@ -155,8 +155,7 @@ fn test_setenv_symbolic_value_falls_back() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"KEY\x00", Permission::RWX);
     let sym_value_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "value_ptr", 64)
+        RustBV::symbol("value_ptr", 64)
     };
 
     let result = NativeSetenv.call(
@@ -174,8 +173,7 @@ fn test_setenv_symbolic_value_falls_back() {
 fn test_putenv_symbolic_arg_falls_back() {
     let mut state = setup_state();
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "str_ptr", 64)
+        RustBV::symbol("str_ptr", 64)
     };
 
     let result = NativePutenv.call(&mut state, &[sym]);
@@ -213,7 +211,7 @@ fn test_unsetenv_missing_key_returns_zero() {
 fn test_unsetenv_symbolic_name() {
     let mut state = setup_state();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "name", 64);
+    let sym = RustBV::symbol("name", 64);
     drop(ctx);
 
     let result = NativeUnsetenv.call(&mut state, &[sym]);

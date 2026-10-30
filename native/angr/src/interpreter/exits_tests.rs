@@ -231,8 +231,8 @@ fn eval_next_addr_single_concretization_returns_target() {
     irsb.next = IRExpr::RdTmp(0);
 
     // Symbolic fallthrough target constrained to exactly 0x9000.
-    let sym = RustBV::symbolic(&ctx, "next_target", 64);
-    let pin = sym.eq(&RustBV::concrete(0x9000, 64), &ctx);
+    let sym = RustBV::symbol("next_target", 64);
+    let pin = sym.eq(&RustBV::concrete(0x9000, 64));
     ctx.assume_true(&pin);
     interp.temps.resize(1, None);
     interp.temps[0] = Some(sym);
@@ -256,7 +256,7 @@ fn eval_next_addr_multivalued_returns_unsupported() {
     irsb.next = IRExpr::RdTmp(0);
 
     // Unconstrained symbolic target -> Multiple/TooLarge -> Unsupported.
-    let sym = RustBV::symbolic(&ctx, "next_target_open", 64);
+    let sym = RustBV::symbol("next_target_open", 64);
     interp.temps.resize(1, None);
     interp.temps[0] = Some(sym);
 
@@ -286,7 +286,7 @@ fn exit_nondeferred_symbolic_guard_uses_eval_next_addr_for_fallthrough() {
     irsb.next = IRExpr::Const(IRConst::U64(0x4000));
 
     // Symbolic 1-bit guard -> non-deferred symbolic-branch path.
-    let guard = RustBV::symbolic(&ctx, "exit_guard", 1);
+    let guard = RustBV::symbol("exit_guard", 1);
     interp.temps.resize(1, None);
     interp.temps[0] = Some(guard);
 
@@ -331,7 +331,7 @@ fn get_syscall_num_returns_none_for_symbolic_rax() {
     // caller routes to Python instead of dispatching to a native handler.
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
-    let sym = RustBV::symbolic(&ctx, "rax_sym", 64);
+    let sym = RustBV::symbol("rax_sym", 64);
     interp.registers.put_reg("rax", sym);
     assert_eq!(interp.get_syscall_num(), None);
 }

@@ -132,11 +132,10 @@ fn span_crossing_unmapped_page_fails() {
 
 #[test]
 fn symbolic_addr_falls_back() {
-    use crate::symbolic::SymContext;
+    
     let h = NativeMprotectSyscall;
     let mut state = mk_state_with_page(0x1000, Permission::RW);
-    let ctx = SymContext::new();
-    let sym_addr = RustBV::symbolic(&ctx, "addr", 64);
+    let sym_addr = RustBV::symbol("addr", 64);
     let args = vec![
         sym_addr,
         RustBV::concrete(0x1000, 64),
@@ -156,11 +155,10 @@ fn symbolic_addr_falls_back() {
 
 #[test]
 fn symbolic_length_falls_back() {
-    use crate::symbolic::SymContext;
+    
     let h = NativeMprotectSyscall;
     let mut state = mk_state_with_page(0x1000, Permission::RW);
-    let ctx = SymContext::new();
-    let sym_length = RustBV::symbolic(&ctx, "length", 64);
+    let sym_length = RustBV::symbol("length", 64);
     let args = vec![
         RustBV::concrete(0x1000, 64),
         sym_length,
@@ -179,11 +177,10 @@ fn symbolic_length_falls_back() {
 
 #[test]
 fn symbolic_prot_falls_back() {
-    use crate::symbolic::SymContext;
+    
     let h = NativeMprotectSyscall;
     let mut state = mk_state_with_page(0x1000, Permission::RW);
-    let ctx = SymContext::new();
-    let sym_prot = RustBV::symbolic(&ctx, "prot", 64);
+    let sym_prot = RustBV::symbol("prot", 64);
     let args = vec![
         RustBV::concrete(0x1000, 64),
         RustBV::concrete(0x1000, 64),

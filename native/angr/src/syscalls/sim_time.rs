@@ -19,7 +19,7 @@
 //!   `key` enables Python's fresh-bvs deduplication when called from the
 //!   *same* SimProcedure instance — angr generates a fresh symbol per
 //!   call site otherwise. Native handlers don't have that machinery, so
-//!   we always create a fresh `RustBV::symbolic(...)` per invocation.
+//!   we always create a fresh `RustBV::symbol(...)` per invocation.
 //!   This mildly differs from Python's intra-procedure deduplication but
 //!   matches its inter-call behavior, which is what binaries observe.
 //! * `USE_SYSTEM_TIMES`: Python's path that returns `int(time.time())` is
@@ -73,10 +73,9 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
         // Bind the borrow to a local so it ends before we hit memory_store
         // (which takes a mutable borrow of the solver internally).
         let (tv_sec, tv_usec) = {
-            let ctx = state.solver().borrow();
             (
-                fresh_symbolic(&ctx, "tv_sec", bits),
-                fresh_symbolic(&ctx, "tv_usec", bits),
+                fresh_symbolic("tv_sec", bits),
+                fresh_symbolic("tv_usec", bits),
             )
         };
         let stride = (bits / 8) as u64;
@@ -115,12 +114,11 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
 pub(crate) fn fresh_monotonic_time(state: &mut RustSimState) -> RustBV {
     let bits = state.arch().bits();
     let (sys_time, monotonic_constraint) = {
-        let ctx = state.solver().borrow();
-        let sys_time = fresh_symbolic(&ctx, "sys_time", bits);
+        let sys_time = fresh_symbolic("sys_time", bits);
         let zero = RustBV::concrete(0, bits);
         // Monotonic constraint: sys_time >= last_time (or >= 0 first call).
         let lower = state.last_time().cloned().unwrap_or(zero);
-        let cmp = sys_time.sge(&lower, &ctx);
+        let cmp = sys_time.sge(&lower);
         (sys_time, cmp)
     };
     state.add_constraint(monotonic_constraint);
@@ -189,10 +187,9 @@ impl NativeSyscall for NativeClockGettimeSyscall {
 
         let bits = state.arch().bits();
         let (tv_sec, tv_nsec) = {
-            let ctx = state.solver().borrow();
             (
-                fresh_symbolic(&ctx, "tv_sec", bits),
-                fresh_symbolic(&ctx, "tv_nsec", bits),
+                fresh_symbolic("tv_sec", bits),
+                fresh_symbolic("tv_nsec", bits),
             )
         };
         let stride = (bits / 8) as u64;

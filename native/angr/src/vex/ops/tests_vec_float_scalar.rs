@@ -56,7 +56,7 @@ fn test_vec_float_scalar_div() {
 #[test]
 fn test_vec_float_scalar_add_symbolic() {
     let ctx = SymContext::new_mock();
-    let xmm0 = RustBV::symbolic(&ctx, "xmm0", 128);
+    let xmm0 = RustBV::symbol("xmm0", 128);
     // xmm1 = [2.0f, 0, 0, 0]
     let xmm1 = RustBV::concrete(2.0f32.to_bits() as u128, 128);
 
@@ -65,7 +65,7 @@ fn test_vec_float_scalar_add_symbolic() {
     assert_eq!(result.width(), 128);
 
     // Constrain low 32 bits of result to bits(5.0).
-    let res_lo = result.extract(31, 0, &ctx);
+    let res_lo = result.extract(31, 0);
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
     let eq = res_lo.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -82,8 +82,8 @@ fn test_vec_float_scalar_add_symbolic() {
     );
 
     // Verify upper 96 bits of result equal upper 96 bits of xmm0 (passthrough).
-    let upper_in = xmm0.extract(127, 32, &ctx);
-    let upper_out = result.extract(127, 32, &ctx);
+    let upper_in = xmm0.extract(127, 32);
+    let upper_out = result.extract(127, 32);
     let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
     ctx.add_constraint(eq_upper);
     assert!(ctx.is_sat(), "expected upper-bits passthrough to hold");
@@ -93,12 +93,12 @@ fn test_vec_float_scalar_add_symbolic() {
 #[test]
 fn test_vec_float_scalar_sqrt_symbolic() {
     let ctx = SymContext::new_mock();
-    let xmm = RustBV::symbolic(&ctx, "xmm_sqrt", 128);
+    let xmm = RustBV::symbol("xmm_sqrt", 128);
 
     let result = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F32 }, xmm.clone(), &ctx).unwrap();
     assert_eq!(result.width(), 128);
 
-    let res_lo = result.extract(31, 0, &ctx);
+    let res_lo = result.extract(31, 0);
     let four = RustBV::concrete(4.0f32.to_bits() as u128, 32);
     let eq = res_lo.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -122,14 +122,14 @@ fn test_vec_float_scalar_sqrt_symbolic() {
 #[test]
 fn test_vec_float_scalar_max_symbolic() {
     let ctx = SymContext::new_mock();
-    let xmm0 = RustBV::symbolic(&ctx, "xmm_max", 128);
+    let xmm0 = RustBV::symbol("xmm_max", 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
     let result =
         VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
     assert_eq!(result.width(), 128);
 
-    let res_lo = result.extract(31, 0, &ctx);
+    let res_lo = result.extract(31, 0);
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
     let eq = res_lo.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -148,14 +148,14 @@ fn test_vec_float_scalar_max_symbolic() {
 #[test]
 fn test_vec_float_scalar_min_symbolic() {
     let ctx = SymContext::new_mock();
-    let xmm0 = RustBV::symbolic(&ctx, "xmm_min", 128);
+    let xmm0 = RustBV::symbol("xmm_min", 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
     let result =
         VEXOps::binop(IROp::VFMinS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
     assert_eq!(result.width(), 128);
 
-    let res_lo = result.extract(31, 0, &ctx);
+    let res_lo = result.extract(31, 0);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let eq = res_lo.to_z3_ast().unwrap().eq(one.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -622,8 +622,8 @@ fn test_estimate_lanes_are_fresh_variables() {
     };
     let a = est(packed, RustBV::concrete(1, 128));
     let b = est(packed, RustBV::concrete(2, 128));
-    let lane0 = a.extract(31, 0, &ctx);
-    let lane1 = a.extract(63, 32, &ctx);
+    let lane0 = a.extract(31, 0);
+    let lane1 = a.extract(63, 32);
     let (v0, v1) = (free_vars(&lane0), free_vars(&lane1));
     assert_eq!(v0.len(), 1, "one leaf per lane: {v0:?}");
     assert!(v0.is_disjoint(&v1), "two lanes share a leaf: {v0:?} {v1:?}");
@@ -635,7 +635,7 @@ fn test_estimate_lanes_are_fresh_variables() {
         "lane names keep irop.py's hint: {va:?}"
     );
     // The solver agrees: two lanes of one estimate can differ.
-    ctx.assume_true(&lane0.ne(&lane1, &ctx));
+    ctx.assume_true(&lane0.ne(&lane1));
     assert!(ctx.is_sat(), "lane0 != lane1 must be satisfiable");
 
     // The scalar (RCPSS) and integer (URECPE) forms mint fresh lanes too.

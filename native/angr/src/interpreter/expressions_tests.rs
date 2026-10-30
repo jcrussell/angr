@@ -54,7 +54,7 @@ fn eval_const_v256_keeps_all_four_lanes_at_width_256() {
     assert_eq!(bv.as_u128(), None);
     for (i, lane) in lanes.iter().enumerate() {
         let lo = (i as u32) * 64;
-        let slice = bv.extract_no_ctx(lo + 63, lo);
+        let slice = bv.extract(lo + 63, lo);
         assert_eq!(slice.width(), 64);
         assert_eq!(slice.as_u64(), Some(*lane), "lane {i} mismatch");
     }
@@ -67,7 +67,7 @@ fn eval_const_v256_zero_is_still_all_zero() {
     let bv = interp.eval_const(&IRConst::V256([0; 4]));
     assert_eq!(bv.width(), 256);
     for i in 0..4u32 {
-        assert_eq!(bv.extract_no_ctx(i * 64 + 63, i * 64).as_u64(), Some(0));
+        assert_eq!(bv.extract(i * 64 + 63, i * 64).as_u64(), Some(0));
     }
 }
 
@@ -220,7 +220,7 @@ fn eval_binop_symbolic_unsupported_routes_to_python_not_fabricate() {
     let mut interp = new_interp(&ctx);
     // Stash a symbolic value in a temp so the operand is symbolic.
     interp.temps.resize(2, None);
-    interp.temps[0] = Some(RustBV::symbolic(&ctx, "sym_in", 64));
+    interp.temps[0] = Some(RustBV::symbol("sym_in", 64));
     let env = TypeEnv::new();
     // Dispatch a unary op through the binary path: VEXOps::binop returns
     // OpError::NotBinary, and the (symbolic) operand takes the fallback arm.
@@ -368,7 +368,7 @@ fn symbolic_overlap_load_returns_symbolic_for_offset_load() {
     let mut interp = new_interp(&ctx);
     interp
         .pending_symbolic_stores
-        .insert(0x1000, RustBV::symbolic(&ctx, "v", 64));
+        .insert(0x1000, RustBV::symbol("v", 64));
     // 4-byte load at offset 4 is fully covered by the 8-byte store.
     let bv = interp
         .symbolic_overlap_load(&interp.pending_symbolic_stores, 0x1004, 4)
@@ -397,7 +397,7 @@ fn symbolic_overlap_load_covers_store_wrapping_past_address_top() {
     let base = u64::MAX - 3;
     interp
         .pending_symbolic_stores
-        .insert(base, RustBV::symbolic(&ctx, "w", 64));
+        .insert(base, RustBV::symbol("w", 64));
 
     // Load entirely inside the wrapped tail.
     let tail = interp
@@ -436,7 +436,7 @@ fn symbolic_overlap_load_misses_when_not_fully_covered() {
     // 4-byte store at 0x1000.
     interp
         .pending_symbolic_stores
-        .insert(0x1000, RustBV::symbolic(&ctx, "v", 32));
+        .insert(0x1000, RustBV::symbol("v", 32));
     // Load straddling the end of the store is not fully covered.
     assert!(
         interp
@@ -478,8 +478,8 @@ fn handle_concrete_store_symbolic_data_evicts_overlapping_symbolic_shadow() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
 
-    let store_a = RustBV::symbolic(&ctx, "store_a", 64); // [0x6000, 0x6008)
-    let store_b = RustBV::symbolic(&ctx, "store_b", 64); // [0x6004, 0x600c) -- overlaps A
+    let store_a = RustBV::symbol("store_a", 64); // [0x6000, 0x6008)
+    let store_b = RustBV::symbol("store_b", 64); // [0x6004, 0x600c) -- overlaps A
 
     interp
         .handle_concrete_store(&callbacks, 0x6000, store_a, 8)
@@ -539,7 +539,7 @@ fn dispatch_multi_load_caps_ite_chain_and_defers_to_python() {
 
     let ctx = SymContext::new_mock();
     let interp = new_interp(&ctx);
-    let addr_bv = RustBV::symbolic(&ctx, "multi_load_addr", 64);
+    let addr_bv = RustBV::symbol("multi_load_addr", 64);
 
     // At the cap: resolved in Rust, one host load per candidate address.
     let addrs: Vec<u64> = (0..MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
@@ -582,7 +582,7 @@ fn dispatch_multi_load_over_cap_without_full_callback_still_builds_ite() {
 
     let ctx = SymContext::new_mock();
     let interp = new_interp(&ctx);
-    let addr_bv = RustBV::symbolic(&ctx, "uncapped_addr", 64);
+    let addr_bv = RustBV::symbol("uncapped_addr", 64);
     let addrs: Vec<u64> = (0..64u64).map(|i| 0x5000 + i * 8).collect();
     let val = interp
         .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
@@ -694,8 +694,8 @@ fn mv_read_concretizer(on: bool) -> crate::concretize::AddressConcretizer {
 /// `should_avoid_multivalued_read` fires, yet the concretizer has exactly one
 /// solution when it does not — so ON and OFF differ only by the short-circuit.
 fn pinned_symbolic_addr(ctx: &SymContext, name: &str, addr: u64) -> RustBV {
-    let bv = RustBV::symbolic(ctx, name, 64);
-    ctx.assume_true(&bv.eq(&RustBV::concrete(addr as u128, 64), ctx));
+    let bv = RustBV::symbol(name, 64);
+    ctx.assume_true(&bv.eq(&RustBV::concrete(addr as u128, 64)));
     assert!(bv.as_u64().is_none(), "address must stay symbolic");
     bv
 }

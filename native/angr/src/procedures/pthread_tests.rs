@@ -30,7 +30,7 @@ fn test_symbolic_mutex_ptr_no_fallback() {
     // pointer is ignored, so the proc still succeeds with 0.
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "mutex_ptr", 64);
+    let sym = RustBV::symbol("mutex_ptr", 64);
     drop(ctx);
     let result = NativePthreadMutexLock.call(&mut state, &[sym]).unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(0));
@@ -149,7 +149,7 @@ fn test_once_symbolic_sp_falls_back_without_mutation() {
     // re-runs pthread_once and still invokes func — no silently-skipped init.
     let mut state = once_state(0x00);
     let ctx = state.solver().borrow();
-    let sym_sp = RustBV::symbolic(&ctx, "sp", 64);
+    let sym_sp = RustBV::symbol("sp", 64);
     drop(ctx);
     state.set_sp(sym_sp);
     assert!(matches!(
@@ -167,7 +167,7 @@ fn test_once_symbolic_sp_falls_back_without_mutation() {
 fn test_once_symbolic_control_ptr_falls_back() {
     let mut state = once_state(0x00);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "control", 64);
+    let sym = RustBV::symbol("control", 64);
     drop(ctx);
     let args = vec![sym, RustBV::concrete(ONCE_FUNC as u128, 64)];
     assert!(matches!(
@@ -182,7 +182,7 @@ fn test_once_symbolic_guard_byte_falls_back() {
     // proc raising on a symbolic control word).
     let mut state = once_state(0x00);
     let ctx = state.solver().borrow();
-    let sym_byte = RustBV::symbolic(&ctx, "guard", 8);
+    let sym_byte = RustBV::symbol("guard", 8);
     drop(ctx);
     state
         .memory_mut()

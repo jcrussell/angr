@@ -62,8 +62,7 @@ fn test_memset_symbolic_value() {
     state.map_memory_data(0x1000, &data, Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "c", 64)
+        RustBV::symbol("c", 64)
     };
 
     let proc = NativeMemset;
@@ -95,13 +94,11 @@ fn test_memset_symbolic_size_pinned() {
     state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     // Constrain before the call so ctx.max(size) == 3 inside the proc.
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(3, 64), &ctx)
+        sym.eq(&RustBV::concrete(3, 64))
     };
     state.add_constraint(eq);
 
@@ -141,13 +138,11 @@ fn test_memset_symbolic_size_conditional() {
     state.map_memory_data(0x1000, &[0xFFu8; 16], Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     // n <= 4  → solver max bound is 4, loop runs over [0, 4).
     let le = {
-        let ctx = state.solver().borrow();
-        sym.ule(&RustBV::concrete(4, 64), &ctx)
+        sym.ule(&RustBV::concrete(4, 64))
     };
     state.add_constraint(le);
 
@@ -183,12 +178,10 @@ fn test_memset_symbolic_addr_pinned() {
     state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
     let dest = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        dest.eq(&RustBV::concrete(0x1000, 64), &ctx)
+        dest.eq(&RustBV::concrete(0x1000, 64))
     };
     state.add_constraint(eq);
 
@@ -223,15 +216,13 @@ fn test_memset_symbolic_addr_two_candidates() {
     state.map_memory_data(0x1000, &[0u8; 32], Permission::RWX);
 
     let dest = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     // dest ∈ {0x1000, 0x1008}.
     let constraint = {
-        let ctx = state.solver().borrow();
-        let a = dest.eq(&RustBV::concrete(0x1000, 64), &ctx);
-        let b = dest.eq(&RustBV::concrete(0x1008, 64), &ctx);
-        a.or(&b, &ctx)
+        let a = dest.eq(&RustBV::concrete(0x1000, 64));
+        let b = dest.eq(&RustBV::concrete(0x1008, 64));
+        a.or(&b)
     };
     state.add_constraint(constraint);
 
@@ -262,8 +253,7 @@ fn test_memset_symbolic_addr_unbounded_fallback() {
     state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
     let dest = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     let proc = NativeMemset;
     let result = proc.call(
@@ -284,16 +274,13 @@ fn test_memset_symbolic_addr_symbolic_size_fallback() {
     state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
     let dest = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     let size = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let eq = {
-        let ctx = state.solver().borrow();
-        dest.eq(&RustBV::concrete(0x1000, 64), &ctx)
+        dest.eq(&RustBV::concrete(0x1000, 64))
     };
     state.add_constraint(eq);
 
@@ -313,8 +300,7 @@ fn test_memset_symbolic_size_unbounded_fallback() {
     state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let proc = NativeMemset;
     let result = proc.call(

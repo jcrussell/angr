@@ -214,8 +214,7 @@ fn newfstatat_unsupported_arch_falls_back() {
 fn newfstatat_symbolic_dirfd_falls_back() {
     let mut state = state_with_path(b"/tmp/x");
     let sym_dirfd = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "dirfd", 64)
+        RustBV::symbol("dirfd", 64)
     };
 
     let err = NativeNewfstatatSyscall
@@ -236,8 +235,7 @@ fn newfstatat_symbolic_dirfd_falls_back() {
 fn newfstatat_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeNewfstatatSyscall
         .call(

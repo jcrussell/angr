@@ -4,7 +4,7 @@ use super::*;
 use crate::exploration::{CallbackReason, PendingCallback};
 use crate::stash::{STASH_ACTIVE, STASH_ERRORED};
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use rustc_hash::FxHashMap;
 
 // amd64 SystemV arg registers (VEX guest-state offsets): RDI, RSI, RDX, RCX,
@@ -59,8 +59,7 @@ fn mips_o32_extract_syscall_args_reads_stack_window() {
 fn mips_o32_extract_syscall_args_symbolic_sp_falls_back() {
     let mgr = RustExplorationManager::new("mips32", None).expect("mips32 mgr");
     let mut state = RustSimState::new("mips32").expect("mips32 state");
-    let ctx = SymContext::new();
-    state.set_sp(RustBV::symbolic(&ctx, "sp", 32));
+    state.set_sp(RustBV::symbol("sp", 32));
 
     match mgr.extract_syscall_args(&state, 6) {
         Err(ExtractionError::SpSymbolic) => {}
@@ -133,8 +132,7 @@ fn amd64_extract_procedure_args_reads_stack_window() {
 fn amd64_extract_procedure_args_symbolic_sp_falls_back() {
     let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let mut state = RustSimState::new("amd64").expect("amd64 state");
-    let ctx = SymContext::new();
-    state.set_sp(RustBV::symbolic(&ctx, "sp", 64));
+    state.set_sp(RustBV::symbol("sp", 64));
 
     // 8 args -> 6 from registers, 2 would spill onto the symbolic stack.
     match mgr.extract_procedure_args(&state, 8) {
@@ -259,9 +257,8 @@ fn amd64_compute_register_tuple_hash_branches() {
 
     // Symbolic register vs a concrete u64::MAX register: the sentinel adds a
     // disambiguating 1u8 so they must NOT collide.
-    let ctx = SymContext::new();
     let mut symbolic = RustSimState::new("amd64").expect("sym state");
-    symbolic.set_register("rax", RustBV::symbolic(&ctx, "x", 64));
+    symbolic.set_register("rax", RustBV::symbol("x", 64));
     let mut max_concrete = RustSimState::new("amd64").expect("max state");
     max_concrete.set_register("rax", RustBV::concrete(u64::MAX as u128, 64));
 
@@ -614,12 +611,10 @@ fn resume_symbolic_branch_deferred_fork_uses_pre_callback_snapshot() {
     // forked solvers (clones of it) recognize the `x` symbol.
     let mut stored = FxHashMap::default();
     {
-        let ctx_ref = state.solver().borrow();
-        let ctx: &SymContext = &ctx_ref;
-        let x = RustBV::symbolic(ctx, "x", 64);
+        let x = RustBV::symbol("x", 64);
         let zero = RustBV::zero(64);
-        stored.insert(1u64, x.eq(&zero, ctx)); // branch B guard: x == 0
-        stored.insert(2u64, x.eq(&zero, ctx)); // deferred fork A condition
+        stored.insert(1u64, x.eq(&zero)); // branch B guard: x == 0
+        stored.insert(2u64, x.eq(&zero)); // deferred fork A condition
     }
 
     // Snapshot captured here — before apply_deferred_fork_constraints and the
@@ -967,7 +962,7 @@ fn advance_sp_past_return_addr_is_noop_when_abi_does_not_pop() {
 #[test]
 fn advance_sp_past_return_addr_keeps_symbolic_sp_symbolic() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let sym = RustBV::symbolic(&state.solver().borrow(), "sym_sp", 64);
+    let sym = RustBV::symbol("sym_sp", 64);
     state.set_sp(sym);
 
     advance_sp_past_return_addr(&mut state, true);
@@ -1223,15 +1218,13 @@ fn write_proc_return_zero_extends_a_symbolic_32bit_return() {
     state.set_register_by_offset(RAX, RustBV::concrete(0xDEAD_BEEF_1234_5678, 64));
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "ret", 32)
+        RustBV::symbol("ret", 32)
     };
     mgr.write_proc_return(&mut state, sym);
 
     let rax = state.get_register_by_offset(RAX, 8);
     assert_eq!(rax.width(), 64);
     assert!(rax.as_u64().is_none(), "symbolic return must stay symbolic");
-    let ctx = state.solver().borrow();
-    let upper = rax.extract(63, 32, &ctx);
+    let upper = rax.extract(63, 32);
     assert_eq!(upper.as_u64(), Some(0), "upper half must be a concrete zero");
 }

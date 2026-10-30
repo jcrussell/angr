@@ -9,7 +9,7 @@
 //! (Iop_QShl/QSal).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -52,7 +52,6 @@ impl VEXOps {
         count: u8,
         src_signed: bool,
         dst_signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
@@ -62,16 +61,14 @@ impl VEXOps {
             from_width,
             to_width,
             count as u32,
-            ctx,
             |lane| Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed),
-            |lane, ctx| {
+            |lane| {
                 Self::saturate_lane_symbolic(
                     lane.clone(),
                     from_width,
                     to_width,
                     src_signed,
                     dst_signed,
-                    ctx,
                 )
             },
         ))
@@ -105,7 +102,6 @@ impl VEXOps {
         count: u8,
         src_signed: bool,
         dst_signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
@@ -121,16 +117,14 @@ impl VEXOps {
             from_width,
             to_width,
             per_input,
-            ctx,
             |lane| Self::saturate_lane(lane, from_width, to_width, src_signed, dst_signed),
-            |lane, ctx| {
+            |lane| {
                 Self::saturate_lane_symbolic(
                     lane.clone(),
                     from_width,
                     to_width,
                     src_signed,
                     dst_signed,
-                    ctx,
                 )
             },
         ))
@@ -146,7 +140,6 @@ impl VEXOps {
         to_width: u32,
         src_signed: bool,
         dst_signed: bool,
-        ctx: &SymContext,
     ) -> RustBV {
         // Kept `debug_assert!` where the rest of this family was hardened into
         // `Self::require_operand_width` (angr-3fb7p): this helper returns a bare
@@ -175,15 +168,15 @@ impl VEXOps {
 
         // gt_max: compare with src_signed semantics
         let gt_max = if src_signed {
-            lane.sgt(&max_bv, ctx)
+            lane.sgt(&max_bv)
         } else {
-            lane.ugt(&max_bv, ctx)
+            lane.ugt(&max_bv)
         };
 
-        let truncated = lane.extract(to_width - 1, 0, ctx);
-        let max_truncated = max_bv.extract(to_width - 1, 0, ctx);
+        let truncated = lane.extract(to_width - 1, 0);
+        let max_truncated = max_bv.extract(to_width - 1, 0);
 
-        let upper_clamped = gt_max.ite(&max_truncated, &truncated, ctx);
+        let upper_clamped = gt_max.ite(&max_truncated, &truncated);
 
         // The lower clamp can only ever fire for a signed source: an unsigned
         // lane is >= 0, and the destination minimum is 0 (unsigned dst) or
@@ -205,10 +198,10 @@ impl VEXOps {
         }
 
         let min_bv = RustBV::concrete(min_val, from_width);
-        let lt_min = lane.slt(&min_bv, ctx);
-        let min_truncated = min_bv.extract(to_width - 1, 0, ctx);
+        let lt_min = lane.slt(&min_bv);
+        let min_truncated = min_bv.extract(to_width - 1, 0);
 
-        lt_min.ite(&min_truncated, &upper_clamped, ctx)
+        lt_min.ite(&min_truncated, &upper_clamped)
     }
 
     /// NEON per-lane saturating integer add/sub —
@@ -238,7 +231,6 @@ impl VEXOps {
         count: u8,
         signed: bool,
         is_sub: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -308,49 +300,45 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let a = left.extract(hi, lo, ctx);
-            let b = right.extract(hi, lo, ctx);
+            let a = left.extract(hi, lo);
+            let b = right.extract(hi, lo);
 
             let res = if is_sub {
-                a.clone().sub_into(b.clone(), ctx)
+                a.clone().sub_into(b.clone())
             } else {
-                a.clone().add_into(b.clone(), ctx)
+                a.clone().add_into(b.clone())
             };
 
             let lane = if signed {
                 // Sign-bit relationships dictate the cap and the overflow flag.
-                let top_a = a.extract(elem_width - 1, elem_width - 1, ctx);
-                let top_b = b.extract(elem_width - 1, elem_width - 1, ctx);
-                let top_r = res.extract(elem_width - 1, elem_width - 1, ctx);
+                let top_a = a.extract(elem_width - 1, elem_width - 1);
+                let top_b = b.extract(elem_width - 1, elem_width - 1);
+                let top_r = res.extract(elem_width - 1, elem_width - 1);
 
                 // QAdd: ~(a ^ b) & (a ^ r); QSub: (a ^ b) & (a ^ r).
-                let a_xor_b = top_a.clone().xor_into(top_b, ctx);
-                let a_xor_r = top_a.xor_into(top_r.clone(), ctx);
-                let lhs = if is_sub {
-                    a_xor_b
-                } else {
-                    a_xor_b.not_into(ctx)
-                };
-                let overflow_flag = lhs.and_into(a_xor_r, ctx);
-                let cap_cond = overflow_flag.eq(&RustBV::concrete(1, 1), ctx);
+                let a_xor_b = top_a.clone().xor_into(top_b);
+                let a_xor_r = top_a.xor_into(top_r.clone());
+                let lhs = if is_sub { a_xor_b } else { a_xor_b.not_into() };
+                let overflow_flag = lhs.and_into(a_xor_r);
+                let cap_cond = overflow_flag.eq(&RustBV::concrete(1, 1));
 
                 // cap = INT_MAX when top_r = 1 (positive overflow → clamp high),
                 // cap = INT_MIN when top_r = 0 (negative overflow → clamp low).
-                let top_r_one = top_r.eq(&RustBV::concrete(1, 1), ctx);
-                let cap = top_r_one.ite(&smax_bv, &smin_bv, ctx);
+                let top_r_one = top_r.eq(&RustBV::concrete(1, 1));
+                let cap = top_r_one.ite(&smax_bv, &smin_bv);
 
-                cap_cond.ite(&cap, &res, ctx)
+                cap_cond.ite(&cap, &res)
             } else if is_sub {
-                let cap_cond = res.ugt(&a, ctx);
-                cap_cond.ite(&zero_bv, &res, ctx)
+                let cap_cond = res.ugt(&a);
+                cap_cond.ite(&zero_bv, &res)
             } else {
-                let cap_cond = res.ult(&a, ctx);
-                cap_cond.ite(&umax_bv, &res, ctx)
+                let cap_cond = res.ult(&a);
+                cap_cond.ite(&umax_bv, &res)
             };
 
             elements.push(lane);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// NEON saturating shift-left by vector — `Iop_QShl{N}x{M}` (unsigned,
@@ -371,7 +359,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -481,44 +468,44 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
-            let a = vec.extract(hi, lo, ctx);
-            let b = amts.extract(hi, lo, ctx);
+            let a = vec.extract(hi, lo);
+            let b = amts.extract(hi, lo);
 
             // Left-shift branch (amt ≥ 0). Both signed and unsigned saturate
             // when the round-trip `(a << amt) >> amt` differs from `a`.
-            let shl_res = a.clone().shl_into(b.clone(), ctx);
+            let shl_res = a.clone().shl_into(b.clone());
 
             let left_result = if signed {
                 // Ashr round-trip detects signed overflow (and OOR shifts).
-                let recovered = shl_res.clone().ashr_into(b.clone(), ctx);
-                let no_overflow = recovered.eq(&a, ctx);
-                let a_top = a.extract(elem_width - 1, elem_width - 1, ctx);
-                let a_is_neg = a_top.eq(&bit_one, ctx);
-                let cap = a_is_neg.ite(&smin_bv, &smax_bv, ctx);
-                no_overflow.ite(&shl_res, &cap, ctx)
+                let recovered = shl_res.clone().ashr_into(b.clone());
+                let no_overflow = recovered.eq(&a);
+                let a_top = a.extract(elem_width - 1, elem_width - 1);
+                let a_is_neg = a_top.eq(&bit_one);
+                let cap = a_is_neg.ite(&smin_bv, &smax_bv);
+                no_overflow.ite(&shl_res, &cap)
             } else {
                 // Lshr round-trip detects unsigned overflow.
-                let recovered = shl_res.clone().lshr_into(b.clone(), ctx);
-                let no_overflow = recovered.eq(&a, ctx);
-                no_overflow.ite(&shl_res, &umax_bv, ctx)
+                let recovered = shl_res.clone().lshr_into(b.clone());
+                let no_overflow = recovered.eq(&a);
+                no_overflow.ite(&shl_res, &umax_bv)
             };
 
             // Right-shift branch (amt < 0). Use -b as the count; Z3 handles
             // OOR (count ≥ width → 0 or sign-fill) natively.
-            let neg_amt = zero_bv.clone().sub_into(b.clone(), ctx);
+            let neg_amt = zero_bv.clone().sub_into(b.clone());
             let right_result = if signed {
-                a.clone().ashr_into(neg_amt, ctx)
+                a.clone().ashr_into(neg_amt)
             } else {
-                a.clone().lshr_into(neg_amt, ctx)
+                a.clone().lshr_into(neg_amt)
             };
 
             // Dispatch on the sign of amt (top bit).
-            let amt_top = b.extract(elem_width - 1, elem_width - 1, ctx);
-            let amt_is_neg = amt_top.eq(&bit_one, ctx);
-            let lane = amt_is_neg.ite(&right_result, &left_result, ctx);
+            let amt_top = b.extract(elem_width - 1, elem_width - 1);
+            let amt_is_neg = amt_top.eq(&bit_one);
+            let lane = amt_is_neg.ite(&right_result, &left_result);
 
             elements.push(lane);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

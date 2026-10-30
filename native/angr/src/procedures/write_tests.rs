@@ -179,9 +179,8 @@ fn test_write_content_sym_demotes_and_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"hi", Permission::RWX);
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("wdem_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("wdem_{i}"), 8))
             .collect()
     };
     state
@@ -238,9 +237,8 @@ fn test_write_content_sym_demotes_and_falls_back() {
 fn test_zero_length_write_does_not_demote() {
     let mut state = RustSimState::new("amd64").unwrap();
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("wzero_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("wzero_{i}"), 8))
             .collect()
     };
     state

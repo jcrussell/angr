@@ -58,22 +58,22 @@ fn test_set_v128_lo32_concrete() {
 #[test]
 fn test_set_v128_lo64_symbolic() {
     let ctx = SymContext::new_mock();
-    let vec = RustBV::symbolic(&ctx, "xmm_setlo", 128);
+    let vec = RustBV::symbol("xmm_setlo", 128);
     let val = RustBV::concrete(0x0102_0304_0506_0708u128, 64);
 
     let result = VEXOps::binop(IROp::SetV128lo64, vec.clone(), val, &ctx).unwrap();
     assert_eq!(result.width(), 128);
 
     // Low 64 of result must equal the inserted value.
-    let res_lo = result.extract(63, 0, &ctx);
+    let res_lo = result.extract(63, 0);
     let inserted = RustBV::concrete(0x0102_0304_0506_0708u128, 64);
     let eq_lo = res_lo.to_z3_ast().unwrap().eq(inserted.to_z3_ast().unwrap());
     ctx.add_constraint(eq_lo);
     assert!(ctx.is_sat(), "low 64 must equal inserted value");
 
     // Upper 64 of result must equal upper 64 of the symbolic input (passthrough).
-    let upper_in = vec.extract(127, 64, &ctx);
-    let upper_out = result.extract(127, 64, &ctx);
+    let upper_in = vec.extract(127, 64);
+    let upper_out = result.extract(127, 64);
     let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
     ctx.add_constraint(eq_upper);
     assert!(ctx.is_sat(), "upper-64 passthrough must hold");
@@ -85,20 +85,20 @@ fn test_set_v128_lo64_symbolic() {
 #[test]
 fn test_set_v128_lo32_symbolic() {
     let ctx = SymContext::new_mock();
-    let vec = RustBV::symbolic(&ctx, "xmm_setlo32", 128);
+    let vec = RustBV::symbol("xmm_setlo32", 128);
     let val = RustBV::concrete(0xCAFE_F00Du128, 32);
 
     let result = VEXOps::binop(IROp::SetV128lo32, vec.clone(), val, &ctx).unwrap();
     assert_eq!(result.width(), 128);
 
-    let res_lo = result.extract(31, 0, &ctx);
+    let res_lo = result.extract(31, 0);
     let inserted = RustBV::concrete(0xCAFE_F00Du128, 32);
     let eq_lo = res_lo.to_z3_ast().unwrap().eq(inserted.to_z3_ast().unwrap());
     ctx.add_constraint(eq_lo);
     assert!(ctx.is_sat(), "low 32 must equal inserted value");
 
-    let upper_in = vec.extract(127, 32, &ctx);
-    let upper_out = result.extract(127, 32, &ctx);
+    let upper_in = vec.extract(127, 32);
+    let upper_out = result.extract(127, 32);
     let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
     ctx.add_constraint(eq_upper);
     assert!(ctx.is_sat(), "upper-96 passthrough must hold");

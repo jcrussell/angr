@@ -234,7 +234,7 @@ fn test_stpncpy_long_src_returns_dest_plus_n() {
 fn test_strdup_symbolic_arg() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "ptr", 64);
+    let sym = RustBV::symbol("ptr", 64);
     drop(ctx);
     let result = NativeStrdup.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -355,7 +355,7 @@ fn test_strndup_registered() {
 /// Insert a fully-symbolic byte at `addr` on an already-mapped page.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, name, 8);
+    let sym = RustBV::symbol(name, 8);
     drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
@@ -396,8 +396,7 @@ fn test_strncpy_symbolic_source_serves_natively() {
     // Constraining the symbolic byte to 'b' makes the whole 4-byte window
     // resolve to "abc\0" — i.e. the ITE copy length picked strlen+1 == 4.
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(b'b' as u128, 8), &ctx)
+        sym.eq(&RustBV::concrete(b'b' as u128, 8))
     };
     state.add_constraint(eq);
     let ctx = state.solver().borrow();
@@ -434,8 +433,7 @@ fn test_strncpy_symbolic_source_null_truncates_copy() {
         .unwrap();
 
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(0u128, 8), &ctx)
+        sym.eq(&RustBV::concrete(0u128, 8))
     };
     state.add_constraint(eq);
     let ctx = state.solver().borrow();

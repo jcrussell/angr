@@ -185,11 +185,11 @@ fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
 
     let (addr_var, val_bv) = {
         let ctx = state.solver().borrow();
-        let addr_var = RustBV::symbolic(&ctx, "pending_multi_addr", 64);
+        let addr_var = RustBV::symbol("pending_multi_addr", 64);
         ctx.assume_true(
             &addr_var
-                .eq(&RustBV::concrete(0x1000, 64), &ctx)
-                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+                .eq(&RustBV::concrete(0x1000, 64))
+                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
         );
         (addr_var, RustBV::concrete(value as u128, 32))
     };
@@ -279,8 +279,7 @@ fn get_pending_register_raises_for_unknown_name_but_not_for_symbolic() {
     let mut state = RustSimState::new("amd64").expect("state");
     assert!(state.set_register("rax", crate::symbolic::RustBV::concrete(0x2a, 64)));
     let sym = {
-        let ctx = state.solver().borrow();
-        crate::symbolic::RustBV::symbolic(&ctx, "rbx_sym", 64)
+        crate::symbolic::RustBV::symbol("rbx_sym", 64)
     };
     assert!(state.set_register("rbx", sym));
     let state_id = state.state_id();
@@ -355,9 +354,9 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
     let data = [0xde_u8, 0xad, 0xbe, 0xef];
     mgr._active_states_map_memory(ADDR, &data, 5);
 
-    let read = |mem: &crate::memory::SymbolicMemory, ctx: &crate::symbolic::SymContext| {
+    let read = |mem: &crate::memory::SymbolicMemory| {
         assert!(mem.is_mapped(ADDR), "region mapped");
-        mem.load_concrete(ADDR, 4, ctx)
+        mem.load_concrete(ADDR, 4)
             .expect("load mapped bytes")
             .as_u64()
             .expect("concrete bytes")
@@ -373,7 +372,7 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
         .find(|s| s.state_id() == stashed_id)
         .expect("stashed state");
     assert_eq!(
-        read(stashed_state.memory(), &stashed_state.solver().borrow()),
+        read(stashed_state.memory()),
         expected,
         "stashed state sees the mapping",
     );
@@ -383,7 +382,7 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
         .get(&StateId::new(sid))
         .expect("callback still parked");
     assert_eq!(
-        read(pending.state.memory(), &pending.state.solver().borrow()),
+        read(pending.state.memory()),
         expected,
         "parked state sees the mapping",
     );
@@ -392,16 +391,13 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
         .as_ref()
         .expect("pre-callback snapshot");
     assert_eq!(
-        read(snap.memory(), &snap.solver().borrow()),
+        read(snap.memory()),
         expected,
         "pre-callback snapshot sees the mapping",
     );
     let branch = &pending.fork_snapshots[&7u64];
     assert_eq!(
-        read(
-            branch.memory.as_ref().expect("branch snapshot memory"),
-            &branch.solver
-        ),
+        read(branch.memory.as_ref().expect("branch snapshot memory")),
         expected,
         "fork snapshot memory sees the mapping",
     );
@@ -454,7 +450,7 @@ fn active_states_map_memory_reaches_parked_parallel_bounce_states() {
         let mem = state.memory();
         assert!(mem.is_mapped(ADDR), "region mapped in parked bounce {id}");
         assert_eq!(
-            mem.load_concrete(ADDR, 4, &state.solver().borrow())
+            mem.load_concrete(ADDR, 4)
                 .expect("load mapped bytes")
                 .as_u64()
                 .expect("concrete bytes"),

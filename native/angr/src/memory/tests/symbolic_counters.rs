@@ -46,12 +46,12 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Build a symbolic address constrained to {0x1000, 0x1004, 0x1008}.
-    let addr = RustBV::symbolic(&ctx, "addr", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x1004, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x1008, 64), &ctx);
-    let or_01 = a0.or(&a1, &ctx);
-    let or_all = or_01.or(&a2, &ctx);
+    let addr = RustBV::symbol("addr", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x1004, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x1008, 64));
+    let or_01 = a0.or(&a1);
+    let or_all = or_01.or(&a2);
     ctx.assume_true(&or_all);
     assert!(ctx.is_sat(), "candidate-address context must be SAT");
 
@@ -138,11 +138,11 @@ fn test_concretize_counters_fire_on_symbolic_store() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 
-    let addr = RustBV::symbolic(&ctx, "addr_2j5v", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x3000, 64), &ctx);
-    let a1 = addr.eq(&RustBV::concrete(0x3004, 64), &ctx);
-    let a2 = addr.eq(&RustBV::concrete(0x3008, 64), &ctx);
-    let or_all = a0.or(&a1, &ctx).or(&a2, &ctx);
+    let addr = RustBV::symbol("addr_2j5v", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x3000, 64));
+    let a1 = addr.eq(&RustBV::concrete(0x3004, 64));
+    let a2 = addr.eq(&RustBV::concrete(0x3008, 64));
+    let or_all = a0.or(&a1).or(&a2);
     ctx.assume_true(&or_all);
     assert!(ctx.is_sat());
 
@@ -289,8 +289,8 @@ fn test_symbolic_addr_counters_tick_from_production_entry_points() {
 
     // A symbolic address pinned to a single concrete solution: still symbolic
     // to `as_u64()`, so it goes past every fast path into the concretizer.
-    let addr = RustBV::symbolic(&ctx, "counter_addr", 64);
-    ctx.assume_true(&addr.eq(&RustBV::concrete(0x1000, 64), &ctx));
+    let addr = RustBV::symbol("counter_addr", 64);
+    ctx.assume_true(&addr.eq(&RustBV::concrete(0x1000, 64)));
     let value = RustBV::concrete(0x41, 8);
 
     let base_store = store_sym();

@@ -45,8 +45,8 @@ fn bytes_to_bv_of_256_bit_buffer_keeps_every_byte_via_concat() {
     let hi = u128::from_le_bytes(bytes[16..].try_into().unwrap());
     // The truncating version dropped `hi` entirely; the wrapping one OR-ed
     // byte 16 (0x11) over byte 0 (0x01), giving a low lane ending in 0x11.
-    assert_eq!(bv.extract_no_ctx(127, 0).as_u128(), Some(lo));
-    assert_eq!(bv.extract_no_ctx(255, 128).as_u128(), Some(hi));
+    assert_eq!(bv.extract(127, 0).as_u128(), Some(lo));
+    assert_eq!(bv.extract(255, 128).as_u128(), Some(hi));
 }
 
 #[test]
@@ -58,8 +58,8 @@ fn bytes_to_bv_round_trips_through_bv_to_bytes_at_256_bits() {
     let bv = RustBV::concrete(value, 256);
     let round_tripped = bytes_to_bv(&bv_to_bytes(&bv), 256);
     assert_eq!(round_tripped.width(), 256);
-    assert_eq!(round_tripped.extract_no_ctx(127, 0).as_u128(), Some(value));
-    assert_eq!(round_tripped.extract_no_ctx(255, 128).as_u128(), Some(0));
+    assert_eq!(round_tripped.extract(127, 0).as_u128(), Some(value));
+    assert_eq!(round_tripped.extract(255, 128).as_u128(), Some(0));
 }
 
 #[test]
@@ -107,12 +107,12 @@ fn bv_to_bytes_and_bytes_to_bv_width_boundary_sweep() {
             // trusting a re-fold to u128 (which would hide the very aliasing
             // bug this pair exists to catch).
             assert_eq!(
-                round.extract_no_ctx(127, 0).as_u128(),
+                round.extract(127, 0).as_u128(),
                 Some(masked),
                 "width={width}"
             );
             assert_eq!(
-                round.extract_no_ctx(width - 1, 128).as_u128(),
+                round.extract(width - 1, 128).as_u128(),
                 Some(0),
                 "width={width}: bytes above the u128 payload must come back as 0, not aliased"
             );
@@ -191,7 +191,6 @@ fn splice_patches_a_concrete_base_byte_by_byte() {
     let spliced = splice_bytes_over_bv(
         &base,
         &[Some(0xaa), None, None, Some(0xbb)],
-        &SymContext::new_mock(),
     );
     assert_eq!(spliced.as_u64(), Some(0xbb34_56aa));
 }
@@ -199,27 +198,25 @@ fn splice_patches_a_concrete_base_byte_by_byte() {
 #[test]
 fn splice_with_an_all_none_overlay_is_the_identity() {
     let base = RustBV::concrete(0x1234_5678, 32);
-    let spliced = splice_bytes_over_bv(&base, &[None; 4], &SymContext::new_mock());
+    let spliced = splice_bytes_over_bv(&base, &[None; 4]);
     assert_eq!(spliced.as_u64(), Some(0x1234_5678));
 }
 
 #[test]
 fn splice_over_a_symbolic_base_keeps_the_uncovered_lanes_symbolic() {
-    let ctx = SymContext::new_mock();
-    let base = RustBV::symbolic(&ctx, "sym", 16);
+    let base = RustBV::symbol("sym", 16);
     // Cover the low byte only: the result must still be symbolic (the high
     // lane is an Extract of `base`), not collapsed to a concrete.
-    let spliced = splice_bytes_over_bv(&base, &[Some(0xaa), None], &ctx);
+    let spliced = splice_bytes_over_bv(&base, &[Some(0xaa), None]);
     assert_eq!(spliced.width(), 16);
     assert!(spliced.is_symbolic());
-    assert_eq!(spliced.extract(7, 0, &ctx).as_u64(), Some(0xaa));
+    assert_eq!(spliced.extract(7, 0).as_u64(), Some(0xaa));
 }
 
 #[test]
 fn splice_over_a_symbolic_base_can_cover_every_lane() {
-    let ctx = SymContext::new_mock();
-    let base = RustBV::symbolic(&ctx, "sym", 16);
-    let spliced = splice_bytes_over_bv(&base, &[Some(0x34), Some(0x12)], &ctx);
+    let base = RustBV::symbol("sym", 16);
+    let spliced = splice_bytes_over_bv(&base, &[Some(0x34), Some(0x12)]);
     assert_eq!(spliced.as_u64(), Some(0x1234));
 }
 
@@ -227,11 +224,10 @@ fn splice_over_a_symbolic_base_can_cover_every_lane() {
 fn ite_targets_are_read_from_a_clarirs_term() {
     // A jump target built as a clarirs ITE must yield the same concrete
     // leaves as the Expression form.
-    let ctx = crate::symbolic::SymContext::new();
-    let x = RustBV::symbolic(&ctx, "ite_tgt_x", 32);
-    let cond = x.ult(&RustBV::concrete(10, 32), &ctx);
-    let inner = cond.ite(&RustBV::concrete(0x2000, 64), &RustBV::concrete(0x3000, 64), &ctx);
-    let target = cond.ite(&RustBV::concrete(0x1000, 64), &inner, &ctx);
+    let x = RustBV::symbol("ite_tgt_x", 32);
+    let cond = x.ult(&RustBV::concrete(10, 32));
+    let inner = cond.ite(&RustBV::concrete(0x2000, 64), &RustBV::concrete(0x3000, 64));
+    let target = cond.ite(&RustBV::concrete(0x1000, 64), &inner);
     let as_ast = RustBV::from_clarirs_lowerable(target.to_clarirs().unwrap());
     assert!(matches!(as_ast, RustBV::Ast { .. }));
     let mut got = extract_ite_targets(&as_ast, 8).unwrap();

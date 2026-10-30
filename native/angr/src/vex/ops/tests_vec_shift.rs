@@ -17,7 +17,7 @@ fn test_vec_shl_n_symbolic_shift() {
         v |= ((i + 1) as u128) << (i * 16);
     }
     let vec = RustBV::concrete(v, 128);
-    let shift = RustBV::symbolic(&ctx, "shl_amt", 8);
+    let shift = RustBV::symbol("shl_amt", 8);
 
     let result = VEXOps::binop(
         IROp::VShlN {
@@ -61,7 +61,7 @@ fn test_vec_shr_n_symbolic_shift() {
         v |= (*lane as u128) << (i * 32);
     }
     let vec = RustBV::concrete(v, 128);
-    let shift = RustBV::symbolic(&ctx, "shr_amt", 8);
+    let shift = RustBV::symbol("shr_amt", 8);
 
     let result = VEXOps::binop(
         IROp::VShrN {
@@ -103,7 +103,7 @@ fn test_vec_sar_n_symbolic_shift() {
         v |= ((*lane as u16) as u128) << (i * 16);
     }
     let vec = RustBV::concrete(v, 128);
-    let shift = RustBV::symbolic(&ctx, "sar_amt", 8);
+    let shift = RustBV::symbol("sar_amt", 8);
 
     let result = VEXOps::binop(
         IROp::VSarN {
@@ -137,7 +137,7 @@ fn test_vec_shl_n_unbounded_shift() {
     let ctx = SymContext::new_mock();
 
     let vec = RustBV::concrete(0x1111_2222_3333_4444u128, 64);
-    let shift = RustBV::symbolic(&ctx, "shl_amt_free", 8);
+    let shift = RustBV::symbol("shl_amt_free", 8);
 
     let result = VEXOps::binop(
         IROp::VShlN {
@@ -340,8 +340,8 @@ fn test_vsal_routes_to_vshl_and_matches() {
 #[test]
 fn test_vshl_16x4_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "shl_a_16x4", 64);
-    let b = RustBV::symbolic(&ctx, "shl_b_16x4", 64);
+    let a = RustBV::symbol("shl_a_16x4", 64);
+    let b = RustBV::symbol("shl_b_16x4", 64);
     let got = VEXOps::binop(
         IROp::VShl {
             elem: IRType::I16,
@@ -359,11 +359,11 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
     for i in 0..4 {
         let lo = i * 16;
         let hi = lo + 15;
-        let al = a.extract(hi, lo, &ctx);
-        let bl = b.extract(hi, lo, &ctx);
-        lanes.push(al.shl_into(bl, &ctx));
+        let al = a.extract(hi, lo);
+        let bl = b.extract(hi, lo);
+        lanes.push(al.shl_into(bl));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
@@ -380,8 +380,8 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
 #[test]
 fn test_vsar_8x16_symbolic_matches_python_ref() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "sar_a_8x16", 128);
-    let b = RustBV::symbolic(&ctx, "sar_b_8x16", 128);
+    let a = RustBV::symbol("sar_a_8x16", 128);
+    let b = RustBV::symbol("sar_b_8x16", 128);
     let got = VEXOps::binop(
         IROp::VSar {
             elem: IRType::I8,
@@ -396,11 +396,11 @@ fn test_vsar_8x16_symbolic_matches_python_ref() {
     for i in 0..16 {
         let lo = i * 8;
         let hi = lo + 7;
-        let al = a.extract(hi, lo, &ctx);
-        let bl = b.extract(hi, lo, &ctx);
-        lanes.push(al.ashr_into(bl, &ctx));
+        let al = a.extract(hi, lo);
+        let bl = b.extract(hi, lo);
+        lanes.push(al.ashr_into(bl));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
     let universal = !ctx.is_sat();
@@ -581,7 +581,7 @@ fn test_vec_shift_n_avx2_256_bit() {
             hi |= shifted;
         }
     }
-    let vec = RustBV::concrete(hi, 128).concat_into(RustBV::concrete(lo, 128), &ctx);
+    let vec = RustBV::concrete(hi, 128).concat_into(RustBV::concrete(lo, 128));
     assert_eq!(vec.width(), 256);
 
     let shift = RustBV::concrete(4, 8);
@@ -618,7 +618,7 @@ fn test_vec_shift_n_avx2_256_bit() {
         // The result is wider than a u128, so check it a lane at a time.
         for (i, lane) in lanes.iter().enumerate() {
             let low = (i as u32) * 32;
-            let extracted = result.extract(low + 31, low, &ctx);
+            let extracted = result.extract(low + 31, low);
             let got = ctx.eval(&extracted).expect("eval(lane) returned None");
             assert_eq!(
                 got,

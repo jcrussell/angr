@@ -84,26 +84,26 @@ fn test_fgets_newline_only_at_last_byte() {
     // Byte 0 (not the last data byte) can NOT be a newline post-fix.
     let b0 = state.memory_load(0x2000, 1).unwrap();
     assert!(
-        !ctx.can_be_true(&b0.eq(&nl, &ctx)),
+        !ctx.can_be_true(&b0.eq(&nl)),
         "byte 0 of a full read must not be allowed to equal newline"
     );
 
     // Byte 5 (still not the last) likewise can NOT be a newline.
     let b5 = state.memory_load(0x2005, 1).unwrap();
     assert!(
-        !ctx.can_be_true(&b5.eq(&nl, &ctx)),
+        !ctx.can_be_true(&b5.eq(&nl)),
         "byte 5 must not equal newline"
     );
 
     // The last data byte (index 6) MAY be the terminating newline.
     let b6 = state.memory_load(0x2006, 1).unwrap();
     assert!(
-        ctx.can_be_true(&b6.eq(&nl, &ctx)),
+        ctx.can_be_true(&b6.eq(&nl)),
         "last data byte may legitimately be the terminating newline"
     );
     // ...and is not forced to a newline either.
     assert!(
-        ctx.can_be_false(&b6.eq(&nl, &ctx)),
+        ctx.can_be_false(&b6.eq(&nl)),
         "last data byte is not forced to newline"
     );
 }
@@ -155,7 +155,7 @@ fn test_fgets_size_0() {
 fn test_fgets_symbolic_buf() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "buf", 64);
+    let sym = RustBV::symbol("buf", 64);
     drop(ctx);
 
     let result = NativeFgets.call(
@@ -253,7 +253,7 @@ fn test_fgets_symbolic_stream_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "stream", 64);
+    let sym = RustBV::symbol("stream", 64);
     drop(ctx);
 
     let result = NativeFgets.call(
@@ -508,8 +508,7 @@ fn test_fgets_short_reads_nul_at_real_size() {
 
     // Pin real_size = 3; the NUL terminator must then sit at buf+3.
     let pin = {
-        let ctx = state.solver().borrow();
-        result.eq(&RustBV::concrete(3, 64), &ctx)
+        result.eq(&RustBV::concrete(3, 64))
     };
     state.add_constraint(pin);
 
@@ -517,7 +516,7 @@ fn test_fgets_short_reads_nul_at_real_size() {
     let ctx = state.solver().borrow();
     let zero = RustBV::concrete(0, 8);
     assert!(
-        !ctx.can_be_true(&byte3.ne(&zero, &ctx)),
+        !ctx.can_be_true(&byte3.ne(&zero)),
         "byte at buf+real_size must be the NUL terminator"
     );
 }
@@ -568,7 +567,7 @@ fn test_gets_nul_at_real_size_bounded() {
         let zero = RustBV::concrete(0, 8);
         let b4 = state.memory_load(0x2004, 1).unwrap();
         let b5 = state.memory_load(0x2005, 1).unwrap();
-        let cons = b5.eq(&zero, &ctx).and(&b4.ne(&zero, &ctx), &ctx);
+        let cons = b5.eq(&zero).and(&b4.ne(&zero));
         let sat = ctx.can_be_true(&cons);
         (cons, sat)
     };
@@ -585,9 +584,8 @@ fn test_fgets_content_sym_fd_falls_back_without_half_serving() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x2000, &[0xAAu8; 16], Permission::RWX);
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("fgetsfile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("fgetsfile_{i}"), 8))
             .collect()
     };
     state

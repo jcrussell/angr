@@ -51,9 +51,8 @@ pub(crate) fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32
 /// write-demotion tests need (angr-0xyq2 Phase 2).
 pub(crate) fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..n)
-            .map(|i| RustBV::symbolic(&ctx, format!("symfile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("symfile_{i}"), 8))
             .collect()
     };
     state.file_system().register_file_content(path, bytes);

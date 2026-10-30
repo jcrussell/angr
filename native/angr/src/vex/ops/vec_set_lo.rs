@@ -5,7 +5,7 @@
 //! (Iop_SetV128lo32 / Iop_SetV128lo64).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 impl VEXOps {
     /// Splice the low `lane_bits` of `lane` into lane 0 of the packed 128-bit
@@ -23,7 +23,7 @@ impl VEXOps {
     /// Insert a `val.width()`-bit scalar into the low lane of a 128-bit vector,
     /// preserving the upper `128 - val.width()` bits. Backs Iop_SetV128lo32
     /// (`val` 32-bit) and Iop_SetV128lo64 (`val` 64-bit).
-    fn set_v128_lo(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
+    fn set_v128_lo(vec: RustBV, val: RustBV) -> Result<RustBV, OpError> {
         Self::require_operand_width("set_v128_lo vec", vec.width(), 128)?;
         let k = val.width();
 
@@ -32,27 +32,19 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, 128));
         }
         // For symbolic, concatenate the preserved upper bits with the value.
-        let upper = vec.extract(127, k, ctx);
-        Ok(upper.concat(&val, ctx))
+        let upper = vec.extract(127, k);
+        Ok(upper.concat(&val))
     }
 
     /// Set low 32 bits of V128.
-    pub(super) fn set_v128_lo32(
-        vec: RustBV,
-        val: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn set_v128_lo32(vec: RustBV, val: RustBV) -> Result<RustBV, OpError> {
         Self::require_operand_width("set_v128_lo32 val", val.width(), 32)?;
-        Self::set_v128_lo(vec, val, ctx)
+        Self::set_v128_lo(vec, val)
     }
 
     /// Set low 64 bits of V128.
-    pub(super) fn set_v128_lo64(
-        vec: RustBV,
-        val: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn set_v128_lo64(vec: RustBV, val: RustBV) -> Result<RustBV, OpError> {
         Self::require_operand_width("set_v128_lo64 val", val.width(), 64)?;
-        Self::set_v128_lo(vec, val, ctx)
+        Self::set_v128_lo(vec, val)
     }
 }

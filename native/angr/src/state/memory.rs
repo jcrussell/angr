@@ -59,8 +59,7 @@ impl RustSimState {
 
     /// Load from memory.
     pub fn memory_load(&self, addr: u64, size: u32) -> Result<RustBV, MemoryError> {
-        let ctx = self.solver.borrow();
-        self.memory.load_concrete(addr, size, &ctx)
+        self.memory.load_concrete(addr, size)
     }
 
     /// Store to memory.

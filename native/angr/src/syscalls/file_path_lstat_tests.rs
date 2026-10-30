@@ -111,8 +111,7 @@ fn lstat_unsupported_arch_falls_back() {
 fn lstat_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeLstatSyscall
         .call(&mut state, &[sym_ptr, RustBV::concrete(0x4000, 64)])

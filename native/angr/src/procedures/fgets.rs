@@ -76,18 +76,17 @@ pub(crate) fn store_symbolic_line(
     // `call` block's size==0 fast path, or MAX_GETS_SIZE for gets()).
     let read_count = size - 1;
     let (real_size, constraints, store_bytes) = {
-        let ctx = state.solver().borrow();
-        let real_size = RustBV::symbolic(&ctx, format!("{label}_realsize_{read_id}"), bits);
+        let real_size = RustBV::symbol(format!("{label}_realsize_{read_id}"), bits);
         // EOF is unknown for native symbolic stdin; a fresh symbolic bit soundly
         // over-approximates `simfd.eof()` (the solver may pick eof=true to
         // justify a short read, matching Python).
-        let eof = RustBV::symbolic(&ctx, format!("{label}_eof_{read_id}"), 1);
+        let eof = RustBV::symbol(format!("{label}_eof_{read_id}"), 1);
         let nl = RustBV::concrete(b'\n' as u128, 8);
         let nul = RustBV::concrete(0, 8);
 
         let mut constraints: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
         // 0 <= real_size <= size-1 (lower bound is implicit for unsigned).
-        constraints.push(real_size.ule(&arch_word(state, read_count), &ctx));
+        constraints.push(real_size.ule(&arch_word(state, read_count)));
 
         // For each returned byte i:
         //   If(i+1 != real_size,            byte != '\n',
@@ -96,23 +95,23 @@ pub(crate) fn store_symbolic_line(
         // is justified by running out of space, EOF, or being the newline.
         for (i, byte) in sym_bytes.iter().enumerate() {
             let idx = i as u64;
-            let cond = arch_word(state, idx + 1).ne(&real_size, &ctx);
-            let then_b = byte.ne(&nl, &ctx);
+            let cond = arch_word(state, idx + 1).ne(&real_size);
+            let then_b = byte.ne(&nl);
             let else_b = if idx + 2 == size {
                 // i+2 == size is a concrete tautology for the last byte.
                 RustBV::concrete(1, 1)
             } else {
-                eof.or(&byte.eq(&nl, &ctx), &ctx)
+                eof.or(&byte.eq(&nl))
             };
-            constraints.push(cond.ite(&then_b, &else_b, &ctx));
+            constraints.push(cond.ite(&then_b, &else_b));
         }
 
         // Emulate Python's `store(dst, data, size=real_size)` + NUL at
         // dst+real_size: byte p is the NUL exactly when real_size == p.
         let mut store_bytes: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
         for (p, byte) in sym_bytes.iter().enumerate() {
-            let at = arch_word(state, p as u64).eq(&real_size, &ctx);
-            store_bytes.push(at.ite(&nul, byte, &ctx));
+            let at = arch_word(state, p as u64).eq(&real_size);
+            store_bytes.push(at.ite(&nul, byte));
         }
         store_bytes.push(nul);
         (real_size, constraints, store_bytes)
@@ -271,12 +270,11 @@ crate::declare_proc! {
         // (procedures/libc/fgets.py) prunes. We do not model short reads / EOF
         // here — that needs variable-length read semantics (see angr-abora).
         let newline_conds: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
             let nl = RustBV::concrete(b'\n' as u128, 8);
             sym_bytes
                 .iter()
                 .take((read_count as usize).saturating_sub(1))
-                .map(|b| b.ne(&nl, &ctx))
+                .map(|b| b.ne(&nl))
                 .collect()
         };
 
@@ -327,13 +325,12 @@ fn read_stdin_char(state: &mut RustSimState, tag: &'static str) -> RustBV {
     let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
         .pop()
         .expect("mint_stdin_bytes returns one BV per name");
-    let ctx = state.solver().borrow();
     // Zero-extend to int (32-bit, matching C int type)
-    let byte_ze = sym_byte.zero_extend(32, &ctx);
+    let byte_ze = sym_byte.zero_extend(32);
     if short_reads {
-        let eof = RustBV::symbolic(&ctx, format!("{tag}_eof_{read_id}"), 1);
+        let eof = RustBV::symbol(format!("{tag}_eof_{read_id}"), 1);
         let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
-        eof.ite(&neg_one, &byte_ze, &ctx)
+        eof.ite(&neg_one, &byte_ze)
     } else {
         byte_ze
     }

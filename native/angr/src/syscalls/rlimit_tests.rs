@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::memory::Permission;
-use crate::symbolic::SymContext;
 
 fn fresh_state() -> RustSimState {
     RustSimState::new("amd64").expect("amd64 state")
@@ -68,11 +67,10 @@ fn getrlimit_non_stack_returns_fresh_symbolic() {
 fn getrlimit_symbolic_resource_returns_error() {
     let h = NativeGetrlimitSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let outcome = h.call(
         &mut state,
         &[
-            RustBV::symbolic(&ctx, "resource_sym", 64),
+            RustBV::symbol("resource_sym", 64),
             RustBV::concrete(0x4000, 64),
         ],
     );
@@ -84,12 +82,11 @@ fn getrlimit_symbolic_resource_returns_error() {
 fn getrlimit_symbolic_rlim_returns_error() {
     let h = NativeGetrlimitSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let outcome = h.call(
         &mut state,
         &[
             RustBV::concrete(RLIMIT_STACK as u128, 64),
-            RustBV::symbolic(&ctx, "rlim_sym", 64),
+            RustBV::symbol("rlim_sym", 64),
         ],
     );
     let err = outcome.expect_err("must error on symbolic rlim");

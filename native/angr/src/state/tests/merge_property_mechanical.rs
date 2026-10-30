@@ -78,7 +78,7 @@ fn mechanical_arch_and_vex_arch_self_wins_across_differing_archs() {
         "a and b must actually differ for this to be non-vacuous"
     );
 
-    let [m0, m1] = conds(&a, "arch_self_wins");
+    let [m0, m1] = conds("arch_self_wins");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(
         merged.arch().name(),
@@ -148,7 +148,7 @@ fn mechanical_self_wins_fields_keep_selfs_value() {
     assert_eq!(expected_max_history, 50);
     assert!(!expected_track_history);
 
-    let [m0, m1] = conds(&a, "self_wins_group");
+    let [m0, m1] = conds("self_wins_group");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert_eq!(merged.pc(), expected_pc);
@@ -197,7 +197,7 @@ fn mechanical_union_bool_fields_take_logical_or() {
     assert!(a.merge_field_keep_ip_symbolic(&[&b]));
     assert!(a.merge_field_force_eager_forks(&[&b]));
 
-    let [m0, m1] = conds(&a, "union_bool_group");
+    let [m0, m1] = conds("union_bool_group");
     let merged = a.merge(&[&b], &[m0, m1]);
 
     assert!(!a.no_ip_concretization(), "sanity: a alone stayed false");
@@ -242,7 +242,7 @@ fn mechanical_max_watermark_fields_take_the_higher_value() {
         crate::vex::dirty::TSC_INITIAL + 5 * crate::vex::dirty::TSC_STEP
     );
 
-    let [m0, m1] = conds(&a, "max_watermark_group");
+    let [m0, m1] = conds("max_watermark_group");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(merged.heap_brk(), expected_heap_brk);
     assert_eq!(merged.posix_brk(), expected_posix_brk);
@@ -264,7 +264,7 @@ fn mechanical_min_field_takes_the_lower_value() {
         "min must take b's lower value (downward-growing allocator)"
     );
 
-    let [m0, m1] = conds(&a, "min_field");
+    let [m0, m1] = conds("min_field");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(merged.cgc_allocation_base(), expected);
 }
@@ -335,7 +335,7 @@ fn mechanical_warn_on_diverge_fields_keep_selfs_value() {
     assert_eq!(expected_extern, a_extern);
     assert_eq!(expected_ctype, a_ctype);
 
-    let [m0, m1] = conds(&a, "warn_on_diverge_group");
+    let [m0, m1] = conds("warn_on_diverge_group");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(merged.concretizer, expected_conc);
     assert_eq!(merged.getopt_optind, expected_optind);

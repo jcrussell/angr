@@ -40,10 +40,8 @@ fn test_check_symbolic_addr_size_symbolic_rejects() {
     // A symbolic size on the symbolic-address path always falls back, even
     // when the solver could bound it — the per-byte ITE product is only
     // tractable with a concrete size.
-    let state = RustSimState::new("amd64").unwrap();
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     assert!(matches!(
         check_symbolic_addr_size(&sym),
@@ -62,14 +60,12 @@ fn test_enumerate_addr_candidates_concrete_is_singleton() {
 fn test_enumerate_addr_candidates_pinned_pair() {
     let state = RustSimState::new("amd64").unwrap();
     let ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     let constraint = {
-        let ctx = state.solver().borrow();
-        let a = ptr.eq(&RustBV::concrete(0x1000, 64), &ctx);
-        let b = ptr.eq(&RustBV::concrete(0x2000, 64), &ctx);
-        a.or(&b, &ctx)
+        let a = ptr.eq(&RustBV::concrete(0x1000, 64));
+        let b = ptr.eq(&RustBV::concrete(0x2000, 64));
+        a.or(&b)
     };
     state.add_constraint(constraint);
 
@@ -84,8 +80,7 @@ fn test_enumerate_addr_candidates_unbounded_rejects() {
     // helper asks for cap+1 solutions precisely so this is detectable.
     let state = RustSimState::new("amd64").unwrap();
     let ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     assert!(matches!(
         enumerate_addr_candidates(&state, &ptr, "dst"),
@@ -99,14 +94,11 @@ fn test_enumerate_addr_candidates_at_cap_accepted() {
     // inclusive, and only the cap+1st solution triggers the fallback.
     let state = RustSimState::new("amd64").unwrap();
     let ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "p", 64)
+        RustBV::symbol("p", 64)
     };
     let bound = {
-        let ctx = state.solver().borrow();
         ptr.ult(
             &RustBV::concrete(MAX_SYMBOLIC_ADDR_CANDIDATES as u128, 64),
-            &ctx,
         )
     };
     state.add_constraint(bound);
@@ -148,12 +140,10 @@ fn test_bounded_symbolic_size_uses_solver_upper_bound() {
     // The bound is the solver's max, not the symbol's width: n <= 4 yields 4.
     let state = RustSimState::new("amd64").unwrap();
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let le = {
-        let ctx = state.solver().borrow();
-        sym.ule(&RustBV::concrete(4, 64), &ctx)
+        sym.ule(&RustBV::concrete(4, 64))
     };
     state.add_constraint(le);
     assert_eq!(bounded_symbolic_size(&state, &sym).unwrap(), Some(4));
@@ -163,8 +153,7 @@ fn test_bounded_symbolic_size_uses_solver_upper_bound() {
 fn test_bounded_symbolic_size_unbounded_rejects() {
     let state = RustSimState::new("amd64").unwrap();
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     assert!(matches!(
         bounded_symbolic_size(&state, &sym),
@@ -204,12 +193,10 @@ fn test_symbolic_size_conditional_store_symbolic_length() {
     state.map_memory_data(0x1000, &[0xFFu8; 8], Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     let le = {
-        let ctx = state.solver().borrow();
-        sym.ule(&RustBV::concrete(3, 64), &ctx)
+        sym.ule(&RustBV::concrete(3, 64))
     };
     state.add_constraint(le);
 
@@ -237,13 +224,11 @@ fn test_symbolic_size_conditional_store_writes_per_index_values() {
     state.map_memory_data(0x1000, &[0u8; 8], Permission::RWX);
 
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "n", 64)
+        RustBV::symbol("n", 64)
     };
     // Pin n == 3 so the ITEs fold to the stored values.
     let eq = {
-        let ctx = state.solver().borrow();
-        sym.eq(&RustBV::concrete(3, 64), &ctx)
+        sym.eq(&RustBV::concrete(3, 64))
     };
     state.add_constraint(eq);
 

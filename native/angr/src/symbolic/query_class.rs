@@ -565,10 +565,9 @@ pub(crate) fn classify_extrema(target: &RustBV, constraints: &[(RustBV, bool)]) 
 )]
 mod tests {
     use super::*;
-    use crate::symbolic::SymContext;
 
     fn sym(id: u64, width: u32) -> RustBV {
-        RustBV::symbolic_with_id(id, format!("v{id}"), width)
+        RustBV::symbol(format!("v{id}"), width)
     }
 
     #[test]
@@ -579,70 +578,63 @@ mod tests {
 
     #[test]
     fn reflexive_comparisons_are_syntactically_decided() {
-        let ctx = SymContext::new_mock();
         // `x + 1` on both sides: structurally equal, but not concrete, so
         // RustBV's own PartialEq says "not equal" and only `struct_eq` sees it.
-        let lhs = sym(1, 32).add(&RustBV::concrete(1, 32), &ctx);
-        let rhs = sym(1, 32).add(&RustBV::concrete(1, 32), &ctx);
-        assert_eq!(syntactic_decide(&lhs.eq(&rhs, &ctx)), Some(true));
-        assert_eq!(syntactic_decide(&lhs.ne(&rhs, &ctx)), Some(false));
-        assert_eq!(syntactic_decide(&lhs.ult(&rhs, &ctx)), Some(false));
-        assert_eq!(syntactic_decide(&lhs.ule(&rhs, &ctx)), Some(true));
+        let lhs = sym(1, 32).add(&RustBV::concrete(1, 32));
+        let rhs = sym(1, 32).add(&RustBV::concrete(1, 32));
+        assert_eq!(syntactic_decide(&lhs.eq(&rhs)), Some(true));
+        assert_eq!(syntactic_decide(&lhs.ne(&rhs)), Some(false));
+        assert_eq!(syntactic_decide(&lhs.ult(&rhs)), Some(false));
+        assert_eq!(syntactic_decide(&lhs.ule(&rhs)), Some(true));
         assert_eq!(
-            classify_bool(&lhs.eq(&rhs, &ctx), &[]),
+            classify_bool(&lhs.eq(&rhs), &[]),
             QueryClass::SyntacticDecide
         );
     }
 
     #[test]
     fn unsigned_bounds_are_syntactically_decided() {
-        let ctx = SymContext::new_mock();
         let x = sym(1, 32);
         // Nothing is below 0, everything is at or below UMAX.
         assert_eq!(
-            syntactic_decide(&x.ult(&RustBV::concrete(0, 32), &ctx)),
+            syntactic_decide(&x.ult(&RustBV::concrete(0, 32))),
             Some(false)
         );
         assert_eq!(
-            syntactic_decide(&x.ule(&RustBV::concrete(0xffff_ffff, 32), &ctx)),
+            syntactic_decide(&x.ule(&RustBV::concrete(0xffff_ffff, 32))),
             Some(true)
         );
         assert_eq!(
-            syntactic_decide(&x.uge(&RustBV::concrete(0, 32), &ctx)),
+            syntactic_decide(&x.uge(&RustBV::concrete(0, 32))),
             Some(true)
         );
         // A real bound still needs the solver.
-        assert_eq!(
-            syntactic_decide(&x.ult(&RustBV::concrete(10, 32), &ctx)),
-            None
-        );
+        assert_eq!(syntactic_decide(&x.ult(&RustBV::concrete(10, 32))), None);
     }
 
     #[test]
     fn mask_bit_contradiction_is_syntactically_decided() {
-        let ctx = SymContext::new_mock();
-        let masked = sym(1, 32).and(&RustBV::concrete(0xff, 32), &ctx);
+        let masked = sym(1, 32).and(&RustBV::concrete(0xff, 32));
         // `(x & 0xff) == 0x100` sets a bit the mask clears → unsat.
         assert_eq!(
-            syntactic_decide(&masked.eq(&RustBV::concrete(0x100, 32), &ctx)),
+            syntactic_decide(&masked.eq(&RustBV::concrete(0x100, 32))),
             Some(false)
         );
         assert_eq!(
-            syntactic_decide(&masked.ne(&RustBV::concrete(0x100, 32), &ctx)),
+            syntactic_decide(&masked.ne(&RustBV::concrete(0x100, 32))),
             Some(true)
         );
         // In-mask constant is a genuine query.
         assert_eq!(
-            syntactic_decide(&masked.eq(&RustBV::concrete(0x42, 32), &ctx)),
+            syntactic_decide(&masked.eq(&RustBV::concrete(0x42, 32))),
             None
         );
     }
 
     #[test]
     fn single_symbol_comparison_is_single_var() {
-        let ctx = SymContext::new_mock();
-        let cond = sym(1, 32).ult(&RustBV::concrete(10, 32), &ctx);
-        let constraints = [(sym(1, 32).uge(&RustBV::concrete(2, 32), &ctx), true)];
+        let cond = sym(1, 32).ult(&RustBV::concrete(10, 32));
+        let constraints = [(sym(1, 32).uge(&RustBV::concrete(2, 32)), true)];
         assert_eq!(
             classify_bool(&cond, &constraints),
             QueryClass::SingleVarRange
@@ -651,24 +643,21 @@ mod tests {
 
     #[test]
     fn two_symbols_are_hard() {
-        let ctx = SymContext::new_mock();
-        let cond = sym(1, 32).ult(&sym(2, 32), &ctx);
+        let cond = sym(1, 32).ult(&sym(2, 32));
         assert_eq!(classify_bool(&cond, &[]), QueryClass::Hard);
     }
 
     #[test]
     fn single_var_query_with_multi_var_constraint_is_hard() {
-        let ctx = SymContext::new_mock();
-        let cond = sym(1, 32).ult(&RustBV::concrete(10, 32), &ctx);
-        let constraints = [(sym(1, 32).eq(&sym(2, 32), &ctx), true)];
+        let cond = sym(1, 32).ult(&RustBV::concrete(10, 32));
+        let constraints = [(sym(1, 32).eq(&sym(2, 32)), true)];
         assert_eq!(classify_bool(&cond, &constraints), QueryClass::Hard);
     }
 
     #[test]
     fn pinned_target_is_forced_value() {
-        let ctx = SymContext::new_mock();
-        let target = sym(1, 32).add(&RustBV::concrete(4, 32), &ctx);
-        let constraints = [(sym(1, 32).eq(&RustBV::concrete(7, 32), &ctx), true)];
+        let target = sym(1, 32).add(&RustBV::concrete(4, 32));
+        let constraints = [(sym(1, 32).eq(&RustBV::concrete(7, 32)), true)];
         assert_eq!(
             classify_eval(&target, &constraints),
             QueryClass::ForcedValue
@@ -677,9 +666,8 @@ mod tests {
 
     #[test]
     fn unpinned_target_is_free_witness() {
-        let ctx = SymContext::new_mock();
-        let target = sym(1, 32).add(&RustBV::concrete(4, 32), &ctx);
-        let constraints = [(sym(1, 32).ult(&RustBV::concrete(7, 32), &ctx), true)];
+        let target = sym(1, 32).add(&RustBV::concrete(4, 32));
+        let constraints = [(sym(1, 32).ult(&RustBV::concrete(7, 32)), true)];
         assert_eq!(
             classify_eval(&target, &constraints),
             QueryClass::FreeWitness
@@ -688,9 +676,8 @@ mod tests {
 
     #[test]
     fn extrema_over_one_symbol_is_single_var() {
-        let ctx = SymContext::new_mock();
         let target = sym(1, 32);
-        let constraints = [(sym(1, 32).ule(&RustBV::concrete(9, 32), &ctx), true)];
+        let constraints = [(sym(1, 32).ule(&RustBV::concrete(9, 32)), true)];
         assert_eq!(
             classify_extrema(&target, &constraints),
             QueryClass::SingleVarRange
@@ -716,19 +703,18 @@ mod tests {
 
     #[test]
     fn clarirs_terms_classify_like_the_expressions_they_came_from() {
-        let ctx = SymContext::new_mock();
         let x = sym(1, 32);
-        let bounded = x.ult(&RustBV::concrete(10, 32), &ctx);
+        let bounded = x.ult(&RustBV::concrete(10, 32));
         assert_eq!(classify_bool(&bounded, &[]), QueryClass::SingleVarRange);
         assert_eq!(
             classify_bool(&as_ast(&bounded), &[]),
             QueryClass::SingleVarRange
         );
-        let lhs = x.add(&RustBV::concrete(1, 32), &ctx);
-        let reflexive = lhs.eq(&lhs, &ctx);
+        let lhs = x.add(&RustBV::concrete(1, 32));
+        let reflexive = lhs.eq(&lhs);
         assert_eq!(syntactic_decide(&as_ast(&reflexive)), Some(true));
-        let masked = x.and(&RustBV::concrete(0xf0, 32), &ctx);
-        let contradiction = masked.eq(&RustBV::concrete(0x01, 32), &ctx);
+        let masked = x.and(&RustBV::concrete(0xf0, 32));
+        let contradiction = masked.eq(&RustBV::concrete(0x01, 32));
         assert_eq!(syntactic_decide(&as_ast(&contradiction)), Some(false));
     }
 
@@ -745,8 +731,7 @@ mod tests {
 
     #[test]
     fn a_clarirs_equality_pins_a_leaf_of_the_same_name() {
-        let ctx = SymContext::new_mock();
-        let pin = as_ast(&sym(1, 32).eq(&RustBV::concrete(5, 32), &ctx));
+        let pin = as_ast(&sym(1, 32).eq(&RustBV::concrete(5, 32)));
         assert_eq!(
             classify_eval(&sym(1, 32), &[(pin, true)]),
             QueryClass::ForcedValue

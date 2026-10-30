@@ -14,7 +14,7 @@ fn setup_string(state: &mut RustSimState, addr: u64, s: &[u8]) {
 /// mapped; this overwrites the byte without disturbing the rest.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, name, 8);
+    let sym = RustBV::symbol(name, 8);
     drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
@@ -162,7 +162,7 @@ fn test_atoi_single_symbolic_digit_constrained() {
     let sym = place_symbolic_byte(&mut state, 0x1000, "d0");
     let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'7' as u128, 8);
-    let eq = sym.eq(&target, &ctx);
+    let eq = sym.eq(&target);
     drop(ctx);
 
     let p = NativeAtoi;
@@ -188,9 +188,9 @@ fn test_atoi_three_symbolic_digits_constrained() {
     let one = RustBV::concrete(b'1' as u128, 8);
     let two = RustBV::concrete(b'2' as u128, 8);
     let three = RustBV::concrete(b'3' as u128, 8);
-    let c0 = s0.eq(&one, &ctx);
-    let c1 = s1.eq(&two, &ctx);
-    let c2 = s2.eq(&three, &ctx);
+    let c0 = s0.eq(&one);
+    let c1 = s1.eq(&two);
+    let c2 = s2.eq(&three);
     drop(ctx);
 
     let p = NativeAtoi;
@@ -215,8 +215,8 @@ fn test_atoi_symbolic_digit_range_bounds() {
     let ctx = state.solver().borrow();
     let zero = RustBV::concrete(b'0' as u128, 8);
     let nine = RustBV::concrete(b'9' as u128, 8);
-    let c_lo = sym.uge(&zero, &ctx);
-    let c_hi = sym.ule(&nine, &ctx);
+    let c_lo = sym.uge(&zero);
+    let c_hi = sym.ule(&nine);
     drop(ctx);
 
     let p = NativeAtoi;
@@ -242,7 +242,7 @@ fn test_atoi_symbolic_terminator_after_digit() {
     let sym = place_symbolic_byte(&mut state, 0x1001, "term");
     let ctx = state.solver().borrow();
     let space = RustBV::concrete(b' ' as u128, 8);
-    let eq = sym.eq(&space, &ctx);
+    let eq = sym.eq(&space);
     drop(ctx);
 
     let p = NativeAtoi;
@@ -266,8 +266,8 @@ fn test_atoi_negative_symbolic_digits() {
     let ctx = state.solver().borrow();
     let four = RustBV::concrete(b'4' as u128, 8);
     let two = RustBV::concrete(b'2' as u128, 8);
-    let c0 = s0.eq(&four, &ctx);
-    let c1 = s1.eq(&two, &ctx);
+    let c0 = s0.eq(&four);
+    let c1 = s1.eq(&two);
     drop(ctx);
 
     let p = NativeAtoi;
@@ -357,9 +357,9 @@ fn test_strtoll_symbolic_digits_constrained() {
     let four = RustBV::concrete(b'4' as u128, 8);
     let five = RustBV::concrete(b'5' as u128, 8);
     let six = RustBV::concrete(b'6' as u128, 8);
-    let c0 = s0.eq(&four, &ctx);
-    let c1 = s1.eq(&five, &ctx);
-    let c2 = s2.eq(&six, &ctx);
+    let c0 = s0.eq(&four);
+    let c1 = s1.eq(&five);
+    let c2 = s2.eq(&six);
     drop(ctx);
 
     let p = NativeStrtoll;
@@ -390,7 +390,7 @@ fn test_strtol_base_16_symbolic_letter_digit() {
     let sym = place_symbolic_byte(&mut state, 0x1000, "d0");
     let ctx = state.solver().borrow();
     let a = RustBV::concrete(b'a' as u128, 8);
-    let eq = sym.eq(&a, &ctx);
+    let eq = sym.eq(&a);
     drop(ctx);
 
     let p = NativeStrtol;

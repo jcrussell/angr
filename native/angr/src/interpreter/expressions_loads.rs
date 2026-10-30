@@ -80,7 +80,7 @@ impl<'a> VEXInterpreter<'a> {
             // would fail, and callers never pass 0).
             let off_bits = (range.start * 8) as u32;
             let hi_bit = (range.end * 8 - 1) as u32;
-            return Some(bv.extract(hi_bit, off_bits, self.ctx));
+            return Some(bv.extract(hi_bit, off_bits));
         }
         None
     }
@@ -102,7 +102,7 @@ impl<'a> VEXInterpreter<'a> {
             if sym_val.width() == want {
                 return Some(sym_val.clone());
             } else if sym_val.width() > want {
-                return Some(sym_val.extract((size * 8 - 1) as u32, 0, self.ctx));
+                return Some(sym_val.extract((size * 8 - 1) as u32, 0));
             }
             return None;
         }
@@ -228,7 +228,7 @@ impl<'a> VEXInterpreter<'a> {
         let partial = self.pending_stores.try_load_partial(addr_concrete, size);
         let below = self.load_concrete_addr_below_pending(callbacks, addr_concrete, size)?;
         match partial {
-            Some(overlay) => Ok(splice_bytes_over_bv(&below, &overlay, self.ctx)),
+            Some(overlay) => Ok(splice_bytes_over_bv(&below, &overlay)),
             None => Ok(below),
         }
     }
@@ -348,14 +348,14 @@ impl<'a> VEXInterpreter<'a> {
         fallback_name: impl Fn() -> String,
     ) -> RustBV {
         let Some(load) = load_results.get(i) else {
-            return RustBV::symbolic(self.ctx, fallback_name(), width);
+            return RustBV::symbol(fallback_name(), width);
         };
         if !load.symbolic {
             return bytes_to_bv(&load.bytes, width);
         }
         load.value
             .clone()
-            .unwrap_or_else(|| RustBV::symbolic(self.ctx, fallback_name(), width))
+            .unwrap_or_else(|| RustBV::symbol(fallback_name(), width))
     }
 
     /// Shared dispatch for Multiple/Strided concretization results on the load
@@ -429,7 +429,7 @@ impl<'a> VEXInterpreter<'a> {
             });
 
             let addr_const = RustBV::concrete(*addr as u128, addr_width);
-            let cond = addr_expr.eq(&addr_const, self.ctx);
+            let cond = addr_expr.eq(&addr_const);
 
             pairs.push((cond, value));
         }
@@ -437,13 +437,9 @@ impl<'a> VEXInterpreter<'a> {
         let default_value = pairs
             .last()
             .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| RustBV::symbolic(self.ctx, "ite_default", width));
+            .unwrap_or_else(|| RustBV::symbol("ite_default", width));
 
-        Ok(build_ite_chain(
-            &pairs[..pairs.len() - 1],
-            default_value,
-            self.ctx,
-        ))
+        Ok(build_ite_chain(&pairs[..pairs.len() - 1], default_value))
     }
 
     /// Build ITE chain stores for symbolic memory writes with multiple candidate addresses.
@@ -474,13 +470,13 @@ impl<'a> VEXInterpreter<'a> {
 
         for (i, &addr) in addrs.iter().enumerate() {
             let addr_const = RustBV::concrete(addr as u128, addr_width);
-            let cond = addr_expr.eq(&addr_const, self.ctx);
+            let cond = addr_expr.eq(&addr_const);
 
             let current = self.convert_load_result(&load_results, i, val_width, || {
                 format!("ite_store_cur_{addr:x}")
             });
 
-            let ite_value = cond.ite(data_val, &current, self.ctx);
+            let ite_value = cond.ite(data_val, &current);
 
             self.store_symbolic_value_buffered(callbacks, addr, &ite_value)?;
         }
@@ -553,7 +549,7 @@ impl<'a> VEXInterpreter<'a> {
             if src_bits > target_bits {
                 // extract(high, low) takes bits [high:low] inclusive, so the
                 // low `target_bits` bits are extract(target_bits - 1, 0).
-                value.extract(target_bits - 1, 0, self.ctx)
+                value.extract(target_bits - 1, 0)
             } else {
                 value
             }
@@ -563,8 +559,8 @@ impl<'a> VEXInterpreter<'a> {
                 // Identity/Unknown should not reach a widening branch (sizes
                 // differ only for the Widen* variants); pass through if they do.
                 IRLoadGOp::Identity | IRLoadGOp::Unknown => value,
-                IRLoadGOp::WidenS { .. } => value.sign_extend(target_bits, self.ctx),
-                IRLoadGOp::WidenZ { .. } => value.zero_extend(target_bits, self.ctx),
+                IRLoadGOp::WidenS { .. } => value.sign_extend(target_bits),
+                IRLoadGOp::WidenZ { .. } => value.zero_extend(target_bits),
             }
         }
     }
@@ -586,7 +582,7 @@ impl<'a> VEXInterpreter<'a> {
         if self.concretizer.should_avoid_multivalued_read(addr_val)
             && let Some(rust_mem) = self.rust_memory.as_ref()
         {
-            let value = rust_mem.unconstrained_read_value(size as u32, self.ctx);
+            let value = rust_mem.unconstrained_read_value(size as u32);
             profile_add!(load_start, self.stats.load_stmt_time_ns);
             return Ok(Some(value));
         }

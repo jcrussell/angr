@@ -15,7 +15,6 @@ use crate::symbolic::SymContext;
 
 #[test]
 fn test_register_file_concrete() {
-    let ctx = SymContext::new_mock();
 
     let mut regs = RegisterFile::new(Box::new(AMD64));
 
@@ -23,27 +22,26 @@ fn test_register_file_concrete() {
     regs.put_reg("rax", RustBV::concrete(0x1234567890ABCDEF, 64));
 
     // Read back
-    let rax = regs.get_reg("rax", &ctx).unwrap();
+    let rax = regs.get_reg("rax").unwrap();
     assert_eq!(rax.as_u64(), Some(0x1234567890ABCDEF));
 
     // Read sub-register (AL is the low byte of RAX)
     // RAX is at offset 16 in VEX AMD64 guest state
-    let al = regs.get(16, 1, &ctx);
+    let al = regs.get(16, 1);
     assert_eq!(al.as_u64(), Some(0xEF));
 }
 
 #[test]
 fn test_register_file_symbolic() {
-    let ctx = SymContext::new_mock();
 
     let mut regs = RegisterFile::new(Box::new(AMD64));
 
     // Write a symbolic value
-    let sym = RustBV::symbolic(&ctx, "rax", 64);
+    let sym = RustBV::symbol("rax", 64);
     regs.put_reg("rax", sym);
 
     // Read back
-    let rax = regs.get_reg("rax", &ctx).unwrap();
+    let rax = regs.get_reg("rax").unwrap();
     assert!(rax.is_symbolic());
 }
 
@@ -55,13 +53,12 @@ fn test_register_file_symbolic() {
 /// value.
 #[test]
 fn copy_to_bytes_zeroes_symbolic_registers() {
-    let ctx = SymContext::new_mock();
     let mut regs = RegisterFile::new(Box::new(AMD64));
 
     // rax concrete, then overwritten symbolically; rbx stays concrete.
     regs.put_reg("rax", RustBV::concrete(0x1234_5678_9ABC_DEF0, 64));
     regs.put_reg("rbx", RustBV::concrete(0x0BAD_C0DE_0BAD_C0DE, 64));
-    regs.put_reg("rax", RustBV::symbolic(&ctx, "rax_sym", 64));
+    regs.put_reg("rax", RustBV::symbol("rax_sym", 64));
 
     let mut bytes = vec![0u8; AMD64.state_size()];
     regs.copy_to_bytes(&mut bytes);
@@ -95,10 +92,9 @@ fn copy_to_bytes_zeroes_symbolic_registers() {
 /// register as a whole is not concretely representable.
 #[test]
 fn copy_to_bytes_zeroes_partially_concrete_symbolic_register() {
-    let ctx = SymContext::new_mock();
     let mut regs = RegisterFile::new(Box::new(AMD64));
 
-    regs.put_reg("rax", RustBV::symbolic(&ctx, "rax_sym", 64));
+    regs.put_reg("rax", RustBV::symbol("rax_sym", 64));
     // `al` is the low byte of rax — composes into the symbolic entry.
     let al_off = AMD64.register_offset("rax").unwrap();
     regs.put(al_off, RustBV::concrete(0xEF, 8));
@@ -121,7 +117,6 @@ fn copy_to_bytes_zeroes_partially_concrete_symbolic_register() {
 /// parent/child boundary (angr-6t8z3.1).
 #[test]
 fn test_register_file_fork_cow_isolation() {
-    let ctx = SymContext::new_mock();
 
     let mut parent = RegisterFile::new(Box::new(AMD64));
     parent.put_reg("rax", RustBV::concrete(0xAAAA_AAAA_AAAA_AAAA, 64));
@@ -129,18 +124,18 @@ fn test_register_file_fork_cow_isolation() {
     // Fork: child shares the parent's data buffer until a write occurs.
     let mut child = parent.fork();
     assert_eq!(
-        child.get_reg("rax", &ctx).unwrap().as_u64(),
+        child.get_reg("rax").unwrap().as_u64(),
         Some(0xAAAA_AAAA_AAAA_AAAA)
     );
 
     // Mutate the child via the concrete `put` path — must not touch parent.
     child.put_reg("rax", RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
     assert_eq!(
-        child.get_reg("rax", &ctx).unwrap().as_u64(),
+        child.get_reg("rax").unwrap().as_u64(),
         Some(0xBBBB_BBBB_BBBB_BBBB)
     );
     assert_eq!(
-        parent.get_reg("rax", &ctx).unwrap().as_u64(),
+        parent.get_reg("rax").unwrap().as_u64(),
         Some(0xAAAA_AAAA_AAAA_AAAA),
         "child write leaked into parent (CoW broken)"
     );
@@ -148,11 +143,11 @@ fn test_register_file_fork_cow_isolation() {
     // Mutate the parent (rbx, untouched offset) — child must not see it.
     parent.put_reg("rbx", RustBV::concrete(0x1111_1111_1111_1111, 64));
     assert_eq!(
-        parent.get_reg("rbx", &ctx).unwrap().as_u64(),
+        parent.get_reg("rbx").unwrap().as_u64(),
         Some(0x1111_1111_1111_1111)
     );
     assert_eq!(
-        child.get_reg("rbx", &ctx).unwrap().as_u64(),
+        child.get_reg("rbx").unwrap().as_u64(),
         Some(0),
         "parent write leaked into child (CoW broken)"
     );
@@ -165,7 +160,7 @@ fn test_register_file_fork_cow_isolation() {
     buf[16] = 0x77; // overwrite RAX low byte region
     p2.copy_from_bytes(&buf);
     assert_eq!(
-        c2.get_reg("rax", &ctx).unwrap().as_u64(),
+        c2.get_reg("rax").unwrap().as_u64(),
         Some(0xDEAD_BEEF),
         "copy_from_bytes leaked into forked child (CoW broken)"
     );
@@ -176,7 +171,6 @@ fn test_register_file_fork_cow_isolation() {
 /// test does not require Z3.
 #[test]
 fn serde_roundtrip_register_file_concrete() {
-    let ctx = SymContext::new_mock();
     let mut regs = RegisterFile::new(Box::new(AMD64));
     regs.put_reg("rax", RustBV::concrete(0x1234567890ABCDEF, 64));
     regs.put_reg("rsp", RustBV::concrete(0x7fff_ffff_0000_1000, 64));
@@ -186,11 +180,11 @@ fn serde_roundtrip_register_file_concrete() {
 
     assert_eq!(restored.arch().name(), "AMD64");
     assert_eq!(
-        restored.get_reg("rax", &ctx).unwrap().as_u64(),
+        restored.get_reg("rax").unwrap().as_u64(),
         Some(0x1234567890ABCDEF)
     );
     assert_eq!(
-        restored.get_reg("rsp", &ctx).unwrap().as_u64(),
+        restored.get_reg("rsp").unwrap().as_u64(),
         Some(0x7fff_ffff_0000_1000)
     );
 }
@@ -203,9 +197,8 @@ fn serde_roundtrip_register_file_concrete() {
 fn serde_roundtrip_register_file_symbolic() {
     use z3::{Config, with_z3_config};
 
-    let ctx = SymContext::new();
     let mut regs = RegisterFile::new(Box::new(AMD64));
-    let sym = RustBV::symbolic(&ctx, "rdi_sym", 64);
+    let sym = RustBV::symbol("rdi_sym", 64);
     let original = sym.leaf_var();
     regs.put_reg("rdi", sym);
 
@@ -216,8 +209,7 @@ fn serde_roundtrip_register_file_symbolic() {
     // snapshot/restore path).
     let (restored_leaf, lowered) = with_z3_config(&Config::new(), || {
         let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
-        let ctx2 = SymContext::new();
-        let bv = restored.get_reg("rdi", &ctx2).unwrap();
+        let bv = restored.get_reg("rdi").unwrap();
         (bv.leaf_var(), bv.to_z3_ast().unwrap().to_string())
     });
 
@@ -274,7 +266,6 @@ fn serde_known_arch_name_round_trips() {
 /// `state.regs.*` after Rust-engine exploration (angr-9ke6b.6).
 #[test]
 fn x87_control_registers_round_trip_through_register_names() {
-    let ctx = SymContext::new();
     for arch in [
         arch_from_name("AMD64").unwrap(),
         arch_from_name("X86").unwrap(),
@@ -299,7 +290,7 @@ fn x87_control_registers_round_trip_through_register_names() {
                 regs.put_reg(fpu, RustBV::concrete(0x25, bits)),
                 "{arch_name}: put_reg({fpu}) rejected"
             );
-            let got = regs.get_reg(fpu, &ctx).expect("register readable");
+            let got = regs.get_reg(fpu).expect("register readable");
             assert_eq!(got.as_u128(), Some(0x25), "{arch_name}: {fpu} round-trip");
             assert_eq!(got.width(), bits, "{arch_name}: {fpu} width");
         }
@@ -323,7 +314,6 @@ fn x87_control_registers_round_trip_through_register_names() {
 /// it feeds.
 #[test]
 fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
-    let ctx = SymContext::new();
     let mut covered = 0usize;
     for desc in ALL_ARCHES {
         let arch_name = desc.name;
@@ -362,7 +352,7 @@ fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
             // Read: exact, and not representable as a u128 — which is what
             // makes the Python `get_register` surface report a clean error
             // instead of a truncated number.
-            let got = regs.get_reg(name, &ctx).expect("register readable");
+            let got = regs.get_reg(name).expect("register readable");
             assert_eq!(got.width(), size * 8, "{arch_name}: {name} read width");
             assert_eq!(
                 got.as_u128(),
@@ -372,12 +362,12 @@ fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
             );
             // Byte 0 of the composed value is still the byte that was written.
             assert_eq!(
-                got.extract(7, 0, &ctx).as_u128(),
+                got.extract(7, 0).as_u128(),
                 Some(0xef),
                 "{arch_name}: {name} byte 0 survives composition"
             );
             assert_eq!(
-                got.extract(size * 8 - 1, size * 8 - 8, &ctx).as_u128(),
+                got.extract(size * 8 - 1, size * 8 - 8).as_u128(),
                 Some(0),
                 "{arch_name}: {name} top byte"
             );
@@ -401,21 +391,20 @@ fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
 /// ITE-merged instead.
 #[test]
 fn merge_width_mismatch_ite_merges_both_paths() {
-    let ctx = SymContext::new_mock();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
     let mut a = RegisterFile::new(Box::new(AMD64));
-    a.put(rax_off, RustBV::symbolic(&ctx, "narrow", 32));
+    a.put(rax_off, RustBV::symbol("narrow", 32));
     let mut b = RegisterFile::new(Box::new(AMD64));
-    b.put(rax_off, RustBV::symbolic(&ctx, "wide", 64));
+    b.put(rax_off, RustBV::symbol("wide", 64));
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    let cond = RustBV::symbol("merge_cond", 1);
     assert!(
-        a.merge(&b, &cond, &ctx),
+        a.merge(&b, &cond),
         "width mismatch must count as merged"
     );
 
-    let got = a.get(rax_off, 8, &ctx);
+    let got = a.get(rax_off, 8);
     assert_eq!(got.width(), 64, "merged rax must be the wider of the two");
     assert!(got.is_symbolic());
 
@@ -452,17 +441,16 @@ fn merge_width_mismatch_ite_merges_both_paths() {
 /// bytes) was silently replaced by stale concrete on both paths.
 #[test]
 fn merge_widen_keeps_adjacent_symbolic_overlay() {
-    let ctx = SymContext::new_mock();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
     let mut a = RegisterFile::new(Box::new(AMD64));
-    a.put(rax_off, RustBV::symbolic(&ctx, "al", 8));
-    a.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
+    a.put(rax_off, RustBV::symbol("al", 8));
+    a.put(rax_off + 1, RustBV::symbol("ah", 8));
     let mut b = RegisterFile::new(Box::new(AMD64));
-    b.put(rax_off, RustBV::symbolic(&ctx, "rax", 64));
+    b.put(rax_off, RustBV::symbol("rax", 64));
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx));
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
 
     let collect_names = |bv: &RustBV| {
         let mut names: Vec<String> = Vec::new();
@@ -478,7 +466,7 @@ fn merge_widen_keeps_adjacent_symbolic_overlay() {
         names
     };
 
-    let wide = a.get(rax_off, 8, &ctx);
+    let wide = a.get(rax_off, 8);
     assert_eq!(wide.width(), 64);
     let names = collect_names(&wide);
     for expected in ["al", "ah", "rax"] {
@@ -490,7 +478,7 @@ fn merge_widen_keeps_adjacent_symbolic_overlay() {
 
     // Reading `ah` back must still see the symbolic byte, whether it survives as
     // its own overlay or as a slice of the widened one.
-    let ah_back = a.get(rax_off + 1, 1, &ctx);
+    let ah_back = a.get(rax_off + 1, 1);
     assert_eq!(ah_back.width(), 8);
     let ah_names = collect_names(&ah_back);
     assert!(
@@ -507,9 +495,9 @@ fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
     let ctx = SymContext::new();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
-    let al = RustBV::symbolic(&ctx, "al", 8);
-    let ah = RustBV::symbolic(&ctx, "ah", 8);
-    let rax = RustBV::symbolic(&ctx, "rax", 64);
+    let al = RustBV::symbol("al", 8);
+    let ah = RustBV::symbol("ah", 8);
+    let rax = RustBV::symbol("rax", 64);
 
     let mut a = RegisterFile::new(Box::new(AMD64));
     a.put(rax_off, al.clone());
@@ -517,9 +505,9 @@ fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
     let mut b = RegisterFile::new(Box::new(AMD64));
     b.put(rax_off, rax.clone());
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
+    let got = a.get(rax_off, 8).to_z3_ast().unwrap();
 
     // cond == 1 selects other's whole 64-bit rax.
     ctx.push();
@@ -548,7 +536,6 @@ fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
 /// `rax_off` — which `get` then returned verbatim, shadowing the merged `ah`.
 #[test]
 fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
-    let ctx = SymContext::new_mock();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
     // Neither side has an overlay at `rax_off` itself; only `other` writes
@@ -557,12 +544,12 @@ fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
     a.put(rax_off, RustBV::concrete(0xAAAA_AAAA_AAAA_AAAA, 64));
     let mut b = RegisterFile::new(Box::new(AMD64));
     b.put(rax_off, RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
-    b.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
+    b.put(rax_off + 1, RustBV::symbol("ah", 8));
     assert!(!a.symbolic.contains_key(&rax_off));
     assert!(!b.symbolic.contains_key(&rax_off));
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx));
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
 
     let mentions_ah = |bv: &RustBV| {
         let mut stack = vec![bv.clone()];
@@ -577,13 +564,13 @@ fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
         false
     };
 
-    let wide = a.get(rax_off, 8, &ctx);
+    let wide = a.get(rax_off, 8);
     assert_eq!(wide.width(), 64);
     assert!(
         mentions_ah(&wide),
         "full-width read after merge dropped the merged `ah` overlay: {wide:?}"
     );
-    let ah_back = a.get(rax_off + 1, 1, &ctx);
+    let ah_back = a.get(rax_off + 1, 1);
     assert_eq!(ah_back.width(), 8);
     assert!(
         mentions_ah(&ah_back),
@@ -603,14 +590,14 @@ fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
     a.put(rax_off, RustBV::concrete(0xAAAA_AAAA_AAAA_AAAA, 64));
     let mut b = RegisterFile::new(Box::new(AMD64));
     b.put(rax_off, RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
-    b.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
+    b.put(rax_off + 1, RustBV::symbol("ah", 8));
 
-    let self_expected = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
-    let other_expected = b.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
+    let self_expected = a.get(rax_off, 8).to_z3_ast().unwrap();
+    let other_expected = b.get(rax_off, 8).to_z3_ast().unwrap();
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
+    let got = a.get(rax_off, 8).to_z3_ast().unwrap();
 
     for (bit, expected, what) in [
         (1u64, other_expected, "other's `ah`-composed value"),
@@ -687,7 +674,6 @@ impl Arch for ShortTailArch {
 /// there was silently resolved in `self`'s favour (angr-91vj9.13).
 #[test]
 fn merge_covers_short_tail_chunk_of_guest_state() {
-    let ctx = SymContext::new_mock();
     let reg_bytes = ShortTailArch.bits() as usize / 8;
     let tail = ShortTailArch.state_size() % reg_bytes;
     assert_eq!(tail, 4, "the fixture's guest state is expected to have a short tail");
@@ -702,12 +688,12 @@ fn merge_covers_short_tail_chunk_of_guest_state() {
     assert!(!a.symbolic.contains_key(&tail_off));
     assert!(!b.symbolic.contains_key(&tail_off));
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    let cond = RustBV::symbol("merge_cond", 1);
     assert!(
-        a.merge(&b, &cond, &ctx),
+        a.merge(&b, &cond),
         "a divergence in the short tail chunk must count as a merge"
     );
-    let merged = a.get(tail_off, 4, &ctx);
+    let merged = a.get(tail_off, 4);
     assert_eq!(merged.width(), 32);
     assert!(
         merged.as_u64().is_none(),
@@ -729,9 +715,9 @@ fn merge_short_tail_chunk_selects_each_path_under_solver() {
     let mut b = RegisterFile::new(Box::new(ShortTailArch));
     b.put(tail_off, RustBV::concrete(0x2222_2222, 32));
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(tail_off, 4, &ctx).to_z3_ast().unwrap();
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
+    let got = a.get(tail_off, 4).to_z3_ast().unwrap();
 
     for (bit, expected, what) in [
         (1u64, 0x2222_2222u64, "other's tail bytes"),
@@ -754,17 +740,17 @@ fn merge_width_mismatch_selects_each_path_under_solver() {
     let ctx = SymContext::new();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
-    let narrow = RustBV::symbolic(&ctx, "narrow", 32);
-    let wide = RustBV::symbolic(&ctx, "wide", 64);
+    let narrow = RustBV::symbol("narrow", 32);
+    let wide = RustBV::symbol("wide", 64);
 
     let mut a = RegisterFile::new(Box::new(AMD64));
     a.put(rax_off, narrow.clone());
     let mut b = RegisterFile::new(Box::new(AMD64));
     b.put(rax_off, wide.clone());
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx));
-    let got = a.get(rax_off, 8, &ctx).to_z3_ast().unwrap();
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
+    let got = a.get(rax_off, 8).to_z3_ast().unwrap();
 
     // cond == 1 selects other's 64-bit value.
     ctx.push();
@@ -791,25 +777,24 @@ fn merge_width_mismatch_selects_each_path_under_solver() {
 /// (angr-03vl4.3). Pin the padded result so the two paths cannot diverge.
 #[test]
 fn get_composes_past_end_of_concrete_backing() {
-    let ctx = SymContext::new_mock();
     let state_size = AMD64.state_size() as u32;
     // Straddle the end: the low 2 bytes have an overlay, the high 6 are past
     // the end of `data` entirely.
     let offset = state_size - 2;
 
     let mut regs = RegisterFile::new(Box::new(AMD64));
-    regs.put(offset, RustBV::symbolic(&ctx, "straddle", 16));
+    regs.put(offset, RustBV::symbol("straddle", 16));
 
-    let got = regs.get(offset, 8, &ctx);
+    let got = regs.get(offset, 8);
     assert_eq!(got.width(), 64, "read keeps its requested width");
     // Upper 6 bytes are the zero padding; the low 2 are the overlay.
     assert_eq!(
-        got.extract(63, 16, &ctx).as_u128(),
+        got.extract(63, 16).as_u128(),
         Some(0),
         "positions past the end of `data` pad with zero"
     );
     assert!(
-        got.extract(15, 0, &ctx).is_symbolic(),
+        got.extract(15, 0).is_symbolic(),
         "the overlay survives into the low bytes"
     );
 }
@@ -824,7 +809,6 @@ fn get_composes_past_end_of_concrete_backing() {
 /// register's *base* offset.
 #[test]
 fn be_register_file_mirrors_sub_register_access() {
-    let ctx = SymContext::new_mock();
     let mut regs = RegisterFile::new_with_endian(Box::new(MIPS32), false);
     let f2 = regs.arch().register_offset("f2").unwrap();
     let f0 = regs.arch().register_offset("f0").unwrap();
@@ -833,22 +817,22 @@ fn be_register_file_mirrors_sub_register_access() {
     // Python<->Rust value-level sync already agreed on.
     regs.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
     assert_eq!(
-        regs.get_reg("f2", &ctx).unwrap().as_u64(),
+        regs.get_reg("f2").unwrap().as_u64(),
         Some(0xAABB_CCDD_1122_3344)
     );
 
     // GET:I32 at f2's base offset is `f2_lo`; big-endian storage puts the
     // HIGH word there.
-    let lo_field = regs.get(f2, 4, &ctx);
+    let lo_field = regs.get(f2, 4);
     assert_eq!(lo_field.as_u64(), Some(0xAABB_CCDD), "f2_lo reads high word");
     // ...and the second half of the register holds the low word.
-    assert_eq!(regs.get(f2 + 4, 4, &ctx).as_u64(), Some(0x1122_3344));
+    assert_eq!(regs.get(f2 + 4, 4).as_u64(), Some(0x1122_3344));
 
     // PUT:I32 at f0's base offset lands in f0's high word, exactly as the
     // Python engine reports after `mov.d $f0, $f2`.
     regs.put(f0, lo_field);
     assert_eq!(
-        regs.get_reg("f0", &ctx).unwrap().as_u64(),
+        regs.get_reg("f0").unwrap().as_u64(),
         Some(0xAABB_CCDD_0000_0000)
     );
 }
@@ -869,12 +853,11 @@ fn be_register_file_mirrors_sub_register_access() {
 /// `be_register_file_mirrors_sub_register_access` pins for a plain read.
 #[test]
 fn be_merge_reads_the_other_side_in_storage_coordinates() {
-    let ctx = SymContext::new_mock();
     let f2 = MIPS32.register_offset("f2").unwrap();
 
     let build = || {
         let mut a = RegisterFile::new_with_endian(Box::new(MIPS32), false);
-        a.put(f2, RustBV::symbolic(&ctx, "f2_lo", 32));
+        a.put(f2, RustBV::symbol("f2_lo", 32));
         let mut b = RegisterFile::new_with_endian(Box::new(MIPS32), false);
         b.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
         (a, b)
@@ -882,17 +865,17 @@ fn be_merge_reads_the_other_side_in_storage_coordinates() {
 
     // cond = 1 folds the ITE to `other`'s side.
     let (mut a, b) = build();
-    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
     assert_eq!(
-        a.get(f2, 4, &ctx).as_u64(),
+        a.get(f2, 4).as_u64(),
         Some(0xAABB_CCDD),
         "merged f2_lo must be other's HIGH word, not its low one"
     );
 
     // cond = 0 folds to `self`'s side, which is still the symbol it wrote.
     let (mut a, b) = build();
-    assert!(a.merge(&b, &RustBV::concrete(0, 1), &ctx));
-    let got = a.get(f2, 4, &ctx);
+    assert!(a.merge(&b, &RustBV::concrete(0, 1)));
+    let got = a.get(f2, 4);
     assert_eq!(got.width(), 32);
     assert!(
         got.leaf_var().is_some_and(|(name, _)| &*name == "f2_lo"),
@@ -904,11 +887,10 @@ fn be_merge_reads_the_other_side_in_storage_coordinates() {
 /// angr-fuhmm: no containment table, `mirror_offset` the identity.
 #[test]
 fn le_register_file_does_not_mirror() {
-    let ctx = SymContext::new_mock();
     let mut regs = RegisterFile::new_with_endian(Box::new(MIPS32), true);
     let f2 = regs.arch().register_offset("f2").unwrap();
     regs.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
-    assert_eq!(regs.get(f2, 4, &ctx).as_u64(), Some(0x1122_3344));
+    assert_eq!(regs.get(f2, 4).as_u64(), Some(0x1122_3344));
     assert!(regs.containment.is_none());
 }
 
@@ -946,12 +928,11 @@ fn mirror_offset_is_an_involution_and_identity_where_it_must_be() {
 /// adapter intact — `register_be` is serialized, `containment` rebuilt.
 #[test]
 fn be_register_file_survives_serde_round_trip() {
-    let ctx = SymContext::new_mock();
     let mut regs = RegisterFile::new_with_endian(Box::new(MIPS32), false);
     regs.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
     let bytes = serde_json::to_string(&regs).expect("serialize");
     let restored: RegisterFile = serde_json::from_str(&bytes).expect("deserialize");
     assert!(restored.containment.is_some());
     let f2 = restored.arch().register_offset("f2").unwrap();
-    assert_eq!(restored.get(f2, 4, &ctx).as_u64(), Some(0xAABB_CCDD));
+    assert_eq!(restored.get(f2, 4).as_u64(), Some(0xAABB_CCDD));
 }

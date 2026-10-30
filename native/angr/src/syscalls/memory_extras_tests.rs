@@ -5,7 +5,7 @@ use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
-/// All seven handlers must return a fresh `RustBV::symbolic` of width
+/// All seven handlers must return a fresh `RustBV::symbol` of width
 /// `arch().bits()` on every supported arch, mirroring `syscall_stub`
 /// semantics bit-for-bit. Successive invocations must yield distinct
 /// fresh symbols (different `RustBV::Symbolic.id`).

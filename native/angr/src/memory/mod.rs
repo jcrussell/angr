@@ -915,7 +915,7 @@ impl SymbolicMemory {
         // makes Multi cells the default for symbolic-address stores, so
         // export correctness depends on flushing them even when the
         // pending_writes queue (a separate, scaffolded path) is empty.
-        let proof = self.flush_multi_cells(ctx);
+        let proof = self.flush_multi_cells();
 
         if self.pending_writes.is_empty() {
             return Ok(proof);
@@ -936,7 +936,7 @@ impl SymbolicMemory {
                 ConcretizationResult::Multiple(addrs) => {
                     // Build ITE chains for each candidate address
                     for &candidate in &addrs {
-                        self.materialize_pending_ite(candidate, &pw, ctx)?;
+                        self.materialize_pending_ite(candidate, &pw)?;
                     }
                 }
                 ConcretizationResult::Strided {
@@ -945,7 +945,7 @@ impl SymbolicMemory {
                     count,
                 } => {
                     for candidate in strided_addrs(base, stride, count) {
-                        self.materialize_pending_ite(candidate, &pw, ctx)?;
+                        self.materialize_pending_ite(candidate, &pw)?;
                     }
                 }
                 ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => {
@@ -973,16 +973,15 @@ impl SymbolicMemory {
         &mut self,
         candidate: u64,
         pw: &PendingWrite,
-        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
-        let cond = pw.addr.eq(&addr_const, ctx);
+        let cond = pw.addr.eq(&addr_const);
         let effective_cond = if let Some(ref c) = pw.condition {
-            cond.and(c, ctx)
+            cond.and(c)
         } else {
             cond
         };
-        let current = match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
+        let current = match self.load_concrete_lazy_inner(Address(candidate), pw.size) {
             Ok(v) => v,
             // Surface the fetch-me signal instead of inventing zeros — same
             // contract as the `store_concrete_lazy` below, which fails the
@@ -996,7 +995,7 @@ impl SymbolicMemory {
             // mapping below, so nothing lands on absent memory.
             Err(_) => RustBV::concrete(0, pw.size * 8),
         };
-        let ite_val = effective_cond.ite(&pw.value, &current, ctx);
+        let ite_val = effective_cond.ite(&pw.value, &current);
         self.store_concrete_lazy(candidate, ite_val)
     }
 

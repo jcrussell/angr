@@ -1,7 +1,7 @@
 //! The sort of a named leaf, carried in its Rust-side name.
 //!
 //! `RustBV` has no Bool sort: a claripy `BoolS` leaf is a width-1 value whose
-//! term is built from its *name* (`RustBV::from_parts`), so the name carries
+//! term is built from its *name* (`RustBV::symbol`), so the name carries
 //! the sort. [`SymbolKind::rust_symbol_name`] tags a Bool leaf's name and
 //! `strip_bool_symbol_name` reads the tag back, so `BVS("x", 1)` and
 //! `BoolS("x")` stay two variables (angr-9ke6b.38, angr-9ke6b.223).
@@ -43,7 +43,7 @@ impl SymbolKind {
 /// bitvector leaf.
 ///
 /// Inverse of [`SymbolKind::rust_symbol_name`], and the reason the tag lives
-/// in the name rather than in a `RustBV` field: `RustBV::from_parts` builds a
+/// in the name rather than in a `RustBV` field: `RustBV::symbol` builds a
 /// leaf from its name alone — from the constructors and from the legacy
 /// snapshot record — so the sort survives a snapshot round-trip for free. The
 /// returned name is claripy's own, so the leaf is the very `BoolS` Python

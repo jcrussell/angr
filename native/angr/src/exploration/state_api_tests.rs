@@ -17,11 +17,11 @@ fn state_with_multi_cell_store(value: u32) -> RustSimState {
 
     let (addr_var, val_bv) = {
         let ctx = state.solver().borrow();
-        let addr_var = RustBV::symbolic(&ctx, "export_multi_addr", 64);
+        let addr_var = RustBV::symbol("export_multi_addr", 64);
         ctx.assume_true(
             &addr_var
-                .eq(&RustBV::concrete(0x1000, 64), &ctx)
-                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+                .eq(&RustBV::concrete(0x1000, 64))
+                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
         );
         (addr_var, RustBV::concrete(value as u128, 32))
     };
@@ -140,8 +140,7 @@ fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
 
     assert!(state.set_register("rax", RustBV::concrete(0x2a, 64)));
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "rbx_sym", 64)
+        RustBV::symbol("rbx_sym", 64)
     };
     assert!(state.set_register("rbx", sym));
     // `ymm0` is one of the names angr's `arch.registers` carries but Rust's
@@ -189,8 +188,7 @@ fn read_register_u128_names_both_causes_of_none() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     assert!(state.set_register("rax", RustBV::concrete(0x2a, 64)));
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "rbx_sym", 64)
+        RustBV::symbol("rbx_sym", 64)
     };
     assert!(state.set_register("rbx", sym));
 
@@ -220,8 +218,7 @@ fn state_with_symbolic_object_at_0x1234() -> RustSimState {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state.map_memory(0x1000, 0x1000, Permission::RW);
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "sym_info_probe", 64)
+        RustBV::symbol("sym_info_probe", 64)
     };
     state
         .memory_mut()
@@ -304,9 +301,9 @@ fn undecided_state_in(mgr: &mut RustExplorationManager, name: &str) -> u64 {
     let state = RustSimState::new("amd64").expect("amd64 state");
     {
         let ctx = state.solver().borrow();
-        let x = RustBV::symbolic(&ctx, name, 32);
-        ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
-        ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+        let x = RustBV::symbol(name, 32);
+        ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+        ctx.assume_true(&x.ult(&RustBV::concrete(20, 32)));
         ctx.pin_rlimit_for_test(1);
     }
     let state_id = state.state_id();
@@ -373,10 +370,10 @@ fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
         let state = RustSimState::new("amd64").expect("amd64 state");
         {
             let ctx = state.solver().borrow();
-            let x = RustBV::symbolic(&ctx, "add_constraints_unsat_x", 32);
+            let x = RustBV::symbol("add_constraints_unsat_x", 32);
             let five = RustBV::concrete(5, 32);
-            ctx.assume_true(&x.eq(&five, &ctx));
-            ctx.assume_true(&x.eq(&five, &ctx).not(&ctx));
+            ctx.assume_true(&x.eq(&five));
+            ctx.assume_true(&x.eq(&five).not());
         }
         let state_id = state.state_id();
         mgr.sm.push(STASH_FOUND, state);
@@ -432,8 +429,8 @@ fn import_z3_constraint_ptrs_separates_undecided_from_unsat() {
         let donor = RustSimState::new("amd64").expect("amd64 state");
         {
             let ctx = donor.solver().borrow();
-            let y = RustBV::symbolic(&ctx, "import_ptrs_donor_y", 32);
-            ctx.assume_true(&y.ugt(&RustBV::concrete(3, 32), &ctx));
+            let y = RustBV::symbol("import_ptrs_donor_y", 32);
+            ctx.assume_true(&y.ugt(&RustBV::concrete(3, 32)));
         }
         let donor_id = donor.state_id();
         mgr.sm.push(STASH_FOUND, donor);
@@ -721,8 +718,8 @@ fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
     state.record_stdin_symbol("stdin_scanf_0".to_string(), 32);
     {
         let ctx = state.solver().borrow();
-        let sym = RustBV::symbolic(&ctx, "stdin_scanf_0", 32);
-        ctx.assume_true(&sym.eq(&RustBV::concrete(0x4142_4344, 32), &ctx));
+        let sym = RustBV::symbol("stdin_scanf_0", 32);
+        ctx.assume_true(&sym.eq(&RustBV::concrete(0x4142_4344, 32)));
     }
     let state_id = stash_found(&mut mgr, state);
 
@@ -765,16 +762,14 @@ fn exported_addrs(build: impl FnOnce(&mut RustSimState)) -> Vec<u64> {
         .collect()
 }
 
-fn sym(state: &RustSimState, name: &str, bits: u32) -> RustBV {
-    let ctx = state.solver().borrow();
-    RustBV::symbolic(&ctx, name, bits)
+fn sym(name: &str, bits: u32) -> RustBV {
+    RustBV::symbol(name, bits)
 }
 
 /// A program-computed value: an Expression (`sym + 1`), which is what guest
 /// stores produce and the only kind `_state_symbolic_objects` exports.
-fn expr(state: &RustSimState, name: &str, bits: u32) -> RustBV {
-    let ctx = state.solver().borrow();
-    RustBV::symbolic(&ctx, name, bits).add(&RustBV::concrete(1, bits), &ctx)
+fn expr(name: &str, bits: u32) -> RustBV {
+    RustBV::symbol(name, bits).add(&RustBV::concrete(1, bits))
 }
 
 /// angr-ccp2w: an imported value nobody overwrote stays out of the export —
@@ -782,7 +777,7 @@ fn expr(state: &RustSimState, name: &str, bits: u32) -> RustBV {
 #[test]
 fn export_skips_untouched_import() {
     let addrs = exported_addrs(|state| {
-        let v = expr(state, "ccp2w_untouched", 32);
+        let v = expr("ccp2w_untouched", 32);
         state.memory_mut().import_symbolic_value(0x1000u64, v, None).unwrap();
     });
     assert!(!addrs.contains(&0x1000), "untouched import was exported: {addrs:?}");
@@ -793,8 +788,8 @@ fn export_skips_untouched_import() {
 #[test]
 fn export_includes_overwritten_import_same_base() {
     let addrs = exported_addrs(|state| {
-        let old = sym(state, "ccp2w_old", 32);
-        let new = expr(state, "ccp2w_new", 32);
+        let old = sym("ccp2w_old", 32);
+        let new = expr("ccp2w_new", 32);
         state.memory_mut().import_symbolic_value(0x1000u64, old, None).unwrap();
         state.memory_mut().store_concrete(0x1000u64, new).unwrap();
     });
@@ -806,10 +801,10 @@ fn export_includes_overwritten_import_same_base() {
 fn export_includes_value_stored_over_imported_lanes() {
     let addrs = exported_addrs(|state| {
         for i in 0..4u64 {
-            let lane = sym(state, &format!("ccp2w_lane{i}"), 8);
+            let lane = sym(&format!("ccp2w_lane{i}"), 8);
             state.memory_mut().import_symbolic_value(0x1000 + i, lane, None).unwrap();
         }
-        let new = expr(state, "ccp2w_over_lanes", 32);
+        let new = expr("ccp2w_over_lanes", 32);
         state.memory_mut().store_concrete(0x1000u64, new).unwrap();
     });
     assert!(addrs.contains(&0x1000), "value stored over lanes not exported: {addrs:?}");
@@ -823,8 +818,8 @@ fn export_includes_value_stored_over_imported_lanes() {
 #[test]
 fn export_partial_overwrite_of_import() {
     let addrs = exported_addrs(|state| {
-        let old = sym(state, "ccp2w_wide", 32);
-        let new = expr(state, "ccp2w_mid", 16);
+        let old = sym("ccp2w_wide", 32);
+        let new = expr("ccp2w_mid", 16);
         state.memory_mut().import_symbolic_value(0x1000u64, old, None).unwrap();
         state.memory_mut().store_concrete(0x1002u64, new).unwrap();
     });
@@ -837,7 +832,7 @@ fn export_partial_overwrite_of_import() {
 #[test]
 fn export_includes_installed_guest_value() {
     let addrs = exported_addrs(|state| {
-        let v = expr(state, "ccp2w_guest", 32);
+        let v = expr("ccp2w_guest", 32);
         state.memory_mut().install_symbolic_value(0x1000u64, v).unwrap();
     });
     assert!(addrs.contains(&0x1000), "guest-computed value not exported: {addrs:?}");
@@ -865,7 +860,7 @@ fn exported_objects(build: impl FnOnce(&mut RustSimState)) -> Vec<(u64, u32)> {
 fn concrete_store_over_lanes_retires_them() {
     let objs = exported_objects(|state| {
         for i in 0..4u64 {
-            let lane = expr(state, &format!("ccp2w_clane{i}"), 8);
+            let lane = expr(&format!("ccp2w_clane{i}"), 8);
             state.memory_mut().install_symbolic_value(0x1000 + i, lane).unwrap();
         }
         state.memory_mut()
@@ -884,7 +879,7 @@ fn concrete_store_over_lanes_retires_them() {
 #[test]
 fn concrete_store_inside_wider_object_splits_it() {
     let objs = exported_objects(|state| {
-        let wide = expr(state, "ccp2w_cwide", 32);
+        let wide = expr("ccp2w_cwide", 32);
         state.memory_mut().install_symbolic_value(0x1000u64, wide).unwrap();
         state.memory_mut()
             .store_concrete(0x1002u64, RustBV::concrete(0xBEEF, 16))
@@ -905,16 +900,16 @@ fn install_over_lanes_replaces_all_bytes() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state.map_memory(0x1000, 0x4000, Permission::RWX);
     for i in 0..4u64 {
-        let lane = sym(&state, &format!("ccp2w_ilane{i}"), 8);
+        let lane = sym(&format!("ccp2w_ilane{i}"), 8);
         state.memory_mut().import_symbolic_value(0x1000 + i, lane, None).unwrap();
     }
-    let new = sym(&state, "ccp2w_install_new", 32);
+    let new = sym("ccp2w_install_new", 32);
     state.memory_mut().install_symbolic_value(0x1000u64, new.clone()).unwrap();
     let ctx = state.solver().clone();
     let ctx = ctx.borrow();
     let loaded = state.memory_mut().load_concrete_lazy(0x1000, 4, &ctx).unwrap();
     let probe = ctx.fork();
-    probe.assume_true(&loaded.eq(&new, &probe).not(&probe));
+    probe.assume_true(&loaded.eq(&new).not());
     assert!(!probe.is_sat(), "interior lanes shadow the installed value");
 }
 
@@ -924,8 +919,8 @@ fn install_over_lanes_replaces_all_bytes() {
 #[test]
 fn export_includes_bare_symbol_stored_over_import() {
     let addrs = exported_addrs(|state| {
-        let old = sym(state, "ccp2w_bare_old", 32);
-        let reg = sym(state, "ccp2w_bare_reg", 32);
+        let old = sym("ccp2w_bare_old", 32);
+        let reg = sym("ccp2w_bare_reg", 32);
         state.memory_mut().import_symbolic_value(0x1000u64, old, None).unwrap();
         state.memory_mut().store_concrete(0x1000u64, reg).unwrap();
     });

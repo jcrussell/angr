@@ -459,7 +459,7 @@ pub(super) fn handle_symbolic_jump_target_core(
                 first.set_ip(expr.clone());
             } else {
                 let concrete = RustBV::concrete(addr as u128, expr.width());
-                let constraint = expr.eq(&concrete, &first.solver().borrow());
+                let constraint = expr.eq(&concrete);
                 first.add_constraint(constraint);
                 first.set_pc(addr);
             }
@@ -502,7 +502,7 @@ pub(super) fn handle_symbolic_jump_target_core(
             first_state.set_ip(expr.clone());
         } else {
             let concrete = RustBV::concrete(first_addr as u128, expr.width());
-            let constraint = expr.eq(&concrete, &first_state.solver().borrow());
+            let constraint = expr.eq(&concrete);
             first_state.add_constraint(constraint);
             first_state.set_pc(first_addr);
         }
@@ -520,7 +520,7 @@ pub(super) fn handle_symbolic_jump_target_core(
                 forked.set_ip(expr.clone());
             } else {
                 let concrete = RustBV::concrete(addr as u128, expr.width());
-                let constraint = expr.eq(&concrete, &forked.solver().borrow());
+                let constraint = expr.eq(&concrete);
                 forked.add_constraint(constraint);
                 forked.set_pc(addr);
             }

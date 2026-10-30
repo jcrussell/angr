@@ -22,18 +22,18 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
 
     // Symbolic addresses, each pinned to a specific value via a
     // constraint added to the solver up-front.
-    let addr1 = RustBV::symbolic(&ctx, "addr1", 64);
-    let addr2 = RustBV::symbolic(&ctx, "addr2", 64);
-    ctx.assume_true(&addr1.eq(&RustBV::concrete(0x1000, 64), &ctx));
-    ctx.assume_true(&addr2.eq(&RustBV::concrete(0x1004, 64), &ctx));
+    let addr1 = RustBV::symbol("addr1", 64);
+    let addr2 = RustBV::symbol("addr2", 64);
+    ctx.assume_true(&addr1.eq(&RustBV::concrete(0x1000, 64)));
+    ctx.assume_true(&addr2.eq(&RustBV::concrete(0x1004, 64)));
 
     // Two 64-bit symbolic values; sym1 carries an additional constraint
     // (a specific u128 value) so we can verify that this value-side
     // constraint also survives the partial overlap.
-    let sym1 = RustBV::symbolic(&ctx, "sym1", 64);
-    let sym2 = RustBV::symbolic(&ctx, "sym2", 64);
+    let sym1 = RustBV::symbol("sym1", 64);
+    let sym2 = RustBV::symbol("sym2", 64);
     let pinned_sym1: u128 = 0xDEAD_BEEF_F00D_BABE;
-    ctx.assume_true(&sym1.eq(&RustBV::concrete(pinned_sym1, 64), &ctx));
+    ctx.assume_true(&sym1.eq(&RustBV::concrete(pinned_sym1, 64)));
 
     // Partial overlap: sym1 covers [0x1000, 0x1008); sym2 covers
     // [0x1004, 0x100C). Bytes [0x1004, 0x1008) are written by both.
@@ -51,7 +51,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
     // addr1's solution constraint (== 0x1000) must survive: probing
     // an alternative value in a forked context must be UNSAT.
     let probe_addr = ctx.fork();
-    probe_addr.assume_true(&addr1.eq(&RustBV::concrete(0x2000, 64), &probe_addr));
+    probe_addr.assume_true(&addr1.eq(&RustBV::concrete(0x2000, 64)));
     assert!(
         !probe_addr.is_sat(),
         "addr1==0x1000 must survive partial-overlap stores; \
@@ -61,7 +61,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
     // sym1's value constraint must survive: probing sym1 == 0 must
     // be UNSAT (sym1 is pinned to 0xDEAD_BEEF_F00D_BABE).
     let probe_sym1 = ctx.fork();
-    probe_sym1.assume_true(&sym1.eq(&RustBV::concrete(0, 64), &probe_sym1));
+    probe_sym1.assume_true(&sym1.eq(&RustBV::concrete(0, 64)));
     assert!(
         !probe_sym1.is_sat(),
         "sym1's value constraint must survive partial-overlap stores; \
@@ -71,7 +71,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
     // Loading from 0x1000 must still produce a satisfiable expression
     // and stay consistent with the surviving value-side constraints.
     let loaded = mem
-        .load_concrete(0x1000, 4, &ctx)
+        .load_concrete(0x1000, 4)
         .expect("load[0x1000:4] must succeed after partial-overlap stores");
     assert!(
         ctx.is_sat(),
@@ -102,10 +102,10 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     // predict every byte after the partial overwrite.
     let k1: u128 = 0x1122_3344_5566_7788;
     let k2: u128 = 0xAABB_CCDD_EEFF_0011;
-    let sym1 = RustBV::symbolic(&ctx, "sym1_3zhl", 64);
-    let sym2 = RustBV::symbolic(&ctx, "sym2_3zhl", 64);
-    ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64), &ctx));
-    ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64), &ctx));
+    let sym1 = RustBV::symbol("sym1_3zhl", 64);
+    let sym2 = RustBV::symbol("sym2_3zhl", 64);
+    ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64)));
+    ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64)));
 
     // Store sym1 at 0x1000 (covers 0x1000..0x1008), then sym2 at
     // 0x1004 (covers 0x1004..0x100C). Bytes 0x1004..0x1008 are now
@@ -119,7 +119,7 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     //   bytes 0x1004..0x1008 = sym2[31:0]
     // LE: result low half = sym1[31:0], result high half = sym2[31:0].
     let loaded = mem
-        .load_concrete(0x1000, 8, &ctx)
+        .load_concrete(0x1000, 8)
         .expect("8-byte load at 0x1000 must succeed");
     let expected: u128 = ((k2 & 0xFFFF_FFFF) << 32) | (k1 & 0xFFFF_FFFF);
     assert_eq!(
@@ -132,7 +132,7 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     // Sanity checks for the unaffected ranges:
     // load(0x1000, 4) is sym1's low 4 bytes.
     let lower = mem
-        .load_concrete(0x1000, 4, &ctx)
+        .load_concrete(0x1000, 4)
         .expect("4-byte load at 0x1000 must succeed");
     assert_eq!(
         ctx.eval(&lower),
@@ -141,7 +141,7 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     );
     // load(0x1004, 8) is the full sym2.
     let upper = mem
-        .load_concrete(0x1004, 8, &ctx)
+        .load_concrete(0x1004, 8)
         .expect("8-byte load at 0x1004 must succeed");
     assert_eq!(
         ctx.eval(&upper),
@@ -166,10 +166,10 @@ fn test_load_concrete_lazy_partial_overlap_later_store_wins() {
 
     let k1: u128 = 0x1122_3344_5566_7788;
     let k2: u128 = 0xAABB_CCDD_EEFF_0011;
-    let sym1 = RustBV::symbolic(&ctx, "sym1_97_lazy", 64);
-    let sym2 = RustBV::symbolic(&ctx, "sym2_97_lazy", 64);
-    ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64), &ctx));
-    ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64), &ctx));
+    let sym1 = RustBV::symbol("sym1_97_lazy", 64);
+    let sym2 = RustBV::symbol("sym2_97_lazy", 64);
+    ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64)));
+    ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64)));
 
     mem.store_concrete(0x1000, sym1).expect("store sym1");
     mem.store_concrete(0x1004, sym2).expect("store sym2");
@@ -189,7 +189,7 @@ fn test_load_concrete_lazy_partial_overlap_later_store_wins() {
 
     // The eager and lazy paths must now agree byte-for-byte on this setup.
     let eager = mem
-        .load_concrete(0x1000, 8, &ctx)
+        .load_concrete(0x1000, 8)
         .expect("8-byte eager load at 0x1000 must succeed");
     assert_eq!(
         ctx.eval(&eager),
@@ -212,8 +212,8 @@ fn test_load_concrete_lazy_partial_read_of_wider_sym_big_endian() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     let k: u128 = 0x1122_3344_5566_7788;
-    let sym = RustBV::symbolic(&ctx, "sym_97_be", 64);
-    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
+    let sym = RustBV::symbol("sym_97_be", 64);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64)));
     mem.store_concrete(0x1000, sym).expect("store sym");
 
     // BE: byte 0 of the stored value is the MSB, so a 4-byte read at the
@@ -227,7 +227,7 @@ fn test_load_concrete_lazy_partial_read_of_wider_sym_big_endian() {
         "BE load_concrete_lazy(0x1000, 4) must be the wide value's high half"
     );
     let eager = mem
-        .load_concrete(0x1000, 4, &ctx)
+        .load_concrete(0x1000, 4)
         .expect("4-byte eager load at 0x1000 must succeed");
     assert_eq!(
         ctx.eval(&eager),
@@ -251,8 +251,8 @@ fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
 
     // Pin sym to a known constant so we can predict the bytes.
     let k: u128 = 0x1122_3344_5566_7788;
-    let sym = RustBV::symbolic(&ctx, "sym_jvjf_a", 64);
-    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
+    let sym = RustBV::symbol("sym_jvjf_a", 64);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64)));
 
     // Store the 64-bit sym at 0x1000 (covers 0x1000..0x1008).
     mem.store_concrete(0x1000, sym).expect("store sym");
@@ -265,7 +265,7 @@ fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
     // 8-byte load at 0x1000 must reflect the concrete overwrite at
     // byte 3 — i.e. byte 3 of the loaded value is 0xFF, not 0x44.
     let loaded = mem
-        .load_concrete(0x1000, 8, &ctx)
+        .load_concrete(0x1000, 8)
         .expect("8-byte load must succeed");
     let expected: u128 = (k & !(0xFFu128 << 24)) | (0xFFu128 << 24);
     assert_eq!(
@@ -289,8 +289,8 @@ fn test_concrete_overwrite_clears_stale_symbolic_spans() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     let k: u128 = 0x1122_3344_5566_7788;
-    let sym = RustBV::symbolic(&ctx, "sym_jvjf_b", 64);
-    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
+    let sym = RustBV::symbol("sym_jvjf_b", 64);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64)));
 
     // Wider sym at 0x1000 produces span entries at 0x1001..0x1008.
     mem.store_concrete(0x1000, sym).expect("store sym");
@@ -303,7 +303,7 @@ fn test_concrete_overwrite_clears_stale_symbolic_spans() {
     // 1-byte load at 0x1003 must be the concrete 0xFF, not the
     // extracted sym byte 0x44.
     let byte = mem
-        .load_concrete(0x1003, 1, &ctx)
+        .load_concrete(0x1003, 1)
         .expect("1-byte load must succeed");
     assert_eq!(
         ctx.eval(&byte),
@@ -329,7 +329,7 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_byte_load_succeeds() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let sym = RustBV::symbolic(&ctx, "sym_7qon_a", 16);
+    let sym = RustBV::symbol("sym_7qon_a", 16);
     mem.store_concrete(0x1000, sym).expect("store 16-bit sym");
 
     // Concrete 1-byte write at 0x1000 truncates the wider sym (covers
@@ -342,7 +342,7 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_byte_load_succeeds() {
     // Post-fix: bitmap bit cleared, byte reclassified as concrete
     // (returns the pre-sym page byte, which is 0 here).
     let byte = mem
-        .load_concrete(0x1001, 1, &ctx)
+        .load_concrete(0x1001, 1)
         .expect("1-byte load of survivor must succeed");
     assert_eq!(
         ctx.eval(&byte),
@@ -362,7 +362,7 @@ fn test_concrete_overwrite_partial_truncates_wider_sym_multibyte_tail() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let sym = RustBV::symbolic(&ctx, "sym_7qon_b", 64);
+    let sym = RustBV::symbol("sym_7qon_b", 64);
     mem.store_concrete(0x1000, sym).expect("store 64-bit sym");
 
     // Concrete 4-byte write at 0x1000 truncates the 64-bit sym, leaving
@@ -374,7 +374,7 @@ fn test_concrete_overwrite_partial_truncates_wider_sym_multibyte_tail() {
     // succeed and return the page byte (0).
     for survivor in 0x1004u64..0x1008 {
         let byte = mem
-            .load_concrete(survivor, 1, &ctx)
+            .load_concrete(survivor, 1)
             .unwrap_or_else(|e| panic!("load(0x{survivor:x}, 1) must succeed: {e:?}"));
         assert_eq!(
             ctx.eval(&byte),
@@ -385,7 +385,7 @@ fn test_concrete_overwrite_partial_truncates_wider_sym_multibyte_tail() {
 
     // And a single 4-byte load over the whole tail must also succeed.
     let tail = mem
-        .load_concrete(0x1004, 4, &ctx)
+        .load_concrete(0x1004, 4)
         .expect("4-byte tail load must succeed");
     assert_eq!(ctx.eval(&tail), Some(0));
 }
@@ -400,7 +400,7 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x2000, Permission::RWX);
 
-    let sym = RustBV::symbolic(&ctx, "sym_7qon_c", 16);
+    let sym = RustBV::symbol("sym_7qon_c", 16);
     mem.store_concrete(0x1FFF, sym)
         .expect("store cross-page sym");
 
@@ -408,7 +408,7 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
         .expect("store concrete byte at base");
 
     let byte = mem
-        .load_concrete(0x2000, 1, &ctx)
+        .load_concrete(0x2000, 1)
         .expect("survivor on next page must load");
     assert_eq!(
         ctx.eval(&byte),
@@ -434,17 +434,17 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let wide = RustBV::symbolic(&ctx, "sym_98_wide", 128);
+    let wide = RustBV::symbol("sym_98_wide", 128);
     mem.store_concrete(0x1000, wide).expect("store 16-byte sym");
 
-    let narrow = RustBV::symbolic(&ctx, "sym_98_narrow", 64);
+    let narrow = RustBV::symbol("sym_98_narrow", 64);
     mem.store_concrete(0x1000, narrow.clone())
         .expect("store 8-byte sym at same base");
 
     // The abandoned tail [0x1008, 0x1010) must load cleanly, not raise
     // MemoryError::SymbolicAddress ("symbolic bytes not fully tracked").
     let tail = mem
-        .load_concrete(0x1008, 8, &ctx)
+        .load_concrete(0x1008, 8)
         .expect("abandoned tail must load, not hard-fail");
     // Python-engine parity (angr-7qon)
     assert_eq!(
@@ -456,14 +456,14 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
     // Per-byte too: the first tail byte is the one whose stale span pointed
     // back at the still-live base.
     let tail_byte = mem
-        .load_concrete(0x1008, 1, &ctx)
+        .load_concrete(0x1008, 1)
         .expect("first abandoned tail byte must load");
     assert_eq!(ctx.eval(&tail_byte), Some(0));
 
     // The surviving head must still be the narrow symbolic value.
-    let head = mem.load_concrete(0x1000, 8, &ctx).expect("head must load");
+    let head = mem.load_concrete(0x1000, 8).expect("head must load");
     assert!(head.is_symbolic(), "head must stay symbolic");
-    ctx.assume_true(&narrow.eq(&RustBV::concrete(0x1122_3344_5566_7788, 64), &ctx));
+    ctx.assume_true(&narrow.eq(&RustBV::concrete(0x1122_3344_5566_7788, 64)));
     assert_eq!(
         ctx.eval(&head),
         Some(0x1122_3344_5566_7788),
@@ -478,7 +478,7 @@ fn assert_load_is(mem: &mut SymbolicMemory, ctx: &SymContext, addr: u64, expecte
         .load_concrete_lazy(addr, expected.width() / 8, ctx)
         .expect("load must succeed");
     let probe = ctx.fork();
-    probe.assume_true(&loaded.eq(expected, &probe).not(&probe));
+    probe.assume_true(&loaded.eq(expected).not());
     assert!(!probe.is_sat(), "{what}: load at {addr:#x} can differ from the stored value");
 }
 
@@ -492,9 +492,9 @@ fn test_symbolic_store_over_imported_object_replaces_all_bytes() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let old = RustBV::symbolic(&ctx, "imported_old", 32);
+    let old = RustBV::symbol("imported_old", 32);
     mem.import_symbolic_value(0x1000u64, old, None).unwrap();
-    let new = RustBV::symbolic(&ctx, "stored_new", 32);
+    let new = RustBV::symbol("stored_new", 32);
     mem.store_concrete(0x1000u64, new.clone()).unwrap();
     assert_load_is(&mut mem, &ctx, 0x1000, &new, "32-bit over imported 32-bit");
 }
@@ -509,10 +509,10 @@ fn test_symbolic_store_over_per_byte_objects_replaces_all_bytes() {
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     for i in 0..4u64 {
-        let lane = RustBV::symbolic(&ctx, format!("lane{i}"), 8);
+        let lane = RustBV::symbol(format!("lane{i}"), 8);
         mem.import_symbolic_value(0x1000 + i, lane, None).unwrap();
     }
-    let new = RustBV::symbolic(&ctx, "stored_over_lanes", 32);
+    let new = RustBV::symbol("stored_over_lanes", 32);
     mem.store_concrete(0x1000u64, new.clone()).unwrap();
     assert_load_is(&mut mem, &ctx, 0x1000, &new, "32-bit over byte lanes");
 }
@@ -526,12 +526,12 @@ fn test_symbolic_store_inside_wider_imported_object() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let old = RustBV::symbolic(&ctx, "imported_wide", 64);
+    let old = RustBV::symbol("imported_wide", 64);
     mem.import_symbolic_value(0x1000u64, old.clone(), None).unwrap();
-    let new = RustBV::symbolic(&ctx, "stored_mid", 16);
+    let new = RustBV::symbol("stored_mid", 16);
     mem.store_concrete(0x1002u64, new.clone()).unwrap();
     assert_load_is(&mut mem, &ctx, 0x1002, &new, "16-bit inside imported 64-bit");
     // Little-endian: byte 0x1000..0x1002 are old[15:0].
-    assert_load_is(&mut mem, &ctx, 0x1000, &old.extract(15, 0, &ctx), "untouched head bytes");
-    assert_load_is(&mut mem, &ctx, 0x1004, &old.extract(63, 32, &ctx), "untouched tail bytes");
+    assert_load_is(&mut mem, &ctx, 0x1000, &old.extract(15, 0), "untouched head bytes");
+    assert_load_is(&mut mem, &ctx, 0x1004, &old.extract(63, 32), "untouched tail bytes");
 }

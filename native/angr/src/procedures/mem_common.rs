@@ -155,9 +155,8 @@ pub(crate) fn symbolic_size_conditional_store(
     for i in 0..max_size {
         let orig = state.memory_load(dest.wrapping_add(i), 1)?;
         let stored = {
-            let ctx = state.solver().borrow();
-            let cond = RustBV::concrete(i as u128, width).ult(size_bv, &ctx);
-            cond.ite(&values[i as usize], &orig, &ctx)
+            let cond = RustBV::concrete(i as u128, width).ult(size_bv);
+            cond.ite(&values[i as usize], &orig)
         };
         state.memory_store(dest.wrapping_add(i), stored)?;
     }

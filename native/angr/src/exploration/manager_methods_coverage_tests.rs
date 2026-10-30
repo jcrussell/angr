@@ -229,7 +229,7 @@ fn assert_active_states_map_memory(bucket: Bucket, expect_reach: bool) {
         let expected = 0xefbe_adde_u64;
         let value = state
             .memory()
-            .load_concrete(ADDR, 4, &state.solver().borrow())
+            .load_concrete(ADDR, 4)
             .expect("load mapped bytes")
             .as_u64()
             .expect("concrete bytes");

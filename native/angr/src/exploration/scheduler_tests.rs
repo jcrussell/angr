@@ -23,13 +23,11 @@ use z3::Context;
 fn pinned_state(name: &str, witness: u64) -> RustSimState {
     let mut state = RustSimState::new("amd64").unwrap();
     let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, name, 64)
+        RustBV::symbol(name, 64)
     };
     state.set_register("rax", x.clone());
     let c = {
-        let s = state.solver().borrow();
-        x.eq(&RustBV::concrete(witness as u128, 64), &s)
+        x.eq(&RustBV::concrete(witness as u128, 64))
     };
     state.add_constraint(c);
     state

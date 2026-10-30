@@ -50,8 +50,8 @@ fn test_setbuf_symbolic_args_no_fallback() {
     // Python ignores both operands; symbolic stream/buf must NOT fall back.
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let stream = RustBV::symbolic(&ctx, "stream", 64);
-    let buf = RustBV::symbolic(&ctx, "buf", 64);
+    let stream = RustBV::symbol("stream", 64);
+    let buf = RustBV::symbol("buf", 64);
     drop(ctx);
     let result = NativeSetbuf.call(&mut state, &[stream, buf]).unwrap();
     assert!(result.is_none());

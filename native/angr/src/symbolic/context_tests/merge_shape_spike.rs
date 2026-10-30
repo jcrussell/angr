@@ -33,9 +33,9 @@ const N_ARMS: usize = 2;
 /// assertions so the prefix has a measurable length).
 fn build_base() -> (SymContext, RustBV) {
     let base = SymContext::new();
-    let x = RustBV::symbolic(&base, "x_diamond", 32);
+    let x = RustBV::symbol("x_diamond", 32);
     for i in 0..SHARED_CONSTRAINTS as u128 {
-        base.assume_true(&x.ugt(&RustBV::concrete(i, 32), &base));
+        base.assume_true(&x.ugt(&RustBV::concrete(i, 32)));
     }
     (base, x)
 }
@@ -45,12 +45,12 @@ fn build_base() -> (SymContext, RustBV) {
 /// are compatible with the shared prefix (`x > 7`) and mutually disjoint.
 fn build_arms(base: &SymContext, x: &RustBV) -> (SymContext, SymContext) {
     let arm_a = base.fork();
-    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32), &arm_a));
-    arm_a.assume_true(&x.ult(&RustBV::concrete(250, 32), &arm_a));
+    arm_a.assume_true(&x.ugt(&RustBV::concrete(150, 32)));
+    arm_a.assume_true(&x.ult(&RustBV::concrete(250, 32)));
 
     let arm_b = base.fork();
-    arm_b.assume_true(&x.ugt(&RustBV::concrete(250, 32), &arm_b));
-    arm_b.assume_true(&x.ult(&RustBV::concrete(350, 32), &arm_b));
+    arm_b.assume_true(&x.ugt(&RustBV::concrete(250, 32)));
+    arm_b.assume_true(&x.ult(&RustBV::concrete(350, 32)));
 
     (arm_a, arm_b)
 }
@@ -231,14 +231,14 @@ fn test_cow_merge_stays_sat_and_evals_arm_union() {
     let (base, x) = build_base();
     let (arm_a, arm_b) = build_arms(&base, &x);
 
-    let f0 = RustBV::symbolic(&base, "merge_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "merge_flag_1", 1);
+    let f0 = RustBV::symbol("merge_flag_0", 1);
+    let f1 = RustBV::symbol("merge_flag_1", 1);
     let (merged, guarded) = cow_merge(&[&arm_a, &arm_b], &[f0, f1]);
 
     assert_eq!(guarded, (N_ARMS * DIVERGENT_PER_ARM) as u64);
     assert!(merged.is_sat(), "CoW-merged diamond must stay SAT");
 
-    let xm = RustBV::symbolic(&merged, "x_diamond", 32);
+    let xm = RustBV::symbol("x_diamond", 32);
     assert!(
         merged.solution(&xm, 200),
         "arm A value (x=200) must be admissible"
@@ -267,14 +267,14 @@ fn test_cow_merge_matches_production_semantics() {
     let (base, x) = build_base();
     let (arm_a, arm_b) = build_arms(&base, &x);
 
-    let f0 = RustBV::symbolic(&base, "merge_flag_0", 1);
-    let f1 = RustBV::symbolic(&base, "merge_flag_1", 1);
+    let f0 = RustBV::symbol("merge_flag_0", 1);
+    let f1 = RustBV::symbol("merge_flag_1", 1);
 
     let prod = arm_a.merge(&[&arm_b], &[f0.clone(), f1.clone()]);
     let (cow, _) = cow_merge(&[&arm_a, &arm_b], &[f0, f1]);
 
-    let xp = RustBV::symbolic(&prod, "x_diamond", 32);
-    let xc = RustBV::symbolic(&cow, "x_diamond", 32);
+    let xp = RustBV::symbol("x_diamond", 32);
+    let xc = RustBV::symbol("x_diamond", 32);
 
     assert_eq!(prod.is_sat(), cow.is_sat());
     for v in [200u128, 300, 100, 5] {

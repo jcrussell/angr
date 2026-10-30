@@ -98,7 +98,7 @@ impl<'a> VEXInterpreter<'a> {
         if any_sym {
             if fabricate_unsupported_irop() {
                 self.stats.vex_bypass_fabricate_count += 1;
-                Ok(RustBV::symbolic(self.ctx, name, width))
+                Ok(RustBV::symbol(name, width))
             } else {
                 Err(CbExecutionError::NeedPythonFallback(format!(
                     "unsupported symbolic IROp routed to Python ({name}): {e}"
@@ -348,8 +348,7 @@ impl<'a> VEXInterpreter<'a> {
                 self.pc
             );
             self.stats.vex_bypass_fabricate_count += 1;
-            return Ok(RustBV::symbolic(
-                self.ctx,
+            return Ok(RustBV::symbol(
                 format!("ccall_unsupported_{:x}", self.pc),
                 retty.bits(),
             ));

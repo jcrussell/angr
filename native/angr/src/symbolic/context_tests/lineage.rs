@@ -164,9 +164,9 @@ fn test_with_z3_solver_no_lineage_uses_local_solver() {
     let ctx = SymContext::new();
     assert!(ctx.lineage_arc().is_none());
 
-    let x = RustBV::symbolic(&ctx, "test_with_z3_solver_no_lineage_x", 8);
+    let x = RustBV::symbol("test_with_z3_solver_no_lineage_x", 8);
     let five = RustBV::concrete(5, 8);
-    ctx.assume_true(&x.eq(&five, &ctx));
+    ctx.assume_true(&x.eq(&five));
 
     // Closure asserts via with_z3_solver — must hit the same solver
     // that holds the assume_true constraint.

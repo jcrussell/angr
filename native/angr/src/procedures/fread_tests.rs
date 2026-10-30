@@ -111,9 +111,8 @@ fn test_fread_empty_content_falls_back() {
 /// Register `n` symbolic bytes for `path` and open it. Returns the fd.
 fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..n)
-            .map(|i| RustBV::symbolic(&ctx, format!("freadfile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("freadfile_{i}"), 8))
             .collect()
     };
     state.file_system().register_file_content(path, bytes);
@@ -326,7 +325,7 @@ fn test_fread_symbolic_stream_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "stream", 64);
+    let sym = RustBV::symbol("stream", 64);
     drop(ctx);
 
     let result = NativeFread.call(

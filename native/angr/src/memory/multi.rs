@@ -37,7 +37,7 @@ use std::cell::RefCell;
 
 use super::page::PageIndex;
 use super::{Address, MemoryPage, Permission, SymbolicMemory};
-use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
+use crate::symbolic::{RustBV, record_mem_ite_depth};
 use crate::vex::Endness;
 
 /// Phase 4.2 (angr-mmdh.2): max number of consecutive Multi bytes that
@@ -188,7 +188,7 @@ impl MultiPayload {
     ///
     /// Returns an 8-bit `RustBV`. The caller must ensure all alternative
     /// `value` BVs are 8 bits (the type invariant).
-    pub fn collapse(&self, default_byte: u8, ctx: &SymContext) -> RustBV {
+    pub fn collapse(&self, default_byte: u8) -> RustBV {
         if let Some(cached) = self.cached_collapse.borrow().as_ref()
             && cached.default_byte == default_byte
         {
@@ -197,7 +197,7 @@ impl MultiPayload {
         let default = RustBV::concrete(default_byte as u128, 8);
         let mut acc = default;
         for alt in &self.alternatives {
-            acc = alt.cond.ite(&alt.value, &acc, ctx);
+            acc = alt.cond.ite(&alt.value, &acc);
         }
         *self.cached_collapse.borrow_mut() = Some(CachedCollapse {
             default_byte,
@@ -370,7 +370,7 @@ impl SymbolicMemory {
         clippy::expect_used,
         reason = "the `coalesce` guard immediately above proves every page in `entries[i..j]` is present (`(i..j).all(|k| self.pages.contains_key(..))`), and this loop re-looks-up exactly those same entries — an index-after-check, not a guest-controlled lookup"
     )]
-    pub fn flush_multi_cells(&mut self, ctx: &crate::symbolic::SymContext) -> MultiFlushed {
+    pub fn flush_multi_cells(&mut self) -> MultiFlushed {
         if self.multi_objects.is_empty() {
             return MultiFlushed(());
         }
@@ -438,7 +438,7 @@ impl SymbolicMemory {
                     .iter()
                     .map(|b| RustBV::concrete(*b as u128, 8))
                     .collect();
-                let wider_default = build_wider_value(&default_bvs, endness, ctx);
+                let wider_default = build_wider_value(&default_bvs, endness);
 
                 // Fold per-alt wider values into the final ITE BV, newest
                 // alternative outermost (same order as `MultiPayload::collapse`).
@@ -450,8 +450,8 @@ impl SymbolicMemory {
                     for entry in &entries[i..j] {
                         byte_vals.push(entry.1.alternatives()[c].value.clone());
                     }
-                    let wider_val = build_wider_value(&byte_vals, endness, ctx);
-                    acc = cond.ite(&wider_val, &acc, ctx);
+                    let wider_val = build_wider_value(&byte_vals, endness);
+                    acc = cond.ite(&wider_val, &acc);
                 }
 
                 // Apply state mutations: bump versions, drop Multi bits,
@@ -490,7 +490,7 @@ impl SymbolicMemory {
                     Some(page) => page.load_concrete(offset, 1).first().copied().unwrap_or(0),
                     None => continue,
                 };
-                let acc = payload.collapse(concrete_byte, ctx);
+                let acc = payload.collapse(concrete_byte);
                 if let Some(page) = self.pages.get_mut(&page_num) {
                     page.clear_multi(offset);
                     page.mark_symbolic(offset, 1);
@@ -548,7 +548,7 @@ fn payload_cond_fingerprint(payload: &MultiPayload) -> Vec<u64> {
     clippy::expect_used,
     reason = "first-element `next()` on a non-empty slice: both call sites are inside `flush_multi_cells`'s coalesce branch, which only runs for `run_len >= 2`. The `debug_assert!` below states the contract but compiles out in release, so this expect is the release-mode guard and is kept loud on purpose — see the module Panic policy header"
 )]
-fn build_wider_value(bytes: &[RustBV], endness: Endness, ctx: &SymContext) -> RustBV {
+fn build_wider_value(bytes: &[RustBV], endness: Endness) -> RustBV {
     debug_assert!(
         !bytes.is_empty(),
         "build_wider_value requires non-empty input"
@@ -558,7 +558,7 @@ fn build_wider_value(bytes: &[RustBV], endness: Endness, ctx: &SymContext) -> Ru
             let mut iter = bytes.iter().rev();
             let mut acc = iter.next().expect("non-empty").clone();
             for b in iter {
-                acc = acc.concat(b, ctx);
+                acc = acc.concat(b);
             }
             acc
         }
@@ -566,7 +566,7 @@ fn build_wider_value(bytes: &[RustBV], endness: Endness, ctx: &SymContext) -> Ru
             let mut iter = bytes.iter();
             let mut acc = iter.next().expect("non-empty").clone();
             for b in iter {
-                acc = acc.concat(b, ctx);
+                acc = acc.concat(b);
             }
             acc
         }

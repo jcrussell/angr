@@ -6,7 +6,7 @@
 //! `vec_int_lane_op` driver (`IMinMax`/`IAbs` in `ops/mod.rs`).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 impl VEXOps {
     /// NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-
@@ -19,7 +19,6 @@ impl VEXOps {
         right: RustBV,
         count: u8,
         widen: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_total = 8u32 * count as u32;
         Self::require_operand_width("vec_polynomial_mul left", left.width(), in_total)?;
@@ -65,23 +64,21 @@ impl VEXOps {
         for i in 0..count as u32 {
             let lo = i * 8;
             let hi = lo + 7;
-            let a_lane = left.extract(hi, lo, ctx);
-            let b_lane = right.extract(hi, lo, ctx);
+            let a_lane = left.extract(hi, lo);
+            let b_lane = right.extract(hi, lo);
             // Widen b to 16 bits for shifting (max shift is 7).
-            let b_wide = b_lane.zero_extend_into(16, ctx);
+            let b_wide = b_lane.zero_extend_into(16);
             let mut acc = zero16.clone();
             for bit in 0..8u32 {
-                let bit_a = a_lane.extract(bit, bit, ctx);
-                let cond = bit_a.eq_into(one.clone(), ctx);
-                let shifted = b_wide
-                    .clone()
-                    .shl_into(RustBV::concrete(bit as u128, 16), ctx);
-                let addend = cond.ite_into(shifted, zero16.clone(), ctx);
-                acc = acc.xor_into(addend, ctx);
+                let bit_a = a_lane.extract(bit, bit);
+                let cond = bit_a.eq_into(one.clone());
+                let shifted = b_wide.clone().shl_into(RustBV::concrete(bit as u128, 16));
+                let addend = cond.ite_into(shifted, zero16.clone());
+                acc = acc.xor_into(addend);
             }
-            let lane_out = if widen { acc } else { acc.extract(7, 0, ctx) };
+            let lane_out = if widen { acc } else { acc.extract(7, 0) };
             elements.push(lane_out);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

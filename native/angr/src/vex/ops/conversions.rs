@@ -175,17 +175,16 @@ impl VEXOps {
     fn map_lanes32(
         v: RustBV,
         count: u8,
-        ctx: &SymContext,
         f: impl Fn(RustBV) -> Result<RustBV, OpError>,
     ) -> Result<RustBV, OpError> {
         let lanes = u32::from(count);
         Self::require_operand_width("map_lanes32 arg", v.width(), 32 * lanes)?;
         let mut out: Option<RustBV> = None;
         for i in (0..lanes).rev() {
-            let lane = f(v.extract(32 * i + 31, 32 * i, ctx))?;
+            let lane = f(v.extract(32 * i + 31, 32 * i))?;
             out = Some(match out {
                 None => lane,
-                Some(high) => high.concat_into(lane, ctx),
+                Some(high) => high.concat_into(lane),
             });
         }
         out.ok_or_else(|| OpError::UnsupportedVectorOp("zero-lane conversion".to_string()))
@@ -198,9 +197,8 @@ impl VEXOps {
         v: RustBV,
         count: u8,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        Self::map_lanes32(v, count, ctx, |lane| {
+        Self::map_lanes32(v, count, |lane| {
             Self::int_to_float_rm(rm.clone(), lane, 32, signed, FloatPrec::F32)
         })
     }
@@ -214,7 +212,7 @@ impl VEXOps {
         signed: bool,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        Self::map_lanes32(v, count, ctx, |lane| {
+        Self::map_lanes32(v, count, |lane| {
             if signed {
                 Self::f32_to_i32s_rm(rm.clone(), lane, ctx)
             } else {

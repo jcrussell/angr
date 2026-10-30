@@ -26,8 +26,7 @@ fn test_export_full_named_vs_symbolic_register_split() {
     let mut s = RustSimState::new("amd64").unwrap();
     s.set_register("rax", RustBV::concrete(0xdead_beef, 64));
     let rbx_sym = {
-        let ctx = s.solver().borrow();
-        RustBV::symbolic(&ctx, "n0irt17_rbx", 64)
+        RustBV::symbol("n0irt17_rbx", 64)
     };
     s.set_register("rbx", rbx_sym);
 
@@ -123,8 +122,7 @@ fn test_export_full_symbolic_offsets_nonempty() {
     let mut s = RustSimState::new("amd64").unwrap();
     s.map_memory(0x40_0000, 0x1000, Permission::RW);
     let sym = {
-        let ctx = s.solver().borrow();
-        RustBV::symbolic(&ctx, "n0irt17_byte", 8)
+        RustBV::symbol("n0irt17_byte", 8)
     };
     s.memory_store(0x40_0000, sym).expect("symbolic store");
 

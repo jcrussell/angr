@@ -6,7 +6,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::syscalls::tests_support::assert_over_limit;
 
 #[test]
@@ -204,8 +204,7 @@ fn write_count_at_limit_is_native() {
 fn write_symbolic_fd_falls_back() {
     let h = NativeWriteSyscall;
     let mut state = RustSimState::new("amd64").expect("amd64 state");
-    let ctx = SymContext::new();
-    let sym_fd = RustBV::symbolic(&ctx, "fd", 64);
+    let sym_fd = RustBV::symbol("fd", 64);
     let err = h
         .call(
             &mut state,
@@ -230,8 +229,7 @@ fn write_symbolic_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     // Map some memory and write a symbolic byte at 0x1000.
     state.map_memory(0x1000, 0x1000, Permission::RWX);
-    let ctx = SymContext::new();
-    let sym_byte = RustBV::symbolic(&ctx, "b", 8);
+    let sym_byte = RustBV::symbol("b", 8);
     state.memory_store(0x1000, sym_byte).expect("ok");
 
     let err = h
@@ -264,9 +262,8 @@ fn write_count_zero_is_native_no_op_without_demoting() {
     let h = NativeWriteSyscall;
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("syswzero_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("syswzero_{i}"), 8))
             .collect()
     };
     state
@@ -304,9 +301,8 @@ fn write_content_sym_demotes_and_falls_back() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state.map_memory_data(0x1000, b"hi", Permission::RWX);
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..3)
-            .map(|i| RustBV::symbolic(&ctx, format!("syswdem_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("syswdem_{i}"), 8))
             .collect()
     };
     state

@@ -714,7 +714,7 @@ impl RustExplorationManager {
             let solver_ref = pending.state.solver();
             let ctx = solver_ref.borrow();
             crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
-                match pending.state.memory().load_concrete(a, n, &ctx) {
+                match pending.state.memory().load_concrete(a, n) {
                     Ok(bv) => {
                         if let Some(val) = bv.as_u128() {
                             Ok(crate::symbolic::u128_to_le_bytes(val, n as usize))

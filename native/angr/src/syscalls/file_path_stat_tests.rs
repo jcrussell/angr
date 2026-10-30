@@ -82,7 +82,7 @@ fn stat_symbolic_content_path_reports_symbolic_len() {
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let bytes: Vec<RustBV> = (0..9u64)
-        .map(|i| RustBV::symbolic_with_id(0x7f000 + i, format!("stat_sym_{i}"), 8))
+        .map(|i| RustBV::symbol(format!("stat_sym_{i}"), 8))
         .collect();
     state
         .file_system()
@@ -135,7 +135,7 @@ fn stat_registered_content_path_without_fd_reports_len() {
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let bytes: Vec<RustBV> = (0..7u64)
-        .map(|i| RustBV::symbolic_with_id(0x8f000 + i, format!("regonly_{i}"), 8))
+        .map(|i| RustBV::symbol(format!("regonly_{i}"), 8))
         .collect();
     state
         .file_system()
@@ -162,7 +162,7 @@ fn access_and_stat_relative_spelling_after_relative_registration() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.file_system().set_cwd(b"/home/user".to_vec());
     let bytes: Vec<RustBV> = (0..5u64)
-        .map(|i| RustBV::symbolic_with_id(0x9f000 + i, format!("relreg_{i}"), 8))
+        .map(|i| RustBV::symbol(format!("relreg_{i}"), 8))
         .collect();
     state.file_system().register_file_content("flag.txt", bytes);
     stage_path(&mut state, 0x2000, b"flag.txt");
@@ -250,8 +250,7 @@ fn stat_unsupported_arch_falls_back() {
 fn stat_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeStatSyscall
         .call(&mut state, &[sym_ptr, RustBV::concrete(0x4000, 64)])
@@ -263,8 +262,7 @@ fn stat_symbolic_pathname_addr_falls_back() {
 fn stat_symbolic_buf_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_buf = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "statbuf", 64)
+        RustBV::symbol("statbuf", 64)
     };
     let err = NativeStatSyscall
         .call(&mut state, &[RustBV::concrete(0x2000, 64), sym_buf])

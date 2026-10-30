@@ -22,10 +22,10 @@ fn test_survives_sat_prune_drops_a_proven_unsat_state() {
     let state = RustSimState::new("amd64").unwrap();
     {
         let ctx = state.solver().borrow();
-        let x = RustBV::symbolic(&ctx, "prune_gate_unsat_x", 32);
+        let x = RustBV::symbol("prune_gate_unsat_x", 32);
         let five = RustBV::concrete(5, 32);
-        ctx.assume_true(&x.eq(&five, &ctx));
-        ctx.assume_true(&x.eq(&five, &ctx).not(&ctx));
+        ctx.assume_true(&x.eq(&five));
+        ctx.assume_true(&x.eq(&five).not());
     }
     assert!(
         !state.survives_sat_prune(false),
@@ -42,9 +42,9 @@ fn test_survives_sat_prune_keeps_an_undecided_state() {
     let state = RustSimState::new("amd64").unwrap();
     {
         let ctx = state.solver().borrow();
-        let x = RustBV::symbolic(&ctx, "prune_gate_undecided_x", 32);
-        ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
-        ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+        let x = RustBV::symbol("prune_gate_undecided_x", 32);
+        ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+        ctx.assume_true(&x.ult(&RustBV::concrete(20, 32)));
     }
     pin_rlimit(&state, 1);
 
@@ -77,10 +77,10 @@ fn test_survives_sat_prune_short_circuits_under_lazy_solves() {
     let state = RustSimState::new("amd64").unwrap();
     {
         let ctx = state.solver().borrow();
-        let x = RustBV::symbolic(&ctx, "prune_gate_lazy_x", 32);
+        let x = RustBV::symbol("prune_gate_lazy_x", 32);
         let five = RustBV::concrete(5, 32);
-        ctx.assume_true(&x.eq(&five, &ctx));
-        ctx.assume_true(&x.eq(&five, &ctx).not(&ctx));
+        ctx.assume_true(&x.eq(&five));
+        ctx.assume_true(&x.eq(&five).not());
     }
     assert!(
         state.survives_sat_prune(true),

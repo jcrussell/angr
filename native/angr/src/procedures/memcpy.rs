@@ -99,24 +99,17 @@ fn copy_symbolic_addr(
     let dwidth = dst_bv.width();
     let swidth = src_bv.width();
     for &d in &dst_cands {
-        let dcond = {
-            let ctx = state.solver().borrow();
-            dst_bv.eq(&RustBV::concrete(d as u128, dwidth), &ctx)
-        };
+        let dcond = { dst_bv.eq(&RustBV::concrete(d as u128, dwidth)) };
         for &s in &src_cands {
             let guard = {
-                let ctx = state.solver().borrow();
-                let scond = src_bv.eq(&RustBV::concrete(s as u128, swidth), &ctx);
-                dcond.and(&scond, &ctx)
+                let scond = src_bv.eq(&RustBV::concrete(s as u128, swidth));
+                dcond.and(&scond)
             };
             for i in 0..size {
                 let dp = d.wrapping_add(i);
                 let src_byte = &src_bytes[&s.wrapping_add(i)];
                 let orig = state.memory_load(dp, 1)?;
-                let stored = {
-                    let ctx = state.solver().borrow();
-                    guard.ite(src_byte, &orig, &ctx)
-                };
+                let stored = { guard.ite(src_byte, &orig) };
                 state.memory_store(dp, stored)?;
             }
         }
@@ -315,8 +308,7 @@ crate::declare_proc! {
         NativeMemcpy.call(state, &[dst_bv.clone(), src_bv, size_bv.clone()])?;
         // mempcpy returns dst + n (size_t n is the same width as the pointer).
         let ret = {
-            let ctx = state.solver().borrow();
-            dst_bv.add(&size_bv, &ctx)
+            dst_bv.add(&size_bv)
         };
         Ok(Some(ret))
     }

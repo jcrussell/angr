@@ -29,15 +29,14 @@ fn multi_cell(cond: RustBV, value: u8) -> MultiAlternative {
 /// n_self + n_other, and the byte stays a Multi cell (not eagerly collapsed).
 #[test]
 fn test_both_multi_unions_alternatives() {
-    let ctx = SymContext::new();
     let addr = Address(ADDR);
 
     let mut a = SymbolicMemory::new(Endness::Little);
     a.set_multi_alternatives(
         addr,
         MultiPayload::from_alternatives(vec![
-            multi_cell(RustBV::symbolic(&ctx, "ca1", 1), 0x01),
-            multi_cell(RustBV::symbolic(&ctx, "ca2", 1), 0x02),
+            multi_cell(RustBV::symbol("ca1", 1), 0x01),
+            multi_cell(RustBV::symbol("ca2", 1), 0x02),
         ]),
     );
 
@@ -45,14 +44,14 @@ fn test_both_multi_unions_alternatives() {
     b.set_multi_alternatives(
         addr,
         MultiPayload::from_alternatives(vec![
-            multi_cell(RustBV::symbolic(&ctx, "cb1", 1), 0x11),
-            multi_cell(RustBV::symbolic(&ctx, "cb2", 1), 0x12),
-            multi_cell(RustBV::symbolic(&ctx, "cb3", 1), 0x13),
+            multi_cell(RustBV::symbol("cb1", 1), 0x11),
+            multi_cell(RustBV::symbol("cb2", 1), 0x12),
+            multi_cell(RustBV::symbol("cb3", 1), 0x13),
         ]),
     );
 
-    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
-    assert!(a.merge(&b, &cond, &ctx), "merge reports a change");
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond), "merge reports a change");
 
     let merged = a
         .get_multi_alternatives(addr)
@@ -77,7 +76,6 @@ fn test_both_multi_unions_alternatives() {
 /// concrete so `as_u128()` resolves.
 #[test]
 fn test_both_multi_union_collapses_to_correct_arm() {
-    let ctx = SymContext::new();
     let addr = Address(ADDR);
     let one = || RustBV::concrete(1, 1);
 
@@ -97,21 +95,21 @@ fn test_both_multi_union_collapses_to_correct_arm() {
 
     // m == 1 selects other's value (0x22).
     let (mut a, b) = build();
-    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
     let v = a
         .get_multi_alternatives(addr)
         .unwrap()
-        .collapse(0x00, &ctx)
+        .collapse(0x00)
         .as_u128();
     assert_eq!(v, Some(0x22), "m==1 collapses to other's alternative");
 
     // m == 0 selects self's value (0x11).
     let (mut a, b) = build();
-    assert!(a.merge(&b, &RustBV::concrete(0, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(0, 1)));
     let v = a
         .get_multi_alternatives(addr)
         .unwrap()
-        .collapse(0x00, &ctx)
+        .collapse(0x00)
         .as_u128();
     assert_eq!(v, Some(0x11), "m==0 collapses to self's alternative");
 }
@@ -120,7 +118,6 @@ fn test_both_multi_union_collapses_to_correct_arm() {
 /// collapse-and-ITE path (a single `symbolic_objects` cell), not a Multi union.
 #[test]
 fn test_mixed_multi_and_concrete_collapses() {
-    let ctx = SymContext::new();
     let addr = Address(ADDR);
 
     let mut a = SymbolicMemory::new(Endness::Little);
@@ -133,7 +130,7 @@ fn test_mixed_multi_and_concrete_collapses() {
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(ADDR & !0xfff, PAGE_SIZE, Permission::RW);
 
-    assert!(a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx));
+    assert!(a.merge(&b, &RustBV::symbol("m", 1)));
     assert!(
         a.symbolic_objects.contains_key(&addr),
         "mixed Multi/concrete byte collapses to a symbolic_objects ITE"
@@ -146,25 +143,24 @@ fn test_mixed_multi_and_concrete_collapses() {
 /// condition via `And`) resolves to `1`.
 #[test]
 fn test_pending_writes_are_merge_guarded() {
-    let ctx = SymContext::new();
 
     let mut a = SymbolicMemory::new(Endness::Little);
     a.add_pending_write(PendingWrite {
-        addr: RustBV::symbolic(&ctx, "wa_addr", 64),
-        value: RustBV::symbolic(&ctx, "wa_val", 8),
+        addr: RustBV::symbol("wa_addr", 64),
+        value: RustBV::symbol("wa_val", 8),
         size: 1,
         condition: None,
     });
 
     let mut b = SymbolicMemory::new(Endness::Little);
     b.add_pending_write(PendingWrite {
-        addr: RustBV::symbolic(&ctx, "wb_addr", 64),
-        value: RustBV::symbolic(&ctx, "wb_val", 8),
+        addr: RustBV::symbol("wb_addr", 64),
+        value: RustBV::symbol("wb_val", 8),
         size: 1,
         condition: Some(RustBV::concrete(1, 1)),
     });
 
-    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
 
     let writes = a.pending_writes();
     assert_eq!(writes.len(), 2, "both arms' pending writes are retained");
@@ -199,7 +195,6 @@ fn test_pending_writes_are_merge_guarded() {
 /// reports false and the load silently returns the page's stale concrete byte.
 #[test]
 fn test_merge_adopts_multi_cells_from_other_only_page() {
-    let ctx = SymContext::new();
     let addr = Address(ADDR);
 
     // `a` maps a *different* page, so ADDR's page exists only in `b`.
@@ -213,7 +208,7 @@ fn test_merge_adopts_multi_cells_from_other_only_page() {
     );
 
     assert!(
-        a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx),
+        a.merge(&b, &RustBV::symbol("m", 1)),
         "adopting a page counts as a merge"
     );
 
@@ -227,7 +222,7 @@ fn test_merge_adopts_multi_cells_from_other_only_page() {
         .expect("payload copied alongside the adopted page");
     assert_eq!(payload.len(), 1, "the arm's single alternative survives");
 
-    let v = a.load_concrete(ADDR, 1, &ctx).unwrap();
+    let v = a.load_concrete(ADDR, 1).unwrap();
     assert_eq!(
         v.as_u64(),
         Some(0x5a),
@@ -241,7 +236,6 @@ fn test_merge_adopts_multi_cells_from_other_only_page() {
 /// expect panics; with it copied the union merges normally.
 #[test]
 fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
-    let ctx = SymContext::new();
     let addr = Address(ADDR);
 
     let mut a = SymbolicMemory::new(Endness::Little);
@@ -252,7 +246,7 @@ fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
         addr,
         MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x5a)]),
     );
-    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
 
     let mut c = SymbolicMemory::new(Endness::Little);
     c.set_multi_alternatives(
@@ -260,14 +254,14 @@ fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
         MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x77)]),
     );
     // Pre-fix this panics inside merge on the orphaned `self.multi_objects`.
-    assert!(a.merge(&c, &RustBV::concrete(0, 1), &ctx));
+    assert!(a.merge(&c, &RustBV::concrete(0, 1)));
 
     let merged = a
         .get_multi_alternatives(addr)
         .expect("byte stays a Multi cell after the second merge");
     assert_eq!(merged.len(), 2, "both arms' alternatives are unioned");
     assert_eq!(
-        merged.collapse(0x00, &ctx).as_u128(),
+        merged.collapse(0x00).as_u128(),
         Some(0x5a),
         "m==0 keeps the value adopted by the first merge"
     );
@@ -300,7 +294,7 @@ fn test_collapsed_multi_side_is_retired_from_the_multi_sidecar() {
         .expect("other-arm concrete write");
 
     // `m == 1` selects other's 0x22 at this byte.
-    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
 
     assert!(
         a.get_multi_alternatives(addr).is_none(),

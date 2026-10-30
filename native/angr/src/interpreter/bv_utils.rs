@@ -135,14 +135,14 @@ pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
         && bytes.len() * 8 >= width as usize
     {
         // Fold high byte first so byte 0 lands in the low lane: `a.concat(b)`
-        // puts `a` above `b`. `concat_no_ctx` keeps a `Concat` expression once
+        // puts `a` above `b`. `concat` keeps a `Concat` expression once
         // the result passes 128 bits rather than re-folding into a u128.
         let mut lanes = bytes[..width_bytes]
             .iter()
             .rev()
             .map(|&b| RustBV::concrete(b as u128, 8));
         if let Some(high) = lanes.next() {
-            return lanes.fold(high, |acc, lane| acc.concat_no_ctx(&lane));
+            return lanes.fold(high, |acc, lane| acc.concat(&lane));
         }
     }
 
@@ -179,11 +179,7 @@ pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
 /// answered with (angr-6cp06.88). Lanes past `base`'s width are ignored, and a
 /// ragged top lane (a `base` width that is not a whole number of bytes) keeps
 /// only the bits `base` actually has.
-pub(super) fn splice_bytes_over_bv(
-    base: &RustBV,
-    overlay: &[Option<u8>],
-    ctx: &SymContext,
-) -> RustBV {
+pub(super) fn splice_bytes_over_bv(base: &RustBV, overlay: &[Option<u8>]) -> RustBV {
     let width = base.width();
     let num_bytes = width.div_ceil(8) as usize;
     if matches!(base, RustBV::Concrete { .. }) {
@@ -203,7 +199,7 @@ pub(super) fn splice_bytes_over_bv(
         let high = (low + 7).min(width - 1);
         match overlay.get(i).copied().flatten() {
             Some(byte) => RustBV::concrete(u128::from(byte), high - low + 1),
-            None => base.extract(high, low, ctx),
+            None => base.extract(high, low),
         }
     });
     // `num_bytes == 0` only for a zero-width `base`, which has no bytes to
@@ -211,7 +207,7 @@ pub(super) fn splice_bytes_over_bv(
     let Some(top) = lanes.next() else {
         return base.clone();
     };
-    lanes.fold(top, |acc, lane| acc.concat(&lane, ctx))
+    lanes.fold(top, |acc, lane| acc.concat(&lane))
 }
 
 /// Build a linear ITE chain from a list of (condition, value) pairs:
@@ -225,15 +221,11 @@ pub(super) fn splice_bytes_over_bv(
 /// build a genuinely balanced tree by recursively splitting a *sorted address*
 /// slice at its midpoint. Anything moving this to a balanced shape has to supply
 /// that missing ordering first, and will change the Z3 solve characteristics.
-pub(super) fn build_ite_chain(
-    pairs: &[(RustBV, RustBV)],
-    default_value: RustBV,
-    ctx: &SymContext,
-) -> RustBV {
+pub(super) fn build_ite_chain(pairs: &[(RustBV, RustBV)], default_value: RustBV) -> RustBV {
     // Build right-to-left: innermost ITE is the last pair
     let mut result = default_value;
     for (cond, val) in pairs.iter().rev() {
-        result = cond.ite(val, &result, ctx);
+        result = cond.ite(val, &result);
     }
     result
 }

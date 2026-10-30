@@ -9,7 +9,7 @@
 //! plus the high-half-only Iop_MulHi*).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -28,7 +28,6 @@ impl VEXOps {
         control: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let ew = elem.bits();
         let count = u32::from(count);
@@ -53,7 +52,7 @@ impl VEXOps {
             return Ok(RustBV::concrete(result, total));
         }
 
-        let lane = |bv: &RustBV, j: u32| bv.extract(j * ew + ew - 1, j * ew, ctx);
+        let lane = |bv: &RustBV, j: u32| bv.extract(j * ew + ew - 1, j * ew);
         let zero = RustBV::concrete(0, ew);
         let mut lanes = Vec::with_capacity(count as usize);
         for i in 0..count {
@@ -68,16 +67,16 @@ impl VEXOps {
                 });
                 continue;
             }
-            let sel = ctl.extract(sel_bits - 1, 0, ctx);
+            let sel = ctl.extract(sel_bits - 1, 0);
             let mut picked = lane(&table, count - 1);
             for j in (0..count - 1).rev() {
-                let hit = sel.eq(&RustBV::concrete(u128::from(j), sel_bits), ctx);
-                picked = hit.ite_into(lane(&table, j), picked, ctx);
+                let hit = sel.eq(&RustBV::concrete(u128::from(j), sel_bits));
+                picked = hit.ite_into(lane(&table, j), picked);
             }
-            let kill = ctl.extract(ew - 1, ew - 1, ctx);
-            lanes.push(kill.ite_into(zero.clone(), picked, ctx));
+            let kill = ctl.extract(ew - 1, ew - 1);
+            lanes.push(kill.ite_into(zero.clone(), picked));
         }
-        Ok(Self::concat_le_elements(lanes, ctx))
+        Ok(Self::concat_le_elements(lanes))
     }
 
     /// NEON byte/halfword/word/bit reversal within each lane —
@@ -99,7 +98,6 @@ impl VEXOps {
         sub_width: u8,
         elem: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let sub_width_u32 = sub_width as u32;
@@ -143,10 +141,10 @@ impl VEXOps {
             for j in 0..sub_per_elem {
                 let src_lo = lane_lo + (sub_per_elem - 1 - j) * sub_width_u32;
                 let src_hi = src_lo + sub_width_u32 - 1;
-                elements.push(arg.extract(src_hi, src_lo, ctx));
+                elements.push(arg.extract(src_hi, src_lo));
             }
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// PPC bit-matrix transpose — `Iop_PwBitMtxXpose64x2` (unary, V128 ->
@@ -160,7 +158,7 @@ impl VEXOps {
     /// PPC ISA states the rule in (reversing both index orders leaves a
     /// transpose fixed). angr's Python VEX engine has no handler for this op
     /// at all, so this is new capability rather than a parity port.
-    pub(super) fn vec_bit_mtx_xpose(arg: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
+    pub(super) fn vec_bit_mtx_xpose(arg: RustBV) -> Result<RustBV, OpError> {
         Self::require_operand_width("vec_bit_mtx_xpose arg", arg.width(), 128)?;
 
         // Concrete fast path: move one bit at a time within each half.
@@ -187,11 +185,11 @@ impl VEXOps {
             for j in 0..8u32 {
                 for k in 0..8u32 {
                     let src = half_lo + k * 8 + j;
-                    bits.push(arg.extract(src, src, ctx));
+                    bits.push(arg.extract(src, src));
                 }
             }
         }
-        Ok(Self::concat_le_elements(bits, ctx))
+        Ok(Self::concat_le_elements(bits))
     }
 
     /// Builds the two's-complement lane widener shared by the concrete fast
@@ -236,7 +234,6 @@ impl VEXOps {
         count: u8,
         signed: bool,
         even: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_width = elem.bits();
         let out_width = in_width * 2;
@@ -274,15 +271,11 @@ impl VEXOps {
         for j in 0..out_lanes {
             let lo = j * step * in_width;
             let hi = lo + in_width - 1;
-            let la = left
-                .extract(hi, lo, ctx)
-                .extend_into(out_width, signed, ctx);
-            let ra = right
-                .extract(hi, lo, ctx)
-                .extend_into(out_width, signed, ctx);
-            elements.push(la.mul(&ra, ctx));
+            let la = left.extract(hi, lo).extend_into(out_width, signed);
+            let ra = right.extract(hi, lo).extend_into(out_width, signed);
+            elements.push(la.mul(&ra));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// High half of the widening vector multiply (`Iop_MulHi{N}{U,S}x{M}` —
@@ -300,7 +293,6 @@ impl VEXOps {
         elem: IRType,
         count: u8,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let width = elem.bits();
         let prod_width = width * 2;
@@ -333,15 +325,11 @@ impl VEXOps {
         for j in 0..lanes {
             let lo = j * width;
             let hi = lo + width - 1;
-            let la = left
-                .extract(hi, lo, ctx)
-                .extend_into(prod_width, signed, ctx);
-            let ra = right
-                .extract(hi, lo, ctx)
-                .extend_into(prod_width, signed, ctx);
-            elements.push(la.mul(&ra, ctx).extract(prod_width - 1, width, ctx));
+            let la = left.extract(hi, lo).extend_into(prod_width, signed);
+            let ra = right.extract(hi, lo).extend_into(prod_width, signed);
+            elements.push(la.mul(&ra).extract(prod_width - 1, width));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// Signed doubling saturating widening multiply — Iop_QDMull{N}Sx{M}
@@ -355,7 +343,6 @@ impl VEXOps {
         right: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_width = elem.bits();
         let out_width = in_width * 2;
@@ -391,15 +378,14 @@ impl VEXOps {
         for j in 0..count as u32 {
             let lo = j * in_width;
             let hi = lo + in_width - 1;
-            let la = left.extract(hi, lo, ctx).extend_into(mul_width, true, ctx);
-            let ra = right.extract(hi, lo, ctx).extend_into(mul_width, true, ctx);
-            let prod = la.mul(&ra, ctx);
-            let doubled = prod.add(&prod, ctx);
+            let la = left.extract(hi, lo).extend_into(mul_width, true);
+            let ra = right.extract(hi, lo).extend_into(mul_width, true);
+            let prod = la.mul(&ra);
+            let doubled = prod.add(&prod);
             elements.push(Self::saturate_lane_symbolic(
-                doubled, mul_width, out_width, /*src_signed=*/ true,
-                /*dst_signed=*/ true, ctx,
+                doubled, mul_width, out_width, /*src_signed=*/ true, /*dst_signed=*/ true,
             ));
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 }

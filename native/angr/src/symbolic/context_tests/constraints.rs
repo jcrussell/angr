@@ -162,9 +162,9 @@ fn test_add_constraint_none_branch_no_scope_path() {
     assert!(ctx.lineage_arc().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "test_add_constraint_none_branch_x", 8);
+    let x = RustBV::symbol("test_add_constraint_none_branch_x", 8);
     let five = RustBV::concrete(5, 8);
-    ctx.assume_true(&x.eq(&five, &ctx));
+    ctx.assume_true(&x.eq(&five));
 
     // None branch must not touch scope_path.
     assert_eq!(
@@ -192,9 +192,9 @@ fn test_add_constraint_some_branch_appends_scope_frame() {
 
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "test_add_constraint_some_branch_x", 8);
+    let x = RustBV::symbol("test_add_constraint_some_branch_x", 8);
     let five = RustBV::concrete(5, 8);
-    ctx.assume_true(&x.eq(&five, &ctx));
+    ctx.assume_true(&x.eq(&five));
 
     // Some branch must mint exactly one frame on scope_path.
     assert_eq!(
@@ -230,16 +230,16 @@ fn test_add_constraint_sibling_isolation() {
     sibling_b.set_lineage_for_testing(Arc::clone(&lin));
 
     // Sibling A adds x == 5.
-    let x_a = RustBV::symbolic(&sibling_a, "test_add_constraint_sibling_x", 8);
+    let x_a = RustBV::symbol("test_add_constraint_sibling_x", 8);
     let five = RustBV::concrete(5, 8);
-    sibling_a.assume_true(&x_a.eq(&five, &sibling_a));
+    sibling_a.assume_true(&x_a.eq(&five));
     assert_eq!(sibling_a.scope_path_len(), 1);
     assert_eq!(sibling_b.scope_path_len(), 0);
 
     // Sibling B references the same Z3 symbol by name but has not
     // constrained it. A query from B should see x as unconstrained
     // — switch_to to B's empty scope_path pops A's frame first.
-    let x_b = RustBV::symbolic(&sibling_b, "test_add_constraint_sibling_x", 8);
+    let x_b = RustBV::symbol("test_add_constraint_sibling_x", 8);
     // B should accept any value for x.
     assert!(sibling_b.solution(&x_b, 42));
     assert!(sibling_b.solution(&x_b, 99));
@@ -267,9 +267,9 @@ fn test_add_constraint_raw_none_branch_no_scope_path() {
     assert!(ctx.lineage_arc().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "test_add_constraint_raw_none_x", 8);
+    let x = RustBV::symbol("test_add_constraint_raw_none_x", 8);
     let five = RustBV::concrete(5, 8);
-    let ast = raw_entry(&x.eq(&five, &ctx));
+    let ast = raw_entry(&x.eq(&five));
     ctx.add_constraint_raw(ast);
 
     // None branch must not touch scope_path.
@@ -300,9 +300,9 @@ fn test_add_constraint_raw_some_branch_appends_scope_frame() {
 
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "test_add_constraint_raw_some_x", 8);
+    let x = RustBV::symbol("test_add_constraint_raw_some_x", 8);
     let five = RustBV::concrete(5, 8);
-    let ast = raw_entry(&x.eq(&five, &ctx));
+    let ast = raw_entry(&x.eq(&five));
     ctx.add_constraint_raw(ast);
 
     // Some branch must mint exactly one frame on scope_path.
@@ -336,16 +336,16 @@ fn test_add_constraint_raw_sibling_isolation() {
     sibling_b.set_lineage_for_testing(Arc::clone(&lin));
 
     // Sibling A adds x == 5 via the raw path.
-    let x_a = RustBV::symbolic(&sibling_a, "test_add_constraint_raw_sibling_x", 8);
+    let x_a = RustBV::symbol("test_add_constraint_raw_sibling_x", 8);
     let five = RustBV::concrete(5, 8);
-    let ast = raw_entry(&x_a.eq(&five, &sibling_a));
+    let ast = raw_entry(&x_a.eq(&five));
     sibling_a.add_constraint_raw(ast);
     assert_eq!(sibling_a.scope_path_len(), 1);
     assert_eq!(sibling_b.scope_path_len(), 0);
 
     // Sibling B references the same named symbol but is unconstrained
     // — switch_to to B's empty scope_path must pop A's frame first.
-    let x_b = RustBV::symbolic(&sibling_b, "test_add_constraint_raw_sibling_x", 8);
+    let x_b = RustBV::symbol("test_add_constraint_raw_sibling_x", 8);
     assert!(sibling_b.solution(&x_b, 42));
     assert!(sibling_b.solution(&x_b, 99));
 
@@ -360,9 +360,9 @@ fn test_add_constraint_raw_sibling_isolation() {
 #[test]
 fn test_add_constraint_raw_dedup_repeat_skips_push() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_dedup_repeat_x", 8);
+    let x = RustBV::symbol("test_dedup_repeat_x", 8);
     let five = RustBV::concrete(5, 8);
-    let ast = raw_entry(&x.eq(&five, &ctx));
+    let ast = raw_entry(&x.eq(&five));
 
     let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
         .lock()
@@ -408,14 +408,14 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
 #[test]
 fn test_assume_true_dedup_repeat_skips_assert() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_assume_true_dedup_x", 8);
+    let x = RustBV::symbol("test_assume_true_dedup_x", 8);
     let five = RustBV::concrete(5, 8);
-    let cond = x.eq(&five, &ctx);
+    let cond = x.eq(&five);
 
     // Seed the dedup_set via a distinct add_constraint_raw assertion.
-    let y = RustBV::symbolic(&ctx, "test_assume_true_dedup_y", 8);
+    let y = RustBV::symbol("test_assume_true_dedup_y", 8);
     let ten = RustBV::concrete(10, 8);
-    ctx.add_constraint_raw(raw_entry(&y.eq(&ten, &ctx)));
+    ctx.add_constraint_raw(raw_entry(&y.eq(&ten)));
     assert!(ctx.local_constraints.lock().dedup_set_seeded);
 
     ctx.assume_true(&cond);
@@ -449,14 +449,14 @@ fn test_assume_true_dedup_repeat_skips_assert() {
 #[test]
 fn test_assume_false_dedup_repeat_skips_assert() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_assume_false_dedup_x", 8);
+    let x = RustBV::symbol("test_assume_false_dedup_x", 8);
     let five = RustBV::concrete(5, 8);
-    let cond = x.eq(&five, &ctx);
+    let cond = x.eq(&five);
 
     // Seed the dedup_set via a distinct add_constraint_raw assertion.
-    let y = RustBV::symbolic(&ctx, "test_assume_false_dedup_y", 8);
+    let y = RustBV::symbol("test_assume_false_dedup_y", 8);
     let ten = RustBV::concrete(10, 8);
-    ctx.add_constraint_raw(raw_entry(&y.eq(&ten, &ctx)));
+    ctx.add_constraint_raw(raw_entry(&y.eq(&ten)));
 
     ctx.assume_false(&cond);
     ctx.assume_false(&cond);
@@ -480,9 +480,9 @@ fn test_assume_false_dedup_repeat_skips_assert() {
 #[test]
 fn test_assume_true_no_self_seeding_under_fresh_context() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_assume_no_seed_x", 8);
+    let x = RustBV::symbol("test_assume_no_seed_x", 8);
     let five = RustBV::concrete(5, 8);
-    let cond = x.eq(&five, &ctx);
+    let cond = x.eq(&five);
 
     ctx.assume_true(&cond);
     ctx.assume_true(&cond);
@@ -508,9 +508,9 @@ fn test_assume_true_no_self_seeding_under_fresh_context() {
 #[test]
 fn test_add_constraint_raw_dedup_seeds_from_shared() {
     let parent = SymContext::new();
-    let x = RustBV::symbolic(&parent, "test_dedup_shared_x", 8);
+    let x = RustBV::symbol("test_dedup_shared_x", 8);
     let five = RustBV::concrete(5, 8);
-    let ast = raw_entry(&x.eq(&five, &parent));
+    let ast = raw_entry(&x.eq(&five));
     // Take a second ref for the child call below before the parent
     // consumes its handle.
     let ast_for_child = ast.clone();
@@ -555,12 +555,12 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     assert!(ctx.lineage_arc().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "test_act_indexed_none_x", 8);
+    let x = RustBV::symbol("test_act_indexed_none_x", 8);
     let five = RustBV::concrete(5, 8);
     let ten = RustBV::concrete(10, 8);
 
     // Tracked constraint 1: x == 5.
-    let c1 = x.eq(&five, &ctx).to_z3_bool().unwrap();
+    let c1 = x.eq(&five).to_z3_bool().unwrap();
     let idx1 = ctx.add_constraint_tracked_indexed(c1);
     assert_eq!(idx1, 0, "first tracker registered at index 0");
 
@@ -576,7 +576,7 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     assert!(!ctx.solution(&x, 6));
 
     // Tracked constraint 2: x == 10 (deliberately UNSAT against c1).
-    let c2 = x.eq(&ten, &ctx).to_z3_bool().unwrap();
+    let c2 = x.eq(&ten).to_z3_bool().unwrap();
     let idx2 = ctx.add_constraint_tracked_indexed(c2);
     assert_eq!(idx2, 1, "second tracker registered at index 1");
 
@@ -607,9 +607,9 @@ fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
 
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbolic(&ctx, "test_act_indexed_some_x", 8);
+    let x = RustBV::symbol("test_act_indexed_some_x", 8);
     let five = RustBV::concrete(5, 8);
-    let constraint = x.eq(&five, &ctx).to_z3_bool().unwrap();
+    let constraint = x.eq(&five).to_z3_bool().unwrap();
     let idx = ctx.add_constraint_tracked_indexed(constraint);
     assert_eq!(
         idx, 0,
@@ -648,16 +648,16 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
     sibling_b.set_lineage_for_testing(Arc::clone(&lin));
 
     // Sibling A adds tracked x == 5.
-    let x_a = RustBV::symbolic(&sibling_a, "test_act_indexed_sibling_x", 8);
+    let x_a = RustBV::symbol("test_act_indexed_sibling_x", 8);
     let five = RustBV::concrete(5, 8);
-    let constraint = x_a.eq(&five, &sibling_a).to_z3_bool().unwrap();
+    let constraint = x_a.eq(&five).to_z3_bool().unwrap();
     let _ = sibling_a.add_constraint_tracked_indexed(constraint);
     assert_eq!(sibling_a.scope_path_len(), 1);
     assert_eq!(sibling_b.scope_path_len(), 0);
 
     // Sibling B references the same named symbol but is unconstrained
     // — switch_to to B's empty scope_path must pop A's frame first.
-    let x_b = RustBV::symbolic(&sibling_b, "test_act_indexed_sibling_x", 8);
+    let x_b = RustBV::symbol("test_act_indexed_sibling_x", 8);
     assert!(sibling_b.solution(&x_b, 42));
     assert!(sibling_b.solution(&x_b, 99));
 
@@ -688,17 +688,17 @@ fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
     let parent = SymContext::new();
     let child = parent.fork();
 
-    let x = RustBV::symbolic(&child, "test_act_indexed_fork_cold_x", 8);
+    let x = RustBV::symbol("test_act_indexed_fork_cold_x", 8);
     let five = RustBV::concrete(5, 8);
     let ten = RustBV::concrete(10, 8);
 
     // First Z3-touching call on `child` — its solver is still `None`,
     // forcing `install_constraint`'s cold-start replay path.
-    let c1 = x.eq(&five, &child).to_z3_bool().unwrap();
+    let c1 = x.eq(&five).to_z3_bool().unwrap();
     let idx1 = child.add_constraint_tracked_indexed(c1);
     assert_eq!(idx1, 0);
 
-    let c2 = x.eq(&ten, &child).to_z3_bool().unwrap();
+    let c2 = x.eq(&ten).to_z3_bool().unwrap();
     let idx2 = child.add_constraint_tracked_indexed(c2);
     assert_eq!(idx2, 1);
 
@@ -728,9 +728,9 @@ fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
 #[test]
 fn test_add_constraint_raw_assumed_skips_residual_log() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_araa_x", 8);
+    let x = RustBV::symbol("test_araa_x", 8);
     let five = RustBV::concrete(5, 8);
-    let cond = x.eq(&five, &ctx);
+    let cond = x.eq(&five);
 
     // The pair `add_constraint_ast`'s fixed fast path calls when the
     // RustBV conversion succeeds.
@@ -755,9 +755,9 @@ fn test_add_constraint_raw_assumed_skips_residual_log() {
     // `non_bv_assertions` — proving the assertion above is discriminating
     // and not just an artifact of an always-empty field.
     let ctx2 = SymContext::new();
-    let y = RustBV::symbolic(&ctx2, "test_araa_y", 8);
+    let y = RustBV::symbol("test_araa_y", 8);
     let five2 = RustBV::concrete(5, 8);
-    ctx2.add_constraint_raw(raw_entry(&y.eq(&five2, &ctx2)));
+    ctx2.add_constraint_raw(raw_entry(&y.eq(&five2)));
     assert_eq!(
         ctx2.local_constraints.lock().non_bv_assertions.len(),
         1,
@@ -773,15 +773,15 @@ fn test_add_constraint_raw_assumed_skips_residual_log() {
 #[test]
 fn test_unsat_core_assumed_names_untracked_engine_constraints() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_uca_x", 8);
+    let x = RustBV::symbol("test_uca_x", 8);
     let five = RustBV::concrete(5, 8);
     let six = RustBV::concrete(6, 8);
     let seven = RustBV::concrete(7, 8);
 
     // Added via the engine's untracked path — no assumption literals.
-    ctx.assume_true(&x.eq(&five, &ctx));
-    ctx.assume_true(&x.eq(&six, &ctx));
-    ctx.assume_false(&x.eq(&seven, &ctx));
+    ctx.assume_true(&x.eq(&five));
+    ctx.assume_true(&x.eq(&six));
+    ctx.assume_false(&x.eq(&seven));
 
     assert_eq!(ctx.get_assumed_constraints().len(), 3);
     assert!(!ctx.is_sat());
@@ -807,7 +807,7 @@ fn test_unsat_core_assumed_names_untracked_engine_constraints() {
 #[test]
 fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_uca_dup_x", 32);
+    let x = RustBV::symbol("test_uca_dup_x", 32);
 
     // Mirror the Python import path for `x > 10` and `x < 5`: raw Z3 assert
     // plus an assumed pair for the very same constraint.
@@ -815,9 +815,9 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
         let (val, greater) = bound;
         let rhs = RustBV::concrete(val, 32);
         let guard = if greater {
-            x.ugt(&rhs, &ctx)
+            x.ugt(&rhs)
         } else {
-            x.ult(&rhs, &ctx)
+            x.ult(&rhs)
         };
         ctx.add_constraint_raw(guard.to_z3_bool().unwrap());
         ctx.assumed_constraints_push(guard, true);
@@ -841,12 +841,12 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
 #[test]
 fn test_bare_pop_truncates_local_z3_assertions_log() {
     let ctx = SymContext::new();
-    let z = RustBV::symbolic(&ctx, "test_bare_pop_trunc_z", 32);
+    let z = RustBV::symbol("test_bare_pop_trunc_z", 32);
     let twenty = RustBV::concrete(20, 32);
 
     let before = ctx.local_z3_assertions_len();
     ctx.push();
-    ctx.assume_true(&z.eq(&twenty, &ctx));
+    ctx.assume_true(&z.eq(&twenty));
     assert!(
         ctx.local_z3_assertions_len() > before,
         "assume_true inside the scope must grow the local z3_assertions log"
@@ -867,23 +867,23 @@ fn test_bare_pop_truncates_local_z3_assertions_log() {
 #[test]
 fn test_fork_after_bare_pop_drops_popped_constraint() {
     let ctx = SymContext::new();
-    let z = RustBV::symbolic(&ctx, "test_fork_after_pop_z", 32);
+    let z = RustBV::symbol("test_fork_after_pop_z", 32);
     let twenty = RustBV::concrete(20, 32);
 
     ctx.push();
-    ctx.assume_true(&z.eq(&twenty, &ctx)); // z == 20, inside the scope
+    ctx.assume_true(&z.eq(&twenty)); // z == 20, inside the scope
     assert!(ctx.is_sat());
     ctx.pop(); // discard z == 20
 
     let child = ctx.fork();
-    child.assume_false(&z.eq(&twenty, &child)); // z != 20
+    child.assume_false(&z.eq(&twenty)); // z != 20
     assert!(
         child.is_sat(),
         "popped z == 20 must not resurrect in the fork; z != 20 is feasible"
     );
 
     // The parent stays consistent too: after the pop, z is unconstrained.
-    ctx.assume_false(&z.eq(&twenty, &ctx));
+    ctx.assume_false(&z.eq(&twenty));
     assert!(
         ctx.is_sat(),
         "parent must also be free of the popped z == 20"
@@ -899,7 +899,7 @@ fn test_fork_after_bare_pop_drops_popped_constraint() {
 #[test]
 fn test_fork_preserves_num_constraints_after_add_bv_constraint() {
     let ctx = SymContext::new();
-    let addr = RustBV::symbolic(&ctx, "test_fork_bv_count_addr", 32);
+    let addr = RustBV::symbol("test_fork_bv_count_addr", 32);
     ctx.add_bv_constraint(&addr, 0x4000); // concretize: no assumed pair
     let parent_count = ctx.num_constraints();
     assert_eq!(
@@ -922,9 +922,9 @@ fn test_fork_preserves_num_constraints_after_add_bv_constraint() {
 #[test]
 fn test_fork_preserves_num_constraints_after_raw_constraint() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_fork_raw_count_x", 8);
+    let x = RustBV::symbol("test_fork_raw_count_x", 8);
     let five = RustBV::concrete(5, 8);
-    ctx.add_constraint_raw(raw_entry(&x.eq(&five, &ctx)));
+    ctx.add_constraint_raw(raw_entry(&x.eq(&five)));
     let parent_count = ctx.num_constraints();
     assert_eq!(parent_count, 1);
 
@@ -949,12 +949,12 @@ fn test_fork_preserves_num_constraints_after_raw_constraint() {
 #[test]
 fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
     let parent = SymContext::new();
-    let y = RustBV::symbolic(&parent, "test_fork_under_bare_push_y", 8);
+    let y = RustBV::symbol("test_fork_under_bare_push_y", 8);
     let five = RustBV::concrete(5, 8);
     let six = RustBV::concrete(6, 8);
 
     parent.push();
-    parent.assume_true(&y.eq(&five, &parent));
+    parent.assume_true(&y.eq(&five));
 
     // The child forked INSIDE the scope still inherits the in-scope
     // constraint — freeze returns the merged shared+local set either way;
@@ -980,7 +980,7 @@ fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
         child_b.solution(&y, 6),
         "a fork taken after the pop must not inherit the popped constraint"
     );
-    child_b.assume_true(&y.eq(&six, &child_b));
+    child_b.assume_true(&y.eq(&six));
     assert!(
         child_b.is_sat(),
         "child_b must be SAT under y == 6 — inheriting the popped y == 5 \
@@ -995,12 +995,12 @@ fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
 #[test]
 fn test_fork_under_bare_push_leaves_parent_poppable() {
     let parent = SymContext::new();
-    let x = RustBV::symbolic(&parent, "test_fork_under_push_poppable_x", 8);
+    let x = RustBV::symbol("test_fork_under_push_poppable_x", 8);
     let one = RustBV::concrete(1, 8);
     let two = RustBV::concrete(2, 8);
 
     parent.push();
-    parent.assume_true(&x.eq(&one, &parent));
+    parent.assume_true(&x.eq(&one));
     // Two forks inside the same scope: the first must not drain the local
     // log out from under the second.
     let first = parent.fork();
@@ -1016,7 +1016,7 @@ fn test_fork_under_bare_push_leaves_parent_poppable() {
 
     // A fresh scope on the now-clean parent behaves normally.
     parent.push();
-    parent.assume_true(&x.eq(&two, &parent));
+    parent.assume_true(&x.eq(&two));
     assert!(!parent.solution(&x, 1));
     parent.pop();
     assert!(parent.solution(&x, 1));
@@ -1035,10 +1035,10 @@ fn test_fork_under_bare_push_leaves_parent_poppable() {
 #[test]
 fn test_add_constraints_raw_batch_dedups_repeats() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_batch_dedup_x", 8);
+    let x = RustBV::symbol("test_batch_dedup_x", 8);
     let five = RustBV::concrete(5, 8);
-    let lt_ten = x.ult(&RustBV::concrete(10, 8), &ctx);
-    let eq_five = x.eq(&five, &ctx);
+    let lt_ten = x.ult(&RustBV::concrete(10, 8));
+    let eq_five = x.eq(&five);
 
     let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
         .lock()
@@ -1097,8 +1097,8 @@ fn test_add_constraints_raw_batch_dedups_repeats() {
 #[test]
 fn test_add_constraints_raw_batch_all_dups_is_noop() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "test_batch_all_dup_x", 8);
-    let cond = x.ult(&RustBV::concrete(10, 8), &ctx);
+    let x = RustBV::symbol("test_batch_all_dup_x", 8);
+    let cond = x.ult(&RustBV::concrete(10, 8));
     // Produces a dedup hit, so it must serialize against the delta-asserting
     // tests even though it checks no counter itself.
     let _serial = DEDUP_HIT_COUNTER_TEST_LOCK

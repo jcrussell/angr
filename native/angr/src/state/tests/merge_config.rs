@@ -37,10 +37,9 @@ fn test_merge_unions_config_like_fields_across_branches() {
     b.setenv(b"HOME".to_vec(), b"/root".to_vec());
 
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "ke6b121_m0", 1),
-            RustBV::symbolic(&s, "ke6b121_m1", 1),
+            RustBV::symbol("ke6b121_m0", 1),
+            RustBV::symbol("ke6b121_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);
@@ -92,10 +91,9 @@ fn test_merge_config_union_keeps_shared_arcs_when_nothing_diverged() {
     let b = a.fork();
 
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "ke6b121b_m0", 1),
-            RustBV::symbolic(&s, "ke6b121b_m1", 1),
+            RustBV::symbol("ke6b121b_m0", 1),
+            RustBV::symbol("ke6b121b_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);
@@ -136,10 +134,9 @@ fn test_merge_does_not_resurrect_removed_hook_option_or_env_var() {
     a.unsetenv(b"PATH");
 
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "resurrect_m0", 1),
-            RustBV::symbolic(&s, "resurrect_m1", 1),
+            RustBV::symbol("resurrect_m0", 1),
+            RustBV::symbol("resurrect_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);
@@ -177,10 +174,9 @@ fn test_merge_still_unions_additions_alongside_removals() {
     b.setenv(b"HOME".to_vec(), b"/root".to_vec());
 
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "resurrect_add_m0", 1),
-            RustBV::symbolic(&s, "resurrect_add_m1", 1),
+            RustBV::symbol("resurrect_add_m0", 1),
+            RustBV::symbol("resurrect_add_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);
@@ -231,10 +227,9 @@ fn test_merge_reinstated_hook_option_env_survives_own_removal_tombstone() {
     a.setenv(b"PATH".to_vec(), b"/a2".to_vec());
 
     let (m0, m1) = {
-        let s = a.solver().borrow();
         (
-            RustBV::symbolic(&s, "reinstate_m0", 1),
-            RustBV::symbolic(&s, "reinstate_m1", 1),
+            RustBV::symbol("reinstate_m0", 1),
+            RustBV::symbol("reinstate_m1", 1),
         )
     };
     let merged = a.merge(&[&b], &[m0, m1]);
@@ -285,10 +280,9 @@ fn test_adopted_fork_carries_ancestor_tombstones_into_merge() {
     adopted.carry_tombstones_from(&pending);
 
     let (m0, m1) = {
-        let s = adopted.solver().borrow();
         (
-            RustBV::symbolic(&s, "adopt_m0", 1),
-            RustBV::symbolic(&s, "adopt_m1", 1),
+            RustBV::symbol("adopt_m0", 1),
+            RustBV::symbol("adopt_m1", 1),
         )
     };
     let merged = adopted.merge(&[&sibling], &[m0, m1]);

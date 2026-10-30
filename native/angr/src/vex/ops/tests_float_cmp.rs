@@ -11,7 +11,7 @@ use crate::vex::ir::IRType;
 #[test]
 fn test_float_cmp_lt_symbolic_constraint() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "fcmp_x", 32);
+    let x = RustBV::symbol("fcmp_x", 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
@@ -76,7 +76,7 @@ fn test_float_cmp_le_f64_concrete() {
 #[test]
 fn test_float_cmp_eq_symbolic_constraint() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "fcmp_eq_x", 32);
+    let x = RustBV::symbol("fcmp_eq_x", 32);
     let target = RustBV::concrete(2.5f32.to_bits() as u128, 32);
 
     let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), x.clone(), target, &ctx).unwrap();
@@ -95,7 +95,7 @@ fn test_float_cmp_eq_symbolic_constraint() {
 #[test]
 fn test_float_cmp_le_symbolic_constraint() {
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "fcmp_le_x", 32);
+    let x = RustBV::symbol("fcmp_le_x", 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
 
     let le_x_one = VEXOps::binop(IROp::FCmpLE(IRType::F32), x.clone(), one.clone(), &ctx).unwrap();
@@ -234,7 +234,7 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     // Symbolic: constrain low32(result)==0xFFFFFFFF given right=2.0 and
     // some symbolic left → solver must pick left.lane0 == 2.0.
     let ctx = SymContext::new_mock();
-    let l = RustBV::symbolic(&ctx, "fcmp_lane_l", 128);
+    let l = RustBV::symbol("fcmp_lane_l", 128);
     let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
     let res = VEXOps::binop(
         IROp::FCmpScalarLane {
@@ -247,7 +247,7 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     )
     .unwrap();
     assert_eq!(res.width(), 128);
-    let lo32 = res.extract(31, 0, &ctx);
+    let lo32 = res.extract(31, 0);
     let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
     ctx.add_constraint(lo32.to_z3_ast().unwrap().eq(true_mask.to_z3_ast().unwrap()));
     assert!(
@@ -306,7 +306,7 @@ fn test_fcom_cc_f64_concrete_unordered() {
 fn test_fcom_cc_symbolic_lt() {
     // Symbolic: constrain FComCC(x, 5.0) == 0x01 → x must be < 5.0 (and not NaN).
     let ctx = SymContext::new_mock();
-    let x = RustBV::symbolic(&ctx, "fcom_x", 64);
+    let x = RustBV::symbol("fcom_x", 64);
     let five = RustBV::concrete(5.0f64.to_bits() as u128, 64);
     let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five, &ctx).unwrap();
     assert_eq!(res.width(), 32);
@@ -531,7 +531,7 @@ fn test_fcmp_packed_lt_32fx4_symbolic() {
     // Symbolic vector `l` against concrete `r`. Constrain low lane mask to all-1s
     // → solver must satisfy lane 0 of l < lane 0 of r (= 5.0). Other lanes free.
     let ctx = SymContext::new_mock();
-    let l = RustBV::symbolic(&ctx, "fpkd_lt_l", 128);
+    let l = RustBV::symbol("fpkd_lt_l", 128);
     let r = RustBV::concrete(pack_4xf32(5.0, 1.0, 1.0, 1.0), 128);
     let res = VEXOps::binop(
         IROp::FCmpVecPacked {
@@ -545,7 +545,7 @@ fn test_fcmp_packed_lt_32fx4_symbolic() {
     )
     .unwrap();
     assert_eq!(res.width(), 128);
-    let lane0_mask = res.extract(31, 0, &ctx);
+    let lane0_mask = res.extract(31, 0);
     let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
     ctx.add_constraint(lane0_mask.to_z3_ast().unwrap().eq(true_mask.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT for lane0 LT");

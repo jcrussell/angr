@@ -168,7 +168,7 @@ pub fn try_concretize_binop_rm(
     // two entry points.
     let pinned = RustBV::concrete(xv, x.width());
     let r = try_concrete_binop_rm(opcode, rm, &pinned)?;
-    let cond = x.eq(&pinned, ctx);
+    let cond = x.eq(&pinned);
     ctx.assume_true(&cond);
     Some(r)
 }
@@ -215,11 +215,11 @@ pub fn try_concretize_triop_rm(
     let pinned_b = RustBV::concrete(vals[1], b.width());
     let r = try_concrete_triop_rm(opcode, rm, &pinned_a, &pinned_b)?;
     if a.is_symbolic() {
-        let cond = a.eq(&pinned_a, ctx);
+        let cond = a.eq(&pinned_a);
         ctx.assume_true(&cond);
     }
     if b.is_symbolic() {
-        let cond = b.eq(&pinned_b, ctx);
+        let cond = b.eq(&pinned_b);
         ctx.assume_true(&cond);
     }
     Some(r)

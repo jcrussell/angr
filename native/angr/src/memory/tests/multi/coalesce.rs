@@ -19,17 +19,17 @@ fn test_phase42_flush_coalesces_le_multi_byte_run() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_le_addr", 64);
+    let addr_var = RustBV::symbol("p42_le_addr", 64);
     let value = RustBV::concrete(0xDEAD_BEEF, 32);
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .unwrap();
     assert_eq!(mem.multi_cell_count(), 8);
 
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
     assert_eq!(mem.multi_cell_count(), 0);
 
     // Exactly two wider symbolic_objects entries: 0x1000 and 0x2000 with
@@ -60,15 +60,15 @@ fn test_phase42_flush_coalesces_le_multi_byte_run() {
     // concretization. The wider symbolic_object must hold the original
     // value under cond=true and the concrete default (0) under cond=false.
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
-    let loaded_a = mem.load_concrete(0x1000, 4, &probe_a).unwrap();
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
+    let loaded_a = mem.load_concrete(0x1000, 4).unwrap();
     assert_eq!(probe_a.eval(&loaded_a), Some(0xDEAD_BEEF));
-    let loaded_b_under_a = mem.load_concrete(0x2000, 4, &probe_a).unwrap();
+    let loaded_b_under_a = mem.load_concrete(0x2000, 4).unwrap();
     assert_eq!(probe_a.eval(&loaded_b_under_a), Some(0));
 
     let probe_b = ctx.fork();
-    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64), &probe_b));
-    let loaded_b = mem.load_concrete(0x2000, 4, &probe_b).unwrap();
+    probe_b.assume_true(&addr_var.eq(&RustBV::concrete(0x2000, 64)));
+    let loaded_b = mem.load_concrete(0x2000, 4).unwrap();
     assert_eq!(probe_b.eval(&loaded_b), Some(0xDEAD_BEEF));
 }
 
@@ -81,23 +81,23 @@ fn test_phase42_flush_coalesces_be_multi_byte_run() {
     let mut mem = SymbolicMemory::new(Endness::Big);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_be_addr", 64);
+    let addr_var = RustBV::symbol("p42_be_addr", 64);
     let value = RustBV::concrete(0xCAFE_BABE, 32);
-    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx);
-    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, &ctx));
+    let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
+    let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
 
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .unwrap();
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
 
     assert_eq!(mem.symbolic_object_count(), 2);
     let sym_a = mem.get_symbolic_object(0x1000).unwrap();
     assert_eq!(sym_a.width(), 32);
 
     let probe_a = ctx.fork();
-    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe_a));
-    let loaded_a = mem.load_concrete(0x1000, 4, &probe_a).unwrap();
+    probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
+    let loaded_a = mem.load_concrete(0x1000, 4).unwrap();
     assert_eq!(probe_a.eval(&loaded_a), Some(0xCAFE_BABE));
 }
 
@@ -106,17 +106,16 @@ fn test_phase42_flush_coalesces_be_multi_byte_run() {
 /// pre-Phase-4.2 behaviour.
 #[test]
 fn test_phase42_flush_singleton_no_coalesce() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_single_addr", 64);
+    let addr_var = RustBV::symbol("p42_single_addr", 64);
     let value = RustBV::concrete(0xAB, 8);
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .unwrap();
     assert_eq!(mem.multi_cell_count(), 2);
 
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
 
     // Two per-byte entries, width 8 each. No spans installed.
     assert_eq!(mem.symbolic_object_count(), 2);
@@ -141,16 +140,15 @@ fn test_phase42_flush_singleton_no_coalesce() {
 /// ends of the address space.
 #[test]
 fn test_phase42_flush_no_coalesce_across_address_space_wrap() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
 
-    let addr_var = RustBV::symbolic(&ctx, "p42_wrap_addr", 64);
-    let alt = make_alt(&ctx, &addr_var, 0x1000, 0xAB);
+    let addr_var = RustBV::symbol("p42_wrap_addr", 64);
+    let alt = make_alt(&addr_var, 0x1000, 0xAB);
     mem.set_multi_alternatives(u64::MAX, MultiPayload::from_alternatives(vec![alt.clone()]));
     mem.set_multi_alternatives(0u64, MultiPayload::from_alternatives(vec![alt]));
     assert_eq!(mem.multi_cell_count(), 2);
 
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
 
     assert_eq!(
         mem.symbolic_object_count(),
@@ -179,22 +177,21 @@ fn test_phase42_flush_no_coalesce_across_address_space_wrap() {
 /// pairwise within their matching subsets.
 #[test]
 fn test_phase42_flush_fingerprint_mismatch_breaks_run() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
     // First store: 4-byte value at two candidates → 4 Multi bytes per
     // candidate.
-    let addr1 = RustBV::symbolic(&ctx, "p42_addr1", 64);
-    mem.store_concrete_multi(&addr1, &RustBV::concrete(0x1111_2222, 32), &[0x1000], &ctx)
+    let addr1 = RustBV::symbol("p42_addr1", 64);
+    mem.store_concrete_multi(&addr1, &RustBV::concrete(0x1111_2222, 32), &[0x1000])
         .unwrap();
     assert_eq!(mem.multi_cell_count(), 4);
 
     // Second store: 1-byte value at byte 2 of the previous range. This
     // appends a second alternative to ONLY byte 0x1002, breaking its
     // fingerprint relative to its neighbours.
-    let addr2 = RustBV::symbolic(&ctx, "p42_addr2", 64);
-    mem.store_concrete_multi(&addr2, &RustBV::concrete(0xFF, 8), &[0x1002], &ctx)
+    let addr2 = RustBV::symbol("p42_addr2", 64);
+    mem.store_concrete_multi(&addr2, &RustBV::concrete(0xFF, 8), &[0x1002])
         .unwrap();
     assert_eq!(
         mem.get_multi_alternatives(0x1002).unwrap().len(),
@@ -207,7 +204,7 @@ fn test_phase42_flush_fingerprint_mismatch_breaks_run() {
         "neighbour byte still has 1 alternative"
     );
 
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
 
     // Expected runs:
     //   [0x1000, 0x1001] — coalesced wider entry, width 16.
@@ -230,24 +227,23 @@ fn test_phase42_flush_fingerprint_mismatch_breaks_run() {
 /// first 16 bytes; the remaining bytes flush as a separate run.
 #[test]
 fn test_phase42_flush_run_length_cap() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
     // 24-byte value at a single candidate → 24 adjacent Multi bytes
     // sharing one cond. The cap forces two coalesced runs: 16 bytes and
     // 8 bytes (instead of one wider run of 24).
-    let addr_var = RustBV::symbolic(&ctx, "p42_cap_addr", 64);
+    let addr_var = RustBV::symbol("p42_cap_addr", 64);
     // RustBV::concrete masks the u128 to the declared width, so a
     // 24-byte (192-bit) value can be passed directly. But we only need
     // a sequence of 24 Multi bytes; the value content does not matter
     // for the coalescing logic. Use a width-192 concrete BV.
     let value = RustBV::concrete(0x1234_5678_DEAD_BEEF, 192);
-    mem.store_concrete_multi(&addr_var, &value, &[0x1000], &ctx)
+    mem.store_concrete_multi(&addr_var, &value, &[0x1000])
         .unwrap();
     assert_eq!(mem.multi_cell_count(), 24);
 
-    mem.flush_multi_cells(&ctx);
+    mem.flush_multi_cells();
     // Two wider entries: one at 0x1000 (width 128 = 16 bytes), one at
     // 0x1010 (width 64 = 8 bytes).
     assert_eq!(mem.symbolic_object_count(), 2);

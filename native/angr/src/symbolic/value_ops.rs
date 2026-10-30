@@ -26,9 +26,6 @@
 //! `invariant-assert-not-debug-assert-in-release` for the checks that *do*
 //! warrant a real `assert!`.
 
-use std::sync::Arc;
-
-use super::SymContext;
 use super::stats::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_commutative_canonicalize,
     record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
@@ -55,24 +52,24 @@ macro_rules! define_unsigned_cmp_pair {
     ) => {
         #[doc = $doc_borrow]
         #[inline]
-        pub fn $name(&self, other: &Self, ctx: &SymContext) -> Self {
-            self.clone().$into_name(other.clone(), ctx)
+        pub fn $name(&self, other: &Self) -> Self {
+            self.clone().$into_name(other.clone())
         }
 
         #[doc = $doc_consume]
         #[inline]
-        pub fn $into_name(self, other: Self, ctx: &SymContext) -> Self {
+        pub fn $into_name(self, other: Self) -> Self {
             debug_assert_eq!(self.width(), other.width());
             match (self.as_u128(), other.as_u128()) {
                 (Some(a), Some(b)) => Self::concrete(if a $cmp b { 1 } else { 0 }, 1),
                 _ => {
                     if let Some(folded) =
-                        try_zext_const_cmp_fold(&self, &other, $zext_fwd, ctx)
+                        try_zext_const_cmp_fold(&self, &other, $zext_fwd)
                     {
                         return folded;
                     }
                     if let Some(folded) =
-                        try_zext_const_cmp_fold(&other, &self, $zext_swap, ctx)
+                        try_zext_const_cmp_fold(&other, &self, $zext_swap)
                     {
                         return folded;
                     }
@@ -98,13 +95,13 @@ macro_rules! define_signed_cmp_pair {
     ) => {
         #[doc = $doc_borrow]
         #[inline]
-        pub fn $name(&self, other: &Self, ctx: &SymContext) -> Self {
-            self.clone().$into_name(other.clone(), ctx)
+        pub fn $name(&self, other: &Self) -> Self {
+            self.clone().$into_name(other.clone())
         }
 
         #[doc = $doc_consume]
         #[inline]
-        pub fn $into_name(self, other: Self, _ctx: &SymContext) -> Self {
+        pub fn $into_name(self, other: Self) -> Self {
             debug_assert_eq!(self.width(), other.width());
             match (self.as_u128(), other.as_u128()) {
                 (Some(a), Some(b)) => {
@@ -148,13 +145,13 @@ macro_rules! define_rotate_pair {
     ) => {
         #[doc = $doc_borrow]
         #[inline]
-        pub fn $name(&self, amount: &Self, ctx: &SymContext) -> Self {
-            self.clone().$into_name(amount.clone(), ctx)
+        pub fn $name(&self, amount: &Self) -> Self {
+            self.clone().$into_name(amount.clone())
         }
 
         #[doc = $doc_consume]
         #[inline]
-        pub fn $into_name(self, amount: Self, _ctx: &SymContext) -> Self {
+        pub fn $into_name(self, amount: Self) -> Self {
             debug_assert_eq!(self.width(), amount.width());
             let w = self.width();
             match (self.as_u128(), amount.as_u128()) {
@@ -205,26 +202,24 @@ macro_rules! define_rotate_pair {
 /// supplies only its arms. Shifts/rotates keep their own macros
 /// (`define_rotate_pair!`) because their concrete arms are irregular.
 ///
-/// The invocation names the two operands and the ctx binding
-/// (`|lhs, rhs, ctx|`) so the arms can refer to them by value; `lhs` is the
-/// consumed receiver (`self`), rebound to the chosen name after the width
-/// assertion. Underscore-prefix the ctx name (`_ctx`) for ops that don't
-/// use it.
+/// The invocation names the two operands (`|lhs, rhs|`) so the arms can
+/// refer to them by value; `lhs` is the consumed receiver (`self`), rebound
+/// to the chosen name after the width assertion.
 macro_rules! define_binop_pair {
     (
         $(#[$doc_borrow:meta])* $name:ident,
         $(#[$doc_consume:meta])* $into_name:ident,
-        |$lhs:ident, $rhs:ident, $ctx:ident| { $($arms:tt)* }
+        |$lhs:ident, $rhs:ident| { $($arms:tt)* }
     ) => {
         $(#[$doc_borrow])*
         #[inline]
-        pub fn $name(&self, other: &Self, ctx: &SymContext) -> Self {
-            self.clone().$into_name(other.clone(), ctx)
+        pub fn $name(&self, other: &Self) -> Self {
+            self.clone().$into_name(other.clone())
         }
 
         $(#[$doc_consume])*
         #[inline]
-        pub fn $into_name(self, $rhs: Self, $ctx: &SymContext) -> Self {
+        pub fn $into_name(self, $rhs: Self) -> Self {
             debug_assert_eq!(self.width(), $rhs.width());
             let $lhs = self;
             match ($lhs.as_u128(), $rhs.as_u128()) {
@@ -299,8 +294,7 @@ impl RustBV {
     /// fresh variable, so the value stays unconstrained rather than
     /// silently wrong.
     fn unbuildable(width: u32) -> Self {
-        let id = super::names::next("unbuildable_op");
-        RustBV::from_parts(id, Arc::from(format!("unbuildable_op_{id}")), width)
+        RustBV::fresh("unbuildable_op", width)
     }
 
     /// [`Self::from_op`] for the fixed-arity call sites.
@@ -327,7 +321,7 @@ impl RustBV {
         /// identity simplifications. Hot-path callers (e.g. `VEXOps::binop`)
         /// that already own the operands should prefer this.
         add_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             // The guard declines the fold when the sum carries past bit 127 at
             // a width the payload cannot represent it in; the `_` arm then
             // keeps the Add symbolic (see `concrete_arith_fits`).
@@ -351,7 +345,7 @@ impl RustBV {
         sub,
         /// Subtract two bitvectors, consuming both arguments.
         sub_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             // Declines when the difference borrows past bit 127 (`a < b`, so the
             // true result `a - b + 2^width` needs bits ≥ 128 that the payload
             // has not got) — see `concrete_arith_fits`.
@@ -372,7 +366,7 @@ impl RustBV {
         mul,
         /// Multiply two bitvectors, consuming both arguments.
         mul_into,
-        |lhs, rhs, ctx| {
+        |lhs, rhs| {
             // Declines when the product overflows the payload; both operands
             // are then non-zero, so the `x * 0` arms below stay unreachable for
             // the declined case and the `_` arm keeps the Mul symbolic.
@@ -389,13 +383,13 @@ impl RustBV {
             (None, Some(b)) if b.is_power_of_two() => {
                 let k = b.trailing_zeros();
                 let amt = Self::concrete(k as u128, lhs.width());
-                lhs.shl_into(amt, ctx)
+                lhs.shl_into(amt)
             }
             // 2^k * sym → sym << k
             (Some(a), None) if a.is_power_of_two() => {
                 let k = a.trailing_zeros();
                 let amt = Self::concrete(k as u128, lhs.width());
-                rhs.shl_into(amt, ctx)
+                rhs.shl_into(amt)
             }
             _ => {
                 let width = lhs.width();
@@ -410,7 +404,7 @@ impl RustBV {
         udiv,
         /// Unsigned division, consuming both arguments.
         udiv_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             // `x / 0` is all-ones, which `Self::ones` cannot represent above
             // 128 bits, so the guard declines that one case and the `_` arm
             // keeps the UDiv symbolic — Z3's bvudiv is total the same way
@@ -433,7 +427,7 @@ impl RustBV {
         sdiv,
         /// Signed division, consuming both arguments.
         sdiv_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             // Same `x / 0` decline as `udiv`: above 128 bits the all-ones
             // quotient is unrepresentable, so leave it to Z3 (angr-nknv1).
             (Some(a), Some(b)) if b != 0 || !bits_beyond_storage(lhs.width()) => {
@@ -475,7 +469,7 @@ impl RustBV {
         urem,
         /// Unsigned remainder, consuming both arguments.
         urem_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             (Some(a), Some(b)) => {
                 if b == 0 {
                     lhs
@@ -495,7 +489,7 @@ impl RustBV {
         srem,
         /// Signed remainder, consuming both arguments.
         srem_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             (Some(a), Some(b)) => {
                 let width = lhs.width();
                 if b == 0 {
@@ -520,13 +514,13 @@ impl RustBV {
 
     /// Negate (two's complement).
     #[inline]
-    pub fn neg(&self, ctx: &SymContext) -> Self {
-        self.clone().neg_into(ctx)
+    pub fn neg(&self) -> Self {
+        self.clone().neg_into()
     }
 
     /// Negate (two's complement), consuming the argument.
     #[inline]
-    pub fn neg_into(self, _ctx: &SymContext) -> Self {
+    pub fn neg_into(self) -> Self {
         match self.as_u128() {
             // -0 → 0 at every width, including above the storage ceiling.
             Some(0) => Self::zero(self.width()),
@@ -561,7 +555,7 @@ impl RustBV {
         and,
         /// Bitwise AND, consuming both arguments.
         and_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             (Some(a), Some(b)) => Self::concrete(a & b, lhs.width()),
             // x & 0 → 0
             (_, Some(0)) | (Some(0), _) => Self::zero(lhs.width()),
@@ -583,7 +577,7 @@ impl RustBV {
         or,
         /// Bitwise OR, consuming both arguments.
         or_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             (Some(a), Some(b)) => Self::concrete(a | b, lhs.width()),
             // x | 0 → x
             (None, Some(0)) => lhs,
@@ -606,7 +600,7 @@ impl RustBV {
         xor,
         /// Bitwise XOR, consuming both arguments.
         xor_into,
-        |lhs, rhs, _ctx| {
+        |lhs, rhs| {
             (Some(a), Some(b)) => Self::concrete(a ^ b, lhs.width()),
             // x ^ 0 → x
             (None, Some(0)) => lhs,
@@ -621,13 +615,13 @@ impl RustBV {
 
     /// Bitwise NOT.
     #[inline]
-    pub fn not(&self, ctx: &SymContext) -> Self {
-        self.clone().not_into(ctx)
+    pub fn not(&self) -> Self {
+        self.clone().not_into()
     }
 
     /// Bitwise NOT, consuming the argument.
     #[inline]
-    pub fn not_into(self, _ctx: &SymContext) -> Self {
+    pub fn not_into(self) -> Self {
         match self.as_u128() {
             // Above the storage ceiling the `[128..width)` bits are implicit
             // zeros that a true NOT has to turn into ones — unrepresentable in
@@ -651,23 +645,21 @@ impl RustBV {
 
     /// Byte-reverse a bitvector (endianness swap).
     #[inline]
-    pub fn reverse(&self, ctx: &SymContext) -> Self {
-        self.clone().reverse_into(ctx)
+    pub fn reverse(&self) -> Self {
+        self.clone().reverse_into()
     }
 
     /// Byte-reverse a bitvector, consuming the argument.
     #[inline]
-    pub fn reverse_into(self, _ctx: &SymContext) -> Self {
+    pub fn reverse_into(self) -> Self {
         self.reverse_owned()
     }
 
     /// The single implementation of Reverse: concrete byte-swap fold plus the
     /// `Reverse(Reverse(x)) → x` involution, else a `Reverse` expression node.
     ///
-    /// Split out from `reverse_into` so the ctx-free `RustBVExtractTarget` can
-    /// reach it without fabricating a `SymContext` (angr-9ke6b.237); the public
-    /// entry points keep their `&SymContext` parameter for signature parity
-    /// with `extract`/`concat`.
+    /// Split out from `reverse_into` so `RustBVExtractTarget` can reach it
+    /// with an owned operand (angr-9ke6b.237).
     ///
     /// **Non-byte-aligned widths (angr-sqfj8.92):** a byte reverse is only
     /// defined for a whole number of bytes. Every in-tree caller is aligned by
@@ -743,13 +735,13 @@ impl RustBV {
 
     /// Logical shift left.
     #[inline]
-    pub fn shl(&self, amount: &Self, ctx: &SymContext) -> Self {
-        self.clone().shl_into(amount.clone(), ctx)
+    pub fn shl(&self, amount: &Self) -> Self {
+        self.clone().shl_into(amount.clone())
     }
 
     /// Logical shift left, consuming both arguments.
     #[inline]
-    pub fn shl_into(self, amount: Self, _ctx: &SymContext) -> Self {
+    pub fn shl_into(self, amount: Self) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
@@ -784,8 +776,8 @@ impl RustBV {
             // Avoids Z3 bit-blasting an O(N^2) mux tree for the symbolic shift.
             (None, Some(c)) if c < width as u128 => {
                 let c = c as u32;
-                let lo = self.extract_into(width - c - 1, 0, _ctx);
-                lo.concat_into(Self::zero(c), _ctx)
+                let lo = self.extract_into(width - c - 1, 0);
+                lo.concat_into(Self::zero(c))
             }
             // sym << c with c >= w → 0
             (None, Some(_)) => Self::zero(width),
@@ -795,13 +787,13 @@ impl RustBV {
 
     /// Logical shift right.
     #[inline]
-    pub fn lshr(&self, amount: &Self, ctx: &SymContext) -> Self {
-        self.clone().lshr_into(amount.clone(), ctx)
+    pub fn lshr(&self, amount: &Self) -> Self {
+        self.clone().lshr_into(amount.clone())
     }
 
     /// Logical shift right, consuming both arguments.
     #[inline]
-    pub fn lshr_into(self, amount: Self, _ctx: &SymContext) -> Self {
+    pub fn lshr_into(self, amount: Self) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
@@ -824,8 +816,8 @@ impl RustBV {
             // sym >> c for 0 < c < w → Concat(0^c, Extract(w-1, c, sym)).
             (None, Some(c)) if c < width as u128 => {
                 let c = c as u32;
-                let hi = self.extract_into(width - 1, c, _ctx);
-                Self::zero(c).concat_into(hi, _ctx)
+                let hi = self.extract_into(width - 1, c);
+                Self::zero(c).concat_into(hi)
             }
             // sym >> c with c >= w → 0
             (None, Some(_)) => Self::zero(width),
@@ -835,13 +827,13 @@ impl RustBV {
 
     /// Arithmetic shift right (sign-extending).
     #[inline]
-    pub fn ashr(&self, amount: &Self, ctx: &SymContext) -> Self {
-        self.clone().ashr_into(amount.clone(), ctx)
+    pub fn ashr(&self, amount: &Self) -> Self {
+        self.clone().ashr_into(amount.clone())
     }
 
     /// Arithmetic shift right, consuming both arguments.
     #[inline]
-    pub fn ashr_into(self, amount: Self, _ctx: &SymContext) -> Self {
+    pub fn ashr_into(self, amount: Self) -> Self {
         debug_assert_eq!(self.width(), amount.width());
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
@@ -872,13 +864,13 @@ impl RustBV {
             // sym >>> c for 0 < c < w → SignExt(Extract(w-1, c, sym), w).
             (None, Some(c)) if c < width as u128 => {
                 let c = c as u32;
-                let hi = self.extract_into(width - 1, c, _ctx);
-                hi.sign_extend_into(width, _ctx)
+                let hi = self.extract_into(width - 1, c);
+                hi.sign_extend_into(width)
             }
             // sym >>> c with c >= w → SignExt(MSB, w) (saturates to all sign bits).
             (None, Some(_)) => {
-                let msb = self.extract_into(width - 1, width - 1, _ctx);
-                msb.sign_extend_into(width, _ctx)
+                let msb = self.extract_into(width - 1, width - 1);
+                msb.sign_extend_into(width)
             }
             _ => Self::expr_node(width, BVOp::Ashr, [self, amount]),
         }
@@ -907,13 +899,13 @@ impl RustBV {
 
     /// Equality comparison (returns 1-bit result).
     #[inline]
-    pub fn eq(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().eq_into(other.clone(), ctx)
+    pub fn eq(&self, other: &Self) -> Self {
+        self.clone().eq_into(other.clone())
     }
 
     /// Equality comparison, consuming both arguments.
     #[inline]
-    pub fn eq_into(self, other: Self, ctx: &SymContext) -> Self {
+    pub fn eq_into(self, other: Self) -> Self {
         // Equal width is an invariant here, matching `ne_into` and the arith/cmp
         // siblings. The claripy import boundary (`claripy_bridge::import`'s
         // `check_same_width`) rejects a width mismatch before this is reached;
@@ -931,10 +923,10 @@ impl RustBV {
                 // Handles either operand order; signed ext is intentionally not
                 // touched (the sign-bit handling is more delicate, see
                 // `try_zext_const_cmp_fold`).
-                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Eq, ctx) {
+                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Eq) {
                     return folded;
                 }
-                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Eq, ctx) {
+                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Eq) {
                     return folded;
                 }
                 let (lhs, rhs) = self.canonicalize_commutative(other);
@@ -945,23 +937,23 @@ impl RustBV {
 
     /// Inequality comparison (returns 1-bit result).
     #[inline]
-    pub fn ne(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().ne_into(other.clone(), ctx)
+    pub fn ne(&self, other: &Self) -> Self {
+        self.clone().ne_into(other.clone())
     }
 
     /// Inequality comparison, consuming both arguments.
     #[inline]
-    pub fn ne_into(self, other: Self, ctx: &SymContext) -> Self {
+    pub fn ne_into(self, other: Self) -> Self {
         debug_assert_eq!(self.width(), other.width());
         match (self.as_u128(), other.as_u128()) {
             (Some(a), Some(b)) => Self::concrete(u128::from(a != b), 1),
             _ => {
                 // Zext-compare fold pattern (b), see `eq_into`. For Ne the trivial-decide
                 // direction inverts (high-bit-nonzero const → always not-equal).
-                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ne, ctx) {
+                if let Some(folded) = try_zext_const_cmp_fold(&self, &other, ZExtCmp::Ne) {
                     return folded;
                 }
-                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ne, ctx) {
+                if let Some(folded) = try_zext_const_cmp_fold(&other, &self, ZExtCmp::Ne) {
                     return folded;
                 }
                 let (lhs, rhs) = self.canonicalize_commutative(other);
@@ -1029,13 +1021,13 @@ impl RustBV {
 
     /// Zero-extend to a wider width.
     #[inline]
-    pub fn zero_extend(&self, to_width: u32, ctx: &SymContext) -> Self {
-        self.clone().zero_extend_into(to_width, ctx)
+    pub fn zero_extend(&self, to_width: u32) -> Self {
+        self.clone().zero_extend_into(to_width)
     }
 
     /// Zero-extend to a wider width, consuming the argument.
     #[inline]
-    pub fn zero_extend_into(self, to_width: u32, _ctx: &SymContext) -> Self {
+    pub fn zero_extend_into(self, to_width: u32) -> Self {
         // Narrowing is a caller bug: it silently returns a wider BV than
         // requested, which later trips a distant Z3 sort error. Guard it the
         // same way sign_extend_into does; the Python boundary (op_zero_extend)
@@ -1054,13 +1046,13 @@ impl RustBV {
 
     /// Sign-extend to a wider width.
     #[inline]
-    pub fn sign_extend(&self, to_width: u32, ctx: &SymContext) -> Self {
-        self.clone().sign_extend_into(to_width, ctx)
+    pub fn sign_extend(&self, to_width: u32) -> Self {
+        self.clone().sign_extend_into(to_width)
     }
 
     /// Sign-extend to a wider width, consuming the argument.
     #[inline]
-    pub fn sign_extend_into(self, to_width: u32, _ctx: &SymContext) -> Self {
+    pub fn sign_extend_into(self, to_width: u32) -> Self {
         debug_assert!(to_width >= self.width());
         // No extension needed
         if to_width == self.width() {
@@ -1081,23 +1073,23 @@ impl RustBV {
 
     /// Extend to `to_width` bits, choosing sign- or zero-extension by `signed`.
     #[inline]
-    pub fn extend_into(self, to_width: u32, signed: bool, ctx: &SymContext) -> Self {
+    pub fn extend_into(self, to_width: u32, signed: bool) -> Self {
         if signed {
-            self.sign_extend_into(to_width, ctx)
+            self.sign_extend_into(to_width)
         } else {
-            self.zero_extend_into(to_width, ctx)
+            self.zero_extend_into(to_width)
         }
     }
 
     /// Truncate to a narrower width.
     #[inline]
-    pub fn truncate(&self, to_width: u32, ctx: &SymContext) -> Self {
-        self.clone().truncate_into(to_width, ctx)
+    pub fn truncate(&self, to_width: u32) -> Self {
+        self.clone().truncate_into(to_width)
     }
 
     /// Truncate to a narrower width, consuming the argument.
     #[inline]
-    pub fn truncate_into(self, to_width: u32, _ctx: &SymContext) -> Self {
+    pub fn truncate_into(self, to_width: u32) -> Self {
         debug_assert!(to_width <= self.width());
         // No truncation needed
         if to_width == self.width() {
@@ -1117,8 +1109,8 @@ impl RustBV {
     /// [`RustBVExtractTarget`], which reconstructs Extract/Concat/Reverse/Zero
     /// nodes (angr-ph300.81).
     ///
-    /// All three public entry points (`extract`, `extract_into`,
-    /// `extract_no_ctx`) route through here, so none of them can hand back a
+    /// Both public entry points (`extract`, `extract_into`) route through
+    /// here, so none of them can hand back a
     /// non-canonical Extract shape (angr-9ke6b.237). The driver only borrows its
     /// input, so the consuming entry point gains nothing from owning it.
     #[inline]
@@ -1129,28 +1121,27 @@ impl RustBV {
 
     /// Extract bits \[high:low\] (inclusive).
     #[inline]
-    pub fn extract(&self, high: u32, low: u32, _ctx: &SymContext) -> Self {
+    pub fn extract(&self, high: u32, low: u32) -> Self {
         self.extract_ref(high, low)
     }
 
     /// Extract bits \[high:low\] (inclusive), consuming the argument.
     #[inline]
-    pub fn extract_into(self, high: u32, low: u32, _ctx: &SymContext) -> Self {
+    pub fn extract_into(self, high: u32, low: u32) -> Self {
         self.extract_ref(high, low)
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
     #[inline]
-    pub fn concat(&self, other: &Self, ctx: &SymContext) -> Self {
-        self.clone().concat_into(other.clone(), ctx)
+    pub fn concat(&self, other: &Self) -> Self {
+        self.clone().concat_into(other.clone())
     }
 
     /// The single implementation of Concat: concrete fold plus 128-bit
     /// overflow guard, else a `Concat` clarirs term.
     ///
-    /// Both public entry points (`concat_into`, which takes a `SymContext`
-    /// it does not need, and `concat_no_ctx`, which borrows) route through
-    /// here so the overflow guard cannot be tweaked in only one copy
+    /// Both public entry points (`concat`, which borrows, and
+    /// `concat_into`) route through here so the overflow guard cannot be tweaked in only one copy
     /// (angr-9ke6b.138). Taking owned operands costs the borrowing caller
     /// nothing: the only fold-eligible variant (`Concrete`) holds no `Arc`,
     /// and the term fallthrough consumes both operands anyway.
@@ -1185,20 +1176,8 @@ impl RustBV {
 
     /// Concatenate two bitvectors, consuming both arguments.
     #[inline]
-    pub fn concat_into(self, other: Self, _ctx: &SymContext) -> Self {
+    pub fn concat_into(self, other: Self) -> Self {
         self.concat_owned(other)
-    }
-
-    /// Extract bits without requiring a SymContext — identical canonicalization
-    /// to `extract_into`, which needs no context either.
-    ///
-    /// This used to hand-roll a strict subset of the rules (concrete fold,
-    /// full-width identity, bare `Extract`), so the same operand produced a
-    /// different shape depending on which entry point a caller reached for
-    /// (angr-9ke6b.237).
-    #[inline]
-    pub fn extract_no_ctx(&self, high: u32, low: u32) -> Self {
-        self.extract_ref(high, low)
     }
 
     /// Build a balanced Concat tree from `parts`, ordered HIGH bits first
@@ -1215,7 +1194,7 @@ impl RustBV {
     ///
     /// Panics if `parts` is empty.
     #[inline]
-    pub fn concat_balanced(parts: &[RustBV], ctx: &SymContext) -> Self {
+    pub fn concat_balanced(parts: &[RustBV]) -> Self {
         assert!(
             !parts.is_empty(),
             "concat_balanced requires at least one element"
@@ -1224,15 +1203,9 @@ impl RustBV {
             return parts[0].clone();
         }
         let mid = parts.len() / 2;
-        let high = Self::concat_balanced(&parts[..mid], ctx);
-        let low = Self::concat_balanced(&parts[mid..], ctx);
-        high.concat_into(low, ctx)
-    }
-
-    /// Concatenate without requiring a SymContext (same logic, ctx unused).
-    #[inline]
-    pub fn concat_no_ctx(&self, other: &Self) -> Self {
-        self.clone().concat_owned(other.clone())
+        let high = Self::concat_balanced(&parts[..mid]);
+        let low = Self::concat_balanced(&parts[mid..]);
+        high.concat_into(low)
     }
 
     // =========================================================================
@@ -1241,14 +1214,13 @@ impl RustBV {
 
     /// If-then-else: returns `then_val` if `self` is non-zero, else `else_val`.
     #[inline]
-    pub fn ite(&self, then_val: &Self, else_val: &Self, ctx: &SymContext) -> Self {
-        self.clone()
-            .ite_into(then_val.clone(), else_val.clone(), ctx)
+    pub fn ite(&self, then_val: &Self, else_val: &Self) -> Self {
+        self.clone().ite_into(then_val.clone(), else_val.clone())
     }
 
     /// If-then-else, consuming all three arguments.
     #[inline]
-    pub fn ite_into(self, then_val: Self, else_val: Self, _ctx: &SymContext) -> Self {
+    pub fn ite_into(self, then_val: Self, else_val: Self) -> Self {
         debug_assert_eq!(then_val.width(), else_val.width());
         match self.as_u128() {
             Some(v) => {
@@ -1264,13 +1236,13 @@ impl RustBV {
 
     /// Count leading zeros.
     #[inline]
-    pub fn clz(&self, ctx: &SymContext) -> Self {
-        self.clone().clz_into(ctx)
+    pub fn clz(&self) -> Self {
+        self.clone().clz_into()
     }
 
     /// Count leading zeros, consuming the argument.
     #[inline]
-    pub fn clz_into(self, _ctx: &SymContext) -> Self {
+    pub fn clz_into(self) -> Self {
         match self.as_u128() {
             Some(v) => {
                 let leading = concrete_clz(v, self.width());
@@ -1285,13 +1257,13 @@ impl RustBV {
 
     /// Count trailing zeros.
     #[inline]
-    pub fn ctz(&self, ctx: &SymContext) -> Self {
-        self.clone().ctz_into(ctx)
+    pub fn ctz(&self) -> Self {
+        self.clone().ctz_into()
     }
 
     /// Count trailing zeros, consuming the argument.
     #[inline]
-    pub fn ctz_into(self, _ctx: &SymContext) -> Self {
+    pub fn ctz_into(self) -> Self {
         match self.as_u128() {
             Some(v) => {
                 let trailing = concrete_ctz(v, self.width());
@@ -1306,13 +1278,13 @@ impl RustBV {
 
     /// Population count (number of set bits).
     #[inline]
-    pub fn popcount(&self, ctx: &SymContext) -> Self {
-        self.clone().popcount_into(ctx)
+    pub fn popcount(&self) -> Self {
+        self.clone().popcount_into()
     }
 
     /// Population count, consuming the argument.
     #[inline]
-    pub fn popcount_into(self, _ctx: &SymContext) -> Self {
+    pub fn popcount_into(self) -> Self {
         match self.as_u128() {
             Some(v) => Self::concrete(v.count_ones() as u128, self.width()),
             None => {
@@ -1395,12 +1367,7 @@ enum ZExtCmp {
 ///
 /// Returns `None` if `zext_side` is not a `BVOp::ZeroExt(_)` expression, or
 /// `const_side` is not concrete, or the widths don't match the expected shape.
-fn try_zext_const_cmp_fold(
-    zext_side: &RustBV,
-    const_side: &RustBV,
-    op: ZExtCmp,
-    ctx: &SymContext,
-) -> Option<RustBV> {
+fn try_zext_const_cmp_fold(zext_side: &RustBV, const_side: &RustBV, op: ZExtCmp) -> Option<RustBV> {
     let Some(Node {
         op: BVOp::ZeroExt(extend_bits),
         operands,
@@ -1461,8 +1428,8 @@ fn try_zext_const_cmp_fold(
             let narrowed_const = RustBV::concrete(c_low, inner_width);
             let narrowed_inner = inner.clone();
             let result = match op {
-                ZExtCmp::Eq => narrowed_inner.eq_into(narrowed_const, ctx),
-                ZExtCmp::Ne => narrowed_inner.ne_into(narrowed_const, ctx),
+                ZExtCmp::Eq => narrowed_inner.eq_into(narrowed_const),
+                ZExtCmp::Ne => narrowed_inner.ne_into(narrowed_const),
                 _ => unreachable!(),
             };
             Some(result)
@@ -1480,11 +1447,7 @@ fn try_zext_const_cmp_fold(
                 return Some(RustBV::concrete(0, 1));
             }
             record_zext_cmp_collapse();
-            Some(
-                inner
-                    .clone()
-                    .ult_into(RustBV::concrete(c_low, inner_width), ctx),
-            )
+            Some(inner.clone().ult_into(RustBV::concrete(c_low, inner_width)))
         }
         ZExtCmp::UltSwapped => {
             // `c < ZeroExt(k, x)`. ZeroExt ∈ [0, 2^(W-k)).
@@ -1494,7 +1457,7 @@ fn try_zext_const_cmp_fold(
                 return Some(RustBV::concrete(0, 1));
             }
             record_zext_cmp_collapse();
-            Some(RustBV::concrete(c_low, inner_width).ult_into(inner.clone(), ctx))
+            Some(RustBV::concrete(c_low, inner_width).ult_into(inner.clone()))
         }
         ZExtCmp::Ule => {
             // `ZeroExt(k, x) <= c`.
@@ -1504,11 +1467,7 @@ fn try_zext_const_cmp_fold(
                 return Some(RustBV::concrete(1, 1));
             }
             record_zext_cmp_collapse();
-            Some(
-                inner
-                    .clone()
-                    .ule_into(RustBV::concrete(c_low, inner_width), ctx),
-            )
+            Some(inner.clone().ule_into(RustBV::concrete(c_low, inner_width)))
         }
         ZExtCmp::UleSwapped => {
             // `c <= ZeroExt(k, x)`.
@@ -1523,7 +1482,7 @@ fn try_zext_const_cmp_fold(
                 return Some(RustBV::concrete(1, 1));
             }
             record_zext_cmp_collapse();
-            Some(RustBV::concrete(c_low, inner_width).ule_into(inner.clone(), ctx))
+            Some(RustBV::concrete(c_low, inner_width).ule_into(inner.clone()))
         }
     }
 }
@@ -1815,9 +1774,8 @@ pub(super) fn drive_extract<T: ExtractTarget>(
 /// [`ExtractTarget`] that rebuilds `RustBV` nodes (used by `RustBV::extract_ref`,
 /// the single implementation behind every public Extract entry point).
 ///
-/// Stateless: the reconstruction helpers it calls (`concat_owned`,
-/// `reverse_owned`) need no `SymContext`, which is what lets the ctx-free
-/// `extract_no_ctx` share this exact path (angr-9ke6b.237).
+/// Stateless: it rebuilds through `concat_owned` and `reverse_owned`, the
+/// same paths the public ops take (angr-9ke6b.237).
 pub(super) struct RustBVExtractTarget;
 
 impl ExtractTarget for RustBVExtractTarget {

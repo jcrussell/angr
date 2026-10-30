@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{PAGE_SIZE, PageIndex};
 use super::{Address, MemoryPage, PendingWrite, SymMap, SymbolicMemory};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::Endness;
 
 impl SymbolicMemory {
@@ -30,12 +30,7 @@ impl SymbolicMemory {
         clippy::expect_used,
         reason = "`s_multi`/`o_multi` are `page.has_multi() && page.is_multi(i)` bitmap reads taken from the same byte index a few lines above, and that bit is set only alongside the `multi_objects` entry for the byte's address — so both lookups are proved by the guard that gates this branch, and neither depends on guest input"
     )]
-    pub fn merge(
-        &mut self,
-        other: &SymbolicMemory,
-        merge_cond_other: &RustBV,
-        ctx: &SymContext,
-    ) -> bool {
+    pub fn merge(&mut self, other: &SymbolicMemory, merge_cond_other: &RustBV) -> bool {
         let mut merged = false;
 
         // Collect all page numbers from both memories
@@ -118,7 +113,7 @@ impl SymbolicMemory {
                         // default: exactly one arm's guard is true per
                         // model, so the else-leaf is never selected.
                         if s_multi && o_multi {
-                            let not_cond = merge_cond_other.not(ctx);
+                            let not_cond = merge_cond_other.not();
                             let sp_pl = self
                                 .multi_objects
                                 .get(&addr)
@@ -130,13 +125,13 @@ impl SymbolicMemory {
                             let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len());
                             for alt in sp_pl.alternatives() {
                                 alts.push(MultiAlternative::new(
-                                    not_cond.and(&alt.cond, ctx),
+                                    not_cond.and(&alt.cond),
                                     alt.value.clone(),
                                 ));
                             }
                             for alt in op_pl.alternatives() {
                                 alts.push(MultiAlternative::new(
-                                    merge_cond_other.and(&alt.cond, ctx),
+                                    merge_cond_other.and(&alt.cond),
                                     alt.value.clone(),
                                 ));
                             }
@@ -155,7 +150,6 @@ impl SymbolicMemory {
                             s_sym,
                             s_multi,
                             self.endness,
-                            ctx,
                         );
                         let other_val = Self::merge_byte_value(
                             &other.symbolic_objects,
@@ -166,10 +160,9 @@ impl SymbolicMemory {
                             o_sym,
                             o_multi,
                             other.endness,
-                            ctx,
                         );
 
-                        let ite_val = merge_cond_other.ite(&other_val, &self_val, ctx);
+                        let ite_val = merge_cond_other.ite(&other_val, &self_val);
                         merge_ops.push((page_num, addr, ite_val, s_multi));
                     }
                 }
@@ -337,11 +330,11 @@ impl SymbolicMemory {
         // `merge_cond_other`. Guarding composes with any pre-existing
         // conditional-store condition via `And`.
         if !self.pending_writes.is_empty() {
-            let not_cond = merge_cond_other.not(ctx);
+            let not_cond = merge_cond_other.not();
             let guarded: Vec<PendingWrite> = self
                 .pending_writes
                 .iter()
-                .map(|pw| Self::guard_pending_write(pw, &not_cond, ctx))
+                .map(|pw| Self::guard_pending_write(pw, &not_cond))
                 .collect();
             self.pending_writes = guarded;
             merged = true;
@@ -351,7 +344,7 @@ impl SymbolicMemory {
                 other
                     .pending_writes
                     .iter()
-                    .map(|pw| Self::guard_pending_write(pw, merge_cond_other, ctx)),
+                    .map(|pw| Self::guard_pending_write(pw, merge_cond_other)),
             );
             merged = true;
         }
@@ -418,14 +411,11 @@ impl SymbolicMemory {
         is_sym: bool,
         is_multi: bool,
         endness: Endness,
-        ctx: &SymContext,
     ) -> RustBV {
         if is_multi {
             silent_default!(
                 cat_c,
-                multi_objects
-                    .get(&addr)
-                    .map(|p| p.collapse(concrete_byte, ctx)),
+                multi_objects.get(&addr).map(|p| p.collapse(concrete_byte)),
                 RustBV::concrete(u128::from(concrete_byte), 8),
                 "merge: byte {addr:?} is marked Multi by the page bitmap but multi_objects \
                  holds no payload for it; merging the concrete placeholder {concrete_byte:#04x} \
@@ -482,9 +472,9 @@ impl SymbolicMemory {
     /// (angr-op0dn.11.2.2). The returned write only materializes when `guard`
     /// holds, so an arm-specific pending write stays scoped to its own path
     /// after a merge.
-    fn guard_pending_write(pw: &PendingWrite, guard: &RustBV, ctx: &SymContext) -> PendingWrite {
+    fn guard_pending_write(pw: &PendingWrite, guard: &RustBV) -> PendingWrite {
         let condition = Some(match &pw.condition {
-            Some(c) => guard.and(c, ctx),
+            Some(c) => guard.and(c),
             None => guard.clone(),
         });
         PendingWrite {

@@ -99,7 +99,7 @@ fn dispatch_native_resume_seeded(
     let mut stored_conditions = FxHashMap::default();
     let mut fork_snapshots = FxHashMap::default();
     if let Some(seed) = fork {
-        let guard = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "resume_guard", 1);
+        let guard = crate::symbolic::RustBV::symbol("resume_guard", 1);
         stored_conditions.insert(FORK_COND_ID, guard);
         if seed.with_snapshot {
             fork_snapshots.insert(

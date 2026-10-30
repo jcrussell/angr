@@ -8,7 +8,7 @@
 //! (truncate vs saturate is just the per-lane transform closure).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -26,7 +26,6 @@ impl VEXOps {
         idx: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -47,18 +46,18 @@ impl VEXOps {
             let lane = (i as u8) % count;
             let lo = lane as u32 * elem_width;
             let hi = lo + elem_width - 1;
-            return Ok(vec.extract(hi, lo, ctx));
+            return Ok(vec.extract(hi, lo));
         }
 
         // Symbolic idx: ITE chain over all lanes. count is small (<= 16).
-        let mut result = vec.extract(elem_width - 1, 0, ctx);
+        let mut result = vec.extract(elem_width - 1, 0);
         for lane in 1..count {
             let lo = lane as u32 * elem_width;
             let hi = lo + elem_width - 1;
-            let lane_val = vec.extract(hi, lo, ctx);
+            let lane_val = vec.extract(hi, lo);
             let lane_idx = RustBV::concrete(lane as u128, 8);
-            let cond = idx.eq(&lane_idx, ctx);
-            result = cond.ite(&lane_val, &result, ctx);
+            let cond = idx.eq(&lane_idx);
+            result = cond.ite(&lane_val, &result);
         }
         Ok(result)
     }
@@ -75,7 +74,6 @@ impl VEXOps {
         val: RustBV,
         elem: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
@@ -104,10 +102,10 @@ impl VEXOps {
                 } else {
                     let lo = slot as u32 * elem_width;
                     let hi = lo + elem_width - 1;
-                    elements.push(vec.extract(hi, lo, ctx));
+                    elements.push(vec.extract(hi, lo));
                 }
             }
-            return Ok(Self::concat_le_elements(elements, ctx));
+            return Ok(Self::concat_le_elements(elements));
         }
 
         // Symbolic idx: ITE chain — for each lane, select val if idx==lane
@@ -116,23 +114,18 @@ impl VEXOps {
         for slot in 0..count {
             let lo = slot as u32 * elem_width;
             let hi = lo + elem_width - 1;
-            let orig_lane = vec.extract(hi, lo, ctx);
+            let orig_lane = vec.extract(hi, lo);
             let slot_idx = RustBV::concrete(slot as u128, 8);
-            let cond = idx.eq(&slot_idx, ctx);
-            let chosen = cond.ite(&val, &orig_lane, ctx);
+            let cond = idx.eq(&slot_idx);
+            let chosen = cond.ite(&val, &orig_lane);
             elements.push(chosen);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// NEON broadcast scalar to vector (Iop_Dup{N}x{M}). Replicates `arg` into
     /// `count` lanes of width `elem.bits()`.
-    pub(super) fn vec_dup(
-        arg: RustBV,
-        elem: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn vec_dup(arg: RustBV, elem: IRType, count: u8) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
         Self::require_operand_width("vec_dup arg", arg.width(), elem_width)?;
@@ -156,7 +149,7 @@ impl VEXOps {
         for _ in 0..count {
             elements.push(arg.clone());
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// NEON widen each lane (Iop_Widen{N}{S/U}to{2N}x{M}). Sign- or
@@ -166,7 +159,6 @@ impl VEXOps {
         from: IRType,
         count: u8,
         signed: bool,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width * 2;
@@ -202,11 +194,11 @@ impl VEXOps {
         for i in 0..count {
             let lo = (i as u32) * from_width;
             let hi = lo + from_width - 1;
-            let lane = arg.extract(hi, lo, ctx);
-            let widened = lane.extend_into(to_width, signed, ctx);
+            let lane = arg.extract(hi, lo);
+            let widened = lane.extend_into(to_width, signed);
             elements.push(widened);
         }
-        Ok(Self::concat_le_elements(elements, ctx))
+        Ok(Self::concat_le_elements(elements))
     }
 
     /// Generic NEON narrow driver shared by the truncating (`Narrow*`, this
@@ -230,9 +222,8 @@ impl VEXOps {
         from_width: u32,
         to_width: u32,
         per_input: u32,
-        ctx: &SymContext,
         concrete_lane: impl Fn(u128) -> u128,
-        symbolic_lane: impl Fn(&RustBV, &SymContext) -> RustBV,
+        symbolic_lane: impl Fn(&RustBV) -> RustBV,
     ) -> RustBV {
         let total_lanes = inputs.len() as u32 * per_input;
         let out_width = to_width * total_lanes;
@@ -262,21 +253,16 @@ impl VEXOps {
             for i in 0..per_input {
                 let lo = i * from_width;
                 let hi = lo + from_width - 1;
-                let lane = op.extract(hi, lo, ctx);
-                elements.push(symbolic_lane(&lane, ctx));
+                let lane = op.extract(hi, lo);
+                elements.push(symbolic_lane(&lane));
             }
         }
-        Self::concat_le_elements(elements, ctx)
+        Self::concat_le_elements(elements)
     }
 
     /// NEON unary narrow (Iop_NarrowUn{N}to{N/2}x{M}). Truncates each lane
     /// from `from.bits()` to `from.bits()/2`.
-    pub(super) fn vec_narrow_un(
-        arg: RustBV,
-        from: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn vec_narrow_un(arg: RustBV, from: IRType, count: u8) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
         Self::require_operand_width("vec_narrow_un arg", arg.width(), from_width * count as u32)?;
@@ -286,9 +272,8 @@ impl VEXOps {
             from_width,
             to_width,
             count as u32,
-            ctx,
             |lane| lane & to_mask,
-            |lane, ctx| lane.extract(to_width - 1, 0, ctx),
+            |lane| lane.extract(to_width - 1, 0),
         ))
     }
 
@@ -301,7 +286,6 @@ impl VEXOps {
         right: RustBV,
         from: IRType,
         count: u8,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
@@ -318,9 +302,8 @@ impl VEXOps {
             from_width,
             to_width,
             per_input,
-            ctx,
             |lane| lane & to_mask,
-            |lane, ctx| lane.extract(to_width - 1, 0, ctx),
+            |lane| lane.extract(to_width - 1, 0),
         ))
     }
 }

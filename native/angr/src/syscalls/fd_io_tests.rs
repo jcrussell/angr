@@ -3,7 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::{FdFlags, RustSimState};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::syscalls::tests_support::assert_over_limit;
 
 fn fresh_state() -> RustSimState {
@@ -101,12 +101,11 @@ fn lseek_unknown_fd_falls_back() {
 #[test]
 fn lseek_symbolic_fd_falls_back() {
     let mut state = fresh_state();
-    let ctx = SymContext::new();
     let err = NativeLseekSyscall
         .call(
             &mut state,
             &[
-                RustBV::symbolic(&ctx, "fd", 64),
+                RustBV::symbol("fd", 64),
                 RustBV::concrete(0, 64),
                 RustBV::concrete(0, 64),
             ],
@@ -144,9 +143,8 @@ fn writev_symbolic_byte_leaves_fd_untouched() {
     let mut state = fresh_state();
     state.map_memory_data(0x3000, b"ok", Permission::RWX);
     // Second segment has a symbolic byte.
-    let ctx = SymContext::new();
     state
-        .memory_store(0x3100, RustBV::symbolic(&ctx, "b", 8))
+        .memory_store(0x3100, RustBV::symbol("b", 8))
         .unwrap();
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 2), (0x3100, 1)]);
 
@@ -392,8 +390,7 @@ fn pread64_symbolic_offset_falls_back() {
         .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcd".to_vec())
         .expect("fd space is not exhausted in tests");
     let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "off", 64)
+        RustBV::symbol("off", 64)
     };
     let err = NativePread64Syscall
         .call(
@@ -536,9 +533,8 @@ fn pwrite64_unknown_fd_falls_back() {
 /// Register `n` symbolic bytes for `path` and open it. Returns the fd.
 fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u32 {
     let bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
         (0..n)
-            .map(|i| RustBV::symbolic(&ctx, format!("fdiofile_{i}"), 8))
+            .map(|i| RustBV::symbol(format!("fdiofile_{i}"), 8))
             .collect()
     };
     state.file_system().register_file_content(path, bytes);

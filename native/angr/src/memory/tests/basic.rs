@@ -20,7 +20,6 @@ fn test_memory_concrete() {
 
 #[test]
 fn test_memory_endianness() {
-    let ctx = SymContext::new_mock();
 
     // Little-endian memory
     let mut mem_le = SymbolicMemory::new(Endness::Little);
@@ -30,7 +29,7 @@ fn test_memory_endianness() {
         .unwrap();
 
     // First byte should be 0x78 (low byte)
-    let byte0 = mem_le.load_concrete(0x1000, 1, &ctx).unwrap();
+    let byte0 = mem_le.load_concrete(0x1000, 1).unwrap();
     assert_eq!(byte0.as_u64(), Some(0x78));
 
     // Big-endian memory
@@ -41,7 +40,7 @@ fn test_memory_endianness() {
         .unwrap();
 
     // First byte should be 0x12 (high byte)
-    let byte0 = mem_be.load_concrete(0x1000, 1, &ctx).unwrap();
+    let byte0 = mem_be.load_concrete(0x1000, 1).unwrap();
     assert_eq!(byte0.as_u64(), Some(0x12));
 }
 
@@ -49,7 +48,6 @@ fn test_memory_endianness() {
 fn test_wide_concrete_store_roundtrip_le() {
     // 32-byte (V256) concrete store must round-trip byte-for-byte; the old
     // u128-funnel path would corrupt bytes >=16 via a masked shift.
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
@@ -59,14 +57,13 @@ fn test_wide_concrete_store_roundtrip_le() {
 
     // Little-endian: value byte i lands at addr+i.
     for (i, &b) in le_bytes.iter().enumerate() {
-        let loaded = mem.load_concrete(0x1000 + i as u64, 1, &ctx).unwrap();
+        let loaded = mem.load_concrete(0x1000 + i as u64, 1).unwrap();
         assert_eq!(loaded.as_u64(), Some(b as u64), "LE byte {i} mismatch");
     }
 }
 
 #[test]
 fn test_wide_concrete_store_roundtrip_be() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Big);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
@@ -78,7 +75,7 @@ fn test_wide_concrete_store_roundtrip_be() {
     let len = le_bytes.len();
     for (i, &b) in le_bytes.iter().enumerate() {
         let dst = 0x1000 + (len - 1 - i) as u64;
-        let loaded = mem.load_concrete(dst, 1, &ctx).unwrap();
+        let loaded = mem.load_concrete(dst, 1).unwrap();
         assert_eq!(loaded.as_u64(), Some(b as u64), "BE byte {i} mismatch");
     }
 }
@@ -91,7 +88,6 @@ fn test_wide_concrete_load_exact() {
     // mod 128 in release), so a 24-byte read of "-maxmem\0--debug\0--shell\0"
     // came back as "-msxmmm\0--debug\0-msxmmm\0". The fix assembles wide
     // concrete loads as a Concat of per-byte concretes.
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
@@ -104,10 +100,10 @@ fn test_wide_concrete_load_exact() {
     // Wide loads (>16 bytes) return a Concat expression — verify byte-for-byte
     // via per-byte extract, which would catch any shift-overflow corruption.
     for &size in &[17u32, 24, 32] {
-        let loaded = mem.load_concrete(0x1000, size, &ctx).unwrap();
+        let loaded = mem.load_concrete(0x1000, size).unwrap();
         assert_eq!(loaded.width(), size * 8, "width for size {size}");
         for i in 0..size {
-            let byte = loaded.extract(i * 8 + 7, i * 8, &ctx);
+            let byte = loaded.extract(i * 8 + 7, i * 8);
             assert_eq!(
                 byte.as_u64(),
                 Some(bytes[i as usize] as u64),
@@ -117,9 +113,9 @@ fn test_wide_concrete_load_exact() {
     }
 
     // <=16-byte loads still take the fast u128 path and stay exact.
-    let lo16 = mem.load_concrete(0x1000, 16, &ctx).unwrap();
+    let lo16 = mem.load_concrete(0x1000, 16).unwrap();
     for i in 0..16u32 {
-        let byte = lo16.extract(i * 8 + 7, i * 8, &ctx);
+        let byte = lo16.extract(i * 8 + 7, i * 8);
         assert_eq!(
             byte.as_u64(),
             Some(bytes[i as usize] as u64),
@@ -178,7 +174,7 @@ fn test_zero_size_access_is_rejected_not_looped() {
     for &addr in &[0u64, 0x400, 0x1000] {
         assert!(
             matches!(
-                mem.load_concrete(addr, 0, &ctx),
+                mem.load_concrete(addr, 0),
                 Err(MemoryError::ZeroSize { .. })
             ),
             "zero-size load at 0x{addr:x} must be a clean error"
@@ -200,7 +196,7 @@ fn test_zero_size_access_is_rejected_not_looped() {
         Err(MemoryError::ZeroSize { .. })
     ));
     assert_eq!(
-        mem.load_concrete(0x0u64, 1, &ctx).unwrap().as_u64(),
+        mem.load_concrete(0x0u64, 1).unwrap().as_u64(),
         Some(0),
         "a rejected zero-size store must not have written anything"
     );
@@ -227,7 +223,7 @@ fn test_oversize_access_is_rejected_not_width_wrapped() {
     for &addr in &[0u64, 0x400] {
         assert!(
             matches!(
-                mem.load_concrete(addr, too_big, &ctx),
+                mem.load_concrete(addr, too_big),
                 Err(MemoryError::SizeTooLarge { size, .. }) if size == too_big
             ),
             "oversize load at 0x{addr:x} must be a clean error"
@@ -277,7 +273,7 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
 
     assert!(
         matches!(
-            mem.load_concrete(wrapping, 4, &ctx),
+            mem.load_concrete(wrapping, 4),
             Err(MemoryError::OutOfBounds { .. })
         ),
         "a load whose range wraps past u64::MAX must error, not read page 0"
@@ -304,7 +300,7 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
         Err(MemoryError::OutOfBounds { .. })
     ));
     assert_eq!(
-        mem.load_concrete(0x0u64, 4, &ctx).unwrap().as_u64(),
+        mem.load_concrete(0x0u64, 4).unwrap().as_u64(),
         Some(0x1111_1111),
         "no rejected wraparound store may have corrupted the low page"
     );
@@ -312,7 +308,7 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
     // A single byte *at* u64::MAX does not wrap, so it stays a plain unmapped
     // error — the guard must not over-reject the last addressable byte.
     assert!(matches!(
-        mem.load_concrete(u64::MAX, 1, &ctx),
+        mem.load_concrete(u64::MAX, 1),
         Err(MemoryError::Unmapped { .. })
     ));
 }
@@ -415,7 +411,6 @@ fn test_unmap_zero_size_is_noop_regardless_of_alignment() {
 
 #[test]
 fn test_memory_fork() {
-    let ctx = SymContext::new_mock();
 
     let mut mem1 = SymbolicMemory::new(Endness::Little);
     mem1.map(0x1000, 0x1000, Permission::RWX);
@@ -430,17 +425,16 @@ fn test_memory_fork() {
         .unwrap();
 
     // mem1 should still have original value
-    let val1 = mem1.load_concrete(0x1000, 2, &ctx).unwrap();
+    let val1 = mem1.load_concrete(0x1000, 2).unwrap();
     assert_eq!(val1.as_u64(), Some(0xAAAA));
 
     // mem2 should have new value
-    let val2 = mem2.load_concrete(0x1000, 2, &ctx).unwrap();
+    let val2 = mem2.load_concrete(0x1000, 2).unwrap();
     assert_eq!(val2.as_u64(), Some(0xBBBB));
 }
 
 #[test]
 fn test_memory_map_data() {
-    let ctx = SymContext::new_mock();
 
     let mut mem = SymbolicMemory::new(Endness::Little);
 
@@ -449,10 +443,10 @@ fn test_memory_map_data() {
     mem.map_data(0x1000, &data, Permission::RX);
 
     // Check some bytes
-    let byte0 = mem.load_concrete(0x1000, 1, &ctx).unwrap();
+    let byte0 = mem.load_concrete(0x1000, 1).unwrap();
     assert_eq!(byte0.as_u64(), Some(0));
 
-    let byte100 = mem.load_concrete(0x1064, 1, &ctx).unwrap();
+    let byte100 = mem.load_concrete(0x1064, 1).unwrap();
     assert_eq!(byte100.as_u64(), Some(100));
 }
 
@@ -485,13 +479,12 @@ fn test_symbolic_store_concrete_fast_path() {
     let value = RustBV::concrete(0xDEADBEEF, 32);
     mem.store_symbolic(addr, value, &ctx, &concretizer).unwrap();
 
-    let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
+    let loaded = mem.load_concrete(0x1000, 4).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xDEADBEEF));
 }
 
 #[test]
 fn test_permission_enforcement_disabled_by_default() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     // Read-only page; without enforcement, stores should still succeed.
     mem.map(0x1000, 0x1000, Permission::R);
@@ -499,7 +492,7 @@ fn test_permission_enforcement_disabled_by_default() {
 
     mem.store_concrete(0x1000, RustBV::concrete(0xCAFE, 16))
         .unwrap();
-    let loaded = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    let loaded = mem.load_concrete(0x1000, 2).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xCAFE));
 }
 
@@ -529,13 +522,12 @@ fn test_permission_enforcement_blocks_write_to_readonly() {
 
 #[test]
 fn test_permission_enforcement_blocks_read_from_writeonly() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     // Write-only page (unusual but exercises the R check independently).
     mem.map(0x1000, 0x1000, Permission::W);
     mem.set_enforce_permissions(true);
 
-    let err = mem.load_concrete(0x1000, 2, &ctx).unwrap_err();
+    let err = mem.load_concrete(0x1000, 2).unwrap_err();
     match err {
         MemoryError::Permission {
             addr,
@@ -552,14 +544,13 @@ fn test_permission_enforcement_blocks_read_from_writeonly() {
 
 #[test]
 fn test_permission_enforcement_allows_rwx() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
     mem.set_enforce_permissions(true);
 
     mem.store_concrete(0x1000, RustBV::concrete(0xBEEF, 16))
         .unwrap();
-    let loaded = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    let loaded = mem.load_concrete(0x1000, 2).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xBEEF));
 }
 
@@ -661,8 +652,7 @@ fn test_snapshot_preserves_dirty_pages() {
     };
     assert!(!dirty_before.is_empty(), "store must dirty a page");
 
-    let ctx = SymContext::new();
-    let proof = mem.flush_multi_cells(&ctx);
+    let proof = mem.flush_multi_cells();
     let restored = SymbolicMemory::from_snapshot(mem.to_snapshot(&proof));
     let dirty_after = {
         let mut d = restored.get_dirty_pages();
@@ -747,7 +737,6 @@ fn end_page_helpers_boundary_sweep_matches_checked_add_reference() {
 /// silently redirected into the low pages that a `u64` wrap would land on.
 #[test]
 fn store_and_load_concrete_reject_wraparound_near_top_of_address_space() {
-    let ctx = SymContext::new_mock();
     for &addr in &crate::test_boundary_values::boundary_addresses() {
         let mut mem = SymbolicMemory::new(Endness::Little);
         // A real low page, so a wraparound bug (writing through address 0)
@@ -778,7 +767,7 @@ fn store_and_load_concrete_reject_wraparound_near_top_of_address_space() {
         // would have to jump there.
         if addr >= 0x1000 {
             let low_byte = mem
-                .load_concrete(0u64, 1, &ctx)
+                .load_concrete(0u64, 1)
                 .expect("low page stays mapped and readable");
             assert_eq!(
                 low_byte.as_u64(),

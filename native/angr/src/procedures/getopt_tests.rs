@@ -191,7 +191,7 @@ fn test_symbolic_argc_defers() {
     let mut state = setup();
     load_argv(&mut state, b"a", &[b"prog", b"-a"]);
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "argc", 64);
+    let sym = RustBV::symbol("argc", 64);
     drop(ctx);
     let res = NativeGetopt.call(
         &mut state,
@@ -499,9 +499,8 @@ fn test_bare_colon_option_char_is_unknown() {
 }
 
 /// Build a fresh symbolic BV of `width` bits named `name`.
-fn sym(state: &RustSimState, name: &str, width: u32) -> RustBV {
-    let ctx = state.solver().borrow();
-    RustBV::symbolic(&ctx, name, width)
+fn sym(name: &str, width: u32) -> RustBV {
+    RustBV::symbol(name, width)
 }
 
 fn call_raw(
@@ -517,7 +516,7 @@ fn call_raw(
 fn test_symbolic_argv_ptr_defers() {
     let mut state = setup();
     let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
-    let symv = sym(&state, "argv_ptr", 64);
+    let symv = sym("argv_ptr", 64);
     let res = call_raw(
         &mut state,
         RustBV::concrete(argc as u128, 64),
@@ -531,7 +530,7 @@ fn test_symbolic_argv_ptr_defers() {
 fn test_symbolic_optstring_ptr_defers() {
     let mut state = setup();
     let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
-    let symv = sym(&state, "optstring_ptr", 64);
+    let symv = sym("optstring_ptr", 64);
     let res = call_raw(
         &mut state,
         RustBV::concrete(argc as u128, 64),
@@ -547,7 +546,7 @@ fn test_symbolic_optstring_bytes_defer() {
     // The pointer is concrete but the optstring's first byte is not: the
     // bounded scan must defer rather than concretize an option table.
     let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
-    let symv = sym(&state, "optstring_byte", 8);
+    let symv = sym("optstring_byte", 8);
     state.memory_store(STR_BASE, symv).unwrap();
     let res = call_raw(
         &mut state,
@@ -564,7 +563,7 @@ fn test_symbolic_argv_element_ptr_defers() {
     // argv[1]'s *slot* holds a symbolic pointer: `eval_ptr` yields None and the
     // proc reports the "argv element" deferral rather than concretizing.
     let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
-    let symv = sym(&state, "elem_ptr", 64);
+    let symv = sym("elem_ptr", 64);
     state.memory_store(ARGV_BASE + 8, symv).unwrap();
     let res = call_raw(
         &mut state,
@@ -584,7 +583,7 @@ fn test_symbolic_next_argv_element_ptr_defers() {
     // "-a" needs a required argument from argv[2], whose slot is symbolic: the
     // second `eval_ptr` site (the "argv next" one) must defer too.
     let argc = load_argv(&mut state, b"a:", &[b"prog", b"-a", b"val"]);
-    let symv = sym(&state, "next_ptr", 64);
+    let symv = sym("next_ptr", 64);
     state.memory_store(ARGV_BASE + 16, symv).unwrap();
     let res = call_raw(
         &mut state,
@@ -603,7 +602,7 @@ fn test_symbolic_argv_string_byte_defers() {
     let mut state = setup();
     // The element pointer is concrete but the option character itself is not.
     let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
-    let symv = sym(&state, "argv_byte", 8);
+    let symv = sym("argv_byte", 8);
     // Strings sit sequentially from STR_BASE: "a\0" (2B), "prog\0" (5B), "-a\0".
     let argv1 = STR_BASE + 2 + 5;
     state.memory_store(argv1, symv).unwrap();

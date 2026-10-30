@@ -51,7 +51,7 @@ fn test_node_to_eval_bv_preserves_constraint_identity() {
     let node = GLOBAL_CONTEXT.bvs("evalnode_ident_x", 8).unwrap();
     let seven = crate::symbolic::RustBV::concrete(7, 8);
     let x = node_to_eval_bv(&node).unwrap();
-    ctx.i().ctx().assume_true(&x.eq(&seven, &ctx.i().ctx()));
+    ctx.i().ctx().assume_true(&x.eq(&seven));
 
     let again = node_to_eval_bv(&node).unwrap();
     assert_eq!(ctx.i().ctx().eval(&again), Some(7));

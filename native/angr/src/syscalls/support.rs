@@ -134,20 +134,16 @@ pub(crate) fn extract_bounded_concrete_arg(
 /// Mint a fresh symbolic bitvector with a per-invocation unique name.
 ///
 /// Native syscall handlers that return (or store) symbolic values must not
-/// reuse a fixed name. `RustBV::symbolic` calls
+/// reuse a fixed name. `RustBV::symbol` calls
 /// `z3::ast::BV::new_const(name, sort)`, and two `new_const` calls with the
 /// same name+sort alias to the **same** Z3 constant. That would make two
 /// invocations of e.g. `time()` solver-equal (`ret1 == ret2` unsatisfiable),
 /// unlike claripy's unique-suffixed `BVS`. Appending
 /// `procedures::symbol_counter(prefix)` gives each mint a distinct name and
 /// therefore a distinct Z3 term — mirroring the fgets/scanf/rand procedures.
-pub(crate) fn fresh_symbolic(
-    ctx: &crate::symbolic::SymContext,
-    prefix: &'static str,
-    width: u32,
-) -> RustBV {
+pub(crate) fn fresh_symbolic(prefix: &'static str, width: u32) -> RustBV {
     let id = crate::procedures::symbol_counter(prefix);
-    RustBV::symbolic(ctx, format!("{prefix}_{id}"), width)
+    RustBV::symbol(format!("{prefix}_{id}"), width)
 }
 
 /// Build the "give up and return a fresh symbolic of register width" outcome
@@ -164,10 +160,7 @@ pub(crate) fn fresh_symbolic(
 /// resources other than `RLIMIT_STACK`, `fcntl`/`ioctl` on an unknown `cmd`).
 pub(crate) fn symbolic_outcome(state: &RustSimState, prefix: &'static str) -> SyscallOutcome {
     let bits = state.arch().bits();
-    let ret = {
-        let ctx = state.solver().borrow();
-        fresh_symbolic(&ctx, prefix, bits)
-    };
+    let ret = { fresh_symbolic(prefix, bits) };
     SyscallOutcome::ContinueSymbolic { ret }
 }
 
@@ -202,13 +195,7 @@ pub(crate) fn mint_symbolic_bytes(
     counter: &str,
 ) -> Result<(), SyscallError> {
     let names = fresh_byte_names(prefix, counter, count);
-    let sym_bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
-        names
-            .iter()
-            .map(|name| RustBV::symbolic(&ctx, name, 8))
-            .collect()
-    };
+    let sym_bytes: Vec<RustBV> = { names.iter().map(|name| RustBV::symbol(name, 8)).collect() };
     crate::procedures::strings::write_bv_bytes(state, base, sym_bytes)?;
     Ok(())
 }
@@ -249,7 +236,7 @@ pub(crate) trait NativeSyscall: Send + Sync {
 /// Declare a stub syscall handler with arbitrary arity.
 ///
 /// Generates a unit struct implementing `NativeSyscall` whose `call`
-/// returns a fresh `RustBV::symbolic` of width `arch().bits()` (matching
+/// returns a fresh `RustBV::symbol` of width `arch().bits()` (matching
 /// Python's `procedures/stubs/syscall_stub.py::syscall` for syscalls with
 /// no dedicated `SimProcedure`). Args are intentionally ignored.
 ///

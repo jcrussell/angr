@@ -120,11 +120,7 @@ fn do_scanf(
             let sym_bytes: Vec<RustBV> = if record_stdin {
                 mint_stdin_bytes(state, &names)
             } else {
-                let ctx = state.solver().borrow();
-                names
-                    .iter()
-                    .map(|name| RustBV::symbolic(&ctx, name, 8))
-                    .collect()
+                names.iter().map(|name| RustBV::symbol(name, 8)).collect()
             };
 
             // Suppressed (`ptr == None`): the bytes were still read off the
@@ -155,10 +151,7 @@ fn do_scanf(
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
             let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
-            let sym_val = {
-                let ctx = state.solver().borrow();
-                RustBV::symbolic(&ctx, &name, spec.bits)
-            };
+            let sym_val = { RustBV::symbol(&name, spec.bits) };
 
             // An explicit field width bounds how many digits the conversion can
             // read, so it bounds the value — see `digit_range_bound`. Built
@@ -166,15 +159,12 @@ fn do_scanf(
             // the solver (same shape as access.rs/fgets.rs).
             if let Some((hi, lo_magnitude)) = spec.digit_bound {
                 let bound = {
-                    let ctx = state.solver().borrow();
                     // `RustBV::concrete` masks to the width, so the two's
                     // complement of `lo_magnitude` needs no hand-masking.
                     let hi_bv = RustBV::concrete(u128::from(hi), spec.bits);
                     let lo_bv =
                         RustBV::concrete(u128::from(lo_magnitude).wrapping_neg(), spec.bits);
-                    sym_val
-                        .sle(&hi_bv, &ctx)
-                        .and(&sym_val.sge(&lo_bv, &ctx), &ctx)
+                    sym_val.sle(&hi_bv).and(&sym_val.sge(&lo_bv))
                 };
                 state.add_constraint(bound);
             }

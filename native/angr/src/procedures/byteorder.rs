@@ -31,10 +31,9 @@ fn host_network_swap(
         return Ok(Some(arg.clone()));
     }
     let bits = state.arch().bits();
-    let ctx = state.solver().borrow();
-    let low = arg.extract(low_bits - 1, 0, &ctx);
-    let swapped = low.reverse(&ctx);
-    Ok(Some(swapped.zero_extend(bits, &ctx)))
+    let low = arg.extract(low_bits - 1, 0);
+    let swapped = low.reverse();
+    Ok(Some(swapped.zero_extend(bits)))
 }
 
 crate::declare_proc! {

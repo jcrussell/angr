@@ -8,7 +8,7 @@ use super::*;
 use super::file_path_tests_support::*;
 use crate::memory::Permission;
 use crate::state::{FdFlags, RustSimState};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
 
@@ -64,8 +64,7 @@ fn open_symbolic_path_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.map_memory(0x2000, 0x1000, Permission::RWX);
     let sym_byte = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "first_path_byte", 8)
+        RustBV::symbol("first_path_byte", 8)
     };
     state.memory_store(0x2000, sym_byte).unwrap();
 
@@ -86,8 +85,7 @@ fn open_symbolic_path_byte_falls_back() {
 fn open_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeOpenSyscall
         .call(
@@ -191,8 +189,7 @@ fn close_unknown_fd_returns_minus_one() {
 #[test]
 fn close_symbolic_fd_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
-    let ctx = SymContext::new();
-    let sym_fd = RustBV::symbolic(&ctx, "fd", 64);
+    let sym_fd = RustBV::symbol("fd", 64);
     let err = NativeCloseSyscall
         .call(&mut state, &[sym_fd])
         .expect_err("must fall back");
@@ -282,8 +279,7 @@ fn access_symbolic_path_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.map_memory(0x2000, 0x1000, Permission::RWX);
     let sym_byte = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "first_path_byte", 8)
+        RustBV::symbol("first_path_byte", 8)
     };
     state.memory_store(0x2000, sym_byte).unwrap();
 
@@ -300,8 +296,7 @@ fn access_symbolic_path_byte_falls_back() {
 fn access_symbolic_pathname_addr_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_ptr = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "pathname_ptr", 64)
+        RustBV::symbol("pathname_ptr", 64)
     };
     let err = NativeAccessSyscall
         .call(&mut state, &[sym_ptr, RustBV::concrete(0, 64)])
@@ -470,8 +465,7 @@ fn faccessat_symbolic_path_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.map_memory(0x2000, 0x1000, Permission::RWX);
     let sym_byte = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "first_path_byte", 8)
+        RustBV::symbol("first_path_byte", 8)
     };
     state.memory_store(0x2000, sym_byte).unwrap();
 
@@ -492,8 +486,7 @@ fn faccessat_symbolic_path_byte_falls_back() {
 fn faccessat_symbolic_dirfd_falls_back() {
     let mut state = state_with_path(b"/tmp/x");
     let sym_dirfd = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "dirfd", 64)
+        RustBV::symbol("dirfd", 64)
     };
 
     let err = NativeFaccessatSyscall

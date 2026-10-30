@@ -16,7 +16,7 @@ use super::strings::{
     ConcreteStep, MAX_STRING_SCAN as MAX_SCAN, ScanResult, scan_concrete_then_collect,
 };
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Is a forward-scan result trustworthy even though the scan stopped short of
 /// the caller's `n`?
@@ -70,7 +70,7 @@ fn collect_all_then_build(
     target_arg: &RustBV,
     max_scan: u64,
     stop_at_null: bool,
-    build: impl FnOnce(&[(u64, RustBV)], &RustBV, &SymContext) -> RustBV,
+    build: impl FnOnce(&[(u64, RustBV)], &RustBV) -> RustBV,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let result = scan_concrete_then_collect(
         state,
@@ -85,9 +85,8 @@ fn collect_all_then_build(
         ScanResult::Stopped(_) => unreachable!("symbolic target never stops in concrete mode"),
     };
 
-    let ctx = state.solver().borrow();
-    let target_byte_bv = target_arg.extract(7, 0, &ctx);
-    Ok(Some(build(&byte_loads, &target_byte_bv, &ctx)))
+    let target_byte_bv = target_arg.extract(7, 0);
+    Ok(Some(build(&byte_loads, &target_byte_bv)))
 }
 
 /// Build the symbolic ITE chain for strchr/memchr over `byte_loads`.
@@ -109,28 +108,27 @@ fn build_ite_chain(
     arch_bits: u32,
     stop_at_null: bool,
     nul_returns_addr: bool,
-    ctx: &SymContext,
 ) -> RustBV {
     let null_addr = RustBV::concrete(0u128, arch_bits);
     let zero_byte = RustBV::concrete(0u128, 8);
     let mut result = null_addr.clone();
     for (byte_addr, byte_val) in byte_loads.iter().rev() {
         let addr_bv = RustBV::concrete(*byte_addr as u128, arch_bits);
-        let match_cond = byte_val.eq(target_byte, ctx);
+        let match_cond = byte_val.eq(target_byte);
         if stop_at_null {
             // result = ITE(byte == target, addr, ITE(byte == 0, <nul>, result_next))
             // where <nul> is the terminator address (strchrnul) or NULL (strchr).
-            let null_cond = byte_val.eq(&zero_byte, ctx);
+            let null_cond = byte_val.eq(&zero_byte);
             let nul_result = if nul_returns_addr {
                 &addr_bv
             } else {
                 &null_addr
             };
-            let inner = null_cond.ite(nul_result, &result, ctx);
-            result = match_cond.ite(&addr_bv, &inner, ctx);
+            let inner = null_cond.ite(nul_result, &result);
+            result = match_cond.ite(&addr_bv, &inner);
         } else {
             // result = ITE(byte == target, addr, result_next)
-            result = match_cond.ite(&addr_bv, &result, ctx);
+            result = match_cond.ite(&addr_bv, &result);
         }
     }
     result
@@ -197,7 +195,6 @@ fn scan_for_byte(
             }
             ScanResult::Collected(byte_loads) => {
                 let byte_loads = loads_to_addrs(byte_loads, addr);
-                let ctx = state.solver().borrow();
                 let target_byte_bv = RustBV::concrete(target_byte as u128, 8);
                 build_ite_chain(
                     &byte_loads,
@@ -205,7 +202,6 @@ fn scan_for_byte(
                     arch_bits,
                     stop_at_null,
                     nul_returns_addr,
-                    &ctx,
                 )
             }
         }));
@@ -219,14 +215,13 @@ fn scan_for_byte(
         target_arg,
         max_scan,
         stop_at_null,
-        |byte_loads, target_byte_bv, ctx| {
+        |byte_loads, target_byte_bv| {
             build_ite_chain(
                 byte_loads,
                 target_byte_bv,
                 arch_bits,
                 stop_at_null,
                 nul_returns_addr,
-                ctx,
             )
         },
     )
@@ -365,14 +360,13 @@ fn scan_for_byte_last(
             }
             ScanResult::Collected(byte_loads) => {
                 let byte_loads = loads_to_addrs(byte_loads, addr);
-                let ctx = state.solver().borrow();
                 let target_byte_bv = RustBV::concrete(target_byte as u128, 8);
                 // Build forward so later matches override earlier ones.
                 let seed = match last_match {
                     Some(a) => RustBV::concrete(a as u128, arch_bits),
                     None => null_addr,
                 };
-                build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &seed, &ctx)
+                build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &seed)
             }
         }));
     }
@@ -384,8 +378,8 @@ fn scan_for_byte_last(
         target_arg,
         max_scan,
         stop_at_null,
-        |byte_loads, target_byte_bv, ctx| {
-            build_ite_chain_forward(byte_loads, target_byte_bv, arch_bits, &null_addr, ctx)
+        |byte_loads, target_byte_bv| {
+            build_ite_chain_forward(byte_loads, target_byte_bv, arch_bits, &null_addr)
         },
     )
 }
@@ -400,7 +394,6 @@ fn build_ite_chain_forward(
     target_byte: &RustBV,
     arch_bits: u32,
     seed: &RustBV,
-    ctx: &SymContext,
 ) -> RustBV {
     let mut result = seed.clone();
     // No explicit null-terminator guard is needed here. Positions past the
@@ -410,8 +403,8 @@ fn build_ite_chain_forward(
     // standard: strrchr(s, '\0') → pointer to the null terminator).
     for (byte_addr, byte_val) in byte_loads.iter() {
         let addr_bv = RustBV::concrete(*byte_addr as u128, arch_bits);
-        let match_cond = byte_val.eq(target_byte, ctx);
-        result = match_cond.ite(&addr_bv, &result, ctx);
+        let match_cond = byte_val.eq(target_byte);
+        result = match_cond.ite(&addr_bv, &result);
     }
     result
 }

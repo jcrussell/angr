@@ -14,7 +14,7 @@
 //! can reach it. Ids do **not** come from a context field at all: `next_id`
 //! reads the process-global `NEXT_SYMBOL_ID` static below, for the aliasing
 //! reason its own doc gives. `new_bv` routes construction through
-//! `RustBV::symbolic`. None of these touch the constraint-mutation/transaction
+//! `RustBV::symbol`. None of these touch the constraint-mutation/transaction
 //! path (`local_constraints` / `solver` / `bare_local_savepoints` / lineage), which
 //! lives in its own, higher-coupling module (angr-a2br.2.4).
 //!
@@ -150,11 +150,11 @@ impl SymContext {
     ///
     /// Draws exactly **one** id and names the leaf `{base}_{id}` with it; the
     /// name is the leaf's identity (`invariant-symbol-identity-is-by-name`).
-    /// Going through [`SymContext::unique_name`] + [`RustBV::symbolic`]
+    /// Going through [`SymContext::unique_name`] + [`RustBV::symbol`]
     /// instead would draw two ids per call (angr-sqfj8.90).
     pub fn new_bv(&self, name: &str, width: u32) -> RustBV {
         let id = self.next_id();
-        RustBV::symbolic_with_id(id, format!("{name}_{id}"), width)
+        RustBV::symbol(format!("{name}_{id}"), width)
     }
 
     /// Create a unique name for a symbol.

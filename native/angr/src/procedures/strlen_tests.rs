@@ -96,7 +96,7 @@ fn test_strnlen_empty_string() {
 fn test_strlen_symbolic_addr() {
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym_addr = RustBV::symbolic(&ctx, "addr", 64);
+    let sym_addr = RustBV::symbol("addr", 64);
     drop(ctx);
     let proc = NativeStrlen;
     let result = proc.call(&mut state, &[sym_addr]);
@@ -106,7 +106,7 @@ fn test_strlen_symbolic_addr() {
 /// Insert a fully-symbolic byte at `addr` (page must be pre-mapped).
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, name, 8);
+    let sym = RustBV::symbol(name, 8);
     drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
@@ -137,7 +137,7 @@ fn test_strlen_symbolic_byte_zero_solution() {
 
     let ctx = state.solver().borrow();
     let zero = RustBV::concrete(0u128, 8);
-    let eq = sym.eq(&zero, &ctx);
+    let eq = sym.eq(&zero);
     drop(ctx);
 
     let proc = NativeStrlen;
@@ -160,7 +160,7 @@ fn test_strlen_symbolic_byte_nonzero_solution() {
 
     let ctx = state.solver().borrow();
     let b = RustBV::concrete(b'b' as u128, 8);
-    let eq = sym.eq(&b, &ctx);
+    let eq = sym.eq(&b);
     drop(ctx);
 
     let proc = NativeStrlen;

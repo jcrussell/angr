@@ -16,7 +16,7 @@
 // which is not an inherent method and so needs the trait in scope.
 use std::ops::Neg;
 
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV};
 use crate::vex::ir::IRType;
 
 use super::VEXOps;
@@ -61,7 +61,7 @@ pub(super) trait FloatLaneOp {
     /// Apply to a single concrete f64 lane. `args.len() == self.arity()`.
     fn concrete_f64(&self, args: &[f64]) -> f64;
     /// Build the symbolic per-lane expression. `args.len() == self.arity()`.
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV;
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV;
 }
 
 pub(super) struct FAdd;
@@ -92,7 +92,7 @@ macro_rules! impl_float_lane_binop {
             fn concrete_f64(&self, a: &[f64]) -> f64 {
                 a[0] $op a[1]
             }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV {
                 build_float_expr($kind, prec, args)
             }
         }
@@ -113,7 +113,7 @@ macro_rules! impl_float_lane_unop {
             fn concrete_f64(&self, a: &[f64]) -> f64 {
                 a[0].$method()
             }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
+            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV {
                 build_float_expr($kind, prec, args)
             }
         }
@@ -136,12 +136,7 @@ impl_float_lane_unop!(FNeg, neg, FloatOpKind::Neg);
     clippy::expect_used,
     reason = "arity-2 dispatch invariant: the only route here is `FloatLaneOp::symbolic` from `vec_float_lane_op`, which builds `lane_args` one-for-one from its `args`, and every `FMin`/`FMax` call site passes the array literal `&[left, right]` — see the module Panic policy header"
 )]
-fn float_minmax_symbolic(
-    args: Vec<RustBV>,
-    prec: FloatPrec,
-    ctx: &SymContext,
-    swap_cmp_args: bool,
-) -> RustBV {
+fn float_minmax_symbolic(args: Vec<RustBV>, prec: FloatPrec, swap_cmp_args: bool) -> RustBV {
     let mut iter = args.into_iter();
     let l_lane = iter.next().expect("FMin/FMax arity 2");
     let r_lane = iter.next().expect("FMin/FMax arity 2");
@@ -151,7 +146,7 @@ fn float_minmax_symbolic(
         vec![l_lane.clone(), r_lane.clone()]
     };
     let cond = build_float_expr(FloatOpKind::CmpLt, prec, cmp_args);
-    cond.ite_into(l_lane, r_lane, ctx)
+    cond.ite_into(l_lane, r_lane)
 }
 
 /// Generate a `FloatLaneOp` impl for FP min/max. `$cmp` is the operator that
@@ -169,8 +164,8 @@ macro_rules! impl_float_lane_minmax {
             fn concrete_f64(&self, a: &[f64]) -> f64 {
                 if a[0] $cmp a[1] { a[0] } else { a[1] }
             }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
-                float_minmax_symbolic(args, prec, ctx, $swap_cmp_args)
+            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV {
+                float_minmax_symbolic(args, prec, $swap_cmp_args)
             }
         }
     };
@@ -199,7 +194,7 @@ pub(super) trait IntLaneOp {
     fn concrete_lane(&self, lanes: &[u128], elem_width: u32) -> u128;
     /// Build the symbolic per-lane expression. Must be exactly `elem_width`
     /// bits wide. `lanes.len() == self.arity()`.
-    fn symbolic_lane(&self, lanes: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV;
+    fn symbolic_lane(&self, lanes: &[RustBV], elem_width: u32) -> RustBV;
 }
 
 pub(super) struct IAdd;
@@ -232,8 +227,8 @@ macro_rules! impl_int_lane_arith {
             fn concrete_lane(&self, a: &[u128], _elem_width: u32) -> u128 {
                 a[0].$wrapping(a[1])
             }
-            fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32, ctx: &SymContext) -> RustBV {
-                a[0].clone().$method(a[1].clone(), ctx)
+            fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32) -> RustBV {
+                a[0].clone().$method(a[1].clone())
             }
         }
     };
@@ -254,10 +249,10 @@ impl IntLaneOp for ICmpEq {
             0
         }
     }
-    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
+    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32) -> RustBV {
         a[0].clone()
-            .eq_into(a[1].clone(), ctx)
-            .sign_extend_into(elem_width, ctx)
+            .eq_into(a[1].clone())
+            .sign_extend_into(elem_width)
     }
 }
 
@@ -281,13 +276,13 @@ impl IntLaneOp for ICmpGt {
             0
         }
     }
-    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
+    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32) -> RustBV {
         let cmp = if self.signed {
-            a[0].clone().sgt_into(a[1].clone(), ctx)
+            a[0].clone().sgt_into(a[1].clone())
         } else {
-            a[0].clone().ugt_into(a[1].clone(), ctx)
+            a[0].clone().ugt_into(a[1].clone())
         };
-        cmp.sign_extend_into(elem_width, ctx)
+        cmp.sign_extend_into(elem_width)
     }
 }
 
@@ -307,16 +302,16 @@ impl IntLaneOp for IMinMax {
         };
         if pick_left { a[0] } else { a[1] }
     }
-    fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32, ctx: &SymContext) -> RustBV {
+    fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32) -> RustBV {
         let l = a[0].clone();
         let r = a[1].clone();
         let cond = match (self.signed, self.is_max) {
-            (true, true) => l.clone().sge_into(r.clone(), ctx),
-            (true, false) => l.clone().sle_into(r.clone(), ctx),
-            (false, true) => l.clone().uge_into(r.clone(), ctx),
-            (false, false) => l.clone().ule_into(r.clone(), ctx),
+            (true, true) => l.clone().sge_into(r.clone()),
+            (true, false) => l.clone().sle_into(r.clone()),
+            (false, true) => l.clone().uge_into(r.clone()),
+            (false, false) => l.clone().ule_into(r.clone()),
         };
-        cond.ite_into(l, r, ctx)
+        cond.ite_into(l, r)
     }
 }
 
@@ -334,11 +329,11 @@ impl IntLaneOp for IAbs {
             v
         }
     }
-    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
+    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32) -> RustBV {
         let elem_val = a[0].clone();
         let zero = RustBV::concrete(0, elem_width);
-        let neg = elem_val.clone().neg_into(ctx);
-        let is_neg = elem_val.clone().slt_into(zero, ctx);
-        is_neg.ite_into(neg, elem_val, ctx)
+        let neg = elem_val.clone().neg_into();
+        let is_neg = elem_val.clone().slt_into(zero);
+        is_neg.ite_into(neg, elem_val)
     }
 }

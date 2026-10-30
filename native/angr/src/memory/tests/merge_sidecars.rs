@@ -21,9 +21,9 @@ use super::super::*;
 /// A page number neither memory touches by default.
 const OTHER_ONLY_PAGE: u64 = 0x9000;
 
-fn multi_payload(ctx: &SymContext, name: &str, value: u8) -> MultiPayload {
+fn multi_payload(name: &str, value: u8) -> MultiPayload {
     MultiPayload::from_alternatives(vec![MultiAlternative::new(
-        RustBV::symbolic(ctx, name, 1),
+        RustBV::symbol(name, 1),
         RustBV::concrete(value as u128, 8),
     )])
 }
@@ -33,15 +33,14 @@ fn multi_payload(ctx: &SymContext, name: &str, value: u8) -> MultiPayload {
 /// `multi_objects` side table and must be copied explicitly.
 #[test]
 fn other_only_page_adopts_multi_objects_payload() {
-    let ctx = SymContext::new();
     let addr = Address(OTHER_ONLY_PAGE);
 
     let mut a = SymbolicMemory::new(Endness::Little);
     let mut b = SymbolicMemory::new(Endness::Little);
-    b.set_multi_alternatives(addr, multi_payload(&ctx, "mo", 0x41));
+    b.set_multi_alternatives(addr, multi_payload("mo", 0x41));
 
-    let cond = RustBV::symbolic(&ctx, "m", 1);
-    a.merge(&b, &cond, &ctx);
+    let cond = RustBV::symbol("m", 1);
+    a.merge(&b, &cond);
 
     assert!(
         a.get_multi_alternatives(addr).is_some(),
@@ -50,8 +49,8 @@ fn other_only_page_adopts_multi_objects_payload() {
     // A second merge is where the missing payload used to surface as a panic
     // on the `s_multi implies a payload` expect.
     let mut c = SymbolicMemory::new(Endness::Little);
-    c.set_multi_alternatives(addr, multi_payload(&ctx, "mo2", 0x42));
-    a.merge(&c, &cond, &ctx);
+    c.set_multi_alternatives(addr, multi_payload("mo2", 0x42));
+    a.merge(&c, &cond);
     assert_eq!(
         a.get_multi_alternatives(addr)
             .expect("still Multi after the second merge")
@@ -66,16 +65,15 @@ fn other_only_page_adopts_multi_objects_payload() {
 /// that range would still look fresh.
 #[test]
 fn other_only_page_adopts_multi_versions_entry() {
-    let ctx = SymContext::new();
     let addr = Address(OTHER_ONLY_PAGE);
 
     let mut a = SymbolicMemory::new(Endness::Little);
     assert!(!a.multi_versions.contains_key(&addr));
 
     let mut b = SymbolicMemory::new(Endness::Little);
-    b.set_multi_alternatives(addr, multi_payload(&ctx, "mv", 0x43));
+    b.set_multi_alternatives(addr, multi_payload("mv", 0x43));
 
-    a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx);
+    a.merge(&b, &RustBV::symbol("m", 1));
     assert!(
         a.multi_versions.contains_key(&addr),
         "adopting a Multi cell must bump the byte's version"
@@ -93,11 +91,11 @@ fn other_only_page_adopts_full_symbolic_span_range() {
 
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(addr, 0x1000, Permission::RWX);
-    b.store_concrete(addr, RustBV::symbolic(&ctx, "wide", 32))
+    b.store_concrete(addr, RustBV::symbol("wide", 32))
         .expect("wide symbolic store");
 
     let mut a = SymbolicMemory::new(Endness::Little);
-    a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx);
+    a.merge(&b, &RustBV::symbol("m", 1));
 
     assert!(
         a.get_symbolic_object(addr).is_some(),
@@ -123,8 +121,7 @@ fn other_only_page_adopts_full_symbolic_span_range() {
 /// and are keyed off nothing the page walk can rebuild.
 #[test]
 fn merge_unions_the_accumulating_sidecars() {
-    let ctx = SymContext::new();
-    let cond = RustBV::symbolic(&ctx, "m", 1);
+    let cond = RustBV::symbol("m", 1);
 
     let mut a = SymbolicMemory::new(Endness::Little);
     a.map(0x1000u64, 0x1000, Permission::RWX);
@@ -137,10 +134,10 @@ fn merge_unions_the_accumulating_sidecars() {
     b.store_concrete(Address(0x5000), RustBV::concrete(0xbb, 8))
         .expect("other write");
     b.add_lazy_region(0x30000u64, 0x1000u64);
-    b.import_symbolic_value(0x5008u64, RustBV::symbolic(&ctx, "imp", 8), None)
+    b.import_symbolic_value(0x5008u64, RustBV::symbol("imp", 8), None)
         .expect("import");
 
-    a.merge(&b, &cond, &ctx);
+    a.merge(&b, &cond);
 
     let dirty = a.get_dirty_pages();
     assert!(dirty.contains(&0x1), "self's own dirty page is kept");
@@ -162,7 +159,6 @@ fn merge_unions_the_accumulating_sidecars() {
 /// on a page `self` does not have. Any sidecar the merge forgets shows up here.
 #[test]
 fn every_address_keyed_sidecar_survives_other_only_merge() {
-    let ctx = SymContext::new();
     let base = Address(OTHER_ONLY_PAGE);
     let multi_addr = base; // multi_objects + multi_versions
     let sym_addr = base + 0x40; // symbolic_objects + symbolic_spans
@@ -170,14 +166,14 @@ fn every_address_keyed_sidecar_survives_other_only_merge() {
 
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(base, 0x1000, Permission::RWX);
-    b.set_multi_alternatives(multi_addr, multi_payload(&ctx, "census", 0x7f));
-    b.store_concrete(sym_addr, RustBV::symbolic(&ctx, "census_wide", 32))
+    b.set_multi_alternatives(multi_addr, multi_payload("census", 0x7f));
+    b.store_concrete(sym_addr, RustBV::symbol("census_wide", 32))
         .expect("wide symbolic store");
-    b.import_symbolic_value(imported_addr, RustBV::symbolic(&ctx, "census_imp", 16), None)
+    b.import_symbolic_value(imported_addr, RustBV::symbol("census_imp", 16), None)
         .expect("import");
 
     let mut a = SymbolicMemory::new(Endness::Little);
-    a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx);
+    a.merge(&b, &RustBV::symbol("m", 1));
 
     assert!(
         a.get_multi_alternatives(multi_addr).is_some(),
@@ -215,19 +211,18 @@ fn every_address_keyed_sidecar_survives_other_only_merge() {
 ///     malformed-width `Ite` node in the shipped release build.
 #[test]
 fn wide_symbolic_divergence_merges_per_byte_lanes() {
-    let ctx = SymContext::new();
     let addr = Address(0xa000);
 
     let arm = |name: &str| {
         let mut m = SymbolicMemory::new(Endness::Little);
         m.map(addr, 0x1000, Permission::RWX);
-        m.store_concrete(addr, RustBV::symbolic(&ctx, name, 32))
+        m.store_concrete(addr, RustBV::symbol(name, 32))
             .expect("wide symbolic store");
         m
     };
 
     let (mut a, b) = (arm("wide_a"), arm("wide_b"));
-    assert!(a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx));
+    assert!(a.merge(&b, &RustBV::symbol("m", 1)));
 
     for i in 0..4u64 {
         let cell = a
@@ -257,7 +252,7 @@ fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
 
     let mut a = SymbolicMemory::new(Endness::Little);
     a.map(addr, 0x1000, Permission::RWX);
-    a.store_concrete(addr, RustBV::symbolic(&ctx, "wide_a", 32))
+    a.store_concrete(addr, RustBV::symbol("wide_a", 32))
         .expect("wide symbolic store");
 
     let mut b = SymbolicMemory::new(Endness::Little);
@@ -266,7 +261,7 @@ fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
         .expect("wide concrete store");
 
     // `m == 1` selects `other` at every byte.
-    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
 
     let loaded = a
         .load(RustBV::concrete(addr.raw() as u128, 64), 4, &ctx)
@@ -295,7 +290,7 @@ fn split_page_object_backfills_tail_bytes_when_base_key_is_occupied() {
 
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(0x8000u64, 0x2000, Permission::RWX);
-    b.store_concrete(base, RustBV::symbolic(&ctx, "straddle", 32))
+    b.store_concrete(base, RustBV::symbol("straddle", 32))
         .expect("wide symbolic store across the page boundary");
 
     // `self` has only the base page, so the tail page takes the
@@ -305,7 +300,7 @@ fn split_page_object_backfills_tail_bytes_when_base_key_is_occupied() {
     a.store_concrete(base, RustBV::concrete(0xef, 8))
         .expect("self's concrete write on the base page");
 
-    a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx);
+    a.merge(&b, &RustBV::symbol("m", 1));
 
     for i in 2..4u64 {
         let byte = base + i;

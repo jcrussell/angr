@@ -16,11 +16,11 @@ crate::declare_proc! {
     name = "rand",
     struct = NativeRand,
     args = [],
-    call |state| {
+    call |_state| {
         // 31-bit symbolic value (matches angr's rand, which uses 31 bits)
         // zero-extended to the 32-bit C int width — angr spells the same thing
         // as `zero_extend(sizeof(int) - 31)`.
-        Ok(Some(fresh_zero_extended_symbol(state, "rand", 31, 32)))
+        Ok(Some(fresh_zero_extended_symbol("rand", 31, 32)))
     }
 }
 

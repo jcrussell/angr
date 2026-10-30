@@ -325,8 +325,8 @@ fn test_fp_round_to_int_symbolic_rm_matches_concrete() {
         (4, 2.5, 3.0),
     ] {
         let ctx = SymContext::new();
-        let rm_sym = RustBV::symbolic(&ctx, "rm", 32);
-        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32), &ctx));
+        let rm_sym = RustBV::symbol("rm", 32);
+        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32)));
         let e = fp_expr(
             FloatOpKind::RoundToInt,
             FloatPrec::F64,
@@ -432,8 +432,8 @@ fn test_fp_fma_rm_rounding_is_threaded() {
 fn test_fp_arith_rm_symbolic_rm_matches_concrete() {
     for (vex_rm, expect_rz) in [(0u8, false), (3u8, true)] {
         let ctx = SymContext::new();
-        let rm_sym = RustBV::symbolic(&ctx, "rm", 32);
-        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32), &ctx));
+        let rm_sym = RustBV::symbol("rm", 32);
+        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32)));
         let e = fp_expr(
             FloatOpKind::DivRm,
             FloatPrec::F64,
@@ -570,8 +570,8 @@ fn test_fp_convert_f_to_i_rm_all_modes() {
 fn test_fp_convert_f_to_i_symbolic_rm_matches_concrete() {
     for (vex_rm, expected) in [(0u8, 3u128), (1, 2), (2, 3), (3, 2)] {
         let ctx = SymContext::new();
-        let rm_sym = RustBV::symbolic(&ctx, "rm", 32);
-        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32), &ctx));
+        let rm_sym = RustBV::symbol("rm", 32);
+        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32)));
         let e = fp_expr(
             FloatOpKind::ConvertFtoIRm {
                 dst_bits: 32,
@@ -651,8 +651,8 @@ fn test_fp_convert_f_to_f_symbolic_rm_matches_concrete() {
     let src = 1.0f64 / 3.0;
     for (vex_rm, expect_rz) in [(0u8, false), (3u8, true)] {
         let ctx = SymContext::new();
-        let rm_sym = RustBV::symbolic(&ctx, "rm", 32);
-        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32), &ctx));
+        let rm_sym = RustBV::symbol("rm", 32);
+        ctx.assume_true(&rm_sym.eq(&RustBV::concrete(u128::from(vex_rm), 32)));
         let e = fp_expr(
             FloatOpKind::ConvertFtoFRm {
                 src_prec: FloatPrec::F64,
@@ -691,9 +691,9 @@ fn ulps(v: f64, n: i64) -> f64 {
 #[test]
 fn test_fp_add_with_symbolic_operand_solves() {
     let ctx = SymContext::new();
-    let x = RustBV::symbolic(&ctx, "x", 64);
+    let x = RustBV::symbol("x", 64);
     let sum = fp_expr(FloatOpKind::Add, FloatPrec::F64, vec![x.clone(), bv64(1.5)]);
-    ctx.assume_true(&sum.eq(&bv64(4.0), &ctx));
+    ctx.assume_true(&sum.eq(&bv64(4.0)));
     assert!(ctx.is_sat());
     // Whatever model comes back must satisfy the constraint under Rust's own
     // RNE add — an unconstrained fresh variable would not.
@@ -720,10 +720,10 @@ fn test_fp_add_symbolic_solution_set_is_exactly_rne() {
         (ulps(2.5, -1), false),
     ] {
         let ctx = SymContext::new();
-        let x = RustBV::symbolic(&ctx, "x", 64);
+        let x = RustBV::symbol("x", 64);
         let sum = fp_expr(FloatOpKind::Add, FloatPrec::F64, vec![x.clone(), bv64(1.5)]);
-        ctx.assume_true(&sum.eq(&bv64(4.0), &ctx));
-        ctx.assume_true(&x.eq(&bv64(candidate), &ctx));
+        ctx.assume_true(&sum.eq(&bv64(4.0)));
+        ctx.assume_true(&x.eq(&bv64(candidate)));
         assert_eq!(
             ctx.is_sat(),
             expect_sat,
@@ -744,7 +744,7 @@ fn test_fp_unsat_constraint_is_detected() {
     let ctx = SymContext::new();
     // Nothing squares to a negative number, so sqrt(x) == -1.0 is unsat
     // (IEEE sqrt of a negative is NaN, and NaN != -1.0 bitwise).
-    let x = RustBV::symbolic(&ctx, "x", 64);
+    let x = RustBV::symbol("x", 64);
     let is_lt = fp_expr(
         FloatOpKind::CmpLt,
         FloatPrec::F64,

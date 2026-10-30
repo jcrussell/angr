@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 /// Build a state whose solver context already knows the symbol `x`, plus the
 /// `x == 0` condition expressed in that same context.
@@ -11,10 +11,8 @@ fn state_with_x_eq_zero() -> (RustSimState, RustBV) {
     let mut state = RustSimState::new("amd64").expect("state");
     state.set_pc(0x40_1000);
     let cond = {
-        let ctx_ref = state.solver().borrow();
-        let ctx: &SymContext = &ctx_ref;
-        let x = RustBV::symbolic(ctx, "x", 64);
-        x.eq(&RustBV::zero(64), ctx)
+        let x = RustBV::symbol("x", 64);
+        x.eq(&RustBV::zero(64))
     };
     (state, cond)
 }
@@ -228,11 +226,9 @@ fn state_with_two_conds() -> (RustSimState, RustBV, RustBV) {
     let mut state = RustSimState::new("amd64").expect("state");
     state.set_pc(0x40_1000);
     let (c1, c2) = {
-        let ctx_ref = state.solver().borrow();
-        let ctx: &SymContext = &ctx_ref;
-        let x = RustBV::symbolic(ctx, "x", 64);
-        let y = RustBV::symbolic(ctx, "y", 64);
-        (x.eq(&RustBV::zero(64), ctx), y.eq(&RustBV::zero(64), ctx))
+        let x = RustBV::symbol("x", 64);
+        let y = RustBV::symbol("y", 64);
+        (x.eq(&RustBV::zero(64)), y.eq(&RustBV::zero(64)))
     };
     (state, c1, c2)
 }

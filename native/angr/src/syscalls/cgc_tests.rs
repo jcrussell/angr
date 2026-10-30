@@ -7,7 +7,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::syscalls::tests_support::assert_over_limit;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 fn x86_state_with_buf() -> RustSimState {
     let mut state = RustSimState::new("x86").expect("x86 state");
@@ -85,8 +85,7 @@ fn transmit_symbolic_byte_falls_back() {
     let h = NativeTransmitSyscall;
     let mut state = x86_state_with_buf();
     state.map_memory(0x3000, 0x1000, Permission::RWX);
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "b", 8);
+    let sym = RustBV::symbol("b", 8);
     state.memory_store(0x3000, sym).expect("store");
     let err = h
         .call(
@@ -774,8 +773,7 @@ fn allocate_reuses_sinkhole_first_fit() {
 fn allocate_symbolic_length_falls_back() {
     let h = NativeAllocateSyscall;
     let mut state = x86_state_with_buf();
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "len", 32);
+    let sym = RustBV::symbol("len", 32);
     let err = h
         .call(
             &mut state,

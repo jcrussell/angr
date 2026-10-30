@@ -13,8 +13,8 @@ use super::*;
 #[test]
 fn test_round_f32_to_int_symbolic_rm() {
     let ctx = SymContext::new_mock();
-    let rm = RustBV::symbolic(&ctx, "rm_f32", 32);
-    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32), &ctx));
+    let rm = RustBV::symbol("rm_f32", 32);
+    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32)));
     let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
 
     let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
@@ -35,8 +35,8 @@ fn test_round_f32_to_int_symbolic_rm() {
 #[test]
 fn test_round_f64_to_int_symbolic_rm() {
     let ctx = SymContext::new_mock();
-    let rm = RustBV::symbolic(&ctx, "rm_f64", 32);
-    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32), &ctx));
+    let rm = RustBV::symbol("rm_f64", 32);
+    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32)));
     let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
 
     let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();

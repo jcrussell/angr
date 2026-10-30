@@ -46,11 +46,10 @@ fn strncpy_symbolic(
     // in the first n bytes" saturates the length at n, which makes
     // `len + 1 > n` and clamps `cpy_size` back to n — copy the whole window.
     let cpy_size = {
-        let ctx = state.solver().borrow();
-        let str_len = build_strlen_chain(bytes, arch_bits, n, &ctx);
-        let len_plus_1 = str_len.add(&RustBV::concrete(1u128, arch_bits), &ctx);
+        let str_len = build_strlen_chain(bytes, arch_bits, n);
+        let len_plus_1 = str_len.add(&RustBV::concrete(1u128, arch_bits));
         let n_bv = RustBV::concrete(n as u128, arch_bits);
-        n_bv.ult(&len_plus_1, &ctx).ite(&n_bv, &len_plus_1, &ctx)
+        n_bv.ult(&len_plus_1).ite(&n_bv, &len_plus_1)
     };
 
     // Pre-snapshot the source window before any store lands (dest may alias src).
@@ -162,8 +161,7 @@ crate::declare_proc! {
         // Return dest + strlen(src) (pointer to the written NUL).
         let len_bv = arch_word(state, buf.len() as u64);
         let ret = {
-            let ctx = state.solver().borrow();
-            dest_bv.add(&len_bv, &ctx)
+            dest_bv.add(&len_bv)
         };
         Ok(Some(ret))
     }
@@ -201,8 +199,7 @@ crate::declare_proc! {
         let bits = state.arch().bits();
         let off_bv = RustBV::concrete(ret_off, bits);
         let ret = {
-            let ctx = state.solver().borrow();
-            dest_bv.add(&off_bv, &ctx)
+            dest_bv.add(&off_bv)
         };
         Ok(Some(ret))
     }

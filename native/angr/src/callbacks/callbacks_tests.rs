@@ -40,10 +40,9 @@ fn store_symbolic_full_errors_when_callback_unset() {
 /// first-address-only fallback that silently drops addrs[1..].
 #[test]
 fn concrete_multi_addr_store_prefers_full_callback() {
-    use crate::symbolic::{RustBV, SymContext};
+    use crate::symbolic::RustBV;
     use pyo3::types::{PyDict, PyList};
 
-    let ctx = SymContext::new_mock();
 
     Python::initialize();
     Python::attach(|py| {
@@ -72,7 +71,7 @@ def store_cb(addr, data):
 
         // Symbolic address concretized to 17 candidates (> the in-Rust ITE
         // cap), concrete data — the exact `table[x]=const` shape from the bug.
-        let addr_ast = RustBV::symbolic(&ctx, "store_addr", 64);
+        let addr_ast = RustBV::symbol("store_addr", 64);
         let data = RustBV::concrete(0x41, 8);
         let addrs: Vec<u64> = (0..17).map(|i| 0x1000 + i * 8).collect();
 

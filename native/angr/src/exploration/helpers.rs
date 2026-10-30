@@ -879,8 +879,7 @@ pub(crate) fn advance_sp_past_return_addr(state: &mut RustSimState, pops_return_
                  symbolically by {ptr_size} bytes instead of concretizing"
             );
             let delta = RustBV::concrete(ptr_size as u128, sp.width());
-            let ctx = state.solver().borrow();
-            sp.add_into(delta, &ctx)
+            sp.add_into(delta)
         }
     };
     state.set_sp(bumped);
@@ -915,10 +914,9 @@ pub(crate) fn write_proc_return_with_abi(
     let widened = if rv.width() >= reg_bits {
         rv
     } else {
-        let ctx = state.solver().borrow();
         match ext {
-            ReturnExtension::Zero => rv.zero_extend_into(reg_bits, &ctx),
-            ReturnExtension::Sign => rv.sign_extend_into(reg_bits, &ctx),
+            ReturnExtension::Zero => rv.zero_extend_into(reg_bits),
+            ReturnExtension::Sign => rv.sign_extend_into(reg_bits),
         }
     };
     state.set_register_by_offset(ret_reg, widened);

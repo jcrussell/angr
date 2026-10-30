@@ -108,7 +108,7 @@ fn test_vfpwadd_32fx2_concrete() {
 fn test_vfpwadd_32fx2_symbolic() {
     let ctx = SymContext::new_mock();
     let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, 6.0]), 64);
-    let l = RustBV::symbolic(&ctx, "vfpwadd_l", 64);
+    let l = RustBV::symbol("vfpwadd_l", 64);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast().unwrap()),
@@ -194,7 +194,7 @@ fn test_vfpwmax_32fx4_concrete() {
 fn test_vfpwmin_32fx2_symbolic() {
     let ctx = SymContext::new_mock();
     let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, -6.0]), 64);
-    let l = RustBV::symbolic(&ctx, "vfpwmin_l", 64);
+    let l = RustBV::symbol("vfpwmin_l", 64);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast().unwrap()),
@@ -321,7 +321,7 @@ fn test_vpwaddl_64ux2_concrete() {
 #[test]
 fn test_vpwaddl_64ux2_symbolic_universal() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vpwaddl64_a", 128);
+    let a = RustBV::symbol("vpwaddl64_a", 128);
     let got = VEXOps::unop(
         IROp::VPwAddL {
             elem: IRType::I64,
@@ -334,9 +334,9 @@ fn test_vpwaddl_64ux2_symbolic_universal() {
     .unwrap();
     assert_eq!(got.width(), 128);
 
-    let lo = a.extract(63, 0, &ctx).zero_extend_into(128, &ctx);
-    let hi = a.extract(127, 64, &ctx).zero_extend_into(128, &ctx);
-    let reference = lo.add_into(hi, &ctx);
+    let lo = a.extract(63, 0).zero_extend_into(128);
+    let hi = a.extract(127, 64).zero_extend_into(128);
+    let reference = lo.add_into(hi);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
@@ -421,8 +421,8 @@ fn test_vpwmax_8ux8_concrete() {
 #[test]
 fn test_vpwadd_16x4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vpwadd_a", 64);
-    let b = RustBV::symbolic(&ctx, "vpwadd_b", 64);
+    let a = RustBV::symbol("vpwadd_a", 64);
+    let b = RustBV::symbol("vpwadd_b", 64);
     let got = VEXOps::binop(
         IROp::VPwAdd {
             elem: IRType::I16,
@@ -440,12 +440,12 @@ fn test_vpwadd_16x4_matches_spec_replay() {
         for i in 0..2u32 {
             let lo0 = 2 * i * 16;
             let lo1 = (2 * i + 1) * 16;
-            let l0 = src.extract(lo0 + 15, lo0, &ctx);
-            let l1 = src.extract(lo1 + 15, lo1, &ctx);
-            lanes.push(l0.add_into(l1, &ctx));
+            let l0 = src.extract(lo0 + 15, lo0);
+            let l1 = src.extract(lo1 + 15, lo1);
+            lanes.push(l0.add_into(l1));
         }
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -461,7 +461,7 @@ fn test_vpwadd_16x4_matches_spec_replay() {
 #[test]
 fn test_vpwaddl_16sx4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
-    let arg = RustBV::symbolic(&ctx, "vpwaddl_a", 64);
+    let arg = RustBV::symbol("vpwaddl_a", 64);
     let got = VEXOps::unop(
         IROp::VPwAddL {
             elem: IRType::I16,
@@ -478,11 +478,11 @@ fn test_vpwaddl_16sx4_matches_spec_replay() {
     for i in 0..2u32 {
         let lo0 = 2 * i * 16;
         let lo1 = (2 * i + 1) * 16;
-        let l0 = arg.extract(lo0 + 15, lo0, &ctx).sign_extend_into(32, &ctx);
-        let l1 = arg.extract(lo1 + 15, lo1, &ctx).sign_extend_into(32, &ctx);
-        lanes.push(l0.add_into(l1, &ctx));
+        let l0 = arg.extract(lo0 + 15, lo0).sign_extend_into(32);
+        let l1 = arg.extract(lo1 + 15, lo1).sign_extend_into(32);
+        lanes.push(l0.add_into(l1));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -498,8 +498,8 @@ fn test_vpwaddl_16sx4_matches_spec_replay() {
 #[test]
 fn test_vpwmin_16sx4_matches_spec_replay() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vpwmin_a", 64);
-    let b = RustBV::symbolic(&ctx, "vpwmin_b", 64);
+    let a = RustBV::symbol("vpwmin_a", 64);
+    let b = RustBV::symbol("vpwmin_b", 64);
     let got = VEXOps::binop(
         IROp::VPwMin {
             elem: IRType::I16,
@@ -517,13 +517,13 @@ fn test_vpwmin_16sx4_matches_spec_replay() {
         for i in 0..2u32 {
             let lo0 = 2 * i * 16;
             let lo1 = (2 * i + 1) * 16;
-            let l0 = src.extract(lo0 + 15, lo0, &ctx);
-            let l1 = src.extract(lo1 + 15, lo1, &ctx);
-            let cond = l0.clone().sle_into(l1.clone(), &ctx);
-            lanes.push(cond.ite_into(l0, l1, &ctx));
+            let l0 = src.extract(lo0 + 15, lo0);
+            let l1 = src.extract(lo1 + 15, lo1);
+            let cond = l0.clone().sle_into(l1.clone());
+            lanes.push(cond.ite_into(l0, l1));
         }
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -810,7 +810,7 @@ fn test_vavg_8ux32_avx2_256_bit() {
         for (i, lane) in lanes.iter().enumerate() {
             halves[i / 16] |= (*lane as u128) << ((i % 16) * 8);
         }
-        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128))
     };
     let result = VEXOps::binop(
         IROp::VAvg {
@@ -826,7 +826,7 @@ fn test_vavg_8ux32_avx2_256_bit() {
     assert_eq!(result.width(), 256);
     for i in 0..32u32 {
         let low = i * 8;
-        let extracted = result.extract(low + 7, low, &ctx);
+        let extracted = result.extract(low + 7, low);
         let got = ctx.eval(&extracted).expect("eval(lane) returned None");
         let idx = i as usize;
         let expected = (u32::from(a[idx]) + u32::from(b[idx]) + 1) >> 1;
@@ -887,8 +887,8 @@ fn test_vavg_8sx8_concrete() {
 #[test]
 fn test_vavg_16ux4_symbolic_universal_unsigned() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vavg_a", 64);
-    let b = RustBV::symbolic(&ctx, "vavg_b", 64);
+    let a = RustBV::symbol("vavg_a", 64);
+    let b = RustBV::symbol("vavg_b", 64);
     let got = VEXOps::binop(
         IROp::VAvg {
             elem: IRType::I16,
@@ -905,15 +905,15 @@ fn test_vavg_16ux4_symbolic_universal_unsigned() {
     for i in 0..4u32 {
         let lo = i * 16;
         let hi = lo + 15;
-        let al = a.extract(hi, lo, &ctx).zero_extend_into(17, &ctx);
-        let bl = b.extract(hi, lo, &ctx).zero_extend_into(17, &ctx);
+        let al = a.extract(hi, lo).zero_extend_into(17);
+        let bl = b.extract(hi, lo).zero_extend_into(17);
         let sum = al
-            .add_into(bl, &ctx)
-            .add_into(RustBV::concrete(1, 17), &ctx);
-        let shifted = sum.lshr_into(RustBV::concrete(1, 17), &ctx);
-        lanes.push(shifted.extract(15, 0, &ctx));
+            .add_into(bl)
+            .add_into(RustBV::concrete(1, 17));
+        let shifted = sum.lshr_into(RustBV::concrete(1, 17));
+        lanes.push(shifted.extract(15, 0));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
@@ -929,8 +929,8 @@ fn test_vavg_16ux4_symbolic_universal_unsigned() {
 #[test]
 fn test_vavg_8sx8_symbolic_universal_signed() {
     let ctx = SymContext::new_mock();
-    let a = RustBV::symbolic(&ctx, "vavg_sa", 64);
-    let b = RustBV::symbolic(&ctx, "vavg_sb", 64);
+    let a = RustBV::symbol("vavg_sa", 64);
+    let b = RustBV::symbol("vavg_sb", 64);
     let got = VEXOps::binop(
         IROp::VAvg {
             elem: IRType::I8,
@@ -947,13 +947,13 @@ fn test_vavg_8sx8_symbolic_universal_signed() {
     for i in 0..8u32 {
         let lo = i * 8;
         let hi = lo + 7;
-        let al = a.extract(hi, lo, &ctx).sign_extend_into(9, &ctx);
-        let bl = b.extract(hi, lo, &ctx).sign_extend_into(9, &ctx);
-        let sum = al.add_into(bl, &ctx).add_into(RustBV::concrete(1, 9), &ctx);
-        let shifted = sum.lshr_into(RustBV::concrete(1, 9), &ctx);
-        lanes.push(shifted.extract(7, 0, &ctx));
+        let al = a.extract(hi, lo).sign_extend_into(9);
+        let bl = b.extract(hi, lo).sign_extend_into(9);
+        let sum = al.add_into(bl).add_into(RustBV::concrete(1, 9));
+        let shifted = sum.lshr_into(RustBV::concrete(1, 9));
+        lanes.push(shifted.extract(7, 0));
     }
-    let py = VEXOps::concat_le_elements(lanes, &ctx);
+    let py = VEXOps::concat_le_elements(lanes);
 
     ctx.push();
     ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());

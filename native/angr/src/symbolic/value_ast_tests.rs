@@ -6,6 +6,7 @@ use std::sync::Arc;
 use clarirs_core::prelude::*;
 
 use super::*;
+use crate::symbolic::SymContext;
 use crate::claripy::ast::GLOBAL_CONTEXT;
 
 fn ctx() -> &'static Context<'static> {
@@ -77,12 +78,12 @@ fn ast_operands_compose_with_engine_ops() {
     let (x, _) = nan_probe();
     let bits = RustBV::from_clarirs(x).unwrap();
     // The engine builds an Expression over the Ast leaf; the solver sees both.
-    let sign = bits.extract(31, 31, &sym);
+    let sign = bits.extract(31, 31);
     let positive_nan_bits = RustBV::concrete(0x7fc0_0000, 32);
-    let cond = bits.eq(&positive_nan_bits, &sym);
+    let cond = bits.eq(&positive_nan_bits);
     assert!(sym.can_be_true(&cond));
     assert_eq!(sign.width(), 1);
-    assert!(sym.can_be_true(&sign.eq(&RustBV::concrete(1, 1), &sym)));
+    assert!(sym.can_be_true(&sign.eq(&RustBV::concrete(1, 1))));
 }
 
 #[test]

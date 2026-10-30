@@ -31,7 +31,7 @@ impl<'a> VEXInterpreter<'a> {
                 &ConcretizationResult::Single(addr) => {
                     // Add constraint that target == addr
                     let concrete = RustBV::concrete(addr as u128, next_val.width());
-                    let constraint = next_val.eq(&concrete, self.ctx);
+                    let constraint = next_val.eq(&concrete);
                     self.ctx.assume_true(&constraint);
                     return Ok(addr);
                 }
@@ -111,7 +111,7 @@ impl<'a> VEXInterpreter<'a> {
                     self.symbolic_ip_at_exit = Some(next_val.clone());
                 } else {
                     let concrete = RustBV::concrete(addr as u128, next_val.width());
-                    let constraint = next_val.eq(&concrete, self.ctx);
+                    let constraint = next_val.eq(&concrete);
                     self.ctx.assume_true(&constraint);
                 }
                 Ok(ConcretizedJump::Single(addr))
@@ -332,7 +332,7 @@ impl<'a> VEXInterpreter<'a> {
             return self.arm_linux_syscall_num();
         }
         let offset = self.registers.arch().syscall_num_offset()?;
-        self.registers.get_offset_u64(offset, self.ctx)
+        self.registers.get_offset_u64(offset)
     }
 
     /// ARM Linux syscall number, decoded as `SimCCARMLinuxSyscall.syscall_num`
@@ -362,8 +362,7 @@ impl<'a> VEXInterpreter<'a> {
                 return Some(num);
             }
         }
-        self.registers
-            .get_offset_u64(crate::arch::arm::offsets::R7, self.ctx)
+        self.registers.get_offset_u64(crate::arch::arm::offsets::R7)
     }
 }
 

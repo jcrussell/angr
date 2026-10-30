@@ -22,10 +22,10 @@ use super::super::*;
 /// `(addr == a) | (addr == b)`, the same two-solution idiom
 /// `symbolic_cross_page` uses.
 fn two_solution_addr(ctx: &SymContext, name: &str, a: u64, b: u64) -> RustBV {
-    let addr = RustBV::symbolic(ctx, name, 64);
-    let eq_a = addr.eq(&RustBV::concrete(a as u128, 64), ctx);
-    let eq_b = addr.eq(&RustBV::concrete(b as u128, 64), ctx);
-    ctx.assume_true(&eq_a.or(&eq_b, ctx));
+    let addr = RustBV::symbol(name, 64);
+    let eq_a = addr.eq(&RustBV::concrete(a as u128, 64));
+    let eq_b = addr.eq(&RustBV::concrete(b as u128, 64));
+    ctx.assume_true(&eq_a.or(&eq_b));
     assert!(ctx.is_sat(), "two-solution constraint must be SAT");
     addr
 }
@@ -36,9 +36,9 @@ fn two_solution_addr(ctx: &SymContext, name: &str, a: u64, b: u64) -> RustBV {
 /// away before it reaches the solver.
 fn unsat_ctx_with_symbolic_addr() -> (SymContext, RustBV) {
     let ctx = SymContext::new_mock();
-    let addr = RustBV::symbolic(&ctx, "unsat_addr", 64);
-    ctx.assume_true(&addr.eq(&RustBV::concrete(0x1000, 64), &ctx));
-    ctx.assume_true(&addr.eq(&RustBV::concrete(0x2000, 64), &ctx));
+    let addr = RustBV::symbol("unsat_addr", 64);
+    ctx.assume_true(&addr.eq(&RustBV::concrete(0x1000, 64)));
+    ctx.assume_true(&addr.eq(&RustBV::concrete(0x2000, 64)));
     assert!(!ctx.is_sat(), "contradictory equalities must be UNSAT");
     (ctx, addr)
 }
@@ -108,12 +108,12 @@ fn test_store_symbolic_addr_pins_chosen_solution() {
     let chosen = ctx.eval(&addr).expect("address must stay resolvable");
     let other = if chosen == 0x1000 { 0x1004 } else { 0x1000 };
     assert_eq!(
-        ctx.eval(&mem.load_concrete(chosen as u64, 4, &ctx).expect("load chosen")),
+        ctx.eval(&mem.load_concrete(chosen as u64, 4).expect("load chosen")),
         Some(0xDEAD_BEEF),
         "the chosen address {chosen:#x} must hold the stored value"
     );
     assert_eq!(
-        ctx.eval(&mem.load_concrete(other, 4, &ctx).expect("load other")),
+        ctx.eval(&mem.load_concrete(other, 4).expect("load other")),
         Some(0),
         "the rejected candidate {other:#x} must be untouched"
     );
@@ -165,7 +165,7 @@ fn test_store_unresolvable_symbolic_addr_errors() {
     // The seeded byte survives; nothing was written under the failed store.
     // `load_concrete`'s own permission/mapping checks are unaffected by the
     // UNSAT context — only solver *witnesses* are unavailable.
-    let seeded = mem.load_concrete(0x1000, 4, &ctx).expect("seed still loads");
+    let seeded = mem.load_concrete(0x1000, 4).expect("seed still loads");
     assert_eq!(
         seeded.as_u64(),
         Some(0x5555_5555),

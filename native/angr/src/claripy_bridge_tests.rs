@@ -44,12 +44,11 @@ fn test_export_and_of_two_bools_keeps_both_operands() {
     pyo3::Python::initialize();
     Python::attach(|py| {
         let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
-        let ctx = SymContext::new_mock();
-        let x = RustBV::symbolic(&ctx, "x", 32);
-        let y = RustBV::symbolic(&ctx, "y", 32);
-        let eq1 = x.eq(&RustBV::concrete(5, 32), &ctx);
-        let eq2 = y.eq(&RustBV::concrete(7, 32), &ctx);
-        let expr = eq1.and(&eq2, &ctx);
+        let x = RustBV::symbol("x", 32);
+        let y = RustBV::symbol("y", 32);
+        let eq1 = x.eq(&RustBV::concrete(5, 32));
+        let eq2 = y.eq(&RustBV::concrete(7, 32));
+        let expr = eq1.and(&eq2);
 
         let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
         let ast = ast.bind(py);
@@ -78,10 +77,9 @@ fn test_export_eq_with_bool_operand_not_rebuilt_as_add() {
     pyo3::Python::initialize();
     Python::attach(|py| {
         let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
-        let ctx = SymContext::new_mock();
-        let x = RustBV::symbolic(&ctx, "x", 32);
-        let inner = x.eq(&RustBV::concrete(5, 32), &ctx); // 1-bit Eq (Bool on export)
-        let expr = inner.eq(&RustBV::concrete(1, 1), &ctx); // Eq(Bool-ish, BV1)
+        let x = RustBV::symbol("x", 32);
+        let inner = x.eq(&RustBV::concrete(5, 32)); // 1-bit Eq (Bool on export)
+        let expr = inner.eq(&RustBV::concrete(1, 1)); // Eq(Bool-ish, BV1)
 
         let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
         let ast = ast.bind(py);
@@ -108,7 +106,6 @@ fn test_export_symbolic_bitcount_is_sound() {
     pyo3::Python::initialize();
     Python::attach(|py| {
         let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
-        let ctx = SymContext::new_mock();
         let width: u32 = 8;
 
         // Evaluate `ast` with its single BVS leaf pinned to `v`.
@@ -122,11 +119,11 @@ fn test_export_symbolic_bitcount_is_sound() {
         };
 
         for op in [BVOp::Clz, BVOp::Ctz, BVOp::Popcount] {
-            let x = RustBV::symbolic(&ctx, "x", width);
+            let x = RustBV::symbol("x", width);
             let expr = match op {
-                BVOp::Clz => x.clz(&ctx),
-                BVOp::Ctz => x.ctz(&ctx),
-                BVOp::Popcount => x.popcount(&ctx),
+                BVOp::Clz => x.clz(),
+                BVOp::Ctz => x.ctz(),
+                BVOp::Popcount => x.popcount(),
                 _ => unreachable!(),
             };
             let ast = rustbv_to_claripy(py, &expr, claripy.as_any()).unwrap();
@@ -165,11 +162,10 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
     pyo3::Python::initialize();
     Python::attach(|py| {
         let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
-        let ctx = SymContext::new_mock();
 
         // popcount (sound encoding path)
-        let x = RustBV::symbolic(&ctx, "x", 32);
-        let pc = x.popcount(&ctx);
+        let x = RustBV::symbol("x", 32);
+        let pc = x.popcount();
         let a1 = rustbv_to_claripy(py, &pc, claripy.as_any()).unwrap();
         let a2 = rustbv_to_claripy(py, &pc, claripy.as_any()).unwrap();
         assert!(
@@ -178,7 +174,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
         );
 
         // Float result (unconstrained-but-stable BVS path)
-        let y = RustBV::symbolic(&ctx, "y", 64);
+        let y = RustBV::symbol("y", 64);
         let fp = RustBV::float_node(FloatOpKind::Add, FloatPrec::F64, vec![y.clone(), y]);
         let f1 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
         let f2 = rustbv_to_claripy(py, &fp, claripy.as_any()).unwrap();
@@ -218,8 +214,8 @@ fn test_roundtrip_import_export_preserves_semantics() {
             ctx.pop();
         };
 
-        let x = RustBV::symbolic(&ctx, "x", 32);
-        let y = RustBV::symbolic(&ctx, "y", 32);
+        let x = RustBV::symbol("x", 32);
+        let y = RustBV::symbol("y", 32);
         let c5 = RustBV::concrete(5, 32);
 
         // BVV (concrete) across widths incl. zero + all-ones.
@@ -230,70 +226,70 @@ fn test_roundtrip_import_export_preserves_semantics() {
         // BVS leaf.
         assert_equiv(&x, "bvs");
         // Arithmetic.
-        assert_equiv(&x.add(&y, &ctx), "add");
-        assert_equiv(&x.sub(&c5, &ctx), "sub");
-        assert_equiv(&x.mul(&y, &ctx), "mul");
-        assert_equiv(&x.neg(&ctx), "neg");
+        assert_equiv(&x.add(&y), "add");
+        assert_equiv(&x.sub(&c5), "sub");
+        assert_equiv(&x.mul(&y), "mul");
+        assert_equiv(&x.neg(), "neg");
         // Division / remainder (signed + unsigned). Guards the asymmetric
         // claripy op-name mapping on both bridge directions: export emits
         // UDiv/SDiv/URem/SMod, import maps them back to udiv/sdiv/urem/srem.
-        assert_equiv(&x.udiv(&y, &ctx), "udiv");
-        assert_equiv(&x.sdiv(&y, &ctx), "sdiv");
-        assert_equiv(&x.urem(&y, &ctx), "urem");
-        assert_equiv(&x.srem(&y, &ctx), "srem");
+        assert_equiv(&x.udiv(&y), "udiv");
+        assert_equiv(&x.sdiv(&y), "sdiv");
+        assert_equiv(&x.urem(&y), "urem");
+        assert_equiv(&x.srem(&y), "srem");
         // Bitwise.
-        assert_equiv(&x.and(&y, &ctx), "and");
-        assert_equiv(&x.or(&y, &ctx), "or");
-        assert_equiv(&x.xor(&y, &ctx), "xor");
-        assert_equiv(&x.not(&ctx), "not");
+        assert_equiv(&x.and(&y), "and");
+        assert_equiv(&x.or(&y), "or");
+        assert_equiv(&x.xor(&y), "xor");
+        assert_equiv(&x.not(), "not");
         // Shifts (concrete and symbolic amount).
-        assert_equiv(&x.shl(&RustBV::concrete(3, 32), &ctx), "shl");
-        assert_equiv(&x.lshr(&RustBV::concrete(3, 32), &ctx), "lshr");
-        assert_equiv(&x.ashr(&y, &ctx), "ashr_sym");
+        assert_equiv(&x.shl(&RustBV::concrete(3, 32)), "shl");
+        assert_equiv(&x.lshr(&RustBV::concrete(3, 32)), "lshr");
+        assert_equiv(&x.ashr(&y), "ashr_sym");
         // Rotates. Symbolic amount keeps the concrete-fold arm of
         // `define_rotate_pair!` from collapsing the node before export, so the
         // RotL/RotR -> RotateLeft/RotateRight op-name mapping is exercised.
-        assert_equiv(&x.rotl(&y, &ctx), "rotl_sym");
-        assert_equiv(&x.rotr(&y, &ctx), "rotr_sym");
-        assert_equiv(&x.rotl(&RustBV::concrete(7, 32), &ctx), "rotl_const");
+        assert_equiv(&x.rotl(&y), "rotl_sym");
+        assert_equiv(&x.rotr(&y), "rotr_sym");
+        assert_equiv(&x.rotl(&RustBV::concrete(7, 32)), "rotl_const");
         // Byte reversal. Requires a byte-aligned width on the import side.
-        assert_equiv(&x.reverse(&ctx), "reverse");
+        assert_equiv(&x.reverse(), "reverse");
         // Comparisons -> width-1 Bool.
-        assert_equiv(&x.eq(&c5, &ctx), "eq");
-        assert_equiv(&x.ne(&y, &ctx), "ne");
+        assert_equiv(&x.eq(&c5), "eq");
+        assert_equiv(&x.ne(&y), "ne");
         // Ordered comparisons, both signednesses and both directions. These are
         // the op names most prone to a mixed-up mapping (ULT vs UGT, SLT vs
         // ULT); an inverted or sign-swapped entry on either bridge direction
         // makes the round-trip semantically different, which the
         // counter-example check below catches.
-        assert_equiv(&x.ult(&y, &ctx), "ult");
-        assert_equiv(&x.ule(&y, &ctx), "ule");
-        assert_equiv(&x.ugt(&y, &ctx), "ugt");
-        assert_equiv(&x.uge(&y, &ctx), "uge");
-        assert_equiv(&x.slt(&y, &ctx), "slt");
-        assert_equiv(&x.sle(&y, &ctx), "sle");
-        assert_equiv(&x.sgt(&y, &ctx), "sgt");
-        assert_equiv(&x.sge(&y, &ctx), "sge");
+        assert_equiv(&x.ult(&y), "ult");
+        assert_equiv(&x.ule(&y), "ule");
+        assert_equiv(&x.ugt(&y), "ugt");
+        assert_equiv(&x.uge(&y), "uge");
+        assert_equiv(&x.slt(&y), "slt");
+        assert_equiv(&x.sle(&y), "sle");
+        assert_equiv(&x.sgt(&y), "sgt");
+        assert_equiv(&x.sge(&y), "sge");
         // Same ops against a concrete operand: `c5` has a clear high bit of 0,
         // so a signed/unsigned mix-up in the mapping is separable from an
         // operand-order mix-up.
-        assert_equiv(&x.ult(&c5, &ctx), "ult_const");
-        assert_equiv(&x.slt(&c5, &ctx), "slt_const");
+        assert_equiv(&x.ult(&c5), "ult_const");
+        assert_equiv(&x.slt(&c5), "slt_const");
         // Bool combinators (And/Or/Not over two comparisons).
-        let b1 = x.eq(&c5, &ctx);
-        let b2 = y.eq(&RustBV::concrete(7, 32), &ctx);
-        assert_equiv(&b1.and(&b2, &ctx), "bool_and");
-        assert_equiv(&b1.or(&b2, &ctx), "bool_or");
-        assert_equiv(&b1.not(&ctx), "bool_not");
+        let b1 = x.eq(&c5);
+        let b2 = y.eq(&RustBV::concrete(7, 32));
+        assert_equiv(&b1.and(&b2), "bool_and");
+        assert_equiv(&b1.or(&b2), "bool_or");
+        assert_equiv(&b1.not(), "bool_not");
         // ITE selecting between two 32-bit operands on a Bool condition.
-        assert_equiv(&b1.ite(&x, &y, &ctx), "ite");
+        assert_equiv(&b1.ite(&x, &y), "ite");
         // Extract / Concat / ZeroExt / SignExt.
-        assert_equiv(&x.extract(15, 8, &ctx), "extract");
-        assert_equiv(&x.concat(&y, &ctx), "concat");
-        assert_equiv(&x.clone().extend_into(64, false, &ctx), "zero_ext");
-        assert_equiv(&x.clone().extend_into(64, true, &ctx), "sign_ext");
+        assert_equiv(&x.extract(15, 8), "extract");
+        assert_equiv(&x.concat(&y), "concat");
+        assert_equiv(&x.clone().extend_into(64, false), "zero_ext");
+        assert_equiv(&x.clone().extend_into(64, true), "sign_ext");
         // Nested compound expression across several node kinds.
-        let nested = x.add(&y, &ctx).mul(&c5, &ctx).xor(&x, &ctx);
+        let nested = x.add(&y).mul(&c5).xor(&x);
         assert_equiv(&nested, "nested");
     });
 }
@@ -486,7 +482,7 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 ///
 /// `claripy.BVS(name, w)` without `explicit_name` renames to
 /// `name_<counter>_<w>`. Re-importing such an AST after a registry miss mints a
-/// Rust leaf named `name_<counter>_<w>`, and because `RustBV::from_parts`
+/// Rust leaf named `name_<counter>_<w>`, and because `RustBV::symbol`
 /// derives the Z3 constant from the NAME, that leaf is a brand-new variable no
 /// existing constraint binds — silently wrong (angr-izov2). The
 /// assertions below pin both halves: the exported claripy name is the Rust name,
@@ -497,13 +493,12 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
     pyo3::Python::initialize();
     Python::attach(|py| {
         let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
-        let ctx = SymContext::new_mock();
 
         // A leaf that never came from claripy, e.g. `stdin_<n>_<i>` from the
         // native read proc: nothing has registered a claripy AST for it, so
         // export takes the mint path.
         let rust_name = "ke6b222_native_leaf";
-        let minted = RustBV::symbolic(&ctx, rust_name, 8);
+        let minted = RustBV::symbol(rust_name, 8);
 
         let ast = rustbv_to_claripy(py, &minted, claripy.as_any()).expect("export");
         let exported_name: String = ast
@@ -521,7 +516,7 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
 
         // What a re-import builds from the exported name: the same leaf, since
         // a leaf is its name (angr-mx00p.12).
-        let reminted = RustBV::symbolic(&ctx, exported_name.as_str(), 8);
+        let reminted = RustBV::symbol(exported_name.as_str(), 8);
         assert_eq!(minted, reminted, "the re-imported name is the same leaf");
         assert_eq!(
             minted.to_z3_ast().unwrap(),
@@ -548,14 +543,14 @@ fn test_assumed_guard_to_claripy_all_four_branches() {
     Python::attach(|py| {
         let claripy = crate::claripy_bridge::claripy_module(py).expect("claripy module");
         let ctx = SymContext::new_mock();
-        let x = RustBV::symbolic(&ctx, "c7xno20_x", 32);
+        let x = RustBV::symbol("c7xno20_x", 32);
 
         // A comparison exports as a claripy Bool (no `.length`); a 1-bit
         // Extract exports as a 1-bit BV. Those are the two shapes the
         // `.length` probe in `assumed_guard_to_claripy` discriminates.
         use crate::claripy::ast::bool::Bool;
-        let bool_guard = x.eq(&RustBV::concrete(5, 32), &ctx);
-        let bv_guard = x.extract(0, 0, &ctx);
+        let bool_guard = x.eq(&RustBV::concrete(5, 32));
+        let bv_guard = x.extract(0, 0);
         assert!(
             rustbv_to_claripy(py, &bool_guard, claripy.as_any())
                 .unwrap()

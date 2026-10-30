@@ -132,8 +132,7 @@ fn fcntl_dispatch_concrete_cmds_across_arches() {
 fn fcntl_symbolic_cmd_falls_back_to_python() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_cmd = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "cmd_sym", 64)
+        RustBV::symbol("cmd_sym", 64)
     };
     let err = NativeFcntlSyscall
         .call(
@@ -204,8 +203,7 @@ fn ioctl_unknown_cmd_falls_back_to_symbolic() {
     }
 
     let sym_cmd = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "ioctl_cmd_sym", 64)
+        RustBV::symbol("ioctl_cmd_sym", 64)
     };
     let err = NativeIoctlSyscall
         .call(
@@ -407,8 +405,7 @@ fn dup3_handler_ignores_flags_and_matches_dup2() {
 fn dup3_tolerates_symbolic_flags_without_python_fallback() {
     let mut state = RustSimState::new("amd64").expect("state");
     let sym_flags = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "dup3_flags_sym", 64)
+        RustBV::symbol("dup3_flags_sym", 64)
     };
     let outcome = NativeDup3Syscall
         .call(

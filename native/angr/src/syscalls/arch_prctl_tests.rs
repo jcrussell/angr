@@ -4,7 +4,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 fn fresh_state() -> RustSimState {
     RustSimState::new("amd64").expect("amd64 state")
@@ -112,8 +112,7 @@ fn unknown_code_returns_einval() {
 fn symbolic_code_falls_back() {
     let h = NativeArchPrctlSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym = RustBV::symbolic(&ctx, "code", 64);
+    let sym = RustBV::symbol("code", 64);
     let err = h
         .call(&mut state, &[sym, RustBV::concrete(0, 64)])
         .expect_err("must fall back");
@@ -130,8 +129,7 @@ fn symbolic_code_falls_back() {
 fn get_with_symbolic_addr_falls_back() {
     let h = NativeArchPrctlSyscall;
     let mut state = fresh_state();
-    let ctx = SymContext::new();
-    let sym_addr = RustBV::symbolic(&ctx, "addr", 64);
+    let sym_addr = RustBV::symbol("addr", 64);
     let err = h
         .call(
             &mut state,

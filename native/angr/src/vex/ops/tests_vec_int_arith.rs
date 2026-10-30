@@ -102,7 +102,7 @@ fn test_vec_int_max_symbolic_signed() {
         rv |= (7u128) << (i * 32);
     }
     let r = RustBV::concrete(rv, 128);
-    let l = RustBV::symbolic(&ctx, "vmax_l", 128);
+    let l = RustBV::symbol("vmax_l", 128);
 
     let result = VEXOps::binop(
         IROp::VMax {

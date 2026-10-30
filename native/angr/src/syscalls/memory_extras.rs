@@ -8,7 +8,7 @@
 //!
 //! The native handlers below match that exactly: ignore the args (no
 //! semantic effect on simulated process state) and emit a fresh
-//! `RustBV::symbolic` sized to `arch().bits()` (the C `long` return
+//! `RustBV::symbol` sized to `arch().bits()` (the C `long` return
 //! width on every supported Linux arch). The dispatcher routes this
 //! through `SyscallOutcome::ContinueSymbolic`.
 //!

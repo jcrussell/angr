@@ -28,10 +28,8 @@ fn state_and_condition() -> (RustSimState, RustBV) {
     let mut state = RustSimState::new("amd64").expect("state");
     state.set_pc(0x40_1000);
     let cond = {
-        let ctx_ref = state.solver().borrow();
-        let ctx: &crate::symbolic::SymContext = &ctx_ref;
-        let x = RustBV::symbolic(ctx, "x", 64);
-        x.eq(&RustBV::zero(64), ctx)
+        let x = RustBV::symbol("x", 64);
+        x.eq(&RustBV::zero(64))
     };
     (state, cond)
 }

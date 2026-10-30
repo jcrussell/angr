@@ -165,7 +165,7 @@ fn test_vec_float_neg_symbolic_f32x2() {
     let ctx = SymContext::new_mock();
 
     let target = pack_lanes_f32(&[1.5f32, -4.0]);
-    let v = RustBV::symbolic(&ctx, "vfneg_v", 64);
+    let v = RustBV::symbol("vfneg_v", 64);
     ctx.add_constraint(v.to_z3_ast().unwrap().eq(RustBV::concrete(target, 64).to_z3_ast().unwrap()));
 
     let result = VEXOps::unop(
@@ -239,7 +239,7 @@ fn test_vec_float_add_symbolic_f32x4() {
     let r = RustBV::concrete(pack_lanes_f32(&consts), 128);
 
     let lv_target = pack_lanes_f32(&[1.0f32; 4]);
-    let l = RustBV::symbolic(&ctx, "vfadd_l", 128);
+    let l = RustBV::symbol("vfadd_l", 128);
     ctx.add_constraint(
         l.to_z3_ast().unwrap()
             .eq(RustBV::concrete(lv_target, 128).to_z3_ast().unwrap()),
@@ -289,7 +289,6 @@ impl FloatLaneOp for OverArityFloatLaneOp {
         &self,
         args: Vec<RustBV>,
         _prec: crate::symbolic::FloatPrec,
-        _ctx: &SymContext,
     ) -> RustBV {
         args[0].clone()
     }
@@ -301,13 +300,12 @@ impl FloatLaneOp for OverArityFloatLaneOp {
 /// the guard has to be a real `if`.
 #[test]
 fn test_vec_float_lane_over_arity_returns_error() {
-    let ctx = SymContext::new_mock();
     let args = [
         RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128),
         RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128),
         RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128),
     ];
-    let err = VEXOps::vec_float_lane_op(&args, IRType::F32, 4, &OverArityFloatLaneOp, &ctx)
+    let err = VEXOps::vec_float_lane_op(&args, IRType::F32, 4, &OverArityFloatLaneOp)
         .expect_err("over-arity op must not be dispatched");
     match err {
         OpError::UnsupportedVectorOp(msg) => {
@@ -336,33 +334,33 @@ fn test_vec_float_lane_over_arity_returns_error() {
 
 /// Pack 8 f32 lanes (lane 0 first) into a 256-bit `Concat` of two 128-bit
 /// concrete halves.
-fn pack_v256_f32x8(lanes: &[f32; 8], ctx: &SymContext) -> RustBV {
+fn pack_v256_f32x8(lanes: &[f32; 8]) -> RustBV {
     let mut halves = [0u128; 2];
     for (i, lane) in lanes.iter().enumerate() {
         halves[i / 4] |= u128::from(lane.to_bits()) << ((i % 4) * 32);
     }
-    RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), ctx)
+    RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128))
 }
 
 /// Pack 4 f64 lanes (lane 0 first) into a 256-bit `Concat` of two 128-bit
 /// concrete halves.
-fn pack_v256_f64x4(lanes: &[f64; 4], ctx: &SymContext) -> RustBV {
+fn pack_v256_f64x4(lanes: &[f64; 4]) -> RustBV {
     let mut halves = [0u128; 2];
     for (i, lane) in lanes.iter().enumerate() {
         halves[i / 2] |= u128::from(lane.to_bits()) << ((i % 2) * 64);
     }
-    RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), ctx)
+    RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128))
 }
 
 /// Read lane `i` of a 256-bit result back as f32 via `extract` + model eval.
 fn eval_v256_lane_f32(ctx: &SymContext, result: &RustBV, i: u32) -> f32 {
-    let lane = result.extract(i * 32 + 31, i * 32, ctx);
+    let lane = result.extract(i * 32 + 31, i * 32);
     f32::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u32)
 }
 
 /// Read lane `i` of a 256-bit result back as f64 via `extract` + model eval.
 fn eval_v256_lane_f64(ctx: &SymContext, result: &RustBV, i: u32) -> f64 {
-    let lane = result.extract(i * 64 + 63, i * 64, ctx);
+    let lane = result.extract(i * 64 + 63, i * 64);
     f64::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u64)
 }
 
@@ -399,8 +397,8 @@ fn test_vec_float_binops_avx2_256_bit_f32x8() {
     ] {
         let result = VEXOps::binop(
             op,
-            pack_v256_f32x8(&l, &ctx),
-            pack_v256_f32x8(&r, &ctx),
+            pack_v256_f32x8(&l),
+            pack_v256_f32x8(&r),
             &ctx,
         )
         .unwrap();
@@ -441,8 +439,8 @@ fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
     ] {
         let result = VEXOps::binop(
             op,
-            pack_v256_f64x4(&l, &ctx),
-            pack_v256_f64x4(&r, &ctx),
+            pack_v256_f64x4(&l),
+            pack_v256_f64x4(&r),
             &ctx,
         )
         .unwrap();
@@ -464,7 +462,7 @@ fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
             elem: IRType::F64,
             count: 4,
         },
-        pack_v256_f64x4(&sqrt_in, &ctx),
+        pack_v256_f64x4(&sqrt_in),
         &ctx,
     )
     .unwrap();

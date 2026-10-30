@@ -44,9 +44,9 @@ impl<'a> VEXInterpreter<'a> {
     /// memory side's name counter.
     pub(super) fn fresh_unconstrained_read(&self, size: usize) -> RustBV {
         if let Some(rust_mem) = self.rust_memory.as_ref() {
-            return rust_mem.unconstrained_read_value(size as u32, self.ctx);
+            return rust_mem.unconstrained_read_value(size as u32);
         }
-        crate::memory::fresh_unconstrained_read_symbol((size * 8) as u32, self.ctx)
+        crate::memory::fresh_unconstrained_read_symbol((size * 8) as u32)
     }
 
     /// Concretize for read with per-block caching.

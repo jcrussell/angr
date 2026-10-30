@@ -38,7 +38,7 @@ fn test_symbolic_arg_still_returns_zero_no_fallback() {
     // Python (the `bv` arg kind keeps the raw BV without concretizing).
     let mut state = RustSimState::new("amd64").unwrap();
     let ctx = state.solver().borrow();
-    let sym = RustBV::symbolic(&ctx, "dur", 64);
+    let sym = RustBV::symbol("dur", 64);
     drop(ctx);
     let result = NativeSleep
         .call(&mut state, std::slice::from_ref(&sym))

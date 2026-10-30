@@ -252,12 +252,7 @@ fn claripy_to_rustbv_depth(
             };
             check_bv_width("BVS", width).map_err(BridgeError::InvalidArgs)?;
 
-            Ok(import_symbolic_leaf(
-                &name,
-                width,
-                SymbolKind::BitVector,
-                ctx,
-            ))
+            Ok(import_symbolic_leaf(&name, width, SymbolKind::BitVector))
         }
 
         // Arithmetic operations
@@ -301,7 +296,7 @@ fn claripy_to_rustbv_depth(
             let extend_bits: u32 = args_list[0].extract()?;
             let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             let new_width = extended_width("ZeroExt", val.width(), extend_bits)?;
-            Ok(val.zero_extend(new_width, ctx))
+            Ok(val.zero_extend(new_width))
         }
 
         "SignExt" => {
@@ -312,7 +307,7 @@ fn claripy_to_rustbv_depth(
             let extend_bits: u32 = args_list[0].extract()?;
             let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             let new_width = extended_width("SignExt", val.width(), extend_bits)?;
-            Ok(val.sign_extend(new_width, ctx))
+            Ok(val.sign_extend(new_width))
         }
 
         "Extract" => {
@@ -330,7 +325,7 @@ fn claripy_to_rustbv_depth(
             check_extract_bounds("Extract", high, low, val.width())
                 .map_err(BridgeError::InvalidArgs)?;
 
-            Ok(val.extract(high, low, ctx))
+            Ok(val.extract(high, low))
         }
 
         "Concat" => {
@@ -350,7 +345,7 @@ fn claripy_to_rustbv_depth(
                 // while its Z3 sort is enormous — and `width()` is what every
                 // later extract-bounds / eval / export check trusts.
                 extended_width("Concat", result.width(), next.width())?;
-                result = result.concat(&next, ctx);
+                result = result.concat(&next);
             }
             Ok(result)
         }
@@ -394,7 +389,7 @@ fn claripy_to_rustbv_depth(
             // same-named `BVS(name, 1)` (angr-9ke6b.38): both are width-1
             // Symbolics here, and aliasing them would make export hand back
             // the other one's claripy AST — a BV where a Bool was expected.
-            Ok(import_symbolic_leaf(&name, 1, SymbolKind::Bool, ctx))
+            Ok(import_symbolic_leaf(&name, 1, SymbolKind::Bool))
         }
 
         // If-then-else
@@ -407,7 +402,7 @@ fn claripy_to_rustbv_depth(
             let then_val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             let else_val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
             check_same_width("If", &then_val, &else_val)?;
-            Ok(cond.ite(&then_val, &else_val, ctx))
+            Ok(cond.ite(&then_val, &else_val))
         }
 
         // Boolean operations (for constraints). Both fold their operand list
@@ -430,7 +425,7 @@ fn claripy_to_rustbv_depth(
             }
             let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             // Byte-reverse the value
-            reverse_bytes(&val, ctx)
+            reverse_bytes(&val)
         }
 
         _ => Err(BridgeError::UnsupportedOp(op_str.to_string())),
@@ -497,14 +492,14 @@ fn import_clarirs_node(
         })?;
         import(&c)
     };
-    let binary = |apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV| {
+    let binary = |apply: fn(&RustBV, &RustBV) -> RustBV| {
         let (l, r) = (child(0)?, child(1)?);
         check_same_width(&op_name(), &l, &r)?;
-        Ok(apply(&l, &r, ctx))
+        Ok(apply(&l, &r))
     };
     // Left fold over every operand; `empty` is the identity for an operand-less
     // Bool And/Or, and `None` makes an empty list an error.
-    let fold = |apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV, empty: Option<u128>| {
+    let fold = |apply: fn(&RustBV, &RustBV) -> RustBV, empty: Option<u128>| {
         let mut it = children();
         let Some(first) = it.next() else {
             return empty.map(|v| RustBV::concrete(v, 1)).ok_or_else(|| {
@@ -515,7 +510,7 @@ fn import_clarirs_node(
         for c in it {
             let next = import(&c)?;
             check_same_width(&op_name(), &acc, &next)?;
-            acc = apply(&acc, &next, ctx);
+            acc = apply(&acc, &next);
         }
         Ok(acc)
     };
@@ -566,7 +561,7 @@ fn import_clarirs_node(
         AstOp::BVS(_, width) => {
             check_bv_width("BVS", *width).map_err(BridgeError::InvalidArgs)?;
             if *width == 0 {
-                // The empty bitvector's only value, as `RustBV::from_parts`
+                // The empty bitvector's only value, as `RustBV::symbol`
                 // degenerates a width-0 leaf (angr-fs8kb.28).
                 return Ok(RustBV::concrete(0, 0));
             }
@@ -590,28 +585,28 @@ fn import_clarirs_node(
         AstOp::AShR(..) => binary(RustBV::ashr),
         AstOp::RotateLeft(..) => binary(RustBV::rotl),
         AstOp::RotateRight(..) => binary(RustBV::rotr),
-        AstOp::Neg(_) => child(0).map(|v| v.neg(ctx)),
-        AstOp::Not(_) => child(0).map(|v| v.not(ctx)),
+        AstOp::Neg(_) => child(0).map(|v| v.neg()),
+        AstOp::Not(_) => child(0).map(|v| v.not()),
         AstOp::ITE(..) => {
             let (cond, then_val, else_val) = (child(0)?, child(1)?, child(2)?);
             check_same_width("If", &then_val, &else_val)?;
-            Ok(cond.ite(&then_val, &else_val, ctx))
+            Ok(cond.ite(&then_val, &else_val))
         }
         AstOp::ZeroExt(_, bits) => {
             let val = child(0)?;
             let new_width = extended_width("ZeroExt", val.width(), *bits)?;
-            Ok(val.zero_extend(new_width, ctx))
+            Ok(val.zero_extend(new_width))
         }
         AstOp::SignExt(_, bits) => {
             let val = child(0)?;
             let new_width = extended_width("SignExt", val.width(), *bits)?;
-            Ok(val.sign_extend(new_width, ctx))
+            Ok(val.sign_extend(new_width))
         }
         AstOp::Extract(_, high, low) => {
             let val = child(0)?;
             check_extract_bounds("Extract", *high, *low, val.width())
                 .map_err(BridgeError::InvalidArgs)?;
-            Ok(val.extract(*high, *low, ctx))
+            Ok(val.extract(*high, *low))
         }
         AstOp::Concat(_) => {
             let parts = children()
@@ -628,9 +623,9 @@ fn import_clarirs_node(
             // Balanced, not a left fold: each clarirs node holds the union of
             // its operands' variables, so a chain over n symbolic parts would
             // build sets of every size up to n.
-            Ok(RustBV::concat_balanced(&parts, ctx))
+            Ok(RustBV::concat_balanced(&parts))
         }
-        AstOp::ByteReverse(_) => reverse_bytes(&child(0)?, ctx),
+        AstOp::ByteReverse(_) => reverse_bytes(&child(0)?),
         _ => whole(),
     }
 }
@@ -660,7 +655,7 @@ fn import_binary_op(
     ctx: &SymContext,
     depth: u32,
     op_name: &str,
-    apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+    apply: fn(&RustBV, &RustBV) -> RustBV,
 ) -> Result<RustBV, BridgeError> {
     let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
     if args_list.len() != 2 {
@@ -671,7 +666,7 @@ fn import_binary_op(
     let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
     let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
     check_same_width(op_name, &left, &right)?;
-    Ok(apply(&left, &right, ctx))
+    Ok(apply(&left, &right))
 }
 
 /// N-ary counterpart of [`import_binary_op`] for the associative bitvector
@@ -689,7 +684,7 @@ fn import_assoc_op(
     ctx: &SymContext,
     depth: u32,
     op_name: &str,
-    apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+    apply: fn(&RustBV, &RustBV) -> RustBV,
 ) -> Result<RustBV, BridgeError> {
     let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
     let Some((first, rest)) = args_list.split_first() else {
@@ -701,7 +696,7 @@ fn import_assoc_op(
     for arg in rest {
         let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
         check_same_width(op_name, &result, &next)?;
-        result = apply(&result, &next, ctx);
+        result = apply(&result, &next);
     }
     Ok(result)
 }
@@ -726,7 +721,7 @@ fn import_unary_op(
     ctx: &SymContext,
     depth: u32,
     op_name: &str,
-    apply: fn(&RustBV, &SymContext) -> RustBV,
+    apply: fn(&RustBV) -> RustBV,
 ) -> Result<RustBV, BridgeError> {
     let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
     if args_list.is_empty() {
@@ -735,7 +730,7 @@ fn import_unary_op(
         )));
     }
     let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-    Ok(apply(&val, ctx))
+    Ok(apply(&val))
 }
 
 /// Variadic counterpart of [`import_binary_op`], for the boolean `And` / `Or`
@@ -761,7 +756,7 @@ fn import_nary_op(
     ctx: &SymContext,
     depth: u32,
     op_name: &str,
-    apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+    apply: fn(&RustBV, &RustBV) -> RustBV,
     empty: u128,
 ) -> Result<RustBV, BridgeError> {
     let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
@@ -772,7 +767,7 @@ fn import_nary_op(
     for arg in rest {
         let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
         check_same_width(op_name, &result, &next)?;
-        result = apply(&result, &next, ctx);
+        result = apply(&result, &next);
     }
     Ok(result)
 }
@@ -782,12 +777,12 @@ fn import_nary_op(
 /// and a same-named 1-bit `BVS` stay two variables (angr-9ke6b.38/.223).
 /// A leaf is its name, so re-importing a symbol is the same
 /// leaf (angr-mx00p.12).
-fn import_symbolic_leaf(name: &str, width: u32, kind: SymbolKind, ctx: &SymContext) -> RustBV {
-    RustBV::symbolic(ctx, kind.rust_symbol_name(name), width)
+fn import_symbolic_leaf(name: &str, width: u32, kind: SymbolKind) -> RustBV {
+    RustBV::symbol(kind.rust_symbol_name(name), width)
 }
 
 /// Byte-reverse a RustBV value.
-fn reverse_bytes(bv: &RustBV, ctx: &SymContext) -> Result<RustBV, BridgeError> {
+fn reverse_bytes(bv: &RustBV) -> Result<RustBV, BridgeError> {
     let width = bv.width();
     if !width.is_multiple_of(8) {
         return Err(BridgeError::InvalidArgs(
@@ -815,10 +810,10 @@ fn reverse_bytes(bv: &RustBV, ctx: &SymContext) -> Result<RustBV, BridgeError> {
             // width-0 value (angr-fs8kb.82).
             return Ok(bv.clone());
         }
-        let mut result = bv.extract(7, 0, ctx);
+        let mut result = bv.extract(7, 0);
         for i in 1..num_bytes {
-            let byte = bv.extract((i + 1) * 8 - 1, i * 8, ctx);
-            result = result.concat(&byte, ctx);
+            let byte = bv.extract((i + 1) * 8 - 1, i * 8);
+            result = result.concat(&byte);
         }
         Ok(result)
     }

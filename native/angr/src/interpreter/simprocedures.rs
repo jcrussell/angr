@@ -76,7 +76,7 @@ impl<'a> VEXInterpreter<'a> {
         let size = ptr_size as usize;
         let sp = self
             .registers
-            .get(self.registers.arch().sp_offset(), ptr_size, self.ctx);
+            .get(self.registers.arch().sp_offset(), ptr_size);
         let sp_val = sp.as_u64()?;
 
         // Buffered stores keep raw little-endian bytes; the low `min(size, 8)`
