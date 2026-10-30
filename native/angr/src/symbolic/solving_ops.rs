@@ -28,6 +28,7 @@
 
 use super::RustBV;
 use super::SymContext;
+use super::ToZ3;
 
 use super::bv_codec::*;
 use super::lowered_or_warn;

@@ -1,6 +1,7 @@
 //! Serde round-trip and cross-context translation tests for
 //! the op-tree primitives (angr-x04s.1.1, angr-panhl.2).
 
+use crate::symbolic::ToZ3;
 use super::*;
 
 // -----------------------------------------------------------------

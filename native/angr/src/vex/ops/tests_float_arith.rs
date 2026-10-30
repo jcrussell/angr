@@ -1,5 +1,6 @@
 // angr-9hleg: scalar FP arith tests incl. rounding-mode variants (mirror of ops/float_arith.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::vex::ir::IRType;
 

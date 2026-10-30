@@ -10,6 +10,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rustylib::concretize::AddressConcretizer;
 use rustylib::memory::{Permission, SymbolicMemory};
+use rustylib::symbolic::ToZ3;
 use rustylib::symbolic::lineage::{ScopeFrame, ScopePath, SharedLineageSolver};
 use rustylib::symbolic::{RustBV, SymContext};
 use rustylib::vex::ir::Endness;

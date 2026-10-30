@@ -20,6 +20,7 @@
 
 use super::RustBV;
 use super::SymContext;
+use super::ToZ3;
 
 use super::local_constraints::LocalConstraints;
 use super::solver_build::*;

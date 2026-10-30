@@ -2,6 +2,7 @@
 //! plus the two operand-canonicalization / Z3-hash-cons regression guards that
 //! back the same fold's design assumptions.
 
+use crate::symbolic::ToZ3;
 use super::*;
 
 // =========================================================================

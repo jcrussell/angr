@@ -19,6 +19,7 @@
 
 use super::*;
 use crate::errors::MapPyErr;
+use crate::symbolic::ToZ3;
 
 /// Define the state-keyed accessors whose whole body is a `with_state` /
 /// `with_state_mut` wrap around one infallible `RustSimState` getter or setter

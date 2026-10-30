@@ -1,5 +1,6 @@
 // Tests for syscalls/concurrency.rs (futex and related concurrency syscall stubs).
 // Extracted from the inline `mod tests` block; see that module's siblings.
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::symbolic::SymContext;
 

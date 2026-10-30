@@ -21,7 +21,7 @@
 //! and a width mismatch is not silent in release: the Python boundary rejects
 //! it up front (`claripy_bridge::import`'s `check_same_width`), and anything
 //! that slipped past hits a Z3 sort error.
-//! The same reasoning covers `value_z3.rs`, `context.rs`, `constraint_ops.rs`
+//! The same reasoning covers `to_z3.rs`, `context.rs`, `constraint_ops.rs`
 //! and `solving_ops.rs`. Do NOT bulk-promote these — see the memory
 //! `invariant-assert-not-debug-assert-in-release` for the checks that *do*
 //! warrant a real `assert!`.

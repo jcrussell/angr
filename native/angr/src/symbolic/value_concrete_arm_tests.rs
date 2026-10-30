@@ -2,6 +2,7 @@
 //! (symbolic) counterparts — the arms most prone to silently disagreeing on
 //! amounts >= 2^32, full-width operands, and division by zero.
 
+use crate::symbolic::ToZ3;
 use super::*;
 
 // =========================================================================

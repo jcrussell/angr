@@ -1,5 +1,6 @@
 // angr-9hleg: integer widening-mul / divmod / sign-extend tests (mirror of ops/int_arith.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::vex::ir::IRType;
 

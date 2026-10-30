@@ -21,6 +21,11 @@
 //! with [`LowerError::UnsupportedOp`]; callers treat that like any other
 //! failed lowering and fall back to `claripy_to_rustbv`.
 //!
+//! A term from outside the engine meets that refusal at its trust boundary:
+//! `symbolic::admit_clarirs` lowers it on admission. A term the engine
+//! builds, or a decoded snapshot, meets it at its first query instead
+//! (angr-mx00p.116.5).
+//!
 //! Lowerings persist per thread in [`LOWERED`], keyed by node, so lowering a
 //! term that extends an already-lowered one builds only the new nodes. The
 //! engine builds terms op by op and wraps each in a `RustBV::Ast`; with a

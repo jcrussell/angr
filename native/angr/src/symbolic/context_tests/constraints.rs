@@ -1,4 +1,5 @@
 #![allow(clippy::arc_with_non_send_sync)]
+use crate::symbolic::ToZ3;
 use super::*;
 
 /// Serializes every test that delta-asserts the process-global

@@ -1,5 +1,6 @@
 // angr-9hleg: packed per-lane FP arith tests (mirror of ops/vec_float_lane.rs).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;

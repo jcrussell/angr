@@ -28,6 +28,7 @@
 //! already `pub(super)` (angr-a2br.2.4).
 
 use super::SymContext;
+use super::ToZ3;
 
 use super::solver_build::*;
 use std::sync::atomic::Ordering;

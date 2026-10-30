@@ -1,5 +1,6 @@
 // angr-9hleg: SSE scalar-in-vector FP + recip/rsqrt estimate tests (mirror of ops/vec_float_scalar.rs).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;

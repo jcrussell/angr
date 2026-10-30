@@ -1,5 +1,6 @@
 //! `RustBV::Ast`: clarirs terms held whole (angr-mx00p.11).
 
+use crate::symbolic::ToZ3;
 use std::sync::Arc;
 
 use clarirs_core::prelude::*;
@@ -43,10 +44,21 @@ fn from_clarirs_encodes_each_sort_as_a_bitvector() {
 }
 
 #[test]
-fn from_clarirs_refuses_terms_without_a_z3_form() {
+fn admit_clarirs_refuses_terms_without_a_z3_form() {
     let x = ctx().bvs("ast_vsa_x", 32).unwrap();
     let union = ctx().union([x.clone(), x]).unwrap();
-    assert!(RustBV::from_clarirs(union).is_err());
+    assert!(crate::symbolic::admit_clarirs(union).is_err());
+}
+
+#[test]
+fn from_clarirs_accepts_terms_without_a_z3_form() {
+    // The pure constructor wraps the term; the refusal moves to its query
+    // (angr-mx00p.116.5).
+    let x = ctx().bvs("ast_pure_vsa_x", 32).unwrap();
+    let union = ctx().union([x.clone(), x]).unwrap();
+    let bv = RustBV::from_clarirs(union.clone()).unwrap();
+    assert!(Arc::ptr_eq(ast_of(&bv), &union));
+    assert!(bv.to_z3_ast().is_err());
 }
 
 #[test]
@@ -106,15 +118,18 @@ fn serde_rejects_a_non_bitvector_root() {
 }
 
 #[test]
-fn serde_rejects_a_term_without_a_z3_form() {
-    // A crafted payload must not smuggle in what `from_clarirs` refuses: the
-    // solver lowers every `RustBV::Ast` on the promise that it was checked.
+fn serde_decodes_a_term_without_a_z3_form_and_its_query_fails() {
+    // Decode checks the sort only (angr-mx00p.116.5): an engine-built term
+    // need not be lowerable either. A term with no Z3 form fails loudly at
+    // its first lowering, not at restore.
     let x = ctx().bvs("ast_wire_vsa_x", 32).unwrap();
     let json = serde_json::to_string(&RustBVData::Ast {
         dag: clarirs_core::ast::wire::WireDag::encode(&[ctx().union([x.clone(), x]).unwrap()]),
     })
     .unwrap();
-    assert!(serde_json::from_str::<RustBV>(&json).is_err());
+    let back = serde_json::from_str::<RustBV>(&json).unwrap();
+    assert_eq!(back.width(), 32);
+    assert!(back.to_z3_ast().is_err());
 }
 
 #[test]

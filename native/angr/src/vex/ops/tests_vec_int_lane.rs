@@ -6,6 +6,7 @@
 // sign_extend_into(elem_width)) never executed under Z3. Expected-value arrays
 // are independent reference constants, never derived from the code under test.
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;

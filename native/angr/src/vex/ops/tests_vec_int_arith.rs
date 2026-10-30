@@ -1,5 +1,6 @@
 // angr-9hleg: vector packed-int min/max/abs tests (mirror of ops/vec_int_arith.rs).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;

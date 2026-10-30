@@ -14,6 +14,7 @@
 //! private free helpers (`sign_extend`, `sign_extend_to`); `bv_codec`'s
 //! `pub(super)` codec fns are reachable via `crate::symbolic::bv_codec`.
 
+use crate::symbolic::ToZ3;
 use super::*;
 
 /// The op of a compound value, whichever arm holds it.

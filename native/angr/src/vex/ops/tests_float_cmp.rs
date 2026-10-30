@@ -1,5 +1,6 @@
 // angr-9hleg: scalar/packed FP compare tests (mirror of ops/float_cmp.rs).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::FCmpKind;

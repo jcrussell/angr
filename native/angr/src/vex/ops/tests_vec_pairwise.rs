@@ -1,5 +1,6 @@
 // angr-9hleg: vector pairwise add/min/max + avg tests (mirror of ops/vec_pairwise.rs).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;

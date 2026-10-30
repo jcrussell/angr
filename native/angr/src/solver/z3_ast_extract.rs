@@ -37,7 +37,7 @@ pub(crate) fn node_to_eval_bv(node: &AstRef<'static>) -> Result<RustBV, String> 
     if !(sort.is_bool() || sort.is_bitvec()) {
         return Err(format!("{sort:?}"));
     }
-    RustBV::from_clarirs(node.clone()).map_err(|e| format!("{sort:?}: {e}"))
+    crate::symbolic::admit_clarirs(node.clone()).map_err(|e| format!("{sort:?}: {e}"))
 }
 
 impl RustSolverContext {

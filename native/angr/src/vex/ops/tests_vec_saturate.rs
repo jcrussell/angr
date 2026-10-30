@@ -1,5 +1,6 @@
 // angr-9hleg: vector saturating narrow/add/sub/shift tests (mirror of ops/vec_saturate.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::vex::ir::IRType;
 

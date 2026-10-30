@@ -1,5 +1,6 @@
 // angr-9hleg: NEON vector lane get/set/dup/widen/mul tests (mirror of ops/vec_lane.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::vex::ir::IRType;
 

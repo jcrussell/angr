@@ -1,5 +1,6 @@
 // angr-9hleg: vector shift (shl/shr/sar/sal) tests (mirror of ops/vec_shift.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::vex::ir::IRType;
 

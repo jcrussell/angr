@@ -318,9 +318,9 @@ impl VexRm {
 /// This is the core value type for the VEX execution engine. All register
 /// and memory values are represented as `RustBV`.
 ///
-/// A value holds no Z3 term: `to_z3_ast` lowers an `Ast` through
-/// `z3_lower`, whose per-thread cache keyed by clarirs node is the only
-/// lowering cache (angr-mx00p.116.4).
+/// A value holds no Z3 term: `symbolic::ToZ3::to_z3_ast` lowers an `Ast`
+/// through `z3_lower`, whose per-thread cache keyed by clarirs node is the
+/// only lowering cache (angr-mx00p.116.4).
 ///
 /// ## Serialization
 ///
@@ -346,7 +346,8 @@ pub enum RustBV {
     /// Every symbolic value: a clarirs term (angr-mx00p.11, .12). Always
     /// bitvector-sorted: [`RustBV::from_clarirs`] encodes a Bool as
     /// `ite(b, 1, 0)` and a float as its IEEE bits. Built by `from_clarirs`
-    /// (deserializing included) and by `from_clarirs_lowerable` for the
+    /// (deserializing included; `symbolic::admit_clarirs` at the trust
+    /// boundaries) and by `from_clarirs_lowerable` for the
     /// constructors, the leaves and the operands `RustBV::node` presents;
     /// both fold a literal that fits a `u128` into [`RustBV::Concrete`].
     ///
@@ -413,8 +414,10 @@ impl TryFrom<RustBVData> for RustBV {
                         root.ast_type()
                     ));
                 }
-                // Through the constructor, so a decoded term is checked to
-                // lower exactly as a freshly built one is.
+                // Through the pure constructor: a sort check and the literal
+                // fold, no admission. An engine-built term need not be
+                // lowerable, and one that is not fails its query
+                // (angr-mx00p.116.5).
                 RustBV::from_clarirs(root).map_err(|e| format!("RustBV::Ast: {e}"))?
             }
         })
@@ -558,11 +561,10 @@ impl RustBV {
     /// IEEE bits (`fpToIEEEBV`). A literal that fits a `u128` folds to
     /// [`RustBV::Concrete`]. Strings have no `RustBV` form and are refused.
     ///
-    /// The term is lowered here, which both warms `z3_lower`'s cache and
-    /// refuses what has no Z3 form (strings nested in a bitvector, the VSA ops, a term
-    /// deeper than `z3_lower::MAX_LOWER_DEPTH`) at the boundary. Terms the ops
-    /// build later over the result can still outgrow that depth, which is why
-    /// `to_z3_ast` returns a `Result` (angr-mx00p.116.2).
+    /// Pure: the sort encoding and the literal fold only. Whether the term
+    /// has a Z3 form is the solver's question, not the value's; a term
+    /// arriving from outside the engine goes through
+    /// `symbolic::admit_clarirs`, which also lowers it (angr-mx00p.116.5).
     pub fn from_clarirs(ast: AstRef<'static>) -> Result<Self, ClarirsError> {
         let ctx = &*GLOBAL_CONTEXT;
         let ast = match ast.ast_type() {
@@ -584,8 +586,6 @@ impl RustBV {
         {
             return Ok(RustBV::concrete(v, value.len()));
         }
-        super::z3_lower::lower_bv(&ast)
-            .map_err(|e| ClarirsError::UnsupportedOperation(e.to_string()))?;
         Ok(RustBV::Ast {
             width: ast.size(),
             ast,

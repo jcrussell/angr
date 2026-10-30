@@ -26,6 +26,7 @@
 // `#[allow(unsafe_code)]` (angr-8ucb3).
 #![forbid(unsafe_code)]
 
+use crate::symbolic::ToZ3;
 use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;

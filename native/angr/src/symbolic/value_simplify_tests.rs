@@ -1,6 +1,7 @@
 //! Expression-simplification tests: algebraic identities, the shift/mul →
 //! Concat rewrites, and the pre-Z3 `Extract` rewrite pass (angr-p8cz).
 
+use crate::symbolic::ToZ3;
 use super::value_tests_support::raw_extract_node;
 use super::*;
 use crate::symbolic::Node;

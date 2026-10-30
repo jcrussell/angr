@@ -5,6 +5,7 @@
 // syscall, so these mirror the syscall coverage in
 // `syscalls::sim_time_tests` but assert the *procedure* return convention
 // (`Ok(Some(symbolic))`).
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::{NativeSimProcedure, ProcedureError};

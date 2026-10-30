@@ -322,7 +322,7 @@ impl<'a> VEXInterpreter<'a> {
                 .collect::<Result<Vec<_>, _>>()
                 .ok()?;
             let term = ccall::ccall_symbolic(&cee.name, &terms, ret_bits)?;
-            RustBV::from_clarirs(term).ok()
+            crate::symbolic::admit_clarirs(term).ok()
         });
         if let Some(result) = result {
             return Ok(result);

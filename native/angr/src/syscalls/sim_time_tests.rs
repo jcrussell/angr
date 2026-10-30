@@ -1,5 +1,6 @@
 //! Tests for `sim_time.rs` — gettimeofday / clock_gettime / time syscall handlers.
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;

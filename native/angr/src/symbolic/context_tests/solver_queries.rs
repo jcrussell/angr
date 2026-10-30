@@ -8,6 +8,7 @@
 //! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`)
 //! (angr-5mnx3.50).
 #![allow(clippy::arc_with_non_send_sync)]
+use crate::symbolic::ToZ3;
 use super::*;
 // The instrumentation-counter tests below (`test_record_*_counters`) call
 // `stats.rs` directly; the explicit import names what they depend on rather
@@ -1719,7 +1720,7 @@ fn test_popcount_matches_concrete_when_operand_pinned() {
 }
 
 // angr-0jh0j.54: the Clz/Ctz/Popcount Z3 encodings accumulate at
-// `value_z3::bitcount_acc_width` bits and `zero_ext` once at the end, rather
+// `value_clarirs::bitcount_acc_width` bits and `zero_ext` once at the end, rather
 // than building the whole ladder at the operand width (which allocated
 // `width` constants of `width` bits each). This is the only bitcount test
 // above 64 bits, and it guards both halves of that change: the operand width

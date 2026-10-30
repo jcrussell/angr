@@ -1,5 +1,6 @@
 // angr-9hleg: float/int conversion + round-to-int tests (mirror of ops/conversions.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 
 // =========================================================================

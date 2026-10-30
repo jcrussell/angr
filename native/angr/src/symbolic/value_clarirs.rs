@@ -311,7 +311,7 @@ fn widen(acc: Term, acc_w: u32, width: u32) -> Result<Term, ClarirsError> {
     }
 }
 
-/// `Clz` / `Ctz` as the ite ladder `value_z3` builds: the bit tested last is
+/// `Clz` / `Ctz` as an ite ladder: the bit tested last is
 /// the outermost, so the most significant set bit (clz) or the least
 /// significant one (ctz) wins.
 fn bit_scan(op: &BVOp, x: &Term, width: u32) -> Result<Term, ClarirsError> {
@@ -334,7 +334,7 @@ fn bit_scan(op: &BVOp, x: &Term, width: u32) -> Result<Term, ClarirsError> {
     widen(result, acc_w, width)
 }
 
-/// `Popcount` as the sum of the zero-extended bits, as `value_z3` builds it.
+/// `Popcount` as the sum of the zero-extended bits.
 fn popcount(x: &Term, width: u32) -> Result<Term, ClarirsError> {
     let gc = &*GLOBAL_CONTEXT;
     let acc_w = bitcount_acc_width(width);

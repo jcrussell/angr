@@ -17,6 +17,7 @@
 //! is test-only code: it describes nothing still to be done.
 
 
+use crate::symbolic::ToZ3;
 use super::*;
 use std::sync::Arc;
 

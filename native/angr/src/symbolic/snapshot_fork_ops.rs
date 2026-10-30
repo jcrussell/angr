@@ -14,6 +14,7 @@
 //! (`symbol_table`, `assumed_constraints_shared`) to `pub(super)`
 //! (== `pub(in crate::symbolic)`) (angr-a2br.2.4).
 
+use super::ToZ3;
 use super::local_constraints::LocalConstraints;
 use super::{RustBV, SymContext, SymContextSnapshot};
 

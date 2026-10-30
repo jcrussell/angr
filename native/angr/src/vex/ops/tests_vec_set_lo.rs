@@ -4,6 +4,7 @@
 // of both IROp variants — all previously exercised only indirectly via the
 // scalar-FP ops that share `splice_lane0_u128`.
 
+use crate::symbolic::ToZ3;
 use super::*;
 
 /// Concrete SetV128lo64 (MOVSD-style low-lane splice): overwrite the low 64

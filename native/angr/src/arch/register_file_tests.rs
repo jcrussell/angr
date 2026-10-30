@@ -8,6 +8,7 @@
 //! header, get/put/merge "carry the densest regression history in `arch/`" and
 //! sat interleaved with the unrelated architecture registry.
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::arch::registry::ALL_ARCHES;
 use crate::symbolic::SymContext;

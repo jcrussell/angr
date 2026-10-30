@@ -75,6 +75,7 @@
 // which only checks that the rm parameter is *touched* in the source; it
 // cannot tell whether the rounding math itself agrees with Z3.
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::symbolic::VexRm;
 use crate::vex::ir::IRType;

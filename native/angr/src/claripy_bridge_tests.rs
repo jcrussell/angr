@@ -2,6 +2,7 @@
 // Split from the parent module per rust-module-root-split-recipe.
 
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::symbolic::{RustBV, SymContext};
 

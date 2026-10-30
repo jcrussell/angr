@@ -1,5 +1,6 @@
 // angr-9hleg: vector per-lane count (cnt/clz/cls) + polynomial-mul tests (mirror of ops/vec_count.rs).
 
+use crate::symbolic::ToZ3;
 use super::*;
 use crate::vex::ir::IRType;
 

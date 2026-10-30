@@ -1,5 +1,6 @@
 // angr-9hleg: vector reverse / low-half packed-mul tests (mirror of ops/vec_permute_mul.rs).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;

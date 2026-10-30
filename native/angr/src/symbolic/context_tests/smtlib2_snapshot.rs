@@ -1,4 +1,5 @@
 #![allow(clippy::arc_with_non_send_sync)]
+use crate::symbolic::ToZ3;
 use super::*;
 // angr-fs8kb.35: `SymContextSnapshot` moved out of `context.rs` into
 // `context_snapshot.rs`, so `use super::*` (which reaches `context`) no longer

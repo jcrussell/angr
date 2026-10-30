@@ -524,8 +524,10 @@ fn import_clarirs_node(
     // no operand-wise form: importing a float child as its IEEE bits would turn
     // `fp.eq` into bit equality. Such a node is taken whole as a
     // `RustBV::Ast` (angr-mx00p.11), as is any op without an arm below.
+    // Admitted, so a term with no Z3 form is refused here, at the trust
+    // boundary, not at its first query (angr-mx00p.116.5).
     let whole = || {
-        RustBV::from_clarirs(node.clone())
+        crate::symbolic::admit_clarirs(node.clone())
             .map_err(|e| BridgeError::UnsupportedOp(format!("{}: {e}", op_name())))
     };
     // A compound Bool (a comparison, or a connective over Bools) is also

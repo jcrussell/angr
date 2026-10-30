@@ -10,6 +10,7 @@
 // x86 PUNPCK{L,H}BW / PUNPCK{L,H}QDQ semantics documented in libvex_ir.h, never
 // read back from the code under test (vacuous-test audit invariant).
 
+use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::IRType;
