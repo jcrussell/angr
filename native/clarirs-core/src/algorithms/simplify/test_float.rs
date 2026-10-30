@@ -49,8 +49,14 @@ fn test_min_max_fma_round_fold_constants() -> Result<()> {
         fpv(2.0)?
     );
 
-    // fp.min of +0 and -0 is unspecified, so it is not folded
+    // Every rounding mode folds
+    let rtz = ctx
+        .fp_fma(fpv(0.1)?, fpv(10.0)?, fpv(-1.0)?, FPRM::TowardZero)?
+        .simplify()?;
+    assert!(matches!(rtz.op(), AstOp::FPV(..)));
+
+    // -0 orders below +0
     let zeros = ctx.fp_min(fpv(0.0)?, fpv(-0.0)?)?.simplify()?;
-    assert!(matches!(zeros.op(), AstOp::FpMin(..)));
+    assert!(matches!(zeros.op(), AstOp::FPV(f) if f.is_zero() && f.sign()));
     Ok(())
 }

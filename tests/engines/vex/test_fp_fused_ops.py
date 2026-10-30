@@ -9,6 +9,7 @@ from angr import claripy
 from angr.engines.vex.claripy.irop import vexop_to_simop
 
 RNE = claripy.BVV(0, 32)
+RTP = claripy.BVV(2, 32)
 RZ = claripy.BVV(3, 32)
 
 
@@ -37,12 +38,18 @@ class TestFusedOps(TestCase):
         result = vexop_to_simop("Iop_MSubF64").calculate(RNE, a, b, _f64(1.0))
         assert result.concrete_value == -(2**-104)
 
+    def test_madd_honors_a_directed_mode(self):
+        # 1 * 1 + 2^-60 is 1 under nearest-even but the next double up toward +inf
+        result = vexop_to_simop("Iop_MAddF64").calculate(RTP, _f64(1.0), _f64(1.0), _f64(2**-60))
+        assert result.concrete_value == 1.0 + 2**-52
+
     def test_round_to_integral_by_mode(self):
         round_f64 = vexop_to_simop("Iop_RoundF64toInt")
         assert round_f64.calculate(RNE, _f64(2.5)).concrete_value == 2.0
         assert round_f64.calculate(RZ, _f64(-2.5)).concrete_value == -2.0
         assert round_f64.calculate(RNE, _f64(1e300)).concrete_value == 1e300
         assert math.isnan(round_f64.calculate(RNE, _f64(math.nan)).concrete_value)
+        assert math.copysign(1.0, round_f64.calculate(RNE, _f64(-0.5)).concrete_value) == -1.0
 
     def test_round_f32x4_stays_float(self):
         result = vexop_to_simop("Iop_RoundF32x4_RN").calculate(_f32x4(1.5, -2.5, 3.75, 100.0))

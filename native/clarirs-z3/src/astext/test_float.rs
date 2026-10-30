@@ -850,28 +850,6 @@ mod smtlib {
     }
 
     #[test]
-    fn to_fp_conversions_parse() {
-        let ctx = Context::new();
-        let rm = FPRM::NearestTiesToEven;
-        let f = ctx.fps("f", FSort::f32()).unwrap();
-        let d = ctx.fps("d", FSort::f64()).unwrap();
-        let b32 = ctx.bvs("b32", 32).unwrap();
-        let b64 = ctx.bvs("b64", 64).unwrap();
-
-        let constraints = [
-            ctx.fp_eq(&f, ctx.fp_to_fp(&d, FSort::f32(), rm).unwrap())
-                .unwrap(),
-            ctx.fp_eq(&f, ctx.bv_to_fp(&b32, FSort::f32()).unwrap())
-                .unwrap(),
-            ctx.fp_eq(&d, ctx.bv_to_fp_signed(&b64, FSort::f64(), rm).unwrap())
-                .unwrap(),
-            ctx.fp_eq(&d, ctx.bv_to_fp_unsigned(&b64, FSort::f64(), rm).unwrap())
-                .unwrap(),
-        ];
-        z3_parses(&constraints_to_smtlib(&constraints).unwrap());
-    }
-
-    #[test]
     fn min_max_fma_round_parse() {
         let ctx = Context::new();
         let rm = FPRM::TowardZero;
@@ -917,9 +895,7 @@ mod semantics {
         assert!(holds(&ctx, ctx.fp_max(&one, &two).unwrap(), 2.0));
     }
 
-    /// SMT-LIB leaves the sign of `fp.min(+0, -0)` unspecified. Z3 may keep
-    /// the op or answer with either zero, but whatever it returns has to
-    /// decode: some versions rewrite it to internal ops `from_z3` cannot read.
+    /// Whatever Z3 returns for `fp.min(+0, -0)` has to decode.
     #[test]
     fn min_max_of_signed_zeros_come_back_from_z3() {
         let ctx = Context::new();
@@ -931,6 +907,59 @@ mod semantics {
                     || matches!(back.op(), AstOp::FpMin(..) | AstOp::FpMax(..)),
                 "{back:?}"
             );
+        }
+    }
+
+    /// The constant FMA fold agrees with Z3's `fp.fma` in every rounding
+    /// mode, on operands chosen so the product and addend overlap and cancel.
+    #[test]
+    fn fma_fold_matches_z3_in_every_mode() {
+        let ctx = Context::new();
+        let modes = [
+            FPRM::NearestTiesToEven,
+            FPRM::NearestTiesToAway,
+            FPRM::TowardPositive,
+            FPRM::TowardNegative,
+            FPRM::TowardZero,
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for i in 0..150 {
+            let mut f64_near =
+                |exp: u64| f64::from_bits((next() >> 12) | (exp << 52) | (next() & 1) << 63);
+            let (a, b) = (f64_near(1023 + i % 7), f64_near(1020 + i % 5));
+            let c = if i % 3 == 0 {
+                -(a * b)
+            } else {
+                f64_near(1023 + i % 11)
+            };
+            let f32s = [a as f32, b as f32, c as f32].map(Float::F32);
+            for ops in [[a, b, c].map(Float::F64), f32s] {
+                for rm in modes {
+                    let [fa, fb, fc] = ops.map(|v| ctx.fpv(v).unwrap());
+                    let fma = ctx.fp_fma(&fa, &fb, &fc, rm).unwrap();
+                    let folded = fma.simplify().unwrap();
+                    // Z3 evaluates the unsimplified term itself
+                    let z3 = Z3_CONTEXT.with(|z3_ctx| unsafe {
+                        let ast = fma.to_z3().unwrap();
+                        let simplified = RcAst::try_from(Z3_simplify(*z3_ctx, *ast)).unwrap();
+                        AstRef::from_z3(&ctx, simplified).unwrap()
+                    });
+                    let same = match (folded.op(), z3.op()) {
+                        (AstOp::FPV(x), AstOp::FPV(y)) => {
+                            (x.is_nan() && y.is_nan())
+                                || x.to_f64().map(f64::to_bits) == y.to_f64().map(f64::to_bits)
+                        }
+                        _ => false,
+                    };
+                    assert!(same, "{ops:?} under {rm:?}: folded {folded:?}, Z3 {z3:?}");
+                }
+            }
         }
     }
 

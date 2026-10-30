@@ -89,21 +89,24 @@ pub(crate) fn simplify_float<'c>(
                 _ => Ok(ctx.fp_sqrt(arc, *fprm)?),
             }
         }
-        AstOp::FpMin(..) | AstOp::FpMax(..) => {
-            let is_max = matches!(float_expr.op(), AstOp::FpMax(..));
+        AstOp::FpMin(..) => {
             let (arc, arc1) = (
                 state.get_child_simplified(0)?,
                 state.get_child_simplified(1)?,
             );
-            // A +0/-0 pair has no specified result, so it is left to the solver
-            let folded = match (arc.op(), arc1.op()) {
-                (AstOp::FPV(float1), AstOp::FPV(float2)) => float1.min_max(float2, is_max),
-                _ => None,
-            };
-            match folded {
-                Some(float) => Ok(ctx.fpv(float)?),
-                None if is_max => Ok(ctx.fp_max(arc, arc1)?),
-                None => Ok(ctx.fp_min(arc, arc1)?),
+            match (arc.op(), arc1.op()) {
+                (AstOp::FPV(float1), AstOp::FPV(float2)) => Ok(ctx.fpv(float1.min(float2))?),
+                _ => Ok(ctx.fp_min(arc, arc1)?),
+            }
+        }
+        AstOp::FpMax(..) => {
+            let (arc, arc1) = (
+                state.get_child_simplified(0)?,
+                state.get_child_simplified(1)?,
+            );
+            match (arc.op(), arc1.op()) {
+                (AstOp::FPV(float1), AstOp::FPV(float2)) => Ok(ctx.fpv(float1.max(float2))?),
+                _ => Ok(ctx.fp_max(arc, arc1)?),
             }
         }
         AstOp::FpFma(.., fprm) => {
@@ -113,9 +116,8 @@ pub(crate) fn simplify_float<'c>(
                 state.get_child_simplified(2)?,
             );
             match (a.op(), b.op(), c.op()) {
-                // Rounds to nearest whatever `fprm` is, like the other folds
                 (AstOp::FPV(fa), AstOp::FPV(fb), AstOp::FPV(fc)) => {
-                    Ok(ctx.fpv(fa.mul_add(fb, fc))?)
+                    Ok(ctx.fpv(fa.mul_add(fb, fc, *fprm))?)
                 }
                 _ => Ok(ctx.fp_fma(a, b, c, *fprm)?),
             }

@@ -61,15 +61,15 @@ impl<K: Hash + Eq, V: Clone> Cache<K, V> for GenericCache<K, V> {
 /// this cache stores weak references to the AST nodes; the value is a
 /// `Weak<AstNode>`.
 ///
-/// The map is split into `AST_CACHE_SHARDS` independently locked shards, so
+/// The map is split into `1 << SHARD_BITS` independently locked shards, so
 /// threads building unrelated terms don't serialize on one lock.
+#[derive(Debug)]
 pub struct AstCache<'c> {
     shards: Box<[Shard<'c>]>,
 }
 
-/// Number of shards in an [`AstCache`].
-const AST_CACHE_SHARDS: usize = 64;
-const _: () = assert!(AST_CACHE_SHARDS.is_power_of_two() && AST_CACHE_SHARDS > 1);
+/// Log2 of the number of shards in an [`AstCache`].
+const SHARD_BITS: u32 = 6;
 
 /// One shard, aligned so neighbouring locks do not share a cache line.
 #[derive(Debug, Default)]
@@ -79,23 +79,15 @@ struct Shard<'c>(RwLock<HashMap<u64, Weak<AstNode<'c>>>>);
 impl Default for AstCache<'_> {
     fn default() -> Self {
         Self {
-            shards: (0..AST_CACHE_SHARDS).map(|_| Shard::default()).collect(),
+            shards: (0..1 << SHARD_BITS).map(|_| Shard::default()).collect(),
         }
-    }
-}
-
-impl std::fmt::Debug for AstCache<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AstCache")
-            .field("len", &self.len())
-            .finish()
     }
 }
 
 impl<'c> AstCache<'c> {
     /// The shard holding `key`, picked by its high bits.
     fn shard(&self, key: u64) -> &RwLock<HashMap<u64, Weak<AstNode<'c>>>> {
-        &self.shards[(key >> (u64::BITS - AST_CACHE_SHARDS.trailing_zeros())) as usize].0
+        &self.shards[(key >> (u64::BITS - SHARD_BITS)) as usize].0
     }
 
     /// Remove `key` if its entry is expired (no strong refs left). Called from
