@@ -1,7 +1,7 @@
 //! The solver-facing half of `bv/value_zext_cmp_tests.rs`: these tests lower or solve, so
 //! they stay in `symbolic` (angr-mx00p.116.7).
 
-use crate::bv::*;
+use crate::symbolic::RustBV;
 // `Cmp(ZeroExt(k, x), BVV)` trivial-constraint fast-path tests (angr-g7nq),
 // plus the two operand-canonicalization / Z3-hash-cons regression guards that
 // back the same fold's design assumptions.

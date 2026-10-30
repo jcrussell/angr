@@ -71,6 +71,7 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 name = "angr"
 version = "0.1.0"
 dependencies = [
+ "angr-bv",
  "angr-macros",
  "backtrace",
  "clarirs-core",
@@ -111,6 +112,20 @@ dependencies = [
  "thiserror",
  "z3",
  "z3-sys",
+]
+
+[[package]]
+name = "angr-bv"
+version = "0.1.0"
+dependencies = [
+ "clarirs-core",
+ "log",
+ "num-bigint",
+ "quickcheck",
+ "quickcheck_macros",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

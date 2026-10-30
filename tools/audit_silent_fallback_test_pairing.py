@@ -111,7 +111,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Same roots as audit_silent_fallback.py, the tagging audit this pairs with.
 # A diff has no file count, so there is no floor here; a missing or
 # unclassified root still fails.
-SCAN = {"native/angr": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 
 
@@ -458,6 +458,12 @@ def _write_workspace(repo) -> None:
     """A ``Cargo.toml`` listing this repo's members, so the copy's scan roots resolve."""
     listed = ", ".join(f'"{m}"' for m in workspace_members(REPO_ROOT))
     (repo / "Cargo.toml").write_text(f"[workspace]\nmembers = [{listed}]\n", encoding="utf-8")
+    # Every scanned member but the engine (each scenario lays that out) needs
+    # its src root, or scan_roots refuses the copy.
+    for member in SCAN:
+        if member != "native/angr":
+            (repo / member / "src").mkdir(parents=True)
+            (repo / member / "src" / "placeholder.rs").write_text("// placeholder\n")
 
 
 def _init_git_repo(repo) -> None:

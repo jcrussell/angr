@@ -1,0 +1,34 @@
+[package]
+name = "angr-bv"
+version = "0.1.0"
+edition = "2024"
+description = "The bitvector value layer of angr's native engine: a concrete u128 or a clarirs term, and its ops, with no solver dependency."
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints.clippy]
+# The same table as native/angr-macros: group entries at a lower priority so
+# the specific settings win.
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+let_underscore_must_use = "deny"
+
+[lib]
+name = "angr_bv"
+
+[dependencies]
+clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
+log = "0.4.32"
+num-bigint = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+quickcheck = "1.0"
+quickcheck_macros = "1.0"
+serde_json = "1.0"

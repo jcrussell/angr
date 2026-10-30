@@ -179,7 +179,7 @@ fn test_saved_check_total_sums_every_family() {
         (&Z3_BRANCH_CONCRETE_COUNT, "z3_branch_concrete"),
         (&Z3_ASSUME_CONCRETE_COUNT, "z3_assume_concrete"),
         (
-            &crate::bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
+            &angr_bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
             "zext_cmp_trivial_decide_count",
         ),
         (&Z3_BRANCH_MODEL_HIT_COUNT, "z3_branch_model_hit"),

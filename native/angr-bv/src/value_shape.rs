@@ -1,10 +1,10 @@
-//! A representation-independent view of a `RustBV` node (angr-mx00p.12).
+//! A representation-independent view of a `SymBV` node (angr-mx00p.12).
 //!
-//! [`RustBV::node`] gives the op and operands of a compound clarirs
-//! [`RustBV::Ast`] as `BVOp` and values, so construction-time rewrites and the
+//! [`SymBV::node`] gives the op and operands of a compound clarirs
+//! [`SymBV::Ast`] as `BVOp` and values, so construction-time rewrites and the
 //! fast paths that inspect operands need not match on clarirs ops. Children
 //! are wrapped as values: a literal that fits a `u128` as
-//! [`RustBV::Concrete`] and anything else as an `Ast`.
+//! [`SymBV::Concrete`] and anything else as an `Ast`.
 //!
 //! The view reads an `Ast` through the engine's Bool encoding (see
 //! `value_clarirs.rs`): `ite(cmp, 1, 0)` is the 1-bit comparison itself, a
@@ -17,7 +17,7 @@ use std::borrow::Cow;
 use clarirs_core::prelude::{AstOp, AstRef};
 use num_bigint::BigUint;
 
-use super::value::{BVOp, RustBV};
+use super::value::{BVOp, SymBV};
 use super::value_clarirs::bit_of;
 
 type Term = AstRef<'static>;
@@ -25,18 +25,18 @@ type Term = AstRef<'static>;
 /// The op and operands of a compound value. See the module doc.
 pub struct Node<'a> {
     pub op: BVOp,
-    pub operands: Cow<'a, [RustBV]>,
+    pub operands: Cow<'a, [SymBV]>,
 }
 
-impl RustBV {
+impl SymBV {
     /// The op and operands of this value, or `None` for a leaf or constant.
     pub fn node(&self) -> Option<Node<'_>> {
         match self {
-            RustBV::Ast { ast, .. } => ast_node(ast).map(|(op, operands)| Node {
+            SymBV::Ast { ast, .. } => ast_node(ast).map(|(op, operands)| Node {
                 op,
                 operands: Cow::Owned(operands),
             }),
-            RustBV::Concrete { .. } => None,
+            SymBV::Concrete { .. } => None,
         }
     }
 
@@ -49,7 +49,7 @@ impl RustBV {
         use super::symbol_kind::SymbolKind;
         use std::sync::Arc;
         match self {
-            RustBV::Ast { ast, width, .. } => match ast.op() {
+            SymBV::Ast { ast, width, .. } => match ast.op() {
                 AstOp::BVS(name, w) => Some((Arc::from(name.as_str()), *w)),
                 AstOp::ITE(c, t, e) if *width == 1 && is_bvv(t, 1) && is_bvv(e, 0) => {
                     match c.op() {
@@ -73,29 +73,29 @@ impl RustBV {
     /// `value_clarirs::build_term` emits. The lazy lowering can still refuse
     /// a term that grew deeper than `z3_lower::MAX_LOWER_DEPTH`, and
     /// `to_z3_ast` reports that as an error (angr-mx00p.116.2).
-    pub fn from_clarirs_lowerable(ast: Term) -> RustBV {
+    pub fn from_clarirs_lowerable(ast: Term) -> SymBV {
         if let AstOp::BVV(value) = ast.op()
             && let Ok(v) = u128::try_from(&value.to_biguint())
         {
-            return RustBV::concrete(v, value.len());
+            return SymBV::concrete(v, value.len());
         }
-        RustBV::Ast {
+        SymBV::Ast {
             width: ast.size(),
             ast,
         }
     }
 }
 
-fn wrap(ast: &Term) -> RustBV {
-    RustBV::from_clarirs_lowerable(ast.clone())
+fn wrap(ast: &Term) -> SymBV {
+    SymBV::from_clarirs_lowerable(ast.clone())
 }
 
 /// A Bool operand as the engine's 1-bit encoding.
-fn wrap_bool(b: &Term) -> Option<RustBV> {
-    bit_of(b.clone()).ok().map(RustBV::from_clarirs_lowerable)
+fn wrap_bool(b: &Term) -> Option<SymBV> {
+    bit_of(b.clone()).ok().map(SymBV::from_clarirs_lowerable)
 }
 
-fn wrap_all<'a>(children: impl IntoIterator<Item = &'a Term>) -> Vec<RustBV> {
+fn wrap_all<'a>(children: impl IntoIterator<Item = &'a Term>) -> Vec<SymBV> {
     children.into_iter().map(wrap).collect()
 }
 
@@ -104,7 +104,7 @@ fn is_bvv(term: &Term, value: u64) -> bool {
 }
 
 /// The view of a bitvector-sorted clarirs node.
-fn ast_node(ast: &Term) -> Option<(BVOp, Vec<RustBV>)> {
+fn ast_node(ast: &Term) -> Option<(BVOp, Vec<SymBV>)> {
     let pair = |a: &Term, b: &Term| vec![wrap(a), wrap(b)];
     Some(match ast.op() {
         AstOp::Add(args) => (BVOp::Add, wrap_all(args)),
@@ -137,7 +137,7 @@ fn ast_node(ast: &Term) -> Option<(BVOp, Vec<RustBV>)> {
 
 /// The 1-bit view of a Bool `b` held as `ite(b, 1, 0)`. `None` for a Bool
 /// leaf or literal, and for a Bool op with no 1-bit `BVOp` form.
-fn bool_node(b: &Term) -> Option<(BVOp, Vec<RustBV>)> {
+fn bool_node(b: &Term) -> Option<(BVOp, Vec<SymBV>)> {
     let cmp = |op: BVOp, l: &Term, r: &Term| Some((op, vec![wrap(l), wrap(r)]));
     let bits = |args: &[Term]| args.iter().map(wrap_bool).collect::<Option<Vec<_>>>();
     match b.op() {

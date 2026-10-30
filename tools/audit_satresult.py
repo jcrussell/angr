@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN = {"native/angr": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, it never checks a solver"}
 # Fewer files than this means the code moved out of the scan roots.
 MIN_FILES = 400

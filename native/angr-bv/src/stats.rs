@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // AST construction (specific) — Reverse/Concat/Extract emissions. These
 // are the AST shapes most often blamed when claripy<->Rust mismatch surfaces
-// (angr-tlvl-style residuals). Counted at the public `RustBV::{reverse,
+// (angr-tlvl-style residuals). Counted at the public `SymBV::{reverse,
 // concat, extract}` entry points; internal recursion within `*_into` is
 // not double-counted.
 pub static BVOP_REVERSE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -26,26 +26,26 @@ pub static BVOP_EXTRACT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ZEXT_CMP_COLLAPSE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ZEXT_CMP_TRIVIAL_DECIDE_COUNT: AtomicU64 = AtomicU64::new(0);
 
-// angr-1joc (a) commutative-arg-order: how often the RustBV-level
+// angr-1joc (a) commutative-arg-order: how often the SymBV-level
 // `canonicalize_commutative` actually swaps operands. Swap rate ≈ how often
-// the un-canonicalized RustBV order WOULD have produced a distinct Z3 AST.
+// the un-canonicalized SymBV order WOULD have produced a distinct Z3 AST.
 // Bumped from `value.rs::canonicalize_commutative`.
 pub static RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static RUSTBV_COMMUTATIVE_SWAP_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Record a public `RustBV::reverse` call.
+/// Record a public `SymBV::reverse` call.
 #[inline]
 pub fn record_bvop_reverse() {
     BVOP_REVERSE_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Record a public `RustBV::concat` call.
+/// Record a public `SymBV::concat` call.
 #[inline]
 pub fn record_bvop_concat() {
     BVOP_CONCAT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Record a public `RustBV::extract` call.
+/// Record a public `SymBV::extract` call.
 #[inline]
 pub fn record_bvop_extract() {
     BVOP_EXTRACT_COUNT.fetch_add(1, Ordering::Relaxed);

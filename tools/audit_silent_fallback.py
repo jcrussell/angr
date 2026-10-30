@@ -60,7 +60,7 @@ from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roo
 # Repo layout: this file lives at <repo>/tools/audit_silent_fallback.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
-SCAN = {"native/angr": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 # Fewer non-test, fork-owned files than this means the code moved out of the scan roots.
 MIN_FILES = 200
@@ -171,7 +171,10 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
     """Return (rel, lineno, shape, stripped, tagged) for every detected site."""
     hits: list[tuple[str, int, str, str, bool]] = []
     for path in _iter_rs_files():
-        rel = path.relative_to(SRC_ROOT).as_posix()
+        # Engine-crate keys stay SRC_ROOT-relative (the baseline's format);
+        # another member's file is keyed from the repo root.
+        base = SRC_ROOT if path.is_relative_to(SRC_ROOT) else REPO_ROOT
+        rel = path.relative_to(base).as_posix()
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

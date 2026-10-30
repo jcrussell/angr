@@ -1,7 +1,7 @@
 //! The solver-facing half of `bv/value_concrete_arm_tests.rs`: these tests lower or solve, so
 //! they stay in `symbolic` (angr-mx00p.116.7).
 
-use crate::bv::*;
+use crate::symbolic::RustBV;
 // Tests pinning the *concrete* arms of shift/rotate/divide against their Z3
 // (symbolic) counterparts — the arms most prone to silently disagreeing on
 // amounts >= 2^32, full-width operands, and division by zero.

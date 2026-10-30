@@ -6,11 +6,11 @@
 
 use super::*;
 
-/// Recursive structural rendering of a `RustBV` tree.
+/// Recursive structural rendering of a `SymBV` tree.
 ///
-/// Reads through [`RustBV::leaf_var`] and [`RustBV::node`], so a shape
+/// Reads through [`SymBV::leaf_var`] and [`SymBV::node`], so a shape
 /// assertion names leaves and ops rather than clarirs' SMT-LIB rendering.
-pub(super) fn bv_shape(bv: &RustBV) -> String {
+pub(super) fn bv_shape(bv: &SymBV) -> String {
     if let Some((name, width)) = bv.leaf_var() {
         return format!("Leaf({name}, {width})");
     }

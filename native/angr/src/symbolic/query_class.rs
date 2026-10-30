@@ -42,7 +42,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::{BVOp, RustBV};
-use crate::bv::Node;
+use angr_bv::Node;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

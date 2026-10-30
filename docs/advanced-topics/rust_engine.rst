@@ -422,7 +422,7 @@ cooperate through PyO3:
   dispatch for Python SimProcedures, technique support, and state
   synchronization through ``RustStateProxy``.
 * **FFI boundary:** PyO3 bindings in ``native/angr/src/lib.rs``.
-* **Symbolic values** (``RustBV``, ``value.rs`` in the ``bv`` value layer,
+* **Symbolic values** (``RustBV``, ``value.rs`` in the ``native/angr-bv`` value crate,
   which names no solver; angr-mx00p.116.7): a value up
   to 128 bits wide that is known is a ``Concrete``; anything else is a
   clarirs term (``RustBV::Ast``), the same AST type Python claripy

@@ -97,9 +97,9 @@ indistinguishable from one that cannot. The newer scripts
 | `#[angr_macros::steady_guard_checked]` | any `&mut self` method, whatever its visibility, on a `#[pymethods] impl RustExplorationManager` block (`exploration/manager_methods*.rs`) lacking `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]` → `compile_error!` | the `exempt` attribute with a reason | macro doc in `native/angr-macros/src/lib.rs`; `angr-macros-call-site-invariants` |
 | `tools/audit_rounding_mode_threading.py` | a closure in a `fn *_rm` that ignores its rounding-mode parameter, or an rm operand bound to `_rm` and dropped (`vex/`, `interpreter/`; empty baseline) | `rm-ignored: <why>` on the line above, or as the site's trailing comment | `VEXOps::binop_with_rm` / `qop_with_rm`, `ops::float_arith::apply_rounding` |
 | `tools/audit_sp_default_zero.py` | an SP / return-address accessor chained to `.unwrap_or(0)` / `.unwrap_or_default()` (empty baseline) | `sp-default-ok: <why>` on the line above, or as the site's trailing comment | `AddrOrSymbolic::or_log` in `arch/mod.rs` — the typed accessors have no `Default`/`From<u64>`, `.concrete()` is the only escape hatch |
-| `tools/audit_overflow_wraparound.py` | a bare `+`/`-`/`+=`/`-=` on an address/size/offset/count-shaped operand in `native/angr/src/{arch,bv,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/` (empty baseline) | `overflow-ok: <why>` on the flagged line or either of the two above (for a multi-line expression the flagged line is the continuation carrying the operator) | address arithmetic wraps, sizes and identities refuse: `invariant-rust-concrete-arith-must-wrap`, `invariant-proc-address-arith-wrapping`, `invariant-overflow-fix-refuse-not-saturate-identities`; `cargo test --profile release-checked` has overflow-checks on but is a runtime net only |
+| `tools/audit_overflow_wraparound.py` | a bare `+`/`-`/`+=`/`-=` on an address/size/offset/count-shaped operand in `native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/` and `native/angr-bv/src/` (empty baseline) | `overflow-ok: <why>` on the flagged line or either of the two above (for a multi-line expression the flagged line is the continuation carrying the operator) | address arithmetic wraps, sizes and identities refuse: `invariant-rust-concrete-arith-must-wrap`, `invariant-proc-address-arith-wrapping`, `invariant-overflow-fix-refuse-not-saturate-identities`; `cargo test --profile release-checked` has overflow-checks on but is a runtime net only |
 | `tools/audit_page_shift.py` | an open-coded page shift (`>> 12`, `PageIndex::SHIFT`) or a `0x1000`/`4096`/`0xFFF`/`4095` literal next to an address/page-shaped operand, all of `native/angr/src/` (empty baseline) | `page-shift-ok: <why>` on the flagged line or either of the two above | `Address::{page_num, page_base, page_offset}`, `PageIndex::{of, base_addr, range_covering}`, `PAGE_SIZE`/`PAGE_MASK` in `memory/page.rs` |
-| `tools/audit_core_pyo3_free.py` | any PyO3 token in code (`pyo3`, `Python::initialize` / `attach`, `Py<…>`, `#[pyclass]`, …) in any file, test or prod, under `native/angr/src/{arch,bv,memory,symbolic,vex,interpreter,state}/` (no baseline; the set is empty) | only the upstream-owned files in the script's `ALLOWED` map, each with its reason | `interpreter::EngineHost` and its test double `interpreter::TestHost`; `state::HostAst`; the shell's `state_bridge`, `callbacks`, `claripy_bridge` |
+| `tools/audit_core_pyo3_free.py` | any PyO3 token in code (`pyo3`, `Python::initialize` / `attach`, `Py<…>`, `#[pyclass]`, …) in any file, test or prod, under `native/angr/src/{arch,memory,symbolic,vex,interpreter,state}/` and `native/angr-bv/src/` (no baseline; the set is empty) | only the upstream-owned files in the script's `ALLOWED` map, each with its reason | `interpreter::EngineHost` and its test double `interpreter::TestHost`; `state::HostAst`; the shell's `state_bridge`, `callbacks`, `claripy_bridge` |
 | `tools/audit_test_import_guard.py` | a `py.import("angr.…")` in Rust test code: `cargo test` cannot import `angr`, so the guarded test returns early and passes (no baseline; the set is empty) | `import-guard-ok: <why>` on the line or the one above | `claripy_bridge::claripy_module` / `claripy_object` in `claripy_bridge/mod.rs` |
 
 Preferred fix order for the "invariant upheld at some call sites but not
@@ -185,12 +185,13 @@ module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
 - **Rust engine** (`native/angr/src/`): `exploration/` (manager
   `#[pymethods]` split across `manager_methods*.rs`, the run loops,
   stepping, the work-stealing scheduler), `interpreter/` (VEX execution),
-  `vex/` (IR, op semantics, lifting), `bv/` (`RustBV` and its ops, no
-  solver and no `crate::` paths), `symbolic/` (`SymContext`, `ToZ3`, Z3
-  plumbing), `solver/` (the `RustSolverContext` Python surface),
+  `vex/` (IR, op semantics, lifting), `symbolic/` (`SymContext`, `ToZ3`,
+  Z3 plumbing, and the `RustBV` re-export of `angr_bv::SymBV`), `solver/` (the `RustSolverContext` Python surface),
   `claripy_bridge/` (AST import/export and its caches), `memory/`,
   `state/`, `arch/`, `syscalls/`, `procedures/`, `callbacks/`,
   `fuzzer/`, `automaton/`.
+- **Value layer** (`native/angr-bv/`): `SymBV` (the engine's `RustBV`) and
+  its ops, with no solver dependency; `src/lib.rs` indexes its files.
 - **Compiler-enforced invariants**: `native/angr-macros/` (`steady_guarded`
   / `steady_guard_checked`, `MergePolicy`, `callback_setters!`,
   `inspect_test_entries!`, `inspect_dispatch!`); the crate doc explains

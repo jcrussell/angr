@@ -46,6 +46,7 @@ crate-type = ["cdylib", "rlib"]
 fuzzing = []
 
 [dependencies]
+angr-bv = { path = "../angr-bv" }
 angr-macros = { path = "../angr-macros" }
 backtrace = "0.3.76"
 clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }

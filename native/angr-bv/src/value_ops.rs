@@ -1,7 +1,7 @@
-//! Bitvector arithmetic / bitwise / comparison / structural ops for [`RustBV`].
+//! Bitvector arithmetic / bitwise / comparison / structural ops for [`SymBV`].
 //!
 //! Slice .2 of the `value.rs` split (angr-7hwz). Carries the
-//! second `impl RustBV` block: the canonicalize helpers, integer arithmetic
+//! second `impl SymBV` block: the canonicalize helpers, integer arithmetic
 //! (`add`/`sub`/`mul`/`udiv`/`sdiv`/`urem`/`srem`/`neg`), bitwise
 //! (`and`/`or`/`xor`/`not`/`reverse`/shifts/rotates), comparisons (`eq`/`ne`
 //! plus the macro-generated unsigned/signed ordering pairs), structural ops
@@ -11,7 +11,7 @@
 //!
 //! The two `define_{unsigned,signed}_cmp_pair!` macros and the free helpers
 //! `try_zext_const_cmp_fold` / `sign_extend` / `sign_extend_to` move here
-//! with the ops they serve (used nowhere else). `RustBV::all_ones_mask` stays
+//! with the ops they serve (used nowhere else). `SymBV::all_ones_mask` stays
 //! in `value.rs` (also used by the `ones` constructor) promoted to
 //! `pub(super)`.
 //!
@@ -30,7 +30,7 @@ use super::stats::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_commutative_canonicalize,
     record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
 };
-use super::value::{BVOp, RustBV};
+use super::value::{BVOp, SymBV};
 use super::value_shape::Node;
 
 /// Generate a borrow + consuming comparison pair for an unsigned ordering
@@ -229,7 +229,7 @@ macro_rules! define_binop_pair {
     };
 }
 
-impl RustBV {
+impl SymBV {
     // =========================================================================
     // Arithmetic Operations
     // =========================================================================
@@ -242,7 +242,7 @@ impl RustBV {
     /// to the solver, not on intermediate ASTs used as branch conditions,
     /// register values, etc. Sorting operands by this key at construction
     /// time so two callers that build the same commutative op in opposite
-    /// orders produce the same RustBV (and therefore the same Z3 AST).
+    /// orders produce the same SymBV (and therefore the same Z3 AST).
     ///
     /// Ordering: clarirs terms first, keyed by their structural hash, then
     /// constants, so a constant always ends up on the right. clarirs' hash is
@@ -250,8 +250,8 @@ impl RustBV {
     #[inline]
     fn canonical_sort_key(&self) -> (u8, u128) {
         match self {
-            RustBV::Ast { ast, .. } => (0, u128::from(ast.hash())),
-            RustBV::Concrete { value, .. } => (1, *value),
+            SymBV::Ast { ast, .. } => (0, u128::from(ast.hash())),
+            SymBV::Concrete { value, .. } => (1, *value),
         }
     }
 
@@ -275,9 +275,9 @@ impl RustBV {
     /// constructor, the float builder and the legacy-snapshot decode turn an
     /// op into a value (angr-mx00p.12, .13). A width-0 result is the empty
     /// bitvector's only value (`invariant-rustbv-zero-width`).
-    pub fn from_op(width: u32, op: BVOp, operands: Vec<RustBV>) -> Self {
+    pub fn from_op(width: u32, op: BVOp, operands: Vec<SymBV>) -> Self {
         if width == 0 {
-            return RustBV::Concrete { value: 0, width: 0 };
+            return SymBV::Concrete { value: 0, width: 0 };
         }
         match super::value_clarirs::build_term(&op, &operands, width) {
             Ok(term) => Self::from_clarirs_lowerable(term),
@@ -299,12 +299,12 @@ impl RustBV {
     /// fresh variable, so the value stays unconstrained rather than
     /// silently wrong.
     fn unbuildable(width: u32) -> Self {
-        RustBV::fresh("unbuildable_op", width)
+        SymBV::fresh("unbuildable_op", width)
     }
 
     /// [`Self::from_op`] for the fixed-arity call sites.
     #[inline]
-    fn expr_node<const N: usize>(width: u32, op: BVOp, operands: [RustBV; N]) -> Self {
+    fn expr_node<const N: usize>(width: u32, op: BVOp, operands: [SymBV; N]) -> Self {
         Self::from_op(width, op, Vec::from(operands))
     }
 
@@ -312,7 +312,7 @@ impl RustBV {
     pub fn float_node(
         kind: super::value::FloatOpKind,
         prec: super::value::FloatPrec,
-        operands: Vec<RustBV>,
+        operands: Vec<SymBV>,
     ) -> Self {
         Self::from_op(kind.result_bits(prec), BVOp::Float { kind, prec }, operands)
     }
@@ -1110,7 +1110,7 @@ impl RustBV {
     }
 
     /// The single implementation of Extract: run the rules 1-5 canonicalization
-    /// through the generic [`drive_extract`] driver against the RustBV-rebuilding
+    /// through the generic [`drive_extract`] driver against the SymBV-rebuilding
     /// [`RustBVExtractTarget`], which reconstructs Extract/Concat/Reverse/Zero
     /// nodes (angr-ph300.81).
     ///
@@ -1199,7 +1199,7 @@ impl RustBV {
     ///
     /// Panics if `parts` is empty.
     #[inline]
-    pub fn concat_balanced(parts: &[RustBV]) -> Self {
+    pub fn concat_balanced(parts: &[SymBV]) -> Self {
         assert!(
             !parts.is_empty(),
             "concat_balanced requires at least one element"
@@ -1306,7 +1306,7 @@ impl RustBV {
 
 /// Number of leading zero bits of `value` read as a `width`-bit bitvector.
 ///
-/// Shared by `RustBV::clz_into` and the concrete-operand fold for `BVOp::Clz`
+/// Shared by `SymBV::clz_into` and the concrete-operand fold for `BVOp::Clz`
 /// in `claripy_bridge::export::rustbv_to_claripy_memo`, which used to carry
 /// its own copy spelled `value.leading_zeros() - (128 - width)` — unguarded
 /// `u32` arithmetic that underflows for `width > 128` (a panic under
@@ -1329,7 +1329,7 @@ pub fn concrete_clz(value: u128, width: u32) -> u32 {
 
 /// Number of trailing zero bits of `value` read as a `width`-bit bitvector.
 ///
-/// Sibling of [`concrete_clz`], shared by `RustBV::ctz_into` and the same
+/// Sibling of [`concrete_clz`], shared by `SymBV::ctz_into` and the same
 /// `claripy_bridge::export` fold. This one never had the underflow — the
 /// `.min(width)` clamp is the whole adjustment — but it is duplicated at the
 /// same two sites, so it moves here with its sibling rather than leaving one
@@ -1372,7 +1372,7 @@ enum ZExtCmp {
 ///
 /// Returns `None` if `zext_side` is not a `BVOp::ZeroExt(_)` expression, or
 /// `const_side` is not concrete, or the widths don't match the expected shape.
-fn try_zext_const_cmp_fold(zext_side: &RustBV, const_side: &RustBV, op: ZExtCmp) -> Option<RustBV> {
+fn try_zext_const_cmp_fold(zext_side: &SymBV, const_side: &SymBV, op: ZExtCmp) -> Option<SymBV> {
     let Some(Node {
         op: BVOp::ZeroExt(extend_bits),
         operands,
@@ -1426,11 +1426,11 @@ fn try_zext_const_cmp_fold(zext_side: &RustBV, const_side: &RustBV, op: ZExtCmp)
                     ZExtCmp::Ne => 1,
                     _ => unreachable!(),
                 };
-                return Some(RustBV::concrete(val, 1));
+                return Some(SymBV::concrete(val, 1));
             }
             // High bits agree (both zero) → narrow.
             record_zext_cmp_collapse();
-            let narrowed_const = RustBV::concrete(c_low, inner_width);
+            let narrowed_const = SymBV::concrete(c_low, inner_width);
             let narrowed_inner = inner.clone();
             let result = match op {
                 ZExtCmp::Eq => narrowed_inner.eq_into(narrowed_const),
@@ -1444,50 +1444,50 @@ fn try_zext_const_cmp_fold(zext_side: &RustBV, const_side: &RustBV, op: ZExtCmp)
             if c_high != 0 {
                 // c >= 2^(W-k) ⇒ ZeroExt(x) < c is always true.
                 record_zext_cmp_trivial_decide();
-                return Some(RustBV::concrete(1, 1));
+                return Some(SymBV::concrete(1, 1));
             }
             if c_low == 0 {
                 // ZeroExt(x) < 0 is unsat.
                 record_zext_cmp_trivial_decide();
-                return Some(RustBV::concrete(0, 1));
+                return Some(SymBV::concrete(0, 1));
             }
             record_zext_cmp_collapse();
-            Some(inner.clone().ult_into(RustBV::concrete(c_low, inner_width)))
+            Some(inner.clone().ult_into(SymBV::concrete(c_low, inner_width)))
         }
         ZExtCmp::UltSwapped => {
             // `c < ZeroExt(k, x)`. ZeroExt ∈ [0, 2^(W-k)).
             if c_high != 0 {
                 // c >= 2^(W-k) > ZeroExt(x); never c < ZeroExt(x).
                 record_zext_cmp_trivial_decide();
-                return Some(RustBV::concrete(0, 1));
+                return Some(SymBV::concrete(0, 1));
             }
             record_zext_cmp_collapse();
-            Some(RustBV::concrete(c_low, inner_width).ult_into(inner.clone()))
+            Some(SymBV::concrete(c_low, inner_width).ult_into(inner.clone()))
         }
         ZExtCmp::Ule => {
             // `ZeroExt(k, x) <= c`.
             if c_high != 0 {
                 // c >= 2^(W-k) > all ZeroExt values; always true.
                 record_zext_cmp_trivial_decide();
-                return Some(RustBV::concrete(1, 1));
+                return Some(SymBV::concrete(1, 1));
             }
             record_zext_cmp_collapse();
-            Some(inner.clone().ule_into(RustBV::concrete(c_low, inner_width)))
+            Some(inner.clone().ule_into(SymBV::concrete(c_low, inner_width)))
         }
         ZExtCmp::UleSwapped => {
             // `c <= ZeroExt(k, x)`.
             if c_high != 0 {
                 // c >= 2^(W-k) > ZeroExt(x); never c <= ZeroExt(x).
                 record_zext_cmp_trivial_decide();
-                return Some(RustBV::concrete(0, 1));
+                return Some(SymBV::concrete(0, 1));
             }
             if c_low == 0 {
                 // 0 <= ZeroExt(x) is always true.
                 record_zext_cmp_trivial_decide();
-                return Some(RustBV::concrete(1, 1));
+                return Some(SymBV::concrete(1, 1));
             }
             record_zext_cmp_collapse();
-            Some(RustBV::concrete(c_low, inner_width).ule_into(inner.clone()))
+            Some(SymBV::concrete(c_low, inner_width).ule_into(inner.clone()))
         }
     }
 }
@@ -1532,7 +1532,7 @@ fn exact_shl(v: u128, a: u128) -> Option<u128> {
 /// `exact` is the operation's `checked_*` result: `None` means the true
 /// mathematical result crossed bit 127. Below the storage ceiling that carry
 /// is simply the mod-2^width wraparound the width itself mandates, and
-/// `RustBV::concrete` masks it away; above it (`width > 128`) the carried bit
+/// `SymBV::concrete` masks it away; above it (`width > 128`) the carried bit
 /// is a *real* bit of the result — `2^128` is an ordinary 200-bit number — that
 /// the payload cannot hold, so the caller must decline the fold and let the
 /// operation stay a clarirs term (Z3 computes it exactly at the declared
@@ -1546,16 +1546,16 @@ fn concrete_arith_fits(width: u32, exact: Option<u128>) -> bool {
 /// vector, i.e. when an "operand is all-ones" simplification may fire
 /// (angr-nknv1).
 ///
-/// [`RustBV::all_ones_mask`] saturates at the u128 payload, so above 128 bits
+/// [`SymBV::all_ones_mask`] saturates at the u128 payload, so above 128 bits
 /// it returns `2^128 - 1` rather than `2^width - 1`; a `Concrete` cannot hold
-/// the width's all-ones value there at all (see [`RustBV::ones`]). A bare
+/// the width's all-ones value there at all (see [`SymBV::ones`]). A bare
 /// comparison against the mask therefore misidentifies the ordinary number
 /// `2^128 - 1` as all-ones, and the shortcut it unlocks (`x & ones → x`,
 /// `x | ones → ones`) is wrong for a symbolic `x`: the AND must clear bits
 /// `[128..width)` and the OR must keep them.
 #[inline]
 fn is_all_ones(v: u128, width: u32) -> bool {
-    !bits_beyond_storage(width) && v == RustBV::all_ones_mask(width)
+    !bits_beyond_storage(width) && v == SymBV::all_ones_mask(width)
 }
 
 /// `true` when the sign bit of a `width`-bit `Concrete` lies beyond the u128
@@ -1648,7 +1648,7 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> Option<u128> {
 
 /// Sink for the `Extract(high, low, inner)` canonicalization rules driven by
 /// [`drive_extract`]. Its one implementation, [`RustBVExtractTarget`], rebuilds
-/// `RustBV` nodes (construction-time folding in [`RustBV::extract_into`]); Z3
+/// `SymBV` nodes (construction-time folding in [`SymBV::extract_into`]); Z3
 /// sees the result only through `z3_lower`.
 ///
 /// The Rules 1-5 dispatch (Extract/Concat/Reverse/ZeroExt/SignExt) lives in
@@ -1657,11 +1657,11 @@ pub(super) trait ExtractTarget {
     /// What this target produces.
     type Output;
     /// Recurse into `inner`, extracting bits `[low..=high]`.
-    fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> Self::Output;
+    fn recurse(&mut self, inner: &SymBV, high: u32, low: u32) -> Self::Output;
     /// A fully-folded concrete `value` of `width` bits.
     fn concrete(&mut self, value: u128, width: u32) -> Self::Output;
     /// Identity extraction — the whole `inner` (`Extract(width-1, 0, x) → x`).
-    fn identity(&mut self, inner: &RustBV) -> Self::Output;
+    fn identity(&mut self, inner: &SymBV) -> Self::Output;
     /// Concatenate two already-produced halves (`hi` high, `lo` low).
     fn concat(&mut self, hi: Self::Output, lo: Self::Output) -> Self::Output;
     /// A zero constant of `width` bits.
@@ -1669,7 +1669,7 @@ pub(super) trait ExtractTarget {
     /// Byte-reverse an already-extracted multi-byte value of `inner_width` bits.
     fn reverse_bytes(&mut self, inner: Self::Output, inner_width: u32) -> Self::Output;
     /// Terminal `Extract(high, low, inner)` with no rule applied.
-    fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> Self::Output;
+    fn default_extract(&mut self, inner: &SymBV, high: u32, low: u32) -> Self::Output;
 }
 
 /// Apply the Extract canonicalization rules once, threading terminal actions
@@ -1678,12 +1678,12 @@ pub(super) trait ExtractTarget {
 ///
 /// Ordering note: the concrete fast-path is checked before the identity rule so
 /// a full-width extract of a literal folds to a fresh constant — matching the
-/// RustBV construction-time builders. Only a `Concrete` inner takes the fast
+/// SymBV construction-time builders. Only a `Concrete` inner takes the fast
 /// path, and for it the two orders agree, so the ordering is
 /// behavior-preserving.
 pub(super) fn drive_extract<T: ExtractTarget>(
     target: &mut T,
-    inner: &RustBV,
+    inner: &SymBV,
     high: u32,
     low: u32,
 ) -> T::Output {
@@ -1776,7 +1776,7 @@ pub(super) fn drive_extract<T: ExtractTarget>(
     target.default_extract(inner, high, low)
 }
 
-/// [`ExtractTarget`] that rebuilds `RustBV` nodes (used by `RustBV::extract_ref`,
+/// [`ExtractTarget`] that rebuilds `SymBV` nodes (used by `SymBV::extract_ref`,
 /// the single implementation behind every public Extract entry point).
 ///
 /// Stateless: it rebuilds through `concat_owned` and `reverse_owned`, the
@@ -1784,36 +1784,36 @@ pub(super) fn drive_extract<T: ExtractTarget>(
 pub(super) struct RustBVExtractTarget;
 
 impl ExtractTarget for RustBVExtractTarget {
-    type Output = RustBV;
+    type Output = SymBV;
 
-    fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> RustBV {
+    fn recurse(&mut self, inner: &SymBV, high: u32, low: u32) -> SymBV {
         drive_extract(self, inner, high, low)
     }
 
-    fn concrete(&mut self, value: u128, width: u32) -> RustBV {
-        RustBV::concrete(value, width)
+    fn concrete(&mut self, value: u128, width: u32) -> SymBV {
+        SymBV::concrete(value, width)
     }
 
-    fn identity(&mut self, inner: &RustBV) -> RustBV {
+    fn identity(&mut self, inner: &SymBV) -> SymBV {
         inner.clone()
     }
 
-    fn concat(&mut self, hi: RustBV, lo: RustBV) -> RustBV {
+    fn concat(&mut self, hi: SymBV, lo: SymBV) -> SymBV {
         hi.concat_owned(lo)
     }
 
-    fn zero(&mut self, width: u32) -> RustBV {
-        RustBV::zero(width)
+    fn zero(&mut self, width: u32) -> SymBV {
+        SymBV::zero(width)
     }
 
-    fn reverse_bytes(&mut self, inner: RustBV, _inner_width: u32) -> RustBV {
+    fn reverse_bytes(&mut self, inner: SymBV, _inner_width: u32) -> SymBV {
         inner.reverse_owned()
     }
 
-    fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> RustBV {
+    fn default_extract(&mut self, inner: &SymBV, high: u32, low: u32) -> SymBV {
         record_bvop_extract();
         let result_width = high - low + 1;
-        RustBV::expr_node(result_width, BVOp::Extract(high, low), [inner.clone()])
+        SymBV::expr_node(result_width, BVOp::Extract(high, low), [inner.clone()])
     }
 }
 

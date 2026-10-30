@@ -108,7 +108,7 @@ fn load_concrete_bytes_chunked_reservation_cap_does_not_truncate() {
 
 /// Write side, same 16-byte boundary: each chunk gets its own address and a
 /// width matching its byte count, and the low chunk's payload is little-endian
-/// packed. A single 40-byte `RustBV::concrete` would shift-overflow (angr-5aj8).
+/// packed. A single 40-byte `SymBV::concrete` would shift-overflow (angr-5aj8).
 #[test]
 fn store_concrete_bytes_chunked_splits_at_16_with_le_packing() {
     let data: Vec<u8> = (0..40u8).collect();

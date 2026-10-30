@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "native/angr",
+    "native/angr-bv",
     "native/angr-macros",
     "native/clarirs-core",
     "native/clarirs-num",

@@ -16,7 +16,7 @@
 //!
 //! ## `RustBV` — the bitvector value
 //!
-//! The value type and its ops live in `crate::bv` (angr-mx00p.116.7), which
+//! The value type and its ops live in `angr_bv` (angr-mx00p.116.7), which
 //! names no solver; the items are re-exported here so `crate::symbolic::RustBV`
 //! paths are unchanged. What stays here is the solver-facing half:
 //!
@@ -48,7 +48,7 @@
 //!
 //! ## Identity and trust-boundary guards
 //!
-//! `symbol_kind.rs` and `width_guards.rs` moved to `crate::bv`.
+//! `symbol_kind.rs` and `width_guards.rs` moved to `angr_bv`.
 //!
 //! ## Instrumentation and analysis
 //!
@@ -86,16 +86,16 @@ mod to_z3;
 mod transaction_ops;
 pub(crate) mod z3_lower;
 
-pub(crate) use crate::bv::names;
-pub use crate::bv::stats::{
+pub(crate) use angr_bv::names;
+pub use angr_bv::stats::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_zext_cmp_collapse,
     record_zext_cmp_trivial_decide,
 };
-pub use crate::bv::symbol_kind;
-pub use crate::bv::{
+pub use angr_bv::symbol_kind;
+pub use angr_bv::{
     BVOp, FloatOpKind, FloatPrec, MAX_BV_WIDTH, MAX_CONCRETE_CHUNK, MAX_CONCRETE_LOAD_BYTES,
-    RustBV, RustBVData, SymbolKind, UnsupportedRoundingMode, VexRm, check_bv_width,
-    check_concrete_load_size, check_extract_bounds, load_concrete_bytes_chunked,
+    SymBV as RustBV, SymBVData as RustBVData, SymbolKind, UnsupportedRoundingMode, VexRm,
+    check_bv_width, check_concrete_load_size, check_extract_bounds, load_concrete_bytes_chunked,
     store_concrete_bytes_chunked, u128_le_byte, u128_to_le_bytes,
 };
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
@@ -115,4 +115,4 @@ pub(crate) use to_z3::lowered_or_warn;
 pub use to_z3::{ToZ3, admit_clarirs};
 pub use z3_lower::LowerError;
 // Used by the claripy export.
-pub(crate) use crate::bv::{Node, bool_inside};
+pub(crate) use angr_bv::{Node, bool_inside};

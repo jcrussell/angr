@@ -1,6 +1,6 @@
 //! Symbolic bitvector values for VEX execution.
 //!
-//! The `RustBV` type represents a bitvector that is one of these variants:
+//! The `SymBV` type represents a bitvector that is one of these variants:
 //! - Concrete: A known fixed value
 //! - Ast: A clarirs term — every symbolic value, named leaves included
 
@@ -315,7 +315,7 @@ impl VexRm {
 /// A bitvector value that can be concrete or symbolic.
 ///
 /// This is the core value type for the VEX execution engine. All register
-/// and memory values are represented as `RustBV`.
+/// and memory values are represented as `SymBV`.
 ///
 /// A value holds no Z3 term: `symbolic::ToZ3::to_z3_ast` lowers an `Ast`
 /// through `z3_lower`, whose per-thread cache keyed by clarirs node is the
@@ -323,11 +323,11 @@ impl VexRm {
 ///
 /// ## Serialization
 ///
-/// `RustBV` implements `Serialize`/`Deserialize` via the `RustBVData`
+/// `SymBV` implements `Serialize`/`Deserialize` via the `SymBVData`
 /// shadow type.
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(try_from = "RustBVData", into = "RustBVData")]
-pub enum RustBV {
+#[serde(try_from = "SymBVData", into = "SymBVData")]
+pub enum SymBV {
     /// A known concrete value.
     Concrete {
         /// The value, masked to `width` bits (or to its low 128 bits when
@@ -343,12 +343,12 @@ pub enum RustBV {
         width: u32,
     },
     /// Every symbolic value: a clarirs term (angr-mx00p.11, .12). Always
-    /// bitvector-sorted: [`RustBV::from_clarirs`] encodes a Bool as
+    /// bitvector-sorted: [`SymBV::from_clarirs`] encodes a Bool as
     /// `ite(b, 1, 0)` and a float as its IEEE bits. Built by `from_clarirs`
     /// (deserializing included; `symbolic::admit_clarirs` at the trust
     /// boundaries) and by `from_clarirs_lowerable` for the
-    /// constructors, the leaves and the operands `RustBV::node` presents;
-    /// both fold a literal that fits a `u128` into [`RustBV::Concrete`].
+    /// constructors, the leaves and the operands `SymBV::node` presents;
+    /// both fold a literal that fits a `u128` into [`SymBV::Concrete`].
     ///
     /// Equality is node identity: clarirs interns, so equal terms are one node.
     Ast {
@@ -360,16 +360,16 @@ pub enum RustBV {
 
 // Registers and memory pages hold these, so the value carries no Z3 term
 // (angr-mx00p.116.4): a `Concrete`'s `u128` sets the size.
-const _: () = assert!(std::mem::size_of::<RustBV>() <= 32);
+const _: () = assert!(std::mem::size_of::<SymBV>() <= 32);
 
-/// Serde shadow form for [`RustBV`].
+/// Serde shadow form for [`SymBV`].
 ///
-/// `Concrete` mirrors [`RustBV::Concrete`]; an `Ast` travels as a [`WireDag`]
+/// `Concrete` mirrors [`SymBV::Concrete`]; an `Ast` travels as a [`WireDag`]
 /// of its clarirs term.
 ///
 /// This is the snapshot/serialization format (angr-x04s).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RustBVData {
+pub enum SymBVData {
     Concrete {
         value: u128,
         width: u32,
@@ -381,11 +381,11 @@ pub enum RustBVData {
     },
 }
 
-impl From<RustBV> for RustBVData {
-    fn from(bv: RustBV) -> Self {
+impl From<SymBV> for SymBVData {
+    fn from(bv: SymBV) -> Self {
         match bv {
-            RustBV::Concrete { value, width } => RustBVData::Concrete { value, width },
-            RustBV::Ast { ast, .. } => RustBVData::Ast {
+            SymBV::Concrete { value, width } => SymBVData::Concrete { value, width },
+            SymBV::Ast { ast, .. } => SymBVData::Ast {
                 dag: WireDag::encode(std::slice::from_ref(&ast)),
             },
         }
@@ -394,22 +394,22 @@ impl From<RustBV> for RustBVData {
 
 /// Fallible because an `Ast` payload is a node list that must decode to one
 /// bitvector-sorted root; every other variant always converts.
-impl TryFrom<RustBVData> for RustBV {
+impl TryFrom<SymBVData> for SymBV {
     type Error = String;
 
-    fn try_from(data: RustBVData) -> Result<Self, String> {
+    fn try_from(data: SymBVData) -> Result<Self, String> {
         Ok(match data {
-            RustBVData::Concrete { value, width } => RustBV::Concrete { value, width },
-            RustBVData::Ast { dag } => {
+            SymBVData::Concrete { value, width } => SymBV::Concrete { value, width },
+            SymBVData::Ast { dag } => {
                 let roots = dag
                     .decode(&GLOBAL_CONTEXT)
-                    .map_err(|e| format!("RustBV::Ast: {e}"))?;
+                    .map_err(|e| format!("SymBV::Ast: {e}"))?;
                 let [root] = <[_; 1]>::try_from(roots)
-                    .map_err(|r| format!("RustBV::Ast: {} roots, expected 1", r.len()))?;
-                // Encoding only ever writes the bitvector a `RustBV::Ast` holds.
+                    .map_err(|r| format!("SymBV::Ast: {} roots, expected 1", r.len()))?;
+                // Encoding only ever writes the bitvector a `SymBV::Ast` holds.
                 if !root.ast_type().is_bitvec() {
                     return Err(format!(
-                        "RustBV::Ast: root is {:?}, not a bitvector",
+                        "SymBV::Ast: root is {:?}, not a bitvector",
                         root.ast_type()
                     ));
                 }
@@ -417,13 +417,13 @@ impl TryFrom<RustBVData> for RustBV {
                 // fold, no admission. An engine-built term need not be
                 // lowerable, and one that is not fails its query
                 // (angr-mx00p.116.5).
-                RustBV::from_clarirs(root).map_err(|e| format!("RustBV::Ast: {e}"))?
+                SymBV::from_clarirs(root).map_err(|e| format!("SymBV::Ast: {e}"))?
             }
         })
     }
 }
 
-impl RustBV {
+impl SymBV {
     // =========================================================================
     // Constructors
     // =========================================================================
@@ -431,7 +431,7 @@ impl RustBV {
     /// Create a concrete bitvector from a value.
     #[inline]
     pub fn concrete(value: u128, width: u32) -> Self {
-        RustBV::Concrete {
+        SymBV::Concrete {
             value: value & Self::all_ones_mask(width),
             width,
         }
@@ -440,7 +440,7 @@ impl RustBV {
     /// Create a zero bitvector.
     #[inline]
     pub fn zero(width: u32) -> Self {
-        RustBV::Concrete { value: 0, width }
+        SymBV::Concrete { value: 0, width }
     }
 
     /// Create a bitvector with all bits set to 1.
@@ -454,7 +454,7 @@ impl RustBV {
     /// `value_ops::bits_beyond_storage` is the predicate to gate on.
     #[inline]
     pub fn ones(width: u32) -> Self {
-        RustBV::Concrete {
+        SymBV::Concrete {
             value: Self::all_ones_mask(width),
             width,
         }
@@ -510,7 +510,7 @@ impl RustBV {
         if width == 0 {
             // SILENT(cat-a): expected control flow — the empty bitvector's only
             // value, not a fallback for a failure.
-            return RustBV::Concrete { value: 0, width: 0 };
+            return SymBV::Concrete { value: 0, width: 0 };
         }
         // A Bool-tagged name is `ite(BoolS, 1, 0)`, the encoding
         // `from_clarirs` and `leaf_var` read back (angr-mx00p.12).
@@ -527,7 +527,7 @@ impl RustBV {
             Some(bool_name) => gc.bools(bool_name).and_then(super::value_clarirs::bit_of),
             None => gc.bvs(name, width),
         };
-        RustBV::from_clarirs_lowerable(term.expect("clarirs accepts every BVS / BoolS leaf"))
+        SymBV::from_clarirs_lowerable(term.expect("clarirs accepts every BVS / BoolS leaf"))
     }
 
     /// Create a fresh symbolic bitvector variable named `{hint}_{n}`, with `n`
@@ -536,13 +536,13 @@ impl RustBV {
     /// and rides in snapshots (`names::watermarks`), so a restored state's
     /// names are not reminted.
     pub fn fresh(hint: &str, width: u32) -> Self {
-        RustBV::symbol(format!("{hint}_{}", super::names::next(hint)), width)
+        SymBV::symbol(format!("{hint}_{}", super::names::next(hint)), width)
     }
 
-    /// Wrap a clarirs AST as a [`RustBV::Ast`], in the bitvector encoding the
+    /// Wrap a clarirs AST as a [`SymBV::Ast`], in the bitvector encoding the
     /// other variants use: a Bool becomes `ite(b, 1, 0)` (width 1), a float its
     /// IEEE bits (`fpToIEEEBV`). A literal that fits a `u128` folds to
-    /// [`RustBV::Concrete`]. Strings have no `RustBV` form and are refused.
+    /// [`SymBV::Concrete`]. Strings have no `SymBV` form and are refused.
     ///
     /// Pure: the sort encoding and the literal fold only. Whether the term
     /// has a Z3 form is the solver's question, not the value's; a term
@@ -560,16 +560,16 @@ impl RustBV {
             AstType::Float(_) => ctx.fp_to_ieeebv(&ast)?,
             AstType::String => {
                 return Err(ClarirsError::TypeError(
-                    "a string AST has no RustBV form".into(),
+                    "a string AST has no SymBV form".into(),
                 ));
             }
         };
         if let clarirs_core::prelude::AstOp::BVV(value) = ast.op()
             && let Ok(v) = u128::try_from(&value.to_biguint())
         {
-            return Ok(RustBV::concrete(v, value.len()));
+            return Ok(SymBV::concrete(v, value.len()));
         }
-        Ok(RustBV::Ast {
+        Ok(SymBV::Ast {
             width: ast.size(),
             ast,
         })
@@ -583,30 +583,30 @@ impl RustBV {
     #[inline]
     pub fn width(&self) -> u32 {
         match self {
-            RustBV::Concrete { width, .. } => *width,
-            RustBV::Ast { width, .. } => *width,
+            SymBV::Concrete { width, .. } => *width,
+            SymBV::Ast { width, .. } => *width,
         }
     }
 
     /// Check if this value is concrete.
     #[inline]
     pub fn is_concrete(&self) -> bool {
-        matches!(self, RustBV::Concrete { .. })
+        matches!(self, SymBV::Concrete { .. })
     }
 
     /// Check if this value is symbolic.
     #[inline]
     pub fn is_symbolic(&self) -> bool {
-        matches!(self, RustBV::Ast { .. })
+        matches!(self, SymBV::Ast { .. })
     }
 
     /// Try to get the concrete value.
     #[inline]
     pub fn as_u128(&self) -> Option<u128> {
         match self {
-            RustBV::Concrete { value, .. } => Some(*value),
+            SymBV::Concrete { value, .. } => Some(*value),
             // `from_clarirs` folds every literal that fits into `Concrete`.
-            RustBV::Ast { .. } => None,
+            SymBV::Ast { .. } => None,
         }
     }
 
@@ -621,26 +621,26 @@ impl RustBV {
 // Trait Implementations
 // =============================================================================
 
-impl fmt::Debug for RustBV {
+impl fmt::Debug for SymBV {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RustBV::Concrete { value, width } => {
+            SymBV::Concrete { value, width } => {
                 write!(f, "Concrete(0x{value:x}, {width})")
             }
-            RustBV::Ast { width, ast, .. } => {
+            SymBV::Ast { width, ast, .. } => {
                 write!(f, "Ast({}, {width})", ast.to_smtlib_shallow(2))
             }
         }
     }
 }
 
-impl fmt::Display for RustBV {
+impl fmt::Display for SymBV {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RustBV::Concrete { value, width } => {
+            SymBV::Concrete { value, width } => {
                 write!(f, "<BV{width} 0x{value:x}>")
             }
-            RustBV::Ast { width, ast, .. } => {
+            SymBV::Ast { width, ast, .. } => {
                 write!(f, "<BV{width} {}>", ast.to_smtlib_shallow(2))
             }
         }
@@ -650,7 +650,7 @@ impl fmt::Display for RustBV {
 /// Equality is **value-based where a value is known, identity-based otherwise**
 /// (angr-sqfj8.96).
 ///
-/// The relation partitions `RustBV` into two classes, which never compare
+/// The relation partitions `SymBV` into two classes, which never compare
 /// equal across the class boundary:
 ///
 /// 1. **Known values** (`Concrete`): equal iff same value and same width.
@@ -667,10 +667,10 @@ impl fmt::Display for RustBV {
 ///
 /// There is intentionally no `Eq`/`Hash`: node identity is pointer identity,
 /// which a serde round-trip does not preserve outside one process.
-impl PartialEq for RustBV {
+impl PartialEq for SymBV {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (RustBV::Ast { ast: a, .. }, RustBV::Ast { ast: b, .. }) => Arc::ptr_eq(a, b),
+            (SymBV::Ast { ast: a, .. }, SymBV::Ast { ast: b, .. }) => Arc::ptr_eq(a, b),
             _ => match (self.as_u128(), other.as_u128()) {
                 (Some(a), Some(b)) => a == b && self.width() == other.width(),
                 _ => false,
@@ -679,7 +679,7 @@ impl PartialEq for RustBV {
     }
 }
 
-// angr-7hwz.1: RustBV unit tests, extracted out of the former in-file
+// angr-7hwz.1: SymBV unit tests, extracted out of the former in-file
 // `mod tests` (1219 lines) into a sibling file to shrink value.rs below the
 // god-object threshold. Declared as a direct child of `value` so
 // `use super::*` reaches `value`'s private items.

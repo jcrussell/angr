@@ -17,8 +17,8 @@
 
 use clarirs_core::prelude::{AstRef, ClarirsError};
 
+use super::RustBV;
 use super::z3_lower::LowerError;
-use crate::bv::RustBV;
 
 /// Lowering a value into the engine's thread-local Z3 context. Implemented
 /// for [`RustBV`]; a trait so the value type stays free of Z3 and the
@@ -123,7 +123,7 @@ impl ToZ3 for RustBV {
 /// Lower the Bool a 1-bit [`RustBV::Ast`] term stands for: the `c` of the
 /// `ite(c, 1, 0)` encoding, or `bit != 0`.
 fn lower_clarirs_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, LowerError> {
-    let cond = crate::bv::bool_of(ast)
+    let cond = angr_bv::bool_of(ast)
         .map_err(|err| LowerError::InvalidArgs(format!("no Bool view: {err}")))?;
     super::z3_lower::lower_bool(&cond)
 }
@@ -150,7 +150,7 @@ pub fn admit_clarirs(ast: AstRef<'static>) -> Result<RustBV, ClarirsError> {
 // drives `SymContext::eval`.
 test_submod!("value_z3_fp_tests.rs" => value_z3_fp_tests);
 
-// The solver-facing halves of the `crate::bv` test files: each lowers or
+// The solver-facing halves of the `angr_bv` test files: each lowers or
 // solves, so it stays on this side of the value layer (angr-mx00p.116.7).
 test_submod!("value_simplify_z3_tests.rs" => value_simplify_z3_tests);
 test_submod!("value_zext_cmp_z3_tests.rs" => value_zext_cmp_z3_tests);

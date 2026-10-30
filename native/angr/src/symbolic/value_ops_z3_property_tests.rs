@@ -1,7 +1,7 @@
 //! The solver-facing half of `bv/value_ops_property_tests.rs`: these tests lower or solve, so
 //! they stay in `symbolic` (angr-mx00p.116.7).
 
-use crate::bv::*;
+use crate::symbolic::RustBV;
 // Property-based tests for `value_ops.rs` (RustBV concrete-folding ops) and
 // `bv_codec.rs` (concrete<->Z3 BV round-trips) (angr-ph300.1).
 //

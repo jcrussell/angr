@@ -1,7 +1,8 @@
 //! The solver-facing half of `bv/value_simplify_tests.rs`: these tests lower or solve, so
 //! they stay in `symbolic` (angr-mx00p.116.7).
 
-use crate::bv::*;
+use angr_bv::*;
+use crate::symbolic::RustBV;
 // Expression-simplification tests: algebraic identities, the shift/mul →
 // Concat rewrites, and the pre-Z3 `Extract` rewrite pass (angr-p8cz).
 

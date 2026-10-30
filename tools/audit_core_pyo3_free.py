@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Keep PyO3 out of the engine core, its tests included (angr-mx00p.75).
 
-The core modules (``arch/``, ``bv/``, ``memory/``, ``symbolic/``, ``vex/``,
-``interpreter/`` and ``state/`` under ``native/angr/src/``) are what the crate
-split (angr-mx00p.51) moves into a crate with no ``pyo3`` dependency. Their
+The core modules (``arch/``, ``memory/``, ``symbolic/``, ``vex/``,
+``interpreter/`` and ``state/`` under ``native/angr/src/``, and all of
+``native/angr-bv/src/``) are what the crate split (angr-mx00p.51) moves into
+a crate with no ``pyo3`` dependency. Their
 code reaches Python only through the PyO3 shell (``EngineHost`` for the
 interpreter, ``HostAst`` for the state's overlays), and their tests run
 against plain-Rust doubles (``interpreter::TestHost``), so none of them starts
@@ -43,9 +44,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-SRC = REPO / "native" / "angr" / "src"
-CORE_DIRS = ("arch", "bv", "memory", "symbolic", "vex", "interpreter", "state")
-SCAN = {"native/angr": CORE_DIRS}
+CORE_DIRS = ("arch", "memory", "symbolic", "vex", "interpreter", "state")
+SCAN = {"native/angr": CORE_DIRS, "native/angr-bv": ("",)}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, not the engine core"}
 # Fewer files than this means the core moved out of CORE_DIRS.
 MIN_FILES = 150
@@ -57,9 +57,9 @@ def scan_files(repo_root: Path = REPO) -> list[Path]:
     require_floor(files, MIN_FILES, "audit_core_pyo3_free")
     return files
 
-# Files that keep PyO3 for an upstream reason, relative to SRC.
+# Files that keep PyO3 for an upstream reason, relative to REPO.
 ALLOWED = {
-    "vex/libvex_lifter.rs": (
+    "native/angr/src/vex/libvex_lifter.rs": (
         "built on upstream's ailment::vex_ffi (init_symbols(py)), which lives in "
         "the rustylib crate; moving it needs vex_ffi in its own crate (RFC question)"
     ),
@@ -134,12 +134,12 @@ def main() -> int:
     found = []
     scanned = len(files)
     for path in files:
-        rel = path.relative_to(SRC).as_posix()
+        rel = path.relative_to(REPO).as_posix()
         if rel in ALLOWED:
             continue
         for line in scan(path.read_text(encoding="utf-8")):
-            found.append(f"native/angr/src/{rel}:{line}")
-    stale = [rel for rel in ALLOWED if not (SRC / rel).is_file()]
+            found.append(f"{rel}:{line}")
+    stale = [rel for rel in ALLOWED if not (REPO / rel).is_file()]
     if stale:
         print(f"audit_core_pyo3_free: ALLOWED names files that no longer exist: {stale}", file=sys.stderr)
         return 1

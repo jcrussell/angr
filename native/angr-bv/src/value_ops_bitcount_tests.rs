@@ -5,7 +5,7 @@
 //! `leading_zeros() - (128 - width)`, which underflows for `width > 128`.
 //! Widths above 128 are ordinary here — a page-sized memory chunk or the
 //! 1024-bit BVs the solver round-trip tests build both exceed it — and
-//! `RustBV::as_u128` still answers `Some` for such a value as long as it fits
+//! `SymBV::as_u128` still answers `Some` for such a value as long as it fits
 //! in a `u128`, so the fold is entered with a `width` the old spelling could
 //! not represent.
 

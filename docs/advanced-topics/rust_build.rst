@@ -63,8 +63,9 @@ Incremental builds
 ``make check`` is **not** the CI gate: it compiles default features only,
 so it never sees the ``fuzzer`` / ``fuzzing`` code. CI runs
 ``cargo clippy --all-targets --all-features -- -D warnings`` from the repo
-root (no ``--manifest-path``, so the ``native/angr-macros`` test targets
-are covered too).
+root (no ``--manifest-path``, so the ``native/angr-macros`` and
+``native/angr-bv`` test targets are covered too). The value layer's own
+tests need no Z3 environment: ``cargo test -p angr-bv``.
 
 ``z3-sys`` links whatever ``Z3_LIBRARY_PATH_OVERRIDE`` names, and
 ``native/angr/build.rs`` runpaths the crate's binaries (the extension and

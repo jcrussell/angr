@@ -169,7 +169,7 @@ pub(crate) static CONCRETIZE_DISJUNCTION_MAX_TERMS: AtomicU32 = AtomicU32::new(0
 // whether canonicalization/dedup at add_constraint_raw is worth implementing
 // (threshold: any >=10%).
 //
-// (a) commutative-arg-order: `crate::bv::stats` (the value layer's own
+// (a) commutative-arg-order: `angr_bv::stats` (the value layer's own
 // counters).
 // (b) branch-condition simplify-skip: sampled across assume_true /
 // assume_false / add_constraint_raw. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
@@ -372,19 +372,19 @@ fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], na
 pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 8] = [
     (
         "zext_cmp_collapse_count",
-        &crate::bv::stats::ZEXT_CMP_COLLAPSE_COUNT,
+        &angr_bv::stats::ZEXT_CMP_COLLAPSE_COUNT,
     ),
     (
         "zext_cmp_trivial_decide_count",
-        &crate::bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
+        &angr_bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
     ),
     (
         "rustbv_commutative_canonicalize_count",
-        &crate::bv::stats::RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT,
+        &angr_bv::stats::RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT,
     ),
     (
         "rustbv_commutative_swap_count",
-        &crate::bv::stats::RUSTBV_COMMUTATIVE_SWAP_COUNT,
+        &angr_bv::stats::RUSTBV_COMMUTATIVE_SWAP_COUNT,
     ),
     (
         "add_constraint_raw_dedup_scanned",
@@ -472,9 +472,9 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
         &CONCRETIZE_DISJUNCTION_TERMS_TOTAL,
     ),
     // AST construction.
-    ("bvop_reverse_count", &crate::bv::stats::BVOP_REVERSE_COUNT),
-    ("bvop_concat_count", &crate::bv::stats::BVOP_CONCAT_COUNT),
-    ("bvop_extract_count", &crate::bv::stats::BVOP_EXTRACT_COUNT),
+    ("bvop_reverse_count", &angr_bv::stats::BVOP_REVERSE_COUNT),
+    ("bvop_concat_count", &angr_bv::stats::BVOP_CONCAT_COUNT),
+    ("bvop_extract_count", &angr_bv::stats::BVOP_EXTRACT_COUNT),
     // Constraint intake and simplify sampling (the sampling *phase* counter,
     // `SIMPLIFY_SAMPLE_TICKER`, is deliberately absent — see its doc comment).
     ("add_constraint_raw_total", &ADD_CONSTRAINT_RAW_TOTAL_COUNT),
@@ -618,7 +618,7 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "z3_saved_check_total".into(),
         Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed)
             + Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed)
-            + crate::bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed)
+            + angr_bv::stats::ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed)
             + Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed)
             + Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed)
             + Z3_EVAL_UPTO_MODEL_HIT_COUNT.load(Ordering::Relaxed),

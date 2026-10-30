@@ -1,13 +1,13 @@
-//! Chunked conversion between concrete byte buffers and `RustBV::Concrete`.
+//! Chunked conversion between concrete byte buffers and `SymBV::Concrete`.
 //!
-//! `RustBV::Concrete` is backed by a `u128`, so a single concrete BV round-trips
+//! `SymBV::Concrete` is backed by a `u128`, so a single concrete BV round-trips
 //! at most **16 bytes**. Every memory entry point that moves a `&[u8]` in or out
 //! of the engine therefore has to split the range into `<= 16`-byte chunks. That
 //! loop lives here once rather than hand-copied across call sites
 //! (angr-9ke6b.230).
 //!
-//! This module lives next to [`RustBV`] rather than in `exploration/helpers.rs`
-//! because the constraint it encodes belongs to `RustBV`, and because both
+//! This module lives next to [`SymBV`] rather than in `exploration/helpers.rs`
+//! because the constraint it encodes belongs to `SymBV`, and because both
 //! `state::RustSimState` (lower layer) and `exploration::RustExplorationManager`
 //! (upper layer) need it — `state/` cannot import from `exploration/`.
 //!
@@ -15,14 +15,14 @@
 //! pull `pyo3` into the symbolic layer; the `#[pymethods]` call sites
 //! instantiate `E = PyErr`.
 
-use super::RustBV;
+use super::SymBV;
 
-/// Widest concrete chunk a single `RustBV::Concrete` can round-trip, in bytes
+/// Widest concrete chunk a single `SymBV::Concrete` can round-trip, in bytes
 /// (`u128` = 16 bytes). The reason every helper here loops.
 pub const MAX_CONCRETE_CHUNK: usize = 16;
 
 /// Largest byte count accepted by a memory-read entry point that materializes
-/// the range into a `Vec<u8>` (or a single `RustBV`) for Python.
+/// the range into a `Vec<u8>` (or a single `SymBV`) for Python.
 ///
 /// The `size` on `RustExplorationManager.get_state_memory` /
 /// `get_state_memory_ast` / `get_pending_memory` / `pending_memory_load` and
@@ -53,7 +53,7 @@ pub fn check_concrete_load_size(op: &str, size: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Pack a concrete byte slice into `<= 16`-byte `RustBV::concrete` chunks and
+/// Pack a concrete byte slice into `<= 16`-byte `SymBV::concrete` chunks and
 /// store each via the caller-supplied sink.
 ///
 /// angr-5aj8: packing more than `MAX_CONCRETE_CHUNK` bytes into a single value
@@ -66,7 +66,7 @@ pub fn check_concrete_load_size(op: &str, size: u32) -> Result<(), String> {
 /// An empty `data` stores nothing and never invokes the sink.
 pub fn store_concrete_bytes_chunked<E, F>(addr: u64, data: &[u8], mut store: F) -> Result<(), E>
 where
-    F: FnMut(u64, RustBV) -> Result<(), E>,
+    F: FnMut(u64, SymBV) -> Result<(), E>,
 {
     let mut offset = 0usize;
     while offset < data.len() {
@@ -80,7 +80,7 @@ where
         for (i, &b) in chunk.iter().enumerate() {
             value |= (b as u128) << (i * 8);
         }
-        let bv = RustBV::concrete(value, width);
+        let bv = SymBV::concrete(value, width);
         // Guest address arithmetic wraps mod 2^64 (a range starting near the top
         // of the address space continues at 0), per
         // `invariant-rust-concrete-arith-must-wrap`. A bare `+` here panics

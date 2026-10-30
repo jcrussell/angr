@@ -1,31 +1,31 @@
-//! `RustBV::node` must read every op back from the clarirs term it builds,
+//! `SymBV::node` must read every op back from the clarirs term it builds,
 //! and the construction-time rewrites that inspect operands through it must
-//! fire on those terms. Nodes are built with `RustBV::from_op`, which skips the
+//! fire on those terms. Nodes are built with `SymBV::from_op`, which skips the
 //! rewrites, so each is read as built.
 
 use clarirs_core::prelude::AstFactory;
 
-use super::super::value::{BVOp, RustBV};
+use super::super::value::{BVOp, SymBV};
 use clarirs_core::GLOBAL_CONTEXT;
 
-fn raw(op: BVOp, width: u32, operands: Vec<RustBV>) -> RustBV {
-    RustBV::from_op(width, op, operands)
+fn raw(op: BVOp, width: u32, operands: Vec<SymBV>) -> SymBV {
+    SymBV::from_op(width, op, operands)
 }
 
 /// The same value held as a clarirs term.
-fn ast(value: &RustBV) -> RustBV {
-    RustBV::from_clarirs_lowerable(value.to_clarirs().unwrap())
+fn ast(value: &SymBV) -> SymBV {
+    SymBV::from_clarirs_lowerable(value.to_clarirs().unwrap())
 }
 
 /// Two values denote the same clarirs term.
-fn same(a: &RustBV, b: &RustBV) -> bool {
+fn same(a: &SymBV, b: &SymBV) -> bool {
     a.to_clarirs().unwrap() == b.to_clarirs().unwrap()
 }
 
 #[test]
 fn an_ast_reads_like_the_expression_it_came_from() {
-    let x = RustBV::symbol("shape_x", 32);
-    let y = RustBV::symbol("shape_y", 32);
+    let x = SymBV::symbol("shape_x", 32);
+    let y = SymBV::symbol("shape_y", 32);
     let mut values = vec![];
     for op in [
         BVOp::Add,
@@ -73,7 +73,7 @@ fn an_ast_reads_like_the_expression_it_came_from() {
     for expr in &values {
         let held = ast(expr);
         assert!(
-            matches!(held, RustBV::Ast { .. }),
+            matches!(held, SymBV::Ast { .. }),
             "{expr:?} converted to {held:?}"
         );
         let (want, got) = (expr.node().unwrap(), held.node().unwrap());
@@ -87,11 +87,11 @@ fn an_ast_reads_like_the_expression_it_came_from() {
 
 #[test]
 fn literal_operands_of_an_ast_are_concrete() {
-    let x = RustBV::symbol("shape_lit", 32);
-    let sum = ast(&raw(BVOp::Add, 32, vec![x, RustBV::concrete(7, 32)]));
+    let x = SymBV::symbol("shape_lit", 32);
+    let sum = ast(&raw(BVOp::Add, 32, vec![x, SymBV::concrete(7, 32)]));
     let node = sum.node().unwrap();
     assert_eq!(node.operands[1].as_u128(), Some(7));
-    assert!(RustBV::concrete(3, 8).node().is_none());
+    assert!(SymBV::concrete(3, 8).node().is_none());
 }
 
 #[test]
@@ -102,19 +102,19 @@ fn a_bool_op_under_the_bit_encoding_reads_as_the_bitwise_op() {
     let both = gc
         .and2(gc.ult(x.clone(), y.clone()).unwrap(), gc.ugt(x, y).unwrap())
         .unwrap();
-    let bit = RustBV::from_clarirs(both).unwrap();
+    let bit = SymBV::from_clarirs(both).unwrap();
     let node = bit.node().unwrap();
     assert_eq!(node.op, BVOp::And);
     let ops: Vec<_> = node.operands.iter().map(|b| b.node().unwrap().op).collect();
     assert_eq!(ops, [BVOp::Ult, BVOp::Ugt]);
     // A Bool leaf behind the encoding is a leaf.
-    let flag = RustBV::from_clarirs(gc.bools("shape_flag").unwrap()).unwrap();
+    let flag = SymBV::from_clarirs(gc.bools("shape_flag").unwrap()).unwrap();
     assert!(flag.node().is_none());
 }
 
 #[test]
 fn cancelling_rewrites_see_through_an_ast_operand() {
-    let x = RustBV::symbol("shape_cancel", 32);
+    let x = SymBV::symbol("shape_cancel", 32);
     let neg = ast(&raw(BVOp::Neg, 32, vec![x.clone()]));
     assert!(same(&neg.neg(), &x));
     let not = ast(&raw(BVOp::Not, 32, vec![x.clone()]));
@@ -125,8 +125,8 @@ fn cancelling_rewrites_see_through_an_ast_operand() {
 
 #[test]
 fn extract_rules_see_through_an_ast_operand() {
-    let x = RustBV::symbol("shape_ex", 16);
-    let y = RustBV::symbol("shape_ey", 16);
+    let x = SymBV::symbol("shape_ex", 16);
+    let y = SymBV::symbol("shape_ey", 16);
     // Rule 2: extract of a concat lands in one part.
     let cat = ast(&raw(BVOp::Concat, 32, vec![x.clone(), y.clone()]));
     assert!(same(&cat.extract(15, 0), &y));
@@ -149,12 +149,12 @@ fn extract_rules_see_through_an_ast_operand() {
 
 #[test]
 fn zext_compare_fold_sees_through_an_ast_operand() {
-    let x = RustBV::symbol("shape_zc", 8);
+    let x = SymBV::symbol("shape_zc", 8);
     let wide = ast(&raw(BVOp::ZeroExt(24), 32, vec![x.clone()]));
     // The constant has bits the extension forces to zero: decided outright.
-    assert_eq!(wide.eq(&RustBV::concrete(0x100, 32)).as_u128(), Some(0));
+    assert_eq!(wide.eq(&SymBV::concrete(0x100, 32)).as_u128(), Some(0));
     // Otherwise the compare narrows to the inner width.
-    let narrowed = wide.eq(&RustBV::concrete(0x41, 32));
+    let narrowed = wide.eq(&SymBV::concrete(0x41, 32));
     let node = narrowed.node().unwrap();
     assert_eq!(node.op, BVOp::Eq);
     assert!(same(&node.operands[0], &x));

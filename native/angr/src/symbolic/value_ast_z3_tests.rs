@@ -1,7 +1,7 @@
 //! The solver-facing half of `bv/value_ast_tests.rs`: these tests lower or solve, so
 //! they stay in `symbolic` (angr-mx00p.116.7).
 
-use crate::bv::*;
+use crate::symbolic::{RustBV, RustBVData};
 // `RustBV::Ast`: clarirs terms held whole (angr-mx00p.11).
 
 use crate::symbolic::ToZ3;

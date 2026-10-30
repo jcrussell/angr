@@ -1,9 +1,9 @@
-//! `RustBV` → clarirs: [`build_term`], the clarirs term for an op over
+//! `SymBV` → clarirs: [`build_term`], the clarirs term for an op over
 //! values, which every constructor builds through (angr-mx00p.12), and
-//! [`RustBV::to_clarirs`], the term a value is. The encodings:
+//! [`SymBV::to_clarirs`], the term a value is. The encodings:
 //!
 //! - a 1-bit comparison result is `ite(cmp, 1, 0)`, the encoding
-//!   [`RustBV::from_clarirs`] uses for a Bool, and 1-bit `And` / `Or` /
+//!   [`SymBV::from_clarirs`] uses for a Bool, and 1-bit `And` / `Or` /
 //!   `Xor` / `Not` are the Bool ops under the same encoding;
 //! - `Ite`'s condition is "nonzero";
 //! - `Reverse` of a width that is not a multiple of 8, or is under 16, is the
@@ -17,7 +17,7 @@
 use clarirs_core::prelude::{AstFactory, AstOp, AstRef, BitVec, ClarirsError, FPRM, FSort};
 use num_bigint::BigUint;
 
-use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV, VexRm};
+use super::value::{BVOp, FloatOpKind, FloatPrec, SymBV, VexRm};
 use clarirs_core::GLOBAL_CONTEXT;
 
 type Term = AstRef<'static>;
@@ -53,16 +53,16 @@ fn is_bvv(term: &Term, value: u64) -> bool {
     matches!(term.op(), AstOp::BVV(v) if v.to_biguint() == BigUint::from(value))
 }
 
-impl RustBV {
+impl SymBV {
     /// The clarirs term this value denotes. See the module doc for the
     /// encodings; `Err` for a float op or a zero-width value.
     pub fn to_clarirs(&self) -> Result<Term, ClarirsError> {
         match self {
-            RustBV::Concrete { width: 0, .. } => Err(ClarirsError::InvalidArguments(
+            SymBV::Concrete { width: 0, .. } => Err(ClarirsError::InvalidArguments(
                 "a zero-width value has no clarirs term".into(),
             )),
-            RustBV::Concrete { value, width } => bvv(*value, *width),
-            RustBV::Ast { ast, .. } => Ok(ast.clone()),
+            SymBV::Concrete { value, width } => bvv(*value, *width),
+            SymBV::Ast { ast, .. } => Ok(ast.clone()),
         }
     }
 }
@@ -70,7 +70,7 @@ impl RustBV {
 /// The clarirs term for `op` over `operands`, with the encodings in the
 /// module doc. Constructors call it to build a value as a clarirs node; `Err`
 /// when an operand has no term (a float op) or the op is a float op.
-pub fn build_term(op: &BVOp, operands: &[RustBV], width: u32) -> Result<Term, ClarirsError> {
+pub fn build_term(op: &BVOp, operands: &[SymBV], width: u32) -> Result<Term, ClarirsError> {
     let gc = &*GLOBAL_CONTEXT;
     let arg = |i: usize| -> Result<Term, ClarirsError> {
         operands
@@ -168,7 +168,7 @@ fn vex_rm(mode: VexRm) -> FPRM {
 /// does not decode a symbolic rm at all (`translate_rm` warns and uses its
 /// default).
 fn with_vex_rm(
-    rm: &RustBV,
+    rm: &SymBV,
     build: impl Fn(FPRM) -> Result<Term, ClarirsError>,
 ) -> Result<Term, ClarirsError> {
     if let Some(mode) = rm.as_u128() {
@@ -198,7 +198,7 @@ fn with_vex_rm(
 fn float_term(
     kind: FloatOpKind,
     prec: FloatPrec,
-    operands: &[RustBV],
+    operands: &[SymBV],
 ) -> Result<Term, ClarirsError> {
     use FloatOpKind as K;
     let gc = &*GLOBAL_CONTEXT;

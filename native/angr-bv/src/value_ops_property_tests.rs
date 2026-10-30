@@ -1,10 +1,10 @@
-//! Property-based tests for `value_ops.rs` (RustBV concrete-folding ops)
+//! Property-based tests for `value_ops.rs` (SymBV concrete-folding ops)
 //! (angr-ph300.1). The `bv_codec` round-trips and the Z3 cross-checks are in
 //! `symbolic/value_ops_z3_property_tests.rs`.
 //!
 //! `quickcheck`/`quickcheck_macros` were already declared in
 //! `native/angr/Cargo.toml` `[dev-dependencies]` but had zero uses; these
-//! are the first. Every RustBV op here is exercised on *concrete* operands so
+//! are the first. Every SymBV op here is exercised on *concrete* operands so
 //! it constant-folds to a `Concrete` node whose value `as_u128()` reads back —
 //! the property then checks the folded result against a plain-`u128` reference
 //! computation. This covers the wide op surface (arithmetic / bitwise / shifts
@@ -17,7 +17,7 @@
 use super::*;
 
 /// The op of a compound value, whichever arm holds it.
-fn op_of(bv: &RustBV) -> Option<BVOp> {
+fn op_of(bv: &SymBV) -> Option<BVOp> {
     bv.node().map(|n| n.op)
 }
 use quickcheck_macros::quickcheck;
@@ -42,14 +42,14 @@ fn mask(width: u32) -> u128 {
     }
 }
 
-/// Concrete RustBV; `concrete()` masks `v` to `width` for us.
-fn bv(v: u128, width: u32) -> RustBV {
-    RustBV::concrete(v, width)
+/// Concrete SymBV; `concrete()` masks `v` to `width` for us.
+fn bv(v: u128, width: u32) -> SymBV {
+    SymBV::concrete(v, width)
 }
 
 /// Read back a concrete-folded op result. Panics (fails the property) if the op
 /// unexpectedly did not fold to a concrete node.
-fn val(b: &RustBV) -> u128 {
+fn val(b: &SymBV) -> u128 {
     b.as_u128()
         .expect("op on concrete operands must fold to Concrete")
 }
@@ -418,7 +418,7 @@ fn boundary_concat_recovers_operands() {
 // ---------------------------------------------------------------------------
 // Wider-than-128 concrete fast-path checks (angr-qwyti.12)
 //
-// `RustBV::Concrete` stores its value in a u128, but a `Concrete` node may
+// `SymBV::Concrete` stores its value in a u128, but a `Concrete` node may
 // legitimately carry a `width > 128` when only the low 128 bits are non-zero
 // (e.g. `zero_extend`/`truncate` fast paths return `concrete(v, to_width)` for
 // any `to_width`). Every bit at position >= 128 of such a node is *logically
@@ -862,7 +862,7 @@ fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
 #[test]
 fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
     for &w in &WIDE_WIDTHS {
-        let x = RustBV::symbol("x", w);
+        let x = SymBV::symbol("x", w);
         let ones = bv(u128::MAX, w);
         for (name, got, op) in [
             ("x & ones", x.and(&ones), BVOp::And),
@@ -878,7 +878,7 @@ fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
     // At or below the ceiling `u128::MAX` masked to `w` really is all-ones, so
     // both simplifications must still fire.
     for &w in &[1u32, 8, 64, 127, 128] {
-        let x = RustBV::symbol("x", w);
+        let x = SymBV::symbol("x", w);
         let ones = bv(u128::MAX, w);
         for (name, got) in [("x & ones", x.and(&ones)), ("ones & x", ones.and(&x))] {
             assert_eq!(got.width(), w, "{name} width w={w}");
@@ -889,7 +889,7 @@ fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
     }
 }
 
-// angr-nknv1: `x / 0` is all-ones, which `RustBV::ones` cannot represent above
+// angr-nknv1: `x / 0` is all-ones, which `SymBV::ones` cannot represent above
 // 128 bits (it saturates to `2^128 - 1`), so both division folds must decline
 // there and let Z3's equally-total bvudiv/bvsdiv answer at the declared width.
 #[test]
@@ -937,7 +937,7 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
 /// angr-309bq: `define_rotate_pair!`'s concrete arm used to compute
 /// `amt = a % (w as u128)` unconditionally, and `% 0` is a Rust panic in every
 /// profile (not one gated by overflow-checks). No VEX `IROp` has a 0-bit
-/// operand, but a width-0 value is a supported degenerate `RustBV`, so the
+/// operand, but a width-0 value is a supported degenerate `SymBV`, so the
 /// rotate folds to the 0-bit identity instead.
 #[test]
 fn rotate_and_reverse_boundary_widths() {

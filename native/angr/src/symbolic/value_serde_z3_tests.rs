@@ -1,7 +1,7 @@
 //! The solver-facing half of `bv/value_serde_tests.rs`: these tests lower or solve, so
 //! they stay in `symbolic` (angr-mx00p.116.7).
 
-use crate::bv::*;
+use crate::symbolic::RustBV;
 // Serde round-trip and cross-context translation tests for
 // the op-tree primitives (angr-x04s.1.1, angr-panhl.2).
 

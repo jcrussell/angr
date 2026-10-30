@@ -53,7 +53,7 @@ from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Comment hygiene holds in every fork-owned crate.
-SCAN = {"native/angr": ("",), "native/angr-macros": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-macros": ("",), "native/angr-bv": ("",)}
 EXCLUDE: dict[str, str] = {}
 # Fewer Rust files than this means the code moved out of the scan roots.
 MIN_FILES = 400
