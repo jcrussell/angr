@@ -14,7 +14,7 @@ from angr.ailment.expression import StringLiteral
 from angr.block import Block, BlockNode
 from angr.errors import AngrRuntimeError
 from angr.utils.ail import is_head_controlled_loop_block
-from angr.utils.graph import GraphUtils, dominates, inverted_idoms
+from angr.utils.graph import GraphUtils, dfs_preorder_nodes, dominates, inverted_idoms
 
 from .peephole_optimizations import InvertNegatedLogicalConjunctionsAndDisjunctions, RemoveRedundantNots, X87CmpF
 from .region_overlay import RegionOverlay
@@ -32,7 +32,7 @@ from .structurer_nodes import (
     SequenceNode,
     SwitchCaseNode,
 )
-from .utils import peephole_optimize_expr
+from .utils import peephole_optimize_expr, peephole_optimize_expr_shallow
 from .variable_map import variable_map_of
 
 if TYPE_CHECKING:
@@ -241,7 +241,11 @@ class ConditionProcessor:
         self.jump_table_conds: dict[int, set] = defaultdict(set)
         self.reaching_conditions = {}
         self.guarding_conditions = {}
+        self.edge_conditions: dict[tuple[Any, Any], claripy.ast.Bool] = {}
         self._ast2annotations = {}
+        # claripy hash -> converted (and peephole-optimized) AIL expression; live only during one outermost
+        # conversion or one remove_claripy_bool_asts() traversal (leaf conversions depend on the current mapping)
+        self._conversion_memo: dict[int, Any] | None = None
 
         self._peephole_expr_optimizations = [
             cls(None, None, self.ail_manager)
@@ -253,7 +257,9 @@ class ConditionProcessor:
         self.jump_table_conds = defaultdict(set)
         self.reaching_conditions = {}
         self.guarding_conditions = {}
+        self.edge_conditions = {}
         self._ast2annotations = {}
+        self._conversion_memo = None
 
     def have_opposite_edge_conditions(self, graph: networkx.DiGraph, src, dst0, dst1) -> bool:
         """
@@ -353,10 +359,14 @@ class ConditionProcessor:
         with_successors=False,
         case_entry_to_switch_head: dict[int, int] | None = None,
         simplify_conditions: bool = True,
+        with_guarding_conditions: bool = True,
     ):
         """
         Recover the reaching conditions for each block in an acyclic graph. Note that we assume the graph that's passed
         in is acyclic.
+
+        Edge conditions are stored in self.edge_conditions. Guarding conditions are only needed by structurers that
+        consume them (Dream, DuplicationReverter); pass with_guarding_conditions=False to skip computing them.
         """
 
         def _strictly_postdominates(inv_idoms, node_a, node_b):
@@ -425,25 +435,34 @@ class ConditionProcessor:
                     self.simplify_condition(reaching_condition) if simplify_conditions else reaching_condition
                 )
 
+        self.reaching_conditions = reaching_conditions
+        self.edge_conditions = edge_conditions
+        if not with_guarding_conditions:
+            self.guarding_conditions = {}
+            return
+
         # My hypothesis: for nodes where two paths come together *and* those that cannot be further structured into
         # another if-else construct (we take the short-cut by testing if the operator is an "Or" after running our
         # condition simplifiers previously), we are better off using their "guarding conditions" instead of their
         # reaching conditions for if-else. see my super long chatlog with rhelmot on 5/14/2021.
         guarding_conditions = {}
         for the_node in sorted_nodes:
-            preds = list(_g.predecessors(the_node))
-            if len(preds) != 2:
+            if _g.in_degree(the_node) != 2:
                 continue
-            # generate a graph slice that goes from the region head to this node
-            slice_nodes = list(networkx.dfs_tree(inverted_graph, the_node))
-            subgraph = networkx.subgraph(_g, slice_nodes)
-            # figure out which paths cause the divergence from this node
+            # the graph slice from the region head to this node is the set of nodes that reach it; inverted_graph is
+            # _g reversed (plus a dummy sink without in-edges), so a DFS on it from the_node collects exactly that set
+            slice_nodes = dfs_preorder_nodes(inverted_graph, the_node)
+            slice_set = set(slice_nodes)
+            # successors of slice nodes outside the slice cannot reach the_node: these are the diverging paths. the
+            # slice is visited in the order of a networkx subgraph view so the set below (and the Or built from it)
+            # keeps its historical order
             nodes_do_not_reach_the_node = set()
-            for node_ in subgraph:
+            slice_iter = slice_set if 2 * len(slice_set) < len(_g) else (n for n in _g if n in slice_set)
+            for node_ in slice_iter:
                 if node_ is the_node:
                     continue
                 for succ in _g.successors(node_):
-                    if not networkx.has_path(_g, succ, the_node):
+                    if succ not in slice_set:
                         nodes_do_not_reach_the_node.add(succ)
 
             diverging_conditions = []
@@ -464,57 +483,54 @@ class ConditionProcessor:
                 cond = claripy.Or(*map(claripy.Not, diverging_conditions))  # pylint:disable=bad-builtin
                 guarding_conditions[the_node] = cond
 
-        self.reaching_conditions = reaching_conditions
         self.guarding_conditions = guarding_conditions
 
-    def remove_claripy_bool_asts(self, node, memo=None):
+    def remove_claripy_bool_asts(self, node):
         # Convert claripy Bool ASTs to AIL expressions
 
-        if memo is None:
-            memo = {}
+        if self._conversion_memo is not None:
+            return self._remove_claripy_bool_asts(node)
+        self._conversion_memo = {}
+        try:
+            return self._remove_claripy_bool_asts(node)
+        finally:
+            self._conversion_memo = None
 
+    def _remove_claripy_bool_asts(self, node):
         if isinstance(node, SequenceNode):
             new_nodes = []
             for n in node.nodes:
-                new_node = self.remove_claripy_bool_asts(n, memo=memo)
+                new_node = self._remove_claripy_bool_asts(n)
                 new_nodes.append(new_node)
             return SequenceNode(node.addr, new_nodes)
 
         if isinstance(node, MultiNode):
             new_nodes = []
             for n in node.nodes:
-                new_node = self.remove_claripy_bool_asts(n, memo=memo)
+                new_node = self._remove_claripy_bool_asts(n)
                 new_nodes.append(new_node)
             return MultiNode(nodes=new_nodes)
 
         if isinstance(node, CodeNode):
             return CodeNode(
-                self.remove_claripy_bool_asts(node.node, memo=memo),
-                (
-                    None
-                    if node.reaching_condition is None
-                    else self.convert_claripy_bool_ast(node.reaching_condition, memo=memo)
-                ),
+                self._remove_claripy_bool_asts(node.node),
+                (None if node.reaching_condition is None else self.convert_claripy_bool_ast(node.reaching_condition)),
             )
 
         if isinstance(node, ConditionalBreakNode):
             return ConditionalBreakNode(
                 node.addr,
-                self.convert_claripy_bool_ast(node.condition, memo=memo),
+                self.convert_claripy_bool_ast(node.condition),
                 node.target,
             )
 
         if isinstance(node, ConditionNode):
             return ConditionNode(
                 node.addr,
-                (
-                    None
-                    if node.reaching_condition is None
-                    else self.convert_claripy_bool_ast(node.reaching_condition, memo=memo)
-                ),
-                self.convert_claripy_bool_ast(node.condition, memo=memo),
-                self.remove_claripy_bool_asts(node.true_node, memo=memo),
-                self.remove_claripy_bool_asts(node.false_node, memo=memo),
+                (None if node.reaching_condition is None else self.convert_claripy_bool_ast(node.reaching_condition)),
+                self.convert_claripy_bool_ast(node.condition),
+                self._remove_claripy_bool_asts(node.true_node),
+                self._remove_claripy_bool_asts(node.false_node),
             )
 
         if isinstance(node, CascadingConditionNode):
@@ -522,11 +538,11 @@ class ConditionProcessor:
             for cond, child_node in node.condition_and_nodes:
                 cond_and_nodes.append(
                     (
-                        self.convert_claripy_bool_ast(cond, memo=memo),
-                        self.remove_claripy_bool_asts(child_node, memo=memo),
+                        self.convert_claripy_bool_ast(cond),
+                        self._remove_claripy_bool_asts(child_node),
                     )
                 )
-            else_node = None if node.else_node is None else self.remove_claripy_bool_asts(node.else_node, memo=memo)
+            else_node = None if node.else_node is None else self._remove_claripy_bool_asts(node.else_node)
             return CascadingConditionNode(
                 node.addr,
                 cond_and_nodes,
@@ -535,27 +551,23 @@ class ConditionProcessor:
 
         if isinstance(node, LoopNode):
             result = node.copy()
-            result.condition = (
-                self.convert_claripy_bool_ast(node.condition, memo=memo) if node.condition is not None else None
-            )
-            result.sequence_node = self.remove_claripy_bool_asts(node.sequence_node, memo=memo)
+            result.condition = self.convert_claripy_bool_ast(node.condition) if node.condition is not None else None
+            result.sequence_node = self._remove_claripy_bool_asts(node.sequence_node)
             return result
 
         if isinstance(node, SwitchCaseNode):
             return SwitchCaseNode(
-                self.convert_claripy_bool_ast(node.switch_expr, memo=memo),
-                OrderedDict(
-                    (idx, self.remove_claripy_bool_asts(case_node, memo=memo)) for idx, case_node in node.cases.items()
-                ),
-                self.remove_claripy_bool_asts(node.default_node, memo=memo),
+                self.convert_claripy_bool_ast(node.switch_expr),
+                OrderedDict((idx, self._remove_claripy_bool_asts(case_node)) for idx, case_node in node.cases.items()),
+                self._remove_claripy_bool_asts(node.default_node),
                 addr=node.addr,
             )
 
         if isinstance(node, IncompleteSwitchCaseNode):
             return IncompleteSwitchCaseNode(
                 node.addr,
-                self.remove_claripy_bool_asts(node.head, memo=memo),
-                [self.remove_claripy_bool_asts(case, memo=memo) for case in node.cases],
+                self._remove_claripy_bool_asts(node.head),
+                [self._remove_claripy_bool_asts(case) for case in node.cases],
             )
 
         return node
@@ -784,11 +796,11 @@ class ConditionProcessor:
     # Expression conversion
     #
 
-    def _convert_extract(self, hi, lo, expr, tags, memo=None):
+    def _convert_extract(self, hi, lo, expr, tags):
         # ailment does not support Extract. We translate Extract(hi, lo, expr) to a
         # logical right shift by `lo` (dropping the low bits) followed by a Convert
         # that truncates to the extracted width.
-        converted = self.convert_claripy_bool_ast(expr, memo=memo)
+        converted = self.convert_claripy_bool_ast(expr)
         if lo != 0:
             converted = ailment.Expr.BinaryOp(
                 self.ail_manager.next_atom(),
@@ -809,25 +821,42 @@ class ConditionProcessor:
             **tags,
         )
 
-    def convert_claripy_bool_ast(self, cond, memo=None):
+    def convert_claripy_bool_ast(self, cond):
         """
-        Convert recovered reaching conditions from claripy ASTs to ailment Expressions
+        Convert recovered reaching conditions from claripy ASTs to ailment Expressions.
 
-        :return: None
+        Within one outermost conversion (or one remove_claripy_bool_asts() traversal) subtrees are memoized by claripy
+        hash, so a shared subtree is converted once. The memo does not outlive the call: a leaf converts to whatever
+        AIL expression _condition_mapping currently holds, and later translations may replace that entry with an
+        equivalent expression of a different idx, which codegen types differently.
+
+        Peephole rules are applied bottom-up as nodes are built: children are already optimized when their parent is
+        converted, so only the new node needs checking, and the subtree is re-walked only when a rule rewrites it.
         """
 
         if not isinstance(cond, claripy.ast.Base):
             return cond
-        if memo is None:
-            memo = {}
-        if cond.hash() in memo:
-            return memo[cond.hash()]
-        r = self.convert_claripy_bool_ast_core(cond, memo)
-        r = peephole_optimize_expr(r, self._peephole_expr_optimizations)
-        memo[cond.hash()] = r
+        if self._conversion_memo is not None:
+            return self._convert_claripy_bool_ast(cond)
+        self._conversion_memo = {}
+        try:
+            return self._convert_claripy_bool_ast(cond)
+        finally:
+            self._conversion_memo = None
+
+    def _convert_claripy_bool_ast(self, cond):
+        assert self._conversion_memo is not None
+        key = cond.hash()
+        r = self._conversion_memo.get(key)
+        if r is None:
+            r = self.convert_claripy_bool_ast_core(cond)
+            optimized = peephole_optimize_expr_shallow(r, self._peephole_expr_optimizations)
+            if optimized is not r:
+                r = peephole_optimize_expr(optimized, self._peephole_expr_optimizations)
+            self._conversion_memo[key] = r
         return r
 
-    def convert_claripy_bool_ast_core(self, cond, memo):
+    def convert_claripy_bool_ast_core(self, cond):
         if isinstance(cond, ailment.Expr.Expression):
             return cond
 
@@ -842,19 +871,19 @@ class ConditionProcessor:
             r = None
             for arg in args:
                 if r is None:
-                    r = self.convert_claripy_bool_ast(arg, memo=memo)
+                    r = self.convert_claripy_bool_ast(arg)
                 else:
                     r = ailment.Expr.BinaryOp(
                         self.ail_manager.next_atom(),
                         op,
-                        (r, self.convert_claripy_bool_ast(arg, memo=memo)),
+                        (r, self.convert_claripy_bool_ast(arg)),
                         signed,
                         **tags,
                     )
             return r
 
         def _unary_op_reduce(op, arg, tags):
-            r = self.convert_claripy_bool_ast(arg, memo=memo)
+            r = self.convert_claripy_bool_ast(arg)
             # TODO: Keep track of tags
             return ailment.Expr.UnaryOp(self.ail_manager.next_atom(), op, r, **tags)
 
@@ -871,7 +900,7 @@ class ConditionProcessor:
                 ):
                     hi, lo, base = ext.args
                     mask = ((1 << (hi - lo + 1)) - 1) << lo
-                    base_ail = self.convert_claripy_bool_ast(base, memo=memo)
+                    base_ail = self.convert_claripy_bool_ast(base)
                     masked = ailment.Expr.BinaryOp(
                         self.ail_manager.next_atom(),
                         "And",
@@ -927,7 +956,7 @@ class ConditionProcessor:
                 if cond_.args[0] is True
                 else ailment.Expr.Const(self.ail_manager.next_atom(), False, 1, **tags)
             ),
-            "Extract": lambda cond_, tags: self._convert_extract(*cond_.args, tags, memo=memo),
+            "Extract": lambda cond_, tags: self._convert_extract(*cond_.args, tags),
             "ZeroExt": lambda cond_, tags: _binary_op_reduce(
                 "Concat", [claripy.BVV(0, cond_.args[0]), cond_.args[1]], tags
             ),

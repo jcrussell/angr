@@ -70,6 +70,27 @@ def inverted_idoms[T](
     return inverted_graph, idoms
 
 
+def dfs_preorder_nodes[T](graph: networkx.DiGraph[T], source: T) -> list[T]:
+    """
+    Nodes reachable from source in depth-first preorder, i.e., in the node order of networkx.dfs_tree(graph, source),
+    without building the tree.
+    """
+
+    visited = {source}
+    order = [source]
+    stack = [graph.successors(source)]
+    while stack:
+        for child in stack[-1]:
+            if child not in visited:
+                visited.add(child)
+                order.append(child)
+                stack.append(graph.successors(child))
+                break
+        else:
+            stack.pop()
+    return order
+
+
 def to_acyclic_graph[T](
     graph: networkx.DiGraph[T], node_order: dict[T, int] | None = None, loop_heads: list[T] | None = None
 ) -> networkx.DiGraph[T]:
@@ -102,7 +123,12 @@ def to_acyclic_graph[T](
 
 
 def dfs_back_edges[T](
-    graph: networkx.DiGraph[T], start_node: T, *, visit_all_nodes: bool = False, visited: set[T] | None = None
+    graph: networkx.DiGraph[T],
+    start_node: T,
+    *,
+    visit_all_nodes: bool = False,
+    visited: set[T] | None = None,
+    finished: set[T] | None = None,
 ) -> Iterator[tuple[T, T]]:
     """
     Perform an iterative DFS traversal of the graph, returning back edges.
@@ -115,7 +141,9 @@ def dfs_back_edges[T](
         return  # Ensures that the start node is in the graph
 
     visited = set() if visited is None else visited  # Tracks visited nodes
-    finished = set()  # Tracks nodes whose descendants are fully explored
+    # Tracks nodes whose descendants are fully explored. Shared across restarts: an edge into a node finished by an
+    # earlier traversal is not a back edge
+    finished = set() if finished is None else finished
     stack = [(start_node, iter(sorted(graph[start_node], key=GraphUtils.sort_node)))]
 
     while stack:
@@ -137,7 +165,7 @@ def dfs_back_edges[T](
         while len(visited) < len(graph):
             # If we need to visit all nodes, we can start from unvisited nodes
             node = min(set(graph) - visited, key=GraphUtils.sort_node)
-            yield from dfs_back_edges(graph, node, visited=visited)
+            yield from dfs_back_edges(graph, node, visited=visited, finished=finished)
 
 
 def subgraph_between_nodes[T](

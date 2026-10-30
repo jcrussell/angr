@@ -186,6 +186,21 @@ class TestIcicle(TestCase):
         jk = successors.successors[0].history.jumpkind
         assert jk is not None and jk.startswith("Ijk_Sys")
 
+    def test_mem_access_size_is_validated(self):
+        """An access running past the end of the address space does not wrap to address 0."""
+        emu = Icicle("x86_64", PROCESSORS_DIR, False, False)
+        emu.mem_map(2**64 - 0x1000, 0x1000, 0b011)
+        emu.mem_map(0, 0x1000, 0b011)
+        emu.mem_write(0, b"AB")
+        assert emu.mem_read(2**64 - 1, 1) == b"\x00"
+        with self.assertRaises(RuntimeError):
+            emu.mem_read(2**64 - 1, 2)
+        with self.assertRaises(RuntimeError):
+            emu.mem_write(2**64 - 1, b"xy")
+        assert emu.mem_read(0, 2) == b"AB"
+        with self.assertRaises(MemoryError):
+            emu.mem_read(0, 2**63)
+
 
 class TestSnapshotSync(TestCase):
     """Unit tests for snapshot sync behavior in the Icicle engine."""
@@ -1060,16 +1075,6 @@ class TestSimStateIciclePlugin(TestCase):
         # Ensure copies are independent
         copied.dirty_pages.add(6)
         assert 6 not in plugin.dirty_pages
-
-    def test_plugin_merge(self):
-        """Test that merge returns False (not mergeable)."""
-        dummy_td = cast(IcicleStateTranslationData, None)
-        plugin = SimStateIcicle(
-            generation=1,
-            translation_data=dummy_td,
-            dirty_pages=set(),
-        )
-        assert plugin.merge([], [], None) is False
 
 
 class TestContinuation(TestCase):

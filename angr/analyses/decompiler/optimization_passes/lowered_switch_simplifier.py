@@ -35,6 +35,7 @@ class Case:
 
     __slots__ = (
         "expr",
+        "leftover",
         "next_addr",
         "node_type",
         "original_node",
@@ -54,6 +55,7 @@ class Case:
         target: int,
         target_idx: int,
         next_addr,
+        leftover: bool = False,
     ):
         self.original_node = original_node
         self.node_type = node_type
@@ -63,6 +65,8 @@ class Case:
         self.target = target
         self.target_idx = target_idx
         self.next_addr = next_addr
+        # a default that only keeps an unconsumed successor of the cascade reachable
+        self.leftover = leftover
 
     def __repr__(self):
         if self.value == "default":
@@ -440,6 +444,9 @@ class LoweredSwitchSimplifier(StructuringOptimizationPass):
                 if succ_node is None:
                     # removed above as part of a redundant-node chain
                     continue
+                if any(pred not in heads and pred is not succ_node for pred in graph_copy.predecessors(succ_node)):
+                    # still shared with code outside the switches (e.g., a loop head): copies cannot make it private
+                    continue
                 # each head gets a copy of the node!
                 node_successors = list(graph_copy.successors(succ_node))
                 next_id = succ_node.idx + 1
@@ -750,7 +757,7 @@ class LoweredSwitchSimplifier(StructuringOptimizationPass):
                     ):
                         continue
                     default_case_candidates[succ.addr] = Case(
-                        comp, None, head_varhash, None, "default", succ.addr, succ.idx, None
+                        comp, None, head_varhash, None, "default", succ.addr, succ.idx, None, leftover=True
                     )
 
             if cases and len(default_case_candidates) <= 1:
@@ -780,8 +787,8 @@ class LoweredSwitchSimplifier(StructuringOptimizationPass):
                     kept[idx] = None
                     continue
 
-                # filter: there should be at least three cases
-                if len(cases) < 3:
+                # filter: there should be at least three non-leftover cases.
+                if len([case for case in cases if not case.leftover]) < 3:
                     kept[idx] = None
                     continue
 
@@ -894,14 +901,12 @@ class LoweredSwitchSimplifier(StructuringOptimizationPass):
 
     def _dominator_children(self) -> dict[Block, list[Block]]:
         if self._dominator_children_cache is None:
-            entry = next(
-                (nn for nn in self._graph if (nn.addr, nn.idx) == self.entry_node_addr),
-                next(nn for nn in self._graph if self._graph.in_degree(nn) == 0),
-            )
+            entry = next((nn for nn in self._graph if (nn.addr, nn.idx) == self.entry_node_addr), None)
             children: dict[Block, list[Block]] = defaultdict(list)
-            for node, idom in networkx.immediate_dominators(self._graph, entry).items():
-                if node is not idom:
-                    children[idom].append(node)
+            if entry is not None:
+                for node, idom in networkx.immediate_dominators(self._graph, entry).items():
+                    if node is not idom:
+                        children[idom].append(node)
             self._dominator_children_cache = children
         return self._dominator_children_cache
 
