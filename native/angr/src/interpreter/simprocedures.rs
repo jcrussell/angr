@@ -62,11 +62,8 @@ impl<'a> VEXInterpreter<'a> {
     /// as `RustExplorationManager::get_return_addr_raw` (`exploration/helpers.rs`).
     fn get_return_addr_raw(&self) -> Option<u64> {
         let cc_fallback = || {
-            self.calling_convention.get_return_addr(
-                &self.registers,
-                self.rust_memory.as_ref(),
-                self.ctx,
-            )
+            self.calling_convention
+                .get_return_addr(&self.registers, self.rust_memory.as_ref())
         };
         if !self.calling_convention.pops_return_addr() {
             return cc_fallback();

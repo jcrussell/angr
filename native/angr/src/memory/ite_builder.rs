@@ -80,7 +80,6 @@ impl SymbolicMemory {
         stride: u64,
         count: u64,
         size: u32,
-        ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         if count == 0 {
             return Err(MemoryError::SymbolicAddress {
@@ -88,13 +87,13 @@ impl SymbolicMemory {
             });
         }
         if count == 1 {
-            return self.load_concrete_lazy(base, size, ctx);
+            return self.load_concrete_lazy(base, size);
         }
 
         // Build the balanced tree recursively
         let pattern = StridedPattern { base, stride, size };
         // overflow-ok: `count == 0` is rejected above, so `count - 1 >= 0`.
-        self.build_strided_ite_tree(addr_expr, &pattern, 0, count - 1, ctx)
+        self.build_strided_ite_tree(addr_expr, &pattern, 0, count - 1)
     }
 
     /// Recursive helper to build a balanced ITE tree for strided access.
@@ -104,21 +103,19 @@ impl SymbolicMemory {
     /// * `pattern` - Base/stride/size of the strided access (fixed across the recursion)
     /// * `lo` - Lowest index in the current subtree
     /// * `hi` - Highest index in the current subtree
-    /// * `ctx` - Solver context
     fn build_strided_ite_tree(
         &self,
         addr_expr: &RustBV,
         pattern: &StridedPattern,
         lo: u64,
         hi: u64,
-        ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         let StridedPattern { base, stride, size } = *pattern;
 
         // Base case: single element
         if lo == hi {
             let addr = strided_addr_at(base, stride, lo);
-            return self.load_concrete_lazy(addr, size, ctx);
+            return self.load_concrete_lazy(addr, size);
         }
 
         // Split at midpoint for balanced tree
@@ -130,8 +127,8 @@ impl SymbolicMemory {
         let cond = addr_expr.ule(&mid_const);
 
         // Recursively build left subtree (lo..mid) and right subtree (mid+1..hi)
-        let left = self.build_strided_ite_tree(addr_expr, pattern, lo, mid, ctx)?;
-        let right = self.build_strided_ite_tree(addr_expr, pattern, mid + 1, hi, ctx)?;
+        let left = self.build_strided_ite_tree(addr_expr, pattern, lo, mid)?;
+        let right = self.build_strided_ite_tree(addr_expr, pattern, mid + 1, hi)?;
 
         // angr-269l: collapse `ite(c, v, v) -> v` so identical-content
         // strided regions fold to a single leaf instead of an N-deep tree.
@@ -160,7 +157,7 @@ impl SymbolicMemory {
             });
         }
         if addrs.len() == 1 {
-            return self.load_concrete_lazy(addrs[0], size, ctx);
+            return self.load_concrete_lazy(addrs[0], size);
         }
 
         self.build_balanced_ite_load_inner(addr_expr, addrs, size, ctx)
@@ -175,8 +172,7 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        let mut load_leaf =
-            |m: &Self, a: u64, s: u32, c: &SymContext| m.load_concrete_lazy(a, s, c);
+        let mut load_leaf = |m: &Self, a: u64, s: u32, _: &SymContext| m.load_concrete_lazy(a, s);
         self.build_ite_tree_generic(addr_expr, addrs, size, ctx, &mut load_leaf)
     }
 

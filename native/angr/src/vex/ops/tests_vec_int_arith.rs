@@ -3,6 +3,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -12,7 +13,6 @@ use crate::vex::ir::IRType;
 /// PMINSW-style: signed min over 8x i16 lanes, mix of positive and negative.
 #[test]
 fn test_vec_int_min_signed_concrete() {
-    let ctx = SymContext::new_mock();
 
     let l: [i16; 8] = [-5, 100, 0, -32768, 1, -1, 32767, -2];
     let r: [i16; 8] = [-3, 200, -100, -32767, -1, 0, 32766, 3];
@@ -28,7 +28,6 @@ fn test_vec_int_min_signed_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(
@@ -41,7 +40,6 @@ fn test_vec_int_min_signed_concrete() {
 /// PMAXUB-style: unsigned max over 16x u8 lanes.
 #[test]
 fn test_vec_int_max_unsigned_concrete() {
-    let ctx = SymContext::new_mock();
 
     let l: [u8; 16] = [
         0xFF, 0x00, 0x80, 0x7F, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
@@ -62,7 +60,6 @@ fn test_vec_int_max_unsigned_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp.map(|x| x as u128), 8);
@@ -72,7 +69,6 @@ fn test_vec_int_max_unsigned_concrete() {
 /// which stays INT_MIN under two's-complement |x|).
 #[test]
 fn test_vec_int_abs_concrete() {
-    let ctx = SymContext::new_mock();
 
     let v: [i16; 8] = [-5, 100, 0, -32768, 1, -1, 32767, -200];
     let exp: [u16; 8] = [5, 100, 0, 0x8000 /* INT_MIN stays */, 1, 1, 32767, 200];
@@ -83,7 +79,6 @@ fn test_vec_int_abs_concrete() {
             count: 8,
         },
         RustBV::concrete(pack_lanes_uint(&v.map(|x| x as u16 as u128), 16), 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp.map(|x| x as u128), 16);
@@ -112,7 +107,6 @@ fn test_vec_int_max_symbolic_signed() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);

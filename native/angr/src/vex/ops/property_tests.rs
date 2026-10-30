@@ -69,45 +69,42 @@ fn to_signed(v: u128, width: u32) -> i128 {
 
 #[quickcheck]
 fn prop_and_or_xor_match_reference(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let (am, bm, m) = (a & mask(t.bits()), b & mask(t.bits()), mask(t.bits()));
-    let and = val(&VEXOps::binop(IROp::And(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let or = val(&VEXOps::binop(IROp::Or(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let xor = val(&VEXOps::binop(IROp::Xor(t), bv(a, t), bv(b, t), &ctx).unwrap());
+    let and = val(&VEXOps::binop(IROp::And(t), bv(a, t), bv(b, t)).unwrap());
+    let or = val(&VEXOps::binop(IROp::Or(t), bv(a, t), bv(b, t)).unwrap());
+    let xor = val(&VEXOps::binop(IROp::Xor(t), bv(a, t), bv(b, t)).unwrap());
     and == (am & bm) && or == (am | bm) && xor == ((am ^ bm) & m)
 }
 
 #[quickcheck]
 fn prop_logic_commutative(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
-    let ab = val(&VEXOps::binop(IROp::And(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let ba = val(&VEXOps::binop(IROp::And(t), bv(b, t), bv(a, t), &ctx).unwrap());
-    let oab = val(&VEXOps::binop(IROp::Or(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let oba = val(&VEXOps::binop(IROp::Or(t), bv(b, t), bv(a, t), &ctx).unwrap());
-    let xab = val(&VEXOps::binop(IROp::Xor(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let xba = val(&VEXOps::binop(IROp::Xor(t), bv(b, t), bv(a, t), &ctx).unwrap());
+    let ab = val(&VEXOps::binop(IROp::And(t), bv(a, t), bv(b, t)).unwrap());
+    let ba = val(&VEXOps::binop(IROp::And(t), bv(b, t), bv(a, t)).unwrap());
+    let oab = val(&VEXOps::binop(IROp::Or(t), bv(a, t), bv(b, t)).unwrap());
+    let oba = val(&VEXOps::binop(IROp::Or(t), bv(b, t), bv(a, t)).unwrap());
+    let xab = val(&VEXOps::binop(IROp::Xor(t), bv(a, t), bv(b, t)).unwrap());
+    let xba = val(&VEXOps::binop(IROp::Xor(t), bv(b, t), bv(a, t)).unwrap());
     ab == ba && oab == oba && xab == xba
 }
 
 #[quickcheck]
 fn prop_not_involution_and_demorgan(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let m = mask(t.bits());
     // !!x == x
-    let n = VEXOps::unop(IROp::Not(t), bv(a, t), &ctx).unwrap();
-    let nn = VEXOps::unop(IROp::Not(t), n, &ctx).unwrap();
+    let n = VEXOps::unop(IROp::Not(t), bv(a, t)).unwrap();
+    let nn = VEXOps::unop(IROp::Not(t), n).unwrap();
     if val(&nn) != (a & m) {
         return false;
     }
     // De Morgan: !(x & y) == (!x) | (!y)
-    let and = VEXOps::binop(IROp::And(t), bv(a, t), bv(b, t), &ctx).unwrap();
-    let lhs = val(&VEXOps::unop(IROp::Not(t), and, &ctx).unwrap());
-    let na = VEXOps::unop(IROp::Not(t), bv(a, t), &ctx).unwrap();
-    let nb = VEXOps::unop(IROp::Not(t), bv(b, t), &ctx).unwrap();
-    let rhs = val(&VEXOps::binop(IROp::Or(t), na, nb, &ctx).unwrap());
+    let and = VEXOps::binop(IROp::And(t), bv(a, t), bv(b, t)).unwrap();
+    let lhs = val(&VEXOps::unop(IROp::Not(t), and).unwrap());
+    let na = VEXOps::unop(IROp::Not(t), bv(a, t)).unwrap();
+    let nb = VEXOps::unop(IROp::Not(t), bv(b, t)).unwrap();
+    let rhs = val(&VEXOps::binop(IROp::Or(t), na, nb).unwrap());
     lhs == rhs
 }
 
@@ -120,16 +117,15 @@ fn prop_not_involution_and_demorgan(a: u128, b: u128, ts: u8) -> bool {
 /// the reference stays simple and no width-truncation of the amount occurs.
 #[quickcheck]
 fn prop_shifts_match_reference(v: u128, amt_seed: u8, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let w = t.bits();
     let amt = (amt_seed as u32) % w; // 0..w-1
     let vm = v & mask(w);
     let amtbv = RustBV::concrete(amt as u128, w);
 
-    let shl = val(&VEXOps::binop(IROp::Shl(t), bv(v, t), amtbv.clone(), &ctx).unwrap());
-    let shr = val(&VEXOps::binop(IROp::Shr(t), bv(v, t), amtbv.clone(), &ctx).unwrap());
-    let sar = val(&VEXOps::binop(IROp::Sar(t), bv(v, t), amtbv, &ctx).unwrap());
+    let shl = val(&VEXOps::binop(IROp::Shl(t), bv(v, t), amtbv.clone()).unwrap());
+    let shr = val(&VEXOps::binop(IROp::Shr(t), bv(v, t), amtbv.clone()).unwrap());
+    let sar = val(&VEXOps::binop(IROp::Sar(t), bv(v, t), amtbv).unwrap());
 
     let want_shl = (vm << amt) & mask(w);
     let want_shr = vm >> amt; // logical
@@ -139,14 +135,13 @@ fn prop_shifts_match_reference(v: u128, amt_seed: u8, ts: u8) -> bool {
 
 #[quickcheck]
 fn prop_shift_by_zero_is_identity(v: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let w = t.bits();
     let vm = v & mask(w);
     let z = RustBV::concrete(0, w);
-    val(&VEXOps::binop(IROp::Shl(t), bv(v, t), z.clone(), &ctx).unwrap()) == vm
-        && val(&VEXOps::binop(IROp::Shr(t), bv(v, t), z.clone(), &ctx).unwrap()) == vm
-        && val(&VEXOps::binop(IROp::Sar(t), bv(v, t), z, &ctx).unwrap()) == vm
+    val(&VEXOps::binop(IROp::Shl(t), bv(v, t), z.clone()).unwrap()) == vm
+        && val(&VEXOps::binop(IROp::Shr(t), bv(v, t), z.clone()).unwrap()) == vm
+        && val(&VEXOps::binop(IROp::Sar(t), bv(v, t), z).unwrap()) == vm
 }
 
 // ---------------------------------------------------------------------------
@@ -155,10 +150,9 @@ fn prop_shift_by_zero_is_identity(v: u128, ts: u8) -> bool {
 
 #[quickcheck]
 fn prop_cmp_eq_ne_complement(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
-    let eq = val(&VEXOps::binop(IROp::CmpEQ(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let ne = val(&VEXOps::binop(IROp::CmpNE(t), bv(a, t), bv(b, t), &ctx).unwrap());
+    let eq = val(&VEXOps::binop(IROp::CmpEQ(t), bv(a, t), bv(b, t)).unwrap());
+    let ne = val(&VEXOps::binop(IROp::CmpNE(t), bv(a, t), bv(b, t)).unwrap());
     let want_eq = if (a & mask(t.bits())) == (b & mask(t.bits())) {
         1
     } else {
@@ -167,21 +161,20 @@ fn prop_cmp_eq_ne_complement(a: u128, b: u128, ts: u8) -> bool {
     // EQ matches reference, NE is its 1-bit complement, and EQ(x,x) == 1.
     eq == want_eq
         && ne == (want_eq ^ 1)
-        && val(&VEXOps::binop(IROp::CmpEQ(t), bv(a, t), bv(a, t), &ctx).unwrap()) == 1
+        && val(&VEXOps::binop(IROp::CmpEQ(t), bv(a, t), bv(a, t)).unwrap()) == 1
 }
 
 #[quickcheck]
 fn prop_cmp_signed_unsigned_reference(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let w = t.bits();
     let (au, bu) = (a & mask(w), b & mask(w));
     let (ai, bi) = (to_signed(a, w), to_signed(b, w));
 
-    let ltu = val(&VEXOps::binop(IROp::CmpLTU(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let leu = val(&VEXOps::binop(IROp::CmpLEU(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let lt = val(&VEXOps::binop(IROp::CmpLT(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let le = val(&VEXOps::binop(IROp::CmpLE(t), bv(a, t), bv(b, t), &ctx).unwrap());
+    let ltu = val(&VEXOps::binop(IROp::CmpLTU(t), bv(a, t), bv(b, t)).unwrap());
+    let leu = val(&VEXOps::binop(IROp::CmpLEU(t), bv(a, t), bv(b, t)).unwrap());
+    let lt = val(&VEXOps::binop(IROp::CmpLT(t), bv(a, t), bv(b, t)).unwrap());
+    let le = val(&VEXOps::binop(IROp::CmpLE(t), bv(a, t), bv(b, t)).unwrap());
 
     ltu == u128::from(au < bu)
         && leu == u128::from(au <= bu)
@@ -195,26 +188,24 @@ fn prop_cmp_signed_unsigned_reference(a: u128, b: u128, ts: u8) -> bool {
 
 #[quickcheck]
 fn prop_zero_extend_truncate_roundtrip(v: u128, from_seed: u8, to_seed: u8) -> bool {
-    let ctx = SymContext::new_mock();
     // pick from <= to among the int types
     let (mut from, mut to) = (ty(from_seed), ty(to_seed));
     if from.bits() > to.bits() {
         core::mem::swap(&mut from, &mut to);
     }
     let vm = v & mask(from.bits());
-    let ze = VEXOps::unop(IROp::ZeroExtend { from, to }, bv(v, from), &ctx).unwrap();
+    let ze = VEXOps::unop(IROp::ZeroExtend { from, to }, bv(v, from)).unwrap();
     // zero-extend preserves the low value...
     if val(&ze) != vm {
         return false;
     }
     // ...and truncating back recovers it.
-    let tr = VEXOps::unop(IROp::Truncate { from: to, to: from }, ze, &ctx).unwrap();
+    let tr = VEXOps::unop(IROp::Truncate { from: to, to: from }, ze).unwrap();
     val(&tr) == vm
 }
 
 #[quickcheck]
 fn prop_sign_extend_reference(v: u128, from_seed: u8, to_seed: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let (mut from, mut to) = (ty(from_seed), ty(to_seed));
     if from.bits() > to.bits() {
         core::mem::swap(&mut from, &mut to);
@@ -222,7 +213,7 @@ fn prop_sign_extend_reference(v: u128, from_seed: u8, to_seed: u8) -> bool {
     let (fw, tw) = (from.bits(), to.bits());
     // Reference: reinterpret the low `fw` bits as signed, mask to `tw`.
     let want = (to_signed(v, fw) as u128) & mask(tw);
-    let se = VEXOps::unop(IROp::SignExtend { from, to }, bv(v, from), &ctx).unwrap();
+    let se = VEXOps::unop(IROp::SignExtend { from, to }, bv(v, from)).unwrap();
     val(&se) == want
 }
 
@@ -248,16 +239,15 @@ fn boundary_values(width: u32) -> Vec<u128> {
 
 #[test]
 fn boundary_shifts_match_reference() {
-    let ctx = SymContext::new_mock();
     for &t in &INT_TYPES {
         let w = t.bits();
         for &v in &boundary_values(w) {
             for amt in [0u32, 1, w / 2, w - 1] {
                 let amtbv = RustBV::concrete(amt as u128, w);
                 let vm = v & mask(w);
-                let shl = val(&VEXOps::binop(IROp::Shl(t), bv(v, t), amtbv.clone(), &ctx).unwrap());
-                let shr = val(&VEXOps::binop(IROp::Shr(t), bv(v, t), amtbv.clone(), &ctx).unwrap());
-                let sar = val(&VEXOps::binop(IROp::Sar(t), bv(v, t), amtbv, &ctx).unwrap());
+                let shl = val(&VEXOps::binop(IROp::Shl(t), bv(v, t), amtbv.clone()).unwrap());
+                let shr = val(&VEXOps::binop(IROp::Shr(t), bv(v, t), amtbv.clone()).unwrap());
+                let sar = val(&VEXOps::binop(IROp::Sar(t), bv(v, t), amtbv).unwrap());
                 assert_eq!(shl, (vm << amt) & mask(w), "shl w={w} v={v:#x} amt={amt}");
                 assert_eq!(shr, vm >> amt, "shr w={w} v={v:#x} amt={amt}");
                 assert_eq!(
@@ -272,7 +262,6 @@ fn boundary_shifts_match_reference() {
 
 #[test]
 fn boundary_cmp_signed_vs_unsigned_diverge_on_sign_bit() {
-    let ctx = SymContext::new_mock();
     for &t in &INT_TYPES {
         let w = t.bits();
         // A value with only the sign bit set is the largest unsigned but the
@@ -281,12 +270,12 @@ fn boundary_cmp_signed_vs_unsigned_diverge_on_sign_bit() {
         let one = 1u128;
         // signed: neg < 1  => CmpLT == 1 ; unsigned: neg > 1 => CmpLTU == 0
         assert_eq!(
-            val(&VEXOps::binop(IROp::CmpLT(t), bv(neg, t), bv(one, t), &ctx).unwrap()),
+            val(&VEXOps::binop(IROp::CmpLT(t), bv(neg, t), bv(one, t)).unwrap()),
             1,
             "signed neg<1 w={w}"
         );
         assert_eq!(
-            val(&VEXOps::binop(IROp::CmpLTU(t), bv(neg, t), bv(one, t), &ctx).unwrap()),
+            val(&VEXOps::binop(IROp::CmpLTU(t), bv(neg, t), bv(one, t)).unwrap()),
             0,
             "unsigned neg>1 w={w}"
         );
@@ -295,7 +284,6 @@ fn boundary_cmp_signed_vs_unsigned_diverge_on_sign_bit() {
 
 #[test]
 fn boundary_sign_vs_zero_extend_diverge_on_negative() {
-    let ctx = SymContext::new_mock();
     // from I8 (-1 = 0xFF) to each wider type: sign-extend fills ones, zero
     // fills zeros. Directly checks the two conversion ops do not alias.
     let from = IRType::I8;
@@ -304,8 +292,8 @@ fn boundary_sign_vs_zero_extend_diverge_on_negative() {
             continue;
         }
         let tw = to.bits();
-        let se = val(&VEXOps::unop(IROp::SignExtend { from, to }, bv(0xFF, from), &ctx).unwrap());
-        let ze = val(&VEXOps::unop(IROp::ZeroExtend { from, to }, bv(0xFF, from), &ctx).unwrap());
+        let se = val(&VEXOps::unop(IROp::SignExtend { from, to }, bv(0xFF, from)).unwrap());
+        let ze = val(&VEXOps::unop(IROp::ZeroExtend { from, to }, bv(0xFF, from)).unwrap());
         assert_eq!(se, mask(tw), "sext 0xFF -> {tw} must be all-ones");
         assert_eq!(ze, 0xFF, "zext 0xFF -> {tw} must be 0xFF");
     }
@@ -347,34 +335,31 @@ fn divmod_reference(a: u128, b: u128, w: u32) -> (u128, u128, u128, u128) {
 
 #[quickcheck]
 fn prop_sub_mul_match_reference(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let m = mask(t.bits());
     let (am, bm) = (a & m, b & m);
-    let sub = val(&VEXOps::binop(IROp::Sub(t), bv(a, t), bv(b, t), &ctx).unwrap());
-    let mul = val(&VEXOps::binop(IROp::Mul(t), bv(a, t), bv(b, t), &ctx).unwrap());
+    let sub = val(&VEXOps::binop(IROp::Sub(t), bv(a, t), bv(b, t)).unwrap());
+    let mul = val(&VEXOps::binop(IROp::Mul(t), bv(a, t), bv(b, t)).unwrap());
     sub == (am.wrapping_sub(bm) & m) && mul == (am.wrapping_mul(bm) & m)
 }
 
 #[quickcheck]
 fn prop_div_mod_match_reference(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let (du, ds, mu, ms) = divmod_reference(a, b, t.bits());
-    val(&VEXOps::binop(IROp::DivU(t), bv(a, t), bv(b, t), &ctx).unwrap()) == du
-        && val(&VEXOps::binop(IROp::DivS(t), bv(a, t), bv(b, t), &ctx).unwrap()) == ds
-        && val(&VEXOps::binop(IROp::ModU(t), bv(a, t), bv(b, t), &ctx).unwrap()) == mu
-        && val(&VEXOps::binop(IROp::ModS(t), bv(a, t), bv(b, t), &ctx).unwrap()) == ms
+    val(&VEXOps::binop(IROp::DivU(t), bv(a, t), bv(b, t)).unwrap()) == du
+        && val(&VEXOps::binop(IROp::DivS(t), bv(a, t), bv(b, t)).unwrap()) == ds
+        && val(&VEXOps::binop(IROp::ModU(t), bv(a, t), bv(b, t)).unwrap()) == mu
+        && val(&VEXOps::binop(IROp::ModS(t), bv(a, t), bv(b, t)).unwrap()) == ms
 }
 
 #[quickcheck]
 fn prop_widening_mul_match_reference(a: u128, b: u128, ts: u8) -> bool {
-    let ctx = SymContext::new_mock();
     let t = ty(ts);
     let w = t.bits();
     let m = mask(w);
-    let mullu = VEXOps::binop(IROp::MullU(t), bv(a, t), bv(b, t), &ctx).unwrap();
-    let mulls = VEXOps::binop(IROp::MullS(t), bv(a, t), bv(b, t), &ctx).unwrap();
+    let mullu = VEXOps::binop(IROp::MullU(t), bv(a, t), bv(b, t)).unwrap();
+    let mulls = VEXOps::binop(IROp::MullS(t), bv(a, t), bv(b, t)).unwrap();
     let want_u = (a & m) * (b & m);
     let want_s = (to_signed(a, w).wrapping_mul(to_signed(b, w)) as u128) & mask(w * 2);
     mullu.width() == w * 2
@@ -385,29 +370,28 @@ fn prop_widening_mul_match_reference(a: u128, b: u128, ts: u8) -> bool {
 
 #[test]
 fn boundary_arith_match_reference() {
-    let ctx = SymContext::new_mock();
     for &t in &INT_TYPES {
         let w = t.bits();
         let m = mask(w);
         for &a in &boundary_values(w) {
             for &b in &boundary_values(w) {
-                let sub = val(&VEXOps::binop(IROp::Sub(t), bv(a, t), bv(b, t), &ctx).unwrap());
-                let mul = val(&VEXOps::binop(IROp::Mul(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                let sub = val(&VEXOps::binop(IROp::Sub(t), bv(a, t), bv(b, t)).unwrap());
+                let mul = val(&VEXOps::binop(IROp::Mul(t), bv(a, t), bv(b, t)).unwrap());
                 assert_eq!(sub, a.wrapping_sub(b) & m, "sub w={w} a={a:#x} b={b:#x}");
                 assert_eq!(mul, a.wrapping_mul(b) & m, "mul w={w} a={a:#x} b={b:#x}");
 
                 let (du, ds, mu, ms) = divmod_reference(a, b, w);
-                let got_du = val(&VEXOps::binop(IROp::DivU(t), bv(a, t), bv(b, t), &ctx).unwrap());
-                let got_ds = val(&VEXOps::binop(IROp::DivS(t), bv(a, t), bv(b, t), &ctx).unwrap());
-                let got_mu = val(&VEXOps::binop(IROp::ModU(t), bv(a, t), bv(b, t), &ctx).unwrap());
-                let got_ms = val(&VEXOps::binop(IROp::ModS(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                let got_du = val(&VEXOps::binop(IROp::DivU(t), bv(a, t), bv(b, t)).unwrap());
+                let got_ds = val(&VEXOps::binop(IROp::DivS(t), bv(a, t), bv(b, t)).unwrap());
+                let got_mu = val(&VEXOps::binop(IROp::ModU(t), bv(a, t), bv(b, t)).unwrap());
+                let got_ms = val(&VEXOps::binop(IROp::ModS(t), bv(a, t), bv(b, t)).unwrap());
                 assert_eq!(got_du, du, "divu w={w} a={a:#x} b={b:#x}");
                 assert_eq!(got_ds, ds, "divs w={w} a={a:#x} b={b:#x}");
                 assert_eq!(got_mu, mu, "modu w={w} a={a:#x} b={b:#x}");
                 assert_eq!(got_ms, ms, "mods w={w} a={a:#x} b={b:#x}");
 
-                let mullu = VEXOps::binop(IROp::MullU(t), bv(a, t), bv(b, t), &ctx).unwrap();
-                let mulls = VEXOps::binop(IROp::MullS(t), bv(a, t), bv(b, t), &ctx).unwrap();
+                let mullu = VEXOps::binop(IROp::MullU(t), bv(a, t), bv(b, t)).unwrap();
+                let mulls = VEXOps::binop(IROp::MullS(t), bv(a, t), bv(b, t)).unwrap();
                 assert_eq!(mullu.width(), w * 2, "mullu width w={w}");
                 assert_eq!(mulls.width(), w * 2, "mulls width w={w}");
                 assert_eq!(val(&mullu), a * b, "mullu w={w} a={a:#x} b={b:#x}");
@@ -423,7 +407,6 @@ fn boundary_arith_match_reference() {
 
 #[test]
 fn boundary_signed_vs_unsigned_div_mod_diverge() {
-    let ctx = SymContext::new_mock();
     for &t in &INT_TYPES {
         let w = t.bits();
         let m = mask(w);
@@ -431,10 +414,10 @@ fn boundary_signed_vs_unsigned_div_mod_diverge() {
         // positive 2^w - 7 unsigned, so every one of the four answers differs.
         let neg7 = (-7i128 as u128) & m;
         let three = 3u128;
-        let divs = val(&VEXOps::binop(IROp::DivS(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
-        let divu = val(&VEXOps::binop(IROp::DivU(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
-        let mods = val(&VEXOps::binop(IROp::ModS(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
-        let modu = val(&VEXOps::binop(IROp::ModU(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
+        let divs = val(&VEXOps::binop(IROp::DivS(t), bv(neg7, t), bv(three, t)).unwrap());
+        let divu = val(&VEXOps::binop(IROp::DivU(t), bv(neg7, t), bv(three, t)).unwrap());
+        let mods = val(&VEXOps::binop(IROp::ModS(t), bv(neg7, t), bv(three, t)).unwrap());
+        let modu = val(&VEXOps::binop(IROp::ModU(t), bv(neg7, t), bv(three, t)).unwrap());
         assert_eq!(divs, (-2i128 as u128) & m, "divs -7/3 w={w}");
         assert_eq!(mods, (-1i128 as u128) & m, "mods -7%3 w={w}");
         assert_eq!(divu, neg7 / three, "divu w={w}");
@@ -446,7 +429,6 @@ fn boundary_signed_vs_unsigned_div_mod_diverge() {
 
 #[test]
 fn boundary_signed_div_min_by_negative_one_wraps() {
-    let ctx = SymContext::new_mock();
     for &t in &INT_TYPES {
         let w = t.bits();
         let m = mask(w);
@@ -454,12 +436,12 @@ fn boundary_signed_div_min_by_negative_one_wraps() {
         // wraps MIN / -1 back to MIN, and bvsrem gives 0.
         let min = 1u128 << (w - 1);
         assert_eq!(
-            val(&VEXOps::binop(IROp::DivS(t), bv(min, t), bv(m, t), &ctx).unwrap()),
+            val(&VEXOps::binop(IROp::DivS(t), bv(min, t), bv(m, t)).unwrap()),
             min,
             "MIN / -1 must wrap to MIN w={w}"
         );
         assert_eq!(
-            val(&VEXOps::binop(IROp::ModS(t), bv(min, t), bv(m, t), &ctx).unwrap()),
+            val(&VEXOps::binop(IROp::ModS(t), bv(min, t), bv(m, t)).unwrap()),
             0,
             "MIN % -1 must be 0 w={w}"
         );
@@ -468,7 +450,6 @@ fn boundary_signed_div_min_by_negative_one_wraps() {
 
 #[test]
 fn boundary_div_mod_by_zero_is_total() {
-    let ctx = SymContext::new_mock();
     for &t in &INT_TYPES {
         let w = t.bits();
         let m = mask(w);
@@ -478,7 +459,7 @@ fn boundary_div_mod_by_zero_is_total() {
         // x / 0 is all-ones unsigned; signed it is -1 for x >= 0 and +1 for
         // x < 0. x % 0 returns x for both signednesses.
         let d = |op: IROp, x: u128| {
-            val(&VEXOps::binop(op, bv(x, t), zero.clone(), &ctx).unwrap())
+            val(&VEXOps::binop(op, bv(x, t), zero.clone()).unwrap())
         };
         assert_eq!(d(IROp::DivU(t), pos), m, "5 /u 0 w={w}");
         assert_eq!(d(IROp::DivS(t), pos), m, "5 /s 0 w={w}");
@@ -532,7 +513,6 @@ fn prop_divmod_double_to_single_matches_truncating_reference(
     hi_shift: u8,
     op_seed: u8,
 ) -> bool {
-    let ctx = SymContext::new_mock();
     let (op, dividend_w, divisor_w, signed) = DIVMOD_OPS[(op_seed % 4) as usize];
     let dvs = dvs & mask(divisor_w);
     if dvs == 0 {
@@ -549,7 +529,6 @@ fn prop_divmod_double_to_single_matches_truncating_reference(
         op,
         RustBV::concrete(dvd, dividend_w),
         RustBV::concrete(dvs, divisor_w),
-        &ctx,
     )
     .unwrap());
     got == divmod_double_reference(dvd, dvs, dividend_w, divisor_w, signed)
@@ -559,7 +538,6 @@ fn prop_divmod_double_to_single_matches_truncating_reference(
 /// regression on an unlucky run; these always overflow the quotient.
 #[test]
 fn test_divmod_double_to_single_overflowing_quotients() {
-    let ctx = SymContext::new_mock();
     for (op, dividend_w, divisor_w, signed) in DIVMOD_OPS {
         let cases: [(u128, u128); 4] = [
             // amd64 `div ecx` / `div rcx` with rdx=1, rax=0, rcx=1.
@@ -573,7 +551,6 @@ fn test_divmod_double_to_single_overflowing_quotients() {
                 op,
                 RustBV::concrete(dvd, dividend_w),
                 RustBV::concrete(dvs, divisor_w),
-                &ctx,
             )
             .unwrap());
             let want = divmod_double_reference(dvd, dvs, dividend_w, divisor_w, signed);

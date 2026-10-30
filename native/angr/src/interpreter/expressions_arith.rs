@@ -9,8 +9,10 @@
 //! non-arithmetic expression forms (`Ite`, `GetI`, `Const`) stay in
 //! `expressions.rs`.
 
+use super::transcendental_pins;
 use super::*;
 use crate::vex::ir::IRCallee;
+use crate::vex::transcendentals;
 
 /// The binop families that parse to a concrete `IROp` but have no native
 /// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`): `Iop_Pclmul*`
@@ -120,7 +122,7 @@ impl<'a> VEXInterpreter<'a> {
         let arg_val = self.eval_expr_with_callbacks(callbacks, arg, tyenv)?;
         let arg_is_sym = arg_val.is_symbolic();
         let fallback_width = fabricated_result_width(&op, &[arg_val.width()]);
-        match VEXOps::unop(op, arg_val, self.ctx) {
+        match VEXOps::unop(op, arg_val) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
             // fresh-symbolic fallback below swallow it. See the rustdoc on
@@ -161,9 +163,15 @@ impl<'a> VEXInterpreter<'a> {
         record_vex_binop(iropclass(&op));
         let left_val = self.eval_expr_with_callbacks(callbacks, left, tyenv)?;
         let right_val = self.eval_expr_with_callbacks(callbacks, right, tyenv)?;
+        let right_val = match op {
+            IROp::Raw(code) if transcendentals::pins_binop(code) && right_val.is_symbolic() => {
+                transcendental_pins::pin_operand(&right_val, self.ctx).unwrap_or(right_val)
+            }
+            _ => right_val,
+        };
         let fallback_width = fabricated_result_width(&op, &[left_val.width(), right_val.width()]);
         let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
-        match VEXOps::binop(op, left_val, right_val, self.ctx) {
+        match VEXOps::binop(op, left_val, right_val) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
             // fresh-symbolic fallback below swallow it. See the rustdoc on
@@ -230,9 +238,17 @@ impl<'a> VEXInterpreter<'a> {
         let rm = self.eval_expr_with_callbacks(callbacks, arg1, tyenv)?;
         let v2 = self.eval_expr_with_callbacks(callbacks, arg2, tyenv)?;
         let v3 = self.eval_expr_with_callbacks(callbacks, arg3, tyenv)?;
+        let (v2, v3) = match op {
+            IROp::Raw(code)
+                if transcendentals::pins_triop(code) && (v2.is_symbolic() || v3.is_symbolic()) =>
+            {
+                transcendental_pins::pin_operands(&v2, &v3, self.ctx).unwrap_or((v2, v3))
+            }
+            _ => (v2, v3),
+        };
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
         let width = fabricated_result_width(&op, &[v2.width(), v3.width()]);
-        match VEXOps::binop_with_rm(op, rm, v2, v3, self.ctx) {
+        match VEXOps::binop_with_rm(op, rm, v2, v3) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
             // fresh-symbolic fallback below swallow it. See the rustdoc on
@@ -274,7 +290,7 @@ impl<'a> VEXInterpreter<'a> {
         let v4 = self.eval_expr_with_callbacks(callbacks, args[3], tyenv)?;
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() || rm.is_symbolic();
         let width = fabricated_result_width(&op, &[v2.width(), v3.width(), v4.width()]);
-        match VEXOps::qop_with_rm(op, rm, v2, v3, v4, self.ctx) {
+        match VEXOps::qop_with_rm(op, rm, v2, v3, v4) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
             // fresh-symbolic fallback below swallow it. See the rustdoc on

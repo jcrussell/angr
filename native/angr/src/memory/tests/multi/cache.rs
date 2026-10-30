@@ -27,13 +27,13 @@ fn test_phase3_collapse_cache_hit_after_load() {
     assert!(!payload.has_cached_collapse(), "cache must start empty");
 
     // First load populates the cache.
-    let first = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    let first = mem.load_concrete_lazy(0x1000, 1).unwrap();
     let payload = mem.get_multi_alternatives(0x1000).unwrap();
     assert!(payload.has_cached_collapse(), "first load must cache");
 
     // Second load returns the same BV (we can't compare Z3 AST identity
     // directly, but the model-eval result must match).
-    let second = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    let second = mem.load_concrete_lazy(0x1000, 1).unwrap();
     let probe = ctx.fork();
     probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe.eval(&first), Some(0x77));
@@ -153,11 +153,11 @@ fn test_phase4_wider_load_cache_hit() {
     assert_eq!(mem.wider_load_cache_len(), 0, "cache starts empty");
 
     // First load (size 4 = wider than 1): populates the cache.
-    let first = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let first = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(mem.wider_load_cache_len(), 1, "first load populates cache");
 
     // Second identical load: returns from cache.
-    let second = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let second = mem.load_concrete_lazy(0x1000, 4).unwrap();
     let probe = ctx.fork();
     probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe.eval(&first), probe.eval(&second));
@@ -167,7 +167,6 @@ fn test_phase4_wider_load_cache_hit() {
 /// Size==1 loads bypass the wider-load cache (no concat to amortize).
 #[test]
 fn test_phase4_wider_load_cache_skips_size_one() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
@@ -179,7 +178,7 @@ fn test_phase4_wider_load_cache_skips_size_one() {
     )
     .unwrap();
 
-    let _ = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    let _ = mem.load_concrete_lazy(0x1000, 1).unwrap();
     assert_eq!(
         mem.wider_load_cache_len(),
         0,
@@ -214,7 +213,7 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     // → result byte is 0xAA).
     let first_probe = ctx.fork();
     first_probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x1000, 64)));
-    let first = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let first = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(mem.wider_load_cache_len(), 1);
     assert_eq!(first_probe.eval(&first), Some(0xAA));
 
@@ -236,7 +235,7 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     let probe = ctx.fork();
     probe.assume_true(&addr_var1.eq(&RustBV::concrete(0x9999, 64)));
     probe.assume_true(&addr_var2.eq(&RustBV::concrete(0x1000, 64)));
-    let after = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let after = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(
         mem.wider_load_cache_len(),
         1,
@@ -252,7 +251,6 @@ fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
 /// Loads that touch any plain Symbolic byte must not be cached.
 #[test]
 fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
@@ -271,7 +269,7 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
     mem.store_concrete(0x1001, sym_val).unwrap();
 
     // A 4-byte load at 0x1000 covers both — must NOT cache.
-    let _ = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let _ = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(
         mem.wider_load_cache_len(),
         0,
@@ -285,7 +283,6 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
 /// child-side rebuild must not disturb the parent's own cached entry.
 #[test]
 fn test_phase4_wider_load_cache_fork_independence() {
-    let ctx = SymContext::new_mock();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
@@ -297,7 +294,7 @@ fn test_phase4_wider_load_cache_fork_independence() {
             &[0x1000, 0x2000],
         )
         .unwrap();
-    let _ = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let _ = parent.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(parent.wider_load_cache_len(), 1);
 
     let mut child = parent.fork();
@@ -315,10 +312,10 @@ fn test_phase4_wider_load_cache_fork_independence() {
             &[0x1000, 0x3000],
         )
         .unwrap();
-    let _ = child.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let _ = child.load_concrete_lazy(0x1000, 4).unwrap();
     // Parent's cache still valid (size unchanged, fingerprint still matches
     // its own copy of multi_versions).
-    let _ = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let _ = parent.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(parent.wider_load_cache_len(), 1);
     assert_eq!(child.wider_load_cache_len(), 1);
 }
@@ -356,7 +353,7 @@ fn test_concrete_overwrite_clears_multi_cell() {
     assert_eq!(mem.multi_cell_count(), 4);
 
     // Prime the wider-load cache.
-    let _ = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let _ = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(mem.wider_load_cache_len(), 1);
 
     // Concrete overwrite of byte 0x1000.
@@ -380,7 +377,7 @@ fn test_concrete_overwrite_clears_multi_cell() {
     // (addr_var == 0x1000), the new concrete byte 0x11 must dominate.
     let probe = ctx.fork();
     probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
-    let after = mem.load_concrete_lazy(0x1000, 1, &ctx).unwrap();
+    let after = mem.load_concrete_lazy(0x1000, 1).unwrap();
     assert_eq!(
         probe.eval(&after),
         Some(0x11),

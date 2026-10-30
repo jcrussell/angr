@@ -265,7 +265,7 @@ fn test_multi_inside_wider_symbolic_object_retires_the_container() {
 
     // End-to-end: a 4-byte load sees the Multi byte, not the stale container.
     let loaded = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("wide load over a split container must succeed");
     assert_eq!(ctx.eval(&loaded), Some(0xDD77_BBAA));
 
@@ -344,7 +344,7 @@ fn test_multi_on_wider_object_base_leaves_no_orphan_spans() {
         );
     }
     let loaded = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("wide load must succeed");
     assert_eq!(ctx.eval(&loaded), Some(0x4433_2299));
 }

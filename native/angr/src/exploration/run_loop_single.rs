@@ -385,11 +385,10 @@ impl RustExplorationManager {
                             // used to make ARM/ARM64/MIPS read LR=0 and set PC to
                             // 0.
                             let ctx = state.solver().borrow();
-                            let ret_addr_opt = self.environment.calling_convention.get_return_addr(
-                                state.registers(),
-                                None,
-                                &ctx,
-                            );
+                            let ret_addr_opt = self
+                                .environment
+                                .calling_convention
+                                .get_return_addr(state.registers(), None);
                             let pops_return_addr =
                                 self.environment.calling_convention.pops_return_addr();
                             drop(ctx);

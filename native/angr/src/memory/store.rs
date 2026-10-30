@@ -421,9 +421,9 @@ impl SymbolicMemory {
                 base,
                 stride,
                 count,
-            } => self.store_strided(&addr, &value, base, stride, count, ctx),
+            } => self.store_strided(&addr, &value, base, stride, count),
             ConcretizationResult::Multiple(addrs) => {
-                self.store_eager_ite_candidates(&addr, &value, &addrs, ctx)?;
+                self.store_eager_ite_candidates(&addr, &value, &addrs)?;
                 // angr-62li: hoist the addr-domain disjunction.
                 Self::assert_address_disjunction(&addr, &addrs, ctx);
                 Ok(())
@@ -443,10 +443,9 @@ impl SymbolicMemory {
         base: u64,
         stride: u64,
         count: u64,
-        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         let addrs = strided_addrs(base, stride, count);
-        self.store_eager_ite_candidates(addr_expr, value, &addrs, ctx)
+        self.store_eager_ite_candidates(addr_expr, value, &addrs)
     }
 
     /// Shared eager-ITE conditional-store loop (angr-24pv4.3) used by the
@@ -461,13 +460,12 @@ impl SymbolicMemory {
         addr_expr: &RustBV,
         value: &RustBV,
         addrs: &[u64],
-        ctx: &SymContext,
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
         for &candidate in addrs {
             let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
             let cond = addr_expr.eq(&addr_const);
-            let current = self.load_concrete_lazy(Address(candidate), size, ctx)?;
+            let current = self.load_concrete_lazy(Address(candidate), size)?;
             let conditional_value = cond.ite(value, &current);
             self.store_concrete_lazy(candidate, conditional_value)?;
         }

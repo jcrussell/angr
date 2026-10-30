@@ -176,7 +176,7 @@ fn test_load_concrete_lazy_partial_overlap_later_store_wins() {
     assert!(ctx.is_sat(), "context must remain SAT after both stores");
 
     let loaded = mem
-        .load_concrete_lazy(0x1000, 8, &ctx)
+        .load_concrete_lazy(0x1000, 8)
         .expect("8-byte lazy load at 0x1000 must succeed");
     let expected: u128 = ((k2 & 0xFFFF_FFFF) << 32) | (k1 & 0xFFFF_FFFF);
     assert_eq!(
@@ -219,7 +219,7 @@ fn test_load_concrete_lazy_partial_read_of_wider_sym_big_endian() {
     // BE: byte 0 of the stored value is the MSB, so a 4-byte read at the
     // base address is the high half (0x11223344), not the low half.
     let loaded = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("4-byte lazy load at 0x1000 must succeed");
     assert_eq!(
         ctx.eval(&loaded),
@@ -475,7 +475,7 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
 /// in which they differ).
 fn assert_load_is(mem: &mut SymbolicMemory, ctx: &SymContext, addr: u64, expected: &RustBV, what: &str) {
     let loaded = mem
-        .load_concrete_lazy(addr, expected.width() / 8, ctx)
+        .load_concrete_lazy(addr, expected.width() / 8)
         .expect("load must succeed");
     let probe = ctx.fork();
     probe.assume_true(&loaded.eq(expected).not());

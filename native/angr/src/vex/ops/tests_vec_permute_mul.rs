@@ -3,6 +3,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -13,7 +14,6 @@ use crate::vex::ir::IRType;
 /// (angr-mx00p.6): one lane, so the whole I32 operand.
 #[test]
 fn test_vec_reverse_8in32_x1_concrete() {
-    let ctx = SymContext::new_mock();
     let result = VEXOps::unop(
         IROp::VReverse {
             sub_width: 8,
@@ -21,7 +21,6 @@ fn test_vec_reverse_8in32_x1_concrete() {
             count: 1,
         },
         RustBV::concrete(0x11223344, 32),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 32);
@@ -32,7 +31,6 @@ fn test_vec_reverse_8in32_x1_concrete() {
 /// applied to a NEON D-register). 64-bit total.
 #[test]
 fn test_vec_reverse_8in32_x2_concrete() {
-    let ctx = SymContext::new_mock();
     // Two 32-bit lanes: low = 0x11223344, high = 0xAABBCCDD.
     let v: u128 = 0xAABBCCDD_11223344u128;
     let result = VEXOps::unop(
@@ -42,7 +40,6 @@ fn test_vec_reverse_8in32_x2_concrete() {
             count: 2,
         },
         RustBV::concrete(v, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -57,7 +54,6 @@ fn test_vec_reverse_8in32_x2_concrete() {
 /// `angr/engines/vex/claripy/irop.py:_op_Iop_Reverse32sIn64_x2`.
 #[test]
 fn test_vec_reverse_32in64_x2_concrete_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     // Python ref: Concat(arg[95:64], arg[127:96], arg[31:0], arg[63:32]).
     // Pick a 128-bit value with distinct 32-bit slices to exercise every
     // permutation slot.
@@ -69,7 +65,6 @@ fn test_vec_reverse_32in64_x2_concrete_matches_python_ref() {
             count: 2,
         },
         RustBV::concrete(v, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -84,7 +79,6 @@ fn test_vec_reverse_32in64_x2_concrete_matches_python_ref() {
 /// Iop_Reverse1sIn8_x8 — RBIT: reverse the bit order inside each byte.
 #[test]
 fn test_vec_reverse_1in8_x8_concrete() {
-    let ctx = SymContext::new_mock();
     // Byte 0 = 0b10110010 = 0xB2; reversed = 0b01001101 = 0x4D.
     // Byte 1 = 0xFF (palindrome); reversed = 0xFF.
     // Byte 2 = 0x01; reversed = 0x80.
@@ -108,7 +102,6 @@ fn test_vec_reverse_1in8_x8_concrete() {
             count: 8,
         },
         RustBV::concrete(v, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -119,7 +112,6 @@ fn test_vec_reverse_1in8_x8_concrete() {
 /// applied across two lanes (128-bit Q-register form).
 #[test]
 fn test_vec_reverse_16in64_x2_concrete() {
-    let ctx = SymContext::new_mock();
     // Lane 0 (low 64): halfwords [0x1111, 0x2222, 0x3333, 0x4444] (LSB→MSB).
     // After reversal: [0x4444, 0x3333, 0x2222, 0x1111].
     // Lane 1 (high 64): halfwords [0xAAAA, 0xBBBB, 0xCCCC, 0xDDDD].
@@ -133,7 +125,6 @@ fn test_vec_reverse_16in64_x2_concrete() {
             count: 2,
         },
         RustBV::concrete(v, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -159,8 +150,8 @@ fn test_vec_reverse_double_apply_is_identity() {
             elem,
             count,
         };
-        let once = VEXOps::unop(op, arg.clone(), &ctx).unwrap();
-        let twice = VEXOps::unop(op, once, &ctx).unwrap();
+        let once = VEXOps::unop(op, arg.clone()).unwrap();
+        let twice = VEXOps::unop(op, once).unwrap();
         // Assert there is no satisfying assignment where twice != arg.
         ctx.push();
         ctx.add_constraint(twice.to_z3_ast().unwrap().eq(arg.to_z3_ast().unwrap()).not());
@@ -187,7 +178,6 @@ fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
             count: 2,
         },
         arg.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -227,7 +217,6 @@ fn test_vec_reverse_32in64_x2_symbolic_matches_python_ref() {
 /// to 8 u16 output lanes (128-bit). Exercises zero-extension incl. 255*255.
 #[test]
 fn test_vec_mull_8ux8_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [u128; 8] = [2, 3, 255, 0, 16, 100, 7, 1];
     let r: [u128; 8] = [4, 5, 255, 9, 16, 2, 7, 255];
     let exp: [u128; 8] = [8, 15, 65025, 0, 256, 200, 49, 255];
@@ -242,7 +231,6 @@ fn test_vec_mull_8ux8_concrete() {
         },
         RustBV::concrete(lv, 64),
         RustBV::concrete(rv, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -254,7 +242,6 @@ fn test_vec_mull_8ux8_concrete() {
 /// -32768*-1 = 32768 case that overflows a 16-bit lane but not 32-bit.
 #[test]
 fn test_vec_mull_16sx4_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [i16; 4] = [-2, 100, -32768, 3];
     let r: [i16; 4] = [3, -4, -1, -5];
     let exp: [i32; 4] = [-6, -400, 32768, -15];
@@ -269,7 +256,6 @@ fn test_vec_mull_16sx4_concrete() {
         },
         RustBV::concrete(lv, 64),
         RustBV::concrete(rv, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -286,7 +272,6 @@ fn test_vec_mull_16sx4_concrete() {
 /// The unsigned 16-lane family had only routing coverage before (angr-n0irt.21).
 #[test]
 fn test_vec_mull_16ux4_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [u128; 4] = [10, 65535, 0, 256];
     let r: [u128; 4] = [20, 65535, 5, 256];
     let exp: [u128; 4] = [200, 4_294_836_225, 0, 65536];
@@ -301,7 +286,6 @@ fn test_vec_mull_16ux4_concrete() {
         },
         RustBV::concrete(lv, 64),
         RustBV::concrete(rv, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -314,7 +298,6 @@ fn test_vec_mull_16ux4_concrete() {
 /// pre-existing tests never hit (angr-n0irt.21).
 #[test]
 fn test_vec_mull_32sx2_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [i32; 2] = [i32::MIN, -3];
     let r: [i32; 2] = [i32::MIN, 5];
     // i32::MIN^2 = 4611686018427387904 = 0x4000_0000_0000_0000; -3*5 = -15.
@@ -330,7 +313,6 @@ fn test_vec_mull_32sx2_concrete() {
         },
         RustBV::concrete(lv, 64),
         RustBV::concrete(rv, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -348,7 +330,6 @@ fn test_vec_mull_32sx2_concrete() {
 /// mixed-sign product. Odd lanes (1, 3) are decoys that must be ignored.
 #[test]
 fn test_vec_mull_even_32sx4_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [i32; 4] = [i32::MIN, 0x7EAD_BEEF, -5, 0x1234];
     let r: [i32; 4] = [i32::MIN, 0x1CAF_EBAB, 7, 0x5678];
     // even lane 0: i32::MIN^2 = 0x4000_0000_0000_0000; even lane 2: -5*7 = -35.
@@ -364,7 +345,6 @@ fn test_vec_mull_even_32sx4_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -380,7 +360,6 @@ fn test_vec_mull_even_32sx4_concrete() {
 /// ignored. Exercises the widest widening (32->64) and full-range 0xFFFFFFFF^2.
 #[test]
 fn test_vec_mull_even_32ux4_concrete() {
-    let ctx = SymContext::new_mock();
     // Lanes 0..3; only 0 and 2 (even) contribute. 1 and 3 are decoys.
     let l: [u128; 4] = [0xFFFF_FFFF, 0xDEAD_BEEF, 5, 0x1_0000];
     let r: [u128; 4] = [0xFFFF_FFFF, 0xCAFE_BABE, 7, 0x1_0000];
@@ -398,7 +377,6 @@ fn test_vec_mull_even_32ux4_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -422,7 +400,6 @@ fn test_vec_mull_16sx4_symbolic_matches_reference() {
         },
         left.clone(),
         right.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -471,7 +448,6 @@ fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
         },
         left.clone(),
         right.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 128);
@@ -511,7 +487,6 @@ fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
 /// product whose high half is 0 (the mul-lo-only case).
 #[test]
 fn test_vec_mulhi_16ux8_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [u128; 8] = [0x0002, 0xFFFF, 0x8000, 0x1234, 0x0000, 0x00FF, 0xABCD, 1];
     let r: [u128; 8] = [0x0003, 0xFFFF, 0x8000, 0x1000, 0x5678, 0x0100, 0x0002, 0xFFFF];
     // (l*r) >> 16, zero-extended operands.
@@ -524,7 +499,6 @@ fn test_vec_mulhi_16ux8_concrete() {
         },
         RustBV::concrete(pack_lanes_uint(&l, 16), 128),
         RustBV::concrete(pack_lanes_uint(&r, 16), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -537,7 +511,6 @@ fn test_vec_mulhi_16ux8_concrete() {
 /// high half 0xC000 is negative.
 #[test]
 fn test_vec_mulhi_16sx8_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [i16; 8] = [-2, -32768, 32767, -1, 100, -1, 16384, -32768];
     let r: [i16; 8] = [3, -32768, 32767, -1, 200, 1, 16384, 32767];
     // ((sext(l) * sext(r)) >> 16) & 0xFFFF.
@@ -550,7 +523,6 @@ fn test_vec_mulhi_16sx8_concrete() {
         },
         RustBV::concrete(pack_lanes_uint(&l.map(|x| x as u16 as u128), 16), 128),
         RustBV::concrete(pack_lanes_uint(&r.map(|x| x as u16 as u128), 16), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -585,7 +557,6 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
             },
             left.clone(),
             right.clone(),
-            &ctx,
         )
         .unwrap();
         assert_eq!(hi.width(), width);
@@ -593,7 +564,6 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
             IROp::VMul { elem, count },
             left.clone(),
             right.clone(),
-            &ctx,
         )
         .unwrap();
         let full = VEXOps::binop(
@@ -605,7 +575,6 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
             },
             left.clone(),
             right.clone(),
-            &ctx,
         )
         .unwrap();
 
@@ -642,7 +611,6 @@ fn test_vec_mulhi_symbolic_matches_mull_split() {
 /// doubled = 2^31, which overflows i32 max 2^31-1 and clamps).
 #[test]
 fn test_vec_qdmull_16sx4_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [i16; 4] = [-2, 100, -32768, 3];
     let r: [i16; 4] = [3, -4, -32768, -5];
     // 2*(-2*3)=-12, 2*(100*-4)=-800, 2*(2^30)=2^31 -> sat i32::MAX, 2*(3*-5)=-30
@@ -656,7 +624,6 @@ fn test_vec_qdmull_16sx4_concrete() {
         },
         RustBV::concrete(lv, 64),
         RustBV::concrete(rv, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -672,7 +639,6 @@ fn test_vec_qdmull_16sx4_concrete() {
 /// = 2^63, overflowing i64::MAX).
 #[test]
 fn test_vec_qdmull_32sx2_concrete() {
-    let ctx = SymContext::new_mock();
     let l: [i32; 2] = [7, i32::MIN];
     let r: [i32; 2] = [8, i32::MIN];
     // 2*(7*8)=112, 2*(2^62)=2^63 -> sat i64::MAX
@@ -686,7 +652,6 @@ fn test_vec_qdmull_32sx2_concrete() {
         },
         RustBV::concrete(lv, 32 * 2),
         RustBV::concrete(rv, 32 * 2),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -715,7 +680,6 @@ fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
         },
         left.clone(),
         right.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 128);
@@ -785,9 +749,8 @@ fn vgbbd_be_reference(v: u128) -> u128 {
 /// bit and moves it to the opposite corner of the matrix.
 #[test]
 fn test_vec_bit_mtx_xpose_concrete_gathers_msbs() {
-    let ctx = SymContext::new_mock();
     let v: u128 = 0x01000000_00000000_80808080_80808080u128;
-    let result = VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(v, 128), &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(v, 128)).unwrap();
     assert_eq!(result.width(), 128);
     // Low half: LE bit 8j+7 set for every j → transposed to LE bits 56..=63,
     // i.e. the top byte of the half becomes 0xFF.
@@ -802,7 +765,6 @@ fn test_vec_bit_mtx_xpose_concrete_gathers_msbs() {
 /// differ.
 #[test]
 fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
-    let ctx = SymContext::new_mock();
     let cases: [u128; 6] = [
         0,
         u128::MAX,
@@ -817,7 +779,7 @@ fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
         0xDEADBEEF_CAFEBABE_0BADF00D_5AA55AA5u128,
     ];
     for v in cases {
-        let result = VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(v, 128), &ctx).unwrap();
+        let result = VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(v, 128)).unwrap();
         assert_eq!(
             result.as_u128().unwrap(),
             vgbbd_be_reference(v),
@@ -833,9 +795,9 @@ fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
 fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
     let ctx = SymContext::new_mock();
     let arg = RustBV::symbol("vgbbd_arg", 128);
-    let once = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
+    let once = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone()).unwrap();
     assert!(once.as_u128().is_none(), "operand must stay symbolic");
-    let twice = VEXOps::unop(IROp::VPwBitMtxXpose, once, &ctx).unwrap();
+    let twice = VEXOps::unop(IROp::VPwBitMtxXpose, once).unwrap();
     assert_eq!(twice.width(), 128);
 
     ctx.push();
@@ -854,7 +816,7 @@ fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
     let ctx = SymContext::new_mock();
     let v: u128 = 0xDEADBEEF_CAFEBABE_0BADF00D_5AA55AA5u128;
     let arg = RustBV::symbol("vgbbd_pinned", 128);
-    let got = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
+    let got = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone()).unwrap();
 
     ctx.push();
     ctx.add_constraint(arg.to_z3_ast().unwrap().eq(RustBV::concrete(v, 128).to_z3_ast().unwrap()));
@@ -903,7 +865,6 @@ fn test_vec_mulhi_16x16_avx2_256_bit() {
             },
             pack(&l),
             pack(&r),
-            &ctx,
         )
         .unwrap();
         assert_eq!(result.width(), 256);
@@ -969,7 +930,6 @@ fn pshufb_table() -> [u128; 16] {
 
 #[test]
 fn test_vec_perm_8x16_concrete_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     let table = pshufb_table();
     let want = pack(&perm_ref(&table, &PSHUFB_CTL, 8), 8);
     for name in ["Iop_PermOrZero8x16", "Iop_Perm8x16"] {
@@ -978,7 +938,6 @@ fn test_vec_perm_8x16_concrete_matches_python_ref() {
             op,
             RustBV::concrete(pack(&table, 8), 128),
             RustBV::concrete(pack(&PSHUFB_CTL, 8), 128),
-            &ctx,
         )
         .unwrap();
         assert_eq!(got.width(), 128, "{name}");
@@ -988,14 +947,12 @@ fn test_vec_perm_8x16_concrete_matches_python_ref() {
 
 #[test]
 fn test_vec_perm_8x8_concrete_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     let table: Vec<u128> = (0..8).map(|i| 0x30 + i).collect();
     let ctl = [0x07, 0x80, 0x0b, 0x01, 0xc3, 0x06, 0x00, 0x7f];
     let got = VEXOps::binop(
         crate::vex::opcode_map::parse_opcode("Iop_PermOrZero8x8"),
         RustBV::concrete(pack(&table, 8), 64),
         RustBV::concrete(pack(&ctl, 8), 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 64);
@@ -1004,7 +961,6 @@ fn test_vec_perm_8x8_concrete_matches_python_ref() {
 
 #[test]
 fn test_vec_perm_32x4_concrete_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     let table = [0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444];
     let ctl = [3, 0x8000_0000, 6, 1];
     let got = VEXOps::binop(
@@ -1014,7 +970,6 @@ fn test_vec_perm_32x4_concrete_matches_python_ref() {
         },
         RustBV::concrete(pack(&table, 32), 128),
         RustBV::concrete(pack(&ctl, 32), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.as_u128(), Some(pack(&perm_ref(&table, &ctl, 32), 32)));
@@ -1022,7 +977,6 @@ fn test_vec_perm_32x4_concrete_matches_python_ref() {
 
 #[test]
 fn test_vec_perm_rejects_mismatched_widths() {
-    let ctx = SymContext::new_mock();
     let res = VEXOps::binop(
         IROp::VPerm {
             elem: IRType::I8,
@@ -1030,7 +984,6 @@ fn test_vec_perm_rejects_mismatched_widths() {
         },
         RustBV::concrete(0, 128),
         RustBV::concrete(0, 64),
-        &ctx,
     );
     assert!(matches!(res, Err(OpError::OperandWidthMismatch { .. })), "{res:?}");
 }
@@ -1049,7 +1002,6 @@ fn test_vec_perm_8x16_symbolic_control_matches_python_ref() {
         },
         RustBV::concrete(pack(&table, 8), 128),
         ctl.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 128);
@@ -1085,7 +1037,6 @@ fn test_vec_perm_32x8_symbolic_table_matches_python_ref() {
         },
         t.clone(),
         ctl_bv.unwrap(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 256);

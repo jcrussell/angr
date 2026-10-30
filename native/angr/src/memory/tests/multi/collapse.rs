@@ -38,7 +38,7 @@ fn test_multi_cell_load_single_byte() {
         .unwrap_or(0);
 
     let loaded = mem
-        .load_concrete_lazy(0x1000, 1, &ctx)
+        .load_concrete_lazy(0x1000, 1)
         .expect("Multi-cell load must succeed");
 
     // The collapse must record the alternative count.
@@ -98,7 +98,7 @@ fn test_multi_cell_load_mixed_concrete() {
     ctx.assume_true(&eq_a.or(&eq_b));
 
     let loaded = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("4-byte Multi+concrete load must succeed");
     assert_eq!(loaded.width(), 32);
 
@@ -138,7 +138,7 @@ fn test_multi_cell_load_big_endian() {
     ctx.assume_true(&eq_a.or(&eq_b));
 
     let loaded = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("BE Multi+concrete load must succeed");
 
     let probe_a = ctx.fork();
@@ -184,7 +184,7 @@ fn test_multi_cell_load_multiple_multi_bytes() {
     ctx.assume_true(&eq_a.or(&eq_b));
 
     let loaded = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("two-multi-byte load must succeed");
 
     let probe_a = ctx.fork();
@@ -287,7 +287,7 @@ fn test_symbolic_overwrite_of_multi_loads_new_value() {
     mem.store_concrete(0x3000, fresh.clone()).unwrap();
 
     let loaded = mem
-        .load_concrete_lazy(0x3000, 1, &ctx)
+        .load_concrete_lazy(0x3000, 1)
         .expect("lazy load must succeed");
 
     // Pin the address to the Multi candidate so a surviving cell would fold
@@ -364,7 +364,7 @@ fn test_import_symbolic_value_over_multi_loads_new_value() {
         .unwrap();
 
     let loaded = mem
-        .load_concrete_lazy(0x3000, 1, &ctx)
+        .load_concrete_lazy(0x3000, 1)
         .expect("lazy load must succeed");
 
     let probe = ctx.fork();
@@ -431,7 +431,7 @@ fn test_load_concrete_sees_unflushed_multi_cell() {
     );
 
     // The lazy path must agree — the two must not diverge.
-    let lazy = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let lazy = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(probe.eval(&lazy), probe.eval(&loaded));
 }
 
@@ -538,7 +538,7 @@ fn test_multi_cell_later_store_wins_overlapping_conds() {
         .unwrap();
 
     let loaded = mem
-        .load_concrete_lazy(0x1000, 1, &ctx)
+        .load_concrete_lazy(0x1000, 1)
         .expect("Multi-cell load must succeed");
     let probe = |a1v: u128, a2v: u128| {
         let p = ctx.fork();
@@ -582,7 +582,7 @@ fn test_multi_cell_coalesced_flush_newest_wins() {
         .unwrap();
     mem.flush_multi_cells();
 
-    let loaded = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let loaded = mem.load_concrete_lazy(0x1000, 4).unwrap();
     let p = ctx.fork();
     p.assume_true(&a.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(p.eval(&loaded), Some(0x2222_2222));

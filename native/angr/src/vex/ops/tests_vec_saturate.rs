@@ -2,11 +2,11 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
 fn test_vnarrow_un_16to8x8_concrete() {
-    let ctx = SymContext::new_mock();
     // Input V128 = 8 lanes of I16: 0x1122, 0x3344, 0x5566, 0x7788, 0x99AA,
     // 0xBBCC, 0xDDEE, 0xFF00.
     let lanes_in: [u16; 8] = [
@@ -23,7 +23,6 @@ fn test_vnarrow_un_16to8x8_concrete() {
             count: 8,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -37,7 +36,6 @@ fn test_vnarrow_un_16to8x8_concrete() {
 
 #[test]
 fn test_vnarrow_bin_16to8x16_concrete() {
-    let ctx = SymContext::new_mock();
     // Each input is V128 with 8 lanes of I16. libVEX puts the left operand in
     // the high half: right lanes -> output lanes 0..8, left lanes -> 8..16
     // (angr-vmi2l.55).
@@ -62,7 +60,6 @@ fn test_vnarrow_bin_16to8x16_concrete() {
         },
         RustBV::concrete(l, 128),
         RustBV::concrete(r, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -79,7 +76,6 @@ fn test_vnarrow_bin_16to8x16_concrete() {
 
 #[test]
 fn test_vqnarrow_un_16sto8sx8_saturates() {
-    let ctx = SymContext::new_mock();
     // signed I16 source, signed I8 target. Range [-128, 127].
     // Lane 0 = 1000 (clamps to 127), lane 1 = -200 (clamps to -128 = 0x80),
     // lane 2 = 50 (passes through), lane 3 = -50 (passes through).
@@ -96,7 +92,6 @@ fn test_vqnarrow_un_16sto8sx8_saturates() {
             dst_signed: true,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -113,7 +108,6 @@ fn test_vqnarrow_un_16sto8sx8_saturates() {
 
 #[test]
 fn test_vqnarrow_un_16sto8ux8_signed_to_unsigned() {
-    let ctx = SymContext::new_mock();
     // Signed source -> unsigned dst. Range [0, 255].
     // -1 (0xFFFF) -> 0; 300 -> 255; 100 -> 100.
     let v: u128 = (0xFFFFu128) | ((300u128) << 16) | ((100u128) << 32);
@@ -126,7 +120,6 @@ fn test_vqnarrow_un_16sto8ux8_signed_to_unsigned() {
             dst_signed: false,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     let out = res.as_u128().unwrap();
@@ -138,7 +131,6 @@ fn test_vqnarrow_un_16sto8ux8_signed_to_unsigned() {
 #[test]
 #[allow(clippy::identity_op)] // explicit 8-lane layout reads better than the minimized form
 fn test_vqnarrow_un_16uto8ux8_unsigned() {
-    let ctx = SymContext::new_mock();
     // Unsigned source -> unsigned dst. Range [0, 255]. 256 saturates to 255.
     let v: u128 = (256u128) | ((100u128) << 16) | ((0u128) << 32) | ((0xFFFFu128) << 48);
     let arg = RustBV::concrete(v, 128);
@@ -150,7 +142,6 @@ fn test_vqnarrow_un_16uto8ux8_unsigned() {
             dst_signed: false,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     let out = res.as_u128().unwrap();
@@ -162,7 +153,6 @@ fn test_vqnarrow_un_16uto8ux8_unsigned() {
 
 #[test]
 fn test_vqnarrow_bin_16sto8sx16_two_inputs() {
-    let ctx = SymContext::new_mock();
     // 8 lanes per input of signed I16. Left lane 0 = 200 (>127 -> 127),
     // right lane 7 = -300 (< -128 -> -128).
     let mut l: u128 = 0;
@@ -181,7 +171,6 @@ fn test_vqnarrow_bin_16sto8sx16_two_inputs() {
         },
         RustBV::concrete(l, 128),
         RustBV::concrete(r, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -230,7 +219,7 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
         let l = 0x0102_0304_0506_0708_8090_A0B0_0C0D_0E0Fu128 & mask;
         let r = 0x1112_1314_1516_1718_F1F2_F3F4_0405_0607u128 & mask;
         let concrete =
-            VEXOps::binop(op, RustBV::concrete(l, width), RustBV::concrete(r, width), &ctx)
+            VEXOps::binop(op, RustBV::concrete(l, width), RustBV::concrete(r, width))
                 .unwrap()
                 .as_u128()
                 .unwrap();
@@ -238,14 +227,14 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
         let sym_r = RustBV::symbol("narrow_r", width);
         ctx.add_constraint(sym_l.to_z3_ast().unwrap().eq(RustBV::concrete(l, width).to_z3_ast().unwrap()));
         ctx.add_constraint(sym_r.to_z3_ast().unwrap().eq(RustBV::concrete(r, width).to_z3_ast().unwrap()));
-        let symbolic = VEXOps::binop(op, sym_l, sym_r, &ctx).unwrap();
+        let symbolic = VEXOps::binop(op, sym_l, sym_r).unwrap();
         assert!(symbolic.is_symbolic(), "{op:?}: expected a symbolic result");
         assert_eq!(ctx.eval(&symbolic), Some(concrete), "{op:?}: symbolic layout");
         // The low half is the right operand's narrowed lanes.
         let half = width / 2;
         let low = |v: u128| v & ((1u128 << half) - 1);
         let right_only =
-            VEXOps::binop(op, RustBV::concrete(0, width), RustBV::concrete(r, width), &ctx)
+            VEXOps::binop(op, RustBV::concrete(0, width), RustBV::concrete(r, width))
                 .unwrap()
                 .as_u128()
                 .unwrap();
@@ -267,7 +256,6 @@ fn test_vqnarrow_un_symbolic_saturates() {
             dst_signed: true,
         },
         arg.clone(),
-        &ctx,
     )
     .unwrap();
     // Constrain output lane 0 = 127 AND source lane 0 = 200.
@@ -306,7 +294,6 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
             dst_signed: true,
         },
         arg.clone(),
-        &ctx,
     )
     .unwrap();
     // Source lane 0 = -128 (0xFF80 as sign-extended I16). It is exactly the
@@ -399,7 +386,6 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_symbolic() {
 /// overflow → INT8_MIN (0x80), exact-boundary cases.
 #[test]
 fn test_vqadd_8sx8_concrete() {
-    let ctx = SymContext::new_mock();
     // Lane layout (LSB→MSB):
     //   0:  100 + 100 = 200, signed overflow → clamp to +127 (0x7F).
     //   1:  -100 + -100 = -200, signed underflow → clamp to -128 (0x80).
@@ -428,7 +414,6 @@ fn test_vqadd_8sx8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -438,7 +423,6 @@ fn test_vqadd_8sx8_concrete() {
 /// Iop_QAdd8Ux8 — unsigned 8-bit saturating add. Overflow clamps to 0xFF.
 #[test]
 fn test_vqadd_8ux8_concrete() {
-    let ctx = SymContext::new_mock();
     // 0: 200+100 = 300 → clamp to 255 (0xFF).
     // 1: 255+1   = 256 → clamp to 255.
     // 2: 0+0 → 0.
@@ -465,7 +449,6 @@ fn test_vqadd_8ux8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.as_u128().unwrap(), e);
@@ -475,7 +458,6 @@ fn test_vqadd_8ux8_concrete() {
 /// directions and the no-overflow path.
 #[test]
 fn test_vqsub_16sx4_concrete() {
-    let ctx = SymContext::new_mock();
     // 0:  30000 - (-10000) = 40000 → clamp to 32767.
     // 1: -30000 - 10000    = -40000 → clamp to -32768.
     // 2: 100 - 50 = 50 (no overflow).
@@ -499,7 +481,6 @@ fn test_vqsub_16sx4_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.as_u128().unwrap(), e);
@@ -509,7 +490,6 @@ fn test_vqsub_16sx4_concrete() {
 /// Underflow clamps to 0.
 #[test]
 fn test_vqsub_32ux4_concrete() {
-    let ctx = SymContext::new_mock();
     let lanes_a: [u32; 4] = [100, 0xFFFF_FFFF, 1, 0];
     let lanes_b: [u32; 4] = [50, 1, 5, 5]; // underflow on lane 2 and 3
     let lanes_e: [u32; 4] = [50, 0xFFFF_FFFE, 0, 0];
@@ -529,7 +509,6 @@ fn test_vqsub_32ux4_concrete() {
         },
         RustBV::concrete(a, 128),
         RustBV::concrete(b, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -552,7 +531,6 @@ fn test_vqadd_8sx8_symbolic_matches_python_ref() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -730,7 +708,7 @@ fn test_vqaddsub_8x32_avx2_256_bit() {
     ];
 
     for (name, op, expected_lane) in cases {
-        let result = VEXOps::binop(op, pack(&l), pack(&r), &ctx).unwrap();
+        let result = VEXOps::binop(op, pack(&l), pack(&r)).unwrap();
         assert_eq!(result.width(), 256, "{name}: result width");
 
         for i in 0..32u32 {
@@ -759,7 +737,6 @@ fn test_vqaddsub_8x32_avx2_256_bit() {
 /// branch (right shift via logical shift, with OOR → 0).
 #[test]
 fn test_vqshl_8x8_concrete_unsigned() {
-    let ctx = SymContext::new_mock();
     // amt is sign-extended as i8: 0xFF = -1, 0xFC = -4, 0xF8 = -8.
     let lanes_v: [u8; 8] = [0x01, 0x01, 0x01, 0x80, 0x40, 0xFF, 0x10, 0x80];
     let lanes_s: [u8; 8] = [0, 7, 8, 1, 1, 0xFF, 0xFC, 0xF8];
@@ -782,7 +759,6 @@ fn test_vqshl_8x8_concrete_unsigned() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -794,7 +770,6 @@ fn test_vqshl_8x8_concrete_unsigned() {
 /// shift, and the negative-amt branch (right shift via ashr, sign-fill).
 #[test]
 fn test_vqsal_16x4_concrete_signed() {
-    let ctx = SymContext::new_mock();
     // i16: SMAX=0x7FFF, SMIN=0x8000, -1=0xFFFF.
     // lane 0: 0x1000 (positive) << 3 = 0x8000 (negative when truncated) →
     //   overflow → SMAX = 0x7FFF.
@@ -820,7 +795,6 @@ fn test_vqsal_16x4_concrete_signed() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -832,7 +806,6 @@ fn test_vqsal_16x4_concrete_signed() {
 /// (a < 0 with amt > width).
 #[test]
 fn test_vqsal_8x16_concrete_smin_saturation() {
-    let ctx = SymContext::new_mock();
     // Build a 16-lane vector: alternating positive overflow (a=1, amt=8 OOR)
     // and negative overflow (a=0xFF=-1, amt=8 OOR).
     // amt=8 for all lanes. Positive a=1 (>0) → SMAX=0x7F.
@@ -858,7 +831,6 @@ fn test_vqsal_8x16_concrete_smin_saturation() {
         },
         RustBV::concrete(v, 128),
         RustBV::concrete(s, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -870,7 +842,6 @@ fn test_vqsal_8x16_concrete_smin_saturation() {
 /// the full u64 range; sign-extension via the |!elem_mask| branch).
 #[test]
 fn test_vqshl_64x1_concrete_width_boundary() {
-    let ctx = SymContext::new_mock();
     // Unsigned: 0x0000_0000_0000_0001 << 63 = 0x8000_0000_0000_0000.
     // Round-trip: (0x8000... >> 63) = 1 == a. No overflow. Result OK.
     let v = 1u128;
@@ -884,7 +855,6 @@ fn test_vqshl_64x1_concrete_width_boundary() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.as_u128().unwrap(), e);
@@ -899,7 +869,6 @@ fn test_vqshl_64x1_concrete_width_boundary() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result_s.as_u128().unwrap(), 0x7FFF_FFFF_FFFF_FFFFu128);
@@ -958,7 +927,6 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
     // Reference: per-lane spec replay with the same primitives as the
@@ -1008,7 +976,6 @@ fn test_vqsal_16x4_symbolic_universal_signed() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
     let smax = RustBV::concrete(0x7FFFu128, 16);

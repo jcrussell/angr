@@ -710,8 +710,7 @@ impl RustExplorationManager {
     fn get_return_addr_raw(&self, state: &RustSimState) -> Option<u64> {
         let cc = &self.environment.calling_convention;
         {
-            let ctx = state.solver().borrow();
-            if let Some(addr) = cc.get_return_addr(state.registers(), None, &ctx) {
+            if let Some(addr) = cc.get_return_addr(state.registers(), None) {
                 return Some(addr);
             }
         }

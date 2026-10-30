@@ -217,7 +217,6 @@ fn test_lazy_page_fault_counter_ticks_on_both_sides() {
             .unwrap_or(0)
     };
 
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     // Page 0x2000 is unmapped but declared lazy: Python still holds its backer.
     mem.add_lazy_region(0x2000, 0x1000);
@@ -237,7 +236,7 @@ fn test_lazy_page_fault_counter_ticks_on_both_sides() {
 
     let base_load = fault_count();
     let err = mem
-        .load_concrete_lazy(0x2000, 1, &ctx)
+        .load_concrete_lazy(0x2000, 1)
         .expect_err("lazy-region load must report the fetch-me signal");
     assert!(
         matches!(err, MemoryError::UnmappedPageInRegion { page_addr } if page_addr == 0x2000),
@@ -253,7 +252,7 @@ fn test_lazy_page_fault_counter_ticks_on_both_sides() {
     // on the counter staying equal: it is process-global and a concurrently
     // running test may bump it.)
     assert!(matches!(
-        mem.load_concrete_lazy(0x9000, 1, &ctx),
+        mem.load_concrete_lazy(0x9000, 1),
         Err(MemoryError::Unmapped { .. })
     ));
     assert!(matches!(

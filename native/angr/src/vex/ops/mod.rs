@@ -30,7 +30,7 @@
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext, VexRm};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, VexRm};
 
 use super::ir::IROp;
 use super::transcendentals;
@@ -194,7 +194,7 @@ impl VEXOps {
 
     /// Execute a unary operation.
     #[inline]
-    pub fn unop(op: IROp, arg: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
+    pub fn unop(op: IROp, arg: RustBV) -> Result<RustBV, OpError> {
         match op {
             IROp::Not(ty) => width_unop!(arg, ty, not_into),
             IROp::Clz(ty) => width_unop!(arg, ty, clz_into),
@@ -229,7 +229,7 @@ impl VEXOps {
             // Float operations
             IROp::FNeg(ty) => Self::float_neg(arg, ty),
             IROp::FAbs(ty) => Self::float_abs(arg, ty),
-            IROp::FSqrt(ty) => Self::float_sqrt(arg, ty, ctx),
+            IROp::FSqrt(ty) => Self::float_sqrt(arg, ty),
 
             // Vector int<->float conversions, rm-less forms: `_DEP` rounds to
             // nearest, `_RZ` toward zero (angr's `_op_int_to_fp` /
@@ -238,28 +238,28 @@ impl VEXOps {
                 Self::vec_i32_to_f32(RustBV::concrete(0, 32), arg, count, signed)
             }
             IROp::VF32toI32 { count, signed } => {
-                Self::vec_f32_to_i32(RustBV::concrete(3, 32), arg, count, signed, ctx)
+                Self::vec_f32_to_i32(RustBV::concrete(3, 32), arg, count, signed)
             }
 
             // Float conversions
-            IROp::F32toF64 => Self::f32_to_f64(arg, ctx),
-            IROp::F64toF32 => Self::f64_to_f32(arg, ctx),
-            IROp::I32StoF32 => Self::i32s_to_f32(arg, ctx),
-            IROp::I32StoF64 => Self::i32s_to_f64(arg, ctx),
-            IROp::I64StoF32 => Self::i64s_to_f32(arg, ctx),
-            IROp::I64StoF64 => Self::i64s_to_f64(arg, ctx),
-            IROp::I32UtoF32 => Self::i32u_to_f32(arg, ctx),
-            IROp::I32UtoF64 => Self::i32u_to_f64(arg, ctx),
-            IROp::I64UtoF32 => Self::i64u_to_f32(arg, ctx),
-            IROp::I64UtoF64 => Self::i64u_to_f64(arg, ctx),
-            IROp::F32toI32S => Self::f32_to_i32s(arg, ctx),
-            IROp::F64toI32S => Self::f64_to_i32s(arg, ctx),
-            IROp::F32toI64S => Self::f32_to_i64s(arg, ctx),
-            IROp::F64toI64S => Self::f64_to_i64s(arg, ctx),
-            IROp::F32toI32U => Self::f32_to_i32u(arg, ctx),
-            IROp::F64toI32U => Self::f64_to_i32u(arg, ctx),
-            IROp::F32toI64U => Self::f32_to_i64u(arg, ctx),
-            IROp::F64toI64U => Self::f64_to_i64u(arg, ctx),
+            IROp::F32toF64 => Self::f32_to_f64(arg),
+            IROp::F64toF32 => Self::f64_to_f32(arg),
+            IROp::I32StoF32 => Self::i32s_to_f32(arg),
+            IROp::I32StoF64 => Self::i32s_to_f64(arg),
+            IROp::I64StoF32 => Self::i64s_to_f32(arg),
+            IROp::I64StoF64 => Self::i64s_to_f64(arg),
+            IROp::I32UtoF32 => Self::i32u_to_f32(arg),
+            IROp::I32UtoF64 => Self::i32u_to_f64(arg),
+            IROp::I64UtoF32 => Self::i64u_to_f32(arg),
+            IROp::I64UtoF64 => Self::i64u_to_f64(arg),
+            IROp::F32toI32S => Self::f32_to_i32s(arg),
+            IROp::F64toI32S => Self::f64_to_i32s(arg),
+            IROp::F32toI64S => Self::f32_to_i64s(arg),
+            IROp::F64toI64S => Self::f64_to_i64s(arg),
+            IROp::F32toI32U => Self::f32_to_i32u(arg),
+            IROp::F64toI32U => Self::f64_to_i32u(arg),
+            IROp::F32toI64U => Self::f32_to_i64u(arg),
+            IROp::F64toI64U => Self::f64_to_i64u(arg),
 
             // Vector not
             IROp::VNot(ty) => width_unop!(arg, ty, not_into),
@@ -397,12 +397,7 @@ impl VEXOps {
     /// case along with the typed-error sentinels (`NeonUnimplemented`,
     /// `Unmapped`, `Raw`, `SetV128lo*`, `FSqrt`).
     #[inline]
-    pub fn binop(
-        op: IROp,
-        left: RustBV,
-        right: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub fn binop(op: IROp, left: RustBV, right: RustBV) -> Result<RustBV, OpError> {
         match &op {
             // -- Scalar arithmetic (incl widening, mul-hi, divmod) --
             IROp::Add(_)
@@ -463,7 +458,7 @@ impl VEXOps {
             | IROp::I64StoF64
             | IROp::I64UtoF64
             | IROp::VI32toF32 { .. }
-            | IROp::VF32toI32 { .. } => Self::binop_float(op, left, right, ctx),
+            | IROp::VF32toI32 { .. } => Self::binop_float(op, left, right),
 
             // -- Vector integer (packed integer ops, narrows, interleaves, shifts, bitwise) --
             IROp::VAnd(_)
@@ -524,7 +519,7 @@ impl VEXOps {
 
             // -- Misc: Raw transcendentals, SetV128lo*, FSqrt(rm), NEON
             // sentinels, unmapped, default NotBinary --
-            _ => Self::binop_misc(op, left, right, ctx),
+            _ => Self::binop_misc(op, left, right),
         }
     }
 
@@ -610,44 +605,39 @@ impl VEXOps {
     /// Scalar floating point: arithmetic, comparisons, comparison-with-CC,
     /// rounding, and the float-conversion-with-rm family. All arms are
     /// guarded by the top-level `binop()` dispatch.
-    fn binop_float(
-        op: IROp,
-        left: RustBV,
-        right: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn binop_float(op: IROp, left: RustBV, right: RustBV) -> Result<RustBV, OpError> {
         match op {
             // FP arithmetic.
-            IROp::FAdd(ty) => Self::float_add(left, right, ty, ctx),
-            IROp::FSub(ty) => Self::float_sub(left, right, ty, ctx),
-            IROp::FMul(ty) => Self::float_mul(left, right, ty, ctx),
-            IROp::FDiv(ty) => Self::float_div(left, right, ty, ctx),
+            IROp::FAdd(ty) => Self::float_add(left, right, ty),
+            IROp::FSub(ty) => Self::float_sub(left, right, ty),
+            IROp::FMul(ty) => Self::float_mul(left, right, ty),
+            IROp::FDiv(ty) => Self::float_div(left, right, ty),
 
             // IEEE-754-2008 maxNum/minNum (ARM32 VMAXNM/VMINNM).
-            IROp::FMaxNum(ty) => Self::float_max_num(left, right, ty, ctx),
-            IROp::FMinNum(ty) => Self::float_min_num(left, right, ty, ctx),
+            IROp::FMaxNum(ty) => Self::float_max_num(left, right, ty),
+            IROp::FMinNum(ty) => Self::float_min_num(left, right, ty),
 
             // FP comparisons.
-            IROp::FCmpEQ(ty) => Self::float_cmp_eq(left, right, ty, ctx),
-            IROp::FCmpLT(ty) => Self::float_cmp_lt(left, right, ty, ctx),
-            IROp::FCmpLE(ty) => Self::float_cmp_le(left, right, ty, ctx),
+            IROp::FCmpEQ(ty) => Self::float_cmp_eq(left, right, ty),
+            IROp::FCmpLT(ty) => Self::float_cmp_lt(left, right, ty),
+            IROp::FCmpLE(ty) => Self::float_cmp_le(left, right, ty),
             IROp::FComCC(ty) => Self::float_com_cc(left, right, ty),
 
             // Float rounding with mode (left = rounding mode, right = value).
-            IROp::RoundF32toInt => Self::round_f32_to_int_with_mode(left, right, ctx),
-            IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right, ctx),
+            IROp::RoundF32toInt => Self::round_f32_to_int_with_mode(left, right),
+            IROp::RoundF64toInt => Self::round_f64_to_int_with_mode(left, right),
 
             // Float conversions that take a rounding mode as the first arg,
             // decoded by `VexRm::decode`.
-            IROp::F64toF32 => Self::f64_to_f32_rm(left, right, ctx),
-            IROp::F32toI32S => Self::f32_to_i32s_rm(left, right, ctx),
-            IROp::F64toI32S => Self::f64_to_i32s_rm(left, right, ctx),
-            IROp::F32toI64S => Self::f32_to_i64s_rm(left, right, ctx),
-            IROp::F64toI64S => Self::f64_to_i64s_rm(left, right, ctx),
-            IROp::F32toI32U => Self::f32_to_i32u_rm(left, right, ctx),
-            IROp::F64toI32U => Self::f64_to_i32u_rm(left, right, ctx),
-            IROp::F32toI64U => Self::f32_to_i64u_rm(left, right, ctx),
-            IROp::F64toI64U => Self::f64_to_i64u_rm(left, right, ctx),
+            IROp::F64toF32 => Self::f64_to_f32_rm(left, right),
+            IROp::F32toI32S => Self::f32_to_i32s_rm(left, right),
+            IROp::F64toI32S => Self::f64_to_i32s_rm(left, right),
+            IROp::F32toI64S => Self::f32_to_i64s_rm(left, right),
+            IROp::F64toI64S => Self::f64_to_i64s_rm(left, right),
+            IROp::F32toI32U => Self::f32_to_i32u_rm(left, right),
+            IROp::F64toI32U => Self::f64_to_i32u_rm(left, right),
+            IROp::F32toI64U => Self::f32_to_i64u_rm(left, right),
+            IROp::F64toI64U => Self::f64_to_i64u_rm(left, right),
             IROp::I32StoF32 => Self::int_to_float_rm(left, right, 32, true, FloatPrec::F32),
             IROp::I32UtoF32 => Self::int_to_float_rm(left, right, 32, false, FloatPrec::F32),
             IROp::I64StoF32 => Self::int_to_float_rm(left, right, 64, true, FloatPrec::F32),
@@ -655,9 +645,7 @@ impl VEXOps {
             IROp::I64StoF64 => Self::int_to_float_rm(left, right, 64, true, FloatPrec::F64),
             IROp::I64UtoF64 => Self::int_to_float_rm(left, right, 64, false, FloatPrec::F64),
             IROp::VI32toF32 { count, signed } => Self::vec_i32_to_f32(left, right, count, signed),
-            IROp::VF32toI32 { count, signed } => {
-                Self::vec_f32_to_i32(left, right, count, signed, ctx)
-            }
+            IROp::VF32toI32 { count, signed } => Self::vec_f32_to_i32(left, right, count, signed),
 
             // Misroute (guard/family drift): degrade to Python fallback
             // instead of panicking. See angr-cudgw.15.
@@ -951,30 +939,15 @@ impl VEXOps {
     /// `IROp::FSqrt(rm, value)` arrival pattern, and the typed-error
     /// sentinels (NeonUnimplemented, Unmapped). Also serves as the
     /// dispatch fallback returning `OpError::NotBinary` for unmatched ops.
-    fn binop_misc(
-        op: IROp,
-        left: RustBV,
-        right: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    fn binop_misc(op: IROp, left: RustBV, right: RustBV) -> Result<RustBV, OpError> {
         match op {
-            // Raw opcode — try concrete x87 transcendental fast path first
+            // Raw opcode — the concrete x87 transcendental fast path
             // (Iop_SinF64, Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_RecpExp*).
             // These arrive as Binop(rm, x); `left` carries rm, `right` the value.
-            // For symbolic inputs to Iop_{Sin,Cos,Tan,2xm1}F64, try the
-            // concretize-and-pin fallback (angr-i5lj.1, angr-i5lj.2).
-            // Iop_RecpExp* has a closed-form path and never needs concretize.
-            IROp::Raw(code) => {
-                if let Some(result) = transcendentals::try_concrete_binop_rm(code, &left, &right) {
-                    Ok(result)
-                } else if let Some(result) =
-                    transcendentals::try_concretize_binop_rm(code, &left, &right, ctx)
-                {
-                    Ok(result)
-                } else {
-                    Err(OpError::RawOpcode(code))
-                }
-            }
+            // A symbolic value declines; the interpreter pins the ones
+            // `transcendentals::pins_binop` names before it gets here.
+            IROp::Raw(code) => transcendentals::try_concrete_binop_rm(code, &left, &right)
+                .ok_or(OpError::RawOpcode(code)),
 
             // SetV128lo: set low bits of V128.
             IROp::SetV128lo32 => Self::set_v128_lo32(left, right),
@@ -984,7 +957,7 @@ impl VEXOps {
             // model as IROp::FSqrt — keep the translation here so the
             // interpreter's Binop dispatch routes the rm through
             // unop_with_rm instead of falling back to a fresh symbolic.
-            IROp::FSqrt(_) => Self::unop_with_rm(op, left, right, ctx),
+            IROp::FSqrt(_) => Self::unop_with_rm(op, left, right),
 
             // NEON scaffolding: surface as a typed error rather than silently
             // falling back. interpreter::expressions special-cases
@@ -1009,16 +982,10 @@ impl VEXOps {
     /// round-to-nearest-ties-to-even form. Callers holding the guest's rm
     /// must go through `qop_with_rm`, which delegates here only for RNE.
     #[inline]
-    pub fn qop(
-        op: IROp,
-        a: RustBV,
-        b: RustBV,
-        c: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub fn qop(op: IROp, a: RustBV, b: RustBV, c: RustBV) -> Result<RustBV, OpError> {
         match op {
-            IROp::FMAdd(ty) => Self::float_madd(a, b, c, ty, ctx),
-            IROp::FMSub(ty) => Self::float_msub(a, b, c, ty, ctx),
+            IROp::FMAdd(ty) => Self::float_madd(a, b, c, ty),
+            IROp::FMSub(ty) => Self::float_msub(a, b, c, ty),
             // NEON scaffolding: surface as a typed error rather than silently
             // falling back. interpreter::expressions special-cases
             // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
@@ -1046,14 +1013,13 @@ impl VEXOps {
         a: RustBV,
         b: RustBV,
         c: RustBV,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let (kind_rm, ty) = match op {
             IROp::FMAdd(t) => (FloatOpKind::FmaRm, t),
             IROp::FMSub(t) => (FloatOpKind::FmsRm, t),
             // Non-FMA Qops (NEON scaffolding, unmapped opcodes) carry no
             // rounding mode; let `qop` produce their typed error.
-            _ => return Self::qop(op, a, b, c, ctx),
+            _ => return Self::qop(op, a, b, c),
         };
 
         // RNE concrete: keep the native-f{32,64} `mul_add` fast path, same
@@ -1061,7 +1027,7 @@ impl VEXOps {
         if let Some(m) = rm.as_u128()
             && VexRm::decode(m)? == VexRm::NearestEven
         {
-            return Self::qop(op, a, b, c, ctx);
+            return Self::qop(op, a, b, c);
         }
 
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
@@ -1084,7 +1050,6 @@ impl VEXOps {
         rm: RustBV,
         left: RustBV,
         right: RustBV,
-        ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         // Iop_SetElem* is a VEX Triop but does NOT carry a rounding mode.
         // The Triop dispatch in expressions_arith.rs passes (rm, left, right) as
@@ -1100,9 +1065,9 @@ impl VEXOps {
             IROp::FDiv(t) => (FloatOpKind::DivRm, t),
             IROp::Raw(code) => {
                 // x87 Triop transcendentals: Iop_AtanF64, Iop_Yl2xF64,
-                // Iop_Yl2xp1F64, Iop_ScaleF64. Try concrete libm path first;
-                // for symbolic inputs, fall back to the concretize-and-pin
-                // path (angr-i5lj.1, angr-i5lj.2). Out-of-scope triops fall
+                // Iop_Yl2xp1F64, Iop_ScaleF64, concrete libm path only; the
+                // interpreter pins symbolic operands first
+                // (`transcendentals::pins_triop`). Anything else falls
                 // through to the fresh-symbolic fallback in
                 // expressions_arith.rs::IRExpr::Triop.
                 if let Some(result) =
@@ -1110,14 +1075,9 @@ impl VEXOps {
                 {
                     return Ok(result);
                 }
-                if let Some(result) =
-                    transcendentals::try_concretize_triop_rm(code, &rm, &left, &right, ctx)
-                {
-                    return Ok(result);
-                }
-                return Self::binop(op, left, right, ctx);
+                return Self::binop(op, left, right);
             }
-            _ => return Self::binop(op, left, right, ctx),
+            _ => return Self::binop(op, left, right),
         };
 
         // RNE concrete: keep the native-f{32,64} fast path. Most code uses
@@ -1127,7 +1087,7 @@ impl VEXOps {
         if let Some(m) = rm.as_u128()
             && VexRm::decode(m)? == VexRm::NearestEven
         {
-            return Self::binop(op, left, right, ctx);
+            return Self::binop(op, left, right);
         }
 
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
@@ -1138,21 +1098,16 @@ impl VEXOps {
     /// the existing native-f{32,64} fast path; non-RNE/symbolic rm routes
     /// through `FloatOpKind::SqrtRm`.
     #[inline]
-    pub fn unop_with_rm(
-        op: IROp,
-        rm: RustBV,
-        arg: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub fn unop_with_rm(op: IROp, rm: RustBV, arg: RustBV) -> Result<RustBV, OpError> {
         let (kind_rm, ty) = match op {
             IROp::FSqrt(t) => (FloatOpKind::SqrtRm, t),
-            _ => return Self::unop(op, arg, ctx),
+            _ => return Self::unop(op, arg),
         };
 
         if let Some(m) = rm.as_u128()
             && VexRm::decode(m)? == VexRm::NearestEven
         {
-            return Self::unop(op, arg, ctx);
+            return Self::unop(op, arg);
         }
 
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;

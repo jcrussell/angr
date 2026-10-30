@@ -2,6 +2,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -12,7 +13,6 @@ use crate::vex::ir::IRType;
 /// no-bits-set, single-bit, and mid-density patterns.
 #[test]
 fn test_vcnt_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let lanes: [u8; 8] = [0x00, 0xFF, 0x01, 0x80, 0x0F, 0xF0, 0x55, 0xAA];
     // 0,8,1,1,4,4,4,4 — popcount per lane.
     let expected: [u8; 8] = [0, 8, 1, 1, 4, 4, 4, 4];
@@ -22,7 +22,7 @@ fn test_vcnt_8x8_concrete() {
         a |= (lanes[i] as u128) << (i * 8);
         e |= (expected[i] as u128) << (i * 8);
     }
-    let result = VEXOps::unop(IROp::VCnt { count: 8 }, RustBV::concrete(a, 64), &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VCnt { count: 8 }, RustBV::concrete(a, 64)).unwrap();
     assert_eq!(result.width(), 64);
     assert_eq!(result.as_u128().unwrap(), e);
 }
@@ -30,7 +30,6 @@ fn test_vcnt_8x8_concrete() {
 /// Iop_Cnt8x16 — Q-reg popcount: 16 bytes.
 #[test]
 fn test_vcnt_8x16_concrete() {
-    let ctx = SymContext::new_mock();
     let mut a: u128 = 0;
     let mut e: u128 = 0;
     for i in 0..16u32 {
@@ -39,7 +38,7 @@ fn test_vcnt_8x16_concrete() {
         a |= (v as u128) << (i * 8);
         e |= ((i % 9) as u128) << (i * 8);
     }
-    let result = VEXOps::unop(IROp::VCnt { count: 16 }, RustBV::concrete(a, 128), &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VCnt { count: 16 }, RustBV::concrete(a, 128)).unwrap();
     assert_eq!(result.width(), 128);
     assert_eq!(result.as_u128().unwrap(), e);
 }
@@ -48,7 +47,6 @@ fn test_vcnt_8x16_concrete() {
 /// MSB of byte i. Covers all-set, none-set, and an alternating pattern.
 #[test]
 fn test_vgetmsbs_8x16_concrete() {
-    let ctx = SymContext::new_mock();
     // Byte i: set its MSB iff bit i of the mask 0xA53C is set.
     let mask: u16 = 0xA53C;
     let mut a: u128 = 0;
@@ -60,7 +58,7 @@ fn test_vgetmsbs_8x16_concrete() {
         }
     }
     let result =
-        VEXOps::unop(IROp::VGetMSBs { count: 16 }, RustBV::concrete(a, 128), &ctx).unwrap();
+        VEXOps::unop(IROp::VGetMSBs { count: 16 }, RustBV::concrete(a, 128)).unwrap();
     assert_eq!(result.width(), 16);
     assert_eq!(result.as_u128().unwrap(), mask as u128);
 }
@@ -68,14 +66,13 @@ fn test_vgetmsbs_8x16_concrete() {
 /// Iop_GetMSBs8x8 — PMOVMSKB over 8 bytes (V64 form) → I8.
 #[test]
 fn test_vgetmsbs_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let mask: u8 = 0b1011_0010;
     let mut a: u128 = 0;
     for i in 0..8u32 {
         let byte: u128 = if (mask >> i) & 1 == 1 { 0xC0 } else { 0x40 };
         a |= byte << (i * 8);
     }
-    let result = VEXOps::unop(IROp::VGetMSBs { count: 8 }, RustBV::concrete(a, 64), &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VGetMSBs { count: 8 }, RustBV::concrete(a, 64)).unwrap();
     assert_eq!(result.width(), 8);
     assert_eq!(result.as_u128().unwrap(), mask as u128);
 }
@@ -86,7 +83,7 @@ fn test_vgetmsbs_8x8_concrete() {
 fn test_vgetmsbs_8x16_symbolic_universal() {
     let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vgetmsbs_a", 128);
-    let got = VEXOps::unop(IROp::VGetMSBs { count: 16 }, a.clone(), &ctx).unwrap();
+    let got = VEXOps::unop(IROp::VGetMSBs { count: 16 }, a.clone()).unwrap();
 
     let mut bits = Vec::with_capacity(16);
     for i in 0..16u32 {
@@ -107,7 +104,6 @@ fn test_vgetmsbs_8x16_symbolic_universal() {
 /// Iop_Clz8x8 — per-byte count leading zeros.
 #[test]
 fn test_vclz_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let lanes: [u8; 8] = [0x00, 0x80, 0x40, 0x01, 0xFF, 0x10, 0x08, 0x7F];
     let expected: [u8; 8] = [8, 0, 1, 7, 0, 3, 4, 1];
     let mut a: u128 = 0;
@@ -122,7 +118,6 @@ fn test_vclz_8x8_concrete() {
             count: 8,
         },
         RustBV::concrete(a, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -133,7 +128,6 @@ fn test_vclz_8x8_concrete() {
 /// (→ 0), and a mid-range value.
 #[test]
 fn test_vclz_32x4_concrete() {
-    let ctx = SymContext::new_mock();
     let lanes: [u32; 4] = [0x00000000, 0x80000000, 0x00010000, 0xFFFFFFFF];
     let expected: [u32; 4] = [32, 0, 15, 0];
     let mut a: u128 = 0;
@@ -148,7 +142,6 @@ fn test_vclz_32x4_concrete() {
             count: 4,
         },
         RustBV::concrete(a, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -161,7 +154,6 @@ fn test_vclz_32x4_concrete() {
 /// `res_lane << (i * elem_width)` repack both hit their maxima here.
 #[test]
 fn test_vclz_64x2_concrete() {
-    let ctx = SymContext::new_mock();
     let cases: [([u64; 2], [u64; 2]); 3] = [
         // all-zero → 64 (the saturating case), MSB set → 0.
         ([0x0000_0000_0000_0000, 0x8000_0000_0000_0000], [64, 0]),
@@ -183,7 +175,6 @@ fn test_vclz_64x2_concrete() {
                 count: 2,
             },
             RustBV::concrete(a, 128),
-            &ctx,
         )
         .unwrap();
         assert_eq!(result.width(), 128);
@@ -205,7 +196,6 @@ fn test_vclz_64x2_symbolic_matches_concrete() {
             count: 2,
         },
         a.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 128);
@@ -231,7 +221,6 @@ fn test_vclz_64x2_symbolic_matches_concrete() {
 /// All-same → N-1; first mismatch determines result.
 #[test]
 fn test_vcls_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     // Inputs covering both sign polarities.
     // 0x00 (0b00000000) → all 7 non-MSB bits match MSB(0) → 7.
     // 0xFF (0b11111111) → all 7 non-MSB bits match MSB(1) → 7.
@@ -255,7 +244,6 @@ fn test_vcls_8x8_concrete() {
             count: 8,
         },
         RustBV::concrete(a, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -274,7 +262,6 @@ fn test_vcls_8x8_concrete() {
 ///   a=0xFF, b=0xFF → low8 of GF(2) 0xFF*0xFF; computed below.
 #[test]
 fn test_vpolynomial_mul_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let a_lanes: [u8; 8] = [0x01, 0x02, 0x03, 0x80, 0xFF, 0xC0, 0x00, 0xFF];
     let b_lanes: [u8; 8] = [0x57, 0x57, 0x57, 0x80, 0x01, 0x55, 0xFF, 0xFF];
 
@@ -314,7 +301,6 @@ fn test_vpolynomial_mul_8x8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -325,7 +311,6 @@ fn test_vpolynomial_mul_8x8_concrete() {
 /// keeps the full 16-bit product. Output total = 128.
 #[test]
 fn test_vpolynomial_mull_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let a_lanes: [u8; 8] = [0x01, 0x02, 0x80, 0x40, 0xFF, 0x10, 0x55, 0x00];
     let b_lanes: [u8; 8] = [0x57, 0x57, 0x80, 0x02, 0xFF, 0x10, 0xAA, 0xFF];
     let mut expected: [u16; 8] = [0; 8];
@@ -359,7 +344,6 @@ fn test_vpolynomial_mull_8x8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -372,7 +356,7 @@ fn test_vpolynomial_mull_8x8_concrete() {
 fn test_vcnt_8x8_symbolic_universal() {
     let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vcnt_a", 64);
-    let got = VEXOps::unop(IROp::VCnt { count: 8 }, a.clone(), &ctx).unwrap();
+    let got = VEXOps::unop(IROp::VCnt { count: 8 }, a.clone()).unwrap();
 
     let mut lanes = Vec::with_capacity(8);
     for i in 0..8u32 {
@@ -407,7 +391,6 @@ fn test_vclz_8x8_symbolic_universal() {
             count: 8,
         },
         a.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -452,7 +435,6 @@ fn test_vpolynomial_mul_8x8_symbolic_universal() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -586,7 +568,6 @@ fn test_vcls_8x8_symbolic_universal() {
             count: 8,
         },
         a.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -598,17 +579,15 @@ fn test_vcls_8x8_symbolic_universal() {
         },
         a.clone(),
         RustBV::concrete(7, 8),
-        &ctx,
     )
     .unwrap();
-    let flipped = VEXOps::binop(IROp::Xor(IRType::I64), a.clone(), sign_mask, &ctx).unwrap();
+    let flipped = VEXOps::binop(IROp::Xor(IRType::I64), a.clone(), sign_mask).unwrap();
     let clz = VEXOps::unop(
         IROp::VClz {
             elem: IRType::I8,
             count: 8,
         },
         flipped,
-        &ctx,
     )
     .unwrap();
     let ones = RustBV::concrete(0x0101_0101_0101_0101, 64);
@@ -619,7 +598,6 @@ fn test_vcls_8x8_symbolic_universal() {
         },
         clz,
         ones,
-        &ctx,
     )
     .unwrap();
 
@@ -647,7 +625,6 @@ fn test_vcls_64x2_symbolic_matches_concrete() {
             count: 2,
         },
         a.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 128);

@@ -2,6 +2,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 
 // =========================================================================
 // FP edge cases (angr-io1t)
@@ -17,7 +18,7 @@ fn test_round_f32_to_int_symbolic_rm() {
     ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32)));
     let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
 
-    let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value).unwrap();
     let target = RustBV::concrete((-3.0f32).to_bits() as u128, 32);
     let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -39,7 +40,7 @@ fn test_round_f64_to_int_symbolic_rm() {
     ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32)));
     let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
 
-    let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value).unwrap();
     let target = RustBV::concrete(3.0f64.to_bits() as u128, 64);
     let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -55,9 +56,8 @@ fn test_round_f64_to_int_symbolic_rm() {
 /// F32→I32S with NaN: Rust `as` cast collapses NaN to 0.
 #[test]
 fn test_f32_to_i32s_nan() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(f32::NAN.to_bits() as u128, 32);
-    let result = VEXOps::unop(IROp::F32toI32S, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F32toI32S, arg).unwrap();
     assert_eq!(result.width(), 32);
     assert_eq!(result.as_u64(), Some(0), "NaN as i32 must be 0");
 }
@@ -65,9 +65,8 @@ fn test_f32_to_i32s_nan() {
 /// F32→I32S with +inf: saturates to i32::MAX.
 #[test]
 fn test_f32_to_i32s_pos_infinity() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(f32::INFINITY.to_bits() as u128, 32);
-    let result = VEXOps::unop(IROp::F32toI32S, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F32toI32S, arg).unwrap();
     assert_eq!(
         result.as_u64(),
         Some(i32::MAX as u32 as u64),
@@ -78,9 +77,8 @@ fn test_f32_to_i32s_pos_infinity() {
 /// F32→I32S with -inf: saturates to i32::MIN.
 #[test]
 fn test_f32_to_i32s_neg_infinity() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(f32::NEG_INFINITY.to_bits() as u128, 32);
-    let result = VEXOps::unop(IROp::F32toI32S, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F32toI32S, arg).unwrap();
     assert_eq!(
         result.as_u64(),
         Some(i32::MIN as u32 as u64),
@@ -91,9 +89,8 @@ fn test_f32_to_i32s_neg_infinity() {
 /// F32→I32S with very large magnitude: also saturates.
 #[test]
 fn test_f32_to_i32s_overflow() {
-    let ctx = SymContext::new_mock();
     let big = RustBV::concrete(1e30f32.to_bits() as u128, 32);
-    let result = VEXOps::unop(IROp::F32toI32S, big, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F32toI32S, big).unwrap();
     assert_eq!(
         result.as_u64(),
         Some(i32::MAX as u32 as u64),
@@ -101,7 +98,7 @@ fn test_f32_to_i32s_overflow() {
     );
 
     let neg_big = RustBV::concrete((-1e30f32).to_bits() as u128, 32);
-    let neg_result = VEXOps::unop(IROp::F32toI32S, neg_big, &ctx).unwrap();
+    let neg_result = VEXOps::unop(IROp::F32toI32S, neg_big).unwrap();
     assert_eq!(
         neg_result.as_u64(),
         Some(i32::MIN as u32 as u64),
@@ -112,9 +109,8 @@ fn test_f32_to_i32s_overflow() {
 /// I32S→F32 of INT32_MIN: -2^31 is exactly representable in F32.
 #[test]
 fn test_i32s_to_f32_int_min() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(i32::MIN as u32 as u128, 32);
-    let result = VEXOps::unop(IROp::I32StoF32, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::I32StoF32, arg).unwrap();
     let f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert_eq!(
         f, -2147483648.0f32,
@@ -126,9 +122,8 @@ fn test_i32s_to_f32_int_min() {
 /// Rust `as f32` saturates toward +inf, matching IEEE-754 behavior under RNE.
 #[test]
 fn test_f64_to_f32_overflow() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(1e300f64.to_bits() as u128, 64);
-    let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F64toF32, arg).unwrap();
     assert_eq!(result.width(), 32);
     let f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!(
@@ -141,9 +136,8 @@ fn test_f64_to_f32_overflow() {
 /// payload bits aren't part of the contract.
 #[test]
 fn test_f64_to_f32_nan() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(f64::NAN.to_bits() as u128, 64);
-    let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F64toF32, arg).unwrap();
     assert_eq!(result.width(), 32);
     let f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!(f.is_nan(), "NaN must remain NaN after F64→F32");
@@ -160,12 +154,11 @@ fn test_f64_to_f32_nan() {
 // =========================================================================
 
 /// Drive the real dispatch path: `binop(F64toF32, rm, value)`.
-fn f64_to_f32_with_rm(v: f64, rm: u32, ctx: &SymContext) -> f32 {
+fn f64_to_f32_with_rm(v: f64, rm: u32) -> f32 {
     let result = VEXOps::binop(
         IROp::F64toF32,
         RustBV::concrete(rm as u128, 32),
         RustBV::concrete(v.to_bits() as u128, 64),
-        ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 32);
@@ -176,45 +169,42 @@ fn f64_to_f32_with_rm(v: f64, rm: u32, ctx: &SymContext) -> f32 {
 /// the successor, so RZ/RD (which must round down) disagree with the cast.
 #[test]
 fn test_f64_to_f32_rm_straddles_boundary() {
-    let ctx = SymContext::new_mock();
     let lo = 1.0f32;
     let hi = lo.next_up();
     let v = f64::from(lo) + 0.75 * (f64::from(hi) - f64::from(lo));
 
-    assert_eq!(f64_to_f32_with_rm(v, 0, &ctx), hi, "RNE picks the nearer hi");
-    assert_eq!(f64_to_f32_with_rm(v, 1, &ctx), lo, "toward -inf must give lo");
-    assert_eq!(f64_to_f32_with_rm(v, 2, &ctx), hi, "toward +inf must give hi");
-    assert_eq!(f64_to_f32_with_rm(v, 3, &ctx), lo, "toward zero must give lo");
+    assert_eq!(f64_to_f32_with_rm(v, 0), hi, "RNE picks the nearer hi");
+    assert_eq!(f64_to_f32_with_rm(v, 1), lo, "toward -inf must give lo");
+    assert_eq!(f64_to_f32_with_rm(v, 2), hi, "toward +inf must give hi");
+    assert_eq!(f64_to_f32_with_rm(v, 3), lo, "toward zero must give lo");
 }
 
 /// Same boundary, negated: toward-zero now means rounding *up* (toward -lo),
 /// which is the opposite ULP step from the positive case.
 #[test]
 fn test_f64_to_f32_rm_straddles_boundary_negative() {
-    let ctx = SymContext::new_mock();
     let lo = 1.0f32;
     let hi = lo.next_up();
     let v = -(f64::from(lo) + 0.75 * (f64::from(hi) - f64::from(lo)));
 
-    assert_eq!(f64_to_f32_with_rm(v, 0, &ctx), -hi, "RNE picks the nearer -hi");
-    assert_eq!(f64_to_f32_with_rm(v, 1, &ctx), -hi, "toward -inf must give -hi");
-    assert_eq!(f64_to_f32_with_rm(v, 2, &ctx), -lo, "toward +inf must give -lo");
-    assert_eq!(f64_to_f32_with_rm(v, 3, &ctx), -lo, "toward zero must give -lo");
+    assert_eq!(f64_to_f32_with_rm(v, 0), -hi, "RNE picks the nearer -hi");
+    assert_eq!(f64_to_f32_with_rm(v, 1), -hi, "toward -inf must give -hi");
+    assert_eq!(f64_to_f32_with_rm(v, 2), -lo, "toward +inf must give -lo");
+    assert_eq!(f64_to_f32_with_rm(v, 3), -lo, "toward zero must give -lo");
 }
 
 /// Exactly-representable values are rounding-mode independent.
 #[test]
 fn test_f64_to_f32_rm_exact_is_mode_independent() {
-    let ctx = SymContext::new_mock();
     for rm in 0..4 {
-        assert_eq!(f64_to_f32_with_rm(0.5f64, rm, &ctx), 0.5f32, "rm={rm}");
-        assert_eq!(f64_to_f32_with_rm(-0.0f64, rm, &ctx), -0.0f32, "rm={rm}");
+        assert_eq!(f64_to_f32_with_rm(0.5f64, rm), 0.5f32, "rm={rm}");
+        assert_eq!(f64_to_f32_with_rm(-0.0f64, rm), -0.0f32, "rm={rm}");
         assert!(
-            f64_to_f32_with_rm(f64::NAN, rm, &ctx).is_nan(),
+            f64_to_f32_with_rm(f64::NAN, rm).is_nan(),
             "NaN stays NaN under rm={rm}"
         );
         assert_eq!(
-            f64_to_f32_with_rm(f64::NEG_INFINITY, rm, &ctx),
+            f64_to_f32_with_rm(f64::NEG_INFINITY, rm),
             f32::NEG_INFINITY,
             "rm={rm}"
         );
@@ -225,32 +215,30 @@ fn test_f64_to_f32_rm_exact_is_mode_independent() {
 /// must saturate at f32::MAX instead of producing infinity.
 #[test]
 fn test_f64_to_f32_rm_overflow_saturates() {
-    let ctx = SymContext::new_mock();
-    assert_eq!(f64_to_f32_with_rm(1e300, 0, &ctx), f32::INFINITY);
-    assert_eq!(f64_to_f32_with_rm(1e300, 1, &ctx), f32::MAX, "toward -inf");
-    assert_eq!(f64_to_f32_with_rm(1e300, 2, &ctx), f32::INFINITY, "toward +inf");
-    assert_eq!(f64_to_f32_with_rm(1e300, 3, &ctx), f32::MAX, "toward zero");
-    assert_eq!(f64_to_f32_with_rm(-1e300, 3, &ctx), f32::MIN, "toward zero");
-    assert_eq!(f64_to_f32_with_rm(-1e300, 2, &ctx), f32::MIN, "toward +inf");
+    assert_eq!(f64_to_f32_with_rm(1e300, 0), f32::INFINITY);
+    assert_eq!(f64_to_f32_with_rm(1e300, 1), f32::MAX, "toward -inf");
+    assert_eq!(f64_to_f32_with_rm(1e300, 2), f32::INFINITY, "toward +inf");
+    assert_eq!(f64_to_f32_with_rm(1e300, 3), f32::MAX, "toward zero");
+    assert_eq!(f64_to_f32_with_rm(-1e300, 3), f32::MIN, "toward zero");
+    assert_eq!(f64_to_f32_with_rm(-1e300, 2), f32::MIN, "toward +inf");
 }
 
 /// IEEE-754 underflow: rounding away from zero must reach the smallest
 /// subnormal rather than flushing to zero.
 #[test]
 fn test_f64_to_f32_rm_underflow() {
-    let ctx = SymContext::new_mock();
     let tiny = 1e-60f64; // far below f32's smallest subnormal (~1.4e-45)
     let min_subnormal = f32::from_bits(1);
-    assert_eq!(f64_to_f32_with_rm(tiny, 0, &ctx), 0.0f32);
-    assert_eq!(f64_to_f32_with_rm(tiny, 1, &ctx), 0.0f32, "toward -inf");
+    assert_eq!(f64_to_f32_with_rm(tiny, 0), 0.0f32);
+    assert_eq!(f64_to_f32_with_rm(tiny, 1), 0.0f32, "toward -inf");
     assert_eq!(
-        f64_to_f32_with_rm(tiny, 2, &ctx),
+        f64_to_f32_with_rm(tiny, 2),
         min_subnormal,
         "toward +inf"
     );
-    assert_eq!(f64_to_f32_with_rm(tiny, 3, &ctx), 0.0f32, "toward zero");
+    assert_eq!(f64_to_f32_with_rm(tiny, 3), 0.0f32, "toward zero");
     assert_eq!(
-        f64_to_f32_with_rm(-tiny, 1, &ctx),
+        f64_to_f32_with_rm(-tiny, 1),
         -min_subnormal,
         "toward -inf"
     );
@@ -259,9 +247,8 @@ fn test_f64_to_f32_rm_underflow() {
 /// F64→F32 of -infinity: preserved as -infinity.
 #[test]
 fn test_f64_to_f32_neg_infinity() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(f64::NEG_INFINITY.to_bits() as u128, 64);
-    let result = VEXOps::unop(IROp::F64toF32, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::F64toF32, arg).unwrap();
     let f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!(f.is_infinite() && f.is_sign_negative(), "-inf preserved");
 }
@@ -274,13 +261,11 @@ fn test_f64_to_f32_neg_infinity() {
 /// toward +inf gives 2^53 + 2; the negation mirrors it.
 #[test]
 fn test_i64s_to_f64_rounding_modes() {
-    let ctx = SymContext::new_mock();
     let conv = |v: i64, mode: u128| {
         let r = VEXOps::binop(
             IROp::I64StoF64,
             RustBV::concrete(mode, 32),
             RustBV::concrete(v as u64 as u128, 64),
-            &ctx,
         )
         .unwrap();
         f64::from_bits(r.as_u128().unwrap() as u64)
@@ -300,12 +285,10 @@ fn test_i64s_to_f64_rounding_modes() {
 
 #[test]
 fn test_i64u_to_f32_rounds_up_to_2_pow_64() {
-    let ctx = SymContext::new_mock();
     let r = VEXOps::binop(
         IROp::I64UtoF32,
         RustBV::concrete(0, 32),
         RustBV::concrete(u64::MAX as u128, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(f32::from_bits(r.as_u128().unwrap() as u32), 18446744073709551616.0);
@@ -323,7 +306,6 @@ fn test_int_to_float_rm_symbolic_matches_concrete() {
             IROp::I64StoF64,
             RustBV::concrete(mode, 32),
             RustBV::concrete(x, 64),
-            &ctx,
         )
         .unwrap();
         let term = build_float_expr(
@@ -341,7 +323,6 @@ fn test_int_to_float_rm_symbolic_matches_concrete() {
 /// cvtdq2ps: four signed int lanes to F32, lane 0 lowest.
 #[test]
 fn test_vec_i32s_to_f32x4() {
-    let ctx = SymContext::new_mock();
     let lanes: [i32; 4] = [1, -2, 1 << 24 | 1, 7];
     let v = lanes
         .iter()
@@ -354,7 +335,6 @@ fn test_vec_i32s_to_f32x4() {
         },
         RustBV::concrete(0, 32),
         RustBV::concrete(v, 128),
-        &ctx,
     )
     .unwrap()
     .as_u128()
@@ -369,7 +349,6 @@ fn test_vec_i32s_to_f32x4() {
 /// cvtps2dq rounds by the passed mode; the `_RZ` unop form truncates.
 #[test]
 fn test_vec_f32_to_i32s_x4_modes() {
-    let ctx = SymContext::new_mock();
     let lanes: [f32; 4] = [1.5, -1.5, 2.5, -0.4];
     let v = lanes
         .iter()
@@ -383,23 +362,21 @@ fn test_vec_f32_to_i32s_x4_modes() {
         let r = r.as_u128().unwrap();
         [0, 1, 2, 3].map(|i| (r >> (32 * i)) as u32 as i32)
     };
-    let nearest = VEXOps::binop(op, RustBV::concrete(0, 32), RustBV::concrete(v, 128), &ctx).unwrap();
+    let nearest = VEXOps::binop(op, RustBV::concrete(0, 32), RustBV::concrete(v, 128)).unwrap();
     assert_eq!(unpack(nearest), [2, -2, 2, 0]);
-    let rz = VEXOps::unop(op, RustBV::concrete(v, 128), &ctx).unwrap();
+    let rz = VEXOps::unop(op, RustBV::concrete(v, 128)).unwrap();
     assert_eq!(unpack(rz), [1, -1, 2, 0]);
 }
 
 #[test]
 fn test_vec_conversions_check_width_and_map() {
-    let ctx = SymContext::new_mock();
     assert!(
         VEXOps::unop(
             IROp::VI32toF32 {
                 count: 4,
                 signed: true
             },
-            RustBV::concrete(0, 64),
-            &ctx
+            RustBV::concrete(0, 64)
         )
         .is_err()
     );

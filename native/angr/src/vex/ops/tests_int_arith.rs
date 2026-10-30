@@ -2,27 +2,26 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
 fn test_mul_widening() {
-    let ctx = SymContext::new_mock();
 
     let a = RustBV::concrete(0xFFFFFFFF, 32);
     let b = RustBV::concrete(0xFFFFFFFF, 32);
 
-    let result = VEXOps::binop(IROp::MullU(IRType::I32), a, b, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::MullU(IRType::I32), a, b).unwrap();
     assert_eq!(result.width(), 64);
     assert_eq!(result.as_u128(), Some(0xFFFFFFFE00000001));
 }
 
 #[test]
 fn test_divmod_u64_to_32_concrete() {
-    let ctx = SymContext::new_mock();
     // 100 / 7 = 14 rem 2
     let dvd = RustBV::concrete(100, 64);
     let dvs = RustBV::concrete(7, 32);
-    let result = VEXOps::binop(IROp::DivModU64to32, dvd, dvs, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::DivModU64to32, dvd, dvs).unwrap();
     let v = result.as_u128().unwrap() as u64;
     assert_eq!(v & 0xFFFF_FFFF, 14, "quotient");
     assert_eq!((v >> 32) & 0xFFFF_FFFF, 2, "remainder");
@@ -43,7 +42,6 @@ fn divmod_concrete_matches_pinned_symbolic(
         op,
         RustBV::concrete(dvd, dividend_w),
         RustBV::concrete(dvs, divisor_w),
-        &ctx,
     )
     .unwrap()
     .as_u128()
@@ -59,7 +57,7 @@ fn divmod_concrete_matches_pinned_symbolic(
     } else {
         (RustBV::concrete(dvd, dividend_w), pin("dvs", dvs, divisor_w))
     };
-    let symbolic = VEXOps::binop(op, left, right, &ctx).unwrap();
+    let symbolic = VEXOps::binop(op, left, right).unwrap();
     assert_eq!(symbolic.width(), dividend_w);
     assert!(symbolic.is_symbolic(), "{op:?}: symbolic arm must not fold");
     let symbolic = ctx.eval(&symbolic).expect("pinned operands must be sat");
@@ -129,10 +127,9 @@ fn test_divmod_overflowing_quotient_matches_pinned_symbolic() {
 
 #[test]
 fn test_divmod_u128_to_64_concrete() {
-    let ctx = SymContext::new_mock();
     let dvd = RustBV::concrete(1000, 128);
     let dvs = RustBV::concrete(13, 64);
-    let result = VEXOps::binop(IROp::DivModU128to64, dvd, dvs, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::DivModU128to64, dvd, dvs).unwrap();
     let v = result.as_u128().unwrap();
     assert_eq!(v & 0xFFFF_FFFF_FFFF_FFFF, 76, "quotient = 1000/13");
     assert_eq!((v >> 64) & 0xFFFF_FFFF_FFFF_FFFF, 12, "remainder = 1000%13");
@@ -144,10 +141,9 @@ fn test_divmod_s128_to_64_int_min_by_neg_one() {
     // Z3 bvsdiv/bvsrem. dividend = 1<<127 (= i128::MIN as signed 128), divisor =
     // 0xFFFF..FF (= -1 as signed 64). Reference (Python engine): rax/quotient = 0,
     // rdx/remainder = 0 (regression, angr-n0xru).
-    let ctx = SymContext::new_mock();
     let dvd = RustBV::concrete(1u128 << 127, 128);
     let dvs = RustBV::concrete(u64::MAX as u128, 64);
-    let result = VEXOps::binop(IROp::DivModS128to64, dvd, dvs, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::DivModS128to64, dvd, dvs).unwrap();
     let v = result.as_u128().unwrap();
     assert_eq!(
         v & 0xFFFF_FFFF_FFFF_FFFF,
@@ -171,7 +167,6 @@ fn test_divmod_u128_to_64_symbolic() {
 
 #[test]
 fn test_sign_extend() {
-    let ctx = SymContext::new_mock();
 
     let a = RustBV::concrete(0xFF, 8); // -1 in 8 bits
 
@@ -181,7 +176,6 @@ fn test_sign_extend() {
             to: IRType::I32,
         },
         a,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.as_u64(), Some(0xFFFFFFFF)); // -1 in 32 bits
@@ -199,7 +193,6 @@ fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u3
         op,
         RustBV::concrete(dividend, dividend_w),
         RustBV::concrete(0, divisor_w),
-        &ctx,
     )
     .unwrap();
     assert_eq!(concrete.width(), dividend_w);
@@ -208,7 +201,7 @@ fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u3
     let dvs = RustBV::symbol("dvs_zero", divisor_w);
     let pinned = dvs.eq(&RustBV::concrete(0, divisor_w));
     ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
-    let symbolic = VEXOps::binop(op, RustBV::concrete(dividend, dividend_w), dvs, &ctx).unwrap();
+    let symbolic = VEXOps::binop(op, RustBV::concrete(dividend, dividend_w), dvs).unwrap();
     assert!(symbolic.is_symbolic(), "symbolic arm must not fold");
     let symbolic_v = ctx.eval(&symbolic).expect("symbolic result must be sat");
 
@@ -248,14 +241,12 @@ fn test_divmod_s128_to_64_zero_divisor_negative_dividend() {
 /// `Concat(rem, quot)` at double width, as angr's Python `_op_divmod`.
 #[test]
 fn test_divmod_same_width_concrete() {
-    let ctx = SymContext::new_mock();
     let same = |a: u128, b: u128, ty: IRType, signed: bool| {
         let bits = ty.bits();
         VEXOps::binop(
             IROp::DivModSameWidth { ty, signed },
             RustBV::concrete(a, bits),
             RustBV::concrete(b, bits),
-            &ctx,
         )
         .unwrap()
     };
@@ -279,7 +270,6 @@ fn test_divmod_same_width_concrete() {
 
 #[test]
 fn test_divmod_same_width_symbolic_and_width_checked() {
-    let ctx = SymContext::new_mock();
     let op = IROp::DivModSameWidth {
         ty: IRType::I64,
         signed: true,
@@ -288,7 +278,6 @@ fn test_divmod_same_width_symbolic_and_width_checked() {
         op,
         RustBV::symbol("a", 64),
         RustBV::concrete(3, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(r.width(), 128);
@@ -298,8 +287,7 @@ fn test_divmod_same_width_symbolic_and_width_checked() {
         VEXOps::binop(
             op,
             RustBV::concrete(1, 64),
-            RustBV::concrete(1, 32),
-            &ctx
+            RustBV::concrete(1, 32)
         )
         .is_err()
     );
@@ -309,10 +297,9 @@ fn test_divmod_same_width_symbolic_and_width_checked() {
 /// at 128 bits (angr-mx00p.6).
 #[test]
 fn test_div_mod_128_concrete() {
-    let ctx = SymContext::new_mock();
     let big = (1u128 << 100) + 5;
     let op = |op: IROp, a: u128, b: u128| {
-        VEXOps::binop(op, RustBV::concrete(a, 128), RustBV::concrete(b, 128), &ctx)
+        VEXOps::binop(op, RustBV::concrete(a, 128), RustBV::concrete(b, 128))
             .unwrap()
             .as_u128()
     };

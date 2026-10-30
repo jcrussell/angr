@@ -37,14 +37,13 @@ fn assert_width_rejected(result: Result<RustBV, OpError>, site: &str) {
 /// used to fold to a 32-bit `Concrete` in release.
 #[test]
 fn test_width_binop_rejects_either_narrow_operand() {
-    let ctx = SymContext::new_mock();
     let op = IROp::Add(IRType::I64);
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(1, 32), RustBV::concrete(2, 64), &ctx),
+        VEXOps::binop(op, RustBV::concrete(1, 32), RustBV::concrete(2, 64)),
         "binop add_into left",
     );
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(1, 64), RustBV::concrete(2, 32), &ctx),
+        VEXOps::binop(op, RustBV::concrete(1, 64), RustBV::concrete(2, 32)),
         "binop add_into right",
     );
 }
@@ -53,13 +52,11 @@ fn test_width_binop_rejects_either_narrow_operand() {
 /// (1 bit) hides the mismatch from any downstream width check.
 #[test]
 fn test_width_binop_rejects_narrow_compare_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::binop(
             IROp::CmpEQ(IRType::I32),
             RustBV::concrete(0, 32),
             RustBV::concrete(0, 8),
-            &ctx,
         ),
         "binop eq_into right",
     );
@@ -68,9 +65,8 @@ fn test_width_binop_rejects_narrow_compare_operand() {
 /// `width_unop!` — same macro, unary path.
 #[test]
 fn test_width_unop_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
-        VEXOps::unop(IROp::Not(IRType::I32), RustBV::concrete(0, 16), &ctx),
+        VEXOps::unop(IROp::Not(IRType::I32), RustBV::concrete(0, 16)),
         "unop not_into arg",
     );
 }
@@ -79,7 +75,6 @@ fn test_width_unop_rejects_narrow_operand() {
 /// reads `from` out of the opcode and applies it to a guest-data operand.
 #[test]
 fn test_extend_and_truncate_reject_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::unop(
             IROp::SignExtend {
@@ -87,7 +82,6 @@ fn test_extend_and_truncate_reject_narrow_operand() {
                 to: IRType::I64,
             },
             RustBV::concrete(0, 16),
-            &ctx,
         ),
         "unop SignExtend arg",
     );
@@ -98,7 +92,6 @@ fn test_extend_and_truncate_reject_narrow_operand() {
                 to: IRType::I32,
             },
             RustBV::concrete(0, 32),
-            &ctx,
         ),
         "unop Truncate arg",
     );
@@ -108,7 +101,6 @@ fn test_extend_and_truncate_reject_narrow_operand() {
 /// the derived `hi` read past its end.
 #[test]
 fn test_extract_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::unop(
             IROp::Extract {
@@ -117,7 +109,6 @@ fn test_extract_rejects_narrow_operand() {
                 low_bit: 56,
             },
             RustBV::concrete(0, 32),
-            &ctx,
         ),
         "unop Extract arg",
     );
@@ -127,13 +118,11 @@ fn test_extract_rejects_narrow_operand() {
 /// checked — but it is checked against the opcode's type, not its own width.
 #[test]
 fn test_shift_rejects_narrow_left_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::binop(
             IROp::Shl(IRType::I64),
             RustBV::concrete(1, 32),
             RustBV::concrete(4, 8),
-            &ctx,
         ),
         "binop Shl left",
     );
@@ -143,13 +132,11 @@ fn test_shift_rejects_narrow_left_operand() {
 /// only their sum is — so the guard is a postcondition on the joined result.
 #[test]
 fn test_concat_rejects_wrong_total_width() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::binop(
             IROp::Concat { ty: IRType::I64 },
             RustBV::concrete(0, 32),
             RustBV::concrete(0, 16),
-            &ctx,
         ),
         "binop Concat result",
     );
@@ -159,14 +146,13 @@ fn test_concat_rejects_wrong_total_width() {
 /// `2 * ty.bits()`, so a narrow operand silently changed the product's width.
 #[test]
 fn test_widening_mul_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     let op = IROp::MullS(IRType::I32);
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(3, 16), RustBV::concrete(5, 32), &ctx),
+        VEXOps::binop(op, RustBV::concrete(3, 16), RustBV::concrete(5, 32)),
         "widening_mul left",
     );
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(3, 32), RustBV::concrete(5, 16), &ctx),
+        VEXOps::binop(op, RustBV::concrete(3, 32), RustBV::concrete(5, 16)),
         "widening_mul right",
     );
 }
@@ -175,13 +161,11 @@ fn test_widening_mul_rejects_narrow_operand() {
 /// shared `divmod_double_to_single` pins the 2:1 relation between them.
 #[test]
 fn test_divmod_rejects_mismatched_operands() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::binop(
             IROp::DivModU64to32,
             RustBV::concrete(9, 32),
             RustBV::concrete(2, 32),
-            &ctx,
         ),
         "divmod_64_to_32 dividend",
     );
@@ -190,7 +174,6 @@ fn test_divmod_rejects_mismatched_operands() {
             IROp::DivModS64to32,
             RustBV::concrete(9, 64),
             RustBV::concrete(2, 16),
-            &ctx,
         ),
         "divmod_64_to_32 divisor",
     );
@@ -199,7 +182,6 @@ fn test_divmod_rejects_mismatched_operands() {
             IROp::DivModU128to64,
             RustBV::concrete(9, 64),
             RustBV::concrete(2, 64),
-            &ctx,
         ),
         "divmod_128_to_64 dividend",
     );
@@ -209,9 +191,8 @@ fn test_divmod_rejects_mismatched_operands() {
 /// the opcode and the payload from the operand.
 #[test]
 fn test_int_to_float_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
-        VEXOps::unop(IROp::I32StoF64, RustBV::concrete(0, 16), &ctx),
+        VEXOps::unop(IROp::I32StoF64, RustBV::concrete(0, 16)),
         "int_to_float arg",
     );
 }
@@ -220,9 +201,8 @@ fn test_int_to_float_rejects_narrow_operand() {
 /// `FloatPrec`.
 #[test]
 fn test_float_to_int_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
-        VEXOps::unop(IROp::F64toI32S, RustBV::concrete(0, 32), &ctx),
+        VEXOps::unop(IROp::F64toI32S, RustBV::concrete(0, 32)),
         "float_to_int arg",
     );
 }
@@ -232,7 +212,6 @@ fn test_float_to_int_rejects_narrow_operand() {
 /// rejection (angr-3fb7p).
 #[test]
 fn test_float_packed_cmp_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
         VEXOps::binop(
             IROp::FCmpVecPacked {
@@ -242,7 +221,6 @@ fn test_float_packed_cmp_rejects_narrow_operand() {
             },
             RustBV::concrete(0, 64),
             RustBV::concrete(0, 128),
-            &ctx,
         ),
         "vec_float_packed_cmp left",
     );

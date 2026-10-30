@@ -486,7 +486,6 @@ fn bench_migration_phases(c: &mut Criterion) {
 /// Mul8x16 is also paired with a scalar `Mul64` baseline so the
 /// per-lane multiply cost is comparable to plain 64-bit arithmetic.
 fn bench_rustbv_neon_ops(c: &mut Criterion) {
-    let ctx = SymContext::new();
     let mut group = c.benchmark_group("rustbv_neon_ops");
 
     // ---- Iop_Mul8x16: 16 lanes of 8-bit multiply over a V128.
@@ -504,7 +503,6 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
                     },
                     mul_v128_l.clone(),
                     mul_v128_r.clone(),
-                    &ctx,
                 )
                 .unwrap(),
             )
@@ -523,7 +521,6 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
                     },
                     mul_v128_sym_l.clone(),
                     mul_v128_sym_r.clone(),
-                    &ctx,
                 )
                 .unwrap(),
             )
@@ -537,13 +534,7 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
     group.bench_function("mul64_concrete_baseline", |bench| {
         bench.iter(|| {
             black_box(
-                VEXOps::binop(
-                    IROp::Mul(IRType::I64),
-                    scalar_a.clone(),
-                    scalar_b.clone(),
-                    &ctx,
-                )
-                .unwrap(),
+                VEXOps::binop(IROp::Mul(IRType::I64), scalar_a.clone(), scalar_b.clone()).unwrap(),
             )
         })
     });
@@ -565,7 +556,6 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
                     },
                     lane_vec.clone(),
                     lane_idx_concrete.clone(),
-                    &ctx,
                 )
                 .unwrap(),
             )
@@ -583,7 +573,6 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
                     },
                     lane_vec.clone(),
                     lane_idx_sym.clone(),
-                    &ctx,
                 )
                 .unwrap(),
             )
@@ -604,7 +593,6 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
                     lane_vec.clone(),
                     lane_idx_concrete.clone(),
                     set_val.clone(),
-                    &ctx,
                 )
                 .unwrap(),
             )
@@ -622,7 +610,6 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
                     lane_vec.clone(),
                     lane_idx_sym.clone(),
                     set_val.clone(),
-                    &ctx,
                 )
                 .unwrap(),
             )

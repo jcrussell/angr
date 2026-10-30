@@ -2,6 +2,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 /// Symbolic ShlN16x8: shift count is symbolic; constrain to 4 and verify
@@ -26,7 +27,6 @@ fn test_vec_shl_n_symbolic_shift() {
         },
         vec,
         shift.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -70,7 +70,6 @@ fn test_vec_shr_n_symbolic_shift() {
         },
         vec,
         shift.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -112,7 +111,6 @@ fn test_vec_sar_n_symbolic_shift() {
         },
         vec,
         shift.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -134,7 +132,6 @@ fn test_vec_sar_n_symbolic_shift() {
 /// "fully unconstrained" path stays inside the solver.
 #[test]
 fn test_vec_shl_n_unbounded_shift() {
-    let ctx = SymContext::new_mock();
 
     let vec = RustBV::concrete(0x1111_2222_3333_4444u128, 64);
     let shift = RustBV::symbol("shl_amt_free", 8);
@@ -146,7 +143,6 @@ fn test_vec_shl_n_unbounded_shift() {
         },
         vec,
         shift,
-        &ctx,
     )
     .expect("unbounded symbolic shift must not error");
     assert_eq!(result.width(), 64);
@@ -161,7 +157,6 @@ fn test_vec_shl_n_unbounded_shift() {
 /// (≥ lane width → zero, matching Z3 bvshl).
 #[test]
 fn test_vshl_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     // Lane layout (LSB→MSB): vec lanes, then shift lanes.
     //   0:  0x01 << 0  = 0x01.
     //   1:  0x01 << 1  = 0x02.
@@ -189,7 +184,6 @@ fn test_vshl_8x8_concrete() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -200,7 +194,6 @@ fn test_vshl_8x8_concrete() {
 /// Verifies zero-fill (Shr discards the sign bit) and out-of-range counts.
 #[test]
 fn test_vshr_16x8_concrete() {
-    let ctx = SymContext::new_mock();
     let lanes_v: [u16; 8] = [
         0x8000, 0xFFFF, 0xABCD, 0x0001, 0xFFFF, 0x4000, 0x0F0F, 0x1234,
     ];
@@ -229,7 +222,6 @@ fn test_vshr_16x8_concrete() {
         },
         RustBV::concrete(v, 128),
         RustBV::concrete(s, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -240,7 +232,6 @@ fn test_vshr_16x8_concrete() {
 /// vector. Verifies sign-fill on negative inputs and out-of-range counts.
 #[test]
 fn test_vsar_32x2_concrete() {
-    let ctx = SymContext::new_mock();
     // 0: -1i32 (0xFFFF_FFFF) >> 4   = -1 (sign-fill keeps all bits set).
     // 1: 0x4000_0000   >> 1   = 0x2000_0000 (positive → logical shift).
     // Note: 0xFFFF_FFFF >> 32 would also be all-1 in arithmetic shift,
@@ -264,7 +255,6 @@ fn test_vsar_32x2_concrete() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -275,7 +265,6 @@ fn test_vsar_32x2_concrete() {
 /// lanes, 0 for positive). Concrete fast path mirrors Z3 bvashr.
 #[test]
 fn test_vsar_32x2_oor_sign_fill() {
-    let ctx = SymContext::new_mock();
     // 0: -1i32 >> 64 = sign-fill = 0xFFFF_FFFF.
     // 1:  1i32 >> 32 = sign-fill = 0 (positive).
     let lanes_v: [u32; 2] = [0xFFFF_FFFF, 0x0000_0001];
@@ -296,7 +285,6 @@ fn test_vsar_32x2_oor_sign_fill() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.as_u128().unwrap(), e);
@@ -307,7 +295,6 @@ fn test_vsar_32x2_oor_sign_fill() {
 #[test]
 fn test_vsal_routes_to_vshl_and_matches() {
     use crate::vex::opcode_map::parse_opcode;
-    let ctx = SymContext::new_mock();
     let v = 0x1234_5678_9ABC_DEF0u128;
     let s = 0x0102_0304_0506_0708u128; // per-lane counts 8,7,6,5,4,3,2,1
     let shl_res = VEXOps::binop(
@@ -317,7 +304,6 @@ fn test_vsal_routes_to_vshl_and_matches() {
         },
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     // Sal{N}x{M} must parse to the same IROp variant.
@@ -327,7 +313,6 @@ fn test_vsal_routes_to_vshl_and_matches() {
         sal_op,
         RustBV::concrete(v, 64),
         RustBV::concrete(s, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(sal_res.as_u128().unwrap(), shl_res.as_u128().unwrap());
@@ -349,7 +334,6 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
     // Build the claripy reference: per-lane bvshl. _op_vector_mapped
@@ -389,7 +373,6 @@ fn test_vsar_8x16_symbolic_matches_python_ref() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
     let mut lanes: Vec<RustBV> = Vec::with_capacity(16);
@@ -612,7 +595,7 @@ fn test_vec_shift_n_avx2_256_bit() {
     ];
 
     for (op, expected_lane) in cases {
-        let result = VEXOps::binop(op, vec.clone(), shift.clone(), &ctx).unwrap();
+        let result = VEXOps::binop(op, vec.clone(), shift.clone()).unwrap();
         assert_eq!(result.width(), 256, "{op:?} result width");
 
         // The result is wider than a u128, so check it a lane at a time.

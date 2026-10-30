@@ -179,7 +179,6 @@ fn test_vec_int_binops_iropclass_is_vec() {
 
 #[test]
 fn test_vec_int_binops_dispatch_reachable() {
-    let ctx = SymContext::new_mock();
 
     // (op, left_width, right_width) for the ops whose correct operands are two
     // V128 vectors or V128 + a small scalar. Zero operands suffice: we only
@@ -398,7 +397,7 @@ fn test_vec_int_binops_dispatch_reachable() {
     for (op, lw, rw) in cases {
         let left = RustBV::concrete(0, *lw);
         let right = RustBV::concrete(0, *rw);
-        let result = VEXOps::binop(*op, left, right, &ctx);
+        let result = VEXOps::binop(*op, left, right);
         assert!(
             !matches!(result, Err(OpError::NotBinary(_))),
             "vector op {op:?} fell through to the NotBinary arm — the binop() \

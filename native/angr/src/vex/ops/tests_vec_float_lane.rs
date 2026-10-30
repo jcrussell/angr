@@ -3,6 +3,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -12,7 +13,6 @@ use crate::vex::ir::IRType;
 /// ADDPS-style: 4x f32 add, concrete.
 #[test]
 fn test_vec_float_add_concrete_f32x4() {
-    let ctx = SymContext::new_mock();
 
     let l = [1.0f32, 2.5, -3.0, 0.5];
     let r = [10.0f32, -2.5, 3.0, 8.0];
@@ -25,7 +25,6 @@ fn test_vec_float_add_concrete_f32x4() {
         },
         RustBV::concrete(pack_lanes_f32(&l), 128),
         RustBV::concrete(pack_lanes_f32(&r), 128),
-        &ctx,
     )
     .unwrap();
     assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
@@ -34,7 +33,6 @@ fn test_vec_float_add_concrete_f32x4() {
 /// DIVPD-style: 2x f64 div, concrete.
 #[test]
 fn test_vec_float_div_concrete_f64x2() {
-    let ctx = SymContext::new_mock();
 
     let l = [10.0f64, -8.0];
     let r = [4.0f64, 2.0];
@@ -47,7 +45,6 @@ fn test_vec_float_div_concrete_f64x2() {
         },
         RustBV::concrete(pack_lanes_f64(&l), 128),
         RustBV::concrete(pack_lanes_f64(&r), 128),
-        &ctx,
     )
     .unwrap();
     assert_f64_lanes_approx(result.as_u128().unwrap(), &exp, 1e-12);
@@ -56,7 +53,6 @@ fn test_vec_float_div_concrete_f64x2() {
 /// SQRTPS-style: 4x f32 sqrt, concrete.
 #[test]
 fn test_vec_float_sqrt_concrete_f32x4() {
-    let ctx = SymContext::new_mock();
 
     let v = [4.0f32, 9.0, 16.0, 25.0];
     let exp = [2.0f32, 3.0, 4.0, 5.0];
@@ -67,7 +63,6 @@ fn test_vec_float_sqrt_concrete_f32x4() {
             count: 4,
         },
         RustBV::concrete(pack_lanes_f32(&v), 128),
-        &ctx,
     )
     .unwrap();
     assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
@@ -76,7 +71,6 @@ fn test_vec_float_sqrt_concrete_f32x4() {
 /// Iop_Abs32Fx4-style: per-lane fabs (clears sign bit).
 #[test]
 fn test_vec_float_abs_concrete_f32x4() {
-    let ctx = SymContext::new_mock();
 
     let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
     let exp = [1.5f32, 2.5, 0.0, f32::INFINITY];
@@ -87,7 +81,6 @@ fn test_vec_float_abs_concrete_f32x4() {
             count: 4,
         },
         RustBV::concrete(pack_lanes_f32(&v), 128),
-        &ctx,
     )
     .unwrap();
     assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
@@ -97,7 +90,6 @@ fn test_vec_float_abs_concrete_f32x4() {
 /// Only the low two lanes are meaningful.
 #[test]
 fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
-    let ctx = SymContext::new_mock();
 
     let v = [-1.5f32, -0.0];
     let exp = [1.5f32, 0.0];
@@ -108,7 +100,6 @@ fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
             count: 2,
         },
         RustBV::concrete(pack_lanes_f32(&v), 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -119,7 +110,6 @@ fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
 /// must flip the sign of -0.0 and of infinities, where `==` would not notice.
 #[test]
 fn test_vec_float_neg_concrete_f32x4() {
-    let ctx = SymContext::new_mock();
 
     let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
     let exp = [1.5f32, -2.5, 0.0, f32::INFINITY];
@@ -130,7 +120,6 @@ fn test_vec_float_neg_concrete_f32x4() {
             count: 4,
         },
         RustBV::concrete(pack_lanes_f32(&v), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -140,7 +129,6 @@ fn test_vec_float_neg_concrete_f32x4() {
 /// Iop_Neg64Fx2-style: per-lane sign flip on the f64x2 shape.
 #[test]
 fn test_vec_float_neg_concrete_f64x2() {
-    let ctx = SymContext::new_mock();
 
     let v = [3.25f64, -0.0];
     let exp = [-3.25f64, 0.0];
@@ -151,7 +139,6 @@ fn test_vec_float_neg_concrete_f64x2() {
             count: 2,
         },
         RustBV::concrete(pack_lanes_f64(&v), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -174,7 +161,6 @@ fn test_vec_float_neg_symbolic_f32x2() {
             count: 2,
         },
         v,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -187,7 +173,6 @@ fn test_vec_float_neg_symbolic_f32x2() {
 /// MAXPS-style: per-lane max of two f32x4 vectors.
 #[test]
 fn test_vec_float_max_concrete_f32x4() {
-    let ctx = SymContext::new_mock();
 
     let l = [1.0f32, -2.0, 3.0, 0.5];
     let r = [4.0f32, -3.0, 2.0, 0.6];
@@ -200,7 +185,6 @@ fn test_vec_float_max_concrete_f32x4() {
         },
         RustBV::concrete(pack_lanes_f32(&l), 128),
         RustBV::concrete(pack_lanes_f32(&r), 128),
-        &ctx,
     )
     .unwrap();
     assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
@@ -209,7 +193,6 @@ fn test_vec_float_max_concrete_f32x4() {
 /// MINPD-style: per-lane min of two f64x2 vectors.
 #[test]
 fn test_vec_float_min_concrete_f64x2() {
-    let ctx = SymContext::new_mock();
 
     let l = [1.5f64, -2.5];
     let r = [-1.5f64, 0.5];
@@ -222,7 +205,6 @@ fn test_vec_float_min_concrete_f64x2() {
         },
         RustBV::concrete(pack_lanes_f64(&l), 128),
         RustBV::concrete(pack_lanes_f64(&r), 128),
-        &ctx,
     )
     .unwrap();
     assert_f64_lanes_approx(result.as_u128().unwrap(), &exp, 1e-12);
@@ -252,7 +234,6 @@ fn test_vec_float_add_symbolic_f32x4() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -399,7 +380,6 @@ fn test_vec_float_binops_avx2_256_bit_f32x8() {
             op,
             pack_v256_f32x8(&l),
             pack_v256_f32x8(&r),
-            &ctx,
         )
         .unwrap();
         assert_eq!(result.width(), 256, "{op:?} result width");
@@ -441,7 +421,6 @@ fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
             op,
             pack_v256_f64x4(&l),
             pack_v256_f64x4(&r),
-            &ctx,
         )
         .unwrap();
         assert_eq!(result.width(), 256, "{op:?} result width");
@@ -463,7 +442,6 @@ fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
             count: 4,
         },
         pack_v256_f64x4(&sqrt_in),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 256);

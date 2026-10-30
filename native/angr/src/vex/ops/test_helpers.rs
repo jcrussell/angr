@@ -4,6 +4,7 @@
 // test sibling modules (children of `ops`) reach them. Behavior-preserving.
 
 use super::*;
+use crate::symbolic::SymContext;
 
 // =========================================================================
 // SIMD lane-test helpers (angr-ec82).

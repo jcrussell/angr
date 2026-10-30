@@ -2,6 +2,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // -------------------------------------------------------------------------
@@ -10,7 +11,6 @@ use crate::vex::ir::IRType;
 
 #[test]
 fn test_vmul_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     // 8 lanes of 8-bit, lane i = i for both → product = i*i mod 256.
     // l = 0x0706050403020100, r = same. result lane i = i*i.
     let l = RustBV::concrete(0x0706_0504_0302_0100u128, 64);
@@ -22,7 +22,6 @@ fn test_vmul_8x8_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -36,7 +35,6 @@ fn test_vmul_8x8_concrete() {
 
 #[test]
 fn test_vmul_8x16_concrete() {
-    let ctx = SymContext::new_mock();
     // All lanes = 3, multiplied by all lanes = 5 → all lanes = 15.
     let lo64 = 0x0303_0303_0303_0303u128;
     let l = RustBV::concrete(lo64 | (lo64 << 64), 128);
@@ -49,7 +47,6 @@ fn test_vmul_8x16_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -62,7 +59,6 @@ fn test_vmul_8x16_concrete() {
 
 #[test]
 fn test_vget_elem_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
     // Lane 0 = 0x11, lane 7 = 0x88.
     for (lane, expected) in [
@@ -83,7 +79,6 @@ fn test_vget_elem_8x8_concrete() {
             },
             vec.clone(),
             idx,
-            &ctx,
         )
         .unwrap();
         assert_eq!(res.width(), 8);
@@ -93,7 +88,6 @@ fn test_vget_elem_8x8_concrete() {
 
 #[test]
 fn test_vget_elem_16x8_concrete() {
-    let ctx = SymContext::new_mock();
     // V128 with 8 lanes of 16 bits. Lane 3 = 0xDEAD.
     let mut payload: u128 = 0;
     payload |= 0xDEAD_u128 << (3 * 16);
@@ -106,7 +100,6 @@ fn test_vget_elem_16x8_concrete() {
         },
         vec.clone(),
         RustBV::concrete(3, 8),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 16);
@@ -119,7 +112,6 @@ fn test_vget_elem_16x8_concrete() {
         },
         vec,
         RustBV::concrete(7, 8),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.as_u128().unwrap(), 0xBEEF);
@@ -127,7 +119,6 @@ fn test_vget_elem_16x8_concrete() {
 
 #[test]
 fn test_vget_elem_64x2_concrete() {
-    let ctx = SymContext::new_mock();
     let lo = 0xAAAA_BBBB_CCCC_DDDDu128;
     let hi = 0x1111_2222_3333_4444u128;
     let vec = RustBV::concrete(lo | (hi << 64), 128);
@@ -138,7 +129,6 @@ fn test_vget_elem_64x2_concrete() {
         },
         vec.clone(),
         RustBV::concrete(0, 8),
-        &ctx,
     )
     .unwrap();
     assert_eq!(r0.as_u128().unwrap(), lo);
@@ -149,7 +139,6 @@ fn test_vget_elem_64x2_concrete() {
         },
         vec,
         RustBV::concrete(1, 8),
-        &ctx,
     )
     .unwrap();
     assert_eq!(r1.as_u128().unwrap(), hi);
@@ -157,7 +146,6 @@ fn test_vget_elem_64x2_concrete() {
 
 #[test]
 fn test_vset_elem_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let vec = RustBV::concrete(0x0u128, 64);
     // Set lane 3 to 0xFF.
     let res = VEXOps::binop_with_rm(
@@ -168,7 +156,6 @@ fn test_vset_elem_8x8_concrete() {
         vec,
         RustBV::concrete(3, 8),
         RustBV::concrete(0xFF, 8),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -177,7 +164,6 @@ fn test_vset_elem_8x8_concrete() {
 
 #[test]
 fn test_vset_elem_16x8_concrete() {
-    let ctx = SymContext::new_mock();
     let vec = RustBV::concrete(0u128, 128);
     // Set lane 5 to 0xCAFE in a 16x8 vector.
     let res = VEXOps::binop_with_rm(
@@ -188,7 +174,6 @@ fn test_vset_elem_16x8_concrete() {
         vec,
         RustBV::concrete(5, 8),
         RustBV::concrete(0xCAFE, 16),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -197,7 +182,6 @@ fn test_vset_elem_16x8_concrete() {
 
 #[test]
 fn test_vset_elem_preserves_other_lanes() {
-    let ctx = SymContext::new_mock();
     let vec = RustBV::concrete(0xDEAD_BEEF_CAFE_F00Du128, 64);
     // Overwrite lane 2 (byte 2) with 0x77.
     let res = VEXOps::binop_with_rm(
@@ -208,7 +192,6 @@ fn test_vset_elem_preserves_other_lanes() {
         vec,
         RustBV::concrete(2, 8),
         RustBV::concrete(0x77, 8),
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -219,7 +202,6 @@ fn test_vset_elem_preserves_other_lanes() {
 
 #[test]
 fn test_vset_elem_round_trip_via_get() {
-    let ctx = SymContext::new_mock();
     let vec = RustBV::concrete(0u128, 128);
     let inserted = VEXOps::binop_with_rm(
         IROp::VSetElem {
@@ -229,7 +211,6 @@ fn test_vset_elem_round_trip_via_get() {
         vec,
         RustBV::concrete(2, 8),
         RustBV::concrete(0x1234_5678, 32),
-        &ctx,
     )
     .unwrap();
     let lane = VEXOps::binop(
@@ -239,7 +220,6 @@ fn test_vset_elem_round_trip_via_get() {
         },
         inserted,
         RustBV::concrete(2, 8),
-        &ctx,
     )
     .unwrap();
     assert_eq!(lane.as_u128().unwrap(), 0x1234_5678);
@@ -251,7 +231,6 @@ fn test_vset_elem_round_trip_via_get() {
 
 #[test]
 fn test_vdup_8x8_concrete() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0xABu128, 8);
     let res = VEXOps::unop(
         IROp::VDup {
@@ -259,7 +238,6 @@ fn test_vdup_8x8_concrete() {
             count: 8,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -268,7 +246,6 @@ fn test_vdup_8x8_concrete() {
 
 #[test]
 fn test_vdup_16x8_concrete() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0xCAFEu128, 16);
     let res = VEXOps::unop(
         IROp::VDup {
@@ -276,7 +253,6 @@ fn test_vdup_16x8_concrete() {
             count: 8,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -286,7 +262,6 @@ fn test_vdup_16x8_concrete() {
 
 #[test]
 fn test_vdup_32x4_concrete() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0xDEAD_BEEFu128, 32);
     let res = VEXOps::unop(
         IROp::VDup {
@@ -294,7 +269,6 @@ fn test_vdup_32x4_concrete() {
             count: 4,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -304,7 +278,6 @@ fn test_vdup_32x4_concrete() {
 
 #[test]
 fn test_vwiden_8sto16x8_signed() {
-    let ctx = SymContext::new_mock();
     // 8 lanes of I8: lane 0 = 0xFF (= -1 signed), lane 1 = 0x7F (= 127),
     // lane 2 = 0x80 (= -128), rest = 0.
     let arg_val: u128 = 0xFFu128 | (0x7Fu128 << 8) | (0x80u128 << 16);
@@ -316,7 +289,6 @@ fn test_vwiden_8sto16x8_signed() {
             signed: true,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -330,7 +302,6 @@ fn test_vwiden_8sto16x8_signed() {
 
 #[test]
 fn test_vwiden_8uto16x8_unsigned() {
-    let ctx = SymContext::new_mock();
     let arg_val: u128 = 0xFFu128 | (0x80u128 << 8);
     let arg = RustBV::concrete(arg_val, 64);
     let res = VEXOps::unop(
@@ -340,7 +311,6 @@ fn test_vwiden_8uto16x8_unsigned() {
             signed: false,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -350,7 +320,6 @@ fn test_vwiden_8uto16x8_unsigned() {
 
 #[test]
 fn test_vwiden_32sto64x2_signed() {
-    let ctx = SymContext::new_mock();
     // Lane 0 = 0x80000000 (= INT_MIN signed), Lane 1 = 0x12345678.
     let arg_val: u128 = 0x8000_0000u128 | (0x1234_5678u128 << 32);
     let arg = RustBV::concrete(arg_val, 64);
@@ -361,7 +330,6 @@ fn test_vwiden_32sto64x2_signed() {
             signed: true,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -384,7 +352,6 @@ fn test_vdup_symbolic_arg() {
             count: 8,
         },
         arg.clone(),
-        &ctx,
     )
     .unwrap();
     let target = RustBV::concrete(0x4242_4242_4242_4242u128, 64);
@@ -408,7 +375,6 @@ fn test_vget_elem_symbolic_idx() {
         },
         vec,
         sym_idx.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 8);

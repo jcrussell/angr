@@ -162,17 +162,17 @@ the ``Unmapped`` name.
 
 .. code-block:: rust
 
-   pub fn binop(op: IROp, left: RustBV, right: RustBV, ctx: &SymContext)
+   pub fn binop(op: IROp, left: RustBV, right: RustBV)
        -> Result<RustBV, OpError>
    {
        match op {
-           IROp::Add(ty) => width_binop!(left, right, ty, add_into, ctx),
+           IROp::Add(ty) => width_binop!(left, right, ty, add_into),
            // …
        }
    }
 
 The macro asserts ``width(left) == width(right) == ty.bits()`` and
-delegates to ``left.add_into(right, ctx)``. Symbolic vs. concrete is
+delegates to ``left.add_into(right)``. Symbolic vs. concrete is
 the ``RustBV`` method's responsibility — the dispatch layer doesn't
 care. That's why so many arithmetic arms are one-liners.
 
@@ -185,10 +185,9 @@ files are declared at the bottom of ``ops/mod.rs`` via
 
    #[test]
    fn test_add_op() {
-       let ctx = SymContext::new_mock();
        let a = RustBV::concrete(5, 32);
        let b = RustBV::concrete(3, 32);
-       let result = VEXOps::binop(IROp::Add(IRType::I32), a, b, &ctx).unwrap();
+       let result = VEXOps::binop(IROp::Add(IRType::I32), a, b).unwrap();
        assert_eq!(result.as_u64(), Some(8));
    }
 
@@ -216,8 +215,8 @@ the macro:
 
 .. code-block:: rust
 
-   IROp::MullU(ty) => Self::widening_mul(left, right, ty, false, ctx),
-   IROp::MullS(ty) => Self::widening_mul(left, right, ty, true, ctx),
+   IROp::MullU(ty) => Self::widening_mul(left, right, ty, false),
+   IROp::MullS(ty) => Self::widening_mul(left, right, ty, true),
 
 **ops/int_arith.rs** — the helper itself. It is a ``pub(super)`` method on
 ``impl VEXOps`` in a child module of ``ops``, so the dispatch arm above
@@ -226,20 +225,20 @@ still reaches it as ``Self::widening_mul``:
 .. code-block:: rust
 
    pub(super) fn widening_mul(left: RustBV, right: RustBV, ty: IRType,
-                              signed: bool, ctx: &SymContext)
+                              signed: bool)
        -> Result<RustBV, OpError>
    {
        let in_width = ty.bits();
        let out_width = in_width * 2;
 
        // Extend both operands
-       let left_ext = left.extend_into(out_width, signed, ctx);
-       let right_ext = right.extend_into(out_width, signed, ctx);
+       let left_ext = left.extend_into(out_width, signed);
+       let right_ext = right.extend_into(out_width, signed);
 
-       Ok(left_ext.mul_into(right_ext, ctx))
+       Ok(left_ext.mul_into(right_ext))
    }
 
-Note the single ``extend_into(width, signed, ctx)`` call rather than an
+Note the single ``extend_into(width, signed)`` call rather than an
 ``if signed { sign_extend_into } else { zero_extend_into }`` split: the
 signedness is already a parameter here, so branching on it just to pick
 between two ``RustBV`` methods duplicates a choice ``extend_into``
@@ -251,8 +250,8 @@ Things to take away:
   whole family, in a child module of ``ops`` declared with ``mod`` (as
   ``int_arith`` is), with the methods ``pub(super)`` so the dispatch
   arms can still call them. Keep them ``#[inline]`` and avoid taking
-  ``&mut`` state — VEX ops are pure transforms over ``RustBV`` plus the
-  solver context.
+  ``&mut`` state — VEX ops are pure transforms over ``RustBV``; they take
+  no solver context (angr-mx00p.116.6).
 * When the helper needs both a concrete and a symbolic path (typical
   for FP and vector ops, see ``FloatLaneOp`` in ``ops/lane_traits.rs``),
   use the trait/struct-pair pattern: each implementation
@@ -265,10 +264,9 @@ Things to take away:
 
      #[test]
      fn test_mul_widening() {
-         let ctx = SymContext::new_mock();
          let a = RustBV::concrete(0xFFFFFFFF, 32);
          let b = RustBV::concrete(0xFFFFFFFF, 32);
-         let result = VEXOps::binop(IROp::MullU(IRType::I32), a, b, &ctx).unwrap();
+         let result = VEXOps::binop(IROp::MullU(IRType::I32), a, b).unwrap();
          assert_eq!(result.width(), 64);
          assert_eq!(result.as_u128(), Some(0xFFFFFFFE00000001));
      }
@@ -428,7 +426,7 @@ asserting ``got != reference`` is UNSAT (``ctx.push()``,
 1. **Python parity.** If ``angr/engines/vex/claripy/irop.py`` defines
    ``_op_Iop_X`` / ``_op_generic_X``, rebuild that exact pattern from
    ``RustBV::extract`` + ``VEXOps::concat_le_elements``. Claripy's ``arg[127:96]``
-   maps to ``extract(127, 96, &ctx)``; ``concat_le_elements`` index 0 is the
+   maps to ``extract(127, 96)``; ``concat_le_elements`` index 0 is the
    LSB, so push slices LSB to MSB.
 2. **Sibling-op identity** (preferred when the op is algebraically related to
    ops already covered). Assert an identity tying it to two or more existing
@@ -474,8 +472,8 @@ What *not* to do
 * Don't put memory or register access in ``ops/mod.rs``. The split between
   ``ops/mod.rs`` (pure ``RustBV`` transforms) and ``interpreter`` (state
   access) is the engine's most useful internal boundary; preserving it
-  keeps the test surface small (``SymContext::new_mock()`` is enough
-  to test any pure op).
+  keeps the test surface small (a pure op needs no ``SymContext`` at all;
+  ``SymContext::new_mock()`` is only for tests that ask the solver).
 
 Unsupported op coverage matrix
 ------------------------------
@@ -593,8 +591,12 @@ These ops have no named ``IROp`` variant. ``parse_transcendental``
 to ``IROp::Raw(tag)``, and the ``IROp::Raw`` arms of ``VEXOps::binop``
 (via its private ``binop_misc`` helper) and ``VEXOps::binop_with_rm``
 dispatch that into the concrete-only libm fast path in
-``native/angr/src/vex/transcendentals.rs`` plus a symbolic
-concretization fallback (sample-pin-replace). The ``tag`` values are
+``native/angr/src/vex/transcendentals.rs``. A symbolic operand is
+concretized before dispatch (sample-pin-replace) by the interpreter's
+``eval_binop`` / ``eval_triop``, through ``interpreter/transcendental_pins.rs``,
+for the ops ``transcendentals::pins_binop`` / ``pins_triop`` name; ``VEXOps``
+itself declines a symbolic operand with ``OpError::RawOpcode``
+(angr-mx00p.116.6). The ``tag`` values are
 the libvex ``Iop_*`` discriminants, but since ``parse_transcendental``
 is the sole producer of ``IROp::Raw`` they are now just internal
 tokens — they only have to agree with the ``IOP_*`` consts in

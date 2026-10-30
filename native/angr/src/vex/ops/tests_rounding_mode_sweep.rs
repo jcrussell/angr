@@ -77,6 +77,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::symbolic::VexRm;
 use crate::vex::ir::IRType;
 
@@ -131,7 +132,7 @@ enum RmDispatchKind {
 /// underlying `VEXOps` method's arity (`binop`/`binop_with_rm`/
 /// `unop_with_rm`/`qop_with_rm` all take a different number of non-rm
 /// operands, flattened here into a slice).
-type RmDispatchFn = dyn Fn(RustBV, &[RustBV], &SymContext) -> Result<RustBV, OpError>;
+type RmDispatchFn = dyn Fn(RustBV, &[RustBV]) -> Result<RustBV, OpError>;
 
 /// One `*_rm` op's dispatch entry. `call` invokes the *public* `VEXOps`
 /// method the real interpreter uses (never a private/`pub(super)` helper),
@@ -184,14 +185,14 @@ fn f64_to_f32_straddle(sign: f64) -> f64 {
 
 /// Registers one `binop_float`-family op (Family A: F64toF32 and the
 /// float<->int conversions with an explicit rm, plus the RoundF{32,64}toInt
-/// ops) — all reached via the ordinary `VEXOps::binop(op, rm, value, ctx)`
+/// ops) — all reached via the ordinary `VEXOps::binop(op, rm, value)`
 /// dispatch, per `ops/mod.rs::binop_float`.
 fn family_a(name: &'static str, op: IROp, src_bits: u32, values: Vec<u128>) -> RmOpEntry {
     RmOpEntry {
         name,
         cases: values.into_iter().map(|v| vec![(v, src_bits)]).collect(),
         mode_invariant_cases: Vec::new(),
-        call: Box::new(move |rm, operands, ctx| VEXOps::binop(op, rm, operands[0].clone(), ctx)),
+        call: Box::new(move |rm, operands| VEXOps::binop(op, rm, operands[0].clone())),
         op,
         kind: RmDispatchKind::FamilyA,
     }
@@ -204,8 +205,8 @@ fn binop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOp
         name,
         cases: vec![case],
         mode_invariant_cases: Vec::new(),
-        call: Box::new(move |rm, operands, ctx| {
-            VEXOps::binop_with_rm(op, rm, operands[0].clone(), operands[1].clone(), ctx)
+        call: Box::new(move |rm, operands| {
+            VEXOps::binop_with_rm(op, rm, operands[0].clone(), operands[1].clone())
         }),
         op,
         kind: RmDispatchKind::TriopWithRm,
@@ -218,8 +219,8 @@ fn unop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOpE
         name,
         cases: vec![case],
         mode_invariant_cases: Vec::new(),
-        call: Box::new(move |rm, operands, ctx| {
-            VEXOps::unop_with_rm(op, rm, operands[0].clone(), ctx)
+        call: Box::new(move |rm, operands| {
+            VEXOps::unop_with_rm(op, rm, operands[0].clone())
         }),
         op,
         kind: RmDispatchKind::BinopToUnopWithRm,
@@ -232,14 +233,13 @@ fn qop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOpEn
         name,
         cases: vec![case],
         mode_invariant_cases: Vec::new(),
-        call: Box::new(move |rm, operands, ctx| {
+        call: Box::new(move |rm, operands| {
             VEXOps::qop_with_rm(
                 op,
                 rm,
                 operands[0].clone(),
                 operands[1].clone(),
                 operands[2].clone(),
-                ctx,
             )
         }),
         op,
@@ -482,7 +482,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                     .iter()
                     .map(|&(bits, width)| RustBV::concrete(bits, width))
                     .collect();
-                let concrete_result = (entry.call)(rm_bv.clone(), &concrete_operands, &ctx)
+                let concrete_result = (entry.call)(rm_bv.clone(), &concrete_operands)
                     .unwrap_or_else(|e| {
                         panic!(
                             "{}: concrete call failed for case {case:?} rm={rm}: {e:?}",
@@ -511,7 +511,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                         sym
                     })
                     .collect();
-                let symbolic_result = (entry.call)(rm_bv.clone(), &symbolic_operands, &ctx)
+                let symbolic_result = (entry.call)(rm_bv.clone(), &symbolic_operands)
                     .unwrap_or_else(|e| {
                         panic!(
                             "{}: symbolic call failed for case {case:?} rm={rm}: {e:?}",
@@ -568,19 +568,17 @@ fn eval_rne_only_sibling(
     kind: RmDispatchKind,
     op: IROp,
     operands: &[RustBV],
-    ctx: &SymContext,
-) -> Result<RustBV, OpError> {
+    ) -> Result<RustBV, OpError> {
     match kind {
-        RmDispatchKind::BinopToUnopWithRm => VEXOps::unop(op, operands[0].clone(), ctx),
+        RmDispatchKind::BinopToUnopWithRm => VEXOps::unop(op, operands[0].clone()),
         RmDispatchKind::TriopWithRm => {
-            VEXOps::binop(op, operands[0].clone(), operands[1].clone(), ctx)
+            VEXOps::binop(op, operands[0].clone(), operands[1].clone())
         }
         RmDispatchKind::QopWithRm => VEXOps::qop(
             op,
             operands[0].clone(),
             operands[1].clone(),
             operands[2].clone(),
-            ctx,
         ),
         RmDispatchKind::FamilyA => {
             unreachable!("eval_rne_only_sibling is Family-B only; callers must filter FamilyA")
@@ -702,7 +700,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
 
                 // The correctly-rm-threaded answer: the same `*_with_rm`
                 // call section 1 already exercises directly.
-                let threaded = (entry.call)(rm_bv, &operands, &ctx).unwrap_or_else(|e| {
+                let threaded = (entry.call)(rm_bv, &operands).unwrap_or_else(|e| {
                     panic!("{}: with_rm call failed rm={rm}: {e:?}", entry.name)
                 });
                 let threaded_bits = ctx.eval(&threaded).unwrap_or_else(|| {
@@ -710,7 +708,7 @@ fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
                 });
 
                 // The caller-dispatch bug shape: the rm-less sibling, always RNE.
-                let rne_only = eval_rne_only_sibling(entry.kind, entry.op, &operands, &ctx)
+                let rne_only = eval_rne_only_sibling(entry.kind, entry.op, &operands)
                     .unwrap_or_else(|e| {
                         panic!("{}: rm-less sibling call failed: {e:?}", entry.name)
                     });
@@ -799,7 +797,7 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 // section 1's concrete leg).
                 let concrete_rm = RustBV::concrete(rm as u128, 32);
                 let concrete_result =
-                    (entry.call)(concrete_rm, &operands, &ctx).unwrap_or_else(|e| {
+                    (entry.call)(concrete_rm, &operands).unwrap_or_else(|e| {
                         panic!("{}: concrete-rm call failed rm={rm}: {e:?}", entry.name)
                     });
                 let concrete_bits = ctx.eval(&concrete_result).unwrap_or_else(|| {
@@ -819,7 +817,7 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                     .to_z3_ast().unwrap()
                     .eq(RustBV::concrete(rm as u128, 32).to_z3_ast().unwrap());
                 ctx.add_constraint(pin);
-                let symbolic_result = (entry.call)(rm_sym, &operands, &ctx).unwrap_or_else(|e| {
+                let symbolic_result = (entry.call)(rm_sym, &operands).unwrap_or_else(|e| {
                     panic!("{}: symbolic-rm call failed rm={rm}: {e:?}", entry.name)
                 });
                 assert!(
@@ -859,7 +857,6 @@ fn test_unsupported_rounding_mode_is_an_error() {
     for entry in all_rm_ops() {
         let case = &entry.cases[0];
         for &bad in &UNSUPPORTED_ROUNDING_MODES {
-            let ctx = SymContext::new_mock();
             let concrete: Vec<RustBV> = case
                 .iter()
                 .map(|&(bits, width)| RustBV::concrete(bits, width))
@@ -871,7 +868,7 @@ fn test_unsupported_rounding_mode_is_an_error() {
                 .collect();
             for (label, operands) in [("concrete", &concrete), ("symbolic", &symbolic)] {
                 let rm = RustBV::concrete(bad, 64);
-                match (entry.call)(rm, operands, &ctx) {
+                match (entry.call)(rm, operands) {
                     Err(OpError::UnsupportedRoundingMode(e)) => assert_eq!(e.0, bad),
                     other => panic!(
                         "{}: rm={bad:#x} with {label} operands must be \

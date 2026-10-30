@@ -907,7 +907,7 @@ fn install_over_lanes_replaces_all_bytes() {
     state.memory_mut().install_symbolic_value(0x1000u64, new.clone()).unwrap();
     let ctx = state.solver().clone();
     let ctx = ctx.borrow();
-    let loaded = state.memory_mut().load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let loaded = state.memory_mut().load_concrete_lazy(0x1000, 4).unwrap();
     let probe = ctx.fork();
     probe.assume_true(&loaded.eq(&new).not());
     assert!(!probe.is_sat(), "interior lanes shadow the installed value");

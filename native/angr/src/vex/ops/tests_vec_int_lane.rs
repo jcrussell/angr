@@ -9,6 +9,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -20,7 +21,6 @@ use crate::vex::ir::IRType;
 /// no-wrap lane. Each expected lane is a hand-computed two's-complement u16.
 #[test]
 fn test_vec_sub_concrete_i16x8() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 8] = [0x0000, 100, 0x8000, 0x7FFF, 5, 0xFFFF, 1, 12345];
     let r: [u128; 8] = [0x0001, 50, 0x0001, 0xFFFF, 5, 0x0001, 2, 345];
@@ -37,7 +37,6 @@ fn test_vec_sub_concrete_i16x8() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 16);
@@ -53,7 +52,6 @@ fn test_vec_sub_concrete_i16x8() {
 /// INT_MAX is false. Result lane is all-ones on true, all-zeros on false.
 #[test]
 fn test_vec_cmp_gt_signed_concrete_i32x4() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 4] = [0x7FFF_FFFF, 0x8000_0000, 0x0000_0000, 0xFFFF_FFFF];
     let r: [u128; 4] = [0x8000_0000, 0x7FFF_FFFF, 0x0000_0000, 0x0000_0000];
@@ -70,7 +68,6 @@ fn test_vec_cmp_gt_signed_concrete_i32x4() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 32);
@@ -106,7 +103,6 @@ fn test_vec_cmp_eq_symbolic_i32x4() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -142,7 +138,6 @@ fn test_vec_cmp_gt_signed_symbolic_i32x4() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -166,7 +161,6 @@ fn test_vec_cmp_gt_signed_symbolic_i32x4() {
 ///   lane3: 0x7FFF_FFFF vs 0x8000_0000 -> unsigned false (signed would be true)
 #[test]
 fn test_vec_cmp_gt_unsigned_concrete_u32x4() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 4] = [0xFFFF_FFFF, 0x0000_0001, 0x8000_0000, 0x7FFF_FFFF];
     let r: [u128; 4] = [0x0000_0001, 0xFFFF_FFFF, 0x7FFF_FFFF, 0x8000_0000];
@@ -180,7 +174,6 @@ fn test_vec_cmp_gt_unsigned_concrete_u32x4() {
         },
         RustBV::concrete(pack_lanes_uint(&l, 32), 128),
         RustBV::concrete(pack_lanes_uint(&r, 32), 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 32);
@@ -191,7 +184,6 @@ fn test_vec_cmp_gt_unsigned_concrete_u32x4() {
 /// high-bit-set operands that a signed compare would invert.
 #[test]
 fn test_vec_cmp_gt_unsigned_concrete_u8x16() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 16] = [
         0xFF, 0x00, 0x80, 0x7F, 0x41, 0x41, 0x01, 0xFE, 0xFF, 0x7F, 0x80, 0x00, 0xAA, 0x55, 0x10,
@@ -214,7 +206,6 @@ fn test_vec_cmp_gt_unsigned_concrete_u8x16() {
         },
         RustBV::concrete(pack_lanes_uint(&l, 8), 128),
         RustBV::concrete(pack_lanes_uint(&r, 8), 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 8);
@@ -247,7 +238,6 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -337,7 +327,7 @@ fn test_vec_cmp_avx2_256_bit_i32x8() {
     ];
 
     for (op, expected_lane) in cases {
-        let result = VEXOps::binop(op, lv.clone(), rv.clone(), &ctx).unwrap();
+        let result = VEXOps::binop(op, lv.clone(), rv.clone()).unwrap();
         assert_eq!(result.width(), 256, "{op:?} result width");
 
         // Wider than a u128, so check one lane at a time.
@@ -427,7 +417,6 @@ fn test_vec_mul_16x16_avx2_256_bit() {
         },
         pack(&l),
         pack(&r),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 256);

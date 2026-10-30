@@ -6,12 +6,12 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 
 /// Concrete SetV128lo64 (MOVSD-style low-lane splice): overwrite the low 64
 /// bits, leave the upper 64 bits untouched.
 #[test]
 fn test_set_v128_lo64_concrete() {
-    let ctx = SymContext::new_mock();
 
     // vec upper 64 = 0xAAAA..., lower 64 = 0x1111...; val low 64 = 0xBBBB...
     let vec_bits: u128 = (0xAAAA_AAAA_AAAA_AAAAu128 << 64) | 0x1111_1111_1111_1111u128;
@@ -20,7 +20,7 @@ fn test_set_v128_lo64_concrete() {
     let vec = RustBV::concrete(vec_bits, 128);
     let val = RustBV::concrete(val_bits, 64);
 
-    let result = VEXOps::binop(IROp::SetV128lo64, vec, val, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::SetV128lo64, vec, val).unwrap();
     let out = result.as_u128().unwrap();
 
     assert_eq!(result.width(), 128);
@@ -34,7 +34,6 @@ fn test_set_v128_lo64_concrete() {
 /// bits, leave the upper 96 bits untouched.
 #[test]
 fn test_set_v128_lo32_concrete() {
-    let ctx = SymContext::new_mock();
 
     let vec_bits: u128 = (0xDEAD_BEEF_CAFE_BABEu128 << 64) | 0x1234_5678_9ABC_DEF0u128;
     let val_bits: u128 = 0x0000_0000_1111_2222u128; // low 32 bits = 0x1111_2222
@@ -42,7 +41,7 @@ fn test_set_v128_lo32_concrete() {
     let vec = RustBV::concrete(vec_bits, 128);
     let val = RustBV::concrete(val_bits & 0xFFFF_FFFF, 32);
 
-    let result = VEXOps::binop(IROp::SetV128lo32, vec, val, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::SetV128lo32, vec, val).unwrap();
     let out = result.as_u128().unwrap();
 
     assert_eq!(result.width(), 128);
@@ -61,7 +60,7 @@ fn test_set_v128_lo64_symbolic() {
     let vec = RustBV::symbol("xmm_setlo", 128);
     let val = RustBV::concrete(0x0102_0304_0506_0708u128, 64);
 
-    let result = VEXOps::binop(IROp::SetV128lo64, vec.clone(), val, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::SetV128lo64, vec.clone(), val).unwrap();
     assert_eq!(result.width(), 128);
 
     // Low 64 of result must equal the inserted value.
@@ -88,7 +87,7 @@ fn test_set_v128_lo32_symbolic() {
     let vec = RustBV::symbol("xmm_setlo32", 128);
     let val = RustBV::concrete(0xCAFE_F00Du128, 32);
 
-    let result = VEXOps::binop(IROp::SetV128lo32, vec.clone(), val, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::SetV128lo32, vec.clone(), val).unwrap();
     assert_eq!(result.width(), 128);
 
     let res_lo = result.extract(31, 0);

@@ -3,6 +3,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -14,7 +15,6 @@ use crate::vex::ir::IRType;
 /// halves and a sample of values.
 #[test]
 fn test_vpwadd_16x4_concrete() {
-    let ctx = SymContext::new_mock();
     // a lanes (LSB→MSB): 1, 2, 3, 4 → pairs (1+2, 3+4) = 3, 7.
     // b lanes:           10, 20, 100, 200 → pairs (30, 300).
     // Output (LSB→MSB): 3, 7, 30, 300.
@@ -36,7 +36,6 @@ fn test_vpwadd_16x4_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -47,7 +46,6 @@ fn test_vpwadd_16x4_concrete() {
 /// `a`, output[8..16] from `b`. Wrap-around per lane (e.g. 0xFF+0x01=0x00).
 #[test]
 fn test_vpwadd_8x16_concrete() {
-    let ctx = SymContext::new_mock();
     // a: pairs (10+20, 30+40, ..., 70+80) → 30, 70, 110, ..., 0xFF+0x01=0x00.
     // Use explicit lanes for clarity.
     let a_lanes: [u8; 16] = [10, 20, 30, 40, 50, 60, 70, 80, 0xFF, 0x01, 0, 0, 0, 0, 0, 0];
@@ -72,7 +70,6 @@ fn test_vpwadd_8x16_concrete() {
         },
         RustBV::concrete(a, 128),
         RustBV::concrete(b, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -84,7 +81,6 @@ fn test_vpwadd_8x16_concrete() {
 /// lane 0 (low) from `a`, lane 1 (high) from `b`.
 #[test]
 fn test_vfpwadd_32fx2_concrete() {
-    let ctx = SymContext::new_mock();
     let a = [1.5f32, 2.5]; // a0+a1 = 4.0
     let b = [-3.0f32, 0.25]; // b0+b1 = -2.75
     let exp = [4.0f32, -2.75];
@@ -95,7 +91,6 @@ fn test_vfpwadd_32fx2_concrete() {
         },
         RustBV::concrete(pack_lanes_f32(&a), 64),
         RustBV::concrete(pack_lanes_f32(&b), 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -120,7 +115,6 @@ fn test_vfpwadd_32fx2_symbolic() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -134,7 +128,6 @@ fn test_vfpwadd_32fx2_symbolic() {
 /// a=[a0,a1], b=[b0,b1] → [a0 op a1, b0 op b1] (angr-sqfj8.116).
 #[test]
 fn test_vfpwmaxmin_32fx2_concrete() {
-    let ctx = SymContext::new_mock();
     let a = [1.5f32, -2.5];
     let b = [-3.0f32, 0.25];
     for (op, exp) in [
@@ -157,7 +150,6 @@ fn test_vfpwmaxmin_32fx2_concrete() {
             op,
             RustBV::concrete(pack_lanes_f32(&a), 64),
             RustBV::concrete(pack_lanes_f32(&b), 64),
-            &ctx,
         )
         .unwrap();
         assert_eq!(result.width(), 64, "{op:?}: width");
@@ -171,7 +163,6 @@ fn test_vfpwmaxmin_32fx2_concrete() {
 /// arm produces a 128-bit result, not the 64-bit D-reg one.
 #[test]
 fn test_vfpwmax_32fx4_concrete() {
-    let ctx = SymContext::new_mock();
     let a = [1.0f32, 7.0, -4.0, -9.0];
     let b = [0.5f32, 0.25, 100.0, 3.0];
     let result = VEXOps::binop(
@@ -181,7 +172,6 @@ fn test_vfpwmax_32fx4_concrete() {
         },
         RustBV::concrete(pack_lanes_f32(&a), 128),
         RustBV::concrete(pack_lanes_f32(&b), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -206,7 +196,6 @@ fn test_vfpwmin_32fx2_symbolic() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -220,7 +209,6 @@ fn test_vfpwmin_32fx2_symbolic() {
 /// adding so the sum doesn't lose its sign.
 #[test]
 fn test_vpwaddl_8sx8_concrete() {
-    let ctx = SymContext::new_mock();
     // a lanes (signed i8): -100, -100, 100, 100, -1, -1, 1, 1
     // Pairs: -200, 200, -2, 2 (as i16).
     let a_lanes: [i8; 8] = [-100, -100, 100, 100, -1, -1, 1, 1];
@@ -240,7 +228,6 @@ fn test_vpwaddl_8sx8_concrete() {
             signed: true,
         },
         RustBV::concrete(a, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -251,7 +238,6 @@ fn test_vpwaddl_8sx8_concrete() {
 /// 0xFF + 0xFF widens to 0x01FE rather than overflowing in 8 bits.
 #[test]
 fn test_vpwaddl_8ux16_concrete() {
-    let ctx = SymContext::new_mock();
     let a_lanes: [u8; 16] = [
         0xFF, 0xFF, 0x80, 0x80, 0x01, 0x02, 0, 0, 100, 50, 200, 100, 0, 0, 0, 0,
     ];
@@ -271,7 +257,6 @@ fn test_vpwaddl_8ux16_concrete() {
             signed: false,
         },
         RustBV::concrete(a, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -284,7 +269,6 @@ fn test_vpwaddl_8ux16_concrete() {
 /// needs bit 64) is the case that would expose a 64-bit-wide intermediate.
 #[test]
 fn test_vpwaddl_64ux2_concrete() {
-    let ctx = SymContext::new_mock();
     let cases: [([u64; 2], u128); 3] = [
         // 0xFFFF... + 2 → carries into bit 64.
         (
@@ -308,7 +292,6 @@ fn test_vpwaddl_64ux2_concrete() {
                 signed: false,
             },
             RustBV::concrete(a, 128),
-            &ctx,
         )
         .unwrap();
         assert_eq!(result.width(), 128);
@@ -329,7 +312,6 @@ fn test_vpwaddl_64ux2_symbolic_universal() {
             signed: false,
         },
         a.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(got.width(), 128);
@@ -351,7 +333,6 @@ fn test_vpwaddl_64ux2_symbolic_universal() {
 /// confirms output[2..4] comes from `b`.
 #[test]
 fn test_vpwmin_16sx4_concrete() {
-    let ctx = SymContext::new_mock();
     // a: -100, 100, 200, -200 → pairs min(-100,100)=-100, min(200,-200)=-200
     // b: 30000, -1, 0, 0       → pairs min=-1, min=0
     let a_lanes: [i16; 4] = [-100, 100, 200, -200];
@@ -373,7 +354,6 @@ fn test_vpwmin_16sx4_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -384,7 +364,6 @@ fn test_vpwmin_16sx4_concrete() {
 /// from 0x01 to confirm unsigned compare.
 #[test]
 fn test_vpwmax_8ux8_concrete() {
-    let ctx = SymContext::new_mock();
     // a: 0x80, 0x01, 0x10, 0x10, 0xFF, 0xFF, 0, 0
     //   → unsigned max pairs: 0x80, 0x10, 0xFF, 0
     // b: 0, 0, 0, 0, 50, 60, 70, 80
@@ -408,7 +387,6 @@ fn test_vpwmax_8ux8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.as_u128().unwrap(), e);
@@ -430,7 +408,6 @@ fn test_vpwadd_16x4_matches_spec_replay() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -469,7 +446,6 @@ fn test_vpwaddl_16sx4_matches_spec_replay() {
             signed: true,
         },
         arg.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -508,7 +484,6 @@ fn test_vpwmin_16sx4_matches_spec_replay() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -697,7 +672,6 @@ fn test_parse_pairwise_routing() {
 /// no-overflow guarantee for 0xFF+0xFF.
 #[test]
 fn test_vavg_8ux8_concrete() {
-    let ctx = SymContext::new_mock();
     // Per-lane: rounded average of u8 values.
     //   lane 0: avg(0, 0) = 0.
     //   lane 1: avg(1, 1) = 1.
@@ -726,7 +700,6 @@ fn test_vavg_8ux8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -737,7 +710,6 @@ fn test_vavg_8ux8_concrete() {
 /// rounding-average must stay 0xFFFF (no truncation loss).
 #[test]
 fn test_vavg_16ux8_concrete() {
-    let ctx = SymContext::new_mock();
     let a_lanes: [u16; 8] = [0, 1, 0xFFFF, 0xFFFE, 0x1000, 0x8000, 0x7FFF, 0x0123];
     let b_lanes: [u16; 8] = [0, 2, 0xFFFF, 0xFFFF, 0x2000, 0x8000, 0x0001, 0x0456];
     // Avg = (a+b+1) >> 1
@@ -758,7 +730,6 @@ fn test_vavg_16ux8_concrete() {
         },
         RustBV::concrete(a, 128),
         RustBV::concrete(b, 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -771,7 +742,6 @@ fn test_vavg_16ux8_concrete() {
 /// sloppier "widen to `2 * elem`" would have overflowed.
 #[test]
 fn test_vavg_64sx2_concrete() {
-    let ctx = SymContext::new_mock();
     // lane 0: avg(i64::MIN, i64::MIN) = i64::MIN — the sign-extension fence.
     // lane 1: avg(i64::MAX, 1) = (MAX + 1 + 1) >> 1 = 0x4000_0000_0000_0000.
     let a_lanes: [i64; 2] = [i64::MIN, i64::MAX];
@@ -788,7 +758,6 @@ fn test_vavg_64sx2_concrete() {
         },
         RustBV::concrete(pack(&a_lanes), 128),
         RustBV::concrete(pack(&b_lanes), 128),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -820,7 +789,6 @@ fn test_vavg_8ux32_avx2_256_bit() {
         },
         pack(&a),
         pack(&b),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 256);
@@ -844,7 +812,6 @@ fn test_vavg_8ux32_avx2_256_bit() {
 /// give -128 (sign-extension fence) and mixed-sign lanes round correctly.
 #[test]
 fn test_vavg_8sx8_concrete() {
-    let ctx = SymContext::new_mock();
     // Per-lane signed avg with round-half-up.
     //   lane 0: avg(-128, -128) = -128.
     //   lane 1: avg(127, 127)   = 127.
@@ -873,7 +840,6 @@ fn test_vavg_8sx8_concrete() {
         },
         RustBV::concrete(a, 64),
         RustBV::concrete(b, 64),
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -897,7 +863,6 @@ fn test_vavg_16ux4_symbolic_universal_unsigned() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
 
@@ -939,7 +904,6 @@ fn test_vavg_8sx8_symbolic_universal_signed() {
         },
         a.clone(),
         b.clone(),
-        &ctx,
     )
     .unwrap();
 

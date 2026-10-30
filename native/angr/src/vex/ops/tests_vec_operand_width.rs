@@ -36,7 +36,6 @@ fn assert_width_rejected(result: Result<RustBV, OpError>, site: &str) {
 /// under an 8x8 geometry would read lanes past its end.
 #[test]
 fn test_vec_mull_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     let op = IROp::VMull {
         elem: IRType::I8,
         count: 8,
@@ -44,11 +43,11 @@ fn test_vec_mull_rejects_narrow_operand() {
         even: false,
     };
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(0, 32), RustBV::concrete(0, 64), &ctx),
+        VEXOps::binop(op, RustBV::concrete(0, 32), RustBV::concrete(0, 64)),
         "vec_mull left",
     );
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(0, 64), RustBV::concrete(0, 32), &ctx),
+        VEXOps::binop(op, RustBV::concrete(0, 64), RustBV::concrete(0, 32)),
         "vec_mull right",
     );
 }
@@ -56,14 +55,13 @@ fn test_vec_mull_rejects_narrow_operand() {
 /// High-half multiply — the `vec_mulhi` sibling of the case above.
 #[test]
 fn test_vec_mulhi_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     let op = IROp::VMulHi {
         elem: IRType::I16,
         count: 8,
         signed: true,
     };
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(0, 64), RustBV::concrete(0, 128), &ctx),
+        VEXOps::binop(op, RustBV::concrete(0, 64), RustBV::concrete(0, 128)),
         "vec_mulhi left",
     );
 }
@@ -71,13 +69,12 @@ fn test_vec_mulhi_rejects_narrow_operand() {
 /// Saturating doubling widening multiply (`Iop_QDMull*`).
 #[test]
 fn test_vec_qdmull_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     let op = IROp::VQDMull {
         elem: IRType::I16,
         count: 4,
     };
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(0, 64), RustBV::concrete(0, 32), &ctx),
+        VEXOps::binop(op, RustBV::concrete(0, 64), RustBV::concrete(0, 32)),
         "vec_qdmull right",
     );
 }
@@ -86,13 +83,12 @@ fn test_vec_qdmull_rejects_narrow_operand() {
 /// offsets to `right` as well.
 #[test]
 fn test_vec_interleave_rejects_mismatched_operand() {
-    let ctx = SymContext::new_mock();
     let op = IROp::VInterleaveLO {
         elem: IRType::I8,
         count: 16,
     };
     assert_width_rejected(
-        VEXOps::binop(op, RustBV::concrete(0, 128), RustBV::concrete(0, 64), &ctx),
+        VEXOps::binop(op, RustBV::concrete(0, 128), RustBV::concrete(0, 64)),
         "vec_interleave right",
     );
 }
@@ -100,9 +96,8 @@ fn test_vec_interleave_rejects_mismatched_operand() {
 /// Unary path: per-byte popcount (`Iop_Cnt8x{8,16}`).
 #[test]
 fn test_vec_cnt_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
-        VEXOps::unop(IROp::VCnt { count: 16 }, RustBV::concrete(0, 64), &ctx),
+        VEXOps::unop(IROp::VCnt { count: 16 }, RustBV::concrete(0, 64)),
         "vec_cnt arg",
     );
 }
@@ -110,9 +105,8 @@ fn test_vec_cnt_rejects_narrow_operand() {
 /// Unary path with a fixed 128-bit precondition (`Iop_PwBitMtxXpose64x2`).
 #[test]
 fn test_vec_bit_mtx_xpose_rejects_narrow_operand() {
-    let ctx = SymContext::new_mock();
     assert_width_rejected(
-        VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(0, 64), &ctx),
+        VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(0, 64)),
         "vec_bit_mtx_xpose arg",
     );
 }
@@ -122,13 +116,12 @@ fn test_vec_bit_mtx_xpose_rejects_narrow_operand() {
 /// the expected width is not the vector total.
 #[test]
 fn test_vec_dup_rejects_wrong_lane_width() {
-    let ctx = SymContext::new_mock();
     let op = IROp::VDup {
         elem: IRType::I8,
         count: 8,
     };
     assert_width_rejected(
-        VEXOps::unop(op, RustBV::concrete(0, 16), &ctx),
+        VEXOps::unop(op, RustBV::concrete(0, 16)),
         "vec_dup arg",
     );
 }
@@ -137,8 +130,7 @@ fn test_vec_dup_rejects_wrong_lane_width() {
 /// only, it does not break the happy path.
 #[test]
 fn test_correct_operand_width_still_folds() {
-    let ctx = SymContext::new_mock();
-    let result = VEXOps::unop(IROp::VCnt { count: 8 }, RustBV::concrete(0xFF, 64), &ctx)
+    let result = VEXOps::unop(IROp::VCnt { count: 8 }, RustBV::concrete(0xFF, 64))
         .expect("well-shaped operand must fold");
     assert_eq!(result.width(), 64);
     // Low byte 0xFF has 8 set bits; every other byte is zero.

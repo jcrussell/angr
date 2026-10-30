@@ -540,7 +540,7 @@ impl SymbolicMemory {
 
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete_lazy(Address(concrete_addr), size, ctx);
+            return self.load_concrete_lazy(Address(concrete_addr), size);
         }
         // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
         record_mem_load_symbolic_addr();
@@ -555,13 +555,13 @@ impl SymbolicMemory {
         // Try to concretize the address (read mode: falls back to Any single solution)
         let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_lazy(Address(concrete_addr), size, ctx)?
+                self.load_concrete_lazy(Address(concrete_addr), size)?
             }
             ConcretizationResult::Strided {
                 base,
                 stride,
                 count,
-            } => self.load_strided_balanced(&addr, base, stride, count, size, ctx)?,
+            } => self.load_strided_balanced(&addr, base, stride, count, size)?,
             ConcretizationResult::Multiple(addrs) => {
                 self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
             }
@@ -571,7 +571,7 @@ impl SymbolicMemory {
         };
 
         // Apply any pending writes that might overlap this symbolic load
-        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
+        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value))
     }
 
     /// Load from a concrete address, returning an unconstrained symbolic value if unmapped.
@@ -601,7 +601,7 @@ impl SymbolicMemory {
         ctx: &SymContext,
     ) -> RustBV {
         let addr = addr.into();
-        match self.load_concrete_lazy(addr, size, ctx) {
+        match self.load_concrete_lazy(addr, size) {
             Ok(value) => value,
             Err(_) => {
                 if self.zero_fill_unconstrained {
@@ -662,7 +662,7 @@ impl SymbolicMemory {
 
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete_lazy(Address(concrete_addr), size, ctx);
+            return self.load_concrete_lazy(Address(concrete_addr), size);
         }
         // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
         record_mem_load_symbolic_addr();
@@ -676,7 +676,7 @@ impl SymbolicMemory {
         // Try to concretize the address (read mode: falls back to Any single solution)
         let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_lazy(Address(concrete_addr), size, ctx)?
+                self.load_concrete_lazy(Address(concrete_addr), size)?
             }
             ConcretizationResult::Multiple(addrs) => {
                 let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
@@ -711,7 +711,7 @@ impl SymbolicMemory {
                 count,
             } => {
                 self.prepare_strided_region(base, stride, count, size);
-                self.load_strided_balanced(&addr, base, stride, count, size, ctx)?
+                self.load_strided_balanced(&addr, base, stride, count, size)?
             }
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
@@ -721,7 +721,7 @@ impl SymbolicMemory {
         };
 
         // Apply any pending writes that might overlap this symbolic load
-        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
+        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value))
     }
 
     /// Apply pending writes that might overlap a concrete load address.
@@ -731,7 +731,6 @@ impl SymbolicMemory {
         _addr: Address,
         _size: u32,
         base_value: RustBV,
-        _ctx: &SymContext,
     ) -> RustBV {
         // Pending writes overlay is disabled during execution.
         // Stores go through the eager concretize+ITE path.
@@ -746,7 +745,6 @@ impl SymbolicMemory {
         _addr: &RustBV,
         _size: u32,
         base_value: RustBV,
-        _ctx: &SymContext,
     ) -> RustBV {
         // Pending writes overlay is disabled during execution.
         // See apply_pending_writes_concrete for rationale.
@@ -762,11 +760,10 @@ impl SymbolicMemory {
         &self,
         addr: impl Into<Address>,
         size: u32,
-        ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
         let base = self.load_concrete_lazy_inner(addr, size)?;
-        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
+        Ok(self.apply_pending_writes_concrete(addr, size, base))
     }
 
     /// Internal implementation of `load_concrete_lazy`.

@@ -470,7 +470,6 @@ fn test_link_register_set_on_link_register_abis() {
 /// so this locks that any future per-CC override keeps them in sync.
 #[test]
 fn test_link_register_matches_get_return_addr_register() {
-    let ctx = SymContext::new_mock();
     for desc in ALL_ARCHES {
         let arch = desc.name;
         let cc = (desc.make_cc)();
@@ -481,7 +480,7 @@ fn test_link_register_matches_get_return_addr_register() {
         let marker = 0x0040_1234u64;
         regs.put(lr, RustBV::concrete(marker as u128, cc.pointer_size() * 8));
         assert_eq!(
-            cc.get_return_addr(&regs, None, &ctx),
+            cc.get_return_addr(&regs, None),
             Some(marker),
             "{arch}: get_return_addr must read the register link_register() names",
         );

@@ -10,7 +10,7 @@
 //! paths.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
+use crate::symbolic::{FloatOpKind, FloatPrec, RustBV};
 use crate::vex::ir::{FCmpKind, IRType};
 
 impl VEXOps {
@@ -96,30 +96,15 @@ impl VEXOps {
         Ok(build_float_expr(op, prec, vec![left, right]))
     }
 
-    pub(super) fn float_cmp_eq(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_cmp_eq(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_cmp_scalar(left, right, ty, FCmpKind::Eq)
     }
 
-    pub(super) fn float_cmp_lt(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_cmp_lt(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_cmp_scalar(left, right, ty, FCmpKind::Lt)
     }
 
-    pub(super) fn float_cmp_le(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_cmp_le(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_cmp_scalar(left, right, ty, FCmpKind::Le)
     }
 

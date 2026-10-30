@@ -5,32 +5,29 @@ use crate::vex::ir::IRType;
 
 #[test]
 fn test_add_op() {
-    let ctx = SymContext::new_mock();
 
     let a = RustBV::concrete(5, 32);
     let b = RustBV::concrete(3, 32);
 
-    let result = VEXOps::binop(IROp::Add(IRType::I32), a, b, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::Add(IRType::I32), a, b).unwrap();
     assert_eq!(result.as_u64(), Some(8));
 }
 
 #[test]
 fn test_comparison_ops() {
-    let ctx = SymContext::new_mock();
 
     let a = RustBV::concrete(5, 32);
     let b = RustBV::concrete(10, 32);
 
-    let lt = VEXOps::binop(IROp::CmpLTU(IRType::I32), a.clone(), b.clone(), &ctx).unwrap();
+    let lt = VEXOps::binop(IROp::CmpLTU(IRType::I32), a.clone(), b.clone()).unwrap();
     assert_eq!(lt.as_u64(), Some(1));
 
-    let eq = VEXOps::binop(IROp::CmpEQ(IRType::I32), a, b, &ctx).unwrap();
+    let eq = VEXOps::binop(IROp::CmpEQ(IRType::I32), a, b).unwrap();
     assert_eq!(eq.as_u64(), Some(0));
 }
 
 #[test]
 fn test_vector_add() {
-    let ctx = SymContext::new_mock();
 
     // Two vectors of 4 x i32
     // [1, 2, 3, 4] + [10, 20, 30, 40] = [11, 22, 33, 44]
@@ -47,7 +44,6 @@ fn test_vector_add() {
         },
         av,
         bv,
-        &ctx,
     )
     .unwrap();
     let rv = result.as_u128().unwrap();
@@ -61,7 +57,6 @@ fn test_vector_add() {
 #[test]
 #[allow(clippy::identity_op)] // explicit 4-lane layout reads better than the minimized form
 fn test_vector_cmp_eq() {
-    let ctx = SymContext::new_mock();
 
     // Two vectors of 4 x i32
     // [1, 2, 3, 4] == [1, 0, 3, 0] -> [0xFFFFFFFF, 0, 0xFFFFFFFF, 0]
@@ -78,7 +73,6 @@ fn test_vector_cmp_eq() {
         },
         av,
         bv,
-        &ctx,
     )
     .unwrap();
     let rv = result.as_u128().unwrap();
@@ -91,30 +85,28 @@ fn test_vector_cmp_eq() {
 
 #[test]
 fn test_concat() {
-    let ctx = SymContext::new_mock();
 
     let hi = RustBV::concrete(0xDEAD, 16);
     let lo = RustBV::concrete(0xBEEF, 16);
 
-    let result = VEXOps::binop(IROp::Concat { ty: IRType::I32 }, hi, lo, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::Concat { ty: IRType::I32 }, hi, lo).unwrap();
     assert_eq!(result.as_u64(), Some(0xDEADBEEF));
 }
 
 #[test]
 fn test_bit_manipulation() {
-    let ctx = SymContext::new_mock();
 
     // CLZ (count leading zeros)
     let a = RustBV::concrete(0x0F00, 16); // binary: 0000111100000000
-    let clz = VEXOps::unop(IROp::Clz(IRType::I16), a.clone(), &ctx).unwrap();
+    let clz = VEXOps::unop(IROp::Clz(IRType::I16), a.clone()).unwrap();
     assert_eq!(clz.as_u64(), Some(4)); // 4 leading zeros
 
     // CTZ (count trailing zeros)
-    let ctz = VEXOps::unop(IROp::Ctz(IRType::I16), a.clone(), &ctx).unwrap();
+    let ctz = VEXOps::unop(IROp::Ctz(IRType::I16), a.clone()).unwrap();
     assert_eq!(ctz.as_u64(), Some(8)); // 8 trailing zeros
 
     // PopCount
-    let pop = VEXOps::unop(IROp::PopCount(IRType::I16), a, &ctx).unwrap();
+    let pop = VEXOps::unop(IROp::PopCount(IRType::I16), a).unwrap();
     assert_eq!(pop.as_u64(), Some(4)); // 4 bits set
 }
 
@@ -150,11 +142,10 @@ fn binop_bitwise_shift_cmp_misroute_returns_not_binary() {
 
 #[test]
 fn binop_float_misroute_returns_not_binary() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::concrete(1, 32);
     let b = RustBV::concrete(2, 32);
     // Add is scalar-int, not float — a deliberate misroute.
-    let err = VEXOps::binop_float(IROp::Add(IRType::I32), a, b, &ctx).unwrap_err();
+    let err = VEXOps::binop_float(IROp::Add(IRType::I32), a, b).unwrap_err();
     assert!(matches!(err, OpError::NotBinary(_)), "got {err:?}");
 }
 

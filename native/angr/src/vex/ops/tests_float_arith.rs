@@ -2,56 +2,53 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
 fn test_float_add_concrete() {
-    let ctx = SymContext::new_mock();
 
     let a = RustBV::concrete(1.5f32.to_bits() as u128, 32);
     let b = RustBV::concrete(2.5f32.to_bits() as u128, 32);
 
-    let result = VEXOps::binop(IROp::FAdd(IRType::F32), a, b, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::FAdd(IRType::F32), a, b).unwrap();
     let result_f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!((result_f - 4.0).abs() < 0.0001);
 }
 
 #[test]
 fn test_qop_fmadd_concrete_f64() {
-    let ctx = SymContext::new_mock();
 
     // 2.0 * 3.0 + 4.0 = 10.0
     let a = RustBV::concrete(2.0f64.to_bits() as u128, 64);
     let b = RustBV::concrete(3.0f64.to_bits() as u128, 64);
     let c = RustBV::concrete(4.0f64.to_bits() as u128, 64);
 
-    let result = VEXOps::qop(IROp::FMAdd(IRType::F64), a, b, c, &ctx).unwrap();
+    let result = VEXOps::qop(IROp::FMAdd(IRType::F64), a, b, c).unwrap();
     let result_f = f64::from_bits(result.as_u64().unwrap());
     assert!((result_f - 10.0).abs() < 1e-9);
 }
 
 #[test]
 fn test_qop_fmsub_concrete_f32() {
-    let ctx = SymContext::new_mock();
 
     // 5.0 * 2.0 - 3.0 = 7.0
     let a = RustBV::concrete(5.0f32.to_bits() as u128, 32);
     let b = RustBV::concrete(2.0f32.to_bits() as u128, 32);
     let c = RustBV::concrete(3.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::qop(IROp::FMSub(IRType::F32), a, b, c, &ctx).unwrap();
+    let result = VEXOps::qop(IROp::FMSub(IRType::F32), a, b, c).unwrap();
     let result_f = f32::from_bits(result.as_u64().unwrap() as u32);
     assert!((result_f - 7.0).abs() < 1e-5);
 }
 
 #[test]
 fn test_qop_rejects_non_quaternary() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::concrete(0, 64);
     let b = RustBV::concrete(0, 64);
     let c = RustBV::concrete(0, 64);
 
-    let err = VEXOps::qop(IROp::Add(IRType::I64), a, b, c, &ctx).unwrap_err();
+    let err = VEXOps::qop(IROp::Add(IRType::I64), a, b, c).unwrap_err();
     match err {
         OpError::NotQuaternary(_) => (),
         other => panic!("expected NotQuaternary, got {other:?}"),
@@ -69,7 +66,7 @@ fn test_float_add_symbolic_constraint() {
     let x = RustBV::symbol("x", 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-    let sum = VEXOps::binop(IROp::FAdd(IRType::F32), x.clone(), two, &ctx).unwrap();
+    let sum = VEXOps::binop(IROp::FAdd(IRType::F32), x.clone(), two).unwrap();
 
     // Constrain: sum's IEEE bits == bits(5.0).
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
@@ -91,7 +88,7 @@ fn test_float_sqrt_symbolic_constraint() {
     let ctx = SymContext::new_mock();
     let x = RustBV::symbol("sqrt_x", 64);
 
-    let sqrt_x = VEXOps::unop(IROp::FSqrt(IRType::F64), x.clone(), &ctx).unwrap();
+    let sqrt_x = VEXOps::unop(IROp::FSqrt(IRType::F64), x.clone()).unwrap();
 
     let four = RustBV::concrete(4.0f64.to_bits() as u128, 64);
     let eq = sqrt_x.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
@@ -110,12 +107,11 @@ fn test_float_sqrt_symbolic_constraint() {
 /// 1.0/10.0 under RNE is 0x3DCCCCCD (correctly rounded up).
 #[test]
 fn test_float_div_with_rm_rne_fastpath_f32() {
-    let ctx = SymContext::new_mock();
     let rm_rne = RustBV::concrete(0, 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rne, one, ten, &ctx).unwrap();
+    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rne, one, ten).unwrap();
     // RNE keeps the native-f32 fast path; result is fully concrete (not
     // a Z3 expression).
     assert!(!result.is_symbolic());
@@ -131,7 +127,7 @@ fn test_float_div_with_rm_rz_f32() {
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rz, one, ten, &ctx).unwrap();
+    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rz, one, ten).unwrap();
     let bits = ctx.eval(&result).expect("eval failed") as u32;
     assert_eq!(bits, 0x3DCCCCCC, "1/10 with RZ rounds toward zero");
 }
@@ -145,7 +141,7 @@ fn test_float_div_with_rm_ru_f32() {
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_ru, one, ten, &ctx).unwrap();
+    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_ru, one, ten).unwrap();
     let bits = ctx.eval(&result).expect("eval failed") as u32;
     assert_eq!(bits, 0x3DCCCCCD);
 }
@@ -159,7 +155,7 @@ fn test_float_div_with_rm_rd_f32() {
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rd, one, ten, &ctx).unwrap();
+    let result = VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm_rd, one, ten).unwrap();
     let bits = ctx.eval(&result).expect("eval failed") as u32;
     assert_eq!(bits, 0x3DCCCCCC);
 }
@@ -175,7 +171,7 @@ fn test_float_div_with_symbolic_rm_f32() {
     let ten = RustBV::concrete(10.0f32.to_bits() as u128, 32);
 
     let result =
-        VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm.clone(), one, ten, &ctx).unwrap();
+        VEXOps::binop_with_rm(IROp::FDiv(IRType::F32), rm.clone(), one, ten).unwrap();
     let target = RustBV::concrete(0x3DCCCCCC, 32);
     let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
     ctx.add_constraint(eq);
@@ -198,7 +194,7 @@ fn test_float_add_with_rm_rz_f32() {
     let a = RustBV::concrete(0x3F800001, 32);
     let b = RustBV::concrete(0x3F800002, 32);
 
-    let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a, b, &ctx).unwrap();
+    let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a, b).unwrap();
     let bits = ctx.eval(&result).expect("eval failed") as u32;
     assert_eq!(bits, 0x40000001, "RZ truncates 1.5ulp tie down");
 }
@@ -211,7 +207,7 @@ fn test_float_sqrt_with_rm_ru_f32() {
     let rm_ru = RustBV::concrete(2, 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
+    let result = VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_ru, two).unwrap();
     let bits = ctx.eval(&result).expect("eval failed") as u32;
     assert_eq!(bits, 0x3FB504F4, "sqrt(2) under RU rounds up one ulp");
 }
@@ -219,11 +215,10 @@ fn test_float_sqrt_with_rm_ru_f32() {
 /// SqrtRm: sqrt(2.0f32) RNE keeps the native fast path (no Z3).
 #[test]
 fn test_float_sqrt_with_rm_rne_fastpath_f32() {
-    let ctx = SymContext::new_mock();
     let rm_rne = RustBV::concrete(0, 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_rne, two, &ctx).unwrap();
+    let result = VEXOps::unop_with_rm(IROp::FSqrt(IRType::F32), rm_rne, two).unwrap();
     assert!(!result.is_symbolic());
     assert_eq!(result.as_u64(), Some(0x3FB504F3));
 }
@@ -237,7 +232,7 @@ fn test_float_sqrt_via_binop_with_rm_ru_f32() {
     let rm_ru = RustBV::concrete(2, 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-    let result = VEXOps::binop(IROp::FSqrt(IRType::F32), rm_ru, two, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::FSqrt(IRType::F32), rm_ru, two).unwrap();
     let bits = ctx.eval(&result).expect("eval failed") as u32;
     assert_eq!(bits, 0x3FB504F4, "binop FSqrt+RU rounds up one ulp");
 }
@@ -245,11 +240,10 @@ fn test_float_sqrt_via_binop_with_rm_ru_f32() {
 /// Iop_SqrtF64 via binop with RNE: native fast path returns sqrt(16.0)=4.0.
 #[test]
 fn test_float_sqrt_via_binop_rne_fastpath_f64() {
-    let ctx = SymContext::new_mock();
     let rm_rne = RustBV::concrete(0, 32);
     let sixteen = RustBV::concrete(16.0f64.to_bits() as u128, 64);
 
-    let result = VEXOps::binop(IROp::FSqrt(IRType::F64), rm_rne, sixteen, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::FSqrt(IRType::F64), rm_rne, sixteen).unwrap();
     assert!(!result.is_symbolic(), "RNE concrete must stay native");
     assert_eq!(result.as_u64(), Some(4.0f64.to_bits()));
 }
@@ -267,7 +261,7 @@ fn test_float_add_symbolic_operand_with_rm_rz_f32() {
     let a = RustBV::symbol("fadd_sym_a", 32);
     let b = RustBV::concrete(0x3F800002, 32);
 
-    let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a.clone(), b, &ctx).unwrap();
+    let result = VEXOps::binop_with_rm(IROp::FAdd(IRType::F32), rm_rz, a.clone(), b).unwrap();
     assert!(
         result.is_symbolic(),
         "symbolic operand must yield a symbolic result, not a constant"
@@ -309,11 +303,10 @@ fn fma_tie_operands() -> (RustBV, RustBV, RustBV) {
 /// RNE rm keeps the native `mul_add` fast path: fully concrete result.
 #[test]
 fn test_qop_with_rm_rne_fastpath_f64() {
-    let ctx = SymContext::new_mock();
     let (a, b, c) = fma_tie_operands();
     let rm_rne = RustBV::concrete(0, 32);
 
-    let result = VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_rne, a, b, c, &ctx).unwrap();
+    let result = VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_rne, a, b, c).unwrap();
     assert!(!result.is_symbolic(), "RNE must not route through Z3");
     assert_eq!(result.as_u64(), Some((1.0f64 + f64::EPSILON).to_bits()));
 }
@@ -325,7 +318,7 @@ fn test_qop_with_rm_rz_f64_differs_from_rne() {
     let (a, b, c) = fma_tie_operands();
     let rm_rz = RustBV::concrete(3, 32);
 
-    let result = VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_rz, a, b, c, &ctx).unwrap();
+    let result = VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_rz, a, b, c).unwrap();
     let bits = ctx.eval(&result).expect("eval failed");
     assert_eq!(
         bits,
@@ -350,7 +343,7 @@ fn test_qop_with_rm_fmsub_rz_f64() {
     let c = RustBV::concrete(neg_c.to_bits() as u128, 64);
     let rm_rz = RustBV::concrete(3, 32);
 
-    let result = VEXOps::qop_with_rm(IROp::FMSub(IRType::F64), rm_rz, a, b, c, &ctx).unwrap();
+    let result = VEXOps::qop_with_rm(IROp::FMSub(IRType::F64), rm_rz, a, b, c).unwrap();
     let bits = ctx.eval(&result).expect("eval failed");
     assert_eq!(bits, u128::from(1.0f64.to_bits()));
 }
@@ -364,7 +357,7 @@ fn test_qop_with_rm_symbolic_rm_f64() {
     let rm_sym = RustBV::symbol("fma_rm", 32);
 
     let result =
-        VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_sym.clone(), a, b, c, &ctx).unwrap();
+        VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_sym.clone(), a, b, c).unwrap();
     assert!(result.is_symbolic(), "symbolic rm must yield a Z3 expression");
 
     ctx.add_constraint(
@@ -384,9 +377,8 @@ fn test_qop_with_rm_symbolic_rm_f64() {
 /// the typed error surface is unchanged.
 #[test]
 fn test_qop_with_rm_rejects_non_quaternary() {
-    let ctx = SymContext::new_mock();
     let zero = || RustBV::concrete(0, 64);
-    let err = VEXOps::qop_with_rm(IROp::Add(IRType::I64), zero(), zero(), zero(), zero(), &ctx)
+    let err = VEXOps::qop_with_rm(IROp::Add(IRType::I64), zero(), zero(), zero(), zero())
         .unwrap_err();
     match err {
         OpError::NotQuaternary(_) => (),
@@ -401,19 +393,18 @@ fn test_qop_with_rm_rejects_non_quaternary() {
 /// Ordinary (no-NaN) pairs behave like plain max/min at both widths.
 #[test]
 fn test_max_num_min_num_concrete_ordinary() {
-    let ctx = SymContext::new_mock();
 
     let a32 = RustBV::concrete(1.5f32.to_bits() as u128, 32);
     let b32 = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
-    let max = VEXOps::binop(IROp::FMaxNum(IRType::F32), a32.clone(), b32.clone(), &ctx).unwrap();
-    let min = VEXOps::binop(IROp::FMinNum(IRType::F32), a32, b32, &ctx).unwrap();
+    let max = VEXOps::binop(IROp::FMaxNum(IRType::F32), a32.clone(), b32.clone()).unwrap();
+    let min = VEXOps::binop(IROp::FMinNum(IRType::F32), a32, b32).unwrap();
     assert_eq!(f32::from_bits(max.as_u64().unwrap() as u32), 1.5);
     assert_eq!(f32::from_bits(min.as_u64().unwrap() as u32), -2.5);
 
     let a64 = RustBV::concrete(1.5f64.to_bits() as u128, 64);
     let b64 = RustBV::concrete((-2.5f64).to_bits() as u128, 64);
-    let max = VEXOps::binop(IROp::FMaxNum(IRType::F64), a64.clone(), b64.clone(), &ctx).unwrap();
-    let min = VEXOps::binop(IROp::FMinNum(IRType::F64), a64, b64, &ctx).unwrap();
+    let max = VEXOps::binop(IROp::FMaxNum(IRType::F64), a64.clone(), b64.clone()).unwrap();
+    let min = VEXOps::binop(IROp::FMinNum(IRType::F64), a64, b64).unwrap();
     assert_eq!(f64::from_bits(max.as_u64().unwrap()), 1.5);
     assert_eq!(f64::from_bits(min.as_u64().unwrap()), -2.5);
 }
@@ -423,13 +414,12 @@ fn test_max_num_min_num_concrete_ordinary() {
 /// `VFMin` lane ops deliberately do not do this.
 #[test]
 fn test_max_num_min_num_propagates_the_non_nan_operand() {
-    let ctx = SymContext::new_mock();
     let nan = RustBV::concrete(f32::NAN.to_bits() as u128, 32);
     let num = RustBV::concrete(3.25f32.to_bits() as u128, 32);
 
     for op in [IROp::FMaxNum(IRType::F32), IROp::FMinNum(IRType::F32)] {
-        let nan_left = VEXOps::binop(op, nan.clone(), num.clone(), &ctx).unwrap();
-        let nan_right = VEXOps::binop(op, num.clone(), nan.clone(), &ctx).unwrap();
+        let nan_left = VEXOps::binop(op, nan.clone(), num.clone()).unwrap();
+        let nan_right = VEXOps::binop(op, num.clone(), nan.clone()).unwrap();
         assert_eq!(
             f32::from_bits(nan_left.as_u64().unwrap() as u32),
             3.25,
@@ -443,7 +433,7 @@ fn test_max_num_min_num_propagates_the_non_nan_operand() {
     }
 
     // Both NaN -> NaN.
-    let both = VEXOps::binop(IROp::FMaxNum(IRType::F32), nan.clone(), nan, &ctx).unwrap();
+    let both = VEXOps::binop(IROp::FMaxNum(IRType::F32), nan.clone(), nan).unwrap();
     assert!(f32::from_bits(both.as_u64().unwrap() as u32).is_nan());
 }
 
@@ -451,14 +441,13 @@ fn test_max_num_min_num_propagates_the_non_nan_operand() {
 /// the ARM ARM FPMax/FPMin contract that `f32::max` explicitly does not pin.
 #[test]
 fn test_max_num_min_num_signed_zero() {
-    let ctx = SymContext::new_mock();
     let pos = RustBV::concrete(0.0f32.to_bits() as u128, 32);
     let neg = RustBV::concrete((-0.0f32).to_bits() as u128, 32);
 
     let bits = |bv: RustBV| bv.as_u64().unwrap() as u32;
     for (l, r) in [(pos.clone(), neg.clone()), (neg.clone(), pos.clone())] {
-        let max = VEXOps::binop(IROp::FMaxNum(IRType::F32), l.clone(), r.clone(), &ctx).unwrap();
-        let min = VEXOps::binop(IROp::FMinNum(IRType::F32), l, r, &ctx).unwrap();
+        let max = VEXOps::binop(IROp::FMaxNum(IRType::F32), l.clone(), r.clone()).unwrap();
+        let min = VEXOps::binop(IROp::FMinNum(IRType::F32), l, r).unwrap();
         assert_eq!(bits(max), 0.0f32.to_bits(), "maxNum(+0,-0) must be +0");
         assert_eq!(bits(min), (-0.0f32).to_bits(), "minNum(+0,-0) must be -0");
     }
@@ -473,7 +462,7 @@ fn test_max_num_symbolic_constraint() {
     let x = RustBV::symbol("x", 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
-    let m = VEXOps::binop(IROp::FMaxNum(IRType::F32), x.clone(), two, &ctx).unwrap();
+    let m = VEXOps::binop(IROp::FMaxNum(IRType::F32), x.clone(), two).unwrap();
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
     ctx.add_constraint(m.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap()));
     assert!(ctx.is_sat(), "expected SAT after FMaxNum symbolic constraint");
@@ -580,9 +569,8 @@ fn test_apply_rounding_nearest_away() {
 /// and map NaN to 0 after rounding (Rust `as` semantics).
 #[test]
 fn test_float_to_int_rne_saturates_and_maps_nan_to_zero() {
-    let ctx = SymContext::new_mock();
     let conv = |op: IROp, bits: u128, width: u32| {
-        VEXOps::unop(op, RustBV::concrete(bits, width), &ctx)
+        VEXOps::unop(op, RustBV::concrete(bits, width))
             .unwrap()
             .as_u128()
             .unwrap()

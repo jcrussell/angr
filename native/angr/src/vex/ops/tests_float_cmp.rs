@@ -3,6 +3,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::FCmpKind;
 use crate::vex::ir::IRType;
 
@@ -16,9 +17,9 @@ fn test_float_cmp_lt_symbolic_constraint() {
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
 
     // x < 2.0
-    let lt_x_two = VEXOps::binop(IROp::FCmpLT(IRType::F32), x.clone(), two, &ctx).unwrap();
+    let lt_x_two = VEXOps::binop(IROp::FCmpLT(IRType::F32), x.clone(), two).unwrap();
     // 1.0 < x
-    let lt_one_x = VEXOps::binop(IROp::FCmpLT(IRType::F32), one, x.clone(), &ctx).unwrap();
+    let lt_one_x = VEXOps::binop(IROp::FCmpLT(IRType::F32), one, x.clone()).unwrap();
 
     ctx.assume_true(&lt_x_two);
     ctx.assume_true(&lt_one_x);
@@ -38,15 +39,14 @@ fn test_float_cmp_lt_symbolic_constraint() {
 /// FCmpVecPacked tests below share `fcmp_truth` but not `float_cmp_scalar`).
 #[test]
 fn test_float_cmp_eq_f32_concrete() {
-    let ctx = SymContext::new_mock();
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
     let three = RustBV::concrete(3.0f32.to_bits() as u128, 32);
 
-    let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), two.clone(), two.clone(), &ctx).unwrap();
+    let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), two.clone(), two.clone()).unwrap();
     assert_eq!(eq.width(), 1);
     assert_eq!(eq.as_u128(), Some(1), "2.0 == 2.0 should be true");
 
-    let ne = VEXOps::binop(IROp::FCmpEQ(IRType::F32), two, three, &ctx).unwrap();
+    let ne = VEXOps::binop(IROp::FCmpEQ(IRType::F32), two, three).unwrap();
     assert_eq!(ne.as_u128(), Some(0), "2.0 == 3.0 should be false");
 }
 
@@ -55,18 +55,17 @@ fn test_float_cmp_eq_f32_concrete() {
 /// discriminating one: it separates LE from LT.
 #[test]
 fn test_float_cmp_le_f64_concrete() {
-    let ctx = SymContext::new_mock();
     let one = RustBV::concrete(1.0f64.to_bits() as u128, 64);
     let two = RustBV::concrete(2.0f64.to_bits() as u128, 64);
 
-    let lt = VEXOps::binop(IROp::FCmpLE(IRType::F64), one.clone(), two.clone(), &ctx).unwrap();
+    let lt = VEXOps::binop(IROp::FCmpLE(IRType::F64), one.clone(), two.clone()).unwrap();
     assert_eq!(lt.width(), 1);
     assert_eq!(lt.as_u128(), Some(1), "1.0 <= 2.0 should be true");
 
-    let eq = VEXOps::binop(IROp::FCmpLE(IRType::F64), one.clone(), one, &ctx).unwrap();
+    let eq = VEXOps::binop(IROp::FCmpLE(IRType::F64), one.clone(), one).unwrap();
     assert_eq!(eq.as_u128(), Some(1), "1.0 <= 1.0 should be true (LE, not LT)");
 
-    let gt = VEXOps::binop(IROp::FCmpLE(IRType::F64), two.clone(), two, &ctx).unwrap();
+    let gt = VEXOps::binop(IROp::FCmpLE(IRType::F64), two.clone(), two).unwrap();
     assert_eq!(gt.as_u128(), Some(1), "2.0 <= 2.0 should be true");
 }
 
@@ -79,7 +78,7 @@ fn test_float_cmp_eq_symbolic_constraint() {
     let x = RustBV::symbol("fcmp_eq_x", 32);
     let target = RustBV::concrete(2.5f32.to_bits() as u128, 32);
 
-    let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), x.clone(), target, &ctx).unwrap();
+    let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), x.clone(), target).unwrap();
     assert_eq!(eq.width(), 1);
     ctx.assume_true(&eq);
     assert!(ctx.is_sat(), "expected SAT for x == 2.5");
@@ -98,8 +97,8 @@ fn test_float_cmp_le_symbolic_constraint() {
     let x = RustBV::symbol("fcmp_le_x", 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
 
-    let le_x_one = VEXOps::binop(IROp::FCmpLE(IRType::F32), x.clone(), one.clone(), &ctx).unwrap();
-    let le_one_x = VEXOps::binop(IROp::FCmpLE(IRType::F32), one, x.clone(), &ctx).unwrap();
+    let le_x_one = VEXOps::binop(IROp::FCmpLE(IRType::F32), x.clone(), one.clone()).unwrap();
+    let le_one_x = VEXOps::binop(IROp::FCmpLE(IRType::F32), one, x.clone()).unwrap();
     ctx.assume_true(&le_x_one);
     ctx.assume_true(&le_one_x);
     assert!(ctx.is_sat(), "expected SAT for 1.0 <= x <= 1.0");
@@ -112,7 +111,6 @@ fn test_float_cmp_le_symbolic_constraint() {
 #[test]
 fn test_fcmp_scalar_lane_eq_f32_concrete_true() {
     // CMPEQSS: lane0(left)==lane0(right) → 0xFFFFFFFF in lane0; upper from left.
-    let ctx = SymContext::new_mock();
     let upper = 0xDEAD_BEEF_DEAD_BEEF_DEAD_BEEFu128;
     let l = RustBV::concrete(make_v128_lane0(2.0f32.to_bits() as u128, upper), 128);
     let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
@@ -123,7 +121,6 @@ fn test_fcmp_scalar_lane_eq_f32_concrete_true() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -134,7 +131,6 @@ fn test_fcmp_scalar_lane_eq_f32_concrete_true() {
 
 #[test]
 fn test_fcmp_scalar_lane_eq_f32_concrete_false() {
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(1.0f32.to_bits() as u128, 128);
     let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
     let res = VEXOps::binop(
@@ -144,7 +140,6 @@ fn test_fcmp_scalar_lane_eq_f32_concrete_false() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -153,7 +148,6 @@ fn test_fcmp_scalar_lane_eq_f32_concrete_false() {
 
 #[test]
 fn test_fcmp_scalar_lane_lt_f32_concrete() {
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(1.0f32.to_bits() as u128, 128);
     let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
     let res = VEXOps::binop(
@@ -163,7 +157,6 @@ fn test_fcmp_scalar_lane_lt_f32_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF, 0xFFFF_FFFF);
@@ -171,7 +164,6 @@ fn test_fcmp_scalar_lane_lt_f32_concrete() {
 
 #[test]
 fn test_fcmp_scalar_lane_le_f64_concrete_eq() {
-    let ctx = SymContext::new_mock();
     let upper = 0x123456789ABCDEF0u128;
     let l = RustBV::concrete(make_v128_lane0_64(2.5f64.to_bits() as u128, upper), 128);
     let r = RustBV::concrete(2.5f64.to_bits() as u128, 128);
@@ -182,7 +174,6 @@ fn test_fcmp_scalar_lane_le_f64_concrete_eq() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -193,7 +184,6 @@ fn test_fcmp_scalar_lane_le_f64_concrete_eq() {
 #[test]
 fn test_fcmp_scalar_lane_un_f32_concrete_nan() {
     // CMPUNORD: returns true if either operand is NaN.
-    let ctx = SymContext::new_mock();
     let nan = f32::NAN.to_bits() as u128;
     let l = RustBV::concrete(nan, 128);
     let r = RustBV::concrete(1.0f32.to_bits() as u128, 128);
@@ -204,7 +194,6 @@ fn test_fcmp_scalar_lane_un_f32_concrete_nan() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF, 0xFFFF_FFFF);
@@ -213,7 +202,6 @@ fn test_fcmp_scalar_lane_un_f32_concrete_nan() {
 #[test]
 fn test_fcmp_scalar_lane_un_f64_concrete_ordered() {
     // Both ordered → CMPUNORD returns 0.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(1.0f64.to_bits() as u128, 128);
     let r = RustBV::concrete(2.0f64.to_bits() as u128, 128);
     let res = VEXOps::binop(
@@ -223,7 +211,6 @@ fn test_fcmp_scalar_lane_un_f64_concrete_ordered() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.as_u128().unwrap() & 0xFFFF_FFFF_FFFF_FFFF, 0);
@@ -243,7 +230,6 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
         },
         l.clone(),
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -267,38 +253,34 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
 
 #[test]
 fn test_fcom_cc_f32_concrete_eq() {
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(2.5f32.to_bits() as u128, 32);
     let r = RustBV::concrete(2.5f32.to_bits() as u128, 32);
-    let res = VEXOps::binop(IROp::FComCC(IRType::F32), l, r, &ctx).unwrap();
+    let res = VEXOps::binop(IROp::FComCC(IRType::F32), l, r).unwrap();
     assert_eq!(res.width(), 32);
     assert_eq!(res.as_u128().unwrap(), 0x40);
 }
 
 #[test]
 fn test_fcom_cc_f32_concrete_lt() {
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let r = RustBV::concrete(2.0f32.to_bits() as u128, 32);
-    let res = VEXOps::binop(IROp::FComCC(IRType::F32), l, r, &ctx).unwrap();
+    let res = VEXOps::binop(IROp::FComCC(IRType::F32), l, r).unwrap();
     assert_eq!(res.as_u128().unwrap(), 0x01);
 }
 
 #[test]
 fn test_fcom_cc_f64_concrete_gt() {
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(3.0f64.to_bits() as u128, 64);
     let r = RustBV::concrete(2.0f64.to_bits() as u128, 64);
-    let res = VEXOps::binop(IROp::FComCC(IRType::F64), l, r, &ctx).unwrap();
+    let res = VEXOps::binop(IROp::FComCC(IRType::F64), l, r).unwrap();
     assert_eq!(res.as_u128().unwrap(), 0x00);
 }
 
 #[test]
 fn test_fcom_cc_f64_concrete_unordered() {
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(f64::NAN.to_bits() as u128, 64);
     let r = RustBV::concrete(1.0f64.to_bits() as u128, 64);
-    let res = VEXOps::binop(IROp::FComCC(IRType::F64), l, r, &ctx).unwrap();
+    let res = VEXOps::binop(IROp::FComCC(IRType::F64), l, r).unwrap();
     assert_eq!(res.as_u128().unwrap(), 0x45);
 }
 
@@ -308,7 +290,7 @@ fn test_fcom_cc_symbolic_lt() {
     let ctx = SymContext::new_mock();
     let x = RustBV::symbol("fcom_x", 64);
     let five = RustBV::concrete(5.0f64.to_bits() as u128, 64);
-    let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five, &ctx).unwrap();
+    let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five).unwrap();
     assert_eq!(res.width(), 32);
     let want = RustBV::concrete(0x01, 32);
     ctx.add_constraint(res.to_z3_ast().unwrap().eq(want.to_z3_ast().unwrap()));
@@ -325,7 +307,6 @@ fn test_fcom_cc_symbolic_lt() {
 #[allow(clippy::identity_op)] // explicit 4-lane mask layout reads better than the minimized form
 fn test_fcmp_packed_eq_32fx4_concrete() {
     // CMPEQPS lane-by-lane: lanes 0 and 2 equal, lanes 1 and 3 differ.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128);
     let r = RustBV::concrete(pack_4xf32(1.0, 5.0, 3.0, 7.0), 128);
     let res = VEXOps::binop(
@@ -336,7 +317,6 @@ fn test_fcmp_packed_eq_32fx4_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);
@@ -350,7 +330,6 @@ fn test_fcmp_packed_eq_32fx4_concrete() {
 #[test]
 fn test_fcmp_packed_lt_32fx4_concrete() {
     // CMPLTPS: 1.0 < 2.0 (T), 5.0 < 3.0 (F), -1.0 < 0.0 (T), 4.0 < 4.0 (F).
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_4xf32(1.0, 5.0, -1.0, 4.0), 128);
     let r = RustBV::concrete(pack_4xf32(2.0, 3.0, 0.0, 4.0), 128);
     let res = VEXOps::binop(
@@ -361,7 +340,6 @@ fn test_fcmp_packed_lt_32fx4_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -372,7 +350,6 @@ fn test_fcmp_packed_lt_32fx4_concrete() {
 #[test]
 fn test_fcmp_packed_gt_32fx4_concrete() {
     // CMPGTPS: 5.0 > 2.0 (T), 1.0 > 3.0 (F), 4.0 > 4.0 (F), 9.0 > 0.0 (T).
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_4xf32(5.0, 1.0, 4.0, 9.0), 128);
     let r = RustBV::concrete(pack_4xf32(2.0, 3.0, 4.0, 0.0), 128);
     let res = VEXOps::binop(
@@ -383,7 +360,6 @@ fn test_fcmp_packed_gt_32fx4_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -395,7 +371,6 @@ fn test_fcmp_packed_gt_32fx4_concrete() {
 #[allow(clippy::identity_op)] // explicit 4-lane mask layout reads better than the minimized form
 fn test_fcmp_packed_ge_32fx4_concrete() {
     // CMPGEPS: 5.0>=2.0 T, 3.0>=3.0 T, 1.0>=2.0 F, 4.0>=4.0 T.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_4xf32(5.0, 3.0, 1.0, 4.0), 128);
     let r = RustBV::concrete(pack_4xf32(2.0, 3.0, 2.0, 4.0), 128);
     let res = VEXOps::binop(
@@ -406,7 +381,6 @@ fn test_fcmp_packed_ge_32fx4_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -418,7 +392,6 @@ fn test_fcmp_packed_ge_32fx4_concrete() {
 #[test]
 fn test_fcmp_packed_le_64fx2_concrete() {
     // CMPLEPD: 1.0<=2.0 T, 3.0<=3.0 T.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_2xf64(1.0, 3.0), 128);
     let r = RustBV::concrete(pack_2xf64(2.0, 3.0), 128);
     let res = VEXOps::binop(
@@ -429,7 +402,6 @@ fn test_fcmp_packed_le_64fx2_concrete() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -440,7 +412,6 @@ fn test_fcmp_packed_le_64fx2_concrete() {
 #[test]
 fn test_fcmp_packed_un_32fx4_nan_in_one_lane() {
     // CMPUNPS: NaN in lane 1 only → only lane 1 set.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_4xf32(1.0, f32::NAN, 3.0, 4.0), 128);
     let r = RustBV::concrete(pack_4xf32(2.0, 5.0, 3.0, 4.0), 128);
     let res = VEXOps::binop(
@@ -451,7 +422,6 @@ fn test_fcmp_packed_un_32fx4_nan_in_one_lane() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -462,7 +432,6 @@ fn test_fcmp_packed_un_32fx4_nan_in_one_lane() {
 #[test]
 fn test_fcmp_packed_un_64fx2_nan_in_either() {
     // CMPUNPD: lane 0 has NaN on right, lane 1 ordered.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_2xf64(1.0, 3.0), 128);
     let r = RustBV::concrete(pack_2xf64(f64::NAN, 4.0), 128);
     let res = VEXOps::binop(
@@ -473,7 +442,6 @@ fn test_fcmp_packed_un_64fx2_nan_in_either() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     let v = res.as_u128().unwrap();
@@ -484,7 +452,6 @@ fn test_fcmp_packed_un_64fx2_nan_in_either() {
 #[test]
 fn test_fcmp_packed_eq_32fx2_concrete_i64() {
     // ARM NEON Iop_CmpEQ32Fx2 returns I64 (2 lanes of 32-bit float in 64 bits).
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_2xf32_64(1.0, 2.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
     let r = RustBV::concrete(pack_2xf32_64(1.0, 5.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
     let res = VEXOps::binop(
@@ -495,7 +462,6 @@ fn test_fcmp_packed_eq_32fx2_concrete_i64() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -507,7 +473,6 @@ fn test_fcmp_packed_eq_32fx2_concrete_i64() {
 #[test]
 fn test_fcmp_packed_gt_32fx2_concrete_i64() {
     // ARM NEON Iop_CmpGT32Fx2.
-    let ctx = SymContext::new_mock();
     let l = RustBV::concrete(pack_2xf32_64(5.0, 1.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
     let r = RustBV::concrete(pack_2xf32_64(2.0, 3.0) & 0xFFFF_FFFF_FFFF_FFFF, 64);
     let res = VEXOps::binop(
@@ -518,7 +483,6 @@ fn test_fcmp_packed_gt_32fx2_concrete_i64() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 64);
@@ -541,7 +505,6 @@ fn test_fcmp_packed_lt_32fx4_symbolic() {
         },
         l.clone(),
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(res.width(), 128);

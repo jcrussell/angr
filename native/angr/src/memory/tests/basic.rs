@@ -166,7 +166,6 @@ fn test_zero_size_access_is_rejected_not_looped() {
     // iterated ~4.5e15 pages — a hang, not an error. addr == 0 is the worst case
     // (it underflows even in a debug build), and enforce_permissions is what turns
     // the bad end_page into the loop. If this test ever hangs, the guard is gone.
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x0, 0x1000, Permission::RWX);
     mem.set_enforce_permissions(true);
@@ -181,7 +180,7 @@ fn test_zero_size_access_is_rejected_not_looped() {
         );
         assert!(
             matches!(
-                mem.load_concrete_lazy(addr, 0, &ctx),
+                mem.load_concrete_lazy(addr, 0),
                 Err(MemoryError::ZeroSize { .. })
             ),
             "zero-size lazy load at 0x{addr:x} must be a clean error"
@@ -215,7 +214,6 @@ fn test_oversize_access_is_rejected_not_width_wrapped() {
     // half a billion addresses before minting an invalid BV, so the pre-fix
     // behaviour is "hangs then panics", not "returns a wrong value" — which is
     // also why the assertion below is on the error variant and not on a value.
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x0, 0x1000, Permission::RWX);
 
@@ -230,7 +228,7 @@ fn test_oversize_access_is_rejected_not_width_wrapped() {
         );
         assert!(
             matches!(
-                mem.load_concrete_lazy(addr, too_big, &ctx),
+                mem.load_concrete_lazy(addr, too_big),
                 Err(MemoryError::SizeTooLarge { .. })
             ),
             "oversize lazy load at 0x{addr:x} must be a clean error"
@@ -260,7 +258,6 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
     // empty, and the byte loop's wrapping `Address` addition walks straight into
     // whatever low page is really mapped. Reachable: `write_fallback_max`
     // concretizes an under-constrained store pointer to exactly u64::MAX.
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     // Page 0 is the page a wrapped access lands on. Nothing near u64::MAX is
     // mapped, so a correct engine can only error here.
@@ -279,7 +276,7 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
         "a load whose range wraps past u64::MAX must error, not read page 0"
     );
     assert!(matches!(
-        mem.load_concrete_lazy(wrapping, 4, &ctx),
+        mem.load_concrete_lazy(wrapping, 4),
         Err(MemoryError::OutOfBounds { .. })
     ));
 
@@ -348,7 +345,6 @@ fn test_add_lazy_region_of_last_page_and_of_wrapping_region() {
     // `is_in_lazy_region`'s `page >= start && page < end` can never match — the
     // region was registered but permanently inert, and the pages inside it kept
     // reporting a hard `Unmapped` instead of the intended fetch request.
-    let ctx = SymContext::new_mock();
 
     // Boundary case that must keep working: a region ending exactly at
     // u64::MAX is legal, not an overflow.
@@ -362,7 +358,7 @@ fn test_add_lazy_region_of_last_page_and_of_wrapping_region() {
     );
     assert!(
         matches!(
-            mem.load_concrete_lazy(last_page, 1, &ctx),
+            mem.load_concrete_lazy(last_page, 1),
             Err(MemoryError::UnmappedPageInRegion { .. })
         ),
         "a miss in the last-page lazy region must ask for a fetch"
@@ -387,7 +383,7 @@ fn test_add_lazy_region_of_last_page_and_of_wrapping_region() {
     assert!(!mem.is_in_lazy_region(1));
     assert!(
         matches!(
-            mem.load_concrete_lazy(0x1800u64, 1, &ctx),
+            mem.load_concrete_lazy(0x1800u64, 1),
             Err(MemoryError::Unmapped { .. })
         ),
         "a zero-size lazy region must not make an unmapped page fetchable"

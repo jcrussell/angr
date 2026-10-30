@@ -11,7 +11,6 @@
 
 use crate::arch::RegisterFile;
 use crate::memory::SymbolicMemory;
-use crate::symbolic::SymContext;
 
 // Every ABI register table below is expressed as named VEX guest-state
 // constants rather than bare integers. The per-arch `offsets` modules carry
@@ -263,12 +262,7 @@ pub(crate) trait CallingConvention: Send + Sync {
     /// answers on this one default is what makes `link_register()` and
     /// `get_return_addr()` agree by construction rather than by two hardcoded
     /// copies of the same offset (bead angr-9ke6b.3).
-    fn get_return_addr(
-        &self,
-        regs: &RegisterFile,
-        memory: Option<&SymbolicMemory>,
-        ctx: &SymContext,
-    ) -> Option<u64> {
+    fn get_return_addr(&self, regs: &RegisterFile, memory: Option<&SymbolicMemory>) -> Option<u64> {
         let ptr_size = self.pointer_size();
         if !self.pops_return_addr() {
             // A link-register ABI that has not named its LR gets `None`, never
@@ -280,7 +274,7 @@ pub(crate) trait CallingConvention: Send + Sync {
         let sp_val = sp.as_u64()?;
 
         if let Some(mem) = memory
-            && let Ok(ret_val) = mem.load_concrete_lazy(sp_val, ptr_size, ctx)
+            && let Ok(ret_val) = mem.load_concrete_lazy(sp_val, ptr_size)
         {
             return ret_val.as_u64();
         }

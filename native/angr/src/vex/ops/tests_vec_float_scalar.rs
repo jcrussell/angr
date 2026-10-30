@@ -3,11 +3,11 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
 fn test_vec_float_scalar_add() {
-    let ctx = SymContext::new_mock();
 
     // SSE scalar add: ADDSS xmm0, xmm1
     // xmm0 = [4.0f, 0, 0, 0], xmm1 = [2.0f, 0, 0, 0]
@@ -18,7 +18,7 @@ fn test_vec_float_scalar_add() {
     let xmm0 = RustBV::concrete(f4_bits, 128);
     let xmm1 = RustBV::concrete(f2_bits, 128);
 
-    let result = VEXOps::binop(IROp::VFAddS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::VFAddS { elem: IRType::F32 }, xmm0, xmm1).unwrap();
     let result_val = result.as_u128().unwrap();
     let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
 
@@ -30,7 +30,6 @@ fn test_vec_float_scalar_add() {
 
 #[test]
 fn test_vec_float_scalar_div() {
-    let ctx = SymContext::new_mock();
 
     // SSE scalar div: DIVSS xmm0, xmm1
     // xmm0 = [6.0f, 0, 0, 0], xmm1 = [2.0f, 0, 0, 0]
@@ -41,7 +40,7 @@ fn test_vec_float_scalar_div() {
     let xmm0 = RustBV::concrete(f6_bits, 128);
     let xmm1 = RustBV::concrete(f2_bits, 128);
 
-    let result = VEXOps::binop(IROp::VFDivS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::VFDivS { elem: IRType::F32 }, xmm0, xmm1).unwrap();
     let result_val = result.as_u128().unwrap();
     let result_f32 = f32::from_bits((result_val & 0xFFFFFFFF) as u32);
 
@@ -61,7 +60,7 @@ fn test_vec_float_scalar_add_symbolic() {
     let xmm1 = RustBV::concrete(2.0f32.to_bits() as u128, 128);
 
     let result =
-        VEXOps::binop(IROp::VFAddS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
+        VEXOps::binop(IROp::VFAddS { elem: IRType::F32 }, xmm0.clone(), xmm1).unwrap();
     assert_eq!(result.width(), 128);
 
     // Constrain low 32 bits of result to bits(5.0).
@@ -95,7 +94,7 @@ fn test_vec_float_scalar_sqrt_symbolic() {
     let ctx = SymContext::new_mock();
     let xmm = RustBV::symbol("xmm_sqrt", 128);
 
-    let result = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F32 }, xmm.clone(), &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F32 }, xmm.clone()).unwrap();
     assert_eq!(result.width(), 128);
 
     let res_lo = result.extract(31, 0);
@@ -126,7 +125,7 @@ fn test_vec_float_scalar_max_symbolic() {
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
     let result =
-        VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
+        VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0.clone(), xmm1).unwrap();
     assert_eq!(result.width(), 128);
 
     let res_lo = result.extract(31, 0);
@@ -152,7 +151,7 @@ fn test_vec_float_scalar_min_symbolic() {
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
     let result =
-        VEXOps::binop(IROp::VFMinS { elem: IRType::F32 }, xmm0.clone(), xmm1, &ctx).unwrap();
+        VEXOps::binop(IROp::VFMinS { elem: IRType::F32 }, xmm0.clone(), xmm1).unwrap();
     assert_eq!(result.width(), 128);
 
     let res_lo = result.extract(31, 0);
@@ -173,7 +172,6 @@ fn test_vec_float_scalar_min_symbolic() {
 /// upper 96 bits of xmm0 pass through unchanged.
 #[test]
 fn test_vec_float_scalar_sub_concrete_lane_isolation() {
-    let ctx = SymContext::new_mock();
 
     // xmm0: lane0=10.0, upper bits = 0xDEAD_BEEF_CAFE_BABE_1234_5678 (96 bits)
     let upper_pattern: u128 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128 << 32;
@@ -181,7 +179,7 @@ fn test_vec_float_scalar_sub_concrete_lane_isolation() {
     let xmm0 = RustBV::concrete(xmm0_bits, 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
-    let result = VEXOps::binop(IROp::VFSubS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::VFSubS { elem: IRType::F32 }, xmm0, xmm1).unwrap();
     let rv = result.as_u128().unwrap();
     let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
     assert!((lane0 - 7.0).abs() < 1e-6, "10.0 - 3.0 == 7.0, got {lane0}");
@@ -195,14 +193,13 @@ fn test_vec_float_scalar_sub_concrete_lane_isolation() {
 /// VFMulS concrete lane isolation: MULSS xmm0, xmm1.
 #[test]
 fn test_vec_float_scalar_mul_concrete_lane_isolation() {
-    let ctx = SymContext::new_mock();
 
     let upper_pattern: u128 = 0xFEED_FACE_BAAD_F00D_8BAD_F00Du128 << 32;
     let xmm0_bits = upper_pattern | (4.0f32.to_bits() as u128);
     let xmm0 = RustBV::concrete(xmm0_bits, 128);
     let xmm1 = RustBV::concrete(2.5f32.to_bits() as u128, 128);
 
-    let result = VEXOps::binop(IROp::VFMulS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::VFMulS { elem: IRType::F32 }, xmm0, xmm1).unwrap();
     let rv = result.as_u128().unwrap();
     let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
     assert!(
@@ -221,7 +218,6 @@ fn test_vec_float_scalar_mul_concrete_lane_isolation() {
 /// lane 0 (low 64 bits) and pass the upper 64 bits of `xmm0` through.
 #[test]
 fn test_vec_float_scalar_all_variants_f64() {
-    let ctx = SymContext::new_mock();
     let upper_pattern: u128 = 0xCAFE_BABE_DEAD_BEEFu128 << 64;
 
     let xmm0 = |lane0: f64| RustBV::concrete(upper_pattern | (lane0.to_bits() as u128), 128);
@@ -237,7 +233,7 @@ fn test_vec_float_scalar_all_variants_f64() {
     ];
 
     for (op, l, r, expected) in cases {
-        let result = VEXOps::binop(op, xmm0(l), xmm1(r), &ctx).unwrap();
+        let result = VEXOps::binop(op, xmm0(l), xmm1(r)).unwrap();
         let rv = result.as_u128().unwrap();
         let lane0 = f64::from_bits((rv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
         assert!(
@@ -253,7 +249,7 @@ fn test_vec_float_scalar_all_variants_f64() {
 
     // Unary VFSqrtS{F64}: sqrt(16.0) = 4.0, upper 64 bits pass through.
     let arg = xmm0(16.0);
-    let sqrt_res = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F64 }, arg, &ctx).unwrap();
+    let sqrt_res = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F64 }, arg).unwrap();
     let sv = sqrt_res.as_u128().unwrap();
     let sqrt_lane0 = f64::from_bits((sv & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
     assert!(
@@ -272,12 +268,11 @@ fn test_vec_float_scalar_all_variants_f64() {
 /// semantics encoded by the ITE in vec_float_scalar_lane_minmax.
 #[test]
 fn test_vec_float_scalar_max_nan_concrete() {
-    let ctx = SymContext::new_mock();
 
     let xmm0 = RustBV::concrete(f32::NAN.to_bits() as u128, 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
-    let result = VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0, xmm1, &ctx).unwrap();
+    let result = VEXOps::binop(IROp::VFMaxS { elem: IRType::F32 }, xmm0, xmm1).unwrap();
     let rv = result.as_u128().unwrap();
     let lane0 = f32::from_bits((rv & 0xFFFF_FFFF) as u32);
     // NaN > 3.0 is false, so max picks 3.0 (the right operand).
@@ -294,7 +289,7 @@ fn test_vfrecip_est_s_f32_upper_passthrough() {
     let ctx = SymContext::new_mock();
     let upper96 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128;
     let arg = RustBV::concrete((upper96 << 32) | 0x4080_0000u128, 128); // lane0 = 4.0f32
-    let result = VEXOps::unop(IROp::VFRecipEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VFRecipEstS { elem: IRType::F32 }, arg).unwrap();
     assert_eq!(result.width(), 128);
     let v = eval_v128(&ctx, &result);
     assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
@@ -306,7 +301,7 @@ fn test_vfrsqrt_est_s_f32_upper_passthrough() {
     let ctx = SymContext::new_mock();
     let upper96 = 0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFFu128;
     let arg = RustBV::concrete((upper96 << 32) | 0x4400_0000u128, 128); // lane0 = 512.0f32
-    let result = VEXOps::unop(IROp::VFRSqrtEstS { elem: IRType::F32 }, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VFRSqrtEstS { elem: IRType::F32 }, arg).unwrap();
     assert_eq!(result.width(), 128);
     let v = eval_v128(&ctx, &result);
     assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
@@ -323,7 +318,6 @@ fn test_vfrecip_est_packed_f32x2_shape() {
             count: 2,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -341,7 +335,6 @@ fn test_vfrecip_est_packed_f32x4_shape() {
             count: 4,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -351,7 +344,6 @@ fn test_vfrecip_est_packed_f32x4_shape() {
 /// AVX Iop_RecipEst32Fx8 (8x f32 = 256-bit result).
 #[test]
 fn test_vfrecip_est_packed_f32x8_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 256);
     let result = VEXOps::unop(
         IROp::VFRecipEst {
@@ -359,7 +351,6 @@ fn test_vfrecip_est_packed_f32x8_shape() {
             count: 8,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 256);
@@ -368,7 +359,6 @@ fn test_vfrecip_est_packed_f32x8_shape() {
 /// NEON Iop_RecipEst64Fx2 (2x f64 = 128-bit result).
 #[test]
 fn test_vfrecip_est_packed_f64x2_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 128);
     let result = VEXOps::unop(
         IROp::VFRecipEst {
@@ -376,7 +366,6 @@ fn test_vfrecip_est_packed_f64x2_shape() {
             count: 2,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -385,7 +374,6 @@ fn test_vfrecip_est_packed_f64x2_shape() {
 /// Iop_RSqrtEst*: same widths as RecipEst, separate dispatch arm.
 #[test]
 fn test_vfrsqrt_est_packed_f64x2_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 128);
     let result = VEXOps::unop(
         IROp::VFRSqrtEst {
@@ -393,7 +381,6 @@ fn test_vfrsqrt_est_packed_f64x2_shape() {
             count: 2,
         },
         arg,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -412,7 +399,6 @@ fn test_vfrecip_step_packed_f32x2_shape() {
         },
         a,
         b,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 64);
@@ -422,7 +408,6 @@ fn test_vfrecip_step_packed_f32x2_shape() {
 /// NEON Iop_RecipStep64Fx2: Q-reg binary, 128-bit result.
 #[test]
 fn test_vfrecip_step_packed_f64x2_shape() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::concrete(0u128, 128);
     let b = RustBV::concrete(0u128, 128);
     let result = VEXOps::binop(
@@ -432,7 +417,6 @@ fn test_vfrecip_step_packed_f64x2_shape() {
         },
         a,
         b,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -441,7 +425,6 @@ fn test_vfrecip_step_packed_f64x2_shape() {
 /// NEON Iop_RSqrtStep32Fx4: Q-reg binary, 128-bit result.
 #[test]
 fn test_vfrsqrt_step_packed_f32x4_shape() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::concrete(0u128, 128);
     let b = RustBV::concrete(0u128, 128);
     let result = VEXOps::binop(
@@ -451,7 +434,6 @@ fn test_vfrsqrt_step_packed_f32x4_shape() {
         },
         a,
         b,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -461,9 +443,8 @@ fn test_vfrsqrt_step_packed_f32x4_shape() {
 /// symbolic per lane; shape is what matters here.
 #[test]
 fn test_virecip_est_packed_u32x2_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 64);
-    let result = VEXOps::unop(IROp::VIRecipEst { count: 2 }, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VIRecipEst { count: 2 }, arg).unwrap();
     assert_eq!(result.width(), 64);
     // Symbolic: should not be concrete because each lane was minted fresh.
     assert!(result.as_u128().is_none());
@@ -472,9 +453,8 @@ fn test_virecip_est_packed_u32x2_shape() {
 /// NEON Iop_RecipEst32Ux4 (Q-reg URECPE, 4x u32 = 128-bit result).
 #[test]
 fn test_virecip_est_packed_u32x4_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 128);
-    let result = VEXOps::unop(IROp::VIRecipEst { count: 4 }, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VIRecipEst { count: 4 }, arg).unwrap();
     assert_eq!(result.width(), 128);
     assert!(result.as_u128().is_none());
 }
@@ -482,9 +462,8 @@ fn test_virecip_est_packed_u32x4_shape() {
 /// NEON Iop_RSqrtEst32Ux2 (D-reg URSQRTE, 2x u32 = 64-bit result).
 #[test]
 fn test_virsqrt_est_packed_u32x2_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 64);
-    let result = VEXOps::unop(IROp::VIRSqrtEst { count: 2 }, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VIRSqrtEst { count: 2 }, arg).unwrap();
     assert_eq!(result.width(), 64);
     assert!(result.as_u128().is_none());
 }
@@ -492,9 +471,8 @@ fn test_virsqrt_est_packed_u32x2_shape() {
 /// NEON Iop_RSqrtEst32Ux4 (Q-reg URSQRTE, 4x u32 = 128-bit result).
 #[test]
 fn test_virsqrt_est_packed_u32x4_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 128);
-    let result = VEXOps::unop(IROp::VIRSqrtEst { count: 4 }, arg, &ctx).unwrap();
+    let result = VEXOps::unop(IROp::VIRSqrtEst { count: 4 }, arg).unwrap();
     assert_eq!(result.width(), 128);
     assert!(result.as_u128().is_none());
 }
@@ -615,7 +593,7 @@ fn free_vars(bv: &RustBV) -> std::collections::BTreeSet<String> {
 #[test]
 fn test_estimate_lanes_are_fresh_variables() {
     let ctx = SymContext::new_mock();
-    let est = |op: IROp, arg: RustBV| VEXOps::unop(op, arg, &ctx).unwrap();
+    let est = |op: IROp, arg: RustBV| VEXOps::unop(op, arg).unwrap();
     let packed = IROp::VFRecipEst {
         elem: IRType::F32,
         count: 4,

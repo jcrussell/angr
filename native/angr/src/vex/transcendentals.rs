@@ -8,19 +8,19 @@
 //! `VEXOps::binop_with_rm` dispatch that straight here.
 //!
 //! When all value operands are concrete f32/f64, this module computes the
-//! result via Rust's libm bindings. Symbolic operands fall back to
-//! `unsup_*` fresh-symbolic by default — Z3 has no native sin/cos/log/exp
-//! theory.
+//! result via Rust's libm bindings. Z3 has no native sin/cos/log/exp theory,
+//! so a symbolic operand is either pinned first (below) or the op declines.
 //!
 //! ## Symbolic concretization fallback
 //!
-//! `try_concretize_binop_rm` / `try_concretize_triop_rm` extend the binop
-//! and triop paths with an **input-concretization** strategy for the x87
-//! transcendentals. When the input is symbolic and the concrete path
-//! returned `None`, the solver is asked for one model of the input(s),
-//! the libm op is computed on that sample, the input(s) are pinned to
-//! the sampled value(s) with hard constraints (so the path stays
-//! consistent), and the concrete f64 result is returned.
+//! [`pins_binop`] / [`pins_triop`] name the x87 transcendentals whose
+//! symbolic operands the interpreter concretizes before dispatch
+//! (`interpreter::transcendental_pins`, angr-mx00p.116.6): the solver is
+//! asked for one model of the input(s), the input(s) are pinned to the
+//! sampled value(s) with hard constraints (so the path stays consistent),
+//! and the op then runs here on the concrete value(s). `VEXOps` itself has
+//! no symbolic path for these ops: a symbolic operand reaching it is
+//! `OpError::RawOpcode`.
 //!
 //! Coverage (angr-i5lj.1, angr-i5lj.2):
 //! * binop: `Iop_SinF64`, `Iop_CosF64`, `Iop_TanF64`, `Iop_2xm1F64`
@@ -55,9 +55,7 @@
 //! expose round-to-nearest-even only — there is no rounding-mode-parameterized
 //! form to thread `rm` into. The x87 default of rm=0 (RNE) is the common case,
 //! so the discard is faithful there and off by at most one ulp otherwise.
-//! `try_concrete_binop_rm` and `try_concrete_triop_rm` carry the marker; the
-//! two `try_concretize_*` wrappers do not need one because they forward `rm`
-//! unchanged to those two.
+//! `try_concrete_binop_rm` and `try_concrete_triop_rm` carry the marker.
 //!
 //! Opcode values: libvex_ir.h Iop_* enum, base 0x1400, validated against
 //! pyvex.const.enums_to_ints. The only producer is the *string* router
@@ -65,7 +63,7 @@
 //! internal tags — they do not have to track libVEX renumbering, they
 //! only have to stay distinct and agree with that router.
 
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
 
 pub const IOP_ATAN_F64: u32 = 0x14de;
 pub const IOP_YL2X_F64: u32 = 0x14df;
@@ -133,96 +131,24 @@ pub fn try_concrete_triop_rm(opcode: u32, _rm: &RustBV, a: &RustBV, b: &RustBV) 
     Some(RustBV::concrete(r.to_bits() as u128, 64))
 }
 
-/// Symbolic-input fallback for the in-scope x87 binop transcendentals:
-/// `Iop_SinF64`, `Iop_CosF64`, `Iop_TanF64`, `Iop_2xm1F64`. Returns
-/// `None` for any other opcode (the caller will then fall back to
-/// fresh-symbolic).
-///
-/// When `x` is symbolic, evaluates one model via `ctx.eval`, runs the
-/// matching libm op on that sample, pins `x` to the sampled value with
-/// a hard constraint, and returns the concrete result. See the
-/// module-level docs for the strategy rationale.
-///
-/// Returns `None` if the solver is UNSAT under the current constraints
-/// or the opcode is out of scope.
-pub fn try_concretize_binop_rm(
-    opcode: u32,
-    rm: &RustBV,
-    x: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
-    if !matches!(
+/// Whether a symbolic operand of binop `opcode` is concretized and pinned by
+/// the interpreter (`interpreter::transcendental_pins`): `Iop_SinF64`,
+/// `Iop_CosF64`, `Iop_TanF64`, `Iop_2xm1F64`.
+pub fn pins_binop(opcode: u32) -> bool {
+    matches!(
         opcode,
         IOP_SIN_F64 | IOP_COS_F64 | IOP_TAN_F64 | IOP_2XM1_F64
-    ) {
-        return None;
-    }
-    // Concrete already — defer to the libm fast path (caller usually
-    // tries that first; handle here for robustness).
-    if x.is_concrete() {
-        return try_concrete_binop_rm(opcode, rm, x);
-    }
-    let xv = ctx.eval(x)?;
-    // Delegate the formula itself to the concrete path (angr-fs8kb.21) — one
-    // definition per opcode, so a formula fix cannot land on only one of the
-    // two entry points.
-    let pinned = RustBV::concrete(xv, x.width());
-    let r = try_concrete_binop_rm(opcode, rm, &pinned)?;
-    let cond = x.eq(&pinned);
-    ctx.assume_true(&cond);
-    Some(r)
+    )
 }
 
-/// Symbolic-input fallback for the in-scope x87 triop transcendentals:
-/// `Iop_YL2X_F64`, `Iop_YL2XP1_F64`, `Iop_SCALE_F64`, `Iop_ATAN_F64`.
-/// Returns `None` for any other opcode (the caller will then fall back
-/// to fresh-symbolic).
-///
-/// When `a` and/or `b` are symbolic, evaluates one model of each via
-/// `ctx.eval`, runs the matching libm op on the sample, pins each
-/// symbolic input to its sampled value, and returns the concrete f64
-/// result. See the module-level docs for the strategy rationale.
-///
-/// Returns `None` if either eval fails (UNSAT) or the opcode is out of
-/// scope.
-pub fn try_concretize_triop_rm(
-    opcode: u32,
-    rm: &RustBV,
-    a: &RustBV,
-    b: &RustBV,
-    ctx: &SymContext,
-) -> Option<RustBV> {
-    if !matches!(
+/// Whether symbolic operands of triop `opcode` are concretized and pinned by
+/// the interpreter (`interpreter::transcendental_pins`): `Iop_Yl2xF64`,
+/// `Iop_Yl2xp1F64`, `Iop_ScaleF64`, `Iop_AtanF64`.
+pub fn pins_triop(opcode: u32) -> bool {
+    matches!(
         opcode,
         IOP_YL2X_F64 | IOP_YL2XP1_F64 | IOP_SCALE_F64 | IOP_ATAN_F64
-    ) {
-        return None;
-    }
-    if a.is_concrete() && b.is_concrete() {
-        return try_concrete_triop_rm(opcode, rm, a, b);
-    }
-    // One JOINT witness for both operands (angr-z8elx). Two independent
-    // `ctx.eval` calls are not model-consistent in strict-deterministic mode
-    // (`eval` short-circuits to a per-variable `min`, deliberately skipping the
-    // model cache), so path-correlated operands could each be individually
-    // feasible yet jointly infeasible — and the pins below would then turn a
-    // SAT context UNSAT, silently killing a feasible path.
-    let vals = ctx.eval_many(&[a.clone(), b.clone()])?;
-    // Delegate the formula itself to the concrete path (angr-fs8kb.21) — one
-    // definition per opcode, so a formula fix cannot land on only one of the
-    // two entry points.
-    let pinned_a = RustBV::concrete(vals[0], a.width());
-    let pinned_b = RustBV::concrete(vals[1], b.width());
-    let r = try_concrete_triop_rm(opcode, rm, &pinned_a, &pinned_b)?;
-    if a.is_symbolic() {
-        let cond = a.eq(&pinned_a);
-        ctx.assume_true(&cond);
-    }
-    if b.is_symbolic() {
-        let cond = b.eq(&pinned_b);
-        ctx.assume_true(&cond);
-    }
-    Some(r)
+    )
 }
 
 /// IEEE 754 reciprocal exponent (ARM AArch64 FRECPX semantics).

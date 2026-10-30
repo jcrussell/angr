@@ -13,6 +13,7 @@
 use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
+use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -26,7 +27,6 @@ use crate::vex::ir::IRType;
 /// swap or wrong-half read is immediately visible.
 #[test]
 fn test_vec_interleave_lo_8x16_concrete() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 16] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
@@ -51,7 +51,6 @@ fn test_vec_interleave_lo_8x16_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 8);
@@ -67,7 +66,6 @@ fn test_vec_interleave_lo_8x16_concrete() {
 /// case above — a base-selection bug would read the low half instead.
 #[test]
 fn test_vec_interleave_hi_8x16_concrete() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 16] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
@@ -92,7 +90,6 @@ fn test_vec_interleave_hi_8x16_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 8);
@@ -107,7 +104,6 @@ fn test_vec_interleave_hi_8x16_concrete() {
 /// full-64-bit-lane end of the family so a lane-width miscalc can't hide.
 #[test]
 fn test_vec_interleave_lo_64x2_concrete() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 2] = [0x1111_1111_1111_1111, 0x2222_2222_2222_2222];
     let r: [u128; 2] = [0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB];
@@ -123,7 +119,6 @@ fn test_vec_interleave_lo_64x2_concrete() {
         },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
-        &ctx,
     )
     .unwrap();
     assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 64);
@@ -167,7 +162,6 @@ fn test_vec_interleave_lo_16x8_symbolic() {
         },
         l,
         r,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 128);
@@ -190,7 +184,6 @@ fn test_vec_interleave_lo_16x8_symbolic() {
 /// (`vex/ir_tests.rs`).
 #[test]
 fn test_vec_interleave_8x8_concrete_is_64_bit() {
-    let ctx = SymContext::new_mock();
 
     let l: [u128; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     let r: [u128; 8] = [0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7];
@@ -205,7 +198,6 @@ fn test_vec_interleave_8x8_concrete_is_64_bit() {
         },
         lv.clone(),
         rv.clone(),
-        &ctx,
     )
     .unwrap();
     assert_eq!(lo.width(), 64, "InterleaveLO8x8 must stay 64 bits wide");
@@ -223,7 +215,6 @@ fn test_vec_interleave_8x8_concrete_is_64_bit() {
         },
         lv,
         rv,
-        &ctx,
     )
     .unwrap();
     assert_eq!(hi.width(), 64, "InterleaveHI8x8 must stay 64 bits wide");
@@ -274,7 +265,6 @@ fn test_vec_interleave_lo_8x32_256_bit() {
         },
         lv,
         rv,
-        &ctx,
     )
     .unwrap();
     assert_eq!(result.width(), 256, "InterleaveLO8x32 must stay 256 bits");

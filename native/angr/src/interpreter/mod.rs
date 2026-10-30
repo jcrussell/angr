@@ -138,6 +138,7 @@ mod statements_cas;
 mod statements_dirty;
 mod statements_inspect;
 mod statements_store;
+mod transcendental_pins;
 
 // Shared test helpers for the `statements*` test modules. Registered here
 // rather than from a prod file because its consumers are children of three

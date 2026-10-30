@@ -35,10 +35,10 @@ fn test_store_concrete_multi_le_round_trip() {
 
     // Read back under each candidate concretization.
     let loaded_a = mem
-        .load_concrete_lazy(0x1000, 4, &ctx)
+        .load_concrete_lazy(0x1000, 4)
         .expect("LE load at candidate A must succeed");
     let loaded_b = mem
-        .load_concrete_lazy(0x2000, 4, &ctx)
+        .load_concrete_lazy(0x2000, 4)
         .expect("LE load at candidate B must succeed");
 
     let probe_a = ctx.fork();
@@ -72,7 +72,7 @@ fn test_store_concrete_multi_be_round_trip() {
     mem.store_concrete_multi(&addr_var, &value, &[0x1000, 0x2000])
         .expect("BE store_concrete_multi must succeed");
 
-    let loaded_a = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let loaded_a = mem.load_concrete_lazy(0x1000, 4).unwrap();
     let probe_a = ctx.fork();
     probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe_a.eval(&loaded_a), Some(0xCAFE_BABE));
@@ -115,7 +115,7 @@ fn test_store_concrete_multi_fork_independence() {
     let eq_a = addr_var.eq(&RustBV::concrete(0x1000, 64));
     let eq_b = addr_var.eq(&RustBV::concrete(0x2000, 64));
     ctx.assume_true(&eq_a.or(&eq_b));
-    let parent_loaded = parent.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let parent_loaded = parent.load_concrete_lazy(0x1000, 4).unwrap();
     let probe = ctx.fork();
     probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe.eval(&parent_loaded), Some(0x11_22_33_44));
@@ -151,7 +151,7 @@ fn test_store_symbolic_unified_multi_multiple_round_trip() {
     // Per-byte Multi cells should exist for both candidates.
     assert_eq!(mem.multi_cell_count(), 8);
 
-    let loaded_a = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let loaded_a = mem.load_concrete_lazy(0x1000, 4).unwrap();
     let probe_a = ctx.fork();
     probe_a.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(probe_a.eval(&loaded_a), Some(0x1122_3344));
@@ -217,7 +217,7 @@ fn test_phase2_gate_on_installs_multi() {
     // Load under the addr==A constraint reads back the value.
     let probe = ctx.fork();
     probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
-    let loaded = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let loaded = mem.load_concrete_lazy(0x1000, 4).unwrap();
     assert_eq!(probe.eval(&loaded), Some(0xCAFEBABE));
 }
 

@@ -8,7 +8,7 @@
 //! `vec_float_lane_op`) and the rounding-mode variants.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, RustBV, SymContext, VexRm};
+use crate::symbolic::{FloatOpKind, RustBV, VexRm};
 use crate::vex::ir::IRType;
 use num_traits::Float;
 
@@ -36,11 +36,7 @@ impl VEXOps {
         Ok(arg.and_into(mask))
     }
 
-    pub(super) fn float_sqrt(
-        arg: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_sqrt(arg: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         // For concrete values, compute directly
         if let Some(v) = arg.as_u128() {
             let result = match ty {
@@ -91,12 +87,7 @@ impl VEXOps {
         Ok(build_float_expr(kind, prec, vec![left, right]))
     }
 
-    pub(super) fn float_add(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_add(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_arith_scalar(
             left,
             right,
@@ -107,12 +98,7 @@ impl VEXOps {
         )
     }
 
-    pub(super) fn float_sub(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_sub(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_arith_scalar(
             left,
             right,
@@ -123,12 +109,7 @@ impl VEXOps {
         )
     }
 
-    pub(super) fn float_mul(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_mul(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_arith_scalar(
             left,
             right,
@@ -139,12 +120,7 @@ impl VEXOps {
         )
     }
 
-    pub(super) fn float_div(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        _ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
+    pub(super) fn float_div(left: RustBV, right: RustBV, ty: IRType) -> Result<RustBV, OpError> {
         Self::float_arith_scalar(
             left,
             right,
@@ -160,7 +136,6 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_arith_scalar(
             left,
@@ -177,7 +152,6 @@ impl VEXOps {
         left: RustBV,
         right: RustBV,
         ty: IRType,
-        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_arith_scalar(
             left,
@@ -195,7 +169,6 @@ impl VEXOps {
         b: RustBV,
         c: RustBV,
         ty: IRType,
-        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(av), Some(bv), Some(cv)) = (a.as_u128(), b.as_u128(), c.as_u128()) {
             let result = match ty {
@@ -225,7 +198,6 @@ impl VEXOps {
         b: RustBV,
         c: RustBV,
         ty: IRType,
-        _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         if let (Some(av), Some(bv), Some(cv)) = (a.as_u128(), b.as_u128(), c.as_u128()) {
             let result = match ty {
