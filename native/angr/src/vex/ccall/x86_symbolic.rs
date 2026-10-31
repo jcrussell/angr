@@ -2,14 +2,32 @@
 //! `symbolic_*` builders that construct 1-bit symbolic flag BVs.
 use super::*;
 
-/// Symbolic equivalent of `Flags`: each field is a 1-bit BV.
+/// Symbolic equivalent of `Flags`: each field is a 1-bit BV, except PF,
+/// which [`SymFlags::pf`] builds on demand.
 pub(super) struct SymFlags {
     pub(super) cf: SymBV,
-    pub(super) pf: SymBV,
+    pub(super) pf: Parity,
     pub(super) af: SymBV,
     pub(super) zf: SymBV,
     pub(super) sf: SymBV,
     pub(super) of: SymBV,
+}
+
+/// PF as a builder leaves it: the flag bit of a thunk that stores it, or the
+/// value whose low byte's parity it is. Most conditions never read PF, and its
+/// term is the largest of the six.
+pub(super) enum Parity {
+    Bit(SymBV),
+    Of(SymBV),
+}
+
+impl SymFlags {
+    pub(super) fn pf(&self) -> SymBV {
+        match &self.pf {
+            Parity::Bit(bit) => bit.clone(),
+            Parity::Of(value) => symbolic_parity(value),
+        }
+    }
 }
 
 // ============================================================
@@ -77,7 +95,7 @@ pub(super) fn sym_flags_sub(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags 
         .xor(&d2)
         .and(&d1.xor(&result))
         .extract(nbits - 1, nbits - 1);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     // AF = (result ^ dep1 ^ dep2)[4]
     let af = sym_calc_af(&result, &d1, &d2);
     SymFlags {
@@ -107,7 +125,7 @@ pub(super) fn sym_flags_add(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags 
         .not()
         .and(&d1.xor(&result))
         .extract(nbits - 1, nbits - 1);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     // AF = (result ^ dep1 ^ dep2)[4]
     let af = sym_calc_af(&result, &d1, &d2);
     SymFlags {
@@ -145,7 +163,7 @@ pub(super) fn sym_flags_adc(nbits: u32, dep1: &SymBV, dep2: &SymBV, ndep: &SymBV
         .not()
         .and(&arg_l.xor(&result))
         .extract(nbits - 1, nbits - 1);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     // AF = (result ^ argL ^ argR)[4]
     let af = sym_calc_af(&result, &arg_l, &arg_r);
     SymFlags {
@@ -180,7 +198,7 @@ pub(super) fn sym_flags_sbb(nbits: u32, dep1: &SymBV, dep2: &SymBV, ndep: &SymBV
         .xor(&arg_r)
         .and(&arg_l.xor(&result))
         .extract(nbits - 1, nbits - 1);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     // AF = (result ^ argL ^ argR)[4]
     let af = sym_calc_af(&result, &arg_l, &arg_r);
     SymFlags {
@@ -203,7 +221,7 @@ pub(super) fn sym_flags_logic(nbits: u32, dep1: &SymBV) -> SymFlags {
     let cf = SymBV::concrete(0, 1);
     let of = SymBV::concrete(0, 1);
     let af = SymBV::concrete(0, 1);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     SymFlags {
         cf,
         pf,
@@ -226,7 +244,7 @@ pub(super) fn sym_flags_inc(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags 
     let cf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C);
     // OF = (result == 0x80...0) — overflow on INC happens when 0x7F..F was incremented.
     let of = result.eq(&sign_bit_val);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     // AF = (result ^ (result - 1) ^ 1)[4]
     let one_n = SymBV::concrete(1, nbits);
     let af = sym_calc_af(&result, &result.sub(&one_n), &one_n);
@@ -251,7 +269,7 @@ pub(super) fn sym_flags_dec(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags 
     let sf = result.extract(nbits - 1, nbits - 1);
     let cf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C);
     let of = result.eq(&max_signed);
-    let pf = symbolic_parity(&result);
+    let pf = Parity::Of(result.clone());
     // AF = (result ^ (result + 1) ^ 1)[4]
     let one_n = SymBV::concrete(1, nbits);
     let af = sym_calc_af(&result, &result.add(&one_n), &one_n);
@@ -280,7 +298,7 @@ pub(super) fn sym_flags_shl(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags 
     let zf = remaining.eq(&zero);
     let sf = remaining.extract(nbits - 1, nbits - 1);
     let of = cf.xor(&sf);
-    let pf = symbolic_parity(&remaining);
+    let pf = Parity::Of(remaining.clone());
     // AF is architecturally undefined after a shift; VEX reports 0.
     let af = SymBV::concrete(0, 1);
     SymFlags {
@@ -307,7 +325,7 @@ pub(super) fn sym_flags_shr(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags 
     let zf = remaining.eq(&zero);
     let sf = remaining.extract(nbits - 1, nbits - 1);
     let of = shifted.extract(nbits - 1, nbits - 1).xor(&sf);
-    let pf = symbolic_parity(&remaining);
+    let pf = Parity::Of(remaining.clone());
     // AF is architecturally undefined after a shift; VEX reports 0.
     let af = SymBV::concrete(0, 1);
     SymFlags {
@@ -330,7 +348,7 @@ pub(super) fn sym_flags_rol(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags 
 
     // CF = LSB of the result (the bit rotated around from the top).
     let cf = res.extract(0, 0);
-    let pf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P);
+    let pf = Parity::Bit(sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P));
     let af = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_A);
     let zf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_Z);
     let sf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_S);
@@ -354,7 +372,7 @@ pub(super) fn sym_flags_ror(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags 
 
     // CF = MSB of the result (the bit rotated around from the bottom).
     let cf = res.extract(nbits - 1, nbits - 1);
-    let pf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P);
+    let pf = Parity::Bit(sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P));
     let af = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_A);
     let zf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_Z);
     let sf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_S);
@@ -392,7 +410,7 @@ pub(super) fn sym_flags_umul(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags
     // undefined too and VEX reports 0.
     let zf = lo.eq(&zero);
     let sf = lo.extract(nbits - 1, nbits - 1);
-    let pf = symbolic_parity(&lo);
+    let pf = Parity::Of(lo.clone());
     let af = SymBV::concrete(0, 1);
     SymFlags {
         cf,
@@ -423,7 +441,7 @@ pub(super) fn sym_flags_smul(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags
     let cf = hi.ne(&lo_sign_ext);
     let of = cf.clone();
     let zf = lo.eq(&zero);
-    let pf = symbolic_parity(&lo);
+    let pf = Parity::Of(lo.clone());
     // AF is undefined after a multiply; VEX reports 0.
     let af = SymBV::concrete(0, 1);
     SymFlags {
@@ -492,7 +510,7 @@ pub(super) fn sym_flags_for_category(
 pub(super) fn sym_flags_from_copy(dep1: &SymBV) -> SymFlags {
     SymFlags {
         cf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_C),
-        pf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_P),
+        pf: Parity::Bit(sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_P)),
         af: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_A),
         zf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_Z),
         sf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_S),
@@ -512,7 +530,7 @@ pub(super) fn eval_sym_condition(cond: u64, flags: &SymFlags) -> Option<SymBV> {
         COND_Z => flags.zf.clone(),
         COND_BE => flags.cf.or(&flags.zf),
         COND_S => flags.sf.clone(),
-        COND_P => flags.pf.clone(),
+        COND_P => flags.pf(),
         COND_L => flags.sf.xor(&flags.of),
         COND_LE => flags.sf.xor(&flags.of).or(&flags.zf),
         _ => return None,
@@ -543,6 +561,6 @@ pub(super) fn sym_pack_eflags(flags: &SymFlags, ret_bits: u32) -> SymBV {
         .or(&shifted(&flags.sf, flag_shift::G_CC_SHIFT_S))
         .or(&shifted(&flags.zf, flag_shift::G_CC_SHIFT_Z))
         .or(&shifted(&flags.af, flag_shift::G_CC_SHIFT_A))
-        .or(&shifted(&flags.pf, flag_shift::G_CC_SHIFT_P))
+        .or(&shifted(&flags.pf(), flag_shift::G_CC_SHIFT_P))
         .or(&shifted(&flags.cf, flag_shift::G_CC_SHIFT_C))
 }

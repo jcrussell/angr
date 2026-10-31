@@ -491,7 +491,7 @@ fn sym_flags_to_tuple(
     let bit = |bv: &SymBV| bv.const_value().expect("must be concrete") as u8;
     (
         bit(&f.cf),
-        bit(&f.pf),
+        bit(&f.pf()),
         bit(&f.af),
         bit(&f.zf),
         bit(&f.sf),
@@ -795,7 +795,7 @@ fn sym_flags_wide_mul_matches_concrete() {
                 .expect("category should be supported");
             let got = (
                 f.cf.eval_with(pin.0, pin.1),
-                f.pf.eval_with(pin.0, pin.1),
+                f.pf().eval_with(pin.0, pin.1),
                 f.zf.eval_with(pin.0, pin.1),
                 f.sf.eval_with(pin.0, pin.1),
                 f.of.eval_with(pin.0, pin.1),
@@ -949,7 +949,7 @@ fn unknown_cond_defers_to_python() {
     };
     let sym_f = SymFlags {
         cf: SymBV::concrete(1, 1),
-        pf: SymBV::concrete(1, 1),
+        pf: Parity::Bit(SymBV::concrete(1, 1)),
         af: SymBV::concrete(1, 1),
         zf: SymBV::concrete(1, 1),
         sf: SymBV::concrete(1, 1),
@@ -1010,7 +1010,7 @@ fn diff_fuzz_eval_sym_condition() {
         let f = Flags { cf, pf, af, zf, sf, of };
         let sym_f = SymFlags {
             cf: SymBV::concrete(cf as u128, 1),
-            pf: SymBV::concrete(pf as u128, 1),
+            pf: Parity::Bit(SymBV::concrete(pf as u128, 1)),
             af: SymBV::concrete(af as u128, 1),
             zf: SymBV::concrete(zf as u128, 1),
             sf: SymBV::concrete(sf as u128, 1),
