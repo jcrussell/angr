@@ -223,8 +223,9 @@ class TestFPOperations(unittest.TestCase):
         result = self.fp1 == self.fp_neg1
         self._check_equal(result, False)
 
+        # IEEE equality: -0 equals +0, as the solver agrees
         result = self.fp_neg_zero == self.fp_zero
-        self._check_equal(result, False)
+        self._check_equal(result, True)
 
         result = self.fp_neg_inf == self.fp_inf
         self._check_equal(result, False)
@@ -256,7 +257,7 @@ class TestFPOperations(unittest.TestCase):
         self._check_equal(result, True)
 
         result = self.fp_neg_zero != self.fp_zero
-        self._check_equal(result, True)
+        self._check_equal(result, False)
 
         result = self.fp_neg_inf != self.fp_inf
         self._check_equal(result, True)
@@ -669,7 +670,6 @@ class TestFPOperations(unittest.TestCase):
         self.assertTrue(claripy.fpIsInf(result).is_true())
         self.assertTrue(claripy.fpLT(result, self.fp_zero).is_true())
 
-    @unittest.skip("claripy does not properly implement roundng modes for concrete values")
     def test_rounding_modes(self):
         """Test operations with different rounding modes"""
         # Test addition with different rounding modes
@@ -681,10 +681,17 @@ class TestFPOperations(unittest.TestCase):
         result_rtp = claripy.fpAdd(RM.RM_TowardsPositiveInf, value, value2)
         result_rtn = claripy.fpAdd(RM.RM_TowardsNegativeInf, value, value2)
 
-        # Check that rounding towards positive infinity gives larger result
+        # The sum is positive and inexact: toward positive rounds up, and
+        # toward negative is the same as toward zero
         self.assertTrue(claripy.fpGT(result_rtp, result_rtz).is_true())
-        # Check that rounding towards negative infinity gives smaller result
-        self.assertTrue(claripy.fpLT(result_rtn, result_rtz).is_true())
+        self.assertTrue(claripy.fpEQ(result_rtn, result_rtz).is_true())
+
+        # Negated, the roles swap
+        neg_rtz = claripy.fpAdd(RM.RM_TowardsZero, -value, -value2)
+        neg_rtp = claripy.fpAdd(RM.RM_TowardsPositiveInf, -value, -value2)
+        neg_rtn = claripy.fpAdd(RM.RM_TowardsNegativeInf, -value, -value2)
+        self.assertTrue(claripy.fpEQ(neg_rtp, neg_rtz).is_true())
+        self.assertTrue(claripy.fpLT(neg_rtn, neg_rtz).is_true())
 
     def test_reverse_ops(self):
         """Test reverse operations"""
