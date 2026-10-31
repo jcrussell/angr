@@ -65,7 +65,10 @@ so it never sees the ``fuzzer`` / ``fuzzing`` code. CI runs
 ``cargo clippy --all-targets --all-features -- -D warnings`` from the repo
 root (no ``--manifest-path``, so the ``native/angr-macros`` and
 ``native/angr-bv`` test targets are covered too). The value layer's own
-tests need no Z3 environment: ``cargo test -p angr-bv``.
+tests (``cargo test -p angr-bv``) need the Z3 environment for their
+oracle, which links ``clarirs-z3`` as a dev-dependency; ``angr-bv`` has
+no ``build.rs`` runpath, so ``LD_LIBRARY_PATH`` must name the libz3
+directory as well.
 
 ``z3-sys`` links whatever ``Z3_LIBRARY_PATH_OVERRIDE`` names, and
 ``native/angr/build.rs`` runpaths the crate's binaries (the extension and

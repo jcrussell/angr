@@ -119,6 +119,7 @@ name = "angr-bv"
 version = "0.1.0"
 dependencies = [
  "clarirs-core",
+ "clarirs-z3",
  "log",
  "num-bigint",
  "quickcheck",

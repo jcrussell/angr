@@ -6,6 +6,7 @@
 //!
 //! **Dependencies.** `clarirs-core` and the plain-data crates only: no `z3`,
 //! `clarirs-z3` or `pyo3` (check with `cargo tree -p angr-bv -e normal`).
+//! `clarirs-z3` is a dev-dependency, for the oracle tests.
 //!
 //! # File index
 //!
@@ -22,9 +23,11 @@
 //! | `names.rs` | The fresh-name counters, keyed by caller, and the watermarks a snapshot carries so a restore never re-mints a restored name. |
 //! | `stats.rs` | The value layer's counters (AST-construction shapes, the zext-compare fold, commutative canonicalization), read by `symbolic::stats`. |
 //!
-//! Test files are pulled in by their parent via `#[path]`. Tests that lower
-//! or solve live in the engine crate's `symbolic` (the `*_z3_tests.rs` files
-//! wired from `symbolic/to_z3.rs`), so `cargo test -p angr-bv` needs no Z3.
+//! Test files are pulled in by their parent via `#[path]`, except
+//! `oracle_tests.rs`, which checks every op against the clarirs term it stands
+//! for (its fold against clarirs's simplify, and random op trees against Z3)
+//! and so needs the Z3 environment. Tests of the engine's own lowering live in
+//! its `symbolic` (the `*_z3_tests.rs` files wired from `symbolic/to_z3.rs`).
 //!
 //! The engine (`native/angr`) re-exports `SymBV` / `SymBVData` as
 //! `symbolic::SymBV` / `SymBVData` (angr-mx00p.116.10).

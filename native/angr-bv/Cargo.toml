@@ -29,6 +29,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+clarirs-z3 = { path = "../clarirs-z3" }
 quickcheck = "1.0"
 quickcheck_macros = "1.0"
 serde_json = "1.0"
