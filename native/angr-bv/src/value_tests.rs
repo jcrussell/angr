@@ -234,6 +234,28 @@ fn test_zero_width_symbolic_degenerates_to_concrete() {
     }
 }
 
+/// The signed folds read the sign bit at `width - 1`, which underflowed on the
+/// empty bitvector: a debug or `release-checked` build panicked.
+#[test]
+fn test_zero_width_signed_ops_fold() {
+    let empty = SymBV::zero(0);
+    for got in [empty.sdiv(&empty), empty.srem(&empty), empty.ashr(&empty)] {
+        assert_eq!(got, empty);
+    }
+    for got in [
+        empty.slt(&empty),
+        empty.sle(&empty),
+        empty.sgt(&empty),
+        empty.sge(&empty),
+    ] {
+        assert!(got.is_concrete());
+        assert_eq!(got.width(), 1);
+    }
+    assert_eq!(empty.slt(&empty).as_u64(), Some(0));
+    assert_eq!(empty.sle(&empty).as_u64(), Some(1));
+    assert_eq!(empty.sign_extend(8), SymBV::zero(8));
+}
+
 /// A negative 128-bit constant keeps its sign when extended past the payload:
 /// its sign bit is bit 127, which a `Concrete` stores, so the fold must not
 /// read it as non-negative.

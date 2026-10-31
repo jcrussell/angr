@@ -846,7 +846,7 @@ impl SymBV {
                 // Saturate to the sign bit for amounts >= w (matches the symbolic
                 // `c >= w` arm). Clamp to w-1 BEFORE narrowing so amounts >= 2^32
                 // don't wrap to 0 and width==128 doesn't shift i128 by 128.
-                let amt = a.min((width - 1) as u128);
+                let amt = a.min(width.saturating_sub(1) as u128);
                 if width > 128 {
                     // A `Concrete` of `width > 128` stores only its low 128 bits;
                     // the sign bit (position `width - 1 >= 128`) is logically
@@ -1584,7 +1584,8 @@ fn sign_extend(value: u128, width: u32) -> i128 {
         "sign_extend called at width {width} > 128; caller must take the \
          unsigned path (see sign_bit_beyond_storage)"
     );
-    if width >= 128 {
+    // The empty bitvector has no sign bit; its one value is 0.
+    if width == 0 || width >= 128 {
         value as i128
     } else {
         let sign_bit = 1u128 << (width - 1);
@@ -1605,7 +1606,7 @@ fn sign_extend(value: u128, width: u32) -> i128 {
 /// number into a specific, much smaller, non-negative one — which every
 /// `sign_bit_beyond_storage`-gated signed op would then read as non-negative.
 fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> Option<u128> {
-    if from_width >= to_width || from_width > 128 {
+    if from_width >= to_width || from_width > 128 || from_width == 0 {
         // `from_width >= to_width`: no widening, value is already correct.
         // `from_width > 128`: the sign bit (position `from_width - 1 >= 128`)
         // lies beyond the u128-backed `Concrete`'s stored bits, which are
@@ -1614,6 +1615,8 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> Option<u128> {
         // - 1)` overflow the `else` shift would hit at `from_width > 128`
         // (panic under debug / `panic = "abort"`, wraps mod 128 in release).
         // At exactly 128 the sign bit is bit 127, which is stored.
+        // `from_width == 0`: the empty bitvector has no sign bit; its one
+        // value is 0.
         Some(value)
     } else {
         // `from_width < to_width` and `from_width <= 128`, so the sign-bit
