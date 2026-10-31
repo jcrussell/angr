@@ -411,6 +411,37 @@ before, including the multivalued concretization of a symbolic
 runs every supported helper through both on concrete and symbolic
 operands and requires the same answer wherever ``ccall.py`` answers.
 
+Rust integer IROps in the Python engine
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The same seam serves the Python engine's integer VEX operations.
+``datalayer.py`` offers an op to ``angr.rustylib.vex_irop`` when its name
+is in both ``vex_irop.SUPPORTED`` and ``irop.operations``. ``SUPPORTED``
+holds the scalar integer arithmetic, logic, shift, compare and
+width-conversion ops Rust implements, except:
+
+- ``Iop_Shl64``, ``Iop_Shr64`` and ``Iop_Sar64``, whose ``irop.py``
+  results pass through the clarirs shift folds that truncate the amount
+  (angr-mx00p.105);
+- ``Iop_ModS128``, which ``irop.py`` computes as an unsigned remainder
+  (angr-mx00p.124);
+- the ``Iop_Reinterp*`` ops, which are floating-point sorted on the
+  Python side.
+
+Rust refuses a division by a literal zero (``irop.py`` raises
+``SimZeroDivisionException``), a symbolic value shifted by a literal of
+at least its width (``irop.py`` leaves that shift unfolded), and any
+argument it does not take as given, such as one narrower than the op's
+signature, a non-bitvector or an annotated literal; ``irop.py`` runs
+those calls. The result is simplified as every claripy
+bitvector operator simplifies its node, so a folded result stays
+concrete. ``ANGR_RUST_IROPS=0``, read at import, sends every op to
+``irop.py``.
+
+``irop.py`` is the oracle: ``tests/engines/vex/test_rust_irop.py`` runs
+every served op through both on edge, random and symbolic operands at
+its libVEX signature.
+
 Architecture
 ------------
 

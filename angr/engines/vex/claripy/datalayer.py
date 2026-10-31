@@ -9,7 +9,7 @@ import pyvex
 from angr import claripy, errors
 from angr import sim_options as o
 from angr.engines.vex.light import VEXMixin
-from angr.rustylib import vex_ccall  # pylint:disable=no-name-in-module
+from angr.rustylib import vex_ccall, vex_irop  # pylint:disable=no-name-in-module
 
 from . import ccall, irop
 
@@ -19,6 +19,10 @@ l = logging.getLogger(__name__)
 # refuses. ANGR_RUST_CCALLS=0 sends every call to ccall.py.
 RUST_CCALLS = os.environ.get("ANGR_RUST_CCALLS", "1") != "0"
 _RUST_CCALL_NAMES = frozenset(vex_ccall.SUPPORTED)
+# Serve the integer IROps in vex_irop.SUPPORTED that irop.py also implements with the Rust implementations, falling
+# back to irop.py for every call Rust refuses. ANGR_RUST_IROPS=0 sends every op to irop.py.
+RUST_IROPS = os.environ.get("ANGR_RUST_IROPS", "1") != "0"
+_RUST_IROP_NAMES = frozenset(vex_irop.SUPPORTED).intersection(irop.operations)
 zero = claripy.BVV(0, 32)
 
 
@@ -129,6 +133,11 @@ class ClaripyDataMixin(VEXMixin):
             raise errors.SimError("Claripy failed") from e
 
     def _perform_vex_expr_Op(self, op, args):
+        # irop.operations is checked per call because callers edit it at run time (test_oppologist does).
+        if RUST_IROPS and op in _RUST_IROP_NAMES and op in irop.operations:
+            result = vex_irop.irop(op, tuple(args))
+            if result is not None:
+                return result
         # TODO: get rid of these hacks (i.e. state options and modes) and move these switches into engine properties
         options = getattr(self.state, "options", {o.SUPPORT_FLOATING_POINT})
         simop = irop.vexop_to_simop(

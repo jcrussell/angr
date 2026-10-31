@@ -21,6 +21,8 @@
 //!   including `RustExplorationManager`, `RustSimState` and `RustSolverContext`
 //! - `angr.rustylib.vex_ccall` — the VEX clean-call helpers the Python
 //!   engine's ccall dispatch tries before `ccall.py` (`vex_ccall`)
+//! - `angr.rustylib.vex_irop` — the integer VEX ops the Python engine's op
+//!   dispatch tries before `irop.py` (`vex_irop`)
 //! - `angr.rustylib.segmentlist` — the CFG's `SegmentList`/`Segment`
 //! - `angr.rustylib.automaton` — DFA/NFA support for
 //!   `angr.analyses.typehoon.dfa`
@@ -384,6 +386,7 @@ pub mod symbolic;
 pub(crate) mod syscalls;
 pub mod vex;
 pub(crate) mod vex_ccall;
+pub(crate) mod vex_irop;
 
 /// Shared boundary-value tables for the integer-overflow/wraparound proactive
 /// test sweep (Harness 6, see the module doc for the full rationale). Not
@@ -479,6 +482,8 @@ fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     import_submodule(m, "vex_engine", engine::vex_engine)?;
     // The VEX ccall helpers behind the Python engine's ccall dispatch.
     import_submodule(m, "vex_ccall", vex_ccall::vex_ccall)?;
+    // The integer VEX ops behind the Python engine's op dispatch.
+    import_submodule(m, "vex_irop", vex_irop::vex_irop)?;
 
     Ok(())
 }

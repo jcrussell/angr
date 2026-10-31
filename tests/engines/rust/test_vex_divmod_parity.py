@@ -5,6 +5,9 @@ with the Python engine when the quotient overflows the divisor's width
 libVEX guards only a zero divisor, so an overflowing quotient (which raises
 #DE on hardware) reaches the op. Both engines truncate the quotient to the
 low half; the remainder half must not pick up the quotient's high bits.
+The Python engine would otherwise serve these ops from Rust too, so its run
+is pinned to ``irop.py``; ``tests/engines/vex/test_rust_irop.py`` compares
+the ops one call at a time.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import pytest
 
 import angr
 from angr import claripy
+from angr.engines.vex.claripy import datalayer
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
@@ -59,7 +63,8 @@ def _results(found):
 @pytest.mark.parametrize("symbolic", [False, True], ids=["concrete", "symbolic"])
 @pytest.mark.parametrize("operands", OPERANDS)
 @pytest.mark.parametrize("insn", CASES)
-def test_div_matches_python_engine(insn, operands, symbolic):
+def test_div_matches_python_engine(insn, operands, symbolic, monkeypatch):
+    monkeypatch.setattr(datalayer, "RUST_IROPS", False)
     code = bytes.fromhex(CASES[insn]) + JMP_SELF
     end = BASE + len(code) - len(JMP_SELF)
     vals = OPERANDS[operands]
