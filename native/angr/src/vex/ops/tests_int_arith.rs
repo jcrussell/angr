@@ -293,6 +293,31 @@ fn test_divmod_same_width_symbolic_and_width_checked() {
     );
 }
 
+/// A symbolic same-width DivMod divides at the operand width, the term
+/// irop.py builds, not a double-width division Z3 proves far slower
+/// (angr-mx00p.100).
+#[test]
+fn test_divmod_same_width_symbolic_divides_at_operand_width() {
+    for signed in [false, true] {
+        let (a, b) = (RustBV::symbol("a", 32), RustBV::symbol("b", 32));
+        let r = VEXOps::binop(
+            IROp::DivModSameWidth {
+                ty: IRType::I32,
+                signed,
+            },
+            a.clone(),
+            b.clone(),
+        )
+        .unwrap();
+        let expected = if signed {
+            a.srem(&b).concat_into(a.sdiv(&b))
+        } else {
+            a.urem(&b).concat_into(a.udiv(&b))
+        };
+        assert_eq!(r, expected, "signed={signed}");
+    }
+}
+
 /// pyvex 10's `Iop_{DivU,DivS,ModU,ModS}128` reach the width-generic arms
 /// at 128 bits (angr-mx00p.6).
 #[test]
