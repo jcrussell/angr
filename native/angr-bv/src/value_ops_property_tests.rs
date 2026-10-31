@@ -829,21 +829,16 @@ fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
             let neg = 1u128 << (from - 1); // sign bit set => negative source
             let got = bv(neg, from).sign_extend(to);
             assert_eq!(got.width(), to, "sext({from}->{to}) width");
-            if from >= 128 {
-                // The source's own sign bit is already beyond storage, so the
-                // value is logically non-negative and the extension is a no-op.
-                assert_eq!(val(&got), neg, "sext({from}->{to}) v={neg:#x}");
-            } else {
-                assert!(
-                    got.as_u128().is_none(),
-                    "sext({from}->{to}) of negative v={neg:#x} must not fold"
-                );
-                assert_eq!(
-                    op_of(&got),
-                    Some(BVOp::SignExt(to - from)),
-                    "sext({from}->{to}) op"
-                );
-            }
+            // At 128 bits too: the sign bit is bit 127, which is stored.
+            assert!(
+                got.as_u128().is_none(),
+                "sext({from}->{to}) of negative v={neg:#x} must not fold"
+            );
+            assert_eq!(
+                op_of(&got),
+                Some(BVOp::SignExt(to - from)),
+                "sext({from}->{to}) op"
+            );
             // A non-negative source is a plain zero-extend and still folds.
             let pos = neg - 1;
             let got_pos = bv(pos, from).sign_extend(to);

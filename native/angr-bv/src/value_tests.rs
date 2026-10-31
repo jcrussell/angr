@@ -234,6 +234,29 @@ fn test_zero_width_symbolic_degenerates_to_concrete() {
     }
 }
 
+/// A negative 128-bit constant keeps its sign when extended past the payload:
+/// its sign bit is bit 127, which a `Concrete` stores, so the fold must not
+/// read it as non-negative.
+#[test]
+fn test_sign_extend_negative_128_bit_past_the_payload() {
+    let minus_one = SymBV::concrete(u128::MAX, 128);
+    let wide = minus_one.sign_extend(129);
+    assert_eq!(wide.width(), 129);
+    assert!(
+        wide.is_symbolic(),
+        "2^129 - 1 has no Concrete form: {wide:?}"
+    );
+    let ones = clarirs_core::GLOBAL_CONTEXT
+        .bvv(clarirs_core::prelude::BitVec::ones(129))
+        .unwrap();
+    assert_eq!(wide.to_clarirs().unwrap().simplify().unwrap(), ones);
+    let positive = SymBV::concrete(u128::MAX >> 1, 128);
+    assert_eq!(
+        positive.sign_extend(256),
+        SymBV::concrete(u128::MAX >> 1, 256)
+    );
+}
+
 /// A nonzero width still builds a real `Symbolic` leaf — the width-0 early
 /// return must not swallow the ordinary path.
 #[test]

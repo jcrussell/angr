@@ -1605,22 +1605,25 @@ fn sign_extend(value: u128, width: u32) -> i128 {
 /// number into a specific, much smaller, non-negative one — which every
 /// `sign_bit_beyond_storage`-gated signed op would then read as non-negative.
 fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> Option<u128> {
-    if from_width >= to_width || from_width >= 128 {
+    if from_width >= to_width || from_width > 128 {
         // `from_width >= to_width`: no widening, value is already correct.
-        // `from_width >= 128`: the sign bit (position `from_width - 1 >= 128`)
+        // `from_width > 128`: the sign bit (position `from_width - 1 >= 128`)
         // lies beyond the u128-backed `Concrete`'s stored bits, which are
         // logically zero, so the value is non-negative and sign-extension is a
         // no-op (== zero-extend). This arm also avoids the `1u128 << (from_width
-        // - 1)` overflow the `else` shift would hit at `from_width >= 128`
+        // - 1)` overflow the `else` shift would hit at `from_width > 128`
         // (panic under debug / `panic = "abort"`, wraps mod 128 in release).
+        // At exactly 128 the sign bit is bit 127, which is stored.
         Some(value)
     } else {
-        // `from_width < to_width <= 128`, so `from_width < 128` and the
-        // `1u128 << from_width` shifts below are in range. `to_width` can be
-        // exactly 128, where `1u128 << 128` overflows (panic under debug /
-        // `panic = "abort"`, and silently wraps the shift amount mod 128 in
-        // release — corrupting the mask into a zero-extension). Saturate the
-        // to-mask to `u128::MAX` at width 128, matching `mask()` in the tests.
+        // `from_width < to_width` and `from_width <= 128`, so the sign-bit
+        // shift is in range, and a negative source reaches the
+        // `1u128 << from_width` mask below only when `to_width <= 128`, so
+        // `from_width < 128` there. `to_width` can be exactly 128, where
+        // `1u128 << 128` overflows (panic under debug / `panic = "abort"`, and
+        // silently wraps the shift amount mod 128 in release — corrupting the
+        // mask into a zero-extension). Saturate the to-mask to `u128::MAX` at
+        // width 128, matching `mask()` in the tests.
         let sign_bit = 1u128 << (from_width - 1);
         if value & sign_bit != 0 {
             if bits_beyond_storage(to_width) {
