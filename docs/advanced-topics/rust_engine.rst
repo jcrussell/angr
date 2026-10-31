@@ -401,7 +401,8 @@ The Python engine also uses the Rust flag helpers, without any opt-in.
 ``angr.rustylib.vex_ccall`` when its name is in ``vex_ccall.SUPPORTED``
 (the x86, amd64, ARM and AArch64 condition and flag helpers). Rust
 refuses a call it does not serve (a symbolic condition or ``cc_op``, an
-unported ``cc_op``, a non-bitvector argument) and ``ccall.py`` runs it as
+unported ``cc_op``, a non-bitvector argument, an argument or result width
+other than the helper's) and ``ccall.py`` runs it as
 before, including the multivalued concretization of a symbolic
 ``cc_op``. ``ANGR_RUST_CCALLS=0``, read at import, sends every call to
 ``ccall.py``.

@@ -204,11 +204,11 @@ pub(super) fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64)
 /// `sym_pack_nzcv` (arm32 module — same bit positions).
 pub(super) fn arm64_sym_flags_nzcv(
     cc_op: u64,
-    d1: &Bv,
-    d2: &Bv,
-    d3: &Bv,
+    d1: &SymBV,
+    d2: &SymBV,
+    d3: &SymBV,
     ret_bits: u32,
-) -> Option<Bv> {
+) -> Option<SymBV> {
     let n = arm64_sym_flag_n(cc_op, d1, d2, d3)?;
     let z = arm64_sym_flag_z(cc_op, d1, d2, d3)?;
     let c = arm64_sym_flag_c(cc_op, d1, d2, d3)?;
@@ -217,20 +217,25 @@ pub(super) fn arm64_sym_flags_nzcv(
 }
 
 /// Symbolic arm64 arithmetic result. `d1`/`d2`/`d3` must already be `nb`-wide.
-pub(super) fn arm64_sym_res(op: Arm64Op, d1: &Bv, d2: &Bv, d3: &Bv) -> Bv {
+pub(super) fn arm64_sym_res(op: Arm64Op, d1: &SymBV, d2: &SymBV, d3: &SymBV) -> SymBV {
     match op {
         Arm64Op::Add => d1.add(d2),
         Arm64Op::Sub => d1.sub(d2),
         Arm64Op::Adc => d1.add(d2).add(d3),
         Arm64Op::Sbc => {
-            let one = Bv::concrete(1, d1.width());
+            let one = SymBV::concrete(1, d1.width());
             d1.sub(d2).sub(&d3.xor(&one))
         }
         Arm64Op::Logic => d1.clone(),
     }
 }
 
-pub(super) fn arm64_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
+pub(super) fn arm64_sym_flag_n(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    dep3: &SymBV,
+) -> Option<SymBV> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
         let d1 = extract_to_nbits(dep1, 64);
         return Some(d1.extract(arm_flag_shift::SHIFT_N, arm_flag_shift::SHIFT_N));
@@ -243,7 +248,12 @@ pub(super) fn arm64_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> O
     Some(res.extract(nb - 1, nb - 1))
 }
 
-pub(super) fn arm64_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
+pub(super) fn arm64_sym_flag_z(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    dep3: &SymBV,
+) -> Option<SymBV> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
         let d1 = extract_to_nbits(dep1, 64);
         return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z));
@@ -253,11 +263,16 @@ pub(super) fn arm64_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> O
     let d2 = extract_to_nbits(dep2, nb);
     let d3 = extract_to_nbits(dep3, nb);
     let res = arm64_sym_res(op, &d1, &d2, &d3);
-    let zero = Bv::concrete(0, nb);
+    let zero = SymBV::concrete(0, nb);
     Some(res.eq(&zero))
 }
 
-pub(super) fn arm64_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
+pub(super) fn arm64_sym_flag_c(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    dep3: &SymBV,
+) -> Option<SymBV> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
         let d1 = extract_to_nbits(dep1, 64);
         return Some(d1.extract(arm_flag_shift::SHIFT_C, arm_flag_shift::SHIFT_C));
@@ -265,7 +280,7 @@ pub(super) fn arm64_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> O
     let (op, nb) = arm64_decode(cc_op)?;
     let d1 = extract_to_nbits(dep1, nb);
     let d2 = extract_to_nbits(dep2, nb);
-    let zero = Bv::concrete(0, nb);
+    let zero = SymBV::concrete(0, nb);
     Some(match op {
         Arm64Op::Add => {
             let res = d1.add(&d2);
@@ -288,11 +303,16 @@ pub(super) fn arm64_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> O
             let when_z = d1.ugt(&d2);
             d3_nz.and(&when_nz).or(&d3_nz.not().and(&when_z))
         }
-        Arm64Op::Logic => Bv::concrete(0, 1),
+        Arm64Op::Logic => SymBV::concrete(0, 1),
     })
 }
 
-pub(super) fn arm64_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> Option<Bv> {
+pub(super) fn arm64_sym_flag_v(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    dep3: &SymBV,
+) -> Option<SymBV> {
     if cc_op == arm64_cc_op::ARM64G_CC_OP_COPY {
         let d1 = extract_to_nbits(dep1, 64);
         return Some(d1.extract(arm_flag_shift::SHIFT_V, arm_flag_shift::SHIFT_V));
@@ -316,12 +336,12 @@ pub(super) fn arm64_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> O
             res.xor(&d1).and(&res.xor(&d2)).extract(top, top)
         }
         Arm64Op::Sbc => {
-            let one = Bv::concrete(1, nb);
+            let one = SymBV::concrete(1, nb);
             let d3 = extract_to_nbits(dep3, nb);
             let res = d1.sub(&d2).sub(&d3.xor(&one));
             d1.xor(&d2).and(&d1.xor(&res)).extract(top, top)
         }
-        Arm64Op::Logic => Bv::concrete(0, 1),
+        Arm64Op::Logic => SymBV::concrete(0, 1),
     })
 }
 
@@ -329,16 +349,16 @@ pub(super) fn arm64_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, dep3: &Bv) -> O
 pub(super) fn arm64_sym_calculate_condition(
     cond: u64,
     cc_op: u64,
-    dep1: &Bv,
-    dep2: &Bv,
-    dep3: &Bv,
-) -> Option<Bv> {
+    dep1: &SymBV,
+    dep2: &SymBV,
+    dep3: &SymBV,
+) -> Option<SymBV> {
     use arm_cond::*;
     let inv = (cond & 1) != 0;
 
     // AL (14) and NV (15) are both unconditional-true on AArch64.
     if cond & !1 == ARM_COND_AL {
-        return Some(Bv::concrete(1, 1));
+        return Some(SymBV::concrete(1, 1));
     }
 
     let flag = match cond & !1 {

@@ -2,30 +2,27 @@
 //!
 //! This module implements the guest helper functions that VEX IR uses for
 //! condition-code calculation — x86/AMD64 eflags, ARM32 and AArch64 NZCV.
-//! Each helper has a concrete twin over `u64` and a symbolic one over clarirs
-//! terms (`bv::Bv`). The entry points:
+//! Each helper has a concrete twin over `u64` and a symbolic one over
+//! `angr_bv::SymBV`. The entry points:
 //!
 //! * [`ccall_concrete`] runs a helper on concrete arguments;
-//! * [`ccall_symbolic`] builds its result over clarirs terms when the
+//! * [`ccall_symbolic`] computes its result on `SymBV` when the
 //!   `cond`/`cc_op` selector is a constant;
 //! * [`handle_ccall`] takes clarirs terms and picks between the two.
 //!
 //! Each returns `None` for a call it does not serve, and the caller falls
 //! back to its own implementation (Python's `ccall.py`).
 
+use angr_bv::SymBV;
 use clarirs_core::prelude::*;
-
-use crate::claripy::ast::GLOBAL_CONTEXT;
 
 mod arm32;
 mod arm64;
-mod bv;
 mod x86_concrete;
 mod x86_symbolic;
 
 use arm32::*;
 use arm64::*;
-use bv::Bv;
 use x86_concrete::*;
 use x86_symbolic::*;
 
@@ -554,17 +551,26 @@ pub fn ccall_concrete(name: &str, args: &[u64], ret_bits: u32) -> Option<u64> {
     Some(mask_to(result, ret_bits))
 }
 
-/// Run the VEX helper `name` on clarirs bitvector arguments, returning its
-/// `ret_bits`-wide result as a simplified term, or `None` if Rust does not
-/// serve the call. The `cond`/`cc_op` selector must be a constant; the
-/// thunk operands may be symbolic.
-pub fn ccall_symbolic(
-    name: &str,
-    args: &[AstRef<'static>],
-    ret_bits: u32,
-) -> Option<AstRef<'static>> {
-    let args: Vec<Bv> = args.iter().cloned().map(Bv::from_ast).collect();
-    dispatch_symbolic(name, &args, ret_bits)?.into_ast()
+/// Run the VEX helper `name` on symbolic arguments, returning its
+/// `ret_bits`-wide result, simplified, or `None` if Rust does not serve the
+/// call. The `cond`/`cc_op` selector must be a constant; the thunk operands
+/// may be symbolic.
+pub fn ccall_symbolic(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
+    // libVEX passes every argument and the result at the helper's word size.
+    let width = match name.split('_').next() {
+        Some("amd64g" | "arm64g") => 64,
+        Some("x86g" | "armg") => 32,
+        _ => return None,
+    };
+    if ret_bits != width || args.iter().any(|arg| arg.width() != width) {
+        return None;
+    }
+    let term = dispatch_symbolic(name, args, ret_bits)?
+        .to_clarirs()
+        .ok()?
+        .simplify()
+        .ok()?;
+    SymBV::from_clarirs(term).ok()
 }
 
 /// Run the VEX helper `name` on clarirs bitvector arguments: the concrete
@@ -586,9 +592,17 @@ pub fn handle_ccall(
     if let Some(result) = constants.and_then(|vals| ccall_concrete(name, &vals, ret_bits)) {
         // SILENT(cat-a): building a literal does not fail; None would only
         // hand the call to the caller's own implementation.
-        return GLOBAL_CONTEXT.bvv(BitVec::from((result, ret_bits))).ok();
+        return SymBV::concrete(u128::from(result), ret_bits)
+            .to_clarirs()
+            .ok();
     }
-    ccall_symbolic(name, args, ret_bits)
+    let args = args
+        .iter()
+        .cloned()
+        .map(SymBV::from_clarirs)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    ccall_symbolic(name, &args, ret_bits)?.to_clarirs().ok()
 }
 
 /// The symbolic helper for `name`. Every arm forwards `(args, ret_bits)` to
@@ -596,7 +610,7 @@ pub fn handle_ccall(
 /// several names (the eflags/rflags spelling split, the per-flag `_n`/`_z`/
 /// `_c`/`_v` quartets) are also handed `name` so they can re-derive which
 /// arch or which flag was asked for.
-fn dispatch_symbolic(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn dispatch_symbolic(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     match name {
         "amd64g_calculate_condition" | "x86g_calculate_condition" => {
             handle_x86_calculate_condition(name, args, ret_bits)
@@ -630,7 +644,7 @@ fn dispatch_symbolic(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
 /// x86/amd64 condition code from the `(cond, cc_op, dep1, dep2, ndep)` thunk.
 /// `name` picks the arch — the two use different `cc_op` numberings, see
 /// [`CcArch::from_ccall_name`].
-fn handle_x86_calculate_condition(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_x86_calculate_condition(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     // Args: cond, cc_op, cc_dep1, cc_dep2, cc_ndep
     if args.len() < 5 {
         return None;
@@ -669,7 +683,7 @@ fn handle_x86_calculate_condition(name: &str, args: &[Bv], ret_bits: u32) -> Opt
 /// `{amd64g,x86g}_calculate_{e,r}flags_c`: the carry flag alone. VEX emits
 /// both the "eflags" and "rflags" spelling depending on context, so each arch
 /// arrives under either name; `name` picks the arch.
-fn handle_x86_eflags_c(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_x86_eflags_c(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
     if args.len() < 4 {
         return None;
@@ -700,7 +714,7 @@ fn handle_x86_eflags_c(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
                     let result = d1.add(&d2);
                     Some(result.ult(&d1))
                 }
-                OpCategory::Logic => Some(Bv::concrete(0, 1)),
+                OpCategory::Logic => Some(SymBV::concrete(0, 1)),
                 // INC/DEC do not modify CF; VEX preserves it in cc_ndep
                 // (args[3]). CF = (cc_ndep >> SHIFT_C) & 1 — matches the
                 // concrete calc_flags_inc/calc_flags_dec path. Without this,
@@ -744,7 +758,7 @@ fn handle_x86_eflags_c(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
 /// `{amd64g,x86g}_calculate_{e,r}flags_all`: the whole packed flags word.
 /// Same "eflags"/"rflags" spelling split as [`handle_x86_eflags_c`]; `name`
 /// picks the arch.
-fn handle_x86_eflags_all(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_x86_eflags_all(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
     if args.len() < 4 {
         return None;
@@ -764,7 +778,7 @@ fn handle_x86_eflags_all(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
                 | flag_mask::G_CC_MASK_P
                 | flag_mask::G_CC_MASK_C
                 | flag_mask::G_CC_MASK_A) as u128;
-            let mask = Bv::concrete(flags_mask, args[1].width());
+            let mask = SymBV::concrete(flags_mask, args[1].width());
             let result = args[1].and(&mask);
             if result.width() < ret_bits {
                 return Some(result.zero_extend(ret_bits));
@@ -828,7 +842,7 @@ fn x86_use_seg_selector(ldt: u64, gdt: u64, selector: u64, va: u64) -> Option<u6
 /// `armg_calculate_condition`: evaluate one ARM32 condition code.
 ///
 /// Args: cond_n_op, cc_dep1, cc_dep2, cc_ndep (cc_dep3 in Python naming)
-fn handle_arm32_condition(args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_arm32_condition(args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     if args.len() < 4 {
         return None;
     }
@@ -849,7 +863,7 @@ fn handle_arm32_condition(args: &[Bv], ret_bits: u32) -> Option<Bv> {
 }
 
 /// `armg_calculate_flags_nzcv`: the packed ARM32 NZCV word.
-fn handle_arm32_flags_nzcv(args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_arm32_flags_nzcv(args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     if args.len() < 4 {
         return None;
     }
@@ -867,7 +881,7 @@ fn handle_arm32_flags_nzcv(args: &[Bv], ret_bits: u32) -> Option<Bv> {
 }
 
 /// `armg_calculate_flag_{n,z,c,v}`: one ARM32 flag bit; `name` picks which.
-fn handle_arm32_flag_single(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_arm32_flag_single(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     if args.len() < 4 {
         return None;
     }
@@ -895,7 +909,7 @@ fn handle_arm32_flag_single(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv
 /// `arm64g_calculate_condition`: evaluate one AArch64 condition code.
 ///
 /// Args: cond_n_op, cc_dep1, cc_dep2, cc_dep3
-fn handle_arm64_condition(args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_arm64_condition(args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     if args.len() < 4 {
         return None;
     }
@@ -914,7 +928,7 @@ fn handle_arm64_condition(args: &[Bv], ret_bits: u32) -> Option<Bv> {
 }
 
 /// `arm64g_calculate_flags_nzcv`: the packed AArch64 NZCV word.
-fn handle_arm64_flags_nzcv(args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_arm64_flags_nzcv(args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     if args.len() < 4 {
         return None;
     }
@@ -931,7 +945,7 @@ fn handle_arm64_flags_nzcv(args: &[Bv], ret_bits: u32) -> Option<Bv> {
 }
 
 /// `arm64g_calculate_flag_{n,z,c,v}`: one AArch64 flag bit; `name` picks which.
-fn handle_arm64_flag_single(name: &str, args: &[Bv], ret_bits: u32) -> Option<Bv> {
+fn handle_arm64_flag_single(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymBV> {
     if args.len() < 4 {
         return None;
     }

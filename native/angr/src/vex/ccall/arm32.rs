@@ -57,12 +57,17 @@ pub(super) mod arm_flag_shift {
 // ============================================================
 
 /// Extract `dep` to a 32-bit BV (ARM operands are 32-bit; VEX may hand us wider temps).
-pub(super) fn arm_extract32(val: &Bv) -> Bv {
+pub(super) fn arm_extract32(val: &SymBV) -> SymBV {
     extract_to_nbits(val, 32)
 }
 
 /// Symbolic ARM N flag (bit 31 of result). Returns 1-bit BV.
-pub(super) fn arm_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
+pub(super) fn arm_sym_flag_n(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
+) -> Option<SymBV> {
     use arm_cc_op::*;
     let d1 = arm_extract32(dep1);
     let d2 = arm_extract32(dep2);
@@ -75,7 +80,7 @@ pub(super) fn arm_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
         ARMG_CC_OP_SUB => d1.sub(&d2),
         ARMG_CC_OP_ADC => d1.add(&d2).add(&nd),
         ARMG_CC_OP_SBB => {
-            let one = Bv::concrete(1, 32);
+            let one = SymBV::concrete(1, 32);
             d1.sub(&d2).sub(&nd.xor(&one))
         }
         ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1,
@@ -86,12 +91,17 @@ pub(super) fn arm_sym_flag_n(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
 }
 
 /// Symbolic ARM Z flag (result == 0). Returns 1-bit BV.
-pub(super) fn arm_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
+pub(super) fn arm_sym_flag_z(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
+) -> Option<SymBV> {
     use arm_cc_op::*;
     let d1 = arm_extract32(dep1);
     let d2 = arm_extract32(dep2);
     let nd = arm_extract32(ndep);
-    let zero = Bv::concrete(0, 32);
+    let zero = SymBV::concrete(0, 32);
     let res = match cc_op {
         ARMG_CC_OP_COPY => {
             return Some(d1.extract(arm_flag_shift::SHIFT_Z, arm_flag_shift::SHIFT_Z));
@@ -100,7 +110,7 @@ pub(super) fn arm_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
         ARMG_CC_OP_SUB => d1.sub(&d2),
         ARMG_CC_OP_ADC => d1.add(&d2).add(&nd),
         ARMG_CC_OP_SBB => {
-            let one = Bv::concrete(1, 32);
+            let one = SymBV::concrete(1, 32);
             d1.sub(&d2).sub(&nd.xor(&one))
         }
         ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => d1,
@@ -113,7 +123,12 @@ pub(super) fn arm_sym_flag_z(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
 
 /// Symbolic ARM C flag. ARM C for SUB is the *complement* of x86 borrow:
 /// C=1 iff dep1 >= dep2 (no borrow). Returns 1-bit BV.
-pub(super) fn arm_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
+pub(super) fn arm_sym_flag_c(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
+) -> Option<SymBV> {
     use arm_cc_op::*;
     let d1 = arm_extract32(dep1);
     let d2 = arm_extract32(dep2);
@@ -128,7 +143,7 @@ pub(super) fn arm_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
         ARMG_CC_OP_ADC => {
             // C: if oldC then res<=dep1 else res<dep1
             let res = d1.add(&d2).add(&nd);
-            let zero = Bv::concrete(0, 32);
+            let zero = SymBV::concrete(0, 32);
             let nd_nz = nd.eq(&zero).not();
             let when_old_c = res.ule(&d1);
             let when_no_old_c = res.ult(&d1);
@@ -136,7 +151,7 @@ pub(super) fn arm_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
             Some(nd_nz.and(&when_old_c).or(&nd_nz.not().and(&when_no_old_c)))
         }
         ARMG_CC_OP_SBB => {
-            let zero = Bv::concrete(0, 32);
+            let zero = SymBV::concrete(0, 32);
             let nd_nz = nd.eq(&zero).not();
             let when_old_c = d1.uge(&d2);
             let when_no_old_c = d1.ugt(&d2);
@@ -155,7 +170,12 @@ pub(super) fn arm_sym_flag_c(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
 }
 
 /// Symbolic ARM V flag. Returns 1-bit BV.
-pub(super) fn arm_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Option<Bv> {
+pub(super) fn arm_sym_flag_v(
+    cc_op: u64,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
+) -> Option<SymBV> {
     use arm_cc_op::*;
     let d1 = arm_extract32(dep1);
     let d2 = arm_extract32(dep2);
@@ -177,7 +197,7 @@ pub(super) fn arm_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
             Some(res.xor(&d1).and(&res.xor(&d2)).extract(31, 31))
         }
         ARMG_CC_OP_SBB => {
-            let one = Bv::concrete(1, 32);
+            let one = SymBV::concrete(1, 32);
             let res = d1.sub(&d2).sub(&nd.xor(&one));
             Some(d1.xor(&d2).and(&d1.xor(&res)).extract(31, 31))
         }
@@ -194,15 +214,15 @@ pub(super) fn arm_sym_flag_v(cc_op: u64, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> Opt
 pub(super) fn arm_sym_calculate_condition(
     cond: u64,
     cc_op: u64,
-    dep1: &Bv,
-    dep2: &Bv,
-    ndep: &Bv,
-) -> Option<Bv> {
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
+) -> Option<SymBV> {
     use arm_cond::*;
     let inv = (cond & 1) != 0;
 
     if cond == ARM_COND_AL {
-        return Some(Bv::concrete(1, 1));
+        return Some(SymBV::concrete(1, 1));
     }
     // NV is refused, as in the concrete `armg_calculate_condition`.
     if cond == ARM_COND_NV {
@@ -445,13 +465,19 @@ pub(super) fn armg_calculate_flags_nzcv(
 /// Returns `None` when `ret_bits` cannot hold bit `SHIFT_N`: the shift
 /// amounts are built at `ret_bits` and would wrap, silently yielding a wrong
 /// word rather than deferring to the Python ccall.
-pub(super) fn sym_pack_nzcv(n: &Bv, z: &Bv, c: &Bv, v: &Bv, ret_bits: u32) -> Option<Bv> {
+pub(super) fn sym_pack_nzcv(
+    n: &SymBV,
+    z: &SymBV,
+    c: &SymBV,
+    v: &SymBV,
+    ret_bits: u32,
+) -> Option<SymBV> {
     if ret_bits <= arm_flag_shift::SHIFT_N {
         return None;
     }
-    let shifted = |bit: &Bv, shift: u32| {
+    let shifted = |bit: &SymBV, shift: u32| {
         bit.zero_extend(ret_bits)
-            .shl(&Bv::concrete(u128::from(shift), ret_bits))
+            .shl(&SymBV::concrete(u128::from(shift), ret_bits))
     };
     Some(
         shifted(n, arm_flag_shift::SHIFT_N)
@@ -465,11 +491,11 @@ pub(super) fn sym_pack_nzcv(n: &Bv, z: &Bv, c: &Bv, v: &Bv, ret_bits: u32) -> Op
 /// NZCV bits with `arm_sym_flag_*` and packs them via `sym_pack_nzcv`.
 pub(super) fn arm_sym_flags_nzcv(
     cc_op: u64,
-    dep1: &Bv,
-    dep2: &Bv,
-    ndep: &Bv,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
     ret_bits: u32,
-) -> Option<Bv> {
+) -> Option<SymBV> {
     let n = arm_sym_flag_n(cc_op, dep1, dep2, ndep)?;
     let z = arm_sym_flag_z(cc_op, dep1, dep2, ndep)?;
     let c = arm_sym_flag_c(cc_op, dep1, dep2, ndep)?;

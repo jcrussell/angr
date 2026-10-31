@@ -331,15 +331,7 @@ impl<'a> VEXInterpreter<'a> {
             .collect::<Option<Vec<u64>>>()
             .and_then(|vals| ccall::ccall_concrete(&cee.name, &vals, ret_bits))
             .map(|result| RustBV::concrete(u128::from(result), ret_bits));
-        let result = concrete.or_else(|| {
-            let terms = arg_vals
-                .iter()
-                .map(RustBV::to_clarirs)
-                .collect::<Result<Vec<_>, _>>()
-                .ok()?;
-            let term = ccall::ccall_symbolic(&cee.name, &terms, ret_bits)?;
-            crate::symbolic::admit_clarirs(term).ok()
-        });
+        let result = concrete.or_else(|| ccall::ccall_symbolic(&cee.name, &arg_vals, ret_bits));
         if let Some(result) = result {
             return Ok(result);
         }

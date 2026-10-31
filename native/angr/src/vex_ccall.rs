@@ -5,8 +5,9 @@
 //! on clarirs terms; this module is only the crossing. A claripy argument's
 //! term is `Base::ast()`, an `Arc` clone, and the result goes back with
 //! `Base::from_ast`. Anything the Rust helper does not serve (an unported
-//! name, a symbolic `cond`/`cc_op`, a non-bitvector argument) returns `None`,
-//! and the caller runs `ccall.py`.
+//! name, a symbolic `cond`/`cc_op`, a non-bitvector argument, an argument or
+//! result width other than the helper's) returns `None`, and the caller runs
+//! `ccall.py`.
 //!
 //! [`SUPPORTED`] is the set of names [`ccall`] may serve. It leaves out the
 //! names `handle_ccall` accepts but cannot answer from its arguments alone:

@@ -4,12 +4,12 @@ use super::*;
 
 /// Symbolic equivalent of `Flags`: each field is a 1-bit BV.
 pub(super) struct SymFlags {
-    pub(super) cf: Bv,
-    pub(super) pf: Bv,
-    pub(super) af: Bv,
-    pub(super) zf: Bv,
-    pub(super) sf: Bv,
-    pub(super) of: Bv,
+    pub(super) cf: SymBV,
+    pub(super) pf: SymBV,
+    pub(super) af: SymBV,
+    pub(super) zf: SymBV,
+    pub(super) sf: SymBV,
+    pub(super) of: SymBV,
 }
 
 // ============================================================
@@ -17,7 +17,7 @@ pub(super) struct SymFlags {
 // ============================================================
 
 /// Extract the low `nbits` from a value that may be wider (e.g. 64-bit AMD64 args for 8/16/32-bit ops).
-pub(super) fn extract_to_nbits(val: &Bv, nbits: u32) -> Bv {
+pub(super) fn extract_to_nbits(val: &SymBV, nbits: u32) -> SymBV {
     if val.width() == nbits {
         val.clone()
     } else if val.width() > nbits {
@@ -29,7 +29,7 @@ pub(super) fn extract_to_nbits(val: &Bv, nbits: u32) -> Bv {
 
 /// Compute parity flag symbolically: PF = 1 if even number of 1-bits in low byte.
 /// PF = NOT(b0 XOR b1 XOR b2 XOR b3 XOR b4 XOR b5 XOR b6 XOR b7)
-pub(super) fn symbolic_parity(result: &Bv) -> Bv {
+pub(super) fn symbolic_parity(result: &SymBV) -> SymBV {
     let b0 = result.extract(0, 0);
     let b1 = result.extract(1, 1);
     let b2 = result.extract(2, 2);
@@ -55,18 +55,18 @@ pub(super) fn symbolic_parity(result: &Bv) -> Bv {
 ///
 /// All three operands must already be `nbits` wide (`nbits >= 8`, so bit 4
 /// always exists).
-pub(super) fn sym_calc_af(res: &Bv, arg_l: &Bv, arg_r: &Bv) -> Bv {
+pub(super) fn sym_calc_af(res: &SymBV, arg_l: &SymBV, arg_r: &SymBV) -> SymBV {
     res.xor(arg_l)
         .xor(arg_r)
         .extract(flag_shift::G_CC_SHIFT_A, flag_shift::G_CC_SHIFT_A)
 }
 
 /// SUB / CMP: symbolic flags from dep1 - dep2 at the given width.
-pub(super) fn sym_flags_sub(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
+pub(super) fn sym_flags_sub(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags {
     let d1 = extract_to_nbits(dep1, nbits);
     let d2 = extract_to_nbits(dep2, nbits);
     let result = d1.sub(&d2);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
@@ -91,11 +91,11 @@ pub(super) fn sym_flags_sub(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
 }
 
 /// ADD: symbolic flags from dep1 + dep2 at the given width.
-pub(super) fn sym_flags_add(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
+pub(super) fn sym_flags_add(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags {
     let d1 = extract_to_nbits(dep1, nbits);
     let d2 = extract_to_nbits(dep2, nbits);
     let result = d1.add(&d2);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
@@ -127,13 +127,13 @@ pub(super) fn sym_flags_add(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
 /// (`res <= argL` with an incoming carry, `res < argL` without), so an
 /// ADC/SBB with a symbolic operand does not fall back to Python
 /// (angr-9ke6b.88).
-pub(super) fn sym_flags_adc(nbits: u32, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> SymFlags {
+pub(super) fn sym_flags_adc(nbits: u32, dep1: &SymBV, dep2: &SymBV, ndep: &SymBV) -> SymFlags {
     let old_c = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C);
     let old_c_n = old_c.zero_extend(nbits);
     let arg_l = extract_to_nbits(dep1, nbits);
     let arg_r = extract_to_nbits(dep2, nbits).xor(&old_c_n);
     let result = arg_l.add(&arg_r).add(&old_c_n);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
@@ -163,13 +163,13 @@ pub(super) fn sym_flags_adc(nbits: u32, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> SymF
 /// Mirrors `calc_flags_sbb`; see [`sym_flags_adc`] for the shared oldC
 /// encoding. The borrow test compares the *operands* (`argL` vs `argR`), not
 /// the result, which is why it cannot reuse `sym_flags_sub`.
-pub(super) fn sym_flags_sbb(nbits: u32, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> SymFlags {
+pub(super) fn sym_flags_sbb(nbits: u32, dep1: &SymBV, dep2: &SymBV, ndep: &SymBV) -> SymFlags {
     let old_c = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C);
     let old_c_n = old_c.zero_extend(nbits);
     let arg_l = extract_to_nbits(dep1, nbits);
     let arg_r = extract_to_nbits(dep2, nbits).xor(&old_c_n);
     let result = arg_l.sub(&arg_r).sub(&old_c_n);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
@@ -194,15 +194,15 @@ pub(super) fn sym_flags_sbb(nbits: u32, dep1: &Bv, dep2: &Bv, ndep: &Bv) -> SymF
 }
 
 /// LOGIC (AND/OR/XOR/TEST): result is in dep1; CF=0, OF=0.
-pub(super) fn sym_flags_logic(nbits: u32, dep1: &Bv) -> SymFlags {
+pub(super) fn sym_flags_logic(nbits: u32, dep1: &SymBV) -> SymFlags {
     let result = extract_to_nbits(dep1, nbits);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
-    let cf = Bv::concrete(0, 1);
-    let of = Bv::concrete(0, 1);
-    let af = Bv::concrete(0, 1);
+    let cf = SymBV::concrete(0, 1);
+    let of = SymBV::concrete(0, 1);
+    let af = SymBV::concrete(0, 1);
     let pf = symbolic_parity(&result);
     SymFlags {
         cf,
@@ -215,10 +215,10 @@ pub(super) fn sym_flags_logic(nbits: u32, dep1: &Bv) -> SymFlags {
 }
 
 /// INC: dep1 = result; CF preserved from ndep; OF = (result == sign_bit).
-pub(super) fn sym_flags_inc(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
+pub(super) fn sym_flags_inc(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags {
     let result = extract_to_nbits(dep1, nbits);
-    let zero = Bv::concrete(0, nbits);
-    let sign_bit_val = Bv::concrete(1u128 << (nbits - 1), nbits);
+    let zero = SymBV::concrete(0, nbits);
+    let sign_bit_val = SymBV::concrete(1u128 << (nbits - 1), nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
@@ -228,7 +228,7 @@ pub(super) fn sym_flags_inc(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
     let of = result.eq(&sign_bit_val);
     let pf = symbolic_parity(&result);
     // AF = (result ^ (result - 1) ^ 1)[4]
-    let one_n = Bv::concrete(1, nbits);
+    let one_n = SymBV::concrete(1, nbits);
     let af = sym_calc_af(&result, &result.sub(&one_n), &one_n);
     SymFlags {
         cf,
@@ -241,11 +241,11 @@ pub(super) fn sym_flags_inc(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
 }
 
 /// DEC: dep1 = result; CF preserved from ndep; OF = (result == sign_bit - 1).
-pub(super) fn sym_flags_dec(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
+pub(super) fn sym_flags_dec(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags {
     let result = extract_to_nbits(dep1, nbits);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
     // result == sign_bit - 1 == max signed (0x7F..F)
-    let max_signed = Bv::concrete((1u128 << (nbits - 1)) - 1, nbits);
+    let max_signed = SymBV::concrete((1u128 << (nbits - 1)) - 1, nbits);
 
     let zf = result.eq(&zero);
     let sf = result.extract(nbits - 1, nbits - 1);
@@ -253,7 +253,7 @@ pub(super) fn sym_flags_dec(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
     let of = result.eq(&max_signed);
     let pf = symbolic_parity(&result);
     // AF = (result ^ (result + 1) ^ 1)[4]
-    let one_n = Bv::concrete(1, nbits);
+    let one_n = SymBV::concrete(1, nbits);
     let af = sym_calc_af(&result, &result.add(&one_n), &one_n);
     SymFlags {
         cf,
@@ -270,10 +270,10 @@ pub(super) fn sym_flags_dec(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
 ///
 /// Mirrors `calc_flags_shl`. VEX only records enough state for a shift-by-1
 /// OF (`CF ^ SF`), which is what the concrete path computes too.
-pub(super) fn sym_flags_shl(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
+pub(super) fn sym_flags_shl(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags {
     let remaining = extract_to_nbits(dep1, nbits);
     let shifted = extract_to_nbits(dep2, nbits);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     // CF = last bit shifted out = MSB of the shifted-out value.
     let cf = shifted.extract(nbits - 1, nbits - 1);
@@ -282,7 +282,7 @@ pub(super) fn sym_flags_shl(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
     let of = cf.xor(&sf);
     let pf = symbolic_parity(&remaining);
     // AF is architecturally undefined after a shift; VEX reports 0.
-    let af = Bv::concrete(0, 1);
+    let af = SymBV::concrete(0, 1);
     SymFlags {
         cf,
         pf,
@@ -297,10 +297,10 @@ pub(super) fn sym_flags_shl(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
 /// rotated so its LSB is the last bit shifted out.
 ///
 /// Mirrors `calc_flags_shr`; OF is the XOR of the two values' MSBs.
-pub(super) fn sym_flags_shr(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
+pub(super) fn sym_flags_shr(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags {
     let remaining = extract_to_nbits(dep1, nbits);
     let shifted = extract_to_nbits(dep2, nbits);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     // CF = last bit shifted out = LSB of the shifted-out value.
     let cf = shifted.extract(0, 0);
@@ -309,7 +309,7 @@ pub(super) fn sym_flags_shr(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
     let of = shifted.extract(nbits - 1, nbits - 1).xor(&sf);
     let pf = symbolic_parity(&remaining);
     // AF is architecturally undefined after a shift; VEX reports 0.
-    let af = Bv::concrete(0, 1);
+    let af = SymBV::concrete(0, 1);
     SymFlags {
         cf,
         pf,
@@ -325,7 +325,7 @@ pub(super) fn sym_flags_shr(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
 /// Mirrors `calc_flags_rol`. Rotates on x86 touch only CF and OF, so the other
 /// three flags come out of the saved EFLAGS in `cc_ndep` rather than from the
 /// result — the same preservation `sym_flags_inc`/`sym_flags_dec` do for CF.
-pub(super) fn sym_flags_rol(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
+pub(super) fn sym_flags_rol(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags {
     let res = extract_to_nbits(dep1, nbits);
 
     // CF = LSB of the result (the bit rotated around from the top).
@@ -349,7 +349,7 @@ pub(super) fn sym_flags_rol(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
 /// ROR: `dep1` is the rotate result; PF/ZF/SF are *preserved* from `ndep`.
 ///
 /// Mirrors `calc_flags_ror`; see [`sym_flags_rol`] for the preservation rule.
-pub(super) fn sym_flags_ror(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
+pub(super) fn sym_flags_ror(nbits: u32, dep1: &SymBV, ndep: &SymBV) -> SymFlags {
     let res = extract_to_nbits(dep1, nbits);
 
     // CF = MSB of the result (the bit rotated around from the bottom).
@@ -375,14 +375,14 @@ pub(super) fn sym_flags_ror(nbits: u32, dep1: &Bv, ndep: &Bv) -> SymFlags {
 /// Mirrors `calc_flags_umul`. Both operands are zero-extended to `2 * nbits`
 /// so the full product is exact, then split — that is the symbolic equivalent
 /// of the concrete path's `u128` widening for the 64-bit case.
-pub(super) fn sym_flags_umul(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
+pub(super) fn sym_flags_umul(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags {
     let wide = nbits * 2;
     let a = extract_to_nbits(dep1, nbits).zero_extend(wide);
     let b = extract_to_nbits(dep2, nbits).zero_extend(wide);
     let product = a.mul(&b);
     let lo = product.extract(nbits - 1, 0);
     let hi = product.extract(wide - 1, nbits);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     // CF = OF = high half non-zero (result truncated).
     let cf = hi.ne(&zero);
@@ -393,7 +393,7 @@ pub(super) fn sym_flags_umul(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
     let zf = lo.eq(&zero);
     let sf = lo.extract(nbits - 1, nbits - 1);
     let pf = symbolic_parity(&lo);
-    let af = Bv::concrete(0, 1);
+    let af = SymBV::concrete(0, 1);
     SymFlags {
         cf,
         pf,
@@ -408,14 +408,14 @@ pub(super) fn sym_flags_umul(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
 /// extension of the low half".
 ///
 /// Mirrors `calc_flags_smul`; see [`sym_flags_umul`] for the widening scheme.
-pub(super) fn sym_flags_smul(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
+pub(super) fn sym_flags_smul(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags {
     let wide = nbits * 2;
     let a = extract_to_nbits(dep1, nbits).sign_extend(wide);
     let b = extract_to_nbits(dep2, nbits).sign_extend(wide);
     let product = a.mul(&b);
     let lo = product.extract(nbits - 1, 0);
     let hi = product.extract(wide - 1, nbits);
-    let zero = Bv::concrete(0, nbits);
+    let zero = SymBV::concrete(0, nbits);
 
     let sf = lo.extract(nbits - 1, nbits - 1);
     // Sign extension of `lo`: all-ones when its MSB is set, all-zeros otherwise.
@@ -425,7 +425,7 @@ pub(super) fn sym_flags_smul(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
     let zf = lo.eq(&zero);
     let pf = symbolic_parity(&lo);
     // AF is undefined after a multiply; VEX reports 0.
-    let af = Bv::concrete(0, 1);
+    let af = SymBV::concrete(0, 1);
     SymFlags {
         cf,
         pf,
@@ -437,7 +437,7 @@ pub(super) fn sym_flags_smul(nbits: u32, dep1: &Bv, dep2: &Bv) -> SymFlags {
 }
 
 /// Extract a single flag bit at the given shift from a packed-EFLAGS BV.
-pub(super) fn sym_extract_flag(packed: &Bv, shift: u32) -> Bv {
+pub(super) fn sym_extract_flag(packed: &SymBV, shift: u32) -> SymBV {
     packed.extract(shift, shift)
 }
 
@@ -466,9 +466,9 @@ pub(super) enum SymFlagsError {
 pub(super) fn sym_flags_for_category(
     category: OpCategory,
     nbits: u32,
-    dep1: &Bv,
-    dep2: &Bv,
-    ndep: &Bv,
+    dep1: &SymBV,
+    dep2: &SymBV,
+    ndep: &SymBV,
 ) -> Result<SymFlags, SymFlagsError> {
     match category {
         OpCategory::Copy => Err(SymFlagsError::CopyHandledByCaller),
@@ -489,7 +489,7 @@ pub(super) fn sym_flags_for_category(
 }
 
 /// Extract `SymFlags` from a Copy operation where `dep1` already packs them.
-pub(super) fn sym_flags_from_copy(dep1: &Bv) -> SymFlags {
+pub(super) fn sym_flags_from_copy(dep1: &SymBV) -> SymFlags {
     SymFlags {
         cf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_C),
         pf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_P),
@@ -503,7 +503,7 @@ pub(super) fn sym_flags_from_copy(dep1: &Bv) -> SymFlags {
 /// Symbolic equivalent of `eval_condition`: return a 1-bit BV for condition `cond`.
 ///
 /// Returns `None` for unknown condition codes; callers fall through to Python.
-pub(super) fn eval_sym_condition(cond: u64, flags: &SymFlags) -> Option<Bv> {
+pub(super) fn eval_sym_condition(cond: u64, flags: &SymFlags) -> Option<SymBV> {
     use cond_type::*;
     let inv = (cond & 1) != 0;
     let bit = match cond & !1 {
@@ -529,13 +529,13 @@ pub(super) fn eval_sym_condition(cond: u64, flags: &SymFlags) -> Option<Bv> {
 /// PF@2, CF@0. Both packers must cover every flag the Copy path passes
 /// through, or the omitted bit is structurally always 0 for every computed
 /// category (angr-5mnx3.59).
-pub(super) fn sym_pack_eflags(flags: &SymFlags, ret_bits: u32) -> Bv {
-    let shifted = |bit: &Bv, shift: u32| {
+pub(super) fn sym_pack_eflags(flags: &SymFlags, ret_bits: u32) -> SymBV {
+    let shifted = |bit: &SymBV, shift: u32| {
         let ext = bit.zero_extend(ret_bits);
         if shift == 0 {
             ext
         } else {
-            ext.shl(&Bv::concrete(u128::from(shift), ret_bits))
+            ext.shl(&SymBV::concrete(u128::from(shift), ret_bits))
         }
     };
 
