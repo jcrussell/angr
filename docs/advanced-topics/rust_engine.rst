@@ -425,8 +425,6 @@ integers (``vex::ops::is_int_lane_vec``), except:
 - ``Iop_Shl64``, ``Iop_Shr64`` and ``Iop_Sar64``, whose ``irop.py``
   results pass through the clarirs shift folds that truncate the amount
   (angr-mx00p.105);
-- ``Iop_ModS128``, which ``irop.py`` computes as an unsigned remainder
-  (angr-mx00p.124);
 - the ``Iop_Reinterp*`` ops, which are floating-point sorted on the
   Python side;
 - every float-lane vector op, and the ``Iop_RecipEst*`` /

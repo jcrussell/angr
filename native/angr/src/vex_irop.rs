@@ -39,8 +39,6 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 // irop.py's results pass through clarirs' shift folds, which read the amount with
                 // `to_u64().unwrap_or(0) as u32` (angr-mx00p.105).
                 IROp::Shl(IRType::I64) | IROp::Shr(IRType::I64) | IROp::Sar(IRType::I64) => false,
-                // irop.py computes it as an unsigned remainder (angr-mx00p.124).
-                IROp::ModS(IRType::I128) => false,
                 // FP-sorted on the Python side.
                 IROp::Reinterpret { .. } => false,
                 _ => match iropclass(&op) {
