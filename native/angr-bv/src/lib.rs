@@ -42,6 +42,9 @@ mod value_ops;
 mod value_shape;
 mod width_guards;
 
+#[cfg(test)]
+mod oracle_tests;
+
 pub use bv_chunk::{
     MAX_CONCRETE_CHUNK, MAX_CONCRETE_LOAD_BYTES, check_concrete_load_size,
     load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_le_byte, u128_to_le_bytes,
