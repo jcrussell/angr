@@ -12,8 +12,9 @@
 //!
 //! `SUPPORTED` holds the libVEX names of the scalar integer arithmetic,
 //! logic, shift, compare and width-conversion ops, and of the integer-lane
-//! vector ops ([`is_int_lane_vec`]), that Rust implements, less the
-//! exclusions in [`SERVED`].
+//! vector ops ([`is_int_lane_vec`]) and the vector float ops
+//! ([`is_vector_float_op`]) that Rust implements, less the exclusions in
+//! [`SERVED`].
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -24,10 +25,10 @@ use pyo3::types::PyTuple;
 
 use crate::ailment::vexop_names::IROP_NAMES;
 use crate::claripy::ast::base::Base;
-use crate::symbolic::{RustBV, VexOpFamily};
+use crate::symbolic::{RustBV, VexOpFamily, VexRm};
 use crate::vex::ir::{IROp, IRType};
 use crate::vex::opcode_map::parse_opcode;
-use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec};
+use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec, is_vector_float_op};
 
 /// The libVEX names [`irop`] serves, with their parsed opcodes.
 static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
@@ -41,6 +42,19 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 IROp::Shl(IRType::I64) | IROp::Shr(IRType::I64) | IROp::Sar(IRType::I64) => false,
                 // FP-sorted on the Python side.
                 IROp::Reinterpret { .. } => false,
+                // clarirs folds fpSub of a NaN as an add of its negation, flipping the NaN's sign (angr-mx00p.127).
+                IROp::VFSub { .. } | IROp::VFSubS { .. } => false,
+                // x86 MINPS/MAXPS and AArch64 FMIN/FMAX share these ops and differ on +-0 and NaN; irop.py follows
+                // neither (angr-mx00p.128).
+                IROp::VFMin { .. }
+                | IROp::VFMax { .. }
+                | IROp::VFMinS { .. }
+                | IROp::VFMaxS { .. }
+                | IROp::VFPwMin { .. }
+                | IROp::VFPwMax { .. } => false,
+                // irop.py converts an out-of-range, infinite or NaN lane to 0 (angr-mx00p.129).
+                IROp::VF32toI32 { .. } => false,
+                _ if is_vector_float_op(&op) => true,
                 _ => match iropclass(&op) {
                     VexOpFamily::Arith
                     | VexOpFamily::Logic
@@ -87,6 +101,23 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             return Ok(None);
         };
         imported.push(value);
+    }
+    // Packed float arithmetic carries the VEX rounding mode first; Rust computes it round-to-nearest-even only.
+    let takes_rm = match op {
+        IROp::VFAdd { .. } | IROp::VFSub { .. } | IROp::VFMul { .. } | IROp::VFDiv { .. } => {
+            imported.len() == 3
+        }
+        IROp::VFSqrt { .. } => imported.len() == 2,
+        _ => false,
+    };
+    if takes_rm {
+        let mode = imported[0].as_u128().map(VexRm::decode);
+        if !matches!(mode, Some(Ok(VexRm::NearestEven))) {
+            // SILENT(cat-a): another or a symbolic rounding mode; irop.py honours it.
+            return Ok(None);
+        }
+        imported.remove(0);
+        symbolic.remove(0);
     }
     let result = match imported.as_slice() {
         [a] => VEXOps::unop(op, a.clone()),

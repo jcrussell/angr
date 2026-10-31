@@ -67,9 +67,34 @@ def _join(lane, values):
     return sum((v & ((1 << lane) - 1)) << (i * lane) for i, v in enumerate(values))
 
 
-def _vector_pool(rng, bits, lane):
+# Bit patterns of float edges: +-0, +-1, 0.5, +-inf, quiet and signalling NaNs (both signs), the smallest and largest
+# subnormal, the smallest normal, the largest finite value, and values that round differently by mode.
+FLOAT_EDGES = {
+    32: [0, 0x80000000, 0x3F800000, 0xBF800000, 0x3F000000, 0x7F800000, 0xFF800000, 0x7FC00000, 0xFFC00000,
+         0x7FA00000, 0x7FC00001, 0x00000001, 0x007FFFFF, 0x00800000, 0x7F7FFFFF, 0x3EAAAAAB, 0x4B800001, 0xCF000000],
+    64: [0, 0x8000000000000000, 0x3FF0000000000000, 0xBFF0000000000000, 0x3FE0000000000000, 0x7FF0000000000000,
+         0xFFF0000000000000, 0x7FF8000000000000, 0xFFF8000000000000, 0x7FF4000000000000, 0x7FF8000000000001,
+         0x0000000000000001, 0x000FFFFFFFFFFFFF, 0x0010000000000000, 0x7FEFFFFFFFFFFFFF, 0x3FD5555555555555,
+         0x4340000000000001, 0xC1E0000000000000],
+}
+# libVEX's IRRoundingMode values: nearest-even, -inf, +inf, zero, nearest-away.
+ROUNDING_MODES = [0, 1, 2, 3, 4]
+
+
+def _float_lanes(name):
+    op = irop.operations[name]
+    return op._float and op._vector_size in FLOAT_EDGES
+
+
+def _takes_rm(name):
+    """A vector float op whose first operand is the VEX rounding mode."""
+    _, args = pyvex.expr.op_arg_types(name)
+    return _float_lanes(name) and len(args) > 1 and args[0] == "Ity_I32"
+
+
+def _vector_pool(rng, bits, lane, edges=None):
     count = bits // lane
-    edges = _edges(lane)
+    edges = edges or _edges(lane)
     values = [_join(lane, [e] * count) for e in edges]
     values += [_join(lane, [rng.choice(edges) for _ in range(count)]) for _ in range(10)]
     values += [rng.getrandbits(bits) for _ in range(4)]
@@ -86,7 +111,11 @@ def _vector_cases(name, rng, arg_bits):
     pools = []
     for pos, bits in enumerate(arg_bits):
         arg_lane = _arg_lane(name, bits)
-        if arg_lane is not None:
+        if pos == 0 and _takes_rm(name):
+            pools.append(ROUNDING_MODES)
+        elif arg_lane is not None and _float_lanes(name) and arg_lane in FLOAT_EDGES:
+            pools.append(_vector_pool(rng, bits, arg_lane, FLOAT_EDGES[arg_lane]))
+        elif arg_lane is not None:
             pools.append(_vector_pool(rng, bits, arg_lane))
         elif generic in ("ShlN", "ShrN", "SarN") and pos == 1:
             pools.append([a & ((1 << bits) - 1) for a in (*range(lane), lane, lane + 1, 2 * lane, 255)])
@@ -160,6 +189,9 @@ def _concrete_cases(name, rng, arg_bits):
 
 def _symbolic_cases(name, arg_bits):
     syms = [claripy.BVS(f"a{i}", bits) for i, bits in enumerate(arg_bits)]
+    if _takes_rm(name):
+        # A symbolic rounding mode is declined (test_rust_irop_declines_other_rounding_modes); fix it to nearest-even.
+        syms[0] = claripy.BVV(0, arg_bits[0])
     if 1 in arg_bits:
         flag = claripy.If(claripy.BoolS("flag"), claripy.BVV(1, 1), claripy.BVV(0, 1))
         yield [flag if bits == 1 else s for s, bits in zip(syms, arg_bits)]
@@ -222,6 +254,10 @@ def _check(name, args, ret_bits):
             if args[1].size() > 8:  # a lane-wise shift
                 amounts = _split(lane, args[1].concrete_value, args[1].size() // lane)
             assert max(amounts) >= lane, f"{where}: Rust refused an in-range shift"
+        return False
+    if actual is None and _takes_rm(name):
+        # Rust computes packed float arithmetic round-to-nearest-even only; irop.py honours the other modes.
+        assert args[0].symbolic or args[0].concrete_value != 0, f"{where}: Rust refused a nearest-even call"
         return False
     if actual is None and irop.operations[name]._generic_name in ("GetElem", "SetElem") and not args[1].symbolic:
         # libVEX leaves an index past the lane count undefined; irop.py's reading of it stands.
@@ -290,10 +326,16 @@ def test_rust_irop_exclusions():
     assert not supported & {"Iop_Shl64", "Iop_Shr64", "Iop_Sar64"}
     # FP-sorted on the Python side.
     assert not {n for n in supported if n.startswith("Iop_Reinterp")}
-    # Float lanes are not integer ops; irop.py builds the estimates from fresh symbols.
-    assert not {n for n in supported if n in irop.operations and irop.operations[n]._float}
+    # irop.py builds the estimates from fresh symbols.
     assert not {n for n in supported if "Est" in n or "Step" in n}
     assert {"Iop_Add8x16", "Iop_QNarrowBin16Sto8Ux16", "Iop_SetElem32x4"} <= supported
+    assert {"Iop_Add64F0x2", "Iop_Add32Fx4", "Iop_Mul64F0x2", "Iop_CmpLT64F0x2"} <= supported
+    # clarirs folds fpSub of a NaN with the NaN's sign flipped (angr-mx00p.127).
+    assert not {n for n in supported if n.startswith("Iop_Sub") and "F" in n[7:]}
+    # irop.py's float Min/Max match neither x86 nor AArch64 on +-0 and NaN (angr-mx00p.128).
+    assert not {n for n in supported if n.startswith(("Iop_Min", "Iop_Max", "Iop_PwMin", "Iop_PwMax")) and "F" in n}
+    # irop.py converts an out-of-range, infinite or NaN lane to 0 (angr-mx00p.129).
+    assert not {n for n in supported if n.startswith("Iop_F32toI32")}
     assert datalayer._RUST_IROP_NAMES.issubset(irop.operations)
 
 
@@ -302,6 +344,15 @@ def test_engine_honours_irop_operations_edits(monkeypatch):
     monkeypatch.delitem(irop.operations, "Iop_Add32")
     args = (claripy.BVS("x", 32), claripy.BVV(1, 32))
     assert _seam("Iop_Add32", args)[1] is UnsupportedIROpError
+
+
+def test_rust_irop_declines_other_rounding_modes():
+    a, b = claripy.BVS("a", 128), claripy.BVS("b", 128)
+    assert vex_irop.irop("Iop_Add32Fx4", (claripy.BVV(0, 32), a, b)) is not None
+    for rm in (claripy.BVV(1, 32), claripy.BVV(3, 32), claripy.BVS("rm", 32)):
+        assert vex_irop.irop("Iop_Add32Fx4", (rm, a, b)) is None
+        assert vex_irop.irop("Iop_Sqrt64Fx2", (rm, a)) is None
+        assert _seam("Iop_Add32Fx4", (rm, a, b))[0] is not None
 
 
 class RelocAnnotation(claripy.Annotation):

@@ -260,3 +260,37 @@ pub fn is_int_lane_vec(op: &IROp) -> bool {
             | IROp::VAbs { .. }
     )
 }
+
+/// Whether `op` computes on the float lanes of a vector register, so that
+/// every operand and the result are bitvectors (`irop.py` reads the lanes
+/// itself). The reciprocal and square-root estimates are left out: `irop.py`
+/// builds them from fresh symbols.
+#[inline]
+pub fn is_vector_float_op(op: &IROp) -> bool {
+    matches!(
+        op,
+        IROp::VFAddS { .. }
+            | IROp::VFSubS { .. }
+            | IROp::VFMulS { .. }
+            | IROp::VFDivS { .. }
+            | IROp::VFSqrtS { .. }
+            | IROp::VFMaxS { .. }
+            | IROp::VFMinS { .. }
+            | IROp::VFAdd { .. }
+            | IROp::VFSub { .. }
+            | IROp::VFMul { .. }
+            | IROp::VFDiv { .. }
+            | IROp::VFSqrt { .. }
+            | IROp::VFAbs { .. }
+            | IROp::VFNeg { .. }
+            | IROp::VFMin { .. }
+            | IROp::VFMax { .. }
+            | IROp::VFPwAdd { .. }
+            | IROp::VFPwMax { .. }
+            | IROp::VFPwMin { .. }
+            | IROp::FCmpScalarLane { .. }
+            | IROp::FCmpVecPacked { .. }
+            | IROp::VI32toF32 { .. }
+            | IROp::VF32toI32 { .. }
+    )
+}

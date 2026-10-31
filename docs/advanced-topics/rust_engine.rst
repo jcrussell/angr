@@ -411,32 +411,44 @@ before, including the multivalued concretization of a symbolic
 runs every supported helper through both on concrete and symbolic
 operands and requires the same answer wherever ``ccall.py`` answers.
 
-Rust integer IROps in the Python engine
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Rust IROps in the Python engine
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The same seam serves the Python engine's integer VEX operations, scalar
-and vector.
+and vector, and its vector float operations.
 ``datalayer.py`` offers an op to ``angr.rustylib.vex_irop`` when its name
 is in both ``vex_irop.SUPPORTED`` and ``irop.operations``. ``SUPPORTED``
 holds the scalar integer arithmetic, logic, shift, compare and
 width-conversion ops Rust implements, and the vector ops whose lanes are
-integers (``vex::ops::is_int_lane_vec``), except:
+integers (``vex::ops::is_int_lane_vec``) or that compute on the float
+lanes of a vector register (``vex::ops::is_vector_float_op``), except:
 
 - ``Iop_Shl64``, ``Iop_Shr64`` and ``Iop_Sar64``, whose ``irop.py``
   results pass through the clarirs shift folds that truncate the amount
   (angr-mx00p.105);
 - the ``Iop_Reinterp*`` ops, which are floating-point sorted on the
   Python side;
-- every float-lane vector op, and the ``Iop_RecipEst*`` /
-  ``Iop_RSqrtEst*`` integer estimates, which ``irop.py`` builds from fresh
-  symbols.
+- the ``Iop_RecipEst*`` / ``Iop_RSqrtEst*`` / ``*Step`` estimates, which
+  ``irop.py`` builds from fresh symbols;
+- the vector float ``Sub`` ops, whose ``irop.py`` results pass through a
+  clarirs ``fpSub`` fold that flips a NaN's sign (angr-mx00p.127);
+- the vector float ``Min`` / ``Max`` ops, which x86 and AArch64 define
+  differently on signed zeros and NaN and ``irop.py`` matches neither
+  (angr-mx00p.128);
+- the packed ``Iop_F32toI32*`` conversions, which ``irop.py`` turns into 0
+  for an out-of-range lane (angr-mx00p.129).
+
+Scalar float ops (``Ity_F32`` / ``Ity_F64`` operands) stay in ``irop.py``:
+their arguments and results are claripy floats, not bitvectors.
 
 Rust refuses a division by a literal zero (``irop.py`` raises
 ``SimZeroDivisionException``), a symbolic value shifted by a literal of
 at least its width or, for a vector shift, its lane width (``irop.py``
 leaves that shift unfolded), a literal ``GetElem`` / ``SetElem`` index
 past the lane count (undefined in libVEX; ``irop.py`` reads lane 0 or
-leaves the vector as is), and any
+leaves the vector as is), packed float arithmetic under any rounding
+mode but a literal nearest-even (Rust computes those lanes nearest-even
+only, angr-mx00p.130), and any
 argument it does not take as given, such as one narrower than the op's
 signature, a non-bitvector or an annotated literal; ``irop.py`` runs
 those calls. The result is simplified as every claripy
