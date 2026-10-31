@@ -13,9 +13,7 @@ pub(super) struct SymFlags {
     pub(super) of: SymBV,
 }
 
-/// PF as a builder leaves it: the flag bit of a thunk that stores it, or the
-/// value whose low byte's parity it is. Most conditions never read PF, and its
-/// term is the largest of the six.
+/// PF left unbuilt, since most conditions never read it: a stored flag bit, or the value whose low byte's parity it is.
 pub(super) enum Parity {
     Bit(SymBV),
     Of(SymBV),
