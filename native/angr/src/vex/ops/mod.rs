@@ -129,7 +129,7 @@ enum LaneCountKind {
 /// `vex::ops::iropclass`.
 mod classify;
 
-pub use classify::iropclass;
+pub use classify::{iropclass, is_int_lane_vec};
 
 impl VEXOps {
     /// Reject an operand whose width disagrees with the width the opcode

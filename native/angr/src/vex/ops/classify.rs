@@ -200,3 +200,63 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         IROp::NeonUnimplemented(_) | IROp::Unmapped(_) | IROp::Raw(_) => VexOpFamily::Other,
     }
 }
+
+/// Whether `op` is a [`VexOpFamily::Vec`] op over integer lanes, with no
+/// float lane and no fresh per-lane value (the `VIRecipEst`/`VIRSqrtEst`
+/// estimates, which `irop.py` also builds from fresh symbols). A variant
+/// added to [`iropclass`]'s `Vec` arm is not integer until it is listed here.
+#[inline]
+pub fn is_int_lane_vec(op: &IROp) -> bool {
+    matches!(
+        op,
+        IROp::SetV128lo32
+            | IROp::SetV128lo64
+            | IROp::VAdd { .. }
+            | IROp::VSub { .. }
+            | IROp::VMul { .. }
+            | IROp::VMulHi { .. }
+            | IROp::VMull { .. }
+            | IROp::VQDMull { .. }
+            | IROp::VAnd(_)
+            | IROp::VOr(_)
+            | IROp::VXor(_)
+            | IROp::VNot(_)
+            | IROp::VShlN { .. }
+            | IROp::VShrN { .. }
+            | IROp::VSarN { .. }
+            | IROp::VShl { .. }
+            | IROp::VShr { .. }
+            | IROp::VSar { .. }
+            | IROp::VCmpEQ { .. }
+            | IROp::VCmpGT { .. }
+            | IROp::VInterleaveLO { .. }
+            | IROp::VInterleaveHI { .. }
+            | IROp::VPerm { .. }
+            | IROp::VGetElem { .. }
+            | IROp::VSetElem { .. }
+            | IROp::VDup { .. }
+            | IROp::VWiden { .. }
+            | IROp::VNarrowUn { .. }
+            | IROp::VNarrowBin { .. }
+            | IROp::VQNarrowUn { .. }
+            | IROp::VQNarrowBin { .. }
+            | IROp::VReverse { .. }
+            | IROp::VQAdd { .. }
+            | IROp::VQSub { .. }
+            | IROp::VQShlSat { .. }
+            | IROp::VPwAdd { .. }
+            | IROp::VPwAddL { .. }
+            | IROp::VPwMin { .. }
+            | IROp::VPwMax { .. }
+            | IROp::VAvg { .. }
+            | IROp::VCnt { .. }
+            | IROp::VGetMSBs { .. }
+            | IROp::VPwBitMtxXpose
+            | IROp::VClz { .. }
+            | IROp::VCls { .. }
+            | IROp::VPolynomialMul { .. }
+            | IROp::VMin { .. }
+            | IROp::VMax { .. }
+            | IROp::VAbs { .. }
+    )
+}

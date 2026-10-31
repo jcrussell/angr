@@ -414,11 +414,13 @@ operands and requires the same answer wherever ``ccall.py`` answers.
 Rust integer IROps in the Python engine
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The same seam serves the Python engine's integer VEX operations.
+The same seam serves the Python engine's integer VEX operations, scalar
+and vector.
 ``datalayer.py`` offers an op to ``angr.rustylib.vex_irop`` when its name
 is in both ``vex_irop.SUPPORTED`` and ``irop.operations``. ``SUPPORTED``
 holds the scalar integer arithmetic, logic, shift, compare and
-width-conversion ops Rust implements, except:
+width-conversion ops Rust implements, and the vector ops whose lanes are
+integers (``vex::ops::is_int_lane_vec``), except:
 
 - ``Iop_Shl64``, ``Iop_Shr64`` and ``Iop_Sar64``, whose ``irop.py``
   results pass through the clarirs shift folds that truncate the amount
@@ -426,11 +428,17 @@ width-conversion ops Rust implements, except:
 - ``Iop_ModS128``, which ``irop.py`` computes as an unsigned remainder
   (angr-mx00p.124);
 - the ``Iop_Reinterp*`` ops, which are floating-point sorted on the
-  Python side.
+  Python side;
+- every float-lane vector op, and the ``Iop_RecipEst*`` /
+  ``Iop_RSqrtEst*`` integer estimates, which ``irop.py`` builds from fresh
+  symbols.
 
 Rust refuses a division by a literal zero (``irop.py`` raises
 ``SimZeroDivisionException``), a symbolic value shifted by a literal of
-at least its width (``irop.py`` leaves that shift unfolded), and any
+at least its width or, for a vector shift, its lane width (``irop.py``
+leaves that shift unfolded), a literal ``GetElem`` / ``SetElem`` index
+past the lane count (undefined in libVEX; ``irop.py`` reads lane 0 or
+leaves the vector as is), and any
 argument it does not take as given, such as one narrower than the op's
 signature, a non-bitvector or an annotated literal; ``irop.py`` runs
 those calls. The result is simplified as every claripy
@@ -440,7 +448,8 @@ concrete. ``ANGR_RUST_IROPS=0``, read at import, sends every op to
 
 ``irop.py`` is the oracle: ``tests/engines/vex/test_rust_irop.py`` runs
 every served op through both on edge, random and symbolic operands at
-its libVEX signature.
+its libVEX signature, building vector operands lane by lane from each
+lane's edges.
 
 Architecture
 ------------

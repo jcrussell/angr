@@ -405,3 +405,32 @@ fn test_vec_int_binops_dispatch_reachable() {
         );
     }
 }
+
+/// `is_int_lane_vec` against the libVEX names: a `Vec` op is integer exactly
+/// when its name has no float lane (`32Fx4`, `64F0x2`, `16Fx8`) and is not a
+/// reciprocal or square-root estimate or step, which `irop.py` builds from
+/// fresh symbols. `vex_irop`'s `SERVED` admits a `Vec` op on this predicate.
+#[test]
+fn test_is_int_lane_vec_matches_the_libvex_names() {
+    use crate::ailment::vexop_names::IROP_NAMES;
+    use crate::vex::opcode_map::parse_opcode;
+
+    let float_lane = |name: &str| {
+        let b = name.as_bytes();
+        b.windows(3)
+            .any(|w| w[0].is_ascii_digit() && w[1] == b'F' && (w[2] == b'x' || w[2] == b'0'))
+    };
+    let estimate = |name: &str| name.contains("Est") || name.contains("Step");
+    let mut integer = 0;
+    for &name in IROP_NAMES {
+        let op = parse_opcode(name);
+        if iropclass(&op) != VexOpFamily::Vec {
+            assert!(!is_int_lane_vec(&op), "{name} ({op:?}) is not a Vec op");
+            continue;
+        }
+        let expected = !float_lane(name) && !estimate(name);
+        assert_eq!(is_int_lane_vec(&op), expected, "{name} ({op:?})");
+        integer += usize::from(expected);
+    }
+    assert!(integer > 0);
+}

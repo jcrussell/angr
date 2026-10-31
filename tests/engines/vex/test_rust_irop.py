@@ -2,7 +2,8 @@
 """The Rust integer IROps (angr.rustylib.vex_irop) against irop.py, which is the oracle.
 
 Every op Rust serves runs on edge and random concrete operands at its libVEX signature (pyvex.expr.op_arg_types),
-then on symbolic operands, alone and mixed with edge constants, through both implementations. Rust must refuse
+then on symbolic operands, alone and mixed with edge constants, through both implementations. A vector operand is
+built lane by lane from the lane width's edges, and a shift amount or lane index walks past the lane width or count. Rust must refuse
 wherever irop.py raises, serve wherever it does, and agree with it: the same width and concreteness, equal values for
 concrete results, a solver-proved equivalence for symbolic ones, and no variables the arguments do not carry. Width 0
 is not a VEX type, so the edges stop at 1 bit.
@@ -44,6 +45,76 @@ def _edges(bits):
     return sorted({v & mask for v in values})
 
 
+def _lanes(name):
+    """The lane width and count of a vector op, from irop.py's parse of its name; None for a scalar op."""
+    op = irop.operations[name]
+    if op._vector_size is None:
+        return None
+    return op._vector_size, op._vector_count
+
+
+def _arg_lane(name, bits):
+    """The lane width of a vector operand of `bits` bits, or None if the operand is a scalar."""
+    lanes = _lanes(name)
+    if lanes is None:
+        return None
+    lane = irop.operations[name]._from_size or lanes[0]
+    return lane if bits % lane == 0 and bits > lane else None
+
+
+def _join(lane, values):
+    """Pack lane values, lane 0 lowest, into one integer."""
+    return sum((v & ((1 << lane) - 1)) << (i * lane) for i, v in enumerate(values))
+
+
+def _vector_pool(rng, bits, lane):
+    count = bits // lane
+    edges = _edges(lane)
+    values = [_join(lane, [e] * count) for e in edges]
+    values += [_join(lane, [rng.choice(edges) for _ in range(count)]) for _ in range(10)]
+    values += [rng.getrandbits(bits) for _ in range(4)]
+    return list(dict.fromkeys(values))
+
+
+def _split(lane, value, count):
+    return [(value >> (i * lane)) & ((1 << lane) - 1) for i in range(count)]
+
+
+def _vector_cases(name, rng, arg_bits):
+    lane, count = _lanes(name)
+    generic = irop.operations[name]._generic_name
+    pools = []
+    for pos, bits in enumerate(arg_bits):
+        arg_lane = _arg_lane(name, bits)
+        if arg_lane is not None:
+            pools.append(_vector_pool(rng, bits, arg_lane))
+        elif generic in ("ShlN", "ShrN", "SarN") and pos == 1:
+            pools.append([a & ((1 << bits) - 1) for a in (*range(lane), lane, lane + 1, 2 * lane, 255)])
+        elif generic in ("GetElem", "SetElem") and pos == 1:
+            pools.append([i & ((1 << bits) - 1) for i in (*range(count), count, 255)])
+        else:
+            pools.append(_pool(rng, bits))
+    if generic in ("Shl", "Shr", "Sar") and len(arg_bits) == 2:
+        # A lane-wise shift: each amount lane walks past the lane width.
+        amounts = [*range(lane), lane, lane + 1, 2 * lane, (1 << lane) - 1]
+        pools[1] = [_join(lane, [rng.choice(amounts) for _ in range(count)]) for _ in range(12)]
+        pools[1] += [_join(lane, [a] * count) for a in amounts]
+    if len(pools) == 1:
+        return [(v,) for v in pools[0]]
+    cases = [tuple(rng.choice(p) for p in pools) for _ in range(60)]
+    if len(pools) == 2:
+        cases += [(a, b) for a in _sample(rng, pools[0], 6) for b in _sample(rng, pools[1], 6)]
+        lbits, rbits = arg_bits
+        arg_lane = _arg_lane(name, lbits)
+        if lbits == rbits and arg_lane is not None and generic not in ("Shl", "Shr", "Sar"):
+            # Compares, saturation and borrows flip at equal or adjacent lanes.
+            n = lbits // arg_lane
+            for a in _sample(rng, pools[0], 6):
+                for d in (-1, 0, 1):
+                    cases.append((a, _join(arg_lane, [x + d for x in _split(arg_lane, a, n)])))
+    return list(dict.fromkeys(cases))
+
+
 def _pool(rng, bits, single_bits=False):
     values = _edges(bits)
     if bits > 1:
@@ -58,6 +129,8 @@ def _sample(rng, pool, k):
 
 
 def _concrete_cases(name, rng, arg_bits):
+    if _lanes(name) is not None:
+        return _vector_cases(name, rng, arg_bits)
     if len(arg_bits) == 1:
         return [(v,) for v in _pool(rng, arg_bits[0], single_bits=True)]
     lbits, rbits = arg_bits
@@ -97,8 +170,12 @@ def _symbolic_cases(name, arg_bits):
         if big_divide and pos == 0:
             continue
         values = _edges(bits)[:3] + _edges(bits)[-2:]
+        arg_lane = _arg_lane(name, bits)
+        if arg_lane is not None:
+            values += [_join(arg_lane, [e] * (bits // arg_lane)) for e in _edges(arg_lane)]
         if pos == 1 and name.startswith(SHIFTS):
-            values += [arg_bits[0] - 1, arg_bits[0], arg_bits[0] + 1]
+            width = _lanes(name)[0] if _lanes(name) else arg_bits[0]
+            values += [width - 1, width, width + 1]
         for value in dict.fromkeys(values):
             args = list(syms)
             args[pos] = claripy.BVV(value, bits)
@@ -136,7 +213,19 @@ def _check(name, args, ret_bits):
         return False
     if actual is None and name.startswith(SHIFTS) and args[0].symbolic and not args[1].symbolic:
         # irop.py leaves the shift unfolded where Rust would fold it to the fill, so Rust declines.
-        assert args[1].concrete_value >= args[0].size(), f"{where}: Rust refused an in-range shift"
+        lanes = _lanes(name)
+        if lanes is None:
+            assert args[1].concrete_value >= args[0].size(), f"{where}: Rust refused an in-range shift"
+        else:
+            lane = lanes[0]
+            amounts = [args[1].concrete_value]
+            if args[1].size() > 8:  # a lane-wise shift
+                amounts = _split(lane, args[1].concrete_value, args[1].size() // lane)
+            assert max(amounts) >= lane, f"{where}: Rust refused an in-range shift"
+        return False
+    if actual is None and irop.operations[name]._generic_name in ("GetElem", "SetElem") and not args[1].symbolic:
+        # libVEX leaves an index past the lane count undefined; irop.py's reading of it stands.
+        assert args[1].concrete_value >= _lanes(name)[1], f"{where}: Rust refused an in-range index"
         return False
     assert actual is not None, f"{where}: Rust refused a call irop.py serves"
     assert isinstance(actual, claripy.ast.BV) and isinstance(expected, claripy.ast.BV), where
@@ -184,6 +273,15 @@ def test_rust_irop_refuses_unserved_calls():
     assert vex_irop.irop("Iop_DivU32", (x32, claripy.BVV(0, 32))) is None
     # irop.py leaves a symbolic value's shift by at least the width unfolded.
     assert vex_irop.irop("Iop_Shl32", (x32, claripy.BVV(32, 8))) is None
+    # The same per lane, for the vector shifts; libVEX leaves both undefined.
+    v128 = claripy.BVS("v", 128)
+    assert vex_irop.irop("Iop_ShlN32x4", (v128, claripy.BVV(32, 8))) is None
+    assert vex_irop.irop("Iop_Shr32x4", (v128, claripy.BVV(32 << 64, 128))) is None
+    assert vex_irop.irop("Iop_ShlN32x4", (v128, claripy.BVV(31, 8))) is not None
+    # libVEX leaves a lane index past the lane count undefined: irop.py reads lane 0 or leaves the vector as is.
+    assert vex_irop.irop("Iop_GetElem32x4", (v128, claripy.BVV(4, 8))) is None
+    assert vex_irop.irop("Iop_SetElem32x4", (v128, claripy.BVV(4, 8), x32)) is None
+    assert vex_irop.irop("Iop_SetElem32x4", (v128, claripy.BVV(3, 8), x32)) is not None
 
 
 def test_rust_irop_exclusions():
@@ -194,6 +292,10 @@ def test_rust_irop_exclusions():
     assert "Iop_ModS128" not in supported
     # FP-sorted on the Python side.
     assert not {n for n in supported if n.startswith("Iop_Reinterp")}
+    # Float lanes are not integer ops; irop.py builds the estimates from fresh symbols.
+    assert not {n for n in supported if n in irop.operations and irop.operations[n]._float}
+    assert not {n for n in supported if "Est" in n or "Step" in n}
+    assert {"Iop_Add8x16", "Iop_QNarrowBin16Sto8Ux16", "Iop_SetElem32x4"} <= supported
     assert datalayer._RUST_IROP_NAMES.issubset(irop.operations)
 
 

@@ -7,10 +7,12 @@
 //! claripy bitvector operator applies. Anything Rust does not serve (a
 //! non-bitvector or annotated literal argument, a width or arity the op does
 //! not take, a literal zero divisor, a symbolic value shifted by a literal of
-//! at least its width) returns `None`, and the caller runs `irop.py`.
+//! at least its width or lane width, a literal lane index past the lane
+//! count) returns `None`, and the caller runs `irop.py`.
 //!
 //! `SUPPORTED` holds the libVEX names of the scalar integer arithmetic,
-//! logic, shift, compare and width-conversion ops Rust implements, less the
+//! logic, shift, compare and width-conversion ops, and of the integer-lane
+//! vector ops ([`is_int_lane_vec`]), that Rust implements, less the
 //! exclusions in [`SERVED`].
 
 use std::collections::HashMap;
@@ -25,7 +27,7 @@ use crate::claripy::ast::base::Base;
 use crate::symbolic::{RustBV, VexOpFamily};
 use crate::vex::ir::{IROp, IRType};
 use crate::vex::opcode_map::parse_opcode;
-use crate::vex::ops::{VEXOps, iropclass};
+use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec};
 
 /// The libVEX names [`irop`] serves, with their parsed opcodes.
 static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
@@ -41,14 +43,15 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 IROp::ModS(IRType::I128) => false,
                 // FP-sorted on the Python side.
                 IROp::Reinterpret { .. } => false,
-                _ => matches!(
-                    iropclass(&op),
+                _ => match iropclass(&op) {
                     VexOpFamily::Arith
-                        | VexOpFamily::Logic
-                        | VexOpFamily::Shift
-                        | VexOpFamily::Cmp
-                        | VexOpFamily::Ext
-                ),
+                    | VexOpFamily::Logic
+                    | VexOpFamily::Shift
+                    | VexOpFamily::Cmp
+                    | VexOpFamily::Ext => true,
+                    VexOpFamily::Vec => is_int_lane_vec(&op),
+                    VexOpFamily::Fp | VexOpFamily::Other => false,
+                },
             };
             serve.then_some((name, op))
         })
@@ -64,11 +67,14 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         return Ok(None);
     };
     let mut imported = Vec::with_capacity(args.len());
+    // SymBV keeps a constant wider than 128 bits as a term, so concreteness is read off claripy's AST.
+    let mut symbolic = Vec::with_capacity(args.len());
     for arg in args.iter() {
         let Ok(base) = arg.cast::<Base>() else {
             // SILENT(cat-a): not a claripy AST; irop.py unwraps or rejects it.
             return Ok(None);
         };
+        symbolic.push(base.get().symbolic());
         let ast = base.get().ast();
         if !matches!(ast.ast_type(), AstType::BitVec(_)) {
             // SILENT(cat-a): not a bitvector; irop.py converts it.
@@ -110,7 +116,23 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
                 // SILENT(cat-a): Rust folds it to the fill; irop.py keeps the shift.
                 return Ok(None);
             }
+            if symbolic[0] && literal_shift_past_lane(op, r) {
+                // SILENT(cat-a): Rust folds the lane to zero; irop.py keeps the shift.
+                return Ok(None);
+            }
+            if literal_index_past_count(op, r) {
+                // SILENT(cat-a): libVEX leaves it undefined; irop.py reads lane 0.
+                return Ok(None);
+            }
             VEXOps::binop(op, l.clone(), r.clone())
+        }
+        // `Iop_SetElem*` is the only served Triop; `binop_with_rm` reads its first operand as the vector.
+        [v, i, x] if matches!(op, IROp::VSetElem { .. }) => {
+            if literal_index_past_count(op, i) {
+                // SILENT(cat-a): libVEX leaves it undefined; irop.py leaves the vector as is.
+                return Ok(None);
+            }
+            VEXOps::binop_with_rm(op, v.clone(), i.clone(), x.clone())
         }
         // SILENT(cat-a): an arity the op does not take; irop.py rejects it.
         _ => return Ok(None),
@@ -128,6 +150,39 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     };
     let out = Base::from_ast(py, ast)?;
     Ok(Some(out.into_any().unbind()))
+}
+
+/// Whether `op` is a left or logical-right vector shift whose literal amount
+/// reaches some lane's width (libVEX leaves that undefined). A literal too
+/// wide for `u128` counts as reaching it.
+fn literal_shift_past_lane(op: IROp, amount: &RustBV) -> bool {
+    let (elem, lanewise) = match op {
+        IROp::VShlN { elem, .. } | IROp::VShrN { elem, .. } => (elem, false),
+        IROp::VShl { elem, .. } | IROp::VShr { elem, .. } => (elem, true),
+        _ => return false,
+    };
+    if amount.is_symbolic() {
+        return false;
+    }
+    let Some(value) = amount.as_u128() else {
+        return true;
+    };
+    let bits = elem.bits();
+    if !lanewise {
+        return value >= u128::from(bits);
+    }
+    let mask = u128::MAX >> (128 - bits);
+    (0..amount.width() / bits).any(|lane| (value >> (lane * bits)) & mask >= u128::from(bits))
+}
+
+/// Whether `op` is a lane get or set whose literal index is past its lane count.
+fn literal_index_past_count(op: IROp, index: &RustBV) -> bool {
+    match op {
+        IROp::VGetElem { count, .. } | IROp::VSetElem { count, .. } => {
+            index.as_u128().is_some_and(|i| i >= u128::from(count))
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn vex_irop(m: &Bound<'_, PyModule>) -> PyResult<()> {
