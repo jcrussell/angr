@@ -332,7 +332,7 @@ def test_rust_irop_exclusions():
     assert not {n for n in supported if n.startswith("Iop_Sub") and "F" in n[7:]}
     # irop.py's float Min/Max match neither x86 nor AArch64 on +-0 and NaN (angr-mx00p.128).
     assert not {n for n in supported if n.startswith(("Iop_Min", "Iop_Max", "Iop_PwMin", "Iop_PwMax")) and "F" in n}
-    # irop.py converts an out-of-range, infinite or NaN lane to 0 (angr-mx00p.129).
+    # libVEX leaves an out-of-range lane undefined, and Rust and irop.py fill it differently (angr-mx00p.129).
     assert not {n for n in supported if n.startswith("Iop_F32toI32")}
     assert datalayer._RUST_IROP_NAMES.issubset(irop.operations)
 

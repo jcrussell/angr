@@ -49,7 +49,8 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 | IROp::VFMaxS { .. }
                 | IROp::VFPwMin { .. }
                 | IROp::VFPwMax { .. } => false,
-                // irop.py converts an out-of-range, infinite or NaN lane to 0 (angr-mx00p.129).
+                // libVEX leaves an out-of-range, infinite or NaN lane undefined; Rust saturates, irop.py's fold
+                // gives 0 (angr-mx00p.129).
                 IROp::VF32toI32 { .. } => false,
                 _ if is_vector_float_op(&op) => true,
                 _ => match iropclass(&op) {

@@ -432,8 +432,9 @@ lanes of a vector register (``vex::ops::is_vector_float_op``), except:
 - the vector float ``Min`` / ``Max`` ops, which x86 and AArch64 define
   differently on signed zeros and NaN and ``irop.py`` matches neither
   (angr-mx00p.128);
-- the packed ``Iop_F32toI32*`` conversions, which ``irop.py`` turns into 0
-  for an out-of-range lane (angr-mx00p.129).
+- the packed ``Iop_F32toI32*`` conversions: libVEX leaves an out-of-range
+  lane undefined, Rust saturates it and ``irop.py`` gives 0
+  (angr-mx00p.129).
 
 Scalar float ops (``Ity_F32`` / ``Ity_F64`` operands) stay in ``irop.py``:
 their arguments and results are claripy floats, not bitvectors.
