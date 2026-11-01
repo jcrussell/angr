@@ -1,12 +1,14 @@
-//! `angr.rustylib.vex_irop`: the Rust integer VEX ops behind the Python
-//! engine's op dispatch (`angr/engines/vex/claripy/datalayer.py`).
+//! `angr.rustylib.vex_irop`: the Rust VEX ops behind the Python engine's op
+//! dispatch (`angr/engines/vex/claripy/datalayer.py`).
 //!
 //! The ops live in [`crate::vex::ops`], which stays PyO3-free; this module is
 //! only the crossing. A claripy argument's term is `Base::ast()`, and the
 //! result goes back with `Base::from_ast` after the same `simplify_ext` every
-//! claripy bitvector operator applies. Anything Rust does not serve (a
-//! non-bitvector or annotated literal argument, a width or arity the op does
-//! not take, a literal zero divisor, a symbolic value shifted by a literal of
+//! claripy bitvector operator applies, carrying a literal argument's
+//! relocatable annotations as claripy's fold does. Anything Rust does not
+//! serve (a non-bitvector argument, a width or arity the op does not take, a
+//! literal with an annotation claripy does not fold through, a
+//! literal zero divisor, a symbolic value shifted by a literal of
 //! at least its width or lane width, a literal lane index past the lane
 //! count) returns `None`, and the caller runs `irop.py`.
 //!
@@ -77,6 +79,7 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         return Ok(None);
     };
     let mut imported = Vec::with_capacity(args.len());
+    let mut carried = Vec::new();
     // SymBV keeps a constant wider than 128 bits as a term, so concreteness is read off claripy's AST.
     let mut symbolic = Vec::with_capacity(args.len());
     for arg in args.iter() {
@@ -91,8 +94,12 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             return Ok(None);
         }
         if matches!(ast.op(), AstOp::BVV(_)) && !ast.annotations().is_empty() {
-            // SILENT(cat-a): `from_clarirs` folds a literal to a value, dropping its annotations.
-            return Ok(None);
+            if ast.annotations().iter().any(|a| !a.relocatable()) {
+                // SILENT(cat-a): claripy does not fold through it; irop.py serves the call.
+                return Ok(None);
+            }
+            // `from_clarirs` folds the literal to a value; claripy carries its annotations onto the result.
+            carried.extend(ast.annotations().iter().cloned());
         }
         let Ok(value) = RustBV::from_clarirs(ast) else {
             // SILENT(cat-a): no SymBV form; irop.py serves the call.
@@ -163,6 +170,13 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     let Ok(ast) = result
         .to_clarirs()
         .and_then(|ast| ast.simplify_ext(true, true))
+        .and_then(|ast| {
+            if carried.is_empty() {
+                Ok(ast)
+            } else {
+                ast.annotate(carried)
+            }
+        })
     else {
         // SILENT(cat-a): irop.py serves the call.
         return Ok(None);

@@ -22,6 +22,7 @@ from angr import claripy, load_shellcode
 from angr.engines.vex.claripy import datalayer, irop
 from angr.errors import UnsupportedIROpError
 from angr.rustylib import vex_irop  # pylint:disable=no-name-in-module
+from angr.rustylib.claripy.annotation import UninitializedAnnotation  # pylint:disable=no-name-in-module
 
 SOLVER_TIMEOUT_MS = 60_000
 DIVIDES = ("Iop_Div", "Iop_Mod")
@@ -70,12 +71,46 @@ def _join(lane, values):
 # Bit patterns of float edges: +-0, +-1, 0.5, +-inf, quiet and signalling NaNs (both signs), the smallest and largest
 # subnormal, the smallest normal, the largest finite value, and values that round differently by mode.
 FLOAT_EDGES = {
-    32: [0, 0x80000000, 0x3F800000, 0xBF800000, 0x3F000000, 0x7F800000, 0xFF800000, 0x7FC00000, 0xFFC00000,
-         0x7FA00000, 0x7FC00001, 0x00000001, 0x007FFFFF, 0x00800000, 0x7F7FFFFF, 0x3EAAAAAB, 0x4B800001, 0xCF000000],
-    64: [0, 0x8000000000000000, 0x3FF0000000000000, 0xBFF0000000000000, 0x3FE0000000000000, 0x7FF0000000000000,
-         0xFFF0000000000000, 0x7FF8000000000000, 0xFFF8000000000000, 0x7FF4000000000000, 0x7FF8000000000001,
-         0x0000000000000001, 0x000FFFFFFFFFFFFF, 0x0010000000000000, 0x7FEFFFFFFFFFFFFF, 0x3FD5555555555555,
-         0x4340000000000001, 0xC1E0000000000000],
+    32: [
+        0,
+        0x80000000,
+        0x3F800000,
+        0xBF800000,
+        0x3F000000,
+        0x7F800000,
+        0xFF800000,
+        0x7FC00000,
+        0xFFC00000,
+        0x7FA00000,
+        0x7FC00001,
+        0x00000001,
+        0x007FFFFF,
+        0x00800000,
+        0x7F7FFFFF,
+        0x3EAAAAAB,
+        0x4B800001,
+        0xCF000000,
+    ],
+    64: [
+        0,
+        0x8000000000000000,
+        0x3FF0000000000000,
+        0xBFF0000000000000,
+        0x3FE0000000000000,
+        0x7FF0000000000000,
+        0xFFF0000000000000,
+        0x7FF8000000000000,
+        0xFFF8000000000000,
+        0x7FF4000000000000,
+        0x7FF8000000000001,
+        0x0000000000000001,
+        0x000FFFFFFFFFFFFF,
+        0x0010000000000000,
+        0x7FEFFFFFFFFFFFFF,
+        0x3FD5555555555555,
+        0x4340000000000001,
+        0xC1E0000000000000,
+    ],
 }
 # libVEX's IRRoundingMode values: nearest-even, -inf, +inf, zero, nearest-away.
 ROUNDING_MODES = [0, 1, 2, 3, 4]
@@ -367,9 +402,74 @@ def test_rust_irop_keeps_annotations():
     actual = vex_irop.irop("Iop_Add32", args)
     assert actual is not None and actual.identical(expected)
     assert set(actual.annotations) == set(expected.annotations) == {RelocAnnotation()}
-    # A literal's annotations would not survive the import, so irop.py serves it.
-    args = (claripy.BVS("y", 32), claripy.BVV(5, 32).annotate(RelocAnnotation()))
-    assert vex_irop.irop("Iop_Add32", args) is None
+
+
+class PinnedAnnotation(claripy.Annotation):
+    """Neither relocatable nor eliminatable: claripy does not simplify through it."""
+
+    relocatable = False
+    eliminatable = False
+
+    def __hash__(self):
+        return hash(PinnedAnnotation)
+
+    def __eq__(self, other):
+        return isinstance(other, PinnedAnnotation)
+
+
+# The ops the Python engine reached with an UninitializedAnnotation literal on the drop-in survey.
+ANNOTATED_LITERAL_OPS = [
+    "Iop_And32",
+    "Iop_Or32",
+    "Iop_Xor8",
+    "Iop_Add8",
+    "Iop_Add32",
+    "Iop_Add64",
+    "Iop_Sub32",
+    "Iop_Shl32",
+    "Iop_Shr32",
+    "Iop_CmpEQ32",
+    "Iop_CmpNE32",
+    "Iop_CmpNE64",
+    "Iop_32to1",
+    "Iop_32to8",
+    "Iop_64to1",
+    "Iop_64to8",
+    "Iop_1Uto8",
+    "Iop_1Uto32",
+    "Iop_1Uto64",
+    "Iop_8Uto64",
+]
+
+
+@pytest.mark.parametrize("name", ANNOTATED_LITERAL_OPS)
+def test_rust_irop_carries_a_literal_s_annotations(name):
+    ret_bits, arg_bits = _signature(name)
+    rng = random.Random(name)
+    for pos in range(len(arg_bits)):
+        for annotation in (RelocAnnotation(), UninitializedAnnotation()):
+            for other in ("symbolic", "concrete"):
+                args = []
+                for i, bits in enumerate(arg_bits):
+                    # A shift amount stays below the width: Rust leaves a symbolic value's wider shift to irop.py.
+                    value = claripy.BVV(
+                        rng.getrandbits(bits) % (arg_bits[0] if name.startswith(SHIFTS) else 1 << bits), bits
+                    )
+                    if i == pos:
+                        args.append(value.annotate(annotation))
+                    elif other == "symbolic":
+                        args.append(claripy.BVS(f"a{i}", bits))
+                    else:
+                        args.append(value)
+                expected = _python(name, args)[0]
+                assert _check(name, args, ret_bits), f"{name}{tuple(args)}: Rust refused"
+                actual = vex_irop.irop(name, tuple(args))
+                assert set(actual.annotations) == set(expected.annotations), f"{name}{tuple(args)}"
+                assert any(type(a) is type(annotation) for a in actual.annotations)
+    # claripy does not fold through a pinned annotation, so irop.py serves the call.
+    args = [claripy.BVV(1, bits) for bits in arg_bits]
+    args[0] = args[0].annotate(PinnedAnnotation())
+    assert vex_irop.irop(name, tuple(args)) is None
 
 
 # mov r8d, edi ; add r8d, esi ; mov r9d, edi ; sub r9d, esi ; mov r10d, edi ; imul r10d, esi ; movzx r11d, dil ;
