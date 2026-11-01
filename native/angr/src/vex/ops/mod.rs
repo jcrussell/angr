@@ -958,6 +958,8 @@ impl VEXOps {
             // interpreter's Binop dispatch routes the rm through
             // unop_with_rm instead of falling back to a fresh symbolic.
             IROp::FSqrt(_) => Self::unop_with_rm(op, left, right),
+            // Iop_Sqrt32Fx4 / Sqrt64Fx2 likewise arrive as (rm, value).
+            IROp::VFSqrt { .. } => Self::unop_with_rm(op, left, right),
 
             // NEON scaffolding: surface as a typed error rather than silently
             // falling back. interpreter::expressions special-cases
@@ -1058,6 +1060,25 @@ impl VEXOps {
             return Self::vec_set_elem(rm, left, right, elem, count);
         }
 
+        if let IROp::VFAdd { elem, count }
+        | IROp::VFSub { elem, count }
+        | IROp::VFMul { elem, count }
+        | IROp::VFDiv { elem, count } = op
+        {
+            if let Some(m) = rm.as_u128()
+                && VexRm::decode(m)? == VexRm::NearestEven
+            {
+                return Self::binop(op, left, right);
+            }
+            let kind = match op {
+                IROp::VFAdd { .. } => FloatOpKind::AddRm,
+                IROp::VFSub { .. } => FloatOpKind::SubRm,
+                IROp::VFMul { .. } => FloatOpKind::MulRm,
+                _ => FloatOpKind::DivRm,
+            };
+            return Self::vec_float_lane_rm(&rm, &[left, right], elem, count, kind);
+        }
+
         let (kind_rm, ty) = match op {
             IROp::FAdd(t) => (FloatOpKind::AddRm, t),
             IROp::FSub(t) => (FloatOpKind::SubRm, t),
@@ -1099,6 +1120,14 @@ impl VEXOps {
     /// through `FloatOpKind::SqrtRm`.
     #[inline]
     pub fn unop_with_rm(op: IROp, rm: RustBV, arg: RustBV) -> Result<RustBV, OpError> {
+        if let IROp::VFSqrt { elem, count } = op {
+            if let Some(m) = rm.as_u128()
+                && VexRm::decode(m)? == VexRm::NearestEven
+            {
+                return Self::unop(op, arg);
+            }
+            return Self::vec_float_lane_rm(&rm, &[arg], elem, count, FloatOpKind::SqrtRm);
+        }
         let (kind_rm, ty) = match op {
             IROp::FSqrt(t) => (FloatOpKind::SqrtRm, t),
             _ => return Self::unop(op, arg),

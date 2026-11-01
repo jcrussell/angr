@@ -25,7 +25,7 @@ use pyo3::types::PyTuple;
 
 use crate::ailment::vexop_names::IROP_NAMES;
 use crate::claripy::ast::base::Base;
-use crate::symbolic::{RustBV, VexOpFamily, VexRm};
+use crate::symbolic::{RustBV, VexOpFamily};
 use crate::vex::ir::IROp;
 use crate::vex::opcode_map::parse_opcode;
 use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec, is_vector_float_op};
@@ -100,23 +100,6 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         };
         imported.push(value);
     }
-    // Packed float arithmetic carries the VEX rounding mode first; Rust computes it round-to-nearest-even only.
-    let takes_rm = match op {
-        IROp::VFAdd { .. } | IROp::VFSub { .. } | IROp::VFMul { .. } | IROp::VFDiv { .. } => {
-            imported.len() == 3
-        }
-        IROp::VFSqrt { .. } => imported.len() == 2,
-        _ => false,
-    };
-    if takes_rm {
-        let mode = imported[0].as_u128().map(VexRm::decode);
-        if !matches!(mode, Some(Ok(VexRm::NearestEven))) {
-            // SILENT(cat-a): another or a symbolic rounding mode; irop.py honours it.
-            return Ok(None);
-        }
-        imported.remove(0);
-        symbolic.remove(0);
-    }
     let result = match imported.as_slice() {
         [a] => VEXOps::unop(op, a.clone()),
         [l, r] => {
@@ -153,13 +136,22 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             }
             VEXOps::binop(op, l.clone(), r.clone())
         }
-        // `Iop_SetElem*` is the only served Triop; `binop_with_rm` reads its first operand as the vector.
+        // `Iop_SetElem*` (`binop_with_rm` reads its first operand as the vector) and packed float arithmetic
+        // under the VEX rounding mode are the served Triops.
         [v, i, x] if matches!(op, IROp::VSetElem { .. }) => {
             if literal_index_past_count(op, i) {
                 // SILENT(cat-a): libVEX leaves it undefined; irop.py leaves the vector as is.
                 return Ok(None);
             }
             VEXOps::binop_with_rm(op, v.clone(), i.clone(), x.clone())
+        }
+        [rm, l, r]
+            if matches!(
+                op,
+                IROp::VFAdd { .. } | IROp::VFSub { .. } | IROp::VFMul { .. } | IROp::VFDiv { .. }
+            ) =>
+        {
+            VEXOps::binop_with_rm(op, rm.clone(), l.clone(), r.clone())
         }
         // SILENT(cat-a): an arity the op does not take; irop.py rejects it.
         _ => return Ok(None),

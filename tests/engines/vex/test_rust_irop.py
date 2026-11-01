@@ -190,7 +190,7 @@ def _concrete_cases(name, rng, arg_bits):
 def _symbolic_cases(name, arg_bits):
     syms = [claripy.BVS(f"a{i}", bits) for i, bits in enumerate(arg_bits)]
     if _takes_rm(name):
-        # A symbolic rounding mode is declined (test_rust_irop_declines_other_rounding_modes); fix it to nearest-even.
+        # The concrete cases cover every mode; a symbolic one makes the float equivalence proofs slow.
         syms[0] = claripy.BVV(0, arg_bits[0])
     if 1 in arg_bits:
         flag = claripy.If(claripy.BoolS("flag"), claripy.BVV(1, 1), claripy.BVV(0, 1))
@@ -254,10 +254,6 @@ def _check(name, args, ret_bits):
             if args[1].size() > 8:  # a lane-wise shift
                 amounts = _split(lane, args[1].concrete_value, args[1].size() // lane)
             assert max(amounts) >= lane, f"{where}: Rust refused an in-range shift"
-        return False
-    if actual is None and _takes_rm(name):
-        # Rust computes packed float arithmetic round-to-nearest-even only; irop.py honours the other modes.
-        assert args[0].symbolic or args[0].concrete_value != 0, f"{where}: Rust refused a nearest-even call"
         return False
     if actual is None and irop.operations[name]._generic_name in ("GetElem", "SetElem") and not args[1].symbolic:
         # libVEX leaves an index past the lane count undefined; irop.py's reading of it stands.
@@ -344,13 +340,11 @@ def test_engine_honours_irop_operations_edits(monkeypatch):
     assert _seam("Iop_Add32", args)[1] is UnsupportedIROpError
 
 
-def test_rust_irop_declines_other_rounding_modes():
+def test_rust_irop_honours_a_symbolic_rounding_mode():
     a, b = claripy.BVS("a", 128), claripy.BVS("b", 128)
-    assert vex_irop.irop("Iop_Add32Fx4", (claripy.BVV(0, 32), a, b)) is not None
-    for rm in (claripy.BVV(1, 32), claripy.BVV(3, 32), claripy.BVS("rm", 32)):
-        assert vex_irop.irop("Iop_Add32Fx4", (rm, a, b)) is None
-        assert vex_irop.irop("Iop_Sqrt64Fx2", (rm, a)) is None
-        assert _seam("Iop_Add32Fx4", (rm, a, b))[0] is not None
+    rm = claripy.BVS("rm", 32)
+    result = vex_irop.irop("Iop_Add32Fx4", (rm, a, b))
+    assert result is not None and rm.variables <= result.variables
 
 
 class RelocAnnotation(claripy.Annotation):

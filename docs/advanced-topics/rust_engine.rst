@@ -444,9 +444,7 @@ Rust refuses a division by a literal zero (``irop.py`` raises
 at least its width or, for a vector shift, its lane width (``irop.py``
 leaves that shift unfolded), a literal ``GetElem`` / ``SetElem`` index
 past the lane count (undefined in libVEX; ``irop.py`` reads lane 0 or
-leaves the vector as is), packed float arithmetic under any rounding
-mode but a literal nearest-even (Rust computes those lanes nearest-even
-only, angr-mx00p.130), and any
+leaves the vector as is), and any
 argument it does not take as given, such as one narrower than the op's
 signature, a non-bitvector or an annotated literal; ``irop.py`` runs
 those calls. The result is simplified as every claripy

@@ -161,6 +161,11 @@ struct RmOpEntry {
 fn f32_bits(v: f32) -> u128 {
     v.to_bits() as u128
 }
+/// `lane` repeated `count` times, lane 0 lowest.
+fn splat(lane: u128, width: u32, count: u32) -> u128 {
+    (0..count).fold(0, |acc, i| acc | (lane << (i * width)))
+}
+
 fn f64_bits(v: f64) -> u128 {
     v.to_bits() as u128
 }
@@ -416,6 +421,32 @@ fn all_rm_ops() -> Vec<RmOpEntry> {
             IROp::FSqrt(IRType::F64),
             vec![(f64_bits(2.0), 64)],
         ),
+        // -- Packed forms: the same tie cases in every lane (angr-mx00p.130). --
+        binop_with_rm_entry(
+            "VFAdd(F32x4)",
+            IROp::VFAdd { elem: IRType::F32, count: 4 },
+            vec![(splat(f32_bits(add_a_f32), 32, 4), 128), (splat(f32_bits(add_b_f32), 32, 4), 128)],
+        ),
+        binop_with_rm_entry(
+            "VFSub(F64x2)",
+            IROp::VFSub { elem: IRType::F64, count: 2 },
+            vec![(splat(f64_bits(add_a_f64), 64, 2), 128), (splat(f64_bits(-add_b_f64), 64, 2), 128)],
+        ),
+        binop_with_rm_entry(
+            "VFMul(F32x4)",
+            IROp::VFMul { elem: IRType::F32, count: 4 },
+            vec![(splat(f32_bits(add_a_f32), 32, 4), 128), (splat(f32_bits(add_a_f32), 32, 4), 128)],
+        ),
+        binop_with_rm_entry(
+            "VFDiv(F64x2)",
+            IROp::VFDiv { elem: IRType::F64, count: 2 },
+            vec![(splat(f64_bits(1.0), 64, 2), 128), (splat(f64_bits(10.0), 64, 2), 128)],
+        ),
+        unop_with_rm_entry(
+            "VFSqrt(F32x4)",
+            IROp::VFSqrt { elem: IRType::F32, count: 4 },
+            vec![(splat(f32_bits(2.0), 32, 4), 128)],
+        ),
         // -- Family B: `qop_with_rm` arms (rm + 3 operands). --
         qop_with_rm_entry(
             "FMAdd(F32)",
@@ -588,12 +619,14 @@ fn eval_rne_only_sibling(
 
 /// Build an `IRConst` carrying `bits` at `width`, for the interpreter-level
 /// dispatch call below. Only the widths `all_rm_ops()`'s Family-B cases
-/// actually use (rm is always 32-bit; FP operands are 32 or 64-bit).
+/// actually use (rm is always 32-bit; FP operands are 32 or 64-bit, packed
+/// ones 128).
 fn irconst_for(bits: u128, width: u32) -> crate::vex::ir::IRConst {
     use crate::vex::ir::IRConst;
     match width {
         32 => IRConst::U32(bits as u32),
         64 => IRConst::U64(bits as u64),
+        128 => IRConst::U128(bits),
         other => {
             panic!("irconst_for: unsupported operand width {other} in dispatcher-selection sweep")
         }

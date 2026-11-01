@@ -1,7 +1,9 @@
 //! Generic per-lane packed floating-point VEX op dispatcher.
 
-use super::{FLOAT_LANE_OP_MAX_ARITY, FloatLaneOp, OpError, VEXOps, float_prec_of};
-use crate::symbolic::RustBV;
+use super::{
+    FLOAT_LANE_OP_MAX_ARITY, FloatLaneOp, OpError, VEXOps, build_float_expr, float_prec_of,
+};
+use crate::symbolic::{FloatOpKind, RustBV};
 use crate::vex::ir::IRType;
 
 impl VEXOps {
@@ -81,6 +83,36 @@ impl VEXOps {
             let lane_args: Vec<RustBV> = args.iter().map(|a| a.extract(hi, lo)).collect();
             elements.push(op.symbolic(lane_args, prec));
         }
+        Ok(Self::concat_le_elements(elements))
+    }
+
+    /// Packed FP arithmetic under the VEX rounding mode `rm`: each lane is the
+    /// `kind` term over `rm` and that lane of `args`, as the scalar `*Rm` ops
+    /// build it.
+    pub(super) fn vec_float_lane_rm(
+        rm: &RustBV,
+        args: &[RustBV],
+        elem: IRType,
+        count: u8,
+        kind: FloatOpKind,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        for a in args {
+            Self::require_operand_width(
+                "vec_float_lane_rm a",
+                a.width(),
+                elem_width * u32::from(count),
+            )?;
+        }
+        let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
+        let elements = (0..u32::from(count))
+            .map(|i| {
+                let lo = i * elem_width;
+                let mut operands = vec![rm.clone()];
+                operands.extend(args.iter().map(|a| a.extract(lo + elem_width - 1, lo)));
+                build_float_expr(kind, prec, operands)
+            })
+            .collect();
         Ok(Self::concat_le_elements(elements))
     }
 }
