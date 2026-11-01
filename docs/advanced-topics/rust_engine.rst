@@ -423,9 +423,6 @@ width-conversion ops Rust implements, and the vector ops whose lanes are
 integers (``vex::ops::is_int_lane_vec``) or that compute on the float
 lanes of a vector register (``vex::ops::is_vector_float_op``), except:
 
-- ``Iop_Shl64``, ``Iop_Shr64`` and ``Iop_Sar64``, whose ``irop.py``
-  results pass through the clarirs shift folds that truncate the amount
-  (angr-mx00p.105);
 - the ``Iop_Reinterp*`` ops, which are floating-point sorted on the
   Python side;
 - the ``Iop_RecipEst*`` / ``Iop_RSqrtEst*`` / ``*Step`` estimates, which

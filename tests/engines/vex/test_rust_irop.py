@@ -322,8 +322,6 @@ def test_rust_irop_refuses_unserved_calls():
 
 def test_rust_irop_exclusions():
     supported = set(vex_irop.SUPPORTED)
-    # irop.py's results pass through clarirs' shift folds, which truncate the amount (angr-mx00p.105).
-    assert not supported & {"Iop_Shl64", "Iop_Shr64", "Iop_Sar64"}
     # FP-sorted on the Python side.
     assert not {n for n in supported if n.startswith("Iop_Reinterp")}
     # irop.py builds the estimates from fresh symbols.

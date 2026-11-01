@@ -120,10 +120,6 @@ const UNARY: [Op; 6] = [Neg, Not, Reverse, Clz, Ctz, Popcount];
 const COMPARE: [Op; 10] = [Eq, Ne, Ult, Ule, Ugt, Uge, Slt, Sle, Sgt, Sge];
 
 impl Op {
-    fn is_shift(self) -> bool {
-        matches!(self, Shl | Lshr | Ashr)
-    }
-
     fn is_mul_div(self) -> bool {
         matches!(self, Mul | UDiv | SDiv | URem | SRem)
     }
@@ -272,10 +268,6 @@ fn assert_folds_like_clarirs(op: Op, args: &[Term]) {
     assert_eq!(folded, reference, "{op:?} over {args:?}");
 }
 
-fn shift_amount_is_large(amount: &BitVec) -> bool {
-    amount.to_biguint() >= BigUint::from(1u64 << 32)
-}
-
 #[test]
 fn fold_matches_clarirs_simplify() {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
@@ -283,17 +275,11 @@ fn fold_matches_clarirs_simplify() {
         for i in 0..FOLD_ITERATIONS {
             let (a, b) = (rng.bv(width), rng.bv(width));
             let divisor_is_zero = b.is_zero();
-            let b_value = b.clone();
             let (x, y) = (bvv(a), bvv(b));
             let check = |op: Op, args: &[Term]| assert_folds_like_clarirs(op, args);
             for op in BINARY {
                 // A division by zero is left unfolded on purpose: claripy raises.
                 if divisor_is_zero && matches!(op, UDiv | SDiv | URem | SRem) {
-                    continue;
-                }
-                // clarirs's shift folds misread an amount of 2^32 or more, and
-                // any amount wider than 64 bits (angr-mx00p.105).
-                if op.is_shift() && (width > 64 || shift_amount_is_large(&b_value)) {
                     continue;
                 }
                 check(op, &[x.clone(), y.clone()]);
@@ -366,21 +352,6 @@ enum Plan {
 }
 
 impl Plan {
-    fn width(&self) -> u32 {
-        match self {
-            Plan::Leaf(_, w) => *w,
-            Plan::Const(v) => v.len(),
-            Plan::Op(op, kids) => match *op {
-                _ if COMPARE.contains(op) => 1,
-                ZeroExt(to) | SignExt(to) | Truncate(to) => to,
-                Extract(high, low) => high - low + 1,
-                Concat => kids[0].width() + kids[1].width(),
-                Ite => kids[1].width(),
-                _ => kids[0].width(),
-            },
-        }
-    }
-
     fn name(i: u32, width: u32) -> String {
         format!("x{i}_{width}")
     }
@@ -413,13 +384,6 @@ impl Plan {
             Plan::Leaf(i, w) if !out.contains(&(*i, *w)) => out.push((*i, *w)),
             Plan::Leaf(..) | Plan::Const(_) => {}
             Plan::Op(_, kids) => kids.iter().for_each(|k| k.leaves(out)),
-        }
-    }
-
-    fn any(&self, pred: &dyn Fn(Op, u32) -> bool) -> bool {
-        match self {
-            Plan::Op(op, kids) => pred(*op, self.width()) || kids.iter().any(|k| k.any(pred)),
-            _ => false,
         }
     }
 }
@@ -592,16 +556,11 @@ fn op_trees_match_their_raw_terms() {
                 &format!("(a) {plan:?}"),
             );
 
-            // Shifts wider than 32 bits are left out of the simplify check:
-            // clarirs's shift folds misread an amount of 2^32 or more
-            // (angr-mx00p.105).
-            if !plan.any(&|op, w| op.is_shift() && w > 32) {
-                let simplified = term.simplify().unwrap();
-                assert_unsat(
-                    &[ctx.neq(simplified, raw.clone()).unwrap()],
-                    &format!("(b) {plan:?}"),
-                );
-            }
+            let simplified = term.simplify().unwrap();
+            assert_unsat(
+                &[ctx.neq(simplified, raw.clone()).unwrap()],
+                &format!("(b) {plan:?}"),
+            );
 
             let mut leaves = Vec::new();
             plan.leaves(&mut leaves);
@@ -867,11 +826,6 @@ mod float {
         out
     }
 
-    /// Whether `bits` is a zero of `width` bits.
-    pub(super) fn is_zero(bits: u64, width: u32) -> bool {
-        bits & !(1 << (width - 1)) == 0
-    }
-
     /// An in-range operand of a float-to-integer conversion: out of range
     /// the result is unspecified.
     pub(super) fn in_range(kind: K, prec: FloatPrec, bits: u64) -> bool {
@@ -953,18 +907,6 @@ fn float_ops_match_their_raw_terms() {
                 }
                 let floats = &values[usize::from(float::takes_rm(kind))..];
                 if !floats.iter().all(|&v| float::in_range(kind, prec, v)) {
-                    continue;
-                }
-                // compare_fp folds fpEQ(+0, -0) to false, where fp.eq gives
-                // true (angr-mx00p.104).
-                if kind == crate::FloatOpKind::CmpEq
-                    && floats.iter().all(|&v| float::is_zero(v, prec.bits()))
-                {
-                    continue;
-                }
-                // The FP arithmetic folds round to nearest whatever the mode
-                // (angr-mx00p.97).
-                if float::takes_rm(kind) && values[0] != 0 {
                     continue;
                 }
                 let terms: Vec<Term> = values

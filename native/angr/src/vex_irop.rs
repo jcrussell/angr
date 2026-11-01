@@ -26,7 +26,7 @@ use pyo3::types::PyTuple;
 use crate::ailment::vexop_names::IROP_NAMES;
 use crate::claripy::ast::base::Base;
 use crate::symbolic::{RustBV, VexOpFamily, VexRm};
-use crate::vex::ir::{IROp, IRType};
+use crate::vex::ir::IROp;
 use crate::vex::opcode_map::parse_opcode;
 use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec, is_vector_float_op};
 
@@ -37,9 +37,6 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
         .filter_map(|&name| {
             let op = parse_opcode(name);
             let serve = match op {
-                // irop.py's results pass through clarirs' shift folds, which read the amount with
-                // `to_u64().unwrap_or(0) as u32` (angr-mx00p.105).
-                IROp::Shl(IRType::I64) | IROp::Shr(IRType::I64) | IROp::Sar(IRType::I64) => false,
                 // FP-sorted on the Python side.
                 IROp::Reinterpret { .. } => false,
                 // clarirs folds fpSub of a NaN as an add of its negation, flipping the NaN's sign (angr-mx00p.127).
