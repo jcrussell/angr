@@ -57,7 +57,11 @@
 #
 #   2. run_regression.py — the fast-tier benchmark regression check, mirroring
 #      .github/workflows/ci.yml::benchmark_regression
-#      (--rust-only --skip-bimodal --threshold 0.15).
+#      (--rust-only --skip-bimodal --threshold 0.15 --check-counts --correctness).
+#
+#      --check-counts and --correctness make a wrong answer fail the gate:
+#      under --rust-only the output comparison is skipped, so without them the
+#      step failed only on timing, RSS or a crash (angr-vmi2l.304).
 #
 #      --retry-failures 2: sub-second fast-tier benches are noise-dominated. Per
 #      the `benchmark-regression-noise-floor` memory, a single failing run is not
@@ -104,4 +108,5 @@ fi
 
 echo "== ralph gate [2/2]: fast-tier benchmark regression =="
 exec python tests/benchmarks/run_regression.py \
-    --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2
+    --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 \
+    --check-counts --correctness
