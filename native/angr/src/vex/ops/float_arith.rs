@@ -164,6 +164,11 @@ impl VEXOps {
     }
 
     /// Fused multiply-add: a*b + c
+    ///
+    /// The native `mul_add` serves a non-NaN result only. Under
+    /// `target-cpu=native` it is an x86 `vfmadd`/`vfmsub`, whose NaN result is
+    /// an input NaN chosen by the instruction form and never negated; the
+    /// expression fold picks the NaN as `irop.py`'s `fpFMA` does.
     pub(super) fn float_madd(
         a: RustBV,
         b: RustBV,
@@ -176,23 +181,29 @@ impl VEXOps {
                     let af = f32::from_bits(av as u32);
                     let bf = f32::from_bits(bv as u32);
                     let cf = f32::from_bits(cv as u32);
-                    af.mul_add(bf, cf).to_bits() as u128
+                    Some(af.mul_add(bf, cf))
+                        .filter(|r| !r.is_nan())
+                        .map(|r| r.to_bits() as u128)
                 }
                 IRType::F64 => {
                     let af = f64::from_bits(av as u64);
                     let bf = f64::from_bits(bv as u64);
                     let cf = f64::from_bits(cv as u64);
-                    af.mul_add(bf, cf).to_bits() as u128
+                    Some(af.mul_add(bf, cf))
+                        .filter(|r| !r.is_nan())
+                        .map(|r| r.to_bits() as u128)
                 }
                 _ => return Err(OpError::InvalidFloatType(ty)),
             };
-            return Ok(RustBV::concrete(result, ty.bits()));
+            if let Some(result) = result {
+                return Ok(RustBV::concrete(result, ty.bits()));
+            }
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         Ok(build_float_expr(FloatOpKind::Fma, prec, vec![a, b, c]))
     }
 
-    /// Fused multiply-sub: a*b - c
+    /// Fused multiply-sub: a*b - c, under [`Self::float_madd`]'s NaN rule.
     pub(super) fn float_msub(
         a: RustBV,
         b: RustBV,
@@ -205,17 +216,23 @@ impl VEXOps {
                     let af = f32::from_bits(av as u32);
                     let bf = f32::from_bits(bv as u32);
                     let cf = f32::from_bits(cv as u32);
-                    af.mul_add(bf, -cf).to_bits() as u128
+                    Some(af.mul_add(bf, -cf))
+                        .filter(|r| !r.is_nan())
+                        .map(|r| r.to_bits() as u128)
                 }
                 IRType::F64 => {
                     let af = f64::from_bits(av as u64);
                     let bf = f64::from_bits(bv as u64);
                     let cf = f64::from_bits(cv as u64);
-                    af.mul_add(bf, -cf).to_bits() as u128
+                    Some(af.mul_add(bf, -cf))
+                        .filter(|r| !r.is_nan())
+                        .map(|r| r.to_bits() as u128)
                 }
                 _ => return Err(OpError::InvalidFloatType(ty)),
             };
-            return Ok(RustBV::concrete(result, ty.bits()));
+            if let Some(result) = result {
+                return Ok(RustBV::concrete(result, ty.bits()));
+            }
         }
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         Ok(build_float_expr(FloatOpKind::Fms, prec, vec![a, b, c]))

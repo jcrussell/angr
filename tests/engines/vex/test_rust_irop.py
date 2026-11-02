@@ -190,6 +190,15 @@ def _scalar_float_cases(name, rng, arg_bits):
         # Each edge against itself and its negation: +0 == -0, a NaN is unordered even with itself.
         sign = 1 << (float_bits[0] - 1)
         values += [(m, e, f) for m in modes for e in FLOAT_EDGES[float_bits[0]] for f in (e, e ^ sign)]
+    elif len(pools) == 4:
+        values += [
+            (m, a, b, c)
+            for m in modes
+            for a in _sample(rng, pools[1], 3)
+            for b in _sample(rng, pools[2], 3)
+            for c in _sample(rng, pools[3], 3)
+        ]
+        values += [(m, *triple) for m in modes for triple in _fused_triples(float_bits[0])]
     else:
         values += [(m, a) for m in modes for a in pools[1]]
     for i, case in enumerate(dict.fromkeys(values)):
@@ -198,6 +207,24 @@ def _scalar_float_cases(name, rng, arg_bits):
             _operand(v, b, f, (i + pos) % 2 == 0) for pos, (v, b, f) in enumerate(zip(case[1:], float_bits, floats))
         ]
         yield args
+
+
+def _fused_triples(bits):
+    """Multiply-add operands whose fused and unfused results differ: (1 + u)(1 - u) +- 1 is -+u^2 exactly but 0
+    rounded per step, and 1 * 1 +- u^2 rounds away from 1 only under a directed mode (u is one ulp of 1). A NaN addend
+    of either sign: x86 vfmsub returns it unnegated, irop.py's fpFMA negates it first."""
+    mant = 23 if bits == 32 else 52
+    exp = 8 if bits == 32 else 11
+    one = ((1 << (exp - 1)) - 1) << mant
+    sign = 1 << (bits - 1)
+    tiny = ((1 << (exp - 1)) - 1 - 2 * mant) << mant  # u^2
+    below = (((1 << (exp - 1)) - 2) << mant) | ((1 << mant) - 2)  # 1 - u
+    nan = (((1 << exp) - 1) << mant) | (1 << (mant - 1))
+    return [
+        *((one + 1, below, c) for c in (one, one | sign)),
+        *((one, one, c) for c in (tiny, tiny | sign)),
+        *((one, one, c) for c in (nan, nan | sign)),
+    ]
 
 
 def _scalar_float_symbolic_cases(name, arg_bits):
@@ -624,7 +651,6 @@ UNSERVED = {
         ("Iop_RSqrtEst32F0x4", "Iop_RSqrtEst32Fx2", "Iop_RSqrtEst32Fx4", "Iop_RSqrtEst32Fx8", "Iop_RSqrtEst64Fx2"),
         "stays: irop.py builds the estimate from fresh symbols",
     ),
-    **dict.fromkeys(("Iop_MAddF32", "Iop_MAddF64", "Iop_MSubF32", "Iop_MSubF64"), "Rust family Fp: fused multiply-add"),
     # Scalar integer.
     **dict.fromkeys(
         (

@@ -17,8 +17,8 @@
 //! logic, shift, compare and width-conversion ops, and of the integer-lane
 //! vector ops ([`is_int_lane_vec`]) and the vector float ops
 //! ([`is_vector_float_op`]) that Rust implements, less the exclusions in
-//! [`SERVED`], and of the scalar float arithmetic, sign, compare and
-//! float-to-float, float-to-int and round-to-integral conversion ops
+//! [`SERVED`], and of the scalar float arithmetic, fused multiply-add, sign,
+//! compare and float-to-float, float-to-int and round-to-integral conversion ops
 //! ([`scalar_float_type`]) and the int-to-float conversions
 //! ([`is_int_to_float`]).
 //!
@@ -204,6 +204,10 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         {
             VEXOps::binop_with_rm(op, rm.clone(), l.clone(), r.clone())
         }
+        // `Iop_M{Add,Sub}F*` round `a * b +- c` once under the VEX rounding mode.
+        [rm, a, b, c] if matches!(op, IROp::FMAdd(_) | IROp::FMSub(_)) => {
+            VEXOps::qop_with_rm(op, rm.clone(), a.clone(), b.clone(), c.clone())
+        }
         // SILENT(cat-a): an arity the op does not take; irop.py rejects it.
         _ => return Ok(None),
     };
@@ -239,7 +243,7 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
 }
 
 /// The operand float type of a served scalar float op
-/// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp}F{32,64}`, `Iop_F32toF64`,
+/// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp,MAdd,MSub}F{32,64}`, `Iop_F32toF64`,
 /// `Iop_F64toF32`, `Iop_F{32,64}toI{32,64}{S,U}`, `Iop_F64toI16S`, `Iop_RoundF{32,64}toInt`),
 /// whose float operands `irop.py` takes FP-sorted.
 fn scalar_float_type(op: IROp) -> Option<IRType> {
@@ -256,6 +260,8 @@ fn scalar_float_type(op: IROp) -> Option<IRType> {
         | IROp::FAbs(ty)
         | IROp::FNeg(ty)
         | IROp::FComCC(ty)
+        | IROp::FMAdd(ty)
+        | IROp::FMSub(ty)
             if matches!(ty, IRType::F32 | IRType::F64) =>
         {
             Some(ty)
