@@ -1867,7 +1867,11 @@ in Rust mode.
      - Rust always copies on fork via ``RustSimState::fork``.
        Functionally always-on.
    * - ``UNICORN``, ``UNICORN_*``
-     - Rust does not integrate with the unicorn engine.
+     - Rust does not integrate with the unicorn engine. A seed with
+       ``UNICORN`` set routes a ``Project(engine="rust")`` manager to
+       Python (``_PYTHON_ROUTED_OPTION_NAMES``): a unicorn step runs
+       many concrete blocks, so step counts would differ. An explicit
+       ``engine="rust"`` manager ignores it.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
 

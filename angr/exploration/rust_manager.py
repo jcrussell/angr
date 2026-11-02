@@ -97,7 +97,7 @@ from pyvex.errors import PyVEXError
 
 from angr import claripy
 from angr.claripy.errors import ClaripyError
-from angr.errors import AngrError, SimEngineError, SimError, SimSolverError, SimStateError
+from angr.errors import AngrError, SimEngineError, SimError, SimSolverError, SimStateError, SimZeroDivisionException
 from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
@@ -234,6 +234,12 @@ _RAISE_OPTION_NAMES = frozenset(
         "PRODUCE_ZERODIV_SUCCESSORS",  # Z3 division is total, so no SigFPE successor exists (angr-op0dn.14.9)
     }
 )
+
+# Route a default-routed manager to Python, but are not refused by an explicit
+# engine="rust" manager, which ignores them. UNICORN makes one Python step run
+# every concrete block up to the next symbolic one, so step counts (and where a
+# state errors) change; the Rust engine has no unicorn mode (angr-mx00p.132.10).
+_PYTHON_ROUTED_OPTION_NAMES = frozenset({"UNICORN"})
 
 # Options whose ABSENCE the engine cannot honor. EXTENDED_IROP_SUPPORT ships in
 # every bundle and only widens Python's op table; unset, a user asks for the
@@ -387,7 +393,10 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
         return False, "simulation_manager kwargs not honored by the rust engine: " + ", ".join(unsupported_kwargs)
 
     for state in states or ():
-        offending = rust_unsupported_options(getattr(state, "options", None))
+        options = getattr(state, "options", None)
+        offending = rust_unsupported_options(options)
+        if options is not None:
+            offending += sorted(name for name in _PYTHON_ROUTED_OPTION_NAMES if name in options)
         if offending:
             return False, "state options not honored by the rust engine: " + ", ".join(offending)
 
@@ -702,11 +711,18 @@ class RustErrorRecord:
         ("need lift at", "need_lift"),
         ("need python fallback", "need_python_fallback"),
         ("resolve_function error", "resolve_function"),
+        ("unexecutable vex trap exit", "trap"),
     )
+
+    # The interpreter takes this trap exit only on a concretely zero divisor,
+    # where Python's irop.py raises SimZeroDivisionException (angr-mx00p.132.10).
+    _ZERODIV_TRAP = "unexecutable VEX trap exit Ijk_SigFPE_IntDiv"
 
     def __init__(self, state, message: str, addr: int = 0):
         self.state = state
-        self.error = RuntimeError(message)
+        self.error = (
+            SimZeroDivisionException(message) if message.startswith(self._ZERODIV_TRAP) else RuntimeError(message)
+        )
         self.addr = addr
         self.error_class = self._classify(message)
         self.constraint_count = self._count_constraints(state)

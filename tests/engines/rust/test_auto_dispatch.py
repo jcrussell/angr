@@ -107,6 +107,14 @@ class TestEligibilityPredicate:
         assert eligible is False
         assert option in reason
 
+    def test_unicorn_routes_python(self):
+        """angr-mx00p.132.10: a unicorn step runs many concrete blocks, so a
+        default-routed manager stepping one block at a time errored later than
+        Python (test_0div's run(n=5) + step())."""
+        eligible, reason = rust_engine_eligible(_fake_project(), [_fake_state("UNICORN")], {})
+        assert eligible is False
+        assert "UNICORN" in reason
+
     def test_offending_option_on_a_later_seed_state_counts(self):
         states = [_fake_state("SYMBOLIC"), _fake_state("CALLLESS")]
         eligible, reason = rust_engine_eligible(_fake_project(), states, {})

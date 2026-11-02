@@ -119,6 +119,7 @@ class TestErroredStash:
             "need lift at 0x401000": "need_lift",
             "need Python fallback: VECRET": "need_python_fallback",
             "resolve_function error: bad addr": "resolve_function",
+            "unexecutable VEX trap exit Ijk_SigFPE_IntDiv at 0x400683": "trap",
             "something with timeout in it": "timeout",
             "page is unmapped at 0x0": "unmapped",
             "rust panic in interpreter": "rust_panic",
@@ -127,6 +128,18 @@ class TestErroredStash:
         for msg, expected in cases.items():
             record = RustErrorRecord(None, msg, 0x400000)
             assert record.error_class == expected, (msg, record.error_class)
+
+    def test_concrete_zero_divisor_errors_as_sim_zero_division(self):
+        """angr-mx00p.132.10: Python's irop.py raises SimZeroDivisionException on
+        a concrete zero divisor; the Rust manager errored with a bare RuntimeError
+        naming the Ijk_SigFPE_IntDiv trap exit."""
+        import os
+
+        project = angr.Project(os.path.join(TEST_BINARIES_DIR, "test_0div"), auto_load_libs=False)
+        mgr = RustExplorationManager(project, [project.factory.entry_state()])
+        mgr.run()
+        assert len(mgr.errored) == 1
+        assert isinstance(mgr.errored[0].error, angr.errors.SimZeroDivisionException)
 
     def test_error_record_repr_includes_class(self):
         """repr() includes the classified error class for grep-friendliness."""
