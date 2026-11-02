@@ -417,6 +417,56 @@ fn test_concat_64x4() {
     }
 }
 
+/// `Iop_V256HLtoV512` then `Iop_V512to64_N` / `Iop_V512toV256_N` round-trip
+/// the lanes, including the ones whose low bit is past 255 (angr-mx00p.125.7).
+#[test]
+fn test_v512_concat_extract() {
+    let lanes = [0x1111u128, 0x2222, 0x3333, 0x4444];
+    let [a, b, c, d] = lanes.map(|v| RustBV::concrete(v, 64));
+    let lo = VEXOps::qop_with_rm(
+        IROp::Concat64x4toV256,
+        a.clone(),
+        b.clone(),
+        c.clone(),
+        d.clone(),
+    )
+    .unwrap();
+    let hi = VEXOps::qop_with_rm(IROp::Concat64x4toV256, d, c, b, a).unwrap();
+    let v = VEXOps::binop(IROp::Concat { ty: IRType::V512 }, hi, lo).unwrap();
+    assert_eq!(v.width(), 512);
+    let lane64 = |n: u16| {
+        let op = IROp::Extract {
+            from: IRType::V512,
+            to: IRType::I64,
+            low_bit: n * 64,
+        };
+        VEXOps::unop(op, v.clone()).unwrap().as_u128()
+    };
+    for (n, want) in [
+        0x4444u128, 0x3333, 0x2222, 0x1111, 0x1111, 0x2222, 0x3333, 0x4444,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(lane64(n as u16), Some(want), "lane {n}");
+    }
+    // The top 64 bits of each V256 half are its first `Concat64x4toV256` lane.
+    for (n, want) in [(0u16, 0x1111u128), (1, 0x4444)] {
+        let op = IROp::Extract {
+            from: IRType::V512,
+            to: IRType::V256,
+            low_bit: n * 256,
+        };
+        let half = VEXOps::unop(op, v.clone()).unwrap();
+        assert_eq!(half.width(), 256);
+        assert_eq!(
+            half.extract_into(255, 192).as_u128(),
+            Some(want),
+            "half {n}"
+        );
+    }
+}
+
 /// `Iop_ExpandBitsTo*` widens mask bit `i` to lane `i`, with lanes of
 /// `8 << (code & 3)` bits, and refuses a symbolic width code.
 #[test]
@@ -434,12 +484,27 @@ fn test_expand_bits() {
     let got = expand(0b10, 2, IRType::V128);
     assert_eq!(eval_v128(&got), 0xffff_ffff_0000_0000);
     // code 7 reads as 3: 64-bit lanes, only bit 0 of the mask matters for Int.
-    assert_eq!(expand(0b11, 7, IRType::I64).as_u128(), Some(u64::MAX.into()));
+    assert_eq!(
+        expand(0b11, 7, IRType::I64).as_u128(),
+        Some(u64::MAX.into())
+    );
+    let got = expand(1 << 63, 0, IRType::V512);
+    assert_eq!(got.width(), 512);
+    assert_eq!(got.clone().extract_into(511, 504).as_u128(), Some(0xff));
+    assert_eq!(got.clone().extract_into(503, 440).as_u128(), Some(0));
+    assert_eq!(got.extract_into(63, 0).as_u128(), Some(0));
     let got = expand(0b0110, 3, IRType::V256);
     assert_eq!(got.width(), 256);
-    for (lane, want) in [0u128, u64::MAX.into(), u64::MAX.into(), 0].into_iter().enumerate() {
+    for (lane, want) in [0u128, u64::MAX.into(), u64::MAX.into(), 0]
+        .into_iter()
+        .enumerate()
+    {
         let lo = lane as u32 * 64;
-        assert_eq!(got.clone().extract_into(lo + 63, lo).as_u128(), Some(want), "lane {lane}");
+        assert_eq!(
+            got.clone().extract_into(lo + 63, lo).as_u128(),
+            Some(want),
+            "lane {lane}"
+        );
     }
     let sym = VEXOps::binop(
         IROp::ExpandBits(IRType::V128),

@@ -221,8 +221,8 @@ impl VEXOps {
             // Extraction (unary form - low_bit is encoded in opcode)
             IROp::Extract { from, to, low_bit } => {
                 Self::require_operand_width("unop Extract arg", arg.width(), from.bits())?;
-                let hi = low_bit as u32 + to.bits() - 1;
-                let lo = low_bit as u32;
+                let lo = u32::from(low_bit);
+                let hi = lo + to.bits() - 1;
                 Ok(arg.extract_into(hi, lo))
             }
 

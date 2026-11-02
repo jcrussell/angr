@@ -318,13 +318,13 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
 /// pyvex 10's libVEX emits alongside `Iop_Not1` (see `ailment::vexop_names::IROP_NAMES`).
 fn parse_bitwise(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_And" => And  { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_And" => VAnd { "V128" => V128, "V256" => V256 });
+    tuple_arms!(op_str; "Iop_And" => VAnd { "V128" => V128, "V256" => V256, "V512" => V512 });
     tuple_arms!(op_str; "Iop_Or"  => Or   { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_Or"  => VOr  { "V128" => V128, "V256" => V256 });
+    tuple_arms!(op_str; "Iop_Or"  => VOr  { "V128" => V128, "V256" => V256, "V512" => V512 });
     tuple_arms!(op_str; "Iop_Xor" => Xor  { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_Xor" => VXor { "V128" => V128, "V256" => V256 });
     tuple_arms!(op_str; "Iop_Not" => Not  { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_Not" => VNot { "V128" => V128, "V256" => V256 });
+    tuple_arms!(op_str; "Iop_Not" => VNot { "V128" => V128, "V256" => V256, "V512" => V512 });
     None
 }
 
@@ -562,6 +562,7 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
         "Ity_F128" | "Ity_D128" => Some(IRType::V128),
         "Ity_V128" => Some(IRType::V128),
         "Ity_V256" => Some(IRType::V256),
+        "Ity_V512" => Some(IRType::V512),
         _ => None,
     }
 }

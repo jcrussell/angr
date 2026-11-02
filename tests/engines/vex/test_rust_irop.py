@@ -867,28 +867,6 @@ UNSERVED = {
         ),
         UNMAPPED,
     ),
-    # Whole-register vector ops.
-    **dict.fromkeys(
-        (
-            "Iop_AndV512",
-            "Iop_OrV512",
-            "Iop_NotV512",
-            "Iop_V256HLtoV512",
-            "Iop_V512toV256_0",
-            "Iop_V512toV256_1",
-            "Iop_V512to64_0",
-            "Iop_V512to64_1",
-            "Iop_V512to64_2",
-            "Iop_V512to64_3",
-            "Iop_V512to64_4",
-            "Iop_V512to64_5",
-            "Iop_V512to64_6",
-            "Iop_V512to64_7",
-            # V512 has no IRType
-            "Iop_ExpandBitsToV512",
-        ),
-        UNMAPPED,
-    ),
 }
 
 

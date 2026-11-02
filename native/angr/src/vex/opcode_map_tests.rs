@@ -49,7 +49,7 @@ fn test_parse_cmp_ord() {
 }
 
 #[test]
-fn test_parse_whole_register_v128_v256() {
+fn test_parse_whole_register_v128_v256_v512() {
     let extract = |from, to, low_bit| IROp::Extract { from, to, low_bit };
     for (name, op) in [
         ("Iop_ShlV128", IROp::Shl(IRType::V128)),
@@ -74,6 +74,21 @@ fn test_parse_whole_register_v128_v256() {
         ("Iop_ExpandBitsToInt", IROp::ExpandBits(IRType::I64)),
         ("Iop_ExpandBitsToV128", IROp::ExpandBits(IRType::V128)),
         ("Iop_ExpandBitsToV256", IROp::ExpandBits(IRType::V256)),
+        ("Iop_ExpandBitsToV512", IROp::ExpandBits(IRType::V512)),
+        ("Iop_AndV512", IROp::VAnd(IRType::V512)),
+        ("Iop_OrV512", IROp::VOr(IRType::V512)),
+        ("Iop_NotV512", IROp::VNot(IRType::V512)),
+        ("Iop_V256HLtoV512", IROp::Concat { ty: IRType::V512 }),
+        ("Iop_V512to64_0", extract(IRType::V512, IRType::I64, 0)),
+        ("Iop_V512to64_1", extract(IRType::V512, IRType::I64, 64)),
+        ("Iop_V512to64_2", extract(IRType::V512, IRType::I64, 128)),
+        ("Iop_V512to64_3", extract(IRType::V512, IRType::I64, 192)),
+        ("Iop_V512to64_4", extract(IRType::V512, IRType::I64, 256)),
+        ("Iop_V512to64_5", extract(IRType::V512, IRType::I64, 320)),
+        ("Iop_V512to64_6", extract(IRType::V512, IRType::I64, 384)),
+        ("Iop_V512to64_7", extract(IRType::V512, IRType::I64, 448)),
+        ("Iop_V512toV256_0", extract(IRType::V512, IRType::V256, 0)),
+        ("Iop_V512toV256_1", extract(IRType::V512, IRType::V256, 256)),
     ] {
         assert_eq!(parse_opcode(name), op, "{name}");
     }
@@ -187,6 +202,7 @@ fn test_parse_type() {
 fn test_parse_type_or_log_defaults_to_i64() {
     assert_eq!(parse_type_or_log("Ity_I32", "test"), IRType::I32);
     assert_eq!(parse_type_or_log("Ity_V256", "test"), IRType::V256);
+    assert_eq!(parse_type_or_log("Ity_V512", "test"), IRType::V512);
     assert_eq!(parse_type_or_log("Ity_D64", "test"), IRType::I64);
     assert_eq!(parse_type_or_log("Ity_Nonsense", "test"), IRType::I64);
 }
@@ -1459,12 +1475,11 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         "added by the libVEX bundled with pyvex 10 and not yet mapped.",
     ),
     // AVX512_EVEX — every op past libVEX's Iop_FIRST_EVEX marker. Only
-    // EVEX-encoded code lifts to them and the engine has no 512-bit vector
-    // type (angr-mx00p.5).
+    // EVEX-encoded code lifts to them. The V512 whole-register ops are
+    // mapped (angr-mx00p.125.7); these lane ops are not (angr-mx00p.5).
     (
         &[
             "Iop_16Sto8x8",
-            "Iop_AndV512",
             "Iop_CfD32x16",
             "Iop_CfD32x4",
             "Iop_CfD32x8",
@@ -1531,7 +1546,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_Expand64x2",
             "Iop_Expand64x4",
             "Iop_Expand64x8",
-            "Iop_ExpandBitsToV512",
             "Iop_ExtractExp32F0x4",
             "Iop_ExtractExp32x16",
             "Iop_ExtractExp64F0x2",
@@ -1557,8 +1571,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_Max64Ux8",
             "Iop_Min64Sx8",
             "Iop_Min64Ux8",
-            "Iop_NotV512",
-            "Iop_OrV512",
             "Iop_PMADD52HUQ",
             "Iop_PMADD52LUQ",
             "Iop_Perm16x16",
@@ -1641,17 +1653,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_TestN8x16",
             "Iop_TestN8x32",
             "Iop_TestN8x64",
-            "Iop_V256HLtoV512",
-            "Iop_V512to64_0",
-            "Iop_V512to64_1",
-            "Iop_V512to64_2",
-            "Iop_V512to64_3",
-            "Iop_V512to64_4",
-            "Iop_V512to64_5",
-            "Iop_V512to64_6",
-            "Iop_V512to64_7",
-            "Iop_V512toV256_0",
-            "Iop_V512toV256_1",
             "Iop_VDBPSADBW",
             "Iop_VPSHLDVD_128",
             "Iop_VPSHLDVQ_128",
@@ -1666,7 +1667,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_VPSHUFBITQMB_256",
             "Iop_VPSHUFBITQMB_512",
         ],
-        "AVX-512 (EVEX) ops: only EVEX-encoded code reaches them, and the engine has no 512-bit vector type.",
+        "AVX-512 (EVEX) lane ops: only EVEX-encoded code reaches them, and none is mapped.",
     ),
     // Range markers inside the IROp enum, not operations.
     (

@@ -483,13 +483,13 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     // IROp::SetV128lo64, a binop preserving the upper 64 bits), so a Reinterpret
     // arm would be both dead and semantically wrong. See angr-ph300.62.
 
-    // AVX V256 <-> V128/I64 lane slicing and construction. `_N` names lane N
+    // AVX V256/V512 <-> V256/V128/I64 lane slicing and construction. `_N` names lane N
     // counting from the least significant end.
-    let extract = |from, to: IRType, lane: u8| {
+    let extract = |from, to: IRType, lane: u16| {
         Some(IROp::Extract {
             from,
             to,
-            low_bit: lane * to.bits() as u8,
+            low_bit: lane * to.bits() as u16,
         })
     };
     match op_str {
@@ -502,10 +502,22 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
         "Iop_V256toV128_1" => extract(IRType::V256, IRType::V128, 1),
         "Iop_V128HLtoV256" => Some(IROp::Concat { ty: IRType::V256 }),
         "Iop_64x4toV256" => Some(IROp::Concat64x4toV256),
+        "Iop_V512to64_0" => extract(IRType::V512, IRType::I64, 0),
+        "Iop_V512to64_1" => extract(IRType::V512, IRType::I64, 1),
+        "Iop_V512to64_2" => extract(IRType::V512, IRType::I64, 2),
+        "Iop_V512to64_3" => extract(IRType::V512, IRType::I64, 3),
+        "Iop_V512to64_4" => extract(IRType::V512, IRType::I64, 4),
+        "Iop_V512to64_5" => extract(IRType::V512, IRType::I64, 5),
+        "Iop_V512to64_6" => extract(IRType::V512, IRType::I64, 6),
+        "Iop_V512to64_7" => extract(IRType::V512, IRType::I64, 7),
+        "Iop_V512toV256_0" => extract(IRType::V512, IRType::V256, 0),
+        "Iop_V512toV256_1" => extract(IRType::V512, IRType::V256, 1),
+        "Iop_V256HLtoV512" => Some(IROp::Concat { ty: IRType::V512 }),
         "Iop_SliceV128" => Some(IROp::SliceV128),
         "Iop_ExpandBitsToInt" => Some(IROp::ExpandBits(IRType::I64)),
         "Iop_ExpandBitsToV128" => Some(IROp::ExpandBits(IRType::V128)),
         "Iop_ExpandBitsToV256" => Some(IROp::ExpandBits(IRType::V256)),
+        "Iop_ExpandBitsToV512" => Some(IROp::ExpandBits(IRType::V512)),
         _ => None,
     }
 }

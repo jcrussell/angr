@@ -1,5 +1,5 @@
 //! The IR type and constant lattice: `IRType` (every operand width the engine
-//! understands, from `I1` through `V256`, with its `bits` / `bytes`
+//! understands, from `I1` through `V512`, with its `bits` / `bytes`
 //! accessors) and `IRConst` (a literal of one of those types, with
 //! `IRConst::get_type`). Every other file in this module is parameterized by
 //! `IRType`, so this one has no `use super::*;` — it depends on nothing else
@@ -65,6 +65,8 @@ pub enum IRType {
     V128,
     /// 256-bit vector.
     V256,
+    /// 512-bit vector.
+    V512,
 }
 
 impl IRType {
@@ -83,6 +85,7 @@ impl IRType {
             IRType::F80 => 80,
             IRType::V128 => 128,
             IRType::V256 => 256,
+            IRType::V512 => 512,
         }
     }
 

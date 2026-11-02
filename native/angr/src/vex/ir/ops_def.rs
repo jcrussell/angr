@@ -850,7 +850,7 @@ pub enum IROp {
     Extract {
         from: IRType,
         to: IRType,
-        low_bit: u8,
+        low_bit: u16,
     },
 
     /// `Iop_64x4toV256`: a Qop concatenating four I64s, the first most
