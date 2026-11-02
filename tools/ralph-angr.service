@@ -38,6 +38,9 @@ RestartSec=300
 RestartPreventExitStatus=2 3
 # ralph cancels the loop on SIGTERM and waits for the iteration to unwind.
 TimeoutStopSec=300
+# Claude iterations run in --user scopes outside this cgroup, so stopping the
+# service does not stop them.
+ExecStopPost=/usr/bin/systemctl --user stop ralph-*.scope
 # The gate hook (cargo test --profile release-checked + the bench) runs in this
 # cgroup; each claude iteration runs in its own --user scope capped by
 # .ralph/config.toml's memory_limit_bytes.

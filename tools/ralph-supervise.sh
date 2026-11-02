@@ -20,7 +20,10 @@ log() { echo "$(date -Is) ralph-supervise: $*" | tee -a $state/supervise.log; }
 fresh=()
 grep -q '"state": *"failed"' $state/fsm.json 2>/dev/null && fresh=(--fresh)
 retries=0
+# Claude iterations run in --user scopes that outlive ralph; stop any an earlier run left.
+stop_scopes() { systemctl --user stop 'ralph-*.scope'; }
 while (( $(date +%s) < deadline )); do
+    stop_scopes
     # --unlimited lifts the per-run iteration cap, so the deadline is enforced by
     # timeout (ralph unwinds on SIGTERM); --wait-on-quota sleeps through a usage
     # quota window instead of failing.
@@ -41,4 +44,5 @@ while (( $(date +%s) < deadline )); do
         *) exit 1 ;;
     esac
 done
+stop_scopes
 log "deadline reached"
