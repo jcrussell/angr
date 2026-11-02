@@ -206,3 +206,31 @@ class TestProxyStepState:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestProxyMove:
+    """angr-mx00p.132.28 — ``proxy.move`` matches ``SimulationManager.move``.
+
+    MemoryWatcher's step hook calls ``simgr.move(from_stash=..., to_stash=...)``
+    with no filter; the proxy used to drop the Rust binding's ``filter_fn``
+    argument, so the hook raised and the states stayed in active.
+    """
+
+    def test_unfiltered_move_relocates_all_and_chains(self, fauxware_project):
+        mgr, rust_mgr, state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+
+        assert proxy.move(from_stash="active", to_stash="lowmem") is proxy
+
+        assert rust_mgr.get_state_ids("active") == []
+        assert rust_mgr.get_state_ids("lowmem") == [state_id]
+
+    def test_filtered_move_relocates_only_matches(self, fauxware_project):
+        mgr, rust_mgr, state_id = _rust_mgr_at(fauxware_project, MAIN)
+        proxy = mgr.proxy
+
+        assert proxy.move("active", "lowmem", filter_func=lambda s: s.addr != MAIN) is proxy
+        assert rust_mgr.get_state_ids("active") == [state_id]
+
+        proxy.move("active", "lowmem", filter_func=lambda s: s.addr == MAIN)
+        assert rust_mgr.get_state_ids("lowmem") == [state_id]

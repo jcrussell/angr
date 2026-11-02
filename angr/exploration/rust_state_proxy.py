@@ -4184,20 +4184,15 @@ class RustSimulationManagerProxy:
         )
 
     def move(self, from_stash="active", to_stash="stashed", filter_func=None):
-        """Move states between stashes."""
+        """Move states between stashes; returns self for chaining, as
+        ``SimulationManager.move`` does."""
         if filter_func is None:
-            count = self._mgr.move_states(from_stash, to_stash)
+            self._mgr.move_states(from_stash, to_stash, None)
         else:
-            # Move states that match filter
-            state_ids = self._mgr.get_state_ids(from_stash)
-            moved = 0
-            for sid in state_ids:
-                proxy = self._wrap_state(sid)
-                if filter_func(proxy):
+            for sid in self._mgr.get_state_ids(from_stash):
+                if filter_func(self._wrap_state(sid)):
                     self._mgr.move_state(sid, from_stash, to_stash)
-                    moved += 1
-            count = moved
-        return count
+        return self
 
     def __repr__(self):
         counts = self._mgr.stash_counts()
