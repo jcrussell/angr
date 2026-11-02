@@ -49,6 +49,34 @@ fn test_parse_cmp_ord() {
 }
 
 #[test]
+fn test_parse_whole_register_v128_v256() {
+    let extract = |from, to, low_bit| IROp::Extract { from, to, low_bit };
+    for (name, op) in [
+        ("Iop_ShlV128", IROp::Shl(IRType::V128)),
+        ("Iop_ShrV128", IROp::Shr(IRType::V128)),
+        ("Iop_SarV128", IROp::Sar(IRType::V128)),
+        (
+            "Iop_V128to32",
+            IROp::Truncate {
+                from: IRType::V128,
+                to: IRType::I32,
+            },
+        ),
+        ("Iop_V128HLtoV256", IROp::Concat { ty: IRType::V256 }),
+        ("Iop_64x4toV256", IROp::Concat64x4toV256),
+        ("Iop_SliceV128", IROp::SliceV128),
+        ("Iop_V256to64_0", extract(IRType::V256, IRType::I64, 0)),
+        ("Iop_V256to64_1", extract(IRType::V256, IRType::I64, 64)),
+        ("Iop_V256to64_2", extract(IRType::V256, IRType::I64, 128)),
+        ("Iop_V256to64_3", extract(IRType::V256, IRType::I64, 192)),
+        ("Iop_V256toV128_0", extract(IRType::V256, IRType::V128, 0)),
+        ("Iop_V256toV128_1", extract(IRType::V256, IRType::V128, 128)),
+    ] {
+        assert_eq!(parse_opcode(name), op, "{name}");
+    }
+}
+
+#[test]
 fn test_parse_round_f32x4() {
     for (name, rm) in [
         ("Iop_RoundF32x4_RM", VexRm::TowardNegative),
@@ -1357,37 +1385,18 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         &["Iop_Perm8x16x2"],
         "the two-table AArch64 TBL form of Iop_Perm — deliberately unmapped because it is a triop, while VPerm and Python's _op_generic_Perm are both two-argument (see the parse_special doc comment).",
     ),
-    // V256_LANE_ACCESS
-    (
-        &[
-            "Iop_64x4toV256",
-            "Iop_V128HLtoV256",
-            "Iop_V256to64_0",
-            "Iop_V256to64_1",
-            "Iop_V256to64_2",
-            "Iop_V256to64_3",
-            "Iop_V256toV128_0",
-            "Iop_V256toV128_1",
-        ],
-        "AVX 256-bit lane extraction/construction (V256<->V128/I64 slicing, 64x4toV256) — not yet implemented.",
-    ),
     // V128_MISC
     (
         &[
             "Iop_Add128x1",
             "Iop_Sub128x1",
-            "Iop_SarV128",
-            "Iop_ShlV128",
-            "Iop_ShrV128",
             "Iop_Slice64",
-            "Iop_SliceV128",
-            "Iop_V128to32",
             "Iop_ZeroHI112ofV128",
             "Iop_ZeroHI120ofV128",
             "Iop_ZeroHI64ofV128",
             "Iop_ZeroHI96ofV128",
         ],
-        "assorted V128 lane/bit-width helpers (128-bit-wide single-lane Add/Sub, ShlV128/ShrV128/SarV128 whole-register shift, Slice64/SliceV128, V128to32 narrowing, ZeroHI*ofV128 upper-bits clear) — not yet implemented.",
+        "assorted V128 lane/bit-width helpers (128-bit-wide single-lane Add/Sub, Slice64, ZeroHI*ofV128 upper-bits clear) — not yet implemented.",
     ),
     // PYVEX10_NEW — ops the libVEX bundled with pyvex 10 added that the
     // engine has not mapped yet (128-bit integer divide/modulo, the DivMod

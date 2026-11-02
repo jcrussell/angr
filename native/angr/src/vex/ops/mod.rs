@@ -1045,6 +1045,9 @@ impl VEXOps {
         let (kind_rm, ty) = match op {
             IROp::FMAdd(t) => (FloatOpKind::FmaRm, t),
             IROp::FMSub(t) => (FloatOpKind::FmsRm, t),
+            // `Iop_64x4toV256` carries no rounding mode: its four operands
+            // arrive as (rm, a, b, c).
+            IROp::Concat64x4toV256 => return Self::concat_64x4(rm, a, b, c),
             // Non-FMA Qops (NEON scaffolding, unmapped opcodes) carry no
             // rounding mode; let `qop` produce their typed error.
             _ => return Self::qop(op, a, b, c),
@@ -1084,6 +1087,10 @@ impl VEXOps {
         // the raw three operands (vec, idx, val); reinterpret accordingly.
         if let IROp::VSetElem { elem, count } = op {
             return Self::vec_set_elem(rm, left, right, elem, count);
+        }
+        // Likewise `Iop_SliceV128`'s three operands are (hi, lo, imm).
+        if op == IROp::SliceV128 {
+            return Self::slice_v128(rm, left, right);
         }
 
         if let IROp::VFAdd { elem, count }

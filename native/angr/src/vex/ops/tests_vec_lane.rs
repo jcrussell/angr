@@ -385,3 +385,34 @@ fn test_vget_elem_symbolic_idx() {
     // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).
     assert_eq!(model_idx & 0x7, 5, "expected idx&7 == 5, got {model_idx}");
 }
+
+/// `Iop_SliceV128` returns the V128 `imm` bytes up from the bottom of
+/// `hi:lo`, and refuses a symbolic offset or one past 16.
+#[test]
+fn test_slice_v128() {
+    let hi = RustBV::concrete(0x1f1e_1d1c_1b1a_1918_1716_1514_1312_1110, 128);
+    let lo = RustBV::concrete(0x0f0e_0d0c_0b0a_0908_0706_0504_0302_0100, 128);
+    let slice = |imm: RustBV| VEXOps::binop_with_rm(IROp::SliceV128, hi.clone(), lo.clone(), imm);
+    for imm in 0..=16u128 {
+        let want = (0..16u128).fold(0, |acc, i| acc | ((imm + i) << (8 * i)));
+        let got = slice(RustBV::concrete(imm, 8)).unwrap();
+        assert_eq!(got.width(), 128);
+        assert_eq!(eval_v128(&got), want, "imm {imm}");
+    }
+    assert!(slice(RustBV::concrete(17, 8)).is_err());
+    assert!(slice(RustBV::symbol("slice_imm", 8)).is_err());
+}
+
+/// `Iop_64x4toV256` puts its first operand in the top lane.
+#[test]
+fn test_concat_64x4() {
+    let lanes = [0x4444u128, 0x3333, 0x2222, 0x1111];
+    let [a, b, c, d] = lanes.map(|v| RustBV::concrete(v, 64));
+    let got = VEXOps::qop_with_rm(IROp::Concat64x4toV256, a, b, c, d).unwrap();
+    assert_eq!(got.width(), 256);
+    for (lane, want) in lanes.iter().rev().enumerate() {
+        let lo = lane as u32 * 64;
+        let piece = got.clone().extract_into(lo + 63, lo);
+        assert_eq!(piece.as_u128(), Some(*want), "lane {lane}");
+    }
+}

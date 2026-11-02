@@ -330,9 +330,9 @@ fn parse_bitwise(op_str: &str) -> Option<IROp> {
 
 /// Parse shift operations: Shl, Shr, Sar (scalar and vector)
 fn parse_shift(op_str: &str) -> Option<IROp> {
-    tuple_arms!(op_str; "Iop_Shl" => Shl { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_Shr" => Shr { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_Sar" => Sar { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
+    tuple_arms!(op_str; "Iop_Shl" => Shl { "8" => I8, "16" => I16, "32" => I32, "64" => I64, "V128" => V128 });
+    tuple_arms!(op_str; "Iop_Shr" => Shr { "8" => I8, "16" => I16, "32" => I32, "64" => I64, "V128" => V128 });
+    tuple_arms!(op_str; "Iop_Sar" => Sar { "8" => I8, "16" => I16, "32" => I32, "64" => I64, "V128" => V128 });
 
     // Vector shift {left, right-logical, right-arithmetic} by immediate.
     // The 8x8/16x4/32x2 shapes are NEON D-reg, the 8x16/16x8/32x4/64x2 shapes

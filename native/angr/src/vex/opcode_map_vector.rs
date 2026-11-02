@@ -477,18 +477,32 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
     }
 
     // V128/V256 to/from conversions.
-    cast_arms!(op_str; "Iop_" => Truncate    { "V128to64"   => (V128, I64) });
+    cast_arms!(op_str; "Iop_" => Truncate    { "V128to64"   => (V128, I64), "V128to32" => (V128, I32) });
     cast_arms!(op_str; "Iop_" => ZeroExtend  { "64UtoV128"  => (I64, V128), "32UtoV128" => (I32, V128) });
     // NOTE: no "SetV128lo64" arm here — parse_float claims it first (returns
     // IROp::SetV128lo64, a binop preserving the upper 64 bits), so a Reinterpret
     // arm would be both dead and semantically wrong. See angr-ph300.62.
 
+    // AVX V256 <-> V128/I64 lane slicing and construction. `_N` names lane N
+    // counting from the least significant end.
+    let extract = |from, to: IRType, lane: u8| {
+        Some(IROp::Extract {
+            from,
+            to,
+            low_bit: lane * to.bits() as u8,
+        })
+    };
     match op_str {
-        "Iop_V128HIto64" => Some(IROp::Extract {
-            from: IRType::V128,
-            to: IRType::I64,
-            low_bit: 64,
-        }),
+        "Iop_V128HIto64" => extract(IRType::V128, IRType::I64, 1),
+        "Iop_V256to64_0" => extract(IRType::V256, IRType::I64, 0),
+        "Iop_V256to64_1" => extract(IRType::V256, IRType::I64, 1),
+        "Iop_V256to64_2" => extract(IRType::V256, IRType::I64, 2),
+        "Iop_V256to64_3" => extract(IRType::V256, IRType::I64, 3),
+        "Iop_V256toV128_0" => extract(IRType::V256, IRType::V128, 0),
+        "Iop_V256toV128_1" => extract(IRType::V256, IRType::V128, 1),
+        "Iop_V128HLtoV256" => Some(IROp::Concat { ty: IRType::V256 }),
+        "Iop_64x4toV256" => Some(IROp::Concat64x4toV256),
+        "Iop_SliceV128" => Some(IROp::SliceV128),
         _ => None,
     }
 }

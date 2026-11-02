@@ -853,6 +853,15 @@ pub enum IROp {
         low_bit: u8,
     },
 
+    /// `Iop_64x4toV256`: a Qop concatenating four I64s, the first most
+    /// significant, into a V256.
+    Concat64x4toV256,
+
+    /// `Iop_SliceV128`: a Triop `(hi, lo, imm)` returning the V128 that
+    /// starts `imm` bytes up from the bottom of the V256 `hi:lo` (AArch64
+    /// EXT). `imm` must be a literal of at most 16.
+    SliceV128,
+
     // =========================================================================
     // x86-specific operations
     // =========================================================================
@@ -1264,6 +1273,8 @@ impl IROp {
             IROp::Reinterpret { to, .. } => Some(*to),
             IROp::Concat { ty } => Some(*ty),
             IROp::Extract { to, .. } => Some(*to),
+            IROp::Concat64x4toV256 => Some(IRType::V256),
+            IROp::SliceV128 => Some(IRType::V128),
 
             IROp::PclmulLQLQ
             | IROp::PclmulHQHQ

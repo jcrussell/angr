@@ -83,7 +83,9 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::PopCount(_)
         | IROp::Reinterpret { .. }
         | IROp::Concat { .. }
-        | IROp::Extract { .. } => VexOpFamily::Ext,
+        | IROp::Extract { .. }
+        | IROp::Concat64x4toV256
+        | IROp::SliceV128 => VexOpFamily::Ext,
 
         // Scalar FP (arith + cmp + conversions + rounding)
         IROp::FAdd(_)

@@ -62,6 +62,36 @@ impl VEXOps {
         Ok(result)
     }
 
+    /// `Iop_SliceV128` (AArch64 EXT): the V128 starting `imm` bytes up from
+    /// the bottom of `hi:lo`, irop.py's `Concat(hi, lo)[127 + imm*8 : imm*8]`.
+    /// libVEX always emits a literal `imm`; a symbolic one or one past 16
+    /// is refused, as irop.py refuses it.
+    pub(super) fn slice_v128(hi: RustBV, lo: RustBV, imm: RustBV) -> Result<RustBV, OpError> {
+        Self::require_operand_width("slice_v128 hi", hi.width(), 128)?;
+        Self::require_operand_width("slice_v128 lo", lo.width(), 128)?;
+        Self::require_operand_width("slice_v128 imm", imm.width(), 8)?;
+        let Some(imm) = imm.as_u128().filter(|&i| i <= 16) else {
+            return Err(OpError::UnsupportedVectorOp(
+                "Iop_SliceV128 needs a literal byte offset of at most 16".into(),
+            ));
+        };
+        let low = imm as u32 * 8;
+        Ok(hi.concat_into(lo).extract_into(low + 127, low))
+    }
+
+    /// `Iop_64x4toV256`: the four I64s concatenated, `a` most significant.
+    pub(super) fn concat_64x4(
+        a: RustBV,
+        b: RustBV,
+        c: RustBV,
+        d: RustBV,
+    ) -> Result<RustBV, OpError> {
+        for (what, v) in [("a", &a), ("b", &b), ("c", &c), ("d", &d)] {
+            Self::require_operand_width(what, v.width(), 64)?;
+        }
+        Ok(a.concat_into(b).concat_into(c).concat_into(d))
+    }
+
     /// NEON lane insert (Iop_SetElem{N}x{M}).
     ///
     /// `vec` is the source vector, `idx` (Ity_I8) selects the lane, `val`

@@ -181,8 +181,12 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             }
             VEXOps::binop(op, l.clone(), r.clone())
         }
-        // `Iop_SetElem*` (`binop_with_rm` reads its first operand as the vector) and scalar and packed float
-        // arithmetic under the VEX rounding mode are the served Triops. `Iop_Sqrt*` is a Binop `binop` serves.
+        // `Iop_SetElem*` and `Iop_SliceV128` (`binop_with_rm` reads their first operand as the vector) and scalar
+        // and packed float arithmetic under the VEX rounding mode are the served Triops. `Iop_Sqrt*` is a Binop
+        // `binop` serves.
+        [hi, lo, imm] if op == IROp::SliceV128 => {
+            VEXOps::binop_with_rm(op, hi.clone(), lo.clone(), imm.clone())
+        }
         [v, i, x] if matches!(op, IROp::VSetElem { .. }) => {
             if literal_index_past_count(op, i) {
                 // SILENT(cat-a): libVEX leaves it undefined; irop.py leaves the vector as is.
@@ -205,7 +209,8 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             VEXOps::binop_with_rm(op, rm.clone(), l.clone(), r.clone())
         }
         // `Iop_M{Add,Sub}F*` round `a * b +- c` once under the VEX rounding mode.
-        [rm, a, b, c] if matches!(op, IROp::FMAdd(_) | IROp::FMSub(_)) => {
+        // `Iop_64x4toV256` (`qop_with_rm` reads its first operand as the top lane).
+        [rm, a, b, c] if matches!(op, IROp::FMAdd(_) | IROp::FMSub(_) | IROp::Concat64x4toV256) => {
             VEXOps::qop_with_rm(op, rm.clone(), a.clone(), b.clone(), c.clone())
         }
         // SILENT(cat-a): an arity the op does not take; irop.py rejects it.

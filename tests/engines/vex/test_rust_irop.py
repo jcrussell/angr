@@ -335,6 +335,12 @@ def _concrete_cases(name, rng, arg_bits):
         return _vector_cases(name, rng, arg_bits)
     if len(arg_bits) == 1:
         return [(v,) for v in _pool(rng, arg_bits[0], single_bits=True)]
+    if len(arg_bits) > 2:
+        # Iop_64x4toV256 and Iop_SliceV128, whose byte offset irop.py takes up to 16.
+        pools = [_pool(rng, bits) for bits in arg_bits]
+        if name == "Iop_SliceV128":
+            pools[2] = [*range(18), 255]
+        return list(dict.fromkeys(tuple(rng.choice(p) for p in pools) for _ in range(60)))
     lbits, rbits = arg_bits
     lmask, rmask = (1 << lbits) - 1, (1 << rbits) - 1
     lpool, rpool = _pool(rng, lbits), _pool(rng, rbits)
@@ -864,20 +870,7 @@ UNSERVED = {
             "Iop_AndV512",
             "Iop_OrV512",
             "Iop_NotV512",
-            "Iop_ShlV128",
-            "Iop_ShrV128",
-            "Iop_SarV128",
-            "Iop_SliceV128",
-            "Iop_V128HLtoV256",
             "Iop_V256HLtoV512",
-            "Iop_64x4toV256",
-            "Iop_V128to32",
-            "Iop_V256to64_0",
-            "Iop_V256to64_1",
-            "Iop_V256to64_2",
-            "Iop_V256to64_3",
-            "Iop_V256toV128_0",
-            "Iop_V256toV128_1",
             "Iop_V512toV256_0",
             "Iop_V512toV256_1",
             "Iop_V512to64_0",
