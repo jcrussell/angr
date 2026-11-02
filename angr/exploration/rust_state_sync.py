@@ -487,6 +487,12 @@ class RustStateSyncMixin:
         page_no = sp_page // page_size
         mem_pages = getattr(angr_state.memory, "_pages", None)
         page_obj = mem_pages.get(page_no) if mem_pages is not None else None
+        if mem_pages is not None and page_obj is None:
+            # Python never wrote this page, so it holds nothing but default
+            # fills. Evaluating those would pin them to zero (a shellcode
+            # entry's top-level ret would jump to 0, angr-plh49); leave the
+            # page to the lazy stack region, whose fetch mints them symbolic.
+            return
         used_fast_path = False
         # cat-(b) FALLBACK WITH LOSS: stack page sync failed entirely
         # (slow path raised). Rust will fetch the stack page lazily
@@ -525,9 +531,12 @@ class RustStateSyncMixin:
         """Targeted scan of a stack page's symbolic_data ranges.
 
         Avoids the full 4096-byte byte-by-byte scan in _extract_symbolic_regions
-        — this only walks the explicitly-stored symbolic byte ranges.
+        — this only walks the explicitly-stored symbolic byte ranges. Unlike the
+        wide-region scan it keeps Python's default ``mem_`` fills too: the page
+        was mapped from concrete_load, so a dropped fill would read as zero
+        (angr-plh49).
         """
-        scan_ranges = self._scan_ranges_from_symbolic_data(sd)
+        scan_ranges = self._scan_ranges_from_symbolic_data(sd, user_only=False)
         for start_offset, size in scan_ranges:
             for byte_off in range(size):
                 if start_offset + byte_off >= page_size:
@@ -558,10 +567,10 @@ class RustStateSyncMixin:
             return False
 
     @classmethod
-    def _scan_ranges_from_symbolic_data(cls, sd) -> list:
+    def _scan_ranges_from_symbolic_data(cls, sd, user_only: bool = True) -> list:
         """Build a list of (offset, ast_size_bytes) ranges from a page's
         symbolic_data dict, keeping only entries that reference a user-created
-        symbolic variable.
+        symbolic variable (every symbolic entry when ``user_only`` is False).
 
         Shared by _extract_stack_symbolic_from_sd (stack fast-path) and
         _extract_wide_symbolic_regions (wide-region grouping) so the
@@ -574,7 +583,7 @@ class RustStateSyncMixin:
         for sd_offset, sd_ast in sd.items():
             if not hasattr(sd_ast, "variables"):
                 continue
-            if cls._has_user_symbolic_var(sd_ast):
+            if not user_only or cls._has_user_symbolic_var(sd_ast):
                 ast_size = sd_ast.size() // 8 if hasattr(sd_ast, "size") else 1
                 scan_ranges.append((sd_offset, ast_size))
         return scan_ranges

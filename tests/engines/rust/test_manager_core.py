@@ -2696,6 +2696,43 @@ class TestInitSkipOnlyForRealInit:
         assert sorted({s.addr for s in mgr.active}) == [0x5, 0x7]
 
 
+class TestUnwrittenStackPageStaysSymbolic:
+    """angr-plh49: the SP page's unwritten bytes read symbolic, as in Python.
+
+    ``_sync_stack_page`` evaluated the page's default fills, so a shellcode
+    entry's ``[rsp]`` read 0 and a top-level ``ret`` re-entered the program
+    at 0, re-firing a user hook on every step.
+    """
+
+    # 0x0: nop; 0x1: nop (hooked); 0x2: ret
+    CODE = b"\x90\x90\xc3"
+
+    def test_untouched_page_reads_symbolic(self):
+        proj = angr.load_shellcode(self.CODE, arch="amd64")
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        state = mgr.active[0]
+        assert state.memory.load(state.regs.rsp, 8).symbolic
+
+    def test_python_default_fill_stays_symbolic(self):
+        proj = angr.load_shellcode(self.CODE, arch="amd64")
+        seed = proj.factory.entry_state()
+        filled = seed.memory.load(seed.regs.rsp, 8)
+        mgr = RustExplorationManager(proj, [seed])
+        state = mgr.active[0]
+        assert state.solver.is_true(state.memory.load(state.regs.rsp, 8) == filled)
+
+    def test_hooked_ret_goes_unconstrained(self):
+        calls = []
+        proj = angr.load_shellcode(self.CODE, arch="amd64")
+        proj.hook(0x1, hook=lambda s: calls.append(s.addr), length=1)
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        for _ in range(3):
+            mgr.step()
+        assert calls == [0x1]
+        assert not mgr.active
+        assert len(mgr.unconstrained) == 1
+
+
 class TestRunNIsBlockGranular:
     """``run(n=N)`` steps one basic block per step, as Python does (angr-mx00p.132.22).
 
