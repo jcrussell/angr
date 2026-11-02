@@ -254,6 +254,36 @@ def _install_rust_history_warning(state) -> None:
         history.__class__ = _RustOwnedSimStateHistory
 
 
+# Rust's detailed-history jumpkind codes (``HistoryEntry::jumpkind_str``).
+_HISTORY_JUMPKINDS = {0: "Ijk_Boring", 1: "Ijk_Call", 2: "Ijk_Ret", 3: "Ijk_Sys_syscall"}
+
+
+def _history_child(parent, entry, arch) -> SimStateHistory:
+    """The shared history node for ``entry`` (Rust's ``(addr, jumpkind, target)``) under ``parent``.
+
+    Children are memoized on the parent, so every export whose history runs
+    through the same entries from the same anchor gets the same node objects:
+    ``closest_common_ancestor`` compares by identity (angr-mx00p.132.16).
+    """
+    children = parent.__dict__.setdefault("_rust_children", {})
+    node = children.get(entry)
+    if node is None:
+        node = _RustOwnedSimStateHistory(parent=parent)
+        _fill_history_node(node, entry, arch)
+        children[entry] = node
+    return node
+
+
+def _fill_history_node(node, entry, arch) -> None:
+    """Make ``node`` record one executed block, as the Python engine's step would."""
+    addr, jk, target = entry
+    node.recent_bbl_addrs = [addr]
+    node.recent_block_count = 1
+    node.jumpkind = _HISTORY_JUMPKINDS.get(jk, "Ijk_Other")
+    node.jump_target = claripy.BVV(target, arch.bits)
+    node.arch = arch
+
+
 class RustSolverFallback:
     """Wraps state.solver so eval/min/max/satisfiable defer to the Rust solver.
 
@@ -1020,8 +1050,64 @@ class RustStateExportMixin:
         self._sync_rust_posix_brk_to_state(state, state_id)
         self._sync_rust_heap_brk_to_state(state, state_id)
         self._sync_rust_last_block_to_state(state, state_id)
+        self._install_rust_history_chain(state, state_id)
         state.scratch.rust_fully_synced = True
         state.scratch.rust_mirror_id = state_id
+
+    def _record_history_anchor(self, state_id: int, angr_state) -> None:
+        """Remember the history ``angr_state`` had when it seeded Rust state ``state_id``.
+
+        :meth:`_install_rust_history_chain` grows every export of the seed's
+        lineage from this node. A clone, because the seed's own SimState is
+        the stash mirror and its history is rewritten when it is exported.
+        """
+        if "_rust_history_anchors" not in self.__dict__:
+            self._rust_history_anchors = {}
+        self._rust_history_anchors[state_id] = angr_state.history.copy({})
+
+    def _install_rust_history_chain(self, state, state_id: int, detailed=None) -> None:
+        """Give an export the ``state.history`` parent chain of the blocks Rust executed.
+
+        One node per detailed-history entry, hung under the seed's history
+        (:meth:`_record_history_anchor`), with every node but the state's own
+        shared across exports (:func:`_history_child`). Sibling states then
+        share their ancestors up to the branch, as under the Python engine,
+        so ``closest_common_ancestor`` finds the branch block rather than the
+        seed (angr-mx00p.132.16). The entry ``_seed_python_jumpkind`` added
+        for a stepped seed is the anchor itself. Past ``max_history`` Rust
+        has dropped the oldest entries, so the chain starts at the oldest it
+        kept. A state of no recorded lineage keeps the history it has.
+        """
+        from angr.exploration.rust_state_proxy import _rust_state_get
+
+        anchors = self.__dict__.get("_rust_history_anchors")
+        if not anchors:
+            return
+        root = self._state_roots.get(state_id)
+        if root is None:
+            # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unforked state
+            # has no root entry and is its own root.
+            root = _rust_state_get(self._rust_mgr, "get_state_root", state_id)
+        anchor = anchors.get(state_id if root is None else root)
+        if anchor is None:
+            return
+        if detailed is None:
+            # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable
+            # state keeps the history it has.
+            detailed = _rust_state_get(self._rust_mgr, "get_state_detailed_history", state_id)
+        entries = [tuple(e) for e in detailed or ()]
+        if entries and anchor.depth > 0 and anchor.jumpkind and entries[0][0] == anchor.addr:
+            entries = entries[1:]
+        if not entries:
+            return
+        arch = state.arch
+        parent = anchor
+        for entry in entries[:-1]:
+            parent = _history_child(parent, entry, arch)
+        history = state.history
+        history.parent = parent
+        history.depth = parent.depth + 1
+        _fill_history_node(history, entries[-1], arch)
 
     def _sync_rust_last_block_to_state(self, state, state_id: int) -> None:
         """Point a cached copy's ``scratch`` at the block Rust executed last."""
@@ -1427,6 +1513,7 @@ class RustStateExportMixin:
         if detailed:
             state.history.jumpkind = detailed[-1][1]
             _install_rust_last_block(state, detailed[-1][0])
+        self._install_rust_history_chain(state, snapshot.state_id, snapshot.get_detailed_history())
         self._bind_export(state, snapshot.state_id, snapshot=not mirror)
         return state
 

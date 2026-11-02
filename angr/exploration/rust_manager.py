@@ -3969,6 +3969,7 @@ class RustExplorationManager(
             self._state_cache[actual_state_id] = angr_state
             # Track this as a root state for plugin restoration
             self._state_roots[actual_state_id] = actual_state_id
+            self._record_history_anchor(actual_state_id, angr_state)
             # Seed Python-side options/globals from the source SimState so the
             # proxy returns the user-supplied values rather than empty stand-ins.
             # SimStateOptions is a dict-backed custom mapping that doesn't iterate
@@ -4052,6 +4053,7 @@ class RustExplorationManager(
         self._state_cache[rust_state.state_id] = angr_state
         # Track this as a root state for plugin restoration
         self._state_roots[rust_state.state_id] = rust_state.state_id
+        self._record_history_anchor(rust_state.state_id, angr_state)
         symbolic_pages = self._extract_symbolic_pages(angr_state)
         if symbolic_pages:
             self._rust_mgr.set_state_symbolic_pages(rust_state.state_id, symbolic_pages)

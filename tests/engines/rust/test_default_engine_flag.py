@@ -323,3 +323,30 @@ class TestForkSiblingHistory:
         sibling = [sid for i, sid in enumerate(ids) if rust.get_state_pc("active", i) == 0x86F8]
         assert len(sibling) == 1
         assert rust.get_state_detailed_history(sibling[0]) == [(0x86DC, 0, 0x86F8)]
+
+
+class TestExportHistoryChain:
+    """Exports share their history ancestors up to the branch (angr-mx00p.132.16).
+
+    An export used to get one history node on top of the seed's, so the found
+    and avoid states of x86_64 fauxware met at the seed and
+    ``closest_common_ancestor`` named the seed's block, not the branch on
+    ``strcmp``'s result at ``0x40068e``.
+    """
+
+    def test_found_and_avoid_diverge_at_the_branch(self):
+        import angr
+        from angr.state_plugins.history import HistoryIter
+
+        path = os.path.join(BIN_LOCATION, "tests", "x86_64", "fauxware")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        project = angr.Project(path, auto_load_libs=False, engine="rust")
+        mgr = project.factory.simulation_manager().explore(find=0x4006ED, avoid=[0x4006AA, 0x4006FD])
+
+        found = mgr.found[0]
+        other = (mgr.avoid + mgr.active)[0]
+        ancestor = found.history.closest_common_ancestor(other.history)
+        divergent = next(iter(HistoryIter(found.history, end=ancestor)))
+        assert divergent.recent_bbl_addrs == [0x40068E]
+        assert divergent.jumpkind == "Ijk_Boring"
