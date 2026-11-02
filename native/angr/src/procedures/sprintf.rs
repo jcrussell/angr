@@ -56,7 +56,7 @@ pub(crate) const MAX_VARARGS: usize = 6;
 /// decides what a `%...` means and
 /// [`render_conversion`] emits it.
 /// This loop owns only the literal bytes, `%%`, and the output-length cap.
-fn format_string(
+pub(super) fn format_string(
     state: &mut RustSimState,
     fmt: &[u8],
     args: &[RustBV],
@@ -272,7 +272,7 @@ impl NativeSimProcedure for NativeVsnprintf {
 /// int vsprintf(char *str, const char *format, va_list ap);
 /// ```
 ///
-/// Like the `vprintf = printf` / `vfprintf = fprintf` aliases (printf.rs), this
+/// Like `vprintf` / `vfprintf` (printf.rs), this
 /// deliberately does **not** %-substitute: reading the `va_list` is arch-specific
 /// (x86-64 SysV `reg_save_area`) and unmodeled by angr, so a "real" formatter via
 /// the [`format_string`] core would explore divergent symbolic states (see bd

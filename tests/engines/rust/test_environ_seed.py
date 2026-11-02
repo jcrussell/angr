@@ -20,9 +20,14 @@ installed returns 0 while a never-seen key returns 1.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
+import angr
+from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
+from tests.common import bin_location
 from tests.engines.conftest import load_pbounce
 
 _ENV = {"FLAG_CHECK": "1", "EMPTY_VAR": "", "PATH": "/usr/bin:/bin"}
@@ -60,3 +65,52 @@ class TestEntryStateEnvironSeed:
         mgr = RustExplorationManager(project, [project.factory.entry_state()])
         sid = mgr._rust_mgr.get_state_ids("active")[0]
         assert mgr._rust_mgr.seed_environment(sid, [(b"FLAG_CHECK", b"1")]) == 1
+
+
+def _symbolic_env_state():
+    """``test_getenv`` with ``TEST_ENV1`` symbolic: its envp entry is ``TEST_ENV1=<BVS>``."""
+    flag = claripy.Concat(*[claripy.BVS(f"flag_{i}", 8) for i in range(30)])
+    env = {"PATH": "/home/angr/", "TEST_ENV1": flag, "JAVA_HOME": "jdk-install-dir"}
+    project = angr.Project(os.path.join(bin_location, "tests", "x86_64", "test_getenv"), engine="rust")
+    return project, project.factory.entry_state(env=env), flag
+
+
+class TestSymbolicEnvEntry:
+    def test_concrete_bytes_of_a_mixed_entry_reach_rust_memory(self):
+        """The stack-page sync keeps ``TEST_ENV1=`` beside the symbolic value (angr-mx00p.132.2).
+
+        The entry is one symbolic_data store, and ``concrete_load`` holds zeros
+        across all of it; the targeted scan used to re-add only the symbolic
+        bytes, so Rust read the key as NULs.
+        """
+        project, state, _ = _symbolic_env_state()
+        envp = state.solver.eval(state.posix.environ)
+        ptr = state.solver.eval(state.memory.load(envp + 8, 8, endness=project.arch.memory_endness))
+        simgr = project.factory.simulation_manager(state)
+        loaded = simgr.active[0].memory.load(ptr, 10)
+        assert simgr.active[0].solver.eval(loaded, cast_to=bytes) == b"TEST_ENV1="
+
+    def test_getenv_of_a_symbolic_entry_returns_it(self):
+        """Native getenv cannot hold a symbolic value, so the env family runs on Python.
+
+        Before, native getenv returned NULL for ``TEST_ENV1`` and the Bingo
+        path left the flag unconstrained.
+        """
+        project, state, flag = _symbolic_env_state()
+        simgr = project.factory.simulation_manager(state)
+        simgr.explore()
+        bingo = [s for s in simgr.deadended if b"Bingo" in s.posix.dumps(1)]
+        assert len(bingo) == 1
+        assert bingo[0].solver.eval(flag, cast_to=bytes).split(b"\x00")[0] == b"this_is_a_string!"
+
+
+def test_printf_substitutes_a_concrete_env_value():
+    """Native printf formats ``%s`` as Python's does; it used to print ``!! Bingo %s`` (angr-vmi2l.109)."""
+    env = {"PATH": "/home/angr/", "TEST_ENV1": "this_is_a_string!"}
+    project = angr.Project(os.path.join(bin_location, "tests", "x86_64", "test_getenv"), engine="rust")
+    simgr = project.factory.simulation_manager(project.factory.entry_state(env=env))
+    simgr.explore()
+    assert len(simgr.deadended) == 1
+    lines = simgr.deadended[0].posix.dumps(1).decode().splitlines()
+    assert "!! Bingo this_is_a_string!" in lines
+    assert "TEST_ENV2: __NULL__" in lines

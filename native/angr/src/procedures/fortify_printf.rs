@@ -49,7 +49,7 @@ impl NativeSimProcedure for NativePrintfChk {
     }
 
     fn num_args(&self) -> usize {
-        2 // flag + format
+        2 + MAX_VARARGS // flag + format + varargs
     }
 
     fn call(
@@ -136,7 +136,7 @@ impl NativeSimProcedure for NativeFprintfChk {
     }
 
     fn num_args(&self) -> usize {
-        3 // stream + flag + format
+        3 + MAX_VARARGS // stream + flag + format + varargs
     }
 
     fn call(
@@ -144,7 +144,7 @@ impl NativeSimProcedure for NativeFprintfChk {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // fprintf expects [stream, format]; drop flag (args[1]).
+        // fprintf expects [stream, format, varargs...]; drop flag (args[1]).
         let mut forwarded = Vec::with_capacity(args.len() - 1);
         forwarded.push(args[0].clone());
         forwarded.extend_from_slice(&args[2..]);

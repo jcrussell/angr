@@ -131,10 +131,10 @@ claim the name but routed back to Python through
        and a native free-BVS mint would explore impossible paths (angr-8onrp).
    * - Output (stdout / formatted)
      - ``write``, ``puts``, ``putchar``, ``fputc`` (aliases ``putc``,
-       ``*_unlocked``), ``perror``, ``printf`` (alias ``vprintf``),
-       ``fprintf`` (alias ``vfprintf``), ``sprintf``, ``asprintf``,
+       ``*_unlocked``), ``perror``, ``printf``, ``vprintf``,
+       ``fprintf``, ``vfprintf``, ``sprintf``, ``asprintf``,
        ``snprintf``, ``vsnprintf``, ``vsprintf``
-     - 12 / 12
+     - 14 / 14
      - ``write.rs``, ``puts.rs``, ``perror.rs``, ``printf.rs``,
        ``sprintf.rs``
    * - C stdio ``FILE`` I/O

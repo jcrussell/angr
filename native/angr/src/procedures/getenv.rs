@@ -16,11 +16,13 @@
 //! where Python's `getenv` SimProcedure — which reads that same `envp` array —
 //! finds it.
 //!
-//! Residual divergence from Python, both narrow: an env entry whose bytes are
-//! symbolic is skipped by the bridge (Python's `getenv` would still return a
-//! pointer to it), and the map is write-only with respect to memory — a guest
-//! that walks `environ`/`__environ` itself, rather than calling `getenv`, does
-//! not see a native `setenv`/`putenv`/`unsetenv`.
+//! An `envp` the map cannot hold (a symbolic pointer or entry byte) makes the
+//! bridge disable this whole family for the manager, so Python's procedures,
+//! which read `envp`, serve every call (angr-mx00p.132.2).
+//!
+//! Residual divergence from Python: the map is write-only with respect to
+//! memory — a guest that walks `environ`/`__environ` itself, rather than
+//! calling `getenv`, does not see a native `setenv`/`putenv`/`unsetenv`.
 
 use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded, write_cstr};
 use super::{ProcedureError, arch_word};

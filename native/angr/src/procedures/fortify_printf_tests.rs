@@ -102,7 +102,7 @@ fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
 
 #[test]
 fn test_fprintf_chk_drops_flag_and_writes_fd() {
-    // __fprintf_chk(stderr, flag, fmt) writes the raw format to fd 2.
+    // __fprintf_chk(stderr, flag, fmt, 7) writes the formatted output to fd 2.
     let mut state = RustSimState::new("amd64").unwrap();
     let file_ptr = 0x5000;
     setup_file_struct(&mut state, file_ptr, 2);
@@ -115,12 +115,13 @@ fn test_fprintf_chk_drops_flag_and_writes_fd() {
                 RustBV::concrete(file_ptr as u128, 64), // stream
                 RustBV::concrete(1, 64),                // flag (dropped)
                 RustBV::concrete(0x1000, 64),           // format
+                RustBV::concrete(7, 64),                // %d arg
             ],
         )
         .unwrap();
 
-    assert_eq!(result.unwrap().as_u64(), Some(9));
-    assert_eq!(state.fd_buffer(2), b"error: %d");
+    assert_eq!(result.unwrap().as_u64(), Some(8));
+    assert_eq!(state.fd_buffer(2), b"error: 7");
     assert!(state.stdout_buffer().is_empty());
 }
 
@@ -179,10 +180,10 @@ fn test_vsnprintf_chk_zero_maxlen_returns_length() {
 
 #[test]
 fn test_chk_num_args() {
-    assert_eq!(NativePrintfChk.num_args(), 2);
+    assert_eq!(NativePrintfChk.num_args(), 8);
     assert_eq!(NativeSprintfChk.num_args(), 10);
     assert_eq!(NativeSnprintfChk.num_args(), 11);
-    assert_eq!(NativeFprintfChk.num_args(), 3);
+    assert_eq!(NativeFprintfChk.num_args(), 9);
     assert_eq!(NativeVsnprintfChk.num_args(), 6);
 }
 

@@ -1,102 +1,154 @@
-//! Native printf implementation (simplified).
+//! Native printf / fprintf implementations, and the raw vprintf / vfprintf.
 //!
-//! Reads the format string from memory and appends it to the state's
-//! stdout buffer. Does NOT perform format string substitution — just
-//! writes the raw format string. This is sufficient for predicates that
-//! check for fixed output strings (the common CTF pattern).
+//! printf and fprintf substitute their conversions through the shared
+//! [`format_string`] core, the same one sprintf/snprintf use, so their output
+//! and return value match Python's `FormatString.replace`. Every case that
+//! core refuses (a symbolic format byte or argument, and the specifiers and
+//! flags listed in the `sprintf.rs` module doc) defers to Python
+//! (angr-vmi2l.109).
 //!
-//! Falls back to Python when the format *address* is symbolic
-//! (`extract_concrete_arg`). A symbolic format *byte* is handled
-//! differently from the rest of the family: rather than falling back, the
-//! byte loop stops at the first symbolic byte, writes the concrete prefix,
-//! and returns success. This is intentional (printf only needs the raw
-//! string for fixed-output predicates), but it is the one asymmetry in the
-//! family — scanf/sprintf raise `SymbolicArgument` on the first symbolic
-//! byte instead. See the format-string worked example in
-//! `docs/extending-angr/simprocedures.rst`.
+//! vprintf and vfprintf write the RAW format string: the `va_list` is
+//! unmodeled, and their Python counterparts write the format unsubstituted
+//! too (see [`NativeVsprintf`](super::sprintf::NativeVsprintf)). A symbolic
+//! format byte defers to Python, which writes it as is.
 
-use super::format_common::MAX_FORMAT_LEN;
+use super::format_common::read_format_string;
+use super::sprintf::{MAX_VARARGS, format_string};
+use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-crate::declare_proc! {
-    /// Native printf implementation.
-    ///
-    /// ```c
-    /// int printf(const char *format, ...);
-    /// ```
-    ///
-    /// printf is variadic, but we only read the (concrete) format string.
-    /// Returns a non-negative value (number of characters printed).
-    ///
-    /// Aliased to `vprintf(const char *format, va_list ap)`: since the native
-    /// impl never substitutes (it writes the raw format string), the trailing
-    /// `va_list` is irrelevant and `format` is arg 0 either way, so vprintf is
-    /// byte-for-byte identical to printf — no separate impl needed (DRY).
-    name = "printf",
-    struct = NativePrintf,
-    args = [fmt_addr: concrete],
-    aliases = ["vprintf"],
-    call |state| {
-        // Read the format string byte-by-byte from memory. A symbolic byte,
-        // null terminator, or failed load quietly stops the scan (see the
-        // module docstring's note on printf's intentional symbolic-byte
-        // asymmetry) — exactly `scan_concrete_lossy`'s contract, so reuse it
-        // rather than re-rolling the loop (matches NativeFprintf below).
-        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_FORMAT_LEN);
+/// Native printf implementation.
+///
+/// ```c
+/// int printf(const char *format, ...);
+/// ```
+///
+/// Returns the number of bytes written, like Python `printf`.
+pub(crate) struct NativePrintf;
 
-        // Append to stdout buffer. A refusal (fd 1 dup2'd onto a bounded-
-        // symbolic-content fd, now demoted) bounces to Python — see
-        // FileSystem::write.
-        if !state.write_stdout(&buf) {
-            return Err(crate::procedures::ProcedureError::Other(
-                "printf to stdout with symbolic content falls back to Python (demoted)"
-                    .to_string(),
+impl NativeSimProcedure for NativePrintf {
+    fn name(&self) -> &'static str {
+        "printf"
+    }
+
+    fn num_args(&self) -> usize {
+        1 + MAX_VARARGS // format + varargs
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let fmt_addr = extract_concrete_arg(&args[0], "format")?;
+        let fmt = read_format_string(state, fmt_addr)?;
+        let output = format_string(state, &fmt, &args[1..])?;
+
+        // A refusal (fd 1 dup2'd onto a bounded-symbolic-content fd, now
+        // demoted) bounces to Python — see FileSystem::write.
+        if !state.write_stdout(&output) {
+            return Err(ProcedureError::Other(
+                "printf to stdout with symbolic content falls back to Python (demoted)".to_string(),
             ));
         }
+        Ok(Some(RustBV::concrete(output.len() as u128, 32)))
+    }
+}
 
-        // Number of characters written. C/glibc and Python both return 0 for
-        // an empty format string (printf("") == 0), so return the raw length.
-        let len = buf.len() as u128;
-        Ok(Some(RustBV::concrete(len, 32)))
+/// Native fprintf implementation.
+///
+/// ```c
+/// int fprintf(FILE *stream, const char *format, ...);
+/// ```
+///
+/// The stream variant of [`NativePrintf`]: resolves `stream->_fileno` and
+/// writes the formatted output to that fd. Returns the number of bytes
+/// written, or -1 on a closed/negative fd (matching Python `fprintf`, which
+/// returns -1 when `simfd is None`). A symbolic FILE* defers to Python.
+pub(crate) struct NativeFprintf;
+
+impl NativeSimProcedure for NativeFprintf {
+    fn name(&self) -> &'static str {
+        "fprintf"
+    }
+
+    fn num_args(&self) -> usize {
+        2 + MAX_VARARGS // stream + format + varargs
+    }
+
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        args: &[RustBV],
+    ) -> Result<Option<RustBV>, ProcedureError> {
+        let stream = extract_concrete_arg(&args[0], "stream")?;
+        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
+        let fd = super::stream_ops::read_fileno_or_demote_all(state, stream)?;
+        if fd < 0 {
+            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
+        }
+        let fmt = read_format_string(state, fmt_addr)?;
+        let output = format_string(state, &fmt, &args[2..])?;
+        // A refusal means the fd carried bounded symbolic content (now
+        // demoted) — bounce to Python at the choke point (angr-0xyq2 Phase 2).
+        if !state.write_fd(fd as u32, &output) {
+            return Err(ProcedureError::Other(format!(
+                "fprintf to fd={fd} with symbolic content falls back to Python (demoted)"
+            )));
+        }
+        Ok(Some(RustBV::concrete(output.len() as u128, 32)))
     }
 }
 
 crate::declare_proc! {
-    /// Native fprintf implementation (simplified).
+    /// Native vprintf implementation: writes the raw format string.
     ///
     /// ```c
-    /// int fprintf(FILE *stream, const char *format, ...);
+    /// int vprintf(const char *format, va_list ap);
     /// ```
     ///
-    /// The stream variant of [`NativePrintf`]: resolves `stream->_fileno` and
-    /// writes the RAW format string (no substitution) to that fd via
-    /// `write_fd`, mirroring NativePrintf's stdout write and NativeFputc's fd
-    /// resolution. Like printf, a symbolic format *byte* stops the scan and the
-    /// concrete prefix is written (via `scan_concrete_lossy`); a symbolic
-    /// FILE* or format *address* falls back to Python. Returns the number of
-    /// bytes written, or -1 on a closed/negative fd (matching Python `fprintf`,
-    /// which returns -1 when `simfd is None`).
+    /// A symbolic format byte defers to Python. Returns the number of bytes
+    /// written.
+    name = "vprintf",
+    struct = NativeVprintf,
+    args = [fmt_addr: concrete],
+    call |state| {
+        let buf = read_format_string(state, fmt_addr)?;
+        // Refusal contract — see NativePrintf.
+        if !state.write_stdout(&buf) {
+            return Err(ProcedureError::Other(
+                "vprintf to stdout with symbolic content falls back to Python (demoted)"
+                    .to_string(),
+            ));
+        }
+        Ok(Some(RustBV::concrete(buf.len() as u128, 32)))
+    }
+}
+
+crate::declare_proc! {
+    /// Native vfprintf implementation: writes the raw format string to the
+    /// stream's fd.
     ///
-    /// Aliased to `vfprintf(FILE *stream, const char *format, va_list ap)`:
-    /// like the printf/vprintf pair, the native impl writes the raw format
-    /// string without substitution, so the trailing `va_list` is irrelevant
-    /// and `stream`/`format` are args 0/1 either way — vfprintf is identical
-    /// to fprintf (DRY).
-    name = "fprintf",
-    struct = NativeFprintf,
+    /// ```c
+    /// int vfprintf(FILE *stream, const char *format, va_list ap);
+    /// ```
+    ///
+    /// The raw-write counterpart of [`NativeFprintf`]. Returns -1 on a
+    /// closed/negative fd.
+    name = "vfprintf",
+    struct = NativeVfprintf,
     args = [stream: concrete, fmt_addr: concrete],
-    aliases = ["vfprintf"],
     call |state| {
         let fd = crate::procedures::stream_ops::read_fileno_or_demote_all(state, stream)?;
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }
-        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_FORMAT_LEN);
-        // A refusal means the fd carried bounded symbolic content (now
-        // demoted) — bounce to Python at the choke point (angr-0xyq2 Phase 2).
+        let buf = read_format_string(state, fmt_addr)?;
+        // Refusal contract — see NativeFprintf.
         if !state.write_fd(fd as u32, &buf) {
-            return Err(crate::procedures::ProcedureError::Other(format!(
-                "fprintf to fd={fd} with symbolic content falls back to Python (demoted)"
+            return Err(ProcedureError::Other(format!(
+                "vfprintf to fd={fd} with symbolic content falls back to Python (demoted)"
             )));
         }
         Ok(Some(RustBV::concrete(buf.len() as u128, 32)))

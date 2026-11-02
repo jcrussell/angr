@@ -50,8 +50,100 @@ fn test_printf_symbolic_addr() {
 }
 
 #[test]
-fn test_fprintf_writes_raw_format_to_fd() {
-    // fprintf(stderr, fmt) writes the raw format string to fd 2, not stdout.
+fn test_printf_substitutes_conversions() {
+    // Python printf substitutes through FormatString.replace; native printf
+    // used to write "val=%d %s" literally (angr-vmi2l.109).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"val=%d %s\n\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"str\x00", Permission::RWX);
+
+    let result = NativePrintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(42, 64),
+                RustBV::concrete(0x2000, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(11));
+    assert_eq!(state.stdout_buffer(), b"val=42 str\n");
+}
+
+#[test]
+fn test_printf_symbolic_string_arg_falls_back() {
+    // A symbolic %s argument cannot be rendered natively; Python writes it
+    // symbolically, so the call must defer rather than print a prefix.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"got %s\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"a\x00\x00", Permission::RWX);
+    state
+        .memory_store(0x2001, RustBV::symbol("s", 8))
+        .unwrap();
+
+    let result = NativePrintf.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+    );
+    assert!(result.is_err());
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn test_printf_symbolic_format_byte_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"ab\x00\x00", Permission::RWX);
+    state
+        .memory_store(0x1002, RustBV::symbol("f", 8))
+        .unwrap();
+
+    let result = NativePrintf.call(&mut state, &[RustBV::concrete(0x1000, 64)]);
+    assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn test_vprintf_writes_raw_format() {
+    // vprintf's va_list is unmodeled, so (like Python vprintf) the format is
+    // written unsubstituted.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"val=%d\x00", Permission::RWX);
+
+    let result = NativeVprintf
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x9000, 64)],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(6));
+    assert_eq!(state.stdout_buffer(), b"val=%d");
+}
+
+#[test]
+fn test_vfprintf_writes_raw_format_to_fd() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 2);
+    state.map_memory_data(0x1000, b"error: %d\x00", Permission::RWX);
+
+    let result = NativeVfprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x9000, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(9));
+    assert_eq!(state.fd_buffer(2), b"error: %d");
+}
+
+#[test]
+fn test_fprintf_formats_to_fd() {
+    // fprintf(stderr, fmt, 7) writes the formatted output to fd 2, not stdout.
     let mut state = RustSimState::new("amd64").unwrap();
     let file_ptr = 0x5000;
     setup_file_struct(&mut state, file_ptr, 2);
@@ -63,11 +155,12 @@ fn test_fprintf_writes_raw_format_to_fd() {
             &[
                 RustBV::concrete(file_ptr as u128, 64),
                 RustBV::concrete(0x1000, 64),
+                RustBV::concrete(7, 64),
             ],
         )
         .unwrap();
-    assert_eq!(result.unwrap().as_u64(), Some(9));
-    assert_eq!(state.fd_buffer(2), b"error: %d");
+    assert_eq!(result.unwrap().as_u64(), Some(8));
+    assert_eq!(state.fd_buffer(2), b"error: 7");
     assert!(state.stdout_buffer().is_empty());
 }
 

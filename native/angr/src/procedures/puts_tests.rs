@@ -55,6 +55,20 @@ fn test_puts_symbolic_addr() {
 }
 
 #[test]
+fn test_puts_symbolic_tail_falls_back() {
+    // Python `puts` writes "hi" plus the symbolic byte; a native write of the
+    // concrete prefix would print a different string (angr-vmi2l.109).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hi\x00\x00", Permission::RWX);
+    state
+        .memory_store(0x1002, RustBV::symbol("tail", 8))
+        .unwrap();
+    let result = NativePuts.call(&mut state, &[RustBV::concrete(0x1000, 64)]);
+    assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
 fn test_putchar_basic() {
     let mut state = RustSimState::new("amd64").unwrap();
     let result = NativePutchar

@@ -895,32 +895,23 @@ handles them differently:
   ``sprintf``/``fprintf``/``fscanf`` (after the dest/stream argument), 2 for
   ``snprintf`` (after dest and size).
 
-* **Symbolic format-string bytes.** Here the family is deliberately
-  *asymmetric*:
-
-  - ``scanf``/``fscanf`` and ``sprintf``/``snprintf`` (all four via the one
-    shared ``format_common::read_format_string``) call
-    ``extract_concrete_arg(&bv, ...)`` on *every* byte they read. The first
-    symbolic byte raises ``SymbolicArgument`` and the whole call falls back
-    to Python — these procedures must parse the specifiers
-    (``%d``/``%s``/``%x``/…) to mint output BVs or consume variadic args,
-    and a symbolic specifier byte makes that parse undefined.
-  - ``printf``/``fprintf`` (``NativePrintf::call`` /
-    ``NativeFprintf::call``) do **not** fall back on a symbolic byte. They
-    only copy the raw format string to the output buffer (no specifier
-    substitution — sufficient for the common CTF predicate that greps stdout
-    for a fixed string), so via ``scan_concrete_lossy`` they simply **stop
-    reading, write the concrete prefix, and return success** with the prefix
-    length. This is intentional, but it is the one place in the family where
-    a symbolic format string does *not* hand off to Python: callers that
-    need the full (symbolic-tail) string materialized must not rely on
-    native ``printf``.
+* **Symbolic format-string bytes.** Every member that reads the format
+  string reads it through the one shared
+  ``format_common::read_format_string``, which calls
+  ``extract_concrete_arg(&bv, ...)`` on *every* byte. The first symbolic byte
+  raises ``SymbolicArgument`` and the whole call falls back to Python.
+  ``printf``/``fprintf``/``scanf``/``fscanf``/``sprintf``/``snprintf`` must
+  parse the specifiers (``%d``/``%s``/``%x``/…) to substitute output or
+  consume variadic args, and a symbolic specifier byte makes that parse
+  undefined. The raw-copy ``vprintf``/``vfprintf``/``vsprintf``/``vsnprintf``
+  do not parse, but Python writes their symbolic bytes as is, so a native
+  write that stopped at the first one would print a different string.
 
 * **No symbolic-format substitution path exists.** No member attempts to
   enumerate or constrain a symbolic format string into concrete cases. That
   is the documented boundary: a format string that is symbolic *in the
-  specifiers* is out of scope for the native fast path. ``printf`` degrades
-  to a concrete-prefix write; the rest hand off to Python.
+  specifiers* is out of scope for the native fast path and hands off to
+  Python.
 
 * **``sscanf`` is not in the family at all.** ``NativeSscanf::call`` ignores
   both of its arguments and unconditionally returns
@@ -940,11 +931,10 @@ Things to take away from this example:
 * The address-vs-bytes distinction matters: a concrete pointer into a buffer
   with symbolic contents is the common case (a user-controlled format buffer),
   and that is exactly what forces the ``scanf``/``sprintf`` fallback.
-* ``printf``'s truncate-and-succeed behavior is a per-procedure choice keyed
-  to what the procedure actually does with the string, not a family-wide
-  convention. When adding a new format-consuming procedure, decide explicitly
-  whether a symbolic byte should fall back (parse semantics) or truncate
-  (raw-copy semantics).
+* A native procedure that writes a string Python would write in full must
+  not truncate it at a symbolic byte: falling back keeps the output, the
+  return value and every later stdout predicate identical to Python's
+  (``angr-vmi2l.109``).
 
 Terminal procedures: ``no_return``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

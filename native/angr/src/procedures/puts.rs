@@ -6,10 +6,13 @@
 //!
 //! # Behavior
 //!
-//! - Reads the string at arg\[0\] byte-by-byte until NUL or MAX_PUTS_LEN
+//! - Reads the string at arg\[0\] byte-by-byte until NUL
 //! - Appends string + newline to state.stdout_buffer
 //! - Returns length + 1 (for the appended newline)
-//! - Falls back to Python if address is symbolic
+//! - Falls back to Python if the address or a string byte is symbolic, or no
+//!   NUL appears within MAX_PUTS_LEN: Python `puts` writes the whole string,
+//!   symbolic bytes included, so a truncated native write would diverge
+//!   (angr-vmi2l.109)
 
 use crate::procedures::strings::MAX_STRING_SCAN as MAX_PUTS_LEN;
 use crate::symbolic::RustBV;
@@ -26,9 +29,7 @@ crate::declare_proc! {
     struct = NativePuts,
     args = [s: concrete],
     call |state| {
-        // Read the concrete prefix byte-by-byte; a symbolic byte, failed load,
-        // or the cap quietly stops the scan (puts prints what it has).
-        let buf = crate::procedures::strings::scan_concrete_lossy(state, s, MAX_PUTS_LEN);
+        let buf = crate::procedures::strings::scan_concrete_until_null(state, s, MAX_PUTS_LEN, "puts")?;
 
         // Append string + newline to stdout buffer. A refusal (fd 1 dup2'd
         // onto a bounded-symbolic-content fd, now demoted) bounces to

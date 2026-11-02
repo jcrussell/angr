@@ -504,15 +504,17 @@ class RustStateSyncMixin:
                 # path failed (page has symbolic content). Fall
                 # through to slow path below.
                 with contextlib.suppress(Exception):
-                    concrete = bytes(page_obj.concrete_load(0, page_size))
+                    concrete = bytearray(page_obj.concrete_load(0, page_size))
                     if len(concrete) == page_size:
-                        rust_state.map_memory_data(sp_page, concrete, 6)
-                        used_fast_path = True
                         # Targeted scan of symbolic_data ranges only, far
                         # cheaper than a full _extract_symbolic_regions scan.
                         sd = getattr(page_obj, "symbolic_data", None)
                         if sd:
-                            self._extract_stack_symbolic_from_sd(angr_state, sp_page, page_size, sd, symbolic_regions)
+                            self._extract_stack_symbolic_from_sd(
+                                angr_state, sp_page, page_size, sd, symbolic_regions, concrete
+                            )
+                        rust_state.map_memory_data(sp_page, bytes(concrete), 6)
+                        used_fast_path = True
 
             if not used_fast_path:
                 # Slow path: load through memory mixin stack + solver.eval()
@@ -526,15 +528,26 @@ class RustStateSyncMixin:
             l.debug("Pre-populated 1 stack page in Rust memory")
 
     def _extract_stack_symbolic_from_sd(
-        self, angr_state: angr.SimState, page_addr: int, page_size: int, sd: dict, symbolic_regions: list
+        self,
+        angr_state: angr.SimState,
+        page_addr: int,
+        page_size: int,
+        sd: dict,
+        symbolic_regions: list,
+        concrete: bytearray,
     ) -> None:
         """Targeted scan of a stack page's symbolic_data ranges.
 
         Avoids the full 4096-byte byte-by-byte scan in _extract_symbolic_regions
         — this only walks the explicitly-stored symbolic byte ranges. Unlike the
         wide-region scan it keeps Python's default ``mem_`` fills too: the page
-        was mapped from concrete_load, so a dropped fill would read as zero
+        is mapped from concrete_load, so a dropped fill would read as zero
         (angr-plh49).
+
+        A symbolic_data store can mix concrete and symbolic bytes (an
+        ``entry_state(env=...)`` string ``KEY=<BVS>``), and concrete_load
+        holds zeros across the whole store, so each concrete byte is written
+        into ``concrete`` here, before the page is mapped (angr-mx00p.132.2).
         """
         scan_ranges = self._scan_ranges_from_symbolic_data(sd, user_only=False)
         for start_offset, size in scan_ranges:
@@ -551,6 +564,8 @@ class RustStateSyncMixin:
                     val = angr_state.memory.load(addr, 1, endness="Iend_BE", inspect=False, disable_actions=True)
                     if val.symbolic:
                         symbolic_regions.append((addr, val))
+                    else:
+                        concrete[start_offset + byte_off] = angr_state.solver.eval(val)
 
     @staticmethod
     def _has_user_symbolic_var(ast) -> bool:

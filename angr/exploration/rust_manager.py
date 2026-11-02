@@ -3478,6 +3478,18 @@ class RustExplorationManager(
                 out.append(v)
         return None
 
+    # The native procedures that read or write ``RustSimState``'s environment
+    # map (``native/angr/src/procedures/getenv.rs``). They go off together: a
+    # native setenv whose value only the map holds would be invisible to a
+    # Python getenv.
+    _NATIVE_ENV_PROCS = ("getenv", "setenv", "unsetenv", "clearenv", "putenv")
+
+    def _disable_native_env_procs(self, state_id: int, reason: str) -> None:
+        """Serve the env family from Python for this manager: the map cannot hold this state's envp."""
+        l.debug("state %d: %s; the env procedures run on Python", state_id, reason)
+        for name in self._NATIVE_ENV_PROCS:
+            self._rust_mgr.disable_native_procedure(name)
+
     def _seed_environ_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
         """Bridge the guest's initial ``entry_state(env=...)`` into Rust (angr-6cp06.12).
 
@@ -3493,10 +3505,13 @@ class RustExplorationManager(
         --- and native ``setenv(..., overwrite=0)`` clobbers such a var because
         its existence check misses too.
 
-        Best-effort and lossy by design: a symbolic envp pointer skips the whole
-        walk, and an entry whose bytes are symbolic (or that has no ``=``) is
-        skipped individually. Those keep today's NULL-from-native behavior; see
-        the module doc of ``native/angr/src/procedures/getenv.rs``.
+        A symbolic envp pointer or slot, or an entry with a symbolic byte, has
+        no place in the byte-keyed map, and a native ``getenv`` would return
+        NULL where Python returns the symbolic value (angr-mx00p.132.2). Such a
+        state turns the whole native env family off for this manager
+        (:meth:`_disable_native_env_procs`), so Python's procedures, which read
+        envp, serve every call. An entry with no ``=`` is not a variable at all
+        and is skipped.
         """
         try:
             envp = getattr(getattr(angr_state, "posix", None), "environ", None)
@@ -3504,6 +3519,7 @@ class RustExplorationManager(
                 return
             if isinstance(envp, claripy.ast.Base):
                 if envp.symbolic:
+                    self._disable_native_env_procs(state_id, "symbolic envp pointer")
                     return
                 envp = angr_state.solver.eval(envp)
             envp = int(envp)
@@ -3515,13 +3531,15 @@ class RustExplorationManager(
             for i in range(self._MAX_ENVIRON_ENTRIES):
                 slot = angr_state.memory.load(envp + i * ptr_size, ptr_size, endness=angr_state.arch.memory_endness)
                 if slot.symbolic:
+                    self._disable_native_env_procs(state_id, f"symbolic envp[{i}]")
                     return
                 ptr = angr_state.solver.eval(slot)
                 if ptr == 0:
                     break
                 line = self._read_environ_cstring(angr_state, ptr)
                 if line is None:
-                    continue
+                    self._disable_native_env_procs(state_id, f"envp[{i}] has a symbolic or unterminated entry")
+                    return
                 key, sep, value = line.partition(b"=")
                 if not sep or not key:
                     continue
@@ -3529,6 +3547,7 @@ class RustExplorationManager(
             else:
                 # No NULL terminator inside the cap — treat the array as
                 # unrecognizable rather than seeding a truncated environment.
+                self._disable_native_env_procs(state_id, "envp has no NULL terminator")
                 return
 
             if entries:

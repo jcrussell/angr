@@ -421,6 +421,8 @@ impl NativeProcedureRegistry {
                 perror::NativePerror,
                 printf::NativePrintf,
                 printf::NativeFprintf,
+                printf::NativeVprintf,
+                printf::NativeVfprintf,
                 // New procedures (verified safe — no exploration flow changes)
                 memset::NativeMemset,
                 // bzero(s, n) — forwards to native memset(s, 0, n).
