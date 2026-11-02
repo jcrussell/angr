@@ -4,7 +4,8 @@ The interpreter defers the unexplored side of a branch, and the run loop used
 to materialize it only after running the native proc that ended the block. The
 branch snapshot restores registers, memory and the solver but not the
 filesystem, so the proc's stdout write reached a sibling that never made it:
-fauxware's accepted path printed ``Go away!`` before its welcome line.
+fauxware's accepted path printed ``Go away!`` before its welcome line, and
+checkbyte's good path printed ``First letter bad`` (angr-mx00p.132.1).
 """
 
 from __future__ import annotations
@@ -46,3 +47,12 @@ def test_sscanf_run_prints_one_line_per_path():
     outputs = _run_outputs(SSCANF_PATH)
     assert len(outputs) == 16
     assert all(out.count(b"\n") == 1 for out in outputs), outputs
+
+
+@pytest.mark.parametrize("arch", ["armel", "i386", "mips", "mipsel", "x86_64"])
+def test_checkbyte_run_prints_one_verdict_per_path(arch):
+    path = os.path.join(TEST_BINARIES_DIR, "..", arch, "checkbyte")
+    if not os.path.exists(path):
+        pytest.skip(f"{arch} checkbyte binary not available")
+    outputs = _run_outputs(path)
+    assert sorted(outputs) == [b"First letter bad\n", b"First letter good\n"]
