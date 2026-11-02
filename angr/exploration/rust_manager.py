@@ -5774,8 +5774,13 @@ class RustExplorationManager(
         # Callable for concrete_only pruning) is applied after each step,
         # matching Python SimulationManager.run() behavior. Keep terminal
         # states so they land in their stash (deadended/errored) instead of
-        # being dropped, matching Python.
+        # being dropped, matching Python. Each step advances one basic block,
+        # as a Python step does: with the interpreter's block chaining on, N
+        # steps run far past the budget the caller calibrated against Python
+        # (test_serialization's run(n=10) reached a divide-by-zero the Python
+        # engine is nowhere near after ten steps; angr-mx00p.132.22).
         self._rust_mgr.set_drop_terminal_states(False)
+        was_granular = self.set_block_granular(True)
         try:
             stash = kwargs.pop("stash", "active")
             until = kwargs.pop("until", None)
@@ -5790,6 +5795,7 @@ class RustExplorationManager(
                 if until and until(self):
                     break
         finally:
+            self.set_block_granular(was_granular)
             self._rust_mgr.set_drop_terminal_states(True)
         return self
 

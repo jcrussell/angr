@@ -5,6 +5,8 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import angr
@@ -12,6 +14,7 @@ import angr
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
+    BIN_LOCATION,
     RUST_EXPLORATION_AVAILABLE,
     TEST_BINARIES_DIR,
     ExplorationEvent,
@@ -2641,3 +2644,25 @@ class TestFindInsideInitPrefix:
         sm = proj.factory.simulation_manager(proj.factory.entry_state())
         sm.explore(find=main_addr, avoid=avoid, num_find=1)
         assert len(sm.found) == 0, "vanilla angr avoids the seed inside the init prefix"
+
+
+class TestRunNIsBlockGranular:
+    """``run(n=N)`` steps one basic block per step, as Python does (angr-mx00p.132.22).
+
+    With block chaining on, ten steps carried i386 ``test_division`` from the
+    entry point into ``divide``'s ``idiv`` by zero, which the Python engine
+    does not reach for another couple of dozen steps, so upstream
+    ``test_serialization``'s ``run(n=10)`` saw an errored state.
+    """
+
+    def test_run_n_does_not_chain_past_budget(self):
+        path = os.path.join(BIN_LOCATION, "tests", "i386", "test_division")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        project = angr.Project(path, auto_load_libs=False)
+        mgr = RustExplorationManager(project, [project.factory.entry_state()])
+        mgr.run(n=10)
+        assert not mgr.errored
+        assert len(mgr.active) == 1
+        # The toggle is scoped to the call: step()/explore() keep chaining.
+        assert mgr.set_block_granular(False) is False
