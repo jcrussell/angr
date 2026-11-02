@@ -5,7 +5,9 @@
 //! only the crossing. A claripy argument's term is `Base::ast()`, and the
 //! result goes back with `Base::from_ast` after the same `simplify_ext` every
 //! claripy bitvector operator applies, carrying a literal argument's
-//! relocatable annotations as claripy's fold does. Anything Rust does not
+//! relocatable annotations as claripy's fold does. A scalar commutative op
+//! over a symbolic operand is built as claripy's operator builds it
+//! ([`claripy_operator`]), keeping irop.py's operand order. Anything Rust does not
 //! serve (an argument of the wrong sort, a width or arity the op does not take, a
 //! literal with an annotation claripy does not fold through, a
 //! literal zero divisor, a symbolic value shifted by a literal or
@@ -96,6 +98,7 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         return Ok(None);
     };
     let mut imported = Vec::with_capacity(args.len());
+    let mut terms = Vec::with_capacity(args.len());
     let mut carried = Vec::new();
     // SymBV keeps a constant wider than 128 bits as a term, so concreteness is read off claripy's AST.
     let mut symbolic = Vec::with_capacity(args.len());
@@ -131,11 +134,23 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             // `from_clarirs` folds the literal to a value; claripy carries its annotations onto the result.
             carried.extend(ast.annotations().iter().cloned());
         }
+        terms.push(ast.clone());
         let Ok(value) = RustBV::from_clarirs(ast) else {
             // SILENT(cat-a): no SymBV form; irop.py serves the call.
             return Ok(None);
         };
         imported.push(value);
+    }
+    if let [l, r] = terms.as_slice()
+        && symbolic.contains(&true)
+        && let Some(built) = claripy_operator(op, l, r)
+    {
+        let Ok(ast) = built else {
+            // SILENT(cat-a): irop.py serves the call.
+            return Ok(None);
+        };
+        let out = Base::from_ast(py, ast)?;
+        return Ok(Some(out.into_any().unbind()));
     }
     let result = match imported.as_slice() {
         [a] => VEXOps::unop(op, a.clone()),
@@ -236,6 +251,34 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     }
     let out = Base::from_ast(py, ast)?;
     Ok(Some(out.into_any().unbind()))
+}
+
+/// `l op r` built as the claripy operator `irop.py` applies builds it, for a
+/// scalar `Iop_{Add,Mul,And,Or,Xor}{8,16,32,64}`; `None` for any other op.
+/// `SymBV` sorts commutative operands by hash (`canonicalize_commutative`),
+/// and Z3's optimizer is sensitive to operand order, so the sorted term makes
+/// later `min`/`max` queries slower (angr-mx00p.100.15). The caller takes this
+/// path only when an operand is symbolic; a literal pair folds the same either way.
+fn claripy_operator(
+    op: IROp,
+    l: &AstRef<'static>,
+    r: &AstRef<'static>,
+) -> Option<Result<AstRef<'static>, ClarirsError>> {
+    let ctx = &*GLOBAL_CONTEXT;
+    let built = match op {
+        IROp::Add(ty) | IROp::Mul(ty) | IROp::And(ty) | IROp::Or(ty) | IROp::Xor(ty)
+            if !matches!(ty, IRType::I8 | IRType::I16 | IRType::I32 | IRType::I64) =>
+        {
+            return None;
+        }
+        IROp::Add(_) => ctx.add(l, r),
+        IROp::Mul(_) => ctx.mul(l, r),
+        IROp::And(_) => ctx.and2(l, r),
+        IROp::Or(_) => ctx.or2(l, r),
+        IROp::Xor(_) => ctx.xor2(l, r),
+        _ => return None,
+    };
+    Some(built.and_then(|ast| ast.simplify_ext(true, true)))
 }
 
 /// The simplified clarirs term for `op`'s `result`. A float result leaves

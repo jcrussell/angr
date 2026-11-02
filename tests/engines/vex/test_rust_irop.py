@@ -579,11 +579,25 @@ def test_rust_irop_keeps_a_literal_shift_s_shape(name, amount):
     if name.startswith(MULS):
         calls.append((literal, x))
     for args in calls:
-        assert vex_irop.irop(name, args) is None
+        # A scalar Iop_Mul is built as claripy's operator builds it, so Rust serves irop.py's term itself.
+        if not name.startswith("Iop_Mul") or name.startswith("Iop_Mull"):
+            assert vex_irop.irop(name, args) is None
         assert _seam(name, args)[0].identical(_python(name, args)[0])
     # A product by a non-power of two has no shift form, so Rust serves it.
     if name.startswith(MULS):
         assert vex_irop.irop(name, (x, claripy.BVV(6, amount_bits))) is not None
+
+
+@pytest.mark.parametrize("name", ["Iop_Add8", "Iop_Add32", "Iop_Mul16", "Iop_And64", "Iop_Or32", "Iop_Xor8"])
+def test_rust_irop_keeps_commutative_operand_order(name):
+    """A symbolic commutative op returns irop.py's term, operands in call order: SymBV sorts them by hash, and Z3's
+    optimizer runs min/max slower on the sorted form."""
+    _, (bits, _) = _signature(name)
+    x, y = claripy.BVS("x", bits), claripy.BVS("y", bits)
+    for args in ((x, y), (y, x), (x, claripy.BVV(3, bits)), (claripy.BVV(3, bits), x), (x + y, claripy.BVS("z", bits))):
+        served = vex_irop.irop(name, args)
+        assert served is not None
+        assert served.identical(_python(name, args)[0]), (args, served)
 
 
 def test_rust_irop_exclusions():
