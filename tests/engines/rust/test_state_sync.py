@@ -625,6 +625,29 @@ class TestCallbackPosixSync:
         for s in seen:
             assert s.count(b"AB") == 1, f"native stdout duplicated across bounces: {s!r}"
 
+    def test_bounced_proc_sees_native_stdin(self, hookable_project):
+        """Inbound stdin (angr-mx00p.132.21): a bounced proc reading
+        ``state.posix.dumps(0)`` must see the bytes native ``read`` consumed,
+        solved under the callback state's constraints. Without it the backdoor
+        branch's hook saw ``b""`` and a ``terminate_execution()`` keyed on
+        ``SOSNEAKY`` (tests/sim/test_simple_api.py) never fired."""
+        proj = hookable_project
+        seen = []
+
+        class StdinProc(angr.SimProcedure):
+            def run(self):
+                seen.append(self.state.posix.dumps(0))
+                return 0
+
+        proj.hook_symbol("puts", StdinProc())
+
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=60)
+
+        assert seen, "puts hook never bounced — test would vacuously pass"
+        assert any(b"SOSNEAKY" in s for s in seen), f"bounced proc never saw the solved stdin: {seen!r}"
+
 
 class TestCallbackFdTableSync:
     """The SimProcedure-callback bounce must round-trip the fd *table*, not

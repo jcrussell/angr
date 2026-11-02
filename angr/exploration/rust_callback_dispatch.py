@@ -1919,6 +1919,9 @@ class RustCallbackDispatchMixin:
                 # (or appends to it) must see the native output that preceded
                 # it. Idempotent, so the reused cached state is safe.
                 self._inject_rust_stdout(state, event.callback_state_id)
+                # angr-mx00p.132.21: likewise the stdin native read() consumed,
+                # so a hook keyed on ``posix.dumps(0)`` sees the solved input.
+                self._inject_rust_stdin(state, event.callback_state_id)
                 # angr-op0dn.14.1.6: fds a native open() created must be usable
                 # by the bounced proc — and must be visible to posix._pick_fd so
                 # a bounced open() does not collide with one of them.
