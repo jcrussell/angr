@@ -18,6 +18,7 @@ fn setup_amd64_state() -> RustSimState {
 fn test_fopen_reads_path_and_writes_fileno() {
     let mut state = setup_amd64_state();
     state.map_memory_data(0x1000, b"data.bin\0", Permission::RWX);
+    state.file_system().register_known_path("data.bin".to_string());
     state.map_memory_data(0x2000, b"r\0", Permission::RWX);
 
     let result = NativeFopen
@@ -98,6 +99,7 @@ fn test_fopen_rw_plus_mode() {
 fn test_fopen_binary_suffix_ignored() {
     let mut state = setup_amd64_state();
     state.map_memory_data(0x1000, b"bin.bin\0", Permission::RWX);
+    state.file_system().register_known_path("bin.bin".to_string());
     state.map_memory_data(0x2000, b"rb\0", Permission::RWX);
 
     NativeFopen
@@ -232,6 +234,7 @@ fn test_fopen_unterminated_path_errors() {
 fn test_fclose_releases_fd() {
     let mut state = setup_amd64_state();
     state.map_memory_data(0x1000, b"f.txt\0", Permission::RWX);
+    state.file_system().register_known_path("f.txt".to_string());
     state.map_memory_data(0x2000, b"r\0", Permission::RWX);
 
     let file_bv = NativeFopen
@@ -253,19 +256,31 @@ fn test_fclose_releases_fd() {
 }
 
 #[test]
-fn test_fclose_returns_minus_one_for_closed_fd() {
+fn test_fclose_of_an_fd_not_open_here_falls_back_to_python() {
     let mut state = setup_amd64_state();
-    // Manually construct a FILE struct with a stale fd.
+    // A FILE struct whose fd Rust never opened: a bounced proc may have
+    // opened it in Python (angr-mx00p.132.15).
     state.map_memory_data(0x10000, &vec![0u8; 0x1000], Permission::RWX);
     state
         .memory_store(0x10000 + 112, RustBV::concrete(42, 32))
         .unwrap();
 
-    let ret = NativeFclose
-        .call(&mut state, &[RustBV::concrete(0x10000, 64)])
-        .unwrap()
-        .unwrap();
-    assert_eq!(ret.as_u64(), Some(u64::MAX));
+    let ret = NativeFclose.call(&mut state, &[RustBV::concrete(0x10000, 64)]);
+    assert!(matches!(ret, Err(ProcedureError::Other(_))));
+}
+
+#[test]
+fn test_fopen_read_only_unknown_path_falls_back_to_python() {
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x1000, b"data.bin\0", Permission::RWX);
+    state.map_memory_data(0x2000, b"r\0", Permission::RWX);
+
+    let result = NativeFopen.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    assert!(!state.file_system_ref().is_open(3));
 }
 
 #[test]
@@ -470,37 +485,19 @@ fn test_fdopen_existing_fd() {
 }
 
 #[test]
-fn test_fdopen_unknown_fd_returns_null() {
-    let mut state = setup_amd64_state();
-    state.map_memory_data(0x2000, b"r\0", Permission::RWX);
-
-    // fd 42 is not registered → fdopen returns NULL.
-    let fp = NativeFdopen
-        .call(
+fn test_fdopen_fd_not_open_here_falls_back_to_python() {
+    // fd 42 is not registered in Rust; a bounced proc may have opened it in
+    // Python, which returns NULL for every mode when it did not
+    // (angr-mx00p.132.15).
+    for mode in [&b"r\0"[..], &b"w\0"[..]] {
+        let mut state = setup_amd64_state();
+        state.map_memory_data(0x2000, mode, Permission::RWX);
+        let fp = NativeFdopen.call(
             &mut state,
             &[RustBV::concrete(42, 64), RustBV::concrete(0x2000, 64)],
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(fp.as_u64(), Some(0));
-}
-
-#[test]
-fn test_fdopen_unknown_fd_returns_null_for_creating_mode() {
-    let mut state = setup_amd64_state();
-    state.map_memory_data(0x2000, b"w\0", Permission::RWX);
-
-    // A creating mode (`w`) on a not-open fd still returns NULL, same as `r`:
-    // Python's create_file=True only materializes a file for a multi-solution
-    // symbolic fd, which the `concrete` arg spec excludes here (angr-j0dp3).
-    let fp = NativeFdopen
-        .call(
-            &mut state,
-            &[RustBV::concrete(42, 64), RustBV::concrete(0x2000, 64)],
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(fp.as_u64(), Some(0));
+        );
+        assert!(matches!(fp, Err(ProcedureError::Other(_))));
+    }
 }
 
 #[test]

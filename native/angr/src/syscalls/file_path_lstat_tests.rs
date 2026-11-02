@@ -15,18 +15,18 @@ use crate::symbolic::RustBV;
 use crate::syscalls::NativeSyscall;
 
 #[test]
-fn lstat_unknown_path_returns_minus_one() {
+fn lstat_unknown_path_falls_back_to_python() {
     let mut state = state_with_path(b"/tmp/never-registered");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let out = NativeLstatSyscall
-        .call(
+    let out = NativeLstatSyscall.call(
             &mut state,
             &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
-        )
-        .expect("lstat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
-    // Buffer must NOT have been touched on the failure path.
+        );
+    // Python decides from state.fs and ALL_FILES_EXIST /
+    // ANY_FILE_MIGHT_EXIST (angr-mx00p.132.15).
+    assert!(matches!(out, Err(SyscallError::Other(_))));
+    // Buffer must NOT have been touched on the fallback path.
     assert_eq!(read_u64_le(&state, 0x4000), 0);
 }
 

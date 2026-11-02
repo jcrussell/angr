@@ -29,15 +29,15 @@
 //! table returns `Other` and falls through to Python. The legacy pre-LFS
 //! stat numbers are unregistered; see the `stat_layouts` module doc.
 //!
-//! Unknown fd → `-1` with no buffer write (matches
-//! `fstat_with_result`'s `result = -1` branch).
+//! An fd not open here falls back to Python, which owns any fd a bounced
+//! proc opened on a symbolic file and returns `-1` for the rest.
 //!
 //! ## `stat` (angr-k3ol.4)
 //!
 //! `stat(pathname, statbuf) → 0 | -1` resolves `pathname` via
-//! `read_path`, returns `-1` for empty / unknown paths (via
-//! `stat_lookup_follow`, which walks the symlink table then checks
-//! `FileSystem::is_path_known`), and otherwise writes a per-arch
+//! `read_path`, returns `-1` for an empty path, falls back to Python for
+//! a path `FileSystem::is_path_known` rejects (via `stat_lookup_follow`,
+//! which walks the symlink table first), and otherwise writes a per-arch
 //! `struct stat` via the same `write_stat_for_arch` dispatch used by
 //! `fstat`. The size field is sourced from
 //! `FileSystem::content_size_for_path(path)` (largest
@@ -73,7 +73,7 @@
 //!   `stat_lookup_nofollow` / `stat_lookup_follow` (angr-9ke6b.235;
 //!   before that, both consulted `is_path_known` only, so a
 //!   symlink-only path stat'd as unknown even though `readlink`
-//!   resolved it). A dangling link or an over-long chain is `-1`
+//!   resolved it). A dangling link falls back to Python; an over-long chain is `-1`
 //!   (`ENOENT` / `ELOOP`). Same arch coverage as `stat`:
 //!   AMD64 + X86 + ARM + MIPS32. Caveat: MIPS32's `struct stat64`
 //!   layout writes no `st_mode` field at all (see
@@ -124,49 +124,61 @@ const MAX_SYMLINK_HOPS: usize = 8;
 /// `newfstatat` without `AT_SYMLINK_NOFOLLOW`). Walks the symlink table
 /// up to `MAX_SYMLINK_HOPS` times, then requires the final path to be a
 /// known regular file. Returns `(st_size, st_mode)`, or `None` when the
-/// path is unknown, the link dangles, or the chain exceeds the hop limit
-/// (all three are `-1` at the syscall boundary, matching `ENOENT` /
-/// `ELOOP`).
-fn stat_lookup_follow(fs: &crate::state::FileSystem, path: &str) -> Option<(u64, u32)> {
+/// chain exceeds the hop limit (`-1` at the syscall boundary, matching
+/// `ELOOP`). A final path this `FileSystem` does not know, including a
+/// dangling link's target, is `Err`: see [`stat_lookup_nofollow`].
+fn stat_lookup_follow(
+    fs: &crate::state::FileSystem,
+    path: &str,
+) -> Result<Option<(u64, u32)>, SyscallError> {
     let mut cur = path.to_string();
     for _ in 0..MAX_SYMLINK_HOPS {
         let Some(target) = fs.readlink_target(&cur) else {
             // Not a symlink — it must be a known regular file.
             return stat_lookup_nofollow(fs, &cur);
         };
-        // SILENT(cat-a): symlink targets are raw bytes; a non-UTF-8
-        // target cannot name a path in the `String`-keyed known-path
-        // set, so it dangles. Returning `None` here is exactly the
-        // dangling-link outcome this fn already documents, not a
-        // degraded answer, so it needs no log.
-        cur = String::from_utf8(target.to_vec()).ok()?;
+        // A non-UTF-8 target cannot name a path in the `String`-keyed
+        // known-path set, so it dangles like any unknown target.
+        let Ok(next) = String::from_utf8(target.to_vec()) else {
+            return Err(SyscallError::Other(
+                "stat: non-UTF-8 symlink target, Python decides".to_string(),
+            ));
+        };
+        cur = next;
     }
-    None
+    Ok(None)
 }
 
 /// Resolve `path` for the link-*preserving* handler (`lstat`). A
 /// registered symlink reports `S_IFLNK | 0777` sized to its raw target
 /// bytes (what `readlink` would return); otherwise the path must be a
-/// known regular file. Returns `(st_size, st_mode)`, or `None` for an
-/// unknown path (`-1` / `ENOENT`).
-fn stat_lookup_nofollow(fs: &crate::state::FileSystem, path: &str) -> Option<(u64, u32)> {
+/// known regular file. Returns `(st_size, st_mode)`. An unknown path is
+/// `Err`, falling back to Python: whether it exists depends on `state.fs`
+/// files this side never saw and on `ALL_FILES_EXIST` /
+/// `ANY_FILE_MIGHT_EXIST`, which `stat.py`'s `posix.open` consults
+/// (angr-mx00p.132.15).
+fn stat_lookup_nofollow(
+    fs: &crate::state::FileSystem,
+    path: &str,
+) -> Result<Option<(u64, u32)>, SyscallError> {
     if let Some(target) = fs.readlink_target(path) {
-        return Some((target.len() as u64, S_IFLNK_0777 as u32));
+        return Ok(Some((target.len() as u64, S_IFLNK_0777 as u32)));
     }
     if !fs.is_path_known(path) {
-        return None;
+        return Err(SyscallError::Other(format!(
+            "stat of {path:?}: path unknown to the Rust FileSystem, Python decides"
+        )));
     }
-    Some((
+    Ok(Some((
         fs.content_size_for_path(path).unwrap_or(0) as u64,
         S_IFREG_0755 as u32,
-    ))
+    )))
 }
 
 /// `fstat(fd, statbuf) → 0 | -1` — look up `fd` in the Rust
-/// `FileSystem`, fill a per-arch `struct stat` at `statbuf`. Returns
-/// `-1` when the fd is unknown to the Rust state (matches
-/// `state.posix.fstat_with_result`'s `result = -1` branch). Falls
-/// back to Python on symbolic fd / buf or unsupported arch.
+/// `FileSystem`, fill a per-arch `struct stat` at `statbuf`. Falls back
+/// to Python on an fd not open here, symbolic fd / buf or unsupported
+/// arch.
 pub(crate) struct NativeFstatSyscall;
 
 impl NativeSyscall for NativeFstatSyscall {
@@ -196,9 +208,13 @@ impl NativeSyscall for NativeFstatSyscall {
         // Look up fd — effective_size is the symbolic byte count when
         // bounded symbolic content is attached (angr-0xyq2), else the
         // concrete content length. Borrow ends before any memory_store.
+        // An fd not open here may be one a bounced proc opened in Python
+        // (a symbolic file is never registered), so Python answers.
         let size_opt = state.file_system_ref().effective_size(fd as u32);
         let Some(size) = size_opt else {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+            return Err(SyscallError::Other(format!(
+                "fstat of fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
         };
 
         write_stat_for_arch(state, arch_name, buf, size as u64, S_IFREG_0755 as u32)?;
@@ -211,8 +227,9 @@ impl NativeSyscall for NativeFstatSyscall {
 /// takes the target's content length from
 /// `FileSystem::content_size_for_path`), write a per-arch `struct stat`
 /// using the existing `write_amd64_stat` / `write_i386_stat` /
-/// `write_arm_stat` helpers, return `0`. Unknown / empty path, dangling
-/// link or over-long link chain returns `-1` with no buffer write. Arch
+/// `write_arm_stat` helpers, return `0`. An empty path or over-long link
+/// chain returns `-1` with no buffer write; an unknown path or dangling
+/// link falls back to Python. Arch
 /// coverage:
 /// AMD64 + X86 + ARM + MIPS32 (the latter three via their LFS `stat64`
 /// number; ARM64's asm-generic ABI dropped legacy `stat` — only
@@ -250,7 +267,7 @@ impl NativeSyscall for NativeStatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
-        let Some((size, mode)) = stat_lookup_follow(state.file_system_ref(), &path) else {
+        let Some((size, mode)) = stat_lookup_follow(state.file_system_ref(), &path)? else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         };
 
@@ -303,7 +320,7 @@ impl NativeSyscall for NativeLstatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
-        let Some((size, mode)) = stat_lookup_nofollow(state.file_system_ref(), &path) else {
+        let Some((size, mode)) = stat_lookup_nofollow(state.file_system_ref(), &path)? else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         };
 
@@ -379,7 +396,7 @@ impl NativeSyscall for NativeNewfstatatSyscall {
         } else {
             stat_lookup_follow(fs, &path)
         };
-        let Some((size, mode)) = looked_up else {
+        let Some((size, mode)) = looked_up? else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         };
 

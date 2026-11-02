@@ -197,6 +197,11 @@ crate::declare_proc! {
         })?;
 
         let path_str = String::from_utf8_lossy(&path).to_string();
+        if !state.file_system_ref().native_open_decides(&path_str, flags) {
+            return Err(ProcedureError::Other(format!(
+                "fopen of {path_str:?}: unknown read-only path, Python decides"
+            )));
+        }
         // `None` = the fd space is exhausted (angr-03vl4.88) — see `NativeOpen`.
         let fd = state
             .file_system()
@@ -220,13 +225,12 @@ crate::declare_proc! {
     /// FILE *fdopen(int fd, const char *mode);
     /// ```
     ///
-    /// Allocates an `_IO_FILE` struct for an already-open fd, and returns a
-    /// concrete NULL for an `fd` that is not open — a **successful** native
-    /// return, not a `ProcedureError`, so Python never runs (angr-6cp06.11;
-    /// the doc used to claim a fallback here that the code does not perform).
-    /// Symbolic fds are already excluded by the `concrete` arg spec, so
-    /// `fdopen.py`'s `get_concrete_fd` concretization path is unreachable
-    /// natively either way.
+    /// Allocates an `_IO_FILE` struct for an already-open fd and returns a
+    /// concrete NULL for a negative `fd`. A non-negative `fd` not open here
+    /// falls back to Python, which owns any fd a bounced proc opened on a
+    /// symbolic file (angr-mx00p.132.15). Symbolic fds are already excluded
+    /// by the `concrete` arg spec, so `fdopen.py`'s `get_concrete_fd`
+    /// concretization path is unreachable natively either way.
     ///
     /// Parity: NULL matches `fdopen.py`'s `if fd_concr not in
     /// self.state.posix.fd: return 0`, for **every** mode. The
@@ -256,8 +260,15 @@ crate::declare_proc! {
             ))
         })?;
 
-        if fd < 0 || !state.file_system_ref().is_open(fd as u32) {
+        if fd < 0 {
             return Ok(Some(arch_word(state, 0u64)));
+        }
+        // An fd not open here may be one a bounced proc opened in Python
+        // (a symbolic file is never registered), so Python answers.
+        if !state.file_system_ref().is_open(fd as u32) {
+            return Err(ProcedureError::Other(format!(
+                "fdopen of fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
         }
 
         let arch_name = state.arch().name();
@@ -283,7 +294,7 @@ crate::declare_proc! {
     /// ```
     ///
     /// Reads `stream->_fileno` and calls FileSystem::close. Returns 0 on success
-    /// and -1 if the fd was not open.
+    /// and -1 for a negative fd; an fd not open here falls back to Python.
     name = "fclose",
     struct = NativeFclose,
     args = [file_ptr: concrete],
@@ -292,6 +303,11 @@ crate::declare_proc! {
 
         if fd < 0 {
             return Ok(Some(arch_word(state, -1i64 as u64)));
+        }
+        if !state.file_system_ref().is_open(fd as u32) {
+            return Err(ProcedureError::Other(format!(
+                "fclose of fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
         }
         let ret = if state.file_system().close(fd as u32) {
             0

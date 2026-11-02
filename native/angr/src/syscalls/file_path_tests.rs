@@ -25,7 +25,7 @@ fn open_allocates_fresh_fd_and_records_name() {
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64), // O_RDONLY
+                RustBV::concrete(2, 64), // O_RDWR
                 RustBV::concrete(0, 64),
             ],
         )
@@ -35,6 +35,29 @@ fn open_allocates_fresh_fd_and_records_name() {
     assert!(state.file_system_ref().is_open(fd as u32));
     let (name, _, _, _, _) = state.file_system_ref().fd_info(fd as u32).unwrap();
     assert_eq!(name, "/tmp/example.txt");
+}
+
+#[test]
+fn open_read_only_unknown_path_falls_back_to_python() {
+    // Python decides from state.fs and ALL_FILES_EXIST /
+    // ANY_FILE_MIGHT_EXIST (angr-mx00p.132.15); no fd is minted here.
+    let mut state = state_with_path(b"/tmp/example.txt");
+    let prev_next_fd = state.file_system_ref().next_fd();
+    let args = [
+        RustBV::concrete(0x2000, 64),
+        RustBV::concrete(0, 64), // O_RDONLY
+        RustBV::concrete(0, 64),
+    ];
+    let outcome = NativeOpenSyscall.call(&mut state, &args);
+    assert!(matches!(outcome, Err(SyscallError::Other(_))));
+    assert_eq!(state.file_system_ref().next_fd(), prev_next_fd);
+
+    // Once the path is known here, the same open is served natively.
+    state
+        .file_system()
+        .register_known_path("/tmp/example.txt".to_string());
+    let outcome = NativeOpenSyscall.call(&mut state, &args).expect("open ok");
+    assert_eq!(expect_continue(outcome), 3);
 }
 
 #[test]
@@ -106,7 +129,7 @@ fn openat_absolute_path_allocates_fd_ignoring_dirfd() {
             &[
                 RustBV::concrete(99, 64), // arbitrary dirfd — ignored for absolute paths
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64),
+                RustBV::concrete(2, 64), // O_RDWR
                 RustBV::concrete(0, 64),
             ],
         )
@@ -130,7 +153,7 @@ fn openat_relative_path_with_at_fdcwd_allocates_fd() {
             &[
                 RustBV::concrete(AT_FDCWD_UNSIGNED as u128, 64),
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64),
+                RustBV::concrete(2, 64), // O_RDWR
                 RustBV::concrete(0, 64),
             ],
         )
@@ -177,13 +200,12 @@ fn close_open_fd_returns_zero_and_marks_closed() {
 }
 
 #[test]
-fn close_unknown_fd_returns_minus_one() {
+fn close_of_an_fd_not_open_here_falls_back_to_python() {
     let mut state = RustSimState::new("amd64").expect("state");
-    // fd=99 was never allocated.
-    let outcome = NativeCloseSyscall
-        .call(&mut state, &[RustBV::concrete(99, 64)])
-        .unwrap();
-    assert_eq!(expect_continue(outcome), NEG_ONE);
+    // fd=99 was never allocated here; a bounced proc may have opened it in
+    // Python (angr-mx00p.132.15).
+    let outcome = NativeCloseSyscall.call(&mut state, &[RustBV::concrete(99, 64)]);
+    assert!(matches!(outcome, Err(SyscallError::Other(_))));
 }
 
 #[test]
@@ -219,7 +241,7 @@ fn access_after_open_returns_zero() {
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64),
+                RustBV::concrete(2, 64), // O_RDWR
                 RustBV::concrete(0, 64),
             ],
         )
@@ -373,7 +395,7 @@ fn faccessat_after_open_returns_zero_with_at_fdcwd() {
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64),
+                RustBV::concrete(2, 64), // O_RDWR
                 RustBV::concrete(0, 64),
             ],
         )
@@ -570,7 +592,7 @@ fn open_close_round_trip_sweeps_supported_arches() {
                 &mut state,
                 &[
                     RustBV::concrete(0x2000, bits),
-                    RustBV::concrete(0, bits),
+                    RustBV::concrete(2, bits), // O_RDWR
                     RustBV::concrete(0, bits),
                 ],
             )

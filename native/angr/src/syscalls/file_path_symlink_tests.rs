@@ -87,8 +87,9 @@ fn stat_follows_symlink_to_its_target() {
 }
 
 #[test]
-fn stat_dangling_symlink_returns_minus_one() {
-    // Link registered, target never registered → ENOENT.
+fn stat_dangling_symlink_falls_back_to_python() {
+    // Link registered, target never registered: whether the target exists
+    // is Python's call (angr-mx00p.132.15).
     let mut state = state_with_path(b"/link");
     state
         .file_system()
@@ -100,8 +101,8 @@ fn stat_dangling_symlink_returns_minus_one() {
             &mut state,
             &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
         )
-        .expect("stat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
+        ;
+    assert!(matches!(out, Err(SyscallError::Other(_))));
     assert_eq!(read_u64_le(&state, 0x4000), 0);
 }
 
@@ -153,7 +154,7 @@ fn stat_follows_a_two_hop_symlink_chain() {
 }
 
 #[test]
-fn stat_non_utf8_symlink_target_returns_minus_one() {
+fn stat_non_utf8_symlink_target_falls_back_to_python() {
     // Targets are raw bytes; a non-UTF-8 one can never name a key in the
     // String-keyed known-path set, so it dangles rather than panicking.
     let mut state = state_with_path(b"/link");
@@ -167,8 +168,8 @@ fn stat_non_utf8_symlink_target_returns_minus_one() {
             &mut state,
             &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
         )
-        .expect("stat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
+        ;
+    assert!(matches!(out, Err(SyscallError::Other(_))));
 }
 
 #[test]
@@ -288,7 +289,8 @@ fn newfstatat_nofollow_honors_other_flag_bits_alongside() {
 #[test]
 fn newfstatat_nofollow_on_dangling_link_still_succeeds() {
     // lstat() on a dangling symlink succeeds (it stats the link, never
-    // the target) where the following variant returns -1/ENOENT.
+    // the target) where the following variant leaves the unknown target
+    // to Python.
     let mut state = state_with_path(b"/link");
     state
         .file_system()
@@ -304,10 +306,8 @@ fn newfstatat_nofollow_on_dangling_link_still_succeeds() {
         ]
     };
 
-    let followed = NativeNewfstatatSyscall
-        .call(&mut state, &args(0))
-        .expect("newfstatat ok");
-    assert_eq!(expect_continue(followed), NEG_ONE);
+    let followed = NativeNewfstatatSyscall.call(&mut state, &args(0));
+    assert!(matches!(followed, Err(SyscallError::Other(_))));
 
     let nofollow = NativeNewfstatatSyscall
         .call(&mut state, &args(AT_SYMLINK_NOFOLLOW))

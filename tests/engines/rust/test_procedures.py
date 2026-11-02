@@ -1220,6 +1220,9 @@ class TestNativeFileDescriptorProcedures:
 class TestNativeFileDescriptorErrorReturns:
     """Error-return contract for native fileops procedures (angr-95up.3).
 
+    ``close`` is not here: an fd not open in Rust is Python's to close
+    (angr-mx00p.132.15), which the Cargo ``NativeClose`` tests pin.
+
     Each native proc in `native/angr/src/procedures/fileops.rs` returns -1
     (the EBADF-style sentinel) when handed a never-opened fd. The Cargo
     unit tests pin the per-proc behavior; this Python-level test pins the
@@ -1244,7 +1247,6 @@ class TestNativeFileDescriptorErrorReturns:
     @pytest.mark.parametrize(
         "proc_name,num_args,reg_args,bad_fd",
         [
-            ("close", 1, (99,), 99),  # close(99) — fd never opened
             ("dup", 1, (99,), 99),  # dup(99)   — fd never opened
             ("dup2", 2, (99, 7), 7),  # dup2(99, 7) — newfd 7 must NOT be created
             ("lseek", 3, (99, 0, 0), 99),  # lseek(99, 0, SEEK_SET)

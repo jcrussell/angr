@@ -71,6 +71,16 @@ impl FileSystem {
         self.known_paths.contains(&self.normalize_path(name))
     }
 
+    /// True when a native `open` of `name` with access mode `flags` gives
+    /// the answer Python's `SimSystemPosix.open` would: the path is known
+    /// here, or the mode writes (Python then creates the file whatever the
+    /// options). A read-only open of an unknown path is Python's call — it
+    /// consults `state.fs` files this side never saw, and
+    /// `ALL_FILES_EXIST` / `ANY_FILE_MIGHT_EXIST` (angr-mx00p.132.15).
+    pub fn native_open_decides(&self, name: &str, flags: FdFlags) -> bool {
+        flags != FdFlags::ReadOnly || self.is_path_known(name)
+    }
+
     /// Look up a symlink target by path. Returns the raw target bytes if
     /// `path` is a registered symlink, else `None` (the path is not a
     /// symlink, so `readlink` returns `-1`).

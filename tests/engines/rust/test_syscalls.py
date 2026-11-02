@@ -525,8 +525,8 @@ class TestNativeFdAllocatingSyscalls:
     ``native/angr/src/syscalls/file_path/`` pin per-handler semantics
     (fresh fd, NEG_ONE for empty/relative-without-AT_FDCWD paths, fd
     book-keeping for close); this is the cross-the-FFI dispatch check
-    (``syscall_python_fallback_count`` stays 0 for open / openat /
-    close on amd64).
+    (``syscall_python_fallback_count`` stays 0 for a writing open /
+    openat and for close on amd64).
 
     The companion ``stat`` (4) / ``fstat`` (5) syscalls still fall
     back to Python (need per-arch struct stat layouts +
@@ -538,10 +538,12 @@ class TestNativeFdAllocatingSyscalls:
     @pytest.mark.parametrize(
         "syscall_num,label,setup_args",
         [
-            # open: rdi = path_addr, rsi = O_RDONLY, rdx = mode
-            (2, "open", {"rdi": 0x4000, "rsi": 0, "rdx": 0}),
-            # openat: rdi = AT_FDCWD (-100 as u32), rsi = path_addr, rdx = O_RDONLY
-            (257, "openat", {"rdi": 0xFFFFFFFFFFFFFF9C, "rsi": 0x4000, "rdx": 0, "r10": 0}),
+            # open: rdi = path_addr, rsi = O_WRONLY, rdx = mode. A
+            # read-only open of an unknown path is Python's call
+            # (test_read_only_open_of_unknown_path_falls_back).
+            (2, "open", {"rdi": 0x4000, "rsi": 1, "rdx": 0}),
+            # openat: rdi = AT_FDCWD (-100 as u32), rsi = path_addr, rdx = O_WRONLY
+            (257, "openat", {"rdi": 0xFFFFFFFFFFFFFF9C, "rsi": 0x4000, "rdx": 1, "r10": 0}),
             # close: rdi = fd (use 0 = stdin which is pre-open)
             (3, "close", {"rdi": 0}),
         ],
@@ -567,6 +569,32 @@ class TestNativeFdAllocatingSyscalls:
             f"native {label}({syscall_num}) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
+
+    @pytest.mark.parametrize(
+        "syscall_num,label,setup_args",
+        [
+            (2, "open", {"rdi": 0x4000, "rsi": 0, "rdx": 0}),
+            (257, "openat", {"rdi": 0xFFFFFFFFFFFFFF9C, "rsi": 0x4000, "rdx": 0, "r10": 0}),
+        ],
+    )
+    def test_read_only_open_of_unknown_path_falls_back(self, syscall_num, label, setup_args):
+        """Whether an unknown path opens read-only depends on ``state.fs``
+        and ``ALL_FILES_EXIST`` / ``ANY_FILE_MIGHT_EXIST``, which Rust
+        does not see, so Python decides (angr-mx00p.132.15)."""
+        shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
+        proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
+        state = proj.factory.blank_state(addr=0x1000)
+        state.memory.store(0x4000, b"/tmp/k3ol\x00")
+        state.regs.rax = syscall_num
+        for reg in ("rdi", "rsi", "rdx", "r10", "r8", "r9"):
+            setattr(state.regs, reg, 0)
+        for reg, val in setup_args.items():
+            setattr(state.regs, reg, val)
+
+        mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+        mgr.run(max_steps=1)
+
+        assert mgr._rust_mgr.stats()["syscall_python_fallback_count"] == 1, label
 
 
 class TestNativeAccessSyscall:
@@ -617,14 +645,13 @@ class TestNativeFstatSyscall:
     mints one in ``state.posix.fstat_with_result``) and ``st_size``
     is concrete (``content_len`` of the fd's backing buffer).
 
-    Unknown fd → ``-1`` (matches ``fstat_with_result``'s ``result=-1``
-    branch). Rust cargo tests in
-    ``native/angr/src/syscalls/file_path/`` pin the per-arch field
-    offsets and the symbolic/unmapped fallback paths; this test pins
-    cross-FFI dispatch (``syscall_python_fallback_count`` stays 0).
+    An fd not open in Rust falls back to Python (angr-mx00p.132.15).
+    Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin the
+    per-arch field offsets and the symbolic/unmapped fallback paths;
+    this test pins that fallback across the FFI.
     """
 
-    def test_fstat_unknown_fd_dispatches_natively(self):
+    def test_fstat_unknown_fd_falls_back_to_python(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
@@ -642,28 +669,27 @@ class TestNativeFstatSyscall:
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
-        assert stats["syscall_python_fallback_count"] == 0, (
-            f"native fstat(5) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
-        )
+        # Python decides an fd / path Rust never saw (angr-mx00p.132.15).
+        assert stats["syscall_python_fallback_count"] == 1, stats
 
 
 class TestNativeStatSyscall:
     """angr-k3ol.4: native ``stat`` resolves ``pathname`` via
     ``read_path``, queries ``FileSystem::is_path_known`` (returning
-    ``-1`` for empty / unknown paths) and reuses ``write_amd64_stat``
+    ``-1`` for an empty path; an unknown one falls back to Python) and reuses ``write_amd64_stat``
     when the path is known. AMD64 only — ARM64's asm-generic ABI
     dropped legacy ``stat``. Diverges from
     ``procedures/linux_kernel/stat.py``'s open→fstat→close in that the
     Rust path never mutates the fd table.
 
     Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin
-    the per-handler semantics (unknown→-1, empty→-1, known→0,
+    the per-handler semantics (unknown→fallback, empty→-1, known→0,
     largest-content-len-across-fds, unsupported-arch, symbolic fd /
     statbuf fallback, unmapped buf MemoryError). This Python test pins
-    cross-FFI dispatch (``syscall_python_fallback_count`` stays 0).
+    that an unknown path falls back across the FFI.
     """
 
-    def test_stat_unknown_path_dispatches_natively(self):
+    def test_stat_unknown_path_falls_back_to_python(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
@@ -679,9 +705,8 @@ class TestNativeStatSyscall:
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
-        assert stats["syscall_python_fallback_count"] == 0, (
-            f"native stat(4) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
-        )
+        # Python decides an fd / path Rust never saw (angr-mx00p.132.15).
+        assert stats["syscall_python_fallback_count"] == 1, stats
 
 
 class TestNativeLstatSyscall:
@@ -693,13 +718,13 @@ class TestNativeLstatSyscall:
     with no Python proc.
 
     Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin
-    the per-handler semantics (unknown→-1, empty→-1, known→0,
+    the per-handler semantics (unknown→fallback, empty→-1, known→0,
     unsupported-arch, symbolic-pathname fallback, unmapped-buf
     MemoryError). This Python test pins cross-FFI dispatch
-    (``syscall_python_fallback_count`` stays 0).
+    (an unknown path falls back across the FFI).
     """
 
-    def test_lstat_unknown_path_dispatches_natively(self):
+    def test_lstat_unknown_path_falls_back_to_python(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
@@ -715,9 +740,8 @@ class TestNativeLstatSyscall:
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
-        assert stats["syscall_python_fallback_count"] == 0, (
-            f"native lstat(6) must take the Rust fast path (got fallback={stats['syscall_python_fallback_count']})"
-        )
+        # Python decides an fd / path Rust never saw (angr-mx00p.132.15).
+        assert stats["syscall_python_fallback_count"] == 1, stats
 
 
 class TestNativeNewfstatatSyscall:
@@ -728,14 +752,14 @@ class TestNativeNewfstatatSyscall:
     follow-up — would dispatch to ``fstat(dirfd)``). Per-arch struct
     stat layout via ``write_amd64_stat`` / ``write_aarch64_stat``.
 
-    Rust cargo tests pin per-handler semantics (unknown→-1, known
+    Rust cargo tests pin per-handler semantics (unknown→fallback, known
     AMD64/ARM64 layout, absolute path ignores dirfd, relative +
     non-AT_FDCWD→-1, empty→-1, unsupported-arch, symbolic fallbacks,
     unmapped-buf MemoryError). This Python test pins cross-FFI
-    dispatch on AMD64 (``syscall_python_fallback_count`` stays 0).
+    dispatch on AMD64 (an unknown path falls back to Python).
     """
 
-    def test_newfstatat_unknown_path_dispatches_natively(self):
+    def test_newfstatat_unknown_path_falls_back_to_python(self):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
@@ -753,10 +777,8 @@ class TestNativeNewfstatatSyscall:
         mgr.run(max_steps=1)
 
         stats = mgr._rust_mgr.stats()
-        assert stats["syscall_python_fallback_count"] == 0, (
-            "native newfstatat(262) must take the Rust fast path "
-            f"(got fallback={stats['syscall_python_fallback_count']})"
-        )
+        # Python decides a path Rust never saw (angr-mx00p.132.15).
+        assert stats["syscall_python_fallback_count"] == 1, stats
 
 
 class TestNativeConcurrencySyscalls:

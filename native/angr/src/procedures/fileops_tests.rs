@@ -11,6 +11,10 @@ use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
 
+/// POSIX `O_RDWR`: a writing open is served natively whatever the path,
+/// because Python's `posix.open` creates the file then too.
+const O_RDWR: u128 = 2;
+
 #[test]
 fn test_open_basic() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -20,7 +24,7 @@ fn test_open_basic() {
     let result = NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -34,6 +38,34 @@ fn test_open_basic() {
 }
 
 #[test]
+fn test_open_read_only_unknown_path_falls_back_to_python() {
+    // Python decides from state.fs and ALL_FILES_EXIST /
+    // ANY_FILE_MIGHT_EXIST (angr-mx00p.132.15); no fd is minted here.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"test.txt\0", Permission::RWX);
+    let result = NativeOpen.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+    assert!(!state.file_system_ref().is_open(3));
+}
+
+#[test]
+fn test_open_read_only_known_path_is_served() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"test.txt\0", Permission::RWX);
+    state.file_system().register_known_path("test.txt".to_string());
+    let result = NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(3));
+}
+
+#[test]
 fn test_open_multiple() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
@@ -42,13 +74,13 @@ fn test_open_multiple() {
     let r1 = NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
     let r2 = NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -65,7 +97,7 @@ fn test_close_basic() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -82,13 +114,9 @@ fn test_close_basic() {
 fn test_close_not_open() {
     let mut state = RustSimState::new("amd64").unwrap();
 
-    let result = NativeClose
-        .call(&mut state, &[RustBV::concrete(99, 64)])
-        .unwrap();
-
-    // Should return -1 (not open)
-    let val = result.unwrap().as_u64().unwrap();
-    assert_eq!(val, u64::MAX); // -1 as u64
+    // Not open here, so Python (which may own it) closes it.
+    let result = NativeClose.call(&mut state, &[RustBV::concrete(99, 64)]);
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
 }
 
 #[test]
@@ -184,7 +212,7 @@ fn test_dup_basic() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -217,7 +245,7 @@ fn test_dup_after_close() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
     NativeClose
@@ -238,7 +266,7 @@ fn test_dup2_basic() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -266,13 +294,13 @@ fn test_dup2_closes_target() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -295,7 +323,7 @@ fn test_dup2_same_fd() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
 
@@ -317,7 +345,7 @@ fn test_dup2_huge_newfd_returns_ebadf_without_wrapping_next_fd() {
     NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .unwrap();
     let before = state.file_system_ref().next_fd();
@@ -512,7 +540,7 @@ fn test_open_symbolic_pathname_is_concretized() {
     let result = NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .expect("symbolic pathname byte must be concretized, not bounced");
 
@@ -535,7 +563,7 @@ fn test_open_overlong_pathname_errors_instead_of_truncating() {
     let err = NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .expect_err("overlong pathname must decline, not truncate");
     assert!(
@@ -558,7 +586,7 @@ fn test_open_pathname_filling_the_window_exactly_is_served() {
     let result = NativeOpen
         .call(
             &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
         )
         .expect("a pathname that exactly fills the window must still be served");
     assert_eq!(result.unwrap().as_u64(), Some(3));

@@ -12,18 +12,17 @@ use crate::symbolic::RustBV;
 use crate::syscalls::NativeSyscall;
 
 #[test]
-fn fstat_unknown_fd_returns_minus_one() {
+fn fstat_of_an_fd_not_open_here_falls_back_to_python() {
     let mut state = RustSimState::new("amd64").expect("state");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let out = NativeFstatSyscall
-        .call(
+    let out = NativeFstatSyscall.call(
             &mut state,
             &[RustBV::concrete(99, 64), RustBV::concrete(0x4000, 64)],
-        )
-        .expect("fstat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
-    // Buffer must NOT have been touched on the failure path
+        );
+    // A bounced proc may have opened it in Python (angr-mx00p.132.15).
+    assert!(matches!(out, Err(SyscallError::Other(_))));
+    // Buffer must NOT have been touched on the fallback path
     // (read 0s from the freshly-mapped page).
     assert_eq!(read_u64_le(&state, 0x4000), 0);
 }

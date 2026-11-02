@@ -10,12 +10,11 @@ use crate::symbolic::RustBV;
 use crate::syscalls::NativeSyscall;
 
 #[test]
-fn newfstatat_unknown_path_returns_minus_one() {
+fn newfstatat_unknown_path_falls_back_to_python() {
     let mut state = state_with_path(b"/no/such/file");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let out = NativeNewfstatatSyscall
-        .call(
+    let out = NativeNewfstatatSyscall.call(
             &mut state,
             &[
                 RustBV::concrete(TEST_AT_FDCWD as u128, 64),
@@ -23,10 +22,11 @@ fn newfstatat_unknown_path_returns_minus_one() {
                 RustBV::concrete(0x4000, 64),
                 RustBV::concrete(0, 64), // flag
             ],
-        )
-        .expect("newfstatat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
-    // Buffer must not have been touched on the failure path.
+        );
+    // Python decides from state.fs and ALL_FILES_EXIST /
+    // ANY_FILE_MIGHT_EXIST (angr-mx00p.132.15).
+    assert!(matches!(out, Err(SyscallError::Other(_))));
+    // Buffer must not have been touched on the fallback path.
     assert_eq!(read_u64_le(&state, 0x4000), 0);
 }
 

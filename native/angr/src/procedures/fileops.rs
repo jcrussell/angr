@@ -83,7 +83,8 @@ crate::declare_proc! {
     /// ```
     ///
     /// Reads the pathname string from memory, allocates a new fd in the FileSystem.
-    /// Returns the new fd number, or -1 on error.
+    /// Returns the new fd number, or -1 on error. A read-only open of an
+    /// unknown path falls back to Python (`FileSystem::native_open_decides`).
     name = "open",
     struct = NativeOpen,
     args = [pathname_addr: concrete, flags: concrete],
@@ -94,6 +95,14 @@ crate::declare_proc! {
 
         let pathname = String::from_utf8_lossy(&name).to_string();
         let fd_flags = FdFlags::from_posix(flags as u32);
+        // An empty path stays native: it is how a fully-symbolic path
+        // concretizes, and bouncing it costs fauxware's steady loop a yield.
+        if !pathname.is_empty() && !state.file_system_ref().native_open_decides(&pathname, fd_flags)
+        {
+            return Err(ProcedureError::Other(format!(
+                "open of {pathname:?}: unknown read-only path, Python decides"
+            )));
+        }
         let append = FdFlags::posix_has_append(flags as u32);
         // `None` = the fd space is exhausted (angr-03vl4.88); bounce to Python
         // rather than wrapping `next_fd` and handing out stdin as a fresh file.
@@ -113,11 +122,17 @@ crate::declare_proc! {
     /// int close(int fd);
     /// ```
     ///
-    /// Marks the fd as closed. Returns 0 on success, -1 if not open.
+    /// Marks the fd as closed and returns 0. An fd not open here falls back
+    /// to Python, which owns any fd a bounced proc opened on a symbolic file.
     name = "close",
     struct = NativeClose,
     args = [fd: concrete],
     call |state| {
+        if !state.file_system_ref().is_open(fd as u32) {
+            return Err(ProcedureError::Other(format!(
+                "close of fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
+        }
         let success = state.file_system().close(fd as u32);
         let ret = if success { 0 } else { -1i64 as u64 };
         Ok(Some(arch_word(state, ret)))

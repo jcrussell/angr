@@ -7,10 +7,10 @@
 //! are already wired through `state.file_system()` and therefore
 //! diverge from Python `state.posix.fd` in the same way)
 //! (bd memory `syscall-vs-procedure-dispatch`). The Python proc
-//! `procedures/posix/open.py` returns `-1` when `state.fs.get(path)`
-//! is `None` and creation flags are absent; we always allocate a fresh
-//! fd since the Rust-side `FileSystem` does not mirror Python's
-//! `state.fs`. This is the same trade-off the libc procedure made.
+//! `procedures/posix/open.py` decides a read-only open of a path this
+//! `FileSystem` has never seen from `state.fs` and `ALL_FILES_EXIST` /
+//! `ANY_FILE_MIGHT_EXIST`, so that open falls back to Python
+//! (`FileSystem::native_open_decides`); every other open allocates here.
 
 use super::{NEG_ONE, dirfd_allows, read_path};
 use crate::state::{FdFlags, RustSimState};
@@ -19,11 +19,9 @@ use crate::syscalls::{NativeSyscall, SyscallError, SyscallOutcome, extract_concr
 
 /// `open(pathname, flags, mode) → fd` — allocate a fresh fd in the
 /// Rust `FileSystem` keyed by `pathname`. Mirrors
-/// `procedures/fileops::NativeOpen`; the only divergence from
-/// `procedures/posix/open.py` is that we do not consult Python's
-/// `state.fs` map (which is not mirrored into Rust state), so we never
-/// return `-1` for "file doesn't exist". Empty path → `-1` (same as
-/// the Python proc).
+/// `procedures/fileops::NativeOpen`. A read-only open of an unknown path
+/// falls back to Python (`FileSystem::native_open_decides`). Empty path →
+/// `-1` (same as the Python proc).
 pub(crate) struct NativeOpenSyscall;
 
 impl NativeSyscall for NativeOpenSyscall {
@@ -47,6 +45,14 @@ impl NativeSyscall for NativeOpenSyscall {
         let path = read_path(state, pathname_addr, "open")?;
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
+        if !state
+            .file_system_ref()
+            .native_open_decides(&path, FdFlags::from_posix(flags as u32))
+        {
+            return Err(SyscallError::Other(format!(
+                "open of {path:?}: unknown read-only path, Python decides"
+            )));
         }
         // `None` = the fd space is exhausted (angr-03vl4.88); bounce to Python
         // rather than wrapping `next_fd` and handing out stdin as a fresh file.
@@ -96,6 +102,14 @@ impl NativeSyscall for NativeOpenatSyscall {
         if !dirfd_allows(&path, dirfd) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
+        if !state
+            .file_system_ref()
+            .native_open_decides(&path, FdFlags::from_posix(flags as u32))
+        {
+            return Err(SyscallError::Other(format!(
+                "openat of {path:?}: unknown read-only path, Python decides"
+            )));
+        }
         // `None` = the fd space is exhausted (angr-03vl4.88) — see `NativeOpenSyscall`.
         let fd = state
             .file_system()
@@ -110,8 +124,8 @@ impl NativeSyscall for NativeOpenatSyscall {
 }
 
 /// `close(fd) → 0 | -1` — mark `fd` closed in Rust's `FileSystem`.
-/// Returns `-1` if the fd was never opened by Rust (mirrors
-/// `state.posix.close` returning falsy).
+/// An fd not open here falls back to Python, which owns any fd a bounced
+/// proc opened on a symbolic file and returns `-1` for the rest.
 pub(crate) struct NativeCloseSyscall;
 
 impl NativeSyscall for NativeCloseSyscall {
@@ -129,6 +143,13 @@ impl NativeSyscall for NativeCloseSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         let fd = extract_concrete_arg(&args[0], "close fd")?;
+        // An fd not open here may be one a bounced proc opened in Python
+        // (a symbolic file is never registered), so Python closes it.
+        if !state.file_system_ref().is_open(fd as u32) {
+            return Err(SyscallError::Other(format!(
+                "close of fd={fd} (not open in Rust FileSystem) falls back to Python"
+            )));
+        }
         let ret = if state.file_system().close(fd as u32) {
             0
         } else {
