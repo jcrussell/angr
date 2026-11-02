@@ -3676,6 +3676,11 @@ class RustExplorationManager(
             code = 3 if jumpkind.startswith("Ijk_Sys") else 4
         src = history.addr
         rust_state.add_detailed_history(src if isinstance(src, int) else 0, code, angr_state.addr)
+        if jumpkind.startswith("Ijk_Sys"):
+            # Python stepped up to the syscall exit; the syscall itself is the
+            # next step's work, so Rust must run it before the block at pc
+            # (angr-mx00p.132.12).
+            rust_state.set_pending_syscall(jumpkind)
 
     def _add_rust_state(self, stash: str, angr_state: angr.SimState):
         """Add an angr state to a Rust stash.

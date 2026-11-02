@@ -258,6 +258,7 @@ impl RustSimState {
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
             tsc_counter: self.tsc_counter,
+            pending_syscall: self.pending_syscall,
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
@@ -694,6 +695,7 @@ impl RustSimState {
             // state's next RDTSC can't read earlier than one an arm already
             // observed (which would make time appear to run backwards).
             tsc_counter: self.merge_field_tsc_counter(others),
+            pending_syscall: self.merge_field_pending_syscall(others),
             getopt_optind: self.merge_field_getopt_optind(others),
             getopt_optchar: self.merge_field_getopt_optchar(others),
             getopt_extern: self.merge_field_getopt_extern(others),

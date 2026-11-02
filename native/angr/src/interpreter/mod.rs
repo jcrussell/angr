@@ -292,6 +292,10 @@ pub(crate) struct VEXInterpreter<'a> {
     /// back after it, so RDTSC is deterministic per execution path instead of
     /// depending on a process-wide counter (angr-9ke6b.173).
     pub dirty_helper_state: DirtyHelperState,
+    /// A syscall exit the step stopped at without running it. Seeded from
+    /// and written back to `RustSimState::pending_syscall` around each step;
+    /// see that field and `run_until_event`.
+    pub pending_syscall: Option<JumpKind>,
     /// Registry mapping hook addresses to SimProcedure info.
     /// When a hook is hit, we can extract arguments using this info.
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
@@ -438,6 +442,7 @@ impl<'a> VEXInterpreter<'a> {
             page_prefetch_count: 2, // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
             dirty_helper_state: DirtyHelperState::default(),
+            pending_syscall: None,
             simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
             last_branch_condition: None,
@@ -873,6 +878,7 @@ impl<'a> VEXInterpreter<'a> {
             // Stateful helper scratch (TSC) DOES carry over: a forked path
             // continues the parent's timeline rather than restarting it.
             dirty_helper_state: self.dirty_helper_state.clone(),
+            pending_syscall: self.pending_syscall,
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,
             last_branch_condition: None,               // Fresh for fork

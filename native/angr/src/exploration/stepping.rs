@@ -126,6 +126,9 @@ pub(crate) struct InterpreterStepResult {
     /// Simulated TSC after the step; written back to `RustSimState` so the
     /// counter is per-state rather than process-wide (angr-9ke6b.173).
     pub(crate) new_tsc_counter: u64,
+    /// The syscall exit a block-granular step stopped at; written back to
+    /// `RustSimState::pending_syscall` (angr-mx00p.132.12).
+    pub(crate) new_pending_syscall: Option<crate::vex::JumpKind>,
     pub(crate) recovered_memory: Option<SymbolicMemory>,
     pub(crate) step_stats: ExecutionStats,
     pub(crate) updated_block_cache: LruCache<u64, Arc<IRSB>>,
@@ -158,6 +161,7 @@ pub(crate) fn apply_interpreter_step_result(
     new_call_stack: Vec<CallStackEntry>,
     new_detailed_history: Vec<HistoryEntry>,
     new_tsc_counter: u64,
+    new_pending_syscall: Option<crate::vex::JumpKind>,
 ) {
     // Restore memory from interpreter back to state FIRST.
     // This must happen before any PendingCallback creation
@@ -183,6 +187,7 @@ pub(crate) fn apply_interpreter_step_result(
     state.set_detailed_history(new_detailed_history);
     // Carry the simulated TSC forward; forks made below inherit it.
     state.set_tsc_counter(new_tsc_counter);
+    state.set_pending_syscall(new_pending_syscall);
     // Add to history.
     state.add_to_history(state.pc());
 }
@@ -274,6 +279,7 @@ impl RustExplorationManager {
             step.new_call_stack,
             step.new_detailed_history,
             step.new_tsc_counter,
+            step.new_pending_syscall,
         );
 
         let deferred_forks = step.deferred_forks;

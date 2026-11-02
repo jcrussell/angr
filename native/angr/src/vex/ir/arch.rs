@@ -45,7 +45,7 @@ impl VexArch {
 }
 
 /// Jump kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum JumpKind {
     /// Normal jump (fallthrough or unconditional).

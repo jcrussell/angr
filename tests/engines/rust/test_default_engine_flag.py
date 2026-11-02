@@ -296,6 +296,64 @@ class TestDefaultRoutedStepIsOneBlock:
         assert mgr.set_block_granular(False) is False
 
 
+class TestDefaultRoutedSyscallIsItsOwnStep:
+    """A default-routed ``step()`` stops at a syscall exit (angr-mx00p.132.12).
+
+    Python runs a block and the syscall it exits into as two steps. Upstream
+    ``test_unsupported_syscall_simos`` counts them: under Rust the first
+    ``step()`` ran both, so the state errored a step early, and with
+    ``BYPASS_UNSUPPORTED_SYSCALL`` the second step ran past the stub.
+    """
+
+    @staticmethod
+    def _seed():
+        import angr
+
+        project = angr.load_shellcode("int 0x80", "x86", engine="rust")
+        state = project.factory.entry_state()
+        state.regs.eax = 4
+        return project, state
+
+    def test_syscall_errors_on_the_second_step(self):
+        project, state = self._seed()
+        mgr = project.factory.simulation_manager(state)
+        assert isinstance(mgr, RustExplorationManager)
+
+        mgr.step()
+        assert [s.addr for s in mgr.active] == [0x2]
+        assert mgr.active[0].history.jumpkind == "Ijk_Sys_int128"
+        assert mgr.stash_counts()["errored"] == 0
+        mgr.step()
+        assert not mgr.active
+        assert len(mgr.errored) == 1
+
+    def test_bypassed_syscall_stays_active(self):
+        import angr
+
+        project, state = self._seed()
+        state.options.add(angr.options.BYPASS_UNSUPPORTED_SYSCALL)
+        mgr = project.factory.simulation_manager(state)
+
+        mgr.step()
+        mgr.step()
+        assert len(mgr.active) == 1
+        assert not mgr.errored
+
+    def test_python_stepped_seed_runs_its_pending_syscall(self):
+        project, state = self._seed()
+        python_mgr = SimulationManager(project, active_states=[state])
+        python_mgr.step()
+        (stepped,) = python_mgr.active
+        assert stepped.history.jumpkind.startswith("Ijk_Sys")
+
+        mgr = project.factory.simulation_manager(stepped)
+        assert isinstance(mgr, RustExplorationManager)
+        mgr.step()
+        # The syscall, not the block at 0x2.
+        assert not mgr.active
+        assert len(mgr.errored) == 1
+
+
 class TestForkSiblingHistory:
     """A deferred-fork sibling's history ends at the branch (angr-mx00p.132.44).
 

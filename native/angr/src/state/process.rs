@@ -245,6 +245,17 @@ impl RustSimState {
         self.tsc_counter = tsc;
     }
 
+    /// The syscall exit this state stopped at without running it. See the
+    /// `RustSimState::pending_syscall` field doc.
+    pub fn pending_syscall(&self) -> Option<crate::vex::JumpKind> {
+        self.pending_syscall
+    }
+
+    /// Set or clear the pending syscall. See [`Self::pending_syscall`].
+    pub fn set_pending_syscall(&mut self, jumpkind: Option<crate::vex::JumpKind>) {
+        self.pending_syscall = jumpkind;
+    }
+
     /// Locale ctype table pointers (see [`CtypeLocPtrs`]). Read by the native
     /// `__ctype_b_loc` / `__ctype_tolower_loc` / `__ctype_toupper_loc` procs.
     pub fn ctype_loc(&self) -> CtypeLocPtrs {

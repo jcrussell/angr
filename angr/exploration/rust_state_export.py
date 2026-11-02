@@ -1108,6 +1108,14 @@ class RustStateExportMixin:
         history.parent = parent
         history.depth = parent.depth + 1
         _fill_history_node(history, entries[-1], arch)
+        if entries[-1][1] == 3:
+            # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable
+            # state keeps the lossy Ijk_Sys_syscall spelling.
+            pending = _rust_state_get(self._rust_mgr, "get_state_pending_syscall", state_id)
+            if pending:
+                # A syscall Rust has yet to run: Python's step of this export
+                # picks the syscall ABI from this jumpkind (angr-mx00p.132.12).
+                history.jumpkind = pending
 
     def _sync_rust_last_block_to_state(self, state, state_id: int) -> None:
         """Point a cached copy's ``scratch`` at the block Rust executed last."""

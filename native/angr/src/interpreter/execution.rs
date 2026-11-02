@@ -85,7 +85,10 @@ impl<'a> VEXInterpreter<'a> {
     /// step boundary — Python angr's block-granular `step()` semantics. The
     /// manager sets it for bare step-loops with no find target (CADET solve.py
     /// phase 3); it stays `false` for `explore()` so chaining keeps its
-    /// throughput.
+    /// throughput. It also stops a block's syscall exit short of the syscall:
+    /// Python runs the syscall as a step of its own, so this step ends with
+    /// `pending_syscall` set and the next call returns `RunResult::Syscall`
+    /// before lifting anything (angr-mx00p.132.12).
     pub(crate) fn run_until_event(
         &mut self,
         callbacks: &dyn EngineHost,
@@ -102,6 +105,18 @@ impl<'a> VEXInterpreter<'a> {
         // Clear any previous deferred forks and reset per-step limit
         self.deferred_forks.clear();
         self.deferred_fork_this_step = false;
+
+        if let Some(jumpkind) = self.pending_syscall.take() {
+            return (
+                RunResult::Syscall {
+                    num: self.get_syscall_num(),
+                    pc: self.pc,
+                    jumpkind,
+                },
+                0,
+                Vec::new(),
+            );
+        }
 
         for _ in 0..max_blocks {
             // Break the internal block chain at a block boundary so the
@@ -304,6 +319,10 @@ impl<'a> VEXInterpreter<'a> {
                             self.pc = next_addr;
                             // Return for jumpkinds that need Python handling
                             if jumpkind.is_syscall() {
+                                if block_granular {
+                                    self.pending_syscall = Some(jumpkind);
+                                    break;
+                                }
                                 let syscall_num = self.get_syscall_num();
                                 let forks = self.take_deferred_forks();
                                 return (
@@ -348,6 +367,18 @@ impl<'a> VEXInterpreter<'a> {
                             // Otherwise, continue execution
                         }
                         BlockResult::Syscall { num, jumpkind } => {
+                            // The block that exited into the syscall ran, so it
+                            // gets the history entry BlockEnd would give it, as
+                            // the Hook arm below does (angr-mx00p.132.12).
+                            self.detailed_history.push(crate::state::HistoryEntry {
+                                addr: irsb.addr,
+                                jumpkind: crate::state::HistoryEntry::jumpkind_from_vex(&jumpkind),
+                                jump_target: self.pc,
+                            });
+                            if block_granular {
+                                self.pending_syscall = Some(jumpkind);
+                                break;
+                            }
                             let forks = self.take_deferred_forks();
                             return (
                                 RunResult::Syscall {

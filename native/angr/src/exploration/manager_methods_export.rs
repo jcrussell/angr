@@ -457,6 +457,16 @@ impl RustExplorationManager {
         })
     }
 
+    /// The `Ijk_*` name of the syscall exit a state stopped at without running
+    /// it, or `None`. An export reports it as `history.jumpkind`, which the
+    /// detailed history's syscall byte cannot spell (`int 0x80` vs `syscall`
+    /// picks the AMD64 ABI; angr-mx00p.132.12).
+    pub fn get_state_pending_syscall(&self, state_id: u64) -> PyResult<Option<&'static str>> {
+        self.with_state(state_id, |state| {
+            Ok(state.pending_syscall().map(|jk| jk.ijk_name()))
+        })
+    }
+
     /// Get heap metadata for a state by ID.
     ///
     /// Returns dict with:

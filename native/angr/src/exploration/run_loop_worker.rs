@@ -259,6 +259,7 @@ pub(crate) fn parallel_process_state(
         step.new_call_stack,
         step.new_detailed_history,
         step.new_tsc_counter,
+        step.new_pending_syscall,
     );
 
     let inputs = PostStepInputs {

@@ -350,6 +350,13 @@ pub struct RustSimState {
     /// `heap_brk`/`mmap_base`).
     #[merge_policy = "max"]
     tsc_counter: u64,
+    /// The `Ijk_Sys*` exit of the last block, when its syscall has not run
+    /// yet. A block-granular step stops at the exit like Python's, whose
+    /// syscall is its own step, and the next step serves it before lifting
+    /// anything (angr-mx00p.132.12). Branch siblings never inherit it (see
+    /// `fork_materialize::build_unexplored_fork`).
+    #[merge_policy = "warn_on_diverge"]
+    pending_syscall: Option<crate::vex::JumpKind>,
     /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
     /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
     /// fork + snapshot so each path resumes option scanning correctly.

@@ -695,6 +695,34 @@ impl PyRustSimState {
         self.inner.add_history_entry(addr, jumpkind, jump_target);
     }
 
+    /// The `Ijk_Sys*` exit this state stopped at without running its syscall,
+    /// or None. See `RustSimState::pending_syscall`.
+    #[getter]
+    pub fn pending_syscall(&self) -> Option<&'static str> {
+        self.inner.pending_syscall().map(|jk| jk.ijk_name())
+    }
+
+    /// Mark (or, with None, clear) a syscall the next step must run before
+    /// any block: a seed Python stepped up to an `Ijk_Sys*` exit
+    /// (angr-mx00p.132.12). Rejects a jumpkind that is not a syscall.
+    #[pyo3(signature = (jumpkind))]
+    pub fn set_pending_syscall(&mut self, jumpkind: Option<&str>) -> PyResult<()> {
+        let parsed = match jumpkind {
+            None => None,
+            Some(name) => {
+                let jk = crate::vex::parse_jumpkind(name);
+                if !jk.is_syscall() {
+                    return Err(PyValueError::new_err(format!(
+                        "{name:?} is not a syscall jumpkind"
+                    )));
+                }
+                Some(jk)
+            }
+        };
+        self.inner.set_pending_syscall(parsed);
+        Ok(())
+    }
+
     /// Push a call frame onto the call stack (Ijk_Call simulation).
     /// Test/debug helper — production paths go through the interpreter.
     pub fn push_call_frame(&mut self, call_site: u64, callee: u64, ret_addr: u64, sp: u64) {

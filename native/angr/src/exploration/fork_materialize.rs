@@ -101,6 +101,8 @@ fn build_unexplored_fork(
         f
     };
     forked.set_pc(fork.unexplored_target);
+    // The unexplored side never reached the continuing path's syscall exit.
+    forked.set_pending_syscall(None);
     forked
 }
 
