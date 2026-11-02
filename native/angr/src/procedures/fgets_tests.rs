@@ -879,3 +879,86 @@ fn test_fgets_family_return_widths() {
         .unwrap();
     assert_ret_width(&getc, RET_INT_BITS, "getc");
 }
+
+/// Call SHORT_READS `fgets(0x2000, size, stdin)` on `state` (angr-mx00p.132.3).
+fn short_read_fgets(state: &mut RustSimState, size: u64) -> RustBV {
+    let stdin: u64 = 0x5000;
+    NativeFgets
+        .call(
+            state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(size as u128, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn short_read_fgets_is_its_own_stdin_packet_sized_by_real_size() {
+    // A SHORT_READS fgets records all size-1 leaves but returns a symbolic
+    // count, so `posix.dumps(0)` must cut its packet there: `stdin_packets`
+    // splits it off with the count's name, between the fixed-length getchar
+    // reads around it (angr-mx00p.132.3).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option("SHORT_READS", true);
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    setup_file_struct(&mut state, 0x5000, 0);
+
+    NativeGetchar.call(&mut state, &[]).unwrap();
+    let real_size = short_read_fgets(&mut state, 8);
+    NativeGetchar.call(&mut state, &[]).unwrap();
+
+    let packets = state.stdin_packets();
+    let shape: Vec<(usize, bool)> = packets
+        .iter()
+        .map(|(syms, read)| (syms.len(), read.is_some()))
+        .collect();
+    assert_eq!(shape, vec![(1, false), (7, true), (1, false)]);
+    let read = packets[1].1.unwrap();
+    assert_eq!(read.seeded, 0);
+    assert_eq!(read.first_leaf, packets[1].0[0].0);
+    let length = RustBV::symbol(&read.length.0, read.length.1);
+    let ctx = state.solver().borrow();
+    assert!(
+        !ctx.solution(&length.eq(&real_size), 0),
+        "the recorded length names the count fgets returned"
+    );
+}
+
+#[test]
+fn short_read_fgets_records_the_seeded_bytes_it_consumed() {
+    // Seeded bytes are not recorded as stdin symbols but still count toward
+    // real_size, so the read length carries how many preceded its first leaf.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option("SHORT_READS", true);
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    setup_file_struct(&mut state, 0x5000, 0);
+    let seed: Vec<RustBV> = b"ab".iter().map(|&b| RustBV::concrete(b as u128, 8)).collect();
+    state.file_system().set_fd_content_sym(0, seed);
+
+    short_read_fgets(&mut state, 8);
+
+    let packets = state.stdin_packets();
+    assert_eq!(packets.len(), 1);
+    let (syms, read) = packets[0];
+    let read = read.expect("the fgets packet carries its length");
+    assert_eq!((syms.len(), read.leaves, read.seeded), (5, 5, 2));
+}
+
+#[test]
+fn default_fgets_records_no_read_length() {
+    // Without SHORT_READS fgets returns the buffer and reads size-1 bytes, so
+    // its leaves stay in one fixed-length packet.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    setup_file_struct(&mut state, 0x5000, 0);
+
+    short_read_fgets(&mut state, 8);
+
+    let packets = state.stdin_packets();
+    assert_eq!(packets.len(), 1);
+    assert!(packets[0].1.is_none());
+}

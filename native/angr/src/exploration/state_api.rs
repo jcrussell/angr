@@ -1038,6 +1038,22 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.stdin_symbols().to_vec()))
     }
 
+    pub(crate) fn _get_state_stdin_packets(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<crate::state::StdinPacketExport>> {
+        self.with_state(state_id, |state| {
+            Ok(state
+                .stdin_packets()
+                .into_iter()
+                .map(|(syms, read)| {
+                    let length = read.map(|r| (r.length.0.clone(), r.length.1, r.seeded));
+                    (syms.to_vec(), length)
+                })
+                .collect())
+        })
+    }
+
     // -------------------------------------------------------------------------
     // Call stack / history / heap / fds
     // -------------------------------------------------------------------------

@@ -31,6 +31,7 @@ from angr.exploration.rust_state_export import (
     _concrete_stream_bytes,
     _concrete_stream_len,
     _posix_stream,
+    rust_stdin_read_symbols,
 )
 from angr.storage.file import SimFile, SimFileDescriptor
 
@@ -560,7 +561,7 @@ class RustCallbackDispatchMixin:
         try:
             if not self._rust_mgr.has_state_stdin_symbols(state_id):
                 return
-            stdin_symbols = self._rust_mgr.get_state_stdin_symbols(state_id)
+            stdin_symbols = rust_stdin_read_symbols(self._rust_mgr, state_id)
             if not stdin_symbols:
                 return
             posix = getattr(state, "posix", None)

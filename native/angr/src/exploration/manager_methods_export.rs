@@ -22,7 +22,7 @@
 //!   `set_state_memory_{concrete,ast}{,_automap}`,
 //!   `state_memory_store_symbolic_multi`.
 //! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
-//!   `{has,get}_state_stdin_symbols`, `eval_stdin_symbol`,
+//!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`, `eval_stdin_symbol`,
 //!   `get_state_open_fds`, `has_state_extra_fds`, `get_state_fd_content`,
 //!   `register_state_fd`.
 //! - **History and heap**: `get_state_call_stack{,_depth}`,
@@ -426,6 +426,19 @@ impl RustExplorationManager {
     /// data in Python's posix plugin for posix.dumps(0).
     pub fn get_state_stdin_symbols(&self, state_id: u64) -> PyResult<Vec<(String, u32)>> {
         self._get_state_stdin_symbols(state_id)
+    }
+
+    /// Get a state's stdin symbols split into packets, in read order.
+    ///
+    /// Each packet is `(symbols, length)`: `length` is `None` for a run of
+    /// fixed-length reads, and `(name, bits, seeded)` for a variable-length
+    /// read whose returned byte count is the symbol `name`, `seeded` bytes of
+    /// which precede `symbols` unrecorded (`RustSimState::stdin_packets`).
+    pub fn get_state_stdin_packets(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<crate::state::StdinPacketExport>> {
+        self._get_state_stdin_packets(state_id)
     }
 
     /// Get the call stack for a state by ID.

@@ -266,6 +266,7 @@ impl RustSimState {
             native_resume_stack: self.native_resume_stack.clone(),
             ctype_loc: self.ctype_loc,
             stdin_symbols: self.stdin_symbols.clone(),
+            stdin_read_lengths: self.stdin_read_lengths.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
@@ -496,6 +497,18 @@ impl RustSimState {
             }
         }
 
+        let mut merged_read_lengths = self.stdin_read_lengths.clone();
+        for other in others {
+            for read in &other.stdin_read_lengths {
+                if !merged_read_lengths
+                    .iter()
+                    .any(|r| r.first_leaf == read.first_leaf)
+                {
+                    merged_read_lengths.push(read.clone());
+                }
+            }
+        }
+
         // Union the Python-AST overlay maps across self + others
         // (angr-ph300.51). `clone_py_metadata` seeds from self; each other's
         // entries are folded in, but a key already present is kept from the
@@ -704,6 +717,7 @@ impl RustSimState {
             native_resume_stack: self.native_resume_stack.clone(),
             ctype_loc: self.merge_field_ctype_loc(others),
             stdin_symbols: merged_stdin,
+            stdin_read_lengths: merged_read_lengths,
             call_stack: self.call_stack.clone(),
             // Union every branch's heap bookkeeping, not just self's: heap_brk
             // is maxed above so a branch-only allocation stays reachable in the

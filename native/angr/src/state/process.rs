@@ -72,6 +72,45 @@ impl RustSimState {
         &self.stdin_symbols
     }
 
+    /// Record that the `leaves` stdin symbols starting at `first_leaf` (the
+    /// last ones recorded) were minted by a read returning `length` bytes,
+    /// `seeded` of which came from the harness seed. See [`StdinReadLength`].
+    pub fn record_stdin_read_length(&mut self, read: StdinReadLength) {
+        self.stdin_read_lengths.push(read);
+    }
+
+    /// `stdin_symbols` in read order, split into packets: each
+    /// variable-length read is its own packet carrying its
+    /// [`StdinReadLength`], and every run of fixed-length reads between them
+    /// is one packet with `None`.
+    pub fn stdin_packets(&self) -> Vec<StdinPacket<'_>> {
+        let syms = &self.stdin_symbols;
+        let mut packets = Vec::new();
+        let (mut start, mut i) = (0, 0);
+        while i < syms.len() {
+            let read = self
+                .stdin_read_lengths
+                .iter()
+                .find(|r| r.first_leaf == syms[i].0)
+                .filter(|r| r.leaves > 0 && r.leaves <= syms.len() - i);
+            if let Some(read) = read {
+                if start < i {
+                    packets.push((&syms[start..i], None));
+                }
+                // overflow-ok: the filter above bounds `leaves` by the rest.
+                let end = i + read.leaves;
+                packets.push((&syms[i..end], Some(read)));
+                (start, i) = (end, end);
+            } else {
+                i += 1;
+            }
+        }
+        if start < syms.len() {
+            packets.push((&syms[start..], None));
+        }
+        packets
+    }
+
     /// Check if any stdin symbols have been recorded.
     pub fn has_stdin_symbols(&self) -> bool {
         !self.stdin_symbols.is_empty()

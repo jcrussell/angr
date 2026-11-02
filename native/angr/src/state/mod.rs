@@ -183,6 +183,34 @@ pub struct GetoptExternAddrs {
     pub optopt: Option<u64>,
 }
 
+/// The symbolic byte count of one variable-length stdin read (native
+/// `fgets` under SHORT_READS, and `gets`), which returns a symbolic
+/// `real_size` but records every leaf it minted in
+/// [`RustSimState::stdin_symbols`]. Python stores such a read as one SimPackets
+/// packet whose size is `real_size`, so `posix.dumps(0)` keeps only the bytes
+/// the read returned; the export does the same through
+/// [`RustSimState::stdin_packets`] (angr-mx00p.132.3).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StdinReadLength {
+    /// The read's first leaf recorded in `stdin_symbols`.
+    pub first_leaf: String,
+    /// How many consecutive `stdin_symbols` entries the read recorded.
+    pub leaves: usize,
+    /// Harness-seeded bytes the read consumed ahead of `first_leaf`; they are
+    /// not recorded (`mint_stdin_bytes`) but count toward `length`.
+    pub seeded: usize,
+    /// Name and width of the symbolic byte count the read returned.
+    pub length: (String, u32),
+}
+
+/// One packet of [`RustSimState::stdin_packets`]: a run of `stdin_symbols`
+/// and, for a variable-length read, its [`StdinReadLength`].
+pub type StdinPacket<'a> = (&'a [(String, u32)], Option<&'a StdinReadLength>);
+
+/// A [`StdinPacket`] as `get_state_stdin_packets` hands it to Python: the
+/// symbols, and the read's `(length name, length bits, seeded)`.
+pub type StdinPacketExport = (Vec<(String, u32)>, Option<(String, u32, usize)>);
+
 /// One suspended-continuation frame for the native sub-call (ADDS_EXITS)
 /// dispatcher (design: `tools/decisions/native_subcall_dispatcher_design.md`)
 /// (angr-5gf0s). When a native proc needs to call a guest function and
@@ -403,6 +431,11 @@ pub struct RustSimState {
     #[merge_policy = "union"]
     #[merge_manual = "set-like union over a Vec keyed by name, not a bool OR"]
     stdin_symbols: Vec<(String, u32)>,
+    /// The byte count of each variable-length read among `stdin_symbols`; see
+    /// [`StdinReadLength`].
+    #[merge_policy = "union"]
+    #[merge_manual = "set-like union over a Vec keyed by first leaf, like stdin_symbols"]
+    stdin_read_lengths: Vec<StdinReadLength>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Cloned on fork so each path has its own call stack.
     ///

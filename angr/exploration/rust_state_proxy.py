@@ -25,7 +25,7 @@ import threading
 
 from angr import claripy
 from angr.exploration.rust_state_binding import RustStateBinding, unscoped_binding
-from angr.exploration.rust_state_export import _LazySimStateRef
+from angr.exploration.rust_state_export import _LazySimStateRef, rust_stdin_read_symbols
 from angr.sim_state import SimState
 from angr.state_plugins.sim_action_object import _raw_ast
 
@@ -2792,7 +2792,7 @@ class RustPosixProxy:
             if not self._mgr.has_state_stdin_symbols(self._state_id):
                 return b""
             out = bytearray()
-            for name, bits in self._mgr.get_state_stdin_symbols(self._state_id):
+            for name, bits in rust_stdin_read_symbols(self._mgr, self._state_id):
                 nbytes = max(1, bits // 8)
                 val = self._mgr.eval_stdin_symbol(self._state_id, name, bits)
                 out += (0 if val is None else val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little")

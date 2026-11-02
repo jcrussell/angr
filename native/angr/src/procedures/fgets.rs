@@ -37,7 +37,7 @@ use super::stdin_common::{bounce_if_fd0_dup2d, mint_stdin_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::memory::MemoryError;
 use crate::procedures::stream_ops::read_fileno;
-use crate::state::RustSimState;
+use crate::state::{RustSimState, StdinReadLength};
 use crate::symbolic::RustBV;
 use crate::syscalls::MAX_IO_SIZE as MAX_FGETS_SIZE;
 
@@ -54,9 +54,11 @@ const MAX_GETS_SIZE: u64 = 256;
 /// with a NUL at the `real_size` offset (as fixed-address ITE stores), and
 /// return the symbolic `real_size`.
 ///
-/// `sym_bytes` are the `size-1` already-created symbolic input bytes (the caller
-/// records them as stdin symbols). `label`/`read_id` name the fresh
-/// `real_size`/`eof` symbols. Mirrors `procedures/libc/{fgets,gets}.py` case 2.
+/// `names` name the `size-1` stdin leaves, minted here through
+/// [`mint_stdin_bytes`]; the leaves it records are tagged with `real_size`
+/// ([`StdinReadLength`]) so `posix.dumps(0)` keeps only the bytes the read
+/// returned. `label`/`read_id` name the fresh `real_size`/`eof` symbols.
+/// Mirrors `procedures/libc/{fgets,gets}.py` case 2.
 ///
 /// Keeping every store at a fixed address avoids symbolic-address
 /// concretization (which would enumerate up to `size-1` addresses) and stays
@@ -67,16 +69,31 @@ pub(crate) fn store_symbolic_line(
     state: &mut RustSimState,
     buf: u64,
     size: u64,
-    sym_bytes: &[RustBV],
+    names: &[String],
     label: &str,
     read_id: u64,
 ) -> Result<RustBV, ProcedureError> {
     let bits = state.arch().bits();
+    let recorded_before = state.stdin_symbols().len();
+    let sym_bytes = mint_stdin_bytes(state, names);
+    // overflow-ok: minting only appends to `stdin_symbols`.
+    let recorded = state.stdin_symbols().len() - recorded_before;
+    let real_size_name = format!("{label}_realsize_{read_id}");
+    if recorded > 0 {
+        // overflow-ok: `mint_stdin_bytes` records at most one leaf per name.
+        let seeded = names.len() - recorded;
+        state.record_stdin_read_length(StdinReadLength {
+            first_leaf: names[seeded].clone(),
+            leaves: recorded,
+            seeded,
+            length: (real_size_name.clone(), bits),
+        });
+    }
     // overflow-ok: every caller guards size >= 1 before reaching here (the
     // `call` block's size==0 fast path, or MAX_GETS_SIZE for gets()).
     let read_count = size - 1;
     let (real_size, constraints, store_bytes) = {
-        let real_size = RustBV::symbol(format!("{label}_realsize_{read_id}"), bits);
+        let real_size = RustBV::symbol(real_size_name, bits);
         // EOF is unknown for native symbolic stdin; a fresh symbolic bit soundly
         // over-approximates `simfd.eof()` (the solver may pick eof=true to
         // justify a short read, matching Python).
@@ -234,14 +251,9 @@ crate::declare_proc! {
         let read_id = symbol_counter("fgets");
         let short_reads = state.has_option("SHORT_READS");
 
-        // Create symbolic bytes and record for stdin tracking
         let names: Vec<String> = (0..read_count)
             .map(|i| format!("stdin_fgets_{read_id}_{i}"))
             .collect();
-
-        // Mint the leaves, consuming any harness-seeded fd-0 bytes and recording
-        // the unseeded ones for posix.dumps(0) export (shared by both paths).
-        let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
 
         if short_reads {
             // Variable-length / short-read model, gated behind the SHORT_READS
@@ -255,9 +267,13 @@ crate::declare_proc! {
             // enabling SHORT_READS opts into the same state multiplication it
             // already causes Python-side.
             // Return symbolic real_size — the downstream fork source.
-            let real_size = store_symbolic_line(state, buf, size, &sym_bytes, "fgets", read_id)?;
+            let real_size = store_symbolic_line(state, buf, size, &names, "fgets", read_id)?;
             return Ok(Some(real_size));
         }
+
+        // Mint the leaves, consuming any harness-seeded fd-0 bytes and recording
+        // the unseeded ones for posix.dumps(0) export.
+        let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
 
         // Newline path constraint: a *full* read of `read_count` bytes means no
         // newline terminated the read before its final byte — real fgets stops
@@ -431,13 +447,10 @@ crate::declare_proc! {
         let read_count = MAX_GETS_SIZE - 1;
         let read_id = symbol_counter("gets");
 
-        // Create symbolic stdin bytes and record them for posix.dumps(0) export.
         let names: Vec<String> = (0..read_count)
             .map(|i| format!("stdin_gets_{read_id}_{i}"))
             .collect();
-        let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
-
-        store_symbolic_line(state, buf, MAX_GETS_SIZE, &sym_bytes, "gets", read_id)?;
+        store_symbolic_line(state, buf, MAX_GETS_SIZE, &names, "gets", read_id)?;
 
         // gets returns the destination buffer pointer.
         Ok(Some(arch_word(state, buf)))

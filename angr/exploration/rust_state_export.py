@@ -182,6 +182,26 @@ def _concrete_stream_bytes(state, stream) -> bytes | None:
     return state.solver.eval(data, cast_to=bytes)
 
 
+def rust_stdin_read_symbols(rust_mgr, state_id: int) -> list[tuple[str, int]]:
+    """The ``(name, bits)`` stdin symbols state ``state_id``'s reads returned, in order.
+
+    A variable-length read (native ``fgets`` under SHORT_READS, ``gets``)
+    records every leaf it minted but returns a symbolic byte count; Python
+    keeps such a read as one packet of that size, so ``posix.dumps(0)`` drops
+    the leaves past it. Each is cut to its evaluated count here
+    (angr-mx00p.132.3); an unevaluable count keeps the whole read.
+    """
+    symbols = []
+    for leaves, length in rust_mgr.get_state_stdin_packets(state_id):
+        if length is not None:
+            name, bits, seeded = length
+            returned = rust_mgr.eval_stdin_symbol(state_id, name, bits)
+            if returned is not None:
+                leaves = leaves[: max(0, returned - seeded)]
+        symbols.extend(leaves)
+    return symbols
+
+
 class _RustExportedScratch(SimStateScratch):
     """``SimStateScratch`` whose ``irsb`` is lifted on first read.
 
@@ -1645,7 +1665,8 @@ class RustStateExportMixin:
         bytes it read past the seeded content (``mint_stdin_bytes``), so the
         packet follows any seeded packets on the stream, and every packet
         counts as read: dropping it lost the bytes a re-imported Veritesting
-        successor read natively (angr-mx00p.132.26).
+        successor read natively (angr-mx00p.132.26). A variable-length read is
+        its own packet, sized by its symbolic byte count (angr-mx00p.132.3).
         """
         if not self._rust_mgr.has_state_stdin_symbols(state_id):
             return
@@ -1654,13 +1675,21 @@ class RustStateExportMixin:
         if not isinstance(content, list):
             return
         self._drop_stale_rust_stdin_packets(stdin)
-        leaves = []
-        for name, bits in self._rust_mgr.get_state_stdin_symbols(state_id):
-            sym = claripy.BVS(name, bits, explicit_name=True)
-            # _inject_rust_stdin lays a wider symbol (scanf %d) out little-endian.
-            leaves.append(sym.reversed if bits > 8 else sym)
-        data = claripy.Concat(*leaves) if len(leaves) > 1 else leaves[0]
-        content.append((data, claripy.BVV(data.length // 8, state.arch.bits)))
+        word = state.arch.bits
+        for symbols, length in self._rust_mgr.get_state_stdin_packets(state_id):
+            leaves = []
+            for name, bits in symbols:
+                sym = claripy.BVS(name, bits, explicit_name=True)
+                # _inject_rust_stdin lays a wider symbol (scanf %d) out little-endian.
+                leaves.append(sym.reversed if bits > 8 else sym)
+            data = claripy.Concat(*leaves) if len(leaves) > 1 else leaves[0]
+            size = claripy.BVV(data.length // 8, word)
+            if length is not None:
+                name, bits, seeded = length
+                returned = claripy.BVS(name, bits, explicit_name=True).zero_extend(word - bits)
+                seeded_bv = claripy.BVV(seeded, word)
+                size = claripy.If(returned > seeded_bv, returned - seeded_bv, claripy.BVV(0, word))
+            content.append((data, size))
         stdin.pos = len(content)
 
     def _detach_register_proxy(self, state: angr.SimState, state_id: int) -> None:

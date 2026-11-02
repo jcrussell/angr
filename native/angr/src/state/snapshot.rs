@@ -54,7 +54,7 @@ pub enum SnapshotError {
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
 ///   tsc_counter, pending_syscall, exit_code, getopt_optind, getopt_optchar, getopt_extern,
-///   stdin_symbols, call_stack, heap_metadata, no_ip_concretization,
+///   stdin_symbols, stdin_read_lengths, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
 ///   (carried on StashManager side).
@@ -116,6 +116,9 @@ pub struct RustSimStateSnapshot {
     pub native_resume_stack: Vec<crate::state::NativeResumeFrame>,
     pub ctype_loc: crate::state::CtypeLocPtrs,
     pub stdin_symbols: Vec<(String, u32)>,
+    /// See `RustSimState::stdin_read_lengths` (angr-mx00p.132.3).
+    #[serde(default)]
+    pub stdin_read_lengths: Vec<crate::state::StdinReadLength>,
     pub call_stack: Vec<CallStackEntry>,
     pub heap_metadata: HeapMetadata,
     pub inspection: InspectionManager,
@@ -247,6 +250,7 @@ impl RustSimState {
             native_resume_stack: self.native_resume_stack.clone(),
             ctype_loc: self.ctype_loc,
             stdin_symbols: self.stdin_symbols.clone(),
+            stdin_read_lengths: self.stdin_read_lengths.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
@@ -312,6 +316,7 @@ impl RustSimState {
             native_resume_stack: snap.native_resume_stack,
             ctype_loc: snap.ctype_loc,
             stdin_symbols: snap.stdin_symbols,
+            stdin_read_lengths: snap.stdin_read_lengths,
             call_stack: snap.call_stack,
             heap_metadata: snap.heap_metadata,
             inspection: snap.inspection,
