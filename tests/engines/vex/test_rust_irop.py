@@ -13,6 +13,7 @@ is not a VEX type, so the edges stop at 1 bit.
 from __future__ import annotations
 
 import random
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -125,6 +126,57 @@ def _takes_rm(name):
     """A vector float op whose first operand is the VEX rounding mode."""
     _, args = pyvex.expr.op_arg_types(name)
     return _float_lanes(name) and len(args) > 1 and args[0] == "Ity_I32"
+
+
+def _scalar_float(name):
+    """A scalar float op: its operands after the rounding mode and its result are FP-sorted."""
+    op = irop.operations[name]
+    return op._float and op._vector_size is None
+
+
+def _float_arg(value, bits, as_fpv):
+    """The float with IEEE bits `value`, as claripy's raw_to_fp (bvToFP) or as an FPV."""
+    if not as_fpv:
+        return claripy.BVV(value, bits).raw_to_fp()
+    fmt = ">I" if bits == 32 else ">Q"
+    unpacked = struct.unpack(">f" if bits == 32 else ">d", struct.pack(fmt, value))[0]
+    return claripy.FPV(unpacked, claripy.FSORT_FLOAT if bits == 32 else claripy.FSORT_DOUBLE)
+
+
+def _scalar_float_cases(name, rng, arg_bits):
+    """Rounding mode, then float operands, each a float edge or random bits, alternately bvToFP and FPV."""
+    pools = [ROUNDING_MODES] + [FLOAT_EDGES[b] + [rng.getrandbits(b) for _ in range(4)] for b in arg_bits[1:]]
+    values = [tuple(rng.choice(p) for p in pools) for _ in range(60)]
+    if len(pools) == 3:
+        values += [
+            (rm, a, b) for rm in ROUNDING_MODES for a in _sample(rng, pools[1], 5) for b in _sample(rng, pools[2], 5)
+        ]
+        # 1.0 and the next float up round apart by mode.
+        one = 0x3F800000 if arg_bits[1] == 32 else 0x3FF0000000000000
+        values += [(rm, one, one + 1) for rm in ROUNDING_MODES]
+    else:
+        values += [(rm, a) for rm in ROUNDING_MODES for a in pools[1]]
+    for i, case in enumerate(dict.fromkeys(values)):
+        args = [claripy.BVV(case[0], arg_bits[0])]
+        args += [_float_arg(v, b, (i + pos) % 2 == 0) for pos, (v, b) in enumerate(zip(case[1:], arg_bits[1:]))]
+        yield args
+
+
+def _scalar_float_symbolic_cases(arg_bits):
+    sort = claripy.FSORT_FLOAT if arg_bits[1] == 32 else claripy.FSORT_DOUBLE
+    for rm in ROUNDING_MODES:
+        mode = claripy.BVV(rm, arg_bits[0])
+        syms = [claripy.FPS(f"f{i}", sort) for i in range(1, len(arg_bits))]
+        yield [mode, *syms]
+        # A raw_to_fp of a bitvector symbol, as the Python engine reads a float register.
+        yield [mode, *(claripy.BVS(f"b{i}", arg_bits[1]).raw_to_fp() for i in range(1, len(arg_bits)))]
+        for pos in range(len(syms)):
+            for value in FLOAT_EDGES[arg_bits[1]][::3]:
+                args = list(syms)
+                args[pos] = _float_arg(value, arg_bits[1], value % 2 == 0)
+                yield [mode, *args]
+        if len(syms) == 2:
+            yield [mode, syms[0], syms[0]]
 
 
 def _vector_pool(rng, bits, lane, edges=None):
@@ -295,6 +347,8 @@ def _check(name, args, ret_bits):
         assert args[1].concrete_value >= _lanes(name)[1], f"{where}: Rust refused an in-range index"
         return False
     assert actual is not None, f"{where}: Rust refused a call irop.py serves"
+    if _scalar_float(name):
+        return _check_float(where, args, actual, expected, ret_bits)
     assert isinstance(actual, claripy.ast.BV) and isinstance(expected, claripy.ast.BV), where
     assert actual.size() == expected.size() == ret_bits, where
     assert actual.symbolic == expected.symbolic, f"{where}: Rust {actual} vs irop.py {expected}"
@@ -313,11 +367,44 @@ def _check(name, args, ret_bits):
     return True
 
 
+def _check_float(where, args, actual, expected, ret_bits):
+    """_check for an FP-sorted result: concrete results agree on their IEEE bits, symbolic ones are equal or both NaN
+    for every input."""
+    assert isinstance(actual, claripy.ast.FP) and isinstance(expected, claripy.ast.FP), where
+    assert actual.size() == expected.size() == ret_bits, where
+    assert actual.symbolic == expected.symbolic, f"{where}: Rust {actual} vs irop.py {expected}"
+    if not actual.symbolic:
+        assert actual.raw_to_bv().concrete_value == expected.raw_to_bv().concrete_value, (
+            f"{where}: Rust {actual} != irop.py {expected}"
+        )
+    elif not actual.identical(expected):
+        solver = claripy.Solver(timeout=SOLVER_TIMEOUT_MS)
+        same = claripy.Or(
+            claripy.fpEQ(actual, expected), claripy.And(claripy.fpIsNaN(actual), claripy.fpIsNaN(expected))
+        )
+        solver.add(claripy.Not(same))
+        try:
+            differs = solver.satisfiable()
+        except claripy.ClaripyError as e:
+            pytest.fail(f"{where}: the equivalence check did not finish: {e}")
+        assert not differs, f"{where}: Rust {actual} != irop.py {expected}"
+    allowed = set().union(*(a.variables for a in args))
+    assert actual.variables <= allowed, f"{where}: Rust {actual} has variables its arguments do not"
+    return True
+
+
 @pytest.mark.parametrize("name", sorted(datalayer._RUST_IROP_NAMES))
 def test_rust_irop_matches_python(name):
     ret_bits, arg_bits = _signature(name)
     rng = random.Random(name)
     served = 0
+    if _scalar_float(name):
+        for args in _scalar_float_cases(name, rng, arg_bits):
+            served += _check(name, args, ret_bits)
+        for args in _scalar_float_symbolic_cases(arg_bits):
+            served += _check(name, args, ret_bits)
+        assert served
+        return
     for values in _concrete_cases(name, rng, arg_bits):
         served += _check(name, [claripy.BVV(v, b) for v, b in zip(values, arg_bits)], ret_bits)
     for args in _symbolic_cases(name, arg_bits):
@@ -388,10 +475,38 @@ def test_engine_refuses_float_irops_without_fp_support():
 
 
 def test_rust_irop_honours_a_symbolic_rounding_mode():
+    # irop.py rounds to nearest-even under a symbolic mode; Rust keeps the mode's every value.
     a, b = claripy.BVS("a", 128), claripy.BVS("b", 128)
     rm = claripy.BVS("rm", 32)
     result = vex_irop.irop("Iop_Add32Fx4", (rm, a, b))
     assert result is not None and rm.variables <= result.variables
+    for name, sort in (("Iop_AddF32", claripy.FSORT_FLOAT), ("Iop_DivF64", claripy.FSORT_DOUBLE)):
+        x, y = claripy.FPS("x", sort), claripy.FPS("y", sort)
+        result = vex_irop.irop(name, (rm, x, y))
+        assert isinstance(result, claripy.ast.FP) and rm.variables <= result.variables, name
+        for mode in ROUNDING_MODES:
+            pinned = vex_irop.irop(name, (claripy.BVV(mode, 32), x, y))
+            solver = claripy.Solver(timeout=SOLVER_TIMEOUT_MS)
+            solver.add(rm == mode)
+            solver.add([claripy.Not(claripy.fpEQ(result, pinned)), claripy.Not(claripy.fpIsNaN(pinned))])
+            assert not solver.satisfiable(), (name, mode)
+
+
+def test_rust_irop_scalar_float_operand_sorts():
+    rm, one = claripy.BVV(0, 32), claripy.FPV(1.0, claripy.FSORT_DOUBLE)
+    # irop.py raises for a bitvector float operand, so Rust leaves it to irop.py.
+    assert vex_irop.irop("Iop_AddF64", (rm, claripy.BVV(1, 64), one)) is None
+    assert _python("Iop_AddF64", (rm, claripy.BVV(1, 64), one))[1] is not None
+    # The rounding mode is a bitvector.
+    assert vex_irop.irop("Iop_AddF64", (one, one, one)) is None
+    # A mode libVEX does not define: irop.py raises.
+    assert vex_irop.irop("Iop_AddF64", (claripy.BVV(5, 32), one, one)) is None
+    # A float of the other width.
+    assert vex_irop.irop("Iop_AddF32", (rm, one, one)) is None
+    # A bvToFP keeps a NaN's payload through the round trip.
+    snan = claripy.BVV(0x7FF4000000000001, 64).raw_to_fp()
+    actual, expected = vex_irop.irop("Iop_MulF64", (rm, snan, one)), _python("Iop_MulF64", (rm, snan, one))[0]
+    assert actual.raw_to_bv().concrete_value == expected.raw_to_bv().concrete_value
 
 
 class RelocAnnotation(claripy.Annotation):

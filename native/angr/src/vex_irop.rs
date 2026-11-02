@@ -6,7 +6,7 @@
 //! result goes back with `Base::from_ast` after the same `simplify_ext` every
 //! claripy bitvector operator applies, carrying a literal argument's
 //! relocatable annotations as claripy's fold does. Anything Rust does not
-//! serve (a non-bitvector argument, a width or arity the op does not take, a
+//! serve (an argument of the wrong sort, a width or arity the op does not take, a
 //! literal with an annotation claripy does not fold through, a
 //! literal zero divisor, a symbolic value shifted by a literal of
 //! at least its width or lane width, a literal lane index past the lane
@@ -16,19 +16,24 @@
 //! logic, shift, compare and width-conversion ops, and of the integer-lane
 //! vector ops ([`is_int_lane_vec`]) and the vector float ops
 //! ([`is_vector_float_op`]) that Rust implements, less the exclusions in
-//! [`SERVED`].
+//! [`SERVED`], and of the scalar float arithmetic ([`scalar_float_type`]).
+//!
+//! A scalar float op takes and returns FP-sorted claripy ASTs, as `irop.py`
+//! does: an operand enters as its IEEE bits ([`import_float`]) and the result
+//! leaves wrapped back in `bvToFP`.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use clarirs_core::prelude::{AstOp, AstType};
+use clarirs_core::prelude::{AstFactory, AstOp, AstRef, AstType, FSort};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use crate::ailment::vexop_names::IROP_NAMES;
+use crate::claripy::ast::GLOBAL_CONTEXT;
 use crate::claripy::ast::base::Base;
 use crate::symbolic::{RustBV, VexOpFamily};
-use crate::vex::ir::IROp;
+use crate::vex::ir::{IROp, IRType};
 use crate::vex::opcode_map::parse_opcode;
 use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec, is_vector_float_op};
 
@@ -42,7 +47,7 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 // FP-sorted on the Python side.
                 IROp::Reinterpret { .. } => false,
                 // clarirs folds fpSub of a NaN as an add of its negation, flipping the NaN's sign (angr-mx00p.127).
-                IROp::VFSub { .. } | IROp::VFSubS { .. } => false,
+                IROp::FSub(_) | IROp::VFSub { .. } | IROp::VFSubS { .. } => false,
                 // x86 MINPS/MAXPS and AArch64 FMIN/FMAX share these ops and differ on +-0 and NaN; irop.py follows
                 // neither (angr-mx00p.128).
                 IROp::VFMin { .. }
@@ -54,7 +59,7 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 // libVEX leaves an out-of-range, infinite or NaN lane undefined; Rust saturates, irop.py's fold
                 // gives 0 (angr-mx00p.129).
                 IROp::VF32toI32 { .. } => false,
-                _ if is_vector_float_op(&op) => true,
+                _ if is_vector_float_op(&op) || scalar_float_type(op).is_some() => true,
                 _ => match iropclass(&op) {
                     VexOpFamily::Arith
                     | VexOpFamily::Logic
@@ -82,14 +87,22 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     let mut carried = Vec::new();
     // SymBV keeps a constant wider than 128 bits as a term, so concreteness is read off claripy's AST.
     let mut symbolic = Vec::with_capacity(args.len());
-    for arg in args.iter() {
+    let float = scalar_float_type(op);
+    for (pos, arg) in args.iter().enumerate() {
         let Ok(base) = arg.cast::<Base>() else {
             // SILENT(cat-a): not a claripy AST; irop.py unwraps or rejects it.
             return Ok(None);
         };
         symbolic.push(base.get().symbolic());
-        let ast = base.get().ast();
-        if !matches!(ast.ast_type(), AstType::BitVec(_)) {
+        let mut ast = base.get().ast();
+        // A scalar float op's operands after the rounding mode are floats; irop.py refuses a bitvector there.
+        if let Some(ty) = float.filter(|_| pos > 0) {
+            let Some(bits) = import_float(&ast, ty) else {
+                // SILENT(cat-a): not a float of the op's width, or one with annotations; irop.py serves or rejects it.
+                return Ok(None);
+            };
+            ast = bits;
+        } else if !matches!(ast.ast_type(), AstType::BitVec(_)) {
             // SILENT(cat-a): not a bitvector; irop.py converts it.
             return Ok(None);
         }
@@ -143,8 +156,8 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
             }
             VEXOps::binop(op, l.clone(), r.clone())
         }
-        // `Iop_SetElem*` (`binop_with_rm` reads its first operand as the vector) and packed float arithmetic
-        // under the VEX rounding mode are the served Triops.
+        // `Iop_SetElem*` (`binop_with_rm` reads its first operand as the vector) and scalar and packed float
+        // arithmetic under the VEX rounding mode are the served Triops. `Iop_Sqrt*` is a Binop `binop` serves.
         [v, i, x] if matches!(op, IROp::VSetElem { .. }) => {
             if literal_index_past_count(op, i) {
                 // SILENT(cat-a): libVEX leaves it undefined; irop.py leaves the vector as is.
@@ -155,7 +168,13 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         [rm, l, r]
             if matches!(
                 op,
-                IROp::VFAdd { .. } | IROp::VFSub { .. } | IROp::VFMul { .. } | IROp::VFDiv { .. }
+                IROp::VFAdd { .. }
+                    | IROp::VFSub { .. }
+                    | IROp::VFMul { .. }
+                    | IROp::VFDiv { .. }
+                    | IROp::FAdd(_)
+                    | IROp::FMul(_)
+                    | IROp::FDiv(_)
             ) =>
         {
             VEXOps::binop_with_rm(op, rm.clone(), l.clone(), r.clone())
@@ -169,6 +188,11 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     };
     let Ok(ast) = result
         .to_clarirs()
+        .and_then(|ast| match float {
+            Some(IRType::F32) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f32()),
+            Some(_) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f64()),
+            None => Ok(ast),
+        })
         .and_then(|ast| ast.simplify_ext(true, true))
         .and_then(|ast| {
             if carried.is_empty() {
@@ -183,6 +207,39 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     };
     let out = Base::from_ast(py, ast)?;
     Ok(Some(out.into_any().unbind()))
+}
+
+/// The float type of a served scalar float op (`Iop_{Add,Mul,Div,Sqrt}F{32,64}`), whose result `irop.py`
+/// returns FP-sorted.
+fn scalar_float_type(op: IROp) -> Option<IRType> {
+    match op {
+        IROp::FAdd(ty) | IROp::FMul(ty) | IROp::FDiv(ty) | IROp::FSqrt(ty)
+            if matches!(ty, IRType::F32 | IRType::F64) =>
+        {
+            Some(ty)
+        }
+        _ => None,
+    }
+}
+
+/// A float operand as its IEEE bits: `bvToFP(x)` (claripy's `raw_to_fp`)
+/// peels to `x` and an `FPV` becomes its bit literal, so a concrete float
+/// stays concrete and a NaN keeps its payload; any other float term is
+/// wrapped in `fpToIEEEBV` by `RustBV::from_clarirs`. `None` for a
+/// non-float, a float other than `ty` (`irop.py` computes in the operand's
+/// sort), or a float carrying annotations.
+fn import_float(ast: &AstRef<'static>, ty: IRType) -> Option<AstRef<'static>> {
+    let AstType::Float(sort) = ast.ast_type() else {
+        return None;
+    };
+    if sort.size() != ty.bits() || !ast.annotations().is_empty() {
+        return None;
+    }
+    match ast.op() {
+        AstOp::BvToFp(inner, _) => Some(inner.clone()),
+        AstOp::FPV(value) => GLOBAL_CONTEXT.bvv(value.to_ieee_bits()).ok(),
+        _ => Some(ast.clone()),
+    }
 }
 
 /// Whether `op` is a left or logical-right vector shift whose literal amount
