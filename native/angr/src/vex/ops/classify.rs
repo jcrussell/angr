@@ -61,7 +61,9 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::CmpLT(_)
         | IROp::CmpLE(_)
         | IROp::CmpLTU(_)
-        | IROp::CmpLEU(_) => VexOpFamily::Cmp,
+        | IROp::CmpLEU(_)
+        | IROp::CmpORD(_)
+        | IROp::CmpORDU(_) => VexOpFamily::Cmp,
 
         // Width adjustment, bit-count, reinterpret, concat/extract.
         //

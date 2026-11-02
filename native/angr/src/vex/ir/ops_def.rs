@@ -91,6 +91,11 @@ pub enum IROp {
     CmpLE(IRType),  // Less or equal (signed)
     CmpLTU(IRType), // Less than (unsigned)
     CmpLEU(IRType), // Less or equal (unsigned)
+    /// PowerPC ordered compare (`Iop_CmpORD{32,64}S`): a same-width result
+    /// of 0x8 if `left < right` (signed), 0x4 if greater, 0x2 if equal.
+    CmpORD(IRType),
+    /// Unsigned [`IROp::CmpORD`] (`Iop_CmpORD{32,64}U`).
+    CmpORDU(IRType),
 
     // =========================================================================
     // Conversions
@@ -970,6 +975,9 @@ impl IROp {
             | IROp::CmpLE(_)
             | IROp::CmpLTU(_)
             | IROp::CmpLEU(_) => Some(IRType::I1),
+
+            // Ordered compares return a same-width 0x8/0x4/0x2 code
+            IROp::CmpORD(t) | IROp::CmpORDU(t) => Some(*t),
 
             // Conversions
             IROp::SignExtend { to, .. }

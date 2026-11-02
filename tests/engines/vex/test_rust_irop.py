@@ -653,14 +653,11 @@ UNSERVED = {
     ),
     # Scalar integer.
     **dict.fromkeys(
+        ("Iop_Max32U", "Iop_QAdd32S", "Iop_QSub32S"),
+        "stays: irop.py's Max/QAdd/QSub are lane-only and raise on the scalar form",
+    ),
+    **dict.fromkeys(
         (
-            "Iop_CmpORD32S",
-            "Iop_CmpORD32U",
-            "Iop_CmpORD64S",
-            "Iop_CmpORD64U",
-            "Iop_Max32U",
-            "Iop_QAdd32S",
-            "Iop_QSub32S",
             "Iop_CmpNEZ8",
             "Iop_CmpNEZ16",
             "Iop_CmpNEZ32",

@@ -386,9 +386,10 @@ fn parse_comparison(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_CmpLT" => CmpLTU { "32U" => I32, "64U" => I64 });
     tuple_arms!(op_str; "Iop_CmpLE" => CmpLEU { "32U" => I32, "64U" => I64 });
 
-    // Ordered comparison (CmpORD): returns full-width -1 or 0; unmapped for now.
-    // Pinned by `test_parse_cmp_ord_stays_unmapped` (angr-sqfj8.120) — do not let
-    // the CmpLT/CmpLE arms above widen onto the shared 32S/32U/64S/64U suffixes.
+    // Ordered comparison (PowerPC): a same-width 0x8/0x4/0x2 code, not a 1-bit
+    // result (angr-mx00p.100.13).
+    tuple_arms!(op_str; "Iop_CmpORD" => CmpORD  { "32S" => I32, "64S" => I64 });
+    tuple_arms!(op_str; "Iop_CmpORD" => CmpORDU { "32U" => I32, "64U" => I64 });
     None
 }
 

@@ -32,7 +32,7 @@
 
 use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV, VexRm};
 
-use super::ir::IROp;
+use super::ir::{IROp, IRType};
 use super::transcendentals;
 
 /// Per-lane vector op traits (`FloatLaneOp` / `IntLaneOp`), their marker
@@ -427,7 +427,9 @@ impl VEXOps {
             | IROp::CmpLT(_)
             | IROp::CmpLE(_)
             | IROp::CmpLTU(_)
-            | IROp::CmpLEU(_) => Self::binop_bitwise_shift_cmp(op, left, right),
+            | IROp::CmpLEU(_)
+            | IROp::CmpORD(_)
+            | IROp::CmpORDU(_) => Self::binop_bitwise_shift_cmp(op, left, right),
 
             // -- Scalar floating point (arith, cmp, com, rounding, conversions w/ rm) --
             IROp::FAdd(_)
@@ -596,11 +598,30 @@ impl VEXOps {
             IROp::CmpLE(ty) => width_binop!(left, right, ty, sle_into),
             IROp::CmpLTU(ty) => width_binop!(left, right, ty, ult_into),
             IROp::CmpLEU(ty) => width_binop!(left, right, ty, ule_into),
+            IROp::CmpORD(ty) => Self::cmp_ord(left, right, ty, RustBV::slt_into),
+            IROp::CmpORDU(ty) => Self::cmp_ord(left, right, ty, RustBV::ult_into),
 
             // Misroute (guard/family drift): degrade to Python fallback
             // instead of panicking. See angr-cudgw.15.
             _ => Err(OpError::NotBinary(op)),
         }
+    }
+
+    /// PowerPC ordered compare: `left == right` -> 0x2, `less(left, right)`
+    /// -> 0x8, otherwise 0x4, all at the operand width (libVEX's `CmpORD`
+    /// contract, which irop.py's `_op_generic_CmpORD` builds the same way).
+    fn cmp_ord(
+        left: RustBV,
+        right: RustBV,
+        ty: IRType,
+        less: fn(RustBV, RustBV) -> RustBV,
+    ) -> Result<RustBV, OpError> {
+        Self::require_operand_width("binop CmpORD left", left.width(), ty.bits())?;
+        Self::require_operand_width("binop CmpORD right", right.width(), ty.bits())?;
+        let w = left.width();
+        let code = |c: u128| RustBV::concrete(c, w);
+        let lt_or_gt = less(left.clone(), right.clone()).ite_into(code(0x8), code(0x4));
+        Ok(left.eq_into(right).ite_into(code(0x2), lt_or_gt))
     }
 
     /// Scalar floating point: arithmetic, comparisons, comparison-with-CC,

@@ -326,3 +326,30 @@ fn test_div_mod_128_concrete() {
     assert_eq!(op(IROp::DivS(IRType::I128), neg7, 2), Some(3u128.wrapping_neg()));
     assert_eq!(op(IROp::ModS(IRType::I128), neg7, 2), Some(1u128.wrapping_neg()));
 }
+
+/// angr-mx00p.100.13: `CmpORD`/`CmpORDU` return libVEX's same-width
+/// 0x8 (less) / 0x4 (greater) / 0x2 (equal) code; the signed and unsigned
+/// forms split on a set top bit. A pinned symbol must agree with the literal.
+#[test]
+fn test_cmp_ord() {
+    for (ty, w) in [(IRType::I32, 32u32), (IRType::I64, 64)] {
+        let top = 1u128 << (w - 1);
+        for (a, b, signed, unsigned) in [
+            (3, 7, 0x8, 0x8),
+            (7, 3, 0x4, 0x4),
+            (5, 5, 0x2, 0x2),
+            (top, 1, 0x8, 0x4),
+            (1, top, 0x4, 0x8),
+        ] {
+            for (op, want) in [(IROp::CmpORD(ty), signed), (IROp::CmpORDU(ty), unsigned)] {
+                let got = VEXOps::binop(op, RustBV::concrete(a, w), RustBV::concrete(b, w)).unwrap();
+                assert_eq!(got.width(), w, "{op:?}");
+                assert_eq!(got.as_u128(), Some(want), "{op:?}({a:#x}, {b:#x})");
+                let (sym, pin) = pinned_symbol("cmp_ord_a", a, w);
+                let sym_got = VEXOps::binop(op, sym, RustBV::concrete(b, w)).unwrap();
+                assert!(sym_got.is_symbolic(), "{op:?}");
+                assert_eq!(z3_eval(&sym_got, &[pin]), Some(want), "{op:?}({a:#x}, {b:#x}) symbolic");
+            }
+        }
+    }
+}
