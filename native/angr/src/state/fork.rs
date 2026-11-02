@@ -234,16 +234,32 @@ impl RustSimState {
             child_id,
             self.state_id,
         );
+        let mut child = self.copy_with(registers, memory, Rc::new(RefCell::new(solver)));
+        child.state_id = child_id;
+        child.parent_id = Some(self.state_id);
+        child
+    }
+
+    /// The field carries [`fork_with`](Self::fork_with) makes, with the copy
+    /// keeping this state's `state_id` and `parent_id`. Split out so
+    /// [`fork_base_before_mutation`](Self::fork_base_before_mutation) can
+    /// share the solver `Rc` without minting an id.
+    fn copy_with(
+        &self,
+        registers: RegisterFile,
+        memory: SymbolicMemory,
+        solver: Rc<RefCell<SymContext>>,
+    ) -> Self {
         let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
         RustSimState {
             arch: self.arch.clone(),
             vex_arch: self.vex_arch,
             registers,
             memory,
-            solver: Rc::new(RefCell::new(solver)),
+            solver,
             pc: self.pc,
-            state_id: child_id,
-            parent_id: Some(self.state_id),
+            state_id: self.state_id,
+            parent_id: self.parent_id,
             history: self.history.clone(),
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
@@ -308,6 +324,29 @@ impl RustSimState {
             self.memory.fork(),
             self.solver.borrow().fork(),
             next_state_id(),
+        )
+    }
+
+    /// The base a handler materializes its deferred forks from when it
+    /// mutates the state before materializing them: take it *before* the
+    /// mutation.
+    ///
+    /// A `BranchSnapshot` restores registers, memory, solver, call stack and
+    /// history at the branch, and [`fork_with`](Self::fork_with) copies every
+    /// other field from the base. A native SimProcedure that ran after the
+    /// branch has written some of those fields (`fs` and its stdout buffer,
+    /// `stdin_symbols`, the break pointers, the native resume stack), so a
+    /// sibling forked off the post-call state inherits writes its path never
+    /// made (angr-mx00p.132.4; bd memory `avoid-deferred-fork-base-mismatch`).
+    ///
+    /// The copy keeps this state's ids and shares its solver `Rc`, so the
+    /// taken-path guard that materialization installs on the base lands on
+    /// the continuing state.
+    pub(crate) fn fork_base_before_mutation(&self) -> Self {
+        self.copy_with(
+            self.registers.fork(),
+            self.memory.fork(),
+            Rc::clone(&self.solver),
         )
     }
 

@@ -395,7 +395,7 @@ fn resume_sentinel_name_and_address_are_stable() {
 }
 
 /// angr-fs8kb.6: the test twin must rewind the fork base's resume stack, same
-/// as `handle_native_resume_core` does via `process_deferred_forks_rewound`.
+/// as `handle_native_resume_core` does by forking off `fork_base_for_forks`.
 ///
 /// A branch taken inside the sub-call *body* defers a fork that is materialized
 /// only after the sentinel is reached and the frame popped. `fork_with` copies

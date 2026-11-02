@@ -14,8 +14,9 @@
 //! condition *plus* a pre-branch `BranchSnapshot` — is **no**: the sibling's
 //! registers and solver come from the snapshot, which predates both the branch
 //! guard and the call, so the return-register write and the SP bump stay on the
-//! main successor only. Changing that deliberately means updating these
-//! assertions in the same commit.
+//! main successor only. The fields no snapshot covers (the call's stdout
+//! write, angr-mx00p.132.4) come from a base taken before the call. Changing
+//! that deliberately means updating these assertions in the same commit.
 
 use super::*;
 
@@ -118,6 +119,28 @@ fn simproc_success_fork_does_not_inherit_the_calls_register_mutations() {
             Some(SP_SEED),
             "the sibling keeps the pre-call SP"
         );
+    });
+}
+
+/// angr-mx00p.132.4: the sibling is forked off a base taken before the call,
+/// so the proc's stdout write, which no `BranchSnapshot` covers, stays on the
+/// main successor. Before, a `puts` after the branch printed on both paths.
+#[test]
+fn simproc_success_fork_does_not_inherit_the_calls_stdout() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for with_snapshot in [true, false] {
+            let d = dispatch_with_fork(true, with_snapshot);
+            let CoreReturn::Continue(succ) = d.outcome.ret else {
+                panic!("expected Continue");
+            };
+            assert_eq!(succ.len(), 2, "main + materialized fork");
+            assert_eq!(succ[0].0.fd_buffer(1), PROC_STDOUT, "main ran the proc");
+            assert!(
+                succ[1].0.fd_buffer(1).is_empty(),
+                "the sibling never ran the call (with_snapshot={with_snapshot})"
+            );
+        }
     });
 }
 

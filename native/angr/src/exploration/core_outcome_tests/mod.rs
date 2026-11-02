@@ -59,9 +59,13 @@ const HOOK_RET: u64 = 0x40_2000;
 /// return register distinguishes "the proc ran and wrote here" from a
 /// never-written register (`simproc_forks` leans on that).
 const PROC_RET_VAL: u128 = 0x1234_5678;
+/// What [`FindTargetProc`] writes to stdout.
+const PROC_STDOUT: &[u8] = b"proc ran\n";
 
 /// Stands in for any zero-arg native libc proc (getenv/time/...) hooked in the
 /// extern object, i.e. outside `binary_regions`, where native dispatch fires.
+/// Writes [`PROC_STDOUT`] to fd 1 as `puts` would, so a test can tell whether
+/// the call's process-state writes reached a deferred sibling.
 struct FindTargetProc;
 impl crate::procedures::NativeSimProcedure for FindTargetProc {
     fn name(&self) -> &'static str {
@@ -75,6 +79,7 @@ impl crate::procedures::NativeSimProcedure for FindTargetProc {
         state: &mut RustSimState,
         _args: &[crate::symbolic::RustBV],
     ) -> Result<Option<crate::symbolic::RustBV>, crate::procedures::ProcedureError> {
+        assert!(state.write_fd(1, PROC_STDOUT), "stdout write refused");
         Ok(Some(crate::symbolic::RustBV::concrete(
             PROC_RET_VAL,
             state.arch().bits(),

@@ -247,7 +247,7 @@ fn native_resume_core_failures_deadend() {
 /// `BranchSnapshot` covers that field, so materializing against the
 /// already-popped state handed the sibling an empty stack; it would then hit
 /// the sentinel itself and be deadended by the "empty resume stack" arm, losing
-/// the path. `process_deferred_forks_rewound` rewinds just that field.
+/// the path. The siblings now fork off the pre-pop `fork_base_for_forks`.
 #[test]
 fn native_resume_fork_keeps_the_frame_the_main_successor_popped() {
     pyo3::Python::initialize();

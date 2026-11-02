@@ -90,7 +90,7 @@ use handlers::{
 // twin in `stepping_subcall.rs`, so both spellings of the resume path decide
 // "does this fork base need a resume-stack rewind?" the same way (angr-fs8kb.6).
 #[cfg(test)]
-pub(super) use handlers::resume_stack_for_forks;
+pub(super) use handlers::fork_base_for_forks;
 
 /// `Send + Sync` atomic mirror of the `accumulated_stats` solver-timing fields
 /// the extracted post-step arms increment. The coordinator folds these into
