@@ -105,7 +105,15 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
     )
 
     def base_step(stash="active", **kwargs):
-        event = mgr._rust_mgr.run(batch_size)
+        # One basic block per step, as SimulationManager.step does: a hook that
+        # prunes or picks among the successors (StochasticSearch keeps one)
+        # must see each branch, which a chained run would carry to its end
+        # within the step (angr-mx00p.132.29).
+        was_granular = mgr._rust_mgr.set_block_granular(True)
+        try:
+            event = mgr._rust_mgr.run(batch_size)
+        finally:
+            mgr._rust_mgr.set_block_granular(was_granular)
         captured_event.append(event)
 
     proxy._step_callback = base_step

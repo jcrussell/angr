@@ -2666,3 +2666,49 @@ class TestRunNIsBlockGranular:
         assert len(mgr.active) == 1
         # The toggle is scoped to the call: step()/explore() keep chaining.
         assert mgr.set_block_granular(False) is False
+
+
+class TestStochasticSearchRestarts:
+    """StochasticSearch reaches its target under ``run(until=...)`` (angr-mx00p.132.29).
+
+    Three gaps each kept it from doing so: ``simgr.stashes[stash] = [start_state]``
+    rejected the held stash entry it restarts from, a technique's step() chained
+    blocks so the branch it did not pick ran to a deadend within the step, and
+    ``until`` read a cached pre-step mirror of a state that kept its Rust id.
+    """
+
+    def _project(self, *parts):
+        path = os.path.join(BIN_LOCATION, "tests", *parts)
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        return angr.Project(path, auto_load_libs=False)
+
+    def test_run_until_finds_target(self):
+        project = self._project("x86_64", "veritesting_a")
+        mgr = RustExplorationManager(project, [project.factory.entry_state()])
+        mgr.use_technique(angr.exploration_techniques.StochasticSearch(mgr.active[0]))
+        calls = []
+
+        def until(sm):
+            # Bounded so a regression fails rather than hangs; the target is
+            # a few hundred steps in.
+            calls.append(None)
+            return sm.active[0].addr == 0x40066A or len(calls) >= 5000
+
+        mgr.run(until=until)
+        assert mgr.active[0].addr == 0x40066A
+        assert mgr.active[0].posix.dumps(0).count(b"B") == 10
+
+    def test_until_sees_post_step_address(self):
+        project = self._project("x86_64", "fauxware")
+        mgr = RustExplorationManager(project, [project.factory.entry_state()])
+        seen = []
+
+        def until(sm):
+            seen.append(sm.active[0].addr)
+            return len(seen) >= 3
+
+        mgr.run(until=until)
+        # fauxware's main runs straight-line blocks here: a stale mirror
+        # repeats the first one.
+        assert len(set(seen)) == 3, [hex(a) for a in seen]

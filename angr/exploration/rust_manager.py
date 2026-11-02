@@ -4746,6 +4746,10 @@ class RustExplorationManager(
             if max_steps is not None:
                 batch_limit = min(batch_limit, max_steps - steps_taken)
 
+            if until is not None:
+                # As in _explore_with_addresses: `until` must not read a
+                # pre-step mirror (angr-mx00p.132.29).
+                self._invalidate_state_export_cache()
             steps_taken, _time_in_rust_run = self._run_predicate_batch(steps_taken, batch_limit, _time_in_rust_run)
             self._fire_progress_if_due(start_time, steps_taken)
 
@@ -4874,6 +4878,11 @@ class RustExplorationManager(
                 batch_size = 1 if until is not None else 50
                 if max_steps is not None:
                     batch_size = min(batch_size, max_steps - steps_taken)
+                if until is not None:
+                    # The step-start invalidation step() does: a state that
+                    # keeps its Rust id across the step would otherwise show
+                    # `until` its cached pre-step mirror (angr-mx00p.132.29).
+                    self._invalidate_state_export_cache()
                 if self._has_technique_step_state_hooks():
                     # See _run_predicate_batch: one step per step_state dispatch.
                     event = self._run_with_step_state_hooks(1)

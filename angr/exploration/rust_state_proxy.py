@@ -24,6 +24,8 @@ import threading
 
 from angr import claripy
 from angr.exploration.rust_state_binding import RustStateBinding, unscoped_binding
+from angr.exploration.rust_state_export import _LazySimStateRef
+from angr.sim_state import SimState
 from angr.state_plugins.sim_action_object import _raw_ast
 
 l = logging.getLogger(__name__)
@@ -4230,26 +4232,32 @@ class _StashDict:
             return
 
         # Non-empty assignment (angr-wxuo): make the stash contain exactly the
-        # assigned proxies, in order. Used by Director (goal prioritization,
+        # assigned states, in order. Used by Director (goal prioritization,
         # writes simgr.stashes[stash] = [...]) and StochasticSearch (restart /
         # re-weight). Stash members are RustStateProxy objects carrying
         # Rust-side state_ids, so this is done via move_state without any
-        # SimState materialization.
+        # SimState materialization. Any other state (a SimState, or a stash
+        # entry the caller kept across a step, e.g. StochasticSearch's
+        # start_state) is re-imported as a new Rust state (angr-mx00p.132.29).
         mgr = self._simgr._mgr
-        desired_ids = []
+        tracked = []
+        foreign = []
         seen = set()
         for proxy in value:
-            if not isinstance(proxy, RustStateProxy):
-                raise TypeError(
-                    f"_StashDict.__setitem__ can only assign RustStateProxy objects "
-                    f"to stash '{key}', got {type(proxy).__name__}"
-                )
-            if getattr(proxy, "_mgr", None) is not mgr:
-                raise ValueError(
-                    f"_StashDict.__setitem__: state {proxy.state_id} belongs to a "
-                    f"different manager and cannot be assigned to stash '{key}'"
-                )
-            sid = proxy.state_id
+            sid = self._live_state_id(proxy)
+            if sid is None:
+                if not isinstance(proxy, (SimState, _LazySimStateRef)):
+                    raise TypeError(
+                        f"_StashDict.__setitem__ can only assign states to stash '{key}', got {type(proxy).__name__}"
+                    )
+                if self._simgr._python_mgr is None:
+                    raise TypeError(
+                        f"_StashDict.__setitem__: cannot import {type(proxy).__name__} into stash "
+                        f"'{key}' without a Python manager"
+                    )
+                foreign.append(len(tracked))
+                tracked.append([None, proxy])
+                continue
             if sid in seen:
                 raise ValueError(f"_StashDict.__setitem__: duplicate state {sid} in assignment to stash '{key}'")
             cur = mgr.state_stash(sid)
@@ -4259,7 +4267,18 @@ class _StashDict:
                     f"manager (already dropped?) and cannot be assigned to stash '{key}'"
                 )
             seen.add(sid)
-            desired_ids.append((sid, cur))
+            tracked.append([sid, cur])
+
+        # Import only once every entry has validated, so a bad entry leaves the
+        # stash untouched.
+        for i in foreign:
+            state = tracked[i][1]
+            if isinstance(state, _LazySimStateRef):
+                state = state._materialize()
+            sid = self._simgr._python_mgr._add_rust_state(key, state)
+            seen.add(sid)
+            tracked[i] = [sid, key]
+        desired_ids = [tuple(t) for t in tracked]
 
         # Drop current members of `key` that are not in the desired set. Matches
         # Python angr semantics where states omitted from the new list leave the
@@ -4278,6 +4297,29 @@ class _StashDict:
         # `key`).
         for sid, cur in desired_ids:
             mgr.move_state(sid, cur, key)
+
+    def _live_state_id(self, state):
+        """The id of the stash state ``state`` names in this manager, else ``None``.
+
+        A ``RustStateProxy`` must belong to this manager. A ``_LazySimStateRef``
+        names its state only while unpinned; a pinned one (held across a step)
+        is a snapshot and gets re-imported like a plain ``SimState``.
+        """
+        mgr = self._simgr._mgr
+        if isinstance(state, RustStateProxy):
+            if getattr(state, "_mgr", None) is not mgr:
+                raise ValueError(
+                    f"_StashDict.__setitem__: state {state.state_id} belongs to a "
+                    f"different manager and cannot be assigned to a stash"
+                )
+            return state.state_id
+        if (
+            isinstance(state, _LazySimStateRef)
+            and state._lazy_pinned is None
+            and getattr(state._lazy_mgr, "_rust_mgr", None) is mgr
+        ):
+            return state._lazy_state_id
+        return None
 
     def __contains__(self, key):
         counts = self._simgr._mgr.stash_counts()
