@@ -5696,13 +5696,11 @@ class RustExplorationManager(
         """Apply an exploration technique. See rust_techniques.use_technique()."""
         from angr.exploration.rust_techniques import technique_needs_python_engine, use_technique
 
-        if (
-            self._python_handoff_kwargs is not None
-            and technique_needs_python_engine(technique)
-            and self._rust_mgr.step_count == 0
-        ):
-            self._hand_off_to_python(f"technique {type(technique).__name__} overrides successors()")
-            return self.use_technique(technique)
+        if self._python_handoff_kwargs is not None and self._rust_mgr.step_count == 0:
+            python_reason = technique_needs_python_engine(technique)
+            if python_reason is not None:
+                self._hand_off_to_python(python_reason)
+                return self.use_technique(technique)
         return use_technique(self, technique, **kwargs)
 
     def _hand_off_to_python(self, reason: str) -> None:

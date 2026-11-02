@@ -211,7 +211,10 @@ cannot drift. The decision and its reason are logged on the
 Techniques arrive after that decision, so one more case is caught at
 ``use_technique``: a technique that overrides ``successors()``
 (``LoopSeer``, ``Bucketizer``, ``Oppologist``, …), which the Rust
-manager never dispatches. On a project-default manager that has not
+manager never dispatches, or one whose ``step()`` feeds its states to
+a Python analysis that needs a real ``SimState`` (``Director`` hands
+them to ``CFGEmulated``; ``_PYTHON_ANALYSIS_TECH_NAMES`` in
+``rust_techniques.py``). On a project-default manager that has not
 stepped yet, ``use_technique`` turns the manager into a Python
 ``SimulationManager`` in place, rebuilt from the seed states, the
 caller's kwargs and the techniques already registered, and logs the

@@ -28,7 +28,7 @@ import pytest
 from angr.engines import UberEngine
 from angr.errors import AngrError
 from angr.exploration import RustExplorationManager
-from angr.exploration_techniques import DFS, ExplorationTechnique
+from angr.exploration_techniques import DFS, Director, ExplorationTechnique
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
 
@@ -146,6 +146,14 @@ class TestSuccessorsTechniqueHandsOff:
         mgr.step()
         mgr.use_technique(_CountingSuccessors())
         assert isinstance(mgr, RustExplorationManager)
+
+    def test_director_hands_off(self, rust_project):
+        """Director's step() hands simgr.active to CFGEmulated, which rejects a proxy (angr-mx00p.132.27)."""
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        director = mgr.use_technique(Director(num_fallback_states=1))
+
+        assert type(mgr) is SimulationManager
+        assert director in mgr._techniques
 
 
 class TestRemovedKnobs:

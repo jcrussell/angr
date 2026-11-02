@@ -64,14 +64,27 @@ def _has_dispatched_step_hook(tech) -> bool:
     return tech._is_overridden("step")
 
 
-def technique_needs_python_engine(tech) -> bool:
-    """True iff `tech` overrides successors(), which the Rust manager never dispatches.
+# Techniques whose step() hands simgr states to a Python analysis that only takes a real SimState: Director
+# passes simgr.active to CFGEmulated as ``starts``, which rejects a RustStateProxy, so the hook raises and the
+# run falls back to a direct run with no goal ever checked (angr-mx00p.132.27).
+_PYTHON_ANALYSIS_TECH_NAMES = frozenset({"Director"})
 
+
+def technique_needs_python_engine(tech) -> str | None:
+    """Why `tech` cannot run on the Rust manager, or None if it can.
+
+    A technique that overrides successors() needs Python because the Rust manager never dispatches that hook:
     LoopSeer's trip counts, Bucketizer's transitions and Oppologist's recovery all live there, so on the Rust
-    manager they silently no-op. A default-routed manager hands off to the Python engine instead
+    manager they silently no-op. A ``_PYTHON_ANALYSIS_TECH_NAMES`` member needs Python because its step() feeds
+    states to an analysis that rejects a proxy. A default-routed manager hands off to the Python engine instead
     (``RustExplorationManager._hand_off_to_python``).
     """
-    return type(tech).__name__ not in _NATIVE_STEP_TECH_NAMES and tech._is_overridden("successors")
+    tech_name = type(tech).__name__
+    if tech_name in _PYTHON_ANALYSIS_TECH_NAMES:
+        return f"technique {tech_name} feeds its states to a Python analysis that needs a SimState"
+    if tech_name not in _NATIVE_STEP_TECH_NAMES and tech._is_overridden("successors"):
+        return f"technique {tech_name} overrides successors()"
+    return None
 
 
 def manager_has_step_hooks(mgr: RustExplorationManager) -> bool:
@@ -605,12 +618,12 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
                 "Technique %s overrides step() — will be dispatched via RustSimulationManagerProxy.step() each batch.",
                 tech_name,
             )
-        if technique_needs_python_engine(technique):
+        python_reason = technique_needs_python_engine(technique)
+        if python_reason is not None:
             l.warning(
-                "Technique %s overrides successors(), which is not dispatched by "
-                "the Rust manager. The per-successor hook will silently no-op. "
-                "Run it on the Python engine (a plain SimulationManager) if you need it.",
-                tech_name,
+                "The Rust manager cannot honor this technique (%s); it will not behave as on the "
+                "Python engine. Run it on the Python engine (a plain SimulationManager) if you need it.",
+                python_reason,
             )
         if technique._is_overridden("step_state"):
             l.debug(
