@@ -61,6 +61,28 @@ class TestPredicateStdout:
         assert any(b"Username" in out for out in seen), "find predicate only ever saw empty stdout"
 
 
+class TestAvoidPredicateEveryBlock:
+    def test_avoid_catches_a_state_that_leaves_active_mid_batch(self):
+        """symbolic_fd's ``stat_test`` from a blank_state prints ``nothing``,
+        then returns to an unconstrained address within one predicate batch.
+        The between-batch sweep reads only active/deadended, so avoid must be
+        asked per block, as Python's Explorer does (angr-mx00p.132.47)."""
+        import os
+
+        import angr
+        from tests.common import bin_location
+
+        project = angr.Project(
+            os.path.join(bin_location, "tests", "x86_64", "symbolic_fd"), auto_load_libs=True, engine="rust"
+        )
+        state = project.factory.blank_state(addr=project.loader.find_symbol("stat_test").rebased_addr)
+        state.options["ALL_FILES_EXIST"] = True
+        simgr = project.factory.simgr(state)
+        simgr.explore(find=lambda s: s.posix.dumps(1) == b"c0de\n", avoid=lambda s: s.posix.dumps(1) == b"nothing\n")
+        assert [s.posix.dumps(1) for s in simgr.avoid] == [b"nothing\n"]
+        assert simgr.found == [] and simgr.unconstrained == []
+
+
 class _FdStub:
     """Stands in for the Rust manager's fd-buffer FFI in the injection test."""
 

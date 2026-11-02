@@ -4779,7 +4779,10 @@ class RustExplorationManager(
         Callbacks are handled immediately when Rust returns need_callback events.
         """
         self._rust_mgr.set_find_needs_python(self._find_predicate is not None)
-        self._rust_mgr.set_avoid_needs_python(False)
+        # Avoid is asked at every block, as find is: the between-batch sweep
+        # alone misses a state that leaves active/deadended mid-batch (e.g.
+        # returns into an unconstrained address) (angr-mx00p.132.47).
+        self._rust_mgr.set_avoid_needs_python(self._avoid_predicate is not None)
         # Keep terminal states alive so predicates can check them
         self._rust_mgr.set_drop_terminal_states(False)
 
