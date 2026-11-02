@@ -416,3 +416,35 @@ fn test_concat_64x4() {
         assert_eq!(piece.as_u128(), Some(*want), "lane {lane}");
     }
 }
+
+/// `Iop_ExpandBitsTo*` widens mask bit `i` to lane `i`, with lanes of
+/// `8 << (code & 3)` bits, and refuses a symbolic width code.
+#[test]
+fn test_expand_bits() {
+    let expand = |mask: u128, code: u128, ty: IRType| {
+        VEXOps::binop(
+            IROp::ExpandBits(ty),
+            RustBV::concrete(mask, 64),
+            RustBV::concrete(code, 8),
+        )
+        .unwrap()
+    };
+    let got = expand(0b1010_0101, 0, IRType::I64);
+    assert_eq!(got.as_u128(), Some(0xff00_ff00_00ff_00ff));
+    let got = expand(0b10, 2, IRType::V128);
+    assert_eq!(eval_v128(&got), 0xffff_ffff_0000_0000);
+    // code 7 reads as 3: 64-bit lanes, only bit 0 of the mask matters for Int.
+    assert_eq!(expand(0b11, 7, IRType::I64).as_u128(), Some(u64::MAX.into()));
+    let got = expand(0b0110, 3, IRType::V256);
+    assert_eq!(got.width(), 256);
+    for (lane, want) in [0u128, u64::MAX.into(), u64::MAX.into(), 0].into_iter().enumerate() {
+        let lo = lane as u32 * 64;
+        assert_eq!(got.clone().extract_into(lo + 63, lo).as_u128(), Some(want), "lane {lane}");
+    }
+    let sym = VEXOps::binop(
+        IROp::ExpandBits(IRType::V128),
+        RustBV::concrete(1, 64),
+        RustBV::symbol("expand_code", 8),
+    );
+    assert!(sym.is_err());
+}

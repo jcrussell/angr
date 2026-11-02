@@ -503,6 +503,9 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
         "Iop_V128HLtoV256" => Some(IROp::Concat { ty: IRType::V256 }),
         "Iop_64x4toV256" => Some(IROp::Concat64x4toV256),
         "Iop_SliceV128" => Some(IROp::SliceV128),
+        "Iop_ExpandBitsToInt" => Some(IROp::ExpandBits(IRType::I64)),
+        "Iop_ExpandBitsToV128" => Some(IROp::ExpandBits(IRType::V128)),
+        "Iop_ExpandBitsToV256" => Some(IROp::ExpandBits(IRType::V256)),
         _ => None,
     }
 }

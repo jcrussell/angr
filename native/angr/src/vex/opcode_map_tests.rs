@@ -71,6 +71,9 @@ fn test_parse_whole_register_v128_v256() {
         ("Iop_V256to64_3", extract(IRType::V256, IRType::I64, 192)),
         ("Iop_V256toV128_0", extract(IRType::V256, IRType::V128, 0)),
         ("Iop_V256toV128_1", extract(IRType::V256, IRType::V128, 128)),
+        ("Iop_ExpandBitsToInt", IROp::ExpandBits(IRType::I64)),
+        ("Iop_ExpandBitsToV128", IROp::ExpandBits(IRType::V128)),
+        ("Iop_ExpandBitsToV256", IROp::ExpandBits(IRType::V256)),
     ] {
         assert_eq!(parse_opcode(name), op, "{name}");
     }
@@ -1528,9 +1531,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_Expand64x2",
             "Iop_Expand64x4",
             "Iop_Expand64x8",
-            "Iop_ExpandBitsToInt",
-            "Iop_ExpandBitsToV128",
-            "Iop_ExpandBitsToV256",
             "Iop_ExpandBitsToV512",
             "Iop_ExtractExp32F0x4",
             "Iop_ExtractExp32x16",

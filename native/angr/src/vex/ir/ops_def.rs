@@ -862,6 +862,11 @@ pub enum IROp {
     /// EXT). `imm` must be a literal of at most 16.
     SliceV128,
 
+    /// `Iop_ExpandBitsTo{Int,V128,V256}`: a Binop `(mask:I64, code:I8)`
+    /// widening each mask bit to a whole lane of `8 << code` bits, lane 0
+    /// from bit 0. The payload is the result type; `code` must be a literal.
+    ExpandBits(IRType),
+
     // =========================================================================
     // x86-specific operations
     // =========================================================================
@@ -1275,6 +1280,7 @@ impl IROp {
             IROp::Extract { to, .. } => Some(*to),
             IROp::Concat64x4toV256 => Some(IRType::V256),
             IROp::SliceV128 => Some(IRType::V128),
+            IROp::ExpandBits(ty) => Some(*ty),
 
             IROp::PclmulLQLQ
             | IROp::PclmulHQHQ

@@ -342,6 +342,9 @@ def _concrete_cases(name, rng, arg_bits):
             pools[2] = [*range(18), 255]
         return list(dict.fromkeys(tuple(rng.choice(p) for p in pools) for _ in range(60)))
     lbits, rbits = arg_bits
+    if name.startswith("Iop_ExpandBitsTo"):
+        # The width code is log2 of the lane bytes; irop.py reads only its low two bits.
+        return [(m, c) for m in _sample(rng, _pool(rng, lbits), 8) for c in (0, 1, 2, 3, 4, 255)]
     lmask, rmask = (1 << lbits) - 1, (1 << rbits) - 1
     lpool, rpool = _pool(rng, lbits), _pool(rng, rbits)
     if name.startswith(SHIFTS):
@@ -881,9 +884,7 @@ UNSERVED = {
             "Iop_V512to64_5",
             "Iop_V512to64_6",
             "Iop_V512to64_7",
-            "Iop_ExpandBitsToInt",
-            "Iop_ExpandBitsToV128",
-            "Iop_ExpandBitsToV256",
+            # V512 has no IRType
             "Iop_ExpandBitsToV512",
         ),
         UNMAPPED,

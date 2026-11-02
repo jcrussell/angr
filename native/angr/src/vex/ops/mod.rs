@@ -471,6 +471,7 @@ impl VEXOps {
             | IROp::VOr(_)
             | IROp::VXor(_)
             | IROp::Concat { .. }
+            | IROp::ExpandBits(_)
             | IROp::VAdd { .. }
             | IROp::VSub { .. }
             | IROp::VMul { .. }
@@ -712,6 +713,7 @@ impl VEXOps {
                 Self::require_operand_width("binop Concat result", result.width(), ty.bits())?;
                 Ok(result)
             }
+            IROp::ExpandBits(ty) => Self::expand_bits(left, right, ty),
 
             // Vector arithmetic (element-wise).
             IROp::VAdd { elem, count } => Self::vec_int_lane_op(&[left, right], elem, count, &IAdd),

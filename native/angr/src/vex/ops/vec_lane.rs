@@ -79,6 +79,33 @@ impl VEXOps {
         Ok(hi.concat_into(lo).extract_into(low + 127, low))
     }
 
+    /// `Iop_ExpandBitsTo{Int,V128,V256}` (AVX-512 opmask to vector): lane
+    /// `i` of the `ty`-wide result is all ones when bit `i` of `mask` is set,
+    /// with `8 << (code & 3)`-bit lanes, as irop.py's `_op_evex_expand_bits`.
+    /// A symbolic `code` is refused, as irop.py refuses it.
+    pub(super) fn expand_bits(mask: RustBV, code: RustBV, ty: IRType) -> Result<RustBV, OpError> {
+        Self::require_operand_width("expand_bits mask", mask.width(), 64)?;
+        Self::require_operand_width("expand_bits code", code.width(), 8)?;
+        let Some(code) = code.as_u128() else {
+            return Err(OpError::UnsupportedVectorOp(
+                "Iop_ExpandBitsTo* needs a literal element width".into(),
+            ));
+        };
+        let elem_bits = 8u32 << (code & 3);
+        let count = ty.bits() / elem_bits;
+        let lane = |i: u32| {
+            mask.clone().extract_into(i, i).ite_into(
+                RustBV::concrete(u128::MAX, elem_bits),
+                RustBV::concrete(0, elem_bits),
+            )
+        };
+        let mut result = lane(count - 1);
+        for i in (0..count - 1).rev() {
+            result = result.concat_into(lane(i));
+        }
+        Ok(result)
+    }
+
     /// `Iop_64x4toV256`: the four I64s concatenated, `a` most significant.
     pub(super) fn concat_64x4(
         a: RustBV,
