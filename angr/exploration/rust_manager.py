@@ -93,6 +93,7 @@ from collections.abc import Callable
 from itertools import chain
 from typing import TYPE_CHECKING
 
+import cle
 from pyvex.errors import PyVEXError
 
 from angr import claripy
@@ -3191,17 +3192,23 @@ class RustExplorationManager(
         When a state starts at a loader/init address (e.g., from full_init_state),
         the C++ init sequence (constructors, .init_array, etc.) is too complex for
         the Rust engine. Run it in Python first, then return the state at main.
+
+        Only a real init seed qualifies: the entry of a binary-format main
+        object, or the simos loader stub (``full_init_state``). A shellcode
+        blob has no init, and a user hook or extern SimProcedure seed is
+        ordinary code: pre-stepping either runs the program in Python, and
+        when that pre-run ends without reaching main it is discarded and Rust
+        runs it again, calling every user hook twice (angr-vmi2l.291).
         """
         main_obj = self._project.loader.main_object
         addr = state.addr
         if addr == self._project.entry:
+            if isinstance(main_obj, cle.backends.Blob):
+                return state  # Shellcode: no init sequence to skip
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
-            obj = self._project.loader.find_object_containing(addr)
-            if obj is not None and obj.binary is not None and not obj.binary.startswith("cle##"):
-                return state  # In a real binary (not entry), no init needed
-            if addr not in self._project._sim_procedures:
-                return state  # Not a SimProcedure (e.g., LinuxLoader), don't pre-run
+            if addr is None or addr != getattr(self._project.simos, "_loader_addr", None):
+                return state  # Not the loader stub: no init to skip
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
 
         try:

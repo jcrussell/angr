@@ -2646,6 +2646,56 @@ class TestFindInsideInitPrefix:
         assert len(sm.found) == 0, "vanilla angr avoids the seed inside the init prefix"
 
 
+class TestInitSkipOnlyForRealInit:
+    """angr-vmi2l.291: the Python init skip leaves shellcode and hook seeds alone.
+
+    ``_run_python_init_if_needed`` used to pre-step any seed at
+    ``project.entry`` (a shellcode blob at load address 0 qualifies) and any
+    seed at a hooked fileless address. That pre-run kept only one state, and
+    when it ended without reaching main it was discarded, so Rust re-ran the
+    program and every user hook ran twice.
+    """
+
+    # 0x0: mov [1], rax; 0x8: jmp 0x1b; 0xa: mov [2], rax; 0x12: mov [3], rax;
+    # 0x1a: ret; 0x1b: jmp 0xa (upstream test_hook's nonzero-length shellcode)
+    HOOKED = (
+        b"\x48\x89\x04\x25\x01\x00\x00\x00\xeb\x11\x48\x89\x04\x25\x02\x00\x00\x00\x48"
+        b"\x89\x04\x25\x03\x00\x00\x00\xc3\xeb\xed"
+    )
+
+    @classmethod
+    def _hooked_project(cls, calls):
+        proj = angr.load_shellcode(cls.HOOKED, arch="amd64")
+        proj.hook(0x8, hook=lambda s: calls.append(s.addr), length=2)
+        proj.hook(0xA, hook=lambda s: calls.append(s.addr), length=7)
+        return proj
+
+    def test_shellcode_entry_hooks_run_once(self):
+        calls = []
+        proj = self._hooked_project(calls)
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.run()
+        assert calls == [0x8, 0xA]
+
+    def test_hooked_seed_runs_its_hook_once(self):
+        # 0x0: nop; 0x1: nop (hooked); 0x2: mov eax, 60; 0x7: syscall (exit).
+        # The seed sits on the hook, off the entry, in a fileless blob.
+        calls = []
+        proj = angr.load_shellcode(b"\x90\x90\xb8\x3c\x00\x00\x00\x0f\x05", arch="amd64")
+        proj.hook(0x1, hook=lambda s: calls.append(s.addr), length=1)
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=0x1)])
+        mgr.run()
+        assert calls == [0x1]
+
+    def test_shellcode_entry_fork_keeps_both_branches(self):
+        # 0x0: test rax, rax; 0x3: je 0x7; 0x5: jmp 0x5; 0x7: jmp 0x7
+        proj = angr.load_shellcode(b"\x48\x85\xc0\x74\x02\xeb\xfe\xeb\xfe", arch="amd64")
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        for _ in range(3):
+            mgr.step()
+        assert sorted({s.addr for s in mgr.active}) == [0x5, 0x7]
+
+
 class TestRunNIsBlockGranular:
     """``run(n=N)`` steps one basic block per step, as Python does (angr-mx00p.132.22).
 
