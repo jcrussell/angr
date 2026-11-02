@@ -152,6 +152,27 @@ class TestLoaderPagesCache:
         entry2 = RustExplorationManager._loader_pages_cache[loader]
         assert entry2 is entry1, "second manager must reuse cache entry"
 
+    def test_loader_pages_cache_maps_pe_headers(self):
+        """angr-mx00p.132.41: a PE's headers sit below its first segment, and
+        the MSVC CRT init reads the MZ/PE signatures from them. They must be
+        eagerly mapped, or Rust reads unconstrained filler (the lazy fetch
+        declines mid-run) and forks the signature check."""
+        from angr.exploration.rust_manager import RustExplorationManager
+        from tests.engines.conftest import BIN_LOCATION
+
+        path = os.path.join(BIN_LOCATION, "tests", "i386", "simple_windows.exe")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found at {path}")
+        proj = angr.Project(path, auto_load_libs=False)
+        base = proj.loader.main_object.min_addr
+        assert base < min(seg.min_addr for seg in proj.loader.main_object.segments)
+
+        RustExplorationManager._loader_pages_cache.clear()
+        RustExplorationManager(proj, [proj.factory.entry_state()])
+        pages = {addr: data for addr, data, _ in RustExplorationManager._loader_pages_cache[proj.loader]["batch_pages"]}
+        assert base in pages, "PE header page must be eagerly mapped"
+        assert pages[base][:2] == b"MZ"
+
     def test_loader_pages_cache_separate_projects_separate_entries(self):
         """Two distinct projects must hold separate cache entries (the
         WeakKeyDictionary keys by Loader identity, not by file path)."""

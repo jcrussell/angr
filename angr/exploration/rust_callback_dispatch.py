@@ -227,6 +227,9 @@ class RustCallbackDispatchMixin:
             state: The angr callback state to initialize.
             event: The exploration event that triggered the callback.
         """
+        # The tuple installed below, so _capture_continuation_data can tell
+        # it from a fresh self.call() that re-arms this same address.
+        self._injected_procedure_data = None
         if event.callback_reason != "simprocedure":
             return
 
@@ -241,6 +244,7 @@ class RustCallbackDispatchMixin:
             try:
                 if hasattr(state.callstack, "top") and state.callstack.top is not None:
                     state.callstack.top.procedure_data = stored_data
+                    self._injected_procedure_data = stored_data
                     l.debug(
                         f"Restored procedure_data for continuation at 0x{addr:x}: "
                         f"args={len(stored_data[1]) if len(stored_data) > 1 else 0}"
@@ -269,13 +273,14 @@ class RustCallbackDispatchMixin:
         try:
             if hasattr(state.callstack, "top") and state.callstack.top is not None:
                 # Set procedure_data: (saved_sp, sim_args, saved_local_vars, saved_lr, ideal_addr)
-                state.callstack.top.procedure_data = (
+                self._injected_procedure_data = (
                     saved_sp,  # saved_sp
                     [],  # sim_args (populated by SimProcedure)
                     [],  # saved_local_vars
                     None,  # saved_lr
                     addr,  # ideal_addr
                 )
+                state.callstack.top.procedure_data = self._injected_procedure_data
                 l.debug(f"Initialized callstack procedure_data at 0x{addr:x}")
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: callstack procedure_data init
@@ -893,7 +898,11 @@ class RustCallbackDispatchMixin:
                         cont_addr_int = cont_addr
                     else:
                         continue
-                    if cont_addr_int == addr:
+                    # The tuple _init_callback_callstack installed is not a
+                    # new continuation. A continuation that calls again
+                    # (_initterm_e walking its table, angr-mx00p.132.41)
+                    # re-arms its own address with a fresh tuple.
+                    if cont_addr_int == addr and pdata is self._injected_procedure_data:
                         continue
                     self._pending_procedure_data[cont_addr_int] = pdata
                     if _DBG:
@@ -1189,9 +1198,7 @@ class RustCallbackDispatchMixin:
         self._sync_state_heap_to_rust(succ_state, fork_id)
         self._sync_state_posix_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)
-        self._rust_mgr.resume_forked_successor(
-            fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None
-        )
+        self._rust_mgr.resume_forked_successor(fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None)
         self._callback_fork_scope.consumed(fork_id)
         if _DBG:
             l.debug(f"Finished forked successor {fork_id} at PC 0x{new_pc:x}")

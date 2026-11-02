@@ -2707,6 +2707,66 @@ class TestSimProcedureSelfCallContinuation:
         )
 
 
+class _RepeatedSelfCallProc(angr.SimProcedure):
+    """Calls the callee twice, re-arming the same continuation from inside it
+    (as ``_initterm_e`` does per table entry); writes the sentinel only after
+    the second return."""
+
+    local_vars = ("calls",)
+
+    def run(self):
+        self.calls = 1
+        self.call(_SELFCALL_CALLEE, [], "after_call", prototype="void x()")
+
+    def after_call(self):
+        from angr import claripy
+
+        if self.calls < 2:
+            self.calls += 1
+            self.call(_SELFCALL_CALLEE, [], "after_call", prototype="void x()")
+            return
+        self.state.memory.store(_SELFCALL_MARK, claripy.BVV(_SELFCALL_SENTINEL, 64), endness="Iend_LE")
+
+
+class TestSimProcedureRepeatedSelfCall:
+    """angr-mx00p.132.41: a continuation that calls again re-arms its own
+    address. ``_capture_continuation_data`` used to skip any procedure_data
+    whose continuation equals the running hook, so the second visit found no
+    saved locals, hit the "missing args" deadend and resumed at PC 0."""
+
+    def test_second_continuation_keeps_its_locals(self):
+        shellcode = bytearray(b"\x90" * 0x200)
+        shellcode[_SELFCALL_CALLEE - _SELFCALL_LOAD] = 0xC3  # callee: ret
+        # Start at `call HOOK; jmp $`, not on the hook itself: a hooked start
+        # address sends the whole run through _run_python_init_if_needed, and
+        # the continuations never cross the Rust boundary.
+        call_site = _SELFCALL_RETTGT
+        rel = (_SELFCALL_HOOK - (call_site + 5)) & 0xFFFFFFFF
+        shellcode[call_site - _SELFCALL_LOAD] = 0xE8
+        shellcode[call_site - _SELFCALL_LOAD + 1 : call_site - _SELFCALL_LOAD + 5] = rel.to_bytes(4, "little")
+        shellcode[call_site - _SELFCALL_LOAD + 5] = 0xEB  # jmp $
+        shellcode[call_site - _SELFCALL_LOAD + 6] = 0xFE
+        proj = angr.load_shellcode(bytes(shellcode), arch="AMD64", load_address=_SELFCALL_LOAD)
+        proj.hook(_SELFCALL_HOOK, _RepeatedSelfCallProc(), replace=True)
+        state = proj.factory.blank_state(
+            addr=call_site,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=10)
+
+        states = mgr.active + mgr.deadended + mgr.errored + mgr.unconstrained
+        marks = [s.solver.eval(s.memory.load(_SELFCALL_MARK, 8, endness="Iend_LE")) for s in states]
+        assert _SELFCALL_SENTINEL in marks, (
+            f"second after_call lost its locals; marks={[hex(m) for m in marks]}, "
+            f"addrs={[hex(s.addr) for s in states]}, stash counts={mgr.stash_counts()}"
+        )
+
+
 class TestNativeMemoryCopyAndSet:
     """Integration tests for NativeMemcpy / NativeMemmove / NativeMemset
     (angr-8vfnz) plus the string-copy family NativeStrcpy / NativeStrncpy /

@@ -302,6 +302,14 @@ class RustStateSyncMixin:
                             ranges.append(
                                 (seg.min_addr & ~(page_size - 1), (seg.max_addr + page_size) & ~(page_size - 1))
                             )
+                    # angr-mx00p.132.41: CLE maps a PE's headers (MZ/PE
+                    # signatures, read by the MSVC CRT's init) below its
+                    # first segment. Without this range Rust reads them as
+                    # unconstrained filler, because the lazy fetch declines
+                    # while run() holds the manager.
+                    first_seg = min(seg.min_addr for seg in obj.segments)
+                    if obj.min_addr < first_seg:
+                        ranges.append((obj.min_addr & ~(page_size - 1), first_seg & ~(page_size - 1)))
                 else:
                     ranges = [(obj.min_addr & ~(page_size - 1), (obj.max_addr + page_size) & ~(page_size - 1))]
                 for start_page, end_page in ranges:

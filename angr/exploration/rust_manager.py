@@ -1389,6 +1389,9 @@ class RustExplorationManager(
         # address. When Rust invokes the continuation, we restore this data.
         # Maps continuation_addr -> procedure_data tuple.
         self._pending_procedure_data: dict[int, tuple] = {}
+        # The procedure_data tuple the current callback was seeded with
+        # (see _init_callback_callstack).
+        self._injected_procedure_data: tuple | None = None
 
         # Cache for addresses where SimProcedure continuations always result in exit.
         # After the first time a continuation at an address produces only Ijk_Exit
@@ -3687,9 +3690,7 @@ class RustExplorationManager(
         if binding is not None:
             exporter = getattr(binding.owner, "manager", None)
             if exporter is None:
-                raise SimStateError(
-                    f"cannot add {caller_state!r}: it is a view of a Rust state whose manager is gone"
-                )
+                raise SimStateError(f"cannot add {caller_state!r}: it is a view of a Rust state whose manager is gone")
             exporter._detach_export_proxies(angr_state, binding.state_id)
 
         # Concretize stack-relative registers for Rust compatibility
