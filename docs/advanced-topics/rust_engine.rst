@@ -436,15 +436,21 @@ lanes of a vector register (``vex::ops::is_vector_float_op``), except:
   lane undefined, Rust saturates it and ``irop.py`` gives 0
   (angr-mx00p.129).
 
-Scalar float ops (``Ity_F32`` / ``Ity_F64`` operands) stay in ``irop.py``:
-their arguments and results are claripy floats, not bitvectors.
+The scalar float arithmetic, sign, compare, round-to-integral and
+conversion ops (``Ity_F32`` / ``Ity_F64`` operands or results, listed on
+``vex_irop::scalar_float_type`` and ``vex_irop::is_int_to_float``) take
+and return claripy floats, as ``irop.py`` does: a float operand enters as
+its IEEE bits and a float result leaves wrapped in ``bvToFP``. The scalar
+float ``Sub`` ops stay in ``irop.py`` for the vector ``Sub`` ops' reason.
 
 Rust refuses a division by a literal zero (``irop.py`` raises
 ``SimZeroDivisionException``), a symbolic value shifted by a literal of
 at least its width or, for a vector shift, its lane width (``irop.py``
 leaves that shift unfolded), a literal ``GetElem`` / ``SetElem`` index
 past the lane count (undefined in libVEX; ``irop.py`` reads lane 0 or
-leaves the vector as is), and any
+leaves the vector as is), a scalar float-to-int conversion of an infinite
+or NaN literal or one some rounding mode takes outside the target range
+(undefined in libVEX, angr-mx00p.129), and any
 argument it does not take as given, such as one narrower than the op's
 signature, a non-bitvector or an annotated literal; ``irop.py`` runs
 those calls. The result is simplified as every claripy

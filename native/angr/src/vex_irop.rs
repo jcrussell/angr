@@ -17,14 +17,16 @@
 //! vector ops ([`is_int_lane_vec`]) and the vector float ops
 //! ([`is_vector_float_op`]) that Rust implements, less the exclusions in
 //! [`SERVED`], and of the scalar float arithmetic, sign, compare and
-//! float-to-float conversion ops ([`scalar_float_type`]) and the
-//! int-to-float conversions ([`is_int_to_float`]).
+//! float-to-float, float-to-int and round-to-integral conversion ops
+//! ([`scalar_float_type`]) and the int-to-float conversions
+//! ([`is_int_to_float`]).
 //!
 //! A scalar float op takes FP-sorted claripy ASTs, as `irop.py` does: an
 //! operand enters as its IEEE bits ([`import_float`]) and a float result
 //! leaves wrapped back in `bvToFP` (`Iop_CmpF*` returns its I32 condition code
-//! as a bitvector). An int-to-float conversion takes a bitvector and returns
-//! an FP-sorted result the same way.
+//! as a bitvector, and a float-to-int conversion its integer). An
+//! int-to-float conversion takes a bitvector and returns an FP-sorted result
+//! the same way.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -98,9 +100,9 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     let mut symbolic = Vec::with_capacity(args.len());
     let float = scalar_float_type(op);
     // The rounding mode leads a rounded float op's operands; `Iop_{Abs,Neg,Cmp}F*` and `Iop_F32toF64` take none.
-    let first_float = usize::from(matches!(
+    let first_float = usize::from(!matches!(
         op,
-        IROp::FAdd(_) | IROp::FMul(_) | IROp::FDiv(_) | IROp::FSqrt(_) | IROp::F64toF32
+        IROp::FAbs(_) | IROp::FNeg(_) | IROp::FComCC(_) | IROp::F32toF64
     ));
     for (pos, arg) in args.iter().enumerate() {
         let Ok(base) = arg.cast::<Base>() else {
@@ -168,6 +170,10 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
                 // SILENT(cat-a): libVEX leaves it undefined; irop.py reads lane 0.
                 return Ok(None);
             }
+            if literal_float_past_int_range(op, r) {
+                // SILENT(cat-a): libVEX leaves it undefined; irop.py's reading of it stands (angr-mx00p.129).
+                return Ok(None);
+            }
             VEXOps::binop(op, l.clone(), r.clone())
         }
         // `Iop_SetElem*` (`binop_with_rm` reads its first operand as the vector) and scalar and packed float
@@ -229,11 +235,15 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
 
 /// The operand float type of a served scalar float op
 /// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp}F{32,64}`, `Iop_F32toF64`,
-/// `Iop_F64toF32`), whose float operands `irop.py` takes FP-sorted.
+/// `Iop_F64toF32`, `Iop_F{32,64}toI{32,64}{S,U}`, `Iop_RoundF{32,64}toInt`),
+/// whose float operands `irop.py` takes FP-sorted.
 fn scalar_float_type(op: IROp) -> Option<IRType> {
+    if let Some((ty, _, _)) = float_to_int(op) {
+        return Some(ty);
+    }
     match op {
-        IROp::F32toF64 => Some(IRType::F32),
-        IROp::F64toF32 => Some(IRType::F64),
+        IROp::F32toF64 | IROp::RoundF32toInt => Some(IRType::F32),
+        IROp::F64toF32 | IROp::RoundF64toInt => Some(IRType::F64),
         IROp::FAdd(ty)
         | IROp::FMul(ty)
         | IROp::FDiv(ty)
@@ -247,6 +257,46 @@ fn scalar_float_type(op: IROp) -> Option<IRType> {
         }
         _ => None,
     }
+}
+
+/// The operand float type, target width and signedness of a scalar
+/// float-to-int conversion, `Iop_F{32,64}toI{32,64}{S,U}`.
+fn float_to_int(op: IROp) -> Option<(IRType, u32, bool)> {
+    Some(match op {
+        IROp::F32toI32S => (IRType::F32, 32, true),
+        IROp::F64toI32S => (IRType::F64, 32, true),
+        IROp::F32toI64S => (IRType::F32, 64, true),
+        IROp::F64toI64S => (IRType::F64, 64, true),
+        IROp::F32toI32U => (IRType::F32, 32, false),
+        IROp::F64toI32U => (IRType::F64, 32, false),
+        IROp::F32toI64U => (IRType::F32, 64, false),
+        IROp::F64toI64U => (IRType::F64, 64, false),
+        _ => return None,
+    })
+}
+
+/// Whether `op` is a float-to-int conversion of a literal that some rounding
+/// mode takes outside the target range, or of an infinity or NaN: libVEX
+/// leaves the result undefined there. Checking the floor and the ceiling
+/// covers every mode, a symbolic one included.
+fn literal_float_past_int_range(op: IROp, value: &RustBV) -> bool {
+    let Some((ty, bits, signed)) = float_to_int(op) else {
+        return false;
+    };
+    let Some(raw) = value.as_u128() else {
+        return false;
+    };
+    // An F32 widens to F64 exactly, and the range bounds are powers of two F64 holds exactly.
+    let f = match ty {
+        IRType::F32 => f64::from(f32::from_bits(raw as u32)),
+        _ => f64::from_bits(raw as u64),
+    };
+    let (lo, end) = if signed {
+        (-(2f64.powi(bits as i32 - 1)), 2f64.powi(bits as i32 - 1))
+    } else {
+        (0.0, 2f64.powi(bits as i32))
+    };
+    !f.is_finite() || f.floor() < lo || f.ceil() >= end
 }
 
 /// Whether `op` is a scalar int-to-float conversion,

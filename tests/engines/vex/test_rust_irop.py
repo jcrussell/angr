@@ -12,6 +12,7 @@ is not a VEX type, so the edges stop at 1 bit.
 # pylint: disable=missing-function-docstring
 from __future__ import annotations
 
+import math
 import random
 import struct
 from types import SimpleNamespace
@@ -223,6 +224,19 @@ def _scalar_float_symbolic_cases(name, arg_bits):
             yield [*lead, syms[0], syms[0]]
 
 
+def _past_int_range(name, arg):
+    """Whether a scalar float-to-int conversion's literal operand is infinite, NaN, or rounds outside the target
+    range under some mode, where libVEX leaves the result undefined."""
+    op = irop.operations[name]
+    if arg.symbolic or op._from_type != "F" or op._to_type != "I" or op._vector_size is not None:
+        return False
+    value = arg.concrete_value
+    if not math.isfinite(value):
+        return True
+    lo, end = (-(1 << (op._to_size - 1)), 1 << (op._to_size - 1)) if op._to_signed == "S" else (0, 1 << op._to_size)
+    return math.floor(value) < lo or math.ceil(value) >= end
+
+
 def _vector_pool(rng, bits, lane, edges=None):
     count = bits // lane
     edges = edges or _edges(lane)
@@ -396,6 +410,9 @@ def _check(name, args, ret_bits):
             f"{where}: Rust refused a compare without a NaN literal"
         )
         return False
+    if actual is None and _past_int_range(name, args[-1]):
+        # libVEX leaves an out-of-range, infinite or NaN conversion undefined; irop.py's reading of it stands.
+        return False
     assert actual is not None, f"{where}: Rust refused a call irop.py serves"
     if isinstance(expected, claripy.ast.FP):
         return _check_float(where, args, actual, expected, ret_bits)
@@ -501,7 +518,7 @@ def test_rust_irop_exclusions():
     # irop.py's float Min/Max match neither x86 nor AArch64 on +-0 and NaN (angr-mx00p.128).
     assert not {n for n in supported if n.startswith(("Iop_Min", "Iop_Max", "Iop_PwMin", "Iop_PwMax")) and "F" in n}
     # libVEX leaves an out-of-range lane undefined, and Rust and irop.py fill it differently (angr-mx00p.129).
-    assert not {n for n in supported if n.startswith("Iop_F32toI32")}
+    assert not {n for n in supported if n.startswith("Iop_F32toI32") and "x" in n[12:]}
     assert datalayer._RUST_IROP_NAMES.issubset(irop.operations)
 
 
@@ -548,6 +565,35 @@ def test_rust_irop_honours_a_symbolic_rounding_mode():
             solver.add(rm == mode)
             solver.add([claripy.Not(claripy.fpEQ(result, pinned)), claripy.Not(claripy.fpIsNaN(pinned))])
             assert not solver.satisfiable(), (name, mode)
+
+
+def test_rust_irop_float_to_int_range():
+    # libVEX leaves an out-of-range, infinite or NaN float-to-int conversion undefined, so irop.py's reading stands.
+    rz = claripy.BVV(3, 32)
+    f64 = lambda v: claripy.FPV(v, claripy.FSORT_DOUBLE)  # noqa: E731
+    f32 = lambda v: claripy.FPV(v, claripy.FSORT_FLOAT)  # noqa: E731
+    assert vex_irop.irop("Iop_F64toI32S", (rz, f64(2.0**31))) is None
+    assert vex_irop.irop("Iop_F64toI32S", (rz, f64(2.0**31 - 1))).concrete_value == 2**31 - 1
+    assert vex_irop.irop("Iop_F64toI32S", (rz, f64(-(2.0**31)))).concrete_value == 2**31
+    assert vex_irop.irop("Iop_F32toI64U", (rz, f32(-1.0))) is None
+    assert vex_irop.irop("Iop_F32toI64U", (rz, f32(-0.0))).concrete_value == 0
+    assert vex_irop.irop("Iop_F64toI64U", (rz, f64(math.nan))) is None
+    assert vex_irop.irop("Iop_F32toI32U", (rz, f32(math.inf))) is None
+    # Some mode rounds 2^31 - 0.5 up to 2^31, so Rust declines it whatever the mode.
+    assert vex_irop.irop("Iop_F64toI32S", (rz, f64(2.0**31 - 0.5))) is None
+    assert vex_irop.irop("Iop_F64toI32S", (claripy.BVS("rm", 32), f64(2.0**31 - 0.5))) is None
+    # A symbolic operand is served.
+    assert vex_irop.irop("Iop_F64toI32S", (rz, claripy.FPS("x", claripy.FSORT_DOUBLE))) is not None
+
+
+def test_rust_irop_round_to_int():
+    # Rounding toward +inf keeps -0.3's sign, and mode 4 rounds a tie away from zero.
+    for name, sort in (("Iop_RoundF64toInt", claripy.FSORT_DOUBLE), ("Iop_RoundF32toInt", claripy.FSORT_FLOAT)):
+        for mode, value, want in ((2, -0.3, -0.0), (4, 2.5, 3.0), (4, -2.5, -3.0), (0, 2.5, 2.0)):
+            args = (claripy.BVV(mode, 32), claripy.FPV(value, sort))
+            result = vex_irop.irop(name, args)
+            assert result.raw_to_bv().concrete_value == claripy.FPV(want, sort).raw_to_bv().concrete_value
+            assert result.raw_to_bv().concrete_value == _python(name, args)[0].raw_to_bv().concrete_value
 
 
 def test_rust_irop_scalar_float_operand_sorts():
