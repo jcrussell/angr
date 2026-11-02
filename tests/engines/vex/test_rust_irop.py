@@ -136,8 +136,31 @@ def _scalar_float(name):
 
 
 def _scalar_rm(name):
-    """Whether a scalar float op's first operand is the VEX rounding mode (Iop_{Abs,Neg,Cmp}F* take none)."""
-    return pyvex.expr.op_arg_types(name)[1][0] == "Ity_I32"
+    """Whether a scalar float op's first operand is the VEX rounding mode (Iop_{Abs,Neg,Cmp}F*, Iop_F32toF64 and
+    Iop_I32{S,U}toF64 take none)."""
+    args = pyvex.expr.op_arg_types(name)[1]
+    return len(args) > 1 and args[0] == "Ity_I32"
+
+
+def _float_operands(name):
+    """Whether each operand after any rounding mode is a float (an int-to-float conversion's is an integer)."""
+    args = pyvex.expr.op_arg_types(name)[1]
+    return [a.startswith("Ity_F") for a in args[1 if _scalar_rm(name) else 0 :]]
+
+
+def _int_to_float_edges(bits):
+    """The integer edges plus the integers around 2^24 and 2^53, where F32 and F64 stop being exact."""
+    near = [(1 << p) + d for p in (24, 53) for d in (-1, 0, 1, 2, 3) if p < bits]
+    return sorted(set(_edges(bits)) | {v & ((1 << bits) - 1) for v in near} | {-v & ((1 << bits) - 1) for v in near})
+
+
+def _operand_pool(rng, bits, is_float):
+    edges = FLOAT_EDGES[bits] if is_float else _int_to_float_edges(bits)
+    return edges + [rng.getrandbits(bits) for _ in range(4)]
+
+
+def _operand(value, bits, is_float, as_fpv):
+    return _float_arg(value, bits, as_fpv) if is_float else claripy.BVV(value, bits)
 
 
 def _float_arg(value, bits, as_fpv):
@@ -150,11 +173,12 @@ def _float_arg(value, bits, as_fpv):
 
 
 def _scalar_float_cases(name, rng, arg_bits):
-    """Any rounding mode, then float operands, each a float edge or random bits, alternately bvToFP and FPV."""
+    """Any rounding mode, then the operands, each an edge or random bits, a float alternately bvToFP and FPV."""
     rm = _scalar_rm(name)
     float_bits = arg_bits[1:] if rm else arg_bits
+    floats = _float_operands(name)
     modes = ROUNDING_MODES if rm else [None]
-    pools = [modes] + [FLOAT_EDGES[b] + [rng.getrandbits(b) for _ in range(4)] for b in float_bits]
+    pools = [modes] + [_operand_pool(rng, b, f) for b, f in zip(float_bits, floats)]
     values = [tuple(rng.choice(p) for p in pools) for _ in range(60)]
     if len(pools) == 3:
         values += [(m, a, b) for m in modes for a in _sample(rng, pools[1], 5) for b in _sample(rng, pools[2], 5)]
@@ -168,15 +192,23 @@ def _scalar_float_cases(name, rng, arg_bits):
         values += [(m, a) for m in modes for a in pools[1]]
     for i, case in enumerate(dict.fromkeys(values)):
         args = [claripy.BVV(case[0], arg_bits[0])] if rm else []
-        args += [_float_arg(v, b, (i + pos) % 2 == 0) for pos, (v, b) in enumerate(zip(case[1:], float_bits))]
+        args += [
+            _operand(v, b, f, (i + pos) % 2 == 0) for pos, (v, b, f) in enumerate(zip(case[1:], float_bits, floats))
+        ]
         yield args
 
 
 def _scalar_float_symbolic_cases(name, arg_bits):
     rm = _scalar_rm(name)
     float_bits = arg_bits[1:] if rm else arg_bits
+    modes = [claripy.BVV(m, arg_bits[0]) for m in ROUNDING_MODES] if rm else []
+    if not all(_float_operands(name)):
+        # An int-to-float conversion of a symbolic integer, under each mode (a symbolic mode is pinned separately).
+        for mode in modes or [None]:
+            yield [*([mode] if rm else []), claripy.BVS("i", float_bits[0])]
+        return
     sort = claripy.FSORT_FLOAT if float_bits[0] == 32 else claripy.FSORT_DOUBLE
-    for mode in [claripy.BVV(m, arg_bits[0]) for m in ROUNDING_MODES] if rm else [None]:
+    for mode in modes or [None]:
         lead = [mode] if rm else []
         syms = [claripy.FPS(f"f{i}", sort) for i in range(len(float_bits))]
         yield [*lead, *syms]
@@ -498,12 +530,20 @@ def test_rust_irop_honours_a_symbolic_rounding_mode():
     rm = claripy.BVS("rm", 32)
     result = vex_irop.irop("Iop_Add32Fx4", (rm, a, b))
     assert result is not None and rm.variables <= result.variables
-    for name, sort in (("Iop_AddF32", claripy.FSORT_FLOAT), ("Iop_DivF64", claripy.FSORT_DOUBLE)):
-        x, y = claripy.FPS("x", sort), claripy.FPS("y", sort)
-        result = vex_irop.irop(name, (rm, x, y))
+    cases = {
+        "Iop_AddF32": (claripy.FPS("x", claripy.FSORT_FLOAT), claripy.FPS("y", claripy.FSORT_FLOAT)),
+        "Iop_DivF64": (claripy.FPS("x", claripy.FSORT_DOUBLE), claripy.FPS("y", claripy.FSORT_DOUBLE)),
+        "Iop_F64toF32": (claripy.FPS("x", claripy.FSORT_DOUBLE),),
+        "Iop_I64StoF32": (claripy.BVS("i", 64),),
+        "Iop_I64UtoF64": (claripy.BVS("i", 64),),
+        # 2^53 + 1 is the smallest integer F64 cannot hold; it rounds apart by mode.
+        "Iop_I64StoF64": (claripy.BVV((1 << 53) + 1, 64),),
+    }
+    for name, operands in cases.items():
+        result = vex_irop.irop(name, (rm, *operands))
         assert isinstance(result, claripy.ast.FP) and rm.variables <= result.variables, name
         for mode in ROUNDING_MODES:
-            pinned = vex_irop.irop(name, (claripy.BVV(mode, 32), x, y))
+            pinned = vex_irop.irop(name, (claripy.BVV(mode, 32), *operands))
             solver = claripy.Solver(timeout=SOLVER_TIMEOUT_MS)
             solver.add(rm == mode)
             solver.add([claripy.Not(claripy.fpEQ(result, pinned)), claripy.Not(claripy.fpIsNaN(pinned))])

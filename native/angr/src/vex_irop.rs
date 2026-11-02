@@ -16,13 +16,15 @@
 //! logic, shift, compare and width-conversion ops, and of the integer-lane
 //! vector ops ([`is_int_lane_vec`]) and the vector float ops
 //! ([`is_vector_float_op`]) that Rust implements, less the exclusions in
-//! [`SERVED`], and of the scalar float arithmetic, sign and compare ops
-//! ([`scalar_float_type`]).
+//! [`SERVED`], and of the scalar float arithmetic, sign, compare and
+//! float-to-float conversion ops ([`scalar_float_type`]) and the
+//! int-to-float conversions ([`is_int_to_float`]).
 //!
 //! A scalar float op takes FP-sorted claripy ASTs, as `irop.py` does: an
 //! operand enters as its IEEE bits ([`import_float`]) and a float result
 //! leaves wrapped back in `bvToFP` (`Iop_CmpF*` returns its I32 condition code
-//! as a bitvector).
+//! as a bitvector). An int-to-float conversion takes a bitvector and returns
+//! an FP-sorted result the same way.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -61,7 +63,12 @@ static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
                 // libVEX leaves an out-of-range, infinite or NaN lane undefined; Rust saturates, irop.py's fold
                 // gives 0 (angr-mx00p.129).
                 IROp::VF32toI32 { .. } => false,
-                _ if is_vector_float_op(&op) || scalar_float_type(op).is_some() => true,
+                _ if is_vector_float_op(&op)
+                    || scalar_float_type(op).is_some()
+                    || is_int_to_float(op) =>
+                {
+                    true
+                }
                 _ => match iropclass(&op) {
                     VexOpFamily::Arith
                     | VexOpFamily::Logic
@@ -90,10 +97,10 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     // SymBV keeps a constant wider than 128 bits as a term, so concreteness is read off claripy's AST.
     let mut symbolic = Vec::with_capacity(args.len());
     let float = scalar_float_type(op);
-    // The rounding mode leads a rounded float op's operands; `Iop_{Abs,Neg,Cmp}F*` take none.
+    // The rounding mode leads a rounded float op's operands; `Iop_{Abs,Neg,Cmp}F*` and `Iop_F32toF64` take none.
     let first_float = usize::from(matches!(
         op,
-        IROp::FAdd(_) | IROp::FMul(_) | IROp::FDiv(_) | IROp::FSqrt(_)
+        IROp::FAdd(_) | IROp::FMul(_) | IROp::FDiv(_) | IROp::FSqrt(_) | IROp::F64toF32
     ));
     for (pos, arg) in args.iter().enumerate() {
         let Ok(base) = arg.cast::<Base>() else {
@@ -195,13 +202,11 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     };
     let Ok(ast) = result
         .to_clarirs()
-        .and_then(
-            |ast| match float.filter(|_| !matches!(op, IROp::FComCC(_))) {
-                Some(IRType::F32) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f32()),
-                Some(_) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f64()),
-                None => Ok(ast),
-            },
-        )
+        .and_then(|ast| match op.result_type() {
+            Some(IRType::F32) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f32()),
+            Some(IRType::F64) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f64()),
+            _ => Ok(ast),
+        })
         .and_then(|ast| ast.simplify_ext(true, true))
         .and_then(|ast| {
             if carried.is_empty() {
@@ -223,10 +228,12 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
 }
 
 /// The operand float type of a served scalar float op
-/// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp}F{32,64}`), whose float operands
-/// `irop.py` takes FP-sorted.
+/// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp}F{32,64}`, `Iop_F32toF64`,
+/// `Iop_F64toF32`), whose float operands `irop.py` takes FP-sorted.
 fn scalar_float_type(op: IROp) -> Option<IRType> {
     match op {
+        IROp::F32toF64 => Some(IRType::F32),
+        IROp::F64toF32 => Some(IRType::F64),
         IROp::FAdd(ty)
         | IROp::FMul(ty)
         | IROp::FDiv(ty)
@@ -240,6 +247,23 @@ fn scalar_float_type(op: IROp) -> Option<IRType> {
         }
         _ => None,
     }
+}
+
+/// Whether `op` is a scalar int-to-float conversion,
+/// `Iop_I{32,64}{S,U}toF{32,64}`: its operand is a bitvector and its result
+/// FP-sorted.
+fn is_int_to_float(op: IROp) -> bool {
+    matches!(
+        op,
+        IROp::I32StoF32
+            | IROp::I32StoF64
+            | IROp::I64StoF32
+            | IROp::I64StoF64
+            | IROp::I32UtoF32
+            | IROp::I32UtoF64
+            | IROp::I64UtoF32
+            | IROp::I64UtoF64
+    )
 }
 
 /// A float operand as its IEEE bits: `bvToFP(x)` (claripy's `raw_to_fp`)
