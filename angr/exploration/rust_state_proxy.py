@@ -2400,7 +2400,9 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
           resolved via the forked solver context (one solution).
         * ``data`` — concrete ``bytes``/``bytearray``/``int`` or concrete
           claripy BVV. Symbolic needles raise ``NotImplementedError``.
-        * ``char_size`` — must be ``1`` (no wide-char search).
+        * ``char_size`` — candidate positions step by ``char_size`` bytes
+          (``wcslen`` passes 2); ``max_search`` stays a byte count and the
+          match indices count chars, as in ``SmartFindMixin._find_iter_items``.
         * ``condition`` — must be ``None`` or syntactically true.
 
         Symbolic-byte handling (angr-8dop.1): when the haystack contains any
@@ -2421,10 +2423,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                 )
             max_search = max_search.concrete_value
 
-        if char_size != 1:
-            raise NotImplementedError(
-                "RustMemoryProxy.find() supports char_size=1 only (wide-char search lives in SimMemory.find())."
-            )
+        if not isinstance(char_size, int) or char_size < 1:
+            raise ValueError(f"find() char_size must be a positive int, got {char_size!r}")
         if condition is not None and not (hasattr(condition, "is_true") and condition.is_true()):
             raise NotImplementedError(
                 "RustMemoryProxy.find() does not support a symbolic "
@@ -2504,16 +2504,16 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             if isinstance(default, int)
             else (default if default is not None else claripy.BVV(0, self._arch.bits))
         )
-        max_iter = min(max_search, (haystack_ast.length // 8) - needle_len + 1)
-        for i in range(max_iter):
-            bit_hi = (i + needle_len) * 8 - 1
-            bit_lo = i * 8
+        max_offset = min(max_search, (haystack_ast.length // 8) - needle_len + 1)
+        for i, offset in enumerate(range(0, max_offset, char_size)):
+            bit_hi = (offset + needle_len) * 8 - 1
+            bit_lo = offset * 8
             sub_ast = haystack_ast[bit_hi:bit_lo]
             eq = sub_ast == needle_ast
             if hasattr(eq, "is_false") and eq.is_false():
                 continue
             match_indices.append(i)
-            match_addr = claripy.BVV(addr + i, self._arch.bits)
+            match_addr = claripy.BVV(addr + offset, self._arch.bits)
             cases.append((eq, match_addr))
             if hasattr(eq, "is_true") and eq.is_true():
                 break

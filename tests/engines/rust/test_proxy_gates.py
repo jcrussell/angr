@@ -5,7 +5,6 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
-
 import pytest
 
 import angr
@@ -402,8 +401,8 @@ class TestProxyLiskovGaps:
 class TestProxyMemoryFind:
     """angr-4scu step 1: RustMemoryProxy.find() supports the concrete-needle
     search surface used by libc SimProcs (memchr / strstr against literals).
-    Symbolic needles / conditions / wide-char search raise NotImplementedError
-    and route callers to the SimProcedure-hook path.
+    Symbolic needles and conditions raise NotImplementedError and route
+    callers to the SimProcedure-hook path.
     """
 
     def test_find_concrete_byte_in_concrete_buffer(self, fauxware_project):
@@ -465,16 +464,41 @@ class TestProxyMemoryFind:
         with pytest.raises(NotImplementedError, match="symbolic needles"):
             proxy.memory.find(fauxware_project.entry, sym, 16)
 
-    def test_find_wide_char_raises(self, fauxware_project):
-        """``char_size > 1`` (wide-char) belongs in SimMemory.find(); the
-        proxy refuses with a clear pointer."""
+    def test_find_wide_char_steps_by_char_size(self, fauxware_project):
+        """angr-mx00p.132.11: ``wcslen`` calls ``find(..., char_size=2)``.
+        Candidates sit on char boundaries only, so the odd-offset ``00 00``
+        at offset 3 (the high byte of ``'b'`` plus the terminator's
+        low byte) is skipped, and the match index
+        counts chars, as ``SmartFindMixin`` does."""
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         proxy = mgr.proxy.active[0]
 
-        with pytest.raises(NotImplementedError, match="char_size"):
-            proxy.memory.find(fauxware_project.entry, b"x", 16, char_size=2)
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, "ab".encode("utf-16-le") + b"\x00\x00")
+
+        a, constraints, indices = proxy.memory.find(addr, claripy.BVV(0, 16), 16, char_size=2)
+        assert a.concrete_value == addr + 4
+        assert indices == [2]
+        assert constraints == []
+
+    def test_find_wide_char_on_a_symbolic_string(self, fauxware_project):
+        """A symbolic wide string yields one ITE case per char, never one at
+        an odd byte offset."""
+        from angr import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        addr = fauxware_project.entry
+        proxy.memory.store(addr, claripy.BVS("wide", 32))
+        proxy.memory.store(addr + 4, b"\x00\x00")
+
+        _, _, indices = proxy.memory.find(addr, claripy.BVV(0, 16), 16, char_size=2)
+        assert indices == [0, 1, 2]
 
 
 class TestCallbackMemoryProxyInstall:
