@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import struct
 import threading
 
 from angr import claripy
@@ -192,7 +193,15 @@ def _get_overlap_map(arch) -> dict[str, frozenset[str]]:
 
 
 def _cast_eval_result(expr, result, cast_to):
-    """Cast eval result matching angr's SimSolver._cast_to behavior."""
+    """Cast eval result matching angr's SimSolver._cast_to behavior.
+
+    The Rust context evaluates an FP expression to its IEEE bit pattern;
+    SimSolver answers the float, so the bits are decoded first
+    (angr-mx00p.132.9).
+    """
+    if isinstance(expr, claripy.ast.FP) and isinstance(result, int):
+        fmt = ">f" if expr.sort.length == 32 else ">d"
+        result = struct.unpack(fmt, result.to_bytes(expr.sort.length // 8, "big"))[0]
     if cast_to is None:
         return result
     if cast_to is bytes:
@@ -1103,9 +1112,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         results, unsat = _with_extra_constraints(ctx, query, extra=extra_constraints)
         if unsat:
             raise claripy.errors.UnsatError("unsat")
-        if cast_to is not None:
-            results = [self._cast_result(expr, r, cast_to) for r in results]
-        return list(results)
+        return [self._cast_result(expr, r, cast_to) for r in results]
 
     # SimSolver reports an unsat query as SimUnsatError (its ``error_converter``);
     # angr callers that recover from a dead state catch that class, not
