@@ -1359,6 +1359,53 @@ impl SymContext {
         self.eval_upto_checked(bv, n)
     }
 
+    /// Whether `bv` provably takes every value of its width, decided without
+    /// Z3: it is a leaf symbol or a `Concat` of distinct leaf symbols, and no
+    /// path constraint mentions any of them. A return through a stack slot
+    /// nothing wrote reads such a value (angr-plh49), and bisecting its range
+    /// costs a check per bit.
+    ///
+    /// `false` whenever the constraint set is not fully visible as IR: a
+    /// residual or tracked assertion has no [`RustBV`] to read variables from,
+    /// and a merged context's solver holds guarded disjunctions instead of its
+    /// assumed pairs.
+    pub fn takes_every_value(&self, bv: &RustBV) -> bool {
+        let RustBV::Ast { ast, .. } = bv else {
+            return false;
+        };
+        let leaf_count = match bv.node() {
+            Some(node)
+                if node.op == super::BVOp::Concat
+                    && node.operands.iter().all(|o| o.leaf_var().is_some()) =>
+            {
+                node.operands.len()
+            }
+            Some(_) => return false,
+            None if bv.leaf_var().is_some() => 1,
+            None => return false,
+        };
+        let vars = ast.variables();
+        // One variable per leaf, so no symbol appears twice.
+        if leaf_count != vars.len() {
+            return false;
+        }
+        if !self.assume_class_reconstructible.load(Ordering::Relaxed)
+            || !self.non_bv_assertions_shared.lock().is_empty()
+            || !self.constraint_trackers.lock().is_empty()
+        {
+            return false;
+        }
+        if !self.local_constraints.lock().non_bv_assertions.is_empty() {
+            return false;
+        }
+        self.get_assumed_constraints()
+            .iter()
+            .all(|(cond, _)| match cond {
+                RustBV::Ast { ast: c, .. } => c.variables().is_disjoint(vars),
+                RustBV::Concrete { .. } => true,
+            })
+    }
+
     /// Check if a specific value is a valid solution for a bitvector.
     pub fn solution(&self, bv: &RustBV, value: u128) -> bool {
         // Fast path for concrete values

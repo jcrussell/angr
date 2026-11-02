@@ -1830,3 +1830,33 @@ fn test_term_past_the_lowering_depth_fails_its_queries() {
     assert!(ctx.is_sat());
     assert!(ctx.eval(&x).is_some(), "the rest of the context still solves");
 }
+
+/// `takes_every_value` (angr-plh49): a free leaf or a `Concat` of distinct
+/// free leaves qualifies; a constrained, repeated or computed one does not,
+/// and neither does anything once a residual assertion hides variables.
+#[test]
+fn test_takes_every_value() {
+    let ctx = SymContext::new();
+    let free = RustBV::symbol("tev_free", 64);
+    let bytes: Vec<RustBV> = (0..8).map(|i| RustBV::symbol(format!("tev_b{i}"), 8)).collect();
+    let concat = RustBV::concat_many(bytes.clone());
+    let pinned = RustBV::symbol("tev_pinned", 64);
+    ctx.assume_true(&pinned.ult(&RustBV::concrete(0x1000, 64)));
+
+    assert!(ctx.takes_every_value(&free));
+    assert!(ctx.takes_every_value(&concat));
+    assert!(!ctx.takes_every_value(&pinned));
+    assert!(!ctx.takes_every_value(&RustBV::concrete(7, 64)));
+    assert!(!ctx.takes_every_value(&free.add(&RustBV::concrete(1, 64))));
+    let half = RustBV::symbol("tev_half", 32);
+    assert!(!ctx.takes_every_value(&half.concat(&half)));
+
+    // One constrained byte is enough to lose the whole concat.
+    ctx.assume_true(&bytes[3].eq(&RustBV::concrete(0, 8)).not());
+    assert!(!ctx.takes_every_value(&concat));
+
+    // A residual assertion has no IR to read its variables from.
+    let residual = SymContext::new();
+    residual.add_bv_constraint(&RustBV::symbol("tev_other", 8), 1);
+    assert!(!residual.takes_every_value(&free));
+}

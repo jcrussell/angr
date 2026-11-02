@@ -99,6 +99,22 @@ impl<'a> VEXInterpreter<'a> {
             });
         }
 
+        // A target no constraint touches has 2^width solutions, more than the
+        // limit, which is what `_eval_target_brutal`'s eval_upto would find.
+        // The concretizer would bisect its range a check per bit to say so
+        // (angr-plh49's return through an unwritten stack slot).
+        let limit = self.config.max_symbolic_ip_targets;
+        let width = next_val.width();
+        if (width >= usize::BITS || (1usize << width) > limit)
+            && self.ctx.takes_every_value(&next_val)
+        {
+            return Ok(ConcretizedJump::TooMany {
+                min: 0,
+                max: 0,
+                limit,
+            });
+        }
+
         // Symbolic address - use AddressConcretizer
         match self.concretizer.concretize(&next_val, self.ctx) {
             ConcretizationResult::Single(addr) => {
