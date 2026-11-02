@@ -6,10 +6,8 @@
 // sign_extend_into(elem_width)) never executed under Z3. Expected-value arrays
 // are independent reference constants, never derived from the code under test.
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -83,17 +81,14 @@ fn test_vec_cmp_gt_signed_concrete_i32x4() {
 /// full 0xFFFFFFFF (not just bit 0) and a false lane is all-zeros.
 #[test]
 fn test_vec_cmp_eq_symbolic_i32x4() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     let l_lanes: [u128; 4] = [5, 5, 5, 5];
     let r_lanes: [u128; 4] = [5, 9, 5, 9];
     let exp: [u128; 4] = [0xFFFF_FFFF, 0, 0xFFFF_FFFF, 0];
 
     let l = RustBV::symbol("vcmpeq_l", 128);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
-    );
+    cs.push(l.eq(&RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128)));
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
 
     let result = VEXOps::binop(
@@ -106,9 +101,9 @@ fn test_vec_cmp_eq_symbolic_i32x4() {
     )
     .unwrap();
     assert_eq!(result.width(), 128);
-    assert!(ctx.is_sat(), "expected SAT after pinning left operand");
+    assert!(z3_sat(&cs), "expected SAT after pinning left operand");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     assert_int_lanes_eq(model, &exp, 32);
 }
 
@@ -117,17 +112,14 @@ fn test_vec_cmp_eq_symbolic_i32x4() {
 /// the Z3 comparison is signed: INT_MAX > INT_MIN true, INT_MIN > INT_MAX false.
 #[test]
 fn test_vec_cmp_gt_signed_symbolic_i32x4() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     let l_lanes: [u128; 4] = [0x7FFF_FFFF, 0x8000_0000, 0x0000_0000, 0xFFFF_FFFF];
     let r_lanes: [u128; 4] = [0x8000_0000, 0x7FFF_FFFF, 0x0000_0000, 0x0000_0000];
     let exp: [u128; 4] = [0xFFFF_FFFF, 0, 0, 0];
 
     let l = RustBV::symbol("vcmpgt_l", 128);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
-    );
+    cs.push(l.eq(&RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128)));
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
 
     let result = VEXOps::binop(
@@ -141,9 +133,9 @@ fn test_vec_cmp_gt_signed_symbolic_i32x4() {
     )
     .unwrap();
     assert_eq!(result.width(), 128);
-    assert!(ctx.is_sat(), "expected SAT after pinning left operand");
+    assert!(z3_sat(&cs), "expected SAT after pinning left operand");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     assert_int_lanes_eq(model, &exp, 32);
 }
 
@@ -217,17 +209,14 @@ fn test_vec_cmp_gt_unsigned_concrete_u8x16() {
 /// the two paths are pinned to the same reference answer.
 #[test]
 fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     let l_lanes: [u128; 4] = [0xFFFF_FFFF, 0x0000_0001, 0x8000_0000, 0x7FFF_FFFF];
     let r_lanes: [u128; 4] = [0x0000_0001, 0xFFFF_FFFF, 0x7FFF_FFFF, 0x8000_0000];
     let exp: [u128; 4] = [0xFFFF_FFFF, 0, 0xFFFF_FFFF, 0];
 
     let l = RustBV::symbol("vcmpgtu_l", 128);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128).to_z3_ast().unwrap()),
-    );
+    cs.push(l.eq(&RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128)));
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
 
     let result = VEXOps::binop(
@@ -241,9 +230,9 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
     )
     .unwrap();
     assert_eq!(result.width(), 128);
-    assert!(ctx.is_sat(), "expected SAT after pinning left operand");
+    assert!(z3_sat(&cs), "expected SAT after pinning left operand");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     assert_int_lanes_eq(model, &exp, 32);
 }
 
@@ -261,8 +250,6 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
 /// (`invariant-concrete-bv-u128-16-byte-limit`).
 #[test]
 fn test_vec_cmp_avx2_256_bit_i32x8() {
-    let ctx = SymContext::new_mock();
-
     // Low lane first. Covers equal lanes, sign-boundary values and a pair
     // where the signed and unsigned orderings would disagree (0xFFFF_FFFF is
     // -1 signed but the largest value unsigned).
@@ -334,7 +321,7 @@ fn test_vec_cmp_avx2_256_bit_i32x8() {
         for i in 0..8u32 {
             let low = i * 32;
             let extracted = result.extract(low + 31, low);
-            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            let got = eval_v128(&extracted);
             assert_eq!(
                 got,
                 u128::from(expected_lane(l[i as usize], r[i as usize])),
@@ -388,8 +375,6 @@ fn test_parse_vmul_routing() {
 /// path declines: per-lane `extract` + symbolic `IMul` + `concat_le_elements`.
 #[test]
 fn test_vec_mul_16x16_avx2_256_bit() {
-    let ctx = SymContext::new_mock();
-
     // Low lane first. Covers the wrapping cases the width-preserving multiply
     // must truncate (0xFFFF*0xFFFF, 0x8000*2), identity/zero lanes, and a
     // plain no-wrap lane.
@@ -424,7 +409,7 @@ fn test_vec_mul_16x16_avx2_256_bit() {
     for i in 0..16u32 {
         let low = i * 16;
         let extracted = result.extract(low + 15, low);
-        let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+        let got = eval_v128(&extracted);
         let idx = i as usize;
         // Reference is the wrapping u16 product, computed independently of the
         // lane loop under test.

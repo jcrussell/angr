@@ -1,9 +1,7 @@
 // angr-9hleg: vector packed-int min/max/abs tests (mirror of ops/vec_int_arith.rs).
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -89,7 +87,7 @@ fn test_vec_int_abs_concrete() {
 /// every lane of left to be <= 7.
 #[test]
 fn test_vec_int_max_symbolic_signed() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     // r = [7, 7, 7, 7] as i32x4
     let mut rv: u128 = 0;
@@ -114,6 +112,6 @@ fn test_vec_int_max_symbolic_signed() {
     // Constrain result == [7, 7, 7, 7]; this only requires l <= 7 per lane,
     // so the constraint must remain SAT.
     let exp = RustBV::concrete(rv, 128);
-    ctx.add_constraint(result.to_z3_ast().unwrap().eq(exp.to_z3_ast().unwrap()));
-    assert!(ctx.is_sat(), "expected SAT after constraining max == 7");
+    cs.push(result.eq(&exp));
+    assert!(z3_sat(&cs), "expected SAT after constraining max == 7");
 }

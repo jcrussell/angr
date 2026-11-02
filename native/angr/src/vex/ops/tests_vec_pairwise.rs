@@ -1,9 +1,7 @@
 // angr-9hleg: vector pairwise add/min/max + avg tests (mirror of ops/vec_pairwise.rs).
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -101,13 +99,10 @@ fn test_vfpwadd_32fx2_concrete() {
 /// `right` = [5.0, 6.0]. Expect [1.0+2.0, 5.0+6.0] = [3.0, 11.0].
 #[test]
 fn test_vfpwadd_32fx2_symbolic() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, 6.0]), 64);
     let l = RustBV::symbol("vfpwadd_l", 64);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast().unwrap()),
-    );
+    cs.push(l.eq(&RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64)));
     let result = VEXOps::binop(
         IROp::VFPwAdd {
             elem: IRType::F32,
@@ -118,8 +113,8 @@ fn test_vfpwadd_32fx2_symbolic() {
     )
     .unwrap();
     assert_eq!(result.width(), 64);
-    assert!(ctx.is_sat(), "expected SAT");
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    assert!(z3_sat(&cs), "expected SAT");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     assert_f32_lanes_approx(model, &[3.0f32, 11.0], 1e-6);
 }
 
@@ -182,13 +177,10 @@ fn test_vfpwmax_32fx4_concrete() {
 /// `right` = [5.0, -6.0]. Expect [min(1.0,2.0), min(5.0,-6.0)] = [1.0, -6.0].
 #[test]
 fn test_vfpwmin_32fx2_symbolic() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, -6.0]), 64);
     let l = RustBV::symbol("vfpwmin_l", 64);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast().unwrap()),
-    );
+    cs.push(l.eq(&RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64)));
     let result = VEXOps::binop(
         IROp::VFPwMin {
             elem: IRType::F32,
@@ -199,8 +191,8 @@ fn test_vfpwmin_32fx2_symbolic() {
     )
     .unwrap();
     assert_eq!(result.width(), 64);
-    assert!(ctx.is_sat(), "expected SAT");
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    assert!(z3_sat(&cs), "expected SAT");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     assert_f32_lanes_approx(model, &[1.0f32, -6.0], 1e-6);
 }
 
@@ -303,7 +295,6 @@ fn test_vpwaddl_64ux2_concrete() {
 /// zero-extended sum of its two lanes in 128 bits.
 #[test]
 fn test_vpwaddl_64ux2_symbolic_universal() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vpwaddl64_a", 128);
     let got = VEXOps::unop(
         IROp::VPwAddL {
@@ -320,13 +311,7 @@ fn test_vpwaddl_64ux2_symbolic_universal() {
     let hi = a.extract(127, 64).zero_extend_into(128);
     let reference = lo.add_into(hi);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VPwAddL 64Ux2 must match the zero-extended 128-bit sum"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&reference)]), "VPwAddL 64Ux2 must match the zero-extended 128-bit sum");
 }
 
 /// Iop_PwMin16Sx4 — pairwise signed min. Exercises mixed-sign pairs and
@@ -398,7 +383,6 @@ fn test_vpwmax_8ux8_concrete() {
 /// (bd memory `z3-universality-parity-test-template`).
 #[test]
 fn test_vpwadd_16x4_matches_spec_replay() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vpwadd_a", 64);
     let b = RustBV::symbol("vpwadd_b", 64);
     let got = VEXOps::binop(
@@ -424,20 +408,13 @@ fn test_vpwadd_16x4_matches_spec_replay() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VPwAdd 16x4 must match the spec-replay reference for all 64-bit inputs"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VPwAdd 16x4 must match the spec-replay reference for all 64-bit inputs");
 }
 
 /// Symbolic universality (spec-replay): Iop_PwAddL16Sx4 widens each lane
 /// before adding. Reference uses explicit sign-extend.
 #[test]
 fn test_vpwaddl_16sx4_matches_spec_replay() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::symbol("vpwaddl_a", 64);
     let got = VEXOps::unop(
         IROp::VPwAddL {
@@ -460,20 +437,13 @@ fn test_vpwaddl_16sx4_matches_spec_replay() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VPwAddL 16Sx4 must match the spec-replay sign-extend reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VPwAddL 16Sx4 must match the spec-replay sign-extend reference");
 }
 
 /// Symbolic universality (spec-replay): Iop_PwMin16Sx4 — signed pairwise
 /// min via SLE/ITE for each pair.
 #[test]
 fn test_vpwmin_16sx4_matches_spec_replay() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vpwmin_a", 64);
     let b = RustBV::symbol("vpwmin_b", 64);
     let got = VEXOps::binop(
@@ -500,13 +470,7 @@ fn test_vpwmin_16sx4_matches_spec_replay() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VPwMin 16Sx4 must match the spec-replay signed-min reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VPwMin 16Sx4 must match the spec-replay signed-min reference");
 }
 
 /// Parse routing: Iop_PwAdd / PwAddL / PwMin / PwMax variants land on
@@ -770,7 +734,6 @@ fn test_vavg_64sx2_concrete() {
 /// (bd memory `invariant-concrete-bv-u128-16-byte-limit`).
 #[test]
 fn test_vavg_8ux32_avx2_256_bit() {
-    let ctx = SymContext::new_mock();
     // Low lane first; `i` doubles as one operand so every lane pair differs.
     let a: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_mul(7));
     let b: [u8; 32] = std::array::from_fn(|i| 0xFFu8.wrapping_sub(i as u8));
@@ -795,7 +758,7 @@ fn test_vavg_8ux32_avx2_256_bit() {
     for i in 0..32u32 {
         let low = i * 8;
         let extracted = result.extract(low + 7, low);
-        let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+        let got = eval_v128(&extracted);
         let idx = i as usize;
         let expected = (u32::from(a[idx]) + u32::from(b[idx]) + 1) >> 1;
         assert_eq!(
@@ -852,7 +815,6 @@ fn test_vavg_8sx8_concrete() {
 /// `z3-universality-parity-test-template` pattern.
 #[test]
 fn test_vavg_16ux4_symbolic_universal_unsigned() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vavg_a", 64);
     let b = RustBV::symbol("vavg_b", 64);
     let got = VEXOps::binop(
@@ -880,20 +842,13 @@ fn test_vavg_16ux4_symbolic_universal_unsigned() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VAvg 16Ux4 must match the unsigned spec-replay reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VAvg 16Ux4 must match the unsigned spec-replay reference");
 }
 
 /// Symbolic universality (spec-replay): Iop_Avg8Sx8 signed rounding-avg.
 /// Reference sign-extends each lane to 9 bits before summing.
 #[test]
 fn test_vavg_8sx8_symbolic_universal_signed() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vavg_sa", 64);
     let b = RustBV::symbol("vavg_sb", 64);
     let got = VEXOps::binop(
@@ -919,13 +874,7 @@ fn test_vavg_8sx8_symbolic_universal_signed() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VAvg 8Sx8 must match the signed spec-replay reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VAvg 8Sx8 must match the signed spec-replay reference");
 }
 
 /// Parse routing: all 12 Iop_Avg variants the vendored header declares land on

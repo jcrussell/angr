@@ -1,8 +1,7 @@
 // angr-9hleg: NEON vector lane get/set/dup/widen/mul tests (mirror of ops/vec_lane.rs).
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // -------------------------------------------------------------------------
@@ -344,7 +343,7 @@ fn test_vwiden_32sto64x2_signed() {
 fn test_vdup_symbolic_arg() {
     // Symbolic 8-bit value, dup to 8x8. Constrain the output to a known
     // pattern and check the solver picks the right scalar.
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let arg = RustBV::symbol("dup_arg", 8);
     let res = VEXOps::unop(
         IROp::VDup {
@@ -355,9 +354,9 @@ fn test_vdup_symbolic_arg() {
     )
     .unwrap();
     let target = RustBV::concrete(0x4242_4242_4242_4242u128, 64);
-    ctx.add_constraint(res.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap()));
-    assert!(ctx.is_sat(), "expected SAT for dup to 0x42 broadcast");
-    let model_arg = ctx.eval(&arg).expect("eval(arg) None");
+    cs.push(res.eq(&target));
+    assert!(z3_sat(&cs), "expected SAT for dup to 0x42 broadcast");
+    let model_arg = z3_eval(&arg, &cs).expect("eval(arg) None");
     assert_eq!(model_arg, 0x42);
 }
 
@@ -365,7 +364,7 @@ fn test_vdup_symbolic_arg() {
 fn test_vget_elem_symbolic_idx() {
     // Build a concrete vector with distinct lane values, then read
     // through a symbolic idx and constrain it to return a specific lane.
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let vec = RustBV::concrete(0x8877_6655_4433_2211u128, 64);
     let sym_idx = RustBV::symbol("get_idx", 8);
     let res = VEXOps::binop(
@@ -380,9 +379,9 @@ fn test_vget_elem_symbolic_idx() {
     assert_eq!(res.width(), 8);
     // Constrain result to 0x66 → solver must pick idx == 5.
     let target = RustBV::concrete(0x66, 8);
-    ctx.add_constraint(res.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap()));
-    assert!(ctx.is_sat(), "expected SAT for lane==0x66");
-    let model_idx = ctx.eval(&sym_idx).expect("eval(idx) None");
+    cs.push(res.eq(&target));
+    assert!(z3_sat(&cs), "expected SAT for lane==0x66");
+    let model_idx = z3_eval(&sym_idx, &cs).expect("eval(idx) None");
     // idx must be 5 mod 8 (modulo because ITE chain ignores high bits).
     assert_eq!(model_idx & 0x7, 5, "expected idx&7 == 5, got {model_idx}");
 }

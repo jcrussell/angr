@@ -10,10 +10,8 @@
 // x86 PUNPCK{L,H}BW / PUNPCK{L,H}QDQ semantics documented in libvex_ir.h, never
 // read back from the code under test (vacuous-test audit invariant).
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -135,7 +133,7 @@ fn test_vec_interleave_lo_64x2_concrete() {
 /// path: output lane `2i` = right[i], lane `2i+1` = left[i] for i in 0..4.
 #[test]
 fn test_vec_interleave_lo_16x8_symbolic() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     let l_lanes: [u128; 8] = [
         0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007,
@@ -149,10 +147,7 @@ fn test_vec_interleave_lo_16x8_symbolic() {
     ];
 
     let l = RustBV::symbol("vinterleave_l", 128);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(pack_lanes_uint(&l_lanes, 16), 128).to_z3_ast().unwrap()),
-    );
+    cs.push(l.eq(&RustBV::concrete(pack_lanes_uint(&l_lanes, 16), 128)));
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 16), 128);
 
     let result = VEXOps::binop(
@@ -165,9 +160,9 @@ fn test_vec_interleave_lo_16x8_symbolic() {
     )
     .unwrap();
     assert_eq!(result.width(), 128);
-    assert!(ctx.is_sat(), "expected SAT after pinning left operand");
+    assert!(z3_sat(&cs), "expected SAT after pinning left operand");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     assert_int_lanes_eq(model, &exp, 16);
 }
 
@@ -241,8 +236,6 @@ fn test_vec_interleave_8x8_concrete_is_64_bit() {
 /// `test_vec_cmp_avx2_256_bit_i32x8` (`tests_vec_int_lane.rs`).
 #[test]
 fn test_vec_interleave_lo_8x32_256_bit() {
-    let ctx = SymContext::new_mock();
-
     // Left bytes 0x00..0x1F, right bytes 0xE0..0xFF: disjoint ranges, so a
     // lane swap or wrong-half read is immediately visible.
     let l: [u128; 32] = core::array::from_fn(|i| i as u128);
@@ -275,7 +268,7 @@ fn test_vec_interleave_lo_8x32_256_bit() {
         for (off, exp) in [(0u32, r[i]), (1, l[i])] {
             let low = (2 * i as u32 + off) * 8;
             let extracted = result.extract(low + 7, low);
-            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            let got = eval_v128(&extracted);
             assert_eq!(got, exp, "output lane {}", 2 * i as u32 + off);
         }
     }

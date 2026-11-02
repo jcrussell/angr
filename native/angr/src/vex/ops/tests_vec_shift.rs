@@ -1,8 +1,7 @@
 // angr-9hleg: vector shift (shl/shr/sar/sal) tests (mirror of ops/vec_shift.rs).
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 /// Symbolic ShlN16x8: shift count is symbolic; constrain to 4 and verify
@@ -10,7 +9,7 @@ use crate::vex::ir::IRType;
 /// builds Z3 `bvshl` expressions per lane.
 #[test]
 fn test_vec_shl_n_symbolic_shift() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     // Vector: [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008]
     let mut v: u128 = 0;
@@ -33,11 +32,11 @@ fn test_vec_shl_n_symbolic_shift() {
 
     // Constrain shift == 4.
     let four = RustBV::concrete(4, 8);
-    let eq = shift.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
+    let eq = shift.eq(&four);
+    cs.push(eq);
+    assert!(z3_sat(&cs), "expected SAT after constraining shift == 4");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     for i in 0..8u32 {
         let lane = (model >> (i * 16)) & 0xFFFF;
         let expected = ((i as u128 + 1) << 4) & 0xFFFF;
@@ -52,7 +51,7 @@ fn test_vec_shl_n_symbolic_shift() {
 /// each lane is `lane >> 8`.
 #[test]
 fn test_vec_shr_n_symbolic_shift() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     // Vector: [0xAABBCCDD, 0x11223344, 0xDEADBEEF, 0xCAFEBABE]
     let lanes: [u32; 4] = [0xAABBCCDD, 0x11223344, 0xDEADBEEF, 0xCAFEBABE];
@@ -74,11 +73,11 @@ fn test_vec_shr_n_symbolic_shift() {
     .unwrap();
 
     let eight = RustBV::concrete(8, 8);
-    let eq = shift.to_z3_ast().unwrap().eq(eight.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT after constraining shift == 8");
+    let eq = shift.eq(&eight);
+    cs.push(eq);
+    assert!(z3_sat(&cs), "expected SAT after constraining shift == 8");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     for (i, lane) in lanes.iter().enumerate() {
         let got = ((model >> (i * 32)) & 0xFFFF_FFFF) as u32;
         let expected = lane >> 8;
@@ -93,7 +92,7 @@ fn test_vec_shr_n_symbolic_shift() {
 /// to 4 and verify sign-extending shift (negative values stay negative).
 #[test]
 fn test_vec_sar_n_symbolic_shift() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
 
     // Lanes: mix of positive and negative i16 values.
     let lanes: [i16; 8] = [-1, -32768, -16, 0, 1, 0x4000, -2, 256];
@@ -115,11 +114,11 @@ fn test_vec_sar_n_symbolic_shift() {
     .unwrap();
 
     let four = RustBV::concrete(4, 8);
-    let eq = shift.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT after constraining shift == 4");
+    let eq = shift.eq(&four);
+    cs.push(eq);
+    assert!(z3_sat(&cs), "expected SAT after constraining shift == 4");
 
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
     for (i, lane) in lanes.iter().enumerate() {
         let got = ((model >> (i * 16)) & 0xFFFF) as u16 as i16;
         let expected = lane >> 4; // arithmetic shift in Rust on i16
@@ -324,7 +323,6 @@ fn test_vsal_routes_to_vshl_and_matches() {
 /// Symbolic inputs + add_constraint(got ≠ py).not() → assert UNSAT.
 #[test]
 fn test_vshl_16x4_symbolic_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("shl_a_16x4", 64);
     let b = RustBV::symbol("shl_b_16x4", 64);
     let got = VEXOps::binop(
@@ -348,10 +346,7 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
         lanes.push(al.shl_into(bl));
     }
     let py = VEXOps::concat_le_elements(lanes);
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    let universal = !ctx.is_sat();
-    ctx.pop();
+    let universal = !z3_sat(&[got.ne(&py)]);
     assert!(
         universal,
         "VShl 16x4 must match the claripy __lshift__ reference for all 64-bit inputs"
@@ -363,7 +358,6 @@ fn test_vshl_16x4_symbolic_matches_python_ref() {
 /// across a 128-bit vector).
 #[test]
 fn test_vsar_8x16_symbolic_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("sar_a_8x16", 128);
     let b = RustBV::symbol("sar_b_8x16", 128);
     let got = VEXOps::binop(
@@ -384,10 +378,7 @@ fn test_vsar_8x16_symbolic_matches_python_ref() {
         lanes.push(al.ashr_into(bl));
     }
     let py = VEXOps::concat_le_elements(lanes);
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    let universal = !ctx.is_sat();
-    ctx.pop();
+    let universal = !z3_sat(&[got.ne(&py)]);
     assert!(
         universal,
         "VSar 8x16 must match the claripy __rshift__ reference for all 128-bit inputs"
@@ -540,8 +531,6 @@ fn test_sar_fill_mask_shift0_is_empty_every_width() {
 /// `vec_shift.rs` the concrete fold would have shifted a `u128` by up to 192.
 #[test]
 fn test_vec_shift_n_avx2_256_bit() {
-    let ctx = SymContext::new_mock();
-
     // Low lane first; the mix covers positive, negative and sign-boundary
     // values so the SarN sign fill is actually exercised.
     let lanes: [u32; 8] = [
@@ -602,7 +591,7 @@ fn test_vec_shift_n_avx2_256_bit() {
         for (i, lane) in lanes.iter().enumerate() {
             let low = (i as u32) * 32;
             let extracted = result.extract(low + 31, low);
-            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            let got = eval_v128(&extracted);
             assert_eq!(
                 got,
                 u128::from(expected_lane(*lane)),

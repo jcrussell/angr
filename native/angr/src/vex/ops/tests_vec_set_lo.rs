@@ -4,9 +4,8 @@
 // of both IROp variants — all previously exercised only indirectly via the
 // scalar-FP ops that share `splice_lane0_u128`.
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 
 /// Concrete SetV128lo64 (MOVSD-style low-lane splice): overwrite the low 64
 /// bits, leave the upper 64 bits untouched.
@@ -56,7 +55,7 @@ fn test_set_v128_lo32_concrete() {
 /// upper 64 bits of the result track the original vector's upper 64 bits.
 #[test]
 fn test_set_v128_lo64_symbolic() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let vec = RustBV::symbol("xmm_setlo", 128);
     let val = RustBV::concrete(0x0102_0304_0506_0708u128, 64);
 
@@ -66,16 +65,16 @@ fn test_set_v128_lo64_symbolic() {
     // Low 64 of result must equal the inserted value.
     let res_lo = result.extract(63, 0);
     let inserted = RustBV::concrete(0x0102_0304_0506_0708u128, 64);
-    let eq_lo = res_lo.to_z3_ast().unwrap().eq(inserted.to_z3_ast().unwrap());
-    ctx.add_constraint(eq_lo);
-    assert!(ctx.is_sat(), "low 64 must equal inserted value");
+    let eq_lo = res_lo.eq(&inserted);
+    cs.push(eq_lo);
+    assert!(z3_sat(&cs), "low 64 must equal inserted value");
 
     // Upper 64 of result must equal upper 64 of the symbolic input (passthrough).
     let upper_in = vec.extract(127, 64);
     let upper_out = result.extract(127, 64);
-    let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
-    ctx.add_constraint(eq_upper);
-    assert!(ctx.is_sat(), "upper-64 passthrough must hold");
+    let eq_upper = upper_in.eq(&upper_out);
+    cs.push(eq_upper);
+    assert!(z3_sat(&cs), "upper-64 passthrough must hold");
 }
 
 /// Symbolic SetV128lo32: mixing the low-32 replacement with a symbolic upper.
@@ -83,7 +82,7 @@ fn test_set_v128_lo64_symbolic() {
 /// symbolic input's upper 96 bits (never disturbed by the splice).
 #[test]
 fn test_set_v128_lo32_symbolic() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let vec = RustBV::symbol("xmm_setlo32", 128);
     let val = RustBV::concrete(0xCAFE_F00Du128, 32);
 
@@ -92,29 +91,25 @@ fn test_set_v128_lo32_symbolic() {
 
     let res_lo = result.extract(31, 0);
     let inserted = RustBV::concrete(0xCAFE_F00Du128, 32);
-    let eq_lo = res_lo.to_z3_ast().unwrap().eq(inserted.to_z3_ast().unwrap());
-    ctx.add_constraint(eq_lo);
-    assert!(ctx.is_sat(), "low 32 must equal inserted value");
+    let eq_lo = res_lo.eq(&inserted);
+    cs.push(eq_lo);
+    assert!(z3_sat(&cs), "low 32 must equal inserted value");
 
     let upper_in = vec.extract(127, 32);
     let upper_out = result.extract(127, 32);
-    let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
-    ctx.add_constraint(eq_upper);
-    assert!(ctx.is_sat(), "upper-96 passthrough must hold");
+    let eq_upper = upper_in.eq(&upper_out);
+    cs.push(eq_upper);
+    assert!(z3_sat(&cs), "upper-96 passthrough must hold");
 
     // Negative check: a model where upper bits diverge must be UNSAT.
-    let bad = upper_out
-        .to_z3_ast().unwrap()
-        .eq(RustBV::concrete(0, 96).to_z3_ast().unwrap());
+    let bad = upper_out.eq(&RustBV::concrete(0, 96));
     // Only pin the symbolic input's upper to a nonzero value first so bad=0 is
     // genuinely contradictory rather than vacuously satisfiable.
-    let pin = upper_in
-        .to_z3_ast().unwrap()
-        .eq(RustBV::concrete(0x7777_7777_7777_7777_7777_7777u128, 96).to_z3_ast().unwrap());
-    ctx.add_constraint(pin);
-    ctx.add_constraint(bad);
+    let pin = upper_in.eq(&RustBV::concrete(0x7777_7777_7777_7777_7777_7777u128, 96));
+    cs.push(pin);
+    cs.push(bad);
     assert!(
-        !ctx.is_sat(),
+        !z3_sat(&cs),
         "upper-out must follow upper-in; divergence must be UNSAT"
     );
 }

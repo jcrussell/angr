@@ -1,8 +1,7 @@
 // angr-9hleg: vector saturating narrow/add/sub/shift tests (mirror of ops/vec_saturate.rs).
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
@@ -214,7 +213,7 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
         ),
     ];
     for (op, width) in ops {
-        let ctx = SymContext::new_mock();
+        let mut cs: Vec<RustBV> = Vec::new();
         let mask = if width == 128 { u128::MAX } else { (1u128 << width) - 1 };
         let l = 0x0102_0304_0506_0708_8090_A0B0_0C0D_0E0Fu128 & mask;
         let r = 0x1112_1314_1516_1718_F1F2_F3F4_0405_0607u128 & mask;
@@ -225,11 +224,11 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
                 .unwrap();
         let sym_l = RustBV::symbol("narrow_l", width);
         let sym_r = RustBV::symbol("narrow_r", width);
-        ctx.add_constraint(sym_l.to_z3_ast().unwrap().eq(RustBV::concrete(l, width).to_z3_ast().unwrap()));
-        ctx.add_constraint(sym_r.to_z3_ast().unwrap().eq(RustBV::concrete(r, width).to_z3_ast().unwrap()));
+        cs.push(sym_l.eq(&RustBV::concrete(l, width)));
+        cs.push(sym_r.eq(&RustBV::concrete(r, width)));
         let symbolic = VEXOps::binop(op, sym_l, sym_r).unwrap();
         assert!(symbolic.is_symbolic(), "{op:?}: expected a symbolic result");
-        assert_eq!(ctx.eval(&symbolic), Some(concrete), "{op:?}: symbolic layout");
+        assert_eq!(z3_eval(&symbolic, &cs), Some(concrete), "{op:?}: symbolic layout");
         // The low half is the right operand's narrowed lanes.
         let half = width / 2;
         let low = |v: u128| v & ((1u128 << half) - 1);
@@ -246,7 +245,7 @@ fn test_narrow_bin_symbolic_matches_concrete_layout() {
 fn test_vqnarrow_un_symbolic_saturates() {
     // Symbolic I16 saturating to signed I8. Constrain output lane to 127
     // and require source > 127 to confirm saturation kicked in.
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let arg = RustBV::symbol("qn_arg", 128); // 8 lanes I16
     let res = VEXOps::unop(
         IROp::VQNarrowUn {
@@ -260,19 +259,11 @@ fn test_vqnarrow_un_symbolic_saturates() {
     .unwrap();
     // Constrain output lane 0 = 127 AND source lane 0 = 200.
     let out_lane0 = res.extract(7, 0);
-    ctx.add_constraint(
-        out_lane0
-            .to_z3_ast().unwrap()
-            .eq(RustBV::concrete(127, 8).to_z3_ast().unwrap()),
-    );
+    cs.push(out_lane0.eq(&RustBV::concrete(127, 8)));
     let src_lane0 = arg.extract(15, 0);
-    ctx.add_constraint(
-        src_lane0
-            .to_z3_ast().unwrap()
-            .eq(RustBV::concrete(200, 16).to_z3_ast().unwrap()),
-    );
+    cs.push(src_lane0.eq(&RustBV::concrete(200, 16)));
     assert!(
-        ctx.is_sat(),
+        z3_sat(&cs),
         "expected SAT: src lane 0 = 200 saturates to 127"
     );
 }
@@ -284,7 +275,6 @@ fn test_vqnarrow_un_symbolic_saturates() {
 /// `lane < min` test and was clamped to 0x81 (-127).
 #[test]
 fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::symbol("qn_min_arg", 128); // 8 lanes I16
     let res = VEXOps::unop(
         IROp::VQNarrowUn {
@@ -299,29 +289,16 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
     // Source lane 0 = -128 (0xFF80 as sign-extended I16). It is exactly the
     // destination minimum, so it must narrow to 0x80 (-128), unchanged.
     let src_lane0 = arg.extract(15, 0);
-    ctx.add_constraint(
-        src_lane0
-            .to_z3_ast().unwrap()
-            .eq(RustBV::concrete(0xFF80, 16).to_z3_ast().unwrap()),
-    );
+    let src_pin = src_lane0.eq(&RustBV::concrete(0xFF80, 16));
     let out_lane0 = res.extract(7, 0);
     // With the fix out_lane0 == 0x80; require it to be equal (SAT) and the
     // buggy 0x81 to be impossible (UNSAT) under this source constraint.
-    ctx.push();
-    ctx.add_constraint(
-        out_lane0
-            .to_z3_ast().unwrap()
-            .eq(RustBV::concrete(0x80, 8).to_z3_ast().unwrap()),
-    );
-    assert!(ctx.is_sat(), "dest-min -128 must pass through to 0x80");
-    ctx.pop();
-    ctx.add_constraint(
-        out_lane0
-            .to_z3_ast().unwrap()
-            .eq(RustBV::concrete(0x81, 8).to_z3_ast().unwrap()),
+    assert!(
+        z3_sat(&[src_pin.clone(), out_lane0.eq(&RustBV::concrete(0x80, 8))]),
+        "dest-min -128 must pass through to 0x80"
     );
     assert!(
-        !ctx.is_sat(),
+        !z3_sat(&[src_pin, out_lane0.eq(&RustBV::concrete(0x81, 8))]),
         "dest-min -128 must NOT be mis-clamped to -127 (0x81)"
     );
 }
@@ -362,17 +339,14 @@ fn test_saturate_lane_symbolic_unsigned_src_signed_dst_concrete() {
 /// produced.
 #[test]
 fn test_saturate_lane_symbolic_unsigned_src_signed_dst_symbolic() {
-    let ctx = SymContext::new_mock();
-    let lane = RustBV::symbol("sat_us_sd_lane", 8);
-    let res = VEXOps::saturate_lane_symbolic(lane.clone(), 8, 4, false, true);
-    ctx.add_constraint(lane.to_z3_ast().unwrap().eq(RustBV::concrete(5, 8).to_z3_ast().unwrap()));
-    ctx.push();
-    ctx.add_constraint(res.to_z3_ast().unwrap().eq(RustBV::concrete(5, 4).to_z3_ast().unwrap()));
-    assert!(ctx.is_sat(), "unsigned 5 into a signed 4-bit dest stays 5");
-    ctx.pop();
-    ctx.add_constraint(res.to_z3_ast().unwrap().eq(RustBV::concrete(0x8, 4).to_z3_ast().unwrap()));
+    let (lane, pin) = pinned_symbol("sat_us_sd_lane", 5, 8);
+    let res = VEXOps::saturate_lane_symbolic(lane, 8, 4, false, true);
     assert!(
-        !ctx.is_sat(),
+        z3_sat(&[pin.clone(), res.eq(&RustBV::concrete(5, 4))]),
+        "unsigned 5 into a signed 4-bit dest stays 5"
+    );
+    assert!(
+        !z3_sat(&[pin, res.eq(&RustBV::concrete(0x8, 4))]),
         "unsigned 5 must NOT be clamped to the signed destination minimum"
     );
 }
@@ -520,7 +494,6 @@ fn test_vqsub_32ux4_concrete() {
 /// lane using the explicit sign-bit overflow formula (cap_cond + cap).
 #[test]
 fn test_vqadd_8sx8_symbolic_matches_python_ref() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vqadd_a", 64);
     let b = RustBV::symbol("vqadd_b", 64);
     let got = VEXOps::binop(
@@ -560,13 +533,7 @@ fn test_vqadd_8sx8_symbolic_matches_python_ref() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VQAdd 8Sx8 must match the claripy QAdd reference for all 64-bit inputs"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VQAdd 8Sx8 must match the claripy QAdd reference for all 64-bit inputs");
 }
 
 /// Parse routing: Iop_QAdd / Iop_QSub variants land on VQAdd / VQSub with
@@ -644,8 +611,6 @@ fn test_parse_vqaddsub_routing() {
 /// sign-bit-relationship algorithm under test.
 #[test]
 fn test_vqaddsub_8x32_avx2_256_bit() {
-    let ctx = SymContext::new_mock();
-
     // Low lane first. Covers both clamp directions (0x7F+0x7F, 0x80+0x80),
     // unsigned overflow/underflow, and no-saturation lanes.
     let l: [u8; 32] = [
@@ -714,7 +679,7 @@ fn test_vqaddsub_8x32_avx2_256_bit() {
         for i in 0..32u32 {
             let low = i * 8;
             let extracted = result.extract(low + 7, low);
-            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            let got = eval_v128(&extracted);
             let idx = i as usize;
             assert_eq!(
                 got,
@@ -916,7 +881,6 @@ fn test_parse_vqshlsat_routing() {
 /// extraction errors) without depending on a Python reference.
 #[test]
 fn test_vqshl_16x4_symbolic_universal_unsigned() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("qshl_a_16x4", 64);
     let b = RustBV::symbol("qshl_b_16x4", 64);
     let got = VEXOps::binop(
@@ -951,10 +915,7 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
         lanes.push(amt_is_neg.ite(&right_branch, &left_branch));
     }
     let py = VEXOps::concat_le_elements(lanes);
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    let universal = !ctx.is_sat();
-    ctx.pop();
+    let universal = !z3_sat(&[got.ne(&py)]);
     assert!(
         universal,
         "VQShlSat 16x4 (unsigned) must match the per-lane spec for all 64-bit inputs"
@@ -965,7 +926,6 @@ fn test_vqshl_16x4_symbolic_universal_unsigned() {
 /// SMIN cap selection from the data-sign bit.
 #[test]
 fn test_vqsal_16x4_symbolic_universal_signed() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("qsal_a_16x4", 64);
     let b = RustBV::symbol("qsal_b_16x4", 64);
     let got = VEXOps::binop(
@@ -1002,10 +962,7 @@ fn test_vqsal_16x4_symbolic_universal_signed() {
         lanes.push(amt_is_neg.ite(&right_branch, &left_branch));
     }
     let py = VEXOps::concat_le_elements(lanes);
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    let universal = !ctx.is_sat();
-    ctx.pop();
+    let universal = !z3_sat(&[got.ne(&py)]);
     assert!(
         universal,
         "VQShlSat 16x4 (signed) must match the per-lane spec for all 64-bit inputs"

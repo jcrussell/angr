@@ -1,8 +1,7 @@
 // angr-9hleg: vector per-lane count (cnt/clz/cls) + polynomial-mul tests (mirror of ops/vec_count.rs).
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -81,7 +80,6 @@ fn test_vgetmsbs_8x8_concrete() {
 /// little-endian concat of each byte's MSB bit.
 #[test]
 fn test_vgetmsbs_8x16_symbolic_universal() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vgetmsbs_a", 128);
     let got = VEXOps::unop(IROp::VGetMSBs { count: 16 }, a.clone()).unwrap();
 
@@ -92,13 +90,7 @@ fn test_vgetmsbs_8x16_symbolic_universal() {
     }
     let py = VEXOps::concat_le_elements(bits);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VGetMSBs 8x16 must match the per-byte-MSB reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VGetMSBs 8x16 must match the per-byte-MSB reference");
 }
 
 /// Iop_Clz8x8 — per-byte count leading zeros.
@@ -188,7 +180,7 @@ fn test_vclz_64x2_concrete() {
 /// handing in a concrete one.
 #[test]
 fn test_vclz_64x2_symbolic_matches_concrete() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let a = RustBV::symbol("vclz64_a", 128);
     let got = VEXOps::unop(
         IROp::VClz {
@@ -203,18 +195,12 @@ fn test_vclz_64x2_symbolic_matches_concrete() {
     // lane0 = 1 << 16 → 47; lane1 = 0 → 64 (all-zero lane saturates at N).
     let input: u128 = 0x0001_0000;
     let expected: u128 = 47 | (64u128 << 64);
-    ctx.push();
-    ctx.add_constraint(a.to_z3_ast().unwrap().eq(RustBV::concrete(input, 128).to_z3_ast().unwrap()));
-    ctx.add_constraint(
-        got.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(expected, 128).to_z3_ast().unwrap())
-            .not(),
-    );
+    cs.push(a.eq(&RustBV::concrete(input, 128)));
+    cs.push(got.ne(&RustBV::concrete(expected, 128)));
     assert!(
-        !ctx.is_sat(),
+        !z3_sat(&cs),
         "VClz 64x2 symbolic chain must agree with the concrete semantics"
     );
-    ctx.pop();
 }
 
 /// Iop_Cls8x8 — per-byte count leading sign bits (excluding MSB).
@@ -354,7 +340,6 @@ fn test_vpolynomial_mull_8x8_concrete() {
 /// per-byte bit-sum reference for all 64-bit inputs.
 #[test]
 fn test_vcnt_8x8_symbolic_universal() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vcnt_a", 64);
     let got = VEXOps::unop(IROp::VCnt { count: 8 }, a.clone()).unwrap();
 
@@ -370,20 +355,13 @@ fn test_vcnt_8x8_symbolic_universal() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VCnt 8x8 must match the spec-replay reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VCnt 8x8 must match the spec-replay reference");
 }
 
 /// Symbolic universality (spec-replay): Iop_Clz8x8 must match the
 /// claripy-style ITE chain reference per lane.
 #[test]
 fn test_vclz_8x8_symbolic_universal() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vclz_a", 64);
     let got = VEXOps::unop(
         IROp::VClz {
@@ -412,20 +390,13 @@ fn test_vclz_8x8_symbolic_universal() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VClz 8x8 must match the spec-replay reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VClz 8x8 must match the spec-replay reference");
 }
 
 /// Symbolic universality (spec-replay): Iop_PolynomialMul8x8 must match
 /// the XOR-of-shifts reference per lane (low 8 bits).
 #[test]
 fn test_vpolynomial_mul_8x8_symbolic_universal() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vpmul_a", 64);
     let b = RustBV::symbol("vpmul_b", 64);
     let got = VEXOps::binop(
@@ -460,13 +431,7 @@ fn test_vpolynomial_mul_8x8_symbolic_universal() {
     }
     let py = VEXOps::concat_le_elements(lanes);
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(py.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VPolynomialMul 8x8 must match the spec-replay reference"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&py)]), "VPolynomialMul 8x8 must match the spec-replay reference");
 }
 
 /// Parse routing: all Cnt/Clz/Cls/PolynomialMul opcodes land on their real
@@ -560,7 +525,6 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
 /// off-by-one in its `n - 2 - a` formula cannot cancel out.
 #[test]
 fn test_vcls_8x8_symbolic_universal() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::symbol("vcls_a", 64);
     let got = VEXOps::unop(
         IROp::VCls {
@@ -601,13 +565,7 @@ fn test_vcls_8x8_symbolic_universal() {
     )
     .unwrap();
 
-    ctx.push();
-    ctx.add_constraint(got.to_z3_ast().unwrap().eq(reference.to_z3_ast().unwrap()).not());
-    assert!(
-        !ctx.is_sat(),
-        "VCls 8x8 must match clz(x ^ asr(x, 7)) - 1 for every input"
-    );
-    ctx.pop();
+    assert!(!z3_sat(&[got.ne(&reference)]), "VCls 8x8 must match clz(x ^ asr(x, 7)) - 1 for every input");
 }
 
 /// Symbolic `Iop_Cls64x2` pinned to a concrete input — the Cls mirror of
@@ -617,7 +575,7 @@ fn test_vcls_8x8_symbolic_universal() {
 /// widest lane shape libVEX emits.
 #[test]
 fn test_vcls_64x2_symbolic_matches_concrete() {
-    let ctx = SymContext::new_mock();
+    let mut cs: Vec<RustBV> = Vec::new();
     let a = RustBV::symbol("vcls64_a", 128);
     let got = VEXOps::unop(
         IROp::VCls {
@@ -633,16 +591,10 @@ fn test_vcls_64x2_symbolic_matches_concrete() {
     // lane1 = all ones → every non-MSB bit matches MSB(1) → N-1 = 63.
     let input: u128 = 0xFF | (u128::from(u64::MAX) << 64);
     let expected: u128 = 55 | (63u128 << 64);
-    ctx.push();
-    ctx.add_constraint(a.to_z3_ast().unwrap().eq(RustBV::concrete(input, 128).to_z3_ast().unwrap()));
-    ctx.add_constraint(
-        got.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(expected, 128).to_z3_ast().unwrap())
-            .not(),
-    );
+    cs.push(a.eq(&RustBV::concrete(input, 128)));
+    cs.push(got.ne(&RustBV::concrete(expected, 128)));
     assert!(
-        !ctx.is_sat(),
+        !z3_sat(&cs),
         "VCls 64x2 symbolic chain must agree with the concrete semantics"
     );
-    ctx.pop();
 }
