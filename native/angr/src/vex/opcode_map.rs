@@ -631,6 +631,7 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
         "Ijk_Sys_sysenter" => JumpKind::Sys_sysenter,
         "Ijk_Sys_int" => JumpKind::Sys_int,
         "Ijk_Sys_int32" => JumpKind::Sys_int32,
+        "Ijk_Sys" => JumpKind::Sys,
         "Ijk_ClientReq" => JumpKind::ClientReq,
         "Ijk_Yield" => JumpKind::Yield,
         "Ijk_EmWarn" => JumpKind::EmWarn,

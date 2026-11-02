@@ -340,6 +340,28 @@ impl RustExplorationManager {
         })
     }
 
+    /// Mark (or, with None, clear) a syscall the state must run before any
+    /// block: a Python procedure's successor left at an `Ijk_Sys*` exit
+    /// (angr-mx00p.132.7). See `RustSimState::pending_syscall`.
+    #[pyo3(signature = (state_id, jumpkind))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own pending syscall; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn set_state_pending_syscall(
+        &mut self,
+        state_id: u64,
+        jumpkind: Option<&str>,
+    ) -> PyResult<()> {
+        let parsed = jumpkind
+            .map(crate::state_bridge::parse_syscall_jumpkind)
+            .transpose()?;
+        self.with_state_mut(state_id, |state| {
+            state.set_pending_syscall(parsed);
+            Ok(())
+        })
+    }
+
     /// See `pending_api::_import_symbolic_memory` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own symbolic memory; does not mutate \

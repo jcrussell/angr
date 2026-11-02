@@ -1,9 +1,11 @@
 //! exit / exit_group syscall handler.
 //!
-//! Mirrors `procedures/exit.rs::NativeExit`: signals the dispatcher to
-//! deadend the state instead of advancing PC. The exit code (in rdi) is
-//! intentionally not extracted — angr's `libc.exit` SimProcedure ignores
-//! it for control flow as well, so we follow that contract.
+//! Signals the dispatcher to deadend the state instead of advancing PC, and
+//! ends it as Python's `linux_kernel/exit.py` does through
+//! `SimProcedure.exit`: an `Ijk_Exit` history entry and the status for the
+//! export's `terminate` event (`RustSimState::record_exit`,
+//! angr-mx00p.132.7). The entry's address is the syscall's return pc, since
+//! Rust never sees the kernel-object stub Python reports.
 //!
 //! Unit struct: exit and exit_group share identical semantics here, so
 //! the registry keys both syscall numbers to the same handler instead of
@@ -21,18 +23,15 @@ impl NativeSyscall for NativeExitSyscall {
     }
 
     fn num_args(&self) -> usize {
-        0
+        1
     }
 
-    /// `_state` and `_args` are required by the trait but unused: this
-    /// handler signals deadend by returning `SyscallOutcome::Exit` without
-    /// inspecting any state or argument. `num_args() == 0` also guarantees
-    /// the dispatcher passes an empty `args` slice.
     fn call(
         &self,
-        _state: &mut RustSimState,
-        _args: &[RustBV],
+        state: &mut RustSimState,
+        args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
+        state.record_exit(state.pc(), args.first().cloned());
         Ok(SyscallOutcome::Exit)
     }
 }

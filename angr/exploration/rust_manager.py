@@ -102,6 +102,7 @@ from angr.errors import AngrError, SimEngineError, SimError, SimSolverError, Sim
 from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
+    _pending_syscall_resume,
     _simproc_dispatch_name,
     _unconstrained_stub_spec,
 )
@@ -3687,7 +3688,11 @@ class RustExplorationManager(
         if jumpkind.startswith("Ijk_Sys"):
             # Python stepped up to the syscall exit; the syscall itself is the
             # next step's work, so Rust must run it before the block at pc
-            # (angr-mx00p.132.12).
+            # (angr-mx00p.132.12). Its pc is the syscall's return address,
+            # not the kernel stub ``SimSuccessors`` pointed ip at.
+            syscall = _pending_syscall_resume(angr_state)
+            if syscall is not None:
+                rust_state.pc = syscall[0]
             rust_state.set_pending_syscall(jumpkind)
 
     def _add_rust_state(self, stash: str, angr_state: angr.SimState):

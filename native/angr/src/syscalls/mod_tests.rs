@@ -6,17 +6,6 @@ use super::*;
 use crate::symbolic::RustBV;
 
 #[test]
-fn exit_handler_returns_exit_outcome() {
-    use crate::state::RustSimState;
-    let h = exit::NativeExitSyscall;
-    let mut state = RustSimState::new("amd64").expect("amd64 state");
-    let outcome = h.call(&mut state, &[]).expect("exit handler succeeds");
-    assert!(matches!(outcome, SyscallOutcome::Exit));
-    assert_eq!(h.name(), "exit");
-    assert_eq!(h.num_args(), 0);
-}
-
-#[test]
 fn fresh_byte_names_uniquifies_per_batch_and_index() {
     // angr-9ke6b.158: the naming scheme all five mint-N-symbolic-bytes call
     // sites now share. Two properties are load-bearing (see `fresh_symbolic`

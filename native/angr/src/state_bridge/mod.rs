@@ -13,6 +13,7 @@
 mod pymethods;
 mod snapshot;
 
+pub(crate) use pymethods::parse_syscall_jumpkind;
 pub(crate) use snapshot::ExplorationStateSnapshot;
 
 use pyo3::prelude::*;

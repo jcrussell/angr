@@ -50,13 +50,32 @@ _UNSUPPORTED_SYSCALL_MSG = (
 )
 
 
-
 def _terminate_exit_code(state):
     """The ``exit_code`` of the ``terminate`` event ``SimProcedure.exit`` added to ``state``'s step, or None."""
     for event in reversed(state.history.recent_events):
         if getattr(event, "type", None) == "terminate":
             return event.objects.get("exit_code")
     return None
+
+
+def _pending_syscall_resume(state):
+    """``(return pc, jumpkind)`` for a successor left at an ``Ijk_Sys*`` exit, or None.
+
+    ``SimSuccessors`` points such a successor's ip at the syscall's
+    SimProcedure in the kernel object and saves the address the syscall
+    returns to in ``ip_at_syscall``; the next step runs the syscall. Rust's
+    pending syscall wants the return address as pc instead, so resuming at
+    ``state.addr`` lifted the kernel object as code (angr-mx00p.132.7, a
+    ``_vsyscall`` hook's ``exit_group``).
+    """
+    jumpkind = state.history.jumpkind
+    if not jumpkind or not jumpkind.startswith("Ijk_Sys") or "ip_at_syscall" not in state.arch.registers:
+        return None
+    ret = state.regs.ip_at_syscall
+    if ret.symbolic:
+        return None
+    return ret.concrete_value, jumpkind
+
 
 class _RustInjectedStdin(claripy.Annotation):
     """Provenance marker for a stdin packet appended by ``_inject_rust_stdin``.
@@ -1182,8 +1201,13 @@ class RustCallbackDispatchMixin:
         """
         if resumed_id is None:
             resumed_id = event.callback_state_id
-        # Handle symbolic IP: pick first concrete solution if symbolic
-        new_pc = self._resolve_next_pc(succ_state)
+        syscall = _pending_syscall_resume(succ_state)
+        if syscall is not None:
+            new_pc, jumpkind = syscall
+            self._rust_mgr.set_state_pending_syscall(event.callback_state_id, jumpkind)
+        else:
+            # Handle symbolic IP: pick first concrete solution if symbolic
+            new_pc = self._resolve_next_pc(succ_state)
 
         # For zero-length hooks, tell Rust to skip the hook on next step
         if skip_hook_addr is not None:
@@ -1269,7 +1293,12 @@ class RustCallbackDispatchMixin:
         yet; it is applied to that fork, never to the pending state, and
         ``resume_forked_successor`` routes it (or prunes it if unsat).
         """
-        new_pc = self._resolve_next_pc(succ_state)
+        syscall = _pending_syscall_resume(succ_state)
+        if syscall is not None:
+            new_pc, jumpkind = syscall
+            self._rust_mgr.set_state_pending_syscall(fork_id, jumpkind)
+        else:
+            new_pc = self._resolve_next_pc(succ_state)
         self._sync_state_heap_to_rust(succ_state, fork_id)
         self._sync_state_posix_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)

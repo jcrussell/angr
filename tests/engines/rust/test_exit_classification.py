@@ -106,3 +106,42 @@ class TestPythonProcedureExit:
         for state in mgr.deadended:
             self._assert_exited(state, 0xC0000409)
             assert list(state.history.bbl_addrs)[-1] == proj.simos.fastfail.addr
+
+
+class TestVsyscallHookSyscall:
+    """A Python ``_vsyscall`` hook leaves its successor at an ``Ijk_Sys`` exit
+    whose ip ``SimSuccessors`` pointed at the kernel stub; Rust must run the
+    syscall and continue at its return address, not lift the kernel object
+    (angr-mx00p.132.7)."""
+
+    VSYSCALL = 0x100
+
+    def _run(self, code):
+        proj = angr.load_shellcode(code.ljust(self.VSYSCALL, b"\x90"), arch="x86", simos="linux")
+        proj.hook(self.VSYSCALL, angr.SIM_PROCEDURES["linux_kernel"]["_vsyscall"]())
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=0)])
+        mgr.run()
+        return proj, mgr
+
+    def _call_vsyscall(self, at):
+        return b"\xe8" + (self.VSYSCALL - (at + 5)).to_bytes(4, "little", signed=True)
+
+    def test_exit_group_through_vsyscall_terminates(self):
+        code = b"\xbb\x07\x00\x00\x00\xb8\xfc\x00\x00\x00"  # mov ebx, 7; mov eax, exit_group
+        code += self._call_vsyscall(len(code))
+        _, mgr = self._run(code)
+        assert len(mgr.deadended) == 1, {k: len(v) for k, v in mgr.stashes.items() if v}
+        TestPythonProcedureExit._assert_exited(mgr.deadended[0], 7)
+
+    def test_syscall_through_vsyscall_returns_after_the_call(self):
+        # getpid, then exit_group with its result as the status.
+        code = b"\xb8\x14\x00\x00\x00"  # mov eax, getpid
+        code += self._call_vsyscall(len(code))
+        code += b"\x89\xc3\xb8\xfc\x00\x00\x00"  # mov ebx, eax; mov eax, exit_group
+        code += self._call_vsyscall(len(code))
+        _, mgr = self._run(code)
+        assert len(mgr.deadended) == 1, {k: len(v) for k, v in mgr.stashes.items() if v}
+        state = mgr.deadended[0]
+        terminations = [event for event in state.history.events if event.type == "terminate"]
+        assert len(terminations) == 1
+        assert terminations[0].objects["exit_code"].concrete_value == state.posix.pid

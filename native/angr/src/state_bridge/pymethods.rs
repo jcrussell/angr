@@ -60,6 +60,18 @@ macro_rules! py_state_flag {
 
 crate::state::state_flag_list!(py_state_flags);
 
+/// Parse a pending-syscall jumpkind name, rejecting one that is not a
+/// syscall. See `RustSimState::pending_syscall`.
+pub(crate) fn parse_syscall_jumpkind(name: &str) -> PyResult<crate::vex::JumpKind> {
+    let jk = crate::vex::parse_jumpkind(name);
+    if !jk.is_syscall() {
+        return Err(PyValueError::new_err(format!(
+            "{name:?} is not a syscall jumpkind"
+        )));
+    }
+    Ok(jk)
+}
+
 #[pymethods]
 impl PyRustSimState {
     /// Create a new state for the given architecture.
@@ -707,19 +719,8 @@ impl PyRustSimState {
     /// (angr-mx00p.132.12). Rejects a jumpkind that is not a syscall.
     #[pyo3(signature = (jumpkind))]
     pub fn set_pending_syscall(&mut self, jumpkind: Option<&str>) -> PyResult<()> {
-        let parsed = match jumpkind {
-            None => None,
-            Some(name) => {
-                let jk = crate::vex::parse_jumpkind(name);
-                if !jk.is_syscall() {
-                    return Err(PyValueError::new_err(format!(
-                        "{name:?} is not a syscall jumpkind"
-                    )));
-                }
-                Some(jk)
-            }
-        };
-        self.inner.set_pending_syscall(parsed);
+        self.inner
+            .set_pending_syscall(jumpkind.map(parse_syscall_jumpkind).transpose()?);
         Ok(())
     }
 

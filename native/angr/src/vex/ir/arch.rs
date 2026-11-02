@@ -66,6 +66,9 @@ pub enum JumpKind {
     Sys_int,
     /// `int 0x20`.
     Sys_int32,
+    /// Bare `Ijk_Sys`: never lifted by VEX, but angr's `_vsyscall`
+    /// SimProcedure (the i386 `__kernel_vsyscall` hook) exits with it.
+    Sys,
     /// Client request (Valgrind).
     ClientReq,
     /// Yield (threading).
@@ -122,6 +125,7 @@ impl JumpKind {
                 | JumpKind::Sys_sysenter
                 | JumpKind::Sys_int
                 | JumpKind::Sys_int32
+                | JumpKind::Sys
         )
     }
 
@@ -191,6 +195,7 @@ impl JumpKind {
             JumpKind::Sys_sysenter => "Ijk_Sys_sysenter",
             JumpKind::Sys_int => "Ijk_Sys_int",
             JumpKind::Sys_int32 => "Ijk_Sys_int32",
+            JumpKind::Sys => "Ijk_Sys",
             JumpKind::ClientReq => "Ijk_ClientReq",
             JumpKind::Yield => "Ijk_Yield",
             JumpKind::EmWarn => "Ijk_EmWarn",
