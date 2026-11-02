@@ -606,19 +606,7 @@ impl<'a> VEXInterpreter<'a> {
         let dirty_bytes: Option<Vec<u8>> = if self.is_code_range_dirtied(addr, VEX_MAX_BYTES as u64)
         {
             self.rust_memory.as_ref().and_then(|rust_mem| {
-                let mut max_bytes = VEX_MAX_BYTES;
-                for &hook_addr in self.hook_addrs.iter() {
-                    // Distance rather than `hook_addr < addr + max_bytes`: the
-                    // lift window is guest-PC-relative and `addr + max_bytes`
-                    // overflows for a block at the top of the address space.
-                    // A `hook_addr` below `addr` wraps to a huge delta and so
-                    // fails the `< max_bytes` test, as the old `>` guard did.
-                    let delta = hook_addr.wrapping_sub(addr);
-                    if delta > 0 && delta < max_bytes as u64 {
-                        max_bytes = delta as usize;
-                    }
-                }
-                rust_mem.read_concrete_bytes_for_lift(addr, max_bytes)
+                rust_mem.read_concrete_bytes_for_lift(addr, self.lift_window(addr))
             })
         } else {
             None
@@ -697,9 +685,10 @@ impl<'a> VEXInterpreter<'a> {
             return Err(NativeLiftMiss::Thumb);
         }
 
-        let bytes = self
+        let mut bytes = self
             .native_lift_source_bytes(addr)
             .ok_or(NativeLiftMiss::NoConcreteBytes)?;
+        bytes.truncate(self.lift_window(addr));
 
         // Same precedence as the callback path: per-address override, then
         // the global level, then the engine default inside the lifter.
@@ -729,6 +718,29 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         Ok(irsb)
+    }
+
+    /// The byte budget for a lift at `addr`: [`VEX_MAX_BYTES`], cut at the
+    /// first hook past `addr`, as Python's `VEXLifter._first_stoppoint` cuts
+    /// a block at a hooked address. The IMark check stops the run there
+    /// anyway, but a block lifted through the hook is optimized as a whole:
+    /// libVEX drops a register Put that a later instruction overwrites, so
+    /// stopping at the hook's IMark leaves the register stale (mips
+    /// test_loops: `lw $v0` before a hooked `sll $v0`; angr-mx00p.132.5).
+    pub(super) fn lift_window(&self, addr: u64) -> usize {
+        let mut max_bytes = VEX_MAX_BYTES;
+        for &hook_addr in self.hook_addrs.iter() {
+            // Distance rather than `hook_addr < addr + max_bytes`: the
+            // lift window is guest-PC-relative and `addr + max_bytes`
+            // overflows for a block at the top of the address space.
+            // A `hook_addr` below `addr` wraps to a huge delta and so
+            // fails the `< max_bytes` test, as the old `>` guard did.
+            let delta = hook_addr.wrapping_sub(addr);
+            if delta > 0 && delta < max_bytes as u64 {
+                max_bytes = delta as usize;
+            }
+        }
+        max_bytes
     }
 
     /// Source the block bytes for a native lift at `addr`, or `None` when no

@@ -128,8 +128,11 @@ impl<'a> VEXInterpreter<'a> {
                 self.current_insn_addr = *addr;
                 self.current_insn_len = *len;
                 self.dispatch_instruction_inspect(callbacks, *addr);
-                // Check for hooks at this address
-                if self.is_hooked(*addr) {
+                // Check for hooks at this address. The skipped hook's own
+                // instruction runs once; past it the hook is live again.
+                if self.skip_hook_once == Some(*addr) {
+                    self.skip_hook_once = None;
+                } else if self.is_hooked(*addr) {
                     return Ok(StmtResult::Exit {
                         target: *addr,
                         jumpkind: JumpKind::Boring,

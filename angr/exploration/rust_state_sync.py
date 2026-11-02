@@ -1562,7 +1562,19 @@ class RustStateSyncMixin:
         Args:
             state: The angr state to restore symbolic pages to.
             state_id: The state ID to look up cached symbolic pages.
+
+        angr-mx00p.132.5: skip when ``state.memory`` is the callback memory
+        proxy. The snapshot was imported into Rust when it was taken, so Rust
+        already holds it or something newer; storing it through the proxy
+        writes the stale snapshot over live Rust memory (mips test_loops: a
+        frame slot that held a callee-saved register before ``main`` reverted
+        to it after every hook, so the hook read zeros). Same reasoning as
+        ``_replay_rust_dirty_pages`` (angr-ryf6).
         """
+        from angr.exploration.rust_manager import _is_rust_memory_proxy
+
+        if _is_rust_memory_proxy(state.memory):
+            return
         # Try direct lookup, then ancestry chain for forked states
         symbolic_pages = self._lookup_via_ancestry(self._rust_mgr.get_state_symbolic_pages, state_id, "symbolic pages")
         if not symbolic_pages:
@@ -1631,7 +1643,14 @@ class RustStateSyncMixin:
         Args:
             state: The angr state to restore symbolic memory to.
             state_id: The state ID to look up tracked symbolic memory.
+
+        Skipped under the callback memory proxy for the reason in
+        ``_restore_symbolic_pages`` (angr-mx00p.132.5).
         """
+        from angr.exploration.rust_manager import _is_rust_memory_proxy
+
+        if _is_rust_memory_proxy(state.memory):
+            return
         # Try direct lookup, then ancestry chain for forked states
         hook_memory = self._lookup_via_ancestry(
             self._rust_mgr.get_state_hook_symbolic_memory, state_id, "hook symbolic memory"

@@ -82,6 +82,34 @@ fn imark_at_hooked_address_returns_exit() {
     });
 }
 
+/// A skipped hook lets its own instruction run once, then is live again, so
+/// a loop that comes back to it in the same run stops there (angr-mx00p.132.5).
+#[test]
+fn skip_hook_once_steps_over_the_first_imark_only() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_hook(0x3000);
+    interp.set_skip_hook_once(0x3000);
+    assert!(!interp.is_hooked(0x3000));
+    let irsb = make_irsb_with_temps(0x3000, &[]);
+    let stmt = IRStmt::IMark {
+        addr: 0x3000,
+        len: 1,
+        delta: 0,
+    };
+    with_test_host(|cb| {
+        let first = interp
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
+            .expect("imark");
+        assert!(matches!(first, StmtResult::Continue));
+        assert!(interp.is_hooked(0x3000));
+        let second = interp
+            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
+            .expect("imark");
+        assert!(matches!(second, StmtResult::Exit { target: 0x3000, .. }));
+    });
+}
+
 #[test]
 fn abihint_is_no_op() {
     let ctx = SymContext::new_mock();

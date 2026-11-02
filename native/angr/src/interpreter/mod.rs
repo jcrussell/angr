@@ -198,6 +198,12 @@ pub(crate) struct VEXInterpreter<'a> {
     /// Hook addresses (return to Python when hit).
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
     hook_addrs: Arc<FxHashSet<u64>>,
+    /// A hook to step over once: the zero-length hook the run resumes at,
+    /// already serviced by its callback. [`Self::is_hooked`] reports it
+    /// unhooked until the run's first `IMark` at that address consumes it,
+    /// so a loop that comes back to it later in the same run stops there
+    /// again (angr-mx00p.132.5).
+    skip_hook_once: Option<u64>,
     /// VEX architecture.
     arch: VexArch,
     /// Native libVEX lifter for this arch. When set (and the bytes qualify),
@@ -408,6 +414,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_addr: 0,
             current_insn_len: 0,
             hook_addrs: Arc::new(FxHashSet::default()),
+            skip_hook_once: None,
             arch,
             native_lifter: None,
             // Bounded default: this is the interpreter's own cache when it runs
@@ -788,9 +795,14 @@ impl<'a> VEXInterpreter<'a> {
         Arc::make_mut(&mut self.hook_addrs).remove(&addr);
     }
 
+    /// Step over the hook at `addr` once; see [`Self::skip_hook_once`].
+    pub(crate) fn set_skip_hook_once(&mut self, addr: u64) {
+        self.skip_hook_once = Some(addr);
+    }
+
     /// Check if an address is hooked.
     pub(crate) fn is_hooked(&self, addr: u64) -> bool {
-        self.hook_addrs.contains(&addr)
+        self.skip_hook_once != Some(addr) && self.hook_addrs.contains(&addr)
     }
 
     /// Check if we have a cached block at the given address.
@@ -846,6 +858,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_addr: self.current_insn_addr,
             current_insn_len: self.current_insn_len,
             hook_addrs: Arc::clone(&self.hook_addrs),
+            skip_hook_once: self.skip_hook_once,
             arch: self.arch,
             native_lifter: self.native_lifter,
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)

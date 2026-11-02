@@ -24,6 +24,22 @@ fn test_hook_management() {
     assert!(!interp.is_hooked(0x1000));
 }
 
+/// A lift stops short of the first hook past its start, as Python's
+/// `VEXLifter._first_stoppoint` does; a hook at or below the start does not
+/// cut it (angr-mx00p.132.5).
+#[test]
+fn lift_window_stops_at_the_next_hook() {
+    let ctx = SymContext::new_mock();
+    let mut interp = VEXInterpreter::new(VexArch::MIPS32, &ctx);
+    assert_eq!(interp.lift_window(0x1000), VEX_MAX_BYTES);
+    interp.add_hook(0x1000);
+    interp.add_hook(0x0ff0);
+    assert_eq!(interp.lift_window(0x1000), VEX_MAX_BYTES);
+    interp.add_hook(0x1008);
+    interp.add_hook(0x1010);
+    assert_eq!(interp.lift_window(0x1000), 8);
+}
+
 /// `mov.d $f0, $f2` as VEX lifts it under FR=0: an I32 copy of the `fN_lo`
 /// sub-field sitting at each register's base offset. On a big-endian MIPS32
 /// target that field is the register's HIGH word, so the standalone

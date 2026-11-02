@@ -244,21 +244,27 @@ pub(crate) fn run_interpreter_step_core(
     interp.dirty_helper_state.tsc = state.tsc_counter();
     interp.pending_syscall = state.pending_syscall();
 
-    // Set up hooks, skipping the one we just processed (for zero-length hooks)
+    // Set up hooks. The one we just processed (a zero-length hook) is
+    // stepped over once, not dropped for the whole run: a loop that comes
+    // back to it within this run must stop there again (angr-mx00p.132.5).
     for &addr in &ctx.hooks {
-        if Some(addr) != skip_addr {
-            interp.add_hook(addr);
-        }
+        interp.add_hook(addr);
     }
 
-    // Register SimProcedures, also skipping the one we just processed.
+    // Register SimProcedures.
     // The tuple's `no_return` stays behind on purpose: it is read at dispatch
     // time out of `ctx.simprocedures`, not through the interpreter (see
     // `SimProcedureInfo`).
     for (addr, (name, num_args, _no_return)) in &ctx.simprocedures {
-        if Some(*addr) != skip_addr {
-            interp.register_simprocedure(*addr, name.clone(), *num_args);
-        }
+        interp.register_simprocedure(*addr, name.clone(), *num_args);
+    }
+    // A find/avoid stop at the same address stays armed, as it was when the
+    // skipped hook was left out of the set instead.
+    if let Some(addr) = skip_addr
+        && !ctx.find_addrs.contains(&addr)
+        && !ctx.avoid_addrs.contains(&addr)
+    {
+        interp.set_skip_hook_once(addr);
     }
 
     // Register the native sub-call resume sentinel (S2, bead angr-5gf0s):
