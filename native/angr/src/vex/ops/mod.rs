@@ -1371,6 +1371,10 @@ test_submod!(tests_conversions);
 // hand-written per-op rm cases above).
 test_submod!(tests_rounding_mode_sweep);
 
+// FP arithmetic against the SSE unit under each MXCSR rounding mode.
+#[cfg(target_arch = "x86_64")]
+test_submod!(tests_hw_rounding);
+
 test_submod!(tests_vec_lane);
 
 test_submod!(tests_vec_shift);
