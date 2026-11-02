@@ -24,14 +24,14 @@
 //!
 //! A scalar float op takes FP-sorted claripy ASTs, as `irop.py` does: an
 //! operand enters as its IEEE bits ([`import_float`]) and a float result
-//! leaves wrapped back in `bvToFP` (`Iop_CmpF*` returns its I32 condition code
+//! leaves FP-sorted ([`export_result`]) (`Iop_CmpF*` returns its I32 condition code
 //! as a bitvector, and a float-to-int conversion its integer). An
 //! int-to-float conversion takes a bitvector and returns an FP-sorted result
 //! the same way.
 
 use std::sync::LazyLock;
 
-use clarirs_core::prelude::{AstFactory, AstOp, AstRef, AstType, FSort};
+use clarirs_core::prelude::{AstFactory, AstOp, AstRef, AstType, ClarirsError, FSort};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use rustc_hash::FxHashMap;
@@ -215,22 +215,13 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         // SILENT(cat-a): a width or arity irop.py extends or rejects itself.
         return Ok(None);
     };
-    let Ok(ast) = result
-        .to_clarirs()
-        .and_then(|ast| match op.result_type() {
-            Some(IRType::F32) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f32()),
-            Some(IRType::F64) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f64()),
-            _ => Ok(ast),
-        })
-        .and_then(|ast| ast.simplify_ext(true, true))
-        .and_then(|ast| {
-            if carried.is_empty() {
-                Ok(ast)
-            } else {
-                ast.annotate(carried)
-            }
-        })
-    else {
+    let Ok(ast) = export_result(op, &result).and_then(|ast| {
+        if carried.is_empty() {
+            Ok(ast)
+        } else {
+            ast.annotate(carried)
+        }
+    }) else {
         // SILENT(cat-a): irop.py serves the call.
         return Ok(None);
     };
@@ -240,6 +231,25 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     }
     let out = Base::from_ast(py, ast)?;
     Ok(Some(out.into_any().unbind()))
+}
+
+/// The simplified clarirs term for `op`'s `result`. A float result leaves
+/// FP-sorted: a literal one goes straight to the `FPV` that `simplify_ext`
+/// would fold `bvToFP(BVV)` into (bit for bit, NaN payloads included) without
+/// building either node (angr-mx00p.101.17), a symbolic one wrapped in `bvToFP`.
+fn export_result(op: IROp, result: &RustBV) -> Result<AstRef<'static>, ClarirsError> {
+    let fsort = match op.result_type() {
+        Some(IRType::F32) => FSort::f32(),
+        Some(IRType::F64) => FSort::f64(),
+        _ => return result.to_clarirs()?.simplify_ext(true, true),
+    };
+    match (result.as_u128(), result.width()) {
+        (Some(bits), 32) => GLOBAL_CONTEXT.fpv(f32::from_bits(bits as u32)),
+        (Some(bits), 64) => GLOBAL_CONTEXT.fpv(f64::from_bits(bits as u64)),
+        _ => GLOBAL_CONTEXT
+            .bv_to_fp(result.to_clarirs()?, fsort)?
+            .simplify_ext(true, true),
+    }
 }
 
 /// The operand float type of a served scalar float op
