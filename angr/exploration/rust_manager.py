@@ -403,15 +403,21 @@ def _unsupported_inspect_events(state) -> list[str]:
     Registering one of these on a Rust-owned state raises (see
     ``_format_unsupported_event_msg``, ``rust_state_proxy.py``), so a seeding
     state that carries one is a Python workload — the raise would otherwise be
-    the regression the moment the default engine flips.
+    the regression the moment the default engine flips. The events in
+    ``_RUST_INSPECT_BOUNCE_ONLY_EVENTS`` register, but would silently miss
+    every natively served call, so they count too.
     """
     inspector = getattr(state, "inspect", None)
     breakpoints = getattr(inspector, "_breakpoints", None)
     if not breakpoints:
         return []
-    from angr.exploration.rust_state_proxy import _RUST_INSPECT_SUPPORTED_EVENTS
+    from angr.exploration.rust_state_proxy import _RUST_INSPECT_BOUNCE_ONLY_EVENTS, _RUST_INSPECT_SUPPORTED_EVENTS
 
-    return sorted(event for event, bps in breakpoints.items() if bps and event not in _RUST_INSPECT_SUPPORTED_EVENTS)
+    return sorted(
+        event
+        for event, bps in breakpoints.items()
+        if bps and (event not in _RUST_INSPECT_SUPPORTED_EVENTS or event in _RUST_INSPECT_BOUNCE_ONLY_EVENTS)
+    )
 
 
 # Every manager constructed in this process that is still alive (see _collect_dead_managers).

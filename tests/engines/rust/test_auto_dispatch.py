@@ -131,6 +131,16 @@ class TestEligibilityPredicate:
         assert eligible is False
         assert "engine_process" in reason
 
+    @pytest.mark.parametrize("event", ["simprocedure", "syscall"])
+    def test_bounce_only_inspect_breakpoint_routes_python(self, fauxware_project, event):
+        """angr-mx00p.132.20: these BPs register on Rust but miss every natively
+        served call, so a seed overriding a syscall result found nothing."""
+        state = fauxware_project.factory.entry_state()
+        state.inspect.b(event, action=lambda _s: None)
+        eligible, reason = rust_engine_eligible(fauxware_project, [state], {})
+        assert eligible is False
+        assert event in reason
+
     def test_supported_inspect_breakpoint_stays_eligible(self, fauxware_project):
         state = fauxware_project.factory.entry_state()
         state.inspect.b("mem_read", action=lambda _s: None)

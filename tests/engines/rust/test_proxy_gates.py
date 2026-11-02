@@ -1093,6 +1093,18 @@ class TestCallbackCallStackProxy:
         assert cb_state.callstack.category == "callstack"
         assert cb_state.callstack.state is cb_state
 
+    def test_call_ret_take_callstack_keywords(self, fauxware_project):
+        """angr-mx00p.132.20: ``SimProcedure.call`` with a non-``Ijk_Call``
+        jumpkind passes ``retn_target`` / ``stack_pointer`` by keyword."""
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        seed_id = mgr._rust_mgr.get_state_ids("active")[0]
+        cb_state = fauxware_project.factory.entry_state()
+        mgr._install_callback_callstack_proxy(cb_state, seed_id)
+        cs = cb_state.callstack
+        assert cs.call(0x1000, 0x2000, retn_target=0x1005, stack_pointer=0x7FFF0000) is cs
+        assert cs.ret(retn_target=0x1005) is cs
+
     def test_install_copy_returns_proxy(self, fauxware_project):
         """``copy()`` returns a fresh ``RustCallStackProxyPlugin`` bound
         to the same Rust state."""

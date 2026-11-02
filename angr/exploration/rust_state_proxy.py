@@ -3096,11 +3096,14 @@ class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin
         l.debug("RustCallStackProxyPlugin.pop() is a no-op stub")
         return self
 
-    def call(self, _callsite_addr, _addr, _retn_target=None, _stack_pointer=None):
+    # Parameter names match ``CallStack.call`` / ``CallStack.ret``:
+    # ``SimProcedure.call`` passes ``retn_target`` and ``stack_pointer`` by
+    # keyword.
+    def call(self, callsite_addr, addr, retn_target=None, stack_pointer=None):  # pylint:disable=unused-argument
         l.debug("RustCallStackProxyPlugin.call() is a no-op stub")
         return self
 
-    def ret(self, _retn_target=None):
+    def ret(self, retn_target=None):  # pylint:disable=unused-argument
         l.debug("RustCallStackProxyPlugin.ret() is a no-op stub")
         return self
 
@@ -3503,6 +3506,13 @@ _RUST_INSPECT_EVENT_BITS = {name: spec["bit"] for name, spec in _INSPECT_EVENT_S
 _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS = frozenset(
     name for name, spec in _INSPECT_EVENT_SPECS.items() if spec.get("dispatch_origin") == "python"
 )
+
+# Python-dispatched events whose BPs fire only for the calls the Rust engine
+# bounces to Python: a natively served SimProcedure or syscall fires nothing,
+# and a BP_BEFORE override of ``simprocedure_result`` is ignored
+# (angr-mx00p.132.20). ``rust_engine_eligible`` routes a seed carrying one of
+# these to the Python engine.
+_RUST_INSPECT_BOUNCE_ONLY_EVENTS = frozenset({"simprocedure", "syscall"})
 
 
 def _format_unsupported_event_msg(event_type: str) -> str:

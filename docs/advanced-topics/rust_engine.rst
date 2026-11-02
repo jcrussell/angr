@@ -201,7 +201,8 @@ family, the eager-solve options, …) or lacks a required one
 ``SimulationManager``-only kwarg the Rust manager would silently drop
 (``resilience``, ``hierarchy``, ``techniques``, …); or a seeding state
 already has a breakpoint on an ``inspect`` event the Rust engine does not
-dispatch. The predicate is
+dispatch, or on ``simprocedure`` / ``syscall``, which fire only for calls
+bounced to Python and ignore a ``simprocedure_result`` override. The predicate is
 :func:`angr.exploration.rust_manager.rust_engine_eligible`; it shares
 its option sets with the manager's own construction guard, so the two
 cannot drift. The decision and its reason are logged on the
