@@ -53,8 +53,9 @@ pub(crate) enum BlockResult {
         true_target: u64,
         false_target: u64,
     },
-    /// Hook address hit.
-    Hook { addr: u64 },
+    /// A block exit into a hooked address (a SimProcedure, or a find/avoid
+    /// stop hook); `jumpkind` is that exit's, for the history entry.
+    Hook { addr: u64, jumpkind: JumpKind },
     /// Normal block end with jumpkind.
     BlockEnd { next_addr: u64, jumpkind: JumpKind },
     /// Symbolic jump target with multiple concrete targets after concretization.

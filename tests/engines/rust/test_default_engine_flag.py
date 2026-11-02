@@ -350,3 +350,32 @@ class TestExportHistoryChain:
         divergent = next(iter(HistoryIter(found.history, end=ancestor)))
         assert divergent.recent_bbl_addrs == [0x40068E]
         assert divergent.jumpkind == "Ijk_Boring"
+
+    def test_stop_hook_state_records_the_block_into_it(self):
+        """A block whose exit lands on a hook (find/avoid stop, SimProcedure) is in the history.
+
+        On i386 fauxware the avoid address ``0x8048564`` is the branch's taken
+        exit, so the avoid state's last block, ``0x8048559``, exits straight
+        into the stop hook. That edge was dropped, so its history ended at
+        ``strcmp`` and the divergence point was ``strcmp``'s node. The PLT
+        stub that jumps into a SimProcedure's hook was dropped the same way.
+        """
+        import angr
+        from angr.state_plugins.history import HistoryIter
+
+        path = os.path.join(BIN_LOCATION, "tests", "i386", "fauxware")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        project = angr.Project(path, auto_load_libs=False, engine="rust")
+        mgr = project.factory.simulation_manager().explore(find=0x80485C9, avoid=[0x80485DD, 0x8048564])
+
+        found = mgr.found[0]
+        avoid = mgr.avoid[0]
+        assert avoid.addr == 0x8048564
+        assert avoid.history.addr == 0x8048559
+        assert avoid.history.jump_target.concrete_value == 0x8048564
+        assert 0x80483E0 in list(avoid.history.bbl_addrs)  # strcmp@plt
+        assert found.history.addr == 0x80486CA  # the call to accepted()
+        ancestor = found.history.closest_common_ancestor(avoid.history)
+        divergent = next(iter(HistoryIter(found.history, end=ancestor)))
+        assert divergent.recent_bbl_addrs == [0x8048559]

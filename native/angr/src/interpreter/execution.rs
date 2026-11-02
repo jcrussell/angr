@@ -375,7 +375,17 @@ impl<'a> VEXInterpreter<'a> {
                                 forks,
                             );
                         }
-                        BlockResult::Hook { addr } => {
+                        BlockResult::Hook { addr, jumpkind } => {
+                            // The block that exited into the hook ran, so it
+                            // gets the history entry BlockEnd would give it:
+                            // without it a find/avoid stop state's history
+                            // ends a block early and a PLT stub never shows
+                            // (angr-mx00p.132.16).
+                            self.detailed_history.push(crate::state::HistoryEntry {
+                                addr: irsb.addr,
+                                jumpkind: crate::state::HistoryEntry::jumpkind_from_vex(&jumpkind),
+                                jump_target: addr,
+                            });
                             let forks = self.take_deferred_forks();
                             // Check if this is a registered SimProcedure
                             if let Some(info) = self.simprocedure_registry.get(&addr).cloned() {

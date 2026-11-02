@@ -254,7 +254,10 @@ impl<'a> VEXInterpreter<'a> {
                     stack_ptr,
                 });
             }
-            return BlockResult::Hook { addr: target };
+            return BlockResult::Hook {
+                addr: target,
+                jumpkind,
+            };
         }
 
         // For CALL instructions to external code, ask Python to resolve

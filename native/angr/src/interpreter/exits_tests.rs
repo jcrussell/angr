@@ -55,7 +55,7 @@ fn handle_exit_hooked_address_returns_hook() {
     add_internal_region(&mut interp);
     interp.add_hook(0x1500);
     match interp.handle_exit(0x1500, JumpKind::Boring) {
-        BlockResult::Hook { addr } => assert_eq!(addr, 0x1500),
+        BlockResult::Hook { addr, .. } => assert_eq!(addr, 0x1500),
         other => panic!("expected Hook, got {other:?}"),
     }
 }
