@@ -763,6 +763,20 @@ def _sim_unsat(f):
     return wrapped
 
 
+class _RustConstraintView:
+    """The read-only claripy-frontend surface ``RustSolverProxyPlugin._solver`` returns."""
+
+    __slots__ = ("constraints",)
+
+    def __init__(self, constraints):
+        self.constraints = list(constraints)
+
+    @property
+    def variables(self) -> set[str]:
+        """Names of the variables the constraints mention, as ``claripy`` frontends report them."""
+        return set().union(*(c.variables for c in self.constraints))
+
+
 class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     """SimSolver-shaped plugin that routes constraint ops through Rust.
 
@@ -862,6 +876,17 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # SimSolver.downsize clears Python claripy caches; the proxy has no
         # Python solver state, so this is a no-op.
         pass
+
+    @property
+    def _solver(self):
+        """``SimSolver._solver`` stand-in: a read-only view of the Rust path condition.
+
+        Callers read ``state.solver._solver.variables`` / ``.constraints``
+        (angr-mx00p.132.26). The view has no ``add``, so a write through it
+        fails loudly instead of landing on a detached frontend; use
+        ``state.solver.add``.
+        """
+        return _RustConstraintView(self.constraints)
 
     def simplify(self, e=None):
         """``state.solver.simplify(expr)`` — delegates to claripy.

@@ -1455,8 +1455,11 @@ class RustStateExportMixin:
         ``posix.dumps(0)`` on a finished state, wrong for one that keeps
         running, whose later constraints must stay on the input symbols. The
         packet becomes those symbols, already read, so the re-import seeds them
-        to Rust as consumed (``_seed_stdin_to_rust``). Left alone when the
-        stream also holds harness packets, whose read position Rust owns.
+        to Rust as consumed (``_seed_stdin_to_rust``). Rust records only the
+        bytes it read past the seeded content (``mint_stdin_bytes``), so the
+        packet follows any seeded packets on the stream, and every packet
+        counts as read: dropping it lost the bytes a re-imported Veritesting
+        successor read natively (angr-mx00p.132.26).
         """
         if not self._rust_mgr.has_state_stdin_symbols(state_id):
             return
@@ -1465,8 +1468,6 @@ class RustStateExportMixin:
         if not isinstance(content, list):
             return
         self._drop_stale_rust_stdin_packets(stdin)
-        if content:
-            return
         leaves = []
         for name, bits in self._rust_mgr.get_state_stdin_symbols(state_id):
             sym = claripy.BVS(name, bits, explicit_name=True)

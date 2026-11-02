@@ -1097,6 +1097,27 @@ class TestStateMetadataStorage:
         assert live_sid in mgr._state_cache
         assert dead_sid not in mgr._state_cache, "states absent from active/found stashes must be dropped from cache"
 
+    def test_cleanup_state_cache_keeps_held_step_state_successors(self, fauxware_project):
+        """A successor a step_state hook parked in the hold stash rejoins
+        active next batch, so its cached SimState (the stdin Python read for
+        it) must survive the native run's cleanup (angr-mx00p.132.26).
+        """
+        from angr.exploration.rust_techniques import _VT_HOLD_STASH
+
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr._state_cache.clear()
+        mgr._state_roots = {}
+        mgr._current_callback_state_id = None
+        mgr._current_stepping_state_id = None
+
+        held_sid = mgr._rust_mgr.create_state(_VT_HOLD_STASH)
+        mgr._state_cache[held_sid] = proj.factory.entry_state()
+
+        mgr._cleanup_state_cache()
+
+        assert held_sid in mgr._state_cache
+
     def test_cleanup_state_cache_skips_pinned(self, fauxware_project):
         """``_cleanup_state_cache`` Step 2: pinned ids (roots, current
         callback state, stepping target) are exempt from eviction even

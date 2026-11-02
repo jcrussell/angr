@@ -545,6 +545,25 @@ class TestRustInspectMarshalling:
         assert any(str(c) == str(x == 7) for c in cons)
         assert not any(str(c) == str(x == 99) for c in cons)
 
+    def test_solver_view_reports_constraint_variables(self, fauxware_project):
+        """``state.solver._solver`` reads the Rust path condition (angr-mx00p.132.26).
+
+        Upstream callers check ``state.solver._solver.variables``; the view
+        has no ``add``, so a write through it cannot silently go nowhere.
+        """
+        from angr import claripy
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        plugin = RustSolverProxyPlugin(mgr._rust_mgr, sid, python_mgr=mgr)
+        x = claripy.BVS("view_x", 32)
+        plugin.add(x == 42)
+
+        view = plugin._solver
+        assert x.args[0] in view.variables
+        assert any(str(c) == str(x == 42) for c in view.constraints)
+        assert not hasattr(view, "add")
+
     def test_native_fork_guard_fires_constraints_bp(self, fauxware_project):
         """The native fork-guard add fires the constraints BP (angr-op0dn.14.4.1).
 

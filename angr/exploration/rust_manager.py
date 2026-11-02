@@ -109,6 +109,7 @@ from angr.exploration.rust_state_binding import binding_of
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_state_export import RustStateExportMixin
 from angr.exploration.rust_state_sync import RustStateSyncMixin, _ultrapage_bytes
+from angr.exploration.rust_techniques import _VT_HOLD_STASH
 
 # Envelope head written by RustExplorationManager.dump_snapshot. A file without
 # it is a pre-bucket-D snapshot (bare Rust bytes) and still loads.
@@ -5218,6 +5219,11 @@ class RustExplorationManager(
 
         try:
             active_set = set(self._rust_mgr.get_state_ids("active"))
+            # A step_state hook parks its live successors in the hold stash
+            # while the native run steps the rest; they rejoin active next
+            # batch, and their cached SimState is the only record of the stdin
+            # Python read for them (angr-mx00p.132.26).
+            active_set.update(self._rust_mgr.get_state_ids(_VT_HOLD_STASH))
             found_set = set(self._rust_mgr.get_state_ids("found"))
         except (RuntimeError, KeyError):
             # cat-(b) FALLBACK WITH LOSS: cannot read live state IDs; skip this

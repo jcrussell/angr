@@ -1658,15 +1658,15 @@ class TestEfficientStateMergingHonored:
         assert merge_peak < base_peak, f"merge peak ({merge_peak}) must be strictly below no-merge peak ({base_peak})"
 
 
-def _locate_veritesting_a():
-    """Return the path to the angr/binaries ``veritesting_a`` x86_64 test binary,
+def _locate_veritesting(name="veritesting_a"):
+    """Return the path to the angr/binaries ``name`` x86_64 test binary,
     or None when the binaries repo isn't checked out (local dev without
     ../binaries). CI checks out angr/binaries so the merge assertion runs there.
     """
     candidates = [
-        os.path.join(BIN_LOCATION, "tests", "x86_64", "veritesting_a"),
-        os.path.expanduser("~/repos/binaries/tests/x86_64/veritesting_a"),
-        os.path.expanduser("~/binaries/tests/x86_64/veritesting_a"),
+        os.path.join(BIN_LOCATION, "tests", "x86_64", name),
+        os.path.expanduser(f"~/repos/binaries/tests/x86_64/{name}"),
+        os.path.expanduser(f"~/binaries/tests/x86_64/{name}"),
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -1795,7 +1795,7 @@ class TestVeritestingNativeDispatch:
         repo isn't checked out (local dev)."""
         from angr.exploration_techniques import Veritesting
 
-        binary = _locate_veritesting_a()
+        binary = _locate_veritesting()
         if binary is None:
             pytest.skip("veritesting_a binary not found (angr/binaries not checked out)")
 
@@ -1812,6 +1812,32 @@ class TestVeritestingNativeDispatch:
         )
         # The find is guarded by an input with exactly ten 'B' bytes.
         assert mgr.found[0].posix.dumps(0).count(b"B") == 10
+
+    def test_veritesting_b_keeps_stdin_across_reimports(self):
+        """Each re-imported successor keeps the stdin it read (angr-mx00p.132.26).
+
+        veritesting_b reads one byte per loop trip, so a successor parked in
+        the hold stash next reads natively on top of the bytes Python read
+        for it. Evicting its cached SimState during the native run, or
+        dropping the byte Rust read when the stream already held Python's
+        packets, restarted stdin every trip: the find was reached with a lone
+        newline instead of 35 'B's.
+        """
+        from angr.exploration_techniques import Veritesting
+
+        binary = _locate_veritesting("veritesting_b")
+        if binary is None:
+            pytest.skip("veritesting_b binary not found (angr/binaries not checked out)")
+
+        proj = angr.Project(binary, load_options={"auto_load_libs": False}, use_sim_procedures=True)
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.use_technique(Veritesting(enable_function_inlining=True))
+        mgr.explore(find=0x4006AF, max_steps=4000)
+
+        assert len(mgr.found) == 1
+        found = mgr.found[0]
+        assert found.posix.dumps(0).count(b"B") == 35
+        assert not any("state_merge" in v for v in found.solver._solver.variables)
 
     def test_applied_path_reimports_successors(self, fauxware_project):
         """Exercise the APPLIED branch (re-import of a step_state hook's
