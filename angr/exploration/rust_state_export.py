@@ -18,6 +18,7 @@ from angr import claripy
 from angr.errors import SimUnsatError
 from angr.exploration.rust_state_binding import RustStateBinding
 from angr.state_plugins.history import SimStateHistory
+from angr.state_plugins.scratch import SimStateScratch
 
 if TYPE_CHECKING:
     import angr
@@ -179,6 +180,65 @@ def _concrete_stream_bytes(state, stream) -> bytes | None:
     if data.symbolic:
         return None
     return state.solver.eval(data, cast_to=bytes)
+
+
+class _RustExportedScratch(SimStateScratch):
+    """``SimStateScratch`` whose ``irsb`` is lifted on first read.
+
+    The Rust interpreter keeps no IRSB on the state, only the address of the
+    block it last executed (the last detailed-history entry). An export
+    records that address and this class lifts it when ``scratch.irsb`` is
+    read (BackwardSlice does; angr-mx00p.132.24), so exports nobody slices
+    pay nothing. A write, the Python engine's included, replaces the
+    pending lift.
+    """
+
+    @property
+    def irsb(self):
+        irsb = self.__dict__.get("irsb")
+        addr = self.__dict__.pop("_rust_irsb_addr", None)
+        if irsb is None and addr is not None:
+            project = self.state.project
+            if project is not None and not project.is_hooked(addr):
+                # cat-(b) FALLBACK WITH LOSS: an address that no longer lifts
+                # reads as None, the pre-block default.
+                try:
+                    irsb = project.factory.block(addr).vex
+                except Exception:  # pylint: disable=broad-exception-caught
+                    l.debug("scratch.irsb: block %#x does not lift", addr, exc_info=True)
+                self.__dict__["irsb"] = irsb
+        return irsb
+
+    @irsb.setter
+    def irsb(self, value):
+        self.__dict__.pop("_rust_irsb_addr", None)
+        self.__dict__["irsb"] = value
+
+    @SimStateScratch.memo
+    def copy(self, memo):  # pylint: disable=unused-argument
+        # Park the pending address so the base copy's ``irsb`` read does not
+        # lift; both copies keep it pending.
+        addr = self.__dict__.pop("_rust_irsb_addr", None)
+        c = _RustExportedScratch(scratch=self)
+        if addr is not None:
+            self.__dict__["_rust_irsb_addr"] = addr
+            c.__dict__["_rust_irsb_addr"] = addr
+        return c
+
+
+def _install_rust_last_block(state, block_addr: int) -> None:
+    """Point ``state.scratch`` at the block Rust executed last.
+
+    Sets ``bbl_addr`` and defers ``irsb`` to :class:`_RustExportedScratch`.
+    Only a clean ``SimStateScratch`` is promoted, as for history.
+    """
+    scratch = getattr(state, "scratch", None)
+    if scratch is None or type(scratch) not in (SimStateScratch, _RustExportedScratch):
+        return
+    scratch.__class__ = _RustExportedScratch
+    scratch.bbl_addr = block_addr
+    scratch.__dict__["irsb"] = None
+    scratch.__dict__["_rust_irsb_addr"] = block_addr
 
 
 def _install_rust_history_warning(state) -> None:
@@ -959,8 +1019,19 @@ class RustStateExportMixin:
         self._sync_rust_mmap_base_to_state(state, state_id)
         self._sync_rust_posix_brk_to_state(state, state_id)
         self._sync_rust_heap_brk_to_state(state, state_id)
+        self._sync_rust_last_block_to_state(state, state_id)
         state.scratch.rust_fully_synced = True
         state.scratch.rust_mirror_id = state_id
+
+    def _sync_rust_last_block_to_state(self, state, state_id: int) -> None:
+        """Point a cached copy's ``scratch`` at the block Rust executed last."""
+        from angr.exploration.rust_state_proxy import _rust_state_get
+
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable state
+        # keeps the template's scratch.
+        addr = _rust_state_get(self._rust_mgr, "get_state_last_block_addr", state_id)
+        if addr is not None:
+            _install_rust_last_block(state, addr)
 
     def _finalize_materialized_state(self, state) -> None:
         """Per-state stdin restore + posix weakref fix.
@@ -1355,6 +1426,7 @@ class RustStateExportMixin:
         detailed = snapshot.get_detailed_history_str()
         if detailed:
             state.history.jumpkind = detailed[-1][1]
+            _install_rust_last_block(state, detailed[-1][0])
         self._bind_export(state, snapshot.state_id, snapshot=not mirror)
         return state
 

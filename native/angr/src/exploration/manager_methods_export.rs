@@ -448,6 +448,15 @@ impl RustExplorationManager {
         self._get_state_detailed_history(state_id)
     }
 
+    /// Address of the block a state executed last (the newest detailed-history
+    /// entry), or `None` before its first block. One entry instead of the
+    /// whole history: every export reads it for `scratch.irsb`.
+    pub fn get_state_last_block_addr(&self, state_id: u64) -> PyResult<Option<u64>> {
+        self.with_state(state_id, |state| {
+            Ok(state.detailed_history().back().map(|e| e.addr))
+        })
+    }
+
     /// Get heap metadata for a state by ID.
     ///
     /// Returns dict with:

@@ -23,6 +23,8 @@ The invariants this file pins:
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from angr.engines import UberEngine
@@ -30,7 +32,7 @@ from angr.errors import AngrError
 from angr.exploration import RustExplorationManager
 from angr.exploration_techniques import DFS, Director, ExplorationTechnique
 from angr.sim_manager import SimulationManager
-from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
+from tests.engines.conftest import BIN_LOCATION, RUST_EXPLORATION_AVAILABLE, load_fauxware
 
 pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
@@ -261,3 +263,34 @@ class TestParityUnderTheFlag:
         assert routed_kind is SimulationManager
         assert py_kind is SimulationManager
         assert routed_addr == py_addr
+
+
+class TestDefaultRoutedStepIsOneBlock:
+    """A default-routed ``step()`` runs one block and exports its IRSB (angr-mx00p.132.24).
+
+    Upstream ``test_slicing`` reads ``simgr.active[0].scratch.irsb`` after one
+    ``step()`` from armel fauxware's ``0x86dc``. Under Rust the step chained into
+    the fallthrough's ``bl accepted``, the export left ``scratch.irsb`` None, and
+    the history entry named the block's last ``PUT(pc)`` rather than its start.
+    """
+
+    def test_step_exports_the_executed_block(self):
+        import angr
+
+        path = os.path.join(BIN_LOCATION, "tests", "armel", "fauxware")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        project = angr.Project(path, auto_load_libs=False, engine="rust")
+        mgr = project.factory.simulation_manager(project.factory.blank_state(addr=0x86DC))
+        assert isinstance(mgr, RustExplorationManager)
+
+        mgr.step()
+
+        assert sorted(s.addr for s in mgr.active) == [0x86F0, 0x86F8]
+        for state in mgr.active:
+            assert state.scratch.bbl_addr == 0x86DC
+            assert state.scratch.irsb.addr == 0x86DC
+            # The executed block, not a re-lift at the successor.
+            assert state.scratch.irsb.default_exit_target == 0x86F0
+        # The toggle is scoped to the call.
+        assert mgr.set_block_granular(False) is False

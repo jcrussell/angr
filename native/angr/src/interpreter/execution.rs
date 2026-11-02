@@ -291,8 +291,12 @@ impl<'a> VEXInterpreter<'a> {
                             }
 
                             // Record detailed history entry
+                            // `irsb.addr`, not `self.pc`: an ARM block's per-insn
+                            // `PUT(pc)` has already moved `self.pc` off the block
+                            // start, and exports lift this addr for
+                            // `scratch.irsb` (angr-mx00p.132.24).
                             self.detailed_history.push(crate::state::HistoryEntry {
-                                addr: self.pc, // block that just executed
+                                addr: irsb.addr, // block that just executed
                                 jumpkind: crate::state::HistoryEntry::jumpkind_from_vex(&jumpkind),
                                 jump_target: next_addr,
                             });

@@ -5402,6 +5402,24 @@ class RustExplorationManager(
         # any previously-cached Python mirrors are about to go stale.
         self._invalidate_state_export_cache()
 
+        # A default-routed manager promises Python's step semantics: one basic
+        # block per step, so the successor's ``scratch.irsb`` is the block it
+        # just left (BackwardSlice reads it; angr-mx00p.132.24). An explicit
+        # ``engine="rust"`` manager keeps block chaining for throughput and
+        # opts in with ``set_block_granular`` (``block-granular-step-mode``).
+        was_granular = self.set_block_granular(True) if self._python_handoff_kwargs is not None else None
+        try:
+            self._step_loop(n)
+        finally:
+            if was_granular is not None:
+                self.set_block_granular(was_granular)
+
+        self._release_gone_exports()
+        self._drain_solver_graveyard()
+        return self
+
+    def _step_loop(self, n: int) -> None:
+        """Run ``n`` steps for :meth:`step`, stopping early on a callback or an empty stash."""
         steps_taken = 0
         while steps_taken < n:
             self._sync_hooks_before_step()
@@ -5429,10 +5447,6 @@ class RustExplorationManager(
                     self._apply_technique_filters()
             else:
                 steps_taken += 1
-
-        self._release_gone_exports()
-        self._drain_solver_graveyard()
-        return self
 
     @staticmethod
     def _drain_solver_graveyard() -> None:
