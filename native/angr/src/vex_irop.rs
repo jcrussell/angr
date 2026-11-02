@@ -29,12 +29,12 @@
 //! int-to-float conversion takes a bitvector and returns an FP-sorted result
 //! the same way.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use clarirs_core::prelude::{AstFactory, AstOp, AstRef, AstType, FSort};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use rustc_hash::FxHashMap;
 
 use crate::ailment::vexop_names::IROP_NAMES;
 use crate::claripy::ast::GLOBAL_CONTEXT;
@@ -45,7 +45,7 @@ use crate::vex::opcode_map::parse_opcode;
 use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec, is_vector_float_op};
 
 /// The libVEX names [`irop`] serves, with their parsed opcodes.
-static SERVED: LazyLock<HashMap<&'static str, IROp>> = LazyLock::new(|| {
+static SERVED: LazyLock<FxHashMap<&'static str, IROp>> = LazyLock::new(|| {
     IROP_NAMES
         .iter()
         .filter_map(|&name| {

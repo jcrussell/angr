@@ -26,6 +26,7 @@ clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
 log = "0.4.32"
 num-bigint = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
+smallvec = "1.15"
 thiserror = { workspace = true }
 
 [dev-dependencies]

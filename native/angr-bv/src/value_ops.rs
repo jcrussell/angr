@@ -1223,6 +1223,29 @@ impl SymBV {
         self.concat_owned(other)
     }
 
+    /// One n-ary `Concat` of `parts`, HIGH bits first, when any part is
+    /// symbolic and there are more than two: a vector's lanes as one node, the
+    /// shape claripy's `Concat(*lanes)` simplifies to, rather than a chain of
+    /// binary nodes simplify must flatten (angr-mx00p.102.8). Otherwise the
+    /// parts fold pairwise through [`Self::concat_into`].
+    pub fn concat_many(parts: Vec<SymBV>) -> Self {
+        let parts: Vec<SymBV> = parts.into_iter().filter(|p| p.width() > 0).collect();
+        if parts.len() > 2
+            && parts.iter().any(SymBV::is_symbolic)
+            && let Ok(terms) = parts
+                .iter()
+                .map(SymBV::to_clarirs)
+                .collect::<Result<Vec<_>, _>>()
+            && let Ok(term) = GLOBAL_CONTEXT.concat(terms)
+        {
+            return Self::from_clarirs_lowerable(term);
+        }
+        parts
+            .into_iter()
+            .reduce(Self::concat_into)
+            .unwrap_or(SymBV::Concrete { value: 0, width: 0 })
+    }
+
     /// Build a balanced Concat tree from `parts`, ordered HIGH bits first
     /// and LOW bits last (i.e. `parts\[0\]` becomes the high bits of the
     /// result, `parts[parts.len()-1]` becomes the low bits).
@@ -1764,20 +1787,29 @@ pub(super) fn drive_extract<T: ExtractTarget>(
                 return target.recurse(&operands[0], inner_low + high, inner_low + low);
             }
 
-            // Rule 2: Extract(Concat(a, b)) → distribute to the relevant part(s)
-            BVOp::Concat if operands.len() == 2 => {
-                let b_width = operands[1].width();
-                if high < b_width {
-                    // Entirely within the low part (b)
-                    return target.recurse(&operands[1], high, low);
-                } else if low >= b_width {
-                    // Entirely within the high part (a)
-                    return target.recurse(&operands[0], high - b_width, low - b_width);
+            // Rule 2: Extract(Concat(a, .., z)) → distribute to the part(s) the range covers, joined high to low.
+            // A Concat may have any number of parts (`SymBV::concat_many`, or claripy's own).
+            BVOp::Concat => {
+                let mut pieces = Vec::new();
+                let mut base = 0u32;
+                // Lowest part first.
+                for part in operands.iter().rev() {
+                    // overflow-ok: the parts' widths sum to the Concat's width, a u32.
+                    let top = base + part.width();
+                    if part.width() > 0 && top > low {
+                        // overflow-ok: base <= high < top here, and low < top.
+                        let (hi, lo) = (high.min(top - 1) - base, low.max(base) - base);
+                        pieces.push(target.recurse(part, hi, lo));
+                    }
+                    if top > high {
+                        break;
+                    }
+                    base = top;
                 }
-                // Crosses boundary — extract from each part and concat
-                let lo_part = target.recurse(&operands[1], b_width - 1, low);
-                let hi_part = target.recurse(&operands[0], high - b_width, 0);
-                return target.concat(hi_part, lo_part);
+                let mut pieces = pieces.into_iter().rev();
+                if let Some(highest) = pieces.next() {
+                    return pieces.fold(highest, |hi, lo| target.concat(hi, lo));
+                }
             }
 
             // Rule 3: Extract(Reverse(x)) with byte-aligned bounds.

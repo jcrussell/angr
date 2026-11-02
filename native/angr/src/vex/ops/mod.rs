@@ -1151,18 +1151,9 @@ impl VEXOps {
     /// `elements[0]` is the low-order element and `elements[len-1]` is the
     /// high-order element. Used by all vector ops with a symbolic fallback.
     #[inline]
-    #[allow(
-        clippy::expect_used,
-        reason = "every caller fills `elements` in a `for i in 0..count` loop whose `count` is the opcode table's vector lane count (>= 1 for every packed op), so the vec is never empty — see the module Panic policy header"
-    )]
     fn concat_le_elements(mut elements: Vec<RustBV>) -> RustBV {
-        let mut result = elements
-            .pop()
-            .expect("vec elements guaranteed non-empty by counted loop");
-        while let Some(elem) = elements.pop() {
-            result = result.concat_into(elem);
-        }
-        result
+        elements.reverse();
+        RustBV::concat_many(elements)
     }
 
     /// Sign-extend the low `width` bits of `value` to a 128-bit signed value.

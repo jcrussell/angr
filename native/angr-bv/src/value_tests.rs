@@ -198,6 +198,48 @@ fn test_concat_balanced_matches_linear_value() {
 }
 
 #[test]
+fn test_concat_many_symbolic_lanes_are_one_node() {
+    // angr-mx00p.102.8: a vector's lanes are one n-ary Concat, not a chain of binary ones.
+    let parts: Vec<SymBV> = (0..4).map(|i| SymBV::symbol(format!("m{i}"), 8)).collect();
+    let joined = SymBV::concat_many(parts.clone());
+    assert_eq!(joined.width(), 32);
+    assert_eq!(ast_depth(&joined), 1);
+    let node = joined.node().expect("a symbolic Concat has a node");
+    assert_eq!(node.op, BVOp::Concat);
+    assert_eq!(node.operands.as_ref(), parts.as_slice());
+}
+
+#[test]
+fn test_concat_many_literals_fold() {
+    let parts: Vec<SymBV> = [0xDE, 0xAD, 0xBE, 0xEF]
+        .iter()
+        .map(|&b| SymBV::concrete(b, 8))
+        .collect();
+    assert_eq!(SymBV::concat_many(parts).as_u64(), Some(0xDEADBEEF));
+}
+
+#[test]
+fn test_extract_distributes_over_an_nary_concat() {
+    // Rule 2 of `drive_extract` reads any number of Concat parts, highest first.
+    let parts: Vec<SymBV> = (0..4).map(|i| SymBV::symbol(format!("e{i}"), 8)).collect();
+    let joined = SymBV::concat_many(parts.clone());
+    assert_eq!(joined.extract(7, 0), parts[3]);
+    assert_eq!(joined.extract(23, 16), parts[1]);
+    assert_eq!(joined.extract(31, 24), parts[0]);
+    assert_eq!(
+        joined.extract(19, 4),
+        parts[1]
+            .extract(3, 0)
+            .concat(&parts[2])
+            .concat(&parts[3].extract(7, 4))
+    );
+    assert_eq!(
+        joined.extract(31, 8),
+        parts[0].concat(&parts[1]).concat(&parts[2])
+    );
+}
+
+#[test]
 fn test_comparison_unsigned() {
     let a = SymBV::concrete(5, 32);
     let b = SymBV::concrete(10, 32);

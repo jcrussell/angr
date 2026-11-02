@@ -23,7 +23,13 @@ use clarirs_core::GLOBAL_CONTEXT;
 type Term = AstRef<'static>;
 
 fn bvv(value: u128, width: u32) -> Result<Term, ClarirsError> {
-    GLOBAL_CONTEXT.bvv(BitVec::from((BigUint::from(value), width)))
+    // The u64 words directly: a `BigUint` round trip costs an allocation per literal (angr-mx00p.102.8).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "splitting the u128 into its u64 words"
+    )]
+    let words = smallvec::smallvec![value as u64, (value >> 64) as u64];
+    GLOBAL_CONTEXT.bvv(BitVec::new(words, width)?)
 }
 
 /// A Bool as the engine's 1-bit encoding, `ite(b, 1, 0)`.
