@@ -109,6 +109,7 @@ fn dispatch_native_resume_seeded(
                     registers: state.registers().fork(),
                     memory: None,
                     call_stack: Vec::new(),
+                    detailed_history: Vec::new(),
                 },
             );
         }

@@ -185,6 +185,7 @@ fn dispatch_hook_seeded(
                     registers: state.registers().fork(),
                     memory: None,
                     call_stack: Vec::new(),
+                    detailed_history: Vec::new(),
                 },
             );
         }

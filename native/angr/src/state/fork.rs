@@ -13,6 +13,12 @@ pub struct BranchSnapshot {
     /// materialization time, which may have called or returned since
     /// (angr-mx00p.91).
     pub call_stack: Vec<CallStackEntry>,
+    /// The detailed history at the branch, ending with the entry that leads
+    /// to the unexplored side: (branch block, its jumpkind,
+    /// `unexplored_target`). The fork base's history is that of the
+    /// continuing path, which may have run on past the branch
+    /// (angr-mx00p.132.44).
+    pub detailed_history: Vec<HistoryEntry>,
 }
 
 /// Fold one branch's Python-AST overlay map into the accumulating merged map.
@@ -396,6 +402,7 @@ impl RustSimState {
         let mut forked =
             self.fork_with(snapshot.registers, memory, snapshot.solver, next_state_id());
         forked.call_stack = snapshot.call_stack;
+        forked.set_detailed_history(snapshot.detailed_history);
         forked
     }
 

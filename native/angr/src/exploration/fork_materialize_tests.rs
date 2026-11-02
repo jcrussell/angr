@@ -301,6 +301,7 @@ fn snapshot_built_fork_replays_earlier_guards() {
             registers: base.registers().fork(),
             memory: None,
             call_stack: Vec::new(),
+            detailed_history: Vec::new(),
         },
     );
 

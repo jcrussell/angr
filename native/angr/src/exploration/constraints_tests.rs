@@ -61,6 +61,7 @@ fn pending_with_all_contexts() -> PendingCallback {
             registers: state.registers().fork(),
             memory: None,
             call_stack: Vec::new(),
+            detailed_history: Vec::new(),
         },
     );
     let pre_callback_snapshot = Some(state.fork());

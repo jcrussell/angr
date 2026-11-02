@@ -466,6 +466,28 @@ impl<'a> VEXInterpreter<'a> {
                 // snapshot includes all writes up to this branch point.
                 self.flush_stores_to_rust_memory();
 
+                // Decide which path to take based on branch direction.
+                // For backward branches (loops), take the exit (loop back)
+                // and defer the fall-through (loop exit). For forward branches,
+                // take the fall-through and defer the exit. VEX often inverts
+                // forward branch conditions (e.g., `jne target` becomes
+                // `if (eq) goto exit; NEXT: target`), so fall-through follows
+                // the natural execution flow for forward branches.
+                let is_backward_branch = dst < self.current_insn_addr;
+                let (unexplored_target, unexplored_jumpkind) = if is_backward_branch {
+                    (false_target, crate::state::HistoryEntry::JK_BORING)
+                } else {
+                    (dst, crate::state::HistoryEntry::jumpkind_from_vex(&jk))
+                };
+                // The unexplored side's history: this step's entries so far,
+                // then the edge out of this block (angr-mx00p.132.44).
+                let mut detailed_history = self.detailed_history.clone();
+                detailed_history.push(crate::state::HistoryEntry {
+                    addr: irsb.addr,
+                    jumpkind: unexplored_jumpkind,
+                    jump_target: unexplored_target,
+                });
+
                 // Snapshot full state BEFORE adding the branch constraint.
                 // This enables correct alternate-path forking with solver,
                 // registers, and memory from the branch point.
@@ -479,30 +501,22 @@ impl<'a> VEXInterpreter<'a> {
                             .as_ref()
                             .map(super::super::memory::SymbolicMemory::fork),
                         call_stack: self.call_stack.clone(),
+                        detailed_history,
                     },
                 );
-
-                // Decide which path to take based on branch direction.
-                // For backward branches (loops), take the exit (loop back)
-                // and defer the fall-through (loop exit). For forward branches,
-                // take the fall-through and defer the exit. VEX often inverts
-                // forward branch conditions (e.g., `jne target` becomes
-                // `if (eq) goto exit; NEXT: target`), so fall-through follows
-                // the natural execution flow for forward branches.
-                let is_backward_branch = dst < self.current_insn_addr;
 
                 let deferred = if is_backward_branch {
                     DeferredFork {
                         branch_addr: self.current_insn_addr,
-                        path_taken: true, // we took the exit (guard=true) path
-                        unexplored_target: false_target, // fall-through deferred
+                        path_taken: true,  // we took the exit (guard=true) path
+                        unexplored_target, // fall-through deferred
                         condition_id: cond_id,
                     }
                 } else {
                     DeferredFork {
                         branch_addr: self.current_insn_addr,
                         path_taken: false, // we took the fallthrough (guard=false) path
-                        unexplored_target: dst, // the exit target is deferred
+                        unexplored_target, // the exit target is deferred
                         condition_id: cond_id,
                     }
                 };

@@ -328,6 +328,7 @@ fn set_deterministic_reaches_parked_pending_callback_states() {
             registers: state.registers().fork(),
             memory: None,
             call_stack: Vec::new(),
+            detailed_history: Vec::new(),
         },
     );
     let pre_callback_snapshot = Some(state.fork());

@@ -294,3 +294,32 @@ class TestDefaultRoutedStepIsOneBlock:
             assert state.scratch.irsb.default_exit_target == 0x86F0
         # The toggle is scoped to the call.
         assert mgr.set_block_granular(False) is False
+
+
+class TestForkSiblingHistory:
+    """A deferred-fork sibling's history ends at the branch (angr-mx00p.132.44).
+
+    From armel fauxware's ``0x86dc`` the interpreter continues on the
+    fallthrough (``0x86f0``) and defers ``0x86f8``. The sibling was forked from
+    the continuing state, so it carried that path's history: chained, the
+    whole run through ``bl accepted``; granular, an edge to ``0x86f0``.
+    """
+
+    @pytest.mark.parametrize("granular", [False, True])
+    def test_sibling_history_ends_at_the_branch(self, granular):
+        import angr
+
+        path = os.path.join(BIN_LOCATION, "tests", "armel", "fauxware")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        project = angr.Project(path, auto_load_libs=False, engine="rust")
+        mgr = project.factory.simulation_manager(project.factory.blank_state(addr=0x86DC))
+        mgr.set_block_granular(granular)
+
+        mgr._rust_mgr.run(1)
+
+        rust = mgr._rust_mgr
+        ids = rust.get_state_ids("active")
+        sibling = [sid for i, sid in enumerate(ids) if rust.get_state_pc("active", i) == 0x86F8]
+        assert len(sibling) == 1
+        assert rust.get_state_detailed_history(sibling[0]) == [(0x86DC, 0, 0x86F8)]
