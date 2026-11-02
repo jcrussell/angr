@@ -239,8 +239,15 @@ class AngrObjectFactory:
         else:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
 
-        if engine is None and not (self.project._rust_default and self._rust_eligible(thing, kwargs)):
-            return SimulationManager(self.project, active_states=thing, **kwargs)
+        if engine is None:
+            if not (self.project._rust_default and self._rust_eligible(thing, kwargs)):
+                return SimulationManager(self.project, active_states=thing, **kwargs)
+            from angr.exploration import RustExplorationManager
+
+            handoff_kwargs = dict(kwargs)
+            mgr = RustExplorationManager(self.project, active_states=thing, **kwargs)
+            mgr._python_handoff_kwargs = handoff_kwargs
+            return mgr
 
         from angr.exploration import RustExplorationManager, unsupported_rust_manager_kwargs
 

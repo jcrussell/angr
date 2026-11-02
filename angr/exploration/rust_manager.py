@@ -5672,11 +5672,45 @@ class RustExplorationManager(
 
     # Compatibility methods for SimulationManager API
 
+    # The SimulationManager kwargs of a manager the factory routed here because the project defaults to the Rust
+    # engine (angr-mx00p.132.25); None for one the caller asked for by name. See _hand_off_to_python.
+    _python_handoff_kwargs: dict | None = None
+
     def use_technique(self, technique, **kwargs):
         """Apply an exploration technique. See rust_techniques.use_technique()."""
-        from angr.exploration.rust_techniques import use_technique
+        from angr.exploration.rust_techniques import technique_needs_python_engine, use_technique
 
+        if (
+            self._python_handoff_kwargs is not None
+            and technique_needs_python_engine(technique)
+            and self._rust_mgr.step_count == 0
+        ):
+            self._hand_off_to_python(f"technique {type(technique).__name__} overrides successors()")
+            return self.use_technique(technique)
         return use_technique(self, technique, **kwargs)
+
+    def _hand_off_to_python(self, reason: str) -> None:
+        """Turn this not-yet-stepped, default-routed manager into a Python ``SimulationManager`` in place.
+
+        The factory decides the engine before any technique exists, so a technique the Rust manager cannot honor
+        arrives too late for ``rust_engine_eligible``. A project-default route never diverges (see
+        docs/advanced-topics/rust_engine.rst), so the caller's reference becomes the manager the Python engine would
+        have built: the pristine seed copies, the caller's kwargs, and the techniques already registered. Swapping
+        the class before ``SimulationManager.__init__`` runs keeps the hooks it installs bound to this object.
+        """
+        from angr.sim_manager import SimulationManager
+
+        l.info("simulation_manager: handing off to the python engine (%s)", reason)
+        project = self._project
+        seeds = getattr(self, "_initial_seed_states", None) or []
+        kwargs = self._python_handoff_kwargs
+        techniques = list(self._active_techniques)
+        _live_managers.discard(self)
+        self.__dict__.clear()
+        self.__class__ = SimulationManager
+        SimulationManager.__init__(self, project, active_states=seeds, **kwargs)
+        for tech in techniques:
+            self.use_technique(tech)
 
     def remove_technique(self, technique) -> bool:
         """Remove an exploration technique. See rust_techniques.remove_technique()."""

@@ -28,6 +28,7 @@ import pytest
 from angr.engines import UberEngine
 from angr.errors import AngrError
 from angr.exploration import RustExplorationManager
+from angr.exploration_techniques import DFS, ExplorationTechnique
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
 
@@ -106,6 +107,45 @@ class TestNamingTheEngineStaysLoud:
         """The per-call way back to Python is the stock constructor."""
         mgr = SimulationManager(rust_project, active_states=[rust_project.factory.entry_state()])
         assert type(mgr) is SimulationManager
+
+
+class _CountingSuccessors(ExplorationTechnique):
+    """A successors() override, the hook the Rust manager never dispatches."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def successors(self, simgr, state, **kwargs):
+        self.calls += 1
+        return simgr.successors(state, **kwargs)
+
+
+class TestSuccessorsTechniqueHandsOff:
+    """A default-routed manager hands off to Python for a successors() technique (angr-mx00p.132.25)."""
+
+    def test_default_route_hands_off_before_stepping(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        dfs = mgr.use_technique(DFS())
+        tech = mgr.use_technique(_CountingSuccessors())
+
+        assert type(mgr) is SimulationManager
+        assert dfs in mgr._techniques
+        assert tech in mgr._techniques
+        mgr.step()
+        assert tech.calls == 1
+        assert mgr.active
+
+    def test_named_engine_stays_rust(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")
+        mgr.use_technique(_CountingSuccessors())
+        assert isinstance(mgr, RustExplorationManager)
+
+    def test_stepped_manager_stays_rust(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        mgr.step()
+        mgr.use_technique(_CountingSuccessors())
+        assert isinstance(mgr, RustExplorationManager)
 
 
 class TestRemovedKnobs:

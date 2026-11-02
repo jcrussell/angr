@@ -64,6 +64,16 @@ def _has_dispatched_step_hook(tech) -> bool:
     return tech._is_overridden("step")
 
 
+def technique_needs_python_engine(tech) -> bool:
+    """True iff `tech` overrides successors(), which the Rust manager never dispatches.
+
+    LoopSeer's trip counts, Bucketizer's transitions and Oppologist's recovery all live there, so on the Rust
+    manager they silently no-op. A default-routed manager hands off to the Python engine instead
+    (``RustExplorationManager._hand_off_to_python``).
+    """
+    return type(tech).__name__ not in _NATIVE_STEP_TECH_NAMES and tech._is_overridden("successors")
+
+
 def manager_has_step_hooks(mgr: RustExplorationManager) -> bool:
     """True iff any active technique has a non-native step() hook to dispatch."""
     return any(_has_dispatched_step_hook(t) for t in mgr._active_techniques)
@@ -587,7 +597,7 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
                 "Technique %s overrides step() — will be dispatched via RustSimulationManagerProxy.step() each batch.",
                 tech_name,
             )
-        if technique._is_overridden("successors"):
+        if technique_needs_python_engine(technique):
             l.warning(
                 "Technique %s overrides successors(), which is not dispatched by "
                 "the Rust manager. The per-successor hook will silently no-op. "

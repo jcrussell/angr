@@ -207,6 +207,18 @@ its option sets with the manager's own construction guard, so the two
 cannot drift. The decision and its reason are logged on the
 ``angr.factory`` logger at debug level.
 
+Techniques arrive after that decision, so one more case is caught at
+``use_technique``: a technique that overrides ``successors()``
+(``LoopSeer``, ``Bucketizer``, ``Oppologist``, …), which the Rust
+manager never dispatches. On a project-default manager that has not
+stepped yet, ``use_technique`` turns the manager into a Python
+``SimulationManager`` in place, rebuilt from the seed states, the
+caller's kwargs and the techniques already registered, and logs the
+reason on ``angr.exploration.rust_manager`` at info level
+(``RustExplorationManager._hand_off_to_python``). A manager built with
+``engine="rust"``, or one that has already stepped, keeps the Rust
+engine and the warning that the hook will not run.
+
 ``engine="rust"`` swaps the **manager**, not the ``SimEngine``:
 ``factory.default_engine_factory`` stays ``UberEngine``, so ``block()``,
 the CFG, and every other lifting/analysis path are untouched.
