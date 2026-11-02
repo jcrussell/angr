@@ -169,3 +169,27 @@ def test_engine_dispatches_ccalls(monkeypatch, rust):
         assert calls and all(calls), calls
     else:
         assert not calls
+
+
+@pytest.mark.parametrize("prefix", ["amd64g", "x86g"])
+def test_engine_keeps_simplified_conditions_in_python(prefix):
+    # Under USE_SIMPLIFIED_CCALLS ccall.py returns pc_calculate_condition_simple's comparison term, which Rust does not
+    # build, so the seam must leave these conditions to ccall.py (angr-mx00p.99.1).
+    arch, bits, ret_bits = ARCHES[prefix]
+    data = ccall.data["AMD64" if prefix == "amd64g" else "X86"]
+    sub = "G_CC_OP_SUBQ" if prefix == "amd64g" else "G_CC_OP_SUBL"
+    state = load_shellcode(b"\x00" * 8, arch=arch).factory.blank_state(mode="static")
+    args = (
+        claripy.BVV(data["CondTypes"]["CondL"], bits),
+        claripy.BVV(data["OpTypes"][sub], bits),
+        claripy.BVS("dep1", bits),
+        claripy.BVS("dep2", bits),
+        claripy.BVV(0, bits),
+    )
+    name = f"{prefix}_calculate_condition"
+    expected = getattr(ccall, name)(state, *args)
+    engine = state.project.factory.default_engine
+    engine.state = state
+    # The data layer itself: the action-tracking mixin above it wants (expr, deps) pairs.
+    actual = datalayer.ClaripyDataMixin._perform_vex_expr_CCall(engine, name, f"Ity_I{ret_bits}", args)
+    assert actual.identical(expected)
