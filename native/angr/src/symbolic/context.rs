@@ -67,7 +67,7 @@ use super::local_constraints::LocalConstraints;
 // Constraint-sharing analysis types live in `sharing.rs` (angr-a2br.2 slice 3).
 // `fold_sharing_walk` below takes a `&mut ConstraintSharingWalk`.
 // Solver/engine profiling counters live in `stats.rs` (angr-ugc2). The glob
-// brings every counter static plus `CheckSite` / `VexOpFamily` and the
+// brings every counter static plus `CheckSite` and the
 // `record_*` helpers into scope so the solving paths below read and bump them
 // unchanged.
 use super::stats::*;

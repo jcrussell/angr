@@ -10,8 +10,8 @@
 //! paths.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV};
 use crate::vex::ir::{FCmpKind, IRType};
+use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV};
 
 impl VEXOps {
     /// Concrete IEEE-754 truth value for a single FP-compare lane, shared by the

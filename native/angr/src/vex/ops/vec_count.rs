@@ -7,8 +7,8 @@
 //! zeros / count-leading-sign-bits (Iop_Clz{N}x{M} / Iop_Cls{N}x{M}).
 
 use super::{LaneCountKind, OpError, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// NEON per-byte popcount — `Iop_Cnt8x{8,16}` (ARM CNT). Each 8-bit lane

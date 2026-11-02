@@ -7,8 +7,8 @@
 //! reciprocal/rsqrt estimate-and-step ops.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, RustBV};
 use crate::vex::ir::IRType;
+use angr_bv::{FloatOpKind, SymBV as RustBV};
 
 impl VEXOps {
     /// Scalar float operation in vector (SSE scalar ops like ADDSS, DIVSS).

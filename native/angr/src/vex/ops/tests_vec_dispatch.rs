@@ -23,7 +23,6 @@
 //     ops/tests_vec_permute_mul.rs / ops/tests_vec_saturate.rs / ops/tests_vec_lane.rs.
 
 use super::*;
-use crate::symbolic::VexOpFamily;
 use crate::vex::ir::IRType;
 
 /// Canonical list of the vector-integer binops the `binop()` router forwards to

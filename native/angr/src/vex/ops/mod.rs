@@ -30,7 +30,7 @@
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, VexRm};
+use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV, VexRm};
 
 use super::ir::IROp;
 use super::transcendentals;
@@ -129,7 +129,7 @@ enum LaneCountKind {
 /// `vex::ops::iropclass`.
 mod classify;
 
-pub use classify::{iropclass, is_int_lane_vec, is_vector_float_op};
+pub use classify::{VexOpFamily, iropclass, is_int_lane_vec, is_vector_float_op};
 
 impl VEXOps {
     /// Reject an operand whose width disagrees with the width the opcode

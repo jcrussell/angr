@@ -39,10 +39,10 @@ use rustc_hash::FxHashMap;
 use crate::ailment::vexop_names::IROP_NAMES;
 use crate::claripy::ast::GLOBAL_CONTEXT;
 use crate::claripy::ast::base::Base;
-use crate::symbolic::{RustBV, VexOpFamily};
+use crate::symbolic::RustBV;
 use crate::vex::ir::{IROp, IRType};
 use crate::vex::opcode_map::parse_opcode;
-use crate::vex::ops::{VEXOps, iropclass, is_int_lane_vec, is_vector_float_op};
+use crate::vex::ops::{VEXOps, VexOpFamily, iropclass, is_int_lane_vec, is_vector_float_op};
 
 /// The libVEX names [`irop`] serves, with their parsed opcodes.
 static SERVED: LazyLock<FxHashMap<&'static str, IROp>> = LazyLock::new(|| {

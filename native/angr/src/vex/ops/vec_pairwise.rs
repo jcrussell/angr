@@ -10,8 +10,8 @@
 //! (Iop_Avg).
 
 use super::{FloatLaneOp, OpError, PwOp, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// NEON pairwise widening add — `Iop_PwAddL{N}{S/U}x{M}`. Unary.

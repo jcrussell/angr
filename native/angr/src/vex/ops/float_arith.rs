@@ -8,8 +8,8 @@
 //! `vec_float_lane_op`) and the rounding-mode variants.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
-use crate::symbolic::{FloatOpKind, RustBV, VexRm};
 use crate::vex::ir::IRType;
+use angr_bv::{FloatOpKind, SymBV as RustBV, VexRm};
 use num_traits::Float;
 
 impl VEXOps {

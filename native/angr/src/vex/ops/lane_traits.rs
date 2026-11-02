@@ -16,8 +16,8 @@
 // which is not an inherent method and so needs the trait in scope.
 use std::ops::Neg;
 
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV};
 use crate::vex::ir::IRType;
+use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV};
 
 use super::VEXOps;
 

@@ -5,7 +5,7 @@
 //! (Iop_SetV128lo32 / Iop_SetV128lo64).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// Splice the low `lane_bits` of `lane` into lane 0 of the packed 128-bit

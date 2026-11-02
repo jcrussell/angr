@@ -8,8 +8,8 @@
 //! (truncate vs saturate is just the per-lane transform closure).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// NEON lane extract (Iop_GetElem{N}x{M}).

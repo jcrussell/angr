@@ -4,8 +4,8 @@
 //! so the public path stays `vex::ops::OpError` and the `use super::OpError`
 //! imports in the sibling modules keep resolving.
 
-use crate::symbolic::UnsupportedRoundingMode;
 use crate::vex::ir::{IROp, IRType};
+use angr_bv::UnsupportedRoundingMode;
 
 /// Errors from VEX operation execution.
 ///

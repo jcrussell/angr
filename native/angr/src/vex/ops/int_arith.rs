@@ -1,8 +1,8 @@
 //! Integer widening-multiply and divmod VEX op helpers.
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// Widening multiply: both operands must be `ty`-width; the result is

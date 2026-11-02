@@ -6,8 +6,8 @@
 //! (`ICmpEq`/`ICmpGt` in `ops/mod.rs`).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// Vector interleave low halves.

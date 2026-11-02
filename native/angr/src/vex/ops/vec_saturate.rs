@@ -9,8 +9,8 @@
 //! (Iop_QShl/QSal).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// Saturate one concrete `from_width`-bit lane into a `to_width`-bit

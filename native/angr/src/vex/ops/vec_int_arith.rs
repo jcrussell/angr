@@ -6,7 +6,7 @@
 //! `vec_int_lane_op` driver (`IMinMax`/`IAbs` in `ops/mod.rs`).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-

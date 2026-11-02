@@ -105,7 +105,7 @@ pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
 pub(crate) use solver_build::stop_enumeration_after_for_test;
 pub use solving_ops::Enumeration;
 pub use stats::{
-    VexOpFamily, get_solver_stats, record_concretize_disjunction, record_concretize_read,
+    get_solver_stats, record_concretize_disjunction, record_concretize_read,
     record_concretize_write, record_mem_ite_depth, record_mem_lazy_page_fault, record_mem_load,
     record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
     record_symfile_read_native, record_symfile_write_demotion, record_vex_binop, record_vex_qop,

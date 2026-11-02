@@ -22,8 +22,8 @@
 //! (angr-sqfj8.118).
 
 use super::{OpError, VEXOps, VecShiftKind};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// Vector shift by *immediate*: every lane shifted by the same scalar

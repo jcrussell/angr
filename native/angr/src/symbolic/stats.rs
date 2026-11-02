@@ -33,6 +33,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use crate::vex::ops::VexOpFamily;
+
 // =============================================================================
 // Global Z3 Solver Profiling Counters
 // =============================================================================
@@ -687,21 +689,6 @@ pub(crate) fn record_z3_bool_build() {
 // -----------------------------------------------------------------------------
 // Recorder functions for the instrumentation counters
 // -----------------------------------------------------------------------------
-
-/// VEX IR op family — passed by the dispatcher in `vex/ops/mod.rs` so the
-/// classifier lives next to the dispatch and the counter bookkeeping stays in
-/// `symbolic/context.rs` alongside the other instrumentation atomics.
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum VexOpFamily {
-    Arith,
-    Logic,
-    Shift,
-    Cmp,
-    Ext,
-    Fp,
-    Vec,
-    Other,
-}
 
 #[inline]
 fn bump_vex_family(family: VexOpFamily) {

@@ -8,7 +8,7 @@
 
 use super::float_arith::apply_rounding;
 use super::{OpError, VEXOps, build_float_expr};
-use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, VexRm};
+use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV, VexRm};
 
 /// Generate concrete float-to-float conversion stubs.
 macro_rules! define_float_to_float {

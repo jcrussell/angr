@@ -9,8 +9,8 @@
 //! plus the high-half-only Iop_MulHi*).
 
 use super::{OpError, VEXOps};
-use crate::symbolic::RustBV;
 use crate::vex::ir::IRType;
+use angr_bv::SymBV as RustBV;
 
 impl VEXOps {
     /// Lane permute (`Iop_Perm{8,32}x{M}`, `Iop_PermOrZero8x{8,16}`): lane `i`

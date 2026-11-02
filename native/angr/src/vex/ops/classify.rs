@@ -3,8 +3,23 @@
 //! Extracted from `ops/mod.rs` (angr-9ke6b.170). Re-exported by `ops/mod.rs`
 //! so the public path stays `vex::ops::iropclass`.
 
-use crate::symbolic::VexOpFamily;
 use crate::vex::ir::IROp;
+
+/// VEX IR op family that [`iropclass`] assigns. The `record_vex_*` recorders
+/// in `symbolic/stats.rs` take it and bump the matching `vex_op_<family>`
+/// counter, so the classifier lives next to the dispatch and the counter
+/// bookkeeping stays with the other instrumentation atomics.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum VexOpFamily {
+    Arith,
+    Logic,
+    Shift,
+    Cmp,
+    Ext,
+    Fp,
+    Vec,
+    Other,
+}
 
 /// Classify an `IROp` into a coarse-grained family for instrumentation
 /// (angr-2j5v). Counts roll up into `vex_op_<family>` counters via the

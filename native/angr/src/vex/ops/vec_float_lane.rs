@@ -3,8 +3,8 @@
 use super::{
     FLOAT_LANE_OP_MAX_ARITY, FloatLaneOp, OpError, VEXOps, build_float_expr, float_prec_of,
 };
-use crate::symbolic::{FloatOpKind, RustBV};
 use crate::vex::ir::IRType;
+use angr_bv::{FloatOpKind, SymBV as RustBV};
 
 impl VEXOps {
     /// Generic per-lane FP dispatcher. Handles the lane loop for both the
@@ -27,8 +27,7 @@ impl VEXOps {
 
         // Concrete fast path: every operand must fit in u128.
         if total_width <= 128 {
-            let concrete: Option<Vec<u128>> =
-                args.iter().map(crate::symbolic::RustBV::as_u128).collect();
+            let concrete: Option<Vec<u128>> = args.iter().map(RustBV::as_u128).collect();
             if let Some(concrete) = concrete {
                 if !matches!(elem, IRType::F32 | IRType::F64) {
                     return Err(OpError::InvalidFloatType(elem));
