@@ -467,6 +467,25 @@ impl RustExplorationManager {
         })
     }
 
+    /// The status a state exited with, as a claripy AST, or `None`. An export
+    /// replays it as the `terminate` event of its `Ijk_Exit` history node
+    /// (see `RustSimState::exit_code`).
+    pub fn get_state_exit_code(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.with_state(state_id, |state| {
+            state
+                .exit_code()
+                .map(|bv| {
+                    let claripy = crate::claripy_bridge::claripy_module(py)?;
+                    rustbv_to_claripy(py, bv, claripy.as_any())
+                })
+                .transpose()
+        })
+    }
+
     /// Get heap metadata for a state by ID.
     ///
     /// Returns dict with:

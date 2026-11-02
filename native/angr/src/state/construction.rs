@@ -99,6 +99,7 @@ impl RustSimState {
             mmap_base: 0xC100_0000,
             tsc_counter: crate::vex::dirty::TSC_INITIAL,
             pending_syscall: None,
+            exit_code: None,
             getopt_optind: 1,
             getopt_optchar: 0,
             getopt_extern: GetoptExternAddrs::default(),

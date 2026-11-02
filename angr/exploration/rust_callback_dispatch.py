@@ -50,6 +50,14 @@ _UNSUPPORTED_SYSCALL_MSG = (
 )
 
 
+
+def _terminate_exit_code(state):
+    """The ``exit_code`` of the ``terminate`` event ``SimProcedure.exit`` added to ``state``'s step, or None."""
+    for event in reversed(state.history.recent_events):
+        if getattr(event, "type", None) == "terminate":
+            return event.objects.get("exit_code")
+    return None
+
 class _RustInjectedStdin(claripy.Annotation):
     """Provenance marker for a stdin packet appended by ``_inject_rust_stdin``.
 
@@ -884,6 +892,10 @@ class RustCallbackDispatchMixin:
         if _DBG:
             reason = "no-return procedure" if is_terminal else "exit continuation"
             l.debug(f"Fast path: {reason} {name} at 0x{addr:x} — deadending")
+        if is_cached_exit:
+            self._rust_mgr.record_state_exit(
+                self._current_callback_state_id, addr, self._exit_continuation_addrs[addr_int]
+            )
         self._rust_mgr.deadend_pending_callback(self._current_callback_state_id)
         self._current_callback_state_id = None
         _proc_name = name or proc.__class__.__name__
@@ -1027,9 +1039,16 @@ class RustCallbackDispatchMixin:
         if proc_no_ret and addr_int is not None:
             _all_exit = all(getattr(s.history, "jumpkind", None) == "Ijk_Exit" for s in all_succs)
             if _all_exit:
-                if _DBG:
-                    l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
-                self._exit_continuation_addrs.add(addr_int)
+                # The deadended state is the pending one, so it takes the
+                # successor's Ijk_Exit and status from here (angr-mx00p.132.8).
+                exit_code = _terminate_exit_code(all_succs[0])
+                self._rust_mgr.record_state_exit(event.callback_state_id, addr, exit_code)
+                # A symbolic status depends on the state, so a cache hit could
+                # not replay it: such a procedure runs every time.
+                if exit_code is None or not exit_code.symbolic:
+                    if _DBG:
+                        l.debug(f"Detected exit-only continuation at 0x{addr:x} — caching for fast deadend")
+                    self._exit_continuation_addrs[addr_int] = exit_code
                 self._rust_mgr.deadend_pending_callback(event.callback_state_id)
                 self._set_callback_state(None)
                 self._current_callback_state_id = None

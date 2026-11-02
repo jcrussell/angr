@@ -53,7 +53,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
-///   tsc_counter, pending_syscall, getopt_optind, getopt_optchar, getopt_extern,
+///   tsc_counter, pending_syscall, exit_code, getopt_optind, getopt_optchar, getopt_extern,
 ///   stdin_symbols, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -104,6 +104,9 @@ pub struct RustSimStateSnapshot {
     /// See `RustSimState::pending_syscall` (angr-mx00p.132.12).
     #[serde(default)]
     pub pending_syscall: Option<crate::vex::JumpKind>,
+    /// See `RustSimState::exit_code` (angr-mx00p.132.8).
+    #[serde(default)]
+    pub exit_code: Option<RustBV>,
     pub getopt_optind: u32,
     pub getopt_optchar: u32,
     pub getopt_extern: crate::state::GetoptExternAddrs,
@@ -237,6 +240,7 @@ impl RustSimState {
             mmap_base: self.mmap_base,
             tsc_counter: self.tsc_counter,
             pending_syscall: self.pending_syscall,
+            exit_code: self.exit_code.clone(),
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
@@ -301,6 +305,7 @@ impl RustSimState {
             mmap_base: snap.mmap_base,
             tsc_counter: snap.tsc_counter,
             pending_syscall: snap.pending_syscall,
+            exit_code: snap.exit_code,
             getopt_optind: snap.getopt_optind,
             getopt_optchar: snap.getopt_optchar,
             getopt_extern: snap.getopt_extern,

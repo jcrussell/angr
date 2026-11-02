@@ -83,3 +83,20 @@ fn test_set_detailed_history_unlimited() {
     state.set_detailed_history(entries);
     assert_eq!(state.detailed_history().len(), 50);
 }
+
+/// `record_exit` is what an export reads back as Python's `SimProcedure.exit`
+/// step (angr-mx00p.132.8): an `Ijk_Exit` entry at the procedure and the
+/// status, which fork and the serialized snapshot both carry.
+#[test]
+fn test_record_exit_survives_fork_and_serialization() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.record_exit(0x10_0000, Some(RustBV::concrete(0xC000_0409, 32)));
+    let mut forked = state.fork();
+    let restored = RustSimState::from_serialized(&forked.to_serialized()).expect("from_serialized");
+    for s in [&state, &forked, &restored] {
+        let last = s.detailed_history().back().expect("exit entry");
+        assert_eq!(last.addr, 0x10_0000);
+        assert_eq!(HistoryEntry::jumpkind_str(last.jumpkind), "Ijk_Exit");
+        assert_eq!(s.exit_code(), Some(&RustBV::concrete(0xC000_0409, 32)));
+    }
+}

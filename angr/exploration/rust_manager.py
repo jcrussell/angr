@@ -1420,7 +1420,8 @@ class RustExplorationManager(
         # Cache for addresses where SimProcedure continuations always result in exit.
         # After the first time a continuation at an address produces only Ijk_Exit
         # successors, all subsequent callbacks are fast-deadended without state creation.
-        self._exit_continuation_addrs: set = set()
+        # The value is the concrete exit status the fast path records (None: no status).
+        self._exit_continuation_addrs: dict = {}
 
         # Track root state IDs for plugin restoration.
         # Maps state_id -> root_state_id (the original state from Python).

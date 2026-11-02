@@ -259,6 +259,7 @@ impl RustSimState {
             mmap_base: self.mmap_base,
             tsc_counter: self.tsc_counter,
             pending_syscall: self.pending_syscall,
+            exit_code: self.exit_code.clone(),
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
@@ -696,6 +697,7 @@ impl RustSimState {
             // observed (which would make time appear to run backwards).
             tsc_counter: self.merge_field_tsc_counter(others),
             pending_syscall: self.merge_field_pending_syscall(others),
+            exit_code: self.merge_field_exit_code(others),
             getopt_optind: self.merge_field_getopt_optind(others),
             getopt_optchar: self.merge_field_getopt_optchar(others),
             getopt_extern: self.merge_field_getopt_extern(others),

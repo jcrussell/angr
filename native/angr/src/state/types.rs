@@ -155,6 +155,9 @@ impl HistoryEntry {
     pub const JK_RET: u8 = 2;
     pub const JK_SYSCALL: u8 = 3;
     pub const JK_OTHER: u8 = 4;
+    /// A no-return procedure ended the state: Python's `SimProcedure.exit`
+    /// step, whose `Ijk_Exit` no VEX exit carries (angr-mx00p.132.8).
+    pub const JK_EXIT: u8 = 5;
 
     /// Create from JumpKind enum.
     pub fn jumpkind_from_vex(jk: &crate::vex::JumpKind) -> u8 {
@@ -174,7 +177,7 @@ impl HistoryEntry {
     /// Delegates to `JumpKind::ijk_name` so the `Ijk_*` spellings live in one
     /// place (angr-sqfj8.60). `JK_OTHER` is the lossy catch-all this byte
     /// encoding adds on top of the enum — no `JumpKind` variant maps to it, so
-    /// its string stays local.
+    /// its string stays local, as does `JK_EXIT`'s, which only angr emits.
     pub fn jumpkind_str(jk: u8) -> &'static str {
         use crate::vex::JumpKind;
         match jk {
@@ -182,6 +185,7 @@ impl HistoryEntry {
             Self::JK_CALL => JumpKind::Call.ijk_name(),
             Self::JK_RET => JumpKind::Ret.ijk_name(),
             Self::JK_SYSCALL => JumpKind::Sys_syscall.ijk_name(),
+            Self::JK_EXIT => "Ijk_Exit",
             _ => "Ijk_Other",
         }
     }

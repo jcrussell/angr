@@ -357,6 +357,12 @@ pub struct RustSimState {
     /// `fork_materialize::build_unexplored_fork`).
     #[merge_policy = "warn_on_diverge"]
     pending_syscall: Option<crate::vex::JumpKind>,
+    /// The status a no-return procedure ended this state with, recorded with
+    /// its `HistoryEntry::JK_EXIT` entry by `record_exit`. An export replays
+    /// it as Python's `terminate` event (angr-mx00p.132.8). Carried across
+    /// fork + snapshot.
+    #[merge_policy = "warn_on_diverge"]
+    exit_code: Option<RustBV>,
     /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
     /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
     /// fork + snapshot so each path resumes option scanning correctly.

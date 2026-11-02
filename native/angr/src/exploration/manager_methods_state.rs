@@ -307,6 +307,39 @@ impl RustExplorationManager {
         self._import_symbolic_to_state(py, state_id, addr, ast)
     }
 
+    /// End a state as Python's `SimProcedure.exit` step did: a no-return
+    /// procedure at `addr` whose successor exited with `exit_code` (a claripy
+    /// AST, or `None`). See `RustSimState::record_exit`. Call before
+    /// `deadend_pending_callback`.
+    #[pyo3(signature = (state_id, addr, exit_code=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own history; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn record_state_exit(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        addr: u64,
+        exit_code: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let code = match exit_code {
+                Some(ast) => {
+                    let solver_ref = state.solver();
+                    let sym_ctx = solver_ref.borrow();
+                    Some(
+                        claripy_to_rustbv(py, ast, &sym_ctx)
+                            .map_err(|e| ast_import_err("exit code", e))?,
+                    )
+                }
+                None => None,
+            };
+            state.record_exit(addr, code);
+            Ok(())
+        })
+    }
+
     /// See `pending_api::_import_symbolic_memory` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own symbolic memory; does not mutate \

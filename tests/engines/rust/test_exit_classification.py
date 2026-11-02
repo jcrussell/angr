@@ -11,6 +11,9 @@
   unconstrained-return guard, and the state is deadended instead of landing
   in ``unconstrained``. The manager must also keep unconstrained states by
   default, like Python.
+* Python no-return procedure exit (angr-mx00p.132.8): a state a Python
+  ``SimProcedure.exit`` ends reports ``Ijk_Exit`` and the ``terminate``
+  event's status, also when the exit-only fast path skips the procedure.
 """
 
 from __future__ import annotations
@@ -82,3 +85,24 @@ class TestReturnThroughSymbolicAddress:
         mgr.run()
         assert len(mgr.unconstrained) == 256, {k: len(v) for k, v in mgr.stashes.items() if v}
         assert not mgr.deadended
+
+
+class TestPythonProcedureExit:
+    @staticmethod
+    def _assert_exited(state, exit_code):
+        assert state.history.jumpkind == "Ijk_Exit"
+        terminations = [event for event in state.history.events if event.type == "terminate"]
+        assert len(terminations) == 1
+        assert state.solver.eval_one(terminations[0].objects["exit_code"]) == exit_code
+
+    def test_fastfail_reports_exit_and_status(self):
+        # __fastfail is a Python NO_RET procedure; the first state runs it,
+        # the second hits the cached exit-only fast path.
+        proj = angr.load_shellcode(b"\x00" * 4, arch="aarch64", simos="windows")
+        states = [proj.factory.call_state(proj.simos.fastfail.addr, 0) for _ in range(2)]
+        mgr = RustExplorationManager(proj, states)
+        mgr.run()
+        assert len(mgr.deadended) == 2
+        for state in mgr.deadended:
+            self._assert_exited(state, 0xC0000409)
+            assert list(state.history.bbl_addrs)[-1] == proj.simos.fastfail.addr

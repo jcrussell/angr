@@ -255,7 +255,7 @@ def _install_rust_history_warning(state) -> None:
 
 
 # Rust's detailed-history jumpkind codes (``HistoryEntry::jumpkind_str``).
-_HISTORY_JUMPKINDS = {0: "Ijk_Boring", 1: "Ijk_Call", 2: "Ijk_Ret", 3: "Ijk_Sys_syscall"}
+_HISTORY_JUMPKINDS = {0: "Ijk_Boring", 1: "Ijk_Call", 2: "Ijk_Ret", 3: "Ijk_Sys_syscall", 5: "Ijk_Exit"}
 
 
 def _history_child(parent, entry, arch) -> SimStateHistory:
@@ -1116,6 +1116,13 @@ class RustStateExportMixin:
                 # A syscall Rust has yet to run: Python's step of this export
                 # picks the syscall ABI from this jumpkind (angr-mx00p.132.12).
                 history.jumpkind = pending
+        elif entries[-1][1] == 5:
+            # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable
+            # state reports Ijk_Exit with no terminate event.
+            exit_code = _rust_state_get(self._rust_mgr, "get_state_exit_code", state_id)
+            if exit_code is not None:
+                # SimProcedure.exit's record of the status (angr-mx00p.132.8).
+                history.add_event("terminate", exit_code=exit_code)
 
     def _sync_rust_last_block_to_state(self, state, state_id: int) -> None:
         """Point a cached copy's ``scratch`` at the block Rust executed last."""

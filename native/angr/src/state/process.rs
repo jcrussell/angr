@@ -256,6 +256,20 @@ impl RustSimState {
         self.pending_syscall = jumpkind;
     }
 
+    /// The status recorded by [`Self::record_exit`], if the state exited.
+    pub fn exit_code(&self) -> Option<&RustBV> {
+        self.exit_code.as_ref()
+    }
+
+    /// End the state as Python's `SimProcedure.exit` step does: a
+    /// `HistoryEntry::JK_EXIT` entry for the procedure at `addr`, which an
+    /// export reports as `history.jumpkind == "Ijk_Exit"`, and the status for
+    /// its `terminate` event. See the `RustSimState::exit_code` field doc.
+    pub fn record_exit(&mut self, addr: u64, exit_code: Option<RustBV>) {
+        self.add_history_entry(addr, super::HistoryEntry::JK_EXIT, addr);
+        self.exit_code = exit_code;
+    }
+
     /// Locale ctype table pointers (see [`CtypeLocPtrs`]). Read by the native
     /// `__ctype_b_loc` / `__ctype_tolower_loc` / `__ctype_toupper_loc` procs.
     pub fn ctype_loc(&self) -> CtypeLocPtrs {
