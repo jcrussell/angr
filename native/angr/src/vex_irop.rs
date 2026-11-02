@@ -16,11 +16,13 @@
 //! logic, shift, compare and width-conversion ops, and of the integer-lane
 //! vector ops ([`is_int_lane_vec`]) and the vector float ops
 //! ([`is_vector_float_op`]) that Rust implements, less the exclusions in
-//! [`SERVED`], and of the scalar float arithmetic ([`scalar_float_type`]).
+//! [`SERVED`], and of the scalar float arithmetic, sign and compare ops
+//! ([`scalar_float_type`]).
 //!
-//! A scalar float op takes and returns FP-sorted claripy ASTs, as `irop.py`
-//! does: an operand enters as its IEEE bits ([`import_float`]) and the result
-//! leaves wrapped back in `bvToFP`.
+//! A scalar float op takes FP-sorted claripy ASTs, as `irop.py` does: an
+//! operand enters as its IEEE bits ([`import_float`]) and a float result
+//! leaves wrapped back in `bvToFP` (`Iop_CmpF*` returns its I32 condition code
+//! as a bitvector).
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -88,6 +90,11 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     // SymBV keeps a constant wider than 128 bits as a term, so concreteness is read off claripy's AST.
     let mut symbolic = Vec::with_capacity(args.len());
     let float = scalar_float_type(op);
+    // The rounding mode leads a rounded float op's operands; `Iop_{Abs,Neg,Cmp}F*` take none.
+    let first_float = usize::from(matches!(
+        op,
+        IROp::FAdd(_) | IROp::FMul(_) | IROp::FDiv(_) | IROp::FSqrt(_)
+    ));
     for (pos, arg) in args.iter().enumerate() {
         let Ok(base) = arg.cast::<Base>() else {
             // SILENT(cat-a): not a claripy AST; irop.py unwraps or rejects it.
@@ -95,8 +102,8 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         };
         symbolic.push(base.get().symbolic());
         let mut ast = base.get().ast();
-        // A scalar float op's operands after the rounding mode are floats; irop.py refuses a bitvector there.
-        if let Some(ty) = float.filter(|_| pos > 0) {
+        // A scalar float op's operands after any rounding mode are floats; irop.py refuses a bitvector there.
+        if let Some(ty) = float.filter(|_| pos >= first_float) {
             let Some(bits) = import_float(&ast, ty) else {
                 // SILENT(cat-a): not a float of the op's width, or one with annotations; irop.py serves or rejects it.
                 return Ok(None);
@@ -188,11 +195,13 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
     };
     let Ok(ast) = result
         .to_clarirs()
-        .and_then(|ast| match float {
-            Some(IRType::F32) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f32()),
-            Some(_) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f64()),
-            None => Ok(ast),
-        })
+        .and_then(
+            |ast| match float.filter(|_| !matches!(op, IROp::FComCC(_))) {
+                Some(IRType::F32) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f32()),
+                Some(_) => GLOBAL_CONTEXT.bv_to_fp(ast, FSort::f64()),
+                None => Ok(ast),
+            },
+        )
         .and_then(|ast| ast.simplify_ext(true, true))
         .and_then(|ast| {
             if carried.is_empty() {
@@ -205,15 +214,26 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
         // SILENT(cat-a): irop.py serves the call.
         return Ok(None);
     };
+    if matches!(op, IROp::FComCC(_)) && symbolic.contains(&true) && !ast.symbolic() {
+        // SILENT(cat-a): Rust folds a NaN literal against a symbol to unordered; irop.py keeps the ite chain.
+        return Ok(None);
+    }
     let out = Base::from_ast(py, ast)?;
     Ok(Some(out.into_any().unbind()))
 }
 
-/// The float type of a served scalar float op (`Iop_{Add,Mul,Div,Sqrt}F{32,64}`), whose result `irop.py`
-/// returns FP-sorted.
+/// The operand float type of a served scalar float op
+/// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp}F{32,64}`), whose float operands
+/// `irop.py` takes FP-sorted.
 fn scalar_float_type(op: IROp) -> Option<IRType> {
     match op {
-        IROp::FAdd(ty) | IROp::FMul(ty) | IROp::FDiv(ty) | IROp::FSqrt(ty)
+        IROp::FAdd(ty)
+        | IROp::FMul(ty)
+        | IROp::FDiv(ty)
+        | IROp::FSqrt(ty)
+        | IROp::FAbs(ty)
+        | IROp::FNeg(ty)
+        | IROp::FComCC(ty)
             if matches!(ty, IRType::F32 | IRType::F64) =>
         {
             Some(ty)

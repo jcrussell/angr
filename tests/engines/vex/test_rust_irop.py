@@ -129,9 +129,15 @@ def _takes_rm(name):
 
 
 def _scalar_float(name):
-    """A scalar float op: its operands after the rounding mode and its result are FP-sorted."""
+    """A scalar float op: its operands after any rounding mode are FP-sorted, and so is its result unless it is
+    Iop_CmpF*'s condition code."""
     op = irop.operations[name]
     return op._float and op._vector_size is None
+
+
+def _scalar_rm(name):
+    """Whether a scalar float op's first operand is the VEX rounding mode (Iop_{Abs,Neg,Cmp}F* take none)."""
+    return pyvex.expr.op_arg_types(name)[1][0] == "Ity_I32"
 
 
 def _float_arg(value, bits, as_fpv):
@@ -144,39 +150,45 @@ def _float_arg(value, bits, as_fpv):
 
 
 def _scalar_float_cases(name, rng, arg_bits):
-    """Rounding mode, then float operands, each a float edge or random bits, alternately bvToFP and FPV."""
-    pools = [ROUNDING_MODES] + [FLOAT_EDGES[b] + [rng.getrandbits(b) for _ in range(4)] for b in arg_bits[1:]]
+    """Any rounding mode, then float operands, each a float edge or random bits, alternately bvToFP and FPV."""
+    rm = _scalar_rm(name)
+    float_bits = arg_bits[1:] if rm else arg_bits
+    modes = ROUNDING_MODES if rm else [None]
+    pools = [modes] + [FLOAT_EDGES[b] + [rng.getrandbits(b) for _ in range(4)] for b in float_bits]
     values = [tuple(rng.choice(p) for p in pools) for _ in range(60)]
     if len(pools) == 3:
-        values += [
-            (rm, a, b) for rm in ROUNDING_MODES for a in _sample(rng, pools[1], 5) for b in _sample(rng, pools[2], 5)
-        ]
+        values += [(m, a, b) for m in modes for a in _sample(rng, pools[1], 5) for b in _sample(rng, pools[2], 5)]
         # 1.0 and the next float up round apart by mode.
-        one = 0x3F800000 if arg_bits[1] == 32 else 0x3FF0000000000000
-        values += [(rm, one, one + 1) for rm in ROUNDING_MODES]
+        one = 0x3F800000 if float_bits[0] == 32 else 0x3FF0000000000000
+        values += [(m, one, one + 1) for m in modes]
+        # Each edge against itself and its negation: +0 == -0, a NaN is unordered even with itself.
+        sign = 1 << (float_bits[0] - 1)
+        values += [(m, e, f) for m in modes for e in FLOAT_EDGES[float_bits[0]] for f in (e, e ^ sign)]
     else:
-        values += [(rm, a) for rm in ROUNDING_MODES for a in pools[1]]
+        values += [(m, a) for m in modes for a in pools[1]]
     for i, case in enumerate(dict.fromkeys(values)):
-        args = [claripy.BVV(case[0], arg_bits[0])]
-        args += [_float_arg(v, b, (i + pos) % 2 == 0) for pos, (v, b) in enumerate(zip(case[1:], arg_bits[1:]))]
+        args = [claripy.BVV(case[0], arg_bits[0])] if rm else []
+        args += [_float_arg(v, b, (i + pos) % 2 == 0) for pos, (v, b) in enumerate(zip(case[1:], float_bits))]
         yield args
 
 
-def _scalar_float_symbolic_cases(arg_bits):
-    sort = claripy.FSORT_FLOAT if arg_bits[1] == 32 else claripy.FSORT_DOUBLE
-    for rm in ROUNDING_MODES:
-        mode = claripy.BVV(rm, arg_bits[0])
-        syms = [claripy.FPS(f"f{i}", sort) for i in range(1, len(arg_bits))]
-        yield [mode, *syms]
+def _scalar_float_symbolic_cases(name, arg_bits):
+    rm = _scalar_rm(name)
+    float_bits = arg_bits[1:] if rm else arg_bits
+    sort = claripy.FSORT_FLOAT if float_bits[0] == 32 else claripy.FSORT_DOUBLE
+    for mode in [claripy.BVV(m, arg_bits[0]) for m in ROUNDING_MODES] if rm else [None]:
+        lead = [mode] if rm else []
+        syms = [claripy.FPS(f"f{i}", sort) for i in range(len(float_bits))]
+        yield [*lead, *syms]
         # A raw_to_fp of a bitvector symbol, as the Python engine reads a float register.
-        yield [mode, *(claripy.BVS(f"b{i}", arg_bits[1]).raw_to_fp() for i in range(1, len(arg_bits)))]
+        yield [*lead, *(claripy.BVS(f"b{i}", float_bits[0]).raw_to_fp() for i in range(len(float_bits)))]
         for pos in range(len(syms)):
-            for value in FLOAT_EDGES[arg_bits[1]][::3]:
+            for value in FLOAT_EDGES[float_bits[0]][::3]:
                 args = list(syms)
-                args[pos] = _float_arg(value, arg_bits[1], value % 2 == 0)
-                yield [mode, *args]
+                args[pos] = _float_arg(value, float_bits[0], value % 2 == 0)
+                yield [*lead, *args]
         if len(syms) == 2:
-            yield [mode, syms[0], syms[0]]
+            yield [*lead, syms[0], syms[0]]
 
 
 def _vector_pool(rng, bits, lane, edges=None):
@@ -346,8 +358,14 @@ def _check(name, args, ret_bits):
         # libVEX leaves an index past the lane count undefined; irop.py's reading of it stands.
         assert args[1].concrete_value >= _lanes(name)[1], f"{where}: Rust refused an in-range index"
         return False
+    if actual is None and irop.operations[name]._generic_name == "Cmp" and expected.symbolic:
+        # Rust folds a NaN literal against a symbol to unordered where irop.py keeps the ite chain, so Rust declines.
+        assert any(not a.symbolic and claripy.fpIsNaN(a).is_true() for a in args), (
+            f"{where}: Rust refused a compare without a NaN literal"
+        )
+        return False
     assert actual is not None, f"{where}: Rust refused a call irop.py serves"
-    if _scalar_float(name):
+    if isinstance(expected, claripy.ast.FP):
         return _check_float(where, args, actual, expected, ret_bits)
     assert isinstance(actual, claripy.ast.BV) and isinstance(expected, claripy.ast.BV), where
     assert actual.size() == expected.size() == ret_bits, where
@@ -401,7 +419,7 @@ def test_rust_irop_matches_python(name):
     if _scalar_float(name):
         for args in _scalar_float_cases(name, rng, arg_bits):
             served += _check(name, args, ret_bits)
-        for args in _scalar_float_symbolic_cases(arg_bits):
+        for args in _scalar_float_symbolic_cases(name, arg_bits):
             served += _check(name, args, ret_bits)
         assert served
         return
