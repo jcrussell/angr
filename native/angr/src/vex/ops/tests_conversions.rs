@@ -1,8 +1,7 @@
 // angr-9hleg: float/int conversion + round-to-int tests (mirror of ops/conversions.rs).
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::{pinned_symbol, z3_eval};
 use super::*;
-use crate::symbolic::SymContext;
 
 // =========================================================================
 // FP edge cases (angr-io1t)
@@ -13,18 +12,14 @@ use crate::symbolic::SymContext;
 /// `VexRm` ITE built by `value_clarirs::with_vex_rm`.
 #[test]
 fn test_round_f32_to_int_symbolic_rm() {
-    let ctx = SymContext::new_mock();
     let rm = RustBV::symbol("rm_f32", 32);
-    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32)));
+    let rm_valid = rm.ule(&RustBV::concrete(4, 32));
     let value = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
 
     let result = VEXOps::binop(IROp::RoundF32toInt, rm.clone(), value).unwrap();
     let target = RustBV::concrete((-3.0f32).to_bits() as u128, 32);
-    let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT for round(-2.5)==-3.0");
-
-    let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
+    let model_rm =
+        z3_eval(&rm, &[rm_valid, result.eq(&target)]).expect("expected SAT for round(-2.5)==-3.0");
     assert!(
         model_rm == 1 || model_rm == 4,
         "expected rm 1 (toward -inf) or 4 (ties away), got {model_rm}"
@@ -35,18 +30,14 @@ fn test_round_f32_to_int_symbolic_rm() {
 /// forces rm to 2 (toward +inf) or 4 (ties away). RNE on 2.5 ties to even (2).
 #[test]
 fn test_round_f64_to_int_symbolic_rm() {
-    let ctx = SymContext::new_mock();
     let rm = RustBV::symbol("rm_f64", 32);
-    ctx.assume_true(&rm.ule(&RustBV::concrete(4, 32)));
+    let rm_valid = rm.ule(&RustBV::concrete(4, 32));
     let value = RustBV::concrete(2.5f64.to_bits() as u128, 64);
 
     let result = VEXOps::binop(IROp::RoundF64toInt, rm.clone(), value).unwrap();
     let target = RustBV::concrete(3.0f64.to_bits() as u128, 64);
-    let eq = result.to_z3_ast().unwrap().eq(target.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT for round(2.5)==3.0");
-
-    let model_rm = ctx.eval(&rm).expect("eval(rm) returned None");
+    let model_rm =
+        z3_eval(&rm, &[rm_valid, result.eq(&target)]).expect("expected SAT for round(2.5)==3.0");
     assert!(
         model_rm == 2 || model_rm == 4,
         "expected rm 2 (toward +inf) or 4 (ties away), got {model_rm}"
@@ -299,8 +290,9 @@ fn test_i64u_to_f32_rounds_up_to_2_pow_64() {
 #[test]
 fn test_int_to_float_rm_symbolic_matches_concrete() {
     use crate::symbolic::FloatPrec;
-    let ctx = SymContext::new_mock();
     let x = ((1i64 << 53) + 1).wrapping_neg() as u64 as u128;
+    // x stays a pinned symbol so that Z3, not the clarirs fold, rounds it.
+    let (x_sym, pin) = pinned_symbol("itof_x", x, 64);
     for mode in 0..4u128 {
         let concrete = VEXOps::binop(
             IROp::I64StoF64,
@@ -314,9 +306,10 @@ fn test_int_to_float_rm_symbolic_matches_concrete() {
                 signed: true,
             },
             FloatPrec::F64,
-            vec![RustBV::concrete(mode, 32), RustBV::concrete(x, 64)],
+            vec![RustBV::concrete(mode, 32), x_sym.clone()],
         );
-        assert_eq!(ctx.eval(&term), concrete.as_u128(), "mode {mode}");
+        assert!(term.is_symbolic(), "mode {mode}: the term must not fold");
+        assert_eq!(z3_eval(&term, std::slice::from_ref(&pin)), concrete.as_u128(), "mode {mode}");
     }
 }
 

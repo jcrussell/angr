@@ -1,8 +1,7 @@
 // angr-9hleg: integer widening-mul / divmod / sign-extend tests (mirror of ops/int_arith.rs).
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::{pinned_symbol, z3_eval};
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
@@ -37,7 +36,6 @@ fn divmod_concrete_matches_pinned_symbolic(
     (dvs, divisor_w): (u128, u32),
     symbolic_dividend: bool,
 ) -> u128 {
-    let ctx = SymContext::new_mock();
     let concrete = VEXOps::binop(
         op,
         RustBV::concrete(dvd, dividend_w),
@@ -47,20 +45,17 @@ fn divmod_concrete_matches_pinned_symbolic(
     .as_u128()
     .expect("concrete arm must fold");
 
-    let pin = |name: &str, v: u128, w: u32| {
-        let sym = RustBV::symbol(name, w);
-        ctx.add_constraint(sym.to_z3_ast().unwrap().eq(RustBV::concrete(v, w).to_z3_ast().unwrap()));
-        sym
-    };
-    let (left, right) = if symbolic_dividend {
-        (pin("dvd", dvd, dividend_w), RustBV::concrete(dvs, divisor_w))
+    let (left, right, pin) = if symbolic_dividend {
+        let (sym, pin) = pinned_symbol("dvd", dvd, dividend_w);
+        (sym, RustBV::concrete(dvs, divisor_w), pin)
     } else {
-        (RustBV::concrete(dvd, dividend_w), pin("dvs", dvs, divisor_w))
+        let (sym, pin) = pinned_symbol("dvs", dvs, divisor_w);
+        (RustBV::concrete(dvd, dividend_w), sym, pin)
     };
     let symbolic = VEXOps::binop(op, left, right).unwrap();
     assert_eq!(symbolic.width(), dividend_w);
     assert!(symbolic.is_symbolic(), "{op:?}: symbolic arm must not fold");
-    let symbolic = ctx.eval(&symbolic).expect("pinned operands must be sat");
+    let symbolic = z3_eval(&symbolic, &[pin]).expect("pinned operands must be sat");
     assert_eq!(
         concrete, symbolic,
         "{op:?}: concrete {concrete:#x} != pinned symbolic {symbolic:#x}"
@@ -187,8 +182,6 @@ fn test_sign_extend() {
 // concrete. Each case builds both and compares; the symbolic side pins the
 // divisor to 0 with a constraint so the symbolic path is actually taken.
 fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u32, divisor_w: u32) {
-    let ctx = SymContext::new_mock();
-
     let concrete = VEXOps::binop(
         op,
         RustBV::concrete(dividend, dividend_w),
@@ -198,12 +191,10 @@ fn divmod_zero_divisor_matches_symbolic(op: IROp, dividend: u128, dividend_w: u3
     assert_eq!(concrete.width(), dividend_w);
     let concrete_v = concrete.as_u128().expect("concrete arm must fold");
 
-    let dvs = RustBV::symbol("dvs_zero", divisor_w);
-    let pinned = dvs.eq(&RustBV::concrete(0, divisor_w));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    let (dvs, pinned) = pinned_symbol("dvs_zero", 0, divisor_w);
     let symbolic = VEXOps::binop(op, RustBV::concrete(dividend, dividend_w), dvs).unwrap();
     assert!(symbolic.is_symbolic(), "symbolic arm must not fold");
-    let symbolic_v = ctx.eval(&symbolic).expect("symbolic result must be sat");
+    let symbolic_v = z3_eval(&symbolic, &[pinned]).expect("symbolic result must be sat");
 
     assert_eq!(
         concrete_v, symbolic_v,

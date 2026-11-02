@@ -3,6 +3,11 @@
 // each `use super::test_helpers::*`. Helpers are `pub(super)` so all
 // test sibling modules (children of `ops`) reach them. Behavior-preserving.
 
+use clarirs_core::GLOBAL_CONTEXT;
+use clarirs_core::prelude::*;
+use clarirs_z3::Z3Solver;
+use num_bigint::BigUint;
+
 use super::*;
 use crate::symbolic::SymContext;
 
@@ -145,6 +150,50 @@ pub(super) fn eval_i64(ctx: &SymContext, bv: &RustBV) -> u64 {
 
 pub(super) fn eval_i32(ctx: &SymContext, bv: &RustBV) -> u32 {
     eval_v128(ctx, bv) as u32
+}
+
+// ---- solver-free evaluation (angr-mx00p.100.7) ----
+//
+// `SymContext` is the fork's Z3 wrapper; these evaluate through `clarirs_z3`
+// directly, as angr-bv's `oracle_tests.rs` does, so the tests using them
+// carry no dependency on it.
+
+/// Z3's value for `bv` once every 1-bit `constraint` is asserted to be 1, or
+/// `None` when the constraints are unsatisfiable. A symbolic `bv` is bound to
+/// a fresh result symbol rather than passed to `Z3Solver::eval`, which runs
+/// clarirs's simplify first: callers keep a term's operands symbolic (pinned
+/// by a constraint) so that Z3, not the clarirs fold, decides its value.
+pub(super) fn z3_eval(bv: &RustBV, constraints: &[RustBV]) -> Option<u128> {
+    let ctx = &*GLOBAL_CONTEXT;
+    let mut solver = Z3Solver::new(ctx);
+    for c in constraints {
+        assert_eq!(c.width(), 1, "a constraint is a 1-bit value");
+        let holds = ctx
+            .eq_(c.to_clarirs().unwrap(), ctx.bvv(BitVec::from((BigUint::from(1u32), 1))).unwrap())
+            .unwrap();
+        solver.add(&holds).unwrap();
+    }
+    if !solver.satisfiable().unwrap() {
+        return None;
+    }
+    if let Some(v) = bv.as_u128() {
+        return Some(v);
+    }
+    let result = ctx.bvs("vex_ops_z3_eval_result", bv.width()).unwrap();
+    solver
+        .add(&ctx.eq_(result.clone(), bv.to_clarirs().unwrap()).unwrap())
+        .unwrap();
+    match solver.eval(&result).unwrap().op() {
+        AstOp::BVV(v) => Some(u128::try_from(v.to_biguint()).expect("at most 128 bits")),
+        op => panic!("Z3 returned a non-literal {op:?}"),
+    }
+}
+
+/// A `width`-bit symbol `name` and the 1-bit constraint pinning it to `v`.
+pub(super) fn pinned_symbol(name: &str, v: u128, width: u32) -> (RustBV, RustBV) {
+    let sym = RustBV::symbol(name, width);
+    let pin = sym.eq(&RustBV::concrete(v, width));
+    (sym, pin)
 }
 
 // ---- FCmpScalarLane (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}) ----
