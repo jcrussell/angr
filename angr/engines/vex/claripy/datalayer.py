@@ -133,16 +133,16 @@ class ClaripyDataMixin(VEXMixin):
             raise errors.SimError("Claripy failed") from e
 
     def _perform_vex_expr_Op(self, op, args):
+        # TODO: get rid of these hacks (i.e. state options and modes) and move these switches into engine properties
+        options = getattr(self.state, "options", {o.SUPPORT_FLOATING_POINT})
+        fp = o.SUPPORT_FLOATING_POINT in options
         # irop.operations is checked per call because callers edit it at run time (test_oppologist does).
-        if RUST_IROPS and op in _RUST_IROP_NAMES and op in irop.operations:
+        # Without SUPPORT_FLOATING_POINT irop.py refuses every float op, so Rust must not serve one (angr-mx00p.101.1).
+        if RUST_IROPS and op in _RUST_IROP_NAMES and op in irop.operations and (fp or not irop.operations[op]._float):
             result = vex_irop.irop(op, tuple(args))
             if result is not None:
                 return result
-        # TODO: get rid of these hacks (i.e. state options and modes) and move these switches into engine properties
-        options = getattr(self.state, "options", {o.SUPPORT_FLOATING_POINT})
-        simop = irop.vexop_to_simop(
-            op, extended=o.EXTENDED_IROP_SUPPORT in options, fp=o.SUPPORT_FLOATING_POINT in options
-        )
+        simop = irop.vexop_to_simop(op, extended=o.EXTENDED_IROP_SUPPORT in options, fp=fp)
         return simop.calculate(*args)
 
     # ccall support

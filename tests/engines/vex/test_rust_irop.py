@@ -375,6 +375,18 @@ def test_engine_honours_irop_operations_edits(monkeypatch):
     assert _seam("Iop_Add32", args)[1] is UnsupportedIROpError
 
 
+def test_engine_refuses_float_irops_without_fp_support():
+    # irop.py refuses every float op without SUPPORT_FLOATING_POINT, so Rust must not serve one (angr-mx00p.101.1).
+    engine = SimpleNamespace(state=SimpleNamespace(options=set()))
+    v128 = (claripy.BVV(0, 32), claripy.BVV(1, 128), claripy.BVV(2, 128))
+    assert "Iop_Add32Fx4" in datalayer._RUST_IROP_NAMES
+    with pytest.raises(UnsupportedIROpError):
+        datalayer.ClaripyDataMixin._perform_vex_expr_Op(engine, "Iop_Add32Fx4", v128)
+    args = (claripy.BVS("x", 32), claripy.BVV(1, 32))
+    served = datalayer.ClaripyDataMixin._perform_vex_expr_Op(engine, "Iop_Add32", args)
+    assert served.identical(_python("Iop_Add32", args)[0])
+
+
 def test_rust_irop_honours_a_symbolic_rounding_mode():
     a, b = claripy.BVS("a", 128), claripy.BVS("b", 128)
     rm = claripy.BVS("rm", 32)
