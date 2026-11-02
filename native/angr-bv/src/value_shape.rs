@@ -75,7 +75,7 @@ impl SymBV {
     /// `to_z3_ast` reports that as an error (angr-mx00p.116.2).
     pub fn from_clarirs_lowerable(ast: Term) -> SymBV {
         if let AstOp::BVV(value) = ast.op()
-            && let Ok(v) = u128::try_from(&value.to_biguint())
+            && let Some(v) = super::value::literal_u128(value)
         {
             return SymBV::concrete(v, value.len());
         }

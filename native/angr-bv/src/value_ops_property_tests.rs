@@ -793,7 +793,8 @@ fn wide_arith_declines_the_fold_when_the_result_leaves_the_payload() {
 // angr-0jh0j.52: not/neg at width > 128. A true NOT must set every bit of
 // `[128..w)` (they start at the implicit-zero storage floor), and a true
 // negation `2^w - v` sets them too for any non-zero v — neither is
-// representable, so both decline.
+// representable in the payload. NOT folds to a wide `BVV` literal
+// (angr-mx00p.102.7); neg declines.
 #[test]
 fn wide_not_and_neg_decline_the_concrete_fold() {
     for &w in &WIDE_WIDTHS {
@@ -801,7 +802,13 @@ fn wide_not_and_neg_decline_the_concrete_fold() {
             let not = bv(v, w).not();
             assert_eq!(not.width(), w, "not width w={w} v={v:#x}");
             assert!(not.as_u128().is_none(), "not must not fold w={w} v={v:#x}");
-            assert_eq!(op_of(&not), Some(BVOp::Not), "not op w={w} v={v:#x}");
+            let ones = (num_bigint::BigUint::from(1u8) << w) - 1u8;
+            let expected = ones ^ num_bigint::BigUint::from(v);
+            assert_eq!(
+                not.literal_bits().map(|bits| bits.to_biguint()),
+                Some(expected),
+                "not literal w={w} v={v:#x}"
+            );
 
             let neg = bv(v, w).neg();
             assert_eq!(neg.width(), w, "neg width w={w} v={v:#x}");
@@ -812,6 +819,51 @@ fn wide_not_and_neg_decline_the_concrete_fold() {
                 assert!(neg.as_u128().is_none(), "neg must not fold w={w} v={v:#x}");
                 assert_eq!(op_of(&neg), Some(BVOp::Neg), "neg op w={w} v={v:#x}");
             }
+        }
+    }
+}
+
+// angr-mx00p.102.7: literals too wide for the payload stay literals. Concat
+// of two literals, a bitwise op over two, and a lane of one fold to a single
+// `BVV` (or `Concrete`) instead of building a term.
+#[test]
+fn wide_literals_fold_through_concat_bitwise_and_extract() {
+    use num_bigint::BigUint;
+    let big = |v: u128| BigUint::from(v);
+    let lit = |v: &SymBV| v.literal_bits().map(|bits| bits.to_biguint());
+    for &hi in &wide_payloads() {
+        for &lo in &wide_payloads() {
+            // 128 ++ 128: the AVX2 vector reassembled from its two halves.
+            let wide = bv(hi, 128).concat(&bv(lo, 128));
+            assert_eq!(wide.width(), 256);
+            let expected = (big(hi) << 128u32) | big(lo);
+            assert_eq!(
+                lit(&wide),
+                Some(expected.clone()),
+                "concat hi={hi:#x} lo={lo:#x}"
+            );
+            // ...and a 32-bit lane past it.
+            let lane = wide.concat(&bv(lo & 0xffff_ffff, 32));
+            assert_eq!(
+                lit(&lane),
+                Some((expected.clone() << 32u32) | big(lo & 0xffff_ffff))
+            );
+
+            assert_eq!(wide.extract(127, 0).as_u128(), Some(lo), "low half");
+            assert_eq!(wide.extract(255, 128).as_u128(), Some(hi), "high half");
+            assert_eq!(
+                wide.extract(159, 96).as_u128(),
+                Some(((hi & 0xffff_ffff) << 32) | (lo >> 96)),
+                "a lane straddling the halves"
+            );
+
+            let other = bv(lo, 128).concat(&bv(hi, 128));
+            let other_big = (big(lo) << 128u32) | big(hi);
+            assert_eq!(lit(&wide.and(&other)), Some(&expected & &other_big), "and");
+            assert_eq!(lit(&wide.or(&other)), Some(&expected | &other_big), "or");
+            assert_eq!(lit(&wide.xor(&other)), Some(&expected ^ &other_big), "xor");
+            // A full-width x ^ x is the zero literal, which fits the payload.
+            assert_eq!(wide.xor(&wide).as_u128(), Some(0), "x ^ x");
         }
     }
 }

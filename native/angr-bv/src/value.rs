@@ -565,7 +565,7 @@ impl SymBV {
             }
         };
         if let clarirs_core::prelude::AstOp::BVV(value) = ast.op()
-            && let Ok(v) = u128::try_from(&value.to_biguint())
+            && let Some(v) = literal_u128(value)
         {
             return Ok(SymBV::concrete(v, value.len()));
         }
@@ -610,11 +610,50 @@ impl SymBV {
         }
     }
 
+    /// The literal this value denotes as a [`BitVec`], at any width: a
+    /// `Concrete`, or an `Ast` that is a `BVV` too wide for one. `None` for
+    /// every other term.
+    pub fn literal_bits(&self) -> Option<BitVec> {
+        match self {
+            SymBV::Concrete { value, width } => {
+                Some(BitVec::from((num_bigint::BigUint::from(*value), *width)))
+            }
+            SymBV::Ast { ast, .. } => match ast.op() {
+                clarirs_core::prelude::AstOp::BVV(bits) => Some(bits.clone()),
+                _ => None,
+            },
+        }
+    }
+
     /// Try to get the concrete value as u64.
     #[inline]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_u128().map(|v| v as u64)
     }
+}
+
+/// A literal's value as a `u128`, or `None` when it does not fit. Reads the
+/// low words directly: a wide AVX2 literal is refused without building a
+/// `BigUint` (angr-mx00p.102.7).
+pub(crate) fn literal_u128(bits: &BitVec) -> Option<u128> {
+    let len = bits.len();
+    if len == 0 {
+        return Some(0);
+    }
+    if bits.bits() > 128 {
+        return None;
+    }
+    let word = |low: u32| {
+        if low >= len {
+            return Some(0);
+        }
+        // overflow-ok: `low` is 0 or 64 and `len > low`.
+        bits.extract(low, (low + 63).min(len - 1))
+            .ok()?
+            .to_u64()
+            .map(u128::from)
+    };
+    Some(word(64)? << 64 | word(0)?)
 }
 
 // =============================================================================

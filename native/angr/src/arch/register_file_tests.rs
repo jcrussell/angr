@@ -349,16 +349,14 @@ fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
                  zero, not a wrapped repeat of the low 16"
             );
 
-            // Read: exact, and not representable as a u128 — which is what
-            // makes the Python `get_register` surface report a clean error
-            // instead of a truncated number.
+            // Read: exact. Every byte above the payload is zero, so the value
+            // folds back to the u128 it was written as (angr-mx00p.102.7).
             let got = regs.get_reg(name).expect("register readable");
             assert_eq!(got.width(), size * 8, "{arch_name}: {name} read width");
             assert_eq!(
                 got.as_u128(),
-                None,
-                "{arch_name}: a >128-bit read of {name} has no concrete \
-                 representation"
+                Some(0xdead_beef),
+                "{arch_name}: {name} reads back exactly"
             );
             // Byte 0 of the composed value is still the byte that was written.
             assert_eq!(
@@ -371,6 +369,25 @@ fn registers_wider_than_u128_read_and_write_without_shift_overflow() {
                 Some(0),
                 "{arch_name}: {name} top byte"
             );
+
+            // A set top byte has no u128 representation, which is what makes
+            // the Python `get_register` surface report a clean error instead
+            // of a truncated number.
+            let top = RustBV::concrete(0x80, 8).concat(&RustBV::concrete(0xdead_beef, size * 8 - 8));
+            assert!(regs.put_reg(name, top), "{arch_name}: put_reg({name}) rejected");
+            let got = regs.get_reg(name).expect("register readable");
+            assert_eq!(
+                got.as_u128(),
+                None,
+                "{arch_name}: a >128-bit read of {name} with its top byte set \
+                 has no concrete representation"
+            );
+            assert_eq!(
+                got.extract(size * 8 - 1, size * 8 - 8).as_u128(),
+                Some(0x80),
+                "{arch_name}: {name} top byte set"
+            );
+            assert_eq!(got.extract(31, 0).as_u128(), Some(0xdead_beef), "{arch_name}: {name} low word");
         }
     }
     // x86 and amd64 `fpreg` (64 B each) are the two the sweep exists for; if

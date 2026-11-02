@@ -26,6 +26,9 @@
 //! `invariant-assert-not-debug-assert-in-release` for the checks that *do*
 //! warrant a real `assert!`.
 
+use clarirs_core::GLOBAL_CONTEXT;
+use clarirs_core::prelude::{AstFactory, BitVec};
+
 use super::stats::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_commutative_canonicalize,
     record_zext_cmp_collapse, record_zext_cmp_trivial_decide,
@@ -304,6 +307,21 @@ impl SymBV {
 
     /// [`Self::from_op`] for the fixed-arity call sites.
     #[inline]
+    /// `op` over two literals, at least one too wide for the payload, as one
+    /// `BVV` term, so a concrete AVX2 vector never builds a term chain
+    /// (angr-mx00p.102.7). `None` unless both operands are literals.
+    fn fold_wide_literals(
+        lhs: &Self,
+        rhs: &Self,
+        op: impl FnOnce(BitVec, BitVec) -> Option<BitVec>,
+    ) -> Option<Self> {
+        let bits = op(lhs.literal_bits()?, rhs.literal_bits()?)?;
+        GLOBAL_CONTEXT
+            .bvv(bits)
+            .ok()
+            .map(Self::from_clarirs_lowerable)
+    }
+
     fn expr_node<const N: usize>(width: u32, op: BVOp, operands: [SymBV; N]) -> Self {
         Self::from_op(width, op, Vec::from(operands))
     }
@@ -570,6 +588,9 @@ impl SymBV {
             (None, Some(v)) if is_all_ones(v, lhs.width()) => lhs,
             (Some(v), None) if is_all_ones(v, rhs.width()) => rhs,
             _ => {
+                if let Some(folded) = Self::fold_wide_literals(&lhs, &rhs, |l, r| (l & r).ok()) {
+                    return folded;
+                }
                 let width = lhs.width();
                 let (l, r) = lhs.canonicalize_commutative(rhs);
                 Self::expr_node(width, BVOp::And, [l, r])
@@ -593,6 +614,9 @@ impl SymBV {
             (_, Some(v)) if is_all_ones(v, lhs.width()) => Self::ones(lhs.width()),
             (Some(v), _) if is_all_ones(v, lhs.width()) => Self::ones(lhs.width()),
             _ => {
+                if let Some(folded) = Self::fold_wide_literals(&lhs, &rhs, |l, r| (l | r).ok()) {
+                    return folded;
+                }
                 let width = lhs.width();
                 let (l, r) = lhs.canonicalize_commutative(rhs);
                 Self::expr_node(width, BVOp::Or, [l, r])
@@ -611,6 +635,9 @@ impl SymBV {
             (None, Some(0)) => lhs,
             (Some(0), None) => rhs,
             _ => {
+                if let Some(folded) = Self::fold_wide_literals(&lhs, &rhs, |l, r| (l ^ r).ok()) {
+                    return folded;
+                }
                 let width = lhs.width();
                 let (l, r) = lhs.canonicalize_commutative(rhs);
                 Self::expr_node(width, BVOp::Xor, [l, r])
@@ -634,6 +661,9 @@ impl SymBV {
             // the declared width (angr-0jh0j.52).
             Some(v) if !bits_beyond_storage(self.width()) => Self::concrete(!v, self.width()),
             _ => {
+                if let Some(folded) = Self::fold_wide_literals(&self, &self, |v, _| (!v).ok()) {
+                    return folded;
+                }
                 // not(not(x)) → x
                 if let Some(Node {
                     op: BVOp::Not,
@@ -1173,6 +1203,14 @@ impl SymBV {
                 Self::concrete(combined, result_width)
             }
             _ => {
+                // A literal too wide for the payload stays one `BVV` term, so
+                // a concrete AVX2 vector reassembled from its lanes never
+                // builds a `Concat` chain (angr-mx00p.102.7).
+                if let Some(folded) =
+                    Self::fold_wide_literals(&self, &other, |hi, lo| hi.concat(&lo).ok())
+                {
+                    return folded;
+                }
                 record_bvop_concat();
                 Self::expr_node(result_width, BVOp::Concat, [self, other])
             }
@@ -1702,6 +1740,16 @@ pub(super) fn drive_extract<T: ExtractTarget>(
     if let Some(v) = inner.as_u128() {
         let extracted = super::bv_concrete::concrete_extract_u128(v, low, result_width);
         return target.concrete(extracted, result_width);
+    }
+
+    // A lane of a literal too wide for the payload folds the same way
+    // (angr-mx00p.102.7).
+    if result_width <= 128
+        && let Some(bits) = inner.literal_bits()
+        && let Ok(lane) = bits.extract(low, high)
+        && let Some(v) = super::value::literal_u128(&lane)
+    {
+        return target.concrete(v, result_width);
     }
 
     // Identity: Extract(width-1, 0, x) → x

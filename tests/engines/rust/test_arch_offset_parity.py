@@ -345,8 +345,11 @@ def test_register_wider_than_u128_reads_and_writes_cleanly(rust_arch):
     painted the low 16 bytes four times across the register (angr-0jh0j.2).
 
     Contract now: the write stores the value it was given (implicit zeros above
-    the ``u128`` payload, not a wrapped repeat), and the read declines with a
-    clean ``ValueError`` because no ``u128`` can carry 512 bits back to Python.
+    the ``u128`` payload, not a wrapped repeat), and the read returns exactly
+    that value, since every bit above the payload is zero (angr-mx00p.102.7).
+    A read with a bit set above the payload declines with a ``ValueError``;
+    ``registers_wider_than_u128_read_and_write_without_shift_overflow`` in
+    ``register_file_tests.rs`` covers it, as ``set_register`` cannot write one.
     """
     state = RustSimState(rust_arch)
     offset, size = archinfo.arch_from_id(ARCHES[rust_arch]).registers["fpreg"]
@@ -359,8 +362,7 @@ def test_register_wider_than_u128_reads_and_writes_cleanly(rust_arch):
         "bytes above the u128 payload must stay zero, not repeat the low 16"
     )
 
-    with pytest.raises(ValueError, match="cannot read register fpreg"):
-        state.get_register("fpreg")
+    assert state.get_register("fpreg") == _ALL_ONES
 
 
 # ---------------------------------------------------------------------------
