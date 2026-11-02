@@ -9,7 +9,6 @@ use clarirs_z3::Z3Solver;
 use num_bigint::BigUint;
 
 use super::*;
-use crate::symbolic::SymContext;
 
 // =========================================================================
 // SIMD lane-test helpers (angr-ec82).
@@ -139,24 +138,18 @@ pub(super) fn assert_int_lanes_eq(got: u128, exp: &[u128], lane_bits: u32) {
 //
 // Convenience: turn a width-N RustBV into its u128 representation via the
 // solver so the result of a fresh-symbolic-per-lane op is observable.
-pub(super) fn eval_v128(ctx: &SymContext, bv: &RustBV) -> u128 {
-    assert!(ctx.is_sat(), "expected SAT for eval");
-    ctx.eval(bv).expect("eval returned None")
+pub(super) fn eval_v128(bv: &RustBV) -> u128 {
+    z3_eval(bv, &[]).expect("expected SAT for eval")
 }
 
-pub(super) fn eval_i64(ctx: &SymContext, bv: &RustBV) -> u64 {
-    eval_v128(ctx, bv) as u64
-}
-
-pub(super) fn eval_i32(ctx: &SymContext, bv: &RustBV) -> u32 {
-    eval_v128(ctx, bv) as u32
+pub(super) fn eval_i64(bv: &RustBV) -> u64 {
+    eval_v128(bv) as u64
 }
 
 // ---- solver-free evaluation (angr-mx00p.100.7) ----
 //
-// `SymContext` is the fork's Z3 wrapper; these evaluate through `clarirs_z3`
-// directly, as angr-bv's `oracle_tests.rs` does, so the tests using them
-// carry no dependency on it.
+// These evaluate through `clarirs_z3` directly, as angr-bv's
+// `oracle_tests.rs` does.
 
 /// Z3's value for `bv` once every 1-bit `constraint` is asserted to be 1, or
 /// `None` when the constraints are unsatisfiable. A symbolic `bv` is bound to
@@ -187,6 +180,11 @@ pub(super) fn z3_eval(bv: &RustBV, constraints: &[RustBV]) -> Option<u128> {
         AstOp::BVV(v) => Some(u128::try_from(v.to_biguint()).expect("at most 128 bits")),
         op => panic!("Z3 returned a non-literal {op:?}"),
     }
+}
+
+/// Whether the 1-bit `constraints` are satisfiable together.
+pub(super) fn z3_sat(constraints: &[RustBV]) -> bool {
+    z3_eval(&RustBV::concrete(0, 1), constraints).is_some()
 }
 
 /// A `width`-bit symbol `name` and the 1-bit constraint pinning it to `v`.

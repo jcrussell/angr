@@ -1,9 +1,7 @@
 // angr-9hleg: packed per-lane FP arith tests (mirror of ops/vec_float_lane.rs).
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 // =========================================================================
@@ -13,7 +11,6 @@ use crate::vex::ir::IRType;
 /// ADDPS-style: 4x f32 add, concrete.
 #[test]
 fn test_vec_float_add_concrete_f32x4() {
-
     let l = [1.0f32, 2.5, -3.0, 0.5];
     let r = [10.0f32, -2.5, 3.0, 8.0];
     let exp: [f32; 4] = [11.0, 0.0, 0.0, 8.5];
@@ -33,7 +30,6 @@ fn test_vec_float_add_concrete_f32x4() {
 /// DIVPD-style: 2x f64 div, concrete.
 #[test]
 fn test_vec_float_div_concrete_f64x2() {
-
     let l = [10.0f64, -8.0];
     let r = [4.0f64, 2.0];
     let exp = [2.5f64, -4.0];
@@ -53,7 +49,6 @@ fn test_vec_float_div_concrete_f64x2() {
 /// SQRTPS-style: 4x f32 sqrt, concrete.
 #[test]
 fn test_vec_float_sqrt_concrete_f32x4() {
-
     let v = [4.0f32, 9.0, 16.0, 25.0];
     let exp = [2.0f32, 3.0, 4.0, 5.0];
 
@@ -71,7 +66,6 @@ fn test_vec_float_sqrt_concrete_f32x4() {
 /// Iop_Abs32Fx4-style: per-lane fabs (clears sign bit).
 #[test]
 fn test_vec_float_abs_concrete_f32x4() {
-
     let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
     let exp = [1.5f32, 2.5, 0.0, f32::INFINITY];
 
@@ -90,7 +84,6 @@ fn test_vec_float_abs_concrete_f32x4() {
 /// Only the low two lanes are meaningful.
 #[test]
 fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
-
     let v = [-1.5f32, -0.0];
     let exp = [1.5f32, 0.0];
 
@@ -110,7 +103,6 @@ fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
 /// must flip the sign of -0.0 and of infinities, where `==` would not notice.
 #[test]
 fn test_vec_float_neg_concrete_f32x4() {
-
     let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
     let exp = [1.5f32, -2.5, 0.0, f32::INFINITY];
 
@@ -129,7 +121,6 @@ fn test_vec_float_neg_concrete_f32x4() {
 /// Iop_Neg64Fx2-style: per-lane sign flip on the f64x2 shape.
 #[test]
 fn test_vec_float_neg_concrete_f64x2() {
-
     let v = [3.25f64, -0.0];
     let exp = [-3.25f64, 0.0];
 
@@ -149,11 +140,9 @@ fn test_vec_float_neg_concrete_f64x2() {
 /// Z3 path builds a 64-bit (not 128-bit) result and negates each lane.
 #[test]
 fn test_vec_float_neg_symbolic_f32x2() {
-    let ctx = SymContext::new_mock();
-
     let target = pack_lanes_f32(&[1.5f32, -4.0]);
     let v = RustBV::symbol("vfneg_v", 64);
-    ctx.add_constraint(v.to_z3_ast().unwrap().eq(RustBV::concrete(target, 64).to_z3_ast().unwrap()));
+    let pin = v.eq(&RustBV::concrete(target, 64));
 
     let result = VEXOps::unop(
         IROp::VFNeg {
@@ -164,16 +153,13 @@ fn test_vec_float_neg_symbolic_f32x2() {
     )
     .unwrap();
     assert_eq!(result.width(), 64);
-    assert!(ctx.is_sat(), "expected SAT");
-
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &[pin]).expect("expected SAT");
     assert_f32_lanes_approx(model, &[-1.5f32, 4.0], 1e-6);
 }
 
 /// MAXPS-style: per-lane max of two f32x4 vectors.
 #[test]
 fn test_vec_float_max_concrete_f32x4() {
-
     let l = [1.0f32, -2.0, 3.0, 0.5];
     let r = [4.0f32, -3.0, 2.0, 0.6];
     let exp = [4.0f32, -2.0, 3.0, 0.6];
@@ -193,7 +179,6 @@ fn test_vec_float_max_concrete_f32x4() {
 /// MINPD-style: per-lane min of two f64x2 vectors.
 #[test]
 fn test_vec_float_min_concrete_f64x2() {
-
     let l = [1.5f64, -2.5];
     let r = [-1.5f64, 0.5];
     let exp = [-1.5f64, -2.5];
@@ -215,17 +200,12 @@ fn test_vec_float_min_concrete_f64x2() {
 /// model agrees with [3.0, 4.0, 5.0, 6.0] per lane.
 #[test]
 fn test_vec_float_add_symbolic_f32x4() {
-    let ctx = SymContext::new_mock();
-
     let consts = [2.0f32, 3.0, 4.0, 5.0];
     let r = RustBV::concrete(pack_lanes_f32(&consts), 128);
 
     let lv_target = pack_lanes_f32(&[1.0f32; 4]);
     let l = RustBV::symbol("vfadd_l", 128);
-    ctx.add_constraint(
-        l.to_z3_ast().unwrap()
-            .eq(RustBV::concrete(lv_target, 128).to_z3_ast().unwrap()),
-    );
+    let pin = l.eq(&RustBV::concrete(lv_target, 128));
 
     let result = VEXOps::binop(
         IROp::VFAdd {
@@ -237,9 +217,7 @@ fn test_vec_float_add_symbolic_f32x4() {
     )
     .unwrap();
     assert_eq!(result.width(), 128);
-    assert!(ctx.is_sat(), "expected SAT");
-
-    let model = ctx.eval(&result).expect("eval(result) returned None");
+    let model = z3_eval(&result, &[pin]).expect("expected SAT");
     let exp = [3.0f32, 4.0, 5.0, 6.0];
     assert_f32_lanes_approx(model, &exp, 1e-6);
 }
@@ -334,15 +312,15 @@ fn pack_v256_f64x4(lanes: &[f64; 4]) -> RustBV {
 }
 
 /// Read lane `i` of a 256-bit result back as f32 via `extract` + model eval.
-fn eval_v256_lane_f32(ctx: &SymContext, result: &RustBV, i: u32) -> f32 {
+fn eval_v256_lane_f32(result: &RustBV, i: u32) -> f32 {
     let lane = result.extract(i * 32 + 31, i * 32);
-    f32::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u32)
+    f32::from_bits(z3_eval(&lane, &[]).expect("eval(lane) returned None") as u32)
 }
 
 /// Read lane `i` of a 256-bit result back as f64 via `extract` + model eval.
-fn eval_v256_lane_f64(ctx: &SymContext, result: &RustBV, i: u32) -> f64 {
+fn eval_v256_lane_f64(result: &RustBV, i: u32) -> f64 {
     let lane = result.extract(i * 64 + 63, i * 64);
-    f64::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u64)
+    f64::from_bits(z3_eval(&lane, &[]).expect("eval(lane) returned None") as u64)
 }
 
 /// VADDPS/VSUBPS/VMULPS/VDIVPS-style: the four AVX2 f32x8 arithmetic opcodes.
@@ -351,8 +329,6 @@ fn eval_v256_lane_f64(ctx: &SymContext, result: &RustBV, i: u32) -> f64 {
 /// shows up as a mismatch rather than a rounding wobble.
 #[test]
 fn test_vec_float_binops_avx2_256_bit_f32x8() {
-    let ctx = SymContext::new_mock();
-
     // Lane 0 first. Distinct per lane so a swapped/duplicated lane is visible;
     // no zeros on the right so the same table can drive the divide.
     let l: [f32; 8] = [1.0, 2.5, -3.0, 0.5, 16.0, -0.25, 7.5, 1024.0];
@@ -391,7 +367,7 @@ fn test_vec_float_binops_avx2_256_bit_f32x8() {
                 IROp::VFMul { .. } => l[i] * r[i],
                 _ => l[i] / r[i],
             };
-            let got = eval_v256_lane_f32(&ctx, &result, i as u32);
+            let got = eval_v256_lane_f32(&result, i as u32);
             assert_eq!(got, expected, "{op:?} lane {i}");
         }
     }
@@ -402,8 +378,6 @@ fn test_vec_float_binops_avx2_256_bit_f32x8() {
 /// `vec_float_lane_op`'s arity-1 path never saw a 256-bit operand before.
 #[test]
 fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
-    let ctx = SymContext::new_mock();
-
     let l: [f64; 4] = [1.0, -8.0, 3.5, 0.0];
     let r: [f64; 4] = [2.0, -16.0, 3.5, -1.0];
 
@@ -430,7 +404,7 @@ fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
                 IROp::VFMin { .. } => l[i].min(r[i]),
                 _ => l[i].max(r[i]),
             };
-            let got = eval_v256_lane_f64(&ctx, &result, i as u32);
+            let got = eval_v256_lane_f64(&result, i as u32);
             assert_eq!(got, expected, "{op:?} lane {i}");
         }
     }
@@ -446,7 +420,7 @@ fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
     .unwrap();
     assert_eq!(result.width(), 256);
     for (i, v) in sqrt_in.iter().enumerate() {
-        let got = eval_v256_lane_f64(&ctx, &result, i as u32);
+        let got = eval_v256_lane_f64(&result, i as u32);
         assert_eq!(got, v.sqrt(), "VFSqrt lane {i}");
     }
 }

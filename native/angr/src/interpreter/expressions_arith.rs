@@ -146,13 +146,12 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// `pub(crate)` (rather than the module-private default every sibling
-    /// `eval_*` dispatcher uses) so `vex::ops::tests_rounding_mode_sweep`'s
-    /// dispatcher-selection sweep can drive evaluation through the real
-    /// entry point that had the dispatcher-selection bug (angr-03vl4.30), instead of calling
+    /// `pub(super)` so `rm_dispatch_tests`' dispatcher-selection sweep can
+    /// drive evaluation through the real entry point that had the
+    /// dispatcher-selection bug (angr-03vl4.30), instead of calling
     /// `VEXOps::binop_with_rm`/`qop_with_rm` directly the way the rest of
-    /// that file does — see the module doc comment there.
-    pub(crate) fn eval_binop(
+    /// the sweep does — see `vex::ops::tests_rounding_mode_sweep`'s module doc.
+    pub(super) fn eval_binop(
         &mut self,
         callbacks: &dyn EngineHost,
         op: IROp,
@@ -218,9 +217,9 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// `pub(crate)` — see the doc comment on `eval_binop` above; same
+    /// `pub(super)` — see the doc comment on `eval_binop` above; same
     /// dispatcher-selection-sweep reason applies here.
-    pub(crate) fn eval_triop(
+    pub(super) fn eval_triop(
         &mut self,
         callbacks: &dyn EngineHost,
         op: IROp,
@@ -268,11 +267,11 @@ impl<'a> VEXInterpreter<'a> {
 
     /// `args` is the Qop's four operands in IR order (`arg1..arg4`).
     ///
-    /// `pub(crate)` — see the doc comment on `eval_binop` above; this is the
+    /// `pub(super)` — see the doc comment on `eval_binop` above; this is the
     /// exact dispatcher the rounding-mode bug lived in (routed to
     /// `VEXOps::qop` instead of `qop_with_rm`; angr-03vl4.30), so the dispatcher-selection
     /// sweep needs to call it directly.
-    pub(crate) fn eval_qop(
+    pub(super) fn eval_qop(
         &mut self,
         callbacks: &dyn EngineHost,
         op: IROp,

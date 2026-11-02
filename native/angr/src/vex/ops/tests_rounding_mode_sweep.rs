@@ -32,8 +32,9 @@
 //    testing the caller-dispatch shape back in (interpreter calls the rm-less
 //    sibling instead of the `_with_rm` variant) leaves this section green.
 //    Section 2 exists to close that gap.
-// 2. `test_dispatcher_selection_routes_through_rm_threaded_sibling` —
-//    Family B only. Drives evaluation through the REAL interpreter-level
+// 2. `test_dispatcher_selection_routes_through_rm_threaded_sibling`, which
+//    lives in `interpreter::rm_dispatch_tests` so that vex/ops tests name no
+//    interpreter type, and reads this file's `all_rm_ops()` — Family B only. Drives evaluation through the REAL interpreter-level
 //    dispatch entry points (`VEXInterpreter::eval_binop`/`eval_triop`/
 //    `eval_qop` in `interpreter/expressions_arith.rs`) — the layer the
 //    caller-dispatch bug actually lived in — for one representative op per
@@ -75,16 +76,15 @@
 // which only checks that the rm parameter is *touched* in the source; it
 // cannot tell whether the rounding math itself agrees with Z3.
 
-use crate::symbolic::ToZ3;
+use super::test_helpers::{pinned_symbol, z3_eval};
 use super::*;
-use crate::symbolic::SymContext;
-use crate::symbolic::VexRm;
+use angr_bv::VexRm;
 use crate::vex::ir::IRType;
 
 /// Every VEX rounding mode `VexRm::decode` accepts, by encoding: 0=nearest
 /// (RNE), 1=down/-inf (RD), 2=up/+inf (RU), 3=zero/truncate (RZ),
 /// 4=nearest, ties away from zero (RNA; angr-vmi2l.56).
-const VEX_ROUNDING_MODES: [u32; 5] = [
+pub(crate) const VEX_ROUNDING_MODES: [u32; 5] = [
     VexRm::NearestEven.encoding(),
     VexRm::TowardNegative.encoding(),
     VexRm::TowardPositive.encoding(),
@@ -99,7 +99,7 @@ const UNSUPPORTED_ROUNDING_MODES: [u128; 9] = [5, 6, 7, 8, 9, 10, 11, 0xFFFF_FFF
 /// One non-rm operand of a candidate test case: its raw bit pattern plus its
 /// width, so the sweep can build the right-width `RustBV` for it without the
 /// entry needing a separate parallel width list.
-type Operand = (u128, u32);
+pub(crate) type Operand = (u128, u32);
 
 /// Which real VEX-encoded shape an entry's op arrives as, and — for Family
 /// B — which interpreter-level `eval_*` dispatcher (`interpreter/
@@ -109,7 +109,7 @@ type Operand = (u128, u32);
 /// rm-less sibling to mis-route to, and no rm-concreteness branch to
 /// exercise symbolically.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RmDispatchKind {
+pub(crate) enum RmDispatchKind {
     /// `VEXOps::binop`'s rm-taking `binop_float` arms (F64toF32, the
     /// float<->int conversions, RoundF{32,64}toInt). No interpreter-level
     /// dispatcher-selection risk: `eval_binop` unconditionally calls
@@ -132,30 +132,30 @@ enum RmDispatchKind {
 /// underlying `VEXOps` method's arity (`binop`/`binop_with_rm`/
 /// `unop_with_rm`/`qop_with_rm` all take a different number of non-rm
 /// operands, flattened here into a slice).
-type RmDispatchFn = dyn Fn(RustBV, &[RustBV]) -> Result<RustBV, OpError>;
+pub(crate) type RmDispatchFn = dyn Fn(RustBV, &[RustBV]) -> Result<RustBV, OpError>;
 
 /// One `*_rm` op's dispatch entry. `call` invokes the *public* `VEXOps`
 /// method the real interpreter uses (never a private/`pub(super)` helper),
 /// exactly mirroring the call pattern each existing per-op test already uses.
-struct RmOpEntry {
-    name: &'static str,
+pub(crate) struct RmOpEntry {
+    pub(crate) name: &'static str,
     /// A handful of operand tuples known (and, independently, asserted by
     /// this sweep itself — see the mode-sensitivity check below) to round
     /// differently under different VEX modes, so the equivalence check below
     /// is non-vacuous.
-    cases: Vec<Vec<Operand>>,
+    pub(crate) cases: Vec<Vec<Operand>>,
     /// Operand tuples every mode rounds identically (the sign of zero:
     /// `RoundF{32,64}toInt(-0.0)` is `-0.0` in every mode). Section 1 checks
     /// them for concrete/symbolic agreement but exempts them from the
     /// mode-sensitivity check, which they would fail by construction.
-    mode_invariant_cases: Vec<Vec<Operand>>,
-    call: Box<RmDispatchFn>,
+    pub(crate) mode_invariant_cases: Vec<Vec<Operand>>,
+    pub(crate) call: Box<RmDispatchFn>,
     /// The `IROp` this entry dispatches, for sections 2/3's interpreter- and
     /// rm-less-sibling calls, which need the concrete `IROp` value rather
     /// than a pre-baked closure.
-    op: IROp,
+    pub(crate) op: IROp,
     /// Which dispatch shape `op` arrives as — see `RmDispatchKind`.
-    kind: RmDispatchKind,
+    pub(crate) kind: RmDispatchKind,
 }
 
 fn f32_bits(v: f32) -> u128 {
@@ -254,7 +254,7 @@ fn qop_with_rm_entry(name: &'static str, op: IROp, case: Vec<Operand>) -> RmOpEn
 
 /// The full registry of `*_rm`-flavored ops, read off the real dispatch
 /// match arms (see the module doc comment for exactly which ones).
-fn all_rm_ops() -> Vec<RmOpEntry> {
+pub(crate) fn all_rm_ops() -> Vec<RmOpEntry> {
     // 1-ULP-scale ties, generalized from the exact bit patterns
     // tests_float_arith.rs's `test_float_add_with_rm_rz_f32`
     // (0x3F800001/0x3F800002 == 1.0+1ulp/1.0+2ulp) already proved
@@ -505,7 +505,6 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
             let mut mode_results = Vec::with_capacity(VEX_ROUNDING_MODES.len());
 
             for &rm in &VEX_ROUNDING_MODES {
-                let ctx = SymContext::new_mock();
                 let rm_bv = RustBV::concrete(rm as u128, 32);
 
                 // Concrete path: every operand is a plain concrete RustBV.
@@ -520,7 +519,7 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                             entry.name
                         )
                     });
-                let concrete_bits = ctx.eval(&concrete_result).unwrap_or_else(|| {
+                let concrete_bits = z3_eval(&concrete_result, &[]).unwrap_or_else(|| {
                     panic!(
                         "{}: eval(concrete_result) returned None for case {case:?} rm={rm}",
                         entry.name
@@ -530,18 +529,11 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                 // Symbolic path: fresh symbolic vars pinned to the exact
                 // same bits via a Z3 constraint, then the *same* dispatcher
                 // call and an eval of the result through the model.
-                let symbolic_operands: Vec<RustBV> = case
+                let (symbolic_operands, pins): (Vec<RustBV>, Vec<RustBV>) = case
                     .iter()
                     .enumerate()
-                    .map(|(i, &(bits, width))| {
-                        let sym = RustBV::symbol(format!("operand{i}"), width);
-                        let pin = sym
-                            .to_z3_ast().unwrap()
-                            .eq(RustBV::concrete(bits, width).to_z3_ast().unwrap());
-                        ctx.add_constraint(pin);
-                        sym
-                    })
-                    .collect();
+                    .map(|(i, &(bits, width))| pinned_symbol(&format!("operand{i}"), bits, width))
+                    .unzip();
                 let symbolic_result = (entry.call)(rm_bv.clone(), &symbolic_operands)
                     .unwrap_or_else(|e| {
                         panic!(
@@ -549,14 +541,9 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
                             entry.name
                         )
                     });
-                assert!(
-                    ctx.is_sat(),
-                    "{}: pinned-operand context must stay SAT (case {case:?} rm={rm})",
-                    entry.name
-                );
-                let symbolic_bits = ctx.eval(&symbolic_result).unwrap_or_else(|| {
+                let symbolic_bits = z3_eval(&symbolic_result, &pins).unwrap_or_else(|| {
                     panic!(
-                        "{}: eval(symbolic_result) returned None for case {case:?} rm={rm}",
+                        "{}: pinned operands unsatisfiable for case {case:?} rm={rm}",
                         entry.name
                     )
                 });
@@ -588,218 +575,6 @@ fn test_rounding_mode_concrete_symbolic_equivalence() {
 }
 
 // =============================================================================
-// Section 2: dispatcher-selection coverage (Family B only).
-// =============================================================================
-
-/// The caller-dispatch bug shape, reconstructed directly: call the rm-LESS
-/// sibling `VEXOps` method (always RNE) instead of the `*_with_rm` variant —
-/// what `eval_binop`/`eval_triop`/`eval_qop` would compute if they picked
-/// the wrong method. `operands` excludes rm (same shape as `RmOpEntry::cases`).
-fn eval_rne_only_sibling(
-    kind: RmDispatchKind,
-    op: IROp,
-    operands: &[RustBV],
-    ) -> Result<RustBV, OpError> {
-    match kind {
-        RmDispatchKind::BinopToUnopWithRm => VEXOps::unop(op, operands[0].clone()),
-        RmDispatchKind::TriopWithRm => {
-            VEXOps::binop(op, operands[0].clone(), operands[1].clone())
-        }
-        RmDispatchKind::QopWithRm => VEXOps::qop(
-            op,
-            operands[0].clone(),
-            operands[1].clone(),
-            operands[2].clone(),
-        ),
-        RmDispatchKind::FamilyA => {
-            unreachable!("eval_rne_only_sibling is Family-B only; callers must filter FamilyA")
-        }
-    }
-}
-
-/// Build an `IRConst` carrying `bits` at `width`, for the interpreter-level
-/// dispatch call below. Only the widths `all_rm_ops()`'s Family-B cases
-/// actually use (rm is always 32-bit; FP operands are 32 or 64-bit, packed
-/// ones 128).
-fn irconst_for(bits: u128, width: u32) -> crate::vex::ir::IRConst {
-    use crate::vex::ir::IRConst;
-    match width {
-        32 => IRConst::U32(bits as u32),
-        64 => IRConst::U64(bits as u64),
-        128 => IRConst::U128(bits),
-        other => {
-            panic!("irconst_for: unsupported operand width {other} in dispatcher-selection sweep")
-        }
-    }
-}
-
-/// Evaluate one Family-B op through the REAL interpreter-level dispatch
-/// entry point (`VEXInterpreter::eval_binop`/`eval_triop`/`eval_qop` in
-/// `interpreter/expressions_arith.rs`) — the layer the caller-dispatch bug actually
-/// lived in (the caller picked `VEXOps::qop` instead of `qop_with_rm`),
-/// as opposed to the rest of this file, which calls
-/// `VEXOps::binop_with_rm`/`unop_with_rm`/`qop_with_rm` directly and so
-/// cannot see a caller-picks-wrong-method regression.
-///
-/// `rm` and `case` are passed as raw bits/widths (not `RustBV`) so the IR
-/// tree can be built entirely from `IRExpr::Const` — `VEXInterpreter::temps`
-/// is module-private to `interpreter` and unreachable from this file, but
-/// `eval_binop`/`eval_triop`/`eval_qop` themselves are `pub(crate)`
-/// specifically so this sweep can call them (see their doc comments in
-/// `interpreter/expressions_arith.rs`).
-fn eval_through_interpreter(
-    kind: RmDispatchKind,
-    op: IROp,
-    rm: u32,
-    case: &[Operand],
-    ctx: &SymContext,
-) -> Result<RustBV, String> {
-    use crate::interpreter::{TestHost, VEXInterpreter};
-    use crate::vex::ir::{IRExpr, TypeEnv, VexArch};
-
-    let rm_expr = IRExpr::Const(crate::vex::ir::IRConst::U32(rm));
-    let operand_exprs: Vec<IRExpr> = case
-        .iter()
-        .map(|&(bits, width)| IRExpr::Const(irconst_for(bits, width)))
-        .collect();
-
-    let callbacks = TestHost::default();
-    let mut interp = VEXInterpreter::new(VexArch::AMD64, ctx);
-    let env = TypeEnv::new();
-    let result = match kind {
-        RmDispatchKind::BinopToUnopWithRm => {
-            interp.eval_binop(&callbacks, op, &rm_expr, &operand_exprs[0], &env)
-        }
-        RmDispatchKind::TriopWithRm => interp.eval_triop(
-            &callbacks,
-            op,
-            &rm_expr,
-            &operand_exprs[0],
-            &operand_exprs[1],
-            &env,
-        ),
-        RmDispatchKind::QopWithRm => interp.eval_qop(
-            &callbacks,
-            op,
-            [
-                &rm_expr,
-                &operand_exprs[0],
-                &operand_exprs[1],
-                &operand_exprs[2],
-            ],
-            &env,
-        ),
-        RmDispatchKind::FamilyA => unreachable!(
-            "eval_through_interpreter is Family-B only; callers must filter FamilyA"
-        ),
-    };
-    result.map_err(|e| format!("{e:?}"))
-    }
-
-/// Section 2 (see module doc comment): drives evaluation through the real
-/// interpreter dispatch entry points and cross-checks the result against
-/// BOTH the correctly-rm-threaded `*_with_rm` sibling (must match) and the
-/// rm-less RNE-only sibling (must NOT match) — directly reconstructing the
-/// caller-dispatch regression shape at the layer it actually lived in,
-/// generalized across all 7 Family-B op kinds.
-#[test]
-fn test_dispatcher_selection_routes_through_rm_threaded_sibling() {
-    // RNE (mode 0) takes the identical native fast path in both `*_with_rm`
-    // and its rm-less sibling (the `VexRm::NearestEven` short-circuit every
-    // `*_with_rm` opens with — see e.g. `binop_with_rm` in `ops/mod.rs`), so
-    // it cannot distinguish correct dispatch from the bug shape. The other
-    // modes are the candidates where the historical bug could diverge — but
-    // not every case's *_with_rm answer differs from RNE at every one of them
-    // (e.g. FAdd(F32)'s tie case happens to round the same way under RU as
-    // under RNE), so a mode is only asserted on when it actually is
-    // divergent for this case; the non-vacuousness check after the mode
-    // loop requires at least one to be.
-    let non_rne_modes = &VEX_ROUNDING_MODES[1..];
-
-    for entry in all_rm_ops() {
-        if entry.kind == RmDispatchKind::FamilyA {
-            continue;
-        }
-        for case in &entry.cases {
-            let operands: Vec<RustBV> = case
-                .iter()
-                .map(|&(bits, width)| RustBV::concrete(bits, width))
-                .collect();
-            let mut divergent_modes_checked = 0;
-
-            for &rm in non_rne_modes {
-                let ctx = SymContext::new_mock();
-                let rm_bv = RustBV::concrete(rm as u128, 32);
-
-                // The correctly-rm-threaded answer: the same `*_with_rm`
-                // call section 1 already exercises directly.
-                let threaded = (entry.call)(rm_bv, &operands).unwrap_or_else(|e| {
-                    panic!("{}: with_rm call failed rm={rm}: {e:?}", entry.name)
-                });
-                let threaded_bits = ctx.eval(&threaded).unwrap_or_else(|| {
-                    panic!("{}: eval(with_rm result) returned None rm={rm}", entry.name)
-                });
-
-                // The caller-dispatch bug shape: the rm-less sibling, always RNE.
-                let rne_only = eval_rne_only_sibling(entry.kind, entry.op, &operands)
-                    .unwrap_or_else(|e| {
-                        panic!("{}: rm-less sibling call failed: {e:?}", entry.name)
-                    });
-                let rne_only_bits = ctx.eval(&rne_only).unwrap_or_else(|| {
-                    panic!("{}: eval(rm-less sibling result) returned None", entry.name)
-                });
-
-                if threaded_bits == rne_only_bits {
-                    // This mode happens to round identically to RNE for this
-                    // case — can't distinguish correct dispatch from the bug
-                    // shape here, so skip it (a different mode may still be
-                    // useful; enforced non-vacuous below).
-                    continue;
-                }
-                divergent_modes_checked += 1;
-
-                // The real interpreter entry point.
-                let interp_result = eval_through_interpreter(entry.kind, entry.op, rm, case, &ctx)
-                    .unwrap_or_else(|e| {
-                        panic!("{}: interpreter dispatch failed rm={rm}: {e}", entry.name)
-                    });
-                let interp_bits = ctx.eval(&interp_result).unwrap_or_else(|| {
-                    panic!(
-                        "{}: eval(interpreter result) returned None rm={rm}",
-                        entry.name
-                    )
-                });
-
-                assert_eq!(
-                    interp_bits, threaded_bits,
-                    "{}: interpreter dispatch (eval_binop/eval_triop/eval_qop) at rm={rm} \
-                     disagrees with the correctly-rm-threaded VEXOps::*_with_rm answer for \
-                     case {case:?} — the interpreter likely routed through the rm-less \
-                     sibling (the rm-dropping bug shape)",
-                    entry.name
-                );
-                assert_ne!(
-                    interp_bits, rne_only_bits,
-                    "{}: interpreter dispatch at rm={rm} for case {case:?} matches the \
-                     RNE-only rm-less-sibling answer — this IS the rm-dropping bug shape \
-                     (the interpreter picked VEXOps::{{binop,unop,qop}} instead of the \
-                     *_with_rm variant)",
-                    entry.name
-                );
-            }
-
-            assert!(
-                divergent_modes_checked > 0,
-                "{}: case {case:?} is not mode-sensitive vs RNE under ANY non-RNE mode, so it \
-                 cannot distinguish correct interpreter dispatch from the rm-dropping bug \
-                 shape; pick a different operand case",
-                entry.name
-            );
-        }
-    }
-}
-
-// =============================================================================
 // Section 3: symbolic-rm dispatch coverage (Family B only).
 // =============================================================================
 
@@ -824,8 +599,6 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 .collect();
 
             for &rm in &VEX_ROUNDING_MODES {
-                let ctx = SymContext::new_mock();
-
                 // Fully-concrete-rm answer for this mode (same shape as
                 // section 1's concrete leg).
                 let concrete_rm = RustBV::concrete(rm as u128, 32);
@@ -833,7 +606,7 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                     (entry.call)(concrete_rm, &operands).unwrap_or_else(|e| {
                         panic!("{}: concrete-rm call failed rm={rm}: {e:?}", entry.name)
                     });
-                let concrete_bits = ctx.eval(&concrete_result).unwrap_or_else(|| {
+                let concrete_bits = z3_eval(&concrete_result, &[]).unwrap_or_else(|| {
                     panic!(
                         "{}: eval(concrete-rm result) returned None rm={rm}",
                         entry.name
@@ -845,24 +618,12 @@ fn test_symbolic_rm_dispatch_matches_concrete_rm() {
                 // inside `binop_with_rm`/`unop_with_rm`/`qop_with_rm`,
                 // routing through `with_vex_rm` instead of the
                 // concrete fast path.
-                let rm_sym = RustBV::symbol("rm_sym", 32);
-                let pin = rm_sym
-                    .to_z3_ast().unwrap()
-                    .eq(RustBV::concrete(rm as u128, 32).to_z3_ast().unwrap());
-                ctx.add_constraint(pin);
+                let (rm_sym, pin) = pinned_symbol("rm_sym", rm as u128, 32);
                 let symbolic_result = (entry.call)(rm_sym, &operands).unwrap_or_else(|e| {
                     panic!("{}: symbolic-rm call failed rm={rm}: {e:?}", entry.name)
                 });
-                assert!(
-                    ctx.is_sat(),
-                    "{}: pinned-rm context must stay SAT (rm={rm})",
-                    entry.name
-                );
-                let symbolic_bits = ctx.eval(&symbolic_result).unwrap_or_else(|| {
-                    panic!(
-                        "{}: eval(symbolic-rm result) returned None rm={rm}",
-                        entry.name
-                    )
+                let symbolic_bits = z3_eval(&symbolic_result, &[pin]).unwrap_or_else(|| {
+                    panic!("{}: pinned rm unsatisfiable (rm={rm})", entry.name)
                 });
 
                 assert_eq!(

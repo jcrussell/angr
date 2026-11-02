@@ -1,14 +1,11 @@
 // angr-9hleg: SSE scalar-in-vector FP + recip/rsqrt estimate tests (mirror of ops/vec_float_scalar.rs).
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::IRType;
 
 #[test]
 fn test_vec_float_scalar_add() {
-
     // SSE scalar add: ADDSS xmm0, xmm1
     // xmm0 = [4.0f, 0, 0, 0], xmm1 = [2.0f, 0, 0, 0]
     // Result: xmm0 = [6.0f, 0, 0, 0]
@@ -30,7 +27,6 @@ fn test_vec_float_scalar_add() {
 
 #[test]
 fn test_vec_float_scalar_div() {
-
     // SSE scalar div: DIVSS xmm0, xmm1
     // xmm0 = [6.0f, 0, 0, 0], xmm1 = [2.0f, 0, 0, 0]
     // Result: xmm0 = [3.0f, 0, 0, 0]
@@ -54,7 +50,6 @@ fn test_vec_float_scalar_div() {
 /// and the upper 96 bits of `xmm0` must pass through unchanged.
 #[test]
 fn test_vec_float_scalar_add_symbolic() {
-    let ctx = SymContext::new_mock();
     let xmm0 = RustBV::symbol("xmm0", 128);
     // xmm1 = [2.0f, 0, 0, 0]
     let xmm1 = RustBV::concrete(2.0f32.to_bits() as u128, 128);
@@ -66,14 +61,7 @@ fn test_vec_float_scalar_add_symbolic() {
     // Constrain low 32 bits of result to bits(5.0).
     let res_lo = result.extract(31, 0);
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(
-        ctx.is_sat(),
-        "expected SAT after VFAddS symbolic constraint"
-    );
-
-    let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
+    let model_x = z3_eval(&xmm0, &[res_lo.eq(&five)]).expect("expected SAT after VFAddS symbolic constraint");
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 3.0).abs() < 1e-6,
@@ -83,15 +71,15 @@ fn test_vec_float_scalar_add_symbolic() {
     // Verify upper 96 bits of result equal upper 96 bits of xmm0 (passthrough).
     let upper_in = xmm0.extract(127, 32);
     let upper_out = result.extract(127, 32);
-    let eq_upper = upper_in.to_z3_ast().unwrap().eq(upper_out.to_z3_ast().unwrap());
-    ctx.add_constraint(eq_upper);
-    assert!(ctx.is_sat(), "expected upper-bits passthrough to hold");
+    assert!(
+        z3_sat(&[res_lo.eq(&five), upper_in.eq(&upper_out)]),
+        "expected upper-bits passthrough to hold"
+    );
 }
 
 /// Symbolic VFSqrtS (SQRTSS-style): sqrt(low32(xmm)) == 4.0 → low32 == 16.0.
 #[test]
 fn test_vec_float_scalar_sqrt_symbolic() {
-    let ctx = SymContext::new_mock();
     let xmm = RustBV::symbol("xmm_sqrt", 128);
 
     let result = VEXOps::unop(IROp::VFSqrtS { elem: IRType::F32 }, xmm.clone()).unwrap();
@@ -99,14 +87,7 @@ fn test_vec_float_scalar_sqrt_symbolic() {
 
     let res_lo = result.extract(31, 0);
     let four = RustBV::concrete(4.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().unwrap().eq(four.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(
-        ctx.is_sat(),
-        "expected SAT after VFSqrtS symbolic constraint"
-    );
-
-    let model_x = ctx.eval(&xmm).expect("eval(xmm) returned None");
+    let model_x = z3_eval(&xmm, &[res_lo.eq(&four)]).expect("expected SAT after VFSqrtS symbolic constraint");
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 16.0).abs() < 1e-4,
@@ -120,7 +101,6 @@ fn test_vec_float_scalar_sqrt_symbolic() {
 /// the constraint (we don't test that here, but the ITE encoding guarantees it).
 #[test]
 fn test_vec_float_scalar_max_symbolic() {
-    let ctx = SymContext::new_mock();
     let xmm0 = RustBV::symbol("xmm_max", 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
@@ -130,11 +110,7 @@ fn test_vec_float_scalar_max_symbolic() {
 
     let res_lo = result.extract(31, 0);
     let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().unwrap().eq(five.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT after VFMaxS == 5.0");
-
-    let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
+    let model_x = z3_eval(&xmm0, &[res_lo.eq(&five)]).expect("expected SAT after VFMaxS == 5.0");
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 5.0).abs() < 1e-6,
@@ -146,7 +122,6 @@ fn test_vec_float_scalar_max_symbolic() {
 /// solver must pick xmm0.lane0 == 1.0 (since min(1.0, 3.0) == 1.0).
 #[test]
 fn test_vec_float_scalar_min_symbolic() {
-    let ctx = SymContext::new_mock();
     let xmm0 = RustBV::symbol("xmm_min", 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
@@ -156,11 +131,7 @@ fn test_vec_float_scalar_min_symbolic() {
 
     let res_lo = result.extract(31, 0);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
-    let eq = res_lo.to_z3_ast().unwrap().eq(one.to_z3_ast().unwrap());
-    ctx.add_constraint(eq);
-    assert!(ctx.is_sat(), "expected SAT after VFMinS == 1.0");
-
-    let model_x = ctx.eval(&xmm0).expect("eval(xmm0) returned None");
+    let model_x = z3_eval(&xmm0, &[res_lo.eq(&one)]).expect("expected SAT after VFMinS == 1.0");
     let lane0 = f32::from_bits((model_x & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 1.0).abs() < 1e-6,
@@ -172,7 +143,6 @@ fn test_vec_float_scalar_min_symbolic() {
 /// upper 96 bits of xmm0 pass through unchanged.
 #[test]
 fn test_vec_float_scalar_sub_concrete_lane_isolation() {
-
     // xmm0: lane0=10.0, upper bits = 0xDEAD_BEEF_CAFE_BABE_1234_5678 (96 bits)
     let upper_pattern: u128 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128 << 32;
     let xmm0_bits = upper_pattern | (10.0f32.to_bits() as u128);
@@ -193,7 +163,6 @@ fn test_vec_float_scalar_sub_concrete_lane_isolation() {
 /// VFMulS concrete lane isolation: MULSS xmm0, xmm1.
 #[test]
 fn test_vec_float_scalar_mul_concrete_lane_isolation() {
-
     let upper_pattern: u128 = 0xFEED_FACE_BAAD_F00D_8BAD_F00Du128 << 32;
     let xmm0_bits = upper_pattern | (4.0f32.to_bits() as u128);
     let xmm0 = RustBV::concrete(xmm0_bits, 128);
@@ -268,7 +237,6 @@ fn test_vec_float_scalar_all_variants_f64() {
 /// semantics encoded by the ITE in vec_float_scalar_lane_minmax.
 #[test]
 fn test_vec_float_scalar_max_nan_concrete() {
-
     let xmm0 = RustBV::concrete(f32::NAN.to_bits() as u128, 128);
     let xmm1 = RustBV::concrete(3.0f32.to_bits() as u128, 128);
 
@@ -286,31 +254,28 @@ fn test_vec_float_scalar_max_nan_concrete() {
 /// upper 96 bits passed through unchanged from the arg.
 #[test]
 fn test_vfrecip_est_s_f32_upper_passthrough() {
-    let ctx = SymContext::new_mock();
     let upper96 = 0xDEAD_BEEF_CAFE_BABE_1234_5678u128;
     let arg = RustBV::concrete((upper96 << 32) | 0x4080_0000u128, 128); // lane0 = 4.0f32
     let result = VEXOps::unop(IROp::VFRecipEstS { elem: IRType::F32 }, arg).unwrap();
     assert_eq!(result.width(), 128);
-    let v = eval_v128(&ctx, &result);
+    let v = eval_v128(&result);
     assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
 }
 
 /// SSE RSQRTSS shape: same as RCPSS — upper 96 bits passthrough, lane 0 fresh.
 #[test]
 fn test_vfrsqrt_est_s_f32_upper_passthrough() {
-    let ctx = SymContext::new_mock();
     let upper96 = 0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFFu128;
     let arg = RustBV::concrete((upper96 << 32) | 0x4400_0000u128, 128); // lane0 = 512.0f32
     let result = VEXOps::unop(IROp::VFRSqrtEstS { elem: IRType::F32 }, arg).unwrap();
     assert_eq!(result.width(), 128);
-    let v = eval_v128(&ctx, &result);
+    let v = eval_v128(&result);
     assert_eq!(v >> 32, upper96, "upper 96 bits must pass through");
 }
 
 /// NEON Iop_RecipEst32Fx2 (D-reg, 2x f32 = 64-bit result).
 #[test]
 fn test_vfrecip_est_packed_f32x2_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 64);
     let result = VEXOps::unop(
         IROp::VFRecipEst {
@@ -321,13 +286,12 @@ fn test_vfrecip_est_packed_f32x2_shape() {
     )
     .unwrap();
     assert_eq!(result.width(), 64);
-    let _ = eval_i64(&ctx, &result);
+    let _ = eval_i64(&result);
 }
 
 /// SSE RCPPS / NEON Q-reg Iop_RecipEst32Fx4 (4x f32 = 128-bit result).
 #[test]
 fn test_vfrecip_est_packed_f32x4_shape() {
-    let ctx = SymContext::new_mock();
     let arg = RustBV::concrete(0u128, 128);
     let result = VEXOps::unop(
         IROp::VFRecipEst {
@@ -338,7 +302,7 @@ fn test_vfrecip_est_packed_f32x4_shape() {
     )
     .unwrap();
     assert_eq!(result.width(), 128);
-    let _ = eval_v128(&ctx, &result);
+    let _ = eval_v128(&result);
 }
 
 /// AVX Iop_RecipEst32Fx8 (8x f32 = 256-bit result).
@@ -389,7 +353,6 @@ fn test_vfrsqrt_est_packed_f64x2_shape() {
 /// NEON Iop_RecipStep32Fx2: D-reg binary, 64-bit result.
 #[test]
 fn test_vfrecip_step_packed_f32x2_shape() {
-    let ctx = SymContext::new_mock();
     let a = RustBV::concrete(0u128, 64);
     let b = RustBV::concrete(0u128, 64);
     let result = VEXOps::binop(
@@ -402,7 +365,7 @@ fn test_vfrecip_step_packed_f32x2_shape() {
     )
     .unwrap();
     assert_eq!(result.width(), 64);
-    let _ = eval_i64(&ctx, &result);
+    let _ = eval_i64(&result);
 }
 
 /// NEON Iop_RecipStep64Fx2: Q-reg binary, 128-bit result.
@@ -573,8 +536,6 @@ fn test_recip_rsqrt_opcode_routing() {
             other => panic!("{name}: expected VFRSqrtStep, got {other:?}"),
         }
     }
-    // Suppress the unused-helper lint when running this test alone:
-    let _ = eval_i32;
 }
 
 /// The free variable names of `bv`'s term.
@@ -592,7 +553,6 @@ fn free_vars(bv: &RustBV) -> std::collections::BTreeSet<String> {
 /// would make independent estimates provably equal.
 #[test]
 fn test_estimate_lanes_are_fresh_variables() {
-    let ctx = SymContext::new_mock();
     let est = |op: IROp, arg: RustBV| VEXOps::unop(op, arg).unwrap();
     let packed = IROp::VFRecipEst {
         elem: IRType::F32,
@@ -613,8 +573,7 @@ fn test_estimate_lanes_are_fresh_variables() {
         "lane names keep irop.py's hint: {va:?}"
     );
     // The solver agrees: two lanes of one estimate can differ.
-    ctx.assume_true(&lane0.ne(&lane1));
-    assert!(ctx.is_sat(), "lane0 != lane1 must be satisfiable");
+    assert!(z3_sat(&[lane0.ne(&lane1)]), "lane0 != lane1 must be satisfiable");
 
     // The scalar (RCPSS) and integer (URECPE) forms mint fresh lanes too.
     let s = |arg| est(IROp::VFRecipEstS { elem: IRType::F32 }, arg);

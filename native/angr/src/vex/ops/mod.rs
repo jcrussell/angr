@@ -1361,6 +1361,12 @@ test_submod!(tests_conversions);
 // Generic *_rm concrete/symbolic equivalence sweep (complements the
 // hand-written per-op rm cases above).
 test_submod!(tests_rounding_mode_sweep);
+// The sweep's op registry, for its dispatcher-selection half in
+// `interpreter::rm_dispatch_tests`.
+#[cfg(test)]
+pub(crate) use tests_rounding_mode_sweep::{
+    Operand, RmDispatchKind, VEX_ROUNDING_MODES, all_rm_ops,
+};
 
 // FP arithmetic against the SSE unit under each MXCSR rounding mode.
 #[cfg(target_arch = "x86_64")]

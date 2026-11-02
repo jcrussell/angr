@@ -148,8 +148,7 @@ mod transcendental_pins;
 test_submod!("statements_tests_support.rs" => statements_tests_support);
 
 // The plain-Rust `EngineHost` every interpreter test runs against, so none of
-// them starts Python (angr-mx00p.75). Re-exported for the `vex::ops` sweep,
-// which drives the interpreter's op dispatch too.
+// them starts Python (angr-mx00p.75).
 test_submod!(test_host);
 #[cfg(test)]
 pub(crate) use test_host::{SymbolicValueStore, TestHost};
@@ -919,3 +918,5 @@ impl<'a> VEXInterpreter<'a> {
 test_submod!("interpreter_tests.rs" => interpreter_tests);
 
 test_submod!("smc_tests.rs" => smc_tests);
+
+test_submod!("rm_dispatch_tests.rs" => rm_dispatch_tests);

@@ -1,9 +1,7 @@
 // angr-9hleg: scalar/packed FP compare tests (mirror of ops/float_cmp.rs).
 
-use crate::symbolic::ToZ3;
 use super::test_helpers::*;
 use super::*;
-use crate::symbolic::SymContext;
 use crate::vex::ir::FCmpKind;
 use crate::vex::ir::IRType;
 
@@ -11,7 +9,6 @@ use crate::vex::ir::IRType;
 /// FCmpLT comparisons. Solver should accept and produce x in (1.0, 2.0).
 #[test]
 fn test_float_cmp_lt_symbolic_constraint() {
-    let ctx = SymContext::new_mock();
     let x = RustBV::symbol("fcmp_x", 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
     let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
@@ -21,11 +18,7 @@ fn test_float_cmp_lt_symbolic_constraint() {
     // 1.0 < x
     let lt_one_x = VEXOps::binop(IROp::FCmpLT(IRType::F32), one, x.clone()).unwrap();
 
-    ctx.assume_true(&lt_x_two);
-    ctx.assume_true(&lt_one_x);
-    assert!(ctx.is_sat(), "expected SAT for 1.0 < x < 2.0");
-
-    let model_x = ctx.eval(&x).expect("eval(x) returned None");
+    let model_x = z3_eval(&x, &[lt_x_two, lt_one_x]).expect("expected SAT for 1.0 < x < 2.0");
     let result_f = f32::from_bits(model_x as u32);
     assert!(
         result_f > 1.0 && result_f < 2.0,
@@ -74,16 +67,12 @@ fn test_float_cmp_le_f64_concrete() {
 /// predicate.
 #[test]
 fn test_float_cmp_eq_symbolic_constraint() {
-    let ctx = SymContext::new_mock();
     let x = RustBV::symbol("fcmp_eq_x", 32);
     let target = RustBV::concrete(2.5f32.to_bits() as u128, 32);
 
     let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), x.clone(), target).unwrap();
     assert_eq!(eq.width(), 1);
-    ctx.assume_true(&eq);
-    assert!(ctx.is_sat(), "expected SAT for x == 2.5");
-
-    let model_x = ctx.eval(&x).expect("eval(x) returned None");
+    let model_x = z3_eval(&x, &[eq]).expect("expected SAT for x == 2.5");
     let result_f = f32::from_bits(model_x as u32);
     assert_eq!(result_f, 2.5f32, "expected x pinned to 2.5, got {result_f}");
 }
@@ -93,17 +82,12 @@ fn test_float_cmp_eq_symbolic_constraint() {
 /// to 1.0, so a routing regression to CmpLt/CmpEq is caught either way.
 #[test]
 fn test_float_cmp_le_symbolic_constraint() {
-    let ctx = SymContext::new_mock();
     let x = RustBV::symbol("fcmp_le_x", 32);
     let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
 
     let le_x_one = VEXOps::binop(IROp::FCmpLE(IRType::F32), x.clone(), one.clone()).unwrap();
     let le_one_x = VEXOps::binop(IROp::FCmpLE(IRType::F32), one, x.clone()).unwrap();
-    ctx.assume_true(&le_x_one);
-    ctx.assume_true(&le_one_x);
-    assert!(ctx.is_sat(), "expected SAT for 1.0 <= x <= 1.0");
-
-    let model_x = ctx.eval(&x).expect("eval(x) returned None");
+    let model_x = z3_eval(&x, &[le_x_one, le_one_x]).expect("expected SAT for 1.0 <= x <= 1.0");
     let result_f = f32::from_bits(model_x as u32);
     assert_eq!(result_f, 1.0f32, "expected x pinned to 1.0, got {result_f}");
 }
@@ -220,7 +204,6 @@ fn test_fcmp_scalar_lane_un_f64_concrete_ordered() {
 fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     // Symbolic: constrain low32(result)==0xFFFFFFFF given right=2.0 and
     // some symbolic left → solver must pick left.lane0 == 2.0.
-    let ctx = SymContext::new_mock();
     let l = RustBV::symbol("fcmp_lane_l", 128);
     let r = RustBV::concrete(2.0f32.to_bits() as u128, 128);
     let res = VEXOps::binop(
@@ -235,13 +218,7 @@ fn test_fcmp_scalar_lane_eq_f32_symbolic() {
     assert_eq!(res.width(), 128);
     let lo32 = res.extract(31, 0);
     let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
-    ctx.add_constraint(lo32.to_z3_ast().unwrap().eq(true_mask.to_z3_ast().unwrap()));
-    assert!(
-        ctx.is_sat(),
-        "expected SAT after FCmpScalarLane Eq mask=all1s"
-    );
-
-    let model = ctx.eval(&l).expect("eval(l) returned None");
+    let model = z3_eval(&l, &[lo32.eq(&true_mask)]).expect("expected SAT after FCmpScalarLane Eq mask=all1s");
     let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
     assert!(
         (lane0 - 2.0).abs() < 1e-6,
@@ -287,15 +264,12 @@ fn test_fcom_cc_f64_concrete_unordered() {
 #[test]
 fn test_fcom_cc_symbolic_lt() {
     // Symbolic: constrain FComCC(x, 5.0) == 0x01 → x must be < 5.0 (and not NaN).
-    let ctx = SymContext::new_mock();
     let x = RustBV::symbol("fcom_x", 64);
     let five = RustBV::concrete(5.0f64.to_bits() as u128, 64);
     let res = VEXOps::binop(IROp::FComCC(IRType::F64), x.clone(), five).unwrap();
     assert_eq!(res.width(), 32);
     let want = RustBV::concrete(0x01, 32);
-    ctx.add_constraint(res.to_z3_ast().unwrap().eq(want.to_z3_ast().unwrap()));
-    assert!(ctx.is_sat(), "expected SAT for FComCC(x, 5.0) == LT");
-    let model_x = ctx.eval(&x).expect("eval(x) None");
+    let model_x = z3_eval(&x, &[res.eq(&want)]).expect("expected SAT for FComCC(x, 5.0) == LT");
     let xf = f64::from_bits(model_x as u64);
     assert!(
         !xf.is_nan() && xf < 5.0,
@@ -494,7 +468,6 @@ fn test_fcmp_packed_gt_32fx2_concrete_i64() {
 fn test_fcmp_packed_lt_32fx4_symbolic() {
     // Symbolic vector `l` against concrete `r`. Constrain low lane mask to all-1s
     // → solver must satisfy lane 0 of l < lane 0 of r (= 5.0). Other lanes free.
-    let ctx = SymContext::new_mock();
     let l = RustBV::symbol("fpkd_lt_l", 128);
     let r = RustBV::concrete(pack_4xf32(5.0, 1.0, 1.0, 1.0), 128);
     let res = VEXOps::binop(
@@ -510,9 +483,7 @@ fn test_fcmp_packed_lt_32fx4_symbolic() {
     assert_eq!(res.width(), 128);
     let lane0_mask = res.extract(31, 0);
     let true_mask = RustBV::concrete(0xFFFF_FFFF, 32);
-    ctx.add_constraint(lane0_mask.to_z3_ast().unwrap().eq(true_mask.to_z3_ast().unwrap()));
-    assert!(ctx.is_sat(), "expected SAT for lane0 LT");
-    let model = ctx.eval(&l).expect("eval(l) None");
+    let model = z3_eval(&l, &[lane0_mask.eq(&true_mask)]).expect("expected SAT for lane0 LT");
     let lane0 = f32::from_bits((model & 0xFFFF_FFFF) as u32);
     assert!(
         lane0 < 5.0 && !lane0.is_nan(),
