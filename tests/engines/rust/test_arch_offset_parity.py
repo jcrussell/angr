@@ -114,14 +114,6 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
         ),
         (_numbered("mm", 8), "MMX aliases over the x87 register file (mm0 is fpu_regs+0)"),
         (_numbered("r", 16, "w", start=8), "16-bit sub-registers of r8-r15"),
-        (
-            frozenset(f"xmm{i}{half}" for i in range(16) for half in ("lq", "hq")),
-            "64-bit halves of the xmm slots",
-        ),
-        (
-            _numbered("ymm", 16) | _numbered("ymm", 16, "hx"),
-            "AVX 256-bit views and their upper 128-bit halves; Rust's SIMD support stops at 128-bit xmm",
-        ),
     ),
     "x86": (
         (

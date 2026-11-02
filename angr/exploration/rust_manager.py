@@ -22,7 +22,7 @@ identifiers cited from other files (``native/angr/src/stash.rs``,
 rather than renumbering the rest.
 
 I5. Register filter at the FFI boundary
-    archinfo defines registers (cr0..8, ymm0..15, fs_seg, ds_seg, cmstart,
+    archinfo defines registers (cr0..8, fs_seg, ds_seg, cmstart,
     cmlen, fpreg, ...) the Rust engine does not model; it models a subset
     (rax-r15+rip on amd64). Any register dict passed to Rust via
     `set_registers_bulk` MUST be filtered to `_supported_register_names`

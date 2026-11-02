@@ -89,7 +89,7 @@ enum RegisterU128 {
     /// The register exists but holds a symbolic `RustBV`.
     Symbolic,
     /// The architecture has no `(offset, size)` slot for this name — either an
-    /// angr register Rust's `RegisterFile` does not model (`ymm0`, `cr0`, ...)
+    /// angr register Rust's `RegisterFile` does not model (`cr0`, `fs_seg`, ...)
     /// or a caller typo. `RegisterFile::get_reg` returns `None` in exactly
     /// this case, so the classification below is exact.
     UnknownName,
@@ -667,8 +667,8 @@ impl RustExplorationManager {
     ///   `state.regs`. angr's `arch.registers` is a strict superset of the
     ///   names Rust's `RegisterFile` models — see invariant I5 on
     ///   `PyRustSimState::set_registers_bulk` in `state_bridge/pymethods.rs` for the
-    ///   list (`cr0..8`, `ymm0..15`, `fs_seg`, `fpreg`, ...). Raising here
-    ///   would turn every `state.regs.ymm0` read into an `AttributeError`;
+    ///   list (`cr0..8`, `fs_seg`, `fpreg`, ...). Raising here
+    ///   would turn every `state.regs.cr0` read into an `AttributeError`;
     ///   answering `None` lets the proxy fall back to an unconstrained BVS,
     ///   which is what angr's own register view would have produced.
     /// * `_get_pending_register` is reached only from our own callback-arg

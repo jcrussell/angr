@@ -2594,6 +2594,38 @@ class TestRegisterProxySymbolicRecovery:
         # Reading via the canonical name hits the dual-cached entry.
         assert proxy.solver.eval(proxy.regs.rip) == 0xDEADBEEF
 
+    @pytest.mark.parametrize("name", ["xmm0lq", "xmm0hq", "ymm0", "ymm0hx"])
+    def test_xmm_halves_and_ymm_read_the_xmm_slot(self, name):
+        """xmm0lq/xmm0hq/ymm0/ymm0hx are views of the xmm0 slot (angr-mx00p.132.18).
+
+        Rust's amd64 table once lacked them for xmm0..15, so a read through
+        the proxy minted an orphan ``reg_<name>`` BVS, 64 bits wide even for
+        ymm0. test_vex's CMPLTSD check read ``xmm0lq`` that way and could
+        never match. ``xmm0hq`` stays symbolic (only ``xmm0lq`` is set) and
+        must still come back as the seeded symbol, not a fresh one.
+        """
+        from angr import claripy, load_shellcode
+
+        # cmpltsd xmm0, xmm1 ; ret
+        project = load_shellcode(bytes.fromhex("f20fc2c101c3"), arch="amd64")
+        state = project.factory.call_state(0)
+        state.regs.xmm0lq = claripy.BVV(0x3FF0000000000000, 64)  # 1.0
+        state.regs.xmm1lq = claripy.BVV(0x4000000000000000, 64)  # 2.0
+        hq = state.regs.xmm0hq
+        mgr = RustExplorationManager(project, [state])
+        mgr.run()
+        assert len(mgr.deadended) == 1, mgr.stash_counts()
+        regs = mgr.deadended[0].regs
+        expected = {
+            "xmm0lq": claripy.BVV(-1, 64),
+            "xmm0hq": hq,
+            "ymm0": claripy.Concat(regs.ymm0hx, hq, claripy.BVV(-1, 64)),
+            "ymm0hx": regs.ymm0[255:128],
+        }[name]
+        value = getattr(regs, name)
+        assert value.length == expected.length
+        assert not claripy.Solver().satisfiable(extra_constraints=[value != expected]), (name, value, expected)
+
 
 class TestStateProxyRepr:
     """Tests for the enriched RustStateProxy.__repr__ (angr-4c20).

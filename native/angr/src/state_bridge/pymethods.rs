@@ -295,7 +295,7 @@ impl PyRustSimState {
     /// **Invariant I5 (cross-mixin):** the caller — Python's
     /// `rust_state_sync.py` — must pre-filter the dict to
     /// `_supported_register_names` for the active architecture. archinfo
-    /// names many registers (cr0..8, ymm0..15, fs_seg, ds_seg, cmstart,
+    /// names many registers (cr0..8, fs_seg, ds_seg, cmstart,
     /// cmlen, fpreg, ...), but only a subset has a slot in `RegisterFile`
     /// for amd64/x86/arm/etc. If an
     /// unsupported name leaks through, this method returns

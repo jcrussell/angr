@@ -298,10 +298,10 @@ fn get_pending_register_raises_for_unknown_name_but_not_for_symbolic() {
         "a known-but-symbolic register is the ONLY source of Ok(None) here",
     );
     let err = mgr
-        ._get_pending_register(state_id, "ymm0")
+        ._get_pending_register(state_id, "cr0")
         .expect_err("unmodeled register name must be a loud error");
     assert!(
-        err.to_string().contains("unknown register: ymm0"),
+        err.to_string().contains("unknown register: cr0"),
         "error names the offending register: {err}",
     );
 }

@@ -143,12 +143,12 @@ fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
         RustBV::symbol("rbx_sym", 64)
     };
     assert!(state.set_register("rbx", sym));
-    // `ymm0` is one of the names angr's `arch.registers` carries but Rust's
+    // `cr0` is one of the names angr's `arch.registers` carries but Rust's
     // `RegisterFile` does not model (invariant I5 on `set_registers_bulk`);
     // it is what makes the fold load-bearing for `RustRegisterProxy`.
     assert!(
-        state.arch().register_offset("ymm0").is_none(),
-        "precondition: ymm0 must be unmodeled for this test to mean anything",
+        state.arch().register_offset("cr0").is_none(),
+        "precondition: cr0 must be unmodeled for this test to mean anything",
     );
 
     let state_id = state.state_id();
@@ -164,15 +164,15 @@ fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
         "symbolic register reads as None",
     );
     assert_eq!(
-        mgr._get_state_register(state_id, "ymm0")
-            .expect("ymm0 read"),
+        mgr._get_state_register(state_id, "cr0")
+            .expect("cr0 read"),
         None,
         "unmodeled register name reads as None rather than raising",
     );
 
     // The batch form must agree element-wise, and an unmodeled name must not
     // discard its siblings' values.
-    let names = vec!["rax".to_string(), "ymm0".to_string(), "rbx".to_string()];
+    let names = vec!["rax".to_string(), "cr0".to_string(), "rbx".to_string()];
     assert_eq!(
         mgr._get_state_registers_batch(state_id, names)
             .expect("batch read"),
@@ -201,13 +201,13 @@ fn read_register_u128_names_both_causes_of_none() {
         RegisterU128::Symbolic
     ));
     assert!(matches!(
-        read_register_u128(&state, "ymm0"),
+        read_register_u128(&state, "cr0"),
         RegisterU128::UnknownName
     ));
     // ... and all three still collapse to the documented Python contract.
     assert_eq!(read_register_u128(&state, "rax").into_option(), Some(0x2a));
     assert_eq!(read_register_u128(&state, "rbx").into_option(), None);
-    assert_eq!(read_register_u128(&state, "ymm0").into_option(), None);
+    assert_eq!(read_register_u128(&state, "cr0").into_option(), None);
 }
 
 /// A state with one 64-bit symbolic object at `0x1234` — page 1, in-page

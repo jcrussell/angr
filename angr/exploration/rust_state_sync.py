@@ -151,7 +151,7 @@ class RustStateSyncMixin:
 
         The engine's exported register list (``rust_register_table``), the
         filter applied to every register dict that crosses the FFI boundary.
-        archinfo defines many registers (cr0..8, ymm0..15, fs_seg, cmstart, ...)
+        archinfo defines many registers (cr0..8, fs_seg, cmstart, ...)
         the Rust engine does not model; the Rust list excludes them, so
         `set_registers_bulk` will not raise ValueError on the names returned
         here.
