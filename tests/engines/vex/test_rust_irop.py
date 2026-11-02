@@ -29,6 +29,7 @@ from angr.rustylib.claripy.annotation import UninitializedAnnotation  # pylint:d
 SOLVER_TIMEOUT_MS = 60_000
 DIVIDES = ("Iop_Div", "Iop_Mod")
 SHIFTS = ("Iop_Shl", "Iop_Shr", "Iop_Sar")
+MULS = ("Iop_Mul", "Iop_MullS", "Iop_MullU")
 
 
 def _signature(name):
@@ -379,6 +380,16 @@ def _seam(name, args):
     return _raised(lambda: datalayer.ClaripyDataMixin._perform_vex_expr_Op(SimpleNamespace(state=None), name, args))
 
 
+def _symbolic_times_power_of_two(args):
+    """Whether one of a multiply's operands is symbolic and the other a literal power of two."""
+    a, b = args
+    return any(x.symbolic and not y.symbolic and _is_power_of_two(y.concrete_value) for x, y in ((a, b), (b, a)))
+
+
+def _is_power_of_two(value):
+    return value > 0 and value & (value - 1) == 0
+
+
 def _check(name, args, ret_bits):
     """Compare the two implementations on one call; return whether Rust served it."""
     where = f"{name}{tuple(args)}"
@@ -390,15 +401,17 @@ def _check(name, args, ret_bits):
         return False
     if actual is None and name.startswith(SHIFTS) and args[0].symbolic and not args[1].symbolic:
         # irop.py leaves the shift unfolded where Rust would fold it to the fill, so Rust declines.
+        # A scalar shift by any literal: Rust rewrites it to Concat/Extract, irop.py keeps the shift (angr-mx00p.100.12).
         lanes = _lanes(name)
-        if lanes is None:
-            assert args[1].concrete_value >= args[0].size(), f"{where}: Rust refused an in-range shift"
-        else:
+        if lanes is not None:
             lane = lanes[0]
             amounts = [args[1].concrete_value]
             if args[1].size() > 8:  # a lane-wise shift
                 amounts = _split(lane, args[1].concrete_value, args[1].size() // lane)
             assert max(amounts) >= lane, f"{where}: Rust refused an in-range shift"
+        return False
+    if actual is None and name.startswith(MULS) and _symbolic_times_power_of_two(args):
+        # Rust rewrites it to a shift and then Concat/Extract; irop.py keeps the Mul (angr-mx00p.100.12).
         return False
     if actual is None and irop.operations[name]._generic_name in ("GetElem", "SetElem") and not args[1].symbolic:
         # libVEX leaves an index past the lane count undefined; irop.py's reading of it stands.
@@ -503,6 +516,38 @@ def test_rust_irop_refuses_unserved_calls():
     assert vex_irop.irop("Iop_GetElem32x4", (v128, claripy.BVV(4, 8))) is None
     assert vex_irop.irop("Iop_SetElem32x4", (v128, claripy.BVV(4, 8), x32)) is None
     assert vex_irop.irop("Iop_SetElem32x4", (v128, claripy.BVV(3, 8), x32)) is not None
+
+
+@pytest.mark.parametrize(
+    "name, amount",
+    [
+        ("Iop_Shl64", 3),
+        ("Iop_Shr64", 61),
+        ("Iop_Sar64", 3),
+        ("Iop_Shl32", 0),
+        ("Iop_Shr32", 5),
+        ("Iop_Mul64", 8),
+        ("Iop_Mul32", 1),
+        ("Iop_MullU32", 4),
+        ("Iop_MullS64", 2),
+    ],
+)
+def test_rust_irop_keeps_a_literal_shift_s_shape(name, amount):
+    """A symbolic value shifted by a literal, or multiplied by a literal power of two, keeps irop.py's term: Rust's
+    Concat/Extract form is equal as a bitvector, but the jump-table resolver's VSA loses the table bound on it
+    (angr-mx00p.100.12)."""
+    _, (bits, amount_bits) = _signature(name)
+    x = claripy.BVS("x", bits)
+    literal = claripy.BVV(amount, amount_bits)
+    calls = [(x, literal)]
+    if name.startswith(MULS):
+        calls.append((literal, x))
+    for args in calls:
+        assert vex_irop.irop(name, args) is None
+        assert _seam(name, args)[0].identical(_python(name, args)[0])
+    # A product by a non-power of two has no shift form, so Rust serves it.
+    if name.startswith(MULS):
+        assert vex_irop.irop(name, (x, claripy.BVV(6, amount_bits))) is not None
 
 
 def test_rust_irop_exclusions():
@@ -693,6 +738,10 @@ def test_rust_irop_carries_a_literal_s_annotations(name):
                     else:
                         args.append(value)
                 expected = _python(name, args)[0]
+                if name.startswith(SHIFTS) and args[0].symbolic and pos == 1:
+                    # Rust leaves a symbolic value's literal shift to irop.py (angr-mx00p.100.12).
+                    assert vex_irop.irop(name, tuple(args)) is None
+                    continue
                 assert _check(name, args, ret_bits), f"{name}{tuple(args)}: Rust refused"
                 actual = vex_irop.irop(name, tuple(args))
                 assert set(actual.annotations) == set(expected.annotations), f"{name}{tuple(args)}"

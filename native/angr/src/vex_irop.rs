@@ -8,8 +8,9 @@
 //! relocatable annotations as claripy's fold does. Anything Rust does not
 //! serve (an argument of the wrong sort, a width or arity the op does not take, a
 //! literal with an annotation claripy does not fold through, a
-//! literal zero divisor, a symbolic value shifted by a literal of
-//! at least its width or lane width, a literal lane index past the lane
+//! literal zero divisor, a symbolic value shifted by a literal or
+//! multiplied by a literal power of two, a symbolic vector shifted by a
+//! literal of at least its lane width, a literal lane index past the lane
 //! count) returns `None`, and the caller runs `irop.py`.
 //!
 //! `SUPPORTED` holds the libVEX names of the scalar integer arithmetic,
@@ -154,12 +155,16 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
                 return Ok(None);
             }
             let shifts = matches!(op, IROp::Shl(_) | IROp::Shr(_) | IROp::Sar(_));
-            if shifts
-                && l.is_symbolic()
-                && r.as_u128()
-                    .is_some_and(|amount| amount >= u128::from(l.width()))
-            {
-                // SILENT(cat-a): Rust folds it to the fill; irop.py keeps the shift.
+            if shifts && l.is_symbolic() && r.as_u128().is_some() {
+                // SILENT(cat-a): Rust rewrites it to Concat/Extract (or the fill); irop.py keeps the shift, whose
+                // shape the VSA domain reads more precisely (angr-mx00p.100.12).
+                return Ok(None);
+            }
+            let muls = matches!(op, IROp::Mul(_) | IROp::MullS(_) | IROp::MullU(_));
+            let pow2 = |v: &RustBV| v.as_u128().is_some_and(u128::is_power_of_two);
+            if muls && ((l.is_symbolic() && pow2(r)) || (r.is_symbolic() && pow2(l))) {
+                // SILENT(cat-a): Rust rewrites it to a shift and then Concat/Extract; irop.py keeps the Mul
+                // (angr-mx00p.100.12).
                 return Ok(None);
             }
             if symbolic[0] && literal_shift_past_lane(op, r) {
