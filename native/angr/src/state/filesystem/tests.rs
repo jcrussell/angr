@@ -911,3 +911,46 @@ fn posix_append_flag_decodes_independently_of_access_mode() {
         FdFlags::ReadWrite
     );
 }
+
+/// angr-mx00p.132.46: Python keys file content by path, so the bytes written
+/// through a closed fd survive into a later open of the path, even after the
+/// tombstone holding them is overwritten by fd-number reuse.
+#[test]
+fn reopening_a_path_reads_the_bytes_written_through_a_closed_fd() {
+    let mut fs = FileSystem::default();
+    let w = fs.open("/tmp/f".to_string(), FdFlags::WriteOnly).unwrap();
+    assert!(fs.write(w, b"foobar and baz"));
+    assert!(fs.close(w));
+    assert_eq!(fs.closed_files(), vec![("/tmp/f", &b"foobar and baz"[..])]);
+
+    let r = fs.open("/tmp/f".to_string(), FdFlags::ReadOnly).unwrap();
+    assert_eq!(r, w, "the closed number is reused");
+    assert!(fs.seek(r, 5, 0).is_some());
+    assert_eq!(fs.read(r, 2), b"r ");
+    assert_eq!(fs.content_size_for_path("/tmp/f"), Some(14));
+
+    // A second open while the first is still open starts from its bytes.
+    let r2 = fs.open("/tmp/f".to_string(), FdFlags::ReadOnly).unwrap();
+    assert_eq!(fs.read(r2, 3), b"foo");
+    // Another path and the std fds are untouched.
+    let other = fs.open("/tmp/g".to_string(), FdFlags::ReadOnly).unwrap();
+    assert!(fs.fd_content(other).is_empty());
+    assert!(fs.close(1));
+    assert_eq!(fs.closed_files().len(), 1, "a std fd's buffer is not a file");
+}
+
+/// angr-mx00p.132.46: a bounced proc's read/write on a mirrored fd is carried
+/// back by `update_fd`, which refuses closed, unknown and symbolic fds.
+#[test]
+fn update_fd_carries_a_bounced_position_and_content_back() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open_with_content("/tmp/f".to_string(), FdFlags::ReadWrite, b"abc".to_vec()).unwrap();
+    assert!(!fs.update_fd(fd, b"abc".to_vec(), 0), "no change, no update");
+    assert!(fs.update_fd(fd, b"abcd".to_vec(), 2));
+    assert_eq!(fs.read(fd, 8), b"cd");
+    assert!(!fs.update_fd(99, b"x".to_vec(), 0), "unknown fd");
+    let sym = fs.open_symbolic("/tmp/s".to_string(), FdFlags::ReadOnly).unwrap();
+    assert!(!fs.update_fd(sym, b"x".to_vec(), 0), "symbolic stream fd");
+    assert!(fs.close(fd));
+    assert!(!fs.update_fd(fd, b"zz".to_vec(), 0), "closed fd");
+}

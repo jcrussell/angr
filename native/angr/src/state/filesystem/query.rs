@@ -125,7 +125,22 @@ impl FileSystem {
             .map(FileDescriptor::effective_len)
             .max();
         let reg_len = self.file_contents.get(&norm).map(|v| v.len());
-        fd_max.into_iter().chain(reg_len).max()
+        let closed_len = self.closed_contents.get(&norm).map(Vec::len);
+        fd_max.into_iter().chain(reg_len).chain(closed_len).max()
+    }
+
+    /// The path-keyed bytes of closed files (`closed_contents`), sorted by
+    /// path. Drives the bounced callback state's `state.fs` mirror, so a
+    /// Python `unlink`/`stat` of a file native code wrote and closed finds
+    /// its `SimFile` (angr-mx00p.132.46).
+    pub fn closed_files(&self) -> Vec<(&str, &[u8])> {
+        let mut files: Vec<(&str, &[u8])> = self
+            .closed_contents
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        files.sort_unstable();
+        files
     }
 
     /// Position and [`effective_len`](FileDescriptor::effective_len) for an

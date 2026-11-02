@@ -56,7 +56,10 @@ impl FileSystem {
         // Normalized before install (freezes cwd-at-open) — see `install_fd`.
         let norm = self.normalize_path(&name);
         let content_sym = self.file_contents.get(&norm).cloned();
-        let mut desc = FileDescriptor::new(name, flags);
+        let mut desc = match content_sym {
+            Some(_) => FileDescriptor::new(name, flags),
+            None => FileDescriptor::with_content(name, flags, self.concrete_content_of(&norm)),
+        };
         desc.append = append;
         if content_sym.is_some() {
             // Freeze the registry key on the descriptor so demotion can
@@ -67,6 +70,40 @@ impl FileSystem {
         desc.content_sym = content_sym;
         self.install_fd(fd, norm, desc);
         Some(fd)
+    }
+
+    /// The concrete bytes a fresh open of `norm` starts from: an open
+    /// sibling fd's buffer, else what the path held when its last fd closed
+    /// (`closed_contents`), else empty. Python shares one `SimFile` across
+    /// every fd of a path; this copies a snapshot instead, so writes through
+    /// two simultaneously open fds still do not see each other
+    /// (angr-vmi2l.196). No truncation: Python's `posix.open` ignores
+    /// `O_TRUNC` too. A demoted path is Python-owned and starts empty, as
+    /// before.
+    fn concrete_content_of(&self, norm: &str) -> Vec<u8> {
+        if self.demoted_paths.contains(norm) {
+            return Vec::new();
+        }
+        self.fds
+            .values()
+            .find(|d| {
+                d.is_open && Self::holds_path_content(d) && d.norm_name.as_deref() == Some(norm)
+            })
+            .map(|d| d.content.clone())
+            .or_else(|| self.closed_contents.get(norm).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Whether `desc`'s concrete buffer is the content of the file it names:
+    /// not a symbolic stream, not bounded symbolic content (the
+    /// `file_contents` registry owns that), and opened by path (std fds and
+    /// pipe ends have no `norm_name`).
+    fn holds_path_content(desc: &FileDescriptor) -> bool {
+        !desc.symbolic
+            && desc.content_sym.is_none()
+            && desc.registry_key.is_none()
+            && !desc.is_std_placeholder
+            && desc.norm_name.is_some()
     }
 
     /// Allocate the lowest fd number that is not open — the POSIX `open(2)`
@@ -182,6 +219,32 @@ impl FileSystem {
         true
     }
 
+    /// Overwrite an open path-opened fd's concrete bytes and position with
+    /// what a bounced Python SimProcedure left on its mirror of it — a
+    /// bounced `getc` advances the position, a bounced write extends the
+    /// content — so the native side stays the authority the next bounce's
+    /// mirror is rebuilt from (angr-mx00p.132.46).
+    ///
+    /// Returns false — changing nothing — for an fd that is closed, unknown,
+    /// carries symbolic content (see `holds_path_content`), or already
+    /// matches; a content larger than [`MAX_FS_FILE_SIZE`] is refused too.
+    pub fn update_fd(&mut self, fd: u32, content: Vec<u8>, position: u64) -> bool {
+        let unchanged_or_foreign = self.fds.get(&fd).is_none_or(|d| {
+            !d.is_open
+                || !Self::holds_path_content(d)
+                || (d.position == position && d.content == content)
+        });
+        if unchanged_or_foreign || content.len() as u64 > MAX_FS_FILE_SIZE {
+            return false;
+        }
+        let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) else {
+            return false;
+        };
+        desc.content = content;
+        desc.position = position;
+        true
+    }
+
     /// Open a symbolic-stream file descriptor: empty content, flagged so
     /// that reads mint fresh symbolic bytes natively (the stdin model)
     /// rather than falling back to Python. Returns the allocated fd number.
@@ -235,10 +298,21 @@ impl FileSystem {
     }
 
     /// Close a file descriptor. Returns true if it was open.
+    ///
+    /// A path-opened fd with bytes leaves them in `closed_contents`, so a
+    /// later open of the path reads them even after this tombstone's number
+    /// is reused (angr-mx00p.132.46).
     pub fn close(&mut self, fd: u32) -> bool {
         // Read-first to avoid CoW clone if the fd is missing or already closed.
-        if !self.fds.get(&fd).is_some_and(|d| d.is_open) {
+        let Some(desc) = self.fds.get(&fd).filter(|d| d.is_open) else {
             return false;
+        };
+        if let Some(norm) = desc.norm_name.clone()
+            && Self::holds_path_content(desc)
+            && !desc.content.is_empty()
+        {
+            let content = desc.content.clone();
+            Arc::make_mut(&mut self.closed_contents).insert(norm, content);
         }
         if let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) {
             desc.is_open = false;

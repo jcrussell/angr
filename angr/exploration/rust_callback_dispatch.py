@@ -24,7 +24,7 @@ import time
 from typing import TYPE_CHECKING
 
 from angr import claripy
-from angr.errors import SimStateError, SimUnsatError
+from angr.errors import SimStateError
 from angr.exploration.rust_state_binding import CALLBACK_FORK_STASH, CallbackForkScope
 from angr.exploration.rust_state_export import (
     POSIX_SYNC_FDS,
@@ -363,9 +363,10 @@ class RustCallbackDispatchMixin:
         *it* does not know about — can hand a bounced ``open()`` a number Rust
         is already using, so the two sides end up pointing at different files.
 
-        Idempotent: an fd already in ``state.posix.fd`` is left alone, which
-        matters because the cached callback state is reused across bounces --
-        except fd 0 after a native ``dup2(real_fd, 0)`` (angr-qmrrp): fd 0
+        The cached callback state is reused across bounces, so an fd already
+        in ``state.posix.fd`` is rebuilt from Rust when it is a concrete
+        mirror of the same path (see ``_is_concrete_mirror``) and left alone
+        otherwise -- except fd 0 after a native ``dup2(real_fd, 0)`` (angr-qmrrp): fd 0
         always pre-exists in ``posix.fd`` (the default tty stream), so without
         an explicit carve-out it would never be overwritten with the dup2'd
         file's real content, and a bounced ``fscanf(stdin, ...)``-style
@@ -398,16 +399,19 @@ class RustCallbackDispatchMixin:
             # unconditional posix.fd[newfd] = posix.fd[oldfd] dup2 does on
             # the Python side (angr/procedures/posix/dup.py's dup2 class).
             is_dup2d_stdin = fd == 0 and fd0_dup2d
-            if (fd <= 2 and not is_dup2d_stdin) or not is_open or (fd in posix.fd and not is_dup2d_stdin) or not name:
+            if (fd <= 2 and not is_dup2d_stdin) or not is_open or not name:
+                continue
+            path = name.encode() if isinstance(name, str) else name
+            stale = fd in posix.fd and not is_dup2d_stdin
+            if stale and not self._is_concrete_mirror(state, posix.fd[fd], path):
                 continue
             try:
                 content = bytes(self._rust_mgr.get_state_fd_content(state_id, fd))
             except Exception as e:
                 l.debug("get_state_fd_content(%d, %d) failed: %s", state_id, fd, e)
                 continue
-            path = name.encode() if isinstance(name, str) else name
             simfile = state.fs.get(path)
-            if simfile is None:
+            if stale or simfile is None:
                 # Rust descriptors hold concrete bytes, so the mirror SimFile is
                 # a concrete one. has_end is left to the state's FILES_HAVE_EOF
                 # option, matching what posix.open would have built.
@@ -423,6 +427,58 @@ class RustCallbackDispatchMixin:
             simfd.set_state(state)
             simfd._pos = position
             posix.fd[fd] = simfd
+
+    @staticmethod
+    def _is_concrete_mirror(state, simfd, path):
+        """Whether ``simfd`` is a concrete view of the native file ``path``.
+
+        The cached callback state outlives the bounce that mirrored a native
+        fd into it, while native code keeps reading and writing that fd, so a
+        later bounce must rebuild the mirror from Rust rather than reuse the
+        stale copy (angr-mx00p.132.46). The bounce's own changes reached Rust
+        through ``_sync_state_posix_fds_to_rust``, so Rust is current. A
+        descriptor with symbolic content or for another path is the user's
+        and is left alone.
+        """
+        simfile = getattr(simfd, "file", None)
+        if simfile is None or getattr(simfile, "name", None) != path:
+            return False
+        return _concrete_stream_bytes(state, simfile) is not None
+
+    def _inject_rust_closed_files(self, state, state_id):
+        """Mirror files native code wrote and closed into ``state.fs``.
+
+        Companion to ``_inject_rust_fds``, which mirrors only *open* fds: a
+        file whose last native fd closed has no fd left, but Python keys file
+        content by path, so a bounced ``unlink``/``stat``/``open`` of it must
+        still find its ``SimFile`` (angr-mx00p.132.46). A path this cached
+        state already unlinked stays gone; a path already in ``state.fs`` is
+        left alone, as in ``_inject_rust_fds``.
+        """
+        try:
+            closed = self._rust_mgr.get_state_closed_files(state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: the bounced proc sees no SimFile for
+            # natively written, closed files (the pre-fix behavior).
+            l.debug("get_state_closed_files(%d) failed: %s", state_id, e)
+            return
+        if not closed:
+            return
+        unlinked = {path for path, _ in state.fs.unlinks}
+        posix = state.plugins.get("posix")
+        # An open fd's mirror (just rebuilt by ``_inject_rust_fds``) is newer
+        # than what the path held at its last close.
+        held = {getattr(getattr(d, "file", None), "name", None) for d in posix.fd.values()} if posix else set()
+        for name, content in closed:
+            path = name.encode()
+            if path in unlinked or path in held:
+                continue
+            existing = state.fs.get(path)
+            if existing is not None and _concrete_stream_bytes(state, existing) is None:
+                continue
+            content = bytes(content)
+            if not state.fs.insert(path, SimFile(path, content=content, size=len(content))):
+                l.debug("could not insert mirror SimFile for closed native file %s", name)
 
     def _inject_rust_stdin(self, state, state_id):
         """Inject Rust-side stdin data into posix.dumps(0).
@@ -1925,6 +1981,7 @@ class RustCallbackDispatchMixin:
                 # by the bounced proc — and must be visible to posix._pick_fd so
                 # a bounced open() does not collide with one of them.
                 self._inject_rust_fds(state, event.callback_state_id)
+                self._inject_rust_closed_files(state, event.callback_state_id)
 
         return state
 

@@ -37,6 +37,11 @@ pub struct FileSystemData {
     /// BTreeSet keeps the wire ordering deterministic.
     #[serde(default)]
     pub demoted_paths: std::collections::BTreeSet<String>,
+    /// Path-keyed bytes of closed files (angr-mx00p.132.46).
+    /// `#[serde(default)]` keeps older snapshots loadable — reconstitutes to
+    /// an empty map (a reopen reads empty, the previous behavior).
+    #[serde(default)]
+    pub closed_contents: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 impl From<FileSystem> for FileSystemData {
@@ -65,6 +70,11 @@ impl From<FileSystem> for FileSystemData {
             symlinks,
             file_contents,
             demoted_paths,
+            closed_contents: fs
+                .closed_contents
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 }
@@ -90,6 +100,7 @@ impl From<FileSystemData> for FileSystem {
             symlinks: Arc::new(symlinks),
             file_contents: crate::arc_shared(file_contents),
             demoted_paths: Arc::new(demoted_paths),
+            closed_contents: Arc::new(d.closed_contents.into_iter().collect()),
         };
         // Re-normalize known_paths on load: the key space is normalized at
         // insertion (see `open`), but pre-normalization snapshots may carry

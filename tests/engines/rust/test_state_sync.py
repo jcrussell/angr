@@ -5,6 +5,8 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import angr
@@ -13,6 +15,7 @@ from angr import claripy
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
+    BIN_LOCATION,
     RUST_EXPLORATION_AVAILABLE,
     ExplorationEvent,
     PythonCallbacks,
@@ -854,6 +857,72 @@ class TestCallbackFdInboundSync:
 
         data, _ = state.posix.get_fd(0).read_data(6)
         assert state.solver.eval(data, cast_to=bytes) == b"REALIN"
+
+
+class TestPathContentSurvivesClose:
+    """angr-mx00p.132.46: Python keys file content by path, so bytes written
+    through a native fd stay visible after it closes, and the cached callback
+    state's mirror of a native fd follows what native code did since."""
+
+    O_RDONLY = 0
+
+    @pytest.fixture
+    def mgr_and_sid(self):
+        proj = load_fauxware()
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        return proj, mgr, sid
+
+    def test_stale_mirror_is_rebuilt_and_a_bounced_read_flows_back(self, mgr_and_sid):
+        proj, mgr, sid = mgr_and_sid
+        assert mgr._rust_mgr.register_state_fd(sid, 7, "/tmp/f.txt", self.O_RDONLY, b"", 0)
+        cached = proj.factory.entry_state()
+        mgr._inject_rust_fds(cached, sid)
+        assert cached.posix.get_fd(7).file.concretize() == b""
+
+        # Native code writes after the cached state mirrored the fd.
+        assert mgr._rust_mgr.update_state_fd(sid, 7, b"foobar", 0)
+        mgr._inject_rust_fds(cached, sid)
+        data, _ = cached.posix.get_fd(7).read_data(3)
+        assert cached.solver.eval(data, cast_to=bytes) == b"foo", "the stale empty mirror was reused"
+
+        # That bounced read advanced the position; the next mirror starts there.
+        mgr._sync_state_posix_fds_to_rust(cached, sid)
+        fresh = proj.factory.entry_state()
+        mgr._inject_rust_fds(fresh, sid)
+        data, _ = fresh.posix.get_fd(7).read_data(3)
+        assert fresh.solver.eval(data, cast_to=bytes) == b"bar"
+
+    def test_closed_file_reaches_state_fs_until_unlinked(self, mgr_and_sid):
+        proj, mgr, _sid = mgr_and_sid
+
+        class ClosedFile:
+            def get_state_closed_files(self, _state_id):
+                return [("/tmp/closed.txt", list(b"foobar and baz"))]
+
+        mgr._rust_mgr = ClosedFile()
+        state = proj.factory.entry_state()
+        mgr._inject_rust_closed_files(state, 1)
+        assert state.fs.get(b"/tmp/closed.txt").concretize() == b"foobar and baz"
+
+        assert state.fs.delete(b"/tmp/closed.txt")
+        mgr._inject_rust_closed_files(state, 1)
+        assert state.fs.get(b"/tmp/closed.txt") is None, "an unlinked file came back"
+
+    def test_reopen_after_fclose_reads_the_written_bytes(self):
+        """End to end: fopen/fputs/fclose, open/lseek/fdopen/getc, unlink."""
+        path = os.path.join(BIN_LOCATION, "tests", "x86_64", "test_multi_open_file")
+        if not os.path.exists(path):
+            pytest.skip("test_multi_open_file binary not available")
+        proj = angr.Project(path, auto_load_libs=True)
+        state = proj.factory.entry_state()
+        state.options.discard("LAZY_SOLVES")
+        simgr = proj.factory.simulation_manager(state, engine="rust")
+        simgr.explore()
+        assert len(simgr.deadended) == 1
+        final = simgr.deadended[0]
+        assert final.posix.dumps(2) == b""
+        assert [f.concretize() for _, f in final.fs.unlinks] == [b"foobar and baz"]
 
 
 class TestStateMetadataStorage:

@@ -1121,6 +1121,29 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _get_state_closed_files(&self, state_id: u64) -> Vec<(String, Vec<u8>)> {
+        self.find_state(state_id).map_or_else(Vec::new, |state| {
+            state
+                .file_system_ref()
+                .closed_files()
+                .into_iter()
+                .map(|(path, content)| (path.to_owned(), content.to_vec()))
+                .collect()
+        })
+    }
+
+    pub(crate) fn _update_state_fd(
+        &mut self,
+        state_id: u64,
+        fd: u32,
+        content: Vec<u8>,
+        position: u64,
+    ) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| {
+            Ok(state.file_system().update_fd(fd, content, position))
+        })
+    }
+
     pub(crate) fn _register_state_fd(
         &mut self,
         state_id: u64,

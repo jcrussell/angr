@@ -513,6 +513,30 @@ impl RustExplorationManager {
         self._get_state_fd_content(state_id, fd)
     }
 
+    /// `(path, bytes)` of every file whose last native fd closed with
+    /// content, so the bounced callback state's `state.fs` can mirror them
+    /// (angr-mx00p.132.46). Empty for an unknown state.
+    pub fn get_state_closed_files(&self, state_id: u64) -> Vec<(String, Vec<u8>)> {
+        self._get_state_closed_files(state_id)
+    }
+
+    /// Carry a bounced proc's position/content change on an fd both sides
+    /// know back into the native fd (`FileSystem::update_fd`). Returns False
+    /// when nothing changed or the fd is not a concrete open native one.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own fd table; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn update_state_fd(
+        &mut self,
+        state_id: u64,
+        fd: u32,
+        content: Vec<u8>,
+        position: u64,
+    ) -> PyResult<bool> {
+        self._update_state_fd(state_id, fd, content, position)
+    }
+
     /// Adopt an fd that a bounced Python SimProcedure opened, at the fd number
     /// Python chose. `flags` is a POSIX open(2) bitfield; `content` the
     /// concrete bytes of the backing SimFile; `position` its seek offset.

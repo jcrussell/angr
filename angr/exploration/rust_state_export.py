@@ -1408,8 +1408,6 @@ class RustStateExportMixin:
             l.debug("get_state_open_fds(%d) failed: %s", state_id, e)
             return
         for fd in py_fds:
-            if fd in rust_fds:
-                continue
             desc = posix.get_fd(fd)
             simfile = getattr(desc, "file", None)
             if simfile is None:
@@ -1420,6 +1418,17 @@ class RustStateExportMixin:
                 # cat-(b) FALLBACK WITH LOSS: see docstring — an fd we cannot
                 # faithfully model natively stays unknown to Rust.
                 l.debug("fd %d of callback state %d is not concretely modelable in Rust", fd, state_id)
+                continue
+            if fd in rust_fds:
+                # Both sides know it: carry the bounce's read/write back, so the
+                # next bounce's mirror, rebuilt from Rust, starts where this one
+                # left off (angr-mx00p.132.46). A no-op when nothing changed.
+                try:
+                    self._rust_mgr.update_state_fd(state_id, fd, content, pos)
+                except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: the native fd keeps its
+                    # pre-bounce position and bytes.
+                    l.debug("fd %d update into Rust state %d failed: %s", fd, state_id, e)
                 continue
             name = getattr(simfile, "name", "") or ""
             if isinstance(name, bytes):

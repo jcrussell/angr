@@ -85,6 +85,18 @@ pub struct FileSystem {
     /// [`demote_symbolic_content`]: FileSystem::demote_symbolic_content
     /// [`demote_all_symbolic_content`]: FileSystem::demote_all_symbolic_content
     demoted_paths: Arc<HashSet<String>>,
+    /// Concrete bytes a path held when its last fd closed: cwd-normalized
+    /// absolute path → content. Python keys a file's content by path (one
+    /// `SimFile` in `state.fs` shared by every fd that opens it), while each
+    /// [`FileDescriptor`] here carries its own buffer, so without this a
+    /// `fclose(fopen(p, "w"))` followed by `open(p)` read an empty file, and
+    /// the closed tombstone holding the bytes is itself overwritten once
+    /// `alloc_fd` reuses its number (angr-mx00p.132.46). Written by
+    /// [`close`](FileSystem::close), read by
+    /// [`open_with_append`](FileSystem::open_with_append) and exported to the
+    /// bounced callback state's `state.fs`. Arc'd for O(1) fork, mirroring
+    /// `known_paths`.
+    closed_contents: Arc<HashMap<String, Vec<u8>>>,
 }
 
 impl Default for FileSystem {
@@ -112,6 +124,7 @@ impl Default for FileSystem {
             symlinks: Arc::new(HashMap::new()),
             file_contents: crate::arc_shared(HashMap::new()),
             demoted_paths: Arc::new(HashSet::new()),
+            closed_contents: Arc::new(HashMap::new()),
         }
     }
 }
