@@ -17,9 +17,10 @@
 use std::ops::Neg;
 
 use crate::vex::ir::IRType;
-use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV};
+use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV, VexRm};
 
 use super::VEXOps;
+use super::float_arith::apply_rounding;
 
 /// Map a VEX float `IRType` to a Z3 FP precision.
 #[inline]
@@ -73,6 +74,9 @@ pub(super) struct FAbs;
 /// FP negate (flips the sign bit, including on NaN and zero) — the lane op
 /// behind `IROp::VFNeg`.
 pub(super) struct FNeg;
+/// FP round-to-integral under a fixed mode — the lane op behind
+/// `IROp::VFRoundToInt`.
+pub(super) struct FRoundToInt(pub(super) VexRm);
 /// FP min: matches Rust `<` semantics (NaN passes through right).
 pub(super) struct FMin;
 /// FP max: matches Rust `>` semantics (NaN passes through right).
@@ -127,6 +131,26 @@ impl_float_lane_binop!(FDiv, /, FloatOpKind::Div);
 impl_float_lane_unop!(FSqrt, sqrt, FloatOpKind::Sqrt);
 impl_float_lane_unop!(FAbs, abs, FloatOpKind::Abs);
 impl_float_lane_unop!(FNeg, neg, FloatOpKind::Neg);
+
+impl FloatLaneOp for FRoundToInt {
+    fn arity(&self) -> usize {
+        1
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        apply_rounding(a[0], self.0)
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        apply_rounding(a[0], self.0)
+    }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV {
+        let mode = RustBV::concrete(u128::from(self.0.encoding()), 32);
+        build_float_expr(
+            FloatOpKind::RoundToInt,
+            prec,
+            std::iter::once(mode).chain(args).collect(),
+        )
+    }
+}
 
 /// Build a symbolic min/max ITE over two operand lanes. `swap_cmp_args=false`
 /// gives `ITE(l < r, l, r)` (min); `true` gives `ITE(r < l, l, r)` (max).

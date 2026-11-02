@@ -191,6 +191,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VFSqrt { .. }
         | IROp::VFAbs { .. }
         | IROp::VFNeg { .. }
+        | IROp::VFRoundToInt { .. }
         | IROp::VFMin { .. }
         | IROp::VFMax { .. }
         | IROp::VFPwAdd { .. }
@@ -301,6 +302,7 @@ pub fn is_vector_float_op(op: &IROp) -> bool {
             | IROp::VFSqrt { .. }
             | IROp::VFAbs { .. }
             | IROp::VFNeg { .. }
+            | IROp::VFRoundToInt { .. }
             | IROp::VFMin { .. }
             | IROp::VFMax { .. }
             | IROp::VFPwAdd { .. }

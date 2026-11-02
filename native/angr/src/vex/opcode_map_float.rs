@@ -12,10 +12,21 @@
 //! `super::opcode_map_vector` (SIMD families).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+use angr_bv::VexRm;
+
 use super::ir::{FCmpKind, IROp, IRType};
 use super::opcode_map::{
     cast_arms, fcmp_scalar_arms, fcmp_vec_arms, scalar_arms, tuple_arms, vec_arms,
 };
+
+/// `Iop_RoundF32x4_R*`: the mode is the name's suffix, not an operand.
+fn round_f32x4(rm: VexRm) -> IROp {
+    IROp::VFRoundToInt {
+        rm,
+        elem: IRType::F32,
+        count: 4,
+    }
+}
 
 /// Parse floating point operations
 pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
@@ -219,6 +230,10 @@ pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
         // Rounding
         "Iop_RoundF32toInt" => Some(IROp::RoundF32toInt),
         "Iop_RoundF64toInt" => Some(IROp::RoundF64toInt),
+        "Iop_RoundF32x4_RM" => Some(round_f32x4(VexRm::TowardNegative)),
+        "Iop_RoundF32x4_RN" => Some(round_f32x4(VexRm::NearestEven)),
+        "Iop_RoundF32x4_RP" => Some(round_f32x4(VexRm::TowardPositive)),
+        "Iop_RoundF32x4_RZ" => Some(round_f32x4(VexRm::TowardZero)),
 
         _ => None,
     }

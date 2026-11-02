@@ -4,6 +4,7 @@
 //! (bd memory `rust-module-root-split-recipe`).
 
 use super::*;
+use angr_bv::VexRm;
 
 #[test]
 fn test_parse_arithmetic() {
@@ -45,6 +46,23 @@ fn test_parse_cmp_ord() {
     assert_eq!(parse_opcode("Iop_CmpORD64S"), IROp::CmpORD(IRType::I64));
     assert_eq!(parse_opcode("Iop_CmpORD32U"), IROp::CmpORDU(IRType::I32));
     assert_eq!(parse_opcode("Iop_CmpORD64U"), IROp::CmpORDU(IRType::I64));
+}
+
+#[test]
+fn test_parse_round_f32x4() {
+    for (name, rm) in [
+        ("Iop_RoundF32x4_RM", VexRm::TowardNegative),
+        ("Iop_RoundF32x4_RN", VexRm::NearestEven),
+        ("Iop_RoundF32x4_RP", VexRm::TowardPositive),
+        ("Iop_RoundF32x4_RZ", VexRm::TowardZero),
+    ] {
+        let op = IROp::VFRoundToInt {
+            rm,
+            elem: IRType::F32,
+            count: 4,
+        };
+        assert_eq!(parse_opcode(name), op, "{name}");
+    }
 }
 
 /// angr-0jh0j.62: table arms named opcode strings libVEX
@@ -1217,16 +1235,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     (
         &["Iop_Rol16x8", "Iop_Rol32x4", "Iop_Rol64x2", "Iop_Rol8x16"],
         "NEON Q-reg vector rotate-left (distinct from the Shl/Shr/Sar-by-vector family already mapped) — not yet implemented.",
-    ),
-    // ROUND_F32X4
-    (
-        &[
-            "Iop_RoundF32x4_RM",
-            "Iop_RoundF32x4_RN",
-            "Iop_RoundF32x4_RP",
-            "Iop_RoundF32x4_RZ",
-        ],
-        "SSE4.1 ROUNDPS-style packed-float round-to-integer with an explicit rounding-mode suffix (RM/RN/RP/RZ) — not yet implemented.",
     ),
     // SH_RSH_BIDIRECTIONAL
     (

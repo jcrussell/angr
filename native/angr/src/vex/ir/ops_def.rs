@@ -774,6 +774,14 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
+    /// Packed float round-to-integral under the mode the name fixes —
+    /// Iop_RoundF32x4_{RM,RN,RP,RZ} (AArch64 FRINT{M,N,P,Z}). The mode is
+    /// part of the opcode, not an operand.
+    VFRoundToInt {
+        rm: angr_bv::VexRm,
+        elem: IRType,
+        count: u8,
+    },
     /// Packed float min (MINPS/MINPD)
     VFMin {
         elem: IRType,
@@ -1230,6 +1238,7 @@ impl IROp {
             | IROp::VFSqrt { elem, count }
             | IROp::VFAbs { elem, count }
             | IROp::VFNeg { elem, count }
+            | IROp::VFRoundToInt { elem, count, .. }
             | IROp::VFMin { elem, count }
             | IROp::VFMax { elem, count } => {
                 Self::width_total_to_type(elem.bits() * (*count as u32))

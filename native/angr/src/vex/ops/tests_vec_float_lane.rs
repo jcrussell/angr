@@ -118,6 +118,57 @@ fn test_vec_float_neg_concrete_f32x4() {
     assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
 }
 
+/// Iop_RoundF32x4_R*: per-lane roundToIntegral under the opcode's mode. The
+/// halfway lanes separate the modes; -0.4 checks the sign of a zero result.
+#[test]
+fn test_vec_float_round_to_int_concrete_f32x4() {
+    let v = [2.5f32, -2.5, -0.4, 1.75];
+    for (rm, exp) in [
+        (VexRm::TowardNegative, [2.0f32, -3.0, -1.0, 1.0]),
+        (VexRm::NearestEven, [2.0, -2.0, -0.0, 2.0]),
+        (VexRm::TowardPositive, [3.0, -2.0, -0.0, 2.0]),
+        (VexRm::TowardZero, [2.0, -2.0, -0.0, 1.0]),
+    ] {
+        let result = VEXOps::unop(
+            IROp::VFRoundToInt {
+                rm,
+                elem: IRType::F32,
+                count: 4,
+            },
+            RustBV::concrete(pack_lanes_f32(&v), 128),
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
+    }
+}
+
+/// The symbolic lane carries the opcode's mode: a pinned 2.5 rounds up only
+/// under RP.
+#[test]
+fn test_vec_float_round_to_int_symbolic_f32x4() {
+    let (x, pin) = pinned_symbol("round_lane", u128::from(2.5f32.to_bits()), 32);
+    let v = RustBV::concrete(0, 96).concat(&x);
+    for (rm, want) in [(VexRm::TowardPositive, 3.0f32), (VexRm::NearestEven, 2.0)] {
+        let result = VEXOps::unop(
+            IROp::VFRoundToInt {
+                rm,
+                elem: IRType::F32,
+                count: 4,
+            },
+            v.clone(),
+        )
+        .unwrap();
+        let lane = result.extract(31, 0);
+        assert!(lane.is_symbolic());
+        assert_eq!(
+            z3_eval(&lane, std::slice::from_ref(&pin)),
+            Some(u128::from(want.to_bits())),
+            "{rm:?}"
+        );
+    }
+}
+
 /// Iop_Neg64Fx2-style: per-lane sign flip on the f64x2 shape.
 #[test]
 fn test_vec_float_neg_concrete_f64x2() {

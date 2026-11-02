@@ -724,8 +724,6 @@ _UNMAPPED_FP_DECIMAL = [
     "Iop_F64toD128",
     "Iop_Fixed32SToF32x2_RN",
     "Iop_FtoI32Sx2_RZ",
-    "Iop_RoundF32x4_RM",
-    "Iop_RoundF32x4_RN",
     "Iop_SignificanceRoundD64",
 ]
 

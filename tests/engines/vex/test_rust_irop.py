@@ -595,6 +595,9 @@ def test_rust_irop_exclusions():
 
 
 UNMAPPED = "not mapped in vex/opcode_map"
+# angr-mx00p.101.16: angr-bv's float row is F32 and F64, and Rust has no stable
+# f16/f128 for the concrete folds, so a half or quad lane or operand stays in irop.py.
+F16_F128 = "stays: angr-bv's float row has no F16 or F128"
 # Every irop.py op Rust does not serve, with the reason; test_rust_irop_unserved_is_pinned keeps it exact.
 UNSERVED = {
     # Excluded from SERVED in vex_irop.rs.
@@ -665,7 +668,7 @@ UNSERVED = {
         ),
         UNMAPPED,
     ),
-    # Scalar F16 and F128: angr-bv's float row has F32 and F64 only.
+    # Scalar F16 and F128.
     **dict.fromkeys(
         (
             "Iop_AbsF16",
@@ -706,7 +709,7 @@ UNSERVED = {
             "Iop_ReinterpF128asI128",
             "Iop_ReinterpI128asF128",
         ),
-        UNMAPPED,
+        F16_F128,
     ),
     # Vector float.
     **dict.fromkeys(
@@ -725,12 +728,8 @@ UNSERVED = {
             "Iop_F32toF16x4_DEP",
             "Iop_F32toF16x8",
             "Iop_F64toF16x2_DEP",
-            "Iop_RoundF32x4_RM",
-            "Iop_RoundF32x4_RN",
-            "Iop_RoundF32x4_RP",
-            "Iop_RoundF32x4_RZ",
         ),
-        UNMAPPED,
+        F16_F128,
     ),
     # Vector integer lanes.
     **dict.fromkeys(
