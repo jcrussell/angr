@@ -711,6 +711,63 @@ fn diff_fuzz_sym_flags_smul() {
     }
 }
 
+#[test]
+fn diff_fuzz_sym_flags_bmi() {
+    let mut rng = Lcg::new(0x0b31_0f00);
+    for category in [OpCategory::Andn, OpCategory::Blsi, OpCategory::Blsmsk, OpCategory::Blsr] {
+        for nbits in [32u32, 64] {
+            let m = get_mask(nbits);
+            // Zero operands are the interesting CF/ZF edge, so mix them in.
+            for i in 0..200 {
+                let d1 = if i % 4 == 0 { 0 } else { rng.next() & m };
+                let d2 = if i % 5 == 0 { 0 } else { rng.next() & m };
+                let conc = flags_to_tuple(calc_flags_bmi(category, nbits, d1, d2));
+                let sym = sym_flags_to_tuple(category, nbits, d1, d2, 0);
+                assert_eq!(sym, conc, "{category:?} nbits={nbits} d1={d1:x} d2={d2:x}");
+            }
+        }
+    }
+}
+
+/// angr-mx00p.132.17: the BMI1 cc_ops used to be unknown, so every
+/// `amd64g_calculate_condition` after BLSR fell back to Python. Hand-checked
+/// against ccall.py's `pc_actions_{ANDN,BLSI,BLSMSK,BLSR}`, as packed
+/// `(cf, pf, af, zf, sf, of)`.
+#[test]
+fn bmi_flags_match_ccall_py() {
+    use amd64_cc_op::*;
+    use cond_type::COND_NZ;
+    // BLSR rax, rdi with rdi = 8: result 0, source non-zero.
+    let f = flags_to_tuple(compute_flags_from_category(OpCategory::Blsr, 64, 0, 8, 0));
+    assert_eq!(f, flags_to_tuple(Flags { cf: 0, pf: 0, af: 0, zf: 1, sf: 0, of: 0 }));
+    // BLSR with a zero source sets CF.
+    assert_eq!(calc_flags_bmi(OpCategory::Blsr, 32, 0, 0).cf, 1);
+    // BLSMSK never sets ZF, even for a zero result.
+    assert_eq!(calc_flags_bmi(OpCategory::Blsmsk, 64, 0, 0).zf, 0);
+    assert_eq!(calc_flags_bmi(OpCategory::Blsmsk, 64, 0, 0).cf, 1);
+    // BLSI's CF is "source non-zero"; its SF reads the 32-bit sign bit.
+    let f = calc_flags_bmi(OpCategory::Blsi, 32, 0x8000_0000, 0x8000_0000);
+    assert_eq!((f.cf, f.zf, f.sf), (1, 0, 1));
+    // ANDN never sets CF.
+    assert_eq!(calc_flags_bmi(OpCategory::Andn, 64, 0, 5).cf, 0);
+    // The decoder now serves each cc_op at its width instead of deferring.
+    for (op, nbits) in [
+        (G_CC_OP_ANDN32, 32),
+        (G_CC_OP_ANDN64, 64),
+        (G_CC_OP_BLSI32, 32),
+        (G_CC_OP_BLSI64, 64),
+        (G_CC_OP_BLSMSK32, 32),
+        (G_CC_OP_BLSMSK64, 64),
+        (G_CC_OP_BLSR32, 32),
+        (G_CC_OP_BLSR64, 64),
+    ] {
+        assert_eq!(amd64_cc_op_info(op).map(|i| i.nbits), Some(nbits), "cc_op {op}");
+    }
+    // setne after `blsr rax, rdi` with rdi = 6 (result 4): ZF clear, so NZ holds.
+    assert_eq!(amd64g_calculate_condition(COND_NZ, G_CC_OP_BLSR64, 4, 6, 0), Some(1));
+    assert_eq!(amd64g_calculate_condition(COND_NZ, G_CC_OP_BLSR64, 0, 8, 0), Some(0));
+}
+
 /// angr-0jh0j.69: the `diff_fuzz_sym_flags_*` tests above all pre-mask their
 /// random inputs, so none of them could see a concrete path that reads bits
 /// above the operand width. The symbolic builders `extract_to_nbits` their
@@ -729,6 +786,10 @@ fn diff_fuzz_sym_flags_unmasked_inputs() {
         OpCategory::Logic,
         OpCategory::Umul,
         OpCategory::Smul,
+        OpCategory::Andn,
+        OpCategory::Blsi,
+        OpCategory::Blsmsk,
+        OpCategory::Blsr,
     ] {
         for nbits in [8u32, 16, 32] {
             let m = get_mask(nbits);

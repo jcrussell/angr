@@ -81,6 +81,14 @@ mod amd64_cc_op {
     pub(crate) const G_CC_OP_SMULW: u64 = 50;
     pub(crate) const G_CC_OP_SMULL: u64 = 51;
     pub(crate) const G_CC_OP_SMULQ: u64 = 52;
+    pub(crate) const G_CC_OP_ANDN32: u64 = 53;
+    pub(crate) const G_CC_OP_ANDN64: u64 = 54;
+    pub(crate) const G_CC_OP_BLSI32: u64 = 55;
+    pub(crate) const G_CC_OP_BLSI64: u64 = 56;
+    pub(crate) const G_CC_OP_BLSMSK32: u64 = 57;
+    pub(crate) const G_CC_OP_BLSMSK64: u64 = 58;
+    pub(crate) const G_CC_OP_BLSR32: u64 = 59;
+    pub(crate) const G_CC_OP_BLSR64: u64 = 60;
 }
 
 /// CC_OP values for X86 (from VEX's libvex_guest_x86.h)
@@ -184,6 +192,12 @@ enum OpCategory {
     Ror,
     Umul,
     Smul,
+    /// BMI1 `ANDN`, `BLSI`, `BLSMSK`, `BLSR` (amd64 only): see
+    /// [`calc_flags_bmi`].
+    Andn,
+    Blsi,
+    Blsmsk,
+    Blsr,
 }
 
 /// Decoded metadata for a CC_OP value: operand width and category.
@@ -258,6 +272,10 @@ fn amd64_cc_op_info(cc_op: u64) -> Option<CcOpInfo> {
         Ror   { 8 => G_CC_OP_RORB,   16 => G_CC_OP_RORW,   32 => G_CC_OP_RORL,   64 => G_CC_OP_RORQ },
         Umul  { 8 => G_CC_OP_UMULB,  16 => G_CC_OP_UMULW,  32 => G_CC_OP_UMULL,  64 => G_CC_OP_UMULQ },
         Smul  { 8 => G_CC_OP_SMULB,  16 => G_CC_OP_SMULW,  32 => G_CC_OP_SMULL,  64 => G_CC_OP_SMULQ },
+        Andn   { 32 => G_CC_OP_ANDN32,   64 => G_CC_OP_ANDN64 },
+        Blsi   { 32 => G_CC_OP_BLSI32,   64 => G_CC_OP_BLSI64 },
+        Blsmsk { 32 => G_CC_OP_BLSMSK32, 64 => G_CC_OP_BLSMSK64 },
+        Blsr   { 32 => G_CC_OP_BLSR32,   64 => G_CC_OP_BLSR64 },
     )
 }
 
@@ -315,6 +333,9 @@ fn compute_flags_from_category(
         OpCategory::Ror => calc_flags_ror(nbits, cc_dep1, cc_ndep),
         OpCategory::Umul => calc_flags_umul(nbits, cc_dep1, cc_dep2),
         OpCategory::Smul => calc_flags_smul(nbits, cc_dep1, cc_dep2),
+        OpCategory::Andn | OpCategory::Blsi | OpCategory::Blsmsk | OpCategory::Blsr => {
+            calc_flags_bmi(category, nbits, cc_dep1, cc_dep2)
+        }
     }
 }
 
@@ -740,7 +761,11 @@ fn handle_x86_eflags_c(name: &str, args: &[SymBV], ret_bits: u32) -> Option<SymB
                 | OpCategory::Rol
                 | OpCategory::Ror
                 | OpCategory::Umul
-                | OpCategory::Smul => {
+                | OpCategory::Smul
+                | OpCategory::Andn
+                | OpCategory::Blsi
+                | OpCategory::Blsmsk
+                | OpCategory::Blsr => {
                     sym_flags_for_category(info.category, nb, &args[1], &args[2], &args[3])
                         .ok()
                         .map(|f| f.cf)

@@ -452,6 +452,37 @@ pub(super) fn sym_flags_smul(nbits: u32, dep1: &SymBV, dep2: &SymBV) -> SymFlags
     }
 }
 
+/// BMI1 ANDN/BLSI/BLSMSK/BLSR. Mirrors [`calc_flags_bmi`], whose doc
+/// carries the per-op table.
+pub(super) fn sym_flags_bmi(
+    category: OpCategory,
+    nbits: u32,
+    dep1: &SymBV,
+    dep2: &SymBV,
+) -> SymFlags {
+    let result = extract_to_nbits(dep1, nbits);
+    let src = extract_to_nbits(dep2, nbits);
+    let zero = SymBV::concrete(0, nbits);
+    let cf = match category {
+        OpCategory::Blsi => src.ne(&zero),
+        OpCategory::Blsmsk | OpCategory::Blsr => src.eq(&zero),
+        _ => SymBV::concrete(0, 1),
+    };
+    let zf = if category == OpCategory::Blsmsk {
+        SymBV::concrete(0, 1)
+    } else {
+        result.eq(&zero)
+    };
+    SymFlags {
+        cf,
+        pf: Parity::Bit(SymBV::concrete(0, 1)),
+        af: SymBV::concrete(0, 1),
+        zf,
+        sf: result.extract(nbits - 1, nbits - 1),
+        of: SymBV::concrete(0, 1),
+    }
+}
+
 /// Extract a single flag bit at the given shift from a packed-EFLAGS BV.
 pub(super) fn sym_extract_flag(packed: &SymBV, shift: u32) -> SymBV {
     packed.extract(shift, shift)
@@ -501,6 +532,9 @@ pub(super) fn sym_flags_for_category(
         OpCategory::Ror => Ok(sym_flags_ror(nbits, dep1, ndep)),
         OpCategory::Umul => Ok(sym_flags_umul(nbits, dep1, dep2)),
         OpCategory::Smul => Ok(sym_flags_smul(nbits, dep1, dep2)),
+        OpCategory::Andn | OpCategory::Blsi | OpCategory::Blsmsk | OpCategory::Blsr => {
+            Ok(sym_flags_bmi(category, nbits, dep1, dep2))
+        }
     }
 }
 

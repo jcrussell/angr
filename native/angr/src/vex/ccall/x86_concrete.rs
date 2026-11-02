@@ -546,3 +546,41 @@ pub(super) fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
         of,
     }
 }
+
+/// Calculate flags for the BMI1 ops ANDN, BLSI, BLSMSK and BLSR, after
+/// libVEX's `ACTIONS_{ANDN,BLSI,BLSMSK,BLSR}` and ccall.py's
+/// `pc_actions_*`. `cc_dep1` is the result and `cc_dep2` the source operand:
+///
+/// * SF is the result's sign bit;
+/// * ZF is "result is zero", except BLSMSK, which clears it;
+/// * CF is "source is non-zero" for BLSI, "source is zero" for BLSMSK and
+///   BLSR, and 0 for ANDN;
+/// * PF, AF and OF are 0.
+pub(super) fn calc_flags_bmi(
+    category: OpCategory,
+    nbits: u32,
+    cc_dep1: u64,
+    cc_dep2: u64,
+) -> Flags {
+    let mask = get_mask(nbits);
+    let res = cc_dep1 & mask;
+    let src = cc_dep2 & mask;
+    let cf = match category {
+        OpCategory::Blsi => u8::from(src != 0),
+        OpCategory::Blsmsk | OpCategory::Blsr => u8::from(src == 0),
+        _ => 0,
+    };
+    let zf = if category == OpCategory::Blsmsk {
+        0
+    } else {
+        u8::from(res == 0)
+    };
+    Flags {
+        cf,
+        pf: 0,
+        af: 0,
+        zf,
+        sf: u8::from((res & get_sign_bit(nbits)) != 0),
+        of: 0,
+    }
+}

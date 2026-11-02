@@ -80,3 +80,22 @@ def test_arm64_sbc_u128_compare_matches_python(case, symbolic, monkeypatch):
     assert len(mgr.found) == 1 and not mgr.errored, mgr.stash_counts()
     found = mgr.found[0]
     assert found.solver.eval_upto(found.regs.x4, 2) == [expected]
+
+
+# blsr rax, rdi ; setne al ; movzbl eax, al ; ret -- !!(x & (x - 1)). The
+# setne reads ZF from the BLSR64 cc_op, which Rust once deferred to Python,
+# and the ret lands on the CallReturn sentinel inside the shellcode project's
+# extern object, whose zero bytes lift (angr-mx00p.132.17).
+BLSR_NONZERO = bytes.fromhex("c4e2f8f3cf0f95c00fb6c0c3")
+
+
+def test_amd64_blsr_call_state_deadends_with_python_result():
+    project = angr.load_shellcode(BLSR_NONZERO, arch="amd64")
+    x = claripy.BVS("x", 64)
+    mgr = RustExplorationManager(project, [project.factory.call_state(0, x, prototype="long f(long)")])
+    mgr.run()
+    assert len(mgr.deadended) == 1 and not mgr.errored and not mgr.unconstrained, mgr.stash_counts()
+    state = mgr.deadended[0]
+    assert state.addr == project.simos.return_deadend
+    expected = claripy.If((x & (x - 1)) == 0, claripy.BVV(0, 64), claripy.BVV(1, 64))
+    assert not state.solver.satisfiable(extra_constraints=[state.regs.rax != expected])

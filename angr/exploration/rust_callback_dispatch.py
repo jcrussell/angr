@@ -1016,7 +1016,7 @@ class RustCallbackDispatchMixin:
         """Handle the path where a SimProcedure produced no successors.
 
         Three sub-cases:
-        - Terminal procedures (exit/abort/CallReturn) → deadend or skip-hook resume.
+        - Terminal procedures (exit/abort/CallReturn) → deadend at the hook.
         - Zero-length non-terminal hooks → resume past the hook with synced changes.
         - Other procedures → deadend (NO_RET) or resume at return address.
         """
@@ -1025,19 +1025,11 @@ class RustCallbackDispatchMixin:
         if no_ret_terminal:
             if _DBG:
                 l.debug(f"Terminal procedure {name} — deadending state at 0x{addr:x}")
-            if is_zero_length_hook:
-                # For zero-length terminal hooks (e.g., CallReturn at callable's
-                # return address), skip the hook and resume at addr. The Rust
-                # engine can't lift code there, so it deadends with PC=addr,
-                # preserving the PC for code that checks state.addr.
-                # cat-(b) FALLBACK WITH LOSS: set_skip_hook_addr failed for terminal
-                # zero-length hook; resume_after_simprocedure may re-trigger the
-                # hook on next step.
-                with contextlib.suppress(Exception):
-                    self._rust_mgr.set_skip_hook_addr(addr)
-                self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr, None, None)
-            else:
-                self._rust_mgr.deadend_pending_callback(event.callback_state_id)
+            # Deadend directly, with PC at the hook. Resuming past a
+            # zero-length hook relied on the address not lifting, but a
+            # shellcode project's CallReturn sits inside its extern object,
+            # whose zero bytes lift and run on (angr-mx00p.132.17).
+            self._rust_mgr.deadend_pending_callback(event.callback_state_id)
             return
 
         if is_zero_length_hook:
