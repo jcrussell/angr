@@ -16,15 +16,21 @@ export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTI
 
 log() { echo "$(date -Is) ralph-supervise: $*" | tee -a $state/supervise.log; }
 
+# ralph refuses to start from a failed{*} state without --fresh.
+fresh=()
+grep -q '"state": *"failed"' $state/fsm.json 2>/dev/null && fresh=(--fresh)
 retries=0
 while (( $(date +%s) < deadline )); do
-    ralph run --no-tui 2>&1 | tee $state/supervise-last-run.out
+    # --wait-on-quota: sleep through a usage-quota window instead of failing.
+    ralph run --no-tui --wait-on-quota "${fresh[@]}" 2>&1 | tee $state/supervise-last-run.out
+    fresh=()
     outcome=$(grep -oE '(done|failed)\{[a-z_]+\}' $state/supervise-last-run.out | tail -1)
     log "ralph run ended: ${outcome:-no outcome}"
     case $outcome in
         'done{iter_cap}') retries=0 ;;
         'failed{runner_terminal}')
             (( ++retries > ${RALPH_MAX_RETRIES:-6} )) && exit 3
+            fresh=(--fresh)
             sleep "${RALPH_RETRY_SECS:-900}" ;;
         'failed{auth}') log "log claude in again, then restart ralph-angr"; exit 2 ;;
         done* | 'failed{budget}') exit 0 ;;
