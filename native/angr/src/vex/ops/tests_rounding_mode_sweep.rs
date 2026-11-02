@@ -321,6 +321,12 @@ pub(crate) fn all_rm_ops() -> Vec<RmOpEntry> {
             vec![f64_bits(2.5), f64_bits(-2.5)],
         ),
         family_a(
+            "F64toI16S",
+            IROp::F64toI16S,
+            64,
+            vec![f64_bits(2.5), f64_bits(-2.5)],
+        ),
+        family_a(
             "F32toI64S",
             IROp::F32toI64S,
             32,

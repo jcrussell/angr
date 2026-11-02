@@ -240,7 +240,7 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
 
 /// The operand float type of a served scalar float op
 /// (`Iop_{Add,Mul,Div,Sqrt,Abs,Neg,Cmp}F{32,64}`, `Iop_F32toF64`,
-/// `Iop_F64toF32`, `Iop_F{32,64}toI{32,64}{S,U}`, `Iop_RoundF{32,64}toInt`),
+/// `Iop_F64toF32`, `Iop_F{32,64}toI{32,64}{S,U}`, `Iop_F64toI16S`, `Iop_RoundF{32,64}toInt`),
 /// whose float operands `irop.py` takes FP-sorted.
 fn scalar_float_type(op: IROp) -> Option<IRType> {
     if let Some((ty, _, _)) = float_to_int(op) {
@@ -265,11 +265,12 @@ fn scalar_float_type(op: IROp) -> Option<IRType> {
 }
 
 /// The operand float type, target width and signedness of a scalar
-/// float-to-int conversion, `Iop_F{32,64}toI{32,64}{S,U}`.
+/// float-to-int conversion, `Iop_F{32,64}toI{32,64}{S,U}` and `Iop_F64toI16S`.
 fn float_to_int(op: IROp) -> Option<(IRType, u32, bool)> {
     Some(match op {
         IROp::F32toI32S => (IRType::F32, 32, true),
         IROp::F64toI32S => (IRType::F64, 32, true),
+        IROp::F64toI16S => (IRType::F64, 16, true),
         IROp::F32toI64S => (IRType::F32, 64, true),
         IROp::F64toI64S => (IRType::F64, 64, true),
         IROp::F32toI32U => (IRType::F32, 32, false),

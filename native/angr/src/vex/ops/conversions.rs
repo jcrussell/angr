@@ -458,6 +458,11 @@ impl VEXOps {
             (apply_rounding(f64::from_bits(v as u64), rm) as i32 as u32) as u128
         })
     }
+    pub(super) fn f64_to_i16s_rm(rm: RustBV, arg: RustBV) -> Result<RustBV, OpError> {
+        Self::float_to_int_rm(rm, arg, FloatPrec::F64, 16, true, |v, rm| {
+            (apply_rounding(f64::from_bits(v as u64), rm) as i16 as u16) as u128
+        })
+    }
     pub(super) fn f32_to_i64s_rm(rm: RustBV, arg: RustBV) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, true, |v, rm| {
             (apply_rounding(f32::from_bits(v as u32), rm) as i64 as u64) as u128

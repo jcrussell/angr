@@ -224,6 +224,7 @@ pub enum IROp {
     I64UtoF64,
     F32toI32S,
     F64toI32S,
+    F64toI16S,
     F32toI64S,
     F64toI64S,
     F32toI32U,
@@ -1032,6 +1033,7 @@ impl IROp {
             IROp::F32toI32S | IROp::F64toI32S | IROp::F32toI32U | IROp::F64toI32U => {
                 Some(IRType::I32)
             }
+            IROp::F64toI16S => Some(IRType::I16),
             IROp::F32toI64S | IROp::F64toI64S | IROp::F32toI64U | IROp::F64toI64U => {
                 Some(IRType::I64)
             }

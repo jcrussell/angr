@@ -208,6 +208,7 @@ pub(super) fn parse_float(op_str: &str) -> Option<IROp> {
         "Iop_I64UtoF64" => Some(IROp::I64UtoF64),
         "Iop_F32toI32S" => Some(IROp::F32toI32S),
         "Iop_F64toI32S" => Some(IROp::F64toI32S),
+        "Iop_F64toI16S" => Some(IROp::F64toI16S),
         "Iop_F32toI64S" => Some(IROp::F32toI64S),
         "Iop_F64toI64S" => Some(IROp::F64toI64S),
         "Iop_F32toI32U" => Some(IROp::F32toI32U),

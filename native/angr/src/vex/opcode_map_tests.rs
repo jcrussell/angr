@@ -1038,7 +1038,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_MSubF64r32",
             "Iop_MulF64r32",
             "Iop_SubF64r32",
-            "Iop_F64toI16S",
             "Iop_RSqrtEst5GoodF64",
             "Iop_TruncF64asF32",
             "Iop_RoundF64toF32",
@@ -1047,7 +1046,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_RoundF64toF64_PosINF",
             "Iop_RoundF64toF64_ZERO",
         ],
-        "PowerPC \"round to 32-bit precision after the op\" (*F64r32) arithmetic plus adjacent scalar FP helpers (F64toI16S, RSqrtEst5GoodF64, TruncF64asF32, RoundF64toF32, RoundF64toF64_*) — PowerPC-specific FP helper ops, not yet implemented.",
+        "PowerPC \"round to 32-bit precision after the op\" (*F64r32) arithmetic plus adjacent scalar FP helpers (RSqrtEst5GoodF64, TruncF64asF32, RoundF64toF32, RoundF64toF64_*) — PowerPC-specific FP helper ops, not yet implemented.",
     ),
     // X87_PREM
     (

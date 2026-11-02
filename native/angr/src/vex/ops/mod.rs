@@ -445,6 +445,7 @@ impl VEXOps {
             | IROp::F64toF32
             | IROp::F32toI32S
             | IROp::F64toI32S
+            | IROp::F64toI16S
             | IROp::F32toI64S
             | IROp::F64toI64S
             | IROp::F32toI32U
@@ -632,6 +633,7 @@ impl VEXOps {
             IROp::F64toF32 => Self::f64_to_f32_rm(left, right),
             IROp::F32toI32S => Self::f32_to_i32s_rm(left, right),
             IROp::F64toI32S => Self::f64_to_i32s_rm(left, right),
+            IROp::F64toI16S => Self::f64_to_i16s_rm(left, right),
             IROp::F32toI64S => Self::f32_to_i64s_rm(left, right),
             IROp::F64toI64S => Self::f64_to_i64s_rm(left, right),
             IROp::F32toI32U => Self::f32_to_i32u_rm(left, right),

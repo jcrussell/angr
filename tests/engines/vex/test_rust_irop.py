@@ -620,6 +620,8 @@ def test_rust_irop_float_to_int_range():
     assert vex_irop.irop("Iop_F64toI32S", (rz, f64(2.0**31))) is None
     assert vex_irop.irop("Iop_F64toI32S", (rz, f64(2.0**31 - 1))).concrete_value == 2**31 - 1
     assert vex_irop.irop("Iop_F64toI32S", (rz, f64(-(2.0**31)))).concrete_value == 2**31
+    assert vex_irop.irop("Iop_F64toI16S", (rz, f64(2.0**15))) is None
+    assert vex_irop.irop("Iop_F64toI16S", (rz, f64(-(2.0**15)))).concrete_value == 2**15
     assert vex_irop.irop("Iop_F32toI64U", (rz, f32(-1.0))) is None
     assert vex_irop.irop("Iop_F32toI64U", (rz, f32(-0.0))).concrete_value == 0
     assert vex_irop.irop("Iop_F64toI64U", (rz, f64(math.nan))) is None

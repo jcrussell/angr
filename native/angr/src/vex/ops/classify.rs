@@ -115,6 +115,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::I64UtoF64
         | IROp::F32toI32S
         | IROp::F64toI32S
+        | IROp::F64toI16S
         | IROp::F32toI64S
         | IROp::F64toI64S
         | IROp::F32toI32U
