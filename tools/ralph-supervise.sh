@@ -21,8 +21,12 @@ fresh=()
 grep -q '"state": *"failed"' $state/fsm.json 2>/dev/null && fresh=(--fresh)
 retries=0
 while (( $(date +%s) < deadline )); do
-    # --wait-on-quota: sleep through a usage-quota window instead of failing.
-    ralph run --no-tui --wait-on-quota "${fresh[@]}" 2>&1 | tee $state/supervise-last-run.out
+    # --unlimited lifts the per-run iteration cap, so the deadline is enforced by
+    # timeout (ralph unwinds on SIGTERM); --wait-on-quota sleeps through a usage
+    # quota window instead of failing.
+    timeout --kill-after=300 $(( deadline - $(date +%s) )) \
+        ralph run --no-tui --unlimited --wait-on-quota "${fresh[@]}" 2>&1 | tee $state/supervise-last-run.out
+    (( PIPESTATUS[0] == 124 )) && break
     fresh=()
     outcome=$(grep -oE '(done|failed)\{[a-z_]+\}' $state/supervise-last-run.out | tail -1)
     log "ralph run ended: ${outcome:-no outcome}"
