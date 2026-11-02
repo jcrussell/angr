@@ -723,6 +723,30 @@ class TestCallbackFdTableSync:
         mgr._rust_mgr = Tripwire()
         mgr._sync_state_posix_fds_to_rust(state, 1)
 
+    def test_bounced_open_over_a_closed_rust_fd_registers(self, hookable_project):
+        """angr-mx00p.132.13: Rust reuses a closed fd number, and so does
+        ``posix._pick_fd``. A closed tombstone in Rust's table must not count
+        as "Rust already has this fd", or the reopened file never reaches Rust."""
+        proj = hookable_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        state = proj.factory.entry_state()
+        fd = state.posix.open(b"/tmp/reopened.txt", claripy.BVV(1, 32))
+        assert fd == 3
+
+        registered = []
+
+        class ClosedThree:
+            def get_state_open_fds(self, _state_id):
+                return [(3, "/tmp/closed.txt", 0, 1, 0, False)]
+
+            def register_state_fd(self, _sid, fd, name, *_rest):
+                registered.append((fd, name))
+                return True
+
+        mgr._rust_mgr = ClosedThree()
+        mgr._sync_state_posix_fds_to_rust(state, 1)
+        assert registered == [(3, "/tmp/reopened.txt")]
+
 
 class TestCallbackFdInboundSync:
     """The inbound half of the callback fd-table channel (angr-op0dn.14.1.6).

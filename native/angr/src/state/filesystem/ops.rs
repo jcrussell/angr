@@ -69,22 +69,17 @@ impl FileSystem {
         Some(fd)
     }
 
-    /// Allocate the next free fd number, refusing rather than wrapping when
-    /// the fd space is exhausted.
+    /// Allocate the lowest fd number that is not open — the POSIX `open(2)`
+    /// rule, and Python `SimSystemPosix::_pick_fd`'s — so a closed number is
+    /// handed out again: `fclose(fopen(p)); open(p)` returns the same fd on
+    /// both engines (angr-mx00p.132.13). See
+    /// [`lowest_free_fd_from`](Self::lowest_free_fd_from) for why exhaustion refuses.
     ///
-    /// `next_fd` is not bounded by [`MAX_FD`] —
-    /// [`register_fd_at`](Self::register_fd_at) imports whatever fd numbers
-    /// the Python state carries and bumps `next_fd` past them (saturating), so
-    /// an imported `u32::MAX` leaves `next_fd == u32::MAX` and a plain `+= 1`
-    /// would wrap to 0 in the shipped release profile, handing out stdin as a
-    /// fresh file. Refusing (rather than saturating) is required because an fd
-    /// is an *identity*, not a size: clamping aliases two files onto one
-    /// number. See `invariant-overflow-fix-refuse-not-saturate-identities`.
-    ///
-    /// On refusal `next_fd` is left untouched and no descriptor is inserted.
+    /// `next_fd` is only a high-water mark and is bumped past the result. On
+    /// refusal it is left untouched and no descriptor is inserted.
     fn alloc_fd(&mut self) -> Option<u32> {
-        let fd = self.next_fd;
-        self.next_fd = fd.checked_add(1)?;
+        let fd = self.lowest_free_fd_from(0)?;
+        self.next_fd = self.next_fd.max(fd.saturating_add(1));
         Some(fd)
     }
 
@@ -158,7 +153,7 @@ impl FileSystem {
     /// drawn from `next_fd`, so `next_fd` is bumped past it to keep later
     /// native opens from colliding.
     ///
-    /// Returns false — changing nothing — when `fd` is already known, which
+    /// Returns false — changing nothing — when `fd` is already open, which
     /// is what keeps the caller's diff-against-[`all_fds`](Self::all_fds)
     /// idempotent across the repeated callbacks that share one cached state.
     ///
@@ -173,7 +168,9 @@ impl FileSystem {
         content: Vec<u8>,
         position: u64,
     ) -> bool {
-        if self.fds.contains_key(&fd) {
+        // A closed tombstone is a free slot, as in `lowest_free_fd_from`:
+        // Python reuses the number, so the adopted fd overwrites it.
+        if self.is_open(fd) {
             return false;
         }
         // Normalized before install (freezes cwd-at-open) — see `install_fd`.
@@ -481,8 +478,9 @@ impl FileSystem {
         self.cwd = cwd;
     }
 
-    /// Lowest fd number that is not currently open — the POSIX allocation
-    /// rule for [`dup`](Self::dup). A number that was opened and later
+    /// Lowest fd number at or above `start` that is not currently open — the
+    /// POSIX allocation rule for [`alloc_fd`](Self::alloc_fd),
+    /// [`dup`](Self::dup) and [`pipe`](Self::pipe). A number that was opened and later
     /// `close`d counts as free even though its (closed) descriptor is still
     /// parked in `fds`; reusing it overwrites that tombstone, which is
     /// exactly what a real kernel does when the slot is handed out again.
@@ -497,8 +495,8 @@ impl FileSystem {
     /// `invariant-overflow-fix-refuse-not-saturate-identities`. (Only
     /// reachable with ~4 billion live descriptors, so this is consistency
     /// with the rest of the file's fd arithmetic, not a practical hazard.)
-    fn lowest_free_fd(&self) -> Option<u32> {
-        let mut fd = 0u32;
+    fn lowest_free_fd_from(&self, start: u32) -> Option<u32> {
+        let mut fd = start;
         while self.fds.get(&fd).is_some_and(|d| d.is_open) {
             fd = fd.checked_add(1)?;
         }
@@ -507,10 +505,10 @@ impl FileSystem {
 
     /// Duplicate an open file descriptor, allocating the lowest unused fd.
     /// Returns the new fd, or None if `oldfd` is not open or the fd space is
-    /// exhausted (see `lowest_free_fd`).
+    /// exhausted (see `lowest_free_fd_from`).
     ///
     /// Like POSIX `dup(2)`: the new fd is the lowest number not currently
-    /// open (see `lowest_free_fd`), and it refers to
+    /// open (see `lowest_free_fd_from`), and it refers to
     /// the same underlying state. We model the sharing by cloning the
     /// `FileDescriptor` (name/position/flags/content). `next_fd` is bumped
     /// past the allocated number so a later [`open`](Self::open) cannot
@@ -526,7 +524,7 @@ impl FileSystem {
             return None;
         }
         let cloned = self.fds.get(&oldfd).cloned()?;
-        let newfd = self.lowest_free_fd()?;
+        let newfd = self.lowest_free_fd_from(0)?;
         self.next_fd = self.next_fd.max(newfd.saturating_add(1));
         Arc::make_mut(&mut self.fds).insert(newfd, cloned);
         Some(newfd)
@@ -563,8 +561,9 @@ impl FileSystem {
         Some(newfd)
     }
 
-    /// Create a pipe: returns `Some((read_fd, write_fd))`, allocated as two
-    /// consecutive fds, or `None` when the fd space cannot supply the pair.
+    /// Create a pipe: returns `Some((read_fd, write_fd))`, the two lowest fds
+    /// that are not open (so a closed number is reused, as POSIX `pipe(2)`
+    /// does), or `None` when the fd space cannot supply the pair.
     ///
     /// Like POSIX `pipe(2)`. The read end is opened ReadOnly and the write end
     /// WriteOnly. We do NOT model write→read data flow (each end has its own
@@ -572,19 +571,14 @@ impl FileSystem {
     /// modeling — the procedure exists so binaries that allocate fds via pipe()
     /// don't fall through to Python on every fd op.
     ///
-    /// `next_fd` is not bounded by [`MAX_FD`] — [`register_fd_at`](Self::register_fd_at)
-    /// imports whatever fd numbers the Python state carries and bumps `next_fd`
-    /// past them — so the two-fd bump is `checked_add`, and a `next_fd` within
-    /// two of `u32::MAX` refuses the pipe (nothing inserted, `next_fd`
-    /// unchanged) instead of wrapping. Saturating here would be worse than the
-    /// plain `+` it replaced: it would hand out `u32::MAX` for *both* ends and
-    /// alias them onto whatever the previous allocation put there
-    /// (angr-03vl4.55). Refusing bounces the caller to Python, mirroring
-    /// [`dup2`](Self::dup2)'s `MAX_FD` refusal.
+    /// Exhaustion refuses — nothing inserted, `next_fd` unchanged — rather
+    /// than wrapping or saturating, which would alias both ends onto one
+    /// number (angr-03vl4.55); see `lowest_free_fd_from`. Refusing bounces the
+    /// caller to Python, mirroring [`dup2`](Self::dup2)'s `MAX_FD` refusal.
     pub fn pipe(&mut self) -> Option<(u32, u32)> {
-        let read_fd = self.next_fd;
-        let write_fd = read_fd.checked_add(1)?;
-        self.next_fd = write_fd.checked_add(1)?;
+        let read_fd = self.lowest_free_fd_from(0)?;
+        let write_fd = self.lowest_free_fd_from(read_fd.checked_add(1)?)?;
+        self.next_fd = self.next_fd.max(write_fd.saturating_add(1));
         let map = Arc::make_mut(&mut self.fds);
         map.insert(
             read_fd,

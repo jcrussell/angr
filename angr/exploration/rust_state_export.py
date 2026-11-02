@@ -1397,7 +1397,10 @@ class RustStateExportMixin:
         if not py_fds:
             return
         try:
-            rust_fds = {info[0] for info in self._rust_mgr.get_state_open_fds(state_id)}
+            # Closed tombstones are free numbers (Rust's ``register_fd_at``
+            # overwrites them), so a bounced open that reused one still
+            # registers (angr-mx00p.132.13).
+            rust_fds = {info[0] for info in self._rust_mgr.get_state_open_fds(state_id) if info[5]}
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: cannot tell which fds Rust already
             # has, so skip rather than risk clobbering one. The state may

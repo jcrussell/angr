@@ -39,6 +39,29 @@ fn test_fopen_reads_path_and_writes_fileno() {
     assert_eq!(state.file_system_ref().fd_info(3).unwrap().2, 0);
 }
 
+/// angr-mx00p.132.13 (test_multi_open_file): `fclose` frees the number, so
+/// a later `open` of the same path gets fd 3 again, as on the Python engine.
+#[test]
+fn test_open_after_fclose_reuses_the_fd() {
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x1000, b"/tmp/x\0", Permission::RWX);
+    state.map_memory_data(0x2000, b"w\0", Permission::RWX);
+    let path_mode = [RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)];
+    let fp = NativeFopen.call(&mut state, &path_mode).unwrap().unwrap();
+    let closed = NativeFclose.call(&mut state, &[fp]).unwrap().unwrap();
+    assert_eq!(closed.as_u64(), Some(0));
+
+    let fd = crate::procedures::fileops::NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(fd.as_u64(), Some(3));
+    assert!(state.file_system_ref().is_open(3));
+}
+
 #[test]
 fn test_fopen_write_mode_flags_writeonly() {
     let mut state = setup_amd64_state();

@@ -57,7 +57,7 @@ fn default_preregisters_std_streams() {
 }
 
 #[test]
-fn open_allocates_monotonic_fds_and_marks_path_known() {
+fn open_allocates_lowest_free_fds_and_marks_path_known() {
     let mut fs = FileSystem::default();
     let a = fs
         .open("flag.txt".to_string(), FdFlags::ReadOnly)
@@ -483,7 +483,7 @@ fn dup2_newfd_boundary_sweep_matches_max_fd_threshold() {
 }
 
 #[test]
-fn pipe_allocates_consecutive_read_write_ends() {
+fn pipe_allocates_lowest_free_read_write_ends() {
     let mut fs = FileSystem::default();
     let (r, w) = fs.pipe().unwrap();
     assert_eq!((r, w), (3, 4));
@@ -498,57 +498,77 @@ fn pipe_allocates_consecutive_read_write_ends() {
     );
 }
 
-/// angr-03vl4.55: `pipe` allocates two consecutive fds off `next_fd`, which
-/// `register_fd_at` can drive arbitrarily high from an imported Python state
-/// (it is not bounded by `MAX_FD`). The bump is `checked_add`, so an exhausted
-/// fd space refuses the pipe — leaving the table and `next_fd` untouched — and
-/// `NativePipe` bounces to Python. Saturating instead would return `u32::MAX`
-/// for both ends and alias them.
+/// angr-mx00p.132.13: every allocator hands out the lowest fd that is not
+/// open, as POSIX and Python `SimSystemPosix::_pick_fd` do, so a closed
+/// number comes back: `fclose(fopen(p)); open(p)` must return fd 3 again.
 #[test]
-fn pipe_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
-    // next_fd = u32::MAX (the read end is the last fd) and next_fd = u32::MAX-1
-    // (the read/write pair fits but the post-bump does not) — both refuse.
-    for imported in [u32::MAX - 1, u32::MAX - 2] {
+fn allocators_reuse_the_lowest_closed_fd() {
+    type Allocator = fn(&mut FileSystem) -> Option<u32>;
+    let allocators: [(&str, Allocator); 4] = [
+        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
+        ("open_with_content", |fs| {
+            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
+        }),
+        ("open_symbolic", |fs| {
+            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
+        }),
+        ("dup", |fs| fs.dup(1)),
+    ];
+    for (label, alloc) in allocators {
         let mut fs = FileSystem::default();
-        assert!(fs.register_fd_at(
-            imported,
-            "imported".to_string(),
-            FdFlags::ReadOnly,
-            Vec::new(),
-            0,
-        ));
-        let next_before = fs.next_fd();
-        assert_eq!(next_before, imported + 1);
-        let fds_before = fs.all_fds();
-
-        assert_eq!(
-            fs.pipe(),
-            None,
-            "pipe() must refuse with next_fd={next_before:#x}"
-        );
-        assert_eq!(fs.next_fd(), next_before, "a refused pipe must not bump");
-        assert_eq!(
-            fs.all_fds(),
-            fds_before,
-            "a refused pipe must insert nothing"
-        );
+        let a = fs.open("a".to_string(), FdFlags::WriteOnly).unwrap();
+        let b = fs.open("b".to_string(), FdFlags::WriteOnly).unwrap();
+        assert_eq!((a, b), (3, 4));
+        assert!(fs.close(a));
+        assert_eq!(alloc(&mut fs), Some(3), "{label} must reuse closed fd 3");
+        assert_eq!(alloc(&mut fs), Some(5), "{label} must skip open fd 4");
+        assert_eq!(fs.next_fd(), 6, "next_fd stays a high-water mark");
     }
+
+    // pipe takes the two lowest free numbers, which need not be adjacent.
+    let mut fs = FileSystem::default();
+    for name in ["a", "b", "c"] {
+        fs.open(name.to_string(), FdFlags::WriteOnly).unwrap();
+    }
+    assert!(fs.close(3) && fs.close(5));
+    assert_eq!(fs.pipe(), Some((3, 5)));
+    assert_eq!(fs.fd_info(5).map(|i| i.0), Some("<pipe:w>"));
+
+    // register_fd_at adopts a Python fd over a closed tombstone, and still
+    // refuses an open one.
+    let mut fs = FileSystem::default();
+    fs.open("old".to_string(), FdFlags::WriteOnly).unwrap();
+    assert!(fs.close(3));
+    assert!(fs.register_fd_at(3, "new".to_string(), FdFlags::ReadOnly, b"xy".to_vec(), 1));
+    assert_eq!(fs.fd_info(3).map(|i| (i.0, i.1, i.4)), Some(("new", 1, true)));
+    assert!(!fs.register_fd_at(3, "again".to_string(), FdFlags::ReadOnly, Vec::new(), 0));
 }
 
-/// Harness 6 boundary sweep for the fix above: every u32-representable value
-/// in the shared table, used as a `next_fd` seed (via `register_fd_at`), must
-/// refuse `pipe()` exactly when the two-fd bump would overflow
-/// (`next_fd > u32::MAX - 2`) and otherwise allocate the expected
-/// consecutive pair.
+/// angr-03vl4.55 / angr-03vl4.88: `register_fd_at` can import any Python fd,
+/// up to `u32::MAX` (it is not bounded by `MAX_FD`), and saturates `next_fd`
+/// there. Allocation scans for the lowest free number rather than bumping
+/// `next_fd`, so a high import neither wraps an allocator onto stdin nor
+/// starves it: every allocator still hands out the low slot, and `next_fd`
+/// never moves backwards. Swept over every u32-representable boundary value.
 #[test]
-fn pipe_boundary_sweep_refuses_only_when_the_two_fd_bump_overflows() {
+fn allocators_take_the_low_slot_after_any_high_import() {
+    type Allocator = fn(&mut FileSystem) -> Option<u32>;
+    let allocators: [(&str, Allocator); 4] = [
+        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
+        ("open_with_content", |fs| {
+            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
+        }),
+        ("open_symbolic", |fs| {
+            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
+        }),
+        ("pipe", |fs| fs.pipe().map(|(r, _)| r)),
+    ];
     for &raw in &crate::test_boundary_values::boundary_addresses() {
-        let Ok(seed) = u32::try_from(raw) else {
+        let Ok(imported) = u32::try_from(raw) else {
             continue;
         };
-        let mut fs = FileSystem::default();
-        if seed > 0 {
-            let imported = seed - 1;
+        for (label, alloc) in allocators {
+            let mut fs = FileSystem::default();
             if !fs.register_fd_at(
                 imported,
                 "imported".to_string(),
@@ -556,152 +576,14 @@ fn pipe_boundary_sweep_refuses_only_when_the_two_fd_bump_overflows() {
                 Vec::new(),
                 0,
             ) {
-                // Collided with a preregistered std stream (imported < 3);
-                // seed=0 (no import) already exercises the low end.
-                continue;
-            }
-        }
-        let next_before = fs.next_fd();
-        let would_refuse = next_before.checked_add(2).is_none();
-
-        match fs.pipe() {
-            Some((r, w)) => {
-                assert!(
-                    !would_refuse,
-                    "pipe succeeded despite next_fd={next_before:#x} overflowing the two-fd bump"
-                );
-                assert_eq!((r, w), (next_before, next_before + 1));
-                assert_eq!(fs.next_fd(), next_before + 2);
-            }
-            None => assert!(
-                would_refuse,
-                "pipe refused without cause at next_fd={next_before:#x}"
-            ),
-        }
-    }
-}
-
-/// angr-03vl4.88: the three single-fd allocators bumped `next_fd` with a plain
-/// `+= 1`, which wraps to 0 in the shipped release profile once `register_fd_at`
-/// has imported a Python-chosen fd of `u32::MAX` — the next `open()` would hand
-/// out fd 0 (stdin) as a fresh file. Each must refuse instead, leaving `next_fd`
-/// and the fd table untouched.
-#[test]
-fn open_family_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
-    type Allocator = fn(&mut FileSystem) -> Option<u32>;
-    let allocators: [(&str, Allocator); 3] = [
-        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
-        ("open_with_content", |fs| {
-            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
-        }),
-        ("open_symbolic", |fs| {
-            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
-        }),
-    ];
-
-    for (label, alloc) in allocators {
-        let mut fs = FileSystem::default();
-        assert!(fs.register_fd_at(
-            u32::MAX,
-            "imported".to_string(),
-            FdFlags::ReadOnly,
-            Vec::new(),
-            0,
-        ));
-        // register_fd_at's bump saturates, so next_fd is pinned at u32::MAX —
-        // the fd itself is still free to hand out, but nothing after it is.
-        assert_eq!(fs.next_fd(), u32::MAX);
-        let fds_before = fs.all_fds();
-
-        assert_eq!(fs.next_fd(), u32::MAX, "{label}: precondition");
-        assert_eq!(alloc(&mut fs), None, "{label} must refuse at u32::MAX");
-        assert_eq!(fs.next_fd(), u32::MAX, "a refused {label} must not bump");
-        assert_eq!(
-            fs.all_fds(),
-            fds_before,
-            "a refused {label} must insert nothing"
-        );
-
-        // One below the wall the same allocator succeeds, proving the refusal
-        // is the overflow guard and not a blanket decline.
-        let mut fs = FileSystem::default();
-        assert!(fs.register_fd_at(
-            u32::MAX - 2,
-            "imported".to_string(),
-            FdFlags::ReadOnly,
-            Vec::new(),
-            0,
-        ));
-        assert_eq!(
-            alloc(&mut fs),
-            Some(u32::MAX - 1),
-            "{label} must still allocate below the wall"
-        );
-        assert_eq!(fs.next_fd(), u32::MAX);
-    }
-}
-
-/// Harness 6 boundary sweep for the fix above: every u32-representable value
-/// in the shared table, used as a `next_fd` seed, must refuse each of the
-/// three single-fd allocators exactly at `next_fd == u32::MAX` and otherwise
-/// allocate `next_fd` itself.
-#[test]
-fn open_family_boundary_sweep_refuses_only_at_u32_max() {
-    type Allocator = fn(&mut FileSystem) -> Option<u32>;
-    let allocators: [(&str, Allocator); 3] = [
-        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
-        ("open_with_content", |fs| {
-            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
-        }),
-        ("open_symbolic", |fs| {
-            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
-        }),
-    ];
-
-    for &raw in &crate::test_boundary_values::boundary_addresses() {
-        let Ok(seed) = u32::try_from(raw) else {
-            continue;
-        };
-        for (label, alloc) in allocators {
-            let mut fs = FileSystem::default();
-            if seed > 0 {
-                let imported = seed - 1;
-                if !fs.register_fd_at(
-                    imported,
-                    "imported".to_string(),
-                    FdFlags::ReadOnly,
-                    Vec::new(),
-                    0,
-                ) {
-                    continue; // collided with a preregistered std stream
-                }
+                continue; // collided with a preregistered std stream
             }
             let next_before = fs.next_fd();
-            assert_eq!(
-                next_before,
-                seed.max(3),
-                "seed={seed:#x} {label}: precondition"
-            );
-            let refuses = next_before == u32::MAX;
-            let fds_before = fs.all_fds();
-
+            let expected = if imported == 3 { 4 } else { 3 };
             let got = alloc(&mut fs);
-            if refuses {
-                assert_eq!(got, None, "seed={seed:#x} {label} must refuse at u32::MAX");
-                assert_eq!(fs.next_fd(), next_before, "a refused {label} must not bump");
-                assert_eq!(
-                    fs.all_fds(),
-                    fds_before,
-                    "a refused {label} must insert nothing"
-                );
-            } else {
-                assert_eq!(
-                    got,
-                    Some(next_before),
-                    "seed={seed:#x} {label} must allocate next_fd"
-                );
-                assert_eq!(fs.next_fd(), next_before + 1);
-            }
+            assert_eq!(got, Some(expected), "imported={imported:#x} {label}");
+            assert!(fs.next_fd() >= next_before, "{label} moved next_fd back");
+            assert_eq!(fs.fd_info(0).unwrap().0, "/dev/stdin");
         }
     }
 }
@@ -710,8 +592,7 @@ fn open_family_boundary_sweep_refuses_only_at_u32_max() {
 /// u32-representable value in the shared table must move `next_fd` to
 /// exactly `max(next_fd_before, fd.saturating_add(1))` — including `fd ==
 /// u32::MAX`, where a plain `+ 1` would overflow (`saturating_add` is what
-/// lets [`pipe`]/[`open`]/[`dup2`]'s own `checked_add` guards above see a
-/// pinned `u32::MAX` instead of a wrapped `0`).
+/// lets [`dup2`]'s guard see a pinned `u32::MAX` instead of a wrapped `0`).
 #[test]
 fn register_fd_at_boundary_sweep_bumps_next_fd_by_saturating_add() {
     for &raw in &crate::test_boundary_values::boundary_addresses() {
