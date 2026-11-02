@@ -335,27 +335,37 @@ class _SolutionCountMixin:
     """Shared solution-count wrappers for the two solver proxies.
 
     Subclasses must provide an ``eval_upto(expr, n, **kwargs)`` method.
+    Errors are ``SimSolver``'s (``SimUnsatError`` for no solution,
+    ``SimValueError`` for the wrong count), which callers such as
+    ``SimSystemPosix.fstat_with_result`` catch as ``SimSolverError``
+    (angr-mx00p.132.15).
     """
+
+    @staticmethod
+    def _count_error(results, msg):
+        from angr.errors import SimUnsatError, SimValueError  # pylint: disable=import-outside-toplevel
+
+        return SimUnsatError(msg) if not results else SimValueError(msg)
 
     def eval_one(self, expr, **kwargs):
         """Evaluate expression expecting exactly one solution."""
         results = self.eval_upto(expr, 2, **kwargs)
         if len(results) != 1:
-            raise claripy.errors.ClaripyError(f"expected 1 solution, got {len(results)}")
+            raise self._count_error(results, f"expected 1 solution, got {len(results)}")
         return results[0]
 
     def eval_exact(self, expr, n, **kwargs):
         """Evaluate expression expecting exactly n solutions."""
         results = self.eval_upto(expr, n + 1, **kwargs)
         if len(results) != n:
-            raise claripy.errors.ClaripyError(f"expected {n} solutions, got {len(results)}")
+            raise self._count_error(results, f"expected {n} solutions, got {len(results)}")
         return results
 
     def eval_atleast(self, expr, n, **kwargs):
         """Evaluate expression expecting at least n solutions."""
         results = self.eval_upto(expr, n, **kwargs)
         if len(results) < n:
-            raise claripy.errors.ClaripyError(f"expected at least {n} solutions, got {len(results)}")
+            raise self._count_error(results, f"expected at least {n} solutions, got {len(results)}")
         return results
 
 

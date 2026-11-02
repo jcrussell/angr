@@ -23,11 +23,11 @@ pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exp
 BINARY = os.path.join(bin_location, "tests", "x86_64", "symbolic_fd")
 
 
-def _stdouts(method: str, all_exist: bool) -> list[bytes]:
+def _stdouts(method: str, all_exist: bool, might_exist: bool = False) -> list[bytes]:
     project = angr.Project(BINARY, auto_load_libs=True, engine="rust")
     state = project.factory.blank_state(addr=project.loader.find_symbol(method).rebased_addr)
     state.options["ALL_FILES_EXIST"] = all_exist
-    state.options["ANY_FILE_MIGHT_EXIST"] = False
+    state.options["ANY_FILE_MIGHT_EXIST"] = might_exist
     simgr = project.factory.simgr(state)
     for _ in range(100):
         if not simgr.active:
@@ -44,3 +44,8 @@ class TestUnknownPathExistence:
 
     def test_no_option_finds_no_file(self, method):
         assert _stdouts(method, all_exist=False) == [b"c0de\n"]
+
+    def test_any_file_might_exist_forks_both_ways(self, method):
+        # The open's fd is If(file_exists, fd, -1); the bounced stat's
+        # eval_one must raise a SimSolverError on it, as SimSolver does.
+        assert _stdouts(method, all_exist=False, might_exist=True) == [b"c0de\n", b"nothing\n"]
