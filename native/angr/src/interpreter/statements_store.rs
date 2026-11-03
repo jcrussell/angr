@@ -121,6 +121,26 @@ impl<'a> VEXInterpreter<'a> {
                             }
                         }
                     }
+                } else if let ConcretizationResult::Single(store_addr) = *conc_result
+                    && self.map_fresh_pages_for_store(callbacks, store_addr, data_size)
+                    && let Some(ref mut rust_mem) = self.rust_memory
+                    && rust_mem
+                        .store_with_concretization(
+                            addr_val,
+                            data_val.clone(),
+                            &conc_result,
+                            self.ctx,
+                        )
+                        .is_ok()
+                {
+                    // The host has no page here either: map a fresh one, as
+                    // the `Unmapped` arm below does, rather than park the
+                    // store in `pending_stores`, where a load of a neighbour
+                    // byte mints a filler the flush's zero page never sees
+                    // (angr-vmi2l.325).
+                    self.invalidate_code_on_store(&conc_result, data_size);
+                    profile_add!(store_start, self.stats.store_stmt_time_ns);
+                    return Ok(true);
                 }
                 Ok(false)
             }

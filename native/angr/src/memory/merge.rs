@@ -27,6 +27,17 @@ use crate::symbolic::RustBV;
 use crate::vex::Endness;
 
 impl SymbolicMemory {
+    /// The page an arm that never mapped `base_addr` reads: the zero page
+    /// `auto_map_zero_page` would map, uninitialized outside
+    /// ZERO_FILL_UNCONSTRAINED_MEMORY.
+    fn fresh_stand_in(&self, base_addr: u64, permissions: super::Permission) -> MemoryPage {
+        if self.zero_fill_unconstrained {
+            MemoryPage::new(base_addr, permissions)
+        } else {
+            MemoryPage::new_uninit(base_addr, permissions)
+        }
+    }
+
     /// Merge another memory into this one using a merge condition.
     ///
     /// For each byte that differs between `self` and `other`, the merged
@@ -87,14 +98,14 @@ impl SymbolicMemory {
                     (sp, op)
                 }
                 (Some(sp), None) => {
-                    blank = MemoryPage::new(base_addr.raw(), sp.permissions());
+                    blank = self.fresh_stand_in(base_addr.raw(), sp.permissions());
                     (sp, &blank)
                 }
                 (None, Some(op)) => {
                     // `self` takes the page so the merged state keeps it
                     // mapped; the walk below fills in every byte `other`
                     // changed from zero.
-                    blank = MemoryPage::new(base_addr.raw(), op.permissions());
+                    blank = self.fresh_stand_in(base_addr.raw(), op.permissions());
                     pages_to_add.push((page_num, blank.clone()));
                     (&blank, op)
                 }
@@ -243,6 +254,17 @@ impl SymbolicMemory {
         // Multi, keeping the bitmaps and sidecars in sync. Applied before the
         // symbolic-object merge below so a stray `other` entry can't shadow a
         // freshly-installed Multi cell.
+        // A byte stays uninitialized only where both arms left it so. One
+        // uninit on a single arm reads 0 there, which the walk compared as
+        // such: it keeps that 0, its reading before angr-vmi2l.325, rather
+        // than an ITE against a filler only a later load would mint.
+        for page_num in &all_pages {
+            if let (Some(sp), Some(op)) = (self.pages.get_mut(page_num), other.pages.get(page_num))
+            {
+                sp.intersect_uninit(op);
+            }
+        }
+
         for (addr, payload) in multi_ops {
             self.set_multi_alternatives(addr, payload);
             merged = true;

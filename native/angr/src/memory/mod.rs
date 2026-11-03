@@ -1178,6 +1178,41 @@ impl SymbolicMemory {
         self.pages.insert(page_num, page);
     }
 
+    /// The maximal runs of uninitialized bytes in `[addr, addr + size)`, as
+    /// `(start, len)` pairs, ascending. A byte on an unmapped page is not
+    /// uninitialized here: that is the load path's `Unmapped` refusal.
+    pub fn uninit_runs(&self, addr: impl Into<Address>, size: u64) -> Vec<(u64, u64)> {
+        let addr = addr.into();
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        // The common case: no page under the range has an uninit byte.
+        if !PageIndex::range_covering(addr.raw(), size).any(|page| {
+            self.pages
+                .get(&page.get())
+                .is_some_and(MemoryPage::has_uninit)
+        }) {
+            return runs;
+        }
+        let mut prev_uninit = false;
+        for i in 0..size {
+            // overflow-ok: `Address + u64` is `wrapping_add`, matching the
+            // guest's own pointer wraparound.
+            let byte_addr = addr + i;
+            let uninit = self
+                .pages
+                .get(&byte_addr.page_num())
+                .is_some_and(|p| p.has_uninit() && p.is_uninit(byte_addr.page_offset()));
+            if uninit {
+                match runs.last_mut() {
+                    // overflow-ok: a run is at most `size` bytes long.
+                    Some((_, len)) if prev_uninit => *len += 1,
+                    _ => runs.push((byte_addr.raw(), 1)),
+                }
+            }
+            prev_uninit = uninit;
+        }
+        runs
+    }
+
     /// Auto-map a zero page for an unmapped address in a lazy region.
     ///
     /// # DEPRECATION WARNING
@@ -1205,9 +1240,15 @@ impl SymbolicMemory {
             return false;
         }
 
-        // Create a zero page with RWX permissions
+        // Create a zero page with RWX permissions. No host bytes back it, so
+        // outside ZERO_FILL_UNCONSTRAINED_MEMORY its bytes are uninitialized
+        // and a load mints a filler for them (angr-vmi2l.325).
         let page_addr = PageIndex::from_raw(page_num).base_addr();
-        let page = MemoryPage::new(page_addr, Permission::RWX);
+        let page = if self.zero_fill_unconstrained {
+            MemoryPage::new(page_addr, Permission::RWX)
+        } else {
+            MemoryPage::new_uninit(page_addr, Permission::RWX)
+        };
         self.pages.insert(page_num, page);
 
         // Mark as dirty so it gets synced if modified

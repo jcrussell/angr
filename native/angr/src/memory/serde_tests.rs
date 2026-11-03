@@ -67,6 +67,7 @@ fn serde_malformed_bitmap_length_drops_to_none() {
         base_addr: 0x4000,
         symbolic_bitmap: Some(vec![0u64; BITMAP_WORDS - 1]),
         multi_bitmap: None,
+        uninit_bitmap: None,
     };
     let s = serde_json::to_string(&bad).expect("serialize");
     let restored: MemoryPage = serde_json::from_str(&s).expect("deserialize");
@@ -105,6 +106,7 @@ fn serde_all_zero_bitmap_loads_unallocated() {
         base_addr: 0x6000,
         symbolic_bitmap: Some(vec![0u64; BITMAP_WORDS]),
         multi_bitmap: Some(vec![0u64; BITMAP_WORDS]),
+        uninit_bitmap: None,
     };
     let restored = MemoryPage::from(zero);
     assert!(!restored.has_symbolic());

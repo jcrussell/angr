@@ -270,7 +270,7 @@ impl Permission {
 /// `FixedBitSet` bitmaps collapse to [`BITMAP_WORDS`] `u64` words on the
 /// wire, rebuilding the Arc / bitset on load. Symbolic AST values are NOT carried
 /// on the page itself (they live in `SymbolicMemory::symbolic_objects` etc.);
-/// only the per-byte symbolic/multi bitmaps are part of the snapshot.
+/// only the per-byte symbolic/multi/uninit bitmaps are part of the snapshot.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(from = "MemoryPageData", into = "MemoryPageData")]
 pub struct MemoryPage {
@@ -291,6 +291,14 @@ pub struct MemoryPage {
     /// cells on this page — common case, so we pay one Option discriminant
     /// rather than a 512-byte bitmap allocation.
     multi_bitmap: PageBitmap,
+    /// Bitmap tracking never-written bytes: bit i set means byte i has no
+    /// value yet, so a load must mint and store a filler for it rather than
+    /// read the zero in `data` (angr-vmi2l.325). Only a page mapped with no
+    /// host bytes behind it ([`new_uninit`](Self::new_uninit)) starts with
+    /// bits set; every write ([`store_concrete`](Self::store_concrete),
+    /// [`mark_symbolic`](Self::mark_symbolic), [`mark_multi`](Self::mark_multi))
+    /// clears them.
+    uninit_bitmap: PageBitmap,
 }
 
 impl MemoryPage {
@@ -326,6 +334,44 @@ impl MemoryPage {
             base_addr,
             symbolic_bitmap: PageBitmap::default(),
             multi_bitmap: PageBitmap::default(),
+            uninit_bitmap: PageBitmap::default(),
+        }
+    }
+
+    /// Create a zeroed page whose every byte is uninitialized: the page
+    /// `SymbolicMemory::auto_map_zero_page` maps when no host bytes back it
+    /// and ZERO_FILL_UNCONSTRAINED_MEMORY is off.
+    pub fn new_uninit(base_addr: u64, permissions: Permission) -> Self {
+        let mut page = Self::new(base_addr, permissions);
+        page.uninit_bitmap.set_range(0, PAGE_SIZE as u16);
+        page
+    }
+
+    /// Whether any byte on this page is uninitialized (O(1)).
+    #[inline]
+    pub fn has_uninit(&self) -> bool {
+        self.uninit_bitmap.any_set()
+    }
+
+    /// Whether byte `offset` is uninitialized.
+    #[inline]
+    pub fn is_uninit(&self, offset: u16) -> bool {
+        self.uninit_bitmap.is_set(offset)
+    }
+
+    /// Keep a byte uninitialized only where `other` also has it so: the
+    /// merge of an arm that wrote a byte with one that did not has a value
+    /// for it.
+    pub fn intersect_uninit(&mut self, other: &MemoryPage) {
+        let Some(bits) = &mut self.uninit_bitmap.0 else {
+            return;
+        };
+        match &other.uninit_bitmap.0 {
+            Some(o) => bits.intersect_with(o),
+            None => bits.clear(),
+        }
+        if bits.is_clear() {
+            self.uninit_bitmap.0 = None;
         }
     }
 
@@ -341,6 +387,7 @@ impl MemoryPage {
             base_addr,
             symbolic_bitmap: PageBitmap::default(),
             multi_bitmap: PageBitmap::default(),
+            uninit_bitmap: PageBitmap::default(),
         }
     }
 
@@ -413,6 +460,7 @@ impl MemoryPage {
             && !other.symbolic_bitmap.any_set()
             && !self.multi_bitmap.any_set()
             && !other.multi_bitmap.any_set()
+            && self.uninit_bitmap == other.uninit_bitmap
     }
 
     /// Get the symbolic byte offsets.
@@ -460,6 +508,7 @@ impl MemoryPage {
         // `SymbolicMemory::multi_objects` entries must be dropped by the
         // caller (the page does not own that map).
         self.multi_bitmap.clear_range(offset, loop_end);
+        self.uninit_bitmap.clear_range(offset, loop_end);
     }
 
     /// Mark bytes as symbolic.
@@ -470,6 +519,7 @@ impl MemoryPage {
         );
         let loop_end = Self::clamped_end(offset, size as usize);
         self.symbolic_bitmap.set_range(offset, loop_end);
+        self.uninit_bitmap.clear_range(offset, loop_end);
     }
 
     /// Check if a byte is symbolic.
@@ -495,8 +545,9 @@ impl MemoryPage {
             (offset as usize) < PAGE_SIZE as usize,
             "mark_multi: offset {offset} out of range"
         );
-        self.multi_bitmap
-            .set_range(offset, Self::clamped_end(offset, 1));
+        let end = Self::clamped_end(offset, 1);
+        self.multi_bitmap.set_range(offset, end);
+        self.uninit_bitmap.clear_range(offset, end);
     }
 
     /// Check if this page has any Multi bytes.
@@ -533,6 +584,7 @@ impl MemoryPage {
             base_addr: self.base_addr,
             symbolic_bitmap: self.symbolic_bitmap.clone(),
             multi_bitmap: self.multi_bitmap.clone(),
+            uninit_bitmap: self.uninit_bitmap.clone(),
         }
     }
 }
@@ -551,6 +603,10 @@ pub struct MemoryPageData {
     pub base_addr: u64,
     pub symbolic_bitmap: Option<Vec<u64>>,
     pub multi_bitmap: Option<Vec<u64>>,
+    /// Absent in a snapshot taken before the field existed: such a page
+    /// loads fully initialized, its old reading.
+    #[serde(default)]
+    pub uninit_bitmap: Option<Vec<u64>>,
 }
 
 impl From<MemoryPage> for MemoryPageData {
@@ -561,6 +617,7 @@ impl From<MemoryPage> for MemoryPageData {
             base_addr: page.base_addr,
             symbolic_bitmap: page.symbolic_bitmap.to_words(),
             multi_bitmap: page.multi_bitmap.to_words(),
+            uninit_bitmap: page.uninit_bitmap.to_words(),
         }
     }
 }
@@ -577,6 +634,7 @@ impl From<MemoryPageData> for MemoryPage {
             base_addr: data.base_addr,
             symbolic_bitmap: PageBitmap::from_words(data.symbolic_bitmap),
             multi_bitmap: PageBitmap::from_words(data.multi_bitmap),
+            uninit_bitmap: PageBitmap::from_words(data.uninit_bitmap),
         }
     }
 }

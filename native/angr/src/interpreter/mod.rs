@@ -644,11 +644,7 @@ impl<'a> VEXInterpreter<'a> {
         // A store still buffered outside `rust_memory` (one that missed it
         // and went to the callback ladder) holds bytes the filler would
         // shadow; leave such a load to the ladder, which reads the buffers.
-        if !(self.pending_stores.is_empty()
-            && self.pending_symbolic_stores.is_empty()
-            && self.all_flushed_stores.is_empty()
-            && self.all_flushed_symbolic_stores.is_empty())
-        {
+        if !self.store_buffers_empty() {
             return None;
         }
         // A straddling load whose other page Rust already holds would have
@@ -675,6 +671,53 @@ impl<'a> VEXInterpreter<'a> {
         }
         self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &filler);
         Some(filler)
+    }
+
+    /// Whether every store buffer outside `rust_memory` is empty, so a
+    /// filler written into it cannot shadow a buffered write.
+    fn store_buffers_empty(&self) -> bool {
+        self.pending_stores.is_empty()
+            && self.pending_symbolic_stores.is_empty()
+            && self.all_flushed_stores.is_empty()
+            && self.all_flushed_symbolic_stores.is_empty()
+    }
+
+    /// Before a concrete load, mint and store a filler over each run of
+    /// never-written bytes under it on a page Rust mapped with no host bytes
+    /// (angr-vmi2l.325), as Python's `DefaultFillerMixin` does per gap. The
+    /// load then reads the stored fillers, and so does every later read and
+    /// the export. Each run fires the symbolic_variable inspect, like
+    /// `install_unservable_filler`. Does nothing while a store is buffered
+    /// outside `rust_memory`, for the reason given there.
+    pub(super) fn fill_uninit_under_load(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr_concrete: u64,
+        size: usize,
+    ) {
+        let Some(rust_mem) = self.rust_memory.as_ref() else {
+            return;
+        };
+        let runs = rust_mem.uninit_runs(addr_concrete, size as u64);
+        if runs.is_empty() || !self.store_buffers_empty() {
+            return;
+        }
+        for (run_addr, run_len) in runs {
+            let bits = (run_len * 8) as u32;
+            let name = crate::memory::mem_filler_name(run_addr, bits);
+            let filler = RustBV::symbol(&name, bits);
+            let Some(rust_mem) = self.rust_memory.as_mut() else {
+                return;
+            };
+            if let Err(e) = rust_mem.store_concrete(run_addr, filler.clone()) {
+                // SILENT(cat-b): the run lies on a mapped page Rust owns, so
+                // only a write-protected page refuses; the load then reads
+                // the page's zero, its reading before angr-vmi2l.325.
+                log::debug!("uninit filler store at {run_addr:#x} failed: {e:?}");
+                continue;
+            }
+            self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &filler);
+        }
     }
 
     /// Load from memory via Python callback.

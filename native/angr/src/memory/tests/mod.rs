@@ -71,6 +71,7 @@ mod symbolic_load_store;
 mod symbolic_overlap;
 mod symbolic_unmapped_candidates;
 mod symbolic_wide;
+mod uninit_pages;
 
 /// Test-only instrumentation for `SymbolicMemory::merge`'s page-walk count
 /// (angr-op0dn.11.2.1). The production merge increments this each time it falls

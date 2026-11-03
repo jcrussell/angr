@@ -563,6 +563,9 @@ impl<'a> VEXInterpreter<'a> {
             profile_add!(load_start, self.stats.load_stmt_time_ns);
             return Ok(Some(value));
         }
+        if let Some(addr_concrete) = addr_val.as_u64() {
+            self.fill_uninit_under_load(callbacks, addr_concrete, size);
+        }
         let mut result = match self.rust_memory.as_mut() {
             Some(rust_mem) => rust_mem.load_symbolic_unified_hosted(
                 addr_val.clone(),
