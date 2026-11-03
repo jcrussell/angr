@@ -17,6 +17,8 @@
 //!   one, and concrete/narrower stores truncating a wider symbolic entry.
 //! - `symbolic_cross_page`: symbolic-address concretization across a page
 //!   boundary and permission enforcement for page-straddling accesses.
+//! - `symbolic_unmapped_candidates`: `load_symbolic_unified` candidates on
+//!   pages Rust does not hold — fetched, or read as per-candidate fillers.
 //! - `symbolic_fork`: fork isolation of the symbolic sidecars plus the
 //!   `pending_writes` deferred-write lifecycle.
 //! - `symbolic_counters`: memory ITE depth, load/store volume,
@@ -67,6 +69,7 @@ mod symbolic_cross_page;
 mod symbolic_fork;
 mod symbolic_load_store;
 mod symbolic_overlap;
+mod symbolic_unmapped_candidates;
 mod symbolic_wide;
 
 /// Test-only instrumentation for `SymbolicMemory::merge`'s page-walk count

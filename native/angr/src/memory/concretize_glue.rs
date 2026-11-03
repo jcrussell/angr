@@ -1,38 +1,46 @@
 //! Glue helpers between the address concretizer and the page table.
 //!
-//! `load_symbolic_unified` calls these to prep candidate addresses before
+//! `load_symbolic_unified` calls these to check candidate addresses before
 //! handing them off to the ITE-tree builders. They live here, separate from
 //! the load/store logic in `memory/mod.rs`, so the relationship between
 //! "concretizer told us X addresses" and "page table is ready for X" stays
 //! easy to find.
 
-use super::{Address, SymbolicMemory};
+use super::page::PageIndex;
+use super::{MemoryError, SymbolicMemory};
+use crate::symbolic::record_mem_lazy_page_fault;
 
 impl SymbolicMemory {
-    /// Filter the candidate address list down to the ones whose pages are
-    /// already mapped, so the ITE-tree builder can load each one safely.
+    /// Check every page of every candidate access `[cand, cand + size)`
+    /// before the ITE builder loads them.
     ///
-    /// Unmapped addresses are dropped — the caller should detect an empty or
-    /// shorter return list and fall back to Python (which has the actual
-    /// backer data) instead of speculatively materializing zero pages here.
-    ///
-    /// # Arguments
-    /// * `addrs` - List of candidate addresses
-    /// * `size` - Size of the access in bytes (currently unused)
-    ///
-    /// # Returns
-    /// List of addresses whose pages are mapped.
-    pub fn prepare_addresses_for_ite(&self, addrs: &[u64], _size: u32) -> Vec<u64> {
-        // Keep only addresses whose page is already mapped. Unmapped pages are
-        // intentionally dropped rather than auto-mapped as zeros: Python may
-        // have actual backer data (file contents, initialized data) for them,
-        // so the caller falls back to the Python callback. Speculatively
-        // materializing zero pages here would cause state divergence.
-        addrs
-            .iter()
-            .copied()
-            .filter(|&addr| self.pages.contains_key(&Address::new(addr).page_num()))
-            .collect()
+    /// A missing page that a lazy region covers, or that `host_has_page`
+    /// says the host can serve, returns `UnmappedPageInRegion` so the
+    /// interpreter fetches it and retries, the same cue the store side's
+    /// `install_multi_for_candidates_safe` gives. Any other missing page is
+    /// one neither side holds: its candidate stays in the set and its bytes
+    /// read as a fresh filler (`load_concrete_or_unconstrained`), as in
+    /// Python's default memory. No candidate is ever dropped, so the ITE and
+    /// the address disjunction cover the concretizer's whole set
+    /// (angr-vmi2l.177).
+    pub(super) fn check_candidate_pages(
+        &self,
+        addrs: &[u64],
+        size: u32,
+        host_has_page: &dyn Fn(u64) -> bool,
+    ) -> Result<(), MemoryError> {
+        for &cand in addrs {
+            for page in PageIndex::range_covering(cand, u64::from(size)) {
+                let page_addr = page.base_addr();
+                if !self.is_mapped(page_addr)
+                    && (self.is_addr_in_lazy_region(page_addr) || host_has_page(page_addr))
+                {
+                    record_mem_lazy_page_fault();
+                    return Err(MemoryError::UnmappedPageInRegion { page_addr });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Prepare a strided memory region (no-op - kept for API compatibility).

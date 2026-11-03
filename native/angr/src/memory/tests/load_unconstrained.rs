@@ -26,7 +26,7 @@ fn test_load_concrete_or_unconstrained_zero_fill() {
 }
 
 /// With `zero_fill_unconstrained=false` (the default), an unmapped load returns
-/// a fresh `unc_mem_`-prefixed symbolic of width `size*8`, and successive calls
+/// a fresh `mem_<addr>_rs`-prefixed symbolic of width `size*8`, and successive calls
 /// produce distinct names — guaranteeing distinct constraint identity across
 /// unmapped leaves.
 #[test]
@@ -42,12 +42,12 @@ fn test_load_concrete_or_unconstrained_symbolic_distinct_names() {
     let n1 = sym_name(&v1);
     let n2 = sym_name(&v2);
     assert!(
-        n1.starts_with("unc_mem_"),
-        "name must be unc_mem_-prefixed: {n1}"
+        n1.starts_with("mem_5000_rs"),
+        "name must be mem_<addr>_rs-prefixed: {n1}"
     );
     assert!(
-        n2.starts_with("unc_mem_"),
-        "name must be unc_mem_-prefixed: {n2}"
+        n2.starts_with("mem_5000_rs"),
+        "name must be mem_<addr>_rs-prefixed: {n2}"
     );
     assert_ne!(
         n1, n2,
@@ -58,7 +58,7 @@ fn test_load_concrete_or_unconstrained_symbolic_distinct_names() {
 /// angr-03vl4.41: uniqueness must hold *across* independent ITE-tree builds,
 /// not just within one. The builder used to seed a fresh `counter = 0` per
 /// call, so the first unmapped leaf of every build stringified identically
-/// (`unc_mem_<addr>_1`) — and since `RustBV::symbol` interns the Z3
+/// (then `unc_mem_<addr>_1`) — and since `RustBV::symbol` interns the Z3
 /// constant **by name**, two logically-distinct unconstrained reads aliased in
 /// the solver. Two separate builds over the same unmapped address set must
 /// yield disjoint symbol names.
@@ -85,10 +85,10 @@ fn test_ite_builds_do_not_reuse_unconstrained_names() {
     let n1 = names(&t1);
     let n2 = names(&t2);
     assert!(
-        n1.iter().any(|n| n.starts_with("unc_mem_")),
-        "both leaves are unmapped, so the tree must contain unc_mem_ symbols: {n1:?}"
+        n1.iter().any(|n| n.starts_with("mem_")),
+        "both leaves are unmapped, so the tree must contain mem_ fillers: {n1:?}"
     );
-    for name in n1.iter().filter(|n| n.starts_with("unc_mem_")) {
+    for name in n1.iter().filter(|n| n.starts_with("mem_")) {
         assert!(
             !n2.contains(name),
             "unconstrained name {name} reused across independent ITE builds"

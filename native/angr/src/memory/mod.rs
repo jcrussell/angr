@@ -58,7 +58,7 @@ mod store;
 mod symbolic_objects;
 test_submod!(tests);
 pub use address::Address;
-pub(crate) use load::fresh_unconstrained_read_symbol;
+pub(crate) use load::{fresh_unconstrained_read_symbol, mem_filler_name};
 pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
 
@@ -180,13 +180,12 @@ pub(super) fn check_access_size(addr: u64, size: u32) -> Result<(), MemoryError>
 }
 
 /// Bit width for the *infallible* fabricate paths —
-/// `SymbolicMemory::unconstrained_read_value`,
-/// `SymbolicMemory::load_concrete_or_unconstrained`'s error fallback, and
-/// `SymbolicMemory::load_symbolic_unified`'s all-unmapped `mem_all_unmapped_*`
-/// arm — which mint a BV of `size * 8` bits with no error channel to refuse
-/// on.
+/// `SymbolicMemory::unconstrained_read_value` and
+/// `SymbolicMemory::unmapped_leaf_filler` (the error fallback of
+/// `SymbolicMemory::load_concrete_or_unconstrained`) — which mint a BV of
+/// `size * 8` bits with no error channel to refuse on.
 ///
-/// Every route into those three runs `check_access_size` first (the load entry
+/// Every route into those runs `check_access_size` first (the load entry
 /// points) or derives `size` from a VEX type width (the interpreter's
 /// AVOID_MULTIVALUED_READS hooks), so the clamp is unreachable
 /// defense-in-depth. It exists because the alternative at an unreachable site
@@ -848,7 +847,7 @@ impl SymbolicMemory {
     // ==================== UNIFIED SYMBOLIC MEMORY OPERATIONS ====================
     // These methods handle all symbolic memory operations entirely in Rust,
     // eliminating the need for Python callbacks that were previously broken.
-    // See memory/concretize_glue.rs for prepare_addresses_for_ite and
+    // See memory/concretize_glue.rs for check_candidate_pages and
     // prepare_strided_region. See memory/load.rs for load_*/load_symbolic_unified
     // and memory/store.rs for store_*/store_symbolic_unified.
 

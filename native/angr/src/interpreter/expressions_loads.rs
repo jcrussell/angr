@@ -20,6 +20,10 @@ use super::pending_store::covering_range;
 use super::*;
 use rustc_hash::FxHashMap;
 
+/// Most candidate pages one symbolic-address load fetches before it falls
+/// back to the Python callback (`try_rust_memory_load`).
+const MAX_SYMBOLIC_LOAD_PAGE_FETCHES: usize = 16;
+
 impl<'a> VEXInterpreter<'a> {
     pub(super) fn eval_load(
         &mut self,
@@ -598,44 +602,51 @@ impl<'a> VEXInterpreter<'a> {
             profile_add!(load_start, self.stats.load_stmt_time_ns);
             return Ok(Some(value));
         }
-        let first_result = match self.rust_memory.as_mut() {
-            Some(rust_mem) => rust_mem.load_symbolic_unified(
+        let mut result = match self.rust_memory.as_mut() {
+            Some(rust_mem) => rust_mem.load_symbolic_unified_hosted(
                 addr_val.clone(),
                 size as u32,
                 self.ctx,
                 &self.concretizer,
+                &|page| callbacks.has_page(page),
             ),
             None => return Ok(None),
         };
+        // A symbolic address can need several candidate pages fetched, one
+        // per retry (angr-vmi2l.177); the cap only bounds a host that keeps
+        // claiming a page it then fails to serve.
+        for _ in 0..MAX_SYMBOLIC_LOAD_PAGE_FETCHES {
+            let Err(MemoryError::UnmappedPageInRegion { page_addr }) = result else {
+                break;
+            };
+            let prefetch_count = self.page_prefetch_count;
+            // NOTE: We intentionally do NOT auto-map zero pages when the
+            // fetch fails. Python may have actual data for this page from
+            // backers (file contents, initialized data); the arm below falls
+            // through to the Python callback, which handles memory correctly.
+            if !self.fetch_page_with_prefetch(callbacks, page_addr, prefetch_count)? {
+                break;
+            }
+            let Some(rust_mem) = self.rust_memory.as_mut() else {
+                // SILENT(cat-a): unreachable; `rust_memory` was `Some` for
+                // the first load and a page fetch never detaches it.
+                return Ok(None);
+            };
+            result = rust_mem.load_symbolic_unified_hosted(
+                addr_val.clone(),
+                size as u32,
+                self.ctx,
+                &self.concretizer,
+                &|page| callbacks.has_page(page),
+            );
+        }
 
-        match first_result {
+        match result {
             Ok(value) => {
                 profile_add!(load_start, self.stats.load_stmt_time_ns);
                 Ok(Some(value))
             }
-            Err(MemoryError::UnmappedPageInRegion { page_addr }) => {
-                // Page is in a lazy region - fetch it (rust_mem borrow is dropped here)
-                let prefetch_count = self.page_prefetch_count;
-                let page_fetched =
-                    self.fetch_page_with_prefetch(callbacks, page_addr, prefetch_count)?;
-
-                // NOTE: We intentionally do NOT auto-map zero pages when page_fetched is false.
-                // Python may have actual data for this page from backers (file contents,
-                // initialized data). Speculatively creating zero pages causes state
-                // divergence between Rust and Python. Instead, we fall through to
-                // the Python callback which handles memory correctly.
-
-                if page_fetched
-                    && let Some(ref mut rust_mem) = self.rust_memory
-                    && let Ok(value) = rust_mem.load_symbolic_unified(
-                        addr_val.clone(),
-                        size as u32,
-                        self.ctx,
-                        &self.concretizer,
-                    )
-                {
-                    return Ok(Some(value));
-                }
+            Err(MemoryError::UnmappedPageInRegion { .. }) => {
                 Ok(self.install_filler_at_concrete(callbacks, addr_val, size))
             }
             Err(MemoryError::Unmapped {

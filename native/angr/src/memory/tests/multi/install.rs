@@ -257,8 +257,7 @@ fn test_phase2_safe_install_lazy_region_signals() {
 }
 
 /// The Phase 2 safe installer must silently skip candidates whose pages
-/// are unmapped and NOT in any lazy region (matches
-/// `prepare_addresses_for_ite`'s skip-unmapped behavior).
+/// are unmapped and NOT in any lazy region.
 #[test]
 fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     let ctx = SymContext::new_mock();
@@ -289,9 +288,7 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
 /// candidate list entirely, `install_multi_for_candidates_safe` drops the
 /// whole store and returns `Ok` rather than erroring — the `SILENT(cat-b)`
 /// case documented at that site. Pins the boundary so a future change that
-/// turns "all candidates unreachable" into an error (diverging from eager
-/// `prepare_addresses_for_ite`, which stores nothing in the same situation)
-/// fails loudly here.
+/// turns "all candidates unreachable" into an error fails loudly here.
 #[test]
 fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
     let ctx = SymContext::new_mock();

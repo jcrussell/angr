@@ -236,7 +236,7 @@ impl SymbolicMemory {
 
     /// Build a balanced ITE tree after addresses have been prepared.
     ///
-    /// This is the immutable part of the unified load, called after prepare_addresses_for_ite.
+    /// This is the immutable part of the unified load, called after check_candidate_pages.
     pub(super) fn build_balanced_ite_load_after_prep(
         &self,
         addr_expr: &RustBV,
@@ -247,7 +247,7 @@ impl SymbolicMemory {
         if addrs.is_empty() {
             // angr-03vl4.41: `mem_empty_ite_{size}` alone is not a unique name —
             // two independent empty-address loads of the same width would intern
-            // to the same Z3 constant. Same reasoning as the `unc_mem_` fallback
+            // to the same Z3 constant. Same reasoning as the `mem_filler_name` fallback
             // in `SymbolicMemory::load_concrete_or_unconstrained`.
             return Ok(ctx.new_bv(&format!("mem_empty_ite_{size}"), size * 8));
         }

@@ -14,7 +14,7 @@
 //!   inside a registered lazy region (the interpreter's cue to fetch + retry)?
 //! * **Auto-map** — does it materialize a missing page? **No load path does.**
 //!   Speculative zero pages diverge from Python's backer data (see
-//!   `SymbolicMemory::prepare_addresses_for_ite`).
+//!   `SymbolicMemory::check_candidate_pages`).
 //! * **Multi** — does it honor `Multi` cells? Every path that reaches
 //!   `SymbolicMemory::load_concrete_common` does, via the `range_has_multi`
 //!   dispatch it performs ahead of all other fast paths.
@@ -25,9 +25,9 @@
 //! | [`SymbolicMemory::load_concrete`] | concrete | R | `Unmapped` | no | yes |
 //! | [`SymbolicMemory::load_concrete_lazy`] | concrete | R | `UnmappedPageInRegion` | no | yes |
 //! | `SymbolicMemory::load_concrete_lazy_inner` (`pub(super)`) | concrete | R | `UnmappedPageInRegion` | no | yes |
-//! | [`SymbolicMemory::load_concrete_or_unconstrained`] | concrete | R, but **result discarded** | *swallowed* → fresh `unc_mem_*` BVS | no | yes |
+//! | [`SymbolicMemory::load_concrete_or_unconstrained`] | concrete | R, but **result discarded** | *swallowed* → fresh `mem_<addr>_rs*` filler per refusing page | no | yes |
 //! | [`SymbolicMemory::load_symbolic`] | symbolic (concretizer) | R | `UnmappedPageInRegion` | no | yes |
-//! | [`SymbolicMemory::load_symbolic_unified`] | symbolic (concretizer) | R (leaf-dependent) | leaf-dependent | no (filters instead) | yes |
+//! | [`SymbolicMemory::load_symbolic_unified`] | symbolic (concretizer) | R (leaf-dependent) | `UnmappedPageInRegion` for a lazy or host page, else leaf filler | no | yes |
 //!
 //! Notes that the axes alone don't carry:
 //!
@@ -46,8 +46,9 @@
 //!   load path.
 //! * `load_symbolic` (eager) builds ITE leaves with the error-propagating
 //!   `load_concrete_lazy`; `load_symbolic_unified` builds them with
-//!   `load_concrete_or_unconstrained` after `prepare_addresses_for_ite` has
-//!   dropped candidates whose page is unmapped. Hence the leaf-dependent cells.
+//!   `load_concrete_or_unconstrained` after `check_candidate_pages` has sent
+//!   every fetchable missing page back to the caller. Hence the
+//!   leaf-dependent cells.
 //! * Both symbolic entry points short-circuit to
 //!   `SymbolicMemory::unconstrained_read_value` under AVOID_MULTIVALUED_READS,
 //!   before any page is touched (no perm check, no Multi consult).
@@ -77,7 +78,7 @@ use crate::vex::Endness;
 
 use super::page::{PAGE_SIZE, PageIndex, Permission};
 use super::{
-    Address, MemoryError, SymbolicMemory, check_access_size, end_page_inclusive,
+    Address, MAX_ACCESS_BYTES, MemoryError, SymbolicMemory, check_access_size, end_page_inclusive,
     fabricate_width_bits,
 };
 
@@ -594,10 +595,11 @@ impl SymbolicMemory {
     /// # Arguments
     /// * `addr` - The address to load from
     /// * `size` - Number of bytes to load
-    /// * `ctx` - The solver context
+    /// * `_ctx` - Unused; the fillers are named by `mem_filler_name`
     ///
     /// # Returns
-    /// The loaded value, or a fresh unconstrained symbolic value if unmapped.
+    /// The loaded value, or a fresh unconstrained symbolic value (concrete 0
+    /// under ZERO_FILL_UNCONSTRAINED_MEMORY) for the bytes that refused.
     ///
     /// Like `SymbolicMemory::unconstrained_read_value` the fabricate branch
     /// has no error channel, so it takes its width from
@@ -610,28 +612,46 @@ impl SymbolicMemory {
         &self,
         addr: impl Into<Address>,
         size: u32,
-        ctx: &SymContext,
+        _ctx: &SymContext,
     ) -> RustBV {
         let addr = addr.into();
-        match self.load_concrete_lazy(addr, size) {
-            Ok(value) => value,
-            Err(_) => {
-                if self.zero_fill_unconstrained {
-                    RustBV::concrete(0, fabricate_width_bits(size))
-                } else {
-                    // angr-03vl4.41: the name must be unique *process-wide*, not
-                    // just within one ITE-tree build. `RustBV::symbol` lowers
-                    // the name straight to `z3::ast::BV::new_const`, which interns
-                    // by name and ignores the Rust-side `.id`, so two unconstrained
-                    // reads that stringify the same would literally alias in the
-                    // solver. `SymContext::new_bv` suffixes the globally-monotonic
-                    // `next_id()`, which no per-call counter can collide with.
-                    ctx.new_bv(
-                        &format!("unc_mem_{:x}", addr.raw()),
-                        fabricate_width_bits(size),
-                    )
-                }
-            }
+        if let Ok(value) = self.load_concrete_lazy(addr, size) {
+            return value;
+        }
+        // A range that crosses into another page is split per page, so
+        // the bytes a mapped page holds survive next to a filler for the
+        // page that refused (angr-vmi2l.177).
+        let pages: Vec<PageIndex> =
+            PageIndex::range_covering(addr.raw(), u64::from(size)).collect();
+        if pages.len() < 2 || size > MAX_ACCESS_BYTES {
+            return self.unmapped_leaf_filler(addr, size);
+        }
+        let end = addr.raw().wrapping_add(u64::from(size));
+        let parts: Vec<RustBV> = pages
+            .iter()
+            .enumerate()
+            .map(|(i, page)| {
+                let start = if i == 0 { addr.raw() } else { page.base_addr() };
+                let stop = pages.get(i + 1).map_or(end, |next| next.base_addr());
+                // overflow-ok: `start..stop` lies inside the checked
+                // `[addr, addr + size)`, so the segment is at most `size`.
+                let seg = stop.wrapping_sub(start) as u32;
+                self.load_concrete_lazy(Address(start), seg)
+                    .unwrap_or_else(|_| self.unmapped_leaf_filler(Address(start), seg))
+            })
+            .collect();
+        concat_bytes_endian(parts, self.endness)
+    }
+
+    /// The value of `size` bytes at `addr` that neither side holds: concrete
+    /// 0 under ZERO_FILL_UNCONSTRAINED_MEMORY, else a fresh filler named like
+    /// Python's (`mem_filler_name`).
+    fn unmapped_leaf_filler(&self, addr: Address, size: u32) -> RustBV {
+        let bits = fabricate_width_bits(size);
+        if self.zero_fill_unconstrained {
+            RustBV::concrete(0, bits)
+        } else {
+            RustBV::symbol(mem_filler_name(addr.raw(), bits), bits)
         }
     }
 
@@ -640,14 +660,14 @@ impl SymbolicMemory {
     /// This method replaces the Python fallback for symbolic memory loads.
     /// It handles all cases:
     /// - Single address: direct load
-    /// - Multiple addresses: build balanced ITE tree with auto-mapping
+    /// - Multiple addresses: build balanced ITE tree over every candidate
     /// - Strided access: build balanced ITE tree
-    /// - Too large range: return unconstrained symbolic value
-    /// - Failed concretization: return error
+    /// - Failed or too-large concretization: return error
     ///
-    /// The key improvement is that unmapped pages in lazy regions are auto-mapped
-    /// before ITE construction, and truly unmapped addresses use unconstrained
-    /// symbolic values instead of failing.
+    /// No page is auto-mapped. A missing candidate page in a lazy region
+    /// returns `UnmappedPageInRegion` for the caller to fetch and retry;
+    /// bytes on a page neither side holds read as a fresh filler, or 0
+    /// under ZERO_FILL_UNCONSTRAINED_MEMORY (`check_candidate_pages`).
     ///
     /// # Arguments
     /// * `addr` - The symbolic address to load from
@@ -664,12 +684,27 @@ impl SymbolicMemory {
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
     ) -> Result<RustBV, MemoryError> {
+        self.load_symbolic_unified_hosted(addr, size, ctx, concretizer, &|_| false)
+    }
+
+    /// [`SymbolicMemory::load_symbolic_unified`] for a caller with a host:
+    /// a missing candidate page `host_has_page` claims surfaces as
+    /// `UnmappedPageInRegion`, so the caller fetches it instead of the load
+    /// reading a filler over the host's bytes.
+    pub fn load_symbolic_unified_hosted(
+        &mut self,
+        addr: RustBV,
+        size: u32,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+        host_has_page: &dyn Fn(u64) -> bool,
+    ) -> Result<RustBV, MemoryError> {
         // angr-0jh0j.35: same up-front width bound as
         // `SymbolicMemory::load_symbolic` — the AVOID_MULTIVALUED_READS
-        // short-circuit and the all-unmapped `mem_all_unmapped_*` fabricate
-        // below both mint a width off `size` with no page path to refuse on.
-        // Both now clamp via `fabricate_width_bits` as well (angr-0jh0j.84),
-        // so this check is the primary refusal and the clamp the backstop.
+        // short-circuit and the unmapped-leaf fillers both mint a width off
+        // `size` with no page path to refuse on. Both clamp via
+        // `fabricate_width_bits` as well (angr-0jh0j.84), so this check is
+        // the primary refusal and the clamp the backstop.
         check_access_size(addr.as_u64().unwrap_or(0), size)?;
 
         // Fast path: concrete address
@@ -691,30 +726,11 @@ impl SymbolicMemory {
                 self.load_concrete_lazy(Address(concrete_addr), size)?
             }
             ConcretizationResult::Multiple(addrs) => {
-                let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
-
-                if ready_addrs.is_empty() {
-                    // angr-0jh0j.84: third infallible fabricate site — no error
-                    // channel here either, so the width goes through
-                    // `fabricate_width_bits` like both siblings rather than a
-                    // bare `size * 8`. `check_access_size` above already
-                    // refuses oversize `size`, so the clamp is defense against
-                    // a future edit that bypasses or hoists that check.
-                    return Ok(RustBV::symbol(
-                        format!("mem_all_unmapped_{size}"),
-                        fabricate_width_bits(size),
-                    ));
-                }
-
-                let addr_clone = addr.clone();
-                let value =
-                    self.build_balanced_ite_load_after_prep(&addr_clone, &ready_addrs, size, ctx)?;
+                self.check_candidate_pages(&addrs, size, host_has_page)?;
+                let value = self.build_balanced_ite_load_after_prep(&addr, &addrs, size, ctx)?;
                 // angr-62li: hoist the addr-domain disjunction over the
-                // post-prep set (addresses that actually had data; matches
-                // the set Z3 ITE-loads against, and is the soundest
-                // restriction we can communicate without re-running the
-                // concretizer over unmapped pages).
-                Self::assert_address_disjunction(&addr, &ready_addrs, ctx);
+                // concretizer's whole set; `check_candidate_pages` drops none.
+                Self::assert_address_disjunction(&addr, &addrs, ctx);
                 value
             }
             ConcretizationResult::Strided {
@@ -1137,4 +1153,14 @@ pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness) -> RustBV {
 pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32) -> RustBV {
     let id = crate::symbolic::names::next("symbolic_read_unconstrained");
     RustBV::symbol(format!("symbolic_read_unconstrained_{id}"), width_bits)
+}
+
+/// A fresh `mem_<addr>_rs<id>_<bits>` name for bytes at `addr` that neither
+/// side holds: Python's `mem_<addr>_<id>_<bits>` filler shape, with `rs`
+/// keeping the id disjoint from Python's BVS counter. One counter for every
+/// minting site, since Z3 identity is by name
+/// (`invariant-symbol-identity-is-by-name`).
+pub(crate) fn mem_filler_name(addr: u64, bits: u32) -> String {
+    let id = crate::symbolic::names::next("mem_filler");
+    format!("mem_{addr:x}_rs{id}_{bits}")
 }

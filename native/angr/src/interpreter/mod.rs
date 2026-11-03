@@ -656,8 +656,7 @@ impl<'a> VEXInterpreter<'a> {
             return None;
         }
         let bits = (size * 8) as u32;
-        let id = crate::symbolic::names::next("mem_filler");
-        let name = format!("mem_{addr_concrete:x}_rs{id}_{bits}");
+        let name = crate::memory::mem_filler_name(addr_concrete, bits);
         let filler = RustBV::symbol(&name, bits);
         let rust_mem = self.rust_memory.as_mut()?;
         if let Err(e) = rust_mem.store_concrete(addr_concrete, filler.clone()) {

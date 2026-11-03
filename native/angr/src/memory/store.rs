@@ -713,12 +713,12 @@ impl SymbolicMemory {
     ///   interpreter can fetch the page and retry. Auto-mapping zero
     ///   pages here would diverge state from Python (which has the
     ///   backer data) — same invariant that
-    ///   `prepare_addresses_for_ite` and `store_concrete_lazy` enforce.
+    ///   `check_candidate_pages` and `store_concrete_lazy` enforce.
     /// * Otherwise filter `addrs` down to candidates whose pages are
-    ///   already mapped (mirrors `prepare_addresses_for_ite`'s skip
-    ///   behavior for non-lazy unmapped pages — those are treated as
+    ///   already mapped (non-lazy unmapped pages are treated as
     ///   unreachable since the symbolic address could not validly
     ///   resolve to them) and pass to `install_multi_for_candidates`.
+    ///   The load side no longer filters (`check_candidate_pages`).
     pub(super) fn install_multi_for_candidates_safe(
         &mut self,
         addr_expr: &RustBV,
@@ -729,7 +729,7 @@ impl SymbolicMemory {
 
         // Probe every candidate's pages first. Lazy-region misses must
         // surface so the interpreter fetches the page; non-lazy misses
-        // are silently filtered (matches eager `prepare_addresses_for_ite`).
+        // are silently filtered.
         let mut ready: Vec<u64> = Vec::with_capacity(addrs.len());
         for &cand in addrs {
             let start_page = Address::new(cand).page_num();
@@ -760,9 +760,6 @@ impl SymbolicMemory {
             // every candidate was already filtered as unreachable by the loop
             // above (non-lazy unmapped page => the address could not validly
             // resolve there), so there is no reachable cell left to write.
-            // This mirrors eager `prepare_addresses_for_ite`, which skips the
-            // same candidates and likewise ends up storing nothing; erroring
-            // instead would diverge from the eager path.
             return Ok(());
         }
 
