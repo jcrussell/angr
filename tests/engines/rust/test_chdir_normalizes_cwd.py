@@ -6,9 +6,8 @@ handler used to store the raw C-string, so ``getcwd`` returned ``sub`` and a
 later relative ``open`` resolved against a relative cwd; the exported state
 also kept the old ``fs.cwd``. Each case runs chdir and getcwd, and compares
 with the Python engine. The relative-open resolution is pinned by the cargo
-test ``chdir_normalizes_relative_and_dotted_paths``; a raw ``open``+``read``
-syscall pair on an ``fs.insert``-ed file reads 0 bytes under Rust whatever the
-cwd (angr-vmi2l.327).
+test ``chdir_normalizes_relative_and_dotted_paths`` and the py-vs-rust
+``test_open_read_inserted_simfile.py``.
 """
 
 from __future__ import annotations
