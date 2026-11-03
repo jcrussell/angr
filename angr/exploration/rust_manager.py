@@ -4589,9 +4589,7 @@ class RustExplorationManager(
         # a find/avoid left out of this call must not stay armed from the last
         # one (angr-mx00p.132.49). A native Explorer technique owns the Rust
         # find/avoid addrs instead, so they are left alone while one is active.
-        explorer_technique_armed = any(
-            type(t).__name__ in _FIND_AVOID_TECH_NAMES for t in self._active_techniques
-        )
+        explorer_technique_armed = any(type(t).__name__ in _FIND_AVOID_TECH_NAMES for t in self._active_techniques)
         if find is None and not explorer_technique_armed:
             self._rust_mgr.set_find_addrs([])
             self._find_predicate = None
@@ -5478,11 +5476,24 @@ class RustExplorationManager(
 
         Args:
             n: Number of steps to take.
-            **kwargs: Additional arguments (ignored).
+            **kwargs: ``stash="active"`` only. Anything else (an engine run arg such as ``num_inst``, a
+                selector, another stash) changes what a SimulationManager step executes, so a not-yet-stepped
+                default-routed manager hands off to the Python engine and any other manager raises
+                (angr-mx00p.132.23).
 
         Returns:
             Self, for chaining.
         """
+        unhonored = sorted(k for k, v in kwargs.items() if not (k == "stash" and v == "active"))
+        if unhonored:
+            reason = f"step() cannot honor {', '.join(unhonored)}"
+            if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
+                raise NotImplementedError(f"RustExplorationManager.{reason}; build the manager without engine='rust'.")
+            self._hand_off_to_python(reason)
+            for _ in range(n):
+                self.step(**kwargs)
+            return self
+
         # Re-entry into Rust execution invalidates the state-export cache:
         # any previously-cached Python mirrors are about to go stale.
         self._invalidate_state_export_cache()

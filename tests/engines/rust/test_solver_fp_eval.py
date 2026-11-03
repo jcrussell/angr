@@ -19,14 +19,14 @@ pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exp
 
 @pytest.fixture
 def sqrtss_state():
-    """One step of ``sqrtss xmm1, xmm1`` over a symbolic single-precision input."""
+    """One step of the lone ``sqrtss xmm1, xmm1`` over a symbolic single-precision input."""
     proj = angr.load_shellcode(b"\xf3\x0f\x51\xc9", "amd64", load_address=0, engine="rust")
     state = proj.factory.blank_state(addr=0)
     xmm1 = claripy.FPS("v", claripy.FSORT_FLOAT)
     state.regs.xmm1 = xmm1.to_bv()
     mgr = proj.factory.simgr(state)
     assert type(mgr).__name__ == "RustExplorationManager"
-    mgr.step(num_inst=1)
+    mgr.step()
     assert len(mgr.active) == 1
     final = mgr.active[0]
     return final, xmm1, final.regs.xmm1[31:0].raw_to_fp()

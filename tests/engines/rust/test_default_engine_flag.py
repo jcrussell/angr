@@ -158,6 +158,41 @@ class TestSuccessorsTechniqueHandsOff:
         assert director in mgr._techniques
 
 
+class TestStepRunArgsHandOff:
+    """``step(num_inst=...)`` stops mid-block, as SimulationManager.step does (angr-mx00p.132.23).
+
+    StringObfuscationFinder steps to just before a call with ``num_inst``; the
+    Rust step dropped the kwarg and ran the call, so the callee read its stack
+    arguments 8 bytes off.
+    """
+
+    def test_default_route_hands_off_and_honors_num_inst(self, rust_project):
+        entry = rust_project.entry
+        second_insn = rust_project.factory.block(entry).instruction_addrs[1]
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+
+        mgr.step(num_inst=1)
+
+        assert type(mgr) is SimulationManager
+        assert [s.addr for s in mgr.active] == [second_insn]
+
+    def test_stash_active_stays_rust(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        mgr.step(stash="active")
+        assert isinstance(mgr, RustExplorationManager)
+
+    def test_named_engine_raises(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")
+        with pytest.raises(NotImplementedError, match="num_inst"):
+            mgr.step(num_inst=1)
+
+    def test_stepped_manager_raises(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        mgr.step()
+        with pytest.raises(NotImplementedError, match="num_inst"):
+            mgr.step(num_inst=1)
+
+
 class TestRemovedKnobs:
     """The fork-only selection API is gone outright; using it fails loudly (angr-mx00p.62)."""
 
