@@ -165,14 +165,15 @@ impl EngineHost for PythonCallbacks {
 
     fn dirty_call(
         &self,
+        ctx: &SymContext,
         name: &str,
         args: &[u64],
         ret_ty_bits: u32,
-    ) -> Result<(Vec<u8>, bool), String> {
-        let (bytes, symbolic, _ast) = self
+    ) -> Result<HostLoad, String> {
+        let entry = self
             .call_dirty_call(name, args, ret_ty_bits)
             .map_err(|e| message(&e))?;
-        Ok((bytes, symbolic))
+        Ok(host_load(ctx, entry))
     }
 
     fn inspect_mem_read(

@@ -52,10 +52,9 @@ pub struct IRDirty {
     pub guard: Option<Box<IRExpr>>,
     pub tmp: Option<u32>,
     // mFx/mAddr/mSize/nFxState are populated by both lifter marshal paths
-    // (pyvex_reader/libvex_lifter) but currently write-only: interpreter's
-    // dirty-call handling reads only cee.name/guard/tmp/args. Retained for
-    // VEX-ABI parity and future memory-effect-aware code invalidation —
-    // see angr-36vvn.9.
+    // (pyvex_reader/libvex_lifter). `VEXInterpreter::handle_dirty_call` reads
+    // mFx: a memory-effecting helper with no native handler routes the block
+    // to Python. mAddr/mSize/nFxState are retained for VEX-ABI parity.
     pub mFx: DirtyFx,
     pub mAddr: Option<Box<IRExpr>>,
     pub mSize: u32,

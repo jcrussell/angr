@@ -1375,19 +1375,44 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         if info is None:
             raise AttributeError(f"register '{name}' not found")
         offset, size = info[0], info[1]
+        slice_of = self._covering_register_slice(table, offset, size)
+        if slice_of is None:
+            raise NotImplementedError(
+                f"register '{name}' ({offset}, {size}) is not modelled by the Rust engine on {self._arch.name}"
+            )
+        return slice_of
+
+    def _covering_register_slice(self, table, offset, size):
+        """``(covering, hi, lo)``: the bits of the smallest ``table`` register
+        whose bytes hold ``(offset, size)``, or ``None`` when none does."""
         covering = [
             (c_size, c_off, c_name)
             for c_name, (c_off, c_size) in table["offsets"].items()
             if c_off <= offset and offset + size <= c_off + c_size
         ]
         if not covering:
-            raise NotImplementedError(
-                f"register '{name}' ({offset}, {size}) is not modelled by the Rust engine on {self._arch.name}"
-            )
+            return None
         c_size, c_off, c_name = min(covering)
         rel = offset - c_off
         hi = (c_size - rel if self.endness == "Iend_BE" else rel + size) * 8 - 1
         return c_name, hi, hi - size * 8 + 1
+
+    def _offset_register_slice(self, offset, size):
+        """Resolve an ``(offset, size)`` no archinfo register name matches.
+
+        The Python VEX engine addresses registers by offset, and a ``GetI`` /
+        ``PutI`` over an array register (the x87 ``fptag`` bytes) names one
+        element inside it. Such a slice reads and writes the covering engine
+        register's bits; one no engine register covers raises
+        ``NotImplementedError``.
+        """
+        from angr.exploration.rust_state_sync import rust_register_table
+
+        table = rust_register_table(self._arch)
+        slice_of = None if table is None else self._covering_register_slice(table, offset, size)
+        if slice_of is None:
+            raise NotImplementedError(f"no register for offset {offset} size {size} on {self._arch.name}")
+        return slice_of
 
     def _recover_symbolic_register_ast(self, name, width):
         """Recover Rust's claripy AST for a symbolic register (angr-4pm1).
@@ -1499,6 +1524,10 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             object.__setattr__(self, name, value)
             return
         canonical = self._canonical_name(name)
+        slice_of = self._unmodelled_register_slice(canonical)
+        if slice_of is not None:
+            self._store_register_slice(*slice_of, value)
+            return
         width = self._get_register_width(canonical)
         ast = self._coerce_to_ast(value, width)
         if self._python_mgr is not None:
@@ -1526,6 +1555,24 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         self._cache[name] = ast
         if canonical != name:
             self._cache[canonical] = ast
+
+    def _store_register_slice(self, covering, hi, lo, value):
+        """Write ``value`` into bits ``hi..lo`` of engine register ``covering``.
+
+        A read-modify-write of the covering register, the write-side twin of
+        the ``Extract`` that ``__getattr__`` and ``load`` read a slice with.
+        The whole read cache is dropped afterwards: the overlap map is keyed
+        by archinfo names, so it cannot name every cached slice of
+        ``covering``.
+        """
+        cur = getattr(self, covering)
+        parts = [self._coerce_to_ast(value, hi - lo + 1)]
+        if hi < cur.size() - 1:
+            parts.insert(0, cur[cur.size() - 1 : hi + 1])
+        if lo > 0:
+            parts.append(cur[lo - 1 : 0])
+        setattr(self, covering, claripy.Concat(*parts) if len(parts) > 1 else parts[0])
+        self._cache.clear()
 
     @staticmethod
     def _coerce_to_ast(value, width):
@@ -1566,13 +1613,11 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         if isinstance(reg_name_or_offset, int):
             if size is None:
                 size = self._arch.bytes
-            try:
-                name = self._arch.register_size_names[(reg_name_or_offset, size)]
-            except KeyError as e:
-                raise NotImplementedError(
-                    f"no register for offset {reg_name_or_offset} size {size} on {self._arch.name}"
-                ) from e
-            return getattr(self, name)
+            name = self._arch.register_size_names.get((reg_name_or_offset, size))
+            if name is not None:
+                return getattr(self, name)
+            covering, hi, lo = self._offset_register_slice(reg_name_or_offset, size)
+            return claripy.Extract(hi, lo, getattr(self, covering))
         raise TypeError(f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}")
 
     def store(self, addr, data, size=None, **kwargs):
@@ -1599,11 +1644,11 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
                     size = len(data)
                 else:
                     size = self._arch.bytes
-            try:
-                name = self._arch.register_size_names[(addr, size)]
-            except KeyError as e:
-                raise NotImplementedError(f"no register for offset {addr} size {size} on {self._arch.name}") from e
-            setattr(self, name, data)
+            name = self._arch.register_size_names.get((addr, size))
+            if name is not None:
+                setattr(self, name, data)
+                return
+            self._store_register_slice(*self._offset_register_slice(addr, size), data)
             return
         raise TypeError(f"register store expects str name or int offset, got {type(addr).__name__}")
 

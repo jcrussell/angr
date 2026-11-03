@@ -588,28 +588,25 @@ class TestAdversarial:
         assert v.bit_length() <= 1024
         assert (v & 0xFF) == 0x42
 
-    def test_wide_concrete_bvv_import_rejected(self):
-        """angr-cxw7: a concrete BVV whose value needs >128 bits must error
-        loudly, not silently truncate to its low 128 bits.
+    def test_wide_concrete_bvv_import_not_truncated(self):
+        """angr-cxw7: a concrete BVV whose value needs >128 bits must not
+        silently truncate to its low 128 bits.
 
-        ``RustBV::Concrete`` stores its value in a u128, so importing
-        ``BVV(1 << 200, 256)`` must not wrap to 0. extract_int_value
-        rejects it with a ValueError (BridgeError::InvalidArgs maps to
-        PyValueError, angr-ghwsd.2). The import path is exercised here via
-        ``min`` (which propagates the conversion error; ``eval``/
-        ``add_constraint_ast`` take Z3-export fast paths that bypass the u128
-        import).
+        ``RustBV::Concrete`` stores its value in a u128, so ``BVV(1 << 200,
+        256)`` imports as its clarirs term instead (angr-vmi2l.170): an x87
+        ``fpreg`` write from the Python VEX fallback is such a literal.
+        Exercised via ``min`` (``eval`` takes a Z3-export fast path that
+        bypasses the import): a wide BV has no extremum (``None``), never the
+        truncated 0.
         """
-        import pytest
-
         from angr import claripy
         from angr.rustylib.vex_engine import RustSolverContext
 
         ctx = RustSolverContext()
-        with pytest.raises(ValueError):
-            ctx.min(claripy.BVV(1 << 200, 256), signed=False)
+        assert ctx.min(claripy.BVV(1 << 200, 256), signed=False) is None
 
-        # A 256-bit literal whose magnitude fits in 128 bits imports fine.
+        # A 256-bit literal whose magnitude fits in 128 bits imports as a
+        # concrete and keeps its extremum.
         assert ctx.min(claripy.BVV(1 << 100, 256), signed=False) == (1 << 100)
 
     def test_wide_bv_extrema_returns_none(self):

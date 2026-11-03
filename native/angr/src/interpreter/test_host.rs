@@ -54,6 +54,11 @@ pub(crate) struct TestHost {
     /// The page snapshot `has_page` answers from, as the shell's
     /// `python_has_page` does once one is installed; `None` fails open.
     pub(crate) host_pages: Option<Vec<u64>>,
+    /// Report a `dirty_call` service that answers every helper with this
+    /// symbolic value; `None` reports no service.
+    pub(crate) dirty_result: Option<RustBV>,
+    /// The name of every dirty helper the interpreter handed over.
+    pub(crate) dirty_calls: RefCell<Vec<String>>,
 }
 
 fn not_set<T>(slot: &str) -> Result<T, String> {
@@ -92,7 +97,7 @@ impl EngineHost for TestHost {
     }
 
     fn has_dirty_call(&self) -> bool {
-        false
+        self.dirty_result.is_some()
     }
 
     fn can_serve_page(&self, _page_addr: u64) -> bool {
@@ -200,11 +205,20 @@ impl EngineHost for TestHost {
 
     fn dirty_call(
         &self,
-        _name: &str,
+        _ctx: &SymContext,
+        name: &str,
         _args: &[u64],
         _ret_ty_bits: u32,
-    ) -> Result<(Vec<u8>, bool), String> {
-        not_set("dirty_call")
+    ) -> Result<HostLoad, String> {
+        let Some(value) = &self.dirty_result else {
+            return not_set("dirty_call");
+        };
+        self.dirty_calls.borrow_mut().push(name.to_string());
+        Ok(HostLoad {
+            bytes: Vec::new(),
+            symbolic: true,
+            value: Some(value.clone()),
+        })
     }
 
     fn inspect_mem_read(

@@ -542,18 +542,15 @@ fn import_clarirs_node(
         AstOp::BVV(value) => {
             let width = value.len();
             check_bv_width("BVV", width).map_err(BridgeError::InvalidArgs)?;
-            let big = value.to_biguint();
-            // RustBV::Concrete holds a u128; refuse rather than truncate a
-            // wider literal, as the attribute walk's extract_int_value does
-            // (angr-cxw7).
-            let v = u128::try_from(&big).map_err(|_| {
-                BridgeError::InvalidArgs(format!(
-                    "concrete integer needs {} bits but RustBV::Concrete is capped at 128; \
-                     wide concrete BVV import is unsupported",
-                    big.bits()
-                ))
-            })?;
-            Ok(RustBV::concrete(v, width))
+            // RustBV::Concrete holds a u128. A literal whose value needs more
+            // is taken whole as its clarirs term, the shape `RustBV::concat`
+            // builds for a wide concrete result, never truncated
+            // (angr-cxw7). A wide x87 `fpreg` write from the Python VEX
+            // fallback is one (angr-vmi2l.170).
+            match u128::try_from(&value.to_biguint()) {
+                Ok(v) => Ok(RustBV::concrete(v, width)),
+                Err(_) => whole(),
+            }
         }
         // A clarirs leaf is taken whole: interning makes it the one node with
         // that name, the variable Z3 binds, and keeps its annotations

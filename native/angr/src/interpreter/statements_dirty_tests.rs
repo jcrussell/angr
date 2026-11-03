@@ -4,10 +4,13 @@
 //! Covers the two no-handler-anywhere policies
 //! (`VEXInterpreter::dirty_python_dispatch`'s route-to-Python default and the
 //! `InvalidIR` result-temp validation) and the false-guard poison-write
-//! contract of `VEXInterpreter::dirty_guard_phase`. Shared helpers live in
+//! contract of `VEXInterpreter::dirty_guard_phase`, plus the memory-effect
+//! routing and symbolic-result conversion of `handle_dirty_call` /
+//! `dirty_python_dispatch` (angr-vmi2l.170). Shared helpers live in
 //! `statements_tests_support.rs`.
 
 use super::*;
+use crate::interpreter::TestHost;
 use crate::interpreter::statements_tests_support::{make_irsb_with_temps, new_interp, with_test_host};
 use crate::vex::ir::IRType;
 
@@ -256,4 +259,133 @@ fn dirty_call_with_false_guard_and_no_result_tmp_just_continues() {
             }
         );
     });
+}
+
+/// An x87 `fstp m80` dirty call (`storeF80le`, `mFx = Write`) on a dirty
+/// helper `IRDirty` the native table does not cover.
+fn store_f80_dirty(m_fx: crate::vex::ir::DirtyFx) -> crate::vex::ir::IRDirty {
+    use crate::vex::ir::{IRCallee, IRDirty};
+    IRDirty {
+        cee: IRCallee {
+            name: "x86g_dirtyhelper_storeF80le".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        },
+        guard: None,
+        tmp: None,
+        mFx: m_fx,
+        mAddr: Some(Box::new(IRExpr::Const(IRConst::U32(0x70_0000)))),
+        mSize: 10,
+        nFxState: 0,
+        args: vec![
+            IRExpr::Const(IRConst::U32(0x70_0000)),
+            IRExpr::Const(IRConst::U64(0x4008_0000_0000_0000)),
+        ],
+    }
+}
+
+/// angr-vmi2l.170: the Python `dirty_call` callback runs a helper against the
+/// host's SimState, not `rust_memory`, so a memory-effecting helper with no
+/// native handler must route the block to Python and never reach the
+/// callback, whichever effect it declares.
+#[test]
+fn memory_effect_dirty_call_routes_to_python_not_the_callback() {
+    use crate::vex::ir::DirtyFx;
+    for m_fx in [DirtyFx::Read, DirtyFx::Write, DirtyFx::Modify] {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let irsb = make_irsb_with_temps(0x3000, &[]);
+        let host = TestHost {
+            dirty_result: Some(RustBV::concrete(0, 64)),
+            ..TestHost::default()
+        };
+        let res =
+            interp.execute_stmt_with_callbacks(&host, &IRStmt::Dirty(store_f80_dirty(m_fx)), &irsb);
+        assert!(
+            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+            "{m_fx:?} dirty call must route to Python, got {}",
+            match &res {
+                Ok(_) => "Ok(..)".to_string(),
+                Err(e) => format!("{e:?}"),
+            }
+        );
+        assert!(
+            host.dirty_calls.borrow().is_empty(),
+            "{m_fx:?} dirty call reached the callback"
+        );
+    }
+}
+
+/// The control: the same helper with no memory effect still reaches the
+/// callback, so the routing above is keyed on `mFx`, not on the name.
+#[test]
+fn effect_free_dirty_call_still_reaches_the_callback() {
+    use crate::vex::ir::DirtyFx;
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let irsb = make_irsb_with_temps(0x3000, &[]);
+    let host = TestHost {
+        dirty_result: Some(RustBV::concrete(0, 64)),
+        ..TestHost::default()
+    };
+    let res = interp.execute_stmt_with_callbacks(
+        &host,
+        &IRStmt::Dirty(store_f80_dirty(DirtyFx::None)),
+        &irsb,
+    );
+    assert!(res.is_ok(), "effect-free dirty call failed");
+    assert_eq!(
+        *host.dirty_calls.borrow(),
+        ["x86g_dirtyhelper_storeF80le".to_string()]
+    );
+}
+
+/// angr-vmi2l.170: a symbolic callback result is the host's own value, not a
+/// fresh `dirty_<name>` symbol unrelated to it; a width mismatch routes to
+/// Python rather than writing a wrong-width temp.
+#[test]
+fn symbolic_dirty_result_is_the_hosts_value() {
+    use crate::vex::ir::{DirtyFx, IRCallee, IRDirty};
+    let dirty = IRDirty {
+        cee: IRCallee {
+            name: "x86g_dirtyhelper_RDMSR".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        },
+        guard: None,
+        tmp: Some(0),
+        mFx: DirtyFx::None,
+        mAddr: None,
+        mSize: 0,
+        nFxState: 0,
+        args: vec![IRExpr::Const(IRConst::U32(0x10))],
+    };
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let irsb = make_irsb_with_temps(0x3000, &[IRType::I64]);
+    interp.temps.resize(irsb.tyenv.types.len(), None);
+    let host_value = RustBV::symbol("rdmsr_0x10", 64);
+    let host = TestHost {
+        dirty_result: Some(host_value.clone()),
+        ..TestHost::default()
+    };
+    let res = interp.execute_stmt_with_callbacks(&host, &IRStmt::Dirty(dirty.clone()), &irsb);
+    assert!(res.is_ok(), "symbolic dirty call failed: {:?}", res.err());
+    assert_eq!(
+        interp.temps.first().cloned().flatten(),
+        Some(host_value),
+        "the result temp must hold the host's AST"
+    );
+
+    let mut interp = new_interp(&ctx);
+    interp.temps.resize(irsb.tyenv.types.len(), None);
+    let host = TestHost {
+        dirty_result: Some(RustBV::symbol("rdmsr_0x10_narrow", 32)),
+        ..TestHost::default()
+    };
+    let res = interp.execute_stmt_with_callbacks(&host, &IRStmt::Dirty(dirty), &irsb);
+    assert!(
+        matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+        "a wrong-width symbolic result must route to Python"
+    );
 }

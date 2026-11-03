@@ -97,14 +97,16 @@ pub(crate) trait EngineHost {
         opt_level: Option<i32>,
         dirty_bytes: Option<&[u8]>,
     ) -> Result<LiftBlockOutcome, String>;
-    /// Run a dirty helper the interpreter does not model. Returns the result
-    /// bytes and whether the result is symbolic.
+    /// Run a dirty helper the interpreter does not model. A symbolic result
+    /// carries its value converted with `ctx`; `symbolic` with no `value`
+    /// means the host's AST did not convert.
     fn dirty_call(
         &self,
+        ctx: &SymContext,
         name: &str,
         args: &[u64],
         ret_ty_bits: u32,
-    ) -> Result<(Vec<u8>, bool), String>;
+    ) -> Result<HostLoad, String>;
 
     // ---- state.inspect breakpoints -----------------------------------------
     //

@@ -19,6 +19,11 @@
 //!    callback, plus the two no-handler-anywhere policies (route to Python's
 //!    VEX engine by default, fabricate only under the opt-in gate).
 //!
+//! Between phases 1 and 2, a helper with a memory effect (`mFx`) that no
+//! native handler covers routes the block to Python's VEX engine: the
+//! `dirty_call` callback would run it against the host's SimState, not
+//! `rust_memory`.
+//!
 //! The guard tristate itself ([`GuardClass`]) stays in `statements.rs`: it is
 //! shared with `Exit`, `StoreG` and `LoadG`.
 
@@ -26,6 +31,7 @@ use super::bv_utils::bytes_to_bv;
 use super::expressions_arith::fabricate_unsupported_irop;
 use super::statements::GuardClass;
 use super::*;
+use crate::vex::ir::DirtyFx;
 
 /// VEX's payload for a guarded dirty call's result temp when the guard turns
 /// out false: the repeating `0x5555…5555` bit pattern libvex_ir.h's `IRDirty`
@@ -96,6 +102,18 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<StmtResult, CbExecutionError> {
         if self.dirty_guard_phase(callbacks, dirty, irsb)? == DirtyGuard::Skipped {
             return Ok(StmtResult::Continue);
+        }
+
+        // A helper with a memory effect does its own loads and stores. The
+        // Python `dirty_call` callback runs it against the host's SimState,
+        // not `rust_memory`, so its stores would be lost and its loads stale
+        // (angr-vmi2l.170). No native handler declares one, so route the
+        // block to Python's VEX engine before any arg is pinned.
+        if dirty.mFx != DirtyFx::None && !self.dirty_dispatch.handles(&dirty.cee.name) {
+            return Err(CbExecutionError::NeedPythonFallback(format!(
+                "dirty call '{}': memory effect {:?} with no native handler",
+                dirty.cee.name, dirty.mFx
+            )));
         }
 
         let arg_vals = self.dirty_arg_values(callbacks, dirty, &irsb.tyenv)?;
@@ -296,20 +314,34 @@ impl<'a> VEXInterpreter<'a> {
 
         // Call Python callback
         self.stats.python_dirty_call_count += 1;
-        let (data, is_symbolic) = callbacks
-            .dirty_call(&dirty.cee.name, arg_vals, ret_ty_bits)
+        let reply = callbacks
+            .dirty_call(self.ctx, &dirty.cee.name, arg_vals, ret_ty_bits)
             .map_err(|e| {
                 CbExecutionError::Callback(format!("dirty call {} failed: {}", dirty.cee.name, e))
             })?;
 
         // Store result in temporary if specified
         if let Some(tmp) = dirty.tmp {
-            let result = if is_symbolic {
-                // Create a symbolic value for the result
-                RustBV::symbol(format!("dirty_{}", dirty.cee.name), ret_ty_bits)
+            let result = if reply.symbolic {
+                // The helper's own AST, so constraints and later reads over
+                // it agree with the exported state. A fresh symbol in its
+                // place would be unrelated to it (angr-vmi2l.170).
+                match reply.value {
+                    Some(value) if value.width() == ret_ty_bits => value,
+                    other => {
+                        return Err(CbExecutionError::NeedPythonFallback(format!(
+                            "dirty call '{}': symbolic result {} for a {ret_ty_bits}-bit temp",
+                            dirty.cee.name,
+                            other.map_or_else(
+                                || "did not convert".to_string(),
+                                |v| format!("is {} bits", v.width())
+                            ),
+                        )));
+                    }
+                }
             } else {
                 // Convert the little-endian callback bytes to a concrete value.
-                bytes_to_bv(&data, ret_ty_bits)
+                bytes_to_bv(&reply.bytes, ret_ty_bits)
             };
 
             self.write_tmp(tmp, result)?;

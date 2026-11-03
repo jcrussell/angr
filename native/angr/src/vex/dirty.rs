@@ -106,6 +106,11 @@ impl DirtyHelperDispatch {
         DirtyHelperDispatch { handlers }
     }
 
+    /// Whether a native handler exists for `name`.
+    pub fn handles(&self, name: &str) -> bool {
+        self.handlers.contains_key(name)
+    }
+
     /// Try to handle a dirty call natively.
     ///
     /// # Arguments

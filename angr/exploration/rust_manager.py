@@ -99,7 +99,15 @@ from pyvex.errors import PyVEXError
 
 from angr import claripy
 from angr.claripy.errors import ClaripyError
-from angr.errors import AngrError, SimEngineError, SimError, SimSolverError, SimStateError, SimZeroDivisionException
+from angr.errors import (
+    AngrError,
+    SimEngineError,
+    SimError,
+    SimSolverError,
+    SimStateError,
+    SimZeroDivisionException,
+    UnsupportedDirtyError,
+)
 from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
@@ -2057,9 +2065,20 @@ class RustExplorationManager(
             self._perf_stats.record_fetch_page(time.perf_counter_ns() - _fp_start)
 
     def _cb_dirty_call(self, name: str, args: list, ret_ty_bits: int) -> tuple[bytes, bool, object | None]:
+        """Run the Python dirty helper ``name`` for the Rust interpreter.
+
+        The handler runs against the callback/default SimState, not the Rust
+        state, so its own memory and register effects do not reach the
+        engine. That is why Rust routes a helper with a memory effect to
+        Python's VEX engine instead (`VEXInterpreter::handle_dirty_call`),
+        and why a handler's constraints are refused here rather than added to
+        a solver the Rust state never sees. A missing handler or a handler
+        exception raises, as the Python engine does (angr-vmi2l.170); Rust
+        reports the state errored. A symbolic result travels as its AST.
+        """
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
-            return (bytes(ret_ty_bits // 8), False, None)
+            raise UnsupportedDirtyError(f"dirty call {name}: no state to run the handler on")
         # state.inspect dispatch (angr-xmfj). state_id falls back to -1
         # because dirty calls run from a Rust interpreter dispatch where the
         # state-id is not threaded through this callback yet; the inspect
@@ -2069,48 +2088,31 @@ class RustExplorationManager(
         sid = getattr(self, "_current_callback_state_id", None)
         if sid is None:
             sid = -1
-        try:
-            from angr.engines.vex.heavy import dirty as dirty_module
+        from angr.engines.vex.heavy import dirty as dirty_module
 
-            if not hasattr(dirty_module, name):
-                l.warning(f"No dirty call handler for {name}")
-                return (bytes(ret_ty_bits // 8), False, None)
+        handler = getattr(dirty_module, name, None)
+        if handler is None:
+            raise UnsupportedDirtyError(f"Unsupported dirty helper {name}")
+        claripy_args = [claripy.BVV(arg, 64) for arg in args]
 
-            handler = getattr(dirty_module, name)
-            claripy_args = [claripy.BVV(arg, 64) for arg in args]
+        self._cb_inspect_dirty(sid, "before", name, handler, claripy_args, None)
 
-            self._cb_inspect_dirty(sid, "before", name, handler, claripy_args, None)
+        result, constraints = handler(state, *claripy_args)
+        if constraints:
+            raise UnsupportedDirtyError(f"dirty call {name}: its constraints cannot be applied to the Rust state")
 
-            result, constraints = handler(state, *claripy_args)
+        override = self._cb_inspect_dirty(sid, "after", name, handler, claripy_args, result)
+        if override is not None:
+            # User BP set state.inspect.dirty_result — honor the override
+            # in place of the handler's return value (angr-uy32).
+            result = override
 
-            if constraints:
-                for c in constraints:
-                    state.solver.add(c)
-
-            override = self._cb_inspect_dirty(sid, "after", name, handler, claripy_args, result)
-            if override is not None:
-                # User BP set state.inspect.dirty_result — honor the override
-                # in place of the handler's return value (angr-uy32).
-                result = override
-
-            if result is None:
-                return (bytes(ret_ty_bits // 8), False, None)
-
-            is_sym = getattr(result, "symbolic", False)
-            concrete_val = state.solver.eval(result)
-            num_bytes = ret_ty_bits // 8
-            concrete_bytes = concrete_val.to_bytes(num_bytes, "little")
-
-            if is_sym:
-                self._register_handle(id(result), result)
-                return (concrete_bytes, True, result)
-            return (concrete_bytes, False, None)
-
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: dirty call handler raised; Rust sees
-            # zero bytes for the result. Already warns.
-            l.warning(f"dirty_call {name} error: {e}")
-            return (bytes(ret_ty_bits // 8), False, None)
+        num_bytes = ret_ty_bits // 8
+        if result is None:
+            return (bytes(num_bytes), False, None)
+        if getattr(result, "symbolic", False):
+            return (bytes(num_bytes), True, result)
+        return (state.solver.eval(result).to_bytes(num_bytes, "little"), False, None)
 
     def _cb_resolve_function(self, addr: int, name: str | None) -> tuple[str, int, bool] | None:
         """Resolve an unmodeled function call."""
