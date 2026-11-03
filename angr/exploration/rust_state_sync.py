@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from sortedcontainers import SortedDict
 
 from angr import claripy
+from angr.errors import SimMemoryMissingError
 from angr.rustylib.vex_engine import arch_register_info
 from angr.storage.memory_mixins.paged_memory.pages import UltraPage
 from angr.storage.memory_object import SimMemoryObject
@@ -57,8 +58,9 @@ def rust_register_table(arch) -> dict | None:
 
     ``arch_register_info`` (``native/angr/src/engine.rs``) plus ``offsets``,
     ``{name: (offset, size)}`` over every name the engine resolves,
-    ``sync_map``, the same for the ``sync`` registers, and ``return_regs``
-    (see ``RustStateSyncMixin._get_reg_map_and_return_regs``). ``None``
+    ``sync_map``, the same for the ``sync`` registers, ``return_regs``
+    (see ``RustStateSyncMixin._get_reg_map_and_return_regs``) and
+    ``seed_extra`` (see ``_seed_extra_rows``). ``None``
     for an arch the engine does not implement. Rust's ``arch/*.rs`` tables
     are the source of truth for what crosses the Python/Rust boundary
     (angr-mx00p.34); ``tests/engines/rust/test_arch_offset_parity.py`` checks
@@ -78,8 +80,93 @@ def rust_register_table(arch) -> dict | None:
         # proc may write as part of its return value (angr-hrcds).
         mips_hi = {"v1"} if arch.name in ("MIPS32", "MIPS64") else set()
         info["return_regs"] = frozenset({info["cc_ret"]} | mips_hi)
+        info["seed_extra"] = _seed_extra_rows(info)
     _RUST_REGISTER_TABLES[arch.name] = info
     return info
+
+
+def _seed_extra_rows(info: dict) -> tuple[tuple[str, int, int], ...]:
+    """``(name, offset, size)`` rows that cover the engine bytes no ``exported``
+    register covers, so seed import reaches every byte the engine models
+    (angr-vmi2l.320): on amd64/x86 ``fpreg`` (archinfo's ``fpu_regs``, the
+    x87/MMX file), the ymm/zmm upper lanes on amd64, and the VEX pseudo-guest
+    words (``emnote``, ``cmstart``, ``ip_at_syscall``, ...). Rows are taken
+    largest first and only when none of their bytes is already covered, so no
+    two synced rows overlap.
+    """
+    offsets = info["offsets"]
+    covered: set[int] = set()
+    for name in info["exported"]:
+        off, size = offsets[name]
+        covered.update(range(off, off + size))
+    rows = []
+    for name, (off, size) in sorted(offsets.items(), key=lambda kv: (-kv[1][1], kv[1][0])):
+        span = range(off, off + size)
+        if covered.isdisjoint(span):
+            covered.update(span)
+            rows.append((name, off, size))
+    return tuple(rows)
+
+
+def _written_register_bytes(angr_state: angr.SimState, off: int, size: int) -> list[bool]:
+    """Which bytes of ``[off, off + size)`` the seed's register file holds.
+
+    A register UltraPage answers through its own ``_contains``, after a cheap
+    screen: a row whose bitmap bits are all set (no concrete store) and that
+    no ``symbolic_data`` key reaches was never written. Other storage pays a
+    ``fill_missing=False`` load per byte.
+    """
+    registers = angr_state.registers
+    page_size = registers.page_size
+    page_addr = off - off % page_size
+    page = registers._get_page(off // page_size, False)  # pylint:disable=protected-access
+    base = off - page_addr
+    if isinstance(page, UltraPage) and base + size <= page.symbolic_bitmap.size:
+        sd = page.symbolic_data
+        touched = not page.symbolic_bitmap.all_set(base, base + size) or any(
+            True for _ in sd.irange(base, base + size - 1)
+        )
+        if not touched:
+            prev = next(sd.irange(maximum=base, reverse=True), None)
+            touched = prev is not None and sd[prev].base + sd[prev].length > off
+        if not touched:
+            return [False] * size
+        return [page._contains(base + i, page_addr) for i in range(size)]  # pylint:disable=protected-access
+    written = []
+    for addr in range(off, off + size):
+        try:
+            registers.load(addr, 1, inspect=False, disable_actions=True, fill_missing=False)
+            written.append(True)
+        except SimMemoryMissingError:
+            written.append(False)
+    return written
+
+
+def _seed_register_row(angr_state: angr.SimState, off: int, size: int, rust_raw):
+    """The register-order value of ``[off, off + size)``: the bytes the seed
+    wrote, and ``rust_raw()`` (the Rust state's register bytes) for the rest;
+    ``None`` when the seed wrote none of them.
+    """
+    written = _written_register_bytes(angr_state, off, size)
+    if not any(written):
+        return None
+    load_kwargs = {"inspect": False, "disable_actions": True, "fill_missing": False}
+    if all(written):
+        return angr_state.registers.load(off, size, **load_kwargs)
+    raw = rust_raw()
+    pieces = []
+    start = 0
+    while start < size:
+        end = start
+        while end < size and written[end] == written[start]:
+            end += 1
+        if written[start]:
+            pieces.append(angr_state.registers.load(off + start, end - start, endness="Iend_BE", **load_kwargs))
+        else:
+            pieces.append(claripy.BVV(bytes(raw[off + start : off + end])))
+        start = end
+    value = claripy.Concat(*pieces)
+    return value.reversed if angr_state.arch.register_endness == "Iend_LE" else value
 
 
 class RustStateSyncMixin:
@@ -207,8 +294,45 @@ class RustStateSyncMixin:
                 # solver.eval on concrete value raises) — register won't
                 # be synced; Rust may diverge from Python.
                 l.warning("Failed to sync register %s to Rust: %s", reg_name, e)
+        self._sync_unexported_register_bytes(angr_state, rust_state, bulk_regs)
         if bulk_regs:
             rust_state.set_registers_bulk(bulk_regs)
+
+    @staticmethod
+    def _sync_unexported_register_bytes(angr_state: angr.SimState, rust_state: _RustSimState, bulk_regs: dict):
+        """Sync the ``seed_extra`` rows, read by offset (angr-vmi2l.320).
+
+        archinfo's names for these bytes differ from the engine's (``fpu_regs``
+        vs ``fpreg``), so the read goes by offset (``_seed_register_row``) and
+        only over bytes the seed wrote: a never-written byte keeps the Rust
+        state's value, and the read neither mints angr's fill symbol into the
+        seed nor logs the fill warning. A concrete value of at most 128 bits
+        joins ``bulk_regs``; anything else (symbolic, or a wide concrete like
+        ``fpreg``) is imported as an AST.
+        """
+        table = rust_register_table(angr_state.arch)
+        if table is None:
+            return
+        raw_cache: list = []
+
+        def rust_raw():
+            if not raw_cache:
+                raw_cache.append(rust_state.get_registers_raw())
+            return raw_cache[0]
+
+        for name, off, size in table["seed_extra"]:
+            try:
+                val = _seed_register_row(angr_state, off, size, rust_raw)
+                if val is None:
+                    continue
+                if not val.symbolic and size <= 16:
+                    bulk_regs[name] = angr_state.solver.eval(val)
+                else:
+                    rust_state.set_register_symbolic_ast(name, val)
+            except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: the Rust state keeps its default
+                # for these bytes while the seed holds a written value.
+                l.warning("Failed to sync register %s to Rust: %s", name, e)
 
     def _sync_memory_to_rust(self, angr_state: angr.SimState, rust_state: _RustSimState):
         """Sync memory from angr state to Rust state.
