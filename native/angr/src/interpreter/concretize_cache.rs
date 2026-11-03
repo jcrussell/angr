@@ -156,8 +156,9 @@ impl<'a> VEXInterpreter<'a> {
     /// alone, and a result computed under `guard` is not reusable without it.
     ///
     /// Non-`Single` shapes come back unpinned, exactly as from
-    /// [`concretize_cached_write`](Self::concretize_cached_write); their
-    /// callers hand the store to Python, which concretizes it again.
+    /// [`concretize_cached_write`](Self::concretize_cached_write): a
+    /// `Multiple`/`Strided` set is the complete solution set under `guard`,
+    /// and the caller guards each candidate's write instead.
     pub(super) fn concretize_guarded_write(
         &mut self,
         addr: &RustBV,

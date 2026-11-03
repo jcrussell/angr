@@ -400,10 +400,11 @@ impl<'a> VEXInterpreter<'a> {
     /// The address is concretized under the guard
     /// (`concretize_guarded_write`), so the guard-false path keeps every
     /// address value. A single target gets `ITE(guard, data, current)` through
-    /// [`store_guarded_ite`](Self::store_guarded_ite). Any other shape goes to
-    /// the host's full symbolic store with `host_data`, the value the caller
-    /// would write there unguarded; `what` names the statement in the
-    /// no-callback refusal.
+    /// [`store_guarded_ite`](Self::store_guarded_ite). A `Multiple` or
+    /// `Strided` set within [`MAX_ITE_ADDRS`] gets `ITE(guard && addr == a,
+    /// data, mem[a])` at each candidate. Any other shape goes to the host's
+    /// full symbolic store with `host_data`, the value the caller would write
+    /// there unguarded; `what` names the statement in the no-callback refusal.
     pub(super) fn store_guarded_symbolic_addr(
         &mut self,
         callbacks: &dyn EngineHost,
@@ -429,12 +430,35 @@ impl<'a> VEXInterpreter<'a> {
                 ),
             GuardedWrite::Concretized(other) => {
                 // Invalidate cached code at the concretized target(s) before
-                // dispatching (self-modifying-code support). Combining the
-                // guard-ITE with per-address ITEs requires a per-address load
-                // and is brittle, so delegate to the host's full symbolic
-                // store, which has angr's address concretization strategies.
+                // dispatching (self-modifying-code support).
                 self.invalidate_code_for_concretization(&other, data_size);
                 self.flush_stores(callbacks)?;
+                // A complete candidate set within the ITE cap stores
+                // `ITE(guard && addr == a, data, mem[a])` at each candidate,
+                // as Python's conditional store does. The host's full store
+                // takes no guard (and a proxy-backed host drops it), so only
+                // the shapes Rust cannot enumerate go there (angr-vmi2l.323).
+                let addrs = match &other {
+                    ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
+                    ConcretizationResult::Strided {
+                        base,
+                        stride,
+                        count,
+                    } => Some(strided_addrs(*base, *stride, *count)),
+                    _ => None,
+                };
+                if let Some(addrs) = addrs
+                    && addrs.len() <= MAX_ITE_ADDRS
+                    && callbacks.has_memory_store_symbolic_value()
+                {
+                    return self.build_ite_store_from_callbacks(
+                        callbacks,
+                        &addrs,
+                        addr_val,
+                        data_val,
+                        Some(guard_val),
+                    );
+                }
                 if !callbacks.has_memory_store_symbolic_full() {
                     return Err(CbExecutionError::Unsupported(format!(
                         "{what} with symbolic address: no memory_store_symbolic_full callback"
@@ -741,7 +765,7 @@ impl<'a> VEXInterpreter<'a> {
         data_val: &RustBV,
     ) -> Result<(), CbExecutionError> {
         if addrs.len() <= MAX_ITE_ADDRS && callbacks.has_memory_store_symbolic_value() {
-            self.build_ite_store_from_callbacks(callbacks, addrs, addr_val, data_val)
+            self.build_ite_store_from_callbacks(callbacks, addrs, addr_val, data_val, None)
         } else {
             callbacks
                 .memory_store_symbolic(addrs, data_val, addr_val)

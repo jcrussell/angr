@@ -327,7 +327,7 @@ fn build_ite_store_invokes_per_addr_ite_callbacks() {
     let addrs = [0x1000u64, 0x2000u64];
 
     interp
-        .build_ite_store_from_callbacks(&cb, &addrs, &addr_expr, &data_val)
+        .build_ite_store_from_callbacks(&cb, &addrs, &addr_expr, &data_val, None)
         .expect("build_ite_store_from_callbacks");
 
     let rec = cb.symbolic_value_stores.borrow();
@@ -1081,6 +1081,68 @@ fn storeg_symbolic_guard_symbolic_addr_leaves_index_free_when_false() {
     assert!(buffered.is_symbolic(), "the buffered value is the guard ITE");
 }
 
+/// angr-vmi2l.323: under `SYMBOLIC_WRITE_ADDRESSES` the same `StoreG`
+/// concretizes to a candidate set. Each candidate gets
+/// `ITE(guard && addr == a, data, mem[a])` buffered for Rust memory; it used
+/// to go to the host's full store, which a proxy-backed host drops.
+#[test]
+fn storeg_symbolic_guard_multiwrite_guards_every_candidate() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+    interp.set_concretizer(crate::concretize::AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..crate::concretize::AddressConcretizer::new()
+    });
+
+    let guard = RustBV::symbol("storeg_mw_hi", 1);
+    let idx = RustBV::symbol("storeg_mw_idx", 64);
+    ctx.assume_true(&idx.ule(&RustBV::concrete(3, 64)));
+    let addr = RustBV::concrete(0x4000, 64).add(&idx.mul(&RustBV::concrete(4, 64)));
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I1, IRType::I64]);
+    interp.temps = vec![Some(guard.clone()), Some(addr)];
+
+    let storeg = IRStmt::StoreG {
+        addr: Box::new(IRExpr::RdTmp(1)),
+        data: Box::new(IRExpr::Const(IRConst::U32(0xcafe_0003))),
+        guard: Box::new(IRExpr::RdTmp(0)),
+        endness: Endness::Little,
+    };
+    with_proxy_callbacks(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &storeg, &irsb)
+            .expect("guarded store with symbolic guard and multi-candidate address");
+    });
+
+    for k in 0..4u64 {
+        let cell = interp
+            .pending_symbolic_stores
+            .get(&(0x4000 + 4 * k))
+            .unwrap_or_else(|| panic!("candidate {k} must be buffered"))
+            .clone();
+        let eval_under = |hi: bool, at: u64| {
+            ctx.push();
+            if hi {
+                ctx.assume_true(&guard);
+            } else {
+                ctx.assume_false(&guard);
+            }
+            ctx.assume_true(&idx.eq(&RustBV::concrete(u128::from(at), 64)));
+            let v = ctx.eval(&cell);
+            ctx.pop();
+            v
+        };
+        assert_eq!(eval_under(true, k), Some(0xcafe_0003), "guard true, idx={k}: stored");
+        assert_eq!(eval_under(false, k), Some(0), "guard false, idx={k}: unchanged");
+        assert_eq!(eval_under(true, (k + 1) % 4), Some(0), "other index: unchanged");
+    }
+    ctx.push();
+    ctx.assume_true(&guard);
+    let mut vals = ctx.eval_upto(&idx, 8);
+    ctx.pop();
+    vals.sort_unstable();
+    assert_eq!(vals, vec![0, 1, 2, 3], "a complete candidate set pins nothing");
+}
+
 /// CAS variant (angr-5mnx3.23): `cas_store_symbolic_data` writes back a computed
 /// `RustBV` (the success/failure ITE) that cannot be re-expressed as an
 /// `IRExpr`, so it dispatches the symbolic-value callback directly. Same
@@ -1121,7 +1183,7 @@ fn ite_store_buffers_every_candidate_for_rust_memory() {
 
     with_proxy_callbacks(|cb| {
         interp
-            .build_ite_store_from_callbacks(cb, &addrs, &addr_expr, &data_val)
+            .build_ite_store_from_callbacks(cb, &addrs, &addr_expr, &data_val, None)
             .expect("per-candidate ITE store");
 
         for addr in addrs {

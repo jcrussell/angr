@@ -450,6 +450,8 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// For each candidate address `a_i`, computes:
     ///   `mem[a_i] = ITE(addr == a_i, new_data, mem[a_i])`
+    /// and, for a write that happens only under `guard` (a symbolic-guard
+    /// `StoreG`, an undecided CAS), `ITE(guard && addr == a_i, ..)`.
     /// This keeps the ITE construction in Rust's Z3 context, avoiding FFI round-trips
     /// for the ITE chain building that Python would otherwise do.
     pub(super) fn build_ite_store_from_callbacks(
@@ -458,6 +460,7 @@ impl<'a> VEXInterpreter<'a> {
         addrs: &[u64],
         addr_expr: &RustBV,
         data_val: &RustBV,
+        guard: Option<&RustBV>,
     ) -> Result<(), CbExecutionError> {
         if addrs.is_empty() {
             return Ok(());
@@ -474,7 +477,11 @@ impl<'a> VEXInterpreter<'a> {
 
         for (i, &addr) in addrs.iter().enumerate() {
             let addr_const = RustBV::concrete(addr as u128, addr_width);
-            let cond = addr_expr.eq(&addr_const);
+            let at_addr = addr_expr.eq(&addr_const);
+            let cond = match guard {
+                Some(guard) => guard.and(&at_addr),
+                None => at_addr,
+            };
 
             let current = self.convert_load_result(&load_results, i, val_width, || {
                 format!("ite_store_cur_{addr:x}")
