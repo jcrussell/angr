@@ -228,6 +228,26 @@ pub struct StdinReadLength {
     pub length: (String, u32),
 }
 
+/// A stdin packet a Python SimProcedure read during a bounce (angr-azp2b).
+/// Python's `SimPackets.read` mints the packet as the fresh symbol `data`
+/// (big-endian bytes) of byte count `size`: a symbol under SHORT_READS, else
+/// `data`'s own width. Rust records it so every descendant's
+/// `posix.dumps(0)` keeps it, between the leaves read before and after it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StdinHostPacket {
+    /// How many [`RustSimState::stdin_symbols`] entries precede the packet.
+    pub after_leaves: usize,
+    /// Name and width of the packet's data symbol.
+    pub data: (String, u32),
+    /// Name and width of the packet's symbolic byte count, `None` when the
+    /// count is `data`'s width in bytes.
+    pub size: Option<(String, u32)>,
+}
+
+/// A [`StdinHostPacket`] as `get_state_stdin_host_packets` hands it to
+/// Python: `(after_leaves, data, size)`.
+pub type StdinHostPacketExport = (usize, (String, u32), Option<(String, u32)>);
+
 /// One packet of [`RustSimState::stdin_packets`]: a run of `stdin_symbols`
 /// and, for a variable-length read, its [`StdinReadLength`].
 pub type StdinPacket<'a> = (&'a [(String, u32)], Option<&'a StdinReadLength>);
@@ -457,6 +477,10 @@ pub struct RustSimState {
     #[merge_policy = "union"]
     #[merge_manual = "set-like union over a Vec keyed by first leaf, like stdin_symbols"]
     stdin_read_lengths: Vec<StdinReadLength>,
+    /// Stdin packets Python read in a bounce; see [`StdinHostPacket`].
+    #[merge_policy = "union"]
+    #[merge_manual = "set-like union over a Vec keyed by data symbol, like stdin_symbols"]
+    stdin_host_packets: Vec<StdinHostPacket>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Cloned on fork so each path has its own call stack.
     ///

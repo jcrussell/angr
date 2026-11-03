@@ -1,7 +1,7 @@
 # pylint: disable=missing-class-docstring,no-self-use
 """Stale-stdin-packet dropping is by provenance, not byte value (angr-p8jyz).
 
-``_drop_stale_rust_stdin_packets`` used to identify "packets Rust injected" by a
+``_drop_rust_stdin_packets`` used to identify "packets Rust injected" by a
 manager-wide ``set[bytes]``, so any legitimate Python-side concrete packet whose
 bytes collided with a previously-injected eval was silently stripped from
 ``posix.dumps(0)``. Collisions are realistic: an unconstrained materialization
@@ -46,11 +46,11 @@ class TestStdinPacketProvenance:
         injected = _tagged(b"\x00" * 32)
         stream = types.SimpleNamespace(content=[preseed, injected])
 
-        mixin._drop_stale_rust_stdin_packets(stream)
+        mixin._drop_rust_stdin_packets(stream, [])
 
         assert len(stream.content) == 1
         kept = stream.content[0]
-        assert not RustCallbackDispatchMixin._is_rust_injected(kept)
+        assert RustCallbackDispatchMixin._rust_injected_tag(kept) is None
         assert kept is preseed
 
     def test_only_tagged_packets_dropped(self):
@@ -62,12 +62,23 @@ class TestStdinPacketProvenance:
         d = _tagged(b"DDDD")
         stream = types.SimpleNamespace(content=[a, b, c, d])
 
-        mixin._drop_stale_rust_stdin_packets(stream)
+        mixin._drop_rust_stdin_packets(stream, [])
 
         assert stream.content == [a, c]
 
     def test_empty_content_is_noop(self):
         mixin = RustCallbackDispatchMixin.__new__(RustCallbackDispatchMixin)
         stream = types.SimpleNamespace(content=[])
-        mixin._drop_stale_rust_stdin_packets(stream)
+        mixin._drop_rust_stdin_packets(stream, [])
         assert stream.content == []
+
+    def test_packet_rust_recorded_from_a_bounce_is_dropped(self):
+        """A bounced proc's packet Rust re-supplies goes; an unrecorded one stays (angr-azp2b)."""
+        mixin = RustCallbackDispatchMixin.__new__(RustCallbackDispatchMixin)
+        hosted = (claripy.BVS("packet_1_stdin", 16, explicit_name=True), claripy.BVV(2, 64))
+        other = (claripy.BVS("harness_seed", 16, explicit_name=True), claripy.BVV(2, 64))
+        stream = types.SimpleNamespace(content=[_tagged(b"x"), hosted, other])
+
+        mixin._drop_rust_stdin_packets(stream, [(1, ("packet_1_stdin", 16), None)])
+
+        assert stream.content == [other]

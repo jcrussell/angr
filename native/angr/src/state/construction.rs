@@ -106,6 +106,7 @@ impl RustSimState {
             ctype_loc: CtypeLocPtrs::default(),
             stdin_symbols: Vec::new(),
             stdin_read_lengths: Vec::new(),
+            stdin_host_packets: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),

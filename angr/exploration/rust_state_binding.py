@@ -454,6 +454,10 @@ class CallbackForkScope:
         self._unconsumed: set[int] = set()
         self._settled = False
         self._closed = False
+        # ``len(posix.stdin.content)`` when the callback state was built: a
+        # packet a successor holds past it is one the bounced proc read
+        # (``_sync_state_stdin_to_rust``).
+        self.stdin_frontier: int | None = None
 
     @property
     def fork_count(self) -> int:

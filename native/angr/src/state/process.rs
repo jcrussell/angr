@@ -111,6 +111,26 @@ impl RustSimState {
         packets
     }
 
+    /// Record a packet a bounced Python proc read, after every leaf recorded
+    /// so far; a packet already recorded (same data symbol) is left where it
+    /// is. See [`StdinHostPacket`].
+    pub fn record_stdin_host_packet(&mut self, data: (String, u32), size: Option<(String, u32)>) {
+        if self.stdin_host_packets.iter().any(|p| p.data == data) {
+            return;
+        }
+        let after_leaves = self.stdin_symbols.len();
+        self.stdin_host_packets.push(StdinHostPacket {
+            after_leaves,
+            data,
+            size,
+        });
+    }
+
+    /// Stdin packets Python read in a bounce, in read order.
+    pub fn stdin_host_packets(&self) -> &[StdinHostPacket] {
+        &self.stdin_host_packets
+    }
+
     /// Check if any stdin symbols have been recorded.
     pub fn has_stdin_symbols(&self) -> bool {
         !self.stdin_symbols.is_empty()

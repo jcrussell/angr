@@ -282,6 +282,7 @@ impl RustSimState {
             ctype_loc: self.ctype_loc,
             stdin_symbols: self.stdin_symbols.clone(),
             stdin_read_lengths: self.stdin_read_lengths.clone(),
+            stdin_host_packets: self.stdin_host_packets.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
@@ -535,6 +536,15 @@ impl RustSimState {
             }
         }
 
+        let mut merged_host_packets = self.stdin_host_packets.clone();
+        for other in others {
+            for packet in &other.stdin_host_packets {
+                if !merged_host_packets.iter().any(|p| p.data == packet.data) {
+                    merged_host_packets.push(packet.clone());
+                }
+            }
+        }
+
         let mut merged_read_lengths = self.stdin_read_lengths.clone();
         for other in others {
             for read in &other.stdin_read_lengths {
@@ -755,6 +765,7 @@ impl RustSimState {
             ctype_loc: self.merge_field_ctype_loc(others),
             stdin_symbols: merged_stdin,
             stdin_read_lengths: merged_read_lengths,
+            stdin_host_packets: merged_host_packets,
             call_stack: self.call_stack.clone(),
             // Union every branch's heap bookkeeping, not just self's: heap_brk
             // is maxed above so a branch-only allocation stays reachable in the

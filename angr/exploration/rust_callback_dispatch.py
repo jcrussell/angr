@@ -32,7 +32,7 @@ from angr.exploration.rust_state_export import (
     _concrete_stream_len,
     _posix_stream,
     _stream_is_prefix_of,
-    rust_stdin_read_symbols,
+    rust_stdin_leaves,
 )
 from angr.storage.file import SimFile, SimFileDescriptor
 
@@ -99,7 +99,7 @@ class _RustInjectedStdin(claripy.Annotation):
     a previously-injected eval — e.g. an unconstrained materialization evals its
     stdin to all-zeros, so ``b'\\x00'*N`` enters the set and any zero-filled
     concrete preseed is then dropped from ``posix.dumps(0)`` (angr-p8jyz). We tag
-    the injected BVV instead, so ``_drop_stale_rust_stdin_packets`` drops purely
+    the injected BVV instead, so ``_drop_rust_stdin_packets`` drops purely
     by provenance. ``relocatable`` keeps the tag attached across the SimState
     ``.copy()`` that mints a child stdin stream.
     """
@@ -613,68 +613,117 @@ class RustCallbackDispatchMixin:
             self._perf_stats.record_posix_call(time.perf_counter_ns() - _px_start)
 
     @staticmethod
-    def _is_rust_injected(packet):
-        """True if this ``SimPackets`` content entry carries the provenance tag."""
+    def _rust_injected_tag(packet):
+        """The ``_RustInjectedStdin`` tag on this ``SimPackets`` entry, or ``None``."""
         try:
-            return any(isinstance(a, _RustInjectedStdin) for a in packet[0].annotations)
+            return next((a for a in packet[0].annotations if isinstance(a, _RustInjectedStdin)), None)
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: an entry whose annotations we cannot
             # read is by definition not one we injected; leave it in place.
-            return False
+            return None
 
-    def _drop_stale_rust_stdin_packets(self, stdin_stream):
-        """Remove packets a previous Rust stdin injection put on this stream.
+    def _rust_stdin_host_packets(self, state_id):
+        """``get_state_stdin_host_packets``, or ``[]`` when Rust cannot answer."""
+        try:
+            return self._rust_mgr.get_state_stdin_host_packets(state_id)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: the packets bounced procs read stay
+            # wherever the cached stream put them, or are missing.
+            l.debug("get_state_stdin_host_packets(%d) failed: %s", state_id, e)
+            return []
+
+    def _drop_rust_stdin_packets(self, stdin_stream, host_packets) -> bool:
+        """Drop every packet Rust re-supplies: the tagged ones and those ``host_packets`` name.
 
         A materialized child SimState is a ``.copy()`` of its parent's cached
         state (see the parent-root path in ``_materialize_state``), so it starts
         out carrying whatever packet Rust injected for the parent. Rust's
-        per-state stdin symbol list is cumulative — it already includes every
+        per-state stdin record is cumulative — it already includes every
         byte the parent read — so re-appending would double-count them and
         ``posix.dumps(0)`` would grow a junk prefix (angr-psrxs).
 
-        Dropped purely by the ``_RustInjectedStdin`` provenance tag, not by byte
-        value (angr-p8jyz): a Python-side concrete packet that happens to collide
-        with a previously-injected eval — e.g. a zero preseed vs an all-zeros
-        materialization eval — is never tagged, so it is left alone.
+        Injected packets are dropped by the ``_RustInjectedStdin`` provenance
+        tag, not by byte value (angr-p8jyz): a Python-side concrete packet that
+        happens to collide with a previously-injected eval — e.g. a zero
+        preseed vs an all-zeros materialization eval — is never tagged, so it
+        is left alone. A packet a bounced proc read is dropped by its data
+        symbol, which Rust recorded. Returns ``False``, dropping nothing, when
+        the stream is not a packet list.
         """
-        content = stdin_stream.content
-        if not content:
-            return
-        kept = [pkt for pkt in content if not self._is_rust_injected(pkt)]
-        if len(kept) != len(content):
-            content[:] = kept
+        content = getattr(stdin_stream, "content", None)
+        if not isinstance(content, list):
+            return False
+        hosted = {data for _, data, _ in host_packets}
+
+        def resupplied(pkt):
+            if self._rust_injected_tag(pkt) is not None:
+                return True
+            data = pkt[0]
+            return data.op == "BVS" and (data.args[0], data.size()) in hosted
+
+        content[:] = [pkt for pkt in content if not resupplied(pkt)]
+        return True
 
     def _inject_rust_stdin_inner(self, state, state_id):
+        """Splice the stdin Rust read, natively or in a bounce, into ``posix.stdin``.
+
+        Rust's leaves and the packets bounced procs read (``_sync_state_stdin_to_rust``)
+        are laid out in read order, each run of leaves as one evaluated packet;
+        any copy of them the cached stream carried is dropped first. ``pos``
+        moves past the last of them, so a bounced proc reads a fresh packet
+        (angr-azp2b).
+        """
         try:
-            if not self._rust_mgr.has_state_stdin_symbols(state_id):
+            host_packets = self._rust_stdin_host_packets(state_id)
+            if not host_packets and not self._rust_mgr.has_state_stdin_symbols(state_id):
                 return
-            stdin_symbols = rust_stdin_read_symbols(self._rust_mgr, state_id)
-            if not stdin_symbols:
-                return
+            stdin_symbols = rust_stdin_leaves(self._rust_mgr, state_id)
             posix = getattr(state, "posix", None)
             if posix is None:
                 return
             stdin_stream = getattr(posix, "stdin", None)
-            if stdin_stream is None:
+            if stdin_stream is None or not self._drop_rust_stdin_packets(stdin_stream, host_packets):
                 return
-            # Evaluate each stdin symbol via Rust solver to get concrete bytes
-            concrete_bytes = bytearray()
-            for name, bits in stdin_symbols:
-                # Eval at the symbol's recorded width — a hardcoded 8 minted a
-                # fresh unconstrained const for scanf %d/%ld (32/64-bit) symbols,
-                # so the solved value never reached posix.dumps(0) (angr-ph300.18).
-                nbytes = max(1, bits // 8)
-                val = self._rust_mgr.eval_stdin_symbol(state_id, name, bits)
-                if val is not None:
-                    concrete_bytes.extend((val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little"))
-                else:
-                    concrete_bytes.extend(b"\x00" * nbytes)
-            if concrete_bytes:
-                packet = bytes(concrete_bytes)
-                self._drop_stale_rust_stdin_packets(stdin_stream)
-                data = claripy.BVV(packet).annotate(_RustInjectedStdin())
-                size = claripy.BVV(len(packet), state.arch.bits)
-                stdin_stream.content.append((data, size))
+            word = state.arch.bits
+
+            def leaf_packet(start, end):
+                # Evaluate each stdin symbol via Rust solver to get concrete bytes
+                concrete_bytes = bytearray()
+                for leaf in stdin_symbols[start:end]:
+                    if leaf is None:
+                        continue
+                    name, bits = leaf
+                    # Eval at the symbol's recorded width — a hardcoded 8 minted a
+                    # fresh unconstrained const for scanf %d/%ld (32/64-bit) symbols,
+                    # so the solved value never reached posix.dumps(0) (angr-ph300.18).
+                    nbytes = max(1, bits // 8)
+                    val = self._rust_mgr.eval_stdin_symbol(state_id, name, bits)
+                    if val is not None:
+                        concrete_bytes.extend((val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little"))
+                    else:
+                        concrete_bytes.extend(b"\x00" * nbytes)
+                return bytes(concrete_bytes)
+
+            def host_packet(data, size):
+                name, bits = data
+                raw = self._rust_mgr.eval_stdin_symbol_bytes(state_id, name, bits) or b"\x00" * (bits // 8)
+                if size is not None:
+                    n = self._rust_mgr.eval_stdin_symbol(state_id, *size)
+                    raw = raw[: len(raw) if n is None else n]
+                return raw
+
+            chunks, done = [], 0
+            for after, data, size in sorted(host_packets, key=lambda p: p[0]):
+                chunks.append(leaf_packet(done, after))
+                chunks.append(host_packet(data, size))
+                done = max(done, after)
+            chunks.append(leaf_packet(done, len(stdin_symbols)))
+            chunks = [chunk for chunk in chunks if chunk]
+            for chunk in chunks:
+                data = claripy.BVV(chunk).annotate(_RustInjectedStdin())
+                stdin_stream.content.append((data, claripy.BVV(len(chunk), word)))
+            if chunks and isinstance(getattr(stdin_stream, "pos", None), int):
+                stdin_stream.pos = max(stdin_stream.pos, len(stdin_stream.content))
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust stdin injection raised; posix.
             # dumps(0) will not show the symbolic-stdin bytes that Rust read.
@@ -1276,6 +1325,7 @@ class RustCallbackDispatchMixin:
         ret_addr = event.callback_return_addr or (addr + 1)
         self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
+        self._sync_state_stdin_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, None)
 
@@ -1351,6 +1401,7 @@ class RustCallbackDispatchMixin:
         # so a later native malloc does not overlap what it handed out.
         self._sync_state_heap_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_to_rust(succ_state, event.callback_state_id)
+        self._sync_state_stdin_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(succ_state, event.callback_state_id)
 
         _sb_resume_start = time.perf_counter_ns()
@@ -1400,6 +1451,7 @@ class RustCallbackDispatchMixin:
         # Push back any heap bump the hook made (see _resume_with_state).
         self._sync_state_heap_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
+        self._sync_state_stdin_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
 
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
@@ -1427,6 +1479,7 @@ class RustCallbackDispatchMixin:
             new_pc = self._resolve_next_pc(succ_state)
         self._sync_state_heap_to_rust(succ_state, fork_id)
         self._sync_state_posix_to_rust(succ_state, fork_id)
+        self._sync_state_stdin_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)
         self._rust_mgr.resume_forked_successor(fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None)
         self._callback_fork_scope.consumed(fork_id)
@@ -2157,6 +2210,10 @@ class RustCallbackDispatchMixin:
                 # angr-mx00p.132.21: likewise the stdin native read() consumed,
                 # so a hook keyed on ``posix.dumps(0)`` sees the solved input.
                 self._inject_rust_stdin(state, event.callback_state_id)
+                if scope is not None:
+                    content = getattr(getattr(state.posix, "stdin", None), "content", None)
+                    if isinstance(content, list):
+                        scope.stdin_frontier = len(content)
                 # angr-op0dn.14.1.6: fds a native open() created must be usable
                 # by the bounced proc — and must be visible to posix._pick_fd so
                 # a bounced open() does not collide with one of them.

@@ -22,7 +22,8 @@
 //!   `set_state_memory_{concrete,ast}{,_automap}`,
 //!   `state_memory_store_symbolic_multi`.
 //! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
-//!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`, `eval_stdin_symbol`,
+//!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`, `eval_stdin_symbol{,_bytes}`,
+//!   `record_stdin_host_packet`, `get_state_stdin_host_packets`,
 //!   `get_state_open_fds`, `has_state_extra_fds`, `get_state_fd_content`,
 //!   `register_state_fd`.
 //! - **History and heap**: `get_state_call_stack{,_depth}`,
@@ -428,6 +429,42 @@ impl RustExplorationManager {
         self._get_state_stdin_symbols(state_id)
     }
 
+    /// Record a stdin packet a bounced Python proc read on state `state_id`:
+    /// the packet's data symbol and, under SHORT_READS, its size symbol
+    /// (`RustSimState::record_stdin_host_packet`, angr-azp2b).
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own stdin record; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn record_stdin_host_packet(
+        &mut self,
+        state_id: u64,
+        data_name: String,
+        data_bits: u32,
+        size: Option<(String, u32)>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            state.record_stdin_host_packet((data_name, data_bits), size);
+            Ok(())
+        })
+    }
+
+    /// The stdin packets bounced Python procs read on a state, in read order:
+    /// `(after_leaves, (data name, data bits), size)`, where `after_leaves`
+    /// counts the `get_state_stdin_symbols` entries read before the packet.
+    pub fn get_state_stdin_host_packets(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<crate::state::StdinHostPacketExport>> {
+        self.with_state(state_id, |state| {
+            Ok(state
+                .stdin_host_packets()
+                .iter()
+                .map(|p| (p.after_leaves, p.data.clone(), p.size.clone()))
+                .collect())
+        })
+    }
+
     /// Get a state's stdin symbols split into packets, in read order.
     ///
     /// Each packet is `(symbols, length)`: `length` is `None` for a run of
@@ -621,5 +658,19 @@ impl RustExplorationManager {
     /// cannot be found or evaluated.
     pub fn eval_stdin_symbol(&self, state_id: u64, name: &str, width: u32) -> Option<u64> {
         self._eval_stdin_symbol(state_id, name, width)
+    }
+
+    /// Evaluate a stdin symbol of any width to its big-endian bytes, as
+    /// `eval_stdin_symbol` does for one of at most 64 bits. Used for a
+    /// packet's data symbol (`get_state_stdin_host_packets`).
+    pub fn eval_stdin_symbol_bytes(
+        &self,
+        state_id: u64,
+        name: &str,
+        width: u32,
+    ) -> Option<Vec<u8>> {
+        let state = self.find_state(state_id)?;
+        let ctx = state.solver().borrow();
+        ctx.eval_wide(&crate::symbolic::RustBV::symbol(name, width.max(1)))
     }
 }

@@ -257,24 +257,35 @@ def _stream_is_prefix_of(state, stream, rust_out: bytes) -> bool:
     return True
 
 
-def rust_stdin_read_symbols(rust_mgr, state_id: int) -> list[tuple[str, int]]:
-    """The ``(name, bits)`` stdin symbols state ``state_id``'s reads returned, in order.
+def rust_stdin_leaves(rust_mgr, state_id: int) -> list[tuple[str, int] | None]:
+    """Every ``(name, bits)`` stdin leaf state ``state_id`` recorded, in order.
 
     A variable-length read (native ``fgets`` under SHORT_READS, ``gets``)
     records every leaf it minted but returns a symbolic byte count; Python
     keeps such a read as one packet of that size, so ``posix.dumps(0)`` drops
     the leaves past it. Each is cut to its evaluated count here
-    (angr-mx00p.132.3); an unevaluable count keeps the whole read.
+    (angr-mx00p.132.3): a leaf past it is ``None``, so an index into this list
+    is an index into the state's recorded leaves. An unevaluable count keeps
+    the whole read.
     """
     symbols = []
     for leaves, length in rust_mgr.get_state_stdin_packets(state_id):
+        kept = len(leaves)
         if length is not None:
             name, bits, seeded = length
             returned = rust_mgr.eval_stdin_symbol(state_id, name, bits)
             if returned is not None:
-                leaves = leaves[: max(0, returned - seeded)]
-        symbols.extend(leaves)
+                kept = max(0, returned - seeded)
+        symbols.extend(leaf if i < kept else None for i, leaf in enumerate(leaves))
     return symbols
+
+
+def rust_stdin_read_symbols(rust_mgr, state_id: int) -> list[tuple[str, int]]:
+    """The ``(name, bits)`` stdin symbols state ``state_id``'s reads returned, in order.
+
+    :func:`rust_stdin_leaves` without the leaves a read did not return.
+    """
+    return [leaf for leaf in rust_stdin_leaves(rust_mgr, state_id) if leaf is not None]
 
 
 class _RustExportedScratch(SimStateScratch):
@@ -1482,6 +1493,40 @@ class RustStateExportMixin:
                 # it. The state may simply have been dropped from Rust by now.
                 l.debug("fd %d write-back to Rust state %d failed: %s", fd, state_id, e)
 
+    def _sync_state_stdin_to_rust(self, state: angr.SimState, state_id: int):
+        """Record in Rust the stdin packets a bounced proc read (angr-azp2b).
+
+        Reverse of ``_inject_rust_stdin``. Rust's stdin record is per state
+        and cumulative, but a packet Python's ``SimPackets.read`` minted in the
+        bounce lives only on this callback successor's stream, which no state
+        Rust forks later inherits. Every packet past the scope's
+        ``stdin_frontier`` is new; Rust places it after the leaves it has read
+        so far and skips one it already holds, so repeated syncs are no-ops.
+        Only a packet ``SimPackets.read`` minted, a fresh data symbol sized by
+        its width or by a size symbol, can be named for Rust.
+        """
+        scope = getattr(self, "_callback_fork_scope", None)
+        frontier = getattr(scope, "stdin_frontier", None)
+        content = getattr(getattr(getattr(state, "posix", None), "stdin", None), "content", None)
+        if frontier is None or not isinstance(content, list):
+            return
+        for data, size in content[frontier:]:
+            if data.op != "BVS":
+                continue
+            if size.op == "BVS":
+                size_sym = (size.args[0], size.size())
+            elif size.concrete and size.concrete_value * 8 == data.size():
+                size_sym = None
+            else:
+                continue
+            try:
+                self._rust_mgr.record_stdin_host_packet(state_id, data.args[0], data.size(), size_sym)
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: posix.dumps(0) on a state Rust
+                # forks from this one misses the packet. The state may simply
+                # have been dropped from Rust by now.
+                l.debug("stdin packet write-back to Rust state %d failed: %s", state_id, e)
+
     def _sync_state_posix_fds_to_rust(self, state: angr.SimState, state_id: int):
         """Push fds a bounced proc opened (open/fopen/dup) into Rust's FileSystem.
 
@@ -1758,15 +1803,44 @@ class RustStateExportMixin:
         successor read natively (angr-mx00p.132.26). A variable-length read is
         its own packet, sized by its symbolic byte count (angr-mx00p.132.3).
         """
-        if not self._rust_mgr.has_state_stdin_symbols(state_id):
+        host_packets = self._rust_stdin_host_packets(state_id)
+        if not host_packets and not self._rust_mgr.has_state_stdin_symbols(state_id):
             return
         stdin = getattr(state.posix, "stdin", None)
-        content = getattr(stdin, "content", None)
-        if not isinstance(content, list):
+        if not self._drop_rust_stdin_packets(stdin, host_packets):
             return
-        self._drop_stale_rust_stdin_packets(stdin)
+        content = stdin.content
         word = state.arch.bits
+        # A packet a bounced proc read goes back between the leaves read
+        # before and after it (``_inject_rust_stdin_inner``).
+        pending = sorted(host_packets, key=lambda p: p[0])
+        read = 0
+
+        def flush_host_packets(upto):
+            while pending and pending[0][0] <= upto:
+                _, (name, bits), size = pending.pop(0)
+                if size is None:
+                    size_bv = claripy.BVV(bits // 8, word)
+                else:
+                    size_bv = claripy.BVS(size[0], size[1], explicit_name=True)
+                content.append((claripy.BVS(name, bits, explicit_name=True), size_bv))
+
+        # A run of fixed-length reads is one packet; split it where a bounced
+        # proc's packet falls inside it.
+        cuts = {after for after, _, _ in host_packets}
+        packets, base = [], 0
         for symbols, length in self._rust_mgr.get_state_stdin_packets(state_id):
+            start = 0
+            if length is None:
+                for i in range(1, len(symbols)):
+                    if base + i in cuts:
+                        packets.append((symbols[start:i], None))
+                        start = i
+            packets.append((symbols[start:], length))
+            base += len(symbols)
+        for symbols, length in packets:
+            flush_host_packets(read)
+            read += len(symbols)
             leaves = []
             for name, bits in symbols:
                 sym = claripy.BVS(name, bits, explicit_name=True)
@@ -1780,6 +1854,7 @@ class RustStateExportMixin:
                 seeded_bv = claripy.BVV(seeded, word)
                 size = claripy.If(returned > seeded_bv, returned - seeded_bv, claripy.BVV(0, word))
             content.append((data, size))
+        flush_host_packets(read)
         stdin.pos = len(content)
 
     def _detach_register_proxy(self, state: angr.SimState, state_id: int) -> None:
