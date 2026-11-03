@@ -417,6 +417,31 @@ class TestForkSiblingHistory:
         assert len(sibling) == 1
         assert rust.get_state_detailed_history(sibling[0]) == [(0x86DC, 0, 0x86F8)]
 
+    @pytest.mark.parametrize("granular", [False, True])
+    def test_sibling_recent_bbl_addrs_end_at_the_branch(self, granular):
+        """The sibling's ``recent_bbl_addrs`` names the branch block (angr-mx00p.132.45).
+
+        The plain per-step history is the fork base's, ending at the continuing
+        path's pc; the bbl tail reads the detailed history instead (angr-v625t).
+        """
+        import angr
+
+        path = os.path.join(BIN_LOCATION, "tests", "armel", "fauxware")
+        if not os.path.exists(path):
+            pytest.skip(f"binary not found: {path}")
+        project = angr.Project(path, auto_load_libs=False, engine="rust")
+        mgr = project.factory.simulation_manager(project.factory.blank_state(addr=0x86DC))
+        mgr.set_block_granular(granular)
+
+        mgr._rust_mgr.run(1)
+
+        rust = mgr._rust_mgr
+        ids = rust.get_state_ids("active")
+        sibling = [sid for i, sid in enumerate(ids) if rust.get_state_pc("active", i) == 0x86F8]
+        assert len(sibling) == 1
+        assert rust.get_state_bbl_history_tail(sibling[0], 1) == [0x86DC]
+        assert rust.get_state_bbl_history_tail(sibling[0], 0) == [0x86DC]
+
 
 class TestExportHistoryChain:
     """Exports share their history ancestors up to the branch (angr-mx00p.132.16).
