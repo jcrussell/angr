@@ -114,3 +114,52 @@ def test_printf_substitutes_a_concrete_env_value():
     lines = simgr.deadended[0].posix.dumps(1).decode().splitlines()
     assert "!! Bingo this_is_a_string!" in lines
     assert "TEST_ENV2: __NULL__" in lines
+
+
+_LOAD, _HOOK, _NAME = 0x400000, 0x500000, 0x602000
+# movabs rax, _HOOK; call rax; jmp $
+_CALL_HOOK = bytes([0x48, 0xB8]) + _HOOK.to_bytes(8, "little") + bytes([0xFF, 0xD0, 0xEB, 0xFE])
+
+
+def _getenv_home_rax(engine: str, factory: str):
+    """Call a stock ``getenv("HOME")`` hook on a state with no modeled environment."""
+    project = angr.load_shellcode(_CALL_HOOK, arch="AMD64", load_address=_LOAD)
+    proto = angr.SIM_LIBRARIES["libc.so.6"][0].get_prototype("getenv")
+    project.hook(_HOOK, angr.SIM_PROCEDURES["posix"]["getenv"](prototype=proto), replace=True)
+    opts = {angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS, angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY}
+    if factory == "call_state":
+        state = project.factory.call_state(_LOAD, add_options=opts)
+    else:
+        state = project.factory.blank_state(addr=_LOAD, add_options=opts)
+    assert state.posix.environ is None
+    state.regs.rsp = 0x7FFFFFFF0800
+    state.memory.store(_NAME, b"HOME\0")
+    state.regs.rdi = _NAME
+    if engine == "rust":
+        mgr = RustExplorationManager(project, [state])
+        for _ in range(4):
+            mgr.run(max_steps=1)
+        states = list(mgr.active_proxies())
+    else:
+        simgr = project.factory.simulation_manager(state)
+        for _ in range(3):
+            simgr.step()
+        states = simgr.active
+    assert [s.addr for s in states] == [_LOAD + 12]
+    return states[0], states[0].regs.rax
+
+
+class TestGetenvWithoutModeledEnviron:
+    """No ``posix.environ`` means an unknown environment, not an empty one (angr-vmi2l.124).
+
+    Python's getenv returns a fresh ``getenv__<name>`` symbol, keeping both the
+    NULL and non-NULL branches; native getenv used to answer a concrete NULL.
+    """
+
+    @pytest.mark.parametrize("engine", ["py", "rust"])
+    @pytest.mark.parametrize("factory", ["call_state", "blank_state"])
+    def test_getenv_keeps_both_branches(self, engine, factory):
+        state, rax = _getenv_home_rax(engine, factory)
+        assert rax.symbolic
+        assert state.solver.satisfiable([rax == 0])
+        assert state.solver.satisfiable([rax != 0])

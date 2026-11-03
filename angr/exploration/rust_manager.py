@@ -3560,11 +3560,20 @@ class RustExplorationManager(
         state turns the whole native env family off for this manager
         (:meth:`_disable_native_env_procs`), so Python's procedures, which read
         envp, serve every call. An entry with no ``=`` is not a variable at all
-        and is skipped.
+        and is skipped. A state with no modeled environment at all
+        (``posix.environ is None``) turns the family off the same way.
         """
         try:
-            envp = getattr(getattr(angr_state, "posix", None), "environ", None)
+            posix = getattr(angr_state, "posix", None)
+            if posix is None:
+                return
+            envp = posix.environ
             if envp is None:
+                # No modeled environment (``blank_state``/``call_state``):
+                # Python's getenv mints a ``getenv__<name>`` symbol keeping
+                # both the NULL and non-NULL branches, which the byte-keyed
+                # map cannot express (angr-vmi2l.124).
+                self._disable_native_env_procs(state_id, "no modeled environment (posix.environ is None)")
                 return
             if isinstance(envp, claripy.ast.Base):
                 if envp.symbolic:

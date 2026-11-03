@@ -16,7 +16,8 @@
 //! where Python's `getenv` SimProcedure — which reads that same `envp` array —
 //! finds it.
 //!
-//! An `envp` the map cannot hold (a symbolic pointer or entry byte) makes the
+//! An `envp` the map cannot hold (a symbolic pointer or entry byte, or no
+//! modeled environment at all, angr-vmi2l.124) makes the
 //! bridge disable this whole family for the manager, so Python's procedures,
 //! which read `envp`, serve every call (angr-mx00p.132.2).
 //!

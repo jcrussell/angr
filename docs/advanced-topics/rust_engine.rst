@@ -3074,7 +3074,7 @@ for the full chain of issues (dispatch, exception inheritance,
 ``executed_instruction_count`` attribute) that would each need to be
 addressed before Oppologist could work under Rust.
 
-**The guest environment is bridged, with two narrow gaps.** angr models
+**The guest environment is bridged, with one narrow gap.** angr models
 the initial environment purely in memory --- ``entry_state(env={...})``
 becomes a ``KEY=VALUE`` string table on the stack plus the ``envp`` array
 pointer in ``state.posix.environ``, which the Python ``getenv``
@@ -3082,9 +3082,12 @@ SimProcedure walks. The Rust engine instead keeps a byte-keyed map on
 ``RustSimState`` that the native ``getenv``/``setenv``/``putenv``/
 ``unsetenv`` procedures read. ``RustExplorationManager`` walks the ``envp``
 array at state-add time and seeds the map from it, so a harness-supplied
-var is visible to a native ``getenv``. Two differences remain: an entry
-whose bytes are **symbolic** is skipped by the bridge (the native
-``getenv`` returns NULL where Python would return a pointer to it), and the
+var is visible to a native ``getenv``. A state the map cannot represent
+turns the native environment family off for the whole manager, so Python's
+procedures serve every call: a symbolic ``envp`` pointer, slot or entry
+byte, and a state with no modeled environment at all (``blank_state`` and
+``call_state`` leave ``posix.environ`` unset, and Python's ``getenv`` then
+returns a fresh ``getenv__<name>`` symbol). The remaining difference: the
 map is write-only with respect to memory --- a guest that walks
 ``environ``/``__environ`` itself instead of calling ``getenv`` does not
 observe a native ``setenv``/``putenv``/``unsetenv``.
