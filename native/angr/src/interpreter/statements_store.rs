@@ -169,7 +169,7 @@ impl<'a> VEXInterpreter<'a> {
     /// host may hold (`has_page`, which fails open without a snapshot) is left
     /// alone, since a zero page would shadow its real bytes. Returns whether
     /// every page under the store is now mapped.
-    fn map_fresh_pages_for_store(
+    pub(super) fn map_fresh_pages_for_store(
         &mut self,
         callbacks: &dyn EngineHost,
         addr: u64,

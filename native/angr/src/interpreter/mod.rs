@@ -584,7 +584,10 @@ impl<'a> VEXInterpreter<'a> {
     /// by the fresh-symbol fallback below, so repeated loads of the same
     /// address mint the *same* Z3 constant. The canary depends on this: it is
     /// read twice (store, then compare), and two distinct symbols would make
-    /// the `__stack_chk_fail` branch spuriously feasible.
+    /// the `__stack_chk_fail` branch spuriously feasible. With `rust_memory`
+    /// on, `install_unservable_filler` has already stored a filler before
+    /// the load gets here, so this rung only serves the callback-only mode
+    /// and a load that one could not map.
     fn synthesize_unservable_load(
         &self,
         callbacks: &dyn EngineHost,
@@ -609,6 +612,63 @@ impl<'a> VEXInterpreter<'a> {
         let bv = RustBV::symbol(&name, bits);
         self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &bv);
         Some(bv)
+    }
+
+    /// Mint the filler for a concrete load neither side can back and write
+    /// it into `rust_memory`, so memory stays a function (angr-vmi2l.179).
+    ///
+    /// `synthesize_unservable_load` hands back a filler without storing it,
+    /// so a narrower or shifted re-read of the same bytes mints an unrelated
+    /// symbol and the export fills them with a third. Python's
+    /// `DefaultFillerMixin` stores its filler; this does the same: map the
+    /// pages as `map_fresh_pages_for_store` does for a store, store a uniquely
+    /// named `mem_<addr>_rs<id>_<bits>` filler, and re-read it. The `rs` id
+    /// keeps the name disjoint from Python's `mem_<addr>_<id>_<bits>` counter.
+    /// The stack-canary double read now agrees because the second read hits
+    /// the stored bytes, not because two mints share a name. Returns `None`
+    /// whenever Rust or the host may hold any page under the load, leaving
+    /// the caller on the callback ladder.
+    pub(super) fn install_unservable_filler(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Option<RustBV> {
+        // A store still buffered outside `rust_memory` (one that missed it
+        // and went to the callback ladder) holds bytes the filler would
+        // shadow; leave such a load to the ladder, which reads the buffers.
+        if !(self.pending_stores.is_empty()
+            && self.pending_symbolic_stores.is_empty()
+            && self.all_flushed_stores.is_empty()
+            && self.all_flushed_symbolic_stores.is_empty())
+        {
+            return None;
+        }
+        // A straddling load whose other page Rust already holds would have
+        // the filler overwrite that page's real bytes.
+        let rust_mem = self.rust_memory.as_ref()?;
+        if crate::memory::PageIndex::range_covering(addr_concrete, size as u64)
+            .any(|page| rust_mem.is_mapped(page.base_addr()))
+        {
+            return None;
+        }
+        if !self.map_fresh_pages_for_store(callbacks, addr_concrete, size) {
+            return None;
+        }
+        let bits = (size * 8) as u32;
+        let id = crate::symbolic::names::next("mem_filler");
+        let name = format!("mem_{addr_concrete:x}_rs{id}_{bits}");
+        let filler = RustBV::symbol(&name, bits);
+        let rust_mem = self.rust_memory.as_mut()?;
+        if let Err(e) = rust_mem.store_concrete(addr_concrete, filler.clone()) {
+            // SILENT(cat-b): the pages were just mapped writable, so this
+            // cannot fail short of a wrapping range; the caller falls back to
+            // the uninstalled `synthesize_unservable_load` filler.
+            log::debug!("filler store at {addr_concrete:#x} failed: {e:?}");
+            return None;
+        }
+        self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &filler);
+        Some(filler)
     }
 
     /// Load from memory via Python callback.

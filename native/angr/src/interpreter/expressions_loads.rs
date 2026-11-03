@@ -568,6 +568,18 @@ impl<'a> VEXInterpreter<'a> {
     /// Attempt to load via Rust-native memory. Returns `Ok(Some(bv))` if Rust
     /// handled the load, `Ok(None)` if the caller should fall back to the
     /// Python path, or `Err` for unrecoverable errors.
+    /// `install_unservable_filler` for a concrete `addr_val`; a symbolic
+    /// address keeps the callback ladder, which concretizes it first.
+    fn install_filler_at_concrete(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr_val: &RustBV,
+        size: usize,
+    ) -> Option<RustBV> {
+        let addr = addr_val.as_u64()?;
+        self.install_unservable_filler(callbacks, addr, size)
+    }
+
     pub(super) fn try_rust_memory_load(
         &mut self,
         callbacks: &dyn EngineHost,
@@ -624,12 +636,15 @@ impl<'a> VEXInterpreter<'a> {
                 {
                     return Ok(Some(value));
                 }
-                Ok(None)
+                Ok(self.install_filler_at_concrete(callbacks, addr_val, size))
             }
             Err(MemoryError::Unmapped {
                 addr,
                 size: unmapped_size,
             }) => {
+                if let Some(filler) = self.install_filler_at_concrete(callbacks, addr_val, size) {
+                    return Ok(Some(filler));
+                }
                 log::debug!(
                     "Unmapped memory load at 0x{addr:x} (size={unmapped_size}), falling back to Python"
                 );

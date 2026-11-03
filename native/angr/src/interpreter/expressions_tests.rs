@@ -744,6 +744,50 @@ fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
 /// `memory::tests::avoid_multivalued`). So this test pins the entry point's
 /// observable ON/OFF contract; what the interpreter-level copy adds on top is
 /// skipping the call — not a different result.
+/// A load of memory neither side holds stores its filler (angr-vmi2l.179):
+/// a narrower or shifted re-read slices the first read's value instead of
+/// minting an unrelated symbol, and the filler carries a unique name.
+#[test]
+fn unservable_load_installs_its_filler() {
+    let ctx = SymContext::new_mock();
+    let x: u64 = 0x7000_0020;
+    let read = |host: &TestHost| {
+        let mut interp = new_interp(&ctx);
+        interp.set_rust_memory(SymbolicMemory::new(Endness::Little));
+        let at = |off: u64| RustBV::concrete(u128::from(x + off), 64);
+        let mut load = |off: u64, size: usize| {
+            interp
+                .try_rust_memory_load(host, &at(off), size, None)
+                .expect("load must not fault")
+        };
+        (load(0, 4), load(1, 1), load(2, 4))
+    };
+
+    let host = TestHost {
+        host_pages: Some(vec![]),
+        ..TestHost::default()
+    };
+    let (wide, narrow, shifted) = read(&host);
+    let wide = wide.expect("an unservable load is answered natively");
+    let (name, _) = wide.leaf_var().expect("the filler is a bare leaf");
+    assert!(
+        name.starts_with("mem_70000020_rs") && name.ends_with("_32"),
+        "unique Rust filler name: {name}"
+    );
+    let always_equal = |a: &RustBV, b: &RustBV| ctx.eval_upto(&a.sub(b), 2) == vec![0];
+    let narrow = narrow.expect("re-read hits the stored filler");
+    assert!(always_equal(&narrow, &wide.extract(15, 8)));
+    let shifted = shifted.expect("re-read hits the stored filler");
+    assert!(always_equal(&shifted.extract(15, 0), &wide.extract(31, 16)));
+
+    // A page the host may hold keeps the callback ladder.
+    let held = TestHost {
+        host_pages: Some(vec![x & !0xfff]), // page-shift-ok: test fixture page base
+        ..TestHost::default()
+    };
+    assert!(read(&held).0.is_none(), "a host page must not be shadowed by a filler");
+}
+
 #[test]
 fn try_rust_memory_load_short_circuits_under_avoid_multivalued_reads() {
     let callbacks = TestHost::default();

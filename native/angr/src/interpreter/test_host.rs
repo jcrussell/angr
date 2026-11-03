@@ -51,6 +51,9 @@ pub(crate) struct TestHost {
     pub(crate) symbolic_value_store: SymbolicValueStore,
     /// Every symbolic-value store the host accepted.
     pub(crate) symbolic_value_stores: RefCell<Vec<(u64, RustBV)>>,
+    /// The page snapshot `has_page` answers from, as the shell's
+    /// `python_has_page` does once one is installed; `None` fails open.
+    pub(crate) host_pages: Option<Vec<u64>>,
 }
 
 fn not_set<T>(slot: &str) -> Result<T, String> {
@@ -96,8 +99,10 @@ impl EngineHost for TestHost {
         true
     }
 
-    fn has_page(&self, _page_addr: u64) -> bool {
-        true
+    fn has_page(&self, page_addr: u64) -> bool {
+        self.host_pages
+            .as_ref()
+            .is_none_or(|pages| pages.contains(&page_addr))
     }
 
     fn inspect_event_enabled(&self, _event: InspectBit) -> bool {
