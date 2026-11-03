@@ -44,6 +44,23 @@ pub(super) struct ScanfSpec {
     pub(super) digit_bound: Option<(u64, u64)>,
     /// Whether to suppress assignment (*).
     pub(super) suppress: bool,
+    /// The conversion character (`d`, `s`, ...).
+    pub(super) conv: u8,
+    /// Radix of a numeric conversion (10, 16 or 8); 0 otherwise.
+    pub(super) base: u32,
+    /// The explicit field width, clamped to [`MAX_SCANF_STR_LEN`].
+    pub(super) width: Option<u64>,
+    /// The format's literal bytes ahead of this conversion (`%%` is one `%`).
+    /// Python's SimPackets `interpret` reads each literal off the stream and
+    /// constrains it equal (angr-vmi2l.108).
+    pub(super) literal_before: Vec<u8>,
+}
+
+/// A parsed scanf format: its conversions, then the literal bytes after the
+/// last one.
+pub(super) struct ScanfFormat {
+    pub(super) specs: Vec<ScanfSpec>,
+    pub(super) trailing_literal: Vec<u8>,
 }
 
 /// Range bound for a numeric conversion carrying an explicit field width,
@@ -93,13 +110,14 @@ pub(super) fn digit_range_bound(base: u32, digits: u64, bits: u32) -> Option<(u6
 pub(super) fn parse_scanf_format(
     fmt: &[u8],
     arch_bits: u32,
-) -> Result<Vec<ScanfSpec>, ProcedureError> {
+) -> Result<ScanfFormat, ProcedureError> {
     let mut specs = Vec::new();
+    let mut literal = Vec::new();
     let mut i = 0;
 
     while i < fmt.len() {
         if fmt[i] != b'%' {
-            // Non-format characters are literal matchers; skip them
+            literal.push(fmt[i]);
             i += 1;
             continue;
         }
@@ -110,6 +128,7 @@ pub(super) fn parse_scanf_format(
 
         // Handle %%
         if fmt[i] == b'%' {
+            literal.push(b'%');
             i += 1;
             continue;
         }
@@ -147,6 +166,8 @@ pub(super) fn parse_scanf_format(
 
         let spec = fmt[i];
         i += 1;
+        let width = has_width.then_some(field_width);
+        let literal_before = std::mem::take(&mut literal);
 
         match spec {
             b'd' | b'i' | b'u' | b'x' | b'X' | b'o' => {
@@ -173,6 +194,10 @@ pub(super) fn parse_scanf_format(
                     max_str_len: 0,
                     digit_bound,
                     suppress,
+                    conv: spec,
+                    base,
+                    width,
+                    literal_before,
                 });
             }
             b'c' => {
@@ -183,6 +208,10 @@ pub(super) fn parse_scanf_format(
                     max_str_len: 0,
                     digit_bound: None,
                     suppress,
+                    conv: spec,
+                    base: 0,
+                    width,
+                    literal_before,
                 });
             }
             b's' => {
@@ -198,6 +227,10 @@ pub(super) fn parse_scanf_format(
                     max_str_len: max_len,
                     digit_bound: None,
                     suppress,
+                    conv: spec,
+                    base: 0,
+                    width,
+                    literal_before,
                 });
             }
             b'[' => {
@@ -244,5 +277,8 @@ pub(super) fn parse_scanf_format(
         }
     }
 
-    Ok(specs)
+    Ok(ScanfFormat {
+        specs,
+        trailing_literal: literal,
+    })
 }

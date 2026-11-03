@@ -11,13 +11,24 @@ fn setup_state() -> RustSimState {
     crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)])
 }
 
+/// Run `do_scanf` as fscanf on an untracked non-stdin fd does
+/// (`record_stdin == false`): the one free value per numeric conversion, whose
+/// widths, field-width bounds and conversion count these tests pin. On stdin a
+/// numeric conversion reads spelled digit bytes instead (angr-vmi2l.108).
+fn scanf_off_stdin(
+    state: &mut RustSimState,
+    args: &[RustBV],
+) -> Result<Option<RustBV>, ProcedureError> {
+    let fmt_addr = extract_concrete_arg(&args[0], "format")?;
+    do_scanf(state, fmt_addr, &args[1..], "file", false)
+}
+
 #[test]
 fn test_scanf_percent_d() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64), // format
@@ -44,8 +55,7 @@ fn test_scanf_two_ints() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%d %d\x00", Permission::RWX);
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64),
@@ -204,8 +214,7 @@ fn test_scanf_percent_x() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%x\x00", Permission::RWX);
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64),
@@ -230,8 +239,7 @@ fn test_scanf_long() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%ld\x00", Permission::RWX);
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64),
@@ -257,8 +265,7 @@ fn test_scanf_suppressed() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%*d %d\x00", Permission::RWX);
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64),
@@ -306,7 +313,7 @@ fn test_scanf_symbolic_ptr() {
     let sym = RustBV::symbol("ptr", 64);
     drop(ctx);
 
-    let result = NativeScanf.call(
+    let result = scanf_off_stdin(
         &mut state,
         &[
             RustBV::concrete(0x1000, 64),
@@ -326,8 +333,7 @@ fn test_scanf_mixed_specifiers() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%d %c %s\x00", Permission::RWX);
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64),
@@ -347,7 +353,7 @@ fn test_scanf_mixed_specifiers() {
 #[test]
 fn test_isoc99_scanf() {
     let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    state.map_memory_data(0x1000, b"%c\x00", Permission::RWX);
 
     // __isoc99_scanf is an alias of NativeScanf, so go through the registry:
     // calling NativeScanf directly would prove nothing about the alias being
@@ -455,7 +461,7 @@ fn test_scanf_no_conversions() {
 #[test]
 fn test_scanf_stdin_tracking() {
     let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%d %s\x00", Permission::RWX);
+    state.map_memory_data(0x1000, b"%c%s\x00", Permission::RWX);
 
     NativeScanf
         .call(
@@ -475,7 +481,7 @@ fn test_scanf_stdin_tracking() {
     // Should have recorded stdin symbols
     let symbols = state.stdin_symbols();
     assert!(!symbols.is_empty(), "scanf should record stdin symbols");
-    // One 32-bit symbol for %d + MAX_SYMBOLIC_SCAN_BYTES 8-bit symbols for %s
+    // One 8-bit symbol for %c + MAX_SYMBOLIC_SCAN_BYTES 8-bit symbols for %s
     assert_eq!(symbols.len(), 1 + MAX_SYMBOLIC_SCAN_BYTES);
 }
 
@@ -637,7 +643,7 @@ fn test_fscanf_negative_fd_returns_minus_one() {
 #[test]
 fn test_fscanf_stdin_fd_records_symbols() {
     let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    state.map_memory_data(0x1000, b"%c\x00", Permission::RWX);
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, 0); // fscanf(stdin, ...)
 
@@ -933,7 +939,7 @@ fn test_scanf_percent_c_consumes_seeded_stdin() {
 #[test]
 fn test_scanf_suppressed_consumes_seeded_stdin() {
     let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%*2s %2s\x00", Permission::RWX);
+    state.map_memory_data(0x1000, b"%*2s%2s\x00", Permission::RWX);
     let seed: Vec<RustBV> = (0x41u128..0x45).map(|b| RustBV::concrete(b, 8)).collect();
     state.file_system().set_fd_content_sym(0, seed);
 
@@ -1019,35 +1025,35 @@ fn test_scanf_numeric_over_seeded_stdin_falls_back() {
     assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64(), Some(0));
 }
 
-/// The seeded-stdin fallback is scoped to *unread* seed on stdin: an unseeded
-/// `scanf("%d")` has nothing to mismatch, so it keeps the native `%d` fast path.
-/// (`sscanf` reads a memory buffer, never fd 0, and now defers to Python
-/// unconditionally — see `test_sscanf_defers_to_python` — so it does not touch
-/// the seeded-stdin logic at all.)
+/// angr-vmi2l.108: a numeric conversion on unseeded stdin reads digit bytes,
+/// and the format's literals are read too, so the stdin reconstruction is the
+/// text real scanf(3) parses: `%d.%d` records 10 + 1 + 10 byte leaves, and the
+/// solved value spells back through them.
 #[test]
-fn test_scanf_numeric_native_without_unread_seed() {
-    // scanf("%d") once an earlier reader drained the seed: native again.
+fn test_scanf_numeric_records_ascii_digits_and_literals() {
     let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%c\x00", Permission::RWX);
-    state.map_memory_data(0x1100, b"%d\x00", Permission::RWX);
-    state
-        .file_system()
-        .set_fd_content_sym(0, vec![RustBV::concrete(0x41, 8)]);
+    state.map_memory_data(0x1000, b"%d.%d\x00", Permission::RWX);
+    NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x2100, 64),
+            ],
+        )
+        .expect("unseeded numeric scanf stays native");
+    let symbols = state.stdin_symbols().to_vec();
+    assert_eq!(symbols.len(), 21);
+    assert!(symbols.iter().all(|(_, bits)| *bits == 8));
 
-    NativeScanf
-        .call(
-            &mut state,
-            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
-        )
-        .expect("%c drains the one seeded byte");
-    NativeScanf
-        .call(
-            &mut state,
-            &[RustBV::concrete(0x1100, 64), RustBV::concrete(0x2100, 64)],
-        )
-        .expect("nothing left to mismatch, so %d stays native");
-    let val = state.memory_load(0x2100, 4).unwrap();
-    assert!(val.as_u64().is_none(), "%d still mints a symbolic value");
+    let a = state.memory_load(0x2000, 4).unwrap();
+    state.add_constraint(a.eq(&RustBV::concrete(133_337, 32)));
+    let text: Vec<u8> = symbols
+        .iter()
+        .map(|(name, _)| state.eval(&RustBV::symbol(name, 8)).unwrap() as u8)
+        .collect();
+    assert_eq!(&text[..11], b"0000133337.");
 }
 
 /// Run `scanf(fmt, &dst)` with concrete 0xAA guard bytes filling the 8 bytes at
@@ -1069,8 +1075,7 @@ fn assert_scanf_store_width_arch(arch: &str, fmt: &[u8], expect_bytes: u64) {
             .unwrap();
     }
 
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
         )
@@ -1216,8 +1221,7 @@ fn test_digit_range_bound_declines_when_width_spells_whole_type() {
 fn scanf_one_int(fmt: &[u8]) -> (RustSimState, RustBV) {
     let mut state = setup_state();
     state.map_memory_data(0x1000, fmt, Permission::RWX);
-    let result = NativeScanf
-        .call(
+    let result = scanf_off_stdin(
             &mut state,
             &[
                 RustBV::concrete(0x1000, 64), // format

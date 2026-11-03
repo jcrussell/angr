@@ -928,9 +928,11 @@ handles them differently:
   the concreteness rules above apply to it. The reason is the *source*, not
   the format: ``sscanf`` parses a concrete in-memory buffer, and the parsed
   values must be **constrained by what that buffer holds**
-  (``sscanf("42", "%d", &x)`` must bind ``x == 42``). ``do_scanf`` mints
-  fresh unconstrained BVs, which is faithful for a symbolic *stream*
-  (``scanf``/``fscanf``) but would make impossible paths feasible here.
+  (``sscanf("42", "%d", &x)`` must bind ``x == 42``). ``do_scanf`` reads
+  fresh symbolic bytes off a stream (on stdin, digit bytes constrained to
+  spell the stored value, as Python's ``FormatString._spell`` does), which is
+  faithful for a symbolic *stream* (``scanf``/``fscanf``) but would make
+  impossible paths feasible here.
   Rather than reimplement scanf's matching engine natively, the whole call
   defers to Python's ``format_parser.py`` (``angr-8onrp``); see the
   ``NativeSscanf`` doc comment.

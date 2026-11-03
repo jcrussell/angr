@@ -1,8 +1,11 @@
 //! Native scanf/sscanf implementations for symbolic execution.
 //!
 //! For each format specifier, creates a symbolic BVS of the appropriate width
-//! and stores it at the corresponding pointer argument. This eliminates
-//! Python callback overhead for common CTF patterns using scanf for input.
+//! and stores it at the corresponding pointer argument. On stdin a numeric
+//! conversion also reads digit bytes spelling that value, and each format
+//! literal is read as its own bytes, so `posix.dumps(0)` is parseable input
+//! (see [`scanf_spell`](super::scanf_spell)). This eliminates Python callback
+//! overhead for common CTF patterns using scanf for input.
 //!
 //! Supported conversions: `%d`, `%i`, `%u`, `%x`, `%X`, `%o`, `%s`, `%c` and
 //! the `%%` literal. Each may carry an assignment-suppressing `*` and a field
@@ -30,7 +33,8 @@
 
 use super::arch_word;
 use super::format_common::read_format_string;
-use super::scanf_spec::parse_scanf_format;
+use super::scanf_spec::{ScanfSpec, parse_scanf_format};
+use super::scanf_spell::{max_digits, numeric_spelling};
 use super::stdin_common::{
     bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes,
     stdin_seed_has_concrete_stop, stdin_seed_unconsumed,
@@ -58,24 +62,24 @@ fn do_scanf(
     record_stdin: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let fmt = read_format_string(state, fmt_addr)?;
-    let specs = parse_scanf_format(&fmt, state.arch().bits())?;
+    let format = parse_scanf_format(&fmt, state.arch().bits())?;
+    let specs = &format.specs;
 
-    // A numeric conversion models a decimal/hex *parse*: Python's
-    // format_parser.py::FormatString.interpret reads `max_digits` bytes off the
-    // stream and constrains each one to the ASCII rendering of the stored value.
-    // Natively we only mint one free BVS of the value's width, which neither
-    // constrains it to nor consumes the harness-seeded bytes — so a seeded run
-    // would get an unconstrained value AND leave the seed for the next
-    // conversion to re-read from offset 0. Defer the whole call to Python while
-    // fd 0 still has unread seed; unseeded runs keep the native fast path
-    // (angr-ggb66). Checked before any store so the fallback sees a pristine
-    // state.
+    // A numeric conversion on stdin reads its digit bytes off the stream and
+    // constrains them to spell the stored value (`scanf_spell`), which is
+    // Python's SimPackets model. A harness seed is a SimFile or a pre-filled
+    // packet list, which Python parses differently, so while fd 0 still has
+    // unread seed the whole call defers (angr-ggb66). Checked before any
+    // store so the fallback sees a pristine state.
+    // A format literal is read the same way, so it defers too.
+    let reads_literal =
+        !format.trailing_literal.is_empty() || specs.iter().any(|s| !s.literal_before.is_empty());
     if record_stdin
-        && specs.iter().any(|s| !s.is_string && !s.is_char)
+        && (reads_literal || specs.iter().any(|s| !s.is_string && !s.is_char))
         && stdin_seed_unconsumed(state)
     {
         return Err(ProcedureError::Other(
-            "scanf: numeric conversion over harness-seeded stdin".to_string(),
+            "scanf: numeric conversion or literal over harness-seeded stdin".to_string(),
         ));
     }
 
@@ -109,13 +113,16 @@ fn do_scanf(
         let need = specs
             .iter()
             .map(|s| {
-                if s.is_string {
+                let conv = if s.is_string {
                     s.max_str_len as usize
-                } else {
+                } else if s.is_char {
                     1
-                }
+                } else {
+                    numeric_digits(s) as usize
+                };
+                s.literal_before.len().saturating_add(conv)
             })
-            .fold(0usize, usize::saturating_add);
+            .fold(format.trailing_literal.len(), usize::saturating_add);
         bounce_if_seed_ends_before(state, need, "scanf")?;
     }
 
@@ -136,6 +143,13 @@ fn do_scanf(
         // `%*d` over unread seed already defers the whole call to Python.
         if spec.suppress && !record_stdin {
             continue;
+        }
+
+        // Python reads the format's literal bytes off the stream as well and
+        // constrains them equal, so they reach `posix.dumps(0)`
+        // (angr-vmi2l.108). Off stdin nothing reconstructs the stream.
+        if record_stdin {
+            read_stdin_literal(state, &spec.literal_before, source, scan_id, spec_idx);
         }
 
         let ptr = if spec.suppress {
@@ -204,8 +218,31 @@ fn do_scanf(
             if let Some(ptr) = ptr {
                 state.memory_store(ptr, sym_byte)?;
             }
+        } else if record_stdin {
+            // Numeric on stdin: Python's SimPackets read of the digit bytes,
+            // constrained to spell the stored value (angr-vmi2l.108). The
+            // explicit-width range bound is part of the spelling.
+            let digits = numeric_digits(spec);
+            if digits == 0 {
+                // `%0d`: Python reads no digits and then indexes `chars[0]`.
+                return Err(ProcedureError::Other(
+                    "scanf: zero-width numeric conversion".to_string(),
+                ));
+            }
+            let names: Vec<String> = (0..digits)
+                .map(|j| format!("{source}_scanf_{scan_id}_{spec_idx}_d{j}"))
+                .collect();
+            let chars = mint_stdin_bytes(state, &names);
+            let sym_val = RustBV::symbol(format!("{source}_scanf_{scan_id}_{spec_idx}"), spec.bits);
+            state.add_constraint(numeric_spelling(
+                &chars, spec.conv, spec.base, &sym_val, spec.bits,
+            ));
+            if let Some(ptr) = ptr {
+                state.memory_store(ptr, sym_val)?;
+            }
         } else {
-            // Numeric or char: create one symbolic BVS of appropriate width
+            // Numeric off stdin (fscanf on an untracked fd): one free value of
+            // the conversion's width; nothing reconstructs that stream.
             let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
             let sym_val = { RustBV::symbol(&name, spec.bits) };
 
@@ -225,14 +262,6 @@ fn do_scanf(
                 state.add_constraint(bound);
             }
 
-            // A suppressed numeric still consumes digits off the stream, so it
-            // is recorded for the stdin reconstruction exactly like an assigned
-            // one — only the store is skipped.
-            if record_stdin {
-                state.record_stdin_symbol(name, spec.bits);
-            }
-
-            // Store to pointer — write spec.bits/8 bytes
             if let Some(ptr) = ptr {
                 state.memory_store(ptr, sym_val)?;
             }
@@ -245,8 +274,45 @@ fn do_scanf(
         }
     }
 
+    if record_stdin {
+        read_stdin_literal(
+            state,
+            &format.trailing_literal,
+            source,
+            scan_id,
+            specs.len(),
+        );
+    }
+
     // Return number of successful conversions
     Ok(Some(arch_word(state, conversions)))
+}
+
+/// Digit bytes a numeric conversion reads: its field width, else Python's
+/// `max_digits` for the value's width.
+fn numeric_digits(spec: &ScanfSpec) -> u64 {
+    spec.width
+        .unwrap_or_else(|| max_digits(spec.base, spec.bits))
+}
+
+/// Read a format literal off stdin, each byte constrained equal to it.
+fn read_stdin_literal(
+    state: &mut RustSimState,
+    literal: &[u8],
+    source: &str,
+    scan_id: u64,
+    idx: usize,
+) {
+    if literal.is_empty() {
+        return;
+    }
+    let names: Vec<String> = (0..literal.len())
+        .map(|j| format!("{source}_scanf_{scan_id}_lit{idx}_{j}"))
+        .collect();
+    let bytes = mint_stdin_bytes(state, &names);
+    for (b, &c) in bytes.iter().zip(literal) {
+        state.add_constraint(b.eq(&RustBV::concrete(u128::from(c), 8)));
+    }
 }
 
 /// The bytes a `%s` stops at: Python's `FormatString.SCANF_DELIMITERS`
