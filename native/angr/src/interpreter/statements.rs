@@ -374,7 +374,17 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Guard is symbolic — handle based on deferred fork mode
+        let trap_side = TrapSide::of(jk, self.lazy_solves);
         if !self.config.use_deferred_forks {
+            // The eager branch event carries no jumpkind, so its resume would
+            // mint the trap side as an ordinary path (angr-vmi2l.160). Python's
+            // VEX engine applies the trap rules itself.
+            if trap_side.is_some() {
+                return Err(CbExecutionError::NeedPythonFallback(format!(
+                    "symbolic-guard {} exit under eager forking",
+                    jk.ijk_name()
+                )));
+            }
             // Non-deferred mode: return to Python immediately for forking.
             // Skip can_be_true/can_be_false Z3 checks — Python's
             // resume_after_symbolic_branch will add constraints and the
@@ -476,9 +486,15 @@ impl<'a> VEXInterpreter<'a> {
                 // forward branch conditions (e.g., `jne target` becomes
                 // `if (eq) goto exit; NEXT: target`), so fall-through follows
                 // the natural execution flow for forward branches.
-                let is_backward_branch = dst < self.current_insn_addr;
+                // A trap side is always the deferred one: only the
+                // fall-through can continue (angr-vmi2l.160).
+                let is_backward_branch = dst < self.current_insn_addr && trap_side.is_none();
                 let (unexplored_target, unexplored_jumpkind) = if is_backward_branch {
                     (false_target, crate::state::HistoryEntry::JK_BORING)
+                } else if trap_side.is_some() {
+                    // The byte encoding has no trap kinds; the export reads the
+                    // exact one from the sibling's pending exit.
+                    (dst, crate::state::HistoryEntry::JK_OTHER)
                 } else {
                     (dst, crate::state::HistoryEntry::jumpkind_from_vex(&jk))
                 };
@@ -514,6 +530,7 @@ impl<'a> VEXInterpreter<'a> {
                         path_taken: true,  // we took the exit (guard=true) path
                         unexplored_target, // fall-through deferred
                         condition_id: cond_id,
+                        trap_side: None,
                     }
                 } else {
                     DeferredFork {
@@ -521,6 +538,7 @@ impl<'a> VEXInterpreter<'a> {
                         path_taken: false, // we took the fallthrough (guard=false) path
                         unexplored_target, // the exit target is deferred
                         condition_id: cond_id,
+                        trap_side,
                     }
                 };
                 self.deferred_forks.push(deferred);

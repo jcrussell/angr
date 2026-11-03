@@ -236,7 +236,16 @@ impl<'a> VEXInterpreter<'a> {
     /// Handle an exit (update PC, return result).
     pub(super) fn handle_exit(&mut self, target: u64, jumpkind: JumpKind) -> BlockResult {
         self.set_pc(target);
-        // Trace removed after debugging
+
+        // Ahead of the hook and out-of-image arms: a trap exit is never
+        // executed, whatever its target (angr-vmi2l.160). `run_until_event`'s
+        // `BlockEnd` arm routes it.
+        if jumpkind.is_trap() {
+            return BlockResult::BlockEnd {
+                next_addr: target,
+                jumpkind,
+            };
+        }
 
         if jumpkind.is_syscall() {
             // angr-gffd: keep `num: Option<u64>` honest about symbolicness.

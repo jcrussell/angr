@@ -1212,13 +1212,14 @@ class RustStateExportMixin:
         history.parent = parent
         history.depth = parent.depth + 1
         _fill_history_node(history, entries[-1], arch)
-        if entries[-1][1] == 3:
+        if entries[-1][1] in (3, 4):
             # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable
-            # state keeps the lossy Ijk_Sys_syscall spelling.
+            # state keeps the lossy Ijk_Sys_syscall / Ijk_Other spelling.
             pending = _rust_state_get(self._rust_mgr, "get_state_pending_syscall", state_id)
             if pending:
                 # A syscall Rust has yet to run: Python's step of this export
                 # picks the syscall ABI from this jumpkind (angr-mx00p.132.12).
+                # Or the trap a deferred fork's trap side took (angr-vmi2l.160).
                 history.jumpkind = pending
         elif entries[-1][1] == 5:
             # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable

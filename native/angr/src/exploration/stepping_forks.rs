@@ -46,6 +46,9 @@ impl RustExplorationManager {
                     &prior_guards,
                 );
                 prior_guards.record(condition.clone(), fork.path_taken);
+                let Some(forked) = forked else {
+                    continue;
+                };
 
                 self.sm.set_root(forked.state_id(), root_state_id);
 

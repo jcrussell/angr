@@ -106,6 +106,12 @@ impl<'a> VEXInterpreter<'a> {
         self.deferred_forks.clear();
         self.deferred_fork_this_step = false;
 
+        // A deferred fork's trap-side sibling (angr-vmi2l.160): Python's
+        // `SimEngineFailure` errors it on its first step. The exit stays
+        // pending so the errored export reports the trap jumpkind.
+        if let Some(jumpkind) = self.pending_syscall.filter(JumpKind::is_trap) {
+            return (trap_exit_error(self.pc, jumpkind), 0, Vec::new());
+        }
         if let Some(jumpkind) = self.pending_syscall.take() {
             return (
                 RunResult::Syscall {
@@ -245,18 +251,15 @@ impl<'a> VEXInterpreter<'a> {
                             // not errored. That is the intended reading here
                             // too: a jump to null is a null-jump deadend
                             // whatever jumpkind carried it there.
+                            //
+                            // `exits.rs::handle_exit` returns every trap exit
+                            // as a `BlockEnd`, so a hooked or out-of-image trap
+                            // target lands here too.
                             if jumpkind.is_trap() {
                                 self.pc = next_addr;
                                 let forks = self.take_deferred_forks();
                                 return (
-                                    RunResult::Error {
-                                        message: format!(
-                                            "unexecutable VEX trap exit {} at {next_addr:#x}",
-                                            jumpkind.ijk_name()
-                                        ),
-                                        addr: next_addr,
-                                        kind: crate::interpreter::RunErrorKind::Fatal,
-                                    },
+                                    trap_exit_error(next_addr, jumpkind),
                                     blocks_executed,
                                     forks,
                                 );
@@ -941,6 +944,19 @@ impl<'a> VEXInterpreter<'a> {
             return;
         }
         callbacks.inspect_return(self.current_state_id, when, function_address);
+    }
+}
+
+/// The `RunResult` for a state that took trap exit `jumpkind` to `addr`:
+/// `Fatal`, as `SimEngineFailure` raises `AngrExitError` (angr-vmi2l.160).
+fn trap_exit_error(addr: u64, jumpkind: JumpKind) -> RunResult {
+    RunResult::Error {
+        message: format!(
+            "unexecutable VEX trap exit {} at {addr:#x}",
+            jumpkind.ijk_name()
+        ),
+        addr,
+        kind: crate::interpreter::RunErrorKind::Fatal,
     }
 }
 

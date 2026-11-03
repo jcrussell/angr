@@ -152,6 +152,13 @@ impl JumpKind {
     /// `Ijk_NoDecode` is deliberately absent: Python catches it one layer
     /// earlier, at lift time, and only for the self-targeting shape — see
     /// `interpreter::execution::is_undecodable_block`.
+    ///
+    /// Scope (angr-vmi2l.160): a trap exit is never executed, whatever its
+    /// target. `interpreter::exits::handle_exit` returns it as a `BlockEnd`
+    /// ahead of the hook and out-of-image arms, and `run_until_event` errors
+    /// it. Behind a symbolic guard, the
+    /// trap side is the deferred fork and its disposition is
+    /// `interpreter::TrapSide`.
     pub fn is_trap(&self) -> bool {
         matches!(
             self,

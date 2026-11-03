@@ -159,7 +159,7 @@ use pending_store::PendingStoreBuffer;
 
 pub(crate) use block_result::BlockResult;
 pub(crate) use concrete_memory::ConcreteMemoryRegion;
-pub(crate) use config::{DeferredFork, ExecutionConfig};
+pub(crate) use config::{DeferredFork, ExecutionConfig, TrapSide};
 pub(crate) use execution_error::{
     CbExecutionError, DCAS_UNSUPPORTED_REASON, DISPATCH_FABRICATE_REASON, FallbackStrategy,
     VECRET_GSPTR_REASON,
@@ -305,7 +305,7 @@ pub(crate) struct VEXInterpreter<'a> {
     /// back after it, so RDTSC is deterministic per execution path instead of
     /// depending on a process-wide counter (angr-9ke6b.173).
     pub dirty_helper_state: DirtyHelperState,
-    /// A syscall exit the step stopped at without running it. Seeded from
+    /// A syscall (or trap-side sibling's trap) exit the step stopped at without running it. Seeded from
     /// and written back to `RustSimState::pending_syscall` around each step;
     /// see that field and `run_until_event`.
     pub pending_syscall: Option<JumpKind>,

@@ -12,6 +12,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::interpreter::TrapSide;
 
 /// Install a deferred fork's branch guard on the continuing state, firing the
 /// `state.inspect.constraints` BP around the add (angr-op0dn.14.4.1).
@@ -66,13 +67,25 @@ fn add_fork_guard_constraint(
 /// otherwise `fork_false` / `fork_true` off `base` depending on which side the
 /// main path took. The forked state's PC is then set to
 /// `fork.unexplored_target`.
+///
+/// A trap-side fork (`DeferredFork::trap_side`) yields `None` for
+/// `TrapSide::Drop`, and otherwise a sibling whose pending exit is the trap,
+/// which `run_until_event` errors before lifting anything (angr-vmi2l.160).
 fn build_unexplored_fork(
     base: &RustSimState,
     fork: &DeferredFork,
     condition: &RustBV,
     snapshots: &mut FxHashMap<u64, crate::interpreter::BranchSnapshot>,
     priors: &PriorGuards,
-) -> RustSimState {
+) -> Option<RustSimState> {
+    let pending_exit = match fork.trap_side {
+        Some(TrapSide::Drop) => {
+            snapshots.remove(&fork.condition_id);
+            return None;
+        }
+        Some(TrapSide::Error(jk)) => Some(jk),
+        None => None,
+    };
     let mut forked = if let Some(snapshot) = snapshots.remove(&fork.condition_id) {
         // Snapshot predates the branch constraint, so re-assume the opposite
         // side to keep the unexplored path's constraints consistent.
@@ -101,9 +114,10 @@ fn build_unexplored_fork(
         f
     };
     forked.set_pc(fork.unexplored_target);
-    // The unexplored side never reached the continuing path's syscall exit.
-    forked.set_pending_syscall(None);
-    forked
+    // The unexplored side never reached the continuing path's syscall exit;
+    // a trap side carries its own.
+    forked.set_pending_syscall(pending_exit);
+    Some(forked)
 }
 
 /// Mint the unexplored-side fork for one deferred branch and *then* install the
@@ -134,7 +148,7 @@ pub(crate) fn fork_unexplored_and_guard_base(
     condition: &RustBV,
     snapshots: &mut FxHashMap<u64, crate::interpreter::BranchSnapshot>,
     priors: &PriorGuards,
-) -> RustSimState {
+) -> Option<RustSimState> {
     let forked = build_unexplored_fork(base, fork, condition, snapshots, priors);
     add_fork_guard_constraint(callbacks, base, condition, fork.path_taken);
     forked
@@ -305,6 +319,9 @@ pub(crate) fn materialize_deferred_forks(
             let forked = build_unexplored_fork(fork_base, &fork, cond, snapshots, &prior_guards);
             prior_guards.record(cond.clone(), fork.path_taken);
             charge_fork_op(stats.as_deref_mut(), fork_start);
+            let Some(forked) = forked else {
+                continue;
+            };
             let sat_start = stats.is_some().then(std::time::Instant::now);
             let sat = forked.survives_sat_prune(lazy_solves);
             charge_sat_op(stats.as_deref_mut(), sat_start);

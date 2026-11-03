@@ -36,6 +36,41 @@ pub(crate) struct DeferredFork {
     /// Condition ID for constraint tracking, keying into the interpreter's
     /// stored-conditions map (see `apply_deferred_fork_constraints`).
     pub(crate) condition_id: u64,
+    /// `Some` when the unexplored side is a trap exit (`JumpKind::is_trap`)
+    /// behind a symbolic guard; the continuing path still gets `!guard`.
+    /// `fork_materialize::build_unexplored_fork` reads it (angr-vmi2l.160).
+    pub(crate) trap_side: Option<TrapSide>,
+}
+
+/// What becomes of a deferred fork's trap-side sibling, mirroring Python's
+/// `HeavyVEXMixin` exit handling and `engines/failure.py`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrapSide {
+    /// No sibling at all: `SimSuccessors.add_successor` discards an
+    /// `Ijk_SigFPE_IntDiv` successor (`PRODUCE_ZERODIV_SUCCESSORS` is an
+    /// ignored option), and under `LAZY_SOLVES` the VEX engine never adds an
+    /// `Ijk_Sig*` exit successor.
+    Drop,
+    /// The sibling exists at the trap target and errors on its first step,
+    /// as `SimEngineFailure` raises `AngrExitError` for it.
+    Error(crate::vex::JumpKind),
+}
+
+impl TrapSide {
+    /// The disposition of a symbolic-guard exit's trap side, or `None` when
+    /// `jk` is not a trap.
+    pub(crate) fn of(jk: crate::vex::JumpKind, lazy_solves: bool) -> Option<Self> {
+        use crate::vex::JumpKind;
+        if !jk.is_trap() {
+            return None;
+        }
+        let is_sig = jk.ijk_name().starts_with("Ijk_Sig");
+        if jk == JumpKind::SigFPE_IntDiv || (lazy_solves && is_sig) {
+            Some(Self::Drop)
+        } else {
+            Some(Self::Error(jk))
+        }
+    }
 }
 
 /// Configuration for the execution loop with deferred forks.

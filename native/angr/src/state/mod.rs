@@ -382,7 +382,9 @@ pub struct RustSimState {
     /// yet. A block-granular step stops at the exit like Python's, whose
     /// syscall is its own step, and the next step serves it before lifting
     /// anything (angr-mx00p.132.12). Branch siblings never inherit it (see
-    /// `fork_materialize::build_unexplored_fork`).
+    /// `fork_materialize::build_unexplored_fork`); a deferred fork's trap-side
+    /// sibling gets its trap exit here instead, which the next step errors
+    /// (`interpreter::TrapSide`).
     #[merge_policy = "warn_on_diverge"]
     pending_syscall: Option<crate::vex::JumpKind>,
     /// The status a no-return procedure ended this state with, recorded with

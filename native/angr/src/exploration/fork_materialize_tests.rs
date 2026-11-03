@@ -23,6 +23,7 @@ fn deferred_fork(condition_id: u64, path_taken: bool) -> crate::interpreter::Def
         path_taken,
         unexplored_target: 0x40_2000,
         condition_id,
+        trap_side: None,
     }
 }
 
@@ -324,4 +325,48 @@ fn snapshot_built_fork_replays_earlier_guards() {
         !probe.satisfiable(),
         "snapshot-built fork did not inherit branch 1's taken-path guard"
     );
+}
+
+/// A trap-side fork (angr-vmi2l.160): `TrapSide::Drop` mints no sibling, and
+/// `TrapSide::Error` parks its trap as the sibling's pending exit. Either way
+/// the continuing state still gets the taken-path guard.
+#[test]
+fn materialize_deferred_forks_trap_side() {
+    use crate::interpreter::TrapSide;
+    use crate::vex::JumpKind;
+    Python::initialize();
+    for (side, want) in [
+        (TrapSide::Drop, None),
+        (TrapSide::Error(JumpKind::SigTRAP), Some(JumpKind::SigTRAP)),
+    ] {
+        let (base, cond) = state_with_x_eq_zero();
+        let sink = base.fork();
+        let mut stored = FxHashMap::default();
+        stored.insert(7u64, cond.clone());
+        let mut snapshots = FxHashMap::default();
+        let mut fork = deferred_fork(7, false);
+        fork.trap_side = Some(side);
+
+        let out = materialize_deferred_forks(
+            vec![fork],
+            MaterializeForkCtx {
+                fork_base: &base,
+                stored_conditions: &stored,
+                snapshots: &mut snapshots,
+                lazy_solves: false,
+                guard_sink: Some(&sink),
+                stats: None,
+            },
+        );
+
+        assert!(out.unsat.is_empty(), "{side:?}");
+        assert_eq!(
+            out.sat.first().map(RustSimState::pending_syscall),
+            want.map(Some),
+            "{side:?}"
+        );
+        let probe = sink.fork();
+        probe.solver().borrow().assume_true(&cond);
+        assert!(!probe.satisfiable(), "{side:?}: guard_sink lost the guard");
+    }
 }

@@ -89,7 +89,7 @@ pub(super) fn materialize_deferred_forks_core(
             };
             // Fork first, guard `base` second — the order is load-bearing; see
             // `fork_unexplored_and_guard_base`.
-            let mut forked = super::super::fork_materialize::fork_unexplored_and_guard_base(
+            let forked = super::super::fork_materialize::fork_unexplored_and_guard_base(
                 cc.callbacks,
                 base,
                 &fork,
@@ -98,6 +98,9 @@ pub(super) fn materialize_deferred_forks_core(
                 &prior_guards,
             );
             prior_guards.record(condition.clone(), fork.path_taken);
+            let Some(mut forked) = forked else {
+                continue;
+            };
             if force_eager {
                 forked.set_force_eager_forks(true);
             }
@@ -201,6 +204,9 @@ fn process_deferred_forks_into_core(
                 &prior_guards,
             );
             prior_guards.record(condition.clone(), fork.path_taken);
+            let Some(forked) = forked else {
+                continue;
+            };
             fork_ids_out.push(forked.state_id());
 
             if forked.survives_sat_prune(ctx.lazy_solves) {

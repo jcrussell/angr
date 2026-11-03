@@ -136,6 +136,7 @@ fn dispatch_syscall_seeded(
             path_taken: true,
             unexplored_target: 0x40_8000,
             condition_id: FORK_COND_ID,
+            trap_side: None,
         });
     }
 

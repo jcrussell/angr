@@ -54,6 +54,7 @@ fn pending_with_one_fork(
             path_taken: false,
             unexplored_target: UNEXPLORED,
             condition_id: COND_ID,
+            trap_side: None,
         }],
         stored_conditions: stored,
         fork_snapshots: FxHashMap::default(),
