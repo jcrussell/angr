@@ -4657,22 +4657,40 @@ class RustExplorationManager(
         self._engage_parallel_workers(parallel_eligible)
         restore_veritesting = self._install_veritesting_target_filter(find, avoid)
         try:
-            if has_predicates or bool(self._active_techniques):
-                result = self._explore_with_predicates(num_find, until, timeout, max_steps)
-            else:
-                result = self._explore_with_addresses(num_find, until, timeout, max_steps)
-        finally:
-            restore_veritesting()
-            self._release_gone_exports()
+            try:
+                if has_predicates or bool(self._active_techniques):
+                    result = self._explore_with_predicates(num_find, until, timeout, max_steps)
+                else:
+                    result = self._explore_with_addresses(num_find, until, timeout, max_steps)
+            finally:
+                restore_veritesting()
+                self._release_gone_exports()
 
-        # angr-bdeqa: an address-based find that came up empty may be targeting
-        # an address strictly inside the Python init prefix, which Rust never
-        # steps through. Replay the prefix once, then release the parked seeds.
-        if find is not None and not callable(find):
-            if self._preinit_seeds and self._found_count() == 0:
-                self._replay_preinit_prefix_for_find(self._extract_addrs(find), avoid_addrs)
-            self._preinit_seeds = []
+            # angr-bdeqa: an address-based find that came up empty may be targeting
+            # an address strictly inside the Python init prefix, which Rust never
+            # steps through. Replay the prefix once, then release the parked seeds.
+            if find is not None and not callable(find):
+                if self._preinit_seeds and self._found_count() == 0:
+                    self._replay_preinit_prefix_for_find(self._extract_addrs(find), avoid_addrs)
+                self._preinit_seeds = []
+        finally:
+            if not explorer_technique_armed:
+                self._disarm_explore_targets()
         return result
+
+    def _disarm_explore_targets(self) -> None:
+        """Drop this explore()'s find/avoid/num_find from the Rust manager.
+
+        SimulationManager.explore removes its Explorer when the call returns, so
+        a later step()/run() neither stashes a state at a find/avoid address nor
+        stops on the found count. Left armed, step() on a found state moved back
+        to active re-stashed it as found without advancing (angr-mx00p.132.19).
+        The Python-side predicates and ``_explore_*_addrs`` stay for the
+        callback dispatch and the next explore(), which re-arms everything.
+        """
+        self._rust_mgr.set_find_addrs([])
+        self._rust_mgr.set_avoid_addrs([])
+        self._rust_mgr.set_num_find(sys.maxsize)
 
     def _install_veritesting_target_filter(self, find, avoid) -> Callable[[], None]:
         """Make the first Veritesting stop its nested run at a find/avoid state.

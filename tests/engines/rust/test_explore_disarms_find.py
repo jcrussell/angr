@@ -63,3 +63,28 @@ class TestExploreDisarmsFind:
         mgr.run()
         assert not mgr.avoid
         assert len(mgr.deadended) == 3
+
+
+class TestStepAfterExplore:
+    """A step() after explore() advances the found state as SimulationManager does
+    (angr-mx00p.132.19): the explore's find addr and num_find no longer apply."""
+
+    def test_step_advances_a_found_state_moved_to_active(self, fauxware_project):
+        mgr = _mgr(fauxware_project)
+        mgr.explore(find=_ACCEPTED)
+        mgr.drop(stash="active")
+        mgr.move(from_stash="found", to_stash="active")
+        mgr.step()
+        assert not mgr.found
+        assert mgr.active
+        assert _ACCEPTED not in [s.addr for s in mgr.active]
+
+    def test_step_advances_active_once_num_find_is_reached(self, fauxware_project):
+        mgr = _mgr(fauxware_project)
+        mgr.explore(find=_ACCEPTED)
+        assert len(mgr.found) == 1
+        before = sorted(s.addr for s in mgr.active)
+        assert before
+        mgr.step()
+        assert len(mgr.found) == 1
+        assert sorted(s.addr for s in mgr.active) != before
