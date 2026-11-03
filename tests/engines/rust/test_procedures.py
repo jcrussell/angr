@@ -41,11 +41,20 @@ def _zero_stub(proc_name: str, num_args: int):
         2: lambda self, a0, a1: 0,
         3: lambda self, a0, a1, a2: 0,
     }
-    return type(
-        proc_name,
-        (angr.SimProcedure,),
-        {"num_args": num_args, "run": runs[num_args]},
-    )
+    return _native_stand_in(proc_name, {"num_args": num_args, "run": runs[num_args]})
+
+
+#: The module a native stand-in claims, so ``_native_dispatch_eligible`` treats it as stock.
+_STOCK_MODULE = "angr.procedures.libc"
+
+
+def _native_stand_in(proc_name: str, attrs: dict):
+    """A SimProcedure class named ``proc_name`` that poses as a stock angr proc.
+
+    Only a stock proc is served natively (``_native_dispatch_eligible``), so a
+    test that hooks its own class to reach a native proc claims a module under
+    ``angr.procedures.``."""
+    return type(proc_name, (angr.SimProcedure,), {**attrs, "__module__": _STOCK_MODULE})
 
 
 class TestSymbolicLibcProcedures:
@@ -1146,6 +1155,7 @@ class TestNativeFileDescriptorProcedures:
 
         class pipe(angr.SimProcedure):
             num_args = 1
+            __module__ = _STOCK_MODULE
 
             def run(self, pipefd):  # pylint: disable=arguments-differ
                 return 0
@@ -1186,6 +1196,7 @@ class TestNativeFileDescriptorProcedures:
 
         class dup2(angr.SimProcedure):
             num_args = 2
+            __module__ = _STOCK_MODULE
 
             def run(self, oldfd, newfd):  # pylint: disable=arguments-differ
                 return newfd
@@ -1336,9 +1347,8 @@ class TestNativeIdentityGetters:
 
     @staticmethod
     def _make_stub(proc_name: str):
-        return type(
+        return _native_stand_in(
             proc_name,
-            (angr.SimProcedure,),
             {"num_args": 0, "run": lambda self: 1000},
         )
 
@@ -1406,9 +1416,8 @@ class TestNativeSetbuf:
 
         proj = fauxware_project
 
-        stub_cls = type(
+        stub_cls = _native_stand_in(
             "setbuf",
-            (angr.SimProcedure,),
             {"num_args": 2, "run": lambda self, stream, buf: None},
         )
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
@@ -1452,7 +1461,7 @@ class TestNativeSyslog:
     def _dispatch(self, proj, name, num_args, run, setup_regs):
         from angr import claripy
 
-        stub_cls = type(name, (angr.SimProcedure,), {"num_args": num_args, "run": run})
+        stub_cls = _native_stand_in(name, {"num_args": num_args, "run": run})
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = proj.factory.blank_state(
@@ -1516,7 +1525,7 @@ class TestNativeTime:
         from angr import claripy
 
         proj = fauxware_project
-        stub_cls = type("time", (angr.SimProcedure,), {"num_args": 1, "run": lambda self, tloc: 0})
+        stub_cls = _native_stand_in("time", {"num_args": 1, "run": lambda self, tloc: 0})
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
         try:
             state = proj.factory.blank_state(
@@ -1616,9 +1625,8 @@ class TestNativeSystem:
 
         proj = fauxware_project
 
-        stub_cls = type(
+        stub_cls = _native_stand_in(
             "system",
-            (angr.SimProcedure,),
             {"num_args": 1, "run": lambda self, cmd: 0},
         )
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
@@ -1664,9 +1672,8 @@ class TestNativeAccess:
 
         proj = fauxware_project
 
-        stub_cls = type(
+        stub_cls = _native_stand_in(
             "access",
-            (angr.SimProcedure,),
             {"num_args": 2, "run": lambda self, path, mode: 0},
         )
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
@@ -1739,9 +1746,8 @@ class TestNativeFreadBoundary:
         """SimProcedure stub named `fread` (4 args). `run` is bypassed when
         native dispatch fires (the expected path), but the class must exist
         so `proj.hook` is valid and the name is forwarded to the manager."""
-        return type(
+        return _native_stand_in(
             "fread",
-            (angr.SimProcedure,),
             {
                 "num_args": 4,
                 "run": lambda self, dst, size, nmemb, stream: 0,

@@ -615,7 +615,15 @@ dispatcher chooses between the native and Python implementations using
 this ordered chain (first rule wins; native and Python are **never**
 both invoked except when native fails):
 
-1. **Main-object hooks always run Python.** If the hook PC falls inside
+1. **Non-stock procedures always run Python.** A hook is served
+   natively only when its SimProcedure's class is defined under
+   ``angr.procedures.`` and it was built without constructor kwargs.
+   Any other proc, such as a user ``class rand(angr.SimProcedure)``
+   hooked with ``hook_symbol("rand", ...)``, registers under a
+   ``python:``-prefixed name that no native proc matches
+   (``_native_dispatch_eligible`` in
+   ``angr/exploration/rust_callback_dispatch.py``).
+2. **Main-object hooks always run Python.** If the hook PC falls inside
    the main object's code span (i.e. ``proj.hook(addr, MyProc())``
    placed somewhere in the program text), native is skipped entirely.
    This honors the user's intent to override a specific instruction.
@@ -637,21 +645,22 @@ both invoked except when native fails):
    (Python swaps in a fresh BVS past a recursion depth of 3, and searches
    a narrower concrete window), so a native proc cannot kill a state
    that Python would keep.
-2. **Per-name Python override skips native.**
+3. **Per-name Python override skips native.**
    ``set_python_override("strlen")`` makes ``registry.get("strlen")``
    return ``None`` so dispatch falls through to the Python
    SimProcedure. Used internally by
    ``NativeLibcStartMain`` and available to user code via
    ``mgr._rust_mgr.set_python_override(name)`` (the Python wrapper does
-   not forward it).
-3. **Per-name disable skips native.** ``registry.disable("strlen")``
+   not forward it; it forwards ``mgr.disable_native_procedure(name)``,
+   below, which has the same runtime effect).
+4. **Per-name disable skips native.** ``registry.disable("strlen")``
    has the same runtime effect as a Python override; semantically it
    says "the Rust implementation is not trustworthy right now"
    rather than "Python is canonical for this name".
-4. **Global disable.** ``registry.disable_all()`` /
+5. **Global disable.** ``registry.disable_all()`` /
    ``mgr._rust_mgr.disable_native_procedures()`` skips native for every
    name.
-5. **Native runs; on error, Python takes over.** If steps 1–4 do
+6. **Native runs; on error, Python takes over.** If steps 1–5 do
    not bypass it, the dispatcher calls ``native_proc.call_ex(...)``
    (**not** ``call`` directly — the default ``call_ex`` wraps
    ``call``'s result into ``ProcOutcome::Return``, so return-only
@@ -665,7 +674,7 @@ both invoked except when native fails):
    ``not_implemented_fallbacks_by_name``, or
    ``other_fallbacks_by_name``) and emits a ``need_simprocedure``
    event so the Python SimProcedure runs instead.
-6. **No native implementation.** If the registry has no entry for
+7. **No native implementation.** If the registry has no entry for
    ``name``, the dispatcher proceeds directly to the Python
    fallback. This increments ``simprocedure_python_fallback_count``
    and ``simprocedure_fallback_by_name`` but **not**

@@ -123,11 +123,35 @@ def _simproc_dispatch_name(proc) -> str:
     symbol, e.g. ``"setenv"``) would never match. For first-class SimProcs the
     base class defaults ``display_name`` to ``type(self).__name__``, so this
     coincides with the previous behaviour.
+
+    A proc that ``_native_dispatch_eligible`` rejects gets the
+    ``_PYTHON_ONLY_PREFIX`` key instead, which no native proc or stub matches.
     """
     name = getattr(proc, "display_name", None)
-    if name:
-        return str(name)
-    return proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+    name = str(name) if name else proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
+    if not _native_dispatch_eligible(proc):
+        # No native proc is registered under this key, so the hook bounces to
+        # the user's own ``run()`` (angr-vmi2l.121).
+        return f"{_PYTHON_ONLY_PREFIX}{name}"
+    return name
+
+
+#: Prefix on the dispatch name of a hook the native registry must not serve.
+#: ``:`` is not legal in a C symbol, so no native proc name can collide.
+_PYTHON_ONLY_PREFIX = "python:"
+
+
+def _native_dispatch_eligible(proc) -> bool:
+    """Whether the native proc of the same name may stand in for ``proc``.
+
+    Only a stock angr procedure qualifies: its class is defined under
+    ``angr.procedures.`` and it carries no constructor kwargs (which reach
+    ``run()`` and the native proc would ignore). A user class named like the
+    function it models (``class rand(angr.SimProcedure)``, angr's own naming
+    convention) defaults its ``display_name`` to that name, and must still run.
+    """
+    module = getattr(type(proc), "__module__", "") or ""
+    return module.startswith("angr.procedures.") and not getattr(proc, "kwargs", None)
 
 
 def _proc_no_return(proc) -> bool:

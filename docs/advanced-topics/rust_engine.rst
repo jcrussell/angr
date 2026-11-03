@@ -3110,9 +3110,11 @@ use_sim_procedures=True``, each libc hook lands inside the loaded libc's
 ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0``, to send those hooks to Python)
 lets the native registry serve them, so a concrete
 ``strcmp``/``strlen``/``memcpy`` loop against a dynamically-linked libc
-stays in Rust instead of bouncing across the FFI boundary. Hooks inside
-the main object still go to Python, so a user ``proj.hook()`` override
-always wins. The full rule chain, including how the native string
+stays in Rust instead of bouncing across the FFI boundary. Only a stock
+angr SimProcedure is ever served natively, so a user override, wherever it
+is hooked and whatever it is named, always runs its own ``run()``; to send
+a stock procedure to Python too, call
+``mgr.disable_native_procedure(name)``. The full rule chain, including how the native string
 procedures bound their symbolic scan, is
 :ref:`Dispatch priority <extending-angr/simprocedures:Dispatch priority (native vs Python)>`.
 

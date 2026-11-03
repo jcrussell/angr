@@ -3534,6 +3534,15 @@ class RustExplorationManager(
     # Python getenv.
     _NATIVE_ENV_PROCS = ("getenv", "setenv", "unsetenv", "clearenv", "putenv")
 
+    def disable_native_procedure(self, name: str) -> None:
+        """Serve every hook dispatched as ``name`` from its Python SimProcedure.
+
+        The supported opt-out from the native procedure of that name; a hook
+        whose SimProcedure is not stock angr already runs on Python
+        (``_native_dispatch_eligible``).
+        """
+        self._rust_mgr.disable_native_procedure(name)
+
     def _disable_native_env_procs(self, state_id: int, reason: str) -> None:
         """Serve the env family from Python for this manager: the map cannot hold this state's envp."""
         l.debug("state %d: %s; the env procedures run on Python", state_id, reason)
