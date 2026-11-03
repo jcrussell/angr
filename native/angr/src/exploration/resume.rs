@@ -615,7 +615,19 @@ impl RustExplorationManager {
     }
 
     /// Inner body of the pymethods-exposed `resume_find_predicate`.
-    pub(crate) fn _resume_find_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
+    ///
+    /// `avoid_matched` is the callable avoid predicate's answer when Python
+    /// asked it on this same bounce (only meaningful when find did not
+    /// match). It saves the state a second round trip through the avoid gate
+    /// in `step_one` (angr-mx00p.132.47 made that gate fire at every block).
+    /// `Some(false)` records the avoid skip token too; `Some(true)` routes to
+    /// avoid unless the PC is a find address, which `step_one` checks first.
+    pub(crate) fn _resume_find_predicate(
+        &mut self,
+        state_id: u64,
+        matched: bool,
+        avoid_matched: Option<bool>,
+    ) -> PyResult<()> {
         let pending = self
             .pending_callbacks
             .remove(&StateId::new(state_id))
@@ -650,9 +662,19 @@ impl RustExplorationManager {
             // Mark this state to skip the find predicate check on next pop,
             // preventing infinite loop (state was already checked at this PC).
             let state_id = pending.state.state_id();
+            if avoid_matched == Some(true) && !self.find_addrs.contains(&pending.state.pc()) {
+                log::debug!("Avoid predicate matched - moving state to avoid stash");
+                self.push_or_drop_terminal(STASH_AVOID, pending.state);
+                return Ok(());
+            }
             self.constraint_tracker
                 .skip_find_predicate_states
                 .insert(state_id);
+            if avoid_matched == Some(false) {
+                self.constraint_tracker
+                    .skip_avoid_predicate_states
+                    .insert(state_id);
+            }
             self.push_to_active_or_drop(pending.state);
         }
 

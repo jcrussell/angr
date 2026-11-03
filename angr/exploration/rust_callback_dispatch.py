@@ -1510,9 +1510,18 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Find predicate at 0x{addr:x}: {e}")
                 matched = False
 
+            # A callable avoid is asked on this same bounce, so a block costs
+            # one round trip rather than a second one through Rust's avoid
+            # gate (angr-mx00p.132.47).
+            avoid_matched = None
+            if not matched and getattr(self, "_avoid_predicate", None) is not None:
+                _ap_start = time.perf_counter_ns()
+                avoid_matched = self._ask_avoid_predicate(proxy, addr)
+                self._perf_stats.record_avoid_predicate_call(time.perf_counter_ns() - _ap_start)
+
             # A match moves the state into Rust's found stash, which ``found``
             # reads; keeping the proxy too listed it twice (angr-hc1yj).
-            self._rust_mgr.resume_find_predicate(state_id, matched)
+            self._rust_mgr.resume_find_predicate(state_id, matched, avoid_matched)
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: outer find-predicate handler raised;
@@ -1561,18 +1570,7 @@ class RustCallbackDispatchMixin:
                 python_mgr=self,
             )
             proxy._override_addr = addr
-
-            try:
-                result = self._avoid_predicate(proxy)
-                matched = bool(result) if result is not None else False
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: avoid predicate raised on this state;
-                # treated as not-matched (state stays in active). Debug-logs.
-                if _DBG:
-                    l.debug(f"Avoid predicate at 0x{addr:x}: {e}")
-                matched = False
-
-            self._rust_mgr.resume_avoid_predicate(state_id, matched)
+            self._rust_mgr.resume_avoid_predicate(state_id, self._ask_avoid_predicate(proxy, addr))
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: outer avoid-predicate handler raised;
@@ -1580,6 +1578,18 @@ class RustCallbackDispatchMixin:
             # avoided. Already warns.
             l.warning(f"Avoid predicate callback error: {e}")
             self._rust_mgr.resume_avoid_predicate(state_id, False)
+
+    def _ask_avoid_predicate(self, proxy, addr: int) -> bool:
+        """Evaluate the callable avoid predicate on ``proxy``; a raise is a no."""
+        try:
+            result = self._avoid_predicate(proxy)
+            return bool(result) if result is not None else False
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: avoid predicate raised on this state;
+            # treated as not-matched (state stays in active). Debug-logs.
+            if _DBG:
+                l.debug(f"Avoid predicate at 0x{addr:x}: {e}")
+            return False
 
     def _handle_symbolic_branch_callback(self, event: _ExplorationEvent):
         """Handle symbolic branch callback from Rust.

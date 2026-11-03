@@ -199,14 +199,21 @@ impl RustExplorationManager {
         )
     }
 
-    /// Resume after Python evaluates a find predicate.
+    /// Resume after Python evaluates a find predicate, and optionally the
+    /// avoid predicate on the same bounce (`avoid_matched`).
     /// See `resume::_resume_find_predicate` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
-    pub fn resume_find_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
-        self._resume_find_predicate(state_id, matched)
+    #[pyo3(signature = (state_id, matched, avoid_matched=None))]
+    pub fn resume_find_predicate(
+        &mut self,
+        state_id: u64,
+        matched: bool,
+        avoid_matched: Option<bool>,
+    ) -> PyResult<()> {
+        self._resume_find_predicate(state_id, matched, avoid_matched)
     }
 
     /// Resume after Python evaluates an avoid predicate.

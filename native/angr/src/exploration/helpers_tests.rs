@@ -2,7 +2,7 @@
 // `#[cfg(test)] mod tests` block (see rust-module-root-split-recipe).
 use super::*;
 use crate::exploration::{CallbackReason, PendingCallback};
-use crate::stash::{STASH_ACTIVE, STASH_ERRORED};
+use crate::stash::{STASH_ACTIVE, STASH_AVOID, STASH_ERRORED, STASH_FOUND};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use rustc_hash::FxHashMap;
@@ -492,7 +492,7 @@ fn find_predicate_pending_with_deferred_fork_trips_canary() {
     );
 
     // Panics: the consumer refuses to silently drop the fork.
-    drop(mgr._resume_find_predicate(sid, false));
+    drop(mgr._resume_find_predicate(sid, false, None));
 }
 
 /// Sibling canary to `find_predicate_pending_with_deferred_fork_trips_canary`
@@ -1227,4 +1227,54 @@ fn write_proc_return_zero_extends_a_symbolic_32bit_return() {
     assert!(rax.as_u64().is_none(), "symbolic return must stay symbolic");
     let upper = rax.extract(63, 32);
     assert_eq!(upper.as_u64(), Some(0), "upper half must be a concrete zero");
+}
+
+/// Parks a find-predicate pending at `pc` and resumes it with find false and
+/// the given same-bounce avoid answer.
+fn resume_find_false_with_avoid(
+    mgr: &mut RustExplorationManager,
+    pc: u64,
+    avoid_matched: Option<bool>,
+) -> u64 {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(pc);
+    let sid = state.state_id();
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback::lightweight(state, CallbackReason::FindPredicate { addr: pc }),
+    );
+    mgr._resume_find_predicate(sid, false, avoid_matched)
+        .expect("resume");
+    sid
+}
+
+/// The find-predicate bounce can carry the avoid predicate's answer, so a
+/// block with both predicates callable costs one Python round trip, not two
+/// (angr-mx00p.132.47). A true answer routes to avoid; a false one records
+/// both skip tokens; a find address still wins over avoid, as in `step_one`.
+#[test]
+fn find_predicate_resume_carries_the_avoid_answer() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.sm.set_drop_terminal_states(false);
+
+    let avoided = resume_find_false_with_avoid(&mut mgr, 0x40_1000, Some(true));
+    let avoid = mgr.sm.get(STASH_AVOID).expect("avoid stash");
+    assert_eq!(avoid.len(), 1);
+    assert_eq!(avoid[0].state_id(), avoided);
+
+    let kept = resume_find_false_with_avoid(&mut mgr, 0x40_1100, Some(false));
+    assert!(mgr.constraint_tracker.skip_find_predicate_states.contains(&kept));
+    assert!(mgr.constraint_tracker.skip_avoid_predicate_states.contains(&kept));
+
+    let unasked = resume_find_false_with_avoid(&mut mgr, 0x40_1200, None);
+    assert!(mgr.constraint_tracker.skip_find_predicate_states.contains(&unasked));
+    assert!(!mgr.constraint_tracker.skip_avoid_predicate_states.contains(&unasked));
+
+    mgr.find_addrs.insert(0x40_1300);
+    let at_find = resume_find_false_with_avoid(&mut mgr, 0x40_1300, Some(true));
+    assert!(mgr.sm.get(STASH_FOUND).is_none_or(|f| f.is_empty()));
+    let active = mgr.sm.get(STASH_ACTIVE).expect("active stash");
+    assert!(active.iter().any(|s| s.state_id() == at_find));
+    assert_eq!(mgr.sm.get(STASH_AVOID).expect("avoid stash").len(), 1);
 }
