@@ -222,6 +222,18 @@ impl SymbolicMemory {
         )
     }
 
+    /// Record a filler the interpreter minted for never-written bytes at
+    /// `addr` (see `SymbolicMemory::fillers`).
+    pub fn record_filler(&mut self, addr: u64, name: String, bits: u32) {
+        self.fillers
+            .push_back(super::MemFiller { addr, name, bits });
+    }
+
+    /// The recorded fillers, in mint order (see `SymbolicMemory::fillers`).
+    pub fn fillers(&self) -> impl Iterator<Item = &super::MemFiller> {
+        self.fillers.iter()
+    }
+
     /// Iterate over all symbolic objects in memory.
     ///
     /// Returns `Address` by value (it's `Copy`) so callers can pattern-match

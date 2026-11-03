@@ -667,6 +667,7 @@ impl<'a> VEXInterpreter<'a> {
             log::debug!("filler store at {addr_concrete:#x} failed: {e:?}");
             return None;
         }
+        rust_mem.record_filler(addr_concrete, name.clone(), bits);
         self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &filler);
         Some(filler)
     }
@@ -714,6 +715,7 @@ impl<'a> VEXInterpreter<'a> {
                 log::debug!("uninit filler store at {run_addr:#x} failed: {e:?}");
                 continue;
             }
+            rust_mem.record_filler(run_addr, name.clone(), bits);
             self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &filler);
         }
     }

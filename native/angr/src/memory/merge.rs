@@ -316,6 +316,9 @@ impl SymbolicMemory {
         //   object *is* the recorded value, so a union is safe in both
         //   directions: a byte the merge rewrote (an ITE) no longer matches
         //   and is exported (angr-ccp2w).
+        // * `fillers`: each arm's minted fillers stay registered variables of
+        //   the merged state, as Python's `temporal_tracked_variables` union
+        //   (angr-vmi2l.321); a shared ancestor's filler appears once.
         //
         // They deliberately do not flip `merged`, which reports whether any
         // stored *value* differed between the arms.
@@ -329,6 +332,11 @@ impl SymbolicMemory {
             self.imported_addrs
                 .entry(*addr)
                 .or_insert_with(|| bv.clone());
+        }
+        for filler in &other.fillers {
+            if !self.fillers.contains(filler) {
+                self.fillers.push_back(filler.clone());
+            }
         }
 
         merged

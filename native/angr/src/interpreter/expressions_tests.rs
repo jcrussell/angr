@@ -747,6 +747,7 @@ fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
 /// A load of memory neither side holds stores its filler (angr-vmi2l.179):
 /// a narrower or shifted re-read slices the first read's value instead of
 /// minting an unrelated symbol, and the filler carries a unique name.
+/// The memory records every filler it installs (angr-vmi2l.321).
 #[test]
 fn unservable_load_installs_its_filler() {
     let ctx = SymContext::new_mock();
@@ -760,14 +761,26 @@ fn unservable_load_installs_its_filler() {
                 .try_rust_memory_load(host, &at(off), size, None)
                 .expect("load must not fault")
         };
-        (load(0, 4), load(1, 1), load(2, 4))
+        let loads = (load(0, 4), load(1, 1), load(2, 4));
+        let fillers: Vec<(u64, u32)> = interp
+            .rust_memory
+            .as_ref()
+            .expect("rust memory")
+            .fillers()
+            .map(|f| (f.addr, f.bits))
+            .collect();
+        (loads, fillers)
     };
 
     let host = TestHost {
         host_pages: Some(vec![]),
         ..TestHost::default()
     };
-    let (wide, narrow, shifted) = read(&host);
+    let ((wide, narrow, shifted), fillers) = read(&host);
+    // Each minted filler is recorded for the ("mem", addr) variable key
+    // (angr-vmi2l.321): the first read's, and the shifted read's two-byte
+    // tail past it.
+    assert_eq!(fillers, vec![(x, 32), (x + 4, 16)]);
     let wide = wide.expect("an unservable load is answered natively");
     let (name, _) = wide.leaf_var().expect("the filler is a bare leaf");
     assert!(
@@ -785,7 +798,7 @@ fn unservable_load_installs_its_filler() {
         host_pages: Some(vec![x & !0xfff]), // page-shift-ok: test fixture page base
         ..TestHost::default()
     };
-    assert!(read(&held).0.is_none(), "a host page must not be shadowed by a filler");
+    assert!(read(&held).0.0.is_none(), "a host page must not be shadowed by a filler");
 }
 
 #[test]

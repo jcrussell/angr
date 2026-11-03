@@ -450,6 +450,25 @@ pub struct SymbolicMemory {
     /// merge therefore cannot leave a stale entry reachable.
     #[merge_policy = "in_place_self"]
     wider_load_cache: RefCell<FxHashMap<(Address, u32), CachedWiderLoad>>,
+    /// The fillers the interpreter minted and installed for never-written
+    /// bytes, in mint order (`record_filler`). Python's `DefaultFillerMixin`
+    /// registers each such filler under the `("mem", addr)` variable key; the
+    /// solver proxy's `get_variables` reads this list to do the same
+    /// (`get_state_mem_fillers`, angr-vmi2l.321).
+    ///
+    /// Merged as a union by name — see the accumulating-sidecar block at the
+    /// end of [`Self::merge`].
+    #[merge_policy = "joint"]
+    fillers: im::Vector<MemFiller>,
+}
+
+/// One filler [`SymbolicMemory::record_filler`] recorded: the symbol's name
+/// and width, and the address of its first byte.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemFiller {
+    pub addr: u64,
+    pub name: String,
+    pub bits: u32,
 }
 
 /// Phase 4.1: one byte's role in a cached wider-load result. Loads that
@@ -497,6 +516,7 @@ impl SymbolicMemory {
             enforce_nx: false,
             multi_versions: FxHashMap::default(),
             wider_load_cache: RefCell::new(FxHashMap::default()),
+            fillers: im::Vector::new(),
         }
     }
 
@@ -876,6 +896,7 @@ impl SymbolicMemory {
             // faithful by construction. Avoids the per-fork clone cost; the child
             // repopulates lazily on its first wider load.
             wider_load_cache: RefCell::new(FxHashMap::default()),
+            fillers: self.fillers.clone(),
         }
     }
 
@@ -1304,6 +1325,9 @@ pub struct SymbolicMemorySnapshot {
     /// pre-fix behaviour).
     #[serde(default)]
     pub dirty_pages: Vec<u64>,
+    /// See `SymbolicMemory::fillers` (angr-vmi2l.321).
+    #[serde(default)]
+    pub fillers: Vec<MemFiller>,
 }
 
 impl SymbolicMemory {
@@ -1347,6 +1371,7 @@ impl SymbolicMemory {
                 d.sort_unstable();
                 d
             },
+            fillers: self.fillers.iter().cloned().collect(),
         }
     }
 
@@ -1395,6 +1420,7 @@ impl SymbolicMemory {
             enforce_nx: snap.enforce_nx,
             multi_versions: FxHashMap::default(),
             wider_load_cache: RefCell::new(FxHashMap::default()),
+            fillers: snap.fillers.into_iter().collect(),
         }
     }
 }

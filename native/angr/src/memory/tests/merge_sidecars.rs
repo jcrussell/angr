@@ -262,3 +262,31 @@ fn split_page_object_backfills_tail_bytes_when_base_key_is_occupied() {
         );
     }
 }
+
+/// The filler record (angr-vmi2l.321): a fork inherits it, a merge unions
+/// it with a shared ancestor's filler kept once, and a snapshot carries it.
+#[test]
+fn filler_record_survives_fork_merge_and_snapshot() {
+    let names = |m: &SymbolicMemory| -> Vec<(u64, String)> {
+        m.fillers().map(|f| (f.addr, f.name.clone())).collect()
+    };
+    let mut root = SymbolicMemory::new(Endness::Little);
+    root.record_filler(0x7000_0020, "mem_70000020_rs0_32".into(), 32);
+
+    let mut a = root.fork();
+    let mut b = root.fork();
+    a.record_filler(0x7000_0030, "mem_70000030_rs1_8".into(), 8);
+    b.record_filler(0x7000_0040, "mem_70000040_rs2_16".into(), 16);
+    a.merge(&b, &RustBV::symbol("m", 1));
+    let want = vec![
+        (0x7000_0020, "mem_70000020_rs0_32".to_string()),
+        (0x7000_0030, "mem_70000030_rs1_8".to_string()),
+        (0x7000_0040, "mem_70000040_rs2_16".to_string()),
+    ];
+    assert_eq!(names(&a), want);
+    assert_eq!(names(&root).len(), 1, "a fork's record does not leak back");
+
+    let proof = a.flush_multi_cells();
+    let restored = SymbolicMemory::from_snapshot(a.to_snapshot(&proof));
+    assert_eq!(names(&restored), want);
+}

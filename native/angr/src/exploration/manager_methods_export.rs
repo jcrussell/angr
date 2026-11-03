@@ -20,7 +20,7 @@
 //!   `set_state_register_symbolic_ast`.
 //! - **Memory**: `get_state_memory{,_ast}`,
 //!   `set_state_memory_{concrete,ast}{,_automap}`,
-//!   `state_memory_store_symbolic_multi`.
+//!   `state_memory_store_symbolic_multi`, `get_state_mem_fillers`.
 //! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
 //!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`, `eval_stdin_symbol{,_bytes}`,
 //!   `record_stdin_host_packet`, `get_state_stdin_host_packets`,
@@ -461,6 +461,19 @@ impl RustExplorationManager {
                 .stdin_host_packets()
                 .iter()
                 .map(|p| (p.after_leaves, p.data.clone(), p.size.clone()))
+                .collect())
+        })
+    }
+
+    /// The fillers Rust minted for never-written bytes on a state, in mint
+    /// order, as `(addr, name, bits)`: the solver proxy registers each under
+    /// Python's `("mem", addr)` variable key (angr-vmi2l.321).
+    pub fn get_state_mem_fillers(&self, state_id: u64) -> PyResult<Vec<(u64, String, u32)>> {
+        self.with_state(state_id, |state| {
+            Ok(state
+                .memory()
+                .fillers()
+                .map(|f| (f.addr, f.name.clone(), f.bits))
                 .collect())
         })
     }
