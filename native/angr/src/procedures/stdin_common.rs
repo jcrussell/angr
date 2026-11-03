@@ -76,6 +76,61 @@ pub(crate) fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
     (pos as usize) < content.len()
 }
 
+/// True when fd 0's harness seed ends the stream (Python `SimFile.has_end`)
+/// before a read of `count` bytes would: fewer than `count` unread seeded
+/// bytes remain, none at all included. A positional reader serves the seed
+/// byte-for-byte and mints fresh bytes past it, which models a frontier
+/// seed but not EOF, where Python's read is short and glibc's returns what
+/// is left. Such a read must defer to Python (angr-vmi2l.110).
+pub(crate) fn stdin_seed_ends_before(state: &RustSimState, count: usize) -> bool {
+    let fs = state.file_system_ref();
+    if !fs.fd_content_has_end(0) {
+        return false;
+    }
+    let Some(content) = fs.fd_content_sym(0) else {
+        return false;
+    };
+    let pos = fs.fd_info(0).map_or(0, |info| info.1) as usize;
+    content.len().saturating_sub(pos) < count
+}
+
+/// True when one of the next `window` unread bytes of fd 0's harness seed is
+/// concretely one of `stops`. A reader that stops at such a byte (fgets at
+/// `'\n'`, scanf `%s` at a delimiter) cannot serve it positionally, since its
+/// constraints would make the path UNSAT where the real call stops there, so
+/// it defers to Python (angr-vmi2l.110, angr-vmi2l.111).
+pub(crate) fn stdin_seed_has_concrete_stop(
+    state: &RustSimState,
+    window: usize,
+    stops: &[u8],
+) -> bool {
+    let fs = state.file_system_ref();
+    let Some(content) = fs.fd_content_sym(0) else {
+        return false;
+    };
+    let pos = fs.fd_info(0).map_or(0, |info| info.1) as usize;
+    content.iter().skip(pos).take(window).any(|b| {
+        b.as_u64()
+            .and_then(|v| u8::try_from(v).ok())
+            .is_some_and(|v| stops.contains(&v))
+    })
+}
+
+/// The `Err` a native stdin reader of `count` bytes returns when fd 0's
+/// harness seed ends first ([`stdin_seed_ends_before`]).
+pub(crate) fn bounce_if_seed_ends_before(
+    state: &RustSimState,
+    count: usize,
+    proc_name: &str,
+) -> Result<(), ProcedureError> {
+    if stdin_seed_ends_before(state, count) {
+        return Err(ProcedureError::Other(format!(
+            "{proc_name}: the harness stdin seed ends before {count} bytes; Python models the EOF"
+        )));
+    }
+    Ok(())
+}
+
 /// True when fd 0 no longer points at the pristine harness-seeded stdin
 /// placeholder — i.e. a guest `dup2(real_fd, 0)` rewired it onto a real,
 /// Rust-tracked file. Thin wrapper over

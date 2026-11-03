@@ -3461,6 +3461,9 @@ class RustExplorationManager(
             content = getattr(stdin, "content", None)
             asts = []
             consumed = 0
+            # Only a SimFile can end: a SimPackets stream mints a fresh packet
+            # past its content, as Rust does past a frontier seed.
+            has_end = False
             if isinstance(content, list) and content:
                 # Packets before ``pos`` were already read (a state Python
                 # stepped past a stdin read; angr-mx00p.89).
@@ -3479,17 +3482,21 @@ class RustExplorationManager(
                 if size is None or getattr(size, "symbolic", True):
                     return
                 n = angr_state.solver.eval(size)
-                if n <= 0:
+                has_end = getattr(stdin, "has_end", None) is True
+                # An empty stream that ends is still pushed, so a native
+                # reader sees the EOF (angr-vmi2l.110).
+                if n <= 0 and not has_end:
                     return
-                data = stdin.load(0, n)
-                if not isinstance(data, claripy.ast.BV) or data.length % 8:
-                    return
-                asts.extend(data.chop(8))
+                if n > 0:
+                    data = stdin.load(0, n)
+                    if not isinstance(data, claripy.ast.BV) or data.length % 8:
+                        return
+                    asts.extend(data.chop(8))
             else:
                 return
-            if not asts or len(asts) > self._FS_EXPORT_MAX_FILE_SIZE:
+            if (not asts and not has_end) or len(asts) > self._FS_EXPORT_MAX_FILE_SIZE:
                 return
-            self._rust_mgr.seed_stdin_content(state_id, asts, consumed)
+            self._rust_mgr.seed_stdin_content(state_id, asts, consumed, has_end)
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: stdin seeding failed; native read(0)
             # mints fresh symbols, so the harness's BVS stays unconstrained on

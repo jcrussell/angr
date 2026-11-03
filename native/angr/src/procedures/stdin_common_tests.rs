@@ -138,3 +138,35 @@ fn test_stdin_seed_unconsumed_tracks_position() {
     mint_stdin_bytes(&mut state, &["stdin_2".to_string()]);
     assert!(!stdin_seed_unconsumed(&state));
 }
+
+#[test]
+fn test_seed_ends_before_only_for_a_seed_that_ends() {
+    // angr-vmi2l.110: a frontier seed (Python SimPackets) mints past its end,
+    // so only a has_end seed shorter than the read is an EOF.
+    let mut state = RustSimState::new("amd64").unwrap();
+    assert!(!stdin_seed_ends_before(&state, 10), "no seed at all");
+    seed_stdin(&mut state, b"hello");
+    assert!(!stdin_seed_ends_before(&state, 10), "frontier seed");
+    state.file_system().set_fd_content_has_end(0, true);
+    assert!(stdin_seed_ends_before(&state, 6));
+    assert!(!stdin_seed_ends_before(&state, 5));
+    assert!(bounce_if_seed_ends_before(&state, 6, "read").is_err());
+
+    // The remaining count shrinks as the seed is read; an exhausted seed is
+    // EOF even for a one-byte read.
+    let names: Vec<String> = (0..5).map(|i| format!("stdin_{i}")).collect();
+    mint_stdin_bytes(&mut state, &names);
+    assert!(stdin_seed_ends_before(&state, 1));
+}
+
+#[test]
+fn test_seed_has_concrete_stop_looks_only_in_the_window() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    seed_stdin(&mut state, b"ab\ncd");
+    assert!(!stdin_seed_has_concrete_stop(&state, 2, b"\n"));
+    assert!(stdin_seed_has_concrete_stop(&state, 3, b"\n"));
+    // Bytes already read are outside the window.
+    let names: Vec<String> = (0..3).map(|i| format!("stdin_{i}")).collect();
+    mint_stdin_bytes(&mut state, &names);
+    assert!(!stdin_seed_has_concrete_stop(&state, usize::MAX, b"\n"));
+}

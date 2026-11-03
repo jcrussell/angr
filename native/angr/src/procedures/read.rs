@@ -34,7 +34,7 @@
 //! symbolic-file model can take over.
 
 use super::arch_word;
-use super::stdin_common::{bounce_if_fd0_dup2d, mint_stdin_bytes};
+use super::stdin_common::{bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes};
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -159,6 +159,8 @@ fn read_stdin_symbolic(
     buf: u64,
     count: u64,
 ) -> Result<Option<RustBV>, ProcedureError> {
+    // A read past a seed that ends the stream is short (angr-vmi2l.110).
+    bounce_if_seed_ends_before(state, count as usize, "read")?;
     let read_id = symbol_counter("read");
 
     // Harness-seeded stdin (angr-mb09c): mint the fresh `stdin_N_i` leaves and

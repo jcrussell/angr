@@ -91,6 +91,24 @@ impl FileSystem {
         }
     }
 
+    /// Mark whether `fd`'s attached `content_sym` ends the stream
+    /// ([`FileDescriptor::content_sym_has_end`]). No-op on an unknown fd.
+    ///
+    /// [`FileDescriptor::content_sym_has_end`]: super::FileDescriptor::content_sym_has_end
+    pub fn set_fd_content_has_end(&mut self, fd: u32, has_end: bool) {
+        let fd = self.desc_key(fd);
+        if self
+            .fds
+            .get(&fd)
+            .is_none_or(|d| d.content_sym_has_end == has_end)
+        {
+            return;
+        }
+        if let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) {
+            desc.content_sym_has_end = has_end;
+        }
+    }
+
     /// Look up registered symbolic content for a (possibly relative)
     /// path. Returns a shared handle (refcount bump) when the
     /// cwd-normalized path has a registry entry.
@@ -358,6 +376,16 @@ impl FileSystem {
     pub fn fd_content_sym(&self, fd: u32) -> Option<Arc<Vec<RustBV>>> {
         let fd = self.desc_key(fd);
         self.fds.get(&fd).and_then(|d| d.content_sym.clone())
+    }
+
+    /// True when `fd`'s attached `content_sym` ends the stream; false for no
+    /// content or a frontier seed. See
+    /// [`set_fd_content_has_end`](Self::set_fd_content_has_end).
+    pub fn fd_content_has_end(&self, fd: u32) -> bool {
+        let fd = self.desc_key(fd);
+        self.fds
+            .get(&fd)
+            .is_some_and(|d| d.content_sym.is_some() && d.content_sym_has_end)
     }
 
     /// True when `fd` is open with bounded symbolic content attached — the

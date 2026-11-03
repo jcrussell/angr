@@ -88,6 +88,14 @@ pub struct FileDescriptor {
     /// acceptable, sharing is only a fork-time perf optimization.
     #[serde(default)]
     pub content_sym: Option<Arc<Vec<RustBV>>>,
+    /// Whether the end of `content_sym` is the end of the stream (Python
+    /// `SimFile.has_end`), so a read past it is short or EOF rather than a
+    /// frontier that mints fresh bytes. Set only by
+    /// [`FileSystem::set_fd_content_has_end`] for a harness-seeded stdin
+    /// (angr-vmi2l.110); `#[serde(default)]` keeps older snapshots loadable
+    /// (reconstitutes to the frontier reading).
+    #[serde(default)]
+    pub content_sym_has_end: bool,
     /// The `file_contents` registry key this fd is linked to, recorded at
     /// attach/registration time (cwd-normalized-at-that-moment absolute
     /// path). [`FileSystem::demote_symbolic_content`] keys off this rather
@@ -172,6 +180,7 @@ impl FileDescriptor {
             symbolic: false,
             append: false,
             content_sym: None,
+            content_sym_has_end: false,
             registry_key: None,
             norm_name: None,
             is_std_placeholder: false,
@@ -189,6 +198,7 @@ impl FileDescriptor {
             symbolic: false,
             append: false,
             content_sym: None,
+            content_sym_has_end: false,
             registry_key: None,
             norm_name: None,
             is_std_placeholder: false,
@@ -207,6 +217,7 @@ impl FileDescriptor {
             symbolic: true,
             append: false,
             content_sym: None,
+            content_sym_has_end: false,
             registry_key: None,
             norm_name: None,
             is_std_placeholder: false,

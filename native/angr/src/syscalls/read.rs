@@ -146,6 +146,14 @@ fn read_stdin(
     buf: u64,
     count: u64,
 ) -> Result<SyscallOutcome, SyscallError> {
+    // A read past a seed that ends the stream is short; Python returns what
+    // is left (angr-vmi2l.110).
+    if crate::procedures::stdin_common::stdin_seed_ends_before(state, count as usize) {
+        return Err(SyscallError::Other(
+            "read(0): the harness stdin seed ends before the read; Python models the EOF"
+                .to_string(),
+        ));
+    }
     let names = crate::syscalls::fresh_byte_names("sys_read", SYS_READ_COUNTER, count);
     let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
     write_bv_bytes(state, buf, sym_bytes)?;

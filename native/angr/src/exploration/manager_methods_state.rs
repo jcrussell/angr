@@ -423,7 +423,9 @@ impl RustExplorationManager {
     /// serves these instead of minting fresh `stdin_*` symbols, so the path
     /// condition on an exported found state references the harness's BVS and
     /// `solver.eval(bvs)` / `posix.dumps(0)` return the real solution. Reads
-    /// past the seeded content fall back to fresh symbols. The first
+    /// past the seeded content fall back to fresh symbols unless `has_end`
+    /// (Python `SimFile.has_end`) makes its end the end of the stream, in
+    /// which case the native readers defer such a read (angr-vmi2l.110). The first
     /// `consumed` bytes count as already read (a state Python stepped past a
     /// stdin read and handed back; angr-mx00p.89): fd 0 starts after them, so
     /// no later read serves them again. Errors (not panics) on unknown
@@ -433,15 +435,16 @@ impl RustExplorationManager {
         reason = "mutates one state_id-scoped state's own stdin fd content; does not mutate \
                   exploration config or the active stash."
     )]
-    #[pyo3(signature = (state_id, byte_asts, consumed = 0))]
+    #[pyo3(signature = (state_id, byte_asts, consumed = 0, has_end = false))]
     pub fn seed_stdin_content(
         &mut self,
         py: Python<'_>,
         state_id: u64,
         byte_asts: &Bound<'_, pyo3::types::PyList>,
         consumed: usize,
+        has_end: bool,
     ) -> PyResult<()> {
-        self._seed_stdin_content(py, state_id, byte_asts, consumed)
+        self._seed_stdin_content(py, state_id, byte_asts, consumed, has_end)
     }
 
     /// Seed the guest's initial environment — the `entry_state(env=...)`

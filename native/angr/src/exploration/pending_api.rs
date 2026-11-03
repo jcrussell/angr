@@ -291,12 +291,14 @@ impl RustExplorationManager {
         state_id: u64,
         byte_asts: &Bound<'_, pyo3::types::PyList>,
         consumed: usize,
+        has_end: bool,
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
             let bytes = import_byte_asts(py, state, byte_asts)?;
             let consumed = consumed.min(bytes.len());
             let fs = state.file_system();
             fs.set_fd_content_sym(0, bytes);
+            fs.set_fd_content_has_end(0, has_end);
             if consumed > 0 {
                 // fd 0 exists on every constructed state, so this cannot
                 // take seek's absent-fd `None` arm.

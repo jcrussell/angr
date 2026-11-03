@@ -33,7 +33,9 @@
 //!   symbolic `_fileno` also falls back to Python.
 
 use super::arch_word;
-use super::stdin_common::{bounce_if_fd0_dup2d, mint_stdin_bytes};
+use super::stdin_common::{
+    bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes, stdin_seed_has_concrete_stop,
+};
 use super::{ProcedureError, symbol_counter};
 use crate::memory::MemoryError;
 use crate::procedures::stream_ops::read_fileno;
@@ -73,6 +75,7 @@ pub(crate) fn store_symbolic_line(
     label: &str,
     read_id: u64,
 ) -> Result<RustBV, ProcedureError> {
+    bounce_if_seed_ends_before(state, names.len(), label)?;
     let bits = state.arch().bits();
     let recorded_before = state.stdin_symbols().len();
     let sym_bytes = mint_stdin_bytes(state, names);
@@ -248,8 +251,20 @@ crate::declare_proc! {
 
         // overflow-ok: size == 0 returned above, so size >= 1 here.
         let read_count = size - 1; // fgets reads at most size-1 bytes
-        let read_id = symbol_counter("fgets");
         let short_reads = state.has_option("SHORT_READS");
+        // A concrete newline the full read below would put before its last
+        // byte ends the line there, and the leaves past it would be forced
+        // off '\n' into UNSAT. Python stops at it (angr-vmi2l.110); the
+        // SHORT_READS model's symbolic length already can.
+        if !short_reads
+            && stdin_seed_has_concrete_stop(state, (read_count as usize).saturating_sub(1), b"\n")
+        {
+            return Err(ProcedureError::Other(
+                "fgets: the harness stdin seed ends a line inside the read".to_string(),
+            ));
+        }
+        bounce_if_seed_ends_before(state, read_count as usize, "fgets")?;
+        let read_id = symbol_counter("fgets");
 
         let names: Vec<String> = (0..read_count)
             .map(|i| format!("stdin_fgets_{read_id}_{i}"))
@@ -385,6 +400,7 @@ crate::declare_proc! {
         }
         // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "fgetc")?;
+        bounce_if_seed_ends_before(state, 1, "fgetc")?;
         Ok(Some(read_stdin_char(state, "fgetc")))
     }
 }
@@ -407,6 +423,7 @@ crate::declare_proc! {
     call |state| {
         // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "getchar")?;
+        bounce_if_seed_ends_before(state, 1, "getchar")?;
         Ok(Some(read_stdin_char(state, "getchar")))
     }
 }

@@ -31,7 +31,10 @@
 use super::arch_word;
 use super::format_common::read_format_string;
 use super::scanf_spec::parse_scanf_format;
-use super::stdin_common::{bounce_if_fd0_dup2d, mint_stdin_bytes, stdin_seed_unconsumed};
+use super::stdin_common::{
+    bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes,
+    stdin_seed_has_concrete_stop, stdin_seed_unconsumed,
+};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -90,11 +93,30 @@ fn do_scanf(
                 "scanf: %s under SHORT_READS has a symbolic length".to_string(),
             ));
         }
-        if record_stdin && unread_seed_has_concrete_delimiter(state) {
+        // Conservative: the whole unread seed is checked, not just the window
+        // the call's `%s` conversions would read.
+        if record_stdin && stdin_seed_has_concrete_stop(state, usize::MAX, &SCANF_DELIMITERS) {
             return Err(ProcedureError::Other(
                 "scanf: %s over a harness seed holding a delimiter".to_string(),
             ));
         }
+    }
+
+    // A seed that ends the stream before the bytes this call reads (each `%s`
+    // its width, each other conversion at least one byte) is an EOF the
+    // positional reads below do not model (angr-vmi2l.110).
+    if record_stdin {
+        let need = specs
+            .iter()
+            .map(|s| {
+                if s.is_string {
+                    s.max_str_len as usize
+                } else {
+                    1
+                }
+            })
+            .fold(0usize, usize::saturating_add);
+        bounce_if_seed_ends_before(state, need, "scanf")?;
     }
 
     let scan_id = symbol_counter("scanf");
@@ -230,22 +252,6 @@ fn do_scanf(
 /// The bytes a `%s` stops at: Python's `FormatString.SCANF_DELIMITERS`
 /// (`\t \n \v \r` and space).
 const SCANF_DELIMITERS: [u8; 5] = [b'\t', b'\n', 0x0b, b'\r', b' '];
-
-/// True when fd 0's unread harness seed holds a concrete `%s` delimiter.
-/// Conservative: the whole unread seed is checked, not just the window the
-/// call's `%s` conversions would read.
-fn unread_seed_has_concrete_delimiter(state: &RustSimState) -> bool {
-    let fs = state.file_system_ref();
-    let Some(content) = fs.fd_content_sym(0) else {
-        return false;
-    };
-    let pos = fs.fd_info(0).map_or(0, |info| info.1) as usize;
-    content.iter().skip(pos).any(|b| {
-        b.as_u64()
-            .and_then(|v| u8::try_from(v).ok())
-            .is_some_and(|v| SCANF_DELIMITERS.contains(&v))
-    })
-}
 
 /// Native scanf implementation.
 ///

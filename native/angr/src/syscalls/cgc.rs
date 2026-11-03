@@ -53,7 +53,7 @@ use super::{
     extract_concrete_arg, fresh_byte_names, gather_concrete_bytes, mint_symbolic_bytes,
 };
 use crate::memory::{PAGE_MASK, PAGE_SIZE, Permission};
-use crate::procedures::stdin_common::mint_stdin_bytes;
+use crate::procedures::stdin_common::{mint_stdin_bytes, stdin_seed_ends_before};
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -236,6 +236,13 @@ impl NativeSyscall for NativeReceiveSyscall {
         // so a downstream `posix.dumps(0)` over the Python state can
         // recover the model — same precedent as `NativeReadSyscall` for
         // Linux stdin.
+        // A receive past a seed that ends the stream is short (angr-vmi2l.110).
+        if stdin_seed_ends_before(state, count as usize) {
+            return Err(SyscallError::Other(
+                "receive: the harness stdin seed ends before the read; Python models the EOF"
+                    .to_string(),
+            ));
+        }
         let names = fresh_byte_names("cgc_receive", RECEIVE_COUNTER, count);
         // Not `mint_symbolic_bytes`: `mint_stdin_bytes` binds each leaf to a
         // harness-seeded fd-0 byte when the harness pre-filled
