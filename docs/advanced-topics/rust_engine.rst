@@ -2729,7 +2729,10 @@ facing knobs that cap memory growth are:
   ``state.history`` / ``detailed_history`` ring buffer. Setting it to
   ``0`` disables truncation entirely and is only safe for short runs
   — long explorations will accumulate per-state history blocks
-  proportional to step count and *can OOM*.
+  proportional to step count and *can OOM*. The cap does not limit
+  ``LengthLimiter``, ``LoopSeer`` or ``state.history.block_count``: each
+  state also keeps an uncapped block count and the per-block visit counts
+  of the entries the cap evicted.
 
 ``MemoryWatcher`` technique
   ``mgr.use_technique(MemoryWatcher(min_memory=512))`` moves the

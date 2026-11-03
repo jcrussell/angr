@@ -88,6 +88,8 @@ impl RustSimState {
             history: VecDeque::new(),
             detailed_history: VecDeque::new(),
             max_history: 1000,
+            block_count: 0,
+            evicted_visits: Arc::new(HashMap::new()),
             hooks: Arc::new(HashSet::new()),
             removed_hooks: Arc::new(HashSet::new()),
             concretizer: AddressConcretizer::default(),

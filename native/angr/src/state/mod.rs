@@ -367,6 +367,17 @@ pub struct RustSimState {
     /// Maximum history length (0 = unlimited).
     #[merge_policy = "self_wins"]
     max_history: usize,
+    /// Blocks this path has executed, uncapped by `max_history`: the
+    /// counterpart of Python's `history.block_count`, which the native
+    /// LengthLimiter reads (angr-vmi2l.31). `self_wins` like `history`.
+    #[merge_policy = "self_wins"]
+    block_count: u64,
+    /// Per-address visit counts of the entries `max_history` evicted from
+    /// `history`, so a visit count is `history`'s plus this one and the
+    /// native LoopBound sees visits older than the window (angr-vmi2l.31).
+    /// Empty until the window first overflows. `Arc` so a fork shares it.
+    #[merge_policy = "self_wins"]
+    evicted_visits: Arc<HashMap<u64, u32>>,
     /// Hook addresses. Wrapped in Arc for cheap fork — copy-on-write
     /// via Arc::make_mut on add/remove/clear. Mutated only at config time
     /// in typical workloads, so most forks pay no clone cost here.
@@ -781,7 +792,10 @@ impl RustSimState {
         if max > 0 {
             if self.history.len() > max {
                 let drop = self.history.len() - max;
-                self.history.drain(0..drop);
+                let evicted: Vec<u64> = self.history.drain(0..drop).collect();
+                for addr in evicted {
+                    self.record_evicted_visit(addr);
+                }
             }
             if self.detailed_history.len() > max {
                 let drop = self.detailed_history.len() - max;

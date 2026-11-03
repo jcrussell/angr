@@ -100,3 +100,39 @@ fn test_record_exit_survives_fork_and_serialization() {
         assert_eq!(s.exit_code(), Some(&RustBV::concrete(0xC000_0409, 32)));
     }
 }
+
+#[test]
+fn test_block_count_and_evicted_visits_outlive_the_cap() {
+    // `block_count` and `evicted_visits` keep what the `max_history` window
+    // drops, through a retroactive trim, a fork and a snapshot round trip
+    // (angr-vmi2l.31).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_max_history(0);
+    for i in 0..6u64 {
+        state.add_to_history(0x4000 + (i % 2));
+    }
+    state.set_max_history(2);
+    for _ in 0..3 {
+        state.add_to_history(0x4000);
+    }
+    assert_eq!(state.history().len(), 2);
+    assert_eq!(state.block_count(), 9);
+    // Trim evicted 0x4000 x2 and 0x4001 x2; the pushes evicted 0x4000, 0x4001, 0x4000.
+    assert_eq!(state.evicted_visits().get(&0x4000), Some(&4));
+    assert_eq!(state.evicted_visits().get(&0x4001), Some(&3));
+
+    let child = state.fork();
+    assert_eq!(child.block_count(), 9);
+    assert_eq!(child.evicted_visits(), state.evicted_visits());
+
+    let restored = RustSimState::from_snapshot(state.to_snapshot()).unwrap();
+    assert_eq!(restored.block_count(), 9);
+    assert_eq!(restored.evicted_visits(), state.evicted_visits());
+
+    // Counting does not depend on history tracking, as in Python.
+    let mut untracked = RustSimState::new("amd64").unwrap();
+    untracked.set_track_history(false);
+    untracked.add_to_history(0x4000);
+    assert_eq!(untracked.block_count(), 1);
+    assert!(untracked.history().is_empty());
+}

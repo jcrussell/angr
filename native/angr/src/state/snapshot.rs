@@ -82,6 +82,12 @@ pub struct RustSimStateSnapshot {
     pub history: VecDeque<u64>,
     pub detailed_history: VecDeque<HistoryEntry>,
     pub max_history: usize,
+    /// See `RustSimState::block_count` (angr-vmi2l.31).
+    #[serde(default)]
+    pub block_count: u64,
+    /// See `RustSimState::evicted_visits` (angr-vmi2l.31).
+    #[serde(default)]
+    pub evicted_visits: HashMap<u64, u32>,
     pub hooks: Vec<u64>,
     /// Hook addresses explicitly removed since this state's last fork point
     /// (angr-9ke6b.121 bug fix follow-up; see `RustSimState::removed_hooks`).
@@ -229,6 +235,8 @@ impl RustSimState {
             history: self.history.clone(),
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
+            block_count: self.block_count,
+            evicted_visits: (*self.evicted_visits).clone(),
             hooks,
             removed_hooks,
             concretizer: self.concretizer.clone(),
@@ -294,6 +302,8 @@ impl RustSimState {
             history: snap.history,
             detailed_history: snap.detailed_history,
             max_history: snap.max_history,
+            block_count: snap.block_count,
+            evicted_visits: Arc::new(snap.evicted_visits),
             hooks: Arc::new(hooks),
             removed_hooks: Arc::new(removed_hooks),
             concretizer: snap.concretizer,

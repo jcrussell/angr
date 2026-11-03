@@ -868,11 +868,15 @@ class TestEdgeCases:
                 self.export_calls += 1
                 return self._inner.export_state(state_id)
 
+            def get_state_block_count(self, state_id):
+                return self._inner.get_state_block_count(state_id)
+
         rec = _RecordingMgr(mgr._rust_mgr)
         proxy = RustHistoryProxy(rec, sid)
         addrs = proxy.recent_bbl_addrs
         _ = proxy.bbl_addrs  # delegate
-        _ = proxy.block_count  # delegate
+        # The uncapped counter, not the tail's length (angr-vmi2l.31).
+        assert proxy.block_count == mgr._rust_mgr.get_state_block_count(sid)
 
         assert rec.export_calls == 0, "recent_bbl_addrs must not export_state"
         assert rec.tail_calls == [(sid, RustHistoryProxy._RECENT_TAIL_DEFAULT)], (

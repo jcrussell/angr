@@ -371,6 +371,63 @@ fn length_limiter_boundary_is_strictly_greater_than_max() {
     assert_eq!(mgr.sm.state_ids("cut"), vec![over_limit]);
 }
 
+/// Push an amd64 state capped at `max_history` that executed `blocks`.
+fn push_active_capped(mgr: &mut RustExplorationManager, max_history: usize, blocks: &[u64]) -> u64 {
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_max_history(max_history);
+    for &b in blocks {
+        s.add_to_history(b);
+    }
+    let sid = s.state_id();
+    mgr.sm.push(STASH_ACTIVE, s);
+    sid
+}
+
+/// LengthLimiter counts every executed block, not the `max_history` window:
+/// a limit at or above the cap still fires (angr-vmi2l.31).
+#[test]
+fn length_limiter_counts_blocks_past_the_history_cap() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let blocks: Vec<u64> = (0..20).map(|i| 0x1000 + (i % 2)).collect();
+    let short = push_active_capped(&mut mgr, 4, &blocks[..10]);
+    let long = push_active_capped(&mut mgr, 4, &blocks);
+    mgr.register_length_limiter(10, false);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![short]);
+    assert_eq!(mgr.sm.state_ids("cut"), vec![long]);
+}
+
+/// LoopBound counts the visits `max_history` evicted from the window: a loop
+/// body longer than `max_history / bound` blocks still reaches the bound,
+/// whether or not the hot address is still in the window (angr-vmi2l.31).
+#[test]
+fn loop_bound_counts_visits_past_the_history_cap() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    // A 4-block loop body, 3 trips, under a 4-entry window: each address is
+    // in the window at most once.
+    let body = [0x10, 0x20, 0x30, 0x40];
+    let three_trips: Vec<u64> = body.iter().copied().cycle().take(12).collect();
+    let spinning = push_active_capped(&mut mgr, 4, &three_trips);
+    // The same 3 trips of 0x10, then 5 other blocks evict it entirely.
+    let mut left_loop = three_trips.clone();
+    left_loop.extend([0x50, 0x60, 0x70, 0x80, 0x90]);
+    let left = push_active_capped(&mut mgr, 4, &left_loop);
+    let two_trips: Vec<u64> = body.iter().copied().cycle().take(8).collect();
+    let at_bound = push_active_capped(&mut mgr, 4, &two_trips);
+    mgr.register_loop_bound(2, "spinning");
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![at_bound]);
+    let mut spun = mgr.sm.state_ids("spinning");
+    spun.sort_unstable();
+    let mut expected = vec![spinning, left];
+    expected.sort_unstable();
+    assert_eq!(spun, expected);
+}
+
 /// LoopBound moves the spinning states to the discard stash; a state whose
 /// hottest address appears exactly `bound` times survives (the bound is
 /// strictly-greater-than, same as LengthLimiter's).

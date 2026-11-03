@@ -2843,7 +2843,9 @@ class RustHistoryProxy:
 
     @property
     def block_count(self):
-        return len(self.recent_bbl_addrs)
+        # The uncapped counter, not the tail's length (angr-vmi2l.31).
+        count = self._mgr.get_state_block_count(self._state_id)
+        return count if count is not None else len(self.recent_bbl_addrs)
 
 
 class RustPosixProxy:

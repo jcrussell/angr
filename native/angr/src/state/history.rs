@@ -18,13 +18,40 @@ impl RustSimState {
     }
 
     /// Add an address to history.
+    ///
+    /// Counts the block in `block_count` even when history tracking is off,
+    /// as Python's `history.block_count` does.
     pub fn add_to_history(&mut self, addr: u64) {
+        self.block_count = self.block_count.wrapping_add(1);
         if self.track_history {
             self.history.push_back(addr);
-            if self.max_history > 0 && self.history.len() > self.max_history {
-                self.history.pop_front();
+            if self.max_history > 0
+                && self.history.len() > self.max_history
+                && let Some(evicted) = self.history.pop_front()
+            {
+                self.record_evicted_visit(evicted);
             }
         }
+    }
+
+    /// Blocks this path has executed, not capped by `max_history`.
+    pub fn block_count(&self) -> u64 {
+        self.block_count
+    }
+
+    /// Per-address visit counts of the entries `max_history` evicted from
+    /// `history`. An address's full visit count is this plus its
+    /// occurrences in `history`.
+    pub fn evicted_visits(&self) -> &HashMap<u64, u32> {
+        &self.evicted_visits
+    }
+
+    /// Fold one evicted `history` entry into `evicted_visits`.
+    pub(super) fn record_evicted_visit(&mut self, addr: u64) {
+        let count = Arc::make_mut(&mut self.evicted_visits)
+            .entry(addr)
+            .or_insert(0);
+        *count = count.saturating_add(1);
     }
 
     /// Get the detailed execution history.

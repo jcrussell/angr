@@ -263,6 +263,8 @@ impl RustSimState {
             history: self.history.clone(),
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
+            block_count: self.block_count,
+            evicted_visits: self.evicted_visits.clone(),
             hooks: self.hooks.clone(),
             // Fresh divergence point: this child hasn't removed anything
             // relative to itself yet (see `removed_hooks` field doc).
@@ -736,6 +738,8 @@ impl RustSimState {
             history: self.merge_field_history(others),
             detailed_history: self.merge_field_detailed_history(others),
             max_history: self.merge_field_max_history(others),
+            block_count: self.merge_field_block_count(others),
+            evicted_visits: self.merge_field_evicted_visits(others),
             hooks: merged_hooks,
             // Fresh baseline going forward: `merged_hooks` above already
             // resolved every branch's removal, so nothing is "removed since"

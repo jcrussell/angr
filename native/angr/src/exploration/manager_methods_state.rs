@@ -104,6 +104,13 @@ impl RustExplorationManager {
         Some(hist.range(start..).copied().collect())
     }
 
+    /// Blocks a state's path has executed, not capped by `max_history`
+    /// (`RustSimState::block_count`). Returns None if state not found.
+    pub fn get_state_block_count(&self, state_id: u64) -> Option<u64> {
+        self.find_state(state_id)
+            .map(crate::state::RustSimState::block_count)
+    }
+
     /// Get state IDs in a stash.
     #[pyo3(signature = (stash="active"))]
     pub fn get_state_ids(&self, stash: &str) -> Vec<u64> {

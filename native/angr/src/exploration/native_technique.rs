@@ -125,7 +125,9 @@ impl RustExplorationManager {
                     let max_len = *max_length;
                     // `drop` states have no stash of their own; the rest are cut.
                     let dest = if *drop { None } else { Some("cut") };
-                    self.evict_active_states(|state| state.history().len() > max_len, dest);
+                    // `block_count`, not `history().len()`: the window is capped at
+                    // `max_history`, Python's `block_count` is not (angr-vmi2l.31).
+                    self.evict_active_states(|state| state.block_count() > max_len as u64, dest);
                 }
                 NativeTechnique::LoopBound {
                     bound,
@@ -137,7 +139,7 @@ impl RustExplorationManager {
                     // discard decision here is the manager-wide one.
                     let dest = (!self.sm.drop_terminal_states()).then_some(stash_name);
                     self.evict_active_states(
-                        |state| Self::exceeds_loop_bound(state.history(), max_bound),
+                        |state| Self::exceeds_loop_bound(state, max_bound),
                         dest.as_deref(),
                     );
                 }
@@ -420,19 +422,22 @@ impl RustExplorationManager {
         }
     }
 
-    /// Check if any address in the history exceeds the loop bound.
-    fn exceeds_loop_bound(history: &std::collections::VecDeque<u64>, bound: usize) -> bool {
-        // Use a small HashMap to count address frequencies.
-        // For typical histories this is fast since most addresses appear once.
+    /// Check if any address was visited more than `bound` times, counting
+    /// the visits `max_history` evicted from the window (angr-vmi2l.31).
+    fn exceeds_loop_bound(state: &crate::state::RustSimState, bound: usize) -> bool {
+        let evicted = state.evicted_visits();
         let mut counts: HashMap<u64, usize> = HashMap::new();
-        for &addr in history {
-            let count = counts.entry(addr).or_insert(0);
-            *count += 1;
+        for &addr in state.history() {
+            let count = counts
+                .entry(addr)
+                .or_insert_with(|| evicted.get(&addr).map_or(0, |&n| n as usize));
+            *count = count.saturating_add(1);
             if *count > bound {
                 return true;
             }
         }
-        false
+        // An address no longer in the window keeps its evicted count.
+        evicted.values().any(|&n| n as usize > bound)
     }
 }
 
