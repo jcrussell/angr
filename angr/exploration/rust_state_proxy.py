@@ -1592,18 +1592,26 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             return claripy.BVV(value, width)
         raise TypeError(f"register write expects claripy AST, int, or bytes; got {type(value).__name__}")
 
-    def load(self, reg_name_or_offset, size=None, **kwargs):
+    def load(self, reg_name_or_offset, size=None, *, condition=None, fallback=None, **kwargs):
         """Load register by name or by ``(offset, size)`` tuple.
 
         Mirrors ``SimRegisters.load``: string names route through
         ``__getattr__``; integer offsets are resolved via the architecture's
         ``register_size_names[(offset, size)]`` map (size defaults to
-        ``arch.bytes``, matching angr's SimMemory default).
+        ``arch.bytes``, matching angr's SimMemory default). ``condition``
+        with ``fallback`` returns ``If(condition, loaded, fallback)``.
 
         ``inspect`` / ``disable_actions`` / ``events`` kwargs are accepted
         but ignored — the proxy does not fire BPs (state.inspect raises
         NotImplementedError per docs/advanced-topics/rust_engine.rst).
         """
+        value = self._load_unguarded(reg_name_or_offset, size)
+        condition, fallback = _raw_ast(condition), _raw_ast(fallback)
+        if condition is None or fallback is None:
+            return value
+        return claripy.If(condition, value, _to_bv(fallback, value.size() // 8, self._arch.bits))
+
+    def _load_unguarded(self, reg_name_or_offset, size):
         if isinstance(reg_name_or_offset, str):
             return getattr(self, reg_name_or_offset)
         # The engine passes offsets and sizes as concrete bitvectors too
@@ -1620,15 +1628,27 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             return claripy.Extract(hi, lo, getattr(self, covering))
         raise TypeError(f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}")
 
-    def store(self, addr, data, size=None, **kwargs):
+    def store(self, addr, data, size=None, *, condition=None, **kwargs):
         """Store ``data`` into the register named/offset by ``addr``.
 
         Mirrors ``SimRegisters.store``: string names route through the
         write-through ``__setattr__``; integer offsets are resolved via
-        ``register_size_names[(offset, size)]``. ``inspect`` /
-        ``disable_actions`` / ``endness`` kwargs are accepted but ignored
-        (same as ``load``).
+        ``register_size_names[(offset, size)]``. ``condition`` writes
+        ``If(condition, data, old)``, and a concretely false one writes
+        nothing; the CPUID dirty helpers rely on it (angr-vmi2l.322).
+        ``inspect`` / ``disable_actions`` / ``endness`` kwargs are accepted
+        but ignored (same as ``load``).
         """
+        condition = _raw_ast(condition)
+        if isinstance(condition, bool):
+            condition = claripy.BoolV(condition)
+        if condition is not None and not (condition.concrete and condition.is_true()):
+            if condition.concrete:
+                return
+            if isinstance(addr, str) and size is None:
+                size = self._arch.registers[addr][1]
+            old = self.load(addr, size)
+            data = claripy.If(condition, _to_bv(_raw_ast(data), old.size() // 8, self._arch.bits), old)
         if isinstance(addr, str):
             setattr(self, addr, data)
             return
