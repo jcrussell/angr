@@ -199,8 +199,15 @@ def _cast_eval_result(expr, result, cast_to):
     SimSolver answers the float when uncast (angr-mx00p.132.9) and the bit
     pattern under ``cast_to=int``/``bytes`` (angr-mx00p.132.51), so the bits
     are decoded only for an uncast eval, and a concrete FP's float is encoded
-    back to its bits for a cast one.
+    back to its bits for a cast one. A Bool evaluates to ``ite(b, 1, 0)``;
+    SimSolver answers ``True``/``False`` uncast, ``0``/``1`` for ``int`` and
+    one byte for ``bytes`` (angr-vmi2l.218).
     """
+    if isinstance(expr, claripy.ast.Bool):
+        result = bool(result)
+        if cast_to is bytes:
+            return bytes([int(result)])
+        return result if cast_to is None else cast_to(result)
     if isinstance(expr, claripy.ast.FP):
         fmt = ">f" if expr.sort.length == 32 else ">d"
         if cast_to is None and isinstance(result, int):

@@ -526,8 +526,13 @@ class RustSolverFallback:
         return self._cached_rust_ctx
 
     def _rust_eval(self, rust_ctx, expr, cast_to):
+        from angr.exploration.rust_state_proxy import _cast_eval_result
+
         result = rust_ctx.eval(expr)
         if result is not None:
+            if isinstance(expr, (claripy.ast.Bool, claripy.ast.FP)):
+                # angr-vmi2l.218: Rust answers FP bits and Bool 0/1.
+                return _cast_eval_result(expr, result, cast_to)
             if cast_to == bytes:
                 nbytes = (expr.length + 7) // 8
                 raw = result.to_bytes(nbytes, "little")
@@ -597,7 +602,7 @@ class RustSolverFallback:
         return self._original_eval(expr, cast_to=cast_to, extra_constraints=extra_constraints, **kwargs)
 
     def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), exact=None, **kwargs):
-        from angr.exploration.rust_state_proxy import _with_extra_constraints
+        from angr.exploration.rust_state_proxy import _cast_eval_result, _with_extra_constraints
 
         unsat = False
         try:
@@ -609,6 +614,8 @@ class RustSolverFallback:
 
             results, unsat = _with_extra_constraints(rust_ctx, query, extra=extra_constraints)
             if results:
+                if isinstance(expr, (claripy.ast.Bool, claripy.ast.FP)):
+                    return [_cast_eval_result(expr, r, cast_to) for r in results]
                 if cast_to == bytes:
                     nbytes = (expr.length + 7) // 8
                     return [r.to_bytes(nbytes, "big") for r in results]

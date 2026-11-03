@@ -61,10 +61,10 @@ impl RustSolverContext {
             // SILENT(cat-a): a non-BV-sorted AST is an expected miss on this
             // path — the caller (`eval_batch`) falls back to Python.
             //
-            // Bool is declined here rather than lowered to a 1-bit BV the way
-            // the `eval` paths do: `eval_batch`'s Python fallback yields a
-            // Python bool for a Bool-sorted AST, and quietly swapping that for
-            // 0/1 would change the value `eval_batch` returns.
+            // This declines only the node path. A Bool that
+            // `claripy_to_rustbv` imports above already evaluates as 0/1,
+            // like `eval`; the Python wrappers turn that back into a bool
+            // (`_cast_eval_result`, angr-vmi2l.218).
             if !node.ast_type().is_bitvec() {
                 return None;
             }
