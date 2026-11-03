@@ -1587,6 +1587,56 @@ class TestSnapshotPageByteOrder:
         assert got == want
 
 
+class TestSnapshotSymbolicByteOrder:
+    """A detached export (``_detach_export_proxies``) rebuilds symbolic
+    regions from ``addr_to_ast``, storing each entry with the arch's
+    endness. Seed imports registered their ``Iend_BE`` (memory-order) AST,
+    so a seeded ``memory.store(addr, BVS)`` came back byte-reversed on
+    amd64 (angr-vmi2l.263)."""
+
+    BUF = 0x601000
+
+    def _seeded(self):
+        # nop; jmp $
+        project = angr.load_shellcode(bytes.fromhex("90ebfe"), arch="amd64", load_address=0x400000)
+        state = project.factory.blank_state(addr=0x400000)
+        pw = claripy.BVS("pw", 32)
+        state.memory.store(self.BUF, pw)
+        state.add_constraints(pw == 0x41424344)
+        return RustExplorationManager(project, [state]), pw
+
+    def _detached_bytes(self, mgr, sid):
+        state = mgr.get_state_by_id(sid)
+        mgr._detach_export_proxies(state, sid)
+        return state.solver.eval(state.memory.load(self.BUF, 4), cast_to=bytes), state
+
+    def test_detached_seed_reads_the_seeded_bytes(self):
+        mgr, pw = self._seeded()
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        got, state = self._detached_bytes(mgr, sid)
+        assert got == b"ABCD"
+        assert state.memory.load(self.BUF, 4) is pw
+
+    def test_detached_found_state_reads_the_seeded_bytes(self):
+        mgr, _ = self._seeded()
+        mgr.explore(find=0x400001)
+        assert mgr.found_states[0].solver.eval(mgr.found_states[0].memory.load(self.BUF, 4), cast_to=bytes) == b"ABCD"
+        got, _ = self._detached_bytes(mgr, mgr._rust_mgr.get_state_ids("found")[0])
+        assert got == b"ABCD"
+
+    def test_detached_callback_registered_value_keeps_its_order(self):
+        # A callback producer (_cb_memory_store_symbolic_value) registers the
+        # value-order AST it stored with the arch's endness.
+        mgr, _ = self._seeded()
+        sid = mgr._rust_mgr.get_state_ids("active")[0]
+        val = claripy.BVS("cb", 32)
+        mgr._rust_mgr.import_symbolic_to_state(sid, self.BUF + 0x100, val)
+        mgr._register_handle(id(val), val, addr=self.BUF + 0x100, size=4, state_id=sid)
+        state = mgr.get_state_by_id(sid)
+        mgr._detach_export_proxies(state, sid)
+        assert state.memory.load(self.BUF + 0x100, 4, endness="Iend_LE") is val
+
+
 class TestExportByIdCarriesPosixAndBvOffsets:
     """``get_state_by_id`` must hand back a state a caller can step and solve:
     with the stdin it read (angr-mx00p.89), and with a register proxy that

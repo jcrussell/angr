@@ -4094,13 +4094,7 @@ class RustExplorationManager(
                         import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported_sym += 1
-                        self._register_handle(
-                            id(ast),
-                            ast,
-                            addr=addr,
-                            size=ast.length // 8 if hasattr(ast, "length") else 1,
-                            state_id=actual_state_id,
-                        )
+                        self._register_memory_order_ast(ast, addr, actual_state_id, angr_state.arch)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic page import to Rust failed;
                         # Rust sees only the concrete-witness bytes for this page, losing
@@ -4120,8 +4114,7 @@ class RustExplorationManager(
                         import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported += 1
-                        # Track the ORIGINAL (non-reversed) AST for identity preservation
-                        self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8, state_id=actual_state_id)
+                        self._register_memory_order_ast(ast, addr, actual_state_id, angr_state.arch)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: pending symbolic import to Rust failed;
                         # the symbolic value is not visible to Rust — downstream loads see
@@ -4148,13 +4141,7 @@ class RustExplorationManager(
                 try:
                     import_ast = claripy.Reverse(ast) if hasattr(ast, "length") and ast.length > 8 else ast
                     self._rust_mgr.import_symbolic_to_state(rust_state.state_id, addr, import_ast)
-                    self._register_handle(
-                        id(ast),
-                        ast,
-                        addr=addr,
-                        size=ast.length // 8 if hasattr(ast, "length") else 1,
-                        state_id=rust_state.state_id,
-                    )
+                    self._register_memory_order_ast(ast, addr, rust_state.state_id, angr_state.arch)
                 except (TypeError, ValueError, RuntimeError):
                     # cat-(c) WRONG-ANSWER RISK: same as 2199 but on the fallback path
                     # where actual_state_id was not determined; Python-side state ID is

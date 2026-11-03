@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from angr import claripy
+
 if TYPE_CHECKING:
     import angr
 
@@ -49,6 +51,12 @@ class RustStateCacheMixin:
         is the path ``_get_stash_states`` uses to recover symbolic memory on
         export (rust_state_export.py).
 
+        Every entry is in value order: the AST a
+        ``memory.load(addr, size, endness=arch.memory_endness)`` returns,
+        which is how ``_restore_symbolic_regions`` stores it back. A producer
+        holding memory-order bytes (an ``Iend_BE`` load) goes through
+        :meth:`_register_memory_order_ast` instead (angr-vmi2l.263).
+
         Calls without ``addr``/``state_id`` are no-ops: there is no Python-side
         handle cache to populate. The ``handle_id`` argument is retained only
         for call-site compatibility.
@@ -69,6 +77,18 @@ class RustStateCacheMixin:
             # from Rust between fork and registration; the addr->AST
             # link is best-effort and missing it is fine.
             l.debug("set_state_addr_to_ast(sid=%d, addr=%#x) failed: %s: %s", effective_id, addr, type(e).__name__, e)
+
+    def _register_memory_order_ast(self, ast: object, addr: int, state_id: int, arch) -> None:
+        """:meth:`_register_handle` for an AST in memory order (byte 0 = MSB).
+
+        Seed imports read symbolic regions with ``Iend_BE``; on a
+        little-endian arch the value-order AST ``addr_to_ast`` holds is the
+        byte reverse of that.
+        """
+        size = ast.length // 8 if hasattr(ast, "length") else 1
+        if size > 1 and arch.memory_endness == "Iend_LE":
+            ast = claripy.Reverse(ast)
+        self._register_handle(id(ast), ast, addr=addr, size=size, state_id=state_id)
 
     def _evaluate_predicates_on_active(self):
         """Evaluate callable find/avoid predicates on all Rust states.
