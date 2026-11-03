@@ -20,24 +20,33 @@ impl FileSystem {
     /// `from_utf8_lossy` repo-wide), so Phase 3's export must skip
     /// non-UTF-8 `_files` keys (Python fallback handles those).
     pub fn normalize_path(&self, path: &str) -> String {
-        let path = path.split('\0').next().unwrap_or("");
-        let cwd = String::from_utf8_lossy(&self.cwd);
-        let full = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("{cwd}/{path}")
-        };
-        let mut keys: Vec<&str> = Vec::new();
-        for k in full.split('/') {
+        String::from_utf8_lossy(&self.normalize_path_bytes(path.as_bytes())).into_owned()
+    }
+
+    /// Byte-level body of [`normalize_path`](Self::normalize_path): Python's
+    /// `SimFilesystem._normalize_path` + `_join_chunks` (truncate at the
+    /// first NUL, join a relative path onto the cwd, drop empty and `.`
+    /// components, fold `..` lexically without climbing above `/`).
+    pub fn normalize_path_bytes(&self, path: &[u8]) -> Vec<u8> {
+        let path = path.split(|&b| b == 0).next().unwrap_or(&[]);
+        let mut keys: Vec<&[u8]> = Vec::new();
+        let relative = !path.starts_with(b"/");
+        let cwd_keys = if relative { self.cwd.as_slice() } else { &[] };
+        for k in cwd_keys
+            .split(|&b| b == b'/')
+            .chain(path.split(|&b| b == b'/'))
+        {
             match k {
-                "" | "." => {}
-                ".." => {
+                b"" | b"." => {}
+                b".." => {
                     keys.pop();
                 }
                 _ => keys.push(k),
             }
         }
-        format!("/{}", keys.join("/"))
+        let mut out = b"/".to_vec();
+        out.extend_from_slice(&keys.join(&b'/'));
+        out
     }
 
     /// The cwd-normalized absolute path a descriptor was opened as.

@@ -396,6 +396,21 @@ class RustCallbackDispatchMixin:
             # posix.dumps(fd) misses the native output. Debug-logs.
             l.debug("Failed to inject Rust fd %d output into posix: %s", fd, e)
 
+    def _inject_rust_cwd(self, state, state_id):
+        """Copy the Rust state's cwd to ``state.fs.cwd``.
+
+        Outbound half of ``set_fs_cwd`` (pushed by ``_export_fs_files_to_rust``
+        when the state is added): a native ``chdir`` moves only Rust's cwd, so
+        without this an exported state or a bounced proc resolves relative
+        paths against the stale Python cwd (angr-vmi2l.136).
+        """
+        fs = state.plugins.get("fs")
+        if fs is None:
+            return
+        cwd = self._rust_mgr.get_state_fs_cwd(state_id)
+        if cwd is not None and bytes(cwd) != fs.cwd:
+            fs.cwd = bytes(cwd)
+
     def _inject_rust_fds(self, state, state_id):
         """Seed fds that native code opened into the callback state's posix table.
 
@@ -2087,6 +2102,7 @@ class RustCallbackDispatchMixin:
                 # by the bounced proc — and must be visible to posix._pick_fd so
                 # a bounced open() does not collide with one of them.
                 self._inject_rust_fds(state, event.callback_state_id)
+                self._inject_rust_cwd(state, event.callback_state_id)
                 self._inject_rust_closed_files(state, event.callback_state_id)
 
         return state

@@ -3657,7 +3657,7 @@ class RustExplorationManager(
             # native getcwd/relative-path normalization matches Python
             # regardless of whether any SimFile was inserted. cwd is
             # always bytes on the Python side.
-            self._rust_mgr.set_fs_cwd(state_id, fs.cwd.decode("utf-8"))
+            self._rust_mgr.set_fs_cwd(state_id, fs.cwd)
             files = fs._files
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: fs export preamble failed (non-UTF-8

@@ -620,11 +620,17 @@ impl FileSystem {
         self.write_bytes_at(fd, offset, data, false)
     }
 
-    /// Replace the current working directory bytes. `chdir(2)` semantics —
-    /// the raw concrete path is stored verbatim (no `_normalize_path`
-    /// applied, matching `procedures/linux_kernel/cwd.py::chdir`).
+    /// Replace the current working directory bytes verbatim. The inbound
+    /// sync of Python's already-normalized `state.fs.cwd`; a guest
+    /// `chdir(2)` goes through [`chdir`](Self::chdir) instead.
     pub fn set_cwd(&mut self, cwd: Vec<u8>) {
         self.cwd = cwd;
+    }
+
+    /// `chdir(2)`: store `path` resolved against the cwd with `.`/`..`
+    /// folded, as Python's `SimFilesystem.chdir` does (angr-vmi2l.136).
+    pub fn chdir(&mut self, path: &[u8]) {
+        self.cwd = self.normalize_path_bytes(path);
     }
 
     /// Lowest fd number at or above `start` that is not currently open — the

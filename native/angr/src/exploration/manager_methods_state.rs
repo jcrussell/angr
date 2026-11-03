@@ -389,7 +389,7 @@ impl RustExplorationManager {
         reason = "mutates one state_id-scoped state's own filesystem cwd; does not mutate \
                   exploration config or the active stash."
     )]
-    pub fn set_fs_cwd(&mut self, state_id: u64, cwd: &str) -> PyResult<()> {
+    pub fn set_fs_cwd(&mut self, state_id: u64, cwd: &[u8]) -> PyResult<()> {
         self._set_fs_cwd(state_id, cwd)
     }
 

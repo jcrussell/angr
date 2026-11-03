@@ -7,9 +7,10 @@
 //!
 //! * **`chdir` / `getcwd`** — back the per-state `cwd: Vec<u8>` on
 //!   `FileSystem` added for this subset. `chdir` reads the concrete
-//!   C-string at `path_addr` and assigns it raw (no `_normalize_path`,
-//!   matching `procedures/linux_kernel/cwd.py::chdir` which also does
-//!   `self.state.fs.cwd = cwd`). `getcwd` writes `cwd + b"\0"` to
+//!   C-string at `path_addr` and stores it resolved against the cwd with
+//!   `.`/`..` folded (`FileSystem::chdir`), matching
+//!   `procedures/linux_kernel/cwd.py::chdir`, which calls
+//!   `SimFilesystem.chdir`. `getcwd` writes `cwd + b"\0"` to
 //!   `buf` and returns the byte count, or `-ERANGE` when `size` is too
 //!   small (matches `procedures/linux_kernel/cwd.py::getcwd`).
 //! * **`fchdir`** — no Python `SimProcedure`. The unhandled-syscall
@@ -126,8 +127,8 @@ stub_syscall!(
 );
 
 /// `chdir(path) → 0` — set the per-state cwd to the concrete C-string
-/// at `path`. Mirrors `procedures/linux_kernel/cwd.py::chdir`:
-/// assigns the raw bytes (no `_normalize_path`).
+/// at `path`, normalized against the current cwd. Mirrors
+/// `procedures/linux_kernel/cwd.py::chdir` (`SimFilesystem.chdir`).
 ///
 /// `SyscallError::SymbolicArgument` falls back to Python so the proc
 /// can apply its `solver.eval_one` concretization path.
@@ -149,7 +150,7 @@ impl NativeSyscall for NativeChdirSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let path_addr = extract_concrete_arg(&args[0], "path")?;
         let path = read_concrete_cstring(state, path_addr, PATH_MAX)?;
-        state.file_system().set_cwd(path);
+        state.file_system().chdir(&path);
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }

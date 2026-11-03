@@ -218,7 +218,7 @@ class TestFsExportApiContract:
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
         with pytest.raises(ValueError, match="not found"):
-            mgr._rust_mgr.set_fs_cwd(10**9, "/nowhere")
+            mgr._rust_mgr.set_fs_cwd(10**9, b"/nowhere")
 
     def test_register_file_content_unknown_state_errors(self, fauxware_project):
         state = fauxware_project.factory.entry_state()

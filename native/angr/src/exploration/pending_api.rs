@@ -260,9 +260,9 @@ impl RustExplorationManager {
     // Symbolic file content export (angr-0xyq2 Phase 3)
     // -------------------------------------------------------------------------
 
-    pub(crate) fn _set_fs_cwd(&mut self, state_id: u64, cwd: &str) -> PyResult<()> {
+    pub(crate) fn _set_fs_cwd(&mut self, state_id: u64, cwd: &[u8]) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
-            state.file_system().set_cwd(cwd.as_bytes().to_vec());
+            state.file_system().set_cwd(cwd.to_vec());
             Ok(())
         })
     }

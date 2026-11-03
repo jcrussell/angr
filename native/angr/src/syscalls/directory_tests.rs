@@ -123,6 +123,37 @@ fn chdir_and_getcwd_round_trip() {
     assert_eq!(readback, expected, "getcwd writes cwd + NUL");
 }
 
+/// chdir resolves a relative path against the cwd and folds `.`/`..`
+/// (root-clamped), as Python's `SimFilesystem.chdir` does (angr-vmi2l.136).
+#[test]
+fn chdir_normalizes_relative_and_dotted_paths() {
+    use crate::memory::Permission;
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.map_memory_data(0x1000, &[0u8; 0x1000], Permission::RW);
+    let chdir = |state: &mut RustSimState, path: &[u8]| {
+        for (i, &b) in path.iter().chain(&[0u8]).enumerate() {
+            state
+                .memory_store(0x1000 + i as u64, RustBV::concrete(u128::from(b), 8))
+                .unwrap();
+        }
+        match NativeChdirSyscall
+            .call(state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap()
+        {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+            other => panic!("chdir: expected Continue, got {other:?}"),
+        }
+        state.file_system_ref().cwd().to_vec()
+    };
+    state.file_system().set_cwd(b"/home/user".to_vec());
+    assert_eq!(chdir(&mut state, b"sub"), b"/home/user/sub");
+    assert_eq!(state.file_system_ref().normalize_path("x"), "/home/user/sub/x");
+    assert_eq!(chdir(&mut state, b"./x/../y/"), b"/home/user/sub/y");
+    assert_eq!(chdir(&mut state, b"/a/b/../c/"), b"/a/c");
+    assert_eq!(chdir(&mut state, b"../../../.."), b"/");
+    assert_eq!(chdir(&mut state, b"//p//q/."), b"/p/q");
+}
+
 /// getcwd with size < len(cwd)+1 must return -ERANGE without touching
 /// the buffer.
 #[test]

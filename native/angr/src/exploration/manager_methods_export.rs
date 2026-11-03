@@ -540,6 +540,15 @@ impl RustExplorationManager {
         self._state_fd0_is_dup2d(state_id)
     }
 
+    /// The state's current working directory, the outbound half of
+    /// `set_fs_cwd`: a native `chdir` moves it, and `_inject_rust_cwd`
+    /// copies it to `state.fs.cwd` (angr-vmi2l.136). `None` for an unknown
+    /// state.
+    pub fn get_state_fs_cwd(&self, state_id: u64) -> Option<Vec<u8>> {
+        self.find_state(state_id)
+            .map(|state| state.file_system_ref().cwd().to_vec())
+    }
+
     /// Get the content of a file descriptor for a state.
     pub fn get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
         self._get_state_fd_content(state_id, fd)
