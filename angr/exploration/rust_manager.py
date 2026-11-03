@@ -89,6 +89,7 @@ import sys
 import time
 import warnings
 import weakref
+from collections import defaultdict
 from collections.abc import Callable
 from itertools import chain
 from typing import TYPE_CHECKING
@@ -6425,20 +6426,24 @@ class RustExplorationManager(
         return self
 
     @property
-    def stashes(self) -> dict:
-        """Get all stashes as a dictionary for SimulationManager compatibility.
+    def stashes(self) -> defaultdict[str, list]:
+        """Every stash's states, as ``SimulationManager.stashes`` returns them.
 
-        Returns state IDs per stash.
+        Covers each stash Rust holds (technique-declared ones such as ``cut`` and ``spinning`` included, the
+        ``_step_round_*`` staging stashes excluded) plus the standard names, and reads a missing name as ``[]``
+        (angr-9ij0m).
         """
-        result = {}
-        for stash_name in ["active", "found", "avoid", "deadended", "errored", "unconstrained", "pruned", "stashed"]:
+        names = dict.fromkeys(
+            ["active", "found", "avoid", "deadended", "errored", "unconstrained", "pruned", "stashed"]
+        )
+        names.update(dict.fromkeys(n for n in self._rust_mgr.stash_counts() if not n.startswith("_")))
+        result = defaultdict(list)
+        for name in names:
             try:
-                state_ids = list(self._rust_mgr.get_state_ids(stash_name))
-                result[stash_name] = state_ids
+                result[name] = self._get_stash_states(name)
             except (RuntimeError, KeyError):
-                # cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;
-                # return an empty list for that stash key.
-                result[stash_name] = []
+                # cat-(a) EXPECTED CONTROL FLOW: a standard name Rust has not created yet reads as empty.
+                result[name] = []
         return result
 
     @property
