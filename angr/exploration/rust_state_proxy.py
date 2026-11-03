@@ -195,13 +195,18 @@ def _get_overlap_map(arch) -> dict[str, frozenset[str]]:
 def _cast_eval_result(expr, result, cast_to):
     """Cast eval result matching angr's SimSolver._cast_to behavior.
 
-    The Rust context evaluates an FP expression to its IEEE bit pattern;
-    SimSolver answers the float, so the bits are decoded first
-    (angr-mx00p.132.9).
+    The Rust context evaluates an FP expression to its IEEE bit pattern.
+    SimSolver answers the float when uncast (angr-mx00p.132.9) and the bit
+    pattern under ``cast_to=int``/``bytes`` (angr-mx00p.132.51), so the bits
+    are decoded only for an uncast eval, and a concrete FP's float is encoded
+    back to its bits for a cast one.
     """
-    if isinstance(expr, claripy.ast.FP) and isinstance(result, int):
+    if isinstance(expr, claripy.ast.FP):
         fmt = ">f" if expr.sort.length == 32 else ">d"
-        result = struct.unpack(fmt, result.to_bytes(expr.sort.length // 8, "big"))[0]
+        if cast_to is None and isinstance(result, int):
+            result = struct.unpack(fmt, result.to_bytes(expr.sort.length // 8, "big"))[0]
+        elif cast_to is not None and isinstance(result, float):
+            result = int.from_bytes(struct.pack(fmt, result), "big")
     if cast_to is None:
         return result
     if cast_to is bytes:

@@ -7,6 +7,7 @@ proxy decodes it (angr-mx00p.132.9, upstream test_sqrt_symbolic).
 from __future__ import annotations
 
 import math
+import struct
 
 import pytest
 
@@ -48,7 +49,22 @@ def test_eval_upto_of_an_fp_input_is_floats(sqrtss_state):
     assert all(math.sqrt(v) == pytest.approx(4.0) for v in values)
 
 
-def test_eval_of_a_double_cast_to_int(sqrtss_state):
+def test_eval_of_a_double_cast_to_int_is_its_ieee_bits(sqrtss_state):
+    """SimSolver casts an FP solution through its bit pattern (angr-mx00p.132.51)."""
     final, _, _ = sqrtss_state
     d = claripy.FPS("d", claripy.FSORT_DOUBLE)
-    assert final.solver.eval(d, cast_to=int, extra_constraints=(d == 12.5,)) == 12
+    bits = int.from_bytes(struct.pack(">d", 12.5), "big")
+    assert final.solver.eval(d, cast_to=int, extra_constraints=(d == 12.5,)) == bits
+    assert final.solver.eval(d, cast_to=bytes, extra_constraints=(d == 12.5,)) == struct.pack(">d", 12.5)
+    assert final.solver.eval_upto(d, 2, cast_to=int, extra_constraints=(d == 12.5,)) == [bits]
+
+
+@pytest.mark.parametrize("sort,fmt", [(claripy.FSORT_FLOAT, ">f"), (claripy.FSORT_DOUBLE, ">d")])
+def test_eval_of_a_concrete_fp_cast_matches_simsolver(sqrtss_state, sort, fmt):
+    final, _, _ = sqrtss_state
+    fpv = claripy.FPV(3.25, sort)
+    py_state = angr.load_shellcode(b"\x90", "amd64", load_address=0).factory.blank_state(addr=0)
+    for cast_to in (int, bytes):
+        assert final.solver.eval(fpv, cast_to=cast_to) == py_state.solver.eval(fpv, cast_to=cast_to)
+    assert final.solver.eval(fpv, cast_to=bytes) == struct.pack(fmt, 3.25)
+    assert final.solver.eval(fpv) == 3.25
