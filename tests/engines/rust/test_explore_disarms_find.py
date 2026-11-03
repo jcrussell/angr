@@ -88,3 +88,33 @@ class TestStepAfterExplore:
         mgr.step()
         assert len(mgr.found) == 1
         assert sorted(s.addr for s in mgr.active) != before
+
+
+def _two_stage(project, engine, first, second):
+    state = project.factory.entry_state()
+    mgr = RustExplorationManager(project, [state]) if engine == "rust" else project.factory.simgr(state)
+    mgr.explore(**first)
+    mgr.move(from_stash="found", to_stash="active")
+    mgr.explore(**second)
+    return {
+        "found": sorted(s.addr for s in mgr.found),
+        "avoid": len(mgr.avoid),
+        "deadended": len(mgr.deadended),
+        "active": len(mgr.active),
+    }
+
+
+class TestExploreResetsPerCall:
+    """A second explore() arms exactly its own find/avoid, as SimulationManager's per-call Explorer does
+    (angr-vmi2l.1)."""
+
+    @pytest.mark.parametrize(
+        "first,second",
+        [
+            pytest.param({"find": 0x40071D, "avoid": _ACCEPTED}, {"find": 0x4006FB}, id="avoid_addrs_reset"),
+            pytest.param({"find": lambda s: s.addr == 0x40071D}, {"avoid": 0x4006FD}, id="find_predicate_reset"),
+        ],
+    )
+    def test_matches_python_engine(self, fauxware_project, first, second):
+        expected = _two_stage(fauxware_project, "python", first, second)
+        assert _two_stage(fauxware_project, "rust", first, second) == expected
