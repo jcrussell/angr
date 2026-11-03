@@ -163,6 +163,26 @@ impl RustExplorationManager {
         self._deadend_pending_callback(state_id)
     }
 
+    /// Move the pending callback state to the unconstrained stash. See
+    /// `resume::_unconstrain_pending_callback` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
+    pub fn unconstrain_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
+        self._unconstrain_pending_callback(state_id)
+    }
+
+    /// Move an extra callback successor's fork, parked in `stash`, to the
+    /// unconstrained stash. See `resume::_unconstrain_forked_successor`.
+    #[angr_macros::steady_guard_exempt(
+        reason = "routes one callback successor like resume_forked_successor; drives the \
+                  bounce/resume protocol, does not mutate exploration config."
+    )]
+    pub fn unconstrain_forked_successor(&mut self, fork_id: u64, stash: &str) -> PyResult<()> {
+        self._unconstrain_forked_successor(fork_id, stash)
+    }
+
     /// Resume after an error occurred during callback execution.
     /// See `resume::_resume_after_error` for the body.
     #[angr_macros::steady_guard_exempt(

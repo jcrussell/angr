@@ -650,6 +650,39 @@ class RustCallbackDispatchMixin:
             scope.consumed(resumed_id)
         return resumed_id, extra_ids
 
+    def _settle_categorized_successors(self, event: _ExplorationEvent, successors):
+        """Settle a callback's ``SimSuccessors`` as ``SimulationManager`` files them (angr-vmi2l.292).
+
+        Resumes from ``flat_successors``, where a symbolic IP is already split
+        into one pinned copy per target, never from ``all_successors``, whose
+        unsplit state still admits every target. Each unconstrained successor
+        (too many IP solutions) goes to the unconstrained stash; unsat ones
+        are dropped, as upstream does without ``save_unsat``. When every
+        successor is unsat the first resumes anyway, and Rust's own sat check
+        prunes it.
+
+        Returns ``None`` when there are no successors at all. Otherwise
+        returns ``(first, resumed_id, extras)``: ``first`` is the successor the
+        pending callback resumes from, or ``None`` when the pending state went
+        to the unconstrained stash here, and ``extras`` pairs each other
+        resumable successor with its fork for ``_add_forked_state``.
+        """
+        flat = list(successors.flat_successors)
+        unconstrained = list(successors.unconstrained_successors)
+        if not flat and not unconstrained:
+            flat = successors.all_successors[:1]
+            if not flat:
+                return None
+        resumed_id, extra_ids = self._settle_callback_successors(event, flat + unconstrained)
+        n_flat_extras = max(len(flat) - 1, 0)
+        for fork_id in extra_ids[n_flat_extras:]:
+            self._rust_mgr.unconstrain_forked_successor(fork_id, CALLBACK_FORK_STASH)
+            self._callback_fork_scope.consumed(fork_id)
+        if not flat:
+            self._rust_mgr.unconstrain_pending_callback(event.callback_state_id)
+            return None, resumed_id, []
+        return flat[0], resumed_id, list(zip(flat[1:], extra_ids[:n_flat_extras]))
+
     def _handle_simprocedure_callback(self, event: _ExplorationEvent):
         """Handle a SimProcedure callback; see ``_handle_simprocedure_callback_inner``."""
         return self._run_callback_scoped(self._handle_simprocedure_callback_inner, event)
@@ -805,7 +838,7 @@ class RustCallbackDispatchMixin:
 
             if all_succs:
                 handled_early = self._handle_callback_with_successors(
-                    all_succs,
+                    successors,
                     proc,
                     name,
                     addr,
@@ -1033,7 +1066,7 @@ class RustCallbackDispatchMixin:
 
     def _handle_callback_with_successors(
         self,
-        all_succs,
+        successors,
         proc,
         name: str | None,
         addr: int,
@@ -1049,6 +1082,7 @@ class RustCallbackDispatchMixin:
         signalled and counters were finalized); False if the caller should
         continue with the normal sync_back timing/cleanup.
         """
+        all_succs = successors.all_successors
         proc_no_ret = getattr(proc, "NO_RET", False) if proc else False
 
         # NO_RET termination procedure with successors — deadend.
@@ -1088,7 +1122,9 @@ class RustCallbackDispatchMixin:
                 return True
 
         # First successor continues in Rust
-        first_succ = all_succs[0]
+        first_succ, resumed_id, extras = self._settle_categorized_successors(event, successors)
+        if first_succ is None:
+            return False
 
         # When a SimProcedure uses self.call() (Ijk_Call), angr's
         # ``cc.setup_callsite`` pushes the continuation return address onto
@@ -1104,10 +1140,9 @@ class RustCallbackDispatchMixin:
         # address, the hook just modified state — continue at the same
         # address WITHOUT re-triggering the hook.
         # Check symbolic IP before .addr to prevent SimValueError.
-        succ_ip_symbolic = first_succ.regs._ip.symbolic
-        succ_addr_matches = not succ_ip_symbolic and first_succ.addr == addr
+        succ_ip = first_succ.regs._ip
+        succ_addr_matches = not succ_ip.symbolic and succ_ip.concrete_value == addr
         skip_hook_addr = addr if (is_zero_length_hook and succ_addr_matches) else None
-        resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
         self._resume_with_state(
             first_succ,
             event,
@@ -1116,7 +1151,7 @@ class RustCallbackDispatchMixin:
         )
 
         # Additional successors are finished from their own forks.
-        for succ, fork_id in zip(all_succs[1:], extra_ids):
+        for succ, fork_id in extras:
             self._add_forked_state(succ, fork_id)
         return False
 
@@ -1169,24 +1204,23 @@ class RustCallbackDispatchMixin:
     def _resolve_next_pc(state, fallback_addr=None):
         """Resolve a concrete next-PC from a (possibly symbolic) state IP.
 
-        Concrete IP returns ``state.addr``. A symbolic IP is concretized via
-        ``eval_one``, falling back to ``eval`` (picks any solution) when more
-        than one solution exists. If ``eval`` also raises and ``fallback_addr``
-        is given, that address is returned; otherwise the error propagates.
+        Concrete IP returns ``state.addr``. A symbolic IP must have exactly
+        one solution (``eval_one``): resuming at one of several would leave
+        constraints that still admit the others (angr-vmi2l.292), so a
+        multi-valued IP raises unless ``fallback_addr`` is given, in which
+        case that address is returned.
         """
-        if not state.regs._ip.symbolic:
-            return state.addr
+        ip = state.regs._ip
+        if not ip.symbolic:
+            # Read the value, not ``state.addr``: that goes through the solver,
+            # which an adopted fork no longer answers for once settled.
+            return ip.concrete_value
         try:
-            return state.solver.eval_one(state.regs._ip)
+            return state.solver.eval_one(ip)
         except Exception:
-            # cat-(b) FALLBACK WITH LOSS: eval_one raised (>1 solution or
-            # solver error); pick any concrete value via eval.
-            try:
-                return state.solver.eval(state.regs._ip)
-            except Exception:
-                if fallback_addr is not None:
-                    return fallback_addr
-                raise
+            if fallback_addr is not None:
+                return fallback_addr
+            raise
 
     def _resume_with_state(
         self,
@@ -1427,25 +1461,23 @@ class RustCallbackDispatchMixin:
             # matching the Python engine's `simprocedure=inst` kwarg.
             self._cb_inspect_syscall(state_id, "after", sc_name, sc_proc)
 
-            all_succs = successors.all_successors
-            if all_succs:
+            settled = self._settle_categorized_successors(event, successors)
+            if settled is not None:
                 # First successor continues in Rust; every successor gets its
                 # own Rust state first (angr-mx00p.112).
-                succ_state = all_succs[0]
-                resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
+                succ_state, resumed_id, extras = settled
+                if succ_state is not None:
+                    new_pc = self._resolve_next_pc(succ_state)
 
-                # Handle symbolic IP: pick first concrete solution if symbolic
-                new_pc = self._resolve_next_pc(succ_state)
+                    # Register, memory and constraint writes landed in the
+                    # successor's Rust state through the proxies.
+                    self._rust_mgr.resume_after_syscall(state_id, new_pc, None, None, None)
 
-                # Register, memory and constraint writes landed in the
-                # successor's Rust state through the proxies.
-                self._rust_mgr.resume_after_syscall(state_id, new_pc, None, None, None)
-
-                # Update cache
-                self._cache_state_mirror(resumed_id, succ_state)
+                    # Update cache
+                    self._cache_state_mirror(resumed_id, succ_state)
 
                 # Additional successors are finished from their own forks.
-                for succ, fork_id in zip(all_succs[1:], extra_ids):
+                for succ, fork_id in extras:
                     self._add_forked_state(succ, fork_id)
             else:
                 self._rust_mgr.resume_after_syscall(state_id, syscall_pc + 1, None, None)
@@ -2327,8 +2359,8 @@ class RustCallbackDispatchMixin:
                     self._rust_mgr.resume_after_error(state_id, f"python_vex_fallback_error: {e}")
                 return
 
-            all_succs = succs_obj.all_successors
-            if not all_succs:
+            settled = self._settle_categorized_successors(event, succs_obj)
+            if settled is None:
                 if _DBG:
                     l.debug(f"VEX fallback produced no successors at 0x{addr:x} — deadending")
                 self._rust_mgr.deadend_pending_callback(state_id)
@@ -2337,18 +2369,16 @@ class RustCallbackDispatchMixin:
             # Use the first successor as the primary result. Every successor
             # is a copy of ``state`` (the engine copies before stepping), so
             # each gets its own Rust state here (angr-mx00p.112).
-            succ = all_succs[0]
-            resumed_id, extra_ids = self._settle_callback_successors(event, all_succs)
-            new_pc = succ.addr
-
-            # Register, memory and constraint writes landed in the
-            # successor's Rust state through the proxies.
-            self._rust_mgr.resume_after_simprocedure(state_id, new_pc, None, None, None)
+            succ, _, extras = settled
+            if succ is not None:
+                # Register, memory and constraint writes landed in the
+                # successor's Rust state through the proxies.
+                self._rust_mgr.resume_after_simprocedure(state_id, self._resolve_next_pc(succ), None, None, None)
 
             # Additional successors (symbolic branches in the fallback block)
             # are finished from their own forks so the convergent path isn't
             # silently dropped.
-            for extra_succ, fork_id in zip(all_succs[1:], extra_ids):
+            for extra_succ, fork_id in extras:
                 try:
                     self._add_forked_state(extra_succ, fork_id)
                 except Exception as fork_err:

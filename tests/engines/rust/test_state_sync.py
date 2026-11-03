@@ -1717,7 +1717,16 @@ class TestSymbolicRegisterSync:
         proj.hook(addr, Writer())
         mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=addr)])
         mgr.run(max_steps=1)
-        sid = next(iter(mgr._rust_mgr.get_state_ids("active") + mgr._rust_mgr.get_state_ids("deadended")))
+        # The blank state's return address is unconstrained, so the return
+        # files the state as unconstrained, as SimulationManager does
+        # (angr-vmi2l.292).
+        sid = next(
+            iter(
+                mgr._rust_mgr.get_state_ids("active")
+                + mgr._rust_mgr.get_state_ids("deadended")
+                + mgr._rust_mgr.get_state_ids("unconstrained")
+            )
+        )
         return mgr, sid, seen["value"]
 
     def test_symbolic_nonreturn_register_is_synced(self, hookable_project):

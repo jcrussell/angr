@@ -1459,7 +1459,7 @@ class TestExplorationIntegration:
         succ_b = seed_state.copy()
         succ_b.regs.rax = 0x2222
         all_succs = [succ_a, succ_b]
-        succs_obj = SimpleNamespace(all_successors=all_succs)
+        succs_obj = SimpleNamespace(all_successors=all_succs, flat_successors=all_succs, unconstrained_successors=[])
 
         event = SimpleNamespace(
             callback_addr=seed_state.addr,
@@ -1501,7 +1501,10 @@ class TestExplorationIntegration:
         mgr._add_forked_state = _record_fork  # type: ignore[assignment]
         # The successors are plain SimStates with no copy-on-write scope;
         # hand each extra one a stand-in fork id (angr-mx00p.112).
-        mgr._settle_callback_successors = lambda evt, succs: (evt.callback_state_id, [900 + i for i in range(1, len(succs))])  # type: ignore[assignment]
+        mgr._settle_callback_successors = lambda evt, succs: (
+            evt.callback_state_id,
+            [900 + i for i in range(1, len(succs))],
+        )  # type: ignore[assignment]
 
         try:
             mgr._handle_python_vex_fallback(event)

@@ -397,19 +397,48 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
+        self.retire_pending_callback(state_id, STASH_DEADENDED)
+    }
+
+    /// Inner body of the pymethods-exposed `unconstrain_pending_callback`:
+    /// the callback's only successors had a symbolic IP with too many
+    /// solutions to fork, which `SimSuccessors` files as unconstrained
+    /// (angr-vmi2l.292).
+    pub(crate) fn _unconstrain_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
+        self.retire_pending_callback(state_id, STASH_UNCONSTRAINED)
+    }
+
+    /// Inner body of the pymethods-exposed `unconstrain_forked_successor`:
+    /// the `_resume_forked_successor` counterpart for an unconstrained
+    /// callback successor (angr-vmi2l.292).
+    pub(crate) fn _unconstrain_forked_successor(
+        &mut self,
+        fork_id: u64,
+        stash: &str,
+    ) -> PyResult<()> {
+        let state = self.sm.take_state_from(fork_id, stash).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "unconstrain_forked_successor: state {fork_id} not found in stash {stash:?}"
+            ))
+        })?;
+        self.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
+        Ok(())
+    }
+
+    fn retire_pending_callback(&mut self, state_id: u64, stash: &str) -> PyResult<()> {
         crate::gil_profile::park_end();
         let pending = self
             .pending_callbacks
             .remove(&StateId::new(state_id))
-            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("no pending callback state to retire"))?;
 
-        // Process deferred forks BEFORE deadending — these represent
+        // Process deferred forks BEFORE retiring — these represent
         // unexplored branches that diverged before the exit/abort call; a
         // fork parked behind a no-return SimProcedure (exit/abort) was once
         // silently dropped and its unexplored branch never reached
         // (angr-ph300.7).
         let state = self.materialize_terminal_deferred_forks(pending);
-        self.push_or_drop_terminal(STASH_DEADENDED, state);
+        self.push_or_drop_terminal(stash, state);
         Ok(())
     }
 
