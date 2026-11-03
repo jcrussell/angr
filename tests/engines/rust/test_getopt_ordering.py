@@ -40,7 +40,6 @@ def _run(engine: str, optstring: bytes, argv: list[bytes], libc_cursor=None):
     opts = {angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS, angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY}
     state = proj.factory.blank_state(addr=LOAD, add_options=opts)
     state.regs.rsp = 0x7FFFFFFF0800
-    state.memory.store(OUT, b"\0" * 64)  # Rust drops a store to an untouched page (angr-0mo14)
     state.memory.store(OPTSTRING, optstring + b"\0")
     ptr = STRINGS
     for i, arg in enumerate(argv):

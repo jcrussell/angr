@@ -149,6 +149,7 @@ impl<'a> VEXInterpreter<'a> {
                 size: unmapped_size,
             }) => {
                 if let ConcretizationResult::Single(store_addr) = *conc_result
+                    && self.fetch_host_pages_for_store(callbacks, store_addr, data_size)?
                     && self.map_fresh_pages_for_store(callbacks, store_addr, data_size)
                     && let Some(ref mut rust_mem) = self.rust_memory
                     && rust_mem
@@ -213,6 +214,36 @@ impl<'a> VEXInterpreter<'a> {
             rust_mem.auto_map_zero_page(page.base_addr());
         }
         true
+    }
+
+    /// Fetch each page under a concrete store outside every lazy region that
+    /// Rust lacks and the host may hold, so `map_fresh_pages_for_store` maps
+    /// zero pages only where the host has none (angr-0mo14). Without a
+    /// page-universe snapshot (a ZERO_FILL_UNCONSTRAINED_MEMORY seed)
+    /// `has_page` fails open on every page, so the store used to go to the
+    /// callback ladder and the flush dropped it as `Unmapped`. Under zero-fill
+    /// the host serves a never-touched page as zeros, and a page it holds with
+    /// its own bytes. Returns `false` when the host declines a page, leaving
+    /// the store on the ladder as before.
+    fn fetch_host_pages_for_store(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr: u64,
+        size: usize,
+    ) -> Result<bool, CbExecutionError> {
+        for page in crate::memory::PageIndex::range_covering(addr, size as u64) {
+            let base = page.base_addr();
+            let Some(rust_mem) = self.rust_memory.as_ref() else {
+                return Ok(false);
+            };
+            if rust_mem.is_mapped(base) || !callbacks.has_page(base) {
+                continue;
+            }
+            if !self.fetch_page(callbacks, base)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Invalidate cached IRSBs after a successful Rust-native store when the
