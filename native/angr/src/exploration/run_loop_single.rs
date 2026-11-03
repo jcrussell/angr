@@ -99,10 +99,10 @@ impl RustExplorationManager {
 
             // Get next state from active stash via the selection policy
             // (angr-a32jl.1): Fifo=pop_front (BFS), Lifo=pop_back (DFS).
-            // `policy` is bound first so the closure captures only that field,
-            // leaving `self.sm` free to borrow mutably.
-            let policy = &*self.policy;
-            let state = match self.sm.get_mut(STASH_ACTIVE).and_then(|s| policy.select(s)) {
+            // `pop_active` also un-indexes it, so a terminal drop of this
+            // state passes `push_or_drop_terminal`'s I6 assert
+            // (angr-mx00p.132.50).
+            let state = match self.sm.pop_active(&*self.policy) {
                 Some(s) => {
                     let sid = s.state_id();
                     self.current_stepping_state_id = Some(sid.into());
