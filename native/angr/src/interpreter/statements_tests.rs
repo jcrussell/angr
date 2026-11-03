@@ -1031,6 +1031,56 @@ fn storeg_symbolic_guard_buffers_for_rust_memory() {
     });
 }
 
+/// angr-vmi2l.169: a symbolic-guard `StoreG` at a symbolic address pins the
+/// address only under the guard. ARM's `strhi r3, [r1, r5, lsl #2]` with the
+/// index in `[0, 3]`: the guard-false path stores nothing, so it keeps every
+/// index, while the guard-true path is pinned to the Max solution and gets
+/// the guard ITE there.
+#[test]
+fn storeg_symbolic_guard_symbolic_addr_leaves_index_free_when_false() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+
+    let guard = RustBV::symbol("storeg_hi", 1);
+    let idx = RustBV::symbol("storeg_idx", 64);
+    ctx.assume_true(&idx.ule(&RustBV::concrete(3, 64)));
+    let addr = RustBV::concrete(0x4000, 64).add(&idx.mul(&RustBV::concrete(4, 64)));
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I1, IRType::I64]);
+    interp.temps = vec![Some(guard.clone()), Some(addr)];
+
+    let storeg = IRStmt::StoreG {
+        addr: Box::new(IRExpr::RdTmp(1)),
+        data: Box::new(IRExpr::Const(IRConst::U32(0xcafe_0003))),
+        guard: Box::new(IRExpr::RdTmp(0)),
+        endness: Endness::Little,
+    };
+    with_proxy_callbacks(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &storeg, &irsb)
+            .expect("guarded store with symbolic guard and address");
+    });
+
+    let idx_values = |want: bool| {
+        ctx.push();
+        if want {
+            ctx.assume_true(&guard);
+        } else {
+            ctx.assume_false(&guard);
+        }
+        let mut vals = ctx.eval_upto(&idx, 8);
+        ctx.pop();
+        vals.sort_unstable();
+        vals
+    };
+    assert_eq!(idx_values(false), vec![0, 1, 2, 3], "guard false: no store, index free");
+    assert_eq!(idx_values(true), vec![3], "guard true: pinned to the Max address");
+    let buffered = interp
+        .pending_symbolic_stores
+        .get(&0x400c)
+        .expect("the guard ITE lands at the Max address");
+    assert!(buffered.is_symbolic(), "the buffered value is the guard ITE");
+}
+
 /// CAS variant (angr-5mnx3.23): `cas_store_symbolic_data` writes back a computed
 /// `RustBV` (the success/failure ITE) that cannot be re-expressed as an
 /// `IRExpr`, so it dispatches the symbolic-value callback directly. Same

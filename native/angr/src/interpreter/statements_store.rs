@@ -11,6 +11,7 @@
 //! evicting concrete/symbolic cache entries the store now contradicts.
 
 use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
+use super::concretize_cache::GuardedWrite;
 use super::pending_store::overlap_offsets;
 use super::*;
 use crate::symbolic::{MAX_CONCRETE_CHUNK, u128_to_le_bytes};
@@ -389,6 +390,60 @@ impl<'a> VEXInterpreter<'a> {
             GuardedStoreAddr::Concretized => callbacks
                 .memory_store(addr_concrete, &ite_bytes)
                 .map_err(|e| CbExecutionError::Callback(e.to_string())),
+        }
+    }
+
+    /// Store `data_val` at the symbolic `addr_val` only where the symbolic
+    /// `guard_val` holds: the shared tail of `handle_storeg`'s symbolic-guard
+    /// arm and of a CAS whose comparison is undecided.
+    ///
+    /// The address is concretized under the guard
+    /// (`concretize_guarded_write`), so the guard-false path keeps every
+    /// address value. A single target gets `ITE(guard, data, current)` through
+    /// [`store_guarded_ite`](Self::store_guarded_ite). Any other shape goes to
+    /// the host's full symbolic store with `host_data`, the value the caller
+    /// would write there unguarded; `what` names the statement in the
+    /// no-callback refusal.
+    pub(super) fn store_guarded_symbolic_addr(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr_val: &RustBV,
+        guard_val: &RustBV,
+        data_val: &RustBV,
+        host_data: &RustBV,
+        what: &str,
+    ) -> Result<(), CbExecutionError> {
+        let data_size = data_val.width().div_ceil(8) as usize;
+        match self.concretize_guarded_write(addr_val, guard_val) {
+            GuardedWrite::Infeasible => Ok(()),
+            // Code-cache invalidation for this arm happens inside
+            // `store_guarded_ite` (via `invalidate_and_evict_concrete_store`).
+            GuardedWrite::Concretized(ConcretizationResult::Single(addr_concrete)) => self
+                .store_guarded_ite(
+                    callbacks,
+                    addr_concrete,
+                    guard_val,
+                    data_val,
+                    data_size,
+                    GuardedStoreAddr::Concretized,
+                ),
+            GuardedWrite::Concretized(other) => {
+                // Invalidate cached code at the concretized target(s) before
+                // dispatching (self-modifying-code support). Combining the
+                // guard-ITE with per-address ITEs requires a per-address load
+                // and is brittle, so delegate to the host's full symbolic
+                // store, which has angr's address concretization strategies.
+                self.invalidate_code_for_concretization(&other, data_size);
+                self.flush_stores(callbacks)?;
+                if !callbacks.has_memory_store_symbolic_full() {
+                    return Err(CbExecutionError::Unsupported(format!(
+                        "{what} with symbolic address: no memory_store_symbolic_full callback"
+                    )));
+                }
+                callbacks
+                    .memory_store_symbolic_full(addr_val, host_data)
+                    .map_err(|e| CbExecutionError::Callback(e.to_string()))
+            }
         }
     }
 

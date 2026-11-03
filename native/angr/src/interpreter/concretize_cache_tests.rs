@@ -371,3 +371,81 @@ fn unconstrained_read_fallback_shares_the_memory_name_counter() {
         "fallback {fallback} must come from the memory counter ({before}, {after})"
     );
 }
+
+/// `idx` constrained to `[0, 3]`, the address `0x4000 + idx * 4` built from
+/// it, and a free 1-bit guard: the shape of a conditional store at an
+/// input-dependent index (angr-vmi2l.169).
+fn indexed_addr_and_guard(ctx: &SymContext) -> (RustBV, RustBV, RustBV) {
+    let idx = RustBV::symbol("guarded_idx", 64);
+    ctx.assume_true(&idx.ule(&RustBV::concrete(3, 64)));
+    let addr = RustBV::concrete(0x4000, 64).add(&idx.mul(&RustBV::concrete(4, 64)));
+    (idx, addr, RustBV::symbol("guarded_g", 1))
+}
+
+/// The values `bv` can take with `cond` held to `want`.
+fn values_under(ctx: &SymContext, bv: &RustBV, cond: &RustBV, want: bool) -> Vec<u128> {
+    ctx.push();
+    if want {
+        ctx.assume_true(cond);
+    } else {
+        ctx.assume_false(cond);
+    }
+    let mut vals = ctx.eval_upto(bv, 8);
+    ctx.pop();
+    vals.sort_unstable();
+    vals
+}
+
+/// angr-vmi2l.169: the Max write pin of a guarded store holds only under the
+/// guard. With the guard false no store happens, so the index keeps all four
+/// values; the unguarded `concretize_cached_write` used to pin it to 3.
+#[test]
+fn guarded_write_pins_address_only_under_the_guard() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_concretizer(concretizer_with_fallbacks(false, true));
+    let (idx, addr, guard) = indexed_addr_and_guard(&ctx);
+
+    match interp.concretize_guarded_write(&addr, &guard) {
+        GuardedWrite::Concretized(ConcretizationResult::Single(a)) => assert_eq!(a, 0x400c),
+        other => panic!("Max chain must give one address, got {other:?}"),
+    }
+    assert_eq!(values_under(&ctx, &idx, &guard, false), vec![0, 1, 2, 3]);
+    assert_eq!(values_under(&ctx, &idx, &guard, true), vec![3]);
+}
+
+/// The max is taken under the guard, not over the unguarded address: a guard
+/// that excludes the top index pins the store to the largest index it allows.
+#[test]
+fn guarded_write_maximizes_under_the_guard() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_concretizer(concretizer_with_fallbacks(false, true));
+    let (idx, addr, _) = indexed_addr_and_guard(&ctx);
+    let guard = idx.ule(&RustBV::concrete(1, 64));
+
+    match interp.concretize_guarded_write(&addr, &guard) {
+        GuardedWrite::Concretized(ConcretizationResult::Single(a)) => assert_eq!(a, 0x4004),
+        other => panic!("Max chain must give one address, got {other:?}"),
+    }
+    assert_eq!(values_under(&ctx, &idx, &guard, false), vec![2, 3]);
+}
+
+/// A guard no model satisfies means the store never happens: nothing is
+/// concretized and nothing is pinned.
+#[test]
+fn guarded_write_with_infeasible_guard_pins_nothing() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_concretizer(concretizer_with_fallbacks(false, true));
+    let (idx, addr, _) = indexed_addr_and_guard(&ctx);
+    let guard = idx.ugt(&RustBV::concrete(3, 64));
+
+    assert!(matches!(
+        interp.concretize_guarded_write(&addr, &guard),
+        GuardedWrite::Infeasible
+    ));
+    let mut vals = ctx.eval_upto(&idx, 8);
+    vals.sort_unstable();
+    assert_eq!(vals, vec![0, 1, 2, 3]);
+}

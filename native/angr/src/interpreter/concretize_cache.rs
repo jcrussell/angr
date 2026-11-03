@@ -15,6 +15,16 @@ use super::*;
 /// Only `TooLarge` is re-validated on a hit (each consumer re-applies its own
 /// fallback), which is why the pre-fix code looked safe: the *other* shapes
 /// were passed through verbatim.
+/// Outcome of `VEXInterpreter::concretize_guarded_write`.
+#[derive(Debug)]
+pub(super) enum GuardedWrite {
+    /// No model satisfies the guard, so the write never happens.
+    Infeasible,
+    /// The write chain's result under the guard. A `Single` has already been
+    /// pinned as `Or(Not(guard), addr == a)`.
+    Concretized(ConcretizationResult),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConcretizeNs {
     /// `concretize_cached_read` and `concretize_cached_jump`. Both drive
@@ -132,6 +142,47 @@ impl<'a> VEXInterpreter<'a> {
         }
         self.concretize_cache.insert(cache_key, Arc::clone(&result));
         result
+    }
+
+    /// Concretize the address of a write that happens only under `guard`
+    /// (a symbolic-guard `StoreG`, or a CAS whose comparison is undecided).
+    ///
+    /// Mirrors Python's `AddressConcretizationMixin.store(.., condition=guard)`:
+    /// the write chain runs with `guard` as an extra constraint, and a `Single`
+    /// solution `a` is pinned as `Or(Not(guard), addr == a)`, so the
+    /// guard-false path keeps every value of `addr` (angr-vmi2l.169). The
+    /// chain's own `addr == max` pin lands inside the push/pop scope and is
+    /// discarded with it. Uncached: the per-block cache is keyed on `addr`
+    /// alone, and a result computed under `guard` is not reusable without it.
+    ///
+    /// Non-`Single` shapes come back unpinned, exactly as from
+    /// [`concretize_cached_write`](Self::concretize_cached_write); their
+    /// callers hand the store to Python, which concretizes it again.
+    pub(super) fn concretize_guarded_write(
+        &mut self,
+        addr: &RustBV,
+        guard: &RustBV,
+    ) -> GuardedWrite {
+        let conc_start = std::time::Instant::now();
+        self.ctx.push();
+        self.ctx.assume_true(guard);
+        // Only a decided Unsat proves the store never happens; an Unknown
+        // runs the chain and lets it fail (`invariant-z3-unknown-not-unsat`).
+        let result = (self.ctx.is_sat_checked() != Some(false))
+            .then(|| self.concretizer.concretize_write(addr, self.ctx));
+        self.ctx.pop();
+        if self.profiling_enabled {
+            self.stats.concretize_count += 1;
+            self.stats.concretize_time_ns += crate::duration_ns(conc_start.elapsed());
+        }
+        let Some(result) = result else {
+            return GuardedWrite::Infeasible;
+        };
+        if let ConcretizationResult::Single(chosen) = result {
+            let at_chosen = addr.eq(&RustBV::concrete(u128::from(chosen), addr.width()));
+            self.ctx.assume_true(&guard.not().or(&at_chosen));
+        }
+        GuardedWrite::Concretized(result)
     }
 
     /// Concretize a **jump target** with per-block caching.

@@ -263,14 +263,42 @@ impl<'a> VEXInterpreter<'a> {
                 Ok(())
             }
             None => {
-                let store_lo = cmp.ite(data_lo_val, current_lo);
-                self.cas_store_symbolic_data(callbacks, addr, &store_lo, irsb)?;
+                self.cas_store_undecided(callbacks, addr, cmp, data_lo_val, current_lo, irsb)?;
                 if let Some(d) = dcas {
-                    let store_hi = cmp.ite(&d.data_hi_val, &d.current_hi);
-                    self.cas_store_symbolic_data(callbacks, &d.addr_hi_expr, &store_hi, irsb)?;
+                    self.cas_store_undecided(
+                        callbacks,
+                        &d.addr_hi_expr,
+                        cmp,
+                        &d.data_hi_val,
+                        &d.current_hi,
+                        irsb,
+                    )?;
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// Write back one half of a CAS whose comparison `cmp` is undecided: the
+    /// swap happens only where `cmp` holds. A concrete address stores
+    /// `ITE(cmp, data, current)` there. A symbolic one is a guarded write
+    /// (`store_guarded_symbolic_addr`), concretized under `cmp` so the
+    /// no-swap path keeps every address value (angr-vmi2l.169).
+    fn cas_store_undecided(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr_expr: &IRExpr,
+        cmp: &RustBV,
+        data_val: &RustBV,
+        current: &RustBV,
+        irsb: &IRSB,
+    ) -> Result<(), CbExecutionError> {
+        let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
+        let swapped = cmp.ite(data_val, current);
+        if addr_val.is_symbolic() {
+            self.store_guarded_symbolic_addr(callbacks, &addr_val, cmp, data_val, &swapped, "CAS")
+        } else {
+            self.cas_store_symbolic_data(callbacks, addr_expr, &swapped, irsb)
         }
     }
 
@@ -320,8 +348,8 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// Precondition (not enforced): `data_bv` is symbolic. Both callers
     /// uphold it — `cas_dispatch_store` sends a concrete value down the
-    /// synthesized-`IRStmt::Store` path instead, and `cas_writeback`'s
-    /// `None` arm builds an `ite` over an unresolved comparison. A concrete
+    /// synthesized-`IRStmt::Store` path instead, and `cas_store_undecided`
+    /// builds an `ite` over an unresolved comparison for a concrete address. A concrete
     /// value passed here is still handled correctly, but it takes the
     /// callback path a plain store would have taken more cheaply.
     pub(super) fn cas_store_symbolic_data(
@@ -342,7 +370,7 @@ impl<'a> VEXInterpreter<'a> {
                 // No `memory_store_symbolic_value` callback. Every current
                 // caller arrives with a *symbolic* `data_bv`
                 // (`cas_dispatch_store` gates on `is_symbolic`;
-                // `cas_writeback`'s uncertain-comparison arm hands in an
+                // `cas_store_undecided` hands in an
                 // `ite`), so this guard hard-errors rather than zero-filling
                 // memory (angr-9ke6b.19) and the buffering below is reached
                 // only if a future caller passes a concrete value. Past the

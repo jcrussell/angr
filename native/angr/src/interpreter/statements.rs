@@ -602,49 +602,14 @@ impl<'a> VEXInterpreter<'a> {
                         GuardedStoreAddr::Literal,
                     )?;
                 } else {
-                    // Symbolic address with symbolic guard - concretize for write.
-                    let concret_result = self.concretize_cached_write(&addr_val);
-                    match &*concret_result {
-                        ConcretizationResult::Single(addr_concrete) => {
-                            // Code-cache invalidation for this arm happens inside
-                            // `store_guarded_ite` (via
-                            // `invalidate_and_evict_concrete_store`), which does
-                            // exactly what `invalidate_code_on_store` does for a
-                            // `Single` result.
-                            self.store_guarded_ite(
-                                callbacks,
-                                *addr_concrete,
-                                &guard_val,
-                                &data_val,
-                                data_size,
-                                GuardedStoreAddr::Concretized,
-                            )?;
-                        }
-                        other => {
-                            // Invalidate cached code at the concretized target(s)
-                            // before dispatching (self-modifying-code support),
-                            // mirroring handle_symbolic_store (angr-myzjx.26).
-                            self.invalidate_code_for_concretization(other, data_size);
-                            // Symbolic guard + non-Single address solutions
-                            // (Multiple/Strided/TooLarge/Failed). Combining the
-                            // guard-ITE with per-address ITEs requires a per-
-                            // address load and is brittle, so delegate to Python's
-                            // full symbolic store callback which has access to
-                            // angr's address concretization strategies.
-                            self.flush_stores(callbacks)?;
-                            if callbacks.has_memory_store_symbolic_full() {
-                                callbacks
-                                    .memory_store_symbolic_full(&addr_val, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                return Err(CbExecutionError::Unsupported(
-                                    "guarded store with symbolic address: \
-                                         no memory_store_symbolic_full callback"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    }
+                    self.store_guarded_symbolic_addr(
+                        callbacks,
+                        &addr_val,
+                        &guard_val,
+                        &data_val,
+                        &data_val,
+                        "guarded store",
+                    )?;
                 }
             }
         }
