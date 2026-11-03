@@ -255,7 +255,9 @@ pub fn parse_opcode(op_str: &str) -> IROp {
     // Unmapped operation — capture the name so dispatch can surface a
     // typed UnsupportedVexOp error instead of silently producing fresh
     // symbolic results. See angr-tkbr.2.
-    log::warn!("Unmapped VEX operation: {op_str}");
+    // Debug, not warn: the opcode table parses every VEX op name eagerly, and
+    // executing an unmapped op already raises `UnsupportedVexOp`.
+    log::debug!("Unmapped VEX operation: {op_str}");
     IROp::Unmapped(intern_unmapped_op(op_str))
 }
 

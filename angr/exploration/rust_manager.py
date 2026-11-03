@@ -602,9 +602,11 @@ def _apply_rust_log_env() -> None:
 
     Accepts either a single level word (``debug`` / ``info`` / ``warn`` / ...)
     or a full RUST_LOG-style filter spec
-    (``angr::stepping=debug,angr::interpreter=info``). Per-module filters are
-    honored — the Rust side delegates filter parsing to env_logger.
-    Applies once per process.
+    (``rustylib::exploration=debug,rustylib::interpreter=info``; targets are
+    module paths under the crate's lib name ``rustylib``). Per-module filters
+    are honored — the Rust side delegates filter parsing to env_logger.
+    Applies once per process. With neither variable set, the ``warn`` filter
+    the extension installs at import stays in effect.
 
     Precedence: ``RUST_LOG`` wins if set, else ``ANGR_RUST_LOG`` (kept for
     backcompat with the pre-env_logger logger). ``ANGR_RUST_LOG`` retains
@@ -624,7 +626,7 @@ def _apply_rust_log_env() -> None:
     except Exception as e:
         # cat-(b) FALLBACK WITH LOSS: env-driven level could not be applied;
         # manager construction proceeds, but Rust-side log output stays at
-        # whatever level was set previously (typically off).
+        # whatever level was set previously (``warn`` by default).
         l.debug("Failed to set Rust log level from env (%r): %s", level, e)
 
 

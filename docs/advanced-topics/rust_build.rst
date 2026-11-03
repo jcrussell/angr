@@ -253,8 +253,10 @@ Debugging Rust-side logs
 ------------------------
 
 The Rust engine logs through a stderr logger backed by
-``env_logger::filter::Filter`` (``native/angr/src/engine.rs``). Nothing is
-printed until a level is set.
+``env_logger::filter::Filter`` (``native/angr/src/engine.rs``). Importing the
+extension installs ``DEFAULT_LOG_SPEC`` (``warn``, so every ``log::warn!`` and
+``log::error!`` reaches stderr, the way the Python engine's ``l.warning`` does);
+``set_rust_log_level("off")`` or ``RUST_LOG=off`` silences it.
 
 .. code-block:: python
 

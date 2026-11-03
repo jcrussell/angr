@@ -223,16 +223,41 @@ fn build_filter(spec: &str) -> env_logger::filter::Filter {
     b.build()
 }
 
+/// The filter [`vex_engine`] installs at module init, before anyone calls
+/// [`set_rust_log_level`]. Without it the `log` crate's max level stays `Off`
+/// and every `log::warn!` (each `silent_default!(cat_c, ..)` site included) is
+/// dropped, while the Python engine's `l.warning` reaches stderr by default
+/// (angr-vmi2l.247). `rustylib::claripy::ast::bv` is held at `error`: its
+/// `BVV(bytes, size)` warns fire on every call, and the core Python memory
+/// model (`ultra_page.py`'s `cycle`) makes that call on every page load.
+const DEFAULT_LOG_SPEC: &str = "warn,rustylib::claripy::ast::bv=error";
+
+/// Install the stderr logger on first call and swap its filter to `spec`.
+fn install_log_filter(spec: &str) {
+    let new_filter = build_filter(spec);
+    let max_level = new_filter.filter();
+
+    let logger = LOGGER.get_or_init(|| StderrLogger {
+        filter: parking_lot::RwLock::new(build_filter("off")),
+    });
+    *logger.filter.write() = new_filter;
+    // SILENT(cat-a): log::set_logger errors on second call — fine, the first install wins
+    // and from then on we only swap the filter inside our Logger.
+    drop(log::set_logger(logger));
+    log::set_max_level(max_level);
+}
+
 /// Set the Rust log level from Python.
 ///
 /// Accepts either:
 ///   - a single level word: `error` / `warn` / `info` / `debug` / `trace` / `off`
 ///   - a full RUST_LOG-style filter spec, e.g.
-///     `angr::stepping=debug,angr::interpreter=info,warn` (per-module filters
-///     plus a fallback level).
+///     `rustylib::exploration=debug,rustylib::interpreter=info,warn` (per-module
+///     filters plus a fallback level; targets are module paths under the
+///     crate's lib name `rustylib`).
 ///
-/// Initializes a stderr logger on first call; subsequent calls swap the
-/// active filter in place (no double-install of the global logger).
+/// Replaces the [`DEFAULT_LOG_SPEC`] filter installed at module init; `off`
+/// silences the engine.
 #[pyfunction]
 #[pyo3(signature = (level="info"))]
 fn set_rust_log_level(level: &str) -> PyResult<()> {
@@ -248,23 +273,13 @@ fn set_rust_log_level(level: &str) -> PyResult<()> {
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "invalid log level '{level}': use error/warn/info/debug/trace/off, \
-                     or a RUST_LOG-style spec like 'angr::stepping=debug'"
+                     or a RUST_LOG-style spec like 'rustylib::exploration=debug'"
                 )));
             }
         }
     }
 
-    let new_filter = build_filter(level);
-    let max_level = new_filter.filter();
-
-    let logger = LOGGER.get_or_init(|| StderrLogger {
-        filter: parking_lot::RwLock::new(build_filter("off")),
-    });
-    *logger.filter.write() = new_filter;
-    // SILENT(cat-a): log::set_logger errors on second call — fine, the first install wins
-    // and from then on we only swap the filter inside our Logger.
-    drop(log::set_logger(logger));
-    log::set_max_level(max_level);
+    install_log_filter(level);
     Ok(())
 }
 
@@ -456,6 +471,7 @@ test_submod!("engine_tests.rs" => tests);
 
 /// Register the VEX engine module with Python.
 pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    install_log_filter(DEFAULT_LOG_SPEC);
     // Typed exception classes (angr-tkbr.3).
     crate::errors::register(m)?;
     m.add_class::<PythonCallbacks>()?;

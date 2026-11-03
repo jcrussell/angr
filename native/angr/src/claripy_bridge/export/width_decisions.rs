@@ -15,9 +15,10 @@
 pub(super) enum ConcreteBvvEncoding {
     /// `width <= 64`: pass as `i64`.
     Int64,
-    /// Byte-aligned and fits in the u128's 16 bytes: pass the big-endian bytes.
-    Bytes(usize),
-    /// Non-byte-aligned OR width > 128: pass a Python int (zero-padded).
+    /// `width > 64`: pass a Python int, which `BVV(int, width)` zero-pads for
+    /// any width. Never `bytes`: `BVV(bytes, size)` warns on every call that it
+    /// ignores `size` (angr-vmi2l.247), and a byte count can disagree with
+    /// `width` (angr-ph300.52).
     PyIntWide,
 }
 
@@ -25,8 +26,6 @@ impl ConcreteBvvEncoding {
     pub(super) fn for_width(width: u32) -> Self {
         if width <= 64 {
             Self::Int64
-        } else if width.is_multiple_of(8) && width as usize / 8 <= 16 {
-            Self::Bytes(width as usize / 8)
         } else {
             Self::PyIntWide
         }

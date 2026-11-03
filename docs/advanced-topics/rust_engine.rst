@@ -3311,9 +3311,9 @@ The warn fires exactly once per fresh name — subsequent calls into
 the now-existing stash are silent, so user techniques with their own
 custom stash names (e.g. ``"timeout"`` in ``rust_techniques.py``,
 ``"_merge_drop"`` in the merge fallback path) pay at most one warn
-per process. The default log level is ``off`` so the warn only
-surfaces when the user opts in with
-``set_rust_log_level("warn")`` (or higher) or ``ANGR_RUST_LOG=warn``.
+per manager. The default Rust log filter is ``warn`` (``DEFAULT_LOG_SPEC``
+in ``native/angr/src/engine.rs``), so the warn reaches stderr unless the user
+silences it with ``set_rust_log_level("off")`` or ``RUST_LOG=off``.
 Typos are surfaced, not rejected (angr-630x). Tested by
 ``TestStashNameValidation`` in ``tests/engines/rust/``.
 

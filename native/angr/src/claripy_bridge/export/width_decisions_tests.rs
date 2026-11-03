@@ -2,7 +2,7 @@
 //! (angr-ph300.52), kept alongside its subject (angr-5mnx3.11).
 //!
 //! These pin the concrete-value `BVV` encoding decision (`ConcreteBvvEncoding`).
-//! A copy of it once missed the `width / 8 <= 16` clause, so a byte-aligned
+//! It once had a `bytes` arm, and a copy of it missed the `width / 8 <= 16` clause, so a byte-aligned
 //! width > 128 (e.g. 192) built a 16-byte `PyBytes` and handed it to
 //! `BVV(bytes, 192)` — `ClaripyValueError` string/size mismatch.
 //!
@@ -28,21 +28,21 @@ fn width_le_64_is_int64() {
 }
 
 #[test]
-fn byte_aligned_up_to_128_uses_bytes() {
-    // 65..=128, byte-aligned: exact big-endian bytes, byte_count = width / 8.
+fn byte_aligned_up_to_128_uses_pyint_not_bytes() {
+    // angr-vmi2l.247: `BVV(bytes, size)` warns on every call, so even an exact
+    // 9- or 16-byte value goes out as a Python int.
     assert_eq!(
         ConcreteBvvEncoding::for_width(72),
-        ConcreteBvvEncoding::Bytes(9)
+        ConcreteBvvEncoding::PyIntWide
     );
     assert_eq!(
         ConcreteBvvEncoding::for_width(128),
-        ConcreteBvvEncoding::Bytes(16)
+        ConcreteBvvEncoding::PyIntWide
     );
 }
 
 #[test]
 fn non_byte_aligned_over_64_uses_pyint() {
-    // width % 8 != 0 and width > 64: cannot be exact bytes -> Python int.
     assert_eq!(
         ConcreteBvvEncoding::for_width(65),
         ConcreteBvvEncoding::PyIntWide
@@ -56,8 +56,8 @@ fn non_byte_aligned_over_64_uses_pyint() {
 #[test]
 fn byte_aligned_over_128_uses_pyint_not_bytes() {
     // Regression (angr-ph300.52): width = 192 is byte-aligned but > 128, so
-    // its 24 bytes cannot come from the u128's 16 bytes. MUST be PyIntWide, not
-    // Bytes(24) — the latter is what the un-guarded Constrained arm produced.
+    // its 24 bytes cannot come from the u128's 16 bytes; a 24-byte `bytes`
+    // value is what the un-guarded Constrained arm once produced.
     assert_eq!(
         ConcreteBvvEncoding::for_width(192),
         ConcreteBvvEncoding::PyIntWide
