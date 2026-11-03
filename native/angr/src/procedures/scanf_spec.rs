@@ -17,9 +17,11 @@
 
 use super::ProcedureError;
 use super::format_common::{parse_length_modifier, parse_width_digits};
+use super::strings::MAX_SYMBOLIC_SCAN_BYTES;
 
-/// Max bytes a `%s` conversion mints when the format string gives no explicit
-/// field width.
+/// Clamp on an explicit field width (`%<w>s`, `%<w>d`), so a huge digit run
+/// cannot become a `Vec` bound (angr-mi56k). A `%s` with no width mints
+/// [`MAX_SYMBOLIC_SCAN_BYTES`] bytes instead, Python's `buf_symbolic_bytes`.
 pub(super) const MAX_SCANF_STR_LEN: u64 = 256;
 
 /// Parsed scanf format specifier.
@@ -32,7 +34,8 @@ pub(super) struct ScanfSpec {
     /// conversions it maps one input byte to one stored byte, so it can consume
     /// a harness-seeded stdin byte directly (angr-ggb66).
     pub(super) is_char: bool,
-    /// Max width for %s (from field width, e.g. %10s), or MAX_SCANF_STR_LEN.
+    /// Bytes a `%s` reads: the field width (`%10s`), else
+    /// [`MAX_SYMBOLIC_SCAN_BYTES`] (angr-vmi2l.111).
     pub(super) max_str_len: u64,
     /// Range bound implied by an explicit field width on a numeric conversion
     /// (`%2d`), as `(hi, lo_magnitude)` — see `digit_range_bound`. `None` for
@@ -186,7 +189,7 @@ pub(super) fn parse_scanf_format(
                 let max_len = if has_width {
                     field_width
                 } else {
-                    MAX_SCANF_STR_LEN
+                    MAX_SYMBOLIC_SCAN_BYTES as u64
                 };
                 specs.push(ScanfSpec {
                     bits: 8,

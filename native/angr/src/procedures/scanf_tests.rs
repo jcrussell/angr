@@ -3,6 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::scanf_spec::{MAX_SCANF_STR_LEN, digit_range_bound};
+use crate::procedures::strings::MAX_SYMBOLIC_SCAN_BYTES;
 use crate::procedures::NativeProcedureRegistry;
 use crate::state::FdFlags;
 
@@ -96,8 +97,8 @@ fn test_scanf_percent_s() {
         "scanf %s first byte should be symbolic"
     );
 
-    // NUL terminator at max_str_len offset
-    let nul = state.memory_load(0x2000 + MAX_SCANF_STR_LEN, 1).unwrap();
+    // NUL terminator after the buf_symbolic_bytes read (angr-vmi2l.111)
+    let nul = state.memory_load(0x2000 + MAX_SYMBOLIC_SCAN_BYTES as u64, 1).unwrap();
     assert_eq!(nul.as_u64(), Some(0));
 }
 
@@ -474,8 +475,8 @@ fn test_scanf_stdin_tracking() {
     // Should have recorded stdin symbols
     let symbols = state.stdin_symbols();
     assert!(!symbols.is_empty(), "scanf should record stdin symbols");
-    // One 32-bit symbol for %d + MAX_SCANF_STR_LEN 8-bit symbols for %s
-    assert_eq!(symbols.len(), 1 + MAX_SCANF_STR_LEN as usize);
+    // One 32-bit symbol for %d + MAX_SYMBOLIC_SCAN_BYTES 8-bit symbols for %s
+    assert_eq!(symbols.len(), 1 + MAX_SYMBOLIC_SCAN_BYTES);
 }
 
 // ---- fscanf / __isoc99_fscanf -------------------------------------------
@@ -1290,4 +1291,83 @@ fn test_scanf_hex_field_width_uses_base_16() {
         !ctx.can_be_true(&val.eq(&RustBV::concrete(0x100, 32))),
         "%2x must not reach 0x100"
     );
+}
+
+/// Run `scanf(fmt, 0x2000)` on a fresh state, served natively.
+fn scanf_into_buf(fmt: &[u8]) -> RustSimState {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, fmt, Permission::RWX);
+    NativeScanf
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .expect("scanf served natively");
+    state
+}
+
+/// angr-vmi2l.111: no `%s` byte can be one of Python's `SCANF_DELIMITERS`,
+/// so a path whose input real scanf(3) would split is infeasible.
+#[test]
+fn test_scanf_percent_s_bytes_exclude_delimiters() {
+    for pos in [0u64, 1, MAX_SYMBOLIC_SCAN_BYTES as u64 - 1] {
+        for delim in [b'\t', b'\n', 0x0b, b'\r', b' '] {
+            let state = scanf_into_buf(b"%s\x00");
+            let byte = state.memory_load(0x2000 + pos, 1).unwrap();
+            state.add_constraint(byte.eq(&RustBV::concrete(u128::from(delim), 8)));
+            assert!(!state.satisfiable(), "buf[{pos}] == {delim:#x} must be UNSAT");
+        }
+    }
+    let state = scanf_into_buf(b"%s\x00");
+    let byte = state.memory_load(0x2000, 1).unwrap();
+    state.add_constraint(byte.eq(&RustBV::concrete(u128::from(b'A'), 8)));
+    assert!(state.satisfiable(), "a non-delimiter byte stays feasible");
+}
+
+/// angr-vmi2l.111: the read is `buf_symbolic_bytes` long, so the NUL lands
+/// right after it and nothing past it is written.
+#[test]
+fn test_scanf_percent_s_writes_buf_symbolic_bytes_plus_nul() {
+    let n = MAX_SYMBOLIC_SCAN_BYTES as u64;
+    let state = scanf_into_buf(b"%s\x00");
+    assert!(state.memory_load(0x2000 + n - 1, 1).unwrap().as_u64().is_none());
+    assert_eq!(state.memory_load(0x2000 + n, 1).unwrap().as_u64(), Some(0));
+    for off in [n + 1, MAX_SCANF_STR_LEN] {
+        assert_eq!(
+            state.memory_load(0x2000 + off, 1).unwrap().as_u64(),
+            Some(0),
+            "offset {off} keeps its old (zero) value"
+        );
+    }
+}
+
+/// angr-vmi2l.111: under SHORT_READS Python's `%s` length is symbolic, which
+/// the native read does not model, so the call defers before any store.
+#[test]
+fn test_scanf_percent_s_short_reads_falls_back() {
+    let mut state = setup_state();
+    state.set_option("SHORT_READS", true);
+    state.map_memory_data(0x1000, b"%s\x00", Permission::RWX);
+    let res = NativeScanf.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+    );
+    assert!(matches!(res, Err(ProcedureError::Other(_))), "got {res:?}");
+    assert!(state.stdin_symbols().is_empty(), "nothing minted before deferring");
+}
+
+/// angr-vmi2l.111: a concrete delimiter in the unread seed would make the
+/// delimiter constraints UNSAT, so the call defers with the seed unread.
+#[test]
+fn test_scanf_percent_s_seed_with_delimiter_falls_back() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%s\x00", Permission::RWX);
+    let seed: Vec<RustBV> = b"AB\n".iter().map(|&b| RustBV::concrete(u128::from(b), 8)).collect();
+    state.file_system().set_fd_content_sym(0, seed);
+    let res = NativeScanf.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+    );
+    assert!(matches!(res, Err(ProcedureError::Other(_))), "got {res:?}");
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 0);
 }

@@ -76,6 +76,27 @@ fn do_scanf(
         ));
     }
 
+    // `%s` is Python's SimPackets read (format_parser.py::FormatString.interpret):
+    // a fixed-length read whose every byte is constrained off
+    // `SCANF_DELIMITERS`. Two inputs that model does not cover defer the whole
+    // call, checked before any store. Under SHORT_READS Python's read length is
+    // symbolic, so the bytes past it keep their old memory, which a native
+    // procedure cannot load without risking a mid-call fallback. And a concrete
+    // delimiter in the unread harness seed would make the constraints UNSAT and
+    // kill the path, where real scanf(3) stops the conversion there.
+    if specs.iter().any(|s| s.is_string) {
+        if state.has_option("SHORT_READS") {
+            return Err(ProcedureError::Other(
+                "scanf: %s under SHORT_READS has a symbolic length".to_string(),
+            ));
+        }
+        if record_stdin && unread_seed_has_concrete_delimiter(state) {
+            return Err(ProcedureError::Other(
+                "scanf: %s over a harness seed holding a delimiter".to_string(),
+            ));
+        }
+    }
+
     let scan_id = symbol_counter("scanf");
     let mut arg_idx: usize = 0;
     let mut conversions: u64 = 0;
@@ -108,7 +129,7 @@ fn do_scanf(
         };
 
         if spec.is_string {
-            // %s: create symbolic bytes + NUL terminator
+            // %s: `max_str_len` symbolic bytes, none a delimiter, + NUL
             let str_len = spec.max_str_len;
             let names: Vec<String> = (0..str_len)
                 .map(|j| format!("{source}_scanf_{scan_id}_s{spec_idx}_{j}"))
@@ -123,8 +144,21 @@ fn do_scanf(
                 names.iter().map(|name| RustBV::symbol(name, 8)).collect()
             };
 
-            // Suppressed (`ptr == None`): the bytes were still read off the
-            // stream above, they just have nowhere to land.
+            // Every byte read is constrained, the suppressed case included:
+            // the bytes were still read off the stream (angr-vmi2l.111).
+            let not_delimiter: Vec<RustBV> = sym_bytes
+                .iter()
+                .flat_map(|byte| {
+                    SCANF_DELIMITERS
+                        .iter()
+                        .map(|&d| byte.ne(&RustBV::concrete(u128::from(d), 8)))
+                })
+                .collect();
+            for c in not_delimiter {
+                state.add_constraint(c);
+            }
+
+            // Suppressed (`ptr == None`): the bytes have nowhere to land.
             if let Some(ptr) = ptr {
                 for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
                     state.memory_store(ptr.wrapping_add(j as u64), sym_byte)?;
@@ -191,6 +225,26 @@ fn do_scanf(
 
     // Return number of successful conversions
     Ok(Some(arch_word(state, conversions)))
+}
+
+/// The bytes a `%s` stops at: Python's `FormatString.SCANF_DELIMITERS`
+/// (`\t \n \v \r` and space).
+const SCANF_DELIMITERS: [u8; 5] = [b'\t', b'\n', 0x0b, b'\r', b' '];
+
+/// True when fd 0's unread harness seed holds a concrete `%s` delimiter.
+/// Conservative: the whole unread seed is checked, not just the window the
+/// call's `%s` conversions would read.
+fn unread_seed_has_concrete_delimiter(state: &RustSimState) -> bool {
+    let fs = state.file_system_ref();
+    let Some(content) = fs.fd_content_sym(0) else {
+        return false;
+    };
+    let pos = fs.fd_info(0).map_or(0, |info| info.1) as usize;
+    content.iter().skip(pos).any(|b| {
+        b.as_u64()
+            .and_then(|v| u8::try_from(v).ok())
+            .is_some_and(|v| SCANF_DELIMITERS.contains(&v))
+    })
 }
 
 /// Native scanf implementation.
