@@ -18,6 +18,7 @@
 
 
 use super::*;
+use crate::symbolic::ToZ3;
 use std::sync::Arc;
 
 const SHARED_CONSTRAINTS: usize = 8;
@@ -311,8 +312,9 @@ fn test_merge_dedups_shared_assumed_prefix() {
     let f1 = RustBV::symbol("amerge_flag_1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
 
-    // prefix once + each arm's divergent local suffix.
-    let expected = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM;
+    // prefix once + each arm's divergent local suffix (guarded) + the
+    // `Or` of the merge flags.
+    let expected = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM + 1;
     assert_eq!(
         merged.assumed_constraint_count(),
         expected,
@@ -341,7 +343,7 @@ fn test_nested_merge_does_not_compound_assumed_prefix() {
     let f0 = RustBV::symbol("nest_flag_0", 1);
     let f1 = RustBV::symbol("nest_flag_1", 1);
     let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
-    let round1 = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM;
+    let round1 = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM + 1;
     assert_eq!(merged.assumed_constraint_count(), round1);
 
     // Second diamond: fork the merged context twice. `fork` freezes merged's
@@ -361,7 +363,7 @@ fn test_nested_merge_does_not_compound_assumed_prefix() {
 
     assert_eq!(
         merged2.assumed_constraint_count(),
-        round1 + N_ARMS,
+        round1 + N_ARMS + 1,
         "nested merge must not re-duplicate the round-1 prefix"
     );
 }
@@ -394,7 +396,44 @@ fn test_no_shared_assumed_prefix_keeps_every_arm_prefix() {
 
     assert_eq!(
         merged.assumed_constraint_count(),
-        4,
+        5,
         "distinct per-arm prefixes must all be carried"
+    );
+}
+
+// =============================================================================
+// Guarded per-arm `assumed` export (angr-vmi2l.90)
+// =============================================================================
+
+/// Arms forked on `x > 5` / `!(x > 5)` and merged: the exported `assumed`
+/// list must be jointly SAT, as the merged solver is, and `unsat_core_assumed`
+/// must find no core. Unguarded, the list held both `c` and `!c`.
+#[test]
+fn test_merge_exports_guarded_arm_pairs() {
+    let base = SymContext::new();
+    let x = RustBV::symbol("x_guarded_export", 32);
+    base.assume_true(&x.ult(&RustBV::concrete(100, 32)));
+    let c = x.ugt(&RustBV::concrete(5, 32));
+    let arm_a = base.fork_true(&c);
+    let arm_b = base.fork_false(&c);
+
+    let f0 = RustBV::symbol("guarded_flag_0", 1);
+    let merged = arm_a.merge(&[&arm_b], &[f0.clone(), f0.not()]);
+    assert!(merged.is_sat());
+
+    let solver = z3::Solver::new();
+    for (bv, is_true) in merged.get_assumed_constraints() {
+        assert_eq!(bv.width(), 1);
+        let b = bv.to_z3_bool().expect("assumed pair lowers");
+        solver.assert(if is_true { b } else { b.not() });
+    }
+    assert_eq!(
+        solver.check(),
+        z3::SatResult::Sat,
+        "exported assumed list must be jointly SAT for a SAT merged state"
+    );
+    assert!(
+        merged.unsat_core_assumed(&[]).is_empty(),
+        "a SAT merged state has no unsat core"
     );
 }

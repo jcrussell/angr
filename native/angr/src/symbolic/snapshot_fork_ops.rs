@@ -927,18 +927,37 @@ impl SymContext {
 
             // Also merge assumed_constraints for Python export. The shared
             // prefix was appended once above when every arm holds the same Arc
-            // (angr-9ke6b.139); otherwise each arm contributes its own.
+            // (angr-9ke6b.139); otherwise each arm contributes its own. Every
+            // per-arm pair is exported guarded by its merge condition, the
+            // same `Or(!cond_i, c)` the solver holds: the arms diverged on some
+            // branch, so the unguarded pairs hold both `c` and `!c` and the
+            // exported list (`state.solver.constraints`, `unsat_core_assumed`)
+            // would be jointly UNSAT for a SAT state (angr-vmi2l.90).
             {
                 let arm_assumed_shared = (!dedup_assumed_prefix)
                     .then(|| Arc::clone(&ctx.assumed_constraints_shared.lock()));
+                let not_cond_bv = cond.not();
                 let mut merged_local = merged.local_constraints.lock();
-                if let Some(assumed_shared) = arm_assumed_shared {
-                    merged_local.assumed.extend(assumed_shared.iter().cloned());
+                let arm_pairs = arm_assumed_shared
+                    .iter()
+                    .flat_map(|shared| shared.iter())
+                    .chain(ctx_local.assumed.iter());
+                for (bv, is_true) in arm_pairs {
+                    let guarded = not_cond_bv.or(&assumed_pair_as_bit(bv, *is_true));
+                    merged_local.assumed.push((guarded, true));
                 }
-                merged_local
-                    .assumed
-                    .extend(ctx_local.assumed.iter().cloned());
             }
+        }
+
+        // Export the at-least-one-arm disjunction alongside the guarded pairs,
+        // so the exported list is satisfiable exactly when the solver is.
+        if let Some((first, rest)) = merge_conditions.split_first() {
+            let any_arm = rest.iter().fold(first.clone(), |acc, c| acc.or(c));
+            merged
+                .local_constraints
+                .lock()
+                .assumed
+                .push((any_arm, true));
         }
 
         // Assert that at least one merge condition is true
@@ -984,6 +1003,18 @@ impl SymContext {
 
         merged
     }
+}
+
+/// An `assumed` pair `(bv, is_true)` as the 1-bit value that holds exactly
+/// when the pair does: a wider `bv` reads as `bv != 0`, the same narrowing
+/// `assume` and `unsat_core_assumed` apply.
+fn assumed_pair_as_bit(bv: &RustBV, is_true: bool) -> RustBV {
+    let bit = if bv.width() == 1 {
+        bv.clone()
+    } else {
+        bv.ne(&RustBV::concrete(0, bv.width()))
+    };
+    if is_true { bit } else { bit.not_into() }
 }
 
 // =============================================================================
