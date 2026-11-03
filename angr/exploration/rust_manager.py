@@ -111,7 +111,7 @@ from angr.exploration.rust_state_binding import binding_of
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_state_export import RustStateExportMixin
 from angr.exploration.rust_state_sync import RustStateSyncMixin, _ultrapage_bytes
-from angr.exploration.rust_techniques import _VT_HOLD_STASH
+from angr.exploration.rust_techniques import _FIND_AVOID_TECH_NAMES, _VT_HOLD_STASH
 
 # Envelope head written by RustExplorationManager.dump_snapshot. A file without
 # it is a pre-bucket-D snapshot (bare Rust bytes) and still loads.
@@ -4585,6 +4585,18 @@ class RustExplorationManager(
         if not hasattr(self, "_avoid_predicate"):
             self._avoid_predicate = None
 
+        # As SimulationManager.explore removes its Explorer when the call ends:
+        # a find/avoid left out of this call must not stay armed from the last
+        # one (angr-mx00p.132.49). A native Explorer technique owns the Rust
+        # find/avoid addrs instead, so they are left alone while one is active.
+        explorer_technique_armed = any(
+            type(t).__name__ in _FIND_AVOID_TECH_NAMES for t in self._active_techniques
+        )
+        if find is None and not explorer_technique_armed:
+            self._rust_mgr.set_find_addrs([])
+            self._find_predicate = None
+            self._explore_find_addrs = None
+
         # Set find addresses and store predicate for callback handling
         if find is not None:
             find_addrs = self._extract_addrs(find)
@@ -4601,6 +4613,7 @@ class RustExplorationManager(
         avoid_addrs: list[int] = []
         if avoid is not None:
             avoid_addrs = self._extract_addrs(avoid)
+        if avoid is not None or not explorer_technique_armed:
             self._rust_mgr.set_avoid_addrs(avoid_addrs)
         self._rust_mgr.set_avoid_needs_python(callable(avoid))
         self._avoid_predicate = avoid if callable(avoid) else None
@@ -4788,7 +4801,9 @@ class RustExplorationManager(
         # alone misses a state that leaves active/deadended mid-batch (e.g.
         # returns into an unconstrained address) (angr-mx00p.132.47).
         self._rust_mgr.set_avoid_needs_python(self._avoid_predicate is not None)
-        # Keep terminal states alive so predicates can check them
+        # Keep terminal states alive so predicates can check them; the caller's
+        # setting comes back afterwards (angr-mx00p.132.49).
+        drop_terminal = self._rust_mgr.stats()["drop_terminal_states"]
         self._rust_mgr.set_drop_terminal_states(False)
 
         # An `until` predicate is evaluated after EVERY step by Python's
@@ -4852,7 +4867,7 @@ class RustExplorationManager(
 
         # Final predicate check on deadended/remaining states
         self._evaluate_predicates_on_active()
-        self._rust_mgr.set_drop_terminal_states(True)
+        self._rust_mgr.set_drop_terminal_states(drop_terminal)
 
         # Store timing breakdown for stats
         self._time_in_rust_run_ns = _time_in_rust_run
@@ -5917,6 +5932,7 @@ class RustExplorationManager(
         # steps run far past the budget the caller calibrated against Python
         # (test_serialization's run(n=10) reached a divide-by-zero the Python
         # engine is nowhere near after ten steps; angr-mx00p.132.22).
+        drop_terminal = self._rust_mgr.stats()["drop_terminal_states"]
         self._rust_mgr.set_drop_terminal_states(False)
         was_granular = self.set_block_granular(True)
         try:
@@ -5934,7 +5950,7 @@ class RustExplorationManager(
                     break
         finally:
             self.set_block_granular(was_granular)
-            self._rust_mgr.set_drop_terminal_states(True)
+            self._rust_mgr.set_drop_terminal_states(drop_terminal)
         return self
 
     def _evaluate_predicate_on_stash(
