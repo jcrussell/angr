@@ -221,10 +221,7 @@ impl<'a> VEXInterpreter<'a> {
         arg_vals: &[u64],
         ret_ty_bits: u32,
     ) -> Result<bool, CbExecutionError> {
-        let Some(result) =
-            self.dirty_dispatch
-                .try_call(&mut self.dirty_helper_state, &dirty.cee.name, arg_vals)
-        else {
+        let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, arg_vals) else {
             return Ok(false);
         };
 

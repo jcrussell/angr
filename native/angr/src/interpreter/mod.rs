@@ -45,7 +45,7 @@ use crate::symbolic::{
     record_vex_triop, record_vex_unop,
 };
 use crate::vex::ccall;
-use crate::vex::dirty::{DirtyHelperDispatch, DirtyHelperState};
+use crate::vex::dirty::DirtyHelperDispatch;
 use crate::vex::ir::{
     IRConst, IRExpr, IRLoadGOp, IROp, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch,
 };
@@ -303,11 +303,6 @@ pub(crate) struct VEXInterpreter<'a> {
     page_prefetch_count: u32,
     /// Dirty helper dispatch table for native handling of common helpers.
     dirty_dispatch: DirtyHelperDispatch,
-    /// Per-state scratch space for stateful dirty helpers (the simulated TSC).
-    /// Seeded from `RustSimState::tsc_counter` before the step and written
-    /// back after it, so RDTSC is deterministic per execution path instead of
-    /// depending on a process-wide counter (angr-9ke6b.173).
-    pub dirty_helper_state: DirtyHelperState,
     /// A syscall (or trap-side sibling's trap) exit the step stopped at without running it. Seeded from
     /// and written back to `RustSimState::pending_syscall` around each step;
     /// see that field and `run_until_event`.
@@ -459,7 +454,6 @@ impl<'a> VEXInterpreter<'a> {
             symbolic_ip_at_exit: None,
             page_prefetch_count: 2, // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
-            dirty_helper_state: DirtyHelperState::default(),
             pending_syscall: None,
             simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
@@ -1003,9 +997,6 @@ impl<'a> VEXInterpreter<'a> {
             symbolic_ip_at_exit: None,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
             dirty_dispatch: DirtyHelperDispatch::new(),    // Fresh dispatch (stateless)
-            // Stateful helper scratch (TSC) DOES carry over: a forked path
-            // continues the parent's timeline rather than restarting it.
-            dirty_helper_state: self.dirty_helper_state.clone(),
             pending_syscall: self.pending_syscall,
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,

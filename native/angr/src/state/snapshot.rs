@@ -53,7 +53,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
-///   tsc_counter, pending_syscall, exit_code, getopt_cursor, getopt_extern,
+///   pending_syscall, exit_code, getopt_cursor, getopt_extern,
 ///   stdin_symbols, stdin_read_lengths, stdin_host_packets, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -95,12 +95,6 @@ pub struct RustSimStateSnapshot {
     pub heap_brk: u64,
     pub posix_brk: u64,
     pub mmap_base: u64,
-    /// Simulated RDTSC counter (angr-9ke6b.173). `#[serde(default)]` keeps
-    /// pre-.173 snapshots loadable; they restore to 0, which is harmless — the
-    /// counter only has to be monotonic within a state, not start at
-    /// `TSC_INITIAL`.
-    #[serde(default)]
-    pub tsc_counter: u64,
     /// See `RustSimState::pending_syscall` (angr-mx00p.132.12).
     #[serde(default)]
     pub pending_syscall: Option<crate::vex::JumpKind>,
@@ -243,7 +237,6 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
-            tsc_counter: self.tsc_counter,
             pending_syscall: self.pending_syscall,
             exit_code: self.exit_code.clone(),
             getopt_cursor: self.getopt_cursor,
@@ -309,7 +302,6 @@ impl RustSimState {
             heap_brk: snap.heap_brk,
             posix_brk: snap.posix_brk,
             mmap_base: snap.mmap_base,
-            tsc_counter: snap.tsc_counter,
             pending_syscall: snap.pending_syscall,
             exit_code: snap.exit_code,
             getopt_cursor: snap.getopt_cursor,

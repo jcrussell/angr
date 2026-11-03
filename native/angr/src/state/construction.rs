@@ -97,7 +97,6 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
-            tsc_counter: crate::vex::dirty::TSC_INITIAL,
             pending_syscall: None,
             exit_code: None,
             getopt_cursor: GetoptCursor::default(),

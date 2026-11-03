@@ -64,7 +64,6 @@ pub(super) fn build_populated_state() -> RustSimState {
     s.set_no_symbolic_jump_resolution(true);
     s.set_posix_brk(0x1B0_4000);
     s.set_mmap_base(0xC100_8000);
-    s.set_tsc_counter(0x0010_000F_A000);
     s.set_getopt_cursor(GetoptCursor {
         optind: 7,
         nextchar: 3,

@@ -210,7 +210,7 @@ fn mechanical_union_bool_fields_take_logical_or() {
     assert!(merged.force_eager_forks());
 }
 
-/// max (4): `heap_brk`, `posix_brk`, `mmap_base`, `tsc_counter`. Deliberately
+/// max: `heap_brk`, `posix_brk`, `mmap_base`. Deliberately
 /// alternates which branch is larger per field (`posix_brk` has `a` bigger)
 /// so the test can't pass via a "always take other" bug hiding behind "max".
 #[test]
@@ -223,13 +223,10 @@ fn mechanical_max_watermark_fields_take_the_higher_value() {
     b.set_posix_brk(0x3000);
     a.set_mmap_base(0x4000);
     b.set_mmap_base(0x5000);
-    a.set_tsc_counter(crate::vex::dirty::TSC_INITIAL + 5 * crate::vex::dirty::TSC_STEP);
-    b.set_tsc_counter(crate::vex::dirty::TSC_INITIAL + 2 * crate::vex::dirty::TSC_STEP);
 
     let expected_heap_brk = a.merge_field_heap_brk(&[&b]);
     let expected_posix_brk = a.merge_field_posix_brk(&[&b]);
     let expected_mmap_base = a.merge_field_mmap_base(&[&b]);
-    let expected_tsc = a.merge_field_tsc_counter(&[&b]);
 
     assert_eq!(expected_heap_brk, 0x2000, "max must take b's higher value");
     assert_eq!(
@@ -237,17 +234,12 @@ fn mechanical_max_watermark_fields_take_the_higher_value() {
         "max must keep a's higher value, not blindly take other's"
     );
     assert_eq!(expected_mmap_base, 0x5000);
-    assert_eq!(
-        expected_tsc,
-        crate::vex::dirty::TSC_INITIAL + 5 * crate::vex::dirty::TSC_STEP
-    );
 
     let [m0, m1] = conds("max_watermark_group");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(merged.heap_brk(), expected_heap_brk);
     assert_eq!(merged.posix_brk(), expected_posix_brk);
     assert_eq!(merged.mmap_base(), expected_mmap_base);
-    assert_eq!(merged.tsc_counter(), expected_tsc);
 }
 
 /// min (1): `cgc_allocation_base`. The CGC allocator grows downward, so the

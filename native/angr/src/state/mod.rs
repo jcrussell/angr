@@ -414,15 +414,6 @@ pub struct RustSimState {
     /// at the syscall callback boundary.
     #[merge_policy = "max"]
     mmap_base: u64,
-    /// Simulated timestamp counter backing the `RDTSC` dirty helper. Per-state
-    /// (not a process-wide `AtomicU64`; angr-9ke6b.173) so the Nth RDTSC along
-    /// a path is reproducible across runs, worker counts, and unrelated states.
-    /// Default [`crate::vex::dirty::TSC_INITIAL`]; advances by
-    /// [`crate::vex::dirty::TSC_STEP`] per RDTSC. Carried across fork +
-    /// snapshot; merged as `max` (time is a monotonic watermark, like
-    /// `heap_brk`/`mmap_base`).
-    #[merge_policy = "max"]
-    tsc_counter: u64,
     /// The `Ijk_Sys*` exit of the last block, when its syscall has not run
     /// yet. A block-granular step stops at the exit like Python's, whose
     /// syscall is its own step, and the next step serves it before lifting

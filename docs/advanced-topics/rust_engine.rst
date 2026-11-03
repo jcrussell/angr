@@ -578,8 +578,7 @@ The vocabulary (see ``VALID_MERGE_POLICIES`` in
        mirrors, a logical OR.
    * - ``max`` / ``min``
      - yes
-     - Numeric extremum across branches (``heap_brk``, ``mmap_base``,
-       ``tsc_counter``).
+     - Numeric extremum across branches (``heap_brk``, ``mmap_base``).
    * - ``warn_on_diverge``
      - yes
      - Kept from ``self``, but ``warn_config_divergence`` runs first so
@@ -1784,7 +1783,9 @@ vs. Python.
        ``gettimeofday``/``time``/``clock_gettime``) always write a fresh
        symbolic ``timeval``/``timespec`` and never consult the option.
        Warn-once so a user who opted into concrete host times learns the
-       native path is ignoring it (angr-0y0v).
+       native path is ignoring it (angr-0y0v). ``RDTSC`` is the exception:
+       it has no native handler and runs Python's dirty helper, which
+       reads the option as the Python engine does (angr-vmi2l.69).
    * - ``PRODUCE_ZERODIV_SUCCESSORS``
      - Keeps the ``Ijk_SigFPE_IntDiv`` successor Python spawns on a
        concrete zero divisor (dropped in ``add_successor`` when unset).

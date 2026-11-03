@@ -273,7 +273,6 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
-            tsc_counter: self.tsc_counter,
             pending_syscall: self.pending_syscall,
             exit_code: self.exit_code.clone(),
             getopt_cursor: self.getopt_cursor,
@@ -701,7 +700,7 @@ impl RustSimState {
         warn_config_divergence("call_stack", call_stack_diverges(self, others));
 
         // angr-sqfj8.88: `last_time` is the symbolic analogue of the
-        // tsc_counter/heap_brk/mmap_base watermarks above — it must never
+        // heap_brk/mmap_base watermarks above — it must never
         // read as though time ran backwards relative to any branch. Unlike
         // those plain `u64`s, `Option<RustBV>` has no `Ord`, so a real
         // symbolic maximum is built via `uge` + `ite` per branch instead of
@@ -752,11 +751,6 @@ impl RustSimState {
             heap_brk: self.merge_field_heap_brk(others),
             posix_brk: self.merge_field_posix_brk(others),
             mmap_base: self.merge_field_mmap_base(others),
-            // Simulated time is a monotonic watermark like the allocator
-            // bases above: take the furthest-advanced branch so the merged
-            // state's next RDTSC can't read earlier than one an arm already
-            // observed (which would make time appear to run backwards).
-            tsc_counter: self.merge_field_tsc_counter(others),
             pending_syscall: self.merge_field_pending_syscall(others),
             exit_code: self.merge_field_exit_code(others),
             getopt_cursor: self.merge_field_getopt_cursor(others),

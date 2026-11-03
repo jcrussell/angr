@@ -29,7 +29,6 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(restored.heap_brk(), orig.heap_brk());
     assert_eq!(restored.posix_brk(), orig.posix_brk());
     assert_eq!(restored.mmap_base(), orig.mmap_base());
-    assert_eq!(restored.tsc_counter(), orig.tsc_counter());
     assert_eq!(restored.getopt_cursor(), orig.getopt_cursor());
     {
         let (ro, oo) = (restored.getopt_extern(), orig.getopt_extern());

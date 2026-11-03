@@ -224,7 +224,9 @@ _REJECTED_OPTION_NAMES = frozenset(
         "FAST_REGISTERS",
         "UNDER_CONSTRAINED_SYMEXEC",
         "BYPASS_VERITESTING_EXCEPTIONS",  # only Veritesting reads it, on its own Python manager (angr-6rz8)
-        "USE_SYSTEM_TIMES",  # native time syscalls always return a fresh symbol (angr-0y0v)
+        # Native time syscalls always return a fresh symbol (angr-0y0v); RDTSC
+        # runs Python's dirty helper, which does honor it (angr-vmi2l.69).
+        "USE_SYSTEM_TIMES",
     }
 )
 

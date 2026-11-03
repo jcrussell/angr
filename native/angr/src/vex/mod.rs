@@ -6,8 +6,8 @@
 //! - VEX lifting interface
 //! - pyvex IRSB serialization/deserialization
 //! - Clean call (CCall) implementations for flag calculations
-//! - Native dirty helper implementations (RDTSC, IN/OUT port access; see
-//!   `dirty.rs`'s header for why CPUID/RDTSCP are deliberately not among them)
+//! - Native dirty helper implementations (OUT port access; see `dirty.rs`'s
+//!   header for why CPUID/RDTSCP, RDTSC and IN are deliberately not among them)
 
 pub mod ccall;
 pub mod dirty;
@@ -31,7 +31,7 @@ pub mod transcendentals;
 /// been lifted from stale image bytes (angr-sqfj8.67).
 pub(crate) const VEX_MAX_BYTES: usize = 5000;
 
-pub use dirty::{DirtyHelperDispatch, DirtyHelperResult, DirtyHelperState};
+pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
 pub use ir::*;
 pub use lifter::{LiftError, VEXLifter};
 pub use opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};

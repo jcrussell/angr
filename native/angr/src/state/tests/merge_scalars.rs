@@ -61,50 +61,8 @@ fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
     assert_eq!(merged.mmap_base(), 0x50_0000, "mmap_base must be max(a, b)");
 }
 
-// angr-9ke6b.173: the simulated RDTSC counter moved from a process-wide
-// AtomicU64 onto RustSimState. It must default to TSC_INITIAL, survive a fork
-// (a child continues the parent's clock and then diverges independently), and
-// merge as a max watermark so the merged state's next RDTSC can't read earlier
-// than a value one of the arms already observed.
-#[test]
-fn test_tsc_counter_forks_and_merges_as_watermark() {
-    let mut a = RustSimState::new("amd64").unwrap();
-    assert_eq!(
-        a.tsc_counter(),
-        crate::vex::dirty::TSC_INITIAL,
-        "a fresh state starts at the fixed initial TSC, not wherever some \
-         other state left a global counter"
-    );
-
-    a.set_tsc_counter(crate::vex::dirty::TSC_INITIAL + 5 * crate::vex::dirty::TSC_STEP);
-    let mut child = a.fork();
-    assert_eq!(
-        child.tsc_counter(),
-        a.tsc_counter(),
-        "fork inherits the parent's clock"
-    );
-
-    // Diverge: the child executes more RDTSCs than the parent.
-    child.set_tsc_counter(child.tsc_counter() + 3 * crate::vex::dirty::TSC_STEP);
-    assert_ne!(child.tsc_counter(), a.tsc_counter());
-
-    let m0 = {
-        RustBV::symbol("tsc173_m0", 1)
-    };
-    let m1 = {
-        RustBV::symbol("tsc173_m1", 1)
-    };
-    let expected = child.tsc_counter();
-    let merged = a.merge(&[&child], &[m0, m1]);
-    assert_eq!(
-        merged.tsc_counter(),
-        expected,
-        "merge must take the furthest-advanced TSC across branches"
-    );
-}
-
 // angr-sqfj8.88: `last_time` is `Option<RustBV>`, the symbolic analogue of the
-// `tsc_counter` watermark above — merge must never let it read as though time
+// `heap_brk`/`mmap_base` watermarks — merge must never let it read as though time
 // ran backwards relative to any branch. Since `RustBV` has no `Ord`, this
 // takes a real symbolic maximum (`uge` + `ite`) rather than dropping straight
 // to `self`'s value.
