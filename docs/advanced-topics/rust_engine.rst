@@ -2722,7 +2722,10 @@ facing knobs that cap memory growth are:
   ``DEFAULT_MAX_ACTIVE_STATES`` in ``angr/exploration/rust_manager.py``,
   a runaway-explosion backstop set far above realistic workloads; pass
   ``None`` to disable the cap or a smaller int to bound tighter. It is a
-  state-count cap, not a memory limit.
+  state-count cap, not a memory limit. These are the only states in
+  ``pruned``: a state the solver proves UNSAT is dropped, as
+  ``SimulationManager`` drops one without ``save_unsat``, and is only
+  counted in ``pruned_count``.
 
 ``max_history``
   Constructor argument (default ``1000``). Caps the per-state

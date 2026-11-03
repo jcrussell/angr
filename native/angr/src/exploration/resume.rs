@@ -137,7 +137,7 @@ impl RustExplorationManager {
                 final_successors.push(successor);
             } else {
                 log::debug!(
-                    "Successor state {} is UNSAT, moving to pruned stash",
+                    "Successor state {} is UNSAT, dropping it",
                     successor.state_id()
                 );
                 pruned_states.push(successor);
@@ -151,9 +151,9 @@ impl RustExplorationManager {
         // to STASH_ACTIVE as before.
         self.route_resume_successors(final_successors);
 
-        // Add to pruned stash
+        // Drop the UNSAT states (angr-vmi2l.326).
         for s in pruned_states {
-            self.push_or_drop_terminal(STASH_PRUNED, s);
+            self.drop_unsat(s);
         }
 
         // Apply native uniqueness filter if enabled
@@ -293,7 +293,7 @@ impl RustExplorationManager {
             new_constraints,
         )?;
         if unsat || !state.survives_sat_prune(self.constraint_solver.lazy_solves) {
-            self.push_or_drop_terminal(STASH_PRUNED, state);
+            self.drop_unsat(state);
         } else {
             self.route_resume_successors(vec![state]);
         }
@@ -626,10 +626,10 @@ impl RustExplorationManager {
             self.route_successor(s, false);
         }
 
-        // Add to pruned stash
+        // Drop the UNSAT states (angr-vmi2l.326).
         pruned_states.extend(deferred_pruned);
         for s in pruned_states {
-            self.push_or_drop_terminal(STASH_PRUNED, s);
+            self.drop_unsat(s);
         }
 
         log::debug!(

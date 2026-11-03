@@ -502,7 +502,7 @@ impl RustExplorationManager {
                             log::debug!(
                                 "parallel: bounce at find addr 0x{addr:x} is UNSAT, pruning"
                             );
-                            self.push_or_drop_terminal(STASH_PRUNED, state);
+                            self.drop_unsat(state);
                         }
                     }
                     Some(addr) if self.avoid_addrs.contains(&addr) => {

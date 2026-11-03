@@ -58,9 +58,8 @@ def _run_proc(proj, engine, proc, args, seed):
             simgr.run(max_steps=1)
             calls = simgr._rust_mgr.native_procedure_stats()["call_counts"].get(proc, 0)
         if not simgr.active:
-            # Python's %s over a seed shorter than its read is UNSAT. Rust
-            # files that state under `pruned` (angr-vmi2l.326), so the parity
-            # check only compares that no successor survives.
+            # Python's %s over a seed shorter than its read is UNSAT, so
+            # neither engine keeps a successor.
             return "no-active", None, calls
         (succ,) = simgr.active
         ret = succ.solver.eval(succ.regs.rax)

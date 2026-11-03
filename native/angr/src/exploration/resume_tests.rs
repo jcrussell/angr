@@ -396,7 +396,8 @@ fn forked_successor_routes_from_its_own_fork() {
         Some(0x333)
     );
     assert_eq!(mgr.get_state_root(live), Some(sid));
-    assert_eq!(mgr.stash_count(STASH_PRUNED), 1, "unsat successor is pruned");
+    assert_eq!(mgr.stash_count(STASH_PRUNED), 0, "unsat successor is dropped");
+    assert_eq!(mgr.sm.pruned_count, 1, "and counted");
     assert!(
         mgr.pending_callbacks.contains_key(&StateId::new(sid)),
         "the pending callback is not consumed by an extra successor"

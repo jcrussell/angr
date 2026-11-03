@@ -360,10 +360,9 @@ impl RustExplorationManager {
     /// the solver *proved* unsatisfiable (`survives_sat_prune`, which keeps a
     /// state whose satisfiability query timed out — the run_loop
     /// successor/loop-exit sites that have not yet filtered satisfiability);
-    /// such a state is routed to `STASH_PRUNED` — NOT silently dropped —
-    /// exactly as the popped-state path in `check_terminal_conditions` does
-    /// for the same condition, so `pruned_count` is arrival-path invariant
-    /// (angr-ph300.13). The resume.rs sites pass false because satisfiability
+    /// such a state goes to `drop_unsat` (counted, not stashed) exactly as the
+    /// popped-state path in `check_terminal_conditions` does for the same
+    /// condition, so `pruned_count` is arrival-path invariant (angr-ph300.13). The resume.rs sites pass false because satisfiability
     /// was already established upstream (the whole block is gated on it), so
     /// the FOUND push is unconditional there and the prune arm is unreachable.
     #[inline]
@@ -379,7 +378,7 @@ impl RustExplorationManager {
                     .push_back(state);
             } else {
                 log::debug!("State at find address 0x{spc:x} is UNSAT, pruning");
-                self.push_or_drop_terminal(STASH_PRUNED, state);
+                self.drop_unsat(state);
             }
         } else if target_pc.is_some_and(|p| self.avoid_addrs.contains(&p)) {
             self.push_or_drop_terminal(STASH_AVOID, state);
@@ -603,6 +602,12 @@ impl RustExplorationManager {
     /// `apply_terminal` in `run_loop.rs`.
     pub(crate) fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
         self.sm.push_or_drop_terminal(stash_name, state);
+    }
+
+    /// Discard a state the solver proved UNSAT; see `StashManager::drop_unsat`.
+    /// Every UNSAT routing site goes through here, never `STASH_PRUNED`.
+    pub(crate) fn drop_unsat(&mut self, state: RustSimState) {
+        self.sm.drop_unsat(state);
     }
 
     /// Push a state onto the errored stash, incrementing `errored_count`.

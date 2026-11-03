@@ -269,7 +269,7 @@ impl RustExplorationManager {
                     .push_back(state);
             } else {
                 log::debug!("State at find address 0x{pc:x} is UNSAT, pruning");
-                self.push_or_drop_terminal(STASH_PRUNED, state);
+                self.drop_unsat(state);
             }
             return Ok(StepOutcome::Routed);
         }
@@ -583,7 +583,7 @@ impl RustExplorationManager {
                                 .push_back(pending.state);
                         } else {
                             log::debug!("State at find address 0x{addr:x} is UNSAT, pruning");
-                            self.push_or_drop_terminal(STASH_PRUNED, pending.state);
+                            self.drop_unsat(pending.state);
                         }
                     } else {
                         self.push_or_drop_terminal(STASH_AVOID, pending.state);

@@ -167,14 +167,13 @@ fn untagged_residual_at_find_pc_routes_to_found() {
 
 /// Pin `rax` to two different values so the state's path constraints are UNSAT.
 #[test]
-fn unsat_successor_at_find_pc_routes_to_pruned() {
+fn unsat_successor_at_find_pc_is_dropped_and_counted() {
     Python::initialize();
     Python::attach(|_py| {
         // angr-ph300.13: an UNSAT state reaching a find address via an
-        // infeasible path must land in STASH_PRUNED, not vanish. The
-        // popped-state path (`check_terminal_conditions`) already did this;
-        // the successor path silently dropped it, so `pruned_count` differed
-        // by arrival path between two semantically identical explorations.
+        // infeasible path is counted in `pruned_count` whatever its arrival
+        // path. angr-vmi2l.326: it is dropped, not stashed, as Python's
+        // SimulationManager drops unsat successors without `save_unsat`.
         let find = 0x40_9000;
         let (mut mgr, _sat, _id) = mgr_and_state(find);
         mgr.set_find_addrs(vec![find]);
@@ -182,7 +181,8 @@ fn unsat_successor_at_find_pc_routes_to_pruned() {
         mgr.route_successor(unsat_state_at(find), true);
 
         assert_eq!(mgr.stash_count(STASH_FOUND), 0, "UNSAT is not a find");
-        assert_eq!(mgr.stash_count(STASH_PRUNED), 1, "tracked, not dropped");
+        assert_eq!(mgr.stash_count(STASH_PRUNED), 0, "dropped, not stashed");
+        assert_eq!(mgr.sm.pruned_count, 1, "but counted");
         assert_eq!(mgr.stash_count(STASH_ACTIVE), 0);
     });
 }
@@ -205,12 +205,12 @@ fn sat_successor_at_find_pc_still_routes_to_found() {
 }
 
 #[test]
-fn untagged_unsat_residual_at_find_pc_routes_to_pruned() {
+fn untagged_unsat_residual_at_find_pc_is_dropped_and_counted() {
     Python::initialize();
     Python::attach(|_py| {
         // The coordinator's untagged residual arm funnels an UNSAT-at-find
         // state through `route_successor(state, true)`, so it inherits the
-        // prune routing rather than the old silent drop.
+        // counted drop rather than an uncounted one.
         let find = 0x40_b000;
         let (mut mgr, _sat, _id) = mgr_and_state(find);
         mgr.set_find_addrs(vec![find]);
@@ -222,8 +222,9 @@ fn untagged_unsat_residual_at_find_pc_routes_to_pruned() {
 
         assert!(bounce_queue.is_empty());
         assert_eq!(mgr.stash_count(STASH_FOUND), 0);
-        assert_eq!(mgr.stash_count(STASH_PRUNED), 1);
-        assert_eq!(mgr.sm.get_root(id), Some(7), "lineage root still replayed");
+        assert_eq!(mgr.stash_count(STASH_PRUNED), 0);
+        assert_eq!(mgr.sm.pruned_count, 1);
+        assert_eq!(mgr.sm.get_root(id), None, "the drop releases the lineage root");
     });
 }
 

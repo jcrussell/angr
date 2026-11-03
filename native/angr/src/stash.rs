@@ -362,24 +362,38 @@ impl StashManager {
         if !self.drop_terminal_states {
             self.push(stash_name, state);
         } else {
-            let sid = state.state_id();
-            self.state_roots.remove(&sid);
-            // I6 consistency: the dropped state should not remain in
-            // state_index. The caller pops from a stash before invoking
-            // us, which un-indexes via `pop_active`; this assert documents
-            // that contract and catches a regression where a drop path
-            // skips the un-index step. Always-on (angr-9ke6b.220): a stale
-            // index entry pointing at a dropped state makes `find_state`
-            // silently resolve to nothing (or, after ID churn, to the wrong
-            // state). One hash lookup per dropped terminal.
-            assert!(
-                !self.state_index.contains_key(&sid),
-                "I6: state {} dropped while still indexed under stash {:?}",
-                sid,
-                self.state_index.get(&sid)
-            );
-            // State is dropped here, freeing its Z3 solver clone.
+            self.drop_unindexed(state);
         }
+    }
+
+    /// Discard a state the solver proved UNSAT, counting it in `pruned_count`
+    /// whatever `drop_terminal_states` says (angr-vmi2l.326). Python's
+    /// SimulationManager drops unsat successors unless `save_unsat` is set, so
+    /// `STASH_PRUNED` holds only the `max_active_states` backstop's prunes.
+    pub fn drop_unsat(&mut self, state: RustSimState) {
+        self.pruned_count += 1;
+        self.drop_unindexed(state);
+    }
+
+    /// The drop half of [`Self::push_or_drop_terminal`] (invariant I6).
+    fn drop_unindexed(&mut self, state: RustSimState) {
+        let sid = state.state_id();
+        self.state_roots.remove(&sid);
+        // I6 consistency: the dropped state should not remain in
+        // state_index. The caller pops from a stash before invoking
+        // us, which un-indexes via `pop_active`; this assert documents
+        // that contract and catches a regression where a drop path
+        // skips the un-index step. Always-on (angr-9ke6b.220): a stale
+        // index entry pointing at a dropped state makes `find_state`
+        // silently resolve to nothing (or, after ID churn, to the wrong
+        // state). One hash lookup per dropped terminal.
+        assert!(
+            !self.state_index.contains_key(&sid),
+            "I6: state {} dropped while still indexed under stash {:?}",
+            sid,
+            self.state_index.get(&sid)
+        );
+        // State is dropped here, freeing its Z3 solver clone.
     }
 
     /// Push a state onto `STASH_ERRORED`, incrementing `errored_count`.

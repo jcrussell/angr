@@ -58,7 +58,7 @@ impl RustExplorationManager {
                 if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {
                     successors.push(forked);
                 } else {
-                    self.push_or_drop_terminal(STASH_PRUNED, forked);
+                    self.drop_unsat(forked);
                 }
             } else {
                 // Conservative fork without condition
@@ -71,7 +71,7 @@ impl RustExplorationManager {
                 if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {
                     successors.push(forked);
                 } else {
-                    self.push_or_drop_terminal(STASH_PRUNED, forked);
+                    self.drop_unsat(forked);
                 }
             }
         }

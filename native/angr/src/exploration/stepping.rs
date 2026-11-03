@@ -371,14 +371,14 @@ impl RustExplorationManager {
             self.dispatch_fork_inspect(fid);
         }
 
-        // 5. Push UNSAT forks to STASH_PRUNED.
+        // 5. Drop UNSAT forks (angr-vmi2l.326).
+        for s in pruned {
+            self.drop_unsat(s);
+        }
         // 6. Side-effect terminal pushes (no-return main state from a native
         //    `exit` / no-return proc, deadended while its forks continue).
-        //    Both are diverted to the caller when a terminal sink is set.
-        let terminals = pruned
-            .into_iter()
-            .map(|s| (STASH_PRUNED, s))
-            .chain(terminal_pushes.into_iter().map(|(s, stash)| (stash, s)));
+        //    They are diverted to the caller when a terminal sink is set.
+        let terminals = terminal_pushes.into_iter().map(|(s, stash)| (stash, s));
         if let Some(sink) = terminal_sink {
             sink.extend(terminals.map(|(stash, s)| (stash.to_string(), s)));
         } else {

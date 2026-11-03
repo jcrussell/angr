@@ -80,10 +80,10 @@ fn find_address_routes_satisfiable_state_to_found_stash() {
 
 /// A state can reach a find address down an infeasible path; `step_one` must
 /// prune it rather than report a bogus solution. Mirrors
-/// `run_loop_wave_tests.rs::unsat_successor_at_find_pc_routes_to_pruned` on
+/// `run_loop_wave_tests.rs::unsat_successor_at_find_pc_is_dropped_and_counted` on
 /// the single-threaded side.
 #[test]
-fn unsat_state_at_find_address_is_pruned_not_found() {
+fn unsat_state_at_find_address_is_dropped_not_found() {
     Python::initialize();
     Python::attach(|_py| {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
@@ -94,7 +94,8 @@ fn unsat_state_at_find_address_is_pruned_not_found() {
 
         assert_eq!(mgr.found_count(), 0, "UNSAT state is not a solution");
         assert_eq!(mgr.stash_count(STASH_FOUND), 0);
-        assert_eq!(mgr.stash_count(STASH_PRUNED), 1);
+        assert_eq!(mgr.stash_count(STASH_PRUNED), 0, "dropped (angr-vmi2l.326)");
+        assert_eq!(mgr.sm.pruned_count, 1);
     });
 }
 

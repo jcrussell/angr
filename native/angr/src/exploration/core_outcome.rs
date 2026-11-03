@@ -25,7 +25,7 @@
 //! - SAT continue states (incl. the main state) in [`CoreReturn::Continue`],
 //!   each carrying a [`RoutingTag`] (`is_fork` distinguishes a freshly minted
 //!   fork that needs `set_root` from the moved main/first state that does not).
-//! - UNSAT forks in [`CoreOutcome::pruned`] (coordinator pushes to STASH_PRUNED;
+//! - UNSAT forks in [`CoreOutcome::pruned`] (coordinator drops them via `drop_unsat`;
 //!   each also needs `set_root`).
 //! - Every newly minted fork id that the single-threaded path fires
 //!   `dispatch_fork_inspect` on, in firing order, in [`CoreOutcome::fork_ids`].
@@ -325,7 +325,7 @@ pub(crate) enum CoreReturn {
 /// returns. See the module docs for the contract.
 pub(crate) struct CoreOutcome {
     pub(crate) ret: CoreReturn,
-    /// UNSAT forks (coordinator: `set_root` each, then push to STASH_PRUNED).
+    /// UNSAT forks (coordinator: `set_root` each, then `drop_unsat`).
     pub(crate) pruned: Vec<RustSimState>,
     /// Newly minted fork ids the legacy path fires `dispatch_fork_inspect` on,
     /// in firing order.
