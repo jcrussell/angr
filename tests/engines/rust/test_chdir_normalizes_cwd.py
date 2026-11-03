@@ -37,8 +37,6 @@ def _sys(nr: int) -> bytes:
 CODE = (
     _mov_rdi(PATH) + _sys(80)  # chdir(PATH)
     + _mov_rdi(CWD_BUF) + b"\xbe\x00\x01\x00\x00" + _sys(79)  # getcwd(CWD_BUF, 256)
-    # jmp short +0: END must not be the syscall's return address (angr-vmi2l.328)
-    + b"\xeb\x00"
 )  # fmt: skip
 END = LOAD + len(CODE)
 

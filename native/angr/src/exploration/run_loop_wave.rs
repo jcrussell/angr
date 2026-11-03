@@ -528,8 +528,9 @@ impl RustExplorationManager {
                 // (angr-op0dn.13.17) so the parallel drain does not over-collect
                 // past the serial baseline; surplus stays active + re-findable.
                 self.sm.set_root(id, root);
-                let spc = state.pc();
-                if self.find_addrs.contains(&spc)
+                if state
+                    .find_avoid_pc()
+                    .is_some_and(|p| self.find_addrs.contains(&p))
                     && state.survives_sat_prune(self.constraint_solver.lazy_solves)
                 {
                     self.push_found_capped(state);

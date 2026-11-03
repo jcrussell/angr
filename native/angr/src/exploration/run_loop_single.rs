@@ -229,6 +229,7 @@ impl RustExplorationManager {
         // no matter which side of a step boundary the state is observed on
         // (angr-03vl4.14).
         let pc = state.pc();
+        let target_pc = state.find_avoid_pc();
         let state_id = state.state_id();
 
         // Check if callable find predicate needs Python evaluation.
@@ -256,7 +257,7 @@ impl RustExplorationManager {
         }
 
         // Check find addresses (address-based, only when NOT using callable predicate)
-        if self.find_addrs.contains(&pc) {
+        if target_pc.is_some_and(|p| self.find_addrs.contains(&p)) {
             self.clear_predicate_skip_tokens(state_id);
             // Only add to found if the state is satisfiable
             // (UNSAT states reached the address via infeasible paths)
@@ -291,7 +292,7 @@ impl RustExplorationManager {
         }
 
         // Check avoid addresses (address-based, only when NOT using callable predicate)
-        if self.avoid_addrs.contains(&pc) {
+        if target_pc.is_some_and(|p| self.avoid_addrs.contains(&p)) {
             self.clear_predicate_skip_tokens(state_id);
             self.push_or_drop_terminal(STASH_AVOID, state);
             return Ok(StepOutcome::Routed);

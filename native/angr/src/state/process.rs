@@ -290,6 +290,19 @@ impl RustSimState {
         self.pending_syscall
     }
 
+    /// The pc an address-based find/avoid matches this state on, or `None`
+    /// while an `Ijk_Sys*` exit is pending. Python points such a successor's
+    /// ip at the syscall's SimProcedure, so its explorer never matches the
+    /// return address until the syscall has run (angr-vmi2l.328). A trap-side
+    /// sibling's pending trap keeps its pc: Python's trap successor sits at
+    /// the target.
+    pub fn find_avoid_pc(&self) -> Option<u64> {
+        match self.pending_syscall {
+            Some(jk) if jk.is_syscall() => None,
+            _ => Some(self.pc()),
+        }
+    }
+
     /// Set or clear the pending syscall. See [`Self::pending_syscall`].
     pub fn set_pending_syscall(&mut self, jumpkind: Option<crate::vex::JumpKind>) {
         self.pending_syscall = jumpkind;

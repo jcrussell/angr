@@ -316,8 +316,9 @@ impl RustExplorationManager {
                 // (which owns the private `SteadySession` internals).
                 let mut inject: Vec<(u64, u64, crate::state::StateMigrationPayload)> = Vec::new();
                 for s in successors {
-                    let pc = s.pc();
-                    if self.find_addrs.contains(&pc) || self.avoid_addrs.contains(&pc) {
+                    if s.find_avoid_pc().is_some_and(|p| {
+                        self.find_addrs.contains(&p) || self.avoid_addrs.contains(&p)
+                    }) {
                         self.route_successor(s, false);
                     } else {
                         let id = s.state_id();
@@ -691,7 +692,12 @@ impl RustExplorationManager {
             // Mark this state to skip the find predicate check on next pop,
             // preventing infinite loop (state was already checked at this PC).
             let state_id = pending.state.state_id();
-            if avoid_matched == Some(true) && !self.find_addrs.contains(&pending.state.pc()) {
+            if avoid_matched == Some(true)
+                && !pending
+                    .state
+                    .find_avoid_pc()
+                    .is_some_and(|p| self.find_addrs.contains(&p))
+            {
                 log::debug!("Avoid predicate matched - moving state to avoid stash");
                 self.push_or_drop_terminal(STASH_AVOID, pending.state);
                 return Ok(());

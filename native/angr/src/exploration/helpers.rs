@@ -369,7 +369,8 @@ impl RustExplorationManager {
     #[inline]
     pub(crate) fn route_successor(&mut self, state: RustSimState, gate_found_on_sat: bool) {
         let spc = state.pc();
-        if self.find_addrs.contains(&spc) {
+        let target_pc = state.find_avoid_pc();
+        if target_pc.is_some_and(|p| self.find_addrs.contains(&p)) {
             if !gate_found_on_sat || state.survives_sat_prune(self.constraint_solver.lazy_solves) {
                 self.sm
                     .stashes_mut()
@@ -380,7 +381,7 @@ impl RustExplorationManager {
                 log::debug!("State at find address 0x{spc:x} is UNSAT, pruning");
                 self.push_or_drop_terminal(STASH_PRUNED, state);
             }
-        } else if self.avoid_addrs.contains(&spc) {
+        } else if target_pc.is_some_and(|p| self.avoid_addrs.contains(&p)) {
             self.push_or_drop_terminal(STASH_AVOID, state);
         } else {
             self.push_to_active_or_drop(state);

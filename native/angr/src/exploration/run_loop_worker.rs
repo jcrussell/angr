@@ -167,7 +167,8 @@ pub(crate) fn parallel_process_state(
     // Find-first, exactly as `step_one` orders it: an address in BOTH sets is a
     // FOUND, and the parallel loop must agree with the serial one or the
     // worker-invariance contract breaks on that config (angr-03vl4.14).
-    if cc.ctx.find_addrs.contains(&pc) {
+    let target_pc = state.find_avoid_pc();
+    if target_pc.is_some_and(|p| cc.ctx.find_addrs.contains(&p)) {
         if state.survives_sat_prune(cc.ctx.lazy_solves) {
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
@@ -192,7 +193,7 @@ pub(crate) fn parallel_process_state(
             SchedDisposition::Pruned,
         )]);
     }
-    if cc.ctx.avoid_addrs.contains(&pc) {
+    if target_pc.is_some_and(|p| cc.ctx.avoid_addrs.contains(&p)) {
         return TaskOutcome::summarized(vec![TerminalSummary::of(
             &state,
             SchedDisposition::Avoided,
