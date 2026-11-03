@@ -271,7 +271,6 @@ pub(crate) fn elapsed_ns(start: std::time::Instant) -> u64 {
 #[cfg(feature = "fuzzing")]
 pub mod fuzz_api {
     pub use crate::procedures::format_common::{parse_length_modifier, parse_width_digits};
-    pub use crate::procedures::getopt::fuzz_exports::parse_optstring;
 }
 
 // Modules shared with upstream angr (always built). They are kept

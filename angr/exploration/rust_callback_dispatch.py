@@ -411,6 +411,24 @@ class RustCallbackDispatchMixin:
         if cwd is not None and bytes(cwd) != fs.cwd:
             fs.cwd = bytes(cwd)
 
+    def _inject_rust_getopt(self, state, state_id):
+        """Copy the Rust state's getopt scan state to ``state.libc``.
+
+        Outbound half of the ``getopt_cursor`` push at state add: a native
+        ``getopt`` advances only the Rust cursor, so without this an exported
+        state or a bounced ``getopt_long`` resumes from a stale scan
+        (angr-vmi2l.123).
+        """
+        cursor = self._rust_mgr.get_state_getopt_cursor(state_id)
+        if cursor is None:
+            return
+        libc = state.plugins.get("libc")
+        if libc is None:
+            if tuple(cursor) == (1, 0, 1, 1):
+                return
+            libc = state.libc
+        libc.getopt_optind, libc.getopt_nextchar, libc.getopt_first_nonopt, libc.getopt_last_nonopt = cursor
+
     def _inject_rust_fds(self, state, state_id):
         """Seed fds that native code opened into the callback state's posix table.
 
@@ -2103,6 +2121,7 @@ class RustCallbackDispatchMixin:
                 # a bounced open() does not collide with one of them.
                 self._inject_rust_fds(state, event.callback_state_id)
                 self._inject_rust_cwd(state, event.callback_state_id)
+                self._inject_rust_getopt(state, event.callback_state_id)
                 self._inject_rust_closed_files(state, event.callback_state_id)
 
         return state

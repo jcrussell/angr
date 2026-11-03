@@ -3920,6 +3920,23 @@ class RustExplorationManager(
             # native getopt proc will defer to Python. Debug-logs.
             l.debug("getopt extern-addr init push failed: %s", e)
 
+        # Push glibc getopt's scan state kept on state.libc, so a native getopt
+        # resumes a scan Python started (angr-vmi2l.123). The outbound half is
+        # ``_inject_rust_getopt``.
+        try:
+            libc = angr_state.plugins.get("libc")
+            if libc is not None:
+                rust_state.getopt_cursor = (
+                    libc.getopt_optind,
+                    libc.getopt_nextchar,
+                    libc.getopt_first_nonopt,
+                    libc.getopt_last_nonopt,
+                )
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: getopt cursor push failed (a cursor
+            # field outside u32); native getopt starts a fresh scan. Debug-logs.
+            l.debug("getopt cursor init push failed: %s", e)
+
         # Sync registers
         _t_reg = time.perf_counter_ns()
         self._sync_registers_to_rust(angr_state, rust_state)

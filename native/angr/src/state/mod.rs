@@ -166,6 +166,31 @@ pub struct CtypeLocPtrs {
     pub toupper: Option<u64>,
 }
 
+/// glibc getopt(3)'s state kept between calls, one field per Python
+/// `angr/state_plugins/libc.py::SimStateLibc` `getopt_*` attribute:
+/// `optind` as last written, the offset of the next short option inside
+/// `argv[optind]` (`nextchar`, 0 between elements), and the operands skipped
+/// so far under PERMUTE ordering, `argv[first_nonopt..last_nonopt]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GetoptCursor {
+    pub optind: u32,
+    pub nextchar: u32,
+    pub first_nonopt: u32,
+    pub last_nonopt: u32,
+}
+
+impl Default for GetoptCursor {
+    /// glibc's initial state, which `optind = 0` also requests.
+    fn default() -> Self {
+        Self {
+            optind: 1,
+            nextchar: 0,
+            first_nonopt: 1,
+            last_nonopt: 1,
+        }
+    }
+}
+
 /// Guest-memory addresses of the glibc getopt(3) extern globals `optind`,
 /// `optarg`, and `optopt`, resolved Python-side once via
 /// `proj.loader.find_symbol(name).rebased_addr` and pushed into Rust at
@@ -393,18 +418,12 @@ pub struct RustSimState {
     /// fork + snapshot.
     #[merge_policy = "warn_on_diverge"]
     exit_code: Option<RustBV>,
-    /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
-    /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
-    /// fork + snapshot so each path resumes option scanning correctly.
-    /// Consumed by the native getopt proc (angr-bhk0a.3), with the
-    /// loader-resolved extern-symbol address push (angr-bhk0a.2).
+    /// glibc getopt(3)'s private scan state, mirroring Python's
+    /// `state.libc.getopt_*` fields. See [`GetoptCursor`]. Carried across
+    /// fork + snapshot, and synced with `state.libc` at state add
+    /// (`set_state_getopt_cursor`) and on export (`get_state_getopt_cursor`).
     #[merge_policy = "warn_on_diverge"]
-    getopt_optind: u32,
-    /// getopt(3) cursor — index into the current `argv` element (POSIX
-    /// `optchar`, for bundled short options like `-abc`). Mirrors
-    /// `state.libc.getopt_optchar`. Default 0. See `getopt_optind`.
-    #[merge_policy = "warn_on_diverge"]
-    getopt_optchar: u32,
+    getopt_cursor: GetoptCursor,
     /// Guest-memory addresses of the glibc getopt(3) extern globals
     /// (`optind`/`optarg`/`optopt`), pushed Python-side at init. See
     /// [`GetoptExternAddrs`]. Carried across fork + snapshot. Consumed by the

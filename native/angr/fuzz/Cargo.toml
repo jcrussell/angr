@@ -27,10 +27,3 @@ path = "fuzz_targets/format_parsers.rs"
 test = false
 doc = false
 bench = false
-
-[[bin]]
-name = "optstring_parser"
-path = "fuzz_targets/optstring_parser.rs"
-test = false
-doc = false
-bench = false

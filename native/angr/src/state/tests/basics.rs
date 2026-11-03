@@ -36,20 +36,34 @@ fn test_state_fork() {
 #[test]
 fn test_getopt_cursor_default_and_fork_isolation() {
     // Foundation slice for native getopt parity (bead angr-bhk0a): the
-    // per-state getopt cursor must default to (optind=1, optchar=0) — the
-    // glibc/Python `state.libc.getopt_optind`/`getopt_optchar` defaults — and
+    // per-state getopt cursor must default to glibc's initial state — the
+    // Python `state.libc.getopt_*` defaults — and
     // be copied (not shared) across fork so each path scans argv independently.
     let mut parent = RustSimState::new("amd64").unwrap();
-    assert_eq!(parent.getopt_cursor(), (1, 0));
+    assert_eq!(
+        parent.getopt_cursor(),
+        GetoptCursor {
+            optind: 1,
+            nextchar: 0,
+            first_nonopt: 1,
+            last_nonopt: 1
+        }
+    );
 
-    parent.set_getopt_cursor(4, 2);
+    let moved = GetoptCursor {
+        optind: 4,
+        nextchar: 2,
+        first_nonopt: 2,
+        last_nonopt: 3,
+    };
+    parent.set_getopt_cursor(moved);
     let mut child = parent.fork();
-    assert_eq!(child.getopt_cursor(), (4, 2));
+    assert_eq!(child.getopt_cursor(), moved);
 
     // Mutating the child must not disturb the parent (CoW isolation).
-    child.set_getopt_cursor(9, 0);
-    assert_eq!(child.getopt_cursor(), (9, 0));
-    assert_eq!(parent.getopt_cursor(), (4, 2));
+    child.set_getopt_cursor(GetoptCursor::default());
+    assert_eq!(child.getopt_cursor(), GetoptCursor::default());
+    assert_eq!(parent.getopt_cursor(), moved);
 }
 
 #[test]

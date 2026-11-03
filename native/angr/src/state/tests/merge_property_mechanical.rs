@@ -269,8 +269,8 @@ fn mechanical_min_field_takes_the_lower_value() {
     assert_eq!(merged.cgc_allocation_base(), expected);
 }
 
-/// warn_on_diverge (5): `concretizer`, `getopt_optind`, `getopt_optchar`,
-/// `getopt_extern`, `ctype_loc`. Value-wise these behave exactly like
+/// warn_on_diverge: `concretizer`, `getopt_cursor`, `getopt_extern`,
+/// `ctype_loc`. Value-wise these behave exactly like
 /// self_wins (only the loudness of the drop differs, which is not
 /// mechanically checkable here without fighting the process-global logger —
 /// see `test_native_resume_stack_diverges_detects_depth_mismatch` in
@@ -291,8 +291,17 @@ fn mechanical_warn_on_diverge_fields_keep_selfs_value() {
     a.set_concretizer(a_conc.clone());
     b.set_concretizer(b_conc);
 
-    a.set_getopt_cursor(3, 1);
-    b.set_getopt_cursor(7, 2);
+    let a_cursor = GetoptCursor {
+        optind: 3,
+        nextchar: 1,
+        ..GetoptCursor::default()
+    };
+    a.set_getopt_cursor(a_cursor);
+    b.set_getopt_cursor(GetoptCursor {
+        optind: 7,
+        nextchar: 2,
+        ..GetoptCursor::default()
+    });
 
     let a_extern = GetoptExternAddrs {
         optind: Some(0x1000),
@@ -321,8 +330,7 @@ fn mechanical_warn_on_diverge_fields_keep_selfs_value() {
     b.set_ctype_loc(b_ctype);
 
     let expected_conc = a.merge_field_concretizer(&[&b]);
-    let expected_optind = a.merge_field_getopt_optind(&[&b]);
-    let expected_optchar = a.merge_field_getopt_optchar(&[&b]);
+    let expected_cursor = a.merge_field_getopt_cursor(&[&b]);
     let expected_extern = a.merge_field_getopt_extern(&[&b]);
     let expected_ctype = a.merge_field_ctype_loc(&[&b]);
 
@@ -330,16 +338,14 @@ fn mechanical_warn_on_diverge_fields_keep_selfs_value() {
         expected_conc, a_conc,
         "warn_on_diverge keeps self's value like self_wins"
     );
-    assert_eq!(expected_optind, 3);
-    assert_eq!(expected_optchar, 1);
+    assert_eq!(expected_cursor, a_cursor);
     assert_eq!(expected_extern, a_extern);
     assert_eq!(expected_ctype, a_ctype);
 
     let [m0, m1] = conds("warn_on_diverge_group");
     let merged = a.merge(&[&b], &[m0, m1]);
     assert_eq!(merged.concretizer, expected_conc);
-    assert_eq!(merged.getopt_optind, expected_optind);
-    assert_eq!(merged.getopt_optchar, expected_optchar);
+    assert_eq!(merged.getopt_cursor, expected_cursor);
     assert_eq!(merged.getopt_extern(), expected_extern);
     assert_eq!(merged.ctype_loc(), expected_ctype);
 }

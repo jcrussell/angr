@@ -549,6 +549,17 @@ impl RustExplorationManager {
             .map(|state| state.file_system_ref().cwd().to_vec())
     }
 
+    /// The state's getopt(3) scan state as `(optind, nextchar, first_nonopt,
+    /// last_nonopt)`, the outbound half of the `getopt_cursor` setter: a
+    /// native `getopt` advances it, and `_inject_rust_getopt` copies it to
+    /// `state.libc` (angr-vmi2l.123). `None` for an unknown state.
+    pub fn get_state_getopt_cursor(&self, state_id: u64) -> Option<(u32, u32, u32, u32)> {
+        self.find_state(state_id).map(|state| {
+            let c = state.getopt_cursor();
+            (c.optind, c.nextchar, c.first_nonopt, c.last_nonopt)
+        })
+    }
+
     /// Get the content of a file descriptor for a state.
     pub fn get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
         self._get_state_fd_content(state_id, fd)

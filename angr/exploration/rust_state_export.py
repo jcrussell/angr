@@ -1149,6 +1149,7 @@ class RustStateExportMixin:
         self._inject_rust_stdin(state, state_id)
         self._inject_rust_fds(state, state_id)
         self._inject_rust_cwd(state, state_id)
+        self._inject_rust_getopt(state, state_id)
         self._inject_rust_closed_files(state, state_id)
         self._sync_rust_registers_to_state(state, state_id)
         self._sync_rust_mmap_base_to_state(state, state_id)
@@ -1640,6 +1641,7 @@ class RustStateExportMixin:
         # template's ``fs`` predates them (angr-mx00p.132.14).
         self._inject_rust_fds(state, snapshot.state_id)
         self._inject_rust_cwd(state, snapshot.state_id)
+        self._inject_rust_getopt(state, snapshot.state_id)
         self._inject_rust_closed_files(state, snapshot.state_id)
         # The jumpkind that led here: analyses that step the state themselves
         # key on it (Veritesting builds its CFG from ``(addr, jumpkind)``;

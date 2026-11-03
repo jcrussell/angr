@@ -65,7 +65,12 @@ pub(super) fn build_populated_state() -> RustSimState {
     s.set_posix_brk(0x1B0_4000);
     s.set_mmap_base(0xC100_8000);
     s.set_tsc_counter(0x0010_000F_A000);
-    s.set_getopt_cursor(7, 3);
+    s.set_getopt_cursor(GetoptCursor {
+        optind: 7,
+        nextchar: 3,
+        first_nonopt: 2,
+        last_nonopt: 5,
+    });
     s.set_getopt_extern(GetoptExternAddrs {
         optind: Some(0x602000),
         optarg: Some(0x602008),

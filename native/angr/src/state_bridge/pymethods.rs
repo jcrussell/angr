@@ -144,27 +144,38 @@ impl PyRustSimState {
     /// Get the getopt(3) `optind` cursor (mirrors `state.libc.getopt_optind`).
     #[getter]
     pub fn getopt_optind(&self) -> u32 {
-        self.inner.getopt_cursor().0
+        self.inner.getopt_cursor().optind
     }
 
     /// Set the getopt(3) `optind` cursor.
     #[setter]
     pub fn set_getopt_optind(&mut self, value: u32) {
-        let (_, optchar) = self.inner.getopt_cursor();
-        self.inner.set_getopt_cursor(value, optchar);
+        let cursor = self.inner.getopt_cursor();
+        self.inner.set_getopt_cursor(crate::state::GetoptCursor {
+            optind: value,
+            ..cursor
+        });
     }
 
-    /// Get the getopt(3) `optchar` cursor (mirrors `state.libc.getopt_optchar`).
+    /// Get glibc getopt(3)'s scan state as `(optind, nextchar, first_nonopt,
+    /// last_nonopt)`, the four `state.libc.getopt_*` fields.
     #[getter]
-    pub fn getopt_optchar(&self) -> u32 {
-        self.inner.getopt_cursor().1
+    pub fn getopt_cursor(&self) -> (u32, u32, u32, u32) {
+        let c = self.inner.getopt_cursor();
+        (c.optind, c.nextchar, c.first_nonopt, c.last_nonopt)
     }
 
-    /// Set the getopt(3) `optchar` cursor.
+    /// Set glibc getopt(3)'s scan state from `state.libc` at state add
+    /// (angr-vmi2l.123). See `getopt_cursor`.
     #[setter]
-    pub fn set_getopt_optchar(&mut self, value: u32) {
-        let (optind, _) = self.inner.getopt_cursor();
-        self.inner.set_getopt_cursor(optind, value);
+    pub fn set_getopt_cursor(&mut self, value: (u32, u32, u32, u32)) {
+        let (optind, nextchar, first_nonopt, last_nonopt) = value;
+        self.inner.set_getopt_cursor(crate::state::GetoptCursor {
+            optind,
+            nextchar,
+            first_nonopt,
+            last_nonopt,
+        });
     }
 
     /// Get the heap brk pointer (mirrors Python's `state.heap.heap_location`,

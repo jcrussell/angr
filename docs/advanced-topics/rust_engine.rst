@@ -583,7 +583,7 @@ The vocabulary (see ``VALID_MERGE_POLICIES`` in
    * - ``warn_on_diverge``
      - yes
      - Kept from ``self``, but ``warn_config_divergence`` runs first so
-       divergence is loud rather than silent (``getopt_optind``,
+       divergence is loud rather than silent (``getopt_cursor``,
        ``ctype_loc``).
    * - ``computed``
      - no

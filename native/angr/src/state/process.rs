@@ -230,18 +230,14 @@ impl RustSimState {
         self.posix_brk = addr;
     }
 
-    /// getopt(3) cursor pair `(optind, optchar)` — mirrors Python's
-    /// `state.libc.getopt_optind` / `getopt_optchar`. Per-state, fork- and
-    /// snapshot-carried. Consumed by the native getopt proc
-    /// (angr-bhk0a.3).
-    pub fn getopt_cursor(&self) -> (u32, u32) {
-        (self.getopt_optind, self.getopt_optchar)
+    /// glibc getopt(3)'s scan state. See [`GetoptCursor`].
+    pub fn getopt_cursor(&self) -> GetoptCursor {
+        self.getopt_cursor
     }
 
-    /// Set the getopt(3) cursor pair `(optind, optchar)`. See `getopt_cursor`.
-    pub fn set_getopt_cursor(&mut self, optind: u32, optchar: u32) {
-        self.getopt_optind = optind;
-        self.getopt_optchar = optchar;
+    /// Replace the getopt(3) scan state. See [`GetoptCursor`].
+    pub fn set_getopt_cursor(&mut self, cursor: GetoptCursor) {
+        self.getopt_cursor = cursor;
     }
 
     /// Get the mmap base pointer (mirrors `state.heap.mmap_base` for the

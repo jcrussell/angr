@@ -2,9 +2,9 @@
 //!
 //! These exercise the concrete-argv fast path and assert byte-for-byte parity
 //! with the Python `_GetOptBase._getopt` semantics: the `int` return, the
-//! `optind`/`optchar` cursor advance, and the `optarg`/`optopt` extern-global
-//! writes. Python-side parity (the cross-engine check) lives in the pytest
-//! suite.
+//! `optind`/`nextchar` cursor advance, and the `optarg`/`optopt` extern-global
+//! writes. The cross-engine check is
+//! `tests/engines/rust/test_getopt_ordering.py`.
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
@@ -207,25 +207,25 @@ fn test_symbolic_argc_defers() {
 #[test]
 fn test_shrunk_argv_element_defers_not_panics() {
     // angr-qwyti.19: the guest shrinks its own argv element between getopt
-    // calls, leaving the engine's restored `optchar` cursor past the new end.
+    // calls, leaving the engine's restored `nextchar` cursor past the new end.
     // The native proc must defer (Err), not panic-index the buffer.
     let mut state = setup();
     // optstring "ab": -a and -b are both flags. "-ab" packs two flags, so the
-    // first call parks the cursor mid-element (optchar=2, optind stays 1).
+    // first call parks the cursor mid-element (nextchar=2, optind stays 1).
     let argc = load_argv(&mut state, b"ab", &[b"prog", b"-ab"]);
     assert_eq!(call(&mut state, argc), b'a' as i64);
     assert_eq!(read_optind(&state), 1); // cursor parked inside the element
 
     // Strings are laid out sequentially from STR_BASE: optstring "ab\0" (3B) at
     // 0x1000, "prog\0" (5B) at 0x1003, "-ab\0" at 0x1008. Shrink argv[1] to "-a"
-    // by NUL-ing offset 2 — the restored optchar (2) now exceeds arg.len() (2).
+    // by NUL-ing offset 2 — the restored nextchar (2) now exceeds arg.len() (2).
     let argv1 = STR_BASE + 3 + 5;
     state
         .memory_store(argv1 + 2, RustBV::concrete(0, 8))
         .unwrap();
 
-    // Second call: optchar==2 indexes a length-2 element. Must Err (defer to
-    // Python), not panic on the raw `arg[optchar]`.
+    // Second call: nextchar==2 indexes a length-2 element. Must Err (defer to
+    // Python), not panic on the raw `arg[nextchar]`.
     let res = NativeGetopt.call(
         &mut state,
         &[
@@ -261,7 +261,7 @@ fn map_wrap_pages(state: &mut RustSimState) {
     state.map_memory(0, 0x1000, Permission::RWX);
 }
 
-/// Extern-global layout with `optind` unset, so `load_cursor` uses the plugin
+/// Extern-global layout with `optind` unset, so the proc uses the state's
 /// cursor these tests seed directly instead of a guest word.
 fn wrap_setup() -> RustSimState {
     let mut state = setup();
@@ -305,7 +305,10 @@ fn getopt_argv_ptr_near_u64_max_wraps_element_slot() {
     // argv[1]'s slot is `argv_ptr + 1 * 8`, which wraps to address 0.
     let argv_ptr = u64::MAX - 7;
     store_ptr_at(&mut state, 0, arg1);
-    state.set_getopt_cursor(1, 0);
+    state.set_getopt_cursor(GetoptCursor {
+        optind: 1,
+        ..GetoptCursor::default()
+    });
 
     assert_eq!(call_at(&mut state, 2, argv_ptr), b'a' as i64);
 }
@@ -324,7 +327,10 @@ fn getopt_argv_ptr_near_u64_max_wraps_next_element_slot() {
     let argv_ptr = u64::MAX - 7;
     store_ptr_at(&mut state, argv_ptr, arg0);
     store_ptr_at(&mut state, 0, arg1);
-    state.set_getopt_cursor(0, 0);
+    state.set_getopt_cursor(GetoptCursor {
+        optind: 0,
+        ..GetoptCursor::default()
+    });
 
     assert_eq!(call_at(&mut state, 2, argv_ptr), b'a' as i64);
     assert_eq!(read_optarg(&state), arg1);
@@ -336,7 +342,7 @@ fn getopt_element_near_u64_max_wraps_inline_optarg() {
     state.map_memory_data(STR_BASE, b"a:\0", Permission::RWX);
 
     // The argv element itself straddles the wrap: "-av\0" starts at u64::MAX,
-    // so the inline optarg (`elem_ptr + optchar + 1`) lands at address 1.
+    // so the inline optarg (`elem_ptr + nextchar`) lands at address 1.
     let elem_ptr = u64::MAX;
     for (i, b) in b"-av\0".iter().enumerate() {
         state
@@ -344,7 +350,10 @@ fn getopt_element_near_u64_max_wraps_inline_optarg() {
             .unwrap();
     }
     store_ptr_at(&mut state, ARGV_BASE, elem_ptr);
-    state.set_getopt_cursor(0, 0);
+    state.set_getopt_cursor(GetoptCursor {
+        optind: 0,
+        ..GetoptCursor::default()
+    });
 
     assert_eq!(call_at(&mut state, 1, ARGV_BASE), b'a' as i64);
     assert_eq!(read_optarg(&state), 1);
@@ -376,7 +385,10 @@ fn getopt_argv_ptr_boundary_sweep_wraps_element_slot() {
             state.map_memory(page, 0x1000, Permission::RWX);
         }
         store_ptr_at(&mut state, slot1, arg1);
-        state.set_getopt_cursor(1, 0);
+        state.set_getopt_cursor(GetoptCursor {
+        optind: 1,
+        ..GetoptCursor::default()
+    });
 
         assert_eq!(
             call_at(&mut state, 2, argv_ptr),
@@ -388,7 +400,7 @@ fn getopt_argv_ptr_boundary_sweep_wraps_element_slot() {
 
 // --- optional-argument spec and symbolic-input deferral (angr-6cp06.14) ----
 //
-// `parse_optstring`'s `OPTIONAL_ARGUMENT` ("a::") spec and the three symbolic
+// The optional-argument ("a::") spec and the three symbolic
 // inputs that are not `argc` (the optstring, `argv_ptr` itself, and an argv
 // element pointer) had no coverage. The optional-argument arm is the one place
 // a silent Python/Rust divergence could land, because it is the only spec whose
@@ -460,7 +472,7 @@ fn test_optional_arg_absent_at_end_ignores_leading_colon() {
 fn test_optional_arg_packed_after_flag() {
     let mut state = setup();
     // "ab::" and "-abval": -a is a flag consumed in place (cursor parks at
-    // optchar=2), then -b takes the rest of the element as its optional arg.
+    // nextchar=2), then -b takes the rest of the element as its optional arg.
     let argc = load_argv(&mut state, b"ab::", &[b"prog", b"-abval"]);
     assert_eq!(call(&mut state, argc), b'a' as i64);
     assert_eq!(read_optind(&state), 1); // still inside the element
@@ -470,28 +482,10 @@ fn test_optional_arg_packed_after_flag() {
 }
 
 #[test]
-fn test_parse_optstring_spec_triple() {
-    // The three specs, plus the leading-colon flag, straight off the parser.
-    let (opts, leading_colon) = parse_optstring(b":ab:c::");
-    assert!(leading_colon);
-    assert_eq!(opts.get(&b'a').copied(), Some(NO_ARGUMENT));
-    assert_eq!(opts.get(&b'b').copied(), Some(REQUIRED_ARGUMENT));
-    assert_eq!(opts.get(&b'c').copied(), Some(OPTIONAL_ARGUMENT));
-    // Mode chars are skipped, and a colon after them still reads as leading.
-    let (opts, leading_colon) = parse_optstring(b"+-:a");
-    assert!(leading_colon);
-    assert_eq!(opts.get(&b'a').copied(), Some(NO_ARGUMENT));
-    assert!(!parse_optstring(b"a:").1);
-}
-
-#[test]
 fn test_bare_colon_option_char_is_unknown() {
     let mut state = setup();
-    // A fourth colon in "a:::" parses as an option *char* ':' with no argument,
-    // so `opts` really does contain a ':' key. Python guards that with
-    // `spec is None or c == _COLON`; the Rust match arm's `c != COLON` guard is
-    // the same rule, and a "-:" element must still report '?' via optopt.
-    assert_eq!(parse_optstring(b"a:::").0.get(&COLON).copied(), Some(NO_ARGUMENT));
+    // ':' occurs in "a:::", so the optstring lookup finds it; Python rejects
+    // it with `c in (_COLON, ord(";"))`, and a "-:" element must report '?'.
     let argc = load_argv(&mut state, b"a:::", &[b"prog", b"-:"]);
     assert_eq!(call(&mut state, argc), b'?' as i64);
     assert_eq!(read_optopt(&state), COLON as u32);
@@ -581,7 +575,7 @@ fn test_symbolic_argv_element_ptr_defers() {
 fn test_symbolic_next_argv_element_ptr_defers() {
     let mut state = setup();
     // "-a" needs a required argument from argv[2], whose slot is symbolic: the
-    // second `eval_ptr` site (the "argv next" one) must defer too.
+    // `argp` read for the argument element must defer too.
     let argc = load_argv(&mut state, b"a:", &[b"prog", b"-a", b"val"]);
     let symv = sym("next_ptr", 64);
     state.memory_store(ARGV_BASE + 16, symv).unwrap();
@@ -592,7 +586,7 @@ fn test_symbolic_next_argv_element_ptr_defers() {
         RustBV::concrete(STR_BASE as u128, 64),
     );
     match res {
-        Err(ProcedureError::SymbolicArgument(what)) => assert_eq!(what, "argv next"),
+        Err(ProcedureError::SymbolicArgument(what)) => assert_eq!(what, "argv element"),
         other => panic!("expected symbolic-next-element deferral, got {other:?}"),
     }
 }
@@ -613,4 +607,115 @@ fn test_symbolic_argv_string_byte_defers() {
         RustBV::concrete(STR_BASE as u128, 64),
     );
     assert!(matches!(res, Err(ProcedureError::SymbolicArgument(_))), "got {res:?}");
+}
+
+// --- argv ordering and ';' (angr-vmi2l.123) ---------------------------------
+//
+// Expected values follow `angr/procedures/libc/getopt.py`, the glibc port.
+
+/// argv[i] as a string, through the (possibly permuted) pointer array.
+fn argv_str(state: &RustSimState, i: u64) -> Vec<u8> {
+    let p = state
+        .memory_load(ARGV_BASE + i * 8, 8)
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    let mut out = Vec::new();
+    for k in 0.. {
+        let b = state.memory_load(p + k, 1).unwrap().as_u64().unwrap() as u8;
+        if b == 0 {
+            return out;
+        }
+        out.push(b);
+    }
+    unreachable!()
+}
+
+#[test]
+fn test_permute_skips_operand_and_moves_it_last() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"v", &[b"prog", b"file", b"-v"]);
+    assert_eq!(call(&mut state, argc), b'v' as i64);
+    assert_eq!(read_optind(&state), 3);
+    assert_eq!(call(&mut state, argc), -1);
+    // The operand is permuted behind the option and optind is left on it.
+    assert_eq!(read_optind(&state), 2);
+    assert_eq!(argv_str(&state, 1), b"-v");
+    assert_eq!(argv_str(&state, 2), b"file");
+    assert_eq!(
+        state.getopt_cursor(),
+        GetoptCursor {
+            optind: 2,
+            nextchar: 0,
+            first_nonopt: 2,
+            last_nonopt: 3
+        }
+    );
+}
+
+#[test]
+fn test_permute_double_dash_keeps_later_operands() {
+    let mut state = setup();
+    let argc = load_argv(
+        &mut state,
+        b"ab:",
+        &[b"prog", b"x", b"-a", b"-b", b"val", b"--", b"-y", b"z"],
+    );
+    assert_eq!(call(&mut state, argc), b'a' as i64);
+    assert_eq!(call(&mut state, argc), b'b' as i64);
+    assert_eq!(call(&mut state, argc), -1);
+    assert_eq!(read_optind(&state), 5);
+    let order: Vec<Vec<u8>> = (0..8).map(|i| argv_str(&state, i)).collect();
+    assert_eq!(
+        order,
+        [&b"prog"[..], b"-a", b"-b", b"val", b"--", b"x", b"-y", b"z"]
+    );
+}
+
+#[test]
+fn test_return_in_order_reports_operand_as_option_1() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"-v", &[b"prog", b"file", b"-v"]);
+    assert_eq!(call(&mut state, argc), 1);
+    assert_eq!(argv_str(&state, 1), b"file");
+    assert_eq!(read_bytes(&state, read_optarg(&state), 4), b"file");
+    assert_eq!(read_optind(&state), 2);
+    assert_eq!(call(&mut state, argc), b'v' as i64);
+    assert_eq!(call(&mut state, argc), -1);
+    assert_eq!(read_optind(&state), 3);
+}
+
+#[test]
+fn test_require_order_stops_at_first_operand() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"+v", &[b"prog", b"file", b"-v"]);
+    assert_eq!(call(&mut state, argc), -1);
+    assert_eq!(read_optind(&state), 1);
+    assert_eq!(argv_str(&state, 1), b"file");
+}
+
+#[test]
+fn test_semicolon_is_never_an_option() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"v;", &[b"prog", b"-;"]);
+    assert_eq!(call(&mut state, argc), b'?' as i64);
+    assert_eq!(read_optopt(&state), b';' as u32);
+    assert_eq!(read_optind(&state), 2);
+}
+
+#[test]
+fn test_symbolic_guest_optind_defers_without_writes() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"v", &[b"prog", b"file", b"-v"]);
+    state.memory_store(OPTIND_ADDR, sym("optind", 32)).unwrap();
+    let before = state.getopt_cursor();
+    assert!(call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        RustBV::concrete(ARGV_BASE as u128, 64),
+        RustBV::concrete(STR_BASE as u128, 64),
+    )
+    .is_err());
+    assert_eq!(state.getopt_cursor(), before);
+    assert_eq!(argv_str(&state, 1), b"file");
 }

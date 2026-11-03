@@ -53,7 +53,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
-///   tsc_counter, pending_syscall, exit_code, getopt_optind, getopt_optchar, getopt_extern,
+///   tsc_counter, pending_syscall, exit_code, getopt_cursor, getopt_extern,
 ///   stdin_symbols, stdin_read_lengths, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -107,8 +107,7 @@ pub struct RustSimStateSnapshot {
     /// See `RustSimState::exit_code` (angr-mx00p.132.8).
     #[serde(default)]
     pub exit_code: Option<RustBV>,
-    pub getopt_optind: u32,
-    pub getopt_optchar: u32,
+    pub getopt_cursor: crate::state::GetoptCursor,
     pub getopt_extern: crate::state::GetoptExternAddrs,
     /// Suspended native sub-call continuations (bead angr-pn3w8). `#[serde(default)]`
     /// keeps pre-pn3w8 snapshots forward-compatible (restores to an empty stack).
@@ -244,8 +243,7 @@ impl RustSimState {
             tsc_counter: self.tsc_counter,
             pending_syscall: self.pending_syscall,
             exit_code: self.exit_code.clone(),
-            getopt_optind: self.getopt_optind,
-            getopt_optchar: self.getopt_optchar,
+            getopt_cursor: self.getopt_cursor,
             getopt_extern: self.getopt_extern,
             native_resume_stack: self.native_resume_stack.clone(),
             ctype_loc: self.ctype_loc,
@@ -310,8 +308,7 @@ impl RustSimState {
             tsc_counter: snap.tsc_counter,
             pending_syscall: snap.pending_syscall,
             exit_code: snap.exit_code,
-            getopt_optind: snap.getopt_optind,
-            getopt_optchar: snap.getopt_optchar,
+            getopt_cursor: snap.getopt_cursor,
             getopt_extern: snap.getopt_extern,
             native_resume_stack: snap.native_resume_stack,
             ctype_loc: snap.ctype_loc,

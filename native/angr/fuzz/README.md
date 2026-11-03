@@ -10,7 +10,6 @@ width/truncation bugs have historically clustered. **Not** wired into CI or
 | Target | Function(s) under test | Prior bugs in this surface |
 |--------|------------------------|----------------------------|
 | `format_parsers` | `procedures::format_common::{parse_width_digits, parse_length_modifier}` | angr-vfhyx, angr-n0irt.4 |
-| `optstring_parser` | `procedures::getopt::parse_optstring` | none yet — first coverage of this parser |
 
 The targets reach these functions through the `fuzz_api` module in the main
 crate, which is compiled **only** under the `fuzzing` cargo feature (see
@@ -30,7 +29,6 @@ export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.12/site-packages/z3/lib:$LD_LIBRA
 
 cd native/angr
 cargo +nightly fuzz run format_parsers      -- -max_total_time=60
-cargo +nightly fuzz run optstring_parser    -- -max_total_time=60
 ```
 
 Add `--sanitizer none` for a faster link-only smoke check without AddressSanitizer.

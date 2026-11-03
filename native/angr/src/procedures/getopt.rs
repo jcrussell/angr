@@ -1,93 +1,257 @@
-//! Native `getopt(3)` short-option engine.
+//! Native `getopt(3)`.
 //!
-//! Faithful Rust port of the short-option path of
-//! `angr/procedures/libc/getopt.py::_GetOptBase._getopt`. Registered only for
-//! the 3-argument `getopt` (no long-option variants): `getopt_long` /
-//! `getopt_long_only` stay on the Python proc, which owns the option-table
-//! walk and ambiguous-abbreviation handling.
+//! Port of `angr/procedures/libc/getopt.py::_GetOptBase` (itself a port of
+//! glibc's `posix/getopt.c`) for the 3-argument `getopt` only: `getopt_long`
+//! / `getopt_long_only` stay on the Python proc, which owns the option-table
+//! walk. Like Python it permutes argv under the default PERMUTE ordering,
+//! honours a leading `+` (REQUIRE_ORDER) or `-` (RETURN_IN_ORDER, operands
+//! return as option 1), and rejects `:` and `;` as option characters.
 //!
-//! Contract — **match Python byte-for-byte, or defer** (return
-//! `ProcedureError` → Python fallback). We defer whenever any required input
-//! is symbolic (argc, argv, an argv element pointer, the optstring, or any
-//! scanned byte), mirroring Python's `_unconstrained()` branch which produces a
-//! fresh symbolic return rather than committing to a concrete scan. Deferring
-//! lets the Python proc produce that unconstrained value itself.
+//! Contract — **match Python, or defer** (return `ProcedureError` → Python
+//! fallback). We defer whenever anything the parser reads is symbolic or
+//! unterminated (argc, argv, an argv element, the optstring, the guest
+//! `optind`), which is where Python's `_Unsupported` returns a fresh
+//! unconstrained value and changes nothing. `Parser` reads only; every
+//! write happens in `Parser::commit`, so a deferred call leaves no trace.
 //!
-//! Cross-call cursor state (`optind` / `optchar`) lives on `RustSimState`
-//! (bhk0a.3 cursor fields). The loader-resolved guest addresses of the
+//! The scan state between calls is [`GetoptCursor`] on `RustSimState`, the
+//! mirror of `state.libc.getopt_*`. The loader-resolved guest addresses of the
 //! `optind` / `optarg` / `optopt` extern globals are pushed from Python into
-//! `RustSimState::getopt_extern` (bhk0a.1); we write the updated values back
-//! there so the guest program reads them like real getopt would. A `None`
-//! address (symbol absent) just skips that store — exactly as Python's
-//! `_store_int` / `_store_ptr` skip when `_global_addr` returns `None`.
+//! `RustSimState::getopt_extern` (bhk0a.1); a `None` address skips that store,
+//! as Python's `_store_global` does when the symbol is absent.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** `argv`, the
 //! optstring and the saved cursor are all guest-controlled, so this module
-//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]` and every
-//! unresolvable value returns a `ProcedureError` that falls back to the Python
-//! proc. There are no `unwrap`/`expect` sites left: the optstring lookup binds
-//! its hit in the match arm that proves it (see the `spec` match), and the
-//! cursor read already used a checked `arg.get(..)` (angr-qwyti.19).
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`, uses checked
+//! slice access and checked cursor arithmetic, and every unresolvable value
+//! returns a `ProcedureError` that falls back to the Python proc.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::strings::{MAX_STRING_SCAN, scan_concrete_until_null};
 use super::{ProcedureError, arch_word};
-use crate::state::RustSimState;
+use crate::state::{GetoptCursor, RustSimState};
 use crate::symbolic::RustBV;
-
-const NO_ARGUMENT: u8 = 0;
-const REQUIRED_ARGUMENT: u8 = 1;
-const OPTIONAL_ARGUMENT: u8 = 2;
 
 const DASH: u8 = b'-';
 const COLON: u8 = b':';
+const QUESTION: u32 = b'?' as u32;
+const DONE: u32 = 0xFFFF_FFFF; // -1
 
-/// Parse an optstring into `(char -> has_arg, leading_colon)` per POSIX/glibc
-/// syntax. Leading `+`/`-` mode chars (ordering, which we do not model) are
-/// skipped; a leading `:` selects the missing-arg `':'` return.
-fn parse_optstring(s: &[u8]) -> (std::collections::HashMap<u8, u8>, bool) {
-    let mut opts = std::collections::HashMap::new();
-    let mut i = 0;
-    while i < s.len() && (s[i] == b'+' || s[i] == DASH) {
-        i += 1;
+/// argv ordering, selected by a leading `+` or `-` in the optstring.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ordering {
+    RequireOrder,
+    Permute,
+    ReturnInOrder,
+}
+
+/// `v + 1` for a cursor index, deferring instead of wrapping: the cursor is
+/// restored from guest-reachable state.
+fn bump(v: u32) -> Result<u32, ProcedureError> {
+    v.checked_add(1)
+        .ok_or_else(|| ProcedureError::Other("getopt cursor overflow".into()))
+}
+
+/// One getopt call: Python's `_parse` / `_next` / `_short`. The parse only
+/// reads `state`; the writes accumulate here until `commit` applies them.
+struct Parser<'a> {
+    state: &'a mut RustSimState,
+    argc: u32,
+    argv: u64,
+    optstring: Vec<u8>,
+    /// argv slots read so far, rewritten in place by `exchange`.
+    argv_ptrs: BTreeMap<u32, u64>,
+    /// argv slots `exchange` moved; `commit` writes them back.
+    dirty: BTreeSet<u32>,
+    cur: GetoptCursor,
+    optarg: u64,
+    optopt: Option<u32>,
+}
+
+impl Parser<'_> {
+    fn argp(&mut self, i: u32) -> Result<u64, ProcedureError> {
+        if let Some(&p) = self.argv_ptrs.get(&i) {
+            return Ok(p);
+        }
+        let ps = self.state.arch().bytes();
+        // `argv` is guest-controlled: wrap like the guest's own indexing
+        // would (invariant-rust-concrete-arith-must-wrap). u32 * 8 fits u64.
+        let slot = self.argv.wrapping_add(u64::from(i) * ps as u64);
+        let p = self
+            .state
+            .memory_load(slot, ps)?
+            .as_u64()
+            .ok_or_else(|| ProcedureError::SymbolicArgument("argv element".into()))?;
+        self.argv_ptrs.insert(i, p);
+        Ok(p)
     }
-    let leading_colon = i < s.len() && s[i] == COLON;
-    if leading_colon {
-        i += 1;
+
+    fn arg(&mut self, i: u32) -> Result<Vec<u8>, ProcedureError> {
+        let p = self.argp(i)?;
+        scan_concrete_until_null(self.state, p, MAX_STRING_SCAN, "argv string")
     }
-    while i < s.len() {
-        let c = s[i];
-        i += 1;
-        let mut nargs = NO_ARGUMENT;
-        if i < s.len() && s[i] == COLON {
-            nargs = REQUIRED_ARGUMENT;
-            i += 1;
-            if i < s.len() && s[i] == COLON {
-                nargs = OPTIONAL_ARGUMENT;
-                i += 1;
+
+    fn nonoption(&mut self, i: u32) -> Result<bool, ProcedureError> {
+        let arg = self.arg(i)?;
+        Ok(arg.len() < 2 || arg[0] != DASH)
+    }
+
+    /// Move the skipped operands `argv[first..last]` behind the options
+    /// `argv[last..optind]`.
+    fn exchange(&mut self) -> Result<(), ProcedureError> {
+        let GetoptCursor {
+            optind,
+            first_nonopt: first,
+            last_nonopt: last,
+            ..
+        } = self.cur;
+        if !(first <= last && last <= optind) {
+            return Err(ProcedureError::Other("getopt cursor out of order".into()));
+        }
+        let mut ptrs = (first..optind)
+            .map(|i| self.argp(i))
+            .collect::<Result<Vec<_>, _>>()?;
+        ptrs.rotate_left((last - first) as usize); // overflow-ok: first <= last checked above
+        for (i, p) in (first..optind).zip(ptrs) {
+            self.argv_ptrs.insert(i, p);
+            self.dirty.insert(i);
+        }
+        self.cur.first_nonopt = first + (optind - last); // overflow-ok: first <= last <= optind checked above
+        self.cur.last_nonopt = optind;
+        Ok(())
+    }
+
+    fn next(&mut self, ordering: Ordering) -> Result<u32, ProcedureError> {
+        if self.cur.nextchar == 0 {
+            // starting a new argv element
+            self.cur.last_nonopt = self.cur.last_nonopt.min(self.cur.optind);
+            self.cur.first_nonopt = self.cur.first_nonopt.min(self.cur.optind);
+
+            if ordering == Ordering::Permute {
+                let c = self.cur;
+                if c.first_nonopt != c.last_nonopt && c.last_nonopt != c.optind {
+                    self.exchange()?;
+                } else if c.last_nonopt != c.optind {
+                    self.cur.first_nonopt = c.optind;
+                }
+                while self.cur.optind < self.argc && self.nonoption(self.cur.optind)? {
+                    self.cur.optind = bump(self.cur.optind)?;
+                }
+                self.cur.last_nonopt = self.cur.optind;
+            }
+
+            if self.cur.optind < self.argc && self.arg(self.cur.optind)? == b"--" {
+                self.cur.optind = bump(self.cur.optind)?;
+                let c = self.cur;
+                if c.first_nonopt != c.last_nonopt && c.last_nonopt != c.optind {
+                    self.exchange()?;
+                } else if c.first_nonopt == c.last_nonopt {
+                    self.cur.first_nonopt = c.optind;
+                }
+                self.cur.last_nonopt = self.argc;
+                self.cur.optind = self.argc;
+            }
+
+            if self.cur.optind >= self.argc {
+                // leave optind on the first operand
+                if self.cur.first_nonopt != self.cur.last_nonopt {
+                    self.cur.optind = self.cur.first_nonopt;
+                }
+                return Ok(DONE);
+            }
+
+            if self.nonoption(self.cur.optind)? {
+                if ordering == Ordering::RequireOrder {
+                    return Ok(DONE);
+                }
+                // RETURN_IN_ORDER: report the operand as the argument of option 1
+                self.optarg = self.argp(self.cur.optind)?;
+                self.cur.optind = bump(self.cur.optind)?;
+                return Ok(1);
+            }
+            self.cur.nextchar = 1;
+        }
+        self.short()
+    }
+
+    fn short(&mut self) -> Result<u32, ProcedureError> {
+        let arg = self.arg(self.cur.optind)?;
+        // The saved `nextchar` can exceed an argv element the guest has since
+        // shortened in place (angr-qwyti.19): defer rather than index past it.
+        let Some(&c) = arg.get(self.cur.nextchar as usize) else {
+            return Err(ProcedureError::Other(
+                "getopt cursor past end of argv element (shrunk argv)".into(),
+            ));
+        };
+        self.cur.nextchar = bump(self.cur.nextchar)?;
+        let at_end = self.cur.nextchar as usize >= arg.len();
+        if at_end {
+            self.cur.optind = bump(self.cur.optind)?;
+        }
+
+        let idx = match self.optstring.iter().position(|&b| b == c) {
+            Some(idx) if c != COLON && c != b';' => idx,
+            _ => {
+                if at_end {
+                    self.cur.nextchar = 0;
+                }
+                self.optopt = Some(u32::from(c));
+                return Ok(QUESTION);
+            }
+        };
+
+        let spec = |k: usize| self.optstring.get(idx.saturating_add(k)) == Some(&COLON);
+        let mut ret = u32::from(c);
+        if spec(1) {
+            let optional = spec(2);
+            if !at_end {
+                // the argument is the rest of this element
+                self.optarg = self
+                    .argp(self.cur.optind)?
+                    .wrapping_add(u64::from(self.cur.nextchar));
+                self.cur.optind = bump(self.cur.optind)?;
+            } else if !optional {
+                if self.cur.optind >= self.argc {
+                    self.optopt = Some(u32::from(c));
+                    if self.optstring.first() == Some(&COLON) {
+                        ret = u32::from(COLON);
+                    } else {
+                        ret = QUESTION;
+                    }
+                } else {
+                    self.optarg = self.argp(self.cur.optind)?;
+                    self.cur.optind = bump(self.cur.optind)?;
+                }
+            }
+            self.cur.nextchar = 0;
+        } else if at_end {
+            self.cur.nextchar = 0;
+        }
+        Ok(ret)
+    }
+
+    /// The writes Python's `_parse` makes after `_next`: the permuted argv
+    /// slots, the cursor, and the `optind` / `optarg` / `optopt` globals.
+    fn commit(self) -> Result<(), ProcedureError> {
+        let state = self.state;
+        let ps = state.arch().bytes() as u64;
+        for i in &self.dirty {
+            if let Some(&p) = self.argv_ptrs.get(i) {
+                let word = arch_word(state, p);
+                state.memory_store(self.argv.wrapping_add(u64::from(*i) * ps), word)?;
             }
         }
-        opts.insert(c, nargs);
+        state.set_getopt_cursor(self.cur);
+        let ext = state.getopt_extern();
+        store_int(state, ext.optind, self.cur.optind)?;
+        store_ptr(state, ext.optarg, self.optarg)?;
+        if let Some(optopt) = self.optopt {
+            store_int(state, ext.optopt, optopt)?;
+        }
+        Ok(())
     }
-    (opts, leading_colon)
-}
-
-/// Dev-only re-export of [`parse_optstring`] for cargo-fuzz targets
-/// (angr-qwyti.9 established the recipe). `parse_optstring` is a pure function over
-/// arbitrary bytes with no debug-assert precondition, so it fuzzes
-/// hermetically. Gated behind `fuzzing` so the normal build keeps the parser
-/// `fn`-private (its only real caller is `getopt` in this same module).
-#[cfg(feature = "fuzzing")]
-pub(crate) mod fuzz_exports {
-    pub fn parse_optstring(s: &[u8]) -> (std::collections::HashMap<u8, u8>, bool) {
-        super::parse_optstring(s)
-    }
-}
-
-/// Load a pointer-sized word; `Ok(None)` if symbolic (caller defers).
-fn eval_ptr(state: &RustSimState, addr: u64) -> Result<Option<u64>, ProcedureError> {
-    let ps = state.arch().bytes();
-    Ok(state.memory_load(addr, ps)?.as_u64())
 }
 
 /// Store a 32-bit int at the extern global `addr` if present (else no-op),
@@ -116,53 +280,15 @@ fn store_ptr(
     Ok(())
 }
 
-/// Resolve `(optind, optchar)`, honouring a guest reset of `optind` exactly as
-/// Python's `_load_cursor`.
-fn load_cursor(
-    state: &RustSimState,
-    optind_addr: Option<u64>,
-) -> Result<(u32, u32), ProcedureError> {
-    let (plugin_optind, plugin_optchar) = state.getopt_cursor();
-    if let Some(addr) = optind_addr {
-        let word = state.memory_load(addr, 4)?;
-        if let Some(guest) = word.as_u64() {
-            let guest = guest as u32;
-            if guest == 0 {
-                return Ok((1, 0)); // glibc: optind==0 requests a full reset
-            }
-            // guest >= 1: honour a guest rescan (optind reset to a smaller index)
-            let oc = if guest == plugin_optind {
-                plugin_optchar
-            } else {
-                0
-            };
-            return Ok((guest, oc));
-        }
-    }
-    Ok((plugin_optind, plugin_optchar))
-}
-
-/// Persist `(optind, optchar)` to the cursor fields and write `optind` back to
-/// guest memory, mirroring Python's `_save_cursor`.
-fn save_cursor(
-    state: &mut RustSimState,
-    optind_addr: Option<u64>,
-    optind: u32,
-    optchar: u32,
-) -> Result<(), ProcedureError> {
-    state.set_getopt_cursor(optind, optchar);
-    store_int(state, optind_addr, optind)
-}
-
-/// `int getopt(int argc, char *const argv[], const char *optstring)`.
 #[inline]
 fn ret(value: u32) -> Result<Option<RustBV>, ProcedureError> {
     Ok(Some(RustBV::concrete(value as u128, 32)))
 }
 
 crate::declare_proc! {
-    /// getopt: concrete-argv short-option engine. Defers to Python for any
-    /// symbolic input (matching the Python proc's unconstrained branch).
+    /// getopt: concrete-argv port of the Python proc, argv permutation
+    /// included. Defers to Python for any symbolic input (matching the
+    /// Python proc's unconstrained branch).
     ///
     /// ```c
     /// int getopt(int argc, char *const argv[], const char *optstring);
@@ -171,125 +297,47 @@ crate::declare_proc! {
     struct = NativeGetopt,
     args = [argc: concrete, argv_ptr: concrete, optstring_ptr: concrete],
     call |state| {
-        let ps = state.arch().bytes() as u64;
-        let extern_addrs = state.getopt_extern();
-        let optind_addr = extern_addrs.optind;
-        let optarg_addr = extern_addrs.optarg;
-        let optopt_addr = extern_addrs.optopt;
-
         let argc = argc as u32;
-
         let optstring = scan_concrete_until_null(state, optstring_ptr, MAX_STRING_SCAN, "optstring")?;
-        let (opts, leading_colon) = parse_optstring(&optstring);
-
-        let (mut optind, mut optchar) = load_cursor(state, optind_addr)?;
-
-        if optind >= argc {
-            save_cursor(state, optind_addr, optind, 0)?;
-            store_ptr(state, optarg_addr, 0)?;
-            return ret(0xFFFF_FFFF); // -1
+        if argc < 1 {
+            return ret(DONE);
         }
 
-        // `argv_ptr` is a guest-controlled address, so every address computation
-        // below uses `wrapping_add` per the convention documented in memcpy.rs:
-        // `[profile.release]` disables overflow checks, so a plain `+` panics
-        // under the release-checked test profile and silently wraps in the
-        // shipped `.so` — a wrong address rather than a loud failure.
-        // (`optind`/`optchar` are u32, so their `as u64` scaling cannot itself
-        // overflow: u32::MAX * 8 fits in u64.)
-        let elem_ptr = match eval_ptr(state, argv_ptr.wrapping_add(optind as u64 * ps))? {
-            Some(p) => p,
-            None => return Err(ProcedureError::SymbolicArgument("argv element".into())),
+        let mut cur = state.getopt_cursor();
+        if let Some(addr) = state.getopt_extern().optind {
+            let guest = state
+                .memory_load(addr, 4)?
+                .as_u64()
+                .ok_or_else(|| ProcedureError::SymbolicArgument("guest optind".into()))?
+                as u32;
+            if guest == 0 {
+                // optind = 0 requests a full reset
+                cur = GetoptCursor::default();
+            } else if guest != cur.optind {
+                cur.optind = guest;
+                cur.nextchar = 0;
+            }
+        }
+
+        let (ordering, optstring) = match optstring.split_first() {
+            Some((&DASH, rest)) => (Ordering::ReturnInOrder, rest.to_vec()),
+            Some((&b'+', rest)) => (Ordering::RequireOrder, rest.to_vec()),
+            _ => (Ordering::Permute, optstring),
         };
-        if elem_ptr == 0 {
-            save_cursor(state, optind_addr, optind, 0)?;
-            return ret(0xFFFF_FFFF);
-        }
-        let arg = scan_concrete_until_null(state, elem_ptr, MAX_STRING_SCAN, "argv string")?;
-
-        if optchar == 0 {
-            // non-option operand "-" or a non-dash element -> stop (non-permuting)
-            if arg.is_empty() || arg[0] != DASH || arg == [DASH] {
-                save_cursor(state, optind_addr, optind, 0)?;
-                return ret(0xFFFF_FFFF);
-            }
-            if arg == [DASH, DASH] {
-                save_cursor(state, optind_addr, optind + 1, 0)?;
-                return ret(0xFFFF_FFFF);
-            }
-            // long-option handling lives in the Python proc; the native proc is
-            // registered only for plain `getopt`, so longopts is always absent.
-            optchar = 1;
-        }
-
-        // Defense-in-depth (angr-qwyti.19): `optchar` is engine cursor state
-        // restored from a prior getopt call. If the guest mutated this argv
-        // element in its own memory to be shorter since then, the saved cursor
-        // can exceed the freshly-scanned `arg` length. Use a checked accessor
-        // and defer to the Python getopt proc rather than panic-indexing.
-        let Some(&c) = arg.get(optchar as usize) else {
-            return Err(ProcedureError::Other(
-                "getopt cursor past end of argv element (shrunk argv)".to_string(),
-            ));
+        let mut parser = Parser {
+            state,
+            argc,
+            argv: argv_ptr,
+            optstring,
+            argv_ptrs: BTreeMap::new(),
+            dirty: BTreeSet::new(),
+            cur,
+            optarg: 0,
+            optopt: None,
         };
-        // `c` is a guest byte, so the optstring lookup genuinely can miss —
-        // binding the hit in the match arm keeps the unknown-option path and
-        // the recognized-option path in one place, with no second lookup and no
-        // `unwrap` on what the miss branch just ruled out.
-        let spec = match opts.get(&c).copied() {
-            Some(spec) if c != COLON => spec,
-            // Unknown option (or a bare `:`, which is never an option itself):
-            // report it through `optopt` and return '?'.
-            _ => {
-                store_int(state, optopt_addr, c as u32)?;
-                store_ptr(state, optarg_addr, 0)?;
-                optchar += 1;
-                if optchar as usize >= arg.len() {
-                    optind += 1;
-                    optchar = 0;
-                }
-                save_cursor(state, optind_addr, optind, optchar)?;
-                return ret(b'?' as u32);
-            }
-        };
-
-        if spec == NO_ARGUMENT {
-            store_ptr(state, optarg_addr, 0)?;
-            optchar += 1;
-            if optchar as usize >= arg.len() {
-                optind += 1;
-                optchar = 0;
-            }
-            save_cursor(state, optind_addr, optind, optchar)?;
-            return ret(c as u32);
-        }
-
-        // option takes an argument (required or optional)
-        if (optchar as usize) + 1 < arg.len() {
-            store_ptr(state, optarg_addr, elem_ptr.wrapping_add(optchar as u64 + 1))?;
-            save_cursor(state, optind_addr, optind + 1, 0)?;
-            return ret(c as u32);
-        }
-        if spec == OPTIONAL_ARGUMENT {
-            store_ptr(state, optarg_addr, 0)?;
-            save_cursor(state, optind_addr, optind + 1, 0)?;
-            return ret(c as u32);
-        }
-        // required argument from the next argv element
-        if optind + 1 < argc {
-            let next_ptr = match eval_ptr(state, argv_ptr.wrapping_add((optind as u64 + 1) * ps))? {
-                Some(p) => p,
-                None => return Err(ProcedureError::SymbolicArgument("argv next".into())),
-            };
-            store_ptr(state, optarg_addr, next_ptr)?;
-            save_cursor(state, optind_addr, optind + 2, 0)?;
-            return ret(c as u32);
-        }
-        // missing required argument
-        store_int(state, optopt_addr, c as u32)?;
-        store_ptr(state, optarg_addr, 0)?;
-        save_cursor(state, optind_addr, optind + 1, 0)?;
-        ret(if leading_colon { COLON as u32 } else { b'?' as u32 })
+        let value = parser.next(ordering)?;
+        parser.commit()?;
+        ret(value)
     }
 }
 
