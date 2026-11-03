@@ -953,3 +953,76 @@ fn be_register_file_survives_serde_round_trip() {
     let f2 = restored.arch().register_offset("f2").unwrap();
     assert_eq!(restored.get(f2, 4).as_u64(), Some(0xAABB_CCDD));
 }
+
+/// angr-vmi2l.211: a symbolic overlay wider than the concrete-diff loop's
+/// chunk leaves the backing bytes of its upper chunk stale. The loop used to
+/// compare those stale bytes against the other arm's and stage a concrete ITE
+/// at the interior offset, which every read starting there (amd64 `xmm0hq`,
+/// ARM `s1`) then returned instead of the merged overlay's high lane.
+///
+/// `self` holds the symbolic `wide` value at `off`; `other` holds the concrete
+/// `other_val`. Under the solver, the `width`-bit read at `off + lane` must
+/// equal the lane of `other_val` when `cond` is 1 and the lane of `wide` when
+/// it is 0.
+fn assert_merged_high_lane_tracks_overlay(
+    arch: fn() -> Box<dyn Arch>,
+    off: u32,
+    stale: u128,
+    wide: RustBV,
+    other_val: u128,
+    lane: u32,
+) {
+    let ctx = SymContext::new();
+    let size = wide.width() / 8;
+    let lane_bits = (size - lane) * 8;
+    let mut a = RegisterFile::new(arch());
+    a.put(off, RustBV::concrete(stale, size * 8));
+    a.put(off, wide.clone());
+    let mut b = RegisterFile::new(arch());
+    b.put(off, RustBV::concrete(other_val, size * 8));
+
+    let cond = RustBV::symbol("merge_cond", 1);
+    assert!(a.merge(&b, &cond));
+    let got = a.get(off + lane, size - lane).to_z3_ast().unwrap();
+
+    let self_lane = wide.extract(size * 8 - 1, lane * 8);
+    let other_lane = RustBV::concrete(other_val >> (lane * 8), lane_bits);
+    for (bit, expected, what) in [(1u64, other_lane, "other's"), (0u64, self_lane, "self's")] {
+        ctx.push();
+        ctx.add_constraint(cond.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(bit, 1)));
+        ctx.add_constraint(got.eq(expected.to_z3_ast().unwrap()).not());
+        assert!(
+            !ctx.is_sat(),
+            "cond={bit}: the high-lane read must be {what} overlay lane, not stale bytes"
+        );
+        ctx.pop();
+    }
+}
+
+#[test]
+fn merge_xmm_symbolic_vs_concrete_high_lane_reads_overlay() {
+    let xmm0 = AMD64.register_offset("xmm0").unwrap();
+    // `movq xmm0, rbx`: the low lane is symbolic, the high lane zeroed.
+    let wide = RustBV::concrete(0, 64).concat(&RustBV::symbol("rbx", 64));
+    assert_merged_high_lane_tracks_overlay(
+        || Box::new(AMD64),
+        xmm0,
+        0x1111_1111_1111_1111_2222_2222_2222_2222,
+        wide,
+        0,
+        8,
+    );
+}
+
+#[test]
+fn merge_arm_d0_symbolic_vs_concrete_s1_reads_overlay() {
+    let d0 = crate::arch::arm::ARM.register_offset("d0").unwrap();
+    assert_merged_high_lane_tracks_overlay(
+        || Box::new(crate::arch::arm::ARM),
+        d0,
+        0x3333_3333_4444_4444,
+        RustBV::symbol("d0", 64),
+        0x5555_5555_6666_6666,
+        4,
+    );
+}

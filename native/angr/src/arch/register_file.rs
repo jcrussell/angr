@@ -716,9 +716,31 @@ impl RegisterFile {
         // the "compose, then subsume the inner overlays" contract in one place.
         let reg_bytes = (self.arch.bits() / 8) as usize;
         let len = self.data.len().min(other.data.len());
-        let mut off = 0;
-        while off < len {
-            let reg_bytes = reg_bytes.min(len.saturating_sub(off));
+        // End of the furthest-reaching overlay, of either file, that starts
+        // below `chunk` and runs into it. A symbolic `put` leaves the backing
+        // bytes under its overlay stale, so a 16-byte xmm overlay ending past
+        // the 8-byte chunk at `xmm + 8` must not have that chunk's stale bytes
+        // compared: the ITE it staged there would shadow the overlay's merged
+        // high lane for every read starting at `xmm + 8` (angr-vmi2l.211).
+        // The symbolic loop above already merged the covered bytes.
+        let covered_until = |chunk: usize| -> usize {
+            self.symbolic
+                .iter()
+                .chain(other.symbolic.iter())
+                .filter_map(|(&k, v)| {
+                    let start = k as usize;
+                    let end = start.saturating_add((v.width() / 8) as usize);
+                    (start < chunk && end > chunk).then_some(end)
+                })
+                .max()
+                .unwrap_or(chunk)
+        };
+        let mut chunk = 0;
+        while chunk < len {
+            let chunk_end = chunk.saturating_add(reg_bytes).min(len);
+            // Only the chunk's tail past a covering overlay is compared.
+            let off = covered_until(chunk).min(chunk_end);
+            let reg_bytes = chunk_end.saturating_sub(off);
             let u32_off = off as u32;
             // Skip offsets that are already handled by symbolic merge
             if !all_offsets.contains(&u32_off) {
@@ -750,7 +772,7 @@ impl RegisterFile {
                     }
                 }
             }
-            off += reg_bytes;
+            chunk = chunk_end;
         }
 
         for (offset, val) in updates {
