@@ -5072,6 +5072,13 @@ class RustExplorationManager(
             return False
         if self._found_count() >= num_find:
             return False
+        # A find-all (num_find=None) or a resumed explore exhausts with
+        # found < num_find even when phase 1 DID reach the target. Phase 2
+        # re-explores from the root, so it would find every such state again
+        # (angr-mx00p.132.48): retry only while no found state sits at a target.
+        targets = set(self._explore_find_addrs)
+        if any(self._rust_mgr.get_state_pc_by_id(sid) in targets for sid in self._rust_mgr.get_state_ids("found")):
+            return False
         seeds = getattr(self, "_initial_seed_states", None)
         if not seeds:
             return False

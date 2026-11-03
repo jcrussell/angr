@@ -42,6 +42,23 @@ class TestFindAll:
         assert find_all == exhaustive
         assert find_all >= 1  # the synthetic has at least one reaching path
 
+    def test_find_all_finds_each_feasible_leaf_once(self, project):
+        """A find-all whose phase 1 reached the target does not re-seed phase 2.
+
+        Six of the synthetic's eight leaves can reach ``reach_target``. The
+        phase-2 eager retry re-explores from the root, so firing it after a
+        find-all that already found them reported each leaf twice
+        (angr-mx00p.132.48).
+        """
+        target = project.loader.find_symbol("reach_target").rebased_addr
+        state, _ = pbounce_stdin_state(project)
+        mgr = RustExplorationManager(project, [state])
+        mgr.explore(find=target, num_find=None, n=4096)
+        prefixes = [s.posix.dumps(0)[:3] for s in mgr.found]
+        assert len(prefixes) == 6, f"found {len(prefixes)} states for 6 feasible leaves"
+        assert len(set(prefixes)) == len(prefixes), "a leaf was found twice"
+        assert not getattr(mgr, "_phase2_retried", False)
+
     def test_find_all_unreachable_terminates(self, project):
         """An unreachable target under num_find=None terminates (active_empty),
         not the unbounded run()-respin hang of invariant-active-empty-not-partial-found."""

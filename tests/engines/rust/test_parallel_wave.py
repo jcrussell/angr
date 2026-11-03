@@ -259,9 +259,10 @@ class TestParallelExhaustiveSynthetic:
     (fauxware found states export exactly ONE constraint; these export zero).
     Fingerprinting that list collapses all 8 leaves to a single fingerprint, so
     set equality across worker counts would pass vacuously. The content the
-    Rust engine really does guarantee here is the exhaustive drain: 8 distinct
-    leaves reach the gate, each satisfiable independently, so a lost path shows
-    up as ``< 8`` and cancel-token over-collection as ``> 8``. The
+    Rust engine really does guarantee here is the exhaustive drain: the 6
+    ``_FEASIBLE_LEAVES`` reach the gate, so a lost path shows up as ``< 6`` and
+    over-collection (a cancel token, or a phase-2 re-seed re-finding every
+    leaf, angr-mx00p.132.48) as ``> 6``. The
     order-independent *witness*-multiset guarantee is pinned separately by the
     Rust unit test ``scheduler::tests::test_determinism_result_set``.
     """
@@ -272,8 +273,9 @@ class TestParallelExhaustiveSynthetic:
         mgr, target_addr = _explore_pbounce(pbounce_project, workers, monkeypatch)
         found = list(mgr.found)
         assert len(list(mgr.errored)) == 0, f"workers={workers} rep={rep} errored: {list(mgr.errored)}"
-        assert len(found) == _SYNTH_LEAVES, (
-            f"workers={workers} rep={rep}: exhaustive find-all drained {len(found)} leaves, expected {_SYNTH_LEAVES}"
+        assert len(found) == len(_FEASIBLE_LEAVES), (
+            f"workers={workers} rep={rep}: exhaustive find-all drained {len(found)} leaves, "
+            f"expected {len(_FEASIBLE_LEAVES)}"
         )
         assert {s.addr for s in found} == {target_addr}
 
@@ -345,19 +347,13 @@ class TestParallelFoundContentSynthetic:
       — a lost path drops a leaf, and a found state carrying some other path's
       constraints shows up as a leaf that provably cannot reach the target.
       The count-only gate sees neither.
-
-    Note the drain count (8) exceeds ``len(_FEASIBLE_LEAVES)`` (6): the found
-    stash holds duplicate paths (two of the eight witnesses are byte-identical).
-    That over-collection is present single-threaded too, so it is not a wave-loop
-    defect — tracked separately; this gate deliberately asserts on the leaf SET
-    so it stays green either way.
     """
 
     @pytest.mark.parametrize("workers", [1, 2, 4])
     def test_found_witnesses_satisfy_gate_and_cover_all_leaves(self, pbounce_project, workers, monkeypatch):
         mgr, _ = _explore_pbounce(pbounce_project, workers, monkeypatch)
         found = list(mgr.found)
-        assert len(found) == _SYNTH_LEAVES, f"workers={workers}: drained {len(found)} leaves"
+        assert len(found) == len(_FEASIBLE_LEAVES), f"workers={workers}: drained {len(found)} leaves"
 
         witnesses = [_pbounce_witness(st) for st in found]
         for leaf, acc in witnesses:
@@ -443,8 +439,9 @@ class TestParallelSteadyFoundCap:
     def test_steady_found_count_matches_serial(self, pbounce_project, workers, num_find, monkeypatch):
         serial, _ = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=num_find)
         serial_found = len(list(serial.found))
-        assert serial_found == num_find, (
-            f"serial baseline collected {serial_found} for num_find={num_find}, expected {num_find}"
+        expected = min(num_find, len(_FEASIBLE_LEAVES))
+        assert serial_found == expected, (
+            f"serial baseline collected {serial_found} for num_find={num_find}, expected {expected}"
         )
 
         mgr, target_addr = _explore_pbounce_steady(pbounce_project, workers, monkeypatch, num_find)
@@ -512,10 +509,10 @@ class TestParallelCancelFrontier:
         active = len(list(mgr.active))
         assert active > 0, f"workers={workers} lost the whole frontier on cancel (active={active})"
 
-    @pytest.mark.parametrize("workers", [2, 4])
+    @pytest.mark.parametrize("workers", [1, 2, 4])
     def test_cancelled_frontier_is_resumable(self, pbounce_project, workers, monkeypatch):
         """The drained frontier is LIVE: after a find-1 early cancel, resuming the
-        same manager to ``num_find=8`` still reaches all 8 leaves. Pre-fix the
+        same manager as a find-all still reaches every feasible leaf. Pre-fix the
         residual frontier is gone, so the resumed explore can never make up the
         difference and the drain count comes up short."""
         mgr, target_addr = _explore_pbounce_find_k(pbounce_project, workers, monkeypatch, num_find=1)
@@ -523,12 +520,12 @@ class TestParallelCancelFrontier:
         assert found_first < _SYNTH_LEAVES, "the first explore must have exited early to test resumability"
 
         # num_find counts new finds, as in SimulationManager.explore.
-        mgr.explore(find=target_addr, num_find=_SYNTH_LEAVES - found_first, n=4096)
+        mgr.explore(find=target_addr, num_find=None, n=4096)
         found = list(mgr.found)
         assert len(list(mgr.errored)) == 0, f"workers={workers} errored: {list(mgr.errored)}"
-        assert len(found) == _SYNTH_LEAVES, (
-            f"workers={workers}: resumed find-all drained {len(found)} leaves, expected {_SYNTH_LEAVES} "
-            f"(first pass found {found_first})"
+        assert len(found) == len(_FEASIBLE_LEAVES), (
+            f"workers={workers}: resumed find-all drained {len(found)} leaves, expected "
+            f"{len(_FEASIBLE_LEAVES)} (first pass found {found_first})"
         )
         assert {s.addr for s in found} == {target_addr}
 
@@ -608,9 +605,9 @@ class TestParallelCheckpointFrontier:
         # ``test_resume_from_fixed_snapshot_is_worker_count_invariant``, which holds
         # the snapshot bytes fixed and so has no dump-width variance at all.
         lower = _SYNTH_LEAVES // 2 if workers == 1 else 1
-        assert lower <= len(found) <= _SYNTH_LEAVES, (
+        assert lower <= len(found) <= len(_FEASIBLE_LEAVES), (
             f"workers={workers}: resume-from-snapshot drained {len(found)} leaves, "
-            f"expected {lower}-{_SYNTH_LEAVES} from dump-point frontier {pre}"
+            f"expected {lower}-{len(_FEASIBLE_LEAVES)} from dump-point frontier {pre}"
         )
 
     def test_resume_from_fixed_snapshot_is_worker_count_invariant(self, pbounce_project, monkeypatch, tmp_path):
@@ -673,9 +670,9 @@ class TestParallelCheckpointFrontier:
         for rep in range(2):
             assert _resume(1) == serial, f"rep={rep}: serial resume from a fixed snapshot is not repeatable"
             parallel = _resume(4)
-            assert serial <= parallel <= _SYNTH_LEAVES, (
+            assert serial <= parallel <= len(_FEASIBLE_LEAVES), (
                 f"rep={rep}: workers=4 resume drained {parallel} leaves from the same snapshot the "
-                f"serial resume drained {serial} from (bound: {serial}..{_SYNTH_LEAVES})"
+                f"serial resume drained {serial} from (bound: {serial}..{len(_FEASIBLE_LEAVES)})"
             )
 
     def test_resumed_found_states_solve_to_distinct_stdin(self, pbounce_project, monkeypatch, tmp_path):
@@ -969,8 +966,8 @@ class TestProgrammaticParallelWorkers:
         # (`parallel_tasks` is also bumped by the single-threaded migration model).
         assert sum(mgr.stats["parallel_worker_dispatch"]) > 0, "real worker pool did not dispatch"
         found = list(mgr.found)
-        assert len(found) == _SYNTH_LEAVES, (
-            f"programmatic parallel drained {len(found)} leaves, expected {_SYNTH_LEAVES}"
+        assert len(found) == len(_FEASIBLE_LEAVES), (
+            f"programmatic parallel drained {len(found)} leaves, expected {len(_FEASIBLE_LEAVES)}"
         )
         assert {s.addr for s in found} == {target.rebased_addr}
 
