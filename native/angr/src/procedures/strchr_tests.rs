@@ -538,3 +538,44 @@ fn test_rawmemchr_absent_within_scan_cap_defers_to_python() {
         "expected MaxIterations fallback, got {err:?}"
     );
 }
+
+/// A concrete 72-byte table of distinct non-NUL bytes (`0x30 + i`) at 0x1000,
+/// NUL-terminated, and a symbolic target constrained to the byte at `index`.
+/// Returns the `(min, max)` of the `call` result under that constraint.
+fn search_long_concrete_table_for_symbolic_target(
+    p: &dyn NativeSimProcedure,
+    index: u64,
+    n: Option<u64>,
+) -> (Option<u128>, Option<u128>) {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut table: Vec<u8> = (0..72u8).map(|i| 0x30 + i).collect();
+    table.push(0);
+    state.map_memory_data(0x1000, &table, Permission::RWX);
+    let sym = RustBV::symbol("c", 64);
+    let eq = sym.eq(&RustBV::concrete(u128::from(0x30 + index), 64));
+    let mut args = vec![RustBV::concrete(0x1000, 64), sym];
+    args.extend(n.map(|n| RustBV::concrete(u128::from(n), 64)));
+    let result = p.call(&mut state, &args).unwrap().unwrap();
+    state.add_constraint(eq);
+    let ctx = state.solver().borrow();
+    (ctx.min(&result, false), ctx.max(&result, false))
+}
+
+#[test]
+fn test_symbolic_target_concrete_bytes_do_not_spend_symbolic_budget() {
+    // Concrete bytes past MAX_SYMBOLIC_SCAN_BYTES must still join the chain:
+    // only symbolic bytes draw down the budget (angr-vmi2l.100).
+    let at = |i: u128| Some(0x1000 + i);
+    assert_eq!(
+        search_long_concrete_table_for_symbolic_target(&NativeStrchr, 66, None),
+        (at(66), at(66))
+    );
+    assert_eq!(
+        search_long_concrete_table_for_symbolic_target(&NativeStrrchr, 66, None),
+        (at(66), at(66))
+    );
+    assert_eq!(
+        search_long_concrete_table_for_symbolic_target(&NativeMemchr, 70, Some(72)),
+        (at(70), at(70))
+    );
+}

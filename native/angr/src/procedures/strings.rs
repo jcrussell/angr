@@ -239,6 +239,10 @@ pub(crate) enum ConcreteStep<R> {
     Stop(R),
     /// A symbolic byte was seen; switch to collecting loads for an ITE chain.
     BeginCollect,
+    /// Byte was concrete but the result still depends on it (a symbolic
+    /// search target): collect it like [`ConcreteStep::BeginCollect`], but
+    /// without drawing down [`MAX_SYMBOLIC_SCAN_BYTES`] (angr-vmi2l.100).
+    CollectConcrete,
 }
 
 /// Outcome of [`scan_concrete_then_collect`].
@@ -247,8 +251,9 @@ pub(crate) enum ScanResult<R, B> {
     Stopped(R),
     /// The loop ran to `max` entirely in concrete mode without stopping.
     Exhausted,
-    /// A symbolic byte was seen; here are the collected `(position, load)`
-    /// entries. The symbolic byte that triggered collection is included, and
+    /// A symbolic byte (or a [`ConcreteStep::CollectConcrete`] one) was seen;
+    /// here are the collected `(position, load)` entries. The byte that
+    /// triggered collection is included, and
     /// collection halts after the first load for which `collect_stop` is true
     /// (typically a concrete null terminator, past which positions cannot
     /// affect the ITE chain).
@@ -289,7 +294,7 @@ pub(crate) fn scan_concrete_then_collect<B, R>(
     mut collect_stop: impl FnMut(&B) -> bool,
 ) -> Result<ScanResult<R, B>, ProcedureError> {
     let mut collected: Vec<(u64, B)> = Vec::new();
-    let mut symbolic_seen = false;
+    let mut collecting = false;
     let mut symbolic_budget = MAX_SYMBOLIC_SCAN_BYTES;
     for i in 0..max {
         let loaded = load(state, i)?;
@@ -297,11 +302,11 @@ pub(crate) fn scan_concrete_then_collect<B, R>(
         // `BeginCollect` exactly for the loads this scan considers symbolic.
         let step = concrete(&loaded, i);
         let is_symbolic = matches!(step, ConcreteStep::BeginCollect);
-        if !symbolic_seen {
+        if !collecting {
             match step {
                 ConcreteStep::Continue => continue,
                 ConcreteStep::Stop(r) => return Ok(ScanResult::Stopped(r)),
-                ConcreteStep::BeginCollect => symbolic_seen = true,
+                ConcreteStep::BeginCollect | ConcreteStep::CollectConcrete => collecting = true,
             }
         }
         if is_symbolic {
@@ -318,7 +323,7 @@ pub(crate) fn scan_concrete_then_collect<B, R>(
             break;
         }
     }
-    if symbolic_seen {
+    if collecting {
         Ok(ScanResult::Collected(collected))
     } else {
         Ok(ScanResult::Exhausted)

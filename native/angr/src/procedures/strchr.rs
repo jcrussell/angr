@@ -76,7 +76,12 @@ fn collect_all_then_build(
         state,
         max_scan,
         |st, i| load_byte(st, addr, i),
-        |_byte_val, _i| ConcreteStep::<RustBV>::BeginCollect,
+        // Every position joins the chain, but only symbolic bytes draw down
+        // the symbolic budget, as in Python's `_find_iter_items`.
+        |byte_val, _i| match byte_val.as_u64() {
+            Some(_) => ConcreteStep::<RustBV>::CollectConcrete,
+            None => ConcreteStep::BeginCollect,
+        },
         |byte_val| null_stops_collect(stop_at_null, byte_val),
     )?;
     let byte_loads = match result {
