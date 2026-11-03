@@ -81,10 +81,11 @@ fn delegate_registers_merge_preserves_a_branch_only_concrete_write() {
     );
 }
 
-/// delegate: `memory`. Disjoint pages so no ITE is needed to prove the
-/// point: `SymbolicMemory::merge` (own census in
-/// `memory/tests/merge_sidecars.rs`) has to actually union b's page in, not
-/// keep only self's.
+/// delegate: `memory`. Disjoint pages: `SymbolicMemory::merge` (own census
+/// in `memory/tests/merge_sidecars.rs`) has to carry each branch-only page
+/// into the merged state under that branch's condition, reading as the zero
+/// page on the other branch (angr-vmi2l.187) — not drop it, and not leak it
+/// onto both.
 #[test]
 fn delegate_memory_merge_preserves_a_branch_only_store() {
     let (mut a, mut b) = base_pair("amd64");
@@ -92,24 +93,18 @@ fn delegate_memory_merge_preserves_a_branch_only_store() {
     b.map_memory_data(0x5000_1000, &[0x22], Permission::RWX);
 
     let [m0, m1] = conds("mem_delegate");
-    let merged = a.merge(&[&b], &[m0, m1]);
-
-    assert_eq!(
-        merged
-            .memory_load(0x5000_0000, 1)
-            .ok()
-            .and_then(|v| v.as_u128()),
-        Some(0x11),
-        "self's own page must survive the merge"
-    );
-    assert_eq!(
-        merged
-            .memory_load(0x5000_1000, 1)
-            .ok()
-            .and_then(|v| v.as_u128()),
-        Some(0x22),
-        "a page only b touched must be unioned in, not dropped"
-    );
+    for (cond, want_a, want_b) in [(&m0, 0x11, 0), (&m1, 0, 0x22)] {
+        let merged = a.merge(&[&b], &[m0.clone(), m1.clone()]);
+        merged.solver().borrow().assume_true(cond);
+        let read = |addr| {
+            merged
+                .memory_load(addr, 1)
+                .ok()
+                .and_then(|v| merged.solver().borrow().eval(&v))
+        };
+        assert_eq!(read(0x5000_0000), Some(want_a), "a's page under {cond:?}");
+        assert_eq!(read(0x5000_1000), Some(want_b), "b's page under {cond:?}");
+    }
 }
 
 /// delegate: `solver`. Each branch asserts a *different* value for the same

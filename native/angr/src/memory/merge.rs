@@ -2,7 +2,7 @@
 //!
 //! Extracted from `memory/mod.rs` (angr-03vl4.39), matching the file-splitting
 //! pattern `load`/`store`/`multi`/`symbolic_objects` already follow. Holds
-//! [`SymbolicMemory::merge`] and the two helpers only it uses.
+//! [`SymbolicMemory::merge`] and the helpers only it uses.
 //!
 //! The merge contract: for every byte that differs between the two arms the
 //! merged value becomes `ITE(merge_cond_other, other_byte, self_byte)`, with
@@ -10,6 +10,13 @@
 //! symbolic byte feed the same expression shape (angr-op0dn.11.2.2). Deferred
 //! (pending) symbolic stores cannot be collapsed that way, so they are instead
 //! *guarded* by the arm's condition and carried forward unmaterialized.
+//!
+//! A page only one arm holds is walked against a zero stand-in for the other
+//! arm (angr-vmi2l.187), lazy region or not: a page the engine materializes
+//! without host bytes is the zero page (`auto_map_zero_page`, and the
+//! store-side fresh map outside every region), and the manager's
+//! `fetch_host_pages_for_merge` fetches every host-servable page into the
+//! absent arm before the merge. Nothing is adopted from either arm unguarded.
 
 use rustc_hash::FxHashMap;
 
@@ -54,7 +61,18 @@ impl SymbolicMemory {
             let self_page = self.pages.get(&page_num);
             let other_page = other.pages.get(&page_num);
 
-            match (self_page, other_page) {
+            let base_addr = Address(PageIndex::from_raw(page_num).base_addr());
+            // A page only one arm holds is not "unchanged" on the other arm:
+            // there it is unmaterialized, and reads as the zero page the
+            // engine maps for a fresh lazy page (`auto_map_zero_page`, and the
+            // zero page `map_fresh_pages_for_store` maps for a store outside
+            // every region). Walk it against that zero stand-in so each byte
+            // the holding arm changed is guarded by its own condition instead
+            // of leaking onto the other arm's paths (angr-vmi2l.187). A page
+            // the host can serve is fetched into the absent arm before the
+            // merge (`_merge_states`), so only host-declined pages get here.
+            let blank;
+            let (sp, op) = match (self_page, other_page) {
                 (Some(sp), Some(op)) => {
                     // CoW fast path (angr-op0dn.11.2.1, productionizes S5a): a
                     // structurally-shared page with no symbolic/Multi overlay is
@@ -66,143 +84,127 @@ impl SymbolicMemory {
                     if sp.is_shared_identical(op) {
                         continue;
                     }
-                    #[cfg(test)]
-                    super::tests::merge_instrument::note_page_walked();
-                    // Both have this page — compare concrete data. The Multi
-                    // guards mirror the plain-symbolic ones: a page carrying
-                    // Multi cells can never take the concrete-equality
-                    // early-out because Multi divergence lives in
-                    // `multi_objects`, invisible to a `data[]` compare
-                    // (angr-op0dn.11.2.2).
-                    let s_data = sp.load_concrete(0, PAGE_SIZE as u16);
-                    let o_data = op.load_concrete(0, PAGE_SIZE as u16);
-
-                    if s_data == o_data
-                        && !sp.has_symbolic()
-                        && !op.has_symbolic()
-                        && !sp.has_multi()
-                        && !op.has_multi()
-                    {
-                        continue;
-                    }
-
-                    let base_addr = Address(PageIndex::from_raw(page_num).base_addr());
-                    for i in 0..PAGE_SIZE as usize {
-                        let s_byte = s_data[i];
-                        let o_byte = o_data[i];
-
-                        let s_sym = sp.has_symbolic() && sp.is_symbolic(i as u16);
-                        let o_sym = op.has_symbolic() && op.is_symbolic(i as u16);
-                        let s_multi = sp.has_multi() && sp.is_multi(i as u16);
-                        let o_multi = op.has_multi() && op.is_multi(i as u16);
-
-                        // A byte contributes nothing only when it is plain
-                        // concrete on both arms AND the bytes are equal.
-                        if !s_sym && !o_sym && !s_multi && !o_multi && s_byte == o_byte {
-                            continue;
-                        }
-
-                        // overflow-ok: `Add<u64> for Address` is `wrapping_add`
-                        // and `i` is a page offset, so `i < PAGE_SIZE`.
-                        let addr = base_addr + i as u64;
-
-                        // Both-Multi lazy union (design-doc merge rule): keep
-                        // the result a Multi cell, guarding each arm's
-                        // alternatives so exactly one arm's chain is live per
-                        // model. The page's concrete byte is a don't-care
-                        // default: exactly one arm's guard is true per
-                        // model, so the else-leaf is never selected.
-                        if s_multi && o_multi {
-                            let not_cond = merge_cond_other.not();
-                            let sp_pl = self
-                                .multi_objects
-                                .get(&addr)
-                                .expect("s_multi implies a payload");
-                            let op_pl = other
-                                .multi_objects
-                                .get(&addr)
-                                .expect("o_multi implies a payload");
-                            let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len());
-                            for alt in sp_pl.alternatives() {
-                                alts.push(MultiAlternative::new(
-                                    not_cond.and(&alt.cond),
-                                    alt.value.clone(),
-                                ));
-                            }
-                            for alt in op_pl.alternatives() {
-                                alts.push(MultiAlternative::new(
-                                    merge_cond_other.and(&alt.cond),
-                                    alt.value.clone(),
-                                ));
-                            }
-                            multi_ops.push((addr, MultiPayload::from_alternatives(alts)));
-                            continue;
-                        }
-
-                        // Otherwise collapse any Multi side to a BV and ITE it
-                        // against the other side (concrete / plain-symbolic).
-                        let self_val = Self::merge_byte_value(
-                            &self.symbolic_objects,
-                            &self.symbolic_spans,
-                            &self.multi_objects,
-                            addr,
-                            s_byte,
-                            s_sym,
-                            s_multi,
-                            self.endness,
-                        );
-                        let other_val = Self::merge_byte_value(
-                            &other.symbolic_objects,
-                            &other.symbolic_spans,
-                            &other.multi_objects,
-                            addr,
-                            o_byte,
-                            o_sym,
-                            o_multi,
-                            other.endness,
-                        );
-
-                        let ite_val = merge_cond_other.ite(&other_val, &self_val);
-                        merge_ops.push((page_num, addr, ite_val, s_multi));
-                    }
+                    (sp, op)
+                }
+                (Some(sp), None) => {
+                    blank = MemoryPage::new(base_addr.raw(), sp.permissions());
+                    (sp, &blank)
                 }
                 (None, Some(op)) => {
-                    // A page present only in `other` is adopted wholesale,
-                    // `multi_bitmap` included — but `multi_objects` is a flat
-                    // side table on `SymbolicMemory`, not nested inside
-                    // `MemoryPage`, so the clone carries no payloads with it.
-                    // Copy them explicitly (angr-c7xno.50): an adopted Multi
-                    // bit with no payload makes `range_has_multi` report false
-                    // (it gates on `multi_objects`, not the bitmap), so loads
-                    // silently return the stale page byte, and a later merge's
-                    // `s_multi implies a payload` expect panics.
-                    let mut adopted = op.clone();
-                    let page_base = Address(PageIndex::from_raw(page_num).base_addr());
-                    for offset in op.multi_offsets() {
-                        // overflow-ok: `Address` arithmetic is wrapping, and
-                        // `offset` is a u16 page offset (`< PAGE_SIZE`).
-                        let addr = page_base + u64::from(offset);
-                        match other.multi_objects.get(&addr) {
-                            Some(payload) => multi_ops.push((addr, payload.clone())),
-                            None => {
-                                // SILENT(cat-b): `other` arrived with a Multi
-                                // bit whose payload is already missing — the
-                                // invariant is broken upstream, not here.
-                                // Clear the orphaned bit rather than adopt it
-                                // so `self` stays self-consistent, and warn.
-                                log::warn!(
-                                    "merge: page {page_num:#x} adopted from `other` has a Multi \
-                                     bit at {addr:?} with no multi_objects payload; clearing the \
-                                     orphaned bit"
-                                );
-                                adopted.clear_multi(offset);
-                            }
-                        }
-                    }
-                    pages_to_add.push((page_num, adopted));
+                    // `self` takes the page so the merged state keeps it
+                    // mapped; the walk below fills in every byte `other`
+                    // changed from zero.
+                    blank = MemoryPage::new(base_addr.raw(), op.permissions());
+                    pages_to_add.push((page_num, blank.clone()));
+                    (&blank, op)
                 }
-                (Some(_), None) | (None, None) => {}
+                (None, None) => continue,
+            };
+            #[cfg(test)]
+            super::tests::merge_instrument::note_page_walked();
+            // Compare concrete data. The Multi
+            // guards mirror the plain-symbolic ones: a page carrying
+            // Multi cells can never take the concrete-equality
+            // early-out because Multi divergence lives in
+            // `multi_objects`, invisible to a `data[]` compare
+            // (angr-op0dn.11.2.2).
+            let s_data = sp.load_concrete(0, PAGE_SIZE as u16);
+            let o_data = op.load_concrete(0, PAGE_SIZE as u16);
+
+            if s_data == o_data
+                && !sp.has_symbolic()
+                && !op.has_symbolic()
+                && !sp.has_multi()
+                && !op.has_multi()
+            {
+                continue;
             }
+
+            for i in 0..PAGE_SIZE as usize {
+                let s_byte = s_data[i];
+                let o_byte = o_data[i];
+
+                let s_sym = sp.has_symbolic() && sp.is_symbolic(i as u16);
+                let o_sym = op.has_symbolic() && op.is_symbolic(i as u16);
+                let s_multi = sp.has_multi() && sp.is_multi(i as u16);
+                let o_multi = op.has_multi() && op.is_multi(i as u16);
+
+                // A byte contributes nothing only when it is plain
+                // concrete on both arms AND the bytes are equal.
+                if !s_sym && !o_sym && !s_multi && !o_multi && s_byte == o_byte {
+                    continue;
+                }
+
+                // overflow-ok: `Add<u64> for Address` is `wrapping_add`
+                // and `i` is a page offset, so `i < PAGE_SIZE`.
+                let addr = base_addr + i as u64;
+
+                // Both-Multi lazy union (design-doc merge rule): keep
+                // the result a Multi cell, guarding each arm's
+                // alternatives so exactly one arm's chain is live per
+                // model. The page's concrete byte is a don't-care
+                // default: exactly one arm's guard is true per
+                // model, so the else-leaf is never selected.
+                if s_multi && o_multi {
+                    let not_cond = merge_cond_other.not();
+                    let sp_pl = self
+                        .multi_objects
+                        .get(&addr)
+                        .expect("s_multi implies a payload");
+                    let op_pl = other
+                        .multi_objects
+                        .get(&addr)
+                        .expect("o_multi implies a payload");
+                    let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len());
+                    for alt in sp_pl.alternatives() {
+                        alts.push(MultiAlternative::new(
+                            not_cond.and(&alt.cond),
+                            alt.value.clone(),
+                        ));
+                    }
+                    for alt in op_pl.alternatives() {
+                        alts.push(MultiAlternative::new(
+                            merge_cond_other.and(&alt.cond),
+                            alt.value.clone(),
+                        ));
+                    }
+                    multi_ops.push((addr, MultiPayload::from_alternatives(alts)));
+                    continue;
+                }
+
+                // Otherwise collapse any Multi side to a BV and ITE it
+                // against the other side (concrete / plain-symbolic).
+                let self_val = Self::merge_byte_value(
+                    &self.symbolic_objects,
+                    &self.symbolic_spans,
+                    &self.multi_objects,
+                    addr,
+                    s_byte,
+                    s_sym,
+                    s_multi,
+                    self.endness,
+                );
+                let other_val = Self::merge_byte_value(
+                    &other.symbolic_objects,
+                    &other.symbolic_spans,
+                    &other.multi_objects,
+                    addr,
+                    o_byte,
+                    o_sym,
+                    o_multi,
+                    other.endness,
+                );
+
+                let ite_val = merge_cond_other.ite(&other_val, &self_val);
+                merge_ops.push((page_num, addr, ite_val, s_multi));
+            }
+        }
+
+        // Install the zero stand-ins for other-only pages first, so the
+        // byte apply below marks their merged bytes symbolic.
+        for (page_num, page) in pages_to_add {
+            self.pages.insert(page_num, page);
+            merged = true;
         }
 
         // Apply collected merge operations
@@ -222,17 +224,17 @@ impl SymbolicMemory {
             if s_was_multi {
                 self.clear_multi_at(addr);
             }
+            // Split any wider object covering `addr` into per-byte lanes before
+            // the 8-bit ITE replaces this byte, so no stale wide entry or span
+            // outlives the walk. Every byte of such an object sits on a walked
+            // page, so its other lanes are replaced in turn.
+            self.retire_symbolic_overlapping(addr, 1);
             self.symbolic_objects.insert(addr, ite_val);
             self.symbolic_spans.insert(addr, (addr, 8));
             let offset_in_page = addr.page_offset();
             if let Some(page) = self.pages.get_mut(&page_num) {
                 page.mark_symbolic(offset_in_page, 1);
             }
-            merged = true;
-        }
-
-        for (page_num, page) in pages_to_add {
-            self.pages.insert(page_num, page);
             merged = true;
         }
 
@@ -244,81 +246,6 @@ impl SymbolicMemory {
         for (addr, payload) in multi_ops {
             self.set_multi_alternatives(addr, payload);
             merged = true;
-        }
-
-        // Merge symbolic objects from other that aren't page-based
-        for (&addr, other_obj) in &other.symbolic_objects {
-            let width = other_obj.width();
-            let byte_count = u64::from(width / 8);
-            if let im::hashmap::Entry::Vacant(e) = self.symbolic_objects.entry(addr) {
-                e.insert(other_obj.clone());
-                // `symbolic_spans` is the *reverse* index: an object wider than
-                // one byte owns an entry per covered byte, not just its base
-                // (see `import_symbolic_value`). Adopting the object while
-                // indexing only the base left every interior byte of an
-                // other-only wide object symbolic in the page bitmap but
-                // unresolvable through either sidecar, so a load of `addr + 1`
-                // fell through to the page's concrete placeholder — the same
-                // adopt-the-bitmap-forget-the-sidecar shape as `multi_objects`,
-                // one map over (angr-c7xno.50, angr-91vj9.3).
-                self.symbolic_spans.insert(addr, (addr, width));
-                for i in 1..byte_count {
-                    // overflow-ok: `Address` arithmetic is wrapping (see above).
-                    self.symbolic_spans.insert(addr + i, (addr, width));
-                }
-                merged = true;
-                continue;
-            }
-            // Base key Occupied, so the whole-object adopt above is off the
-            // table — but "occupied" does not imply "resolvable". An object
-            // spanning a page boundary whose *base* page is both-present and
-            // whose *tail* page is other-only hits exactly that: the
-            // both-present byte walk replaced the base key with a fresh 8-bit
-            // ITE, while the tail page arrived through the adopt-wholesale arm,
-            // which copies `is_symbolic` (and `multi_objects`) but not
-            // `symbolic_objects`/`symbolic_spans`. The tail bytes end up
-            // bitmap-symbolic with nothing resolving them, and a load of the
-            // wide value fails outright (angr-fs8kb.68).
-            //
-            // Repair per byte rather than by re-pointing `symbolic_spans` at
-            // `addr`: the occupying base entry is 8 bits wide, so a span
-            // claiming `width` there fails `symbolic_byte_lane`'s width check.
-            // An 8-bit self-referential entry per byte is the same shape the
-            // both-present walk installs for its own bytes.
-            for i in 1..byte_count {
-                // overflow-ok: `Address` arithmetic is wrapping (see above).
-                let byte_addr = addr + i;
-                // The page bitmap is authoritative (`invariant-page-bitmap-authoritative`):
-                // only a byte `self` actually marks symbolic wants a sidecar
-                // entry, and only one `self` cannot already resolve.
-                // A Multi byte is deliberately excluded: `Multi` supersedes
-                // `Symbolic` (`invariant-multi-vs-symbolic-cell-states`), so
-                // installing a `symbolic_objects` entry beside a live payload
-                // would manufacture the inconsistent fourth cell state.
-                if !self.bytes_all_marked_symbolic(byte_addr, 1)
-                    || self.multi_objects.contains_key(&byte_addr)
-                {
-                    continue;
-                }
-                if Self::symbolic_byte_lane(
-                    &self.symbolic_objects,
-                    &self.symbolic_spans,
-                    byte_addr,
-                    self.endness,
-                )
-                .is_some()
-                {
-                    continue;
-                }
-                let Ok(lane_offset) = u32::try_from(i) else {
-                    continue;
-                };
-                if let Some(lane) = Self::extract_byte_lane(other_obj, lane_offset, other.endness) {
-                    self.symbolic_objects.insert(byte_addr, lane);
-                    self.symbolic_spans.insert(byte_addr, (byte_addr, 8));
-                    merged = true;
-                }
-            }
         }
 
         // Merge pending writes with merge-condition guards
@@ -355,7 +282,7 @@ impl SymbolicMemory {
         // the only treatment consistent with its meaning:
         //
         // * `dirty_pages`: a page `other` wrote — including an other-only page
-        //   adopted wholesale just above — is dirty in the merged state too.
+        //   walked against the zero stand-in above — is dirty in the merged state too.
         //   Dropping it strands the write: `_replay_rust_dirty_pages` never
         //   pushes the page to the Python mirror, which then reads stale bytes.
         // * `lazy_regions`: `RustSimState::add_memory_lazy_region` runs

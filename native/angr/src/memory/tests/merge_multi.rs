@@ -188,13 +188,13 @@ fn test_pending_writes_are_merge_guarded() {
     );
 }
 
-/// A page that exists only in `other` and carries Multi cells must bring its
-/// `multi_objects` payloads along (angr-c7xno.50). The page clone copies the
-/// `multi_bitmap`, but the payload table is flat on `SymbolicMemory`, so
-/// without an explicit copy the adopted bit points at nothing: `range_has_multi`
-/// reports false and the load silently returns the page's stale concrete byte.
+/// A Multi cell on a page only `other` holds merges against `self`'s zero
+/// stand-in page like any Multi-vs-concrete byte: it collapses to a guarded
+/// ITE, so `self`'s arm reads 0 and `other`'s arm reads the cell
+/// (angr-vmi2l.187). An adopted Multi bit with no payload (angr-c7xno.50) can
+/// no longer arise, since nothing is adopted unwalked.
 #[test]
-fn test_merge_adopts_multi_cells_from_other_only_page() {
+fn test_merge_other_only_multi_cell_is_guarded() {
     let addr = Address(ADDR);
 
     // `a` maps a *different* page, so ADDR's page exists only in `b`.
@@ -207,35 +207,24 @@ fn test_merge_adopts_multi_cells_from_other_only_page() {
         MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x5a)]),
     );
 
-    assert!(
-        a.merge(&b, &RustBV::symbol("m", 1)),
-        "adopting a page counts as a merge"
-    );
-
-    let page = a.pages.get(&addr.page_num()).expect("page adopted");
-    assert!(
-        page.is_multi(addr.page_offset()),
-        "adopted page keeps its Multi bit"
-    );
-    let payload = a
-        .get_multi_alternatives(addr)
-        .expect("payload copied alongside the adopted page");
-    assert_eq!(payload.len(), 1, "the arm's single alternative survives");
-
-    let v = a.load_concrete(ADDR, 1).unwrap();
-    assert_eq!(
-        v.as_u64(),
-        Some(0x5a),
-        "load dispatches through the Multi cell, not the page's concrete default"
-    );
+    for (m, want) in [(1, 0x5a), (0, 0)] {
+        let mut merged = a.clone();
+        assert!(merged.merge(&b, &RustBV::concrete(m, 1)));
+        assert!(
+            merged.get_multi_alternatives(addr).is_none(),
+            "the cell collapses into the merge ITE"
+        );
+        let v = merged.load_concrete(ADDR, 1).unwrap();
+        assert_eq!(v.as_u128(), Some(want), "m=={m}");
+    }
 }
 
-/// The second half of the orphaned-payload bug (angr-c7xno.50): after adopting an other-only page with a
-/// Multi cell, a *second* merge whose third state is Multi at the same byte
-/// hits the `s_multi implies a payload` expect. With the payload orphaned that
-/// expect panics; with it copied the union merges normally.
+/// A second merge over a byte the first merge carried from an other-only
+/// Multi page, against a third state that is Multi there, keeps both values
+/// on their own arms (angr-c7xno.50 shape; it used to panic on an orphaned
+/// payload).
 #[test]
-fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
+fn test_second_level_merge_over_other_only_multi_page() {
     let addr = Address(ADDR);
 
     let mut a = SymbolicMemory::new(Endness::Little);
@@ -253,18 +242,12 @@ fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
         addr,
         MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x77)]),
     );
-    // Pre-fix this panics inside merge on the orphaned `self.multi_objects`.
-    assert!(a.merge(&c, &RustBV::concrete(0, 1)));
-
-    let merged = a
-        .get_multi_alternatives(addr)
-        .expect("byte stays a Multi cell after the second merge");
-    assert_eq!(merged.len(), 2, "both arms' alternatives are unioned");
-    assert_eq!(
-        merged.collapse(0x00).as_u128(),
-        Some(0x5a),
-        "m==0 keeps the value adopted by the first merge"
-    );
+    for (m, want) in [(0, 0x5a), (1, 0x77)] {
+        let mut merged = a.clone();
+        assert!(merged.merge(&c, &RustBV::concrete(m, 1)));
+        let v = merged.load_concrete(ADDR, 1).unwrap();
+        assert_eq!(v.as_u128(), Some(want), "m=={m}");
+    }
 }
 
 /// Collapsing a self-side Multi cell into a plain merge ITE must also *retire*

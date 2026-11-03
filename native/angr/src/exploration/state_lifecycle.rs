@@ -195,6 +195,8 @@ impl RustExplorationManager {
             }
         }
 
+        self.fetch_host_pages_for_merge(&mut states);
+
         // Create merge conditions: one 1-bit BVS per state
         let solver = states[0].solver();
         let merge_conditions: Vec<RustBV> = (0..states.len())
@@ -233,6 +235,57 @@ impl RustExplorationManager {
         self.states_merged_native += state_ids.len() as u64;
 
         Ok(merged_id)
+    }
+
+    /// Map into each merge input every page another input holds that it
+    /// lacks and the host can serve (angr-vmi2l.187).
+    ///
+    /// `SymbolicMemory::merge` reads a page one arm never materialized as the
+    /// zero page. That is what the engine maps for a host-declined page, but a
+    /// servable page holds backer bytes the absent arm would have fetched on
+    /// its first touch, so fetch them now and let the merge compare real
+    /// content. A failed fetch leaves the zero stand-in and warns.
+    fn fetch_host_pages_for_merge(&self, states: &mut [RustSimState]) {
+        let Some(callbacks) = self.callbacks.as_ref() else {
+            return;
+        };
+        if !callbacks.has_fetch_page() {
+            return;
+        }
+        let all_pages: std::collections::BTreeSet<u64> = states
+            .iter()
+            .flat_map(|s| s.memory().pages().keys().copied())
+            .collect();
+        for state in states.iter_mut() {
+            let missing: Vec<u64> = all_pages
+                .iter()
+                .filter(|p| !state.memory().pages().contains_key(p))
+                .map(|&p| crate::memory::PageIndex::from_raw(p).base_addr())
+                .filter(|&addr| callbacks.python_can_serve_page(addr))
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            match callbacks.call_batch_fetch_pages(&missing) {
+                Ok(pages) => {
+                    for ((data, perms, is_mapped), addr) in pages.into_iter().zip(missing) {
+                        if is_mapped {
+                            state.memory_mut().map_page(
+                                addr,
+                                data,
+                                crate::memory::Permission::from_bits(perms),
+                            );
+                        }
+                    }
+                }
+                Err(e) => log::warn!(
+                    "merge: fetching {} host page(s) for state {} failed ({e}); those pages \
+                     merge against the zero page",
+                    missing.len(),
+                    state.state_id()
+                ),
+            }
+        }
     }
 
     pub(crate) fn _move_states(

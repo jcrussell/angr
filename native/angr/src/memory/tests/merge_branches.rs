@@ -6,8 +6,8 @@
 //! walk, `merge_multi` the Multi-on-both-arms lazy cell, `merge_sidecars` the
 //! per-field `#[merge_policy]` contract, `merge_cost_shape` the cost-shape
 //! spike measurement. This file covers the plain cases those assume:
-//! per-byte ITE selection, page-only-in-other adoption, non-page
-//! symbolic-object union, and pending-write extension.
+//! per-byte ITE selection, the guarded one-arm page walk, and pending-write
+//! extension.
 
 use super::super::*;
 
@@ -67,11 +67,18 @@ fn test_merge_selects_other_vs_self_per_byte() {
 // merge: structural branches (no ITE eval)
 // ---------------------------------------------------------------------------
 
-/// A page present only in `other` is adopted wholesale into `self.pages`,
-/// preserving its concrete contents.
-#[test]
-fn test_merge_adopts_page_only_in_other() {
+/// Evaluate `v` with the merge condition pinned to `arm` (1 = `other`).
+fn eval_on_arm(cond: &RustBV, arm: u128, v: &RustBV) -> Option<u64> {
+    let ctx = SymContext::new();
+    ctx.assume_true(&cond.eq(&RustBV::concrete(arm, 1)));
+    ctx.eval(v).map(|x| x as u64)
+}
 
+/// A page present only in `other` stays mapped in the merged memory, but its
+/// bytes are guarded: `self` never materialized it, so on `self`'s paths it
+/// reads as the zero page (angr-vmi2l.187).
+#[test]
+fn test_merge_other_only_page_is_guarded() {
     let mut self_mem = SymbolicMemory::new(Endness::Little);
     self_mem.map(0x1000, 0x1000, Permission::RWX);
 
@@ -84,52 +91,38 @@ fn test_merge_adopts_page_only_in_other() {
     let cond = RustBV::symbol("c", 1);
     assert!(
         self_mem.merge(&other_mem, &cond),
-        "adopting a page must count as a merge"
+        "an other-only page must count as a merge"
     );
     assert!(
         self_mem.pages.contains_key(&(0x2000 >> 12)),
-        "page only in other must be adopted into self.pages"
+        "page only in other must stay mapped in self.pages"
     );
     let v = self_mem.load_concrete(0x2000, 1).unwrap();
-    assert_eq!(v.as_u64(), Some(0x42), "adopted page bytes must survive");
+    assert_eq!(eval_on_arm(&cond, 1, &v), Some(0x42), "other's arm keeps its byte");
+    assert_eq!(eval_on_arm(&cond, 0, &v), Some(0), "self's arm reads the zero page");
+    let untouched = self_mem.load_concrete(0x2001, 1).unwrap();
+    assert_eq!(untouched.as_u64(), Some(0), "a byte neither arm wrote stays concrete");
 }
 
-/// A symbolic object living at an address whose page is concrete-identical in
-/// both memories (so the per-byte loop short-circuits) is still unioned in via
-/// the final non-page symbolic-object pass, populating both
-/// `symbolic_objects` and `symbolic_spans`.
+/// A page present only in `self` is guarded the same way: on `other`'s paths
+/// it reads as the zero page, not as `self`'s write (angr-vmi2l.187).
 #[test]
-fn test_merge_unions_non_page_symbolic_object_from_other() {
-
+fn test_merge_self_only_page_is_guarded() {
     let mut self_mem = SymbolicMemory::new(Endness::Little);
-    self_mem.map(0x1000, 0x1000, Permission::RWX);
+    self_mem.map(0x2000, 0x1000, Permission::RWX);
+    let sym = RustBV::symbol("w", 16);
+    self_mem.store_concrete(0x2010, sym.clone()).unwrap();
 
-    let mut other_mem = SymbolicMemory::new(Endness::Little);
-    other_mem.map(0x1000, 0x1000, Permission::RWX);
-    // Insert a symbolic object WITHOUT marking the page symbolic, so
-    // op.has_symbolic() stays false and the (s_data==o_data) short-circuit
-    // skips the per-byte loop — leaving only the final union pass to copy it.
-    let sym = RustBV::symbol("ghost_obj", 8);
-    other_mem.symbolic_objects.insert(Address(0x1800), sym);
+    let other_mem = SymbolicMemory::new(Endness::Little);
 
     let cond = RustBV::symbol("c", 1);
-    assert!(
-        self_mem.merge(&other_mem, &cond),
-        "unioning a symbolic object must count as a merge"
-    );
-    assert!(
-        self_mem.symbolic_objects.contains_key(&Address(0x1800)),
-        "non-page symbolic object must be unioned into self.symbolic_objects"
-    );
-    let span = self_mem
-        .symbolic_spans
-        .get(&Address(0x1800))
-        .expect("symbolic_spans must gain the unioned object");
-    assert_eq!(
-        *span,
-        (Address(0x1800), 8),
-        "span must record (addr, width)"
-    );
+    assert!(self_mem.merge(&other_mem, &cond));
+    let v = self_mem.load_concrete(0x2010, 2).unwrap();
+    assert_eq!(eval_on_arm(&cond, 1, &v), Some(0), "other's arm reads the zero page");
+    let ctx = SymContext::new();
+    ctx.assume_true(&cond.eq(&RustBV::concrete(0, 1)));
+    ctx.assume_true(&sym.eq(&RustBV::concrete(0xBEEF, 16)));
+    assert_eq!(ctx.eval(&v), Some(0xBEEF), "self's arm keeps its write");
 }
 
 /// Pending writes present only in `other` extend `self.pending_writes`.

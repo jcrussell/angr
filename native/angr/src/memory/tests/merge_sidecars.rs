@@ -11,110 +11,48 @@
 //! survives a merge.
 //!
 //! The census test [`every_address_keyed_sidecar_survives_other_only_merge`]
-//! populates all of them at once on a page only `other` has — the shape that
-//! bypasses the both-present per-byte walk entirely — so a future sidecar
-//! added to `merge` incorrectly fails here even if it compiles. The
-//! single-map tests below pin down each one's specific failure mode.
+//! populates all of them at once on a page only `other` has. That page is
+//! walked against `self`'s zero stand-in (angr-vmi2l.187), so every populated
+//! byte must resolve to `other`'s value on `other`'s arm and to zero on
+//! `self`'s. The single-map tests below pin down each one's failure mode.
 
 use super::super::*;
 
 /// A page number neither memory touches by default.
 const OTHER_ONLY_PAGE: u64 = 0x9000;
 
-fn multi_payload(name: &str, value: u8) -> MultiPayload {
-    MultiPayload::from_alternatives(vec![MultiAlternative::new(
-        RustBV::symbol(name, 1),
-        RustBV::concrete(value as u128, 8),
-    )])
-}
-
-/// angr-c7xno.50 regression: a Multi cell living on a page only `other` has.
-/// The page clone carries the `multi_bitmap` bit; the payload lives in the flat
-/// `multi_objects` side table and must be copied explicitly.
-#[test]
-fn other_only_page_adopts_multi_objects_payload() {
-    let addr = Address(OTHER_ONLY_PAGE);
-
-    let mut a = SymbolicMemory::new(Endness::Little);
-    let mut b = SymbolicMemory::new(Endness::Little);
-    b.set_multi_alternatives(addr, multi_payload("mo", 0x41));
-
-    let cond = RustBV::symbol("m", 1);
-    a.merge(&b, &cond);
-
-    assert!(
-        a.get_multi_alternatives(addr).is_some(),
-        "adopted Multi bit must arrive with its multi_objects payload"
-    );
-    // A second merge is where the missing payload used to surface as a panic
-    // on the `s_multi implies a payload` expect.
-    let mut c = SymbolicMemory::new(Endness::Little);
-    c.set_multi_alternatives(addr, multi_payload("mo2", 0x42));
-    a.merge(&c, &cond);
-    assert_eq!(
-        a.get_multi_alternatives(addr)
-            .expect("still Multi after the second merge")
-            .len(),
-        2,
-        "second merge unions both arms' alternatives"
-    );
-}
-
-/// `multi_versions` is the fingerprint sidecar the Phase 4.1 wider-load cache
-/// keys on. An adopted Multi cell must bump it, or a cached pre-merge load of
-/// that range would still look fresh.
-#[test]
-fn other_only_page_adopts_multi_versions_entry() {
-    let addr = Address(OTHER_ONLY_PAGE);
-
-    let mut a = SymbolicMemory::new(Endness::Little);
-    assert!(!a.multi_versions.contains_key(&addr));
-
-    let mut b = SymbolicMemory::new(Endness::Little);
-    b.set_multi_alternatives(addr, multi_payload("mv", 0x43));
-
-    a.merge(&b, &RustBV::symbol("m", 1));
-    assert!(
-        a.multi_versions.contains_key(&addr),
-        "adopting a Multi cell must bump the byte's version"
-    );
-}
-
-/// `symbolic_spans` is the reverse index: a wider-than-one-byte symbolic object
-/// owns an entry per covered byte. Adopting the object while indexing only its
-/// base left the interior bytes symbolic in the page bitmap but unresolvable
-/// through either sidecar (angr-91vj9.3).
-#[test]
-fn other_only_page_adopts_full_symbolic_span_range() {
+/// Evaluate `v` with the merge condition `m` pinned to `arm` (1 = `other`),
+/// plus any `extra` assumptions.
+fn eval_on_arm(m: &RustBV, arm: u128, v: &RustBV, extra: &[RustBV]) -> Option<u128> {
     let ctx = SymContext::new();
+    ctx.assume_true(&m.eq(&RustBV::concrete(arm, 1)));
+    for e in extra {
+        ctx.assume_true(e);
+    }
+    ctx.eval(v)
+}
+
+/// A wide symbolic object on a page only `other` holds: every byte resolves
+/// (the reverse-span shape of angr-91vj9.3), and the whole object reads as
+/// `other`'s value on `other`'s arm and as zero on `self`'s (angr-vmi2l.187).
+#[test]
+fn other_only_page_wide_object_is_guarded() {
     let addr = Address(OTHER_ONLY_PAGE);
+    let wide = RustBV::symbol("wide", 32);
 
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(addr, 0x1000, Permission::RWX);
-    b.store_concrete(addr, RustBV::symbol("wide", 32))
+    b.store_concrete(addr, wide.clone())
         .expect("wide symbolic store");
 
     let mut a = SymbolicMemory::new(Endness::Little);
-    a.merge(&b, &RustBV::symbol("m", 1));
+    let m = RustBV::symbol("m", 1);
+    a.merge(&b, &m);
 
-    assert!(
-        a.get_symbolic_object(addr).is_some(),
-        "base object is adopted"
-    );
-    for i in 1..4u64 {
-        let byte = addr + i;
-        assert_eq!(
-            a.symbolic_spans.get(&byte).copied(),
-            Some((addr, 32)),
-            "interior byte {i} of the adopted object must be span-indexed"
-        );
-    }
-    // The whole object must read back symbolically rather than falling through
-    // to the page's concrete placeholder bytes.
-    let loaded = a
-        .load(RustBV::concrete(addr.raw() as u128, 64), 4, &ctx)
-        .expect("load of the adopted object");
-    assert!(loaded.is_symbolic(), "adopted object stays symbolic");
+    let loaded = a.load_concrete(addr, 4).expect("load of the merged object");
+    let pin = wide.eq(&RustBV::concrete(0x1234_5678, 32));
+    assert_eq!(eval_on_arm(&m, 1, &loaded, std::slice::from_ref(&pin)), Some(0x1234_5678));
+    assert_eq!(eval_on_arm(&m, 0, &loaded, &[pin]), Some(0));
 }
 
 /// The accumulating sidecars: sets that grow monotonically over a branch's life
@@ -149,14 +87,17 @@ fn merge_unions_the_accumulating_sidecars() {
         a.is_in_lazy_region(0x20u64) && a.is_in_lazy_region(0x30u64),
         "lazy regions union across arms"
     );
+    // The record unions; the byte itself is now a merge ITE, so it no
+    // longer counts as an unmodified import and is exported (angr-ccp2w).
     assert!(
-        a.is_imported_addr(0x5008u64),
+        a.imported_addrs.contains_key(&Address(0x5008)),
         "imported-address provenance unions across arms"
     );
 }
 
 /// Census: one merge, every address-keyed sidecar populated only on `other`,
-/// on a page `self` does not have. Any sidecar the merge forgets shows up here.
+/// on a page `self` does not have. Every populated byte must read back as
+/// `other`'s value on `other`'s arm and as zero on `self`'s.
 #[test]
 fn every_address_keyed_sidecar_survives_other_only_merge() {
     let base = Address(OTHER_ONLY_PAGE);
@@ -164,33 +105,43 @@ fn every_address_keyed_sidecar_survives_other_only_merge() {
     let sym_addr = base + 0x40; // symbolic_objects + symbolic_spans
     let imported_addr = base + 0x80; // imported_addrs
 
+    let multi_cond = RustBV::symbol("census_mc", 1);
+    let wide = RustBV::symbol("census_wide", 32);
+    let imp = RustBV::symbol("census_imp", 16);
+
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(base, 0x1000, Permission::RWX);
-    b.set_multi_alternatives(multi_addr, multi_payload("census", 0x7f));
-    b.store_concrete(sym_addr, RustBV::symbol("census_wide", 32))
+    b.set_multi_alternatives(
+        multi_addr,
+        MultiPayload::from_alternatives(vec![MultiAlternative::new(
+            multi_cond.clone(),
+            RustBV::concrete(0x7f, 8),
+        )]),
+    );
+    b.store_concrete(sym_addr, wide.clone())
         .expect("wide symbolic store");
-    b.import_symbolic_value(imported_addr, RustBV::symbol("census_imp", 16), None)
+    b.import_symbolic_value(imported_addr, imp.clone(), None)
         .expect("import");
 
     let mut a = SymbolicMemory::new(Endness::Little);
-    a.merge(&b, &RustBV::symbol("m", 1));
+    let m = RustBV::symbol("m", 1);
+    a.merge(&b, &m);
 
-    assert!(
-        a.get_multi_alternatives(multi_addr).is_some(),
-        "multi_objects"
-    );
-    assert!(a.multi_versions.contains_key(&multi_addr), "multi_versions");
-    assert!(a.get_symbolic_object(sym_addr).is_some(), "symbolic_objects");
-    assert_eq!(
-        a.symbolic_spans.get(&(sym_addr + 3)).copied(),
-        Some((sym_addr, 32)),
-        "symbolic_spans covers every byte of the adopted object"
-    );
-    assert!(
-        a.get_symbolic_object(imported_addr).is_some(),
-        "imported object value"
-    );
-    assert!(a.is_imported_addr(imported_addr), "imported_addrs");
+    let pins = [
+        multi_cond.eq(&RustBV::concrete(1, 1)),
+        wide.eq(&RustBV::concrete(0xa1b2_c3d4, 32)),
+        imp.eq(&RustBV::concrete(0x5eed, 16)),
+    ];
+    for (addr, size, want) in [
+        (multi_addr, 1, 0x7f),
+        (sym_addr, 4, 0xa1b2_c3d4),
+        (imported_addr, 2, 0x5eed),
+    ] {
+        let v = a.load_concrete(addr, size).expect("merged byte resolves");
+        assert_eq!(eval_on_arm(&m, 1, &v, &pins), Some(want), "{addr:?} on other's arm");
+        assert_eq!(eval_on_arm(&m, 0, &v, &pins), Some(0), "{addr:?} on self's arm");
+    }
+    assert!(a.imported_addrs.contains_key(&imported_addr), "imported_addrs");
     assert!(
         a.get_dirty_pages().contains(&(OTHER_ONLY_PAGE >> 12)),
         "dirty_pages"
@@ -273,55 +224,41 @@ fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
     );
 }
 
-/// angr-fs8kb.68 regression: a wide symbolic object straddling a page boundary
-/// where the **base** page is both-present and the **tail** page is other-only.
-///
-/// Neither existing case covers it. The both-present per-byte walk rewrites the
-/// object's base key with a fresh 8-bit ITE, which makes the adopt-wholesale
-/// backfill's `Entry::Vacant` test fail — so the tail bytes arrive
-/// bitmap-symbolic (the page clone carries `is_symbolic`) with no
-/// `symbolic_objects`/`symbolic_spans` entry resolving them, and the load fails
-/// outright instead of returning the merged value.
+/// angr-fs8kb.68 / angr-vmi2l.187: a wide symbolic object straddling a page
+/// boundary where the **base** page is both-present and the **tail** page is
+/// other-only. Both pages are walked, so every byte of the object is a
+/// guarded lane: on `other`'s arm the whole object reads back, on `self`'s
+/// arm the base bytes keep `self`'s write and the tail reads as zero (it is
+/// on a page `self` never mapped), not as `other`'s raw lanes.
 #[test]
 fn split_page_object_backfills_tail_bytes_when_base_key_is_occupied() {
-    let ctx = SymContext::new();
     // 0x8ffe..0x9002: two bytes on page 0x8, two on page 0x9.
     let base = Address(0x8ffe);
+    let straddle = RustBV::symbol("straddle", 32);
 
     let mut b = SymbolicMemory::new(Endness::Little);
     b.map(0x8000u64, 0x2000, Permission::RWX);
-    b.store_concrete(base, RustBV::symbol("straddle", 32))
+    b.store_concrete(base, straddle.clone())
         .expect("wide symbolic store across the page boundary");
 
-    // `self` has only the base page, so the tail page takes the
-    // adopt-wholesale arm while the base page takes the byte walk.
+    // `self` has only the base page.
     let mut a = SymbolicMemory::new(Endness::Little);
     a.map(0x8000u64, 0x1000, Permission::RWX);
     a.store_concrete(base, RustBV::concrete(0xef, 8))
         .expect("self's concrete write on the base page");
 
-    a.merge(&b, &RustBV::symbol("m", 1));
+    let m = RustBV::symbol("m", 1);
+    a.merge(&b, &m);
 
-    for i in 2..4u64 {
-        let byte = base + i;
-        assert!(
-            a.bytes_all_marked_symbolic(byte, 1),
-            "tail byte {i} is bitmap-symbolic via the adopted page"
-        );
-        assert!(
-            a.symbolic_spans.contains_key(&byte),
-            "tail byte {i} must be span-indexed, not left unresolvable"
-        );
-        assert!(
-            a.get_symbolic_object(byte).is_some(),
-            "tail byte {i} must resolve to a symbolic lane"
+    let loaded = a.load_concrete(base, 4).expect("load of the straddling object");
+    let pin = [straddle.eq(&RustBV::concrete(0x1122_3344, 32))];
+    assert_eq!(eval_on_arm(&m, 1, &loaded, &pin), Some(0x1122_3344));
+    assert_eq!(eval_on_arm(&m, 0, &loaded, &pin), Some(0xef), "self's base write, zero tail");
+    for i in 0..4u64 {
+        assert_eq!(
+            a.symbolic_spans.get(&(base + i)).copied(),
+            Some((base + i, 8)),
+            "byte {i} is an 8-bit merge lane; no stale wide span survives"
         );
     }
-
-    // The end-to-end symptom: a load of the tail bytes used to fail rather
-    // than return the merged value.
-    let loaded = a
-        .load(RustBV::concrete(0x9000, 64), 2, &ctx)
-        .expect("tail-page load of the straddling object");
-    assert!(loaded.is_symbolic(), "merged tail bytes stay symbolic");
 }
