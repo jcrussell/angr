@@ -151,7 +151,7 @@ fn openat_relative_path_with_at_fdcwd_allocates_fd() {
         .call(
             &mut state,
             &[
-                RustBV::concrete(AT_FDCWD_UNSIGNED as u128, 64),
+                RustBV::concrete(TEST_AT_FDCWD.into(), 64),
                 RustBV::concrete(0x2000, 64),
                 RustBV::concrete(2, 64), // O_RDWR
                 RustBV::concrete(0, 64),
@@ -162,7 +162,25 @@ fn openat_relative_path_with_at_fdcwd_allocates_fd() {
 }
 
 #[test]
-fn openat_relative_path_without_at_fdcwd_returns_minus_one() {
+fn openat_relative_path_with_sign_extended_at_fdcwd_allocates_fd() {
+    let mut state = state_with_path(b"flag.txt");
+
+    let outcome = NativeOpenatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_SEXT.into(), 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(2, 64), // O_RDWR
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("openat ok");
+    assert_eq!(expect_continue(outcome), 3);
+}
+
+#[test]
+fn openat_relative_path_without_at_fdcwd_falls_back() {
     let mut state = state_with_path(b"flag.txt");
     let prev_next_fd = state.file_system_ref().next_fd();
 
@@ -176,8 +194,8 @@ fn openat_relative_path_without_at_fdcwd_returns_minus_one() {
                 RustBV::concrete(0, 64),
             ],
         )
-        .expect("openat ok");
-    assert_eq!(expect_continue(outcome), NEG_ONE);
+        .expect_err("openat of a relative path against a real dirfd");
+    assert_dirfd_fallback(outcome);
     // No fd should have been allocated.
     assert_eq!(state.file_system_ref().next_fd(), prev_next_fd);
 }
@@ -437,7 +455,28 @@ fn faccessat_absolute_path_ignores_dirfd() {
 }
 
 #[test]
-fn faccessat_relative_path_non_atfdcwd_returns_minus_one() {
+fn faccessat_relative_path_with_sign_extended_at_fdcwd_queries_path() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state
+        .file_system()
+        .register_known_path("local.txt".to_string());
+    stage_path(&mut state, 0x2000, b"local.txt");
+
+    let out = NativeFaccessatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_SEXT.into(), 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("faccessat ok");
+    assert_eq!(expect_continue(out), 0);
+}
+
+#[test]
+fn faccessat_relative_path_non_atfdcwd_falls_back() {
     // Mirrors NativeOpenatSyscall: we do not model dirfd directories,
     // so relative paths with a non-AT_FDCWD dirfd cannot be resolved.
     let mut state = RustSimState::new("amd64").expect("state");
@@ -457,8 +496,8 @@ fn faccessat_relative_path_non_atfdcwd_returns_minus_one() {
                 RustBV::concrete(0, 64),
             ],
         )
-        .expect("faccessat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
+        .expect_err("faccessat of a relative path against a real dirfd");
+    assert_dirfd_fallback(out);
 }
 
 #[test]

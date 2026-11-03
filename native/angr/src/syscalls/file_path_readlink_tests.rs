@@ -217,7 +217,7 @@ fn readlinkat_registered_symlink_writes_target() {
         .call(
             &mut state,
             &[
-                RustBV::concrete(AT_FDCWD_UNSIGNED as u128, 64),
+                RustBV::concrete(TEST_AT_FDCWD.into(), 64),
                 RustBV::concrete(0x2000, 64),
                 RustBV::concrete(0x3000, 64),
                 RustBV::concrete(256, 64),
@@ -449,10 +449,32 @@ fn readlinkat_absolute_path_ignores_dirfd() {
 }
 
 #[test]
-fn readlinkat_relative_path_non_atfdcwd_returns_minus_one() {
-    // Relative path with arbitrary dirfd: still -1 (would be -1
-    // anyway, but the short-circuit branch exists for symmetry with
-    // faccessat / openat).
+fn readlinkat_relative_symlink_with_sign_extended_at_fdcwd_writes_target() {
+    let target = b"/at/destination";
+    let mut state = state_with_path(b"atlink");
+    state
+        .file_system()
+        .add_symlink("atlink".to_string(), target.to_vec());
+    state.map_memory(0x3000, 0x1000, Permission::RWX);
+
+    let out = NativeReadlinkatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_SEXT.into(), 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(256, 64),
+            ],
+        )
+        .expect("readlinkat ok");
+    assert_eq!(expect_continue(out), target.len() as u64);
+}
+
+#[test]
+fn readlinkat_relative_path_non_atfdcwd_falls_back() {
+    // Relative path with a real dirfd: not modeled, Python decides
+    // (same `dirfd_allows` policy as faccessat / openat).
     let mut state = state_with_path(b"relative/path");
 
     let out = NativeReadlinkatSyscall
@@ -465,8 +487,8 @@ fn readlinkat_relative_path_non_atfdcwd_returns_minus_one() {
                 RustBV::concrete(256, 64),
             ],
         )
-        .expect("readlinkat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
+        .expect_err("readlinkat of a relative path against a real dirfd");
+    assert_dirfd_fallback(out);
 }
 
 #[test]

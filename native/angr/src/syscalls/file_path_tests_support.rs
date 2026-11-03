@@ -61,9 +61,25 @@ pub(super) fn assert_memory_err(err: SyscallError) {
     }
 }
 
-/// `AT_FDCWD` reinterpreted as unsigned 64-bit — same constant the
-/// handler matches on. Kept inline so the test stays self-contained.
-pub(super) const TEST_AT_FDCWD: u64 = AT_FDCWD_UNSIGNED;
+/// `AT_FDCWD` as a 32-bit `int` zero-extended to the register — same
+/// constant the handler matches on.
+pub(super) const TEST_AT_FDCWD: u64 = AT_FDCWD_UNSIGNED as u64;
+
+/// `AT_FDCWD` sign-extended to a 64-bit register, as aarch64 glibc
+/// (`mov x0, #-0x64`), musl and Go pass it (angr-vmi2l.135).
+pub(super) const TEST_AT_FDCWD_SEXT: u64 = 0xffff_ffff_ffff_ff9c;
+
+/// Assert that `err` is the `dirfd_allows` refusal of a relative path
+/// against a real dirfd, which routes the syscall to Python.
+pub(super) fn assert_dirfd_fallback(err: SyscallError) {
+    match err {
+        SyscallError::Other(msg) => assert!(
+            msg.contains("against dirfd"),
+            "expected the dirfd fallback, got {msg:?}",
+        ),
+        other => panic!("expected Other, got {other:?}"),
+    }
+}
 
 /// Read `size` bytes of LE-packed u64 from memory at `addr`.
 pub(super) fn read_u64_le(state: &RustSimState, addr: u64) -> u64 {

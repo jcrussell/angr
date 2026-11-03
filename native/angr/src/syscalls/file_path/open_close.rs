@@ -70,10 +70,9 @@ impl NativeSyscall for NativeOpenSyscall {
 
 /// `openat(dirfd, pathname, flags, mode) → fd` — like `open`, plus
 /// the `dirfd` arg for relative paths. We only handle absolute paths
-/// and the `AT_FDCWD` sentinel (mirroring
-/// `procedures/linux_kernel/openat.py`, which returns `-1` for any
-/// other dirfd). The relative-path-from-dirfd case is not modeled in
-/// Python either.
+/// and the `AT_FDCWD` sentinel; a relative path against any other
+/// dirfd falls back to Python (`dirfd_allows`), whose
+/// `procedures/linux_kernel/openat.py` does not model it either.
 pub(crate) struct NativeOpenatSyscall;
 
 impl NativeSyscall for NativeOpenatSyscall {
@@ -99,9 +98,7 @@ impl NativeSyscall for NativeOpenatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        if !dirfd_allows(&path, dirfd) {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
+        dirfd_allows(&path, dirfd, "openat")?;
         if !state
             .file_system_ref()
             .native_open_decides(&path, FdFlags::from_posix(flags as u32))

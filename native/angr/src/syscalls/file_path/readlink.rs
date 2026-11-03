@@ -26,7 +26,7 @@
 //! a symbolic path byte routes through `SyscallError::SymbolicArgument`
 //! and falls back to the Python `syscall_stub`. `readlinkat` also reads
 //! `dirfd` and applies the `openat` policy (absolute / `AT_FDCWD` →
-//! resolve; relative + other dirfd → `-1`) even though the dirfd
+//! resolve; relative + other dirfd → Python, via `dirfd_allows`) even though the dirfd
 //! ultimately does not affect the return — keeps the handler shape
 //! symmetric with `NativeFaccessatSyscall` / `NativeOpenatSyscall` and
 //! falls back on symbolic dirfd.
@@ -80,7 +80,7 @@ impl NativeSyscall for NativeReadlinkSyscall {
 /// `readlinkat(dirfd, pathname, buf, bufsiz) → ssize_t` — clone of
 /// `readlink` with `openat`-style dirfd handling. Absolute paths and
 /// `AT_FDCWD` resolve via `read_path`; relative paths with any other
-/// dirfd short-circuit to `-1` without touching the path (mirrors
+/// dirfd fall back to Python without touching the path (mirrors
 /// `NativeOpenatSyscall` / `NativeFaccessatSyscall`). On an absolute /
 /// `AT_FDCWD` path the symlink-table lookup runs via
 /// `write_symlink_target` (empty table → `-1`). Falls back to Python on
@@ -108,9 +108,7 @@ impl NativeSyscall for NativeReadlinkatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        if !dirfd_allows(&path, dirfd) {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
+        dirfd_allows(&path, dirfd, "readlinkat")?;
         write_symlink_target(state, &path, &args[2], &args[3], "readlinkat")
     }
 }

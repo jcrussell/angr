@@ -14,8 +14,8 @@
 //! `faccessat(dfd, pathname, mode) → 0 | -1` — clone of `access` with
 //! dirfd handling. Absolute paths and `AT_FDCWD` query
 //! `FileSystem::is_path_known`. Relative paths with any other dirfd
-//! return `-1` (we do not model directory fds — matches `openat`'s
-//! policy). The `mode` arg is ignored. This was previously a stub.
+//! fall back to Python (we do not model directory fds — matches
+//! `openat`'s policy). The `mode` arg is ignored. This was previously a stub.
 
 // faccessat(dfd, filename, mode) → long — see NativeFaccessatSyscall impl below.
 
@@ -65,8 +65,8 @@ impl NativeSyscall for NativeAccessSyscall {
 /// `faccessat(dirfd, pathname, mode) → 0 | -1` — clone of `access` with
 /// dirfd handling. Absolute paths and `AT_FDCWD` query
 /// `FileSystem::is_path_known`. Relative paths with any other dirfd
-/// return `-1` (we do not model directory fds — matches `openat`'s
-/// policy). The `mode` arg is ignored — Python's stub also ignores it.
+/// fall back to Python (we do not model directory fds — matches
+/// `openat`'s policy). The `mode` arg is ignored — Python's stub also ignores it.
 /// Empty path → `-1`.
 pub(crate) struct NativeFaccessatSyscall;
 
@@ -92,9 +92,7 @@ impl NativeSyscall for NativeFaccessatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        if !dirfd_allows(&path, dirfd) {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
+        dirfd_allows(&path, dirfd, "faccessat")?;
         let ret = if state.file_system_ref().is_path_known(&path) {
             0
         } else {

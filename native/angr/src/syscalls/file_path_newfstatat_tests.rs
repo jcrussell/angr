@@ -122,7 +122,33 @@ fn newfstatat_absolute_path_ignores_dirfd() {
 }
 
 #[test]
-fn newfstatat_relative_path_non_atfdcwd_returns_minus_one() {
+fn newfstatat_relative_path_with_sign_extended_at_fdcwd_aarch64() {
+    // aarch64 glibc's `stat`/`__xstat` pass `mov x0, #-0x64`, so the
+    // dirfd register holds AT_FDCWD sign-extended (angr-vmi2l.135).
+    let mut state = RustSimState::new("aarch64").expect("state");
+    state
+        .file_system()
+        .register_known_path("local.txt".to_string());
+    stage_path(&mut state, 0x2000, b"local.txt");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeNewfstatatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_SEXT.into(), 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x4000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(out), 0);
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x10), S_IFREG_0755 as u32);
+}
+
+#[test]
+fn newfstatat_relative_path_non_atfdcwd_falls_back() {
     // Mirrors NativeOpenatSyscall / NativeFaccessatSyscall: we do
     // not model dirfd directories, so relative paths with a
     // non-AT_FDCWD dirfd cannot be resolved.
@@ -143,8 +169,8 @@ fn newfstatat_relative_path_non_atfdcwd_returns_minus_one() {
                 RustBV::concrete(0, 64),
             ],
         )
-        .expect("newfstatat ok");
-    assert_eq!(expect_continue(out), NEG_ONE);
+        .expect_err("newfstatat of a relative path against a real dirfd");
+    assert_dirfd_fallback(out);
     // Buffer must NOT have been touched on the failure path.
     assert_eq!(read_u64_le(&state, 0x4000), 0);
 }

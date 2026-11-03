@@ -33,25 +33,38 @@ use crate::syscalls::SyscallError;
 /// `AT_FDCWD` in unsigned 32-bit form (-100 reinterpreted). Linux's
 /// `openat(2)` treats this as "use the current working directory" for
 /// relative paths. `procedures/linux_kernel/openat.py` also matches
-/// against this exact unsigned value.
-const AT_FDCWD_UNSIGNED: u64 = 4_294_967_196;
+/// against this exact unsigned value. `dirfd` is a C `int`, so it is
+/// compared at 32 bits: aarch64 glibc, musl and Go pass it sign-extended
+/// to the full register (angr-vmi2l.135).
+const AT_FDCWD_UNSIGNED: u32 = 0xffff_ff9c;
 
 // `NEG_ONE` is the kernel-ABI failure return for `open` / `openat` /
 // `close` here, mirroring `procedures/posix/open.py::run` (`return -1`).
 use super::errno::NEG_ONE;
 
-/// The shared `*at` dirfd policy: `true` when this handler can resolve
+/// The shared `*at` dirfd policy: `Ok` when this handler can resolve
 /// `path` on its own, i.e. the path is absolute (dirfd irrelevant) or
-/// `dirfd` is the `AT_FDCWD` sentinel. A relative path against a real
-/// dirfd is not modeled — Rust's `FileSystem` has no per-fd directory —
-/// so the caller returns `-1`, mirroring
-/// `procedures/linux_kernel/openat.py`.
+/// the low 32 bits of `dirfd` are the `AT_FDCWD` sentinel. A relative
+/// path against a real dirfd is not modeled — Rust's `FileSystem` has no
+/// per-fd directory — so it returns `Other` and Python decides
+/// (angr-vmi2l.135).
 ///
 /// Every `*at` handler in this module (`openat`, `faccessat`,
 /// `readlinkat`, `newfstatat`) must gate on this, so that adding real
 /// dirfd support is a one-site change instead of four (angr-c7xno.82).
-fn dirfd_allows(path: &str, dirfd: u64) -> bool {
-    path.starts_with('/') || dirfd == AT_FDCWD_UNSIGNED
+fn dirfd_allows(path: &str, dirfd: u64, syscall: &str) -> Result<(), SyscallError> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "dirfd is a C int: the kernel reads only the low 32 bits"
+    )]
+    let dirfd = dirfd as u32;
+    if path.starts_with('/') || dirfd == AT_FDCWD_UNSIGNED {
+        Ok(())
+    } else {
+        Err(SyscallError::Other(format!(
+            "{syscall} of relative {path:?} against dirfd {dirfd}: not modeled, Python decides"
+        )))
+    }
 }
 
 /// Read a NUL-terminated path from memory at `addr`, up to

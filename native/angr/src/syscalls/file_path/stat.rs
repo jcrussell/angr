@@ -81,7 +81,7 @@
 //!   distinguishable from a regular file only by `st_size`.
 //! * `newfstatat` adds `openat`-style dirfd handling: absolute paths
 //!   and `AT_FDCWD` resolve via `FileSystem`; relative paths with any
-//!   other dirfd return `-1` (we do not model directory fds). Its
+//!   other dirfd fall back to Python (we do not model directory fds). Its
 //!   `flag` arg honors `AT_SYMLINK_NOFOLLOW` (0x100) by routing to
 //!   `stat_lookup_nofollow` (angr-zueuw) — ARM64 dropped legacy
 //!   `lstat`, so glibc's `lstat()` there lowers to
@@ -333,8 +333,8 @@ impl NativeSyscall for NativeLstatSyscall {
 /// clone with `openat`-style dirfd handling and per-arch `struct stat`
 /// layout. Mirrors `NativeStatSyscall`, plus the dirfd policy from
 /// `NativeOpenatSyscall`: absolute paths and `AT_FDCWD` resolve via
-/// `FileSystem`; relative paths with any other dirfd return `-1` (we
-/// do not model directory fds). `AT_SYMLINK_NOFOLLOW` (0x100) in `flag`
+/// `FileSystem`; relative paths with any other dirfd fall back to
+/// Python (we do not model directory fds). `AT_SYMLINK_NOFOLLOW` (0x100) in `flag`
 /// selects `stat_lookup_nofollow` (`lstat` semantics — a registered
 /// symlink reports its own `S_IFLNK | 0777` mode and target-length
 /// size); without it, symlinks are walked to their target via
@@ -386,9 +386,7 @@ impl NativeSyscall for NativeNewfstatatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        if !dirfd_allows(&path, dirfd) {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
+        dirfd_allows(&path, dirfd, "newfstatat")?;
 
         let fs = state.file_system_ref();
         let looked_up = if nofollow {
