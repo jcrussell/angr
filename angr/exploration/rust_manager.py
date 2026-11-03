@@ -4442,6 +4442,10 @@ class RustExplorationManager(
         under >1 worker. Use ``set_exploration_strategy('coverage')`` to guide
         exploration toward new blocks; this report reads out the result.
 
+        A history is the blocks a state executed, as Python's
+        ``history.bbl_addrs`` is: the entry block is in, the state's own
+        address (not yet executed) is not (angr-v625t).
+
         Note: histories are capped by the state's ``max_history``; on a very
         long-running real binary the report reflects the retained tail.
         """

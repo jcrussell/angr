@@ -849,7 +849,7 @@ class TestEdgeCases:
         # Direct FFI exercise: the accessor exists and returns a list.
         tail = mgr._rust_mgr.get_state_bbl_history_tail(sid, 256)
         assert isinstance(tail, list)
-        assert len(tail) <= RustHistoryProxy._RECENT_TAIL_DEFAULT
+        assert len(tail) <= 256
 
         # Behavioral check via a stand-in manager that records which
         # accessors the proxy calls. PyO3 classes do not allow attribute
@@ -874,16 +874,17 @@ class TestEdgeCases:
         rec = _RecordingMgr(mgr._rust_mgr)
         proxy = RustHistoryProxy(rec, sid)
         addrs = proxy.recent_bbl_addrs
-        _ = proxy.bbl_addrs  # delegate
+        all_addrs = proxy.bbl_addrs
         # The uncapped counter, not the tail's length (angr-vmi2l.31).
         assert proxy.block_count == mgr._rust_mgr.get_state_block_count(sid)
 
         assert rec.export_calls == 0, "recent_bbl_addrs must not export_state"
-        assert rec.tail_calls == [(sid, RustHistoryProxy._RECENT_TAIL_DEFAULT)], (
-            f"expected one tail call with default N, got {rec.tail_calls}"
-        )
+        # recent_bbl_addrs is the last step's block, bbl_addrs the whole
+        # window, and neither is memoized (angr-v625t).
+        assert rec.tail_calls == [(sid, 1), (sid, 0)], f"expected a tail of 1 then all, got {rec.tail_calls}"
         assert isinstance(addrs, list)
-        assert addrs == tail
+        assert addrs == tail[-1:]
+        assert all_addrs[-len(tail) :] == tail
 
     def test_stash_iteration_does_not_materialize_simstate(self, fauxware_project):
         """angr-kwpi.2: iterating ``mgr.active`` / ``mgr.found`` / etc. must

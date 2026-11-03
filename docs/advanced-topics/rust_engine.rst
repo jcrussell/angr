@@ -2733,6 +2733,10 @@ facing knobs that cap memory growth are:
   ``LengthLimiter``, ``LoopSeer`` or ``state.history.block_count``: each
   state also keeps an uncapped block count and the per-block visit counts
   of the entries the cap evicted.
+  ``state.history.bbl_addrs`` on a state proxy holds only the blocks the
+  window still has, oldest first, so ``block_count > len(bbl_addrs)``
+  means the lineage was truncated; ``recent_bbl_addrs`` is the last
+  step's block.
 
 ``MemoryWatcher`` technique
   ``mgr.use_technique(MemoryWatcher(min_memory=512))`` moves the

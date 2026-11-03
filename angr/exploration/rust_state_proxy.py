@@ -2813,39 +2813,38 @@ class RustScratchProxy:
 
 
 class RustHistoryProxy:
-    """Provides state.history.recent_bbl_addrs and similar."""
+    """Provides state.history.recent_bbl_addrs and similar.
 
-    # Tail length used when materializing recent_bbl_addrs. Matches the
-    # spirit of angr's SimStateHistory.recent_bbl_addrs ("most recent" rather
-    # than the full lineage chain). Long-running benches accumulate 100k+ bbl
-    # entries; cloning the full Vec across FFI would be a regression risk
-    # (angr-kwpi.1).
-    _RECENT_TAIL_DEFAULT = 256
+    Every read asks Rust afresh: the proxy outlives a step, so a memo would
+    go stale (angr-v625t). ``bbl_addrs`` covers only the blocks the
+    ``max_history`` window still holds, oldest first; ``block_count`` is
+    the uncapped total, so ``block_count > len(bbl_addrs)`` means the
+    lineage was truncated.
+    """
 
     def __init__(self, rust_mgr, state_id):
         self._mgr = rust_mgr
         self._state_id = state_id
-        self._bbl_addrs = None
+
+    def _executed_blocks(self, n):
+        # `n == 0` is the whole window (get_state_bbl_history_tail).
+        tail = self._mgr.get_state_bbl_history_tail(self._state_id, n)
+        return list(tail) if tail is not None else []
 
     @property
     def recent_bbl_addrs(self):
-        if self._bbl_addrs is None:
-            tail = self._mgr.get_state_bbl_history_tail(
-                self._state_id,
-                self._RECENT_TAIL_DEFAULT,
-            )
-            self._bbl_addrs = list(tail) if tail is not None else []
-        return self._bbl_addrs
+        # A Rust step runs one block, as a Python history node records one.
+        return self._executed_blocks(1)
 
     @property
     def bbl_addrs(self):
-        return self.recent_bbl_addrs
+        return self._executed_blocks(0)
 
     @property
     def block_count(self):
         # The uncapped counter, not the tail's length (angr-vmi2l.31).
         count = self._mgr.get_state_block_count(self._state_id)
-        return count if count is not None else len(self.recent_bbl_addrs)
+        return count if count is not None else len(self.bbl_addrs)
 
 
 class RustPosixProxy:

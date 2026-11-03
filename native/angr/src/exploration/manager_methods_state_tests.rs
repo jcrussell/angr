@@ -76,7 +76,7 @@ fn bbl_history_tail_treats_n_zero_as_all_and_clamps_oversized_n() {
         {
             let state = mgr.sm.find_state_mut(sid).expect("state in active");
             for addr in [0x1000_u64, 0x2000, 0x3000, 0x4000] {
-                state.add_to_history(addr);
+                state.add_history_entry(addr, 0, addr.wrapping_add(0x10));
             }
         }
 
@@ -96,6 +96,27 @@ fn bbl_history_tail_treats_n_zero_as_all_and_clamps_oversized_n() {
             Some(vec![0x1000, 0x2000, 0x3000, 0x4000]),
             "an oversized n saturates (hist.len() - n underflow is guarded)",
         );
+    });
+}
+
+/// The tail is the blocks the state executed (`detailed_history`), not the
+/// plain `history`, whose newest entry is the state's own successor pc
+/// (angr-v625t): `recent_bbl_addrs` must name the block just run.
+#[test]
+fn bbl_history_tail_reads_executed_blocks_not_successor_pcs() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let sid = mgr.create_state("active").expect("create state");
+
+        {
+            let state = mgr.sm.find_state_mut(sid).expect("state in active");
+            state.add_history_entry(0x1000, 0, 0x2000);
+            state.add_to_history(0x2000);
+        }
+
+        assert_eq!(mgr.get_state_bbl_history_tail(sid, 1), Some(vec![0x1000]));
+        assert_eq!(mgr.get_state_bbl_history_tail(sid, 0), Some(vec![0x1000]));
     });
 }
 

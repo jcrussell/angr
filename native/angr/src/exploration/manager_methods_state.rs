@@ -89,19 +89,22 @@ impl RustExplorationManager {
             .map(super::native_proc_dispatch::effective_pc)
     }
 
-    /// Get the tail of a state's bbl history (last `n` addresses).
+    /// The last `n` blocks a state executed, oldest first: the `addr` of its
+    /// newest `detailed_history` entries, Python's `history.bbl_addrs`
+    /// order (angr-v625t). The plain `history` is not used: it records each
+    /// step's successor pc, so its newest entry is the state's own address.
     /// Avoids cloning the full Vec on long benches where max_history=0 means
-    /// `history` may grow to 100k+ entries.
+    /// the history may grow to 100k+ entries.
     /// `n == 0` is treated as "all entries". Returns None if state not found.
     #[pyo3(signature = (state_id, n=256))]
     pub fn get_state_bbl_history_tail(&self, state_id: u64, n: usize) -> Option<Vec<u64>> {
-        let hist = self.find_state(state_id)?.history();
+        let hist = self.find_state(state_id)?.detailed_history();
         let start = if n == 0 {
             0
         } else {
             hist.len().saturating_sub(n)
         };
-        Some(hist.range(start..).copied().collect())
+        Some(hist.range(start..).map(|e| e.addr).collect())
     }
 
     /// Blocks a state's path has executed, not capped by `max_history`
