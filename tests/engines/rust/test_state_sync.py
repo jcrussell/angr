@@ -924,6 +924,22 @@ class TestPathContentSurvivesClose:
         assert final.posix.dumps(2) == b""
         assert [f.concretize() for _, f in final.fs.unlinks] == [b"foobar and baz"]
 
+    def test_exported_state_carries_a_natively_closed_file(self):
+        """angr-mx00p.132.14: an exported state's ``fs`` comes from a cached
+        template that predates the native fopen/fprintf/fclose, so every
+        deadended path must be handed the closed file explicitly."""
+        path = os.path.join(BIN_LOCATION, "tests", "x86_64", "file_func_test")
+        if not os.path.exists(path):
+            pytest.skip("file_func_test binary not available")
+        proj = angr.Project(path, auto_load_libs=False)
+        state = proj.factory.entry_state()
+        state.options.discard("LAZY_SOLVES")
+        simgr = proj.factory.simulation_manager(state, engine="rust")
+        simgr.explore()
+        assert len(simgr.deadended) == 3
+        for final in simgr.deadended:
+            assert final.posix.dump_file_by_path("file.txt") == b"testing abcdef"
+
 
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict

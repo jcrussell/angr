@@ -1065,6 +1065,8 @@ class RustStateExportMixin:
         self._restore_plugins_to_state(state, state_id)
         self._inject_rust_stdout(state, state_id)
         self._inject_rust_stdin(state, state_id)
+        self._inject_rust_fds(state, state_id)
+        self._inject_rust_closed_files(state, state_id)
         self._sync_rust_registers_to_state(state, state_id)
         self._sync_rust_mmap_base_to_state(state, state_id)
         self._sync_rust_posix_brk_to_state(state, state_id)
@@ -1553,6 +1555,10 @@ class RustStateExportMixin:
         # nothing it derives is tied to the input (angr-mx00p.89).
         self._inject_rust_stdout(state, snapshot.state_id)
         self._inject_rust_stdin(state, snapshot.state_id)
+        # Likewise the files native code opened or wrote and closed: the
+        # template's ``fs`` predates them (angr-mx00p.132.14).
+        self._inject_rust_fds(state, snapshot.state_id)
+        self._inject_rust_closed_files(state, snapshot.state_id)
         # The jumpkind that led here: analyses that step the state themselves
         # key on it (Veritesting builds its CFG from ``(addr, jumpkind)``;
         # angr-mx00p.89). The call stack is the live proxy below.
