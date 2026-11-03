@@ -94,6 +94,7 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 import cle
+import pyvex
 from pyvex.errors import PyVEXError
 
 from angr import claripy
@@ -3317,8 +3318,25 @@ class RustExplorationManager(
                 and s.addr not in self._project._sim_procedures
             )
 
+        def spins(s: angr.SimState) -> bool:
+            # A block whose only effect is jumping to itself (`jmp $`) never
+            # changes the state again, so stepping it to the budget is waste.
+            if self._project.is_hooked(s.addr):
+                return False
+            try:
+                irsb = self._project.factory.block(s.addr).vex
+            except (SimEngineError, PyVEXError):
+                return False
+            return (
+                irsb.jumpkind == "Ijk_Boring"
+                and isinstance(irsb.next, pyvex.expr.Const)
+                and irsb.next.con.value == s.addr
+                and all(isinstance(stmt, pyvex.stmt.IMark) for stmt in irsb.statements)
+            )
+
         for step in range(500):
             sm.move(from_stash="active", to_stash="at_main", filter_func=lambda s, step=step: at_main(s, step))
+            sm.move(from_stash="active", to_stash="spinning", filter_func=spins)
             if not sm.active:
                 break
             sm.step()
@@ -3328,7 +3346,13 @@ class RustExplorationManager(
             l.info(f"Python init complete: {len(arrived)} state(s) reached main at 0x{arrived[0].addr:x}")
         if sm.active:
             l.warning(f"Python init: {len(sm.active)} state(s) didn't reach main after 500 steps, using them as-is")
-        carried = [("active", s) for s in arrived + sm.active]
+        if sm.stashes.get("spinning"):
+            l.info(f"Python init: {len(sm.spinning)} state(s) spin on a self-jump, carrying them as-is")
+            sm.move(from_stash="spinning", to_stash="active")
+        # Step-capped forks go first: a LIFO policy (`Lifo::select` pops the
+        # back) then descends the arrivals before a fork that may spin
+        # forever in init, e.g. r100's ptrace anti-debug `jmp $`.
+        carried = [("active", s) for s in sm.active + arrived]
         for _, s in carried:
             self._extract_continuation_data(s)
         carried += [("deadended", s) for s in sm.deadended]

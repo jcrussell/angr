@@ -2736,6 +2736,44 @@ class TestInitPreStepCarriesEveryState:
         assert len(mgr.active) == len(mgr.errored) == 0, mgr.stash_counts()
 
 
+class TestInitPreStepSpinningFork:
+    """A pre-step fork that spins on ``jmp $`` (r100's ptrace anti-debug).
+
+    After angr-vmi2l.291 the pre-step stepped it to the 500-step budget and
+    carried it behind the arrivals, so a LIFO run popped it first and spun
+    forever: defcamp_r100's DFS bench timed out.
+    """
+
+    # 0x1: test rax, rax; 0x4: je 0x8; 0x6: jmp 0x6; 0x8: nop ("main");
+    # 0x9: jmp 0x9
+    CODE = b"\x90\x48\x85\xc0\x74\x02\xeb\xfe\x90\xeb\xfe"
+    STUB, SPIN, MAIN, FIND = 0x1, 0x6, 0x8, 0x9
+
+    def _manager(self, monkeypatch):
+        proj = angr.load_shellcode(self.CODE, arch="amd64")
+        monkeypatch.setattr(proj.simos, "_loader_addr", self.STUB, raising=False)
+        monkeypatch.setattr(RustExplorationManager, "_resolve_main_address", lambda _self: self.MAIN)
+        return RustExplorationManager(proj, [proj.factory.blank_state(addr=self.STUB)])
+
+    def test_spinning_fork_stops_the_pre_step(self, monkeypatch):
+        steps = []
+        real_step = angr.SimulationManager.step
+        monkeypatch.setattr(
+            angr.SimulationManager, "step", lambda sm, *a, **kw: steps.append(1) or real_step(sm, *a, **kw)
+        )
+        mgr = self._manager(monkeypatch)
+
+        assert sorted(s.addr for s in mgr.active) == [self.SPIN, self.MAIN]
+        assert len(steps) == 1
+
+    def test_lifo_descends_the_arrival_first(self, monkeypatch):
+        mgr = self._manager(monkeypatch)
+        mgr.set_exploration_strategy("dfs")
+        mgr.explore(find=self.FIND, num_find=1, max_steps=20)
+
+        assert [s.addr for s in mgr.found] == [self.FIND], mgr.stash_counts()
+
+
 class TestUnwrittenStackPageStaysSymbolic:
     """angr-plh49: the SP page's unwritten bytes read symbolic, as in Python.
 

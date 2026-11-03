@@ -101,7 +101,7 @@
     "python_time": 1.12,
     "rust_time": 0.316,
     "state_creations": 0,
-    "steps": 2
+    "steps": 17
   },
   "defcamp_r100__dfs": {
     "callback_count": 0,
