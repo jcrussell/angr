@@ -623,20 +623,12 @@ fn test_strtol_scan_window_ceiling_truncates() {
     assert_eq!(end.as_u64().unwrap() - 0x10000, MAX_SCAN_BYTES as u64);
 }
 
-/// A symbolic byte stops the growth: the symbolic accumulator caps at
-/// `MAX_DIGITS` digit positions, so the over-approximate `*endptr` stays at the
-/// old bound rather than tracking a window the concrete path grew.
-#[test]
-fn test_strtol_symbolic_digits_endptr_capped_at_max_digits() {
-    let mut state = RustSimState::new("amd64").unwrap();
-    let digits = vec![b'1'; 200];
-    setup_string(&mut state, 0x10000, &digits);
+/// Call native strtol(0x10000, 0x100000, 10) and return the stored `*endptr`.
+fn strtol_symbolic_endptr(state: &mut RustSimState) -> RustBV {
     state.map_memory_data(0x100000, &[0u8; 8], Permission::RWX);
-    // Make the first byte symbolic so the all-concrete fast path is skipped.
-    place_symbolic_byte(&mut state, 0x10000, "d0");
     NativeStrtol
         .call(
-            &mut state,
+            state,
             &[
                 RustBV::concrete(0x10000, 64),
                 RustBV::concrete(0x100000, 64),
@@ -645,6 +637,110 @@ fn test_strtol_symbolic_digits_endptr_capped_at_max_digits() {
         )
         .unwrap()
         .unwrap();
+    state.memory_load(0x100000, 8).unwrap()
+}
+
+/// A symbolic byte stops the growth: the symbolic accumulator caps at
+/// `MAX_DIGITS` digit positions, so the longest `*endptr` stays at that bound
+/// rather than tracking a window the concrete path grew.
+#[test]
+fn test_strtol_symbolic_digits_endptr_capped_at_max_digits() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let digits = vec![b'1'; 200];
+    setup_string(&mut state, 0x10000, &digits);
+    // Make the first byte symbolic so the all-concrete fast path is skipped.
+    let d0 = place_symbolic_byte(&mut state, 0x10000, "d0");
+    state.add_constraint(d0.eq(&RustBV::concrete(b'1' as u128, 8)));
+    let end = strtol_symbolic_endptr(&mut state);
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.min(&end, false), Some(0x10000 + MAX_DIGITS as u128));
+    assert_eq!(ctx.max(&end, false), Some(0x10000 + MAX_DIGITS as u128));
+}
+
+/// Two digits then two free bytes: `*endptr` covers every run length the path
+/// allows (s+2, s+3, s+4), not just the end of the window (angr-vmi2l.101).
+#[test]
+fn test_strtol_symbolic_short_run_endptr_tracks_run() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x10000, b"XXXX");
+    let mut syms = Vec::new();
+    for i in 0..4u64 {
+        syms.push(place_symbolic_byte(&mut state, 0x10000 + i, &format!("d{i}")));
+    }
+    for d in &syms[..2] {
+        state.add_constraint(d.uge(&RustBV::concrete(b'0' as u128, 8)));
+        state.add_constraint(d.ule(&RustBV::concrete(b'9' as u128, 8)));
+    }
+    let end = strtol_symbolic_endptr(&mut state);
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.min(&end, false), Some(0x10002));
+    assert_eq!(ctx.max(&end, false), Some(0x10004));
+    drop(ctx);
+    // A non-digit third byte pins the end at s+2.
+    state.add_constraint(syms[2].eq(&RustBV::concrete(b'z' as u128, 8)));
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.max(&end, false), Some(0x10002));
+}
+
+/// No digit converts (`s[0] == 'x'`): C stores `nptr` itself.
+#[test]
+fn test_strtol_symbolic_no_conversion_endptr_is_nptr() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x10000, b"XXXX");
+    let mut syms = Vec::new();
+    for i in 0..4u64 {
+        syms.push(place_symbolic_byte(&mut state, 0x10000 + i, &format!("d{i}")));
+    }
+    state.add_constraint(syms[0].eq(&RustBV::concrete(b'x' as u128, 8)));
+    let end = strtol_symbolic_endptr(&mut state);
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.min(&end, false), Some(0x10000));
+    assert_eq!(ctx.max(&end, false), Some(0x10000));
+}
+
+/// No conversion stores `nptr` itself, not past the skipped whitespace and
+/// sign; a base-0 leading `0` is a conversion, so its end stays past it
+/// (angr-vmi2l.101).
+#[test]
+fn test_strtol_no_conversion_endptr_is_nptr() {
+    // (input, base, expected endptr offset) — value is 0 in every row.
+    let cases: &[(&[u8], u64, u64)] = &[
+        (b"  -x", 10, 0),
+        (b"x", 10, 0),
+        (b"+", 10, 0),
+        (b"   ", 10, 0),
+        (b"09", 0, 1),
+        (b"0z", 0, 1),
+    ];
+    for &(s, base, want_end) in cases {
+        let (val, end) = strtol_with_endptr(s, base);
+        let shown = String::from_utf8_lossy(s);
+        assert_eq!(val, 0, "value for {shown:?} base {base}");
+        assert_eq!(end, want_end, "endptr for {shown:?} base {base}");
+    }
+}
+
+/// Symbolic arm, base 0: the octal-detecting `0` converts even when no digit
+/// follows it, so `*endptr` is past it, not `nptr`.
+#[test]
+fn test_strtol_symbolic_base0_leading_zero_endptr_past_zero() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x10000, b"0zX");
+    place_symbolic_byte(&mut state, 0x10002, "d2");
+    state.map_memory_data(0x100000, &[0u8; 8], Permission::RWX);
+    NativeStrtol
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x10000, 64),
+                RustBV::concrete(0x100000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
     let end = state.memory_load(0x100000, 8).unwrap();
-    assert_eq!(end.as_u64().unwrap() - 0x10000, MAX_DIGITS as u64);
+    let ctx = state.solver().borrow();
+    assert_eq!(ctx.min(&end, false), Some(0x10001));
+    assert_eq!(ctx.max(&end, false), Some(0x10001));
 }

@@ -298,18 +298,24 @@ fn parse_concrete_digits(bytes: &[u8], base: u32) -> (u128, usize) {
 /// valid digit and we have not yet been terminated by a non-digit) or
 /// stays put. The "terminated" flag is sticky: once a non-digit appears,
 /// later digits do not contribute.
+///
+/// Returns `(accum, run_len)`: `run_len` (also `result_bits` wide) counts the
+/// positions that advanced, built from the same `stay` predicates, so it is
+/// the symbolic length of the converted digit run (angr-vmi2l.101).
 fn build_symbolic_accumulator(
     bytes: &[RustBV],
     start: usize,
     base: u32,
     result_bits: u32,
-) -> RustBV {
+) -> (RustBV, RustBV) {
     let zero_acc = RustBV::concrete(0, result_bits);
     let base_bv = RustBV::concrete(base as u128, result_bits);
     let zero_byte = RustBV::concrete(b'0' as u128, 8);
     let max_dec = (base.min(10) - 1) as u8;
     let dec_high = RustBV::concrete((b'0' + max_dec) as u128, 8);
 
+    let one = RustBV::concrete(1, result_bits);
+    let mut run_len = zero_acc.clone();
     let mut accum = zero_acc;
     let mut terminated = RustBV::concrete(0, 1);
 
@@ -348,9 +354,10 @@ fn build_symbolic_accumulator(
         let accum_advanced = accum.mul(&base_bv).add(&digit_value);
         let stay = terminated.or(&is_digit.not());
         accum = stay.ite(&accum, &accum_advanced);
+        run_len = stay.ite(&run_len, &run_len.add(&one));
         terminated = stay;
     }
-    accum
+    (accum, run_len)
 }
 
 /// Common engine for atoi/atol/strtol/strtoul.
@@ -376,15 +383,21 @@ fn run_strtol(
     let (base, negative) = match prefix {
         Some(p) => p,
         None => {
+            // No conversion: C and Python store `nptr` itself, not past the
+            // skipped whitespace/sign (angr-vmi2l.101).
             if let Some(end) = endptr
                 && end != 0
             {
-                let end_addr = addr.wrapping_add(prefix_end as u64);
-                state.memory_store(end, arch_word(state, end_addr))?;
+                state.memory_store(end, arch_word(state, addr))?;
             }
             return Ok(Some(arch_word(state, 0u64)));
         }
     };
+
+    // Base-0 auto-detect reaches octal only by consuming a leading `0`, which
+    // is itself a converted digit: "0xg" and "09" convert to 0 with the end
+    // past that `0`, not at `nptr`.
+    let prefix_converted = base_arg == 0 && base == 8;
 
     // All-concrete digit region: take the original fast path. Collecting into
     // `Option<Vec<_>>` short-circuits on the first symbolic byte, so this is the
@@ -419,11 +432,9 @@ fn run_strtol(
         if let Some(end) = endptr
             && end != 0
         {
-            let end_addr = if consumed == 0 {
-                // C says: if no conversion, *endptr = nptr. Preserve the
-                // pre-existing behavior of pointing past the prefix; tests
-                // and benchmarks expect this.
-                addr.wrapping_add(prefix_end as u64)
+            let end_addr = if consumed == 0 && !prefix_converted {
+                // No conversion: C and Python store `nptr` (angr-vmi2l.101).
+                addr
             } else {
                 // overflow-ok: prefix_end/consumed are usize offsets into the
                 // parsed input string, nowhere near usize::MAX.
@@ -441,7 +452,7 @@ fn run_strtol(
     let sym_end = bytes.len().min(prefix_end.saturating_add(MAX_DIGITS));
     let ctx_handle = state.solver().clone();
     let ctx = ctx_handle.borrow();
-    let accum = build_symbolic_accumulator(&bytes[..sym_end], prefix_end, base, bits);
+    let (accum, run_len) = build_symbolic_accumulator(&bytes[..sym_end], prefix_end, base, bits);
     let result = if negative { accum.neg() } else { accum };
     // atoi returns int-width bits (Python: `val[sizeof(int)*8 - 1 : 0]`).
     // Extract the low `w` bits then zero-extend back into the return register.
@@ -455,13 +466,21 @@ fn run_strtol(
     };
     drop(ctx);
 
-    // Endptr: best-effort over-approximation = addr + bytes.len() (i.e. past
-    // the last byte considered). The actual end depends on path values.
+    // Endptr follows the path's digit run: `nptr` when no digit converts (C;
+    // Python's `num_bytes` is 0 there), else past the prefix and the run. A
+    // single concrete end made `end == nptr` / `*end != '\0'` checks one-sided
+    // (angr-vmi2l.101).
     if let Some(end) = endptr
         && end != 0
     {
-        let end_addr = addr.wrapping_add(sym_end as u64);
-        state.memory_store(end, arch_word(state, end_addr))?;
+        let nptr = arch_word(state, addr);
+        let past_run = arch_word(state, addr.wrapping_add(prefix_end as u64)).add(&run_len);
+        let end_addr = if prefix_converted {
+            past_run
+        } else {
+            run_len.eq(&arch_word(state, 0)).ite(&nptr, &past_run)
+        };
+        state.memory_store(end, end_addr)?;
     }
 
     Ok(Some(result))
