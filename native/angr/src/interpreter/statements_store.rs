@@ -79,6 +79,13 @@ impl<'a> VEXInterpreter<'a> {
             );
         }
 
+        // A candidate on a page neither side holds would be skipped by the
+        // multi install, where Python maps each page it writes; map them
+        // first. A `Single` store maps its pages on the `Unmapped` arms below.
+        if !matches!(*conc_result, ConcretizationResult::Single(_)) {
+            self.map_fresh_pages_for_candidates(callbacks, &conc_result, data_size)?;
+        }
+
         // Attempt store using pre-computed concretization
         let first_result = match self.rust_memory.as_mut() {
             Some(rust_mem) => rust_mem.store_with_concretization(
@@ -214,6 +221,43 @@ impl<'a> VEXInterpreter<'a> {
             rust_mem.auto_map_zero_page(page.base_addr());
         }
         true
+    }
+
+    /// `fetch_host_pages_for_store` then `map_fresh_pages_for_store` over each
+    /// unmapped page under any candidate of a `Multiple`/`Strided` store.
+    /// `install_multi_for_candidates_safe` drops a candidate on a page that is
+    /// neither mapped nor lazy (SILENT cat-b), so without this a symbolic store
+    /// over fresh memory wrote nothing at all, where Python's `Range` maps each
+    /// page it writes (angr-vmi2l.324). A page the host may hold but does not
+    /// serve stays unmapped, as for a `Single` store.
+    fn map_fresh_pages_for_candidates(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        conc_result: &ConcretizationResult,
+        size: usize,
+    ) -> Result<(), CbExecutionError> {
+        let Some(addrs) = conc_result.addresses() else {
+            return Ok(());
+        };
+        let pages: std::collections::BTreeSet<crate::memory::PageIndex> = addrs
+            .iter()
+            .flat_map(|&addr| crate::memory::PageIndex::range_covering(addr, size as u64))
+            .collect();
+        let page_size = crate::memory::PAGE_SIZE as usize;
+        for page in pages {
+            let base = page.base_addr();
+            if self
+                .rust_memory
+                .as_ref()
+                .is_none_or(|mem| mem.is_mapped(base))
+            {
+                continue;
+            }
+            if self.fetch_host_pages_for_store(callbacks, base, page_size)? {
+                self.map_fresh_pages_for_store(callbacks, base, page_size);
+            }
+        }
+        Ok(())
     }
 
     /// Fetch each page under a concrete store outside every lazy region that
@@ -462,8 +506,8 @@ impl<'a> VEXInterpreter<'a> {
     /// (`concretize_guarded_write`), so the guard-false path keeps every
     /// address value. A single target gets `ITE(guard, data, current)` through
     /// [`store_guarded_ite`](Self::store_guarded_ite). A `Multiple` or
-    /// `Strided` set within [`MAX_ITE_ADDRS`] gets `ITE(guard && addr == a,
-    /// data, mem[a])` at each candidate. Any other shape goes to the host's
+    /// `Strided` set gets `ITE(guard && addr == a, data, mem[a])` at each
+    /// candidate. Any other shape goes to the host's
     /// full symbolic store with `host_data`, the value the caller would write
     /// there unguarded; `what` names the statement in the no-callback refusal.
     pub(super) fn store_guarded_symbolic_addr(
@@ -494,11 +538,11 @@ impl<'a> VEXInterpreter<'a> {
                 // dispatching (self-modifying-code support).
                 self.invalidate_code_for_concretization(&other, data_size);
                 self.flush_stores(callbacks)?;
-                // A complete candidate set within the ITE cap stores
-                // `ITE(guard && addr == a, data, mem[a])` at each candidate,
-                // as Python's conditional store does. The host's full store
-                // takes no guard (and a proxy-backed host drops it), so only
-                // the shapes Rust cannot enumerate go there (angr-vmi2l.323).
+                // A complete candidate set stores `ITE(guard && addr == a,
+                // data, mem[a])` at each candidate, as Python's conditional
+                // store does. The host's full store takes no guard (and a
+                // proxy-backed host refuses it), so only the shapes Rust
+                // cannot enumerate go there (angr-vmi2l.323, angr-vmi2l.324).
                 let addrs = match &other {
                     ConcretizationResult::Multiple(addrs) => Some(addrs.clone()),
                     ConcretizationResult::Strided {
@@ -509,7 +553,6 @@ impl<'a> VEXInterpreter<'a> {
                     _ => None,
                 };
                 if let Some(addrs) = addrs
-                    && addrs.len() <= MAX_ITE_ADDRS
                     && callbacks.has_memory_store_symbolic_value()
                 {
                     return self.build_ite_store_from_callbacks(
@@ -815,9 +858,13 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Shared dispatch for Multiple/Strided concretization results: build an
-    /// in-Rust ITE chain when the address count is within [`MAX_ITE_ADDRS`] and
-    /// the symbolic-value callback is available, otherwise hand the full address
-    /// list to Python. The load-side counterpart is `dispatch_multi_load`.
+    /// in-Rust ITE chain when the symbolic-value callback is available,
+    /// otherwise hand the full address list to Python. Unlike the load side
+    /// (`dispatch_multi_load`), there is no [`MAX_ITE_ADDRS`] cap: the set is
+    /// complete and at most `write_range_limit + 1` cells (`concretize_write`
+    /// sends a larger stride grid to Max), Python's conditional store writes the same ITE at
+    /// each candidate, and a proxy-backed host's full store cannot write Rust
+    /// memory at all (angr-vmi2l.324).
     pub(super) fn dispatch_multi_store(
         &mut self,
         callbacks: &dyn EngineHost,
@@ -825,7 +872,7 @@ impl<'a> VEXInterpreter<'a> {
         addr_val: &RustBV,
         data_val: &RustBV,
     ) -> Result<(), CbExecutionError> {
-        if addrs.len() <= MAX_ITE_ADDRS && callbacks.has_memory_store_symbolic_value() {
+        if callbacks.has_memory_store_symbolic_value() {
             self.build_ite_store_from_callbacks(callbacks, addrs, addr_val, data_val, None)
         } else {
             callbacks

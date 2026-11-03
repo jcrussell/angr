@@ -1302,6 +1302,20 @@ class TestErrorRecovery:
         )
         assert state.solver.eval(loaded) == 0xCAFEBABE
 
+    def test_cb_memory_store_symbolic_full_raises_under_proxy(self, monkeypatch):
+        """angr-vmi2l.324: a proxy-backed state cannot take the write, so the
+        callback raises instead of returning with nothing stored."""
+        from angr import claripy
+        from angr.errors import SimMemoryAddressError
+        from angr.exploration import rust_manager
+
+        mgr, state = self._build_load_store_manager()
+        mgr._set_callback_state(state)
+        monkeypatch.setattr(rust_manager, "_is_rust_memory_proxy", lambda _plugin: True)
+
+        with pytest.raises(SimMemoryAddressError):
+            mgr._cb_memory_store_symbolic_full(claripy.BVS("sym_addr", 64), claripy.BVV(1, 8))
+
     def test_cb_memory_load_symbolic_full_returns_stored_ast(self):
         """Loading via the full callback must return a claripy AST that
         evaluates to the previously stored value at a symbolic-but-pinned

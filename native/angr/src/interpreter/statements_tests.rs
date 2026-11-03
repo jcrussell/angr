@@ -1558,3 +1558,57 @@ fn handle_symbolic_store_drops_the_write_under_avoid_multivalued_writes() {
     });
 }
 
+
+/// angr-vmi2l.324: under `SYMBOLIC_WRITE_ADDRESSES` a plain store at
+/// `base + idx` with `idx <= 63` concretizes to more than `MAX_ITE_ADDRS`
+/// candidates, and every one of them takes the write, as Python's `Range(128)`
+/// conditional store does. `base` is a mapped page or one neither side holds.
+fn wide_symbolic_store_reaches_every_candidate(base: u64) {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+    let mut conc = crate::concretize::AddressConcretizer::new();
+    conc.configure_strategies(false, None, None, true, false, false);
+    interp.set_concretizer(conc);
+
+    let idx = RustBV::symbol("wide_store_idx", 64);
+    ctx.assume_true(&idx.ule(&RustBV::concrete(63, 64)));
+    let addr = RustBV::concrete(u128::from(base), 64).add(&idx);
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I64]);
+    interp.temps = vec![Some(addr)];
+    let store = IRStmt::Store {
+        addr: IRExpr::RdTmp(0),
+        data: IRExpr::Const(IRConst::U8(1)),
+        endness: Endness::Little,
+    };
+    // A page-universe snapshot with no pages in it, as a
+    // ZERO_FILL_UNCONSTRAINED_MEMORY seed gives: the host holds none of them.
+    let cb = TestHost {
+        symbolic_value_store: SymbolicValueStore::Accept,
+        serve_zero_loads: true,
+        host_pages: Some(Default::default()),
+        ..TestHost::default()
+    };
+    {
+        let cb = &cb;
+        interp
+            .execute_stmt_with_callbacks(cb, &store, &irsb)
+            .expect("wide symbolic store");
+        for k in [0u64, 5, 63] {
+            let at = idx.eq(&RustBV::concrete(u128::from(k), 64));
+            let (in_block, flushed) = read_back(&mut interp, cb, base + k, 1);
+            for value in [&in_block, &flushed] {
+                assert_eq!(eval_assuming(&ctx, value, &[(&at, true)]), Some(1), "idx {k}");
+            }
+        }
+    }
+}
+
+#[test]
+fn wide_symbolic_store_reaches_every_candidate_mapped() {
+    wide_symbolic_store_reaches_every_candidate(0x4000);
+}
+
+#[test]
+fn wide_symbolic_store_reaches_every_candidate_unmapped() {
+    wide_symbolic_store_reaches_every_candidate(0x10000);
+}

@@ -334,17 +334,14 @@ impl<'a> VEXInterpreter<'a> {
     /// IRExpr, and wrapping a computed RustBV would mean adding a temp to the
     /// per-IRSB tyenv mid-execution.
     /// Routes through `memory_store_symbolic_value` for concrete addresses
-    /// and `memory_store_symbolic_full` for symbolic addresses.
+    /// and through `handle_symbolic_store` for symbolic ones.
     ///
     /// Both branches invalidate any stale cached IRSB at the (concretized)
-    /// target address(es) before dispatching the store (angr-slbsd). This
-    /// reuses the same helpers the ordinary `IRStmt::Store` path uses
-    /// (`statements_store.rs`): `invalidate_code_at_store` for a concrete
-    /// address, and `concretize_cached_write` + `invalidate_code_on_store`
-    /// (mirroring `handle_symbolic_store`'s `Single` case) when the address
-    /// itself is symbolic. The actual store still goes through the Python
-    /// callback / pending-store buffer below — this call only protects the
-    /// Rust-side `block_cache` against self-modifying `lock cmpxchg` writes.
+    /// target address(es) before dispatching the store (angr-slbsd), using
+    /// the helpers the ordinary `IRStmt::Store` path uses: here
+    /// `invalidate_code_at_store` for a concrete address, and inside
+    /// `handle_symbolic_store` for a symbolic one. This protects the Rust-side
+    /// `block_cache` against self-modifying `lock cmpxchg` writes.
     ///
     /// Precondition (not enforced): `data_bv` is symbolic. Both callers
     /// uphold it — `cas_dispatch_store` sends a concrete value down the
@@ -396,20 +393,10 @@ impl<'a> VEXInterpreter<'a> {
                 }
             }
         } else {
-            self.flush_stores(callbacks)?;
-            let conc_result = self.concretize_cached_write(&addr_val);
-            self.invalidate_code_on_store(&conc_result, data_size);
-            if callbacks.has_memory_store_symbolic_full() {
-                callbacks
-                    .memory_store_symbolic_full(&addr_val, data_bv)
-                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-            } else {
-                return Err(CbExecutionError::Unsupported(
-                    "CAS with symbolic address: \
-                     no memory_store_symbolic_full callback"
-                        .to_string(),
-                ));
-            }
+            // The plain store's dispatch, so a concretized CAS lands in Rust
+            // memory; the host's full store is only for the shapes Rust cannot
+            // enumerate, and a proxy-backed host refuses it (angr-vmi2l.324).
+            self.handle_symbolic_store(callbacks, &addr_val, data_bv, data_size)?;
         }
         Ok(())
     }

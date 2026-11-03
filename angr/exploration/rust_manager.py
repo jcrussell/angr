@@ -104,6 +104,7 @@ from angr.errors import (
     AngrError,
     SimEngineError,
     SimError,
+    SimMemoryAddressError,
     SimSolverError,
     SimStateError,
     SimZeroDivisionException,
@@ -2421,12 +2422,14 @@ class RustExplorationManager(
             return
         if self._try_multi_cell_store(addr_ast, data_ast):
             return
-        # angr-hcok: proxy gate — the Multi-cell fast path above already
-        # handled the write directly in Rust; if it declined, skip the
-        # Python shadow store to avoid the &mut self re-entry.
+        # angr-hcok: proxy gate — a store through the proxy would re-enter
+        # Rust under &mut self, and returning would drop the write. Rust
+        # stores every enumerable candidate set itself, so only an address
+        # it cannot resolve (TooLarge with no Max fallback, a Failed
+        # concretization) gets here; fail loud, as Python's empty strategy
+        # chain does (angr-vmi2l.324).
         if _is_rust_memory_proxy(state.memory):
-            self._register_handle(id(data_ast), data_ast)
-            return
+            raise SimMemoryAddressError(f"Rust could not concretize the symbolic store address {addr_ast!r}")
         try:
             state.memory.store(
                 addr_ast, data_ast, endness=state.arch.memory_endness, inspect=False, disable_actions=True

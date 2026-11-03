@@ -164,9 +164,9 @@ pub struct AddressConcretizer {
     /// Maximum number of solutions to enumerate in Rust (default: 256). A set
     /// over this cap whose span is within the range limit is `Failed`, not
     /// `TooLarge`, so the access defers to Python's `Range` instead of being
-    /// pinned (angr-vmi2l.248). Loads and stores over `MAX_ITE_ADDRS`
-    /// candidates already go to the Python memory model, so the cap bounds
-    /// only Rust's enumeration cost, never which paths survive.
+    /// pinned (angr-vmi2l.248). Loads over `MAX_ITE_ADDRS` candidates go to the
+    /// Python memory model, and stores build their ITE in Rust, so the cap
+    /// bounds only Rust's enumeration cost, never which paths survive.
     pub max_solutions: usize,
     /// Maximum number of elements for strided access (default: 16384).
     /// If stride count exceeds this, falls back to TooLarge.
@@ -408,12 +408,22 @@ impl AddressConcretizer {
     ) -> ConcretizationResult {
         let result = if self.write_range_applies(multiwrite) {
             let ranged = self.concretize_with_mode(addr, ctx, ConcretizationMode::Write);
-            match ranged {
-                // Fallback: SimConcretizationStrategyMax - return maximum solution
-                ConcretizationResult::TooLarge { .. } if self.write_fallback_max => {
-                    self.max_solution(addr, ctx).unwrap_or(ranged)
+            // A stride grid with more cells than `Range` could ever return is
+            // `unenumerable`'s abstraction of a set Python rejects, so it takes
+            // the Max step just as `TooLarge` does: the store dispatch writes
+            // every grid cell it is handed (angr-vmi2l.324).
+            let range_failed = match &ranged {
+                ConcretizationResult::TooLarge { .. } => true,
+                ConcretizationResult::Strided { count, .. } => {
+                    *count > self.write_range_limit.saturating_add(1)
                 }
-                _ => ranged,
+                _ => false,
+            };
+            if range_failed && self.write_fallback_max {
+                // Fallback: SimConcretizationStrategyMax - return maximum solution
+                self.max_solution(addr, ctx).unwrap_or(ranged)
+            } else {
+                ranged
             }
         } else if self.write_fallback_max {
             // Python's chain for an unannotated write with

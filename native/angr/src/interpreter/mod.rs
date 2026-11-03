@@ -81,11 +81,11 @@ pub(crate) const BLOCK_CACHE_CAPACITY_NZ: std::num::NonZeroUsize =
 /// A `Multiple`/`Strided` concretization can carry up to `Concretizer::max_solutions`
 /// (256) addresses, and an in-Rust ITE chain costs one Python `memory_load_batch`
 /// entry plus one ITE node per address — an expression the solver then has to
-/// carry through every downstream constraint. Beyond this cap both the load
-/// (`dispatch_multi_load`) and the store (`dispatch_multi_store`) hand the whole
-/// access to Python's memory model, which has purpose-built machinery for
-/// wide symbolic accesses. Keeping one constant for both keeps the two paths from
-/// drifting apart (angr-sqfj8.68).
+/// carry through every downstream constraint. Beyond this cap the load
+/// (`dispatch_multi_load`) hands the whole access to Python's memory model,
+/// which has purpose-built machinery for wide symbolic accesses (angr-sqfj8.68).
+/// The store (`dispatch_multi_store`) has no cap: a proxy-backed host cannot
+/// write Rust memory from its full store (angr-vmi2l.324).
 pub(crate) const MAX_ITE_ADDRS: usize = 16;
 
 /// Start a profiling timer iff `self.profiling_enabled`. Yields `Option<Instant>`.
