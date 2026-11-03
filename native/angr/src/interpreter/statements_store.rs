@@ -127,6 +127,22 @@ impl<'a> VEXInterpreter<'a> {
                 addr,
                 size: unmapped_size,
             }) => {
+                if let ConcretizationResult::Single(store_addr) = *conc_result
+                    && self.map_fresh_pages_for_store(callbacks, store_addr, data_size)
+                    && let Some(ref mut rust_mem) = self.rust_memory
+                    && rust_mem
+                        .store_with_concretization(
+                            addr_val,
+                            data_val.clone(),
+                            &conc_result,
+                            self.ctx,
+                        )
+                        .is_ok()
+                {
+                    self.invalidate_code_on_store(&conc_result, data_size);
+                    profile_add!(store_start, self.stats.store_stmt_time_ns);
+                    return Ok(true);
+                }
                 log::debug!(
                     "Unmapped memory store at 0x{addr:x} (size={unmapped_size}), falling back to Python"
                 );
@@ -139,6 +155,43 @@ impl<'a> VEXInterpreter<'a> {
             }
             Err(e) => Err(CbExecutionError::Memory(e)),
         }
+    }
+
+    /// Map zero pages under a concrete store that hit pages neither side holds,
+    /// so the write lands in `rust_memory` (angr-sy3xj). Without this the
+    /// store is buffered in `pending_stores`, which a multi-block run's later
+    /// loads read back, but the flush drops it: the next step and every export
+    /// see the page as never written.
+    ///
+    /// angr's `DefaultMemory` maps a page on any write when STRICT_PAGE_ACCESS
+    /// is off; the proxy-write twin is
+    /// `state_api::_set_state_memory_concrete_automap` (angr-ijwp0). A page the
+    /// host may hold (`has_page`, which fails open without a snapshot) is left
+    /// alone, since a zero page would shadow its real bytes. Returns whether
+    /// every page under the store is now mapped.
+    fn map_fresh_pages_for_store(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        addr: u64,
+        size: usize,
+    ) -> bool {
+        let Some(rust_mem) = self.rust_memory.as_mut() else {
+            return false;
+        };
+        if rust_mem.enforce_permissions() {
+            return false;
+        }
+        let pages = crate::memory::PageIndex::range_covering(addr, size as u64);
+        if pages.clone().any(|page| {
+            !rust_mem.is_mapped(page.base_addr()) && callbacks.has_page(page.base_addr())
+        }) {
+            return false;
+        }
+        rust_mem.add_lazy_region(addr, size as u64);
+        for page in pages {
+            rust_mem.auto_map_zero_page(page.base_addr());
+        }
+        true
     }
 
     /// Invalidate cached IRSBs after a successful Rust-native store when the
