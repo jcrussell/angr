@@ -154,8 +154,9 @@ steps (``RustExplorationManager._step_round``). The selection policy
 (BFS / DFS) orders states only inside an unbounded ``run()`` /
 ``explore()``. A manager built with an explicit ``engine="rust"`` still
 chains blocks inside a state's step; a default-routed one advances one
-basic block per step. A registered technique ``step()`` /
-``step_state()`` hook still advances one policy-selected state per step.
+basic block per step. A registered technique ``step()`` hook wraps that
+whole round, and a ``step_state()`` hook sees each state first; the states
+it declines are advanced by the round.
 
 Unconstrained states
 ~~~~~~~~~~~~~~~~~~~~

@@ -92,7 +92,7 @@ def manager_has_step_hooks(mgr: RustExplorationManager) -> bool:
     return any(_has_dispatched_step_hook(t) for t in mgr._active_techniques)
 
 
-def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="active"):
+def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="active", native_run=None):
     """Run one step batch under ExplorationTechnique step() hook composition.
 
     Builds a fresh RustSimulationManagerProxy per dispatch, hooks each
@@ -104,6 +104,10 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
     or None if no technique ever invoked simgr.step() (the technique consumed
     the batch without delegating — a possibility for stash-only techniques
     like StubStasher).
+
+    ``native_run(batch_size)`` replaces that innermost call when given:
+    ``RustExplorationManager.step()`` passes one that advances every active
+    state once (angr-vmi2l.317).
     """
     from angr.exploration.rust_state_proxy import RustSimulationManagerProxy
 
@@ -117,17 +121,19 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
         python_mgr=mgr,
     )
 
-    def base_step(stash="active", **kwargs):
+    def run_natively(size):
         # One basic block per step, as SimulationManager.step does: a hook that
         # prunes or picks among the successors (StochasticSearch keeps one)
         # must see each branch, which a chained run would carry to its end
         # within the step (angr-mx00p.132.29).
         was_granular = mgr._rust_mgr.set_block_granular(True)
         try:
-            event = mgr._rust_mgr.run(batch_size)
+            return native_run(size) if native_run is not None else mgr._rust_mgr.run(size)
         finally:
             mgr._rust_mgr.set_block_granular(was_granular)
-        captured_event.append(event)
+
+    def base_step(stash="active", **kwargs):
+        captured_event.append(run_natively(batch_size))
 
     proxy._step_callback = base_step
 
@@ -160,7 +166,7 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
             e,
         )
         if not captured_event:
-            captured_event.append(mgr._rust_mgr.run(batch_size))
+            captured_event.append(run_natively(batch_size))
 
     return captured_event[0] if captured_event else None
 
@@ -211,7 +217,7 @@ _VT_HOLD_STASH = "_vt_hold"
 _VT_DROP_STASH = "_vt_drop"
 
 
-def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stash="active"):
+def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stash="active", native_run=None):
     """Run one step batch under ExplorationTechnique step_state() hook composition.
 
     Mirrors ``SimulationManager.step()`` over the E1 proxy (angr-op0dn.11.7).
@@ -232,6 +238,8 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
     Returns ``(event, applied)`` where ``event`` is the ExplorationEvent from the
     native run over the declined states (or a ``_SyntheticStepEvent`` when every
     state was merged) and ``applied`` counts the states a step_state hook rewrote.
+    ``native_run(batch_size)`` replaces that native run when given, as in
+    :func:`dispatch_step_with_hooks`.
     """
     import types
 
@@ -332,7 +340,7 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
     if mgr._rust_mgr.get_state_ids(stash):
         was_granular = mgr._rust_mgr.set_block_granular(True)
         try:
-            event = mgr._rust_mgr.run(batch_size)
+            event = native_run(batch_size) if native_run is not None else mgr._rust_mgr.run(batch_size)
         finally:
             mgr._rust_mgr.set_block_granular(was_granular)
     else:

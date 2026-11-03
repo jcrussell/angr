@@ -92,3 +92,49 @@ class TestStepAdvancesWholeStash:
         rust.step()
         counts = rust.stash_counts()
         assert not any(v for k, v in counts.items() if k.startswith("_step_round"))
+
+
+class _PassThroughStep(angr.ExplorationTechnique):
+    """A step() hook that only delegates, recording the frontier the base step leaves."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = []
+
+    def step(self, simgr, stash="active", **kwargs):
+        simgr = simgr.step(stash=stash, **kwargs)
+        self.seen.append(Counter(s.addr for s in simgr.stashes[stash]))
+        return simgr
+
+
+class _DecliningStepState(angr.ExplorationTechnique):
+    """A step_state() hook that always falls back to the base step_state."""
+
+    def step_state(self, simgr, state, **kwargs):
+        return simgr.step_state(state, **kwargs)
+
+
+class TestHookedStepAdvancesWholeStash:
+    """A technique hook wraps the whole-stash round (angr-vmi2l.317)."""
+
+    def test_step_hook_sees_and_leaves_python_frontier(self, forked_pair):
+        py, rust = forked_pair
+        py_tech, rust_tech = _PassThroughStep(), _PassThroughStep()
+        py.use_technique(py_tech)
+        rust.use_technique(rust_tech)
+
+        py.step()
+        rust.step()
+
+        assert _addrs(rust) == _addrs(py)
+        assert rust_tech.seen == py_tech.seen
+
+    def test_step_state_hook_declined_states_all_advance(self, forked_pair):
+        py, rust = forked_pair
+        py.use_technique(_DecliningStepState())
+        rust.use_technique(_DecliningStepState())
+
+        py.run(n=2)
+        rust.run(n=2)
+
+        assert _addrs(rust) == _addrs(py) == Counter({BASE + 0x40: 3})

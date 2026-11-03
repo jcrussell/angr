@@ -5568,18 +5568,47 @@ class RustExplorationManager(
 
         A step is a SimulationManager step: each state in ``active`` when it begins is advanced once, and its
         successors are not re-stepped in the same step (angr-vmi2l.246). A technique step()/step_state() hook
-        still drives one policy-selected state per step.
+        wraps that round, as it wraps SimulationManager.step's (angr-vmi2l.317).
         """
         for _ in range(n):
             self._sync_hooks_before_step()
-            if self._has_technique_step_state_hooks() or self._has_technique_step_hooks():
-                if not self._step_one_selected():
-                    break
-            elif not self._step_round():
+            hooked = self._has_technique_step_state_hooks() or self._has_technique_step_hooks()
+            if not (self._step_hooked_round() if hooked else self._step_round()):
                 break
 
     def _step_round(self) -> bool:
-        """Advance every active state once; return False when stepping should stop.
+        """Advance every active state once, then apply technique filters; return False when stepping should stop."""
+        keep_going, stepped = self._advance_round()
+        if stepped and self._active_techniques:
+            self._apply_technique_filters()
+        return keep_going
+
+    def _step_hooked_round(self) -> bool:
+        """Run :meth:`_advance_round` as the native step under the technique hooks; False when stepping should stop.
+
+        A step_state hook that rewrites a state takes it out of ``active`` before the round, so the round advances
+        only the states every hook declined; a step() hook that never delegates leaves the round unrun.
+        """
+        from angr.exploration.rust_techniques import _SyntheticStepEvent
+
+        outcome = {"keep_going": True}
+
+        def run_round(_batch_size):
+            outcome["keep_going"], _ = self._advance_round()
+            counts = self._rust_mgr.stash_counts()
+            return _SyntheticStepEvent(counts.get("found", 0), counts.get("active", 0))
+
+        if self._has_technique_step_state_hooks():
+            self._run_with_step_state_hooks(1, native_run=run_round)
+        else:
+            self._run_with_step_hooks(1, native_run=run_round)
+        self._rust_mgr.sync_state_index()
+        if outcome["keep_going"]:
+            self._apply_technique_filters()
+        return outcome["keep_going"]
+
+    def _advance_round(self) -> tuple[bool, bool]:
+        """Advance every active state once; return ``(keep_going, stepped)``.
 
         The round's states wait in ``_STEP_ROUND_QUEUE`` and are released into ``active`` one at a time, so the
         ``run(1)`` that steps each sees only that state whatever the selection policy. Successors collect in
@@ -5589,7 +5618,11 @@ class RustExplorationManager(
         rust = self._rust_mgr
         if rust.move_states("active", _STEP_ROUND_QUEUE, None) == 0:
             # Nothing visible to queue; a plain run(1) still flushes parked bounces or reports active_empty.
-            return self._step_one_selected()
+            self._stats_ffi_crossings += 1
+            event = rust.run(1)
+            rust.sync_state_index()
+            kind = event.event_type
+            return self._step_event_keeps_going(event), kind not in ("found", "active_empty")
         keep_going = True
         stepped = False
         try:
@@ -5598,47 +5631,26 @@ class RustExplorationManager(
                 self._stats_ffi_crossings += 1
                 event = rust.run(1)
                 rust.sync_state_index()
-                kind = event.event_type
-                if kind == "need_callback":
-                    keep_going = not self._dispatch_callback(event)
-                elif kind == "errored":
-                    l.warning(f"Step error: {event.callback_reason}")
-                    keep_going = False
-                elif kind == "found":
-                    # num_find is reached: run(1) returns before popping, so no state in the round can advance.
-                    keep_going = False
-                stepped = stepped or kind != "found"
+                # num_find is reached on "found": run(1) returns before popping, so no state in the round can advance.
+                keep_going = self._step_event_keeps_going(event) and event.event_type != "found"
+                stepped = stepped or event.event_type != "found"
                 rust.move_states("active", _STEP_ROUND_DONE, None)
                 if not keep_going:
                     break
         finally:
             rust.move_states(_STEP_ROUND_DONE, "active", None)
             rust.move_states(_STEP_ROUND_QUEUE, "active", None)
-        if stepped and self._active_techniques:
-            self._apply_technique_filters()
-        return keep_going
+        return keep_going, stepped
 
-    def _step_one_selected(self) -> bool:
-        """Advance the one active state the selection policy picks; return False when stepping should stop."""
-        self._stats_ffi_crossings += 1
-        if self._has_technique_step_state_hooks():
-            event = self._run_with_step_state_hooks(1)
-        elif self._has_technique_step_hooks():
-            event = self._run_with_step_hooks(1)
-        else:
-            event = self._rust_mgr.run(1)
-        self._rust_mgr.sync_state_index()
-
-        if event.event_type == "need_callback":
+    def _step_event_keeps_going(self, event) -> bool:
+        """Dispatch a pending callback from a step's ``run(1)`` event; return False when stepping should stop."""
+        kind = event.event_type
+        if kind == "need_callback":
             return not self._dispatch_callback(event)
-        if event.event_type == "active_empty":
-            return False
-        if event.event_type == "errored":
+        if kind == "errored":
             l.warning(f"Step error: {event.callback_reason}")
             return False
-        if event.event_type in ("step_complete", "found") and self._active_techniques:
-            self._apply_technique_filters()
-        return True
+        return kind != "active_empty"
 
     @staticmethod
     def _drain_solver_graveyard() -> None:
@@ -5965,18 +5977,19 @@ class RustExplorationManager(
 
         return manager_has_step_hooks(self)
 
-    def _run_with_step_hooks(self, batch_size):
+    def _run_with_step_hooks(self, batch_size, native_run=None):
         """Run one batch under ExplorationTechnique step() hook composition.
 
         Returns the captured ExplorationEvent. When the step-hook stack never
         delegates to simgr.step() (e.g. a stash-only step hook), falls back to
-        a direct Rust run so the loop still makes progress.
+        a direct run (``native_run`` when given, as for
+        ``dispatch_step_with_hooks``) so the loop still makes progress.
         """
         from angr.exploration.rust_techniques import dispatch_step_with_hooks
 
-        event = dispatch_step_with_hooks(self, batch_size)
+        event = dispatch_step_with_hooks(self, batch_size, native_run=native_run)
         if event is None:
-            event = self._rust_mgr.run(batch_size)
+            event = native_run(batch_size) if native_run is not None else self._rust_mgr.run(batch_size)
         return event
 
     def _has_technique_step_state_hooks(self) -> bool:
@@ -5993,7 +6006,7 @@ class RustExplorationManager(
 
         return manager_has_step_state_hooks(self)
 
-    def _run_with_step_state_hooks(self, batch_size):
+    def _run_with_step_state_hooks(self, batch_size, native_run=None):
         """Run one batch under ExplorationTechnique step_state() hook composition.
 
         Returns the ExplorationEvent (real, over the natively-advanced declined
@@ -6003,7 +6016,7 @@ class RustExplorationManager(
         from angr.exploration.rust_techniques import dispatch_step_state_with_hooks
 
         self._stats_veritesting_dispatches += 1
-        event, applied = dispatch_step_state_with_hooks(self, batch_size)
+        event, applied = dispatch_step_state_with_hooks(self, batch_size, native_run=native_run)
         self._stats_veritesting_applied += applied
         return event
 
