@@ -3136,6 +3136,12 @@ class RustExplorationManager(
                     l.debug(f"Could not load region {name}: {e}")
 
         self._rust_mgr.load_binary_regions(regions)
+        # Every loaded object, pseudo-objects included: a transfer outside all
+        # of them into code the state holds is executed (angr-vmi2l.158).
+        # cle's max_addr is inclusive; the Rust side wants half-open ranges.
+        self._rust_mgr.set_loader_object_ranges(
+            [(obj.min_addr, obj.max_addr + 1) for obj in self._project.loader.all_objects]
+        )
 
         # Main-object span for the native-dispatch gate: hooks landing inside the
         # main object are user `proj.hook()` territory and always defer to Python,

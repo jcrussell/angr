@@ -6,6 +6,7 @@
 //! * `arch_name` — architecture name string (used for arch_from_name lookups).
 //! * `vex_arch` — VEX architecture enum (passed to the interpreter).
 //! * `binary_regions` — code regions for native lifting (Arc-shared).
+//! * `loader_object_ranges` — every loaded object's span (Arc-shared).
 //! * `block_cache` — IRSB cache shared with each interpreter via swap.
 //! * `calling_convention` — argument extraction / return-register protocol.
 //! * `little_endian` — endianness override (None = arch default).
@@ -41,6 +42,9 @@ pub(crate) struct ExecutionEnvironment {
     /// `[start, end)` of the main object's code regions, when known. Hooks in
     /// this range are user `proj.hook()` territory and always defer to Python.
     pub(crate) main_object_range: Option<(u64, u64)>,
+    /// `[start, end)` of every loaded object; see
+    /// `VEXInterpreter::set_loader_object_ranges`.
+    pub(crate) loader_object_ranges: Arc<[(u64, u64)]>,
     /// On by default (angr-gorvf.6, angr-a8epx, angr-gorvf.3.2):
     /// also prefer the native registry for hooks that land inside a NON-main
     /// loaded object. Python sets this explicitly on every manager.
@@ -109,6 +113,7 @@ impl ExecutionEnvironment {
             little_endian,
             max_history: 1000,
             main_object_range: None,
+            loader_object_ranges: Arc::from([]),
             prefer_native_library_hooks: true,
         }
     }

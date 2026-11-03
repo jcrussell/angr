@@ -55,6 +55,8 @@ pub(crate) struct StepContext {
     pub(crate) binary_regions: Vec<(u64, Arc<Vec<u8>>)>,
     /// `[start, end)` of the main object's code regions (native-dispatch gate).
     pub(crate) main_object_range: Option<(u64, u64)>,
+    /// Every loaded object's `[start, end)` span (out-of-image exit gate).
+    pub(crate) loader_object_ranges: Arc<[(u64, u64)]>,
     /// Prefer native procs for non-main-object library hooks (native-dispatch gate).
     pub(crate) prefer_native_library_hooks: bool,
     /// Deferred-fork / branch-policy execution config.
@@ -128,6 +130,7 @@ impl RustExplorationManager {
             pointer_size: self.environment.calling_convention.pointer_size(),
             binary_regions: self.environment.binary_regions.clone(),
             main_object_range: self.environment.main_object_range,
+            loader_object_ranges: Arc::clone(&self.environment.loader_object_ranges),
             prefer_native_library_hooks: self.environment.prefer_native_library_hooks,
             exec_config: self.exec_config.clone(),
             lazy_solves: self.constraint_solver.lazy_solves,
@@ -290,6 +293,7 @@ pub(crate) fn run_interpreter_step_core(
     for (base, data) in &ctx.binary_regions {
         interp.add_concrete_memory_shared(*base, Arc::clone(data));
     }
+    interp.set_loader_object_ranges(Arc::clone(&ctx.loader_object_ranges));
 
     // Transfer state's SymbolicMemory into the interpreter.
     // This makes Rust the source of truth for all memory during

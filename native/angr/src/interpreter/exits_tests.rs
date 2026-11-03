@@ -335,3 +335,41 @@ fn get_syscall_num_returns_none_for_symbolic_rax() {
     interp.registers.put_reg("rax", sym);
     assert_eq!(interp.get_syscall_num(), None);
 }
+
+/// Interpreter whose `rust_memory` holds concrete code at 0x9000, outside the
+/// 0x1000 image region (angr-vmi2l.158).
+fn interp_with_state_code(ctx: &SymContext) -> VEXInterpreter<'_> {
+    let mut interp = new_interp(ctx);
+    add_internal_region(&mut interp);
+    let mut mem = SymbolicMemory::new(crate::vex::ir::Endness::Little);
+    mem.map(0x9000u64, crate::memory::PAGE_SIZE, crate::memory::Permission::RWX);
+    mem.store_concrete(0x9000u64, RustBV::concrete(0x90c3, 16))
+        .expect("plant code");
+    interp.set_rust_memory(mem);
+    interp
+}
+
+#[test]
+fn handle_exit_into_state_code_outside_the_image_is_block_end() {
+    let ctx = SymContext::new_mock();
+    for jumpkind in [JumpKind::Call, JumpKind::Boring, JumpKind::Ret] {
+        let mut interp = interp_with_state_code(&ctx);
+        match interp.handle_exit(0x9000, jumpkind) {
+            BlockResult::BlockEnd { next_addr, .. } => assert_eq!(next_addr, 0x9000),
+            other => panic!("{jumpkind:?}: expected BlockEnd, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn handle_exit_into_a_loader_objects_mapped_bytes_stays_unmodeled() {
+    // The extern object's stubs are mapped from the loader but are not code
+    // the engine may run: they stay unmodeled calls.
+    let ctx = SymContext::new_mock();
+    let mut interp = interp_with_state_code(&ctx);
+    interp.set_loader_object_ranges(Arc::from([(0x9000, 0xa000)]));
+    match interp.handle_exit(0x9000, JumpKind::Call) {
+        BlockResult::UnmodeledCall { addr, .. } => assert_eq!(addr, 0x9000),
+        other => panic!("expected UnmodeledCall, got {other:?}"),
+    }
+}

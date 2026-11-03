@@ -165,8 +165,8 @@ As in angr's ``SimulationManager``, ``save_unconstrained`` defaults to
 ``True``: a state whose instruction pointer is unconstrained (for example
 ``main`` returning through the symbolic return address a ``blank_state``
 leaves on the stack) goes to the ``unconstrained`` stash. A ``ret`` is treated
-as unconstrained when its target is outside the loaded image, unhooked, and
-expected by no call frame; hooked SimProcedures return without popping their
+as unconstrained when its target is outside the loaded image, unhooked, not
+mapped in the state, and expected by no call frame; hooked SimProcedures return without popping their
 frame, so the engine pops frames the way ``CallStack.ret`` does, through the
 frame that expects the return address.
 

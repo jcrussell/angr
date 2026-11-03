@@ -116,6 +116,17 @@ impl RustExplorationManager {
         self.environment.main_object_range = Some((start, end));
     }
 
+    /// Record every loaded object's `[start, end)` span. A transfer to a
+    /// target outside all of them that the state holds concrete code at is
+    /// executed rather than routed as an unmodeled call (angr-vmi2l.158).
+    ///
+    /// Snapshotted into each worker's `StepContext` like `binary_regions`
+    /// above.
+    #[angr_macros::steady_guarded]
+    pub fn set_loader_object_ranges(&mut self, ranges: Vec<(u64, u64)>) {
+        self.environment.loader_object_ranges = ranges.into();
+    }
+
     /// Opt-in: prefer native procedures for `use_sim_procedures` library hooks
     /// that land inside a non-main loaded object (angr-a8epx / angr-gorvf.3.2).
     ///

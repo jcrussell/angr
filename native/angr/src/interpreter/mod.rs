@@ -234,6 +234,9 @@ pub(crate) struct VEXInterpreter<'a> {
     /// These are read-only regions (e.g., binary .text/.rodata sections).
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
     concrete_memory: Arc<Vec<ConcreteMemoryRegion>>,
+    /// `[start, end)` of every loaded object (see
+    /// [`Self::set_loader_object_ranges`]). Arc-shared on fork.
+    loader_object_ranges: Arc<[(u64, u64)]>,
     /// Address concretizer for handling symbolic addresses.
     concretizer: AddressConcretizer,
     /// Pending concrete stores to batch for efficiency.
@@ -440,6 +443,7 @@ impl<'a> VEXInterpreter<'a> {
             config,
             next_condition_id: 0,
             concrete_memory: Arc::new(Vec::new()),
+            loader_object_ranges: Arc::from([]),
             concretizer: AddressConcretizer::new(),
             pending_stores: PendingStoreBuffer::with_capacity(256),
             all_flushed_stores: FxHashMap::default(),
@@ -979,7 +983,8 @@ impl<'a> VEXInterpreter<'a> {
             config: self.config.clone(),
             next_condition_id: self.next_condition_id,
             concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)
-            concretizer: self.concretizer.clone(),              // Share concretizer settings
+            loader_object_ranges: Arc::clone(&self.loader_object_ranges),
+            concretizer: self.concretizer.clone(), // Share concretizer settings
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
             all_flushed_stores: FxHashMap::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),

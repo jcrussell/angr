@@ -285,6 +285,16 @@ impl<'a> VEXInterpreter<'a> {
             };
         }
 
+        // Ahead of the out-of-image arms below: a call/jmp/ret into code the
+        // state holds outside every loaded object is lifted from state memory
+        // and executed, as Python does (angr-vmi2l.158).
+        if self.holds_state_code(target) {
+            return BlockResult::BlockEnd {
+                next_addr: target,
+                jumpkind,
+            };
+        }
+
         // For CALL instructions to external code, ask Python to resolve
         if jumpkind.is_call() && !self.is_in_binary(target) {
             let return_addr =

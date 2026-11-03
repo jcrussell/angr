@@ -132,6 +132,35 @@ impl<'a> VEXInterpreter<'a> {
         None
     }
 
+    /// Record the `[start, end)` span of every loaded object, executable or
+    /// not, pseudo-objects (externs, kernel, tls) included.
+    pub(crate) fn set_loader_object_ranges(&mut self, ranges: Arc<[(u64, u64)]>) {
+        self.loader_object_ranges = ranges;
+    }
+
+    /// Whether `addr` is code the state itself holds outside every loaded
+    /// object: stack or heap shellcode, JIT output, code a seed state stored
+    /// (angr-vmi2l.158). True only when the byte at `addr` is mapped in
+    /// `rust_memory`, concrete and initialized, so an unmapped target keeps
+    /// the out-of-image exit classification (the angr continuation
+    /// addresses, the ret-to-nowhere unconstrained case). A loaded object's
+    /// non-code span (the extern object's stubs, a data section) is excluded:
+    /// those are routed as unmodeled calls, as before.
+    pub(super) fn holds_state_code(&self, addr: u64) -> bool {
+        if self.is_in_binary(addr)
+            || self
+                .loader_object_ranges
+                .iter()
+                .any(|&(start, end)| addr >= start && addr < end)
+        {
+            return false;
+        }
+        self.rust_memory.as_ref().is_some_and(|mem| {
+            mem.read_concrete_bytes_for_lift(addr, 1).is_some()
+                && mem.uninit_runs(addr, 1).is_empty()
+        })
+    }
+
     /// Check if an address is within loaded binary (concrete memory) regions.
     /// Used to distinguish internal function calls from external/library calls.
     pub(crate) fn is_in_binary(&self, addr: u64) -> bool {
