@@ -5075,6 +5075,9 @@ class RustExplorationManager(
         # it is a safe no-op when steady mode is off.
         residency = not need_per_step
         self._set_frontier_residency(residency)
+        # angr-vmi2l.157: what each stash held before this explore, so a phase-2
+        # retry can discard exactly phase 1's terminal states.
+        self._pre_explore_stash_ids = self._stash_id_snapshot()
 
         while True:
             if self._check_limits(start_time, steps_taken, timeout, max_steps):
@@ -5238,6 +5241,10 @@ class RustExplorationManager(
         except AttributeError:
             # Rust extension predates set_use_deferred_forks; cannot retry.
             return False
+        # Phase 2 re-explores every path phase 1 did from the same roots, so
+        # phase 1's found/avoid/deadended/errored/pruned states would each be
+        # reported twice (angr-vmi2l.157). Keep only what predates this explore.
+        self._drop_states_added_since(getattr(self, "_pre_explore_stash_ids", None) or {})
         # Re-seed from copies so the pristine originals stay reusable.
         self._phase2_reseeding = True
         try:
@@ -5247,6 +5254,24 @@ class RustExplorationManager(
         self._rust_mgr.sync_state_index()
         # Guard against a no-op re-seed (would otherwise spin active_empty).
         return bool(self._rust_mgr.get_state_ids("active"))
+
+    def _stash_id_snapshot(self) -> dict[str, set[int]]:
+        """Map each public stash to the state ids it holds now."""
+        return {
+            stash: set(self._rust_mgr.get_state_ids(stash))
+            for stash in self._rust_mgr.stash_counts()
+            if not stash.startswith("_")
+        }
+
+    def _drop_states_added_since(self, snapshot: dict[str, set[int]]) -> None:
+        """Drop every public-stash state that is not in ``snapshot``.
+
+        Internal ``_``-prefixed stashes (``_copies``) back live proxies and
+        are left alone.
+        """
+        for stash, ids in self._stash_id_snapshot().items():
+            for sid in ids - snapshot.get(stash, set()):
+                self._rust_mgr.drop_state_from_stash(sid, stash)
 
     def get_state_options_py(self, state_id: int) -> set:
         """Return the Python-side options set for a Rust state.
