@@ -51,7 +51,7 @@ def _explore_coverage(project, workers, monkeypatch, strategy="coverage"):
     if strategy is not None:
         mgr.set_exploration_strategy(strategy)
     target = project.loader.find_symbol("reach_target").rebased_addr
-    mgr.explore(find=target, num_find=None, n=4096)
+    mgr.explore(find=target, num_find=None)
     return mgr
 
 

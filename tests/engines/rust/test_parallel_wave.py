@@ -243,7 +243,7 @@ def _explore_pbounce(project, workers, monkeypatch):
     target = project.loader.find_symbol("reach_target")
     mgr = RustExplorationManager(project, [_pbounce_state(project)])
     assert mgr.stats["parallel_real_workers"] == workers
-    mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+    mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES)
     return mgr, target.rebased_addr
 
 
@@ -406,7 +406,7 @@ def _explore_pbounce_find_k(project, workers, monkeypatch, num_find):
     target = project.loader.find_symbol("reach_target")
     mgr = RustExplorationManager(project, [_pbounce_state(project)])
     assert mgr.stats["parallel_real_workers"] == workers
-    mgr.explore(find=target.rebased_addr, num_find=num_find, n=4096)
+    mgr.explore(find=target.rebased_addr, num_find=num_find)
     return mgr, target.rebased_addr
 
 
@@ -417,7 +417,7 @@ def _explore_pbounce_steady(project, workers, monkeypatch, num_find):
     target = project.loader.find_symbol("reach_target")
     mgr = RustExplorationManager(project, [_pbounce_state(project)])
     assert mgr.stats["parallel_real_workers"] == workers
-    mgr.explore(find=target.rebased_addr, num_find=num_find, n=4096)
+    mgr.explore(find=target.rebased_addr, num_find=num_find)
     return mgr, target.rebased_addr
 
 
@@ -520,7 +520,7 @@ class TestParallelCancelFrontier:
         assert found_first < _SYNTH_LEAVES, "the first explore must have exited early to test resumability"
 
         # num_find counts new finds, as in SimulationManager.explore.
-        mgr.explore(find=target_addr, num_find=None, n=4096)
+        mgr.explore(find=target_addr, num_find=None)
         found = list(mgr.found)
         assert len(list(mgr.errored)) == 0, f"workers={workers} errored: {list(mgr.errored)}"
         assert len(found) == len(_FEASIBLE_LEAVES), (
@@ -564,7 +564,7 @@ class TestParallelCheckpointFrontier:
 
         assert _fingerprint(resumed) == pre, f"workers={workers}: frontier truncated across the snapshot"
 
-        resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+        resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES)
         found = list(resumed.found)
         assert len(list(resumed.errored)) == 0, f"workers={workers} errored: {list(resumed.errored)}"
         assert {s.addr for s in found} == {target_addr}
@@ -651,7 +651,7 @@ class TestParallelCheckpointFrontier:
                 monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
             resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
             resumed.load_snapshot(str(snap))
-            resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+            resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES)
             found = list(resumed.found)
             assert len(list(resumed.errored)) == 0, f"workers={workers} errored: {list(resumed.errored)}"
             assert {s.addr for s in found} == {target_addr}
@@ -694,7 +694,7 @@ class TestParallelCheckpointFrontier:
 
         resumed = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
         resumed.load_snapshot(str(snap))
-        resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+        resumed.explore(find=target_addr, num_find=_SYNTH_LEAVES)
 
         found = list(resumed.found)
         assert found, "resume drained no leaves; the round-trip test owns that failure"
@@ -959,7 +959,7 @@ class TestProgrammaticParallelWorkers:
         # Not yet engaged at construction: the kwarg arms at explore() time once
         # eligibility (address-based) is known.
         assert mgr.stats["parallel_real_workers"] == 1
-        mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES)
         assert mgr.stats["parallel_real_workers"] == 2
         # `parallel_worker_dispatch` is empty on the serial path and populated
         # only by the real pool — the unambiguous "parallel ran" signal
@@ -977,11 +977,11 @@ class TestProgrammaticParallelWorkers:
         target = pbounce_project.loader.find_symbol("reach_target")
 
         serial = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
-        serial.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        serial.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES)
         base = sorted(s.addr for s in serial.found)
 
         par = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=2)
-        par.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        par.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES)
         assert sorted(s.addr for s in par.found) == base
 
     def test_callable_find_falls_back_single_threaded(self, pbounce_project, monkeypatch):
@@ -989,7 +989,7 @@ class TestProgrammaticParallelWorkers:
         monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
         target = pbounce_project.loader.find_symbol("reach_target").rebased_addr
         mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=2)
-        mgr.explore(find=lambda s: s.addr == target, num_find=1, n=4096)
+        mgr.explore(find=lambda s: s.addr == target, num_find=1)
         # Ineligible: the setter was forced back to 1 and the real pool never ran
         # (worker-dispatch stays empty; only the migration MODEL bumps
         # parallel_tasks on the serial path).
@@ -1004,7 +1004,7 @@ class TestProgrammaticParallelWorkers:
         # kwarg asks for 1, env asks for 2 → env wins (read once in Rust new()).
         mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
         assert mgr.stats["parallel_real_workers"] == 2
-        mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES, n=4096)
+        mgr.explore(find=target.rebased_addr, num_find=_SYNTH_LEAVES)
         assert mgr.stats["parallel_real_workers"] == 2
 
     def test_deterministic_plus_parallel_raises(self, pbounce_project, monkeypatch):
@@ -1037,7 +1037,7 @@ class TestEnvParallelIneligibleDowngrade:
         mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
         # Env applied at construction.
         assert mgr.stats["parallel_real_workers"] == 2
-        mgr.explore(find=lambda s: s.addr == target, num_find=1, n=4096)
+        mgr.explore(find=lambda s: s.addr == target, num_find=1)
         # Downgraded to serial for the ineligible explore; the real pool never dispatched.
         assert mgr.stats["parallel_real_workers"] == 1
         assert sum(mgr.stats["parallel_worker_dispatch"]) == 0
@@ -1050,11 +1050,11 @@ class TestEnvParallelIneligibleDowngrade:
         mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)], parallel_workers=1)
         assert mgr.stats["parallel_real_workers"] == 2
         # Ineligible explore downgrades the same manager to serial for that run.
-        mgr.explore(find=lambda s: s.addr == target, num_find=1, n=4096)
+        mgr.explore(find=lambda s: s.addr == target, num_find=1)
         assert mgr.stats["parallel_real_workers"] == 1
         # A subsequent eligible (address-based) explore on the SAME manager
         # restores the env-configured worker count.
-        mgr.explore(find=target, num_find=_SYNTH_LEAVES, n=4096)
+        mgr.explore(find=target, num_find=_SYNTH_LEAVES)
         assert mgr.stats["parallel_real_workers"] == 2
 
 

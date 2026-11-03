@@ -304,11 +304,11 @@ def state_requires_python_engine(state) -> bool:
 def unsupported_rust_manager_kwargs(kwargs) -> list[str]:
     """Return sorted *kwargs* names that :class:`RustExplorationManager` cannot honor.
 
-    ``RustExplorationManager.__init__`` accepts ``**kwargs`` (for forward
-    compat with subclasses) and would otherwise swallow SimulationManager-only
-    constructor arguments — ``hierarchy``, ``resilience``, ``techniques``, …
-    — silently. Callers that forward user kwargs (notably the factory) use
-    this to fail loudly instead of dropping them.
+    ``RustExplorationManager.__init__`` takes no ``**kwargs``, so a
+    SimulationManager-only constructor argument — ``hierarchy``,
+    ``resilience``, ``techniques``, … — is a TypeError there (angr-vmi2l.243).
+    Callers that forward user kwargs (notably the factory) use this to name
+    them all in one error, or to route the manager to the Python engine.
     """
     import inspect
 
@@ -1012,7 +1012,6 @@ class RustExplorationManager(
         use_native_lift: bool = True,
         parallel_workers: int = 1,
         symlinks: dict | None = None,
-        **kwargs,
     ):
         """Initialize the Rust exploration manager.
 
@@ -4567,6 +4566,12 @@ class RustExplorationManager(
         until: Callable | None = None,
         timeout: float | None = None,
         max_steps: int | None = None,
+        stash: str = "active",
+        n: int | None = None,
+        find_stash: str = "found",
+        avoid_stash: str = "avoid",
+        cfg=None,
+        avoid_priority: bool = False,
         **kwargs,
     ) -> RustExplorationManager:
         """Run exploration with find/avoid conditions.
@@ -4584,7 +4589,17 @@ class RustExplorationManager(
             until: Callable predicate that receives `self` and returns True to stop.
             timeout: Wall-clock timeout in seconds.
             max_steps: Maximum exploration steps before stopping.
-            **kwargs: Additional arguments (ignored for compatibility).
+            stash: ``"active"`` only, as in SimulationManager.explore.
+            n: Step at most this many times, each step a SimulationManager step (every active state advances one
+                block), as SimulationManager.explore(n=) does.
+            find_stash: Stash this call's finds move to (SimulationManager.explore's ``find_stash``).
+            avoid_stash: Stash this call's avoided states move to.
+            cfg: ``None`` only. Explorer's CFG pruning has no Rust counterpart.
+            avoid_priority: ``False`` only.
+            **kwargs: Nothing. SimulationManager.explore forwards these to step(), whose engine arguments the Rust
+                run loop has no counterpart for. Like every argument above outside its supported value, any
+                kwarg hands a not-yet-stepped default-routed manager off to the Python engine, and raises
+                NotImplementedError on any other manager (angr-vmi2l.243).
 
         Returns:
             Self, for chaining.
@@ -4598,6 +4613,31 @@ class RustExplorationManager(
         # exhaustion. sys.maxsize fits usize on 64-bit and never realistically
         # collides with an actual found_count. Kept out of the num_find==1
         # find-directed opt-in path, so find-all stays breadth-first.
+        unhonored = sorted(kwargs)
+        unhonored += [f"stash={stash!r}"] if stash != "active" else []
+        unhonored += ["cfg"] if cfg is not None else []
+        unhonored += ["avoid_priority"] if avoid_priority else []
+        if self._refuse_or_hand_off("explore", unhonored):
+            if until is not None:
+                kwargs["until"] = until
+            return self.explore(
+                stash=stash,
+                n=n,
+                find=find,
+                avoid=avoid,
+                find_stash=find_stash,
+                avoid_stash=avoid_stash,
+                cfg=cfg,
+                num_find=num_find,
+                avoid_priority=avoid_priority,
+                **kwargs,
+            )
+        settled_before = {
+            source: set(self._rust_mgr.get_state_ids(source))
+            for source, target in (("found", find_stash), ("avoid", avoid_stash))
+            if target != source
+        }
+
         if num_find is None:
             num_find = sys.maxsize
         else:
@@ -4689,7 +4729,9 @@ class RustExplorationManager(
         restore_veritesting = self._install_veritesting_target_filter(find, avoid)
         try:
             try:
-                if has_predicates or bool(self._active_techniques):
+                if n is not None:
+                    result = self._explore_rounds(n, num_find, until)
+                elif has_predicates or bool(self._active_techniques):
                     result = self._explore_with_predicates(num_find, until, timeout, max_steps)
                 else:
                     result = self._explore_with_addresses(num_find, until, timeout, max_steps)
@@ -4707,7 +4749,43 @@ class RustExplorationManager(
         finally:
             if not explorer_technique_armed:
                 self._disarm_explore_targets()
+            for source, before in settled_before.items():
+                target = find_stash if source == "found" else avoid_stash
+                for sid in self._rust_mgr.get_state_ids(source):
+                    if sid not in before:
+                        self._rust_mgr.move_state(sid, source, target)
         return result
+
+    def _explore_rounds(self, n: int, num_find: int, until: Callable | None) -> RustExplorationManager:
+        """Run explore(n=)'s budget: at most *n* SimulationManager steps, as SimulationManager.explore does.
+
+        Each round is a :meth:`step` (every active state advances one block), so *n* bounds the run as it does on
+        the Python engine, and a find that is never reached still returns (angr-vmi2l.243).
+        """
+        rust = self._rust_mgr
+        rust.set_find_needs_python(self._find_predicate is not None)
+        rust.set_avoid_needs_python(self._avoid_predicate is not None)
+        drop_terminal = rust.stats()["drop_terminal_states"]
+        rust.set_drop_terminal_states(False)
+        was_granular = self.set_block_granular(True)
+        try:
+            for _ in range(n):
+                self._invalidate_state_export_cache()
+                # An empty visible stash still steps: the round's run(1) flushes parked bounces.
+                if not self._step_loop(1):
+                    break
+                self._evaluate_predicates_on_active()
+                if self._found_count() >= num_find:
+                    break
+                if self._active_techniques and self._check_technique_complete():
+                    break
+                if until is not None and until(self):
+                    break
+            self._evaluate_predicates_on_active()
+        finally:
+            self.set_block_granular(was_granular)
+            rust.set_drop_terminal_states(drop_terminal)
+        return self
 
     def _disarm_explore_targets(self) -> None:
         """Drop this explore()'s find/avoid/num_find from the Rust manager.
@@ -5534,11 +5612,7 @@ class RustExplorationManager(
             Self, for chaining.
         """
         unhonored = sorted(k for k, v in kwargs.items() if not (k == "stash" and v == "active"))
-        if unhonored:
-            reason = f"step() cannot honor {', '.join(unhonored)}"
-            if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
-                raise NotImplementedError(f"RustExplorationManager.{reason}; build the manager without engine='rust'.")
-            self._hand_off_to_python(reason)
+        if self._refuse_or_hand_off("step", unhonored):
             for _ in range(n):
                 self.step(**kwargs)
             return self
@@ -5563,8 +5637,8 @@ class RustExplorationManager(
         self._drain_solver_graveyard()
         return self
 
-    def _step_loop(self, n: int) -> None:
-        """Run ``n`` steps for :meth:`step`, stopping early on a callback or an empty stash.
+    def _step_loop(self, n: int) -> bool:
+        """Run ``n`` steps for :meth:`step`, stopping early on a callback or an empty stash; False when it stopped.
 
         A step is a SimulationManager step: each state in ``active`` when it begins is advanced once, and its
         successors are not re-stepped in the same step (angr-vmi2l.246). A technique step()/step_state() hook
@@ -5574,7 +5648,8 @@ class RustExplorationManager(
             self._sync_hooks_before_step()
             hooked = self._has_technique_step_state_hooks() or self._has_technique_step_hooks()
             if not (self._step_hooked_round() if hooked else self._step_round()):
-                break
+                return False
+        return True
 
     def _step_round(self) -> bool:
         """Advance every active state once, then apply technique filters; return False when stepping should stop."""
@@ -5926,6 +6001,21 @@ class RustExplorationManager(
                 self._hand_off_to_python(python_reason)
                 return self.use_technique(technique)
         return use_technique(self, technique, **kwargs)
+
+    def _refuse_or_hand_off(self, method: str, unhonored: list[str]) -> bool:
+        """Fail loudly on SimulationManager arguments *method* cannot honor; True when the manager handed off.
+
+        A not-yet-stepped, default-routed manager hands off to the Python engine (:meth:`_hand_off_to_python`), so
+        the caller re-dispatches *method* on the SimulationManager it became; any other manager raises
+        NotImplementedError naming each argument (angr-mx00p.132.23, angr-vmi2l.243).
+        """
+        if not unhonored:
+            return False
+        reason = f"{method}() cannot honor {', '.join(unhonored)}"
+        if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
+            raise NotImplementedError(f"RustExplorationManager.{reason}; build the manager without engine='rust'.")
+        self._hand_off_to_python(reason)
+        return True
 
     def _hand_off_to_python(self, reason: str) -> None:
         """Turn this not-yet-stepped, default-routed manager into a Python ``SimulationManager`` in place.
@@ -6815,8 +6905,10 @@ class RustExplorationManager(
             return states[0] if states else None
 
         try:
-            return self._rust_mgr.get_state_ids(name)
+            self._rust_mgr.get_state_ids(name)
         except (RuntimeError, KeyError):
             # cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;
             # raise AttributeError so getattr-style probes return the default.
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        # A stash the caller named (explore(find_stash=)) reads as states, as a SimulationManager's does.
+        return self._get_stash_states(name)

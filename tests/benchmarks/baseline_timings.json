@@ -53,7 +53,7 @@
     "python_time": null,
     "rust_time": 0.52,
     "state_creations": 5,
-    "steps": 6
+    "steps": 31
   },
   "cmu_binary_bomb_partial": {
     "callback_count": 2,
@@ -285,6 +285,6 @@
     "python_time": 3.84,
     "rust_time": 3.86,
     "state_creations": 0,
-    "steps": 22
+    "steps": 161
   }
 }

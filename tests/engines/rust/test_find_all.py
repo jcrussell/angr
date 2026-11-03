@@ -29,7 +29,7 @@ def _run(project, target, num_find):
     """Fresh manager + state; run explore, return the found-set size."""
     state, _ = pbounce_stdin_state(project)
     mgr = RustExplorationManager(project, [state])
-    mgr.explore(find=target, num_find=num_find, n=4096)
+    mgr.explore(find=target, num_find=num_find)
     return len(mgr.found)
 
 
@@ -53,7 +53,7 @@ class TestFindAll:
         target = project.loader.find_symbol("reach_target").rebased_addr
         state, _ = pbounce_stdin_state(project)
         mgr = RustExplorationManager(project, [state])
-        mgr.explore(find=target, num_find=None, n=4096)
+        mgr.explore(find=target, num_find=None)
         prefixes = [s.posix.dumps(0)[:3] for s in mgr.found]
         assert len(prefixes) == 6, f"found {len(prefixes)} states for 6 feasible leaves"
         assert len(set(prefixes)) == len(prefixes), "a leaf was found twice"

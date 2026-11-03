@@ -76,7 +76,8 @@ def technique_needs_python_engine(tech) -> str | None:
     A technique that overrides successors() needs Python because the Rust manager never dispatches that hook:
     LoopSeer's trip counts, Bucketizer's transitions and Oppologist's recovery all live there, so on the Rust
     manager they silently no-op. A ``_PYTHON_ANALYSIS_TECH_NAMES`` member needs Python because its step() feeds
-    states to an analysis that rejects a proxy. A default-routed manager hands off to the Python engine instead
+    states to an analysis that rejects a proxy. An Explorer needs Python when it sets a stash, priority or CFG
+    option the native find/avoid arming ignores. A default-routed manager hands off to the Python engine instead
     (``RustExplorationManager._hand_off_to_python``).
     """
     tech_name = type(tech).__name__
@@ -84,6 +85,16 @@ def technique_needs_python_engine(tech) -> str | None:
         return f"technique {tech_name} feeds its states to a Python analysis that needs a SimState"
     if tech_name not in _NATIVE_STEP_TECH_NAMES and tech._is_overridden("successors"):
         return f"technique {tech_name} overrides successors()"
+    if tech_name in _FIND_AVOID_TECH_NAMES:
+        # The native arming routes to the fixed found/avoid stashes and has no CFG pruning (angr-vmi2l.243).
+        unhonored = [
+            name
+            for name, default in (("find_stash", "found"), ("avoid_stash", "avoid"), ("avoid_priority", False))
+            if getattr(tech, name, default) != default
+        ]
+        unhonored += ["cfg"] if getattr(tech, "cfg", None) is not None else []
+        if unhonored:
+            return f"technique {tech_name} sets {', '.join(unhonored)}"
     return None
 
 
@@ -620,18 +631,18 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     #                  RustSimulationManagerProxy.successors() docstring)
     #   step_state() — now dispatched per-state via dispatch_step_state_with_hooks()
     #                  (Veritesting; angr-op0dn.11.7)
+    python_reason = technique_needs_python_engine(technique)
+    if python_reason is not None:
+        l.warning(
+            "The Rust manager cannot honor this technique (%s); it will not behave as on the "
+            "Python engine. Run it on the Python engine (a plain SimulationManager) if you need it.",
+            python_reason,
+        )
     if tech_name not in _NATIVE_STEP_TECH_NAMES:
         if technique._is_overridden("step"):
             l.debug(
                 "Technique %s overrides step() — will be dispatched via RustSimulationManagerProxy.step() each batch.",
                 tech_name,
-            )
-        python_reason = technique_needs_python_engine(technique)
-        if python_reason is not None:
-            l.warning(
-                "The Rust manager cannot honor this technique (%s); it will not behave as on the "
-                "Python engine. Run it on the Python engine (a plain SimulationManager) if you need it.",
-                python_reason,
             )
         if technique._is_overridden("step_state"):
             l.debug(

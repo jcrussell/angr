@@ -47,7 +47,7 @@ def stepped_dumps():
         if not mgr.active:
             break
         stepped.extend(state.posix.dumps(0) for state in mgr.active)
-    mgr.explore(find=target, num_find=_LEAVES, n=2048)
+    mgr.explore(find=target, num_find=_LEAVES)
     return stepped, [state.posix.dumps(0) for state in mgr.found]
 
 

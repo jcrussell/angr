@@ -42,7 +42,7 @@ def seeded_found():
     state, stdin_bvs = pbounce_stdin_state(project)
 
     mgr = RustExplorationManager(project, [state])
-    mgr.explore(find=target, num_find=_LEAVES, n=4096)
+    mgr.explore(find=target, num_find=_LEAVES)
     return list(mgr.found), stdin_bvs
 
 
