@@ -239,6 +239,13 @@ pub(crate) struct VEXInterpreter<'a> {
     /// Pending concrete stores to batch for efficiency.
     /// Each entry is (address, data_bytes). Wrapped in a buffer that maintains
     /// a per-byte-address index so loads can fast-skip the reverse scan.
+    ///
+    /// Under `use_rust_memory` this and `pending_symbolic_stores` hold only
+    /// writes `rust_memory` refused: every store, guarded and CAS writebacks
+    /// included, tries `try_rust_memory_store` first, because `load_layered`
+    /// reads these buffers only after `rust_memory` declines and
+    /// `flush_stores` replays them after any newer direct store
+    /// (angr-vmi2l.168).
     pending_stores: PendingStoreBuffer,
     /// All stores flushed during this step (accumulated across block boundaries).
     /// Used for same-step cross-block load forwarding and for applying to state memory.
@@ -673,11 +680,12 @@ impl<'a> VEXInterpreter<'a> {
     /// Load from memory via Python callback.
     /// This handles the common case of loading from a concrete address.
     ///
-    /// Bottom rung of the load-resolution ladder: every caller arrives here
-    /// through `load_concrete_addr` in `expressions_loads.rs`, which has already
-    /// missed the pending/flushed store buffers and the prefetch and
-    /// concrete-memory caches. `synthesize_unservable_load` above gets the
-    /// last word before the GIL crossing.
+    /// Bottom rung of the load-resolution ladder: callers reach it from
+    /// `load_layered` (through `load_concrete_addr`, after the pending/flushed
+    /// store buffers and the prefetch and concrete-memory caches, or through
+    /// `load_symbolic_addr`'s concretized arms), never in place of it.
+    /// `synthesize_unservable_load` above gets the last word before the GIL
+    /// crossing.
     fn load_from_callback(
         &self,
         callbacks: &dyn EngineHost,

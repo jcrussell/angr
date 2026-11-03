@@ -665,19 +665,13 @@ impl<'a> VEXInterpreter<'a> {
             GuardClass::Always => {
                 // Guard is true - perform the load unconditionally.
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let loaded =
-                    self.resolve_loadg_load(callbacks, &addr_val, load_size, "LoadG (true guard)")?;
+                let loaded = self.load_layered(callbacks, &addr_val, load_size, None)?;
                 self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
             }
             GuardClass::Symbolic => {
                 // Both paths possible - evaluate address and load, then ITE
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let loaded = self.resolve_loadg_load(
-                    callbacks,
-                    &addr_val,
-                    load_size,
-                    "LoadG (symbolic guard)",
-                )?;
+                let loaded = self.load_layered(callbacks, &addr_val, load_size, None)?;
 
                 // Apply conversion to loaded value
                 let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());

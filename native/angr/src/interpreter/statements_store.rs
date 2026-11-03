@@ -345,7 +345,8 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Conditional-store body shared by both of `handle_storeg`'s
     /// symbolic-guard branches (angr-5mnx3.24): load the current bytes at
-    /// `addr_concrete`, build `ITE(guard, data, current)`, invalidate the code
+    /// `addr_concrete`, build `ITE(guard, data, current)`, and store it. Under
+    /// `use_rust_memory` that is `store_value`; otherwise invalidate the code
     /// cache and evict overlapping symbolic shadows the write now
     /// contradicts, then dispatch the ITE result. `kind` carries the only
     /// remaining divergence — see [`GuardedStoreAddr`]. Both branches used to
@@ -360,7 +361,16 @@ impl<'a> VEXInterpreter<'a> {
         data_size: usize,
         kind: GuardedStoreAddr,
     ) -> Result<(), CbExecutionError> {
-        let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
+        // `current` comes through the same ladder a plain `Load` reads, so it
+        // sees this run's native and buffered stores. Under `use_rust_memory`
+        // the ITE then commits through `store_value`, never parked behind a
+        // later direct store (angr-vmi2l.168).
+        let addr_bv = RustBV::concrete(addr_concrete as u128, self.arch.pointer_size());
+        let current = self.load_layered(callbacks, &addr_bv, data_size, None)?;
+        if self.use_rust_memory {
+            let ite_result = guard_val.ite(data_val, &current);
+            return self.store_value(callbacks, &addr_bv, ite_result, data_size);
+        }
         let ite_result = guard_val.ite(data_val, &current);
         // The ITE captured `current`; now that we're about to overwrite this
         // range, invalidate stale cached code and evict overlapping symbolic

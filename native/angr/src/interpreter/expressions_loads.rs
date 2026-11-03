@@ -4,15 +4,15 @@
 //! Split out of `expressions.rs` (angr-fs8kb.66). `eval_load` is the entry
 //! point; `load_layered` picks between the native `rust_memory` fast path
 //! (`try_rust_memory_load`), the layered pending-store buffer
-//! (`load_layered_at`, `covering_range`) and the Python callback, depending on
+//! (`covering_range`) and the Python callback, depending on
 //! how concrete the address is (`load_concrete_addr`,
 //! `load_concrete_addr_below_pending`, `load_symbolic_addr`,
 //! `symbolic_overlap_load`, `symbolic_store_load`). The multi-address /
 //! ITE-chain callback helpers (`dispatch_multi_load`,
 //! `build_ite_load_from_callbacks`, `build_ite_store_from_callbacks`,
 //! `convert_load_result`) and the `LoadG`
-//! guarded-load pair (`resolve_loadg_load`, `apply_loadg_conversion`) live here
-//! too. The op dispatchers are in `expressions_arith.rs`; the read-side
+//! guarded-load conversion (`apply_loadg_conversion`) live here too; `LoadG`
+//! reads through `load_layered` exactly as `Load` does (angr-vmi2l.168). The op dispatchers are in `expressions_arith.rs`; the read-side
 //! `state.inspect` dispatchers in `expressions_inspect.rs`.
 
 use super::bv_utils::{build_ite_chain, bytes_to_bv, splice_bytes_over_bv};
@@ -114,7 +114,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// The full layered memory read, shared by `Load` (`eval_load`) and
-    /// `LoadG` (`resolve_loadg_load`): Rust-native memory first when enabled,
+    /// `LoadG` (`handle_loadg`): Rust-native memory first when enabled,
     /// then — for the callback path — the pending / flushed store buffers and
     /// concrete caches in `load_concrete_addr`, or the concretizing
     /// `load_symbolic_addr` for a symbolic address.
@@ -157,21 +157,6 @@ impl<'a> VEXInterpreter<'a> {
         } else {
             self.load_symbolic_addr(callbacks, addr_val, size)
         }
-    }
-
-    /// `load_layered` at an address that a caller already concretized out of a
-    /// symbolic `addr_val` (LoadG's Single / Multiple shapes). The concrete
-    /// address is rebuilt as a BV of the original address width so the
-    /// Rust-memory layer sees the same pointer size the block does.
-    pub(super) fn load_layered_at(
-        &mut self,
-        callbacks: &dyn EngineHost,
-        addr_val: &RustBV,
-        addr_concrete: u64,
-        size: usize,
-    ) -> Result<RustBV, CbExecutionError> {
-        let concrete_bv = RustBV::concrete(addr_concrete as u128, addr_val.width());
-        self.load_layered(callbacks, &concrete_bv, size, None)
     }
 
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
@@ -470,6 +455,25 @@ impl<'a> VEXInterpreter<'a> {
         let addr_width = addr_expr.width();
         let val_width = data_val.width();
 
+        // Under `use_rust_memory` each candidate reads through the plain-load
+        // ladder and commits through `store_value`, so the ITE sees and
+        // lands in `rust_memory` rather than the host's stale shadow
+        // (angr-vmi2l.168).
+        if self.use_rust_memory {
+            for &addr in addrs {
+                let addr_const = RustBV::concrete(addr as u128, addr_width);
+                let at_addr = addr_expr.eq(&addr_const);
+                let cond = match guard {
+                    Some(guard) => guard.and(&at_addr),
+                    None => at_addr,
+                };
+                let current = self.load_layered(callbacks, &addr_const, size, None)?;
+                let ite_value = cond.ite(data_val, &current);
+                self.store_value(callbacks, &addr_const, ite_value, size)?;
+            }
+            return Ok(());
+        }
+
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
         let load_results = callbacks
             .memory_load_batch(self.ctx, &load_requests)
@@ -493,56 +497,6 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         Ok(())
-    }
-
-    /// Resolve a LoadG load given its address BV. Concrete addresses and
-    /// Single/Multiple concretizations go through `load_layered` — the same
-    /// Rust-memory / pending-store / flushed-store / concrete-cache ladder
-    /// ordinary `Load` uses (angr-9ke6b.83) — and it falls back to the Python full
-    /// symbolic load callback for TooLarge / Strided / Failed shapes (so the
-    /// load no longer hard-errors when angr's address strategies could resolve
-    /// it). Multiple addresses still take the first solution to preserve the
-    /// pre-existing LoadG behavior — broader Multiple handling can be added
-    /// later if needed.
-    pub(super) fn resolve_loadg_load(
-        &mut self,
-        callbacks: &dyn EngineHost,
-        addr_val: &RustBV,
-        load_size: usize,
-        context: &str,
-    ) -> Result<RustBV, CbExecutionError> {
-        if addr_val.as_u64().is_some() {
-            return self.load_layered(callbacks, addr_val, load_size, None);
-        }
-        let conc = self.concretize_cached_read(addr_val);
-        match &*conc {
-            ConcretizationResult::Single(a) => {
-                let a = *a;
-                self.load_layered_at(callbacks, addr_val, a, load_size)
-            }
-            ConcretizationResult::Multiple(addrs) => {
-                let a = *addrs.first().ok_or_else(|| {
-                    CbExecutionError::Unsupported(format!("{context} with empty address set"))
-                })?;
-                self.load_layered_at(callbacks, addr_val, a, load_size)
-            }
-            ConcretizationResult::Strided {
-                base,
-                stride,
-                count,
-            } => {
-                let descr = format!("strided base=0x{base:x} stride=0x{stride:x} count={count}");
-                self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
-            }
-            ConcretizationResult::TooLarge { min, max, .. } => {
-                let descr = format!("range 0x{min:x}-0x{max:x}");
-                self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
-            }
-            ConcretizationResult::Failed(reason) => {
-                let descr = format!("concretize failed: {reason}");
-                self.fallback_load_symbolic_full(callbacks, addr_val, load_size, context, &descr)
-            }
-        }
     }
 
     /// Apply LoadG conversion (widening) to loaded value.

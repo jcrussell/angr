@@ -836,8 +836,7 @@ fn loadg_sees_rust_memory_store_from_same_block() {
 }
 
 /// `Single` concretization arm (angr-9ke6b.83): a symbolic address pinned to one
-/// solution takes `resolve_loadg_load`'s `ConcretizationResult::Single` branch,
-/// which must go through the same layered read (`load_layered_at`) rather than
+/// solution must go through the same layered read (`load_layered`) rather than
 /// straight to the Python callback.
 // Needs a real solver: the `Single` branch is only taken when concretization
 // finds exactly one solution (angr-9ke6b.236).
@@ -972,14 +971,14 @@ fn symbolic_store_fallback_writes_concretized_bytes_when_eval_succeeds() {
 /// the callback deliberately declines to re-enter it). A dispatch that
 /// reaches this service without first calling `buffer_store_for_rust_memory`
 /// therefore lands nowhere at all.
-fn with_proxy_callbacks<F: FnOnce(&TestHost)>(f: F) {
+fn with_proxy_callbacks<R, F: FnOnce(&TestHost) -> R>(f: F) -> R {
     let cb = TestHost {
         symbolic_value_store: SymbolicValueStore::Accept,
         serve_zero_loads: true,
         ..TestHost::default()
     };
     assert!(cb.has_memory_store_symbolic_value());
-    f(&cb);
+    f(&cb)
 }
 
 /// Build an interpreter that owns its memory (the production configuration —
@@ -993,23 +992,66 @@ fn new_interp_rust_memory(ctx: &SymContext) -> VEXInterpreter<'_> {
     interp
 }
 
-/// angr-5mnx3.23: a `StoreG` with a *symbolic* guard at a concrete address
-/// builds `ITE(guard, new, current)` and hands it to
-/// `memory_store_symbolic_value`. That callback absorbs nothing in
-/// production, so the ITE must also be buffered in `pending_symbolic_stores` —
-/// otherwise the predicated store (ARM conditional stores, masked SIMD) is
-/// silently dropped.
+/// The value at `addr` read back both ways the rest of the run sees it: by a
+/// later in-block load (`load_layered`), and from `rust_memory` once the
+/// block's pending buffers are flushed. angr-vmi2l.168: asserting only that a
+/// buffer entry exists stayed green while the entry was invisible to the
+/// in-block load and replayed over newer stores.
+fn read_back(
+    interp: &mut VEXInterpreter<'_>,
+    cb: &TestHost,
+    addr: u64,
+    size: usize,
+) -> (RustBV, RustBV) {
+    let in_block = interp
+        .load_layered(cb, &RustBV::concrete(u128::from(addr), 64), size, None)
+        .expect("in-block read-back");
+    interp.flush_stores_to_rust_memory();
+    let flushed = interp
+        .rust_memory
+        .as_ref()
+        .expect("rust_memory installed")
+        .load_concrete(addr, size as u32)
+        .expect("flushed read-back");
+    (in_block, flushed)
+}
+
+/// `bv` evaluated with each `(cond, true/false)` assumption in force.
+fn eval_assuming(ctx: &SymContext, bv: &RustBV, assumptions: &[(&RustBV, bool)]) -> Option<u128> {
+    ctx.push();
+    for &(cond, holds) in assumptions {
+        if holds {
+            ctx.assume_true(cond);
+        } else {
+            ctx.assume_false(cond);
+        }
+    }
+    let v = ctx.eval(bv);
+    ctx.pop();
+    v
+}
+
+/// angr-5mnx3.23, angr-vmi2l.168: a `StoreG` with a *symbolic* guard at a
+/// concrete address stores `ITE(guard, new, current)`, where `current` is what
+/// `rust_memory` holds (here an earlier store in the same block), and both a
+/// later in-block load and the flushed memory see it. The ITE used to read
+/// the host's stale shadow and park in the pending buffers.
 // Needs a real solver: `classify_guard` must return `Symbolic`, which requires
 // `check_branch_feasibility` to find both branches satisfiable.
 #[test]
-fn storeg_symbolic_guard_buffers_for_rust_memory() {
+fn storeg_symbolic_guard_reads_back_for_rust_memory() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
 
+    let guard = RustBV::symbol("storeg_guard", 1);
     let irsb = make_irsb_with_temps(0x1000, &[IRType::I1]);
-    interp.temps.resize(1, None);
-    interp.temps[0] = Some(RustBV::symbol("storeg_guard", 1));
+    interp.temps = vec![Some(guard.clone())];
 
+    let prior = IRStmt::Store {
+        addr: IRExpr::Const(IRConst::U64(0x4010)),
+        data: IRExpr::Const(IRConst::U32(0xcafe_0002)),
+        endness: Endness::Little,
+    };
     let storeg = IRStmt::StoreG {
         addr: Box::new(IRExpr::Const(IRConst::U64(0x4010))),
         data: Box::new(IRExpr::Const(IRConst::U32(0xdead_beef))),
@@ -1018,16 +1060,63 @@ fn storeg_symbolic_guard_buffers_for_rust_memory() {
     };
 
     with_proxy_callbacks(|cb| {
-        interp
-            .execute_stmt_with_callbacks(cb, &storeg, &irsb)
-            .expect("guarded store with symbolic guard");
+        for stmt in [&prior, &storeg] {
+            interp
+                .execute_stmt_with_callbacks(cb, stmt, &irsb)
+                .expect("store, then guarded store with symbolic guard");
+        }
+        let (in_block, flushed) = read_back(&mut interp, cb, 0x4010, 4);
+        for value in [&in_block, &flushed] {
+            assert_eq!(eval_assuming(&ctx, value, &[(&guard, true)]), Some(0xdead_beef));
+            assert_eq!(
+                eval_assuming(&ctx, value, &[(&guard, false)]),
+                Some(0xcafe_0002),
+                "guard false keeps the earlier store, not the pre-block value"
+            );
+        }
+    });
+}
 
-        let buffered = interp
-            .pending_symbolic_stores
-            .get(&0x4010)
-            .expect("symbolic-guard StoreG must be buffered for rust_memory");
-        assert_eq!(buffered.width(), 32, "buffered ITE keeps the store width");
-        assert!(buffered.is_symbolic(), "the buffered value is the guard ITE");
+/// angr-vmi2l.168: a plain `Store` after a symbolic-guard `StoreG` to the same
+/// address wins on every path. The guarded write used to sit in the pending
+/// buffer and be replayed over the newer direct store at flush.
+#[test]
+fn storeg_then_plain_store_keeps_the_newer_value() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+
+    let guard = RustBV::symbol("storeg_later_guard", 1);
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I1]);
+    interp.temps = vec![Some(guard.clone())];
+
+    let storeg = IRStmt::StoreG {
+        addr: Box::new(IRExpr::Const(IRConst::U64(0x4010))),
+        data: Box::new(IRExpr::Const(IRConst::U32(0xcafe_0003))),
+        guard: Box::new(IRExpr::RdTmp(0)),
+        endness: Endness::Little,
+    };
+    let later = IRStmt::Store {
+        addr: IRExpr::Const(IRConst::U64(0x4010)),
+        data: IRExpr::Const(IRConst::U32(0xcafe_0002)),
+        endness: Endness::Little,
+    };
+
+    with_proxy_callbacks(|cb| {
+        for stmt in [&storeg, &later] {
+            interp
+                .execute_stmt_with_callbacks(cb, stmt, &irsb)
+                .expect("guarded store, then plain store");
+        }
+        let (in_block, flushed) = read_back(&mut interp, cb, 0x4010, 4);
+        for value in [&in_block, &flushed] {
+            for holds in [true, false] {
+                assert_eq!(
+                    eval_assuming(&ctx, value, &[(&guard, holds)]),
+                    Some(0xcafe_0002),
+                    "guard {holds}: the later plain store wins"
+                );
+            }
+        }
     });
 }
 
@@ -1074,11 +1163,17 @@ fn storeg_symbolic_guard_symbolic_addr_leaves_index_free_when_false() {
     };
     assert_eq!(idx_values(false), vec![0, 1, 2, 3], "guard false: no store, index free");
     assert_eq!(idx_values(true), vec![3], "guard true: pinned to the Max address");
-    let buffered = interp
-        .pending_symbolic_stores
-        .get(&0x400c)
-        .expect("the guard ITE lands at the Max address");
-    assert!(buffered.is_symbolic(), "the buffered value is the guard ITE");
+    with_proxy_callbacks(|cb| {
+        let (in_block, flushed) = read_back(&mut interp, cb, 0x400c, 4);
+        for value in [&in_block, &flushed] {
+            assert_eq!(
+                eval_assuming(&ctx, value, &[(&guard, true)]),
+                Some(0xcafe_0003),
+                "the guard ITE lands at the Max address"
+            );
+            assert_eq!(eval_assuming(&ctx, value, &[(&guard, false)]), Some(0));
+        }
+    });
 }
 
 /// angr-vmi2l.323: under `SYMBOLIC_WRITE_ADDRESSES` the same `StoreG`
@@ -1114,26 +1209,17 @@ fn storeg_symbolic_guard_multiwrite_guards_every_candidate() {
     });
 
     for k in 0..4u64 {
-        let cell = interp
-            .pending_symbolic_stores
-            .get(&(0x4000 + 4 * k))
-            .unwrap_or_else(|| panic!("candidate {k} must be buffered"))
-            .clone();
-        let eval_under = |hi: bool, at: u64| {
-            ctx.push();
-            if hi {
-                ctx.assume_true(&guard);
-            } else {
-                ctx.assume_false(&guard);
-            }
-            ctx.assume_true(&idx.eq(&RustBV::concrete(u128::from(at), 64)));
-            let v = ctx.eval(&cell);
-            ctx.pop();
-            v
-        };
-        assert_eq!(eval_under(true, k), Some(0xcafe_0003), "guard true, idx={k}: stored");
-        assert_eq!(eval_under(false, k), Some(0), "guard false, idx={k}: unchanged");
-        assert_eq!(eval_under(true, (k + 1) % 4), Some(0), "other index: unchanged");
+        let (in_block, flushed) =
+            with_proxy_callbacks(|cb| read_back(&mut interp, cb, 0x4000 + 4 * k, 4));
+        for cell in [&in_block, &flushed] {
+            let eval_under = |hi: bool, at: u64| {
+                let at_idx = idx.eq(&RustBV::concrete(u128::from(at), 64));
+                eval_assuming(&ctx, cell, &[(&guard, hi), (&at_idx, true)])
+            };
+            assert_eq!(eval_under(true, k), Some(0xcafe_0003), "guard true, idx={k}: stored");
+            assert_eq!(eval_under(false, k), Some(0), "guard false, idx={k}: unchanged");
+            assert_eq!(eval_under(true, (k + 1) % 4), Some(0), "other index: unchanged");
+        }
     }
     ctx.push();
     ctx.assume_true(&guard);
@@ -1143,56 +1229,131 @@ fn storeg_symbolic_guard_multiwrite_guards_every_candidate() {
     assert_eq!(vals, vec![0, 1, 2, 3], "a complete candidate set pins nothing");
 }
 
-/// CAS variant (angr-5mnx3.23): `cas_store_symbolic_data` writes back a computed
-/// `RustBV` (the success/failure ITE) that cannot be re-expressed as an
-/// `IRExpr`, so it dispatches the symbolic-value callback directly. Same
-/// no-op callback, same requirement to buffer.
+/// CAS variant (angr-5mnx3.23, angr-vmi2l.168): `cas_store_symbolic_data`
+/// writes back a computed `RustBV` (the success/failure ITE) that cannot be
+/// re-expressed as an `IRExpr`. It must land where a later in-block load and
+/// the flushed memory both see it.
 #[test]
-fn cas_symbolic_writeback_buffers_for_rust_memory() {
+fn cas_symbolic_writeback_reads_back_for_rust_memory() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
     let irsb = make_irsb_with_temps(0x1000, &[]);
 
-    let data_bv = RustBV::symbol("cas_writeback", 32);
+    let swap = RustBV::symbol("cas_swap", 1);
+    let data_bv = swap.ite(
+        &RustBV::concrete(0x5eed_0001, 32),
+        &RustBV::concrete(0x0a0a_0a00, 32),
+    );
     let addr_expr = IRExpr::Const(IRConst::U64(0x4020));
 
     with_proxy_callbacks(|cb| {
         interp
             .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &irsb)
             .expect("CAS symbolic writeback");
-
-        assert!(
-            interp.pending_symbolic_stores.contains_key(&0x4020),
-            "CAS symbolic writeback must be buffered for rust_memory"
-        );
+        let (in_block, flushed) = read_back(&mut interp, cb, 0x4020, 4);
+        for value in [&in_block, &flushed] {
+            assert_eq!(eval_assuming(&ctx, value, &[(&swap, true)]), Some(0x5eed_0001));
+            assert_eq!(eval_assuming(&ctx, value, &[(&swap, false)]), Some(0x0a0a_0a00));
+        }
     });
 }
 
-/// Multi-address variant (angr-5mnx3.23): a symbolic-address store that
-/// concretizes to several candidates within `MAX_ITE_ADDRS` emits one
-/// `ITE(addr == a_i, data, mem[a_i])` per candidate through the same callback.
-/// Each of those must be buffered too.
+/// Multi-address variant (angr-5mnx3.23, angr-vmi2l.168): a symbolic-address
+/// store that concretizes to several candidates within `MAX_ITE_ADDRS` stores
+/// `ITE(addr == a_i, data, mem[a_i])` at each candidate, and each reads back
+/// in-block and after the flush.
 #[test]
-fn ite_store_buffers_every_candidate_for_rust_memory() {
+fn ite_store_reads_back_every_candidate_for_rust_memory() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
 
     let addr_expr = RustBV::symbol("ite_store_addr", 64);
-    let data_val = RustBV::symbol("ite_store_data", 32);
+    let data_val = RustBV::concrete(0xcafe_0001, 32);
     let addrs = [0x4010u64, 0x4020u64];
 
     with_proxy_callbacks(|cb| {
         interp
             .build_ite_store_from_callbacks(cb, &addrs, &addr_expr, &data_val, None)
             .expect("per-candidate ITE store");
-
         for addr in addrs {
-            assert!(
-                interp.pending_symbolic_stores.contains_key(&addr),
-                "candidate {addr:#x} must be buffered for rust_memory"
-            );
+            let at = addr_expr.eq(&RustBV::concrete(u128::from(addr), 64));
+            let (in_block, flushed) = read_back(&mut interp, cb, addr, 4);
+            for value in [&in_block, &flushed] {
+                assert_eq!(eval_assuming(&ctx, value, &[(&at, true)]), Some(0xcafe_0001));
+                assert_eq!(eval_assuming(&ctx, value, &[(&at, false)]), Some(0));
+            }
         }
     });
+}
+
+/// angr-vmi2l.168: a symbolic-guard `LoadG` at a symbolic address reads every
+/// candidate, as a plain `Load` does. `idx_constraint` shapes the candidate
+/// set (`Multiple` for a sparse set, `Strided` for a range). The `Multiple`
+/// shape used to read only the first candidate for every index, and the
+/// `Strided` one read the host's shadow, missing the same-block store.
+fn loadg_symbolic_addr_reads_every_candidate(name: &str, sparse: bool) {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+
+    let guard = RustBV::symbol(format!("{name}_hi"), 1);
+    let idx = RustBV::symbol(format!("{name}_idx"), 64);
+    let at = |k: u64| idx.eq(&RustBV::concrete(u128::from(k), 64));
+    let indices: Vec<u64> = if sparse {
+        ctx.assume_true(&at(0).or(&at(1)).or(&at(3)));
+        vec![0, 1, 3]
+    } else {
+        ctx.assume_true(&idx.ule(&RustBV::concrete(3, 64)));
+        vec![0, 1, 2, 3]
+    };
+    let addr = RustBV::concrete(0x4000, 64).add(&idx.mul(&RustBV::concrete(4, 64)));
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I1, IRType::I64, IRType::I32]);
+    interp.temps = vec![Some(guard.clone()), Some(addr), None];
+
+    let stores: Vec<IRStmt> = (0..4u64)
+        .map(|k| IRStmt::Store {
+            addr: IRExpr::Const(IRConst::U64(0x4000 + 4 * k)),
+            data: IRExpr::Const(IRConst::U32(0x0d0d_0d00 + k as u32)),
+            endness: Endness::Little,
+        })
+        .collect();
+    let loadg = IRStmt::LoadG {
+        endness: Endness::Little,
+        cvt: IRLoadGOp::Identity,
+        dst: 2,
+        addr: Box::new(IRExpr::RdTmp(1)),
+        alt: Box::new(IRExpr::Const(IRConst::U32(0x99))),
+        guard: Box::new(IRExpr::RdTmp(0)),
+    };
+    with_proxy_callbacks(|cb| {
+        for stmt in stores.iter().chain([&loadg]) {
+            interp
+                .execute_stmt_with_callbacks(cb, stmt, &irsb)
+                .expect("stores, then guarded load at a symbolic address");
+        }
+    });
+    let loaded = interp.temps[2].clone().expect("LoadG wrote its temp");
+    for k in indices {
+        assert_eq!(
+            eval_assuming(&ctx, &loaded, &[(&guard, true), (&at(k), true)]),
+            Some(0x0d0d_0d00 + u128::from(k)),
+            "guard true, idx={k}: reads that candidate"
+        );
+        assert_eq!(
+            eval_assuming(&ctx, &loaded, &[(&guard, false), (&at(k), true)]),
+            Some(0x99),
+            "guard false, idx={k}: the alt value"
+        );
+    }
+}
+
+#[test]
+fn loadg_symbolic_addr_multiple_reads_every_candidate() {
+    loadg_symbolic_addr_reads_every_candidate("loadg_multi", true);
+}
+
+#[test]
+fn loadg_symbolic_addr_strided_reads_every_candidate() {
+    loadg_symbolic_addr_reads_every_candidate("loadg_strided", false);
 }
 
 /// angr-6cp06.88: a load only *partially* covered by the pending-store buffer

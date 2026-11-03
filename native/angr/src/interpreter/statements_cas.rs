@@ -361,6 +361,12 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<(), CbExecutionError> {
         let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
         let data_size = (data_bv.width() / 8) as usize;
+        // Under `use_rust_memory` the writeback is an ordinary store: parked
+        // in the pending buffers it was invisible to a later in-block load
+        // and replayed over any newer direct store (angr-vmi2l.168).
+        if self.use_rust_memory {
+            return self.store_value(callbacks, &addr_val, data_bv.clone(), data_size);
+        }
         if let Some(addr_concrete) = addr_val.as_u64() {
             self.invalidate_code_at_store(addr_concrete, data_size);
             if callbacks.has_memory_store_symbolic_value() {
