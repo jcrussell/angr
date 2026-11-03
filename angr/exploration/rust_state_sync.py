@@ -405,7 +405,7 @@ class RustStateSyncMixin:
         """Compute the cacheable (batch_pages, lazy_regions) for the loader.
 
         Iterates `loader.all_objects` once, reads each in-segment page via
-        `loader.memory.load`, and collects every object's full address range
+        `_loader_page_bytes`, and collects every object's full address range
         as a lazy region. Pure function of `self._project.loader` — output
         is reusable across RustExplorationManager constructions for the
         same project (see `RustExplorationManager._loader_pages_cache`).
@@ -445,15 +445,37 @@ class RustStateSyncMixin:
                         # (esp. ELF .bss gaps). Skip silently — the
                         # lazy region added below catches accesses.
                         with contextlib.suppress(Exception):
-                            data = self._project.loader.memory.load(page_addr, page_size)
-                            if data and len(data) == page_size:
-                                batch_pages.append((page_addr, bytes(data), 7))
+                            data = self._loader_page_bytes(page_addr, page_size)
+                            if data is not None:
+                                batch_pages.append((page_addr, data, 7))
                                 seen_page_addrs.add(page_addr)
                 region_start = obj.min_addr & ~(page_size - 1)
                 region_end = (obj.max_addr + page_size) & ~(page_size - 1)
                 if region_end - region_start > 0:
                     lazy_regions.append((region_start, region_end - region_start))
         return {"batch_pages": batch_pages, "lazy_regions": lazy_regions}
+
+    def _loader_page_bytes(self, page_addr: int, page_size: int) -> bytes | None:
+        """Return the loader's bytes for one page, or None if none are backed.
+
+        A page the image covers only in part (a blob's tail page, the head
+        page of a blob at an unaligned load address) is zero-padded, as the
+        Python engine's page reads it. Without it the first store into the
+        page mapped a zero page over the image bytes (angr-vmi2l.159).
+        """
+        page = bytearray(page_size)
+        backed = False
+        for start, backer in self._project.loader.memory.backers(page_addr):
+            if start >= page_addr + page_size:
+                break
+            if isinstance(backer, list):
+                continue
+            lo = max(start, page_addr)
+            hi = min(start + len(backer), page_addr + page_size)
+            if lo < hi:
+                page[lo - page_addr : hi - page_addr] = memoryview(backer)[lo - start : hi - start]
+                backed = True
+        return bytes(page) if backed else None
 
     def _get_loader_pages_cache(self, page_size: int) -> dict:
         """Return the cached loader pages entry, building it on miss.

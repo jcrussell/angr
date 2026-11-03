@@ -30,21 +30,22 @@ pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exp
 
 class TestFallThroughOutOfImage:
     def test_fall_through_keeps_state_and_registers(self):
-        # 0x1000: ldrneh r0, [r1] — the block's fall-through (0x1004) is past
-        # the end of the 4-byte image.
-        proj = angr.load_shellcode(bytes.fromhex("b000d111"), arch="ARMEL", load_address=0x1000)
-        state = proj.factory.blank_state(addr=0x1000)
+        # 0x1ffc: ldrneh r0, [r1] — the block's fall-through (0x2000) is past
+        # the end of the 4-byte image and of its page (the rest of the page
+        # is zero padding, which both engines execute; angr-vmi2l.159).
+        proj = angr.load_shellcode(bytes.fromhex("b000d111"), arch="ARMEL", load_address=0x1FFC)
+        state = proj.factory.blank_state(addr=0x1FFC)
         state.regs.r1 = 0x4000
         state.memory.store(0x4000, 0xABCD, size=2, endness="Iend_LE")
         mgr = RustExplorationManager(proj, [state])
         mgr.run(max_steps=1)
-        # Rust's step chains on into 0x1004, which has no code, so the state
+        # Rust's step chains on into 0x2000, which has no code, so the state
         # may end deadended there rather than active; what matters is that it
         # sits at the fall-through target with the loaded value intact.
         finals = list(mgr.active) + list(mgr.deadended) + [e.state for e in mgr.errored]
         assert len(finals) == 1, {k: len(v) for k, v in mgr.stashes.items() if v}
         s = finals[0]
-        assert s.solver.eval(s.regs.pc) == 0x1004
+        assert s.solver.eval(s.regs.pc) == 0x2000
         assert s.solver.eval(s.regs.r0) == 0xABCD
 
 
