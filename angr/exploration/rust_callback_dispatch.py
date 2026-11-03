@@ -51,6 +51,18 @@ _UNSUPPORTED_SYSCALL_MSG = (
 )
 
 
+class _UserPredicateError(Exception):
+    """Carries an exception a user find/avoid predicate raised past the handler's engine-error catch.
+
+    The handler resumes the pending state first, so the manager stays steppable, then re-raises
+    ``error`` out of explore(), as ``SimulationManager.explore`` lets it propagate (angr-vmi2l.298).
+    """
+
+    def __init__(self, error: Exception):
+        super().__init__(error)
+        self.error = error
+
+
 def _terminate_exit_code(state):
     """The ``exit_code`` of the ``terminate`` event ``SimProcedure.exit`` added to ``state``'s step, or None."""
     for event in reversed(state.history.recent_events):
@@ -1502,13 +1514,9 @@ class RustCallbackDispatchMixin:
 
             try:
                 result = self._find_predicate(proxy)
-                matched = bool(result) if result is not None else False
             except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: find predicate raised on this state;
-                # treated as not-matched. Debug-logs.
-                if _DBG:
-                    l.debug(f"Find predicate at 0x{addr:x}: {e}")
-                matched = False
+                raise _UserPredicateError(e) from e
+            matched = bool(result) if result is not None else False
 
             # A callable avoid is asked on this same bounce, so a block costs
             # one round trip rather than a second one through Rust's avoid
@@ -1523,6 +1531,9 @@ class RustCallbackDispatchMixin:
             # reads; keeping the proxy too listed it twice (angr-hc1yj).
             self._rust_mgr.resume_find_predicate(state_id, matched, avoid_matched)
 
+        except _UserPredicateError as e:
+            self._rust_mgr.resume_find_predicate(state_id, False)
+            raise e.error from None
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: outer find-predicate handler raised;
             # state is reported as not-matched even if it would have been.
@@ -1572,6 +1583,9 @@ class RustCallbackDispatchMixin:
             proxy._override_addr = addr
             self._rust_mgr.resume_avoid_predicate(state_id, self._ask_avoid_predicate(proxy, addr))
 
+        except _UserPredicateError as e:
+            self._rust_mgr.resume_avoid_predicate(state_id, False)
+            raise e.error from None
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: outer avoid-predicate handler raised;
             # state is reported as not-matched even if it would have been
@@ -1580,16 +1594,12 @@ class RustCallbackDispatchMixin:
             self._rust_mgr.resume_avoid_predicate(state_id, False)
 
     def _ask_avoid_predicate(self, proxy, addr: int) -> bool:
-        """Evaluate the callable avoid predicate on ``proxy``; a raise is a no."""
+        """Evaluate the callable avoid predicate on ``proxy``; a raise surfaces as :class:`_UserPredicateError`."""
         try:
             result = self._avoid_predicate(proxy)
-            return bool(result) if result is not None else False
         except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: avoid predicate raised on this state;
-            # treated as not-matched (state stays in active). Debug-logs.
-            if _DBG:
-                l.debug(f"Avoid predicate at 0x{addr:x}: {e}")
-            return False
+            raise _UserPredicateError(e) from e
+        return bool(result) if result is not None else False
 
     def _handle_symbolic_branch_callback(self, event: _ExplorationEvent):
         """Handle symbolic branch callback from Rust.

@@ -809,28 +809,20 @@ def apply_technique_filters(mgr: RustExplorationManager):
                     continue
 
                 # LengthLimiter: check _filter (uses step() pattern, not filter())
+                # A raising filter propagates out of explore()/run(), as under
+                # SimulationManager (angr-vmi2l.298).
                 if tech_name == "LengthLimiter" and hasattr(tech, "_filter"):
-                    try:
-                        if tech._filter(state_proxy):
-                            drop = getattr(tech, "_drop", False)
-                            goto = "_DROP" if drop else "cut"
-                            break
-                    except Exception as e:
-                        # cat-(b) FALLBACK WITH LOSS: user technique raised; we
-                        # treat the state as not-cut and let other techniques try.
-                        l.debug(f"LengthLimiter._filter() error: {e}")
+                    if tech._filter(state_proxy):
+                        drop = getattr(tech, "_drop", False)
+                        goto = "_DROP" if drop else "cut"
+                        break
                     continue
 
                 if hasattr(tech, "filter"):
-                    try:
-                        result = tech.filter(simgr_proxy, state_proxy)
-                        if result is not None and result != stash:
-                            goto = result
-                            break
-                    except Exception as e:
-                        # cat-(b) FALLBACK WITH LOSS: user technique raised; we
-                        # leave the state in its current stash. (User code bug.)
-                        l.debug(f"Technique {tech_name}.filter() error: {e}")
+                    result = tech.filter(simgr_proxy, state_proxy)
+                    if result is not None and result != stash:
+                        goto = result
+                        break
 
             # Record this sweep's signature so an unchanged state is skipped
             # next time and a changed one re-runs non-monotonic filters.
@@ -909,14 +901,9 @@ def check_technique_complete(mgr: RustExplorationManager) -> bool:
                     l.warning(f"exploration timeout in {timeout_val} seconds!")
                     return True
 
-        if hasattr(tech, "complete"):
-            try:
-                if tech.complete(simgr_proxy):
-                    l.debug(f"Technique {tech_name}.complete() returned True")
-                    return True
-            except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: user technique raised; we treat
-                # the technique as not-complete and continue exploration.
-                l.debug(f"Technique {tech_name}.complete() error: {e}")
+        # A raising complete() propagates, as under SimulationManager (angr-vmi2l.298).
+        if hasattr(tech, "complete") and tech.complete(simgr_proxy):
+            l.debug(f"Technique {tech_name}.complete() returned True")
+            return True
 
     return False

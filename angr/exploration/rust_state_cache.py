@@ -131,26 +131,15 @@ class RustStateCacheMixin:
                 python_mgr=self,
             )
 
-            if self._find_predicate is not None:
-                try:
-                    if self._find_predicate(state):
-                        found_sids.add(state_id)
-                        self._predicate_eval_cache[state_id] = current_info
-                        continue
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: user predicate raised; we
-                    # skip find for this state and fall through to avoid.
-                    # User-code bug — log at debug.
-                    l.debug("find_predicate(sid=%d) raised: %s: %s", state_id, type(e).__name__, e)
+            # A raising predicate propagates out of explore(), as under
+            # SimulationManager.explore (angr-vmi2l.298).
+            if self._find_predicate is not None and self._find_predicate(state):
+                found_sids.add(state_id)
+                self._predicate_eval_cache[state_id] = current_info
+                continue
 
-            if self._avoid_predicate is not None:
-                try:
-                    if self._avoid_predicate(state):
-                        avoid_sids.add(state_id)
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: user predicate raised; we
-                    # don't avoid this state. User-code bug — log at debug.
-                    l.debug("avoid_predicate(sid=%d) raised: %s: %s", state_id, type(e).__name__, e)
+            if self._avoid_predicate is not None and self._avoid_predicate(state):
+                avoid_sids.add(state_id)
 
             self._predicate_eval_cache[state_id] = current_info
 
