@@ -378,10 +378,12 @@ fn max_only_write_pins_the_chosen_address() {
 // `solutions()` returns `min(n, #feasible)` with no truncation signal, so a
 // feasible set larger than the cap came back as a silently-truncated address
 // list that every consumer (ITE load default arm, store disjunction hoist,
-// `invalidate_code_for_concretization`) treats as exhaustive. It must now
-// report `TooLarge` instead.
+// `invalidate_code_for_concretization`) treats as exhaustive. Nor may it be
+// `TooLarge`: the span is within the range limit, where Python's `Range` keeps
+// every solution, and `concretize_read` pins a `TooLarge` to one address
+// (angr-vmi2l.248). It must report `Failed`, which defers to Python.
 #[test]
-fn test_over_max_solutions_is_too_large_not_truncated_multiple() {
+fn test_over_max_solutions_in_range_fails_not_truncated_or_pinned() {
     let ctx = SymContext::new_mock();
     let mut concretizer = AddressConcretizer::new();
     concretizer.max_solutions = 20;
@@ -397,11 +399,18 @@ fn test_over_max_solutions_is_too_large_not_truncated_multiple() {
     ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64)));
 
     match concretizer.concretize(&addr, &ctx) {
-        ConcretizationResult::TooLarge { min, max, .. } => {
-            assert_eq!((min, max), (0x1000, 0x1020));
-        }
-        other => panic!("expected TooLarge for a set over max_solutions, got {other:?}"),
+        ConcretizationResult::Failed(msg) => assert!(msg.contains("0x1000-0x1020"), "{msg}"),
+        other => panic!("expected Failed for a set over max_solutions, got {other:?}"),
     }
+    match concretizer.concretize_read(&addr, &ctx) {
+        ConcretizationResult::Failed(_) => {}
+        other => panic!("read must defer, not pin, got {other:?}"),
+    }
+    assert!(
+        ctx.can_be_true(&addr.eq(&RustBV::concrete(0x1000, 64)))
+            && ctx.can_be_true(&addr.eq(&RustBV::concrete(0x1020, 64))),
+        "the read must not have pinned the address"
+    );
 }
 
 // Companion: with the cap above the feasible count the same address still
@@ -524,8 +533,9 @@ fn fast_enum_undecided_reports_failed_for_every_entry_point() {
 /// `[min, max]` bounds) but the `max_solutions` enumeration behind it stops
 /// partway. A short list from a stopped enumeration has the same shape as an
 /// exhaustive one, so treating it as `Multiple` would hand consumers a
-/// truncated set they read as complete (angr-03vl4.85) — it must come back as
-/// `TooLarge` with the honest bounds instead.
+/// truncated set they read as complete (angr-03vl4.85). Nor is it `TooLarge`,
+/// which the read fallback pins (angr-vmi2l.248): the span is in range, so it
+/// comes back as `Failed` naming the decided bounds.
 ///
 /// The allowance is the fast enumeration's own check count (17 solutions, one
 /// `EvalUpto` check each; 16 when the warm model cache seeds the first value),
@@ -533,18 +543,17 @@ fn fast_enum_undecided_reports_failed_for_every_entry_point() {
 /// leaves that enumeration undecided — with an empty or a one-element prefix —
 /// which is the branch under test.
 #[test]
-fn undecided_max_solutions_enum_reports_too_large_not_a_truncated_set() {
+fn undecided_max_solutions_enum_reports_failed_not_a_truncated_set() {
     let ctx = SymContext::new_mock();
     let addr = ranged_addr(&ctx, "enum_undecided_addr");
     let concretizer = no_stride_concretizer();
 
     let _fault = crate::symbolic::stop_enumeration_after_for_test(17);
     match concretizer.concretize(&addr, &ctx) {
-        ConcretizationResult::TooLarge { min, max, limit } => {
-            assert_eq!((min, max), (0x1000, 0x103f), "bounds must be the decided ones");
-            assert_eq!(limit, concretizer.read_range_limit);
+        ConcretizationResult::Failed(msg) => {
+            assert!(msg.contains("0x1000-0x103f"), "bounds must be the decided ones: {msg}");
         }
-        other => panic!("expected TooLarge with decided bounds, got {other:?}"),
+        other => panic!("expected Failed with decided bounds, got {other:?}"),
     }
 }
 
@@ -552,7 +561,7 @@ fn undecided_max_solutions_enum_reports_too_large_not_a_truncated_set() {
 /// that stopped partway still has a *non-empty* prefix, and returning it as
 /// `Single`/`Multiple` would claim a 3-address set for a 64-address one. The
 /// prefix must never escape — here the range tail takes over and reports
-/// `TooLarge`.
+/// `Failed`.
 #[test]
 fn undecided_fast_enum_prefix_never_escapes_as_a_complete_set() {
     let ctx = SymContext::new_mock();
@@ -561,19 +570,18 @@ fn undecided_fast_enum_prefix_never_escapes_as_a_complete_set() {
 
     let _fault = crate::symbolic::stop_enumeration_after_for_test(3);
     match concretizer.concretize(&addr, &ctx) {
+        ConcretizationResult::Failed(msg) => {
+            // The range tail decides, then its enumeration stops too.
+            assert!(msg.contains("0x1000-0x103f"), "range query should have decided: {msg}");
+        }
         ConcretizationResult::TooLarge { min, max, .. } => {
-            assert_eq!((min, max), (0x1000, 0x103f));
+            panic!("in-range set must not be TooLarge: {min:#x}-{max:#x}")
         }
         ConcretizationResult::Single(a) => panic!("truncated prefix escaped as Single({a:#x})"),
         ConcretizationResult::Multiple(addrs) => {
             panic!("truncated prefix escaped as an exhaustive Multiple: {addrs:x?}")
         }
         ConcretizationResult::Strided { .. } => unreachable!("stride detection is off"),
-        ConcretizationResult::Failed(msg) => {
-            // Acceptable (also a "take the symbolic path" answer) only if the
-            // range query is what failed — but nothing starves it here.
-            panic!("range query should have decided, got Failed({msg:?})")
-        }
     }
 }
 

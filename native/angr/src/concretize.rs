@@ -161,7 +161,12 @@ pub struct AddressConcretizer {
     pub read_range_limit: u64,
     /// Maximum address range for write concretization (default: 128, matching Python).
     pub write_range_limit: u64,
-    /// Maximum number of solutions to enumerate (default: 256).
+    /// Maximum number of solutions to enumerate in Rust (default: 256). A set
+    /// over this cap whose span is within the range limit is `Failed`, not
+    /// `TooLarge`, so the access defers to Python's `Range` instead of being
+    /// pinned (angr-vmi2l.248). Loads and stores over `MAX_ITE_ADDRS`
+    /// candidates already go to the Python memory model, so the cap bounds
+    /// only Rust's enumeration cost, never which paths survive.
     pub max_solutions: usize,
     /// Maximum number of elements for strided access (default: 16384).
     /// If stride count exceeds this, falls back to TooLarge.
@@ -450,7 +455,8 @@ impl AddressConcretizer {
     ///   always the *complete* feasible set, never a truncated prefix
     /// * `Strided` if a regular stride pattern is detected (e.g., arr\[i*4\])
     /// * `TooLarge` if the address range exceeds the limit
-    /// * `Failed` if concretization is not possible
+    /// * `Failed` if concretization is not possible in Rust, including an
+    ///   in-range set over `max_solutions` (Python's `Range` keeps it)
     pub fn concretize(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
         self.concretize_internal(addr, ctx, self.read_range_limit)
     }
@@ -575,10 +581,21 @@ impl AddressConcretizer {
             // enumerate — or Z3 stopped deciding partway through it
             // (angr-03vl4.85), which yields a *short* list with the same shape
             // as an exhaustive one. Either way it is not a `Multiple` any
-            // consumer may treat as exhaustive. Same fallback as the over-range
-            // branch above, and here `[min, max]` is a real decided bound, so
-            // `TooLarge` can report it honestly.
-            return self.unenumerable(addr, ctx, min, max, range_limit);
+            // consumer may treat as exhaustive. Nor is it `TooLarge`: the span
+            // is within `range_limit`, so Python's `Range` strategy *succeeds*
+            // here and keeps every solution, while `concretize_read` and the
+            // write Max fallback read `TooLarge` as "Range failed" and pin one
+            // address (angr-vmi2l.248). A complete stride grid is still sound;
+            // otherwise `Failed`, which every consumer hands to the fully
+            // symbolic Python path, where `Range` runs as it would in Python.
+            if self.enable_stride_detection
+                && let Some(strided) = self.try_detect_stride(addr, ctx, min, max)
+            {
+                return strided;
+            }
+            return ConcretizationResult::Failed(format!(
+                "feasible set over max_solutions within range 0x{min:x}-0x{max:x}"
+            ));
         }
 
         match solutions.len() {
@@ -606,8 +623,7 @@ impl AddressConcretizer {
     }
 
     /// Result for an address whose feasible set is bounded by `[min, max]` but
-    /// cannot be enumerated exhaustively — either because the range exceeds
-    /// `limit` or because enumeration overflowed `max_solutions`.
+    /// spans more than `limit`, so `Range` fails as it does in Python.
     ///
     /// Tries the stride abstraction first (`try_detect_stride` carries the
     /// completeness gate (angr-lf108), so a grid it returns really does cover
