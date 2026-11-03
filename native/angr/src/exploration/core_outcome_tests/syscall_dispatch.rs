@@ -18,7 +18,13 @@ enum StubSyscallBehavior {
     Exit,
     /// Registered handler that declines — falls through to Python.
     Decline,
+    /// Writes [`PROC_STDOUT`] to fd 1 and records a stdin symbol, then
+    /// returns 0 (`exit` = false) or deadends (`exit` = true).
+    Io { exit: bool },
 }
+
+/// The stdin symbol [`StubSyscallBehavior::Io`] records.
+const STUB_STDIN_SYMBOL: &str = "stub_stdin_0";
 
 /// Stands in for any registered native syscall handler, with the outcome and
 /// the declared arity both under test control (a `num_args` past the ABI's
@@ -52,6 +58,15 @@ impl crate::syscalls::NativeSyscall for StubSyscall {
             StubSyscallBehavior::Decline => Err(crate::syscalls::SyscallError::Other(
                 "declined by stub".to_string(),
             )),
+            StubSyscallBehavior::Io { exit } => {
+                assert!(state.write_fd(1, PROC_STDOUT), "stdout write refused");
+                state.record_stdin_symbol(STUB_STDIN_SYMBOL.to_string(), 8);
+                Ok(if exit {
+                    SyscallOutcome::Exit
+                } else {
+                    SyscallOutcome::Continue { ret: 0 }
+                })
+            }
         }
     }
 }
@@ -68,6 +83,18 @@ fn dispatch_syscall_exit(
     num: Option<u64>,
     stub: Option<StubSyscall>,
     jumpkind: crate::vex::ir::JumpKind,
+) -> (CoreOutcome, u64) {
+    dispatch_syscall_seeded(num, stub, jumpkind, false)
+}
+
+/// [`dispatch_syscall_exit`], optionally with one deferred fork (and the
+/// pre-branch `BranchSnapshot` the interpreter records next to it) riding in,
+/// modelling a symbolic branch the block took before reaching the syscall.
+fn dispatch_syscall_seeded(
+    num: Option<u64>,
+    stub: Option<StubSyscall>,
+    jumpkind: crate::vex::ir::JumpKind,
+    with_fork: bool,
 ) -> (CoreOutcome, u64) {
     let mgr = RustExplorationManager::new("amd64", None).unwrap();
     let ctx = mgr.step_context();
@@ -86,6 +113,32 @@ fn dispatch_syscall_exit(
     state.set_pc(0x40_0000);
     let sid = state.state_id();
 
+    let mut deferred_forks = Vec::new();
+    let mut stored_conditions = FxHashMap::default();
+    let mut fork_snapshots = FxHashMap::default();
+    if with_fork {
+        stored_conditions.insert(
+            FORK_COND_ID,
+            crate::symbolic::RustBV::symbol("syscall_guard", 1),
+        );
+        fork_snapshots.insert(
+            FORK_COND_ID,
+            crate::interpreter::BranchSnapshot {
+                solver: state.solver().borrow().fork(),
+                registers: state.registers().fork(),
+                memory: None,
+                call_stack: Vec::new(),
+                detailed_history: Vec::new(),
+            },
+        );
+        deferred_forks.push(DeferredFork {
+            branch_addr: SYSCALL_PC - 0x10,
+            path_taken: true,
+            unexplored_target: 0x40_8000,
+            condition_id: FORK_COND_ID,
+        });
+    }
+
     let outcome = run_post_step_core(
         &CoreCtx {
             ctx: &ctx,
@@ -101,10 +154,10 @@ fn dispatch_syscall_exit(
                 pc: SYSCALL_PC,
                 jumpkind,
             },
-            deferred_forks: Vec::new(),
+            deferred_forks,
             last_condition: None,
-            stored_conditions: FxHashMap::default(),
-            fork_snapshots: FxHashMap::default(),
+            stored_conditions,
+            fork_snapshots,
         },
         sid,
     );
@@ -422,6 +475,50 @@ fn amd64_int_0x80_bounces_even_when_the_amd64_table_has_the_number() {
                 },
                 _ => panic!("expected NeedsPython for {jumpkind:?}"),
             }
+        }
+    });
+}
+
+/// angr-vmi2l.195: a deferred sibling of a branch taken before a native
+/// syscall is forked off a base captured before the syscall ran, so the
+/// syscall's fd 1 write and `stdin_symbols` entry, which no `BranchSnapshot`
+/// covers, stay on the path that made them. Covers the continue tail and the
+/// exit tail.
+#[test]
+fn syscall_native_fork_does_not_inherit_the_syscalls_io() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for exit in [false, true] {
+            let (outcome, _) = dispatch_syscall_seeded(
+                Some(STUB_SYSCALL_NUM),
+                Some(StubSyscall {
+                    behavior: StubSyscallBehavior::Io { exit },
+                    num_args: 0,
+                }),
+                crate::vex::ir::JumpKind::Sys_syscall,
+                true,
+            );
+            assert_eq!(outcome.fork_ids.len(), 1, "the fork is minted (exit={exit})");
+            let CoreReturn::Continue(succ) = outcome.ret else {
+                panic!("expected Continue");
+            };
+            let (main, sibling) = if exit {
+                assert_eq!(succ.len(), 1, "only the sibling continues");
+                (&outcome.terminal_pushes[0].0, &succ[0].0)
+            } else {
+                assert_eq!(succ.len(), 2, "main + materialized fork");
+                (&succ[0].0, &succ[1].0)
+            };
+            assert_eq!(main.fd_buffer(1), PROC_STDOUT, "main ran the syscall");
+            assert_eq!(main.stdin_symbols().len(), 1);
+            assert!(
+                sibling.fd_buffer(1).is_empty(),
+                "the sibling never ran the syscall (exit={exit})"
+            );
+            assert!(
+                sibling.stdin_symbols().is_empty(),
+                "the sibling never read stdin (exit={exit})"
+            );
         }
     });
 }

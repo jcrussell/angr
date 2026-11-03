@@ -230,8 +230,8 @@ fn process_deferred_forks_into_core(
 ///
 /// Call this *before* the handler runs the native proc or touches the resume
 /// stack; see [`RustSimState::fork_base_before_mutation`] for which fields the
-/// snapshot cannot restore. Both handlers that materialize forks after a
-/// mutation need it:
+/// snapshot cannot restore. Every handler that materializes forks after a
+/// mutation needs it:
 ///
 /// - `handle_native_resume_core` has already *popped* the resume frame and
 ///   run the proc's continuation, so a sibling of a branch taken inside the
@@ -240,6 +240,9 @@ fn process_deferred_forks_into_core(
 /// - `handle_simprocedure_core` has already run the proc (whose stdout,
 ///   stdin and fs writes the sibling never made, angr-mx00p.132.4) and, on
 ///   its sub-call arm, pushed a continuation the sibling never entered.
+/// - `handle_syscall_core` has already run the native syscall, whose fd
+///   writes, reads and `stdin_symbols` the sibling never made
+///   (angr-vmi2l.195).
 ///
 /// Takes the fork slice rather than a whole [`ForkPayload`] so the
 /// single-threaded `RustExplorationManager::handle_native_resume` twin, which
@@ -998,6 +1001,9 @@ pub(super) fn handle_syscall_core(
                 );
             }
         };
+        // Captured before the syscall writes `fs` / `stdin_symbols`, which no
+        // `BranchSnapshot` restores (angr-vmi2l.195).
+        let fork_base = fork_base_for_forks(&state, &payload.deferred_forks);
         let outcome = handler.call(&mut state, &args);
         if outcome.is_ok() {
             counters.syscall_native_count += 1;
@@ -1015,6 +1021,7 @@ pub(super) fn handle_syscall_core(
                 return syscall_continue(
                     cc,
                     state,
+                    fork_base,
                     payload,
                     std::mem::take(counters),
                     root_hint,
@@ -1027,6 +1034,7 @@ pub(super) fn handle_syscall_core(
                 return syscall_continue(
                     cc,
                     state,
+                    fork_base,
                     payload,
                     std::mem::take(counters),
                     root_hint,
@@ -1037,6 +1045,7 @@ pub(super) fn handle_syscall_core(
                 return syscall_continue(
                     cc,
                     state,
+                    fork_base,
                     payload,
                     std::mem::take(counters),
                     root_hint,
@@ -1074,9 +1083,11 @@ pub(super) fn handle_syscall_core(
 }
 
 /// Shared continue/exit tail for the three native syscall outcomes.
+/// `fork_base` is the pre-syscall copy from [`fork_base_for_forks`].
 fn syscall_continue(
     cc: &CoreCtx,
     state: RustSimState,
+    fork_base: Option<RustSimState>,
     payload: ForkPayload,
     counters: CoreCounters,
     root_hint: u64,
@@ -1087,7 +1098,7 @@ fn syscall_continue(
     let mut fork_ids = Vec::new();
     process_deferred_forks_into_core(
         cc,
-        &state,
+        fork_base.as_ref().unwrap_or(&state),
         payload,
         root_hint,
         ForkSink {
