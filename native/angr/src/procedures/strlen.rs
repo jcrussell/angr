@@ -21,8 +21,8 @@
 use super::ProcedureError;
 use super::check_max;
 use super::strings::{
-    MAX_STRING_SCAN as MAX_STRLEN, ScanOutcome, build_strlen_chain, null_exists_constraint,
-    scan_for_null_symbolic,
+    MAX_STRING_SCAN as MAX_STRLEN, MAX_SYMBOLIC_SCAN_BYTES, ScanOutcome, build_strlen_chain,
+    null_exists_constraint, scan_for_null_symbolic,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -54,7 +54,18 @@ fn scan_for_null(
             }
             Ok(Some(RustBV::concrete(length as u128, arch_bits)))
         }
-        ScanOutcome::Symbolic { bytes } => {
+        ScanOutcome::Symbolic {
+            bytes,
+            budget_spent,
+        } => {
+            // strnlen asserts no terminator, so past a spent budget its
+            // `max_scan` default would stand for bytes nobody read
+            // (angr-vmi2l.99). strlen's `null_exists_constraint` (always
+            // `Some` here: the window holds symbolic bytes and no concrete
+            // null) forces the length into the prefix, as Python's does.
+            if budget_spent && !require_null {
+                return Err(ProcedureError::MaxIterations(MAX_SYMBOLIC_SCAN_BYTES));
+            }
             let (chain, pruning) = {
                 let chain = build_strlen_chain(&bytes, arch_bits, max_scan);
                 let pruning = if require_null {

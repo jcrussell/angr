@@ -35,7 +35,8 @@ use super::ProcedureError;
 use super::check_max;
 use super::ctype;
 use super::strings::{
-    ConcreteStep, ScanResult, null_exists_constraint, scan_concrete_then_collect,
+    ConcreteStep, MAX_SYMBOLIC_SCAN_BYTES, ScanResult, null_exists_constraint,
+    scan_concrete_then_collect,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -179,37 +180,70 @@ pub(super) fn compare_bytes(
             }
             RustBV::zero(32)
         }
-        ScanResult::Collected(collected) => {
-            // Only the unbounded compares (strcmp/strcasecmp) may assert that
-            // s1 is terminated inside the window: a caller-bounded
-            // strncmp(a, b, n) can legitimately compare n non-null bytes, at
-            // ANY n — C does not require termination for a bounded compare,
-            // and Python's strncmp.py lets the null sit beyond the compared
-            // range. Deriving this from `max_len >= MAX_STRCMP_LEN` instead
-            // pruned exactly those states for n >= 4096 (angr-fs8kb.36).
-            // See strings::null_exists_constraint (angr-sgcye).
-            let require_null = stop_at_null && unbounded;
-            let s1_bytes: Vec<(u64, RustBV)> = collected
-                .iter()
-                .map(|(i, (c1, _))| (*i, c1.clone()))
-                .collect();
-            let pairs: Vec<(RustBV, RustBV)> =
-                collected.into_iter().map(|(_, pair)| pair).collect();
-            let (chain, pruning) = {
-                let chain = build_diff_chain(&pairs, stop_at_null, case_insensitive);
-                let pruning = if require_null {
-                    null_exists_constraint(&s1_bytes)
-                } else {
-                    None
-                };
-                (chain, pruning)
-            };
-            if let Some(c) = pruning {
-                state.add_constraint(c);
-            }
-            chain
-        }
+        ScanResult::Collected(collected) => build_compare_chain(
+            state,
+            collected,
+            false,
+            unbounded,
+            stop_at_null,
+            case_insensitive,
+        )?,
+        ScanResult::BudgetSpent(collected) => build_compare_chain(
+            state,
+            collected,
+            true,
+            unbounded,
+            stop_at_null,
+            case_insensitive,
+        )?,
     }))
+}
+
+/// Chain builder for [`compare_bytes`]' collected window. With
+/// `budget_spent` the window is a prefix of the compare
+/// ([`ScanResult::BudgetSpent`]), so its trailing 0 would claim "equal" for
+/// bytes nobody read: only a `null_exists_constraint` on s1 (forcing the
+/// compare to end inside the prefix, as Python's inline strlen does) makes
+/// that sound, and without one the call defers to Python (angr-vmi2l.99).
+fn build_compare_chain(
+    state: &mut RustSimState,
+    collected: Vec<(u64, (RustBV, RustBV))>,
+    budget_spent: bool,
+    unbounded: bool,
+    stop_at_null: bool,
+    case_insensitive: bool,
+) -> Result<RustBV, ProcedureError> {
+    // Only the unbounded compares (strcmp/strcasecmp) may assert that
+    // s1 is terminated inside the window: a caller-bounded
+    // strncmp(a, b, n) can legitimately compare n non-null bytes, at
+    // ANY n — C does not require termination for a bounded compare,
+    // and Python's strncmp.py lets the null sit beyond the compared
+    // range. Deriving this from `max_len >= MAX_STRCMP_LEN` instead
+    // pruned exactly those states for n >= 4096 (angr-fs8kb.36).
+    // See strings::null_exists_constraint (angr-sgcye).
+    let require_null = stop_at_null && unbounded;
+    let s1_bytes: Vec<(u64, RustBV)> = collected
+        .iter()
+        .map(|(i, (c1, _))| (*i, c1.clone()))
+        .collect();
+    let pairs: Vec<(RustBV, RustBV)> = collected.into_iter().map(|(_, pair)| pair).collect();
+    let (chain, pruning) = {
+        let chain = build_diff_chain(&pairs, stop_at_null, case_insensitive);
+        let pruning = if require_null {
+            null_exists_constraint(&s1_bytes)
+        } else {
+            None
+        };
+        (chain, pruning)
+    };
+    match pruning {
+        Some(c) => state.add_constraint(c),
+        None if budget_spent => {
+            return Err(ProcedureError::MaxIterations(MAX_SYMBOLIC_SCAN_BYTES));
+        }
+        None => {}
+    }
+    Ok(chain)
 }
 
 crate::declare_proc! {

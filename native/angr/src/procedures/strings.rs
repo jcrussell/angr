@@ -258,6 +258,14 @@ pub(crate) enum ScanResult<R, B> {
     /// (typically a concrete null terminator, past which positions cannot
     /// affect the ITE chain).
     Collected(Vec<(u64, B)>),
+    /// Collection stopped because [`MAX_SYMBOLIC_SCAN_BYTES`] symbolic
+    /// positions were spent, not at a terminator or the end of the window:
+    /// the entries cover only a prefix, so a chain built over them answers
+    /// for the uncollected tail with its "nothing more" default. Only a
+    /// caller that also asserts the answer lies inside the prefix (a
+    /// [`null_exists_constraint`]) may build one; every other caller defers
+    /// to Python (angr-vmi2l.99).
+    BudgetSpent(Vec<(u64, B)>),
 }
 
 /// Number of *symbolic* positions a scan may collect before it stops looking.
@@ -296,6 +304,7 @@ pub(crate) fn scan_concrete_then_collect<B, R>(
     let mut collected: Vec<(u64, B)> = Vec::new();
     let mut collecting = false;
     let mut symbolic_budget = MAX_SYMBOLIC_SCAN_BYTES;
+    let mut budget_spent = false;
     for i in 0..max {
         let loaded = load(state, i)?;
         // `concrete` doubles as the symbolic predicate: it answers
@@ -314,7 +323,10 @@ pub(crate) fn scan_concrete_then_collect<B, R>(
                 Some(rest) => symbolic_budget = rest,
                 // Budget spent: stop before collecting this position, matching
                 // `_find_iter_items`' early `return`.
-                None => break,
+                None => {
+                    budget_spent = true;
+                    break;
+                }
             }
         }
         let stop = collect_stop(&loaded);
@@ -323,7 +335,9 @@ pub(crate) fn scan_concrete_then_collect<B, R>(
             break;
         }
     }
-    if collecting {
+    if budget_spent {
+        Ok(ScanResult::BudgetSpent(collected))
+    } else if collecting {
         Ok(ScanResult::Collected(collected))
     } else {
         Ok(ScanResult::Exhausted)
@@ -344,8 +358,14 @@ pub(crate) enum ScanOutcome {
     /// error out (angr-sqfj8.80).
     AllConcrete { length: u64 },
     /// At least one byte was symbolic; the chain builder must be invoked.
-    /// Each entry is `(position, byte_8bit)`.
-    Symbolic { bytes: Vec<(u64, RustBV)> },
+    /// Each entry is `(position, byte_8bit)`. `budget_spent` is
+    /// [`ScanResult::BudgetSpent`]: `bytes` stops short of both a terminator
+    /// and `max`, so only a caller that asserts [`null_exists_constraint`]
+    /// may build a chain over it.
+    Symbolic {
+        bytes: Vec<(u64, RustBV)>,
+        budget_spent: bool,
+    },
 }
 
 /// Scan up to `max` bytes, collecting (position, byte) pairs once a symbolic
@@ -373,7 +393,14 @@ pub(crate) fn scan_for_null_symbolic(
     Ok(match result {
         ScanResult::Stopped(length) => ScanOutcome::AllConcrete { length },
         ScanResult::Exhausted => ScanOutcome::AllConcrete { length: max },
-        ScanResult::Collected(bytes) => ScanOutcome::Symbolic { bytes },
+        ScanResult::Collected(bytes) => ScanOutcome::Symbolic {
+            bytes,
+            budget_spent: false,
+        },
+        ScanResult::BudgetSpent(bytes) => ScanOutcome::Symbolic {
+            bytes,
+            budget_spent: true,
+        },
     })
 }
 

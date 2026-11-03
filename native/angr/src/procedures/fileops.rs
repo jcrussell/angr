@@ -46,7 +46,9 @@ fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedu
             let (buf, _) = scan_concrete_bounded(state, addr, length as usize, "pathname")?;
             return Ok(buf);
         }
-        ScanOutcome::Symbolic { bytes } => bytes,
+        // A spent budget is sound here: the `null_exists_constraint` below
+        // puts the terminator inside the collected prefix (angr-vmi2l.99).
+        ScanOutcome::Symbolic { bytes, .. } => bytes,
     };
 
     // Bytes before the first symbolic one were all concrete and non-NUL.

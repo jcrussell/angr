@@ -97,7 +97,8 @@ fn test_scan_for_null_symbolic_with_sym_byte() {
     drop(ctx);
     state.memory_store(0x1001, sym).unwrap();
     match scan_for_null_symbolic(&mut state, 0x1000, 4096).unwrap() {
-        ScanOutcome::Symbolic { bytes } => {
+        ScanOutcome::Symbolic { bytes, budget_spent } => {
+            assert!(!budget_spent);
             // Position 0 was concrete 'a' (skipped), positions 1..3 collected.
             assert!(bytes.iter().any(|(p, _)| *p == 1));
             // Concrete '\x00' at position 3 stops the scan.
@@ -125,7 +126,8 @@ fn test_scan_for_null_symbolic_caps_symbolic_bytes() {
         state.memory_store(0x2000 + i as u64, sym).unwrap();
     }
     match scan_for_null_symbolic(&mut state, 0x2000, 4096).unwrap() {
-        ScanOutcome::Symbolic { bytes } => {
+        ScanOutcome::Symbolic { bytes, budget_spent } => {
+            assert!(budget_spent);
             assert_eq!(bytes.len(), MAX_SYMBOLIC_SCAN_BYTES);
             assert_eq!(bytes.last().unwrap().0, MAX_SYMBOLIC_SCAN_BYTES as u64 - 1);
         }
@@ -147,7 +149,8 @@ fn test_scan_for_null_symbolic_concrete_bytes_do_not_draw_down_budget() {
     drop(ctx);
     state.memory_store(0x3000, sym).unwrap();
     match scan_for_null_symbolic(&mut state, 0x3000, 4096).unwrap() {
-        ScanOutcome::Symbolic { bytes } => {
+        ScanOutcome::Symbolic { bytes, budget_spent } => {
+            assert!(!budget_spent);
             assert_eq!(bytes.len(), 201);
             assert_eq!(bytes.last().unwrap().0, 200);
         }
@@ -200,4 +203,103 @@ fn test_null_exists_constraint_prunes_unterminated_symbolic_window() {
     ctx.assume_true(&b0.eq(&nonnull));
     ctx.assume_true(&b1.eq(&nonnull));
     assert!(!ctx.is_sat());
+}
+
+/// Address of [`budget_spending_buffer`]'s fully symbolic input.
+const SYM_BUF: u64 = 0x2000;
+/// Address of its concrete, NUL-terminated `'P'` counterpart.
+const CONC_BUF: u64 = 0x3000;
+/// Length of both buffers: past [`MAX_SYMBOLIC_SCAN_BYTES`], so the decisive
+/// bytes at 60..100 lie beyond the budget.
+const BUF_LEN: u64 = 100;
+
+/// State with `BUF_LEN` fresh symbolic bytes at `SYM_BUF` and `BUF_LEN`
+/// concrete `'P'` bytes plus a NUL at `CONC_BUF` (the a10_h `pwmemcmp`
+/// shape).
+fn budget_spending_buffer() -> RustSimState {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut conc = vec![b'P'; BUF_LEN as usize];
+    conc.push(0);
+    state.map_memory_data(CONC_BUF, &conc, Permission::RWX);
+    state.map_memory_data(SYM_BUF, &[b'a'; BUF_LEN as usize + 1], Permission::RWX);
+    for i in 0..BUF_LEN {
+        let sym = RustBV::symbol(format!("in{i}"), 8);
+        state.memory_store(SYM_BUF + i, sym).unwrap();
+    }
+    state.map_memory_data(0x4000, &[0u8; BUF_LEN as usize], Permission::RWX);
+    state
+}
+
+/// Call `proc` on a fresh [`budget_spending_buffer`] with `args`.
+fn call_on_budget_buffer(
+    proc: &dyn crate::procedures::NativeSimProcedure,
+    args: &[u64],
+) -> Result<Option<RustBV>, ProcedureError> {
+    let mut state = budget_spending_buffer();
+    let args: Vec<RustBV> = args
+        .iter()
+        .map(|a| RustBV::concrete(u128::from(*a), 64))
+        .collect();
+    proc.call(&mut state, &args)
+}
+
+#[test]
+fn test_spent_symbolic_budget_defers_without_pruning_constraint() {
+    // Past 60 symbolic positions the collected window is only a prefix. With
+    // no constraint forcing the answer into it, the chain's default (0 for a
+    // compare, n for strnlen/strncpy, NULL or the last in-budget match for
+    // the memchr family) would answer for bytes nobody read, so each of these
+    // defers to Python (angr-vmi2l.99).
+    use crate::procedures::strchr::{
+        NativeMemchr, NativeMemrchr, NativeRawmemchr, NativeStrchr, NativeStrrchr,
+    };
+    use crate::procedures::strcmp::{NativeStrcmp, NativeStrncasecmp, NativeStrncmp};
+    use crate::procedures::strcpy::NativeStrncpy;
+    use crate::procedures::strlen::NativeStrnlen;
+    use crate::procedures::memcmp::NativeMemcmp;
+    let x = u64::from(b'x');
+    let cases: &[(&str, &dyn crate::procedures::NativeSimProcedure, Vec<u64>)] = &[
+        ("memcmp", &NativeMemcmp, vec![SYM_BUF, CONC_BUF, BUF_LEN]),
+        ("strncmp", &NativeStrncmp, vec![SYM_BUF, CONC_BUF, BUF_LEN]),
+        ("strncasecmp", &NativeStrncasecmp, vec![SYM_BUF, CONC_BUF, BUF_LEN]),
+        // Concrete s1: `null_exists_constraint` has no symbolic s1 byte.
+        ("strcmp_conc_s1", &NativeStrcmp, vec![CONC_BUF, SYM_BUF]),
+        ("strnlen", &NativeStrnlen, vec![SYM_BUF, BUF_LEN]),
+        ("strncpy", &NativeStrncpy, vec![0x4000, SYM_BUF, BUF_LEN]),
+        ("memchr", &NativeMemchr, vec![SYM_BUF, x, BUF_LEN]),
+        ("memrchr", &NativeMemrchr, vec![SYM_BUF, x, BUF_LEN]),
+        ("rawmemchr", &NativeRawmemchr, vec![SYM_BUF, x]),
+        ("strchr", &NativeStrchr, vec![SYM_BUF, x]),
+        ("strrchr", &NativeStrrchr, vec![SYM_BUF, x]),
+        ("strchr_sym_target", &NativeStrchr, vec![SYM_BUF, x]),
+    ];
+    let mut served = Vec::new();
+    for (name, proc, args) in cases.iter() {
+        let mut state = budget_spending_buffer();
+        let mut args: Vec<RustBV> = args
+            .iter()
+            .map(|a| RustBV::concrete(u128::from(*a), 64))
+            .collect();
+        if *name == "strchr_sym_target" {
+            args[1] = RustBV::symbol("target", 64);
+        }
+        let result = proc.call(&mut state, &args);
+        if !matches!(result, Err(ProcedureError::MaxIterations(MAX_SYMBOLIC_SCAN_BYTES))) {
+            served.push(*name);
+        }
+    }
+    assert!(served.is_empty(), "served instead of deferring: {served:?}");
+}
+
+#[test]
+fn test_spent_symbolic_budget_served_under_pruning_constraint() {
+    // strlen and strcmp with a symbolic s1 assert a terminator inside the
+    // collected prefix (as Python's inline strlen does), so their chain's
+    // default is unreachable and they stay native.
+    use crate::procedures::strcmp::NativeStrcmp;
+    use crate::procedures::strlen::NativeStrlen;
+    let strlen = call_on_budget_buffer(&NativeStrlen, &[SYM_BUF]);
+    assert!(matches!(strlen, Ok(Some(_))), "strlen: {strlen:?}");
+    let strcmp = call_on_budget_buffer(&NativeStrcmp, &[SYM_BUF, CONC_BUF]);
+    assert!(matches!(strcmp, Ok(Some(_))), "strcmp: {strcmp:?}");
 }

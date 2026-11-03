@@ -641,10 +641,19 @@ both invoked except when native fails):
    natively is safe on symbolic input because the native string
    procedures cap their symbolic scan window at Python's
    ``buf_symbolic_bytes`` (``MAX_SYMBOLIC_SCAN_BYTES`` in
-   ``procedures::strings``); the residual divergences are conservative
-   (Python swaps in a fresh BVS past a recursion depth of 3, and searches
-   a narrower concrete window), so a native proc cannot kill a state
-   that Python would keep.
+   ``procedures::strings``). A scan that spends that budget has
+   collected only a prefix of its window
+   (``ScanResult::BudgetSpent``): strlen, and strcmp with a symbolic
+   s1, still answer natively because they assert a terminator inside
+   the prefix, as Python's inline strlen does, while every other
+   consumer (memcmp, the bounded compares, strnlen, strncpy, the
+   memchr/strchr family) defers to Python rather than let its chain's
+   default answer for bytes it never read. Residual divergences: Python
+   swaps in a fresh BVS past a recursion depth of 3 and searches a
+   narrower concrete window, and it charges the budget only for
+   multi-valued bytes while native charges every structurally symbolic
+   one, so a native strlen can hit the cap, and prune, where Python
+   would not.
 3. **Per-name Python override skips native.**
    ``set_python_override("strlen")`` makes ``registry.get("strlen")``
    return ``None`` so dispatch falls through to the Python

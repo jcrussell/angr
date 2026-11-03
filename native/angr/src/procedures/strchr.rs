@@ -13,7 +13,8 @@
 use super::ProcedureError;
 use super::check_max;
 use super::strings::{
-    ConcreteStep, MAX_STRING_SCAN as MAX_SCAN, ScanResult, scan_concrete_then_collect,
+    ConcreteStep, MAX_STRING_SCAN as MAX_SCAN, MAX_SYMBOLIC_SCAN_BYTES, ScanResult,
+    scan_concrete_then_collect,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -29,6 +30,15 @@ use crate::symbolic::RustBV;
 /// Python instead of reporting a truncated "not found".
 fn forward_match_is_conclusive(result: &Option<RustBV>) -> bool {
     matches!(result.as_ref().and_then(RustBV::as_u64), Some(a) if a != 0)
+}
+
+/// Error for a scan whose symbolic budget ran out
+/// ([`ScanResult::BudgetSpent`]). No scan here asserts its answer lies in the
+/// collected prefix, so a chain over it would let its NULL / last-match
+/// default stand for bytes nobody read; Python decides instead
+/// (angr-vmi2l.99).
+fn budget_spent_error() -> ProcedureError {
+    ProcedureError::MaxIterations(MAX_SYMBOLIC_SCAN_BYTES)
 }
 
 /// Per-position loader every scan in this module hands to
@@ -88,6 +98,7 @@ fn collect_all_then_build(
         ScanResult::Collected(v) => loads_to_addrs(v, addr),
         ScanResult::Exhausted => Vec::new(), // max_scan == 0
         ScanResult::Stopped(_) => unreachable!("symbolic target never stops in concrete mode"),
+        ScanResult::BudgetSpent(_) => return Err(budget_spent_error()),
     };
 
     let target_byte_bv = target_arg.extract(7, 0);
@@ -209,6 +220,7 @@ fn scan_for_byte(
                     nul_returns_addr,
                 )
             }
+            ScanResult::BudgetSpent(_) => return Err(budget_spent_error()),
         }));
     }
 
@@ -373,6 +385,7 @@ fn scan_for_byte_last(
                 };
                 build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &seed)
             }
+            ScanResult::BudgetSpent(_) => return Err(budget_spent_error()),
         }));
     }
 

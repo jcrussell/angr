@@ -11,8 +11,9 @@
 use super::arch_word;
 use super::mem_common::symbolic_size_conditional_store;
 use super::strings::{
-    MAX_STRING_SCAN, ScanOutcome, build_strlen_chain, scan_concrete_bounded,
-    scan_concrete_until_null, scan_for_null_symbolic, write_concrete_bytes, write_cstr,
+    MAX_STRING_SCAN, MAX_SYMBOLIC_SCAN_BYTES, ScanOutcome, build_strlen_chain,
+    scan_concrete_bounded, scan_concrete_until_null, scan_for_null_symbolic, write_concrete_bytes,
+    write_cstr,
 };
 use super::{ProcedureError, check_max, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -120,8 +121,18 @@ crate::declare_proc! {
             }
             Err(ProcedureError::SymbolicArgument(_)) => {
                 match scan_for_null_symbolic(state, src, n)? {
-                    ScanOutcome::Symbolic { bytes } => {
+                    ScanOutcome::Symbolic {
+                        bytes,
+                        budget_spent: false,
+                    } => {
                         strncpy_symbolic(state, dest, src, n, &bytes)?;
+                    }
+                    // The copy length would default to `n` over source bytes
+                    // nobody read (angr-vmi2l.99).
+                    ScanOutcome::Symbolic {
+                        budget_spent: true, ..
+                    } => {
+                        return Err(ProcedureError::MaxIterations(MAX_SYMBOLIC_SCAN_BYTES));
                     }
                     // Unreachable: the concrete scan just hit a symbolic byte.
                     ScanOutcome::AllConcrete { .. } => {
