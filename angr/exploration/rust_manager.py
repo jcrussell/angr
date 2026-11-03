@@ -1372,9 +1372,10 @@ class RustExplorationManager(
         self._state_cache: dict[int, angr.SimState] = {}
 
         # angr-lyvf2: seeds the Python init skip fast-forwarded past their own
-        # PC, as (pre-init addr, un-advanced SimState, rust id of the advanced
-        # state). `explore()` consumes this once, then drops the refs.
-        self._preinit_seeds: list[tuple[int, angr.SimState, int | None]] = []
+        # PC, as (pre-init addr, un-advanced SimState, (stash, rust id) of each
+        # state the pre-step produced). `explore()` consumes this once, then
+        # drops the refs.
+        self._preinit_seeds: list[tuple[int, angr.SimState, list[tuple[str, int | None]]]] = []
 
         # Lazy SimState references handed out by _get_stash_states. Keyed by
         # Rust state id so repeated stash reads return the same wrapper
@@ -1606,11 +1607,11 @@ class RustExplorationManager(
                 # that the Rust engine can't execute correctly.
                 _t0 = time.perf_counter_ns()
                 seed_state, seed_addr = state, state.addr
-                state = self._run_python_init_if_needed(state)
+                carried = self._run_python_init_if_needed(state)
                 self._perf_stats.add_init_phase("python_run", time.perf_counter_ns() - _t0)
 
                 _t0 = time.perf_counter_ns()
-                sid = self._add_rust_state("active", state)
+                placed = [(stash, self._add_rust_state(stash, s)) for stash, s in carried]
                 self._perf_stats.add_init_phase("add_rust_state", time.perf_counter_ns() - _t0)
 
                 # angr-lyvf2: the init skip fast-forwards the seed past its own
@@ -1621,8 +1622,9 @@ class RustExplorationManager(
                 # The phase-2 retry (angr-027h) re-activates copies of the same
                 # seeds mid-explore; parking them again would double-report the
                 # find (angr-bdeqa), so only the original activation parks.
-                if state.addr != seed_addr and not getattr(self, "_phase2_reseeding", False):
-                    self._preinit_seeds.append((seed_addr, seed_state, sid))
+                pre_stepped = carried != [("active", seed_state)]
+                if pre_stepped and not getattr(self, "_phase2_reseeding", False):
+                    self._preinit_seeds.append((seed_addr, seed_state, placed))
 
         self._install_python_servable_pages()
 
@@ -3188,12 +3190,14 @@ class RustExplorationManager(
                     )
             frame = getattr(frame, "next", None)
 
-    def _run_python_init_if_needed(self, state: angr.SimState) -> angr.SimState:
+    def _run_python_init_if_needed(self, state: angr.SimState) -> list[tuple[str, angr.SimState]]:
         """Run initialization in Python if the state starts at a loader address.
 
         When a state starts at a loader/init address (e.g., from full_init_state),
         the C++ init sequence (constructors, .init_array, etc.) is too complex for
-        the Rust engine. Run it in Python first, then return the state at main.
+        the Rust engine. Run it in Python first, then return every state it
+        produced as ``(stash, state)`` pairs (see :meth:`_step_python_to_main`).
+        A seed that needs no init comes back alone, as ``[("active", state)]``.
 
         Only a real init seed qualifies: the entry of a binary-format main
         object, or the simos loader stub (``full_init_state``). A shellcode
@@ -3206,11 +3210,11 @@ class RustExplorationManager(
         addr = state.addr
         if addr == self._project.entry:
             if isinstance(main_obj, cle.backends.Blob):
-                return state  # Shellcode: no init sequence to skip
+                return [("active", state)]  # Shellcode: no init sequence to skip
             l.info(f"State at entry point 0x{addr:x}, running Python init to main")
         else:
             if addr is None or addr != getattr(self._project.simos, "_loader_addr", None):
-                return state  # Not the loader stub: no init to skip
+                return [("active", state)]  # Not the loader stub: no init to skip
             l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
 
         try:
@@ -3221,7 +3225,7 @@ class RustExplorationManager(
             # state is used unmodified, so init-side-effects (constructors,
             # .init_array) may not have run. Already warns.
             l.warning(f"Python init failed: {e}, using original state")
-            return state
+            return [("active", state)]
 
     def _resolve_main_address(self) -> int | None:
         """Find main function address; for stripped binaries, parse _start's PUT(rdi)."""
@@ -3276,8 +3280,17 @@ class RustExplorationManager(
             l.debug(f"Could not extract main from _start: {e}")
         return None
 
-    def _step_python_to_main(self, state: angr.SimState, main_addr: int | None, main_obj) -> angr.SimState:
-        """Run Python SimulationManager until reaching main, then return that state."""
+    def _step_python_to_main(
+        self, state: angr.SimState, main_addr: int | None, main_obj
+    ) -> list[tuple[str, angr.SimState]]:
+        """Run Python SimulationManager until every path reaches main or ends.
+
+        Returns ``(stash, state)`` pairs for every state the prefix produced:
+        each fork that reached main (it stops there), each fork still running
+        when the step budget ran out, and every deadended, unconstrained and
+        errored state. Keeping only the first arrival silently dropped the
+        other forks of a branching init (angr-vmi2l.291).
+        """
         # Init-only addresses we never want to land on as "main"
         init_addrs = {self._project.entry}
         for obj in self._project.loader.all_objects:
@@ -3292,45 +3305,41 @@ class RustExplorationManager(
         main_min = main_obj.min_addr
         main_max = main_obj.max_addr
 
+        def at_main(s: angr.SimState, step: int) -> bool:
+            if main_addr is not None:
+                return s.addr == main_addr
+            # No main symbol: a state inside the main binary that isn't at
+            # _start, isn't at a SimProcedure, and is past the prologue.
+            return (
+                step > 10
+                and main_min <= s.addr <= main_max
+                and s.addr not in init_addrs
+                and s.addr not in self._project._sim_procedures
+            )
+
         for step in range(500):
+            sm.move(from_stash="active", to_stash="at_main", filter_func=lambda s, step=step: at_main(s, step))
             if not sm.active:
                 break
-
-            if main_addr is not None:
-                at_main = [s for s in sm.active if s.addr == main_addr]
-                if at_main:
-                    l.info(f"Python init complete: state reached main at 0x{main_addr:x} after {step} steps")
-                    result = at_main[0]
-                    self._extract_continuation_data(result)
-                    return result
-
-            # No main symbol: pick the first state inside the main binary that
-            # isn't at _start, isn't at a SimProcedure, and is past the prologue.
-            if main_addr is None and step > 10:
-                in_main = [
-                    s
-                    for s in sm.active
-                    if main_min <= s.addr <= main_max
-                    and s.addr not in init_addrs
-                    and s.addr not in self._project._sim_procedures
-                ]
-                if in_main:
-                    l.info(f"Python init complete: state at 0x{in_main[0].addr:x} after {step} steps")
-                    result = in_main[0]
-                    self._extract_continuation_data(result)
-                    return result
-
             sm.step()
 
-        # Couldn't reach main within budget — fall back to whatever we have.
+        arrived = sm.stashes.get("at_main", [])
+        if arrived:
+            l.info(f"Python init complete: {len(arrived)} state(s) reached main at 0x{arrived[0].addr:x}")
         if sm.active:
-            best = sm.active[0]
-            self._extract_continuation_data(best)
-            l.warning(f"Python init: didn't reach main after 500 steps, using state at 0x{best.addr:x}")
-            return best
-        if sm.deadended:
-            l.warning("Python init: all states deadended")
-        return state
+            l.warning(f"Python init: {len(sm.active)} state(s) didn't reach main after 500 steps, using them as-is")
+        carried = [("active", s) for s in arrived + sm.active]
+        for _, s in carried:
+            self._extract_continuation_data(s)
+        carried += [("deadended", s) for s in sm.deadended]
+        carried += [("unconstrained", s) for s in sm.unconstrained]
+        carried += [("errored", rec.state) for rec in sm.errored]
+        if not carried:
+            # Every path was pruned (e.g. an unsat seed). An unstepped
+            # SimulationManager would still hold the seed, so keep it.
+            l.warning("Python init: no state survived the prefix, using original state")
+            return [("active", state)]
+        return carried
 
     def _warn_rejected_options(self, options) -> None:
         """Emit a one-time UserWarning per silently-divergent SimOption.
@@ -4440,7 +4449,7 @@ class RustExplorationManager(
         (angr-lyvf2). Vanilla angr's ``Explorer`` matches such a state in
         ``filter()``, before the first step, so it belongs in FOUND unstepped:
         push the un-advanced seed into the found stash and drop its
-        fast-forwarded counterpart from active, exactly as ``filter()`` moves
+        fast-forwarded descendants from their stashes, exactly as ``filter()`` moves
         the state out of active.
 
         Seeds whose own PC is not a target stay parked: the find address may
@@ -4452,18 +4461,20 @@ class RustExplorationManager(
         seeds, self._preinit_seeds = self._preinit_seeds, []
         targets = set(find_addrs)
         routed = False
-        for seed_addr, seed_state, sid in seeds:
+        for seed_addr, seed_state, placed in seeds:
             if seed_addr not in targets:
-                self._preinit_seeds.append((seed_addr, seed_state, sid))
+                self._preinit_seeds.append((seed_addr, seed_state, placed))
                 continue
-            if sid is not None:
+            for stash, sid in placed:
+                if sid is None:
+                    continue
                 try:
-                    if self._rust_mgr.drop_state_from_stash(sid, "active"):
+                    if self._rust_mgr.drop_state_from_stash(sid, stash):
                         self._state_cache.pop(sid, None)
                         self._state_roots.pop(sid, None)
                 except Exception as e:
-                    # cat-(b) BENIGN: the advanced state stays in active and is
-                    # explored redundantly; the seed is still reported as found.
+                    # cat-(b) BENIGN: the advanced state stays in its stash and
+                    # is explored redundantly; the seed is still reported as found.
                     l.debug("preinit seed drop(sid=%d) failed: %s: %s", sid, type(e).__name__, e)
             self._add_rust_state("found", seed_state)
             routed = True
@@ -4501,7 +4512,7 @@ class RustExplorationManager(
         main_addr = self._resolve_main_address()
         routed = False
 
-        for _seed_addr, seed_state, _sid in self._preinit_seeds:
+        for _seed_addr, seed_state, _placed in self._preinit_seeds:
             sm = SimulationManager(project=self._project, active_states=[seed_state.copy()])
             hit = None
             for _ in range(500):

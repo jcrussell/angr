@@ -2696,6 +2696,46 @@ class TestInitSkipOnlyForRealInit:
         assert sorted({s.addr for s in mgr.active}) == [0x5, 0x7]
 
 
+class TestInitPreStepCarriesEveryState:
+    """angr-vmi2l.291: a real-init pre-step hands Rust every state it produced.
+
+    ``_step_python_to_main`` returned the first state to reach main, so the
+    other forks of a branching init prefix, and every path that ended inside
+    it, were silently dropped.
+    """
+
+    # 0x0: nop; 0x1: test rax, rax; 0x4: je 0xb; 0x6: test rbx, rbx;
+    # 0x9: je 0xd; 0xb: jmp 0xb ("main"); 0xd: mov eax, 60; 0x12: syscall
+    CODE = b"\x90\x48\x85\xc0\x74\x05\x48\x85\xdb\x74\x02\xeb\xfe\xb8\x3c\x00\x00\x00\x0f\x05"
+    STUB, MAIN = 0x1, 0xB
+
+    def _project(self, monkeypatch):
+        proj = angr.load_shellcode(self.CODE, arch="amd64")
+        # Make the seed a "loader stub" whose init prefix ends at MAIN.
+        monkeypatch.setattr(proj.simos, "_loader_addr", self.STUB, raising=False)
+        monkeypatch.setattr(RustExplorationManager, "_resolve_main_address", lambda _self: self.MAIN)
+        return proj
+
+    def test_every_fork_and_terminal_state_is_seeded(self, monkeypatch):
+        proj = self._project(monkeypatch)
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=self.STUB)])
+
+        sm = proj.factory.simulation_manager(proj.factory.blank_state(addr=self.STUB))
+        sm.run(until=lambda m: all(s.addr == self.MAIN for s in m.active))
+
+        assert [s.addr for s in mgr.active] == [s.addr for s in sm.active] == [self.MAIN, self.MAIN]
+        # The exit path errors on both engines: shellcode's SimOS has no syscalls.
+        assert len(mgr.errored) == len(sm.errored) == 1
+
+    def test_seed_find_drops_every_descendant(self, monkeypatch):
+        proj = self._project(monkeypatch)
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=self.STUB)])
+        mgr.explore(find=self.STUB, num_find=1, max_steps=1)
+
+        assert [s.addr for s in mgr.found] == [self.STUB]
+        assert len(mgr.active) == len(mgr.errored) == 0, mgr.stash_counts()
+
+
 class TestUnwrittenStackPageStaysSymbolic:
     """angr-plh49: the SP page's unwritten bytes read symbolic, as in Python.
 
