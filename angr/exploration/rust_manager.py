@@ -4569,6 +4569,11 @@ class RustExplorationManager(
         # find-directed opt-in path, so find-all stays breadth-first.
         if num_find is None:
             num_find = sys.maxsize
+        else:
+            # As SimulationManager.explore does: num_find counts new finds, so a
+            # repeat explore() does not stop at once on the finds already
+            # stashed by the last one (angr-mx00p.132.15).
+            num_find += self._found_count()
 
         # Re-entry into Rust execution invalidates the state-export cache:
         # any previously-cached Python mirrors are about to go stale.

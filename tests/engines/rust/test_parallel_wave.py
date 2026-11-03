@@ -522,7 +522,8 @@ class TestParallelCancelFrontier:
         found_first = len(list(mgr.found))
         assert found_first < _SYNTH_LEAVES, "the first explore must have exited early to test resumability"
 
-        mgr.explore(find=target_addr, num_find=_SYNTH_LEAVES, n=4096)
+        # num_find counts new finds, as in SimulationManager.explore.
+        mgr.explore(find=target_addr, num_find=_SYNTH_LEAVES - found_first, n=4096)
         found = list(mgr.found)
         assert len(list(mgr.errored)) == 0, f"workers={workers} errored: {list(mgr.errored)}"
         assert len(found) == _SYNTH_LEAVES, (

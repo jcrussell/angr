@@ -49,3 +49,21 @@ class TestUnknownPathExistence:
         # The open's fd is If(file_exists, fd, -1); the bounced stat's
         # eval_one must raise a SimSolverError on it, as SimSolver does.
         assert _stdouts(method, all_exist=False, might_exist=True) == [b"c0de\n", b"nothing\n"]
+
+
+def test_repeat_explore_counts_only_new_finds():
+    # Like SimulationManager.explore, num_find counts finds made by this call:
+    # the upstream test loops explore() until active drains, and a second call
+    # that stopped at once on the last call's find never advanced the other path.
+    project = angr.Project(BINARY, auto_load_libs=True, engine="rust")
+    state = project.factory.blank_state(addr=project.loader.find_symbol("fstat_test").rebased_addr)
+    state.options["ALL_FILES_EXIST"] = False
+    state.options["ANY_FILE_MIGHT_EXIST"] = True
+    simgr = project.factory.simgr(state)
+    for _ in range(10):
+        if not simgr.active:
+            break
+        simgr.explore(find=lambda s: s.posix.dumps(1) == b"c0de\n", avoid=lambda s: s.posix.dumps(1) == b"nothing\n")
+    assert not simgr.active
+    assert [s.posix.dumps(1) for s in simgr.found] == [b"c0de\n"]
+    assert [s.posix.dumps(1) for s in simgr.avoid] == [b"nothing\n"]
