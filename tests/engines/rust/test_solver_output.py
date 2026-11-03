@@ -503,29 +503,52 @@ class TestCallableStepFunc:
         assert len(mgr.deadended) == 0, "Deadended should be empty after unstash"
         assert len(mgr.active) >= deadended_count
 
-    def test_prune_with_filter_func(self, fauxware_project):
-        """prune(filter_func=...) keeps only matching states."""
+    @staticmethod
+    def _split_manager(project, engine):
+        """A manager stepped until active holds two satisfiable states."""
+        state = project.factory.entry_state()
+        if engine == "rust":
+            mgr = RustExplorationManager(project, [state])
+        else:
+            mgr = project.factory.simulation_manager(state)
+        mgr.run(until=lambda sm: len(sm.active) > 1)
+        assert len(mgr.active) == 2
+        return mgr
 
-        ACCEPTED = 0x4006ED
+    @pytest.mark.parametrize("engine", ["python", "rust"])
+    def test_prune_with_filter_func_keeps_satisfiable(self, fauxware_project, engine):
+        """prune(filter_func=) only prunes matches that are unsat (angr-vmi2l.235).
 
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        Both states are satisfiable, so neither moves, whichever the filter
+        matches; the Python engine is the reference.
+        """
+        mgr = self._split_manager(fauxware_project, engine)
+        keep = mgr.active[0].addr
+        mgr.prune(filter_func=lambda s: s.addr == keep)
+        assert len(mgr.active) == 2
+        assert len(mgr.pruned) == 0
 
-        # Explore to find accepted states
-        mgr.explore(find=ACCEPTED, max_steps=50000)
-        found_count = len(mgr.found)
-        assert found_count > 0, "Should find at least one state"
+    @pytest.mark.parametrize("engine", ["python", "rust"])
+    def test_prune_filter_func_selects_among_unsat(self, fauxware_project, engine):
+        """Of two unsat states, only the one the filter matches is pruned, into to_stash."""
+        state_a = fauxware_project.factory.blank_state(addr=0x400664)
+        state_b = fauxware_project.factory.blank_state(addr=0x4006ED)
+        for st in (state_a, state_b):
+            x = st.solver.BVS("x", 32)
+            st.add_constraints(x == 1, x == 2)
+        if engine == "rust":
+            mgr = RustExplorationManager(fauxware_project, [state_a, state_b])
+        else:
+            mgr = fauxware_project.factory.simulation_manager([state_a, state_b])
+        assert sorted(s.addr for s in mgr.active) == [0x400664, 0x4006ED]
 
-        # Move found + deadended to active for testing prune with filter
-        mgr.unstash(from_stash="found", to_stash="active")
-        mgr.unstash(from_stash="deadended", to_stash="active")
-        total_active = len(mgr.active)
-        assert total_active > 0
+        mgr.prune(filter_func=lambda s: s.addr == 0x4006ED, to_stash="gone")
+        assert [s.addr for s in mgr.active] == [0x400664]
+        assert [s.addr for s in mgr.gone] == [0x4006ED]
 
-        # Prune with filter: keep only states at ACCEPTED
-        mgr.prune(filter_func=lambda s: s.addr == ACCEPTED)
-        # Should have kept the found states
-        assert len(mgr.active) == found_count
+        mgr.prune(from_stash="active", to_stash="gone")
+        assert len(mgr.active) == 0
+        assert sorted(s.addr for s in mgr.gone) == [0x400664, 0x4006ED]
 
     def test_move_filter_func_sees_rust_state_proxy(self, fauxware_project):
         """move(filter_func=...) passes a RustStateProxy when the predicate stays read-only.

@@ -6163,12 +6163,10 @@ class RustExplorationManager(
             self._rust_mgr.set_drop_terminal_states(drop_terminal)
         return self
 
-    def _evaluate_predicate_on_stash(
-        self, stash: str, filter_func, cache_exported: bool = False
-    ) -> tuple[list[int], list[int], list[int]]:
+    def _evaluate_predicate_on_stash(self, stash: str, filter_func) -> tuple[list[int], list[int], list[int]]:
         """Evaluate ``filter_func`` against every state in ``stash``.
 
-        Shared backbone for move()/filter()/drop() (and prune() via filter()),
+        Shared backbone for move()/prune()/drop(),
         which previously hand-rolled this same proxy-then-full-export block
         near-identically (angr-hv4lt.3). Tries the lightweight
         ``RustStateProxy`` first; on ``(AttributeError, TypeError,
@@ -6182,11 +6180,6 @@ class RustExplorationManager(
           - errored_ids: predicate raised an unexpected exception (cat-(b)
             fallback-with-loss; the state is neither matched nor unmatched so
             callers leave it in place). Debug-logged.
-
-        If ``cache_exported`` is True, a py_state produced via the export
-        fallback is stored in ``self._state_cache[state_id]`` so
-        ``_get_stash_states`` finds the fresh snapshot rather than a stale root
-        copy — filter() relies on this side effect.
         """
         from angr.exploration.rust_state_proxy import RustStateProxy
 
@@ -6205,10 +6198,6 @@ class RustExplorationManager(
                     snapshot = self._rust_mgr.export_state(state_id)
                     py_state = self._snapshot_to_angr(snapshot)
                     matched = bool(filter_func(py_state))
-                    if cache_exported:
-                        # Cache the snapshot-exported state so _get_stash_states
-                        # can find it later (avoids falling back to stale root copy).
-                        self._state_cache[state_id] = py_state
                 (matched_ids if matched else unmatched_ids).append(state_id)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: predicate raised on a state; leave
@@ -6257,66 +6246,41 @@ class RustExplorationManager(
         """Unstash some states. Alias for move() with different defaults."""
         return self.move(from_stash, to_stash, filter_func=filter_func)
 
-    def filter(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
-        """Filter states in a stash by predicate.
+    def prune(self, filter_func=None, from_stash="active", to_stash="pruned") -> RustExplorationManager:
+        """Move the unsatisfiable states of ``from_stash`` to ``to_stash``.
 
-        States not matching the predicate are removed (moved to 'pruned').
+        Same contract as ``SimulationManager.prune``: a state is pruned iff
+        ``filter_func`` is None or matches it, *and* it is unsat. A
+        satisfiable state stays put whatever the filter says (angr-vmi2l.235).
+        Satisfiability goes through the Rust solver directly, so no state is
+        exported unless the filter needs more than the proxy exposes.
 
         Args:
-            stash: The stash to filter. Defaults to 'active'.
-            filter_func: Callable predicate. States where this returns True are kept.
+            filter_func: Only prune states that match this predicate.
+            from_stash: Prune states from this stash. Defaults to 'active'.
+            to_stash: Put pruned states in this stash. Defaults to 'pruned'.
 
         Returns:
             Self, for chaining.
         """
         if filter_func is None:
-            return self
-
-        # Matched states are kept; unmatched are pruned. Errored states stay put
-        # (kept). cache_exported=True so _get_stash_states finds fresh snapshots.
-        _keep_ids, prune_ids, _errored_ids = self._evaluate_predicate_on_stash(stash, filter_func, cache_exported=True)
-
-        # Move non-matching states to pruned stash
+            candidate_ids = list(self._rust_mgr.get_state_ids(from_stash))
+        else:
+            candidate_ids, _unmatched_ids, _errored_ids = self._evaluate_predicate_on_stash(from_stash, filter_func)
+        prune_ids = []
+        for state_id in candidate_ids:
+            try:
+                if not self._rust_mgr.state_satisfiable(state_id):
+                    prune_ids.append(state_id)
+            except (RuntimeError, KeyError):
+                # cat-(b) FALLBACK WITH LOSS: state_satisfiable() raised; keep the
+                # state — if it's actually unsat, downstream solver use will catch.
+                pass  # Keep on error
         for state_id in prune_ids:
             # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
             with contextlib.suppress(RuntimeError, KeyError):
-                self._rust_mgr.move_state(state_id, stash, "pruned")
-
+                self._rust_mgr.move_state(state_id, from_stash, to_stash)
         return self
-
-    def prune(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
-        """Remove states from a stash based on predicate.
-
-        Default behavior prunes unsatisfiable states.
-
-        Args:
-            stash: The stash to prune. Defaults to 'active'.
-            filter_func: Callable predicate. States where this returns True are kept.
-                        Defaults to keeping satisfiable states.
-
-        Returns:
-            Self, for chaining.
-        """
-        if filter_func is None:
-            # Fast path: check satisfiability via Rust solver directly,
-            # avoiding expensive state export + _snapshot_to_angr conversion.
-            state_ids = list(self._rust_mgr.get_state_ids(stash))
-            prune_ids = []
-            for state_id in state_ids:
-                try:
-                    if not self._rust_mgr.state_satisfiable(state_id):
-                        prune_ids.append(state_id)
-                except (RuntimeError, KeyError):
-                    # cat-(b) FALLBACK WITH LOSS: state_satisfiable() raised; keep the
-                    # state — if it's actually unsat, downstream solver use will catch.
-                    pass  # Keep on error
-            for state_id in prune_ids:
-                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                with contextlib.suppress(RuntimeError, KeyError):
-                    self._rust_mgr.move_state(state_id, stash, "pruned")
-            return self
-
-        return self.filter(stash=stash, filter_func=filter_func)
 
     def drop(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
         """Drop states from a stash.
