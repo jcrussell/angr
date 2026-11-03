@@ -112,6 +112,7 @@ from angr.exploration._constants import PAGE_SIZE
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
     _pending_syscall_resume,
+    _proc_no_return,
     _simproc_dispatch_name,
     _unconstrained_stub_spec,
 )
@@ -2120,7 +2121,7 @@ class RustExplorationManager(
             proc = self._project._sim_procedures[addr]
             proc_name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
             num_args = getattr(proc, "num_args", 0) or 0
-            no_ret = getattr(proc, "NO_RET", False)
+            no_ret = _proc_no_return(proc)
             return (proc_name, num_args, no_ret)
 
         if hasattr(self._project, "loader"):
@@ -2155,7 +2156,7 @@ class RustExplorationManager(
                                         if sym_name in proc_by_name:
                                             proc_addr, proc = proc_by_name[sym_name]
                                             num_args = getattr(proc, "num_args", 0) or 0
-                                            no_ret = getattr(proc, "NO_RET", False)
+                                            no_ret = _proc_no_return(proc)
                                             l.debug(f"Resolved PLT at 0x{addr:x} to {sym_name} (GOT 0x{got_addr:x})")
                                             return (sym_name, num_args, no_ret)
                                     else:
@@ -2170,7 +2171,7 @@ class RustExplorationManager(
                                                     proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
                                                 )
                                                 num_args = getattr(proc, "num_args", 0) or 0
-                                                no_ret = getattr(proc, "NO_RET", False)
+                                                no_ret = _proc_no_return(proc)
                                                 l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
                                                 return (proc_name, num_args, no_ret)
                     except Exception as e:
@@ -3166,7 +3167,7 @@ class RustExplorationManager(
             for addr, proc in self._project._sim_procedures.items():
                 name = _simproc_dispatch_name(proc)
                 num_args = getattr(proc, "num_args", 0) or 0
-                no_return = getattr(proc, "NO_RET", False)
+                no_return = _proc_no_return(proc)
                 procs.append((addr, name, num_args, no_return))
                 # Track this hook as registered
                 self._registered_hooks.add(addr)

@@ -130,6 +130,17 @@ def _simproc_dispatch_name(proc) -> str:
     return proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
 
 
+def _proc_no_return(proc) -> bool:
+    """Whether ``proc`` never returns to its caller.
+
+    ``NO_RET`` alone is not enough: ``SimLibrary._apply_metadata`` marks a
+    library's ``non_returning`` names (``longjmp``, ``pthread_exit``, ...) with
+    ``proc.returns = False`` and leaves ``NO_RET`` False, and Python's procedure
+    engine then emits no return successor (angr-vmi2l.122).
+    """
+    return bool(getattr(proc, "NO_RET", False)) or getattr(proc, "returns", True) is False
+
+
 def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
     """``(dispatch_name, ret_bits)`` if ``proc`` is a plain ``ReturnUnconstrained``, else None.
 
@@ -140,9 +151,11 @@ def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
     (``procedures/stub.rs::NativeReturnUnconstrained``) instead of bouncing into
     Python for one BVS.
 
-    Two shapes stay on Python: a stub carrying an explicit ``return_val=`` kwarg
-    (it returns that value, not a symbol), and one whose prototype has no return
-    size (void — Python writes no return register at all).
+    Three shapes stay on Python: a stub carrying an explicit ``return_val=`` kwarg
+    (it returns that value, not a symbol), one whose prototype has no return
+    size (void — Python writes no return register at all), and one that never
+    returns (``_proc_no_return``: Python deadends it, the native stub would
+    resume after the call).
 
     ``arch`` is the project's arch: an unbound ``SimType`` cannot report its size
     (``ValueError: Can't tell my size without an arch!``), and at registration
@@ -151,7 +164,7 @@ def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
     """
     from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
-    if type(proc) is not ReturnUnconstrained:
+    if type(proc) is not ReturnUnconstrained or _proc_no_return(proc):
         return None
     if getattr(proc, "kwargs", None) and proc.kwargs.get("return_val") is not None:
         return None
@@ -1089,7 +1102,7 @@ class RustCallbackDispatchMixin:
                         continue
                     cont_name = _simproc_dispatch_name(cont_proc)
                     cont_num_args = getattr(cont_proc, "num_args", 0) or 0
-                    cont_no_return = getattr(cont_proc, "NO_RET", False)
+                    cont_no_return = _proc_no_return(cont_proc)
                     self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
                     self._registered_hooks.add(cont_addr_int)
                     if _DBG:
@@ -1204,10 +1217,11 @@ class RustCallbackDispatchMixin:
     ) -> None:
         """Handle the path where a SimProcedure produced no successors.
 
-        Three sub-cases:
+        Four sub-cases:
         - Terminal procedures (exit/abort/CallReturn) → deadend at the hook.
-        - Zero-length non-terminal hooks → resume past the hook with synced changes.
-        - Other procedures → deadend (NO_RET) or resume at return address.
+        - Procedures that never return (``_proc_no_return``) → deadend.
+        - Zero-length hooks → resume past the hook with synced changes.
+        - Other procedures → resume at return address.
         """
         # CallReturn is the terminal hook used by factory.callable().
         no_ret_terminal = name in ("exit", "_exit", "abort", "__stack_chk_fail", "CallReturn")
@@ -1221,15 +1235,18 @@ class RustCallbackDispatchMixin:
             self._rust_mgr.deadend_pending_callback(event.callback_state_id)
             return
 
-        if is_zero_length_hook:
-            self._resume_with_skip_hook(addr, state, event)
-            return
-
-        # Non-zero-length, non-terminal: check NO_RET as fallback
-        if getattr(proc, "NO_RET", False):
+        # A procedure that never returns produced no successors, so Python's
+        # engine deadends it, whatever the hook length: library stubs are
+        # zero-length hooks, and resuming past one ran a `longjmp` on into the
+        # bytes after it (angr-vmi2l.122).
+        if _proc_no_return(proc):
             if _DBG:
                 l.debug(f"No-return procedure {name} — deadending state")
             self._rust_mgr.deadend_pending_callback(event.callback_state_id)
+            return
+
+        if is_zero_length_hook:
+            self._resume_with_skip_hook(addr, state, event)
             return
 
         ret_addr = event.callback_return_addr or (addr + 1)

@@ -343,7 +343,7 @@ impl RustExplorationManager {
                         native_proc.as_ref(),
                         &mut state,
                         &name,
-                        no_return,
+                        no_return || native_proc.no_return(),
                         args,
                         // `mirror_segfault`: unlike the parallel mirror, a
                         // strict-page-access fault still bounces to Python here.

@@ -132,8 +132,8 @@ enum FallbackBucket {
 /// Callers own the parts that genuinely differ:
 /// * argument extraction (`args`) — the serial path reads the manager's
 ///   calling convention, the core path a `CcSnapshot`;
-/// * `no_return` — the serial path trusts the Python registration tuple, the
-///   core path `native_proc.no_return()`;
+/// * `no_return` — both paths OR `native_proc.no_return()` with the Python
+///   registration tuple's flag, read from their own `simprocedures` map;
 /// * the [`NativeProcDisposition::SubCall`] counter bump, which is deliberately
 ///   NOT done here: both dispatch sites count a sub-call as a native call only
 ///   once `setup_native_subcall` succeeds, and book an `other` Python fallback

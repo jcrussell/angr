@@ -612,7 +612,15 @@ fn dispatch_simproc_natively(
     let Some(native_proc) = cc.native_procs.get(name) else {
         return NativeProcDisposition::Fallback;
     };
-    let proc_no_return = native_proc.no_return();
+    // Either side may know the call never returns: the native proc, or the
+    // Python registration tuple (a `non_returning` libc name such as
+    // `longjmp`, whose stub the native registry would otherwise serve as a
+    // returning call; angr-vmi2l.122). `step_one` ORs the same two flags.
+    let proc_no_return = native_proc.no_return()
+        || ctx
+            .simprocedures
+            .get(&addr)
+            .is_some_and(|&(_, _, no_return)| no_return);
     // `num_args` is the Python SimProcedure's FIXED-arg count (variadics
     // excluded). Native procs consuming variadic pointers (scanf family)
     // declare a larger `num_args()`; use the max so the full arg window
