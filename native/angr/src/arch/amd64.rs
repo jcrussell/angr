@@ -256,6 +256,14 @@ const ALIASES: &[RegEntry] = &[
     // sub-registers are unreachable by name here, exactly as in archinfo.
     ("si", offsets::RSI, 2),
     ("di", offsets::RDI, 2),
+    ("r8w", offsets::R8, 2),
+    ("r9w", offsets::R9, 2),
+    ("r10w", offsets::R10, 2),
+    ("r11w", offsets::R11, 2),
+    ("r12w", offsets::R12, 2),
+    ("r13w", offsets::R13, 2),
+    ("r14w", offsets::R14, 2),
+    ("r15w", offsets::R15, 2),
     // 8-bit low
     ("al", offsets::RAX, 1),
     ("cl", offsets::RCX, 1),

@@ -1295,16 +1295,19 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         # would poison the cache with an orphan BVS that has no identity link
         # to the real register. Mirror __getattr__/__setattr__, which both
         # canonicalize via _canonical_name before touching Rust.
-        canonical_names = [self._canonical_name(name) for name in names]
+        # A name the engine's table lacks is left to __getattr__, which reads
+        # it as a slice of a modelled register or raises (angr-vmi2l.212).
+        pairs = [(name, self._canonical_name(name)) for name in names]
+        pairs = [(name, canonical) for name, canonical in pairs if self._is_engine_register(canonical)]
         state_id = self._state_id
         try:
-            values = self._mgr.get_state_registers_batch(state_id, canonical_names)
+            values = self._mgr.get_state_registers_batch(state_id, [canonical for _, canonical in pairs])
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: prefetch is a best-effort
             # optimization; missing prefetch falls back to per-register
             # __getattr__ on first access.
             return
-        for name, canonical, val in zip(names, canonical_names, values):
+        for (name, canonical), val in zip(pairs, values):
             width = self._get_register_width(canonical)
             result = self._recover_symbolic_register_ast(canonical, width) if val is None else claripy.BVV(val, width)
             # Cache under both the caller-supplied name and the canonical name
@@ -1320,6 +1323,12 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         if name in self._cache:
             return self._cache[name]
         canonical = self._canonical_name(name)
+        slice_of = self._unmodelled_register_slice(canonical)
+        if slice_of is not None:
+            covering, hi, lo = slice_of
+            result = claripy.Extract(hi, lo, getattr(self, covering))
+            self._cache[name] = result
+            return result
         # Resolved outside the try: a released binding must raise, not read
         # as "no such register" (angr-mx00p.112).
         state_id = self._state_id
@@ -1337,6 +1346,49 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         self._cache[name] = result
         return result
 
+    def _is_engine_register(self, name):
+        """Whether Rust reads ``name`` itself (or the arch has no table)."""
+        from angr.exploration.rust_state_sync import rust_register_table
+
+        table = rust_register_table(self._arch)
+        return table is None or name in table["offsets"]
+
+    def _unmodelled_register_slice(self, name):
+        """Resolve a name the engine's register table lacks (angr-vmi2l.212).
+
+        Returns ``None`` when the table resolves ``name`` (or the arch has no
+        table), so the caller reads it from Rust. Otherwise the name must be
+        an archinfo register: it reads as ``(covering, hi, lo)``, the bits of
+        the smallest table register whose bytes hold archinfo's
+        ``(offset, size)``. A name archinfo does not know raises
+        ``AttributeError``, as ``SimState.regs`` does; an archinfo register no
+        table entry covers raises ``NotImplementedError``. Neither mints a
+        free symbol, which ``get_state_register``'s ``None`` would otherwise
+        turn into (its ``None`` also means "symbolic").
+        """
+        from angr.exploration.rust_state_sync import rust_register_table
+
+        if self._is_engine_register(name):
+            return None
+        table = rust_register_table(self._arch)
+        info = self._arch.registers.get(name)
+        if info is None:
+            raise AttributeError(f"register '{name}' not found")
+        offset, size = info[0], info[1]
+        covering = [
+            (c_size, c_off, c_name)
+            for c_name, (c_off, c_size) in table["offsets"].items()
+            if c_off <= offset and offset + size <= c_off + c_size
+        ]
+        if not covering:
+            raise NotImplementedError(
+                f"register '{name}' ({offset}, {size}) is not modelled by the Rust engine on {self._arch.name}"
+            )
+        c_size, c_off, c_name = min(covering)
+        rel = offset - c_off
+        hi = (c_size - rel if self.endness == "Iend_BE" else rel + size) * 8 - 1
+        return c_name, hi, hi - size * 8 + 1
+
     def _recover_symbolic_register_ast(self, name, width):
         """Recover Rust's claripy AST for a symbolic register (angr-4pm1).
 
@@ -1350,8 +1402,9 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         ``get_state_register_ast`` (which round-trips through
         ``rustbv_to_claripy`` and preserves the underlying Z3 AST), so
         downstream solver operations land on the correct symbol. Only when
-        the manager genuinely has no value for the register (unknown name)
-        do we fall back to the orphan BVS — same loss-of-identity behavior as
+        the manager genuinely has no value for the register (a name
+        ``_unmodelled_register_slice`` cannot screen because the arch has no
+        engine table) do we fall back to the orphan BVS — same loss-of-identity behavior as
         before, but at least with a debug log so the gap is visible.
         """
         state_id = self._state_id

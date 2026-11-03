@@ -113,7 +113,6 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
             ),
         ),
         (_numbered("mm", 8), "MMX aliases over the x87 register file (mm0 is fpu_regs+0)"),
-        (_numbered("r", 16, "w", start=8), "16-bit sub-registers of r8-r15"),
     ),
     "x86": (
         (
