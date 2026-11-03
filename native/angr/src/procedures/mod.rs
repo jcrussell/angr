@@ -209,6 +209,20 @@ pub(crate) fn arch_word(state: &RustSimState, value: u64) -> RustBV {
     RustBV::concrete(u128::from(value), state.arch().bits())
 }
 
+/// Read a concrete word-width C argument (`long`, `off_t`) as signed: the low
+/// `state.arch().bits()` bits of `raw`, sign-extended to `i64`. A concrete
+/// argument arrives zero-extended, so on a 32-bit arch `raw as i64` turns
+/// `-2` into `+0xfffffffe` (angr-vmi2l.113).
+pub(crate) fn arch_signed_word(state: &RustSimState, raw: u64) -> i64 {
+    match state.arch().bits() {
+        bits @ 1..=63 => {
+            let shift = 64 - bits;
+            ((raw << shift) as i64) >> shift
+        }
+        _ => raw as i64,
+    }
+}
+
 /// Mint a fresh symbolic bitvector of `src_bits` and zero-extend it to
 /// `ext_bits`, naming it `<prefix>_<counter>` via [`symbol_counter`].
 ///

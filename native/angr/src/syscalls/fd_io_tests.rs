@@ -1069,3 +1069,35 @@ fn pwrite64_nbyte_at_limit_is_native() {
         MAX_IO_SIZE as usize
     );
 }
+
+/// angr-vmi2l.113: the raw i386 `lseek` syscall sign-extends its 32-bit
+/// `off_t`, so `lseek(fd, -1, SEEK_END)` is EOF-1, and a negative target is -1
+/// with the position unchanged.
+#[test]
+fn lseek_x86_negative_offset_sign_extends_and_rejects_negative_target() {
+    let mut state = RustSimState::new("x86").expect("x86 state");
+    let fd = state
+        .file_system()
+        .open_with_content("g".to_string(), FdFlags::ReadOnly, b"ABCDEF".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let lseek = |state: &mut RustSimState, offset: i32, whence: u128| {
+        match NativeLseekSyscall
+            .call(
+                state,
+                &[
+                    RustBV::concrete(u128::from(fd), 32),
+                    RustBV::concrete(u128::from(offset as u32), 32),
+                    RustBV::concrete(whence, 32),
+                ],
+            )
+            .expect("ok")
+        {
+            SyscallOutcome::Continue { ret } => ret,
+            _ => panic!("expected Continue"),
+        }
+    };
+
+    assert_eq!(lseek(&mut state, -1, 2), 5);
+    assert_eq!(lseek(&mut state, -5, 0), NEG_ONE);
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 5);
+}

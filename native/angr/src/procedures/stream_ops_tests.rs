@@ -518,3 +518,39 @@ fn test_fdopen_negative_fd_returns_null() {
     assert_eq!(fp.as_u64(), Some(0));
 }
 
+
+/// angr-vmi2l.113: on x86 `long` is 32 bits, so `fseek(fp, -2, SEEK_END)`
+/// lands 2 bytes before EOF rather than at +0xfffffffe, and a negative target
+/// returns -1 with the position unchanged.
+#[test]
+fn test_fseek_negative_offset_x86_sign_extends_and_rejects_negative_target() {
+    let mut state = RustSimState::new("x86").unwrap();
+    let fd = state
+        .file_system()
+        .open_with_content("data".to_string(), FdFlags::ReadOnly, b"hello".to_vec())
+        .expect("fd space is not exhausted in tests");
+    state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
+    state
+        .memory_store(0x20000 + 56, RustBV::concrete(u128::from(fd), 32))
+        .unwrap();
+    let fseek = |state: &mut RustSimState, offset: i32, whence: u128| {
+        NativeFseek
+            .call(
+                state,
+                &[
+                    RustBV::concrete(0x20000, 32),
+                    RustBV::concrete(u128::from(offset as u32), 32),
+                    RustBV::concrete(whence, 32),
+                ],
+            )
+            .unwrap()
+            .unwrap()
+            .as_u64()
+    };
+
+    assert_eq!(fseek(&mut state, -2, 2), Some(0));
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 3);
+    assert_eq!(fseek(&mut state, -5, 0), Some(0xffff_ffff));
+    assert_eq!(fseek(&mut state, -6, 2), Some(0xffff_ffff));
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 3);
+}

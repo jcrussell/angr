@@ -5,7 +5,8 @@
 //!
 //!   - `lseek(fd, offset, whence)` mirrors `procedures/fileops.rs::NativeLseek`
 //!     and `linux_kernel/lseek.py`: adjusts the `FileSystem` position via
-//!     `FileSystem::seek` and returns the new position, or -1 on a bad whence.
+//!     `FileSystem::seek` and returns the new position, or -1 on a bad whence
+//!     or a negative target.
 //!     Falls back to Python for symbolic args and fds not open in the Rust
 //!     `FileSystem` (Python's symbolic-file model owns those).
 //!   - `readv(fd, iov, iovcnt)` / `writev(fd, iov, iovcnt)` mirror
@@ -82,7 +83,11 @@ impl NativeSyscall for NativeLseekSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
         let fd = extract_concrete_arg(&args[0], "lseek fd")?;
-        let offset = extract_concrete_arg(&args[1], "lseek offset")?;
+        // `off_t` is word-width: sign-extend so a 32-bit -1 is not +0xffffffff.
+        let offset = crate::procedures::arch_signed_word(
+            state,
+            extract_concrete_arg(&args[1], "lseek offset")?,
+        );
         let whence = extract_concrete_arg(&args[2], "lseek whence")?;
 
         // Fds not open in the Rust FileSystem are owned by Python's
@@ -93,12 +98,9 @@ impl NativeSyscall for NativeLseekSyscall {
             )));
         }
 
-        match state
-            .file_system()
-            .seek(fd as u32, offset as i64, whence as u32)
-        {
+        match state.file_system().seek(fd as u32, offset, whence as u32) {
             Some(new_pos) => Ok(SyscallOutcome::Continue { ret: new_pos }),
-            // Bad whence — mirror NativeLseek returning -1.
+            // Bad whence or negative target — mirror NativeLseek returning -1.
             None => Ok(SyscallOutcome::Continue { ret: NEG_ONE }),
         }
     }

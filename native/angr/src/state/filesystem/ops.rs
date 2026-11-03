@@ -565,6 +565,9 @@ impl FileSystem {
     ///
     /// whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END
     ///
+    /// A negative target is `None` with the position unchanged, as in glibc
+    /// (`EINVAL`) and Python's `SimFileDescriptor.seek` (angr-vmi2l.113).
+    ///
     /// The SEEK_CUR/SEEK_END bases are combined with the guest's signed
     /// `offset` through `offset_position`, not through `base as i64 +
     /// offset` (angr-03vl4.54).
@@ -574,9 +577,9 @@ impl FileSystem {
         // and the whence value is valid.
         let desc = self.fds.get(&fd)?;
         let new_pos = match whence {
-            0 => offset.max(0) as u64,                                 // SEEK_SET
-            1 => offset_position(desc.position, offset),               // SEEK_CUR
-            2 => offset_position(desc.effective_len() as u64, offset), // SEEK_END
+            0 => u64::try_from(offset).ok()?,             // SEEK_SET
+            1 => offset_position(desc.position, offset)?, // SEEK_CUR
+            2 => offset_position(desc.effective_len() as u64, offset)?, // SEEK_END
             _ => return None,
         };
         Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
@@ -764,7 +767,7 @@ impl FileSystem {
 }
 
 /// Combine an unsigned file position/length `base` with a guest-supplied
-/// signed `offset`, clamping at both ends of the `u64` range.
+/// signed `offset`: `None` below zero, saturating above `u64::MAX`.
 ///
 /// `lseek`'s offset arrives from the guest unbounded (`NativeLseekSyscall`'s
 /// `extract_concrete_arg`), and `base` is itself guest-steerable — a prior
@@ -774,8 +777,12 @@ impl FileSystem {
 /// `[profile.release-checked]`, silent wrap in the shipped
 /// `[profile.release]`), and `base as i64` alone turns any position above
 /// `i64::MAX` negative before the offset is even applied. `i128` has room for
-/// every `u64` base plus every `i64` offset, so the clamp is the only
-/// approximation left.
-fn offset_position(base: u64, offset: i64) -> u64 {
-    (i128::from(base) + i128::from(offset)).clamp(0, i128::from(u64::MAX)) as u64
+/// every `u64` base plus every `i64` offset. A negative sum is `None` (the
+/// seek fails); a sum past `u64::MAX` saturates.
+fn offset_position(base: u64, offset: i64) -> Option<u64> {
+    let target = i128::from(base) + i128::from(offset);
+    if target < 0 {
+        return None;
+    }
+    Some(target.min(i128::from(u64::MAX)) as u64)
 }

@@ -178,8 +178,12 @@ fn seek_whence_variants_and_invalid() {
     assert_eq!(fs.seek(fd, 3, 0), Some(3)); // SEEK_SET
     assert_eq!(fs.seek(fd, 2, 1), Some(5)); // SEEK_CUR
     assert_eq!(fs.seek(fd, -1, 2), Some(9)); // SEEK_END (len 10 - 1)
-    // Negative absolute positions saturate at 0.
-    assert_eq!(fs.seek(fd, -100, 1), Some(0));
+    // A negative target fails and leaves the position alone (angr-vmi2l.113).
+    assert_eq!(fs.seek(fd, -100, 1), None);
+    assert_eq!(fs.seek(fd, -11, 2), None);
+    assert_eq!(fs.seek(fd, -1, 0), None);
+    assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(9));
+    assert_eq!(fs.seek(fd, 0, 0), Some(0));
     // Unknown whence is rejected without moving the position.
     assert_eq!(fs.seek(fd, 0, 7), None);
     assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(0));
@@ -191,8 +195,8 @@ fn seek_whence_variants_and_invalid() {
 /// itself guest-steerable (a prior SEEK_SET accepts any non-negative `i64`), so
 /// the old `(base as i64 + offset)` overflowed — a panic under
 /// `[profile.release-checked]`, a silently wrapped position in the shipped
-/// `[profile.release]`. `offset_position` clamps at both ends of the `u64` range
-/// instead.
+/// `[profile.release]`. `offset_position` saturates above `u64::MAX` and fails
+/// below 0 instead.
 #[test]
 fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
     let mut fs = FileSystem::default();
@@ -213,14 +217,15 @@ fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
     assert_eq!(fs.seek(fd, -1, 1), Some(u64::MAX - 1));
     assert_eq!(fs.seek(fd, i64::MIN, 1), Some(i64::MAX as u64 - 1));
 
-    // The negative direction still clamps at 0, as the old `.max(0)` did.
+    // The negative direction fails without moving (angr-vmi2l.113).
     assert_eq!(fs.seek(fd, 10, 0), Some(10));
-    assert_eq!(fs.seek(fd, i64::MIN, 1), Some(0));
+    assert_eq!(fs.seek(fd, i64::MIN, 1), None);
+    assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(10));
 
     // SEEK_END shares the helper: a tiny file plus a huge offset must not wrap,
     // and i64::MIN must not negate into a positive.
     assert_eq!(fs.seek(fd, i64::MAX, 2), Some(100 + i64::MAX as u64));
-    assert_eq!(fs.seek(fd, i64::MIN, 2), Some(0));
+    assert_eq!(fs.seek(fd, i64::MIN, 2), None);
 }
 
 /// Harness 6 boundary sweep (angr-03vl4.54): `offset_position` (shared by
@@ -254,11 +259,11 @@ fn seek_cur_and_end_boundary_sweep_matches_i128_clamp_reference() {
                 "SEEK_SET base={base:#x}"
             );
 
-            let want =
-                (i128::from(base) + i128::from(delta)).clamp(0, i128::from(u64::MAX)) as u64;
+            let sum = i128::from(base) + i128::from(delta);
+            let want = (sum >= 0).then(|| sum.min(i128::from(u64::MAX)) as u64);
             assert_eq!(
                 fs.seek(fd, delta, 1),
-                Some(want),
+                want,
                 "SEEK_CUR base={base:#x} delta={delta}"
             );
         }
@@ -270,8 +275,9 @@ fn seek_cur_and_end_boundary_sweep_matches_i128_clamp_reference() {
         let fd = fs
             .open_with_content("f".to_string(), FdFlags::ReadOnly, vec![0u8; 1])
             .expect("fd space is not exhausted in tests");
-        let want = (i128::from(1u64) + i128::from(delta)).clamp(0, i128::from(u64::MAX)) as u64;
-        assert_eq!(fs.seek(fd, delta, 2), Some(want), "SEEK_END delta={delta}");
+        let sum = i128::from(1u64) + i128::from(delta);
+        let want = (sum >= 0).then(|| sum.min(i128::from(u64::MAX)) as u64);
+        assert_eq!(fs.seek(fd, delta, 2), want, "SEEK_END delta={delta}");
     }
 }
 

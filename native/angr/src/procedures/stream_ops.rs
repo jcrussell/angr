@@ -326,13 +326,15 @@ crate::declare_proc! {
     /// ```
     ///
     /// Reads `stream->_fileno` and seeks via FileSystem::seek. Returns 0 on
-    /// success and -1 on failure (matching glibc).
+    /// success and -1 on failure (matching glibc); a negative target fails
+    /// with the position unchanged. `offset` is a `long`, sign-extended from
+    /// the word width.
     name = "fseek",
     struct = NativeFseek,
     args = [file_ptr: concrete, offset_raw: concrete, whence_raw: concrete],
     aliases = ["fseeko"],
     call |state| {
-        let offset = offset_raw as i64;
+        let offset = super::arch_signed_word(state, offset_raw);
         let whence = whence_raw as u32;
         let fd = read_fileno(state, file_ptr)?;
         if fd < 0 {

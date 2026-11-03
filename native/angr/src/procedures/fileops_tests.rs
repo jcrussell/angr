@@ -593,3 +593,63 @@ fn test_open_pathname_filling_the_window_exactly_is_served() {
     let info = state.file_system_ref().fd_info(3).unwrap();
     assert_eq!(info.0.len(), MAX_PATH as usize - 1);
 }
+
+/// Run `lseek(fd, offset, whence)` with every argument at `bits` wide.
+fn lseek_ret(state: &mut RustSimState, fd: u128, offset: u128, whence: u128, bits: u32) -> u64 {
+    NativeLseek
+        .call(
+            state,
+            &[
+                RustBV::concrete(fd, bits),
+                RustBV::concrete(offset, bits),
+                RustBV::concrete(whence, bits),
+            ],
+        )
+        .unwrap()
+        .unwrap()
+        .as_u64()
+        .unwrap()
+}
+
+/// angr-vmi2l.113: on x86 `off_t` is 32 bits, so a 32-bit `-1` is sign-extended
+/// (not +0xffffffff), and a negative target fails with -1 and the position
+/// unchanged, as glibc and Python's `SimFileDescriptor.seek` do.
+#[test]
+fn test_lseek_negative_offset_x86_sign_extends_and_rejects_negative_target() {
+    let mut state = RustSimState::new("x86").unwrap();
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "f".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"hello".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    let fd = u128::from(fd);
+    let neg = |v: i32| u128::from(v as u32);
+
+    assert_eq!(lseek_ret(&mut state, fd, neg(-2), 2, 32), 3); // SEEK_END - 2
+    assert_eq!(lseek_ret(&mut state, fd, neg(-5), 0, 32), 0xffff_ffff); // SEEK_SET -5
+    assert_eq!(lseek_ret(&mut state, fd, neg(-6), 2, 32), 0xffff_ffff); // SEEK_END - 6
+    assert_eq!(state.file_system_ref().fd_info(fd as u32).unwrap().1, 3);
+}
+
+#[test]
+fn test_lseek_negative_set_amd64_fails_with_position_unchanged() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "f".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"hello".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    let fd = u128::from(fd);
+    assert_eq!(lseek_ret(&mut state, fd, 2, 0, 64), 2);
+    assert_eq!(
+        lseek_ret(&mut state, fd, u128::from(-5i64 as u64), 0, 64),
+        u64::MAX
+    );
+    assert_eq!(state.file_system_ref().fd_info(fd as u32).unwrap().1, 2);
+}

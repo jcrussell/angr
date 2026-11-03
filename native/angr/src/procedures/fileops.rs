@@ -146,14 +146,15 @@ crate::declare_proc! {
     /// off_t lseek(int fd, off_t offset, int whence);
     /// ```
     ///
-    /// Adjusts the file position. Returns the new position, or -1 on error.
+    /// Adjusts the file position. Returns the new position, or -1 on error
+    /// (bad whence, or a negative target, which leaves the position
+    /// unchanged). `offset` is an `off_t`, sign-extended from the word width.
     name = "lseek",
     struct = NativeLseek,
     args = [fd: concrete, offset: concrete, whence: concrete],
     call |state| {
-        match state
-            .file_system()
-            .seek(fd as u32, offset as i64, whence as u32)
+        let offset = super::arch_signed_word(state, offset);
+        match state.file_system().seek(fd as u32, offset, whence as u32)
         {
             Some(new_pos) => Ok(Some(arch_word(state, new_pos))),
             None => Ok(Some(arch_word(state, -1i64 as u64))),
