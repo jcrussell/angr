@@ -39,6 +39,16 @@ pub struct FileSystem {
     /// Open file descriptors. Standard fds: 0=stdin, 1=stdout, 2=stderr.
     /// Wrapped in Arc for cheap fork; copy-on-write via Arc::make_mut on mutation.
     fds: Arc<HashMap<u32, FileDescriptor>>,
+    /// `dup`/`dup2` aliases: fd number → the `fds` key whose
+    /// [`FileDescriptor`] it shares. POSIX `dup` makes two fd numbers refer to
+    /// one open file description (offset, content, flags), as Python's
+    /// `procedures/posix/dup.py` does by aliasing one `SimFileDescriptor`;
+    /// cloning the descriptor instead let the two diverge (angr-vmi2l.196).
+    /// Every per-fd accessor resolves its argument through
+    /// [`desc_key`](FileSystem::desc_key). Invariants: a target is never itself
+    /// an alias, an alias is always open, and an aliased number has no entry of
+    /// its own in `fds`. Arc'd for O(1) fork, mirroring `known_paths`.
+    aliases: Arc<HashMap<u32, u32>>,
     /// Next file descriptor number to allocate.
     next_fd: u32,
     /// Current working directory as raw bytes (matches Python
@@ -118,6 +128,7 @@ impl Default for FileSystem {
         );
         FileSystem {
             fds: crate::arc_shared(fds),
+            aliases: Arc::new(HashMap::new()),
             next_fd: 3,
             cwd: b"/".to_vec(),
             known_paths: Arc::new(HashSet::new()),

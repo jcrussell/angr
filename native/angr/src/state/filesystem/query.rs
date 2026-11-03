@@ -59,6 +59,7 @@ impl FileSystem {
     /// fresh symbolic bytes once the concrete buffer is consumed). Drives
     /// the symbolic-read branch of `NativeReadSyscall`.
     pub fn is_symbolic(&self, fd: u32) -> bool {
+        let fd = self.desc_key(fd);
         self.fds.get(&fd).is_some_and(|d| d.is_open && d.symbolic)
     }
 
@@ -90,6 +91,7 @@ impl FileSystem {
 
     /// Get the content buffer for a file descriptor (read-only).
     pub fn fd_content(&self, fd: u32) -> &[u8] {
+        let fd = self.desc_key(fd);
         self.fds
             .get(&fd)
             .map(|d| d.content.as_slice())
@@ -98,11 +100,13 @@ impl FileSystem {
 
     /// Check if a file descriptor is open.
     pub fn is_open(&self, fd: u32) -> bool {
+        let fd = self.desc_key(fd);
         self.fds.get(&fd).is_some_and(|d| d.is_open)
     }
 
     /// Get file descriptor info: (name, position, flags, content_len, is_open).
     pub fn fd_info(&self, fd: u32) -> Option<(&str, u64, u32, usize, bool)> {
+        let fd = self.desc_key(fd);
         self.fds.get(&fd).map(|d| {
             (
                 d.name.as_str(),
@@ -157,6 +161,7 @@ impl FileSystem {
     /// fd, in a single map lookup. Drives `NativeFeof`, which is hot in
     /// `while (!feof(f))` guest loops.
     pub fn fd_pos_and_size(&self, fd: u32) -> Option<(u64, usize)> {
+        let fd = self.desc_key(fd);
         self.fds.get(&fd).map(|d| (d.position, d.effective_len()))
     }
 
@@ -165,12 +170,18 @@ impl FileSystem {
     /// `NativeFstatSyscall` st_size; `NativeFeof` uses the combined
     /// [`fd_pos_and_size`](Self::fd_pos_and_size) accessor instead.
     pub fn effective_size(&self, fd: u32) -> Option<usize> {
+        let fd = self.desc_key(fd);
         self.fds.get(&fd).map(FileDescriptor::effective_len)
     }
 
     /// List all file descriptor numbers (including closed ones).
     pub fn all_fds(&self) -> Vec<u32> {
-        let mut fds: Vec<u32> = self.fds.keys().copied().collect();
+        let mut fds: Vec<u32> = self
+            .fds
+            .keys()
+            .chain(self.aliases.keys())
+            .copied()
+            .collect();
         fds.sort();
         fds
     }
@@ -182,6 +193,7 @@ impl FileSystem {
             .iter()
             .filter(|(_, d)| d.is_open)
             .map(|(k, _)| *k)
+            .chain(self.aliases.keys().copied())
             .collect();
         fds.sort();
         fds
@@ -195,25 +207,26 @@ impl FileSystem {
     /// table seeded when this is true, so the common case pays one bool over
     /// the FFI instead of a `Vec<(u32, String, ..)>` of the std fds.
     pub fn has_fds_above_stderr(&self) -> bool {
-        self.fds.iter().any(|(&fd, d)| fd > 2 && d.is_open)
+        self.aliases.keys().any(|&fd| fd > 2) || self.fds.iter().any(|(&fd, d)| fd > 2 && d.is_open)
     }
 
     /// True when fd 0 no longer points at the pristine harness-seeded stdin
     /// placeholder [`Default for FileSystem`](struct@FileSystem)'s `impl`
     /// registers at process start -- i.e. a guest `dup2(real_fd, 0)` rewired
-    /// it onto a real, Rust-tracked file (angr-qmrrp). `dup2` clones the
-    /// whole source [`FileDescriptor`], so the clone carries the source's
-    /// [`is_std_placeholder`](FileDescriptor::is_std_placeholder) flag —
-    /// `false` for every descriptor `open`/`pipe`/`register_fd_at` mint —
-    /// into fd 0's slot.
+    /// it onto a real, Rust-tracked file (angr-qmrrp). A `dup2` onto fd 0
+    /// makes it an alias (see `FileSystem::aliases`), which counts whatever
+    /// the shared description is — `dup2(1, 0)` shares stdout's placeholder.
+    /// Otherwise fd 0's own descriptor decides through its
+    /// [`is_std_placeholder`](FileDescriptor::is_std_placeholder) flag, which
+    /// is `false` for every descriptor `open`/`pipe`/`register_fd_at` mint.
     ///
-    /// Keying off that flag rather than the descriptor's `name` is what
+    /// Keying off provenance rather than the descriptor's `name` is what
     /// catches a guest `open("/dev/stdin")` + `dup2(fd, 0)`: `open` stores
-    /// the caller-supplied path verbatim, so the dup2'd clone's name is
-    /// still literally `"/dev/stdin"` and the old string comparison read it
-    /// as pristine (angr-tqw60).
+    /// the caller-supplied path verbatim, so the shared description's name
+    /// is still literally `"/dev/stdin"` and the old string comparison read
+    /// it as pristine (angr-tqw60).
     pub fn fd0_is_dup2d(&self) -> bool {
-        self.fds.get(&0).is_some_and(|d| !d.is_std_placeholder)
+        self.aliases.contains_key(&0) || self.fds.get(&0).is_some_and(|d| !d.is_std_placeholder)
     }
 
     /// Get the next fd number (for pre-allocating).

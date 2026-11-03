@@ -290,7 +290,7 @@ fn close_flips_flag_and_is_idempotent() {
 }
 
 #[test]
-fn dup_clones_state_at_lowest_free_fd() {
+fn dup_shares_state_at_lowest_free_fd() {
     let mut fs = FileSystem::default();
     let fd = fs
         .open_with_content("f".to_string(), FdFlags::ReadWrite, b"data".to_vec())
@@ -298,12 +298,94 @@ fn dup_clones_state_at_lowest_free_fd() {
     assert_eq!(fs.seek(fd, 2, 0), Some(2));
     let dupd = fs.dup(fd).expect("dup of open fd");
     assert_eq!(dupd, 4);
-    // The dup snapshots position and content (independent buffers thereafter).
     assert_eq!(fs.fd_info(dupd).map(|i| (i.1, i.3)), Some((2, 4)));
     // dup of a closed / missing fd returns None.
     assert!(fs.close(fd));
     assert!(fs.dup(fd).is_none());
     assert!(fs.dup(777).is_none());
+}
+
+/// angr-vmi2l.196: both numbers of a dup refer to one open file description,
+/// so a read through either advances the shared offset (the clone re-read
+/// the first bytes).
+#[test]
+fn dup_shares_the_offset() {
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadOnly, b"ABCDEFGH".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let fd2 = fs.dup(fd).expect("dup of open fd");
+    assert_eq!(fs.read(fd2, 4), b"ABCD");
+    assert_eq!(fs.read(fd, 4), b"EFGH");
+    assert_eq!(fs.seek(fd, 1, 0), Some(1));
+    assert_eq!(fs.fd_pos_and_size(fd2), Some((1, 8)));
+}
+
+/// angr-vmi2l.196: a write through a dup of fd 1 lands in stdout's buffer,
+/// which is what `posix.dumps(1)` reads, interleaved in program order.
+#[test]
+fn write_through_dup_of_stdout_is_visible_on_fd_1() {
+    let mut fs = FileSystem::default();
+    let d = fs.dup(1).expect("dup of stdout");
+    assert!(fs.write(d, b"hi"));
+    assert!(fs.write(1, b"yo"));
+    assert_eq!(fs.fd_content(1), b"hiyo");
+    assert_eq!(fs.fd_content(d), b"hiyo");
+    // dup2 onto stdout redirects it into the file's description.
+    let f = fs
+        .open("out".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    assert_eq!(fs.dup2(f, 1), Some(1));
+    assert!(fs.write(1, b"zz"));
+    assert_eq!(fs.fd_content(f), b"zz");
+    // `d` still holds the old stdout description.
+    assert_eq!(fs.fd_content(d), b"hiyo");
+}
+
+/// Closing one number of a shared description leaves it open through the
+/// others; the closed number refuses writes rather than auto-vivifying, and
+/// a fork's alias table is its own.
+#[test]
+fn close_of_a_dup_keeps_the_description_open_for_the_others() {
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, b"ab".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let d1 = fs.dup(fd).expect("dup of open fd");
+    let d2 = fs.dup(fd).expect("dup of open fd");
+    // Closing the original hands the description on.
+    assert!(fs.close(fd));
+    assert!(!fs.is_open(fd));
+    assert!(!fs.write(fd, b"x"), "closed number must refuse");
+    assert!(fs.is_open(d1) && fs.is_open(d2));
+    assert_eq!(fs.seek(d1, 0, 2), Some(2));
+    assert!(fs.write(d1, b"cd"));
+    assert_eq!(fs.read_at(d2, 0, 8), b"abcd");
+    // Closing an alias leaves the owner alone.
+    assert!(fs.close(d2));
+    assert!(!fs.close(d2));
+    assert!(fs.is_open(d1));
+    assert_eq!(fs.open_fds(), vec![0, 1, 2, d1]);
+    // A fork's dup does not leak into its sibling.
+    let mut sibling = fs.clone();
+    let d3 = sibling.dup(d1).expect("dup of open fd");
+    assert!(sibling.is_open(d3));
+    assert!(!fs.is_open(d3));
+    // The alias table round-trips through serde.
+    let back: FileSystem = FileSystemData::from(sibling.clone()).into();
+    assert!(back.is_open(d3));
+    assert_eq!(back.desc_key(d3), sibling.desc_key(d1));
+}
+
+/// `dup2(1, 0)` shares stdout's placeholder description, which is still a
+/// rewired fd 0, including after fd 1 closes and fd 0 inherits it.
+#[test]
+fn fd0_is_dup2d_for_a_dup2_of_a_std_placeholder() {
+    let mut fs = FileSystem::default();
+    assert_eq!(fs.dup2(1, 0), Some(0));
+    assert!(fs.fd0_is_dup2d());
+    assert!(fs.close(1));
+    assert!(fs.fd0_is_dup2d());
 }
 
 #[test]

@@ -11,6 +11,9 @@ use super::*;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileSystemData {
     pub fds: std::collections::BTreeMap<u32, FileDescriptor>,
+    /// See `FileSystem::aliases`; older snapshots reconstitute with none.
+    #[serde(default)]
+    pub aliases: std::collections::BTreeMap<u32, u32>,
     pub next_fd: u32,
     pub cwd: Vec<u8>,
     /// `#[serde(default)]` keeps older snapshots loadable —
@@ -64,6 +67,7 @@ impl From<FileSystem> for FileSystemData {
             fs.demoted_paths.iter().cloned().collect();
         FileSystemData {
             fds,
+            aliases: fs.aliases.iter().map(|(k, v)| (*k, *v)).collect(),
             next_fd: fs.next_fd,
             cwd: fs.cwd,
             known_paths,
@@ -94,6 +98,7 @@ impl From<FileSystemData> for FileSystem {
         let demoted_paths: HashSet<String> = d.demoted_paths.into_iter().collect();
         let mut fs = FileSystem {
             fds: crate::arc_shared(fds),
+            aliases: Arc::new(d.aliases.into_iter().collect()),
             next_fd: d.next_fd,
             cwd: d.cwd,
             known_paths: Arc::new(HashSet::new()),

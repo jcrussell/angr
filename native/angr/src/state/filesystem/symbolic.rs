@@ -78,6 +78,7 @@ impl FileSystem {
     /// Position is left as-is (0 on a seed state). No-op on an unknown fd.
     // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     pub fn set_fd_content_sym(&mut self, fd: u32, bytes: Vec<RustBV>) {
+        let fd = self.desc_key(fd);
         // The `contains_key` peek keeps the unknown-fd no-op from forcing a
         // CoW deep clone of the fd table; the `if let` is the same single
         // lookup the write needs anyway, so the pair costs what one
@@ -122,6 +123,7 @@ impl FileSystem {
     /// (once per guest call that served >0 bytes), not here — `readv`
     /// calls this once per iovec segment.
     pub fn read_sym(&mut self, fd: u32, count: usize) -> Option<Vec<RustBV>> {
+        let fd = self.desc_key(fd);
         // Peek to compute the byte count without forcing CoW at EOF.
         let (start, n) = {
             let desc = self.fds.get(&fd)?;
@@ -155,6 +157,7 @@ impl FileSystem {
     /// [`read_at`](Self::read_at)). Same `None` / `Some(empty)` contract
     /// (including the not-open guard and the call-site counter note).
     pub fn read_sym_at(&self, fd: u32, offset: u64, count: usize) -> Option<Vec<RustBV>> {
+        let fd = self.desc_key(fd);
         let desc = self.fds.get(&fd)?;
         if !desc.is_open {
             return None;
@@ -195,6 +198,7 @@ impl FileSystem {
     /// symbolic input file) don't write the input file, so this only
     /// bites guests that write their own symbolic input.
     pub fn demote_symbolic_content(&mut self, fd: u32) -> bool {
+        let fd = self.desc_key(fd);
         let Some(desc) = self.fds.get(&fd) else {
             return false;
         };
@@ -310,6 +314,7 @@ impl FileSystem {
     /// (`read_file_symbolic`, angr-gorvf.15), which would silently discard
     /// the Python-side write.
     pub fn is_demoted_fd(&self, fd: u32) -> bool {
+        let fd = self.desc_key(fd);
         if self.demoted_paths.is_empty() {
             return false;
         }
@@ -351,6 +356,7 @@ impl FileSystem {
     /// [`has_content_sym`](Self::has_content_sym) when only a predicate is
     /// needed.
     pub fn fd_content_sym(&self, fd: u32) -> Option<Arc<Vec<RustBV>>> {
+        let fd = self.desc_key(fd);
         self.fds.get(&fd).and_then(|d| d.content_sym.clone())
     }
 
@@ -358,6 +364,7 @@ impl FileSystem {
     /// serve-gate predicate for the read paths (no Arc clone, matching
     /// [`read_sym`](Self::read_sym)'s not-open guard).
     pub fn has_content_sym(&self, fd: u32) -> bool {
+        let fd = self.desc_key(fd);
         self.fds
             .get(&fd)
             .is_some_and(|d| d.is_open && d.content_sym.is_some())

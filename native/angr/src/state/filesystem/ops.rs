@@ -106,6 +106,18 @@ impl FileSystem {
             && desc.norm_name.is_some()
     }
 
+    /// The `fds` key holding `fd`'s open file description: the fd a `dup`
+    /// aliased it to, else `fd` itself. See `FileSystem::aliases`. Every
+    /// per-fd entry point resolves its argument through this before touching
+    /// `fds`.
+    #[inline]
+    pub(super) fn desc_key(&self, fd: u32) -> u32 {
+        if self.aliases.is_empty() {
+            return fd;
+        }
+        self.aliases.get(&fd).copied().unwrap_or(fd)
+    }
+
     /// Allocate the lowest fd number that is not open — the POSIX `open(2)`
     /// rule, and Python `SimSystemPosix::_pick_fd`'s — so a closed number is
     /// handed out again: `fclose(fopen(p)); open(p)` returns the same fd on
@@ -229,6 +241,7 @@ impl FileSystem {
     /// carries symbolic content (see `holds_path_content`), or already
     /// matches; a content larger than [`MAX_FS_FILE_SIZE`] is refused too.
     pub fn update_fd(&mut self, fd: u32, content: Vec<u8>, position: u64) -> bool {
+        let fd = self.desc_key(fd);
         let unchanged_or_foreign = self.fds.get(&fd).is_none_or(|d| {
             !d.is_open
                 || !Self::holds_path_content(d)
@@ -302,7 +315,22 @@ impl FileSystem {
     /// A path-opened fd with bytes leaves them in `closed_contents`, so a
     /// later open of the path reads them even after this tombstone's number
     /// is reused (angr-mx00p.132.46).
+    ///
+    /// Closing one of several fds sharing a description (see
+    /// `FileSystem::aliases`) leaves the description open for the others
+    /// and records nothing in `closed_contents`; the closed number keeps a
+    /// tombstone so a later write to it is refused, not auto-vivified.
     pub fn close(&mut self, fd: u32) -> bool {
+        if self.aliases.contains_key(&fd) {
+            Arc::make_mut(&mut self.aliases).remove(&fd);
+            self.insert_tombstone(fd);
+            return true;
+        }
+        if self.aliases.values().any(|&k| k == fd) {
+            self.promote_alias_of(fd);
+            self.insert_tombstone(fd);
+            return true;
+        }
         // Read-first to avoid CoW clone if the fd is missing or already closed.
         let Some(desc) = self.fds.get(&fd).filter(|d| d.is_open) else {
             return false;
@@ -320,6 +348,48 @@ impl FileSystem {
         } else {
             false
         }
+    }
+
+    /// Hand `owner`'s description to its lowest alias, which becomes the new
+    /// `fds` key, and repoint the remaining aliases at it. The caller then
+    /// overwrites `owner`'s slot. The moved description loses its
+    /// [`is_std_placeholder`](FileDescriptor::is_std_placeholder) stamp: it no
+    /// longer sits at its pre-registered number, so `dup2(1, 0); close(1)`
+    /// still reads as a rewired fd 0.
+    fn promote_alias_of(&mut self, owner: u32) {
+        let Some(heir) = self
+            .aliases
+            .iter()
+            .filter(|&(_, &k)| k == owner)
+            .map(|(&a, _)| a)
+            .min()
+        else {
+            return;
+        };
+        let aliases = Arc::make_mut(&mut self.aliases);
+        aliases.remove(&heir);
+        for target in aliases.values_mut() {
+            if *target == owner {
+                *target = heir;
+            }
+        }
+        let fds = Arc::make_mut(&mut self.fds);
+        if let Some(mut desc) = fds.remove(&owner) {
+            desc.is_std_placeholder = false;
+            fds.insert(heir, desc);
+        }
+    }
+
+    /// Park a closed descriptor at `fd`, which `close` has just detached
+    /// from a description another fd still holds open.
+    fn insert_tombstone(&mut self, fd: u32) {
+        let desc = self.fds.get(&self.desc_key(fd));
+        let (name, flags) = desc.map_or((String::new(), FdFlags::ReadOnly), |d| {
+            (d.name.clone(), d.flags)
+        });
+        let mut tomb = FileDescriptor::new(name, flags);
+        tomb.is_open = false;
+        Arc::make_mut(&mut self.fds).insert(fd, tomb);
     }
 
     /// True when `fd` has bounded symbolic content or a live registry link
@@ -388,6 +458,7 @@ impl FileSystem {
         // advances `position` to the new end, exactly as Python
         // `SimFileDescriptor::write_data` does after its
         // `self._pos = self.file.size`. See [`FileDescriptor::append`].
+        let fd = self.desc_key(fd);
         let position = self.fds.get(&fd).map_or(0, |d| {
             if d.append {
                 d.effective_len() as u64
@@ -414,6 +485,7 @@ impl FileSystem {
         if data.is_empty() {
             return true;
         }
+        let fd = self.desc_key(fd);
         if self.write_closed(fd) {
             return false;
         }
@@ -462,6 +534,7 @@ impl FileSystem {
     /// Read up to `count` bytes from a file descriptor at its current position.
     /// Advances the position. Returns bytes read.
     pub fn read(&mut self, fd: u32, count: usize) -> Vec<u8> {
+        let fd = self.desc_key(fd);
         // Peek to compute byte count without forcing CoW when nothing is readable.
         let n = match self.fds.get(&fd) {
             // Guard on is_open for parity with read_sym/read_sym_at; a closed
@@ -496,6 +569,7 @@ impl FileSystem {
     /// `offset` through `offset_position`, not through `base as i64 +
     /// offset` (angr-03vl4.54).
     pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
+        let fd = self.desc_key(fd);
         // Compute new position without CoW first; only mutate if the fd exists
         // and the whence value is valid.
         let desc = self.fds.get(&fd)?;
@@ -514,6 +588,7 @@ impl FileSystem {
     /// `pread` (the file offset is unaffected). Returns the bytes read
     /// (empty if `offset` is past EOF or the fd is absent).
     pub fn read_at(&self, fd: u32, offset: u64, count: usize) -> Vec<u8> {
+        let fd = self.desc_key(fd);
         match self.fds.get(&fd) {
             // Guard on is_open for parity with read_sym_at (POSIX pread on a
             // closed fd reads nothing).
@@ -571,7 +646,7 @@ impl FileSystem {
     /// with the rest of the file's fd arithmetic, not a practical hazard.)
     fn lowest_free_fd_from(&self, start: u32) -> Option<u32> {
         let mut fd = start;
-        while self.fds.get(&fd).is_some_and(|d| d.is_open) {
+        while self.is_open(fd) {
             fd = fd.checked_add(1)?;
         }
         Some(fd)
@@ -582,11 +657,11 @@ impl FileSystem {
     /// exhausted (see `lowest_free_fd_from`).
     ///
     /// Like POSIX `dup(2)`: the new fd is the lowest number not currently
-    /// open (see `lowest_free_fd_from`), and it refers to
-    /// the same underlying state. We model the sharing by cloning the
-    /// `FileDescriptor` (name/position/flags/content). `next_fd` is bumped
-    /// past the allocated number so a later [`open`](Self::open) cannot
-    /// hand out the same slot.
+    /// open (see `lowest_free_fd_from`), and it refers to the same open file
+    /// description — an entry in `FileSystem::aliases`, so offset, content
+    /// and flags stay shared (angr-vmi2l.196). `next_fd` is bumped past the
+    /// allocated number so a later [`open`](Self::open) cannot hand out the
+    /// same slot.
     ///
     /// Divergence from Python `procedures/posix/dup.py` (angr-9ke6b.119):
     /// its gap scan keeps the *last* mismatching index rather than breaking
@@ -594,17 +669,27 @@ impl FileSystem {
     /// still open and clobber it. We return the true lowest free fd; the two
     /// agree for the single-gap case that real binaries hit.
     pub fn dup(&mut self, oldfd: u32) -> Option<u32> {
-        if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
+        if !self.is_open(oldfd) {
             return None;
         }
-        let cloned = self.fds.get(&oldfd).cloned()?;
         let newfd = self.lowest_free_fd_from(0)?;
         self.next_fd = self.next_fd.max(newfd.saturating_add(1));
-        Arc::make_mut(&mut self.fds).insert(newfd, cloned);
+        self.alias_fd(newfd, oldfd);
         Some(newfd)
     }
 
-    /// Duplicate `oldfd` to `newfd`. If `newfd` was open, it is closed first.
+    /// Make the free number `newfd` share `oldfd`'s open description,
+    /// dropping any closed tombstone parked at `newfd`.
+    fn alias_fd(&mut self, newfd: u32, oldfd: u32) {
+        let key = self.desc_key(oldfd);
+        if self.fds.contains_key(&newfd) {
+            Arc::make_mut(&mut self.fds).remove(&newfd);
+        }
+        Arc::make_mut(&mut self.aliases).insert(newfd, key);
+    }
+
+    /// Duplicate `oldfd` to `newfd`, sharing its open description as
+    /// [`dup`](Self::dup) does. If `newfd` was open, it is closed first.
     /// If `oldfd == newfd` and `oldfd` is open, returns `newfd` unchanged.
     /// Returns the new fd on success, or None if `oldfd` is not open.
     ///
@@ -618,7 +703,7 @@ impl FileSystem {
     /// `procedures/posix/dup.py` — see `MAX_FD` and the
     /// `invariant-dup-python-parity-no-einval` memory.
     pub fn dup2(&mut self, oldfd: u32, newfd: u32) -> Option<u32> {
-        if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
+        if !self.is_open(oldfd) {
             return None;
         }
         if oldfd == newfd {
@@ -627,8 +712,14 @@ impl FileSystem {
         if newfd >= MAX_FD {
             return None;
         }
-        let cloned = self.fds.get(&oldfd).cloned()?;
-        Arc::make_mut(&mut self.fds).insert(newfd, cloned);
+        // Already sharing one description: POSIX dup2 leaves it as is.
+        if self.desc_key(oldfd) == self.desc_key(newfd) {
+            return Some(newfd);
+        }
+        // Closing first may promote `newfd`'s aliases, possibly `oldfd`
+        // itself, so the alias resolves `oldfd` only afterwards.
+        self.close(newfd);
+        self.alias_fd(newfd, oldfd);
         if newfd >= self.next_fd {
             self.next_fd = newfd.saturating_add(1);
         }

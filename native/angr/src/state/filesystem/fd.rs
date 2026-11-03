@@ -145,12 +145,11 @@ pub struct FileDescriptor {
     /// `register_fd_at`/`pipe` carries `false` even when its `name` string
     /// happens to be `"/dev/stdin"`.
     ///
-    /// [`FileSystem::dup2`](crate::state::FileSystem::dup2) clones the whole
-    /// struct, so this travels with the descriptor and gives
+    /// Together with the `dup` alias table this gives
     /// [`FileSystem::fd0_is_dup2d`](crate::state::FileSystem::fd0_is_dup2d)
     /// real provenance instead of the `name != "/dev/stdin"` heuristic it used
     /// before — which missed a guest `open("/dev/stdin")` + `dup2(fd, 0)`,
-    /// whose clone keeps that very name (angr-tqw60).
+    /// whose shared description keeps that very name (angr-tqw60).
     ///
     /// `#[serde(default)]` keeps older snapshots loadable; their fd 0
     /// reconstitutes as `false`, i.e. reported as dup2'd, so native stdin
