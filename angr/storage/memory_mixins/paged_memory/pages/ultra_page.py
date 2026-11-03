@@ -107,8 +107,12 @@ class UltraPage(MemoryObjectMixin, PageBase):
                 if cur_val is None:
                     obj_end = end
                 else:
-                    obj_end = subaddr + cur_val.length
-                    obj_end = min(end, obj_end)
+                    # the object may start before subaddr (e.g. a load at an offset into an earlier filler), so its
+                    # end is measured from its base, not from subaddr
+                    offset_in_obj = realaddr - cur_val.base
+                    if offset_in_obj < 0:
+                        offset_in_obj += 1 << memory.state.arch.bits
+                    obj_end = min(end, subaddr + cur_val.length - offset_in_obj)
 
                 # determine how many bytes come from this object: scan forward until the end of the object, the first
                 # non-symbolic byte, or the start of the next object, whichever comes first
