@@ -202,11 +202,14 @@ impl StashManager {
     /// vanishing into an invisible stash. Subsequent calls with the same name
     /// are silent — the stash exists in the map after the first creation.
     ///
-    /// [`STASH_STEP_OUT`] is created on demand (not pre-registered — it must
-    /// not show up in `stash_counts()` for managers that never call
-    /// `step_state()`), so it is exempt from the typo warning.
+    /// A name with a leading `_` is an engine-internal holding stash created
+    /// on demand — [`STASH_STEP_OUT`], the Python side's `_copies`, `_vt_hold`
+    /// and the `step()` round stashes (`_STEP_ROUND_QUEUE` in
+    /// `rust_manager.py`) — and is exempt from the typo warning: none is a
+    /// misspelling of a user stash, and none may show up in `stash_counts()`
+    /// for a manager that never used it, so none is pre-registered.
     pub fn ensure_stash(&mut self, name: &str) -> &mut VecDeque<RustSimState> {
-        if !self.stashes.contains_key(name) && name != STASH_STEP_OUT {
+        if !self.stashes.contains_key(name) && !name.starts_with('_') {
             log::warn!(
                 "Rust exploration: creating new stash '{name}' (not one of the \
                  standard stashes {STANDARD_STASHES:?}); if this is a typo, the state will be \

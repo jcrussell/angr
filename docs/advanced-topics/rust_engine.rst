@@ -144,6 +144,19 @@ form returns a wrapper that exposes the same interface as the standard
 ``SimulationManager`` (``explore``, ``step``, ``found``, ``avoid``,
 etc.) while running the Rust engine underneath.
 
+Stepping
+~~~~~~~~
+
+As with ``SimulationManager.step()``, one ``step()`` advances each state
+that was in ``active`` when the call began exactly once, and the
+successors it produces wait for the next step. ``run(n=N)`` is ``N`` such
+steps (``RustExplorationManager._step_round``). The selection policy
+(BFS / DFS) orders states only inside an unbounded ``run()`` /
+``explore()``. A manager built with an explicit ``engine="rust"`` still
+chains blocks inside a state's step; a default-routed one advances one
+basic block per step. A registered technique ``step()`` /
+``step_state()`` hook still advances one policy-selected state per step.
+
 Unconstrained states
 ~~~~~~~~~~~~~~~~~~~~
 

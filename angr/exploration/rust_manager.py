@@ -123,6 +123,13 @@ _SNAPSHOT_MAGIC = b"ANGRSNAP\x01"
 # posix.stdin.content ASTs — see `_capture_seed_stdin_content`.
 _SEED_STDIN_KEY = -1
 
+# Holding stashes for one `step()` round (angr-vmi2l.246): the round's
+# not-yet-stepped states wait in the queue, and each stepped state's successors
+# wait in the done stash, so the policy's `run(1)` only ever sees the one state
+# the round is stepping.
+_STEP_ROUND_QUEUE = "_step_round_queue"
+_STEP_ROUND_DONE = "_step_round_done"
+
 # `HistoryEntry`'s jumpkind byte for each `Ijk_*` it names (native
 # `state/types.rs`); a syscall is 3 and anything else 4.
 _HISTORY_JUMPKIND_CODES = {"Ijk_Boring": 0, "Ijk_Call": 1, "Ijk_Ret": 2}
@@ -834,7 +841,7 @@ DEFAULT_MAX_ACTIVE_STATES = 100_000
 # used to be hand-written one-liners, so a new stash could reach one list and
 # be forgotten in the other.
 _STASH_ACCESSORS = {
-    "active": ("These are the states that the next :meth:`step` call will advance.", True, True),
+    "active": ("These are the states that the next :meth:`step` call will advance, each once.", True, True),
     "found": ("", False, True),
     "avoid": ("These are the states that matched the ``avoid`` predicate.", True, True),
     "deadended": ("These are the states that produced no successors.", True, True),
@@ -5557,34 +5564,81 @@ class RustExplorationManager(
         return self
 
     def _step_loop(self, n: int) -> None:
-        """Run ``n`` steps for :meth:`step`, stopping early on a callback or an empty stash."""
-        steps_taken = 0
-        while steps_taken < n:
-            self._sync_hooks_before_step()
-            self._stats_ffi_crossings += 1
-            if self._has_technique_step_state_hooks():
-                event = self._run_with_step_state_hooks(1)
-            elif self._has_technique_step_hooks():
-                event = self._run_with_step_hooks(1)
-            else:
-                event = self._rust_mgr.run(1)
-            self._rust_mgr.sync_state_index()
+        """Run ``n`` steps for :meth:`step`, stopping early on a callback or an empty stash.
 
-            if event.event_type == "need_callback":
-                if self._dispatch_callback(event):
+        A step is a SimulationManager step: each state in ``active`` when it begins is advanced once, and its
+        successors are not re-stepped in the same step (angr-vmi2l.246). A technique step()/step_state() hook
+        still drives one policy-selected state per step.
+        """
+        for _ in range(n):
+            self._sync_hooks_before_step()
+            if self._has_technique_step_state_hooks() or self._has_technique_step_hooks():
+                if not self._step_one_selected():
                     break
-                steps_taken += 1
-            elif event.event_type == "active_empty":
+            elif not self._step_round():
                 break
-            elif event.event_type == "errored":
-                l.warning(f"Step error: {event.callback_reason}")
-                break
-            elif event.event_type in ("step_complete", "found"):
-                steps_taken += 1
-                if self._active_techniques:
-                    self._apply_technique_filters()
-            else:
-                steps_taken += 1
+
+    def _step_round(self) -> bool:
+        """Advance every active state once; return False when stepping should stop.
+
+        The round's states wait in ``_STEP_ROUND_QUEUE`` and are released into ``active`` one at a time, so the
+        ``run(1)`` that steps each sees only that state whatever the selection policy. Successors collect in
+        ``_STEP_ROUND_DONE`` and rejoin ``active`` in stepping order when the round ends, as do any states an
+        early stop left unstepped.
+        """
+        rust = self._rust_mgr
+        if rust.move_states("active", _STEP_ROUND_QUEUE, None) == 0:
+            # Nothing visible to queue; a plain run(1) still flushes parked bounces or reports active_empty.
+            return self._step_one_selected()
+        keep_going = True
+        stepped = False
+        try:
+            for sid in rust.get_state_ids(_STEP_ROUND_QUEUE):
+                rust.move_state(sid, _STEP_ROUND_QUEUE, "active")
+                self._stats_ffi_crossings += 1
+                event = rust.run(1)
+                rust.sync_state_index()
+                kind = event.event_type
+                if kind == "need_callback":
+                    keep_going = not self._dispatch_callback(event)
+                elif kind == "errored":
+                    l.warning(f"Step error: {event.callback_reason}")
+                    keep_going = False
+                elif kind == "found":
+                    # num_find is reached: run(1) returns before popping, so no state in the round can advance.
+                    keep_going = False
+                stepped = stepped or kind != "found"
+                rust.move_states("active", _STEP_ROUND_DONE, None)
+                if not keep_going:
+                    break
+        finally:
+            rust.move_states(_STEP_ROUND_DONE, "active", None)
+            rust.move_states(_STEP_ROUND_QUEUE, "active", None)
+        if stepped and self._active_techniques:
+            self._apply_technique_filters()
+        return keep_going
+
+    def _step_one_selected(self) -> bool:
+        """Advance the one active state the selection policy picks; return False when stepping should stop."""
+        self._stats_ffi_crossings += 1
+        if self._has_technique_step_state_hooks():
+            event = self._run_with_step_state_hooks(1)
+        elif self._has_technique_step_hooks():
+            event = self._run_with_step_hooks(1)
+        else:
+            event = self._rust_mgr.run(1)
+        self._rust_mgr.sync_state_index()
+
+        if event.event_type == "need_callback":
+            return not self._dispatch_callback(event)
+        if event.event_type == "active_empty":
+            return False
+        if event.event_type == "errored":
+            l.warning(f"Step error: {event.callback_reason}")
+            return False
+        if event.event_type in ("step_complete", "found") and self._active_techniques:
+            self._apply_technique_filters()
+        return True
 
     @staticmethod
     def _drain_solver_graveyard() -> None:
