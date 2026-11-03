@@ -173,7 +173,9 @@ frame that expects the return address.
 Sibling paths still pending (deferred forks) when a state goes unconstrained
 are kept. ``set_materialize_unconstrained_forks(False)`` drops them instead,
 which is faster but loses those paths unless an address-based ``explore()``'s
-eager retry happens to re-derive them.
+eager retry happens to re-derive them. The retry re-runs the manager's initial
+states, so it only fires for an ``explore()`` that starts from them, before any
+``step()`` or earlier ``explore()``.
 
 Selecting the engine
 ~~~~~~~~~~~~~~~~~~~~

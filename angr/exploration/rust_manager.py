@@ -1561,6 +1561,7 @@ class RustExplorationManager(
             # overwrite the pristine originals).
             if not getattr(self, "_phase2_reseeding", False):
                 self._initial_seed_states = [s.copy() for s in active_states]
+                self._frontier_is_seeds = True
             for state in active_states:
                 # Detect state options
                 if hasattr(state, "options"):
@@ -4779,6 +4780,13 @@ class RustExplorationManager(
             # whatever counters survived the previous explore().
             pass
 
+        # The phase-2 retry and the preinit-prefix replay both re-run paths
+        # from the seeds, so they only stand in for this explore when it
+        # starts from them: after a step() or an earlier explore they revive
+        # paths the frontier already left (angr-vmi2l.319).
+        self._explore_from_seeds = getattr(self, "_frontier_is_seeds", False)
+        self._frontier_is_seeds = False
+
         # Route to appropriate exploration strategy
         has_predicates = self._find_predicate is not None or self._avoid_predicate is not None
         # Parallel engages only on the pure address-based full-batch path — the
@@ -4804,7 +4812,7 @@ class RustExplorationManager(
             # an address strictly inside the Python init prefix, which Rust never
             # steps through. Replay the prefix once, then release the parked seeds.
             if find is not None and not callable(find):
-                if self._preinit_seeds and self._found_count() == 0:
+                if self._preinit_seeds and self._explore_from_seeds and self._found_count() == 0:
                     self._replay_preinit_prefix_for_find(self._extract_addrs(find), avoid_addrs)
                 self._preinit_seeds = []
         finally:
@@ -5266,13 +5274,16 @@ class RustExplorationManager(
         """angr-027h: re-seed the initial states in eager-fork mode (phase 2).
 
         Fires at most once per explore, only for address-based finds that
-        exhausted phase 1 (deferred) without reaching the target. Returns True
+        exhausted phase 1 (deferred) without reaching the target, and only
+        when the explore started from the seed frontier (``_explore_from_seeds``). Returns True
         when a retry was seeded (the caller should reset its step/time budget and
         continue), False otherwise.
         """
         if getattr(self, "_phase2_retried", False):
             return False
         if not getattr(self, "_explore_find_addrs", None):
+            return False
+        if not getattr(self, "_explore_from_seeds", False):
             return False
         if self._found_count() >= num_find:
             return False
@@ -5706,6 +5717,7 @@ class RustExplorationManager(
         # Re-entry into Rust execution invalidates the state-export cache:
         # any previously-cached Python mirrors are about to go stale.
         self._invalidate_state_export_cache()
+        self._frontier_is_seeds = False
 
         # A default-routed manager promises Python's step semantics: one basic
         # block per step, so the successor's ``scratch.irsb`` is the block it

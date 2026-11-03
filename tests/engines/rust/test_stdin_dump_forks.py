@@ -26,6 +26,7 @@ from tests.engines.conftest import TrapPoint, load_pbounce
 
 _READ_BYTES = 32  # the synthetic's single read(0, b, 32)
 _LEAVES = 8
+_STEPS = 3  # pbounce still has forked states active after these
 
 
 @pytest.fixture(scope="module")
@@ -34,6 +35,8 @@ def stepped_dumps():
 
     Reading ``dumps(0)`` materializes and caches the state, so the states forked
     off it on later steps are copies that already carry its injected packet.
+    Stepping stops while states are still active, so the explore that follows
+    has a frontier to find the leaves from (angr-vmi2l.319).
     Returns (dumps seen while stepping, dumps of the found leaves).
     """
     project = load_pbounce()
@@ -42,10 +45,8 @@ def stepped_dumps():
 
     mgr = RustExplorationManager(project, [project.factory.entry_state()])
     stepped = []
-    for _ in range(24):
+    for _ in range(_STEPS):
         mgr.step(n=1)
-        if not mgr.active:
-            break
         stepped.extend(state.posix.dumps(0) for state in mgr.active)
     mgr.explore(find=target, num_find=_LEAVES)
     return stepped, [state.posix.dumps(0) for state in mgr.found]
