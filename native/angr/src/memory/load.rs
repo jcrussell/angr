@@ -268,8 +268,20 @@ impl SymbolicMemory {
             if let Some(merged) = self.try_byte_merge_load(addr, size) {
                 return Ok(merged);
             }
-            // Byte-merge fell through (e.g. unmapped/non-symbolic byte gap);
-            // continue to the page-scan path below.
+            // angr-vmi2l.178: byte-merge refuses any concrete byte, but a
+            // concrete byte beside an interior lane of a wider object (or an
+            // object base) is the ordinary shape of a symbolic word stored
+            // inside a concrete buffer. The page-scan loop below resolves
+            // only object bases, so the per-byte assembler serves it instead.
+            // When it cannot (an unmapped page, a span with no backing
+            // object), the scan below still runs: it classifies the unmapped
+            // page by `lazy` and tries `containing_wider_sym`.
+            let start_page = addr.page_num();
+            let end_page = end_page_inclusive(addr.raw(), size as u64)?;
+            self.check_perms_range(start_page, end_page, Permission::R)?;
+            if let Ok(assembled) = self.assemble_load_with_multi(addr, size) {
+                return Ok(assembled);
+            }
         } else {
             // angr-jvjf: partial-overwrite guard. `store_concrete` clears
             // the page bitmap for the overwritten bytes but leaves
@@ -420,9 +432,9 @@ impl SymbolicMemory {
                 if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
                     if sym.width() == 8 {
                         parts.push(sym.clone());
-                    } else if sym.width() > 8 {
-                        // Extract the relevant byte
-                        parts.push(sym.extract(7, 0));
+                    } else if let Some(lane) = Self::extract_byte_lane(sym, 0, self.endness) {
+                        // angr-vmi2l.178: the base byte is `[7:0]` only on LE.
+                        parts.push(lane);
                     } else {
                         all_found = false;
                         break;

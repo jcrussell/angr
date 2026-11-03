@@ -535,3 +535,73 @@ fn test_symbolic_store_inside_wider_imported_object() {
     assert_load_is(&mut mem, &ctx, 0x1000, &old.extract(15, 0), "untouched head bytes");
     assert_load_is(&mut mem, &ctx, 0x1004, &old.extract(63, 32), "untouched tail bytes");
 }
+
+/// angr-vmi2l.178: seed `[0x1000, 0x1010)` with bytes `a0..af`, store the
+/// pinned 32-bit `x` at `0x1000 + off`, and load `size` bytes at `0x1000`.
+/// Returns the evaluated load and the expected value built byte by byte, so
+/// every caller checks one interleaving of concrete bytes and `x` lanes.
+fn load_over_inner_word(endness: Endness, off: u64, size: u32) -> (Option<u128>, u128) {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(endness);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    let seed: [u8; 16] = std::array::from_fn(|i| 0xa0 + i as u8);
+    let seed_val = match endness {
+        Endness::Little => u128::from_le_bytes(seed),
+        Endness::Big => u128::from_be_bytes(seed),
+    };
+    mem.store_concrete(0x1000, RustBV::concrete(seed_val, 128))
+        .expect("seed store");
+    let k: u32 = 0x1122_3344;
+    let x = RustBV::symbol(format!("x_vmi2l178_{off}_{size}"), 32);
+    ctx.assume_true(&x.eq(&RustBV::concrete(u128::from(k), 32)));
+    mem.store_concrete(0x1000 + off, x).expect("store x");
+
+    let mut bytes = seed;
+    let x_bytes = match endness {
+        Endness::Little => k.to_le_bytes(),
+        Endness::Big => k.to_be_bytes(),
+    };
+    bytes[off as usize..off as usize + 4].copy_from_slice(&x_bytes);
+    let expected = bytes[..size as usize].iter().enumerate().fold(0u128, |acc, (i, &b)| {
+        let shift = match endness {
+            Endness::Little => i as u32 * 8,
+            Endness::Big => (size - 1 - i as u32) * 8,
+        };
+        acc | (u128::from(b) << shift)
+    });
+    let loaded = mem
+        .load_concrete(0x1000, size)
+        .expect("load over an inner symbolic word must be served in Rust");
+    (ctx.eval(&loaded), expected)
+}
+
+/// angr-vmi2l.178 S1: `concrete, lane, lane, concrete` — the store sits
+/// strictly inside the load and both ends stay concrete. The load used to
+/// refuse with `SymbolicAddress`, so the interpreter read the pre-store bytes.
+#[test]
+fn load_concrete_lanes_between_concrete_bytes() {
+    for endness in [Endness::Little, Endness::Big] {
+        let (got, want) = load_over_inner_word(endness, 2, 8);
+        assert_eq!(got, Some(want), "{endness:?} off=2 size=8");
+    }
+}
+
+/// angr-vmi2l.178 S1: the load ends inside the stored word, so its tail
+/// bytes are interior lanes reachable only through `symbolic_spans`.
+#[test]
+fn load_concrete_then_leading_lanes_of_wider_word() {
+    for endness in [Endness::Little, Endness::Big] {
+        let (got, want) = load_over_inner_word(endness, 2, 4);
+        assert_eq!(got, Some(want), "{endness:?} off=2 size=4");
+    }
+}
+
+/// angr-vmi2l.178 S2: `concrete, base-of-wider` — the load's last byte is
+/// the stored word's base, which on BE is `x[31:24]`, not `x[7:0]`.
+#[test]
+fn load_concrete_then_base_byte_of_wider_word() {
+    for endness in [Endness::Little, Endness::Big] {
+        let (got, want) = load_over_inner_word(endness, 3, 4);
+        assert_eq!(got, Some(want), "{endness:?} off=3 size=4");
+    }
+}
