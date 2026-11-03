@@ -31,6 +31,7 @@ from angr.exploration.rust_state_export import (
     _concrete_stream_bytes,
     _concrete_stream_len,
     _posix_stream,
+    _stream_is_prefix_of,
     rust_stdin_read_symbols,
 )
 from angr.storage.file import SimFile, SimFileDescriptor
@@ -366,21 +367,25 @@ class RustCallbackDispatchMixin:
         if py_len is None:
             # Symbolic-size stream: cannot tell what is missing.
             return
-        if py_len and isinstance(getattr(stream, "content", None), list):
-            # angr-hc1yj: appending only the suffix assumes the Python stream
-            # is a prefix of Rust's buffer (the POSIX_SYNC_FDS invariant).
-            # A frame copied from a root that already carries another
-            # branch's output breaks that, and appending then splices the two
-            # (or, when Python is longer, keeps the foreign bytes and the
-            # write-back pushes them into Rust). Rust's buffer is the source
-            # of truth: replace a stream that is not its prefix.
-            py_bytes = _concrete_stream_bytes(state, stream)
-            if py_bytes is not None and not rust_out.startswith(py_bytes):
-                stream.content.clear()
-                if hasattr(stream, "pos"):
-                    # SimPacketsStream writes at its own packet index.
-                    stream.pos = 0
-                py_len = 0
+        # angr-hc1yj: appending only the suffix assumes the Python stream is
+        # a prefix of Rust's buffer (the POSIX_SYNC_FDS invariant). A frame
+        # copied from a root that already carries another branch's output
+        # breaks that, and appending then splices the two (or, when Python is
+        # longer, keeps the foreign bytes and the write-back pushes them into
+        # Rust). Rust's buffer is the source of truth: replace a stream that
+        # is not its prefix. A symbolic segment is not trusted by length
+        # alone (angr-vmi2l.264): Rust must cover it, and every concrete
+        # segment must match.
+        if (
+            py_len
+            and isinstance(getattr(stream, "content", None), list)
+            and not _stream_is_prefix_of(state, stream, rust_out)
+        ):
+            stream.content.clear()
+            if hasattr(stream, "pos"):
+                # SimPacketsStream writes at its own packet index.
+                stream.pos = 0
+            py_len = 0
         if py_len >= len(rust_out):
             # The Python side is already caught up.
             return

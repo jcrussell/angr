@@ -182,6 +182,81 @@ def _concrete_stream_bytes(state, stream) -> bytes | None:
     return state.solver.eval(data, cast_to=bytes)
 
 
+def _stream_segments(state, stream) -> list[tuple[object, int]] | None:
+    """A posix stream's content as ``(data, n)`` byte segments, or None if
+    any length is symbolic.
+
+    ``data`` is the segment's ``bytes`` when concrete, else its BV AST (the
+    leading ``n`` bytes are the payload). A flat ``SimFile`` stream is one
+    segment.
+    """
+    packets = getattr(stream, "content", None)
+    if isinstance(packets, list):
+        segments = []
+        for data, length in packets:
+            n = _bvv_int(length)
+            if n is None:
+                return None
+            segments.append((data if data.symbolic else state.solver.eval(data, cast_to=bytes)[:n], n))
+        return segments
+    size = _concrete_stream_len(stream)
+    if size is None:
+        return None
+    if not size:
+        return []
+    data = stream.load(0, size)
+    return [(data if data.symbolic else state.solver.eval(data, cast_to=bytes), size)]
+
+
+def _mirror_stream_bytes(state, stream) -> bytes | None:
+    """The bytes Rust's fd buffer mirrors ``stream`` with, or None if a
+    length is symbolic.
+
+    Rust's fd buffers hold concrete bytes only (angr-vmi2l.264). A symbolic
+    segment is concretized to its value when it has exactly one, and
+    otherwise to one model of it, so the buffer stays as long as the Python
+    stream: later native output then lands after it, and the length-based
+    delta of ``_sync_state_posix_to_rust`` / ``_inject_rust_fd_output`` stays
+    sound. The exported state keeps the Python stream's AST for that span;
+    only a proxy's ``dumps`` reads the model.
+    """
+    segments = _stream_segments(state, stream)
+    if segments is None:
+        return None
+    out = bytearray()
+    for data, n in segments:
+        if isinstance(data, bytes):
+            out += data
+            continue
+        values = state.solver.eval_upto(data, 2, cast_to=bytes)
+        if len(values) != 1:
+            l.debug("multi-valued fd output mirrored to Rust as one model of it")
+        out += values[0][:n]
+    return bytes(out)
+
+
+def _stream_is_prefix_of(state, stream, rust_out: bytes) -> bool:
+    """Whether ``stream`` could be a prefix of Rust's fd buffer ``rust_out``.
+
+    Concrete segments must match byte for byte; a symbolic segment matches
+    whatever Rust holds at its offset (the model ``_mirror_stream_bytes``
+    wrote) as long as Rust's buffer covers it. A stream with a symbolic
+    length is assumed to be a prefix.
+    """
+    segments = _stream_segments(state, stream)
+    if segments is None:
+        return True
+    pos = 0
+    for data, n in segments:
+        if isinstance(data, bytes):
+            if rust_out[pos : pos + n] != data:
+                return False
+        elif pos + n > len(rust_out):
+            return False
+        pos += n
+    return True
+
+
 def rust_stdin_read_symbols(rust_mgr, state_id: int) -> list[tuple[str, int]]:
     """The ``(name, bits)`` stdin symbols state ``state_id``'s reads returned, in order.
 
@@ -1385,12 +1460,9 @@ class RustStateExportMixin:
                 continue
             if py_len <= rust_len:
                 continue
-            data = _concrete_stream_bytes(state, stream)
+            data = _mirror_stream_bytes(state, stream)
             if data is None:
-                # cat-(b) FALLBACK WITH LOSS: Rust's fd buffers hold concrete
-                # bytes; a symbolic write from the bounced proc is dropped
-                # rather than concretized to an arbitrary model.
-                l.debug("symbolic fd %d output from callback state %d not synced to Rust", fd, state_id)
+                # Unreachable: py_len is concrete, so every length is.
                 continue
             try:
                 self._rust_mgr.append_state_fd_output(state_id, fd, data[rust_len:])
