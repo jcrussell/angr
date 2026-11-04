@@ -195,6 +195,7 @@ class RustBackend(SimulationBackend):
         mgr = self._manager()
         rust = mgr._rust_mgr
         sid = self._resident_id(mgr, state)
+        self._detach_source(mgr, state, sid)
         mgr._sync_hooks_before_step()
         rust.move_state(sid, _PARKED, "active")
         self._resident.discard(sid)
@@ -249,6 +250,24 @@ class RustBackend(SimulationBackend):
         rust.move_states("active", _PARKED, None)
         self._resident.add(sid)
         return sid
+
+    def _detach_source(self, mgr: RustExplorationManager, state: SimState, sid: int) -> None:
+        """Move *state*, a root export of *sid*, onto a fork of its own before *sid* steps.
+
+        A non-forking step keeps the source's id, so without this a SimState
+        the caller holds would follow the stepped state; on the Python engine
+        it keeps showing the pre-step state (angr-mx00p.136.7). Its copies
+        follow it, as they are views of it. The fork is dropped with *state*.
+        An imported state is not bound to *sid* and needs nothing.
+        """
+        binding = binding_of(state)
+        owner = mgr._copy_stash_fork_owner
+        if binding is None or binding.owner is not owner or binding.is_virtual or binding.raw_id != sid:
+            return
+        cache = mgr._state_cache
+        for key in [k for k, v in cache.items() if v is state]:
+            del cache[key]
+        owner.detach(binding)
 
     def _export(self, mgr: RustExplorationManager, state_id: int) -> SimState:
         """A new stash-mirror SimState of *state_id*, owned by the backend.

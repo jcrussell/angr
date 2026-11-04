@@ -3,7 +3,9 @@
 On fauxware for x86_64, armel and mips, an explore with the backend must find
 the Python engine's stdin, every stash entry must be a SimState, the stash
 operations a user script does on the found state must work, and run(n=10)
-from main must leave the Python engine's active addresses.
+from main must leave the Python engine's active addresses. A SimState held
+across step() keeps its pre-step contents, as on the Python engine
+(angr-mx00p.136.7).
 """
 
 from __future__ import annotations
@@ -86,3 +88,51 @@ def test_a_copy_of_an_export_is_imported():
     assert stepped.addr != before
     assert simgr.held[0].addr == before
     assert backend.stats["claimed"] == 2
+
+
+def _held_after_constraints(project, backend):
+    """A simgr whose active[0] is single-successor past the first fork, so its export carries constraints."""
+    simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
+    for _ in range(200):
+        simgr.step()
+        if any(s.solver.constraints for s in simgr.active) and len(simgr.active) == 1:
+            break
+    assert simgr.active and simgr.active[0].solver.constraints
+    return simgr
+
+
+def test_a_held_state_keeps_its_pre_step_contents(project):
+    # On the Python engine step() replaces each state with new successor objects (angr-mx00p.136.7).
+    backend = RustBackend(project)
+    simgr = _held_after_constraints(project, backend)
+    held = simgr.active[0]
+    addr, sp, constraints = held.addr, held.solver.eval(held.regs.sp), list(held.solver.constraints)
+    simgr.step()
+    assert backend.stats["claimed"] > 0
+    assert held.addr == addr
+    assert held.solver.eval(held.regs.sp) == sp
+    assert [str(c) for c in held.solver.constraints] == [str(c) for c in constraints]
+    assert all(s is not held for s in simgr.active)
+    assert any(s.addr != addr for s in simgr.active)
+
+
+def test_a_write_to_a_held_state_does_not_reach_its_successor(project):
+    backend = RustBackend(project)
+    simgr = _held_after_constraints(project, backend)
+    held = simgr.active[0]
+    simgr.step()
+    succ_sp = [s.solver.eval(s.regs.sp) for s in simgr.active]
+    held.regs.sp = 0x1234
+    assert [s.solver.eval(s.regs.sp) for s in simgr.active] == succ_sp
+    assert held.solver.eval(held.regs.sp) == 0x1234
+
+
+def test_a_copy_then_step_leaves_the_copy_unchanged(project):
+    backend = RustBackend(project)
+    simgr = _held_after_constraints(project, backend)
+    copy = simgr.active[0].copy()
+    addr, sp = copy.addr, copy.solver.eval(copy.regs.sp)
+    simgr.step()
+    assert copy.addr == addr
+    assert copy.solver.eval(copy.regs.sp) == sp
+    assert all(s is not copy for s in simgr.active)
