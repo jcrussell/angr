@@ -5,7 +5,10 @@ steps a state (:meth:`RustBackend.claims`); a declined state runs on the
 Python engine. A claimed state is stepped one block in a private
 :class:`~angr.exploration.rust_manager.RustExplorationManager`
 (:meth:`RustBackend.step_state`), and its successors come back as exported
-SimStates.
+SimStates. Between steps every Rust state the backend handed out waits in one
+private stash, kept only while its export is referenced: once that export is
+collected (dropped from every stash and not held), the state is dropped before
+the next step (angr-mx00p.136.9).
 """
 
 from __future__ import annotations
@@ -89,6 +92,13 @@ class _LineageMarks:
         self._marks[state.history] = mark
 
 
+def _queue_release(backend_ref, state_id: int) -> None:
+    backend = backend_ref()
+    if backend is not None:
+        backend._export_finalizers.pop(state_id, None)
+        backend._released.append(state_id)
+
+
 class RustBackend(SimulationBackend):
     """Steps the states the Rust engine supports, one block per step.
 
@@ -111,6 +121,12 @@ class RustBackend(SimulationBackend):
         self._mgr: RustExplorationManager | None = None
         # Ids of the Rust states waiting in _PARKED.
         self._resident: set[int] = set()
+        # The finalizer of the export each resident id was handed out as; it queues the id in
+        # _released when that export is collected.
+        self._export_finalizers: dict[int, weakref.finalize] = {}
+        # Resident ids whose export is gone, dropped from _PARKED before the next step. A
+        # finalizer can run inside a Rust call (a callback's GC), so it only queues the id.
+        self._released: list[int] = []
         # Python-lifted block size per address, for the extra_stop_points check.
         self._block_sizes: dict[int, int] = {}
 
@@ -200,32 +216,68 @@ class RustBackend(SimulationBackend):
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
+        self._drop_released(mgr)
         sid = self._resident_id(mgr, state)
+        # The source is consumed: the step's children are exported anew, and a held source
+        # reads its own fork from here on.
+        finalizer = self._export_finalizers.pop(sid, None)
+        if finalizer is not None:
+            finalizer.detach()
         self._detach_source(mgr, state, sid)
         mgr._sync_hooks_before_step()
         rust.move_state(sid, _PARKED, "active")
         self._resident.discard(sid)
+        children = {}
         try:
             children = mgr._step_ids_once([sid]).get(sid, {})
         finally:
-            parked = rust.get_state_ids("active")
+            # Python owns stash membership, so every child waits in _PARKED whatever its Rust
+            # stash; one that is not handed out below is dropped.
+            messages = {err_id: message for _, message, err_id in rust.get_errors()}
+            rust.clear_errors()
             rust.move_states("active", _PARKED, None)
-            self._resident.update(parked)
+            for name, cids in children.items():
+                if name != "active":
+                    for cid in cids:
+                        rust.move_state(cid, name, _PARKED)
+            unexported = {cid for cids in children.values() for cid in cids} | {sid}
+            self._resident.update(unexported)
+        try:
+            return self._successors(mgr, simgr, sid, children, messages, error_list, unexported)
+        finally:
+            for cid in unexported:
+                self._release(mgr, cid)
+
+    def _successors(self, mgr, simgr, sid, children, messages, error_list, unexported) -> dict:
+        """Export the children of *sid*'s step, discarding from *unexported* each id handed out."""
         if children == {"deadended": [sid]}:
             return {}
         stashes = {}
         for name, cids in children.items():
             if name == "errored":
-                messages = {err_id: message for _, message, err_id in rust.get_errors()}
                 for cid in sorted(cids, key=lambda c: c != sid):
                     message = messages.get(cid, "rust engine error")
                     error = sim_error_for_rust_message(message, RustErrorRecord._classify(message))
                     if cid == sid or not isinstance(error, simgr._resilience):
                         raise error
                     error_list.append(ErrorRecord(self._export(mgr, cid), error, None))
+                    unexported.discard(cid)
                 continue
             stashes[None if name == "active" else name] = [self._export(mgr, cid) for cid in cids]
+            unexported.difference_update(cids)
         return stashes
+
+    def _release(self, mgr: RustExplorationManager, sid: int) -> None:
+        """Drop resident *sid* from ``_PARKED`` with its per-state metadata."""
+        if sid in self._resident:
+            self._resident.discard(sid)
+            mgr.drop_copy(sid, _PARKED)
+
+    def _drop_released(self, mgr: RustExplorationManager) -> None:
+        """Drop the resident ids whose export was collected since the last step."""
+        released, self._released = self._released, []
+        for sid in released:
+            self._release(mgr, sid)
 
     def _manager(self) -> RustExplorationManager:
         """The private Rust manager, built on first use with no states.
@@ -287,6 +339,11 @@ class RustBackend(SimulationBackend):
         """
         mgr._state_cache.pop(state_id, None)
         export = mgr._materialize_single_state(state_id)
+        # Not cached: the export alone keeps the Rust state, which is released with it.
+        mgr._state_cache.pop(state_id, None)
+        self._export_finalizers[state_id] = weakref.finalize(
+            binding_of(export), _queue_release, weakref.ref(self), state_id
+        )
         self._phase.set(export, _PAST_INIT)
         self._ownership.set(export, _OWNED)
         return export
