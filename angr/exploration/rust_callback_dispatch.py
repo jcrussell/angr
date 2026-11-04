@@ -32,7 +32,6 @@ from angr.exploration.rust_state_export import (
     _concrete_stream_len,
     _posix_stream,
     _stream_is_prefix_of,
-    rust_stdin_leaves,
 )
 from angr.storage.file import SimFile, SimFileDescriptor
 
@@ -677,7 +676,14 @@ class RustCallbackDispatchMixin:
             host_packets = self._rust_stdin_host_packets(state_id)
             if not host_packets and not self._rust_mgr.has_state_stdin_symbols(state_id):
                 return
-            stdin_symbols = rust_stdin_leaves(self._rust_mgr, state_id)
+            # One Rust call evaluates every leaf run between the host packets,
+            # each leaf at its recorded width: a hardcoded 8 minted a fresh
+            # unconstrained const for scanf %d/%ld (32/64-bit) symbols, so the
+            # solved value never reached posix.dumps(0) (angr-ph300.18).
+            host_packets = sorted(host_packets, key=lambda p: p[0])
+            leaf_runs = self._rust_mgr.eval_stdin_leaf_runs(state_id, [after for after, _, _ in host_packets])
+            if leaf_runs is None:
+                return
             posix = getattr(state, "posix", None)
             if posix is None:
                 return
@@ -685,24 +691,6 @@ class RustCallbackDispatchMixin:
             if stdin_stream is None or not self._drop_rust_stdin_packets(stdin_stream, host_packets):
                 return
             word = state.arch.bits
-
-            def leaf_packet(start, end):
-                # Evaluate each stdin symbol via Rust solver to get concrete bytes
-                concrete_bytes = bytearray()
-                for leaf in stdin_symbols[start:end]:
-                    if leaf is None:
-                        continue
-                    name, bits = leaf
-                    # Eval at the symbol's recorded width — a hardcoded 8 minted a
-                    # fresh unconstrained const for scanf %d/%ld (32/64-bit) symbols,
-                    # so the solved value never reached posix.dumps(0) (angr-ph300.18).
-                    nbytes = max(1, bits // 8)
-                    val = self._rust_mgr.eval_stdin_symbol(state_id, name, bits)
-                    if val is not None:
-                        concrete_bytes.extend((val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little"))
-                    else:
-                        concrete_bytes.extend(b"\x00" * nbytes)
-                return bytes(concrete_bytes)
 
             def host_packet(data, size):
                 name, bits = data
@@ -712,12 +700,10 @@ class RustCallbackDispatchMixin:
                     raw = raw[: len(raw) if n is None else n]
                 return raw
 
-            chunks, done = [], 0
-            for after, data, size in sorted(host_packets, key=lambda p: p[0]):
-                chunks.append(leaf_packet(done, after))
+            chunks = [leaf_runs[0]]
+            for (_, data, size), leaf_run in zip(host_packets, leaf_runs[1:]):
                 chunks.append(host_packet(data, size))
-                done = max(done, after)
-            chunks.append(leaf_packet(done, len(stdin_symbols)))
+                chunks.append(leaf_run)
             chunks = [chunk for chunk in chunks if chunk]
             for chunk in chunks:
                 data = claripy.BVV(chunk).annotate(_RustInjectedStdin())

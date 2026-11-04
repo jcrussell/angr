@@ -22,7 +22,8 @@
 //!   `set_state_memory_{concrete,ast}{,_automap}`,
 //!   `state_memory_store_symbolic_multi`, `get_state_mem_fillers`.
 //! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
-//!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`, `eval_stdin_symbol{,_bytes}`,
+//!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`,
+//!   `get_state_stdin_leaves`, `eval_stdin_leaf_runs`, `eval_stdin_symbol{,_bytes}`,
 //!   `record_stdin_host_packet`, `get_state_stdin_host_packets`,
 //!   `get_state_open_fds`, `has_state_extra_fds`, `get_state_fd_content`,
 //!   `register_state_fd`.
@@ -671,6 +672,22 @@ impl RustExplorationManager {
     /// cannot be found or evaluated.
     pub fn eval_stdin_symbol(&self, state_id: u64, name: &str, width: u32) -> Option<u64> {
         self._eval_stdin_symbol(state_id, name, width)
+    }
+
+    /// Every `(name, bits)` stdin leaf the state recorded, in read order,
+    /// with `None` for a leaf past a variable-length read's evaluated byte
+    /// count, so an index here is an index into the recorded leaves
+    /// (`rust_stdin_leaves`).
+    pub fn get_state_stdin_leaves(&self, state_id: u64) -> PyResult<Vec<Option<(String, u32)>>> {
+        self._get_state_stdin_leaves(state_id)
+    }
+
+    /// The packet bytes for each run of `get_state_stdin_leaves` that the
+    /// sorted leaf indices `cuts` delimit, `len(cuts) + 1` runs, all in one
+    /// call. Each leaf gives its low `max(1, bits / 8)` bytes, little-endian
+    /// (zeros when it does not evaluate). `None` for an unknown state.
+    pub fn eval_stdin_leaf_runs(&self, state_id: u64, cuts: Vec<usize>) -> Option<Vec<Vec<u8>>> {
+        self._eval_stdin_leaf_runs(state_id, &cuts)
     }
 
     /// Evaluate a stdin symbol of any width to its big-endian bytes, as

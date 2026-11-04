@@ -263,21 +263,12 @@ def rust_stdin_leaves(rust_mgr, state_id: int) -> list[tuple[str, int] | None]:
     A variable-length read (native ``fgets`` under SHORT_READS, ``gets``)
     records every leaf it minted but returns a symbolic byte count; Python
     keeps such a read as one packet of that size, so ``posix.dumps(0)`` drops
-    the leaves past it. Each is cut to its evaluated count here
-    (angr-mx00p.132.3): a leaf past it is ``None``, so an index into this list
-    is an index into the state's recorded leaves. An unevaluable count keeps
-    the whole read.
+    the leaves past it. Each is cut to its evaluated count (angr-mx00p.132.3,
+    done in Rust by ``get_state_stdin_leaves``): a leaf past it is ``None``,
+    so an index into this list is an index into the state's recorded leaves.
+    An unevaluable count keeps the whole read.
     """
-    symbols = []
-    for leaves, length in rust_mgr.get_state_stdin_packets(state_id):
-        kept = len(leaves)
-        if length is not None:
-            name, bits, seeded = length
-            returned = rust_mgr.eval_stdin_symbol(state_id, name, bits)
-            if returned is not None:
-                kept = max(0, returned - seeded)
-        symbols.extend(leaf if i < kept else None for i, leaf in enumerate(leaves))
-    return symbols
+    return rust_mgr.get_state_stdin_leaves(state_id)
 
 
 def rust_stdin_read_symbols(rust_mgr, state_id: int) -> list[tuple[str, int]]:

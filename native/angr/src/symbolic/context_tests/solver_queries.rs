@@ -1926,3 +1926,24 @@ fn branch_check_models_follow_fork_and_pop() {
     ctx.pop();
     assert!(ctx.model_cache.borrow().is_none() && ctx.alt_model_cache.borrow().is_none());
 }
+
+/// `eval_bv_symbol` answers what `eval(&RustBV::symbol(..))` does, on a cold
+/// context, from a warm cached model, and in deterministic mode (which skips
+/// the cached model for the feasible minimum) (angr-mx00p.136.29).
+#[test]
+fn eval_bv_symbol_matches_eval_of_the_symbol() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("eval_bv_symbol_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(0x1000_0000, 32)));
+    ctx.assume_true(&x.ult(&RustBV::concrete(0x1000_0010, 32)));
+
+    let cold = ctx.eval_bv_symbol("eval_bv_symbol_x", 32);
+    assert!(ctx.model_cache.borrow().is_some(), "the cold eval warms the model");
+    assert_eq!(cold, ctx.eval(&x));
+    assert_eq!(ctx.eval_bv_symbol("eval_bv_symbol_x", 32), cold);
+    assert!(matches!(cold, Some(v) if (0x1000_0001..0x1000_0010).contains(&v)));
+
+    ctx.set_deterministic(true);
+    assert_eq!(ctx.eval_bv_symbol("eval_bv_symbol_x", 32), Some(0x1000_0001));
+    assert_eq!(ctx.eval(&x), Some(0x1000_0001));
+}

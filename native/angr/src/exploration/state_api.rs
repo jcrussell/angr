@@ -1190,6 +1190,97 @@ impl RustExplorationManager {
         let sym = crate::symbolic::RustBV::symbol(name, width.max(1));
         ctx.eval(&sym).map(|v| v as u64)
     }
+
+    /// `get_state_stdin_leaves`: every stdin leaf the state recorded, in read
+    /// order, `None` past a variable-length read's evaluated byte count.
+    pub(crate) fn _get_state_stdin_leaves(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<Option<(String, u32)>>> {
+        self.with_state(state_id, |state| {
+            Ok(stdin_leaves(state)
+                .into_iter()
+                .map(|leaf| leaf.cloned())
+                .collect())
+        })
+    }
+
+    /// `eval_stdin_leaf_runs`: the bytes `posix.stdin` gets for each run of
+    /// [`stdin_leaves`] that `cuts` delimits, in one solver borrow (one FFI
+    /// per export, not one per leaf, angr-mx00p.136.29). The runs are
+    /// `[done, cut)` for each cut in order, with `done` the furthest cut so
+    /// far, then `[done, len)`; a run past the end is empty. Each leaf is
+    /// evaluated as `_eval_stdin_symbol` does and written as its low
+    /// `max(1, width / 8)` bytes, little-endian, or as that many zeros when
+    /// it does not evaluate; a `None` leaf writes nothing. `None` for an
+    /// unknown state.
+    pub(crate) fn _eval_stdin_leaf_runs(
+        &self,
+        state_id: u64,
+        cuts: &[usize],
+    ) -> Option<Vec<Vec<u8>>> {
+        let state = self.find_state(state_id)?;
+        let leaves = stdin_leaves(state);
+        let ctx = state.solver().borrow();
+        let run = |start: usize, end: usize| {
+            let mut out = Vec::new();
+            let end = end.min(leaves.len());
+            for (name, width) in leaves[start.min(end)..end].iter().flatten() {
+                let nbytes = (*width / 8).max(1) as usize;
+                // Truncated to u64 as `_eval_stdin_symbol` answers; a wider
+                // leaf is zero-padded past its low 8 bytes.
+                let value = ctx
+                    .eval_bv_symbol(name, (*width).max(1))
+                    .map_or(0, |v| v as u64);
+                out.extend(
+                    value
+                        .to_le_bytes()
+                        .into_iter()
+                        .chain(std::iter::repeat(0))
+                        .take(nbytes),
+                );
+            }
+            out
+        };
+        let mut runs = Vec::with_capacity(cuts.len().saturating_add(1));
+        let mut done = 0;
+        for &cut in cuts {
+            runs.push(run(done, cut));
+            done = done.max(cut);
+        }
+        runs.push(run(done, leaves.len()));
+        Some(runs)
+    }
+}
+
+/// Every `(name, width)` stdin leaf `state` recorded, in read order. A
+/// variable-length read (native `fgets` under SHORT_READS, `gets`) records
+/// every leaf it minted but returns a symbolic byte count; Python keeps such
+/// a read as one packet of that size, so `posix.dumps(0)` drops the leaves
+/// past it. Each is cut to its evaluated count here (angr-mx00p.132.3): a
+/// leaf past it is `None`, so an index into this list is an index into the
+/// state's recorded leaves. An unevaluable count keeps the whole read.
+fn stdin_leaves(state: &crate::state::RustSimState) -> Vec<Option<&(String, u32)>> {
+    let ctx = state.solver().borrow();
+    let mut leaves = Vec::new();
+    for (syms, read) in state.stdin_packets() {
+        let kept = read
+            .and_then(|r| {
+                let (name, bits) = &r.length;
+                let returned = ctx.eval(&crate::symbolic::RustBV::symbol(name, (*bits).max(1)))?;
+                // A count short of the seeded prefix keeps no leaf.
+                Some((returned as u64).saturating_sub(r.seeded as u64))
+            })
+            .map_or(syms.len(), |kept| {
+                usize::try_from(kept).unwrap_or(usize::MAX)
+            });
+        leaves.extend(
+            syms.iter()
+                .enumerate()
+                .map(|(i, leaf)| (i < kept).then_some(leaf)),
+        );
+    }
+    leaves
 }
 
 test_submod!("state_api_tests.rs" => tests);
