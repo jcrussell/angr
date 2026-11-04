@@ -20,6 +20,7 @@ from angr.exploration import (
     unsupported_rust_manager_kwargs,
 )
 from angr.sim_manager import SimulationManager
+from angr.sim_manager_backend import SimulationBackend
 
 # Rust availability guard lives in the parent conftest, which also supplies
 # the module-scoped ``fauxware_project`` fixture used below (angr-7gdp).
@@ -55,6 +56,7 @@ _SENTINELS = {
     "completion_mode": all,
     "techniques": None,
     "suggestions": False,
+    "backend": SimulationBackend(),
 }
 
 

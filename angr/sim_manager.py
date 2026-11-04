@@ -16,6 +16,7 @@ from .exploration_techniques import ExplorationTechnique, Explorer, Suggestions,
 from .misc.hookset import HookSet
 from .misc.picklable_lock import PicklableLock
 from .misc.ux import once
+from .sim_manager_backend import SimulationBackend
 from .sim_options import LAZY_SOLVES
 from .sim_state import SimState
 from .state_hierarchy import StateHierarchy
@@ -56,6 +57,8 @@ class SimulationManager:
                             hook set will interact. By default, the builtin function ``any``.
     :param techniques:      A list of techniques that should be pre-set to use with this manager.
     :param suggestions:     Whether to automatically install the Suggestions exploration technique. Default True.
+    :param backend:         A :class:`angr.sim_manager_backend.SimulationBackend` asked, per state and per step,
+                            whether it steps that state instead of the Python path. Default None (no backend).
 
     :ivar errored:          Not a stash, but a list of ErrorRecords. Whenever a step raises an exception that we catch,
                             the state and some information about the error are placed in this list. You can adjust the
@@ -70,6 +73,9 @@ class SimulationManager:
 
     _integral_stashes: tuple[str] = ("active", "stashed", "pruned", "unsat", "errored", "deadended", "unconstrained")
 
+    # A class default, so a manager unpickled from before the backend seam existed reads None, not a stash.
+    _backend: SimulationBackend | None = None
+
     def __init__(
         self,
         project,
@@ -83,6 +89,7 @@ class SimulationManager:
         completion_mode=any,
         techniques=None,
         suggestions=True,
+        backend=None,
         **kwargs,
     ):
         super().__init__()
@@ -91,6 +98,7 @@ class SimulationManager:
         self.completion_mode = completion_mode
         self._errored = []
         self._lock = PicklableLock()
+        self._backend = backend
 
         if stashes is None:
             stashes = self._create_integral_stashes()
@@ -224,6 +232,7 @@ class SimulationManager:
             completion_mode=self.completion_mode,
             errored=self._errored,
             suggestions=False,
+            backend=self._backend,
         )
         HookSet.copy_hooks(self, simgr, ExplorationTechnique._hook_list)
         return simgr
@@ -511,13 +520,21 @@ class SimulationManager:
         Don't use this function manually - it is meant to interface with exploration techniques.
         """
         error_list = error_list if error_list is not None else self._errored
+        claimed = False
+        if self._backend is not None:
+            claimed, reason = self._backend.claims(self, state, successor_func, run_args)
+            if not claimed:
+                l.debug("Backend %r declined %r: %s", self._backend, state, reason)
         try:
-            successors = self.successors(state, successor_func=successor_func, **run_args)
-            stashes = {
-                None: successors.flat_successors,
-                "unsat": successors.unsat_successors,
-                "unconstrained": successors.unconstrained_successors,
-            }
+            if claimed:
+                stashes = self._backend.step_state(self, state, error_list, **run_args)
+            else:
+                successors = self.successors(state, successor_func=successor_func, **run_args)
+                stashes = {
+                    None: successors.flat_successors,
+                    "unsat": successors.unsat_successors,
+                    "unconstrained": successors.unconstrained_successors,
+                }
 
         except (SimUnsatError, claripy.UnsatError) as e:
             if LAZY_SOLVES not in state.options:
@@ -922,6 +939,8 @@ class SimulationManager:
         s = {k: v for k, v in self.__dict__.items() if not isinstance(v, types.MethodType)}
         if self._hierarchy is not False:
             s["_hierarchy"] = None
+        # The backend holds live engine state; an unpickled manager steps on the Python path.
+        s["_backend"] = None
         return s
 
     def __setstate__(self, s):
