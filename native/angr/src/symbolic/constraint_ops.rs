@@ -476,33 +476,35 @@ impl SymContext {
         self.invalidate_model_if_inconsistent_batch(&constraints);
     }
 
-    /// Batched model invalidation: if the cached model fails to satisfy any
-    /// constraint in `constraints`, drop it. Short-circuits on the first
-    /// inconsistency. If the cache is already empty, returns immediately.
+    /// Batched model invalidation: drop each cached witness (`model_cache`,
+    /// `alt_model_cache`) that fails any constraint in `constraints`.
     fn invalidate_model_if_inconsistent_batch(&self, constraints: &[z3::ast::Bool]) {
+        self.retain_models_satisfying(|model| {
+            constraints
+                .iter()
+                .all(|constraint| model_satisfies(model, constraint))
+        });
+    }
+
+    /// Keep each cached witness that `satisfies` the constraint just added and
+    /// drop the rest; a surviving `alt_model_cache` is promoted when the
+    /// primary fails, so the taken side of a branch keeps the witness
+    /// `check_branch_feasibility` found for it.
+    fn retain_models_satisfying(&self, satisfies: impl Fn(&z3::Model) -> bool) {
         let mut cache = self.model_cache.borrow_mut();
-        if cache.is_none() {
+        let mut alt = self.alt_model_cache.borrow_mut();
+        if cache.is_none() && alt.is_none() {
             return;
         }
-        let mut still_valid = true;
-        if let Some(model) = cache.as_ref() {
-            for constraint in constraints {
-                // SILENT(cat-a): an eval/extraction failure means the cached
-                // model cannot be shown to satisfy this constraint, which is
-                // exactly the `false` case — the model is dropped and the next
-                // query re-solves. Never a wrong answer, only a lost cache hit.
-                let ok = model
-                    .eval(constraint, true)
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(false);
-                if !ok {
-                    still_valid = false;
-                    break;
-                }
+        let keep = |slot: Option<std::rc::Rc<z3::Model>>| slot.filter(|m| satisfies(m));
+        let primary = keep(cache.take());
+        let secondary = keep(alt.take());
+        match primary {
+            Some(m) => {
+                *cache = Some(m);
+                *alt = secondary;
             }
-        }
-        if !still_valid {
-            *cache = None;
+            None => *cache = secondary,
         }
     }
 
@@ -595,27 +597,12 @@ impl SymContext {
         tracker_idx
     }
 
-    /// If a cached model exists, drop it unless it still satisfies the new
-    /// constraint. Models that satisfy a superset of constraints stay valid;
-    /// this lets check_branch_feasibility reuse a model across consecutive
+    /// Drop each cached witness that no longer satisfies the new constraint.
+    /// Models that satisfy a superset of constraints stay valid; this lets
+    /// check_branch_feasibility reuse a model across consecutive
     /// assume_true/assume_false calls in deferred-fork mode.
     fn invalidate_model_if_inconsistent(&self, constraint: &z3::ast::Bool) {
-        let mut cache = self.model_cache.borrow_mut();
-        if cache.is_none() {
-            return;
-        }
-        // SILENT(cat-a): same as in `invalidate_model_if_inconsistent_batch` —
-        // an eval/extraction failure collapses to "cannot show the cached model
-        // still satisfies this", which drops the cache and forces a fresh
-        // solver check. Never a wrong answer, only a lost cache hit.
-        let still_valid = cache
-            .as_ref()
-            .and_then(|m| m.eval(constraint, true))
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false);
-        if !still_valid {
-            *cache = None;
-        }
+        self.retain_models_satisfying(|model| model_satisfies(model, constraint));
     }
 
     /// Add a constraint that the bitvector equals a specific value.
@@ -728,3 +715,16 @@ impl SymContext {
 }
 
 test_submod!("constraint_ops_tests.rs" => constraint_ops_tests);
+
+/// Whether `model` shows `constraint` true.
+///
+/// SILENT(cat-a): an eval/extraction failure means the model cannot be shown
+/// to satisfy the constraint, which is exactly the `false` case — the model is
+/// dropped and the next query re-solves. Never a wrong answer, only a lost
+/// cache hit.
+fn model_satisfies(model: &z3::Model, constraint: &z3::ast::Bool) -> bool {
+    model
+        .eval(constraint, true)
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false)
+}

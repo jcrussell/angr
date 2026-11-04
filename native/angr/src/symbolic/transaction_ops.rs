@@ -71,6 +71,7 @@ impl SymContext {
         // Invalidate caches since constraint set may change
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
+        *self.alt_model_cache.borrow_mut() = None;
     }
 
     /// Restore solver state.
@@ -89,6 +90,7 @@ impl SymContext {
         // Invalidate caches since constraint set has changed
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
+        *self.alt_model_cache.borrow_mut() = None;
     }
 
     /// Attempt a scope [`pop()`](Self::pop), refusing an unbalanced under-pop

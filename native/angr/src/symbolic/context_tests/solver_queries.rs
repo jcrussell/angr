@@ -1860,3 +1860,69 @@ fn test_takes_every_value() {
     residual.add_bv_constraint(&RustBV::symbol("tev_other", 8), 1);
     assert!(!residual.takes_every_value(&free));
 }
+
+// ---------------------------------------------------------------------------
+// angr-vmi2l.318: the model a branch-feasibility check finds for a side is a
+// witness of the state that then assumes that side, so the successor's
+// `is_sat_checked` answers from it instead of re-solving the same query.
+// ---------------------------------------------------------------------------
+
+/// The side the cached model does not predict keeps its own witness once the
+/// state assumes it, and that witness satisfies every constraint.
+#[test]
+fn branch_check_model_witnesses_the_assumed_side() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    assert_eq!(ctx.is_sat_checked(), Some(true));
+    let v = ctx.eval(&x).expect("a satisfiable context evals");
+    // The cached model has x == v, so it predicts `x != v` false and only
+    // the `x != v` side reaches Z3.
+    let cond = x.ne(&RustBV::concrete(v, 32));
+    assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
+    assert!(ctx.alt_model_cache.borrow().is_some());
+
+    ctx.assume_true(&cond);
+    assert!(
+        ctx.model_cache.borrow().is_some(),
+        "the taken side must keep the model its feasibility check found"
+    );
+    assert_eq!(ctx.is_sat_checked(), Some(true));
+    let w = ctx.eval(&x).expect("the promoted witness evals");
+    assert!(w != v && w > 10, "the witness must satisfy x > 10 and x != {v}, got {w}");
+}
+
+/// A fresh context with no model keeps both sides' witnesses, and a later
+/// constraint neither satisfies drops both, so UNSAT is still decided by Z3.
+#[test]
+fn branch_check_models_are_dropped_when_stale() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("x", 32);
+    let cond = x.ugt(&RustBV::concrete(10, 32));
+    assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
+    assert!(ctx.model_cache.borrow().is_some() && ctx.alt_model_cache.borrow().is_some());
+
+    ctx.assume_false(&cond);
+    assert!(ctx.model_cache.borrow().is_some(), "the ¬cond witness is promoted");
+    assert!(ctx.alt_model_cache.borrow().is_none(), "the cond witness fails ¬cond");
+    let w = ctx.eval(&x).expect("the promoted witness evals");
+    assert!(w <= 10, "the witness must satisfy x <= 10, got {w}");
+
+    ctx.assume_true(&cond);
+    assert!(ctx.model_cache.borrow().is_none());
+    assert_eq!(ctx.is_sat_checked(), Some(false));
+}
+
+/// A fork carries both witnesses, and a scope `pop` drops both.
+#[test]
+fn branch_check_models_follow_fork_and_pop() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("x", 32);
+    let cond = x.ugt(&RustBV::concrete(10, 32));
+    ctx.push();
+    assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
+    let child = ctx.fork();
+    assert!(child.alt_model_cache.borrow().is_some());
+    ctx.pop();
+    assert!(ctx.model_cache.borrow().is_none() && ctx.alt_model_cache.borrow().is_none());
+}

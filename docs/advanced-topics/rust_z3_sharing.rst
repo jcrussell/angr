@@ -152,8 +152,9 @@ Scope save/restore on a ``SymContext`` is a **single** system today:
 (``native/angr/src/symbolic/transaction_ops.rs``), layered over the
 ``scope_savepoint_push`` / ``scope_savepoint_pop`` helpers
 (``native/angr/src/symbolic/lineage_ops.rs``). ``push()`` calls
-``scope_savepoint_push()`` then invalidates ``sat_cache`` /
-``model_cache``; ``pop()`` is symmetric.
+``scope_savepoint_push()`` then invalidates ``sat_cache`` and both
+cached witnesses (``model_cache`` / ``alt_model_cache``); ``pop()`` is
+symmetric.
 
 .. note::
 

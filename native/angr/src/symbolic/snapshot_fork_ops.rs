@@ -622,6 +622,7 @@ impl SymContext {
             // fresh model to the parent's equally-valid one.
             sat_cache: Cell::new(self.sat_cache.get()),
             model_cache: RefCell::new(self.model_cache.borrow().clone()),
+            alt_model_cache: RefCell::new(self.alt_model_cache.borrow().clone()),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
             // angr-op0dn.10.2: a whole lineage stays in one witness-selection

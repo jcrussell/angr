@@ -312,6 +312,14 @@ impl SymContext {
         if let Some(cached) = self.sat_cache.get() {
             return Some(cached);
         }
+        // A cached model witnesses every current constraint (the invariant
+        // `invalidate_model_if_inconsistent` keeps), so it proves SAT without
+        // a check: the taken side of a branch keeps the model its feasibility
+        // check found (angr-vmi2l.318).
+        if self.model_cache.borrow().is_some() {
+            self.sat_cache.set(Some(true));
+            return Some(true);
+        }
         let _class =
             query_class::scope(|| query_class::classify_sat(&self.get_assumed_constraints()));
         // Perform actual SAT check. Both the check() and the post-check
@@ -433,7 +441,7 @@ impl SymContext {
                     // (angr-ph300.43). Conservatively keep the branch on Unknown
                     // (decided() == None) — only Some(false) prunes.
                     let can_false =
-                        timed_check(solver, CheckSite::BranchFalse).decided() != Some(false);
+                        self.check_branch_side(solver, CheckSite::BranchFalse) != Some(false);
                     solver.pop(1);
                     (true, can_false)
                 }
@@ -445,7 +453,7 @@ impl SymContext {
                     // Unknown must not prune the true branch (angr-ph300.43):
                     // only a decided Unsat (Some(false)) makes it infeasible.
                     let can_true =
-                        timed_check(solver, CheckSite::BranchTrue).decided() != Some(false);
+                        self.check_branch_side(solver, CheckSite::BranchTrue) != Some(false);
                     solver.pop(1);
                     (can_true, true)
                 }
@@ -459,7 +467,7 @@ impl SymContext {
                     // silently killing the feasible true branch.
                     solver.push();
                     solver.assert(&bool_ast);
-                    let cond_check = timed_check(solver, CheckSite::BranchTrue).decided();
+                    let cond_check = self.check_branch_side(solver, CheckSite::BranchTrue);
                     solver.pop(1);
                     let can_true = cond_check != Some(false);
 
@@ -472,13 +480,35 @@ impl SymContext {
                     solver.push();
                     solver.assert(bool_ast.not());
                     let can_false =
-                        timed_check(solver, CheckSite::BranchFalse).decided() != Some(false);
+                        self.check_branch_side(solver, CheckSite::BranchFalse) != Some(false);
                     solver.pop(1);
 
                     (can_true, can_false)
                 }
             }
         })
+    }
+
+    /// Run one side's check inside `check_branch_feasibility`'s push scope and
+    /// keep its model as a witness of the current constraints: a model of
+    /// `constraints ∧ side` satisfies `constraints`. It fills `model_cache`
+    /// when that is empty, else `alt_model_cache`, so the side the state then
+    /// assumes still has a witness and its next `is_sat_checked` skips Z3
+    /// (angr-vmi2l.318).
+    fn check_branch_side(&self, solver: &z3::Solver, site: CheckSite) -> Option<bool> {
+        let decided = timed_check(solver, site).decided();
+        if decided == Some(true)
+            && let Some(model) = solver.get_model()
+        {
+            let model = Some(std::rc::Rc::new(model));
+            let mut primary = self.model_cache.borrow_mut();
+            if primary.is_none() {
+                *primary = model;
+            } else {
+                *self.alt_model_cache.borrow_mut() = model;
+            }
+        }
+        decided
     }
 
     /// Whether strict-deterministic witness selection is on (angr-op0dn.10.2).

@@ -178,6 +178,13 @@ pub struct SymContext {
     /// (slice 7, angr-wf6f) can read/write it. Held in an `Rc` so a fork
     /// shares the parent's model instead of copying it (angr-gorvf.16).
     pub(super) model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
+    /// A second witness of the current constraints: the model of the branch
+    /// side `check_branch_feasibility` checked that `model_cache` does not
+    /// already satisfy. Whichever side the state then assumes keeps a
+    /// witness, so `is_sat_checked` on the successor needs no fresh Z3
+    /// check (angr-vmi2l.318). Same invariant and invalidation as
+    /// `model_cache`, which it is promoted into when that one goes stale.
+    pub(super) alt_model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
     /// List of Z3 tracking boolean constants for unsat core mapping.
     /// Each entry is a (track_bool, constraint_ast) pair.
     /// `pub(super)` for `add_constraint_tracked_indexed` in `constraint_ops.rs`
@@ -325,6 +332,7 @@ impl SymContext {
             solver: Mutex::new(Some(solver)),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
+            alt_model_cache: RefCell::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(timeout_ms),
             deterministic: AtomicBool::new(false),
