@@ -340,6 +340,12 @@ impl<'a> VEXInterpreter<'a> {
                             }
                             // For Call/Ret, we might want to return for SimProcedures
                             if self.is_hooked(next_addr) {
+                                // A Python step runs the block into a hook and
+                                // the hook as two steps; the loop-top hook
+                                // check serves it next call (angr-mx00p.136.3).
+                                if block_granular {
+                                    break;
+                                }
                                 let forks = self.take_deferred_forks();
                                 // Update PC before extracting args (so SP/ret addr are correct)
                                 self.pc = next_addr;
@@ -420,6 +426,11 @@ impl<'a> VEXInterpreter<'a> {
                                 jumpkind: crate::state::HistoryEntry::jumpkind_from_vex(&jumpkind),
                                 jump_target: addr,
                             });
+                            // As for a BlockEnd into a hook: one step each.
+                            if block_granular {
+                                self.pc = addr;
+                                break;
+                            }
                             let forks = self.take_deferred_forks();
                             // Check if this is a registered SimProcedure
                             if let Some(info) = self.simprocedure_registry.get(&addr).cloned() {

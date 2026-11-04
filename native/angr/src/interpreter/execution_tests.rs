@@ -395,3 +395,44 @@ fn emfail_and_mapfail_block_ends_error_but_emwarn_continues() {
         "Ijk_EmWarn must not error, got {result:?}"
     );
 }
+
+// angr-mx00p.136.3: a Python step runs the block that jumps into a hook and the
+// hook itself as two steps. Granular mode stops at the hooked target, and the
+// next call serves the SimProcedure without running a block; a chaining run
+// returns the SimProcedure from the call that ran the block.
+#[test]
+fn granular_run_stops_at_a_hooked_target_before_serving_it() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.next = IRExpr::Const(IRConst::U64(0x1800));
+    irsb.jumpkind = JumpKind::Boring;
+    interp.cache_block(0x1000, irsb);
+    interp.register_simprocedure(0x1800, "puts".to_string(), 1);
+    let callbacks = TestHost::default();
+    let no_stops = std::collections::HashSet::new();
+
+    interp.set_pc(0x1000);
+    let (result, blocks, _forks) = interp.run_until_event(&callbacks, 16, &no_stops, false);
+    assert!(
+        matches!(result, RunResult::SimProcedure { addr: 0x1800, .. }),
+        "chaining serves the hook in the same call, got {result:?}"
+    );
+    assert_eq!(blocks, 1);
+
+    interp.set_pc(0x1000);
+    let (result, blocks, _forks) = interp.run_until_event(&callbacks, 16, &no_stops, true);
+    assert!(
+        matches!(result, RunResult::MaxBlocks { pc: 0x1800 }),
+        "granular stops at the hook, got {result:?}"
+    );
+    assert_eq!(blocks, 1);
+
+    let (result, blocks, _forks) = interp.run_until_event(&callbacks, 16, &no_stops, true);
+    assert!(
+        matches!(result, RunResult::SimProcedure { addr: 0x1800, .. }),
+        "the next granular call serves the hook, got {result:?}"
+    );
+    assert_eq!(blocks, 0);
+}

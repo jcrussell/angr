@@ -5837,6 +5837,65 @@ class RustExplorationManager(
             rust.move_states(_STEP_ROUND_QUEUE, "active", None)
         return keep_going, stepped
 
+    def _step_ids_once(self, ids) -> dict[int, dict[str, list[int]]]:
+        """Step each active state of ``ids`` once, as one SimulationManager step does; map it to its children.
+
+        The primitive the simgr backend steps through (angr-mx00p.136.3). Each id is advanced by its own
+        block-granular ``run(1)`` with every other state parked, so whatever lands in a stash during that run
+        is its child. A state that does not fork keeps its id, so a deadended state maps to itself under
+        ``"deadended"``. The returned dict has one entry per id, keyed by the Rust stash each child landed in
+        (``"active"`` for the flat successors), and the active children rejoin ``active``. Terminal states are
+        kept, the find/avoid targets stay disarmed (no explore() is running), and the manager's settings and
+        the other active states are restored before it returns.
+        """
+        rust = self._rust_mgr
+        self._invalidate_state_export_cache()
+        self._frontier_is_seeds = False
+        self._disarm_explore_targets()
+        wanted = list(ids)
+        rust.move_states("active", _STEP_ROUND_QUEUE, None)
+        queued = set(rust.get_state_ids(_STEP_ROUND_QUEUE))
+        missing = [sid for sid in wanted if sid not in queued]
+        if missing:
+            rust.move_states(_STEP_ROUND_QUEUE, "active", None)
+            raise ValueError(f"_step_ids_once: states {missing} are not active")
+
+        private = {"active", _STEP_ROUND_QUEUE, _STEP_ROUND_DONE}
+        counts = {k: v for k, v in rust.stash_counts().items() if k not in private}
+        seen = {k: set(rust.get_state_ids(k)) for k, v in counts.items() if v}
+        drop_terminal = rust.stats()["drop_terminal_states"]
+        rust.set_drop_terminal_states(False)
+        was_granular = self.set_block_granular(True)
+        children: dict[int, dict[str, list[int]]] = {}
+        try:
+            for sid in wanted:
+                rust.move_state(sid, _STEP_ROUND_QUEUE, "active")
+                self._stats_ffi_crossings += 1
+                event = rust.run(1)
+                rust.sync_state_index()
+                if event.event_type == "need_callback":
+                    self._dispatch_callback(event)
+                elif event.event_type == "errored":
+                    l.debug("_step_ids_once: state %d errored: %s", sid, event.callback_reason)
+                buckets = {"active": rust.get_state_ids("active")}
+                for name, count in rust.stash_counts().items():
+                    if name in private or count == counts.get(name, 0):
+                        continue
+                    counts[name] = count
+                    now = rust.get_state_ids(name)
+                    before = seen.setdefault(name, set())
+                    buckets[name] = [cid for cid in now if cid not in before]
+                    before.update(now)
+                children[sid] = {name: cids for name, cids in buckets.items() if cids}
+                rust.move_states("active", _STEP_ROUND_DONE, None)
+        finally:
+            self.set_block_granular(was_granular)
+            rust.set_drop_terminal_states(drop_terminal)
+            rust.move_states(_STEP_ROUND_DONE, "active", None)
+            rust.move_states(_STEP_ROUND_QUEUE, "active", None)
+        self._release_gone_exports()
+        return children
+
     def _step_event_keeps_going(self, event) -> bool:
         """Dispatch a pending callback from a step's ``run(1)`` event; return False when stepping should stop."""
         kind = event.event_type
