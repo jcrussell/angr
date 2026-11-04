@@ -1,4 +1,4 @@
-"""SimulationManager+RustBackend: an explore() runs natively (angr-mx00p.136.14, angr-mx00p.136.15).
+"""SimulationManager+RustBackend: an explore() or a plain run() runs natively (angr-mx00p.136.14, angr-mx00p.136.15).
 
 With no ``n``, ``until`` or step arguments and only an Explorer (plus
 the default Suggestions) installed, :meth:`SimulationManager.run` hands the
@@ -233,3 +233,34 @@ def test_a_dfs_with_states_already_deferred_keeps_the_per_step_path():
 
     assert backend.stats["fast_path_runs"] == 0
     assert len(simgr.found) == 1
+
+
+FORK_TREE_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "benchmarks", "synthetic_examples", "cow_fork_scaling", "fork_tree_8"
+)
+
+
+def _fork_tree_simgr():
+    # cow_fork_scaling's setup: 2**8 leaves, each returning through the blank state's symbolic return address.
+    project = angr.Project(FORK_TREE_PATH, auto_load_libs=False)
+    state = project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr)
+    state.posix.stdin.content.append((claripy.BVS("stdin", 16 * 8), claripy.BVV(16, state.arch.bits)))
+    backend = RustBackend(project)
+    return angr.SimulationManager(project, [state], backend=backend), backend
+
+
+@pytest.mark.parametrize("name", ["fauxware", "fork_tree"])
+def test_a_plain_run_runs_natively_with_the_per_step_stashes(name):
+    runs = []
+    for fast in (True, False):
+        simgr, backend = _fork_tree_simgr() if name == "fork_tree" else _simgr(name)
+        simgr.run(n=None if fast else PER_STEP_N)
+        runs.append((simgr, backend))
+    (fast, fast_backend), (per_step, per_step_backend) = runs
+
+    assert fast_backend.stats["fast_path_runs"] == 1
+    assert per_step_backend.stats["fast_path_runs"] == 0
+    assert not fast.active
+    assert _summary(fast) == _summary(per_step)
+    if name == "fork_tree":
+        assert len(fast.unconstrained) == 2**8

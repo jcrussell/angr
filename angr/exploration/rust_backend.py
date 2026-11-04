@@ -329,10 +329,10 @@ class RustBackend(SimulationBackend):
                 self._release(mgr, cid)
 
     def try_run(self, simgr: SimulationManager, stash: str, n: int | None, until, run_args: dict) -> bool:
-        """Run an ``explore()`` to its end in one native run (angr-mx00p.136.14).
+        """Run an ``explore()`` or ``run()`` to its end in one native run (angr-mx00p.136.14).
 
         Taken when the run has no ``n``, ``until`` or step arguments, the
-        manager's only techniques are one :class:`Explorer` (no ``cfg``, no
+        manager's only techniques are at most one :class:`Explorer` (no ``cfg``, no
         ``avoid_priority``) and the default Suggestions, and every state of
         *stash* would be claimed this
         step. The private manager's ``explore`` runs them, then every state it
@@ -346,7 +346,7 @@ class RustBackend(SimulationBackend):
         self._simgr = weakref.ref(simgr)
         explorer = self._fast_path_explorer(simgr, stash, n, until, run_args)
         states = simgr._stashes[stash]
-        if explorer is None or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
+        if explorer is False or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
             return False
         limiter = self._fast_path_limiter(simgr, stash, states)
         dfs = self._fast_path_dfs(simgr, stash, explorer)
@@ -360,27 +360,31 @@ class RustBackend(SimulationBackend):
 
     @staticmethod
     def _fast_path_explorer(simgr: SimulationManager, stash: str, n, until, run_args: dict):
-        """The run's Explorer when the fast path can stand in for it, else None."""
+        """The run's Explorer, None if it has none (a plain ``run()``), False when the fast path cannot stand in."""
         from angr.exploration_techniques import DFS, Explorer, LengthLimiter, Suggestions
         from angr.sim_manager import SimulationManager
 
         if n is not None or until is not None or run_args:
-            return None
+            return False
         cls = type(simgr)
         if any(
             getattr(cls, m) is not getattr(SimulationManager, m) for m in ("step", "step_state", "filter", "selector")
         ):
-            return None
+            return False
         explorers = [t for t in simgr._techniques if type(t) is Explorer]
-        if len(explorers) != 1 or any(
+        if len(explorers) > 1 or any(
             type(t) not in (Explorer, Suggestions, LengthLimiter, DFS) for t in simgr._techniques
         ):
+            return False
+        if not explorers:
+            # The private manager's active stash ends empty as the Python loop's does; terminal
+            # states land in their stashes either way (angr-mx00p.136.40).
             return None
         (explorer,) = explorers
         if explorer.cfg is not None or explorer.avoid_priority:
-            return None
+            return False
         if len({stash, explorer.find_stash, explorer.avoid_stash}) != 3:
-            return None
+            return False
         return explorer
 
     def _fast_path_limiter(self, simgr: SimulationManager, stash: str, states: list[SimState]):
@@ -433,7 +437,8 @@ class RustBackend(SimulationBackend):
             return False
         (dfs,) = dfs_list
         name = dfs.deferred_stash
-        if name.startswith("_") or name in (stash, explorer.find_stash, explorer.avoid_stash, "found", "avoid"):
+        written = () if explorer is None else (explorer.find_stash, explorer.avoid_stash)
+        if name.startswith("_") or name in (stash, *written, "found", "avoid"):
             return False
         if simgr._stashes.get(name):
             return False
@@ -463,12 +468,18 @@ class RustBackend(SimulationBackend):
 
         *limiter* is :meth:`_fast_path_limiter`'s ``(max_length, drop)``, armed for this run only;
         *dfs* is :meth:`_fast_path_dfs`'s DFS, replayed between rounds for this run only.
+        *explorer* None runs *states* until no state is active, as a plain ``run()`` does.
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
         sids = self._activate(mgr, states)
         roots = tuple(sorted({root for sid in sids for root in self._root_of[sid]}))
-        num_find = explorer.num_find - len(simgr._stashes.get(explorer.find_stash, ()))
+        if explorer is None:
+            find = avoid = num_find = None
+        else:
+            find = _explore_target(explorer.find, explorer.static_find)
+            avoid = _explore_target(explorer.avoid, explorer.static_avoid)
+            num_find = max(explorer.num_find - len(simgr._stashes.get(explorer.find_stash, ())), 1)
         drop_terminal = rust.stats()["drop_terminal_states"]
         rust.set_drop_terminal_states(False)
         if limiter is not None:
@@ -477,9 +488,9 @@ class RustBackend(SimulationBackend):
             mgr._round_reorder = self._dfs_round(rust, dfs)
         try:
             mgr.explore(
-                find=_explore_target(explorer.find, explorer.static_find),
-                avoid=_explore_target(explorer.avoid, explorer.static_avoid),
-                num_find=max(num_find, 1),
+                find=find,
+                avoid=avoid,
+                num_find=num_find,
                 # In rounds, one native block step of every active state each, so the run stops on
                 # the same step, with the same frontier, as SimulationManager's own loop.
                 n=sys.maxsize,
@@ -507,7 +518,9 @@ class RustBackend(SimulationBackend):
             for sid in sids:
                 if sid not in ended_ids:
                     self._unref(sid)
-        targets = {"active": stash, "found": explorer.find_stash, "avoid": explorer.avoid_stash}
+        targets = {"active": stash}
+        if explorer is not None:
+            targets.update(found=explorer.find_stash, avoid=explorer.avoid_stash)
         if limiter is not None and not limiter[1]:
             # LengthLimiter's step() leaves a ``cut`` stash, empty or not.
             targets["cut"] = "cut"
