@@ -84,3 +84,5 @@ pub(crate) fn vex_ccall(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SUPPORTED", SUPPORTED.to_vec())?;
     Ok(())
 }
+
+test_submod!("vex_ccall_tests.rs" => vex_ccall_tests);

@@ -446,3 +446,5 @@ pub(crate) fn vex_irop(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SUPPORTED", names)?;
     Ok(())
 }
+
+test_submod!("vex_irop_tests.rs" => vex_irop_tests);
