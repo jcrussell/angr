@@ -10,7 +10,7 @@
 //! behavioural tests are in `callbacks/inspect_tests.rs`.
 //!
 //! Every entry is written against a `self.forward(..)` placeholder that
-//! [`angr_macros::inspect_test_entries`] rewrites to
+//! [`angr_symex_macros::inspect_test_entries`] rewrites to
 //! `call_inspect_<entry name>`, so the Rust method name, the Python-visible
 //! name and the dispatch method under test all derive from one ident — a
 //! copy-paste between the identically-typed pairs (mem_read/mem_write,
@@ -25,7 +25,7 @@
 //! a test for one of those has to assert on a side effect the Python callback
 //! recorded instead.
 
-use angr_macros::inspect_test_entries;
+use angr_symex_macros::inspect_test_entries;
 use pyo3::prelude::*;
 
 use super::PythonCallbacks;

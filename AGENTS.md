@@ -94,7 +94,7 @@ indistinguishable from one that cannot. The newer scripts
 | `tools/audit_silent_fallback.py` | `return Ok(None)` / `.ok();` discards (bare, or as a `let` tail) without a `// SILENT(cat-a\|b\|c): <why>` tag (baseline) | the tag | `silent_default!` doc in `native/angr/src/lib.rs`: `cat_b` logs debug, `cat_c` logs warn, there is no `cat_a` arm; `let _ = fallible` is denied by clippy (`let_underscore_must_use`), so spell expected discards `drop(expr)` + tag, or `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): …")]` for `Copy` results. Wildcard `_ =>` arms are not auto-detected: at a trust boundary fail loud. |
 | `tools/audit_silent_fallback_test_pairing.py` | a new `cat_b`/`cat_c` site in the diff with no regression test in the same diff (diff-based) | — | same macro doc |
 | `tools/audit_satresult.py` | raw `z3::SatResult::{Sat,Unsat}` matches outside test code (`*_tests.rs`, `*_tests/`) | `// satresult-exempt: <why>` on the line or either of the two above | `SatOutcome::decided` in `symbolic/solver_build.rs` (`invariant-z3-unknown-not-unsat`): `Unknown` is never `Unsat` |
-| `#[angr_macros::steady_guard_checked]` | any `&mut self` method, whatever its visibility, on a `#[pymethods] impl RustExplorationManager` block (`exploration/manager_methods*.rs`) lacking `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]` → `compile_error!` | the `exempt` attribute with a reason | macro doc in `native/angr-macros/src/lib.rs`; `angr-macros-call-site-invariants` |
+| `#[angr_symex_macros::steady_guard_checked]` | any `&mut self` method, whatever its visibility, on a `#[pymethods] impl RustExplorationManager` block (`exploration/manager_methods*.rs`) lacking `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]` → `compile_error!` | the `exempt` attribute with a reason | macro doc in `native/angr-symex-macros/src/lib.rs`; `angr-macros-call-site-invariants` |
 | `tools/audit_rounding_mode_threading.py` | a closure in a `fn *_rm` that ignores its rounding-mode parameter, or an rm operand bound to `_rm` and dropped (`vex/`, `interpreter/`; empty baseline) | `rm-ignored: <why>` on the line above, or as the site's trailing comment | `VEXOps::binop_with_rm` / `qop_with_rm`, `ops::float_arith::apply_rounding` |
 | `tools/audit_sp_default_zero.py` | an SP / return-address accessor chained to `.unwrap_or(0)` / `.unwrap_or_default()` (empty baseline) | `sp-default-ok: <why>` on the line above, or as the site's trailing comment | `AddrOrSymbolic::or_log` in `arch/mod.rs` — the typed accessors have no `Default`/`From<u64>`, `.concrete()` is the only escape hatch |
 | `tools/audit_overflow_wraparound.py` | a bare `+`/`-`/`+=`/`-=` on an address/size/offset/count-shaped operand in `native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/` and `native/angr-bv/src/` (empty baseline) | `overflow-ok: <why>` on the flagged line or either of the two above (for a multi-line expression the flagged line is the continuation carrying the operator) | address arithmetic wraps, sizes and identities refuse: `invariant-rust-concrete-arith-must-wrap`, `invariant-proc-address-arith-wrapping`, `invariant-overflow-fix-refuse-not-saturate-identities`; `cargo test --profile release-checked` has overflow-checks on but is a runtime net only |
@@ -107,7 +107,7 @@ others" bug family, strongest first: make the unchecked value
 unrepresentable (`BoundedArg`, `AddrOrSymbolic`), then a compile-time
 macro over the whole impl/struct (`steady_guard_checked`, `MergePolicy`),
 then a baseline-gated script. Why, in the "Which enforcement shape to
-reach for" section of the `native/angr-macros/src/lib.rs` crate doc.
+reach for" section of the `native/angr-symex-macros/src/lib.rs` crate doc.
 
 ## Where context lives
 
@@ -128,7 +128,7 @@ per-decision detail. Look here first, then `bd recall`.
 | Wheel distribution | docs/advanced-topics/rust_wheel_distribution.rst | avoid-pip-install-deps |
 | VEX op contribution | docs/extending-angr/rust_vex_ops.rst | invariant-vex-op-no-concrete-zero-fallback |
 | Native SimProcedures & syscalls | docs/extending-angr/simprocedures.rst, docs/extending-angr/native_coverage_matrix.rst | invariant-syscall-arg-extraction |
-| Proc-macro invariants | native/angr-macros/src/lib.rs crate doc | angr-macros-call-site-invariants |
+| Proc-macro invariants | native/angr-symex-macros/src/lib.rs crate doc | angr-macros-call-site-invariants |
 | Bead priority / type rubric | TRIAGE.md (repo root) | triage-rubric |
 
 Live numbers never go in prose: `tests/benchmarks/baseline_timings.json`
@@ -192,7 +192,7 @@ module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
   `fuzzer/`, `automaton/`.
 - **Value layer** (`native/angr-bv/`): `SymBV` (the engine's `RustBV`) and
   its ops, with no solver dependency; `src/lib.rs` indexes its files.
-- **Compiler-enforced invariants**: `native/angr-macros/` (`steady_guarded`
+- **Compiler-enforced invariants**: `native/angr-symex-macros/` (`steady_guarded`
   / `steady_guard_checked`, `MergePolicy`, `callback_setters!`,
   `inspect_test_entries!`, `inspect_dispatch!`); the crate doc explains
   each.

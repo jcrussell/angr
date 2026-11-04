@@ -1,5 +1,5 @@
 //! Hand-written half of the `RustSimState::merge` field-policy census —
-//! the **21** fields `#[derive(angr_macros::MergePolicy)]` generates no
+//! the **21** fields `#[derive(angr_symex_macros::MergePolicy)]` generates no
 //! `merge_field_<name>` for, so nothing but a hand-authored expected value
 //! can check them.
 //!

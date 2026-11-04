@@ -113,7 +113,7 @@ SUBSYSTEMS = (
     "exploration",
 )
 SCAN = {"native/angr": SUBSYSTEMS, "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 150
 BASELINE_PATH = REPO_ROOT / "tools" / "overflow_baseline.txt"

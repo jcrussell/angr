@@ -61,7 +61,7 @@ from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roo
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
 SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 # Fewer non-test, fork-owned files than this means the code moved out of the scan roots.
 MIN_FILES = 200
 BASELINE_PATH = REPO_ROOT / "tools" / "silent_fallback_baseline.txt"

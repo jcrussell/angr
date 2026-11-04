@@ -11,7 +11,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -30,7 +30,7 @@ impl RustExplorationManager {
     /// worker Z3 contexts and is in NO stash, so dumping `self.sm` mid-session
     /// would silently truncate the search — the snapshot would look valid and
     /// resume with a smaller frontier. Finalize-then-capture is the contract.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn dump_snapshot_bytes<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
         self.flush_parked_bounces_to_active();
         let bytes = self.sm.dump_snapshot();
@@ -84,7 +84,7 @@ impl RustExplorationManager {
     /// on purpose, and buys nothing — a lazily-memoizing policy populates its
     /// side table on the next `select`.
     ///
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "the guard must run AFTER the fallible parse below, not as the unconditional \
                   first statement #[steady_guarded] would inject — a malformed envelope should \
                   error out without finalizing a live session that turns out not to be \

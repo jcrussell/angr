@@ -24,7 +24,7 @@ use lru::LruCache;
 /// angr-sqfj8.28/.29: the native-technique registrars
 /// (`manager_methods_techniques.rs`) and native-procedure mutators
 /// (`manager_methods_procedures.rs`) were missing the guard entirely — fixed
-/// via the `#[angr_macros::steady_guarded]` attribute macro (which injects
+/// via the `#[angr_symex_macros::steady_guarded]` attribute macro (which injects
 /// `self.steady_config_guard();` as the method's first statement) rather than
 /// a hand-written call, so the same class of omission can't recur silently.
 /// Covered below alongside the pre-existing sites.

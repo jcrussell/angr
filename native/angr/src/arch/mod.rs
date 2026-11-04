@@ -331,13 +331,13 @@ pub(crate) use impl_arch_registers;
 /// with [`crate::memory::SymbolicMemory`], the "field-added-without-a-merge-line"
 /// bug family recurred one level deeper ([`Self::merge`]'s
 /// concrete-diff chunk scan shadowed an already-merged unaligned sub-register
-/// overlay; angr-c7xno.1). Deriving [`angr_macros::MergePolicy`] here extends the guarantee:
+/// overlay; angr-c7xno.1). Deriving [`angr_symex_macros::MergePolicy`] here extends the guarantee:
 /// a new field does not compile until it declares how [`Self::merge`] treats it.
 ///
 /// [`Self::merge`] mutates `self` in place rather than building a new struct, so
 /// "self wins" is spelled `in_place_self` — there is no assignment for a
 /// generated `merge_field_<name>()` to replace.
-#[derive(Clone, Serialize, Deserialize, angr_macros::MergePolicy)]
+#[derive(Clone, Serialize, Deserialize, angr_symex_macros::MergePolicy)]
 #[serde(try_from = "RegisterFileData", into = "RegisterFileData")]
 pub struct RegisterFile {
     /// Raw storage (byte-addressable). `Arc`-wrapped so `fork`/`Clone`

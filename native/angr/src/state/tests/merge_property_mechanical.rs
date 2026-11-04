@@ -3,7 +3,7 @@
 //! [`super::merge_property_manual`]; this header carries the rationale both
 //! halves share.
 //!
-//! `#[derive(angr_macros::MergePolicy)]` on `RustSimState` (`state/mod.rs`)
+//! `#[derive(angr_symex_macros::MergePolicy)]` on `RustSimState` (`state/mod.rs`)
 //! proves every field carries a `#[merge_policy = "..."]` label, and for the
 //! mechanical policies (`self_wins`/`union`/`max`/`min`/
 //! `warn_on_diverge`, minus any field opted out via `#[merge_manual]`)
@@ -29,7 +29,7 @@
 //! sequencing, etc: those files exist first and stay authoritative for that
 //! depth). They are additive to `memory/tests/merge_sidecars.rs`, which
 //! censuses `SymbolicMemory`'s own independent
-//! `#[derive(angr_macros::MergePolicy)]` one level below the `memory` field's
+//! `#[derive(angr_symex_macros::MergePolicy)]` one level below the `memory` field's
 //! `delegate` label — same census shape, one level up the struct tree.
 //!
 //! Layout here: one test per policy kind, each merging one pair of states

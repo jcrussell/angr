@@ -42,7 +42,7 @@ from rust_source_utils import ScanRootError, is_test_file, require_floor, rust_f
 
 REPO = Path(__file__).resolve().parent.parent
 SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: its tests never start Python"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: its tests never start Python"}
 # Fewer test files than this means the tests moved out of the scan roots.
 MIN_FILES = 150
 

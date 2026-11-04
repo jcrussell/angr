@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "native/angr",
     "native/angr-bv",
-    "native/angr-macros",
+    "native/angr-symex-macros",
     "native/clarirs-core",
     "native/clarirs-num",
     "native/clarirs-vsa",
@@ -38,7 +38,7 @@ repository = "https://github.com/angr/angr.git"
 [workspace.lints.clippy]
 # Upstream's workspace defaults; the clarirs crates inherit these. The fork's
 # stricter set lives in crate-level `[lints]`
-# tables in native/angr and native/angr-macros, so it does not reach clarirs.
+# tables in native/angr and native/angr-symex-macros, so it does not reach clarirs.
 all = "warn"
 cargo = "warn"
 

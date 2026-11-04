@@ -87,7 +87,7 @@ from rust_source_utils import (
 # Repo layout: this file lives at <repo>/tools/audit_sp_default_zero.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 200
 BASELINE_PATH = REPO_ROOT / "tools" / "sp_default_baseline.txt"

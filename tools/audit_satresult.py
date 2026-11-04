@@ -46,7 +46,7 @@ from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, it never checks a solver"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, it never checks a solver"}
 # Fewer files than this means the code moved out of the scan roots.
 MIN_FILES = 400
 

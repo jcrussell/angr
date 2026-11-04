@@ -103,7 +103,7 @@
 //!   `address_concretization` / `symbolic_variable` / `fork` / `constraints` /
 //!   `vex_lift`), whose unset arm is a documented no-op. Each one's body and
 //!   the slot field it reads are derived from a single ident by
-//!   [`angr_macros::inspect_dispatch`].
+//!   [`angr_symex_macros::inspect_dispatch`].
 //! - [`inspect_test_entries`] — Python-visible test entry points onto that
 //!   dispatch family; no engine path reaches them.
 //! - `test_support` (`#[cfg(test)]`) — the shared `defs`/`obj`/`recorder`
@@ -122,7 +122,7 @@
 //! (`with_callback_fields!`), the generated setters, the GC
 //! `__traverse__`/`__clear__` pair, and [`require_callback`].
 
-use angr_macros::callback_setters;
+use angr_symex_macros::callback_setters;
 use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -541,7 +541,7 @@ pub struct PythonCallbacks {
 // list, generated from that one list so a setter cannot write a slot other than
 // the one it is named for
 // (angr-0jh0j.6). It expands to its own `#[pymethods] impl` block — see
-// `angr_macros::callback_setters` for why it cannot live inside the hand-written
+// `angr_symex_macros::callback_setters` for why it cannot live inside the hand-written
 // one below. Per-slot prose belongs on the struct field's doc comment.
 with_callback_fields!(callback_setters PythonCallbacks =>);
 

@@ -63,7 +63,7 @@ jobs:
       #
       # `--workspace` is load-bearing too (angr-pr0tj): pinned at
       # `--manifest-path native/angr/Cargo.toml`, this lane never documented
-      # `native/angr-macros`, and two `private_intra_doc_links` errors sat red
+      # `native/angr-symex-macros`, and two `private_intra_doc_links` errors sat red
       # there from the day the `MergePolicy` derive was written. Keep it
       # workspace-wide so a new member crate is covered on arrival.
       - name: Rustdoc link check

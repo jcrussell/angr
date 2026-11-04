@@ -1,0 +1,49 @@
+[package]
+name = "angr-symex-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Proc macros enforcing repo-specific call-site invariants for the rustylib engine (angr-sqfj8/angr-9ke6b whac-a-mole follow-up)."
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints.clippy]
+# Group entries need a lower priority than the individual lints below so the
+# specific settings win; cargo errors out when they tie.
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Panics on caller-supplied/untrusted input are a recurring audit-bug class
+# (angr-9ke6b.126/.191/.63/.75). New code and files without a grandfather
+# #![allow(...)] must handle the None/Err case explicitly instead of
+# unwrap()/expect(); the existing grandfathered sites are burned down
+# incrementally.
+unwrap_used = "warn"
+expect_used = "warn"
+# `Result`/`Option` are already `#[must_use]`, but every silently-discarded-error
+# finding the audits turned up (angr-sqfj8.87/.82/.38, angr-c7xno.60/.84)
+# opted OUT of that via
+# `let _ = <fallible expr>;` — so plain must_use never caught them. This lint
+# flags exactly that shape. A discard that really is expected control flow
+# stays legal by spelling itself `drop(expr)` with a `SILENT(cat-a)` rationale
+# comment; a lossy one uses `silent_default!` (see its doc in
+# native/angr/src/lib.rs). When the
+# discarded value is `Copy` (e.g. `compare_exchange`'s `Result<u64, u64>`),
+# `drop` is a no-op that clippy rejects in turn — those keep `let _ =` under an
+# `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): ...")]`.
+let_underscore_must_use = "deny"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[dev-dependencies]
+# Compile-fail harness: the unit tests in src/lib.rs prove a `compile_error!`
+# token is *emitted*, only an end-to-end rustc run proves it actually halts
+# compilation with that message (angr-03vl4.78).
+trybuild = "1"

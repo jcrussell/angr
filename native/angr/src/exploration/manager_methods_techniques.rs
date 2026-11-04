@@ -8,7 +8,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -20,7 +20,7 @@ impl RustExplorationManager {
     /// After each step in run(), states with duplicate register tuples
     /// are moved to 'not_unique' stash. This replaces the Python
     /// CheckUniqueness technique with zero FFI overhead.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
         self.constraint_tracker.uniqueness_registers = register_names;
         self.constraint_tracker.uniqueness_set.clear();
@@ -29,7 +29,7 @@ impl RustExplorationManager {
     }
 
     /// Disable the native uniqueness filter.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn disable_uniqueness_filter(&mut self) {
         self.constraint_tracker.uniqueness_registers.clear();
         self.constraint_tracker.uniqueness_set.clear();
@@ -53,7 +53,7 @@ impl RustExplorationManager {
     ///
     /// States whose history exceeds `max_length` blocks are moved to "cut"
     /// (or "_DROP" if `drop` is true). Runs entirely in Rust with zero FFI overhead.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_length_limiter(&mut self, max_length: usize, drop: bool) {
         self.native_techniques
             .push(NativeTechnique::LengthLimiter { max_length, drop });
@@ -66,7 +66,7 @@ impl RustExplorationManager {
     ///
     /// Exploration stops after `timeout_secs` seconds. All active states are
     /// moved to "timeout" stash. Timer starts on first call to apply_native_techniques().
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_timeout(&mut self, timeout_secs: f64) {
         self.native_techniques.push(NativeTechnique::Timeout {
             timeout_secs,
@@ -81,7 +81,7 @@ impl RustExplorationManager {
     /// their history are moved to `discard_stash`. This is a simplified
     /// version of LoopSeer that doesn't require CFG analysis.
     #[pyo3(signature = (bound, discard_stash="spinning"))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_loop_bound(&mut self, bound: usize, discard_stash: &str) {
         self.native_techniques.push(NativeTechnique::LoopBound {
             bound,
@@ -108,7 +108,7 @@ impl RustExplorationManager {
     /// would observe `wait_len == 0` and return above its own counter tick,
     /// leaving its `wait_counter` silently dead (angr-fs8kb.2).
     #[pyo3(signature = (address, wait_counter=10))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_merge_point(&mut self, address: u64, wait_counter: usize) {
         let existing = self
             .native_techniques
@@ -154,7 +154,7 @@ impl RustExplorationManager {
     }
 
     /// Clear all native techniques.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn clear_native_techniques(&mut self) {
         self.native_techniques.clear();
     }

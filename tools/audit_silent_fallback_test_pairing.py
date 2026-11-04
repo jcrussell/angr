@@ -112,7 +112,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # A diff has no file count, so there is no floor here; a missing or
 # unclassified root still fails.
 SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 
 
 def src_prefixes(repo_root: Path = REPO_ROOT) -> list[str]:

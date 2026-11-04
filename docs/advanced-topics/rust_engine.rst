@@ -542,11 +542,11 @@ Merging N states into one is a **per-field** decision, and
 hand-written in ``state/fork.rs::RustSimState::merge``, but *which*
 treatment a field gets is declared at the field, next to its
 definition, with a ``#[merge_policy = "..."]`` attribute that
-``#[derive(angr_macros::MergePolicy)]`` validates at compile time:
+``#[derive(angr_symex_macros::MergePolicy)]`` validates at compile time:
 
 .. code-block:: rust
 
-   #[derive(angr_macros::MergePolicy)]
+   #[derive(angr_symex_macros::MergePolicy)]
    pub struct RustSimState {
        #[merge_policy = "self_wins"]
        arch: Box<dyn Arch>,
@@ -563,7 +563,7 @@ Adding a field without a policy — or with a mistyped one — is a
 among the other labels.
 
 The vocabulary (see ``VALID_MERGE_POLICIES`` in
-``native/angr-macros/src/lib.rs`` for the authoritative list):
+``native/angr-symex-macros/src/lib.rs`` for the authoritative list):
 
 .. list-table::
    :header-rows: 1

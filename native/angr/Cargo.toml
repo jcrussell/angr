@@ -47,7 +47,7 @@ fuzzing = []
 
 [dependencies]
 angr-bv = { path = "../angr-bv" }
-angr-macros = { path = "../angr-macros" }
+angr-symex-macros = { path = "../angr-symex-macros" }
 backtrace = "0.3.76"
 clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
 clarirs-num = { path = "../clarirs-num" }

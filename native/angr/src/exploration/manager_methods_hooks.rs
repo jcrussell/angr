@@ -8,7 +8,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -20,13 +20,13 @@ impl RustExplorationManager {
     /// Guarded like `register_simprocedures`: a live steady session snapshots
     /// `hooks` into each worker's `StepContext`, so mutating the set mid-run
     /// must finalize first or the new hook silently never fires.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn add_hook(&mut self, addr: u64) {
         self.hooks.insert(addr);
     }
 
     /// Add multiple hook addresses.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn add_hooks(&mut self, addrs: Vec<u64>) {
         for addr in addrs {
             self.hooks.insert(addr);
@@ -45,7 +45,7 @@ impl RustExplorationManager {
     /// `simprocedures.get(&pc)` *inside* the `hooks.contains(&pc)` gate, so a
     /// stale entry surviving a clear would resurrect as a SimProcedure call
     /// the moment the same address was re-hooked via a plain `add_hook`.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn clear_hooks(&mut self) {
         self.hooks.clear();
         self.simprocedures.clear();
@@ -53,7 +53,7 @@ impl RustExplorationManager {
 
     /// Register a SimProcedure.
     #[pyo3(signature = (addr, name, num_args=0, no_return=false))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_simprocedure(
         &mut self,
         addr: u64,
@@ -73,7 +73,7 @@ impl RustExplorationManager {
     /// would keep stepping against the stale hook set. Continuation
     /// SimProcedures re-hook mid-run by design, so continuation-heavy
     /// workloads finalize repeatedly — steady mode degrades gracefully there.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_simprocedures(&mut self, procs: Vec<(u64, String, usize, bool)>) {
         for (addr, name, num_args, no_return) in procs {
             self.hooks.insert(addr);
@@ -84,7 +84,7 @@ impl RustExplorationManager {
     /// Unregister multiple SimProcedures (e.g. after `proj.unhook(addr)` on a
     /// live manager). Removes each address from both the hook set and the
     /// SimProcedure table so a stale hook no longer fires (angr-969g).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn unregister_simprocedures(&mut self, addrs: Vec<u64>) {
         for addr in addrs {
             self.hooks.remove(&addr);
@@ -97,7 +97,7 @@ impl RustExplorationManager {
     /// `binary_regions` is snapshotted into each worker's `StepContext`
     /// (`step_core.rs`), so mutating it mid-run must finalize a live steady
     /// session first or the change silently never reaches a resident worker.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn load_binary_regions(&mut self, regions: Vec<(u64, Vec<u8>)>) {
         self.environment.binary_regions = regions
             .into_iter()
@@ -111,7 +111,7 @@ impl RustExplorationManager {
     ///
     /// `main_object_range` is snapshotted into each worker's `StepContext`
     /// like `binary_regions` above.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_main_object_range(&mut self, start: u64, end: u64) {
         self.environment.main_object_range = Some((start, end));
     }
@@ -122,7 +122,7 @@ impl RustExplorationManager {
     ///
     /// Snapshotted into each worker's `StepContext` like `binary_regions`
     /// above.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_loader_object_ranges(&mut self, ranges: Vec<(u64, u64)>) {
         self.environment.loader_object_ranges = ranges.into();
     }
@@ -132,7 +132,7 @@ impl RustExplorationManager {
     ///
     /// `prefer_native_library_hooks` is snapshotted into each worker's
     /// `StepContext` like `binary_regions`/`main_object_range` above.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_prefer_native_library_hooks(&mut self, enabled: bool) {
         self.environment.prefer_native_library_hooks = enabled;
     }

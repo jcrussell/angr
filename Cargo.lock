@@ -72,7 +72,7 @@ name = "angr"
 version = "0.1.0"
 dependencies = [
  "angr-bv",
- "angr-macros",
+ "angr-symex-macros",
  "backtrace",
  "clarirs-core",
  "clarirs-num",
@@ -131,7 +131,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "angr-macros"
+name = "angr-symex-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",

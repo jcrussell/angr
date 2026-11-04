@@ -752,7 +752,7 @@ impl RustExplorationManager {
             // reacquire it to drain the session.
             let finalized = Python::attach(|py| self.finalize_steady_session(py));
             // SILENT(cat-c): the guard is injected by
-            // `#[angr_macros::steady_guarded]` into ~58 pymethods, all but one
+            // `#[angr_symex_macros::steady_guarded]` into ~58 pymethods, all but one
             // of which return `()`, so the only Err `finalize_steady_session`
             // can produce (the drain timeout, whose message names the stuck
             // workers and says their resident frontier states are lost) has no

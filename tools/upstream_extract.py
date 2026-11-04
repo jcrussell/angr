@@ -60,7 +60,7 @@ import sys
 from pathlib import Path
 
 # The generic shape of a bead id: `angr-` plus 4-5 id characters, not part of
-# a longer word (`angr-macros`). Used by --self-test and when bd is absent;
+# a longer word (`angr-symex-macros`). Used by --self-test and when bd is absent;
 # a real run matches only the ids bd knows (:func:`known_bead_pattern`), so
 # prose such as `angr-side` is never mistaken for one.
 GENERIC_BEAD = r"angr-(?!(?:utils|bench|tests|docs|core|data|side)\b)[a-z0-9]{4,5}"
@@ -310,8 +310,8 @@ SELF_TESTS: list[tuple[str, str, str, bool]] = [
     ("a.rs", "    let p = 'a'; // angr-ab12c: note\n", "    let p = 'a'; // note\n", False),
     (
         "a.rs",
-        "// tables in native/angr and native/angr-macros\n",
-        "// tables in native/angr and native/angr-macros\n",
+        "// tables in native/angr and native/angr-symex-macros\n",
+        "// tables in native/angr and native/angr-symex-macros\n",
         False,
     ),
     ("a.rs", "// proxy later (angr-4scu step 3), and more\n", "// proxy later, and more\n", False),

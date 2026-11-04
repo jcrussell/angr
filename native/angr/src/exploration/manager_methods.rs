@@ -38,7 +38,7 @@ fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -210,7 +210,7 @@ impl RustExplorationManager {
     }
 
     /// Set find addresses.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_find_addrs(&mut self, addrs: Vec<u64>) {
         self.find_addrs = addrs.into_iter().collect();
         self.find_needs_python = false;
@@ -218,7 +218,7 @@ impl RustExplorationManager {
     }
 
     /// Set avoid addresses.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_avoid_addrs(&mut self, addrs: Vec<u64>) {
         self.avoid_addrs = addrs.into_iter().collect();
         self.avoid_needs_python = false;
@@ -227,7 +227,7 @@ impl RustExplorationManager {
 
     /// Recompute the union of find + avoid addresses (the interpreter's
     /// block-chain stop set). Called whenever either set changes.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     fn rebuild_stop_addrs(&mut self) {
         self.stop_addrs = self
             .find_addrs
@@ -238,13 +238,13 @@ impl RustExplorationManager {
     }
 
     /// Mark that find condition has callable predicates (needs Python).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_find_needs_python(&mut self, needs: bool) {
         self.find_needs_python = needs;
     }
 
     /// Mark that avoid condition has callable predicates (needs Python).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_avoid_needs_python(&mut self, needs: bool) {
         self.avoid_needs_python = needs;
     }
@@ -256,7 +256,7 @@ impl RustExplorationManager {
     /// (address-based explore without `until`/techniques); every other driver
     /// path must leave it false. Turning it off finalizes any live session.
     ///
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "the guard must fire only on the disabling edge, not unconditionally as the \
                   first statement: enabling residency is what lets a worker-resident frontier \
                   stay live across a need_callback return in the first place, so an \
@@ -281,7 +281,7 @@ impl RustExplorationManager {
     /// with bounces parked would otherwise under-report the resumable frontier
     /// in `stash_counts()` relative to the serial loop. Unlike the steady
     /// drain, this half is not session-gated.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "is the finalize/drain operation itself — the thing every #[steady_guarded] \
                   mutator calls into via steady_config_guard(); guarding it would be circular."
     )]
@@ -301,14 +301,14 @@ impl RustExplorationManager {
     }
 
     /// Set state selection to LIFO (DFS - depth-first search).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_lifo(&mut self) {
         self.policy = Arc::new(selection_policy::Lifo);
         log::debug!("State selection set to LIFO (DFS)");
     }
 
     /// Set state selection to FIFO (BFS - breadth-first search).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_fifo(&mut self) {
         self.policy = Arc::new(selection_policy::Fifo);
         log::debug!("State selection set to FIFO (BFS)");
@@ -318,7 +318,7 @@ impl RustExplorationManager {
     /// uniformly-random active state, seeded for reproducibility. Opt-in only;
     /// never a default. `seed` fixes the SplitMix64 stream so a run is
     /// byte-reproducible.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_random(&mut self, seed: u64) {
         self.policy = Arc::new(selection_policy::RandomSelection::new(seed));
         log::debug!("State selection set to RANDOM (seed={seed})");
@@ -328,7 +328,7 @@ impl RustExplorationManager {
     /// new-block-first — step the oldest active state parked on a block never
     /// dispatched before, degrading to FIFO once all active blocks are seen.
     /// Opt-in only; never a default.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_coverage(&mut self) {
         self.policy = Arc::new(selection_policy::CoverageGuided::new());
         log::debug!("State selection set to COVERAGE (new-block-first)");
@@ -337,7 +337,7 @@ impl RustExplorationManager {
     /// angr-caplg prototype: set state selection to loop-head round-robin —
     /// rotate dispatch across (loop-head, callstack-class) buckets so a looping
     /// state cannot starve sibling paths. Opt-in only; never a default.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_loop_head(&mut self) {
         self.policy = Arc::new(selection_policy::LoopHeadRoundRobin::new());
         log::debug!("State selection set to LOOP_HEAD (round-robin fairness)");
@@ -349,7 +349,7 @@ impl RustExplorationManager {
     /// runtime bounces); `beam_width` (default 2 from the Python setter) keeps
     /// best-first out of the greedy trap on data-dependent targets. Opt-in
     /// only; never a default.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_directed(
         &mut self,
         distances: std::collections::HashMap<u64, u64>,
@@ -369,7 +369,7 @@ impl RustExplorationManager {
     /// `addr -> distance-to-find` snapshot computed Python-side from the angr
     /// CFG, zero runtime bounces). Novelty is the anti-greedy-trap mechanism, so
     /// no beam width is needed. Opt-in only; never a default.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_state_selection_find_directed(
         &mut self,
         distances: std::collections::HashMap<u64, u64>,
@@ -380,7 +380,7 @@ impl RustExplorationManager {
     }
 
     /// Set the number of solutions to find before stopping.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_num_find(&mut self, n: usize) {
         self.num_find = n;
     }
@@ -399,27 +399,27 @@ impl RustExplorationManager {
     /// no resize path, so without that the FIRST parallel run would pin the
     /// worker count for the manager's whole life and every later call here
     /// would be silently inert (angr-5mnx3.14).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_parallel_workers(&mut self, n: usize) {
         self.parallel_real_workers = n.max(1);
         self.retire_parallel_pool_for_resize();
     }
 
     /// Set maximum steps per run iteration.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_max_steps_per_run(&mut self, n: u32) {
         self.max_steps_per_run = n;
     }
 
     /// Enable lazy solves mode (skip satisfiability checks on forks).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_lazy_solves(&mut self, enabled: bool) {
         self.constraint_solver.lazy_solves = enabled;
     }
 
     /// Enable zero-fill for unconstrained memory reads.
     /// When true, unmapped memory returns zero instead of fresh symbolic values.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_zero_fill_unconstrained(&mut self, enabled: bool) {
         self.memory_config.zero_fill_unconstrained = enabled;
     }
@@ -432,7 +432,7 @@ impl RustExplorationManager {
     /// of a wider active stash. Python's `_explore_with_addresses` runs phase 1
     /// deferred and, only if it exhausts to `active_empty` without finding,
     /// re-seeds the initial states with this set to `false`.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_use_deferred_forks(&mut self, enabled: bool) {
         // Steady-state note: today's only caller mid-explore is
         // `_maybe_phase2_eager_retry`, which fires on `active_empty` — where
@@ -452,7 +452,7 @@ impl RustExplorationManager {
     /// addresses. Default `false` keeps chaining on for `explore()` and
     /// benchmark throughput. Returns the previous value so callers (e.g. a
     /// scoped step-loop) can restore it.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_block_granular(&mut self, enabled: bool) -> bool {
         let prev = self.block_granular;
         self.block_granular = enabled;
@@ -474,7 +474,7 @@ impl RustExplorationManager {
     /// the target block is observable before the materialized subtree
     /// explodes. Default `false`: dropping is what `explore()`'s two-phase
     /// eager retry relies on, so this stays opt-in. Returns the previous value.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_materialize_unconstrained_forks(&mut self, enabled: bool) -> bool {
         let prev = self.materialize_unconstrained_forks;
         self.materialize_unconstrained_forks = enabled;
@@ -507,7 +507,7 @@ impl RustExplorationManager {
 
     /// Set the Z3 solver timeout in milliseconds (default:
     /// [`DEFAULT_SOLVER_TIMEOUT_MS`](crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS)).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
         // Workers snapshot the solver config into their StepContext, so a
         // mid-session change would never reach a live steady session; finalize
@@ -533,7 +533,7 @@ impl RustExplorationManager {
     /// opt-in. Note this makes *witness choice* deterministic; with more than
     /// one real scheduler worker the steal order still varies, so the found
     /// set is stable but the order states are reported in is not.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_deterministic(&mut self, v: bool) {
         // Finalize a live steady session first: workers snapshot the solver
         // config and resident/parked-pending states never appear in the
@@ -582,7 +582,7 @@ impl RustExplorationManager {
     /// otherwise be silently ignored by the resident frontier while the
     /// manager reported the new value.
     #[pyo3(signature = (limit=None))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_max_active_states(&mut self, limit: Option<usize>) {
         self.max_active_states = limit;
     }
@@ -596,7 +596,7 @@ impl RustExplorationManager {
     /// None = use pyvex default (typically 1).
     /// Level 0: no optimization. Level 1: standard. Level 2-3: aggressive.
     #[pyo3(signature = (level=None))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_vex_opt_level(&mut self, level: Option<i32>) {
         self.memory_config.vex_opt_level = level;
         // Invalidate block cache since opt_level affects IR output
@@ -624,7 +624,7 @@ impl RustExplorationManager {
         cross_insn_opt = true,
         selfmodifying_code = false,
     ))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_native_lift(
         &mut self,
         arch: Option<&Bound<'_, PyAny>>,
@@ -648,7 +648,7 @@ impl RustExplorationManager {
 
     /// Set a per-address VEX optimization level override.
     /// Blocks at this address will be lifted with the specified opt_level.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
         Arc::make_mut(&mut self.memory_config.vex_opt_level_overrides).insert(addr, level);
         // Remove this address from block cache since opt_level changed
@@ -656,14 +656,14 @@ impl RustExplorationManager {
     }
 
     /// Remove a per-address VEX optimization level override.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn remove_vex_opt_level_override(&mut self, addr: u64) {
         Arc::make_mut(&mut self.memory_config.vex_opt_level_overrides).remove(&addr);
         self.environment.block_cache.pop(&addr);
     }
 
     /// Clear all per-address VEX optimization level overrides.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn clear_vex_opt_level_overrides(&mut self) {
         let addrs: Vec<u64> = self
             .memory_config
@@ -690,7 +690,7 @@ impl RustExplorationManager {
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_drop_terminal_states(&mut self, enabled: bool) {
         self.sm.set_drop_terminal_states(enabled);
     }
@@ -705,7 +705,7 @@ impl RustExplorationManager {
     /// * `avoid_multivalued_reads` - Whether AVOID_MULTIVALUED_READS is enabled
     /// * `avoid_multivalued_writes` - Whether AVOID_MULTIVALUED_WRITES is enabled
     #[pyo3(signature = (use_approximate, read_range_limit=None, write_range_limit=None, symbolic_write_addresses=false, avoid_multivalued_reads=false, avoid_multivalued_writes=false))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn configure_concretization_strategies(
         &mut self,
         use_approximate: bool,
@@ -759,7 +759,7 @@ impl RustExplorationManager {
     ///
     /// `profiling_enabled` is snapshotted into each worker's `StepContext`
     /// like the other exploration-config mutators in this file.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_profiling(&mut self, enabled: bool) {
         self.profiling.profiling_enabled = enabled;
         // angr-1ilq.7: the GIL/wall accumulators are deliberately NOT reset
@@ -785,7 +785,7 @@ impl RustExplorationManager {
     /// or in `pending_parallel_bounces` (angr-03vl4.10) lives in no stash, so
     /// the stash loop below alone would leave it capped at the old value
     /// forever.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_max_history(&mut self, max: usize) {
         self.environment.max_history = max;
         // All three buckets, mirroring `set_deterministic`: the stashes plus
@@ -809,7 +809,7 @@ impl RustExplorationManager {
     }
 
     /// Reset accumulated execution statistics.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates only self.profiling's accumulated stats counters, not \
                   StepContext-snapshotted exploration config or the active stash."
     )]
@@ -818,13 +818,13 @@ impl RustExplorationManager {
     }
 
     /// Set Python callbacks for memory/lifting.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_callbacks(&mut self, callbacks: PythonCallbacks) {
         self.callbacks = Some(callbacks);
     }
 
     /// Clear callbacks.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn clear_callbacks(&mut self) {
         self.callbacks = None;
     }
@@ -847,7 +847,7 @@ impl RustExplorationManager {
     /// longer call back into Python — but cycle-GC only invokes __clear__
     /// when the object is being collected, so further callbacks would not
     /// be issued.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "cycle-GC teardown hook invoked while the whole manager is being collected, \
                   not a live config mutation; clears Python bound-method refs on self.callbacks \
                   for cycle-breaking, unrelated to StepContext-snapshotted exploration config."

@@ -27,12 +27,14 @@ pub struct CallStackEntry {
 ///
 /// `RustSimState` labels `heap_metadata` `#[merge_policy = "delegate"]`, which
 /// ends the top-level derive's guarantee here; deriving
-/// [`angr_macros::MergePolicy`] extends it, so a new field does not compile
+/// [`angr_symex_macros::MergePolicy`] extends it, so a new field does not compile
 /// until it declares how [`Self::union_from`] treats it. `union_from` merges in
 /// place and both fields are combined by hand (the `allocated` union reads its
 /// `freed` sibling), so both are `joint` rather than the mechanical `union` —
 /// that policy generates a `bool`-only `||` body.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, angr_macros::MergePolicy)]
+#[derive(
+    Clone, Debug, Default, serde::Serialize, serde::Deserialize, angr_symex_macros::MergePolicy,
+)]
 pub struct HeapMetadata {
     /// Currently allocated regions: address -> size in bytes.
     ///

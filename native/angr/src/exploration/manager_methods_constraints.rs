@@ -44,19 +44,19 @@
 //! `See ... for the body` line on each — and those modules carry the test
 //! coverage (`pending_api.rs`, `constraints.rs`,
 //! `state_api.rs`, `stats_api.rs`). What is left at this
-//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]` /
-//! `#[angr_macros::steady_guard_exempt]` choice — the signature defaults
+//! layer is the PyO3 signature and the `#[angr_symex_macros::steady_guarded]` /
+//! `#[angr_symex_macros::steady_guard_exempt]` choice — the signature defaults
 //! only apply to a call made *from Python*, so no Rust-level unit test can
 //! observe those, but making *some* explicit choice (not necessarily the
 //! correct one) is a compile-time obligation enforced by
-//! `#[angr_macros::steady_guard_checked]` on the `impl` block below.
+//! `#[angr_symex_macros::steady_guard_checked]` on the `impl` block below.
 //! Sibling `manager_methods_{procedures,techniques,state}.rs` do have test
 //! modules because their methods carry filtering / stash-declaration logic of
 //! their own rather than delegating outright.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -90,7 +90,7 @@ impl RustExplorationManager {
     /// This allows Python to get a complete snapshot of the pending state
     /// including all registers, memory pages, and metadata.
     /// See `pending_api::_export_pending_state` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "exports one state_id-scoped state's snapshot; does not mutate exploration \
                   config or the active stash."
     )]
@@ -197,7 +197,7 @@ impl RustExplorationManager {
     /// the solver decided, `None` when it gave up (which is *not* "unsat", so
     /// a caller must not prune on it).
     /// See `pending_api::_add_constraints_to_pending` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
@@ -218,7 +218,7 @@ impl RustExplorationManager {
     /// `RustSolverContext::satisfiable`. A caller that would *drop* the state
     /// on `False` must use `add_constraints_to_state_checked` instead — see
     /// `invariant-z3-unknown-not-unsat`.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
@@ -246,7 +246,7 @@ impl RustExplorationManager {
     /// `RustSolverContext`: `None` means "the solver gave up", never "no
     /// solutions". The constraints are imported either way — only the returned
     /// verdict differs.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
@@ -271,7 +271,7 @@ impl RustExplorationManager {
     /// Lenient form — see `add_constraints_to_state` for why `False` here can
     /// also mean "Z3 gave up", and `import_z3_constraint_ptrs_checked` for the
     /// form that tells the two apart.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
@@ -289,7 +289,7 @@ impl RustExplorationManager {
 
     /// `import_z3_constraint_ptrs`, but reporting an undecided satisfiability
     /// query as `None` rather than collapsing it into `False`.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
@@ -364,7 +364,7 @@ impl RustExplorationManager {
     /// Set the per-state mmap base pointer. Used by tests and by Python-side
     /// fallbacks that allocate from `state.heap.mmap_base` and need to push
     /// the advance back into Rust so subsequent native mmaps don't collide.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own mmap-base metadata; does not mutate \
                   exploration config or the active stash."
     )]
@@ -384,7 +384,7 @@ impl RustExplorationManager {
     /// Set the per-state posix brk pointer. Used by tests and by Python-side
     /// fallbacks (symbolic `brk` argument, collision retry) that bump
     /// `state.posix.brk` and need to push the advance back into Rust.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own posix-brk metadata; does not mutate \
                   exploration config or the active stash."
     )]
@@ -405,7 +405,7 @@ impl RustExplorationManager {
     /// Set the per-state heap brk pointer. Used by tests and on import to
     /// push a Python-side `state.heap.heap_location` advance back into Rust
     /// so subsequent native allocations don't collide.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own heap-brk metadata; does not mutate \
                   exploration config or the active stash."
     )]
@@ -420,7 +420,7 @@ impl RustExplorationManager {
 
     /// Replace the whole `symbolic_pages` map for a state. Mirrors the
     /// previous Python-side `_state_md(sid).symbolic_pages = pages` write.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own AST metadata; does not mutate \
                   exploration config or the active stash."
     )]
@@ -445,7 +445,7 @@ impl RustExplorationManager {
     }
 
     /// Insert/replace an entry in `hook_symbolic_memory` for a state.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own AST metadata; does not mutate \
                   exploration config or the active stash."
     )]
@@ -469,7 +469,7 @@ impl RustExplorationManager {
     }
 
     /// Insert/replace an entry in `addr_to_ast` for a state.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own AST metadata; does not mutate \
                   exploration config or the active stash."
     )]
@@ -495,7 +495,7 @@ impl RustExplorationManager {
     /// Drop all per-state metadata (`symbolic_pages`, `hook_symbolic_memory`,
     /// `addr_to_ast`) for a state. No-op if the state is unknown — matches the
     /// `_state_metadata.pop(state_id, None)` semantics it replaces.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "clears one state_id-scoped state's own metadata; does not mutate exploration \
                   config or the active stash."
     )]
@@ -530,7 +530,7 @@ impl RustExplorationManager {
     /// (addr, claripy AST) pairs for every multi-byte symbolic object whose
     /// base address falls on the given page.
     /// See `pending_api::_pending_memory_load_symbolic_page` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "reads pending-state memory (&mut self for internal caching only); does not \
                   mutate exploration config or the active stash."
     )]
@@ -557,7 +557,7 @@ impl RustExplorationManager {
     /// The skip is automatically cleared after one step or when the address is used.
     /// Stack-based tracking allows for nested zero-length hooks.
     /// See `pending_api::_set_skip_hook_addr` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \
                   auto-expires (see consume_skip_hook), not sticky StepContext-snapshotted \
                   config or the active stash."
@@ -568,7 +568,7 @@ impl RustExplorationManager {
 
     /// Clear all pending skip_hook entries.
     /// See `pending_api::_clear_skip_hook_addr` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \
                   auto-expires (see consume_skip_hook), not sticky StepContext-snapshotted \
                   config or the active stash."
@@ -579,7 +579,7 @@ impl RustExplorationManager {
 
     /// Clear skip entry for a specific address.
     /// See `pending_api::_clear_skip_hook_for_addr` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \
                   auto-expires (see consume_skip_hook), not sticky StepContext-snapshotted \
                   config or the active stash."
@@ -594,7 +594,7 @@ impl RustExplorationManager {
     }
 
     /// Clear error log.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "clears only the self.errors log accumulator; does not mutate exploration \
                   config or the active stash."
     )]
@@ -608,7 +608,7 @@ impl RustExplorationManager {
     /// for truth the way Python's `if` would; an exception it raises (directly
     /// or from `__bool__`) propagates rather than counting as "no match".
     /// See `state_lifecycle::_move_states` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "routine per-step stash bookkeeping (deadended/pruned/found/avoid routing) \
                   called by the Python driver on every batch, including while a steady \
                   session's frontier is intentionally resident across a need_callback return; \
@@ -627,7 +627,7 @@ impl RustExplorationManager {
 
     /// Move a single state by ID between stashes.
     /// See `state_lifecycle::_move_state` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "routine per-step stash bookkeeping, same rationale as move_states."
     )]
     pub fn move_state(
@@ -640,7 +640,7 @@ impl RustExplorationManager {
     }
 
     /// Clear all states from a stash.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "routine per-step stash bookkeeping, same rationale as move_states."
     )]
     pub fn clear_stash(&mut self, stash: &str) {
@@ -663,7 +663,7 @@ impl RustExplorationManager {
     /// `rust_state_proxy.py::_StashDict.__setitem__` passes whatever stash key
     /// the caller assigned to. Returns `true` when a state was actually
     /// dropped.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "routine stash bookkeeping (backs RustStateProxy.__del__), same rationale as \
                   move_states."
     )]
@@ -692,7 +692,7 @@ impl RustExplorationManager {
     /// `pending_parallel_bounces`). Returns the state ID of the moved state.
     /// This avoids constraint transfer between managers.
     /// See `state_lifecycle::_reset_for_stage` for the body.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn reset_for_stage(&mut self, found_state_id: u64) -> PyResult<u64> {
         self._reset_for_stage(found_state_id)
     }

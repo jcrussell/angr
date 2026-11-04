@@ -319,7 +319,7 @@ pub(crate) fn as_symbolic_address_error(result: &ConcretizationResult) -> Memory
 /// deeper ([`Self::merge`] adopted an other-only page's
 /// `multi_bitmap` but never copied the matching `multi_objects` payloads,
 /// because that sidecar is a flat map here rather than nested in
-/// [`MemoryPage`]; angr-c7xno.50). Deriving [`angr_macros::MergePolicy`] here extends the
+/// [`MemoryPage`]; angr-c7xno.50). Deriving [`angr_symex_macros::MergePolicy`] here extends the
 /// guarantee: a new field — especially a new address-keyed sidecar map — does
 /// not compile until it declares how [`Self::merge`] treats it. The behavioural
 /// half lives in `memory/tests/merge_sidecars.rs`, which exercises every
@@ -328,7 +328,7 @@ pub(crate) fn as_symbolic_address_error(result: &ConcretizationResult) -> Memory
 /// `in_place_self` is the common label here because [`Self::merge`] mutates
 /// `self` rather than building a new struct, so "self wins" means "never
 /// assigned" and has no line to generate.
-#[derive(angr_macros::MergePolicy)]
+#[derive(angr_symex_macros::MergePolicy)]
 pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
     #[merge_policy = "joint"]

@@ -8,7 +8,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -16,13 +16,13 @@ use super::*;
 #[pymethods]
 impl RustExplorationManager {
     /// Disable all native procedures (always use Python).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn disable_native_procedures(&mut self) {
         Arc::make_mut(&mut self.native_procedures).disable_all();
     }
 
     /// Enable all native procedures.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn enable_native_procedures(&mut self) {
         Arc::make_mut(&mut self.native_procedures).enable_all();
     }
@@ -33,13 +33,13 @@ impl RustExplorationManager {
     }
 
     /// Disable a specific native procedure (fall back to Python).
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn disable_native_procedure(&mut self, name: &str) {
         Arc::make_mut(&mut self.native_procedures).disable(name);
     }
 
     /// Enable a specific native procedure.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn enable_native_procedure(&mut self, name: &str) {
         Arc::make_mut(&mut self.native_procedures).enable(name);
     }
@@ -47,13 +47,13 @@ impl RustExplorationManager {
     /// Set a Python override for a procedure.
     ///
     /// When set, the native implementation is never called.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_python_override(&mut self, name: &str) {
         Arc::make_mut(&mut self.native_procedures).set_python_override(name);
     }
 
     /// Remove a Python override.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn remove_python_override(&mut self, name: &str) {
         Arc::make_mut(&mut self.native_procedures).remove_python_override(name);
     }
@@ -84,7 +84,7 @@ impl RustExplorationManager {
     ///
     /// Raises `ValueError` for an angr ABI the engine has no handlers for
     /// and does not knowingly skip.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn set_syscall_tables(
         &mut self,
         tables: Vec<(String, HashMap<u64, String>)>,
@@ -125,7 +125,7 @@ impl RustExplorationManager {
     /// Python SimProcedure path; the registered callable is only invoked
     /// when all args are concrete.
     #[pyo3(signature = (name, num_args, no_return, callable))]
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_python_procedure(
         &mut self,
         name: String,
@@ -151,7 +151,7 @@ impl RustExplorationManager {
     /// Names that already have a real native procedure, or that carry a zero
     /// return width, are skipped: a genuine implementation always outranks a
     /// "return a fresh symbol" stub.
-    #[angr_macros::steady_guarded]
+    #[angr_symex_macros::steady_guarded]
     pub fn register_unconstrained_stubs(&mut self, stubs: Vec<(String, u32)>) {
         let registry = Arc::make_mut(&mut self.native_procedures);
         for (name, ret_bits) in stubs {

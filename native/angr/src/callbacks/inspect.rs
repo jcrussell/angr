@@ -5,7 +5,7 @@
 //!
 //! The dispatch methods themselves live in the `inspect_dispatch!` invocation
 //! at the bottom: each entry is written against a `self.with_slot(..)`
-//! placeholder that [`angr_macros::inspect_dispatch`] rewrites to
+//! placeholder that [`angr_symex_macros::inspect_dispatch`] rewrites to
 //! `self.with_inspect_cb(self.inspect_<entry name>.as_ref(), ..)`, so the
 //! method name and the slot field it reads derive from one ident. Hand-written,
 //! the identically-shaped siblings (`mem_read`/`mem_write`,
@@ -18,7 +18,7 @@
 //! is not per-event: `with_inspect_cb`, the enabled-bit checks, and
 //! `fire_constraints_bp`.
 
-use angr_macros::inspect_dispatch;
+use angr_symex_macros::inspect_dispatch;
 
 use super::*;
 use crate::interpreter::InspectBit;

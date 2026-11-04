@@ -13,7 +13,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
-#[angr_macros::steady_guard_checked]
+#[angr_symex_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -28,7 +28,7 @@ impl RustExplorationManager {
     /// - Need Python callback (SimProcedure, syscall)
     /// - Max steps reached
     #[pyo3(signature = (n=None))]
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "drives the run loop itself — the entity that creates/manages a live steady \
                   session, not a config mutation racing against one."
     )]
@@ -52,7 +52,7 @@ impl RustExplorationManager {
 
     /// Resume after a SimProcedure callback. See `resume::_resume_after_simprocedure` for the body.
     #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -79,7 +79,7 @@ impl RustExplorationManager {
     /// callback `pending_id` resumes. See
     /// `resume::_adopt_pending_callback_state` for the body.
     #[pyo3(signature = (pending_id, fork_id, stash))]
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "swaps the state inside one state_id-scoped pending callback for a fork the \
                   same callback minted; does not mutate exploration config or the active stash."
     )]
@@ -96,7 +96,7 @@ impl RustExplorationManager {
     /// `fork_id` parked in `stash`, and route it. See
     /// `resume::_resume_forked_successor` for the body.
     #[pyo3(signature = (fork_id, stash, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "routes one callback successor like resume_after_simprocedure routes the \
                   pending state; drives the bounce/resume protocol, does not mutate exploration \
                   config."
@@ -128,7 +128,7 @@ impl RustExplorationManager {
 
     /// Resume after a syscall callback.
     #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -155,7 +155,7 @@ impl RustExplorationManager {
     /// Fast-path: deadend the pending callback state without full apply_changes.
     /// Used for SimProcedure continuations known to just call exit().
     /// See `resume::_deadend_pending_callback` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -165,7 +165,7 @@ impl RustExplorationManager {
 
     /// Move the pending callback state to the unconstrained stash. See
     /// `resume::_unconstrain_pending_callback` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -175,7 +175,7 @@ impl RustExplorationManager {
 
     /// Move an extra callback successor's fork, parked in `stash`, to the
     /// unconstrained stash. See `resume::_unconstrain_forked_successor`.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "routes one callback successor like resume_forked_successor; drives the \
                   bounce/resume protocol, does not mutate exploration config."
     )]
@@ -185,7 +185,7 @@ impl RustExplorationManager {
 
     /// Resume after an error occurred during callback execution.
     /// See `resume::_resume_after_error` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -196,7 +196,7 @@ impl RustExplorationManager {
     /// Resume after Python handles a symbolic branch.
     /// See `resume::_resume_after_symbolic_branch` for the body.
     #[pyo3(signature = (state_id, true_pc, false_pc, true_constraints=None, false_constraints=None))]
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -222,7 +222,7 @@ impl RustExplorationManager {
     /// Resume after Python evaluates a find predicate, and optionally the
     /// avoid predicate on the same bounce (`avoid_matched`).
     /// See `resume::_resume_find_predicate` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]
@@ -238,7 +238,7 @@ impl RustExplorationManager {
 
     /// Resume after Python evaluates an avoid predicate.
     /// See `resume::_resume_avoid_predicate` for the body.
-    #[angr_macros::steady_guard_exempt(
+    #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
     )]

@@ -393,7 +393,7 @@ impl RustExplorationManager {
     /// [`flush_parked_bounces_to_active`](Self::flush_parked_bounces_to_active)
     /// later routes the state back to
     /// `STASH_ACTIVE`, so it would resume on the old configuration forever.
-    /// `#[angr_macros::steady_guarded]` does not cover this: the guard only
+    /// `#[angr_symex_macros::steady_guarded]` does not cover this: the guard only
     /// drains the parallel session's *resident* frontier back into stashes.
     ///
     /// Yields EVERY parked entry, including the ones

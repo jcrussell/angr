@@ -50,7 +50,7 @@ from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_fi
 REPO = Path(__file__).resolve().parent.parent
 CORE_DIRS = ("arch", "memory", "symbolic", "vex", "interpreter", "state", "procedures", "syscalls")
 SCAN = {"native/angr": CORE_DIRS, "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, not the engine core"}
+EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, not the engine core"}
 # Fewer files than this means the core moved out of CORE_DIRS.
 MIN_FILES = 150
 

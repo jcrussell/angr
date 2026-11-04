@@ -1,6 +1,6 @@
 //! Sidecar-map merge coverage for `SymbolicMemory::merge` (angr-91vj9.3).
 //!
-//! `RustSimState`'s `#[derive(angr_macros::MergePolicy)]` proves every
+//! `RustSimState`'s `#[derive(angr_symex_macros::MergePolicy)]` proves every
 //! top-level field declares a merge treatment, but `memory` is labelled
 //! `delegate` — so the guarantee stops at [`SymbolicMemory`]'s boundary, and
 //! the same bug family recurred one level deeper (an other-only

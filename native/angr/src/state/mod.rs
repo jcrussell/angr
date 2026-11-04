@@ -83,7 +83,7 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-// Called by the `merge_field_*` bodies `#[derive(angr_macros::MergePolicy)]`
+// Called by the `merge_field_*` bodies `#[derive(angr_symex_macros::MergePolicy)]`
 // generates for every `warn_on_diverge` field below; the derive emits a bare
 // call, so the name has to be in scope here.
 pub use self::fork::BranchSnapshot;
@@ -328,7 +328,7 @@ pub type OverlayMap<V> = im::HashMap<u64, V, std::hash::BuildHasherDefault<rustc
 /// - Registers are cloned (small, ~700 bytes for AMD64)
 /// - Solver context is cloned with constraint state preserved
 /// - History is optionally shared or copied based on config
-#[derive(angr_macros::MergePolicy)]
+#[derive(angr_symex_macros::MergePolicy)]
 pub struct RustSimState {
     /// Architecture information.
     #[merge_policy = "self_wins"]

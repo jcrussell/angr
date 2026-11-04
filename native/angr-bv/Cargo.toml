@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [lints.clippy]
-# The same table as native/angr-macros: group entries at a lower priority so
+# The same table as native/angr-symex-macros: group entries at a lower priority so
 # the specific settings win.
 all = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
