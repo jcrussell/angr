@@ -38,8 +38,8 @@ use crate::arch::{
     AddrOrSymbolic, RegisterFile, arch_from_vex, calling_conventions::CallingConvention,
     default_cc_for_arch,
 };
-use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
+use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{
     BVOp, RustBV, SymContext, record_mem_load, record_mem_store, record_vex_binop, record_vex_qop,
     record_vex_triop, record_vex_unop,

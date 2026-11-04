@@ -58,6 +58,12 @@
 //! | `query_class.rs` | Structural classification of the checks that actually reach Z3, for the cheap-pre-solver-tier spike. **(z3)** |
 //! | `sharing.rs` | `ConstraintSharingWalk` — measures `Arc` sharing across a population of constraint DAGs. |
 //!
+//! ## Address concretization
+//!
+//! | File | Holds |
+//! |------|-------|
+//! | `concretize.rs` | `pub mod concretize` — the read/write concretization strategies (`AddressConcretizer`, `ConcretizationMode`, `ConcretizationResult`) that turn a symbolic address into a concrete set. Merged here from the crate root (angr-mx00p.51.8). **(z3)** |
+//!
 //! ## Tests
 //!
 //! Test files are not declared in this file. Each `*_tests.rs` sibling is pulled
@@ -67,6 +73,7 @@
 
 mod bv_codec;
 mod bv_id_ops;
+pub mod concretize;
 pub use bv_id_ops::{
     SymbolIdRebase, reserve_symbol_id, symbol_id_rebase_offset, symbol_id_watermark,
 };

@@ -1639,7 +1639,7 @@ fn test_eval_upto_wide_checked_not_flagged_when_decided() {
 /// rather than in `concretize_tests.rs` so it can reuse the stall rig above.
 #[test]
 fn test_concretize_refuses_timeout_truncated_solution_set() {
-    use crate::concretize::{AddressConcretizer, ConcretizationResult};
+    use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult};
 
     let ctx = SymContext::new();
     let (addr, _) = build_warm_seed_then_stalled(&ctx, "stalled_addr", 0x1000, 0x2000);

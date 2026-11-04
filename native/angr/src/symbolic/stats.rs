@@ -16,7 +16,7 @@
 //! itself (`context.rs`, `solving_ops.rs`, `constraint_ops.rs`,
 //! `solver_build.rs`, `value_ops.rs`, `to_z3.rs` — mostly via
 //! `use super::stats::*`) and, through the re-exports in `symbolic/mod.rs`,
-//! in `interpreter/`, `memory/`, `concretize.rs`, `claripy_bridge/`,
+//! in `interpreter/`, `memory/`, `symbolic/concretize.rs`, `claripy_bridge/`,
 //! `vex/ops/classify.rs`, `procedures/`, `syscalls/`, and
 //! `state/filesystem/symbolic.rs`.
 //!

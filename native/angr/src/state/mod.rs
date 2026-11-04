@@ -89,8 +89,8 @@ use rustc_hash::FxHashMap;
 pub use self::fork::BranchSnapshot;
 use self::fork::warn_config_divergence;
 use crate::arch::{Arch, RegisterFile, arch_from_name};
-use crate::concretize::AddressConcretizer;
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
+use crate::symbolic::concretize::AddressConcretizer;
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::{Endness, VexArch};
 

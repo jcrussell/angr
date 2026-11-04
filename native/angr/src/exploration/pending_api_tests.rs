@@ -176,7 +176,7 @@ fn consume_skip_hook_drops_expired_entries() {
 /// rather than the page's `symbolic_bitmap`. Mirrors
 /// `state_api_tests::state_with_multi_cell_store`.
 fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
-    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::concretize::AddressConcretizer;
     use crate::memory::Permission;
     use crate::symbolic::RustBV;
 

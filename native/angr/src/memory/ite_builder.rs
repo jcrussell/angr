@@ -15,7 +15,7 @@
 //! parent module, so callers in `memory/mod.rs` keep using `self.method(...)`.
 use std::sync::Arc;
 
-use crate::concretize::strided_addr_at;
+use crate::symbolic::concretize::strided_addr_at;
 use crate::symbolic::{RustBV, SymContext};
 
 use super::{MemoryError, SymbolicMemory};

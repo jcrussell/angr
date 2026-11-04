@@ -77,7 +77,7 @@ impl TrapSide {
 ///
 /// Scope note (angr-9ke6b.17): symbolic-address concretization is *not*
 /// configured here. Those bounds live in
-/// [`AddressConcretizer`](crate::concretize::AddressConcretizer)'s
+/// [`AddressConcretizer`](crate::symbolic::concretize::AddressConcretizer)'s
 /// `read_range_limit` / `write_range_limit`, driven by SimOptions. A
 /// `max_concretization_range` knob used to sit on this struct and was never
 /// read by anything — don't re-add it; extend `AddressConcretizer` instead.
@@ -90,7 +90,7 @@ impl TrapSide {
 ///
 /// Third instance, same shape (angr-c7xno.5): an `enable_stride_detection`
 /// knob lived here as a `#[pyo3(get, set)]` field wholly separate from
-/// [`AddressConcretizer::enable_stride_detection`](crate::concretize::AddressConcretizer),
+/// [`AddressConcretizer::enable_stride_detection`](crate::symbolic::concretize::AddressConcretizer),
 /// which is the field the concretizer actually reads. `AddressConcretizer` is
 /// built without ever seeing an `ExecutionConfig` (see
 /// `VEXInterpreter::with_config` and `RustSimState::with_solver_endian`), and

@@ -684,8 +684,8 @@ fn oversized_load_falls_back_to_python_rather_than_erroring() {
 
 /// Concretizer with `avoid_multivalued_reads` set to `on` and nothing else
 /// changed from the default.
-fn mv_read_concretizer(on: bool) -> crate::concretize::AddressConcretizer {
-    let mut c = crate::concretize::AddressConcretizer::new();
+fn mv_read_concretizer(on: bool) -> crate::symbolic::concretize::AddressConcretizer {
+    let mut c = crate::symbolic::concretize::AddressConcretizer::new();
     c.configure_strategies(false, None, None, false, on, false);
     c
 }

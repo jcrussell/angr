@@ -43,7 +43,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub(crate) type SymMap<K, V> =
     im::HashMap<K, V, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
 
-use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
+use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
@@ -262,44 +262,44 @@ pub(super) fn end_page_exclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
     }
 }
 
-impl ConcretizationResult {
-    /// Map a *failed* concretization (`TooLarge` / `Failed`) onto the
-    /// `MemoryError::SymbolicAddress` it should surface, so callers can fall
-    /// back to Python's memory model (angr-24pv4.3). Returns `None` for the
-    /// success variants (`Single` / `Multiple` / `Strided`), which every
-    /// caller handles before delegating here. Centralizes the "address range
-    /// too large" message string that was previously copy-pasted at six load
-    /// and store concretization-dispatch sites.
-    pub(crate) fn to_symbolic_address_error(&self) -> Option<MemoryError> {
-        match self {
-            ConcretizationResult::TooLarge { min, max, .. } => Some(MemoryError::SymbolicAddress {
-                description: format!(
-                    "address range too large for concretization: 0x{min:x} - 0x{max:x}"
-                ),
-            }),
-            ConcretizationResult::Failed(reason) => Some(MemoryError::SymbolicAddress {
-                description: reason.clone(),
-            }),
-            _ => None,
-        }
+/// Map a *failed* concretization (`TooLarge` / `Failed`) onto the
+/// `MemoryError::SymbolicAddress` it should surface, so callers can fall
+/// back to Python's memory model (angr-24pv4.3). Returns `None` for the
+/// success variants (`Single` / `Multiple` / `Strided`), which every
+/// caller handles before delegating here. Centralizes the "address range
+/// too large" message string that was previously copy-pasted at six load
+/// and store concretization-dispatch sites.
+///
+/// A free fn rather than an inherent method so `ConcretizationResult`'s only
+/// inherent impl stays in its own module (angr-mx00p.51.8).
+pub(crate) fn to_symbolic_address_error(result: &ConcretizationResult) -> Option<MemoryError> {
+    match result {
+        ConcretizationResult::TooLarge { min, max, .. } => Some(MemoryError::SymbolicAddress {
+            description: format!(
+                "address range too large for concretization: 0x{min:x} - 0x{max:x}"
+            ),
+        }),
+        ConcretizationResult::Failed(reason) => Some(MemoryError::SymbolicAddress {
+            description: reason.clone(),
+        }),
+        _ => None,
     }
+}
 
-    /// Total form of [`Self::to_symbolic_address_error`] for the concretization
-    /// dispatch sites, whose catch-all arm has already peeled off every success
-    /// variant.
-    ///
-    /// Those arms used to end in `.to_symbolic_address_error().expect(..)`,
-    /// which turned a hypothetical new success variant into a panic. This maps
-    /// it onto the same recoverable `SymbolicAddress` error the caller already
-    /// routes to the Python memory model — the same defense-in-depth trade
-    /// [`MemoryError::UnexpectedSymbolic`] documents — while naming the
-    /// unexpected variant so the message is still diagnosable.
-    pub(crate) fn as_symbolic_address_error(&self) -> MemoryError {
-        self.to_symbolic_address_error()
-            .unwrap_or_else(|| MemoryError::SymbolicAddress {
-                description: format!("unexpected concretization result: {self:?}"),
-            })
-    }
+/// Total form of [`to_symbolic_address_error`] for the concretization
+/// dispatch sites, whose catch-all arm has already peeled off every success
+/// variant.
+///
+/// Those arms used to end in `.to_symbolic_address_error().expect(..)`,
+/// which turned a hypothetical new success variant into a panic. This maps
+/// it onto the same recoverable `SymbolicAddress` error the caller already
+/// routes to the Python memory model — the same defense-in-depth trade
+/// [`MemoryError::UnexpectedSymbolic`] documents — while naming the
+/// unexpected variant so the message is still diagnosable.
+pub(crate) fn as_symbolic_address_error(result: &ConcretizationResult) -> MemoryError {
+    to_symbolic_address_error(result).unwrap_or_else(|| MemoryError::SymbolicAddress {
+        description: format!("unexpected concretization result: {result:?}"),
+    })
 }
 
 /// Symbolic memory model.

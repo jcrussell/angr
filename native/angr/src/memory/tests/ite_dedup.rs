@@ -160,7 +160,7 @@ fn test_ite_dedup_strided_zero_collapses() {
 /// candidate set.
 #[test]
 fn test_assert_address_disjunction_multiple_write_hoists() {
-    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::concretize::AddressConcretizer;
     use crate::symbolic::get_solver_stats;
 
     let pre = get_solver_stats();
@@ -255,7 +255,7 @@ fn test_assert_address_disjunction_empty_and_single_addr_lists_are_noops() {
 /// `load_symbolic_unified` Multiple arm.
 #[test]
 fn test_assert_address_disjunction_multiple_load_hoists() {
-    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::concretize::AddressConcretizer;
     use crate::symbolic::get_solver_stats;
 
     let pre = get_solver_stats();

@@ -65,14 +65,14 @@
 //! **Panic policy (angr-9ke6b.212):** stores run on guest-supplied addresses
 //! and values, so nothing here may panic on their shape. An unresolvable
 //! address becomes `MemoryError::SymbolicAddress` (via
-//! [`ConcretizationResult::as_symbolic_address_error`]), which the caller turns
+//! [`as_symbolic_address_error`]), which the caller turns
 //! into a Python-memory-model fallback.
 //!
 //! The `deny` below follows the crate [Panic policy](crate#panic-policy)
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
+use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{
     RustBV, SymContext, record_concretize_disjunction, record_mem_ite_depth,
     record_mem_lazy_page_fault, record_mem_store, record_mem_store_symbolic_addr,
@@ -81,7 +81,10 @@ use crate::vex::Endness;
 
 use super::multi::MultiAlternative;
 use super::page::{MemoryPage, PAGE_SIZE, PageIndex, Permission};
-use super::{Address, MemoryError, SymbolicMemory, end_page_exclusive, end_page_inclusive};
+use super::{
+    Address, MemoryError, SymbolicMemory, as_symbolic_address_error, end_page_exclusive,
+    end_page_inclusive, to_symbolic_address_error,
+};
 
 impl SymbolicMemory {
     /// Store a value to memory.
@@ -105,7 +108,7 @@ impl SymbolicMemory {
                     // Pin the arbitrarily-chosen store address on the path so the
                     // store is not invisible to a later read that concretizes
                     // elsewhere (angr-mv08h, parity with Python's store pin).
-                    crate::concretize::pin_fallback_addr(ctx, addr, a as u64);
+                    crate::symbolic::concretize::pin_fallback_addr(ctx, addr, a as u64);
                     a as u64
                 }
                 None => {
@@ -428,7 +431,7 @@ impl SymbolicMemory {
                 Self::assert_address_disjunction(&addr, &addrs, ctx);
                 Ok(())
             }
-            other => Err(other.as_symbolic_address_error()),
+            other => Err(as_symbolic_address_error(&other)),
         }
     }
 
@@ -536,9 +539,7 @@ impl SymbolicMemory {
             }
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
-            other => other
-                .to_symbolic_address_error()
-                .map_or(Ok(Some(result)), Err),
+            other => to_symbolic_address_error(other).map_or(Ok(Some(result)), Err),
         }
     }
 
@@ -584,7 +585,7 @@ impl SymbolicMemory {
             }
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
-            other => other.to_symbolic_address_error().map_or(Ok(()), Err),
+            other => to_symbolic_address_error(other).map_or(Ok(()), Err),
         }
     }
 
@@ -900,9 +901,7 @@ impl SymbolicMemory {
                 self.install_multi_for_candidates(&addr, &value, &addrs_v)?;
                 Ok(Some(result))
             }
-            other => other
-                .to_symbolic_address_error()
-                .map_or(Ok(Some(result)), Err),
+            other => to_symbolic_address_error(other).map_or(Ok(Some(result)), Err),
         }
     }
 

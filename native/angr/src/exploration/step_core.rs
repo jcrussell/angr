@@ -28,10 +28,10 @@ use lru::LruCache;
 use rustc_hash::FxHashMap;
 
 use crate::callbacks::PythonCallbacks;
-use crate::concretize::AddressConcretizer;
 use crate::interpreter::ExecutionConfig;
 use crate::interpreter::VEXInterpreter;
 use crate::state::RustSimState;
+use crate::symbolic::concretize::AddressConcretizer;
 use crate::vex::{IRSB, VexArch};
 
 use super::RustExplorationManager;

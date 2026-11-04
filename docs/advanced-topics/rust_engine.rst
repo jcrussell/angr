@@ -1216,7 +1216,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
   * ``mem_lazy_page_fault_count`` — ``UnmappedPageInRegion`` errors,
     bumped on the public ``load`` / ``store`` paths only.
 
-* **Concretization fanout** (bumped in ``concretize.rs``):
+* **Concretization fanout** (bumped in ``symbolic/concretize.rs``):
 
   * ``concretize_read_count`` / ``concretize_write_count`` — number of
     ``concretize_read`` / ``concretize_write`` calls.

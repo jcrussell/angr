@@ -90,9 +90,9 @@ fn test_migrate_carries_multi_cell_bytes() {
         );
         (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
     };
-    let concretizer = crate::concretize::AddressConcretizer {
+    let concretizer = crate::symbolic::concretize::AddressConcretizer {
         symbolic_write_addresses: true,
-        ..crate::concretize::AddressConcretizer::new()
+        ..crate::symbolic::concretize::AddressConcretizer::new()
     };
     let ctx = state.solver().clone();
     let ctx = ctx.borrow();

@@ -41,7 +41,7 @@
 //! - `procedures` / `syscalls` — native SimProcedures and syscall handlers,
 //!   each falling back to Python via `ProcedureError`/`SyscallError`
 //! - `exploration` — the run loop, work-stealing scheduler and step core
-//! - [`concretize`] — concretization strategies for symbolic addresses
+//! - [`symbolic::concretize`] — concretization strategies for symbolic addresses
 //!
 //! # Feature flags
 //!
@@ -109,7 +109,7 @@
 // silent for all of them, however many `unreachable_pub` sites exist. Dropping `rlib` is not an option (`benches/`,
 // `examples/`, `tests/` and the `fuzz/` cargo-fuzz project all link it), so the
 // lever is the other direction: only the modules an external target actually
-// imports stay `pub mod` (`automaton`, `concretize`, `fuzz_api`, `memory`,
+// imports stay `pub mod` (`automaton`, `fuzz_api`, `memory`,
 // `stash`, `state`, `symbolic`, `vex` — re-derive with
 // `grep -rhoE "rustylib::[a-z_]+" tests benches examples fuzz`), everything else
 // is `pub(crate) mod`. Narrowing the items inside those modules is what lets
@@ -369,7 +369,6 @@ pub mod segmentlist;
 pub(crate) mod arch;
 pub(crate) mod callbacks;
 pub(crate) mod claripy_bridge;
-pub mod concretize;
 pub(crate) mod engine;
 pub(crate) mod errors;
 pub(crate) mod exploration;

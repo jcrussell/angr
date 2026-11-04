@@ -26,7 +26,7 @@ pub(crate) struct MemoryConfiguration {
     pub(crate) zero_fill_unconstrained: bool,
     /// Address concretization configuration, propagated to each
     /// engine/interpreter via `set_concretizer`.
-    pub(crate) concretizer_config: crate::concretize::AddressConcretizer,
+    pub(crate) concretizer_config: crate::symbolic::concretize::AddressConcretizer,
     /// VEX optimization level (0-3). None = use pyvex default (typically 1).
     pub(crate) vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.

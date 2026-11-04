@@ -5,7 +5,7 @@
 //! ZERO_FILL_UNCONSTRAINED_MEMORY) instead of a name-interned shared symbol.
 
 use super::super::*;
-use crate::concretize::AddressConcretizer;
+use crate::symbolic::concretize::AddressConcretizer;
 
 /// A symbolic address constrained to `base + offs[i]`. The offsets must be
 /// irregular: an arithmetic progression concretizes as `Strided`, not the

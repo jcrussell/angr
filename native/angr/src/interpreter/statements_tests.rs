@@ -16,9 +16,9 @@ use crate::vex::ir::{Endness, IRType, MBusEvent};
 /// `Single` — see `AddressConcretizer::write_range_applies` (angr-9ke6b.194).
 fn new_interp_multiwrite(ctx: &SymContext) -> VEXInterpreter<'_> {
     let mut interp = new_interp(ctx);
-    interp.set_concretizer(crate::concretize::AddressConcretizer {
+    interp.set_concretizer(crate::symbolic::concretize::AddressConcretizer {
         symbolic_write_addresses: true,
-        ..crate::concretize::AddressConcretizer::new()
+        ..crate::symbolic::concretize::AddressConcretizer::new()
     });
     interp
 }
@@ -593,7 +593,7 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     // expression's evaluated value. Constrain it to a single solution
     // (0x2010, inside the cached block) so concretization is deterministic.
     let addr_bv = RustBV::symbol("cas_sym_addr", 64);
-    crate::concretize::pin_fallback_addr(&ctx, &addr_bv, 0x2010);
+    crate::symbolic::concretize::pin_fallback_addr(&ctx, &addr_bv, 0x2010);
     interp.temps = vec![Some(addr_bv)];
 
     let addr_expr = IRExpr::RdTmp(0);
@@ -1184,9 +1184,9 @@ fn storeg_symbolic_guard_symbolic_addr_leaves_index_free_when_false() {
 fn storeg_symbolic_guard_multiwrite_guards_every_candidate() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
-    interp.set_concretizer(crate::concretize::AddressConcretizer {
+    interp.set_concretizer(crate::symbolic::concretize::AddressConcretizer {
         symbolic_write_addresses: true,
-        ..crate::concretize::AddressConcretizer::new()
+        ..crate::symbolic::concretize::AddressConcretizer::new()
     });
 
     let guard = RustBV::symbol("storeg_mw_hi", 1);
@@ -1444,8 +1444,8 @@ fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
 
 /// Concretizer with `avoid_multivalued_writes` set to `on` and nothing else
 /// changed from the default.
-fn mv_write_concretizer(on: bool) -> crate::concretize::AddressConcretizer {
-    let mut c = crate::concretize::AddressConcretizer::new();
+fn mv_write_concretizer(on: bool) -> crate::symbolic::concretize::AddressConcretizer {
+    let mut c = crate::symbolic::concretize::AddressConcretizer::new();
     c.configure_strategies(false, None, None, false, false, on);
     c
 }
@@ -1566,7 +1566,7 @@ fn handle_symbolic_store_drops_the_write_under_avoid_multivalued_writes() {
 fn wide_symbolic_store_reaches_every_candidate(base: u64) {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
-    let mut conc = crate::concretize::AddressConcretizer::new();
+    let mut conc = crate::symbolic::concretize::AddressConcretizer::new();
     conc.configure_strategies(false, None, None, true, false, false);
     interp.set_concretizer(conc);
 

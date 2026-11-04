@@ -680,7 +680,8 @@ impl AddressConcretizer {
 
         // Verify the stride covers the range properly
         if stride > 1 {
-            let count = (max - min) / stride + 1;
+            // overflow-ok: a reversed span refuses the grid; `stride > 1` keeps the quotient below u64::MAX
+            let count = max.checked_sub(min)? / stride + 1;
             if count <= self.max_stride_count {
                 // Soundness gate (angr-lf108): the GCD of a 4-sample subset can
                 // strictly exceed the true stride of the feasible set, so the
@@ -745,7 +746,8 @@ impl AddressConcretizer {
         if stride > 1 {
             let base = addrs[0];
             let max = addrs[addrs.len() - 1];
-            let expected_count = (max - base) / stride + 1;
+            // overflow-ok: a reversed span refuses the grid; `stride > 1` keeps the quotient below u64::MAX
+            let expected_count = max.checked_sub(base)? / stride + 1;
 
             // Check if all expected addresses are present
             if expected_count == addrs.len() as u64 {

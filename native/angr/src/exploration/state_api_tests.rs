@@ -1,7 +1,7 @@
 // Tests for exploration/state_api.rs (see rust-module-root-split-recipe
 // for why these live in a sibling file rather than an inline `mod tests`).
 use super::*;
-use crate::concretize::AddressConcretizer;
+use crate::symbolic::concretize::AddressConcretizer;
 use crate::memory::Permission;
 use crate::stash::STASH_FOUND;
 use crate::state::RustSimState;

@@ -20,7 +20,7 @@ use super::super::*;
 /// post-store watermark must be at least 3 (it can only climb).
 #[test]
 fn test_mem_ite_depth_counter_records_eager_multi_store() {
-    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::concretize::AddressConcretizer;
     use crate::symbolic::get_solver_stats;
 
     let pre = get_solver_stats();
@@ -119,7 +119,7 @@ fn test_memory_volume_counters_fire_on_load_store() {
 /// Uses the same setup as the ITE-depth test (3 candidate addresses).
 #[test]
 fn test_concretize_counters_fire_on_symbolic_store() {
-    use crate::concretize::AddressConcretizer;
+    use crate::symbolic::concretize::AddressConcretizer;
     use crate::symbolic::get_solver_stats;
 
     let pre = get_solver_stats();

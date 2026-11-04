@@ -63,14 +63,14 @@
 //! **Panic policy (angr-9ke6b.212):** loads run on guest-supplied addresses, so
 //! nothing here may panic on address shape. The concretization dispatch reports
 //! an unresolvable address as `MemoryError::SymbolicAddress` (via
-//! [`ConcretizationResult::as_symbolic_address_error`]), which the caller turns
+//! [`as_symbolic_address_error`]), which the caller turns
 //! into a Python-memory-model fallback.
 //!
 //! The `deny` below follows the crate [Panic policy](crate#panic-policy)
 //! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{
     RustBV, SymContext, record_mem_lazy_page_fault, record_mem_load, record_mem_load_symbolic_addr,
 };
@@ -78,8 +78,8 @@ use crate::vex::Endness;
 
 use super::page::{PAGE_SIZE, PageIndex, Permission};
 use super::{
-    Address, MAX_ACCESS_BYTES, MemoryError, SymbolicMemory, check_access_size, end_page_inclusive,
-    fabricate_width_bits,
+    Address, MAX_ACCESS_BYTES, MemoryError, SymbolicMemory, as_symbolic_address_error,
+    check_access_size, end_page_inclusive, fabricate_width_bits,
 };
 
 impl SymbolicMemory {
@@ -159,7 +159,7 @@ impl SymbolicMemory {
                         // Pin the arbitrarily-chosen load address on the path so
                         // a later eval() of inputs cannot yield a path-infeasible
                         // solution (angr-mv08h, parity with Python's load pin).
-                        crate::concretize::pin_fallback_addr(ctx, &addr, a as u64);
+                        crate::symbolic::concretize::pin_fallback_addr(ctx, &addr, a as u64);
                         a as u64
                     }
                     None => {
@@ -579,7 +579,7 @@ impl SymbolicMemory {
                 self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
             }
             other => {
-                return Err(other.as_symbolic_address_error());
+                return Err(as_symbolic_address_error(&other));
             }
         };
 
@@ -744,7 +744,7 @@ impl SymbolicMemory {
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
             other => {
-                return Err(other.as_symbolic_address_error());
+                return Err(as_symbolic_address_error(&other));
             }
         };
 
