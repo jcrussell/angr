@@ -3,18 +3,20 @@
 //! lineage solver and address concretization (`symbolic::concretize`);
 //! [`memory`], the lazy copy-on-write `SymbolicMemory`; [`arch`], the
 //! `Arch` trait, the per-arch register tables, `RegisterFile` and the
-//! calling conventions; and the crate-root helpers every engine module
-//! shares ([`arc_shared`], [`duration_ns`], [`elapsed_ns`]). `state` and
-//! `interpreter` join it one module at a time (angr-mx00p.51).
+//! calling conventions; [`state`], `RustSimState` and its filesystem,
+//! snapshots and migration payload; and the crate-root helpers every engine
+//! module shares ([`arc_shared`], [`duration_ns`], [`elapsed_ns`]).
+//! `interpreter` joins it next (angr-mx00p.51).
 //!
 //! **Dependencies.** `angr-bv`, `angr-vex`, `angr-symex-macros`,
 //! `clarirs-core`, `z3` and the plain-data crates: no `pyo3` (check with
 //! `cargo tree -p angr-symex-core -e normal`).
 //!
-//! The engine (`native/angr`) re-exports [`symbolic`], [`memory`] and
-//! [`arch`], so `crate::symbolic::` / `crate::memory::` / `crate::arch::`
-//! (and the `rustylib::` spellings of the first two) name these items
-//! (angr-mx00p.51.11, angr-mx00p.51.12, angr-mx00p.51.13).
+//! The engine (`native/angr`) re-exports [`symbolic`], [`memory`], [`arch`]
+//! and [`state`], so `crate::symbolic::` / `crate::memory::` /
+//! `crate::arch::` / `crate::state::` (and the `rustylib::` spellings of all
+//! but `arch`) name these items (angr-mx00p.51.11, angr-mx00p.51.12,
+//! angr-mx00p.51.13, angr-mx00p.51.14).
 //!
 //! # File index
 //!
@@ -22,6 +24,7 @@
 //! |------|-------|
 //! | `arch/` | The `Arch` trait and `AddrOrSymbolic`, the per-arch register tables and offsets, `RegisterFile`, the arch registry and the calling conventions; `arch/mod.rs` indexes its files. |
 //! | `memory/` | `SymbolicMemory`, its pages, loads, stores, merge and the multi-value overlay; `memory/mod.rs` indexes its files. |
+//! | `state/` | `RustSimState` (construction, fork/merge, registers, memory, history, inspection, export), its filesystem, snapshots and `StateMigrationPayload`; `state/mod.rs` indexes its files. |
 //! | `symbolic/` | `SymContext`, `ToZ3`, the Z3 plumbing, the `RustBV` re-export of `angr_bv::SymBV`, and `concretize`; `symbolic/mod.rs` indexes its files. |
 //! | `test_boundary_values.rs` | The boundary-value tables for the integer-overflow sweep; test-only, widened by feature `testing`. |
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -95,6 +98,7 @@ pub fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
 
 pub mod arch;
 pub mod memory;
+pub mod state;
 pub mod symbolic;
 
 /// Shared boundary-value tables for the integer-overflow/wraparound proactive

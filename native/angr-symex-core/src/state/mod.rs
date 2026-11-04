@@ -19,7 +19,8 @@
 //! - **I7 (`max()` field sync)** — Rust owns `mmap_base` and `posix_brk`
 //!   (this module); the setters here accept any value, and the
 //!   directionality is enforced at the Python export site.
-//! - **I8 (loop termination)** — enforced in `exploration/run_loop_single.rs`.
+//! - **I8 (loop termination)** — enforced in the engine shell's
+//!   `exploration/run_loop_single.rs`.
 //!
 //! # State metadata + fork invariants
 //!
@@ -92,7 +93,7 @@ use crate::arch::{Arch, RegisterFile, arch_from_name};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::concretize::AddressConcretizer;
 use crate::symbolic::{RustBV, SymContext};
-use crate::vex::{Endness, VexArch};
+use angr_vex::{Endness, VexArch};
 
 mod construction;
 mod export;
@@ -112,12 +113,12 @@ mod snapshot;
 mod solver_access;
 mod types;
 
+pub use crate::state_flag_list;
 pub use export::*;
 pub use filesystem::*;
 pub use inspection::*;
 pub use migration::StateMigrationPayload;
 pub use options::SYMBOLIC_INITIAL_VALUES;
-pub(crate) use options::state_flag_list;
 pub use snapshot::*;
 pub use types::*;
 
@@ -280,7 +281,7 @@ pub struct NativeResumeFrame {
     pub saved_args: Vec<RustBV>,
     /// Address the *original* caller of this proc should resume at once the
     /// continuation finishes. Captured at sub-call time and used as the PC on
-    /// the final `crate::procedures::ProcOutcome::Return` instead of reading
+    /// the final `procedures::ProcOutcome::Return` (engine shell) instead of reading
     /// the stack: a stack-return ABI clobbers the slot when the guest routine
     /// returns to the resume sentinel, and a link-register ABI loses the
     /// original return address when the dispatcher overwrites LR with the
@@ -433,7 +434,7 @@ pub struct RustSimState {
     /// sibling gets its trap exit here instead, which the next step errors
     /// (`interpreter::TrapSide`).
     #[merge_policy = "warn_on_diverge"]
-    pending_syscall: Option<crate::vex::JumpKind>,
+    pending_syscall: Option<angr_vex::JumpKind>,
     /// The status a no-return procedure ended this state with, recorded with
     /// its `HistoryEntry::JK_EXIT` entry by `record_exit`. An export replays
     /// it as Python's `terminate` event (angr-mx00p.132.8). Carried across
@@ -561,13 +562,15 @@ pub struct RustSimState {
     last_time: Option<RustBV>,
     /// Mirrors angr's NO_IP_CONCRETIZATION SimOption. When true, symbolic
     /// jump targets are NOT enumerated via solver — the state routes to the
-    /// unconstrained stash without warning. See engines/successors.py:292-296.
+    /// unconstrained stash without warning. See `SimSuccessors._categorize_successor`
+    /// (angr/engines/successors.py).
     /// Cloned on fork.
     #[merge_policy = "union"]
     no_ip_concretization: bool,
     /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION SimOption. When true, any
     /// symbolic jump target routes the state to the unconstrained stash
-    /// before enumeration is attempted. See engines/successors.py:234-239.
+    /// before enumeration is attempted. See
+    /// `SimSuccessors._categorize_successor` (angr/engines/successors.py).
     /// Behaviourally identical to `no_ip_concretization` for the Rust engine
     /// (both short-circuit `eval_next_addr_concretized` for symbolic IPs);
     /// they are separate flags to preserve Python option semantics. Cloned
@@ -579,7 +582,8 @@ pub struct RustSimState {
     /// register is left set to the original symbolic expression (not the
     /// concretized constant) and no `target == addr` narrowing constraint is
     /// added per fork. The engine still uses the concrete `pc` value to drive
-    /// the next block lift. See engines/successors.py:297-307,326-331.
+    /// the next block lift. See
+    /// `SimSuccessors._categorize_successor` (angr/engines/successors.py).
     /// Cloned on fork.
     #[merge_policy = "union"]
     keep_ip_symbolic: bool,

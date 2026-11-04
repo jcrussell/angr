@@ -136,7 +136,7 @@ pub extern crate angr_vex as vex;
 
 // The crate-root helpers live in angr-symex-core (angr-mx00p.51.11); these
 // re-exports keep `crate::arc_shared` and friends resolving.
-pub(crate) use angr_symex_core::{arc_shared, duration_ns, elapsed_ns};
+pub(crate) use angr_symex_core::{duration_ns, elapsed_ns};
 
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
@@ -253,7 +253,7 @@ pub use angr_symex_core::memory;
 pub(crate) mod procedures;
 pub(crate) mod solver;
 pub mod stash;
-pub mod state;
+pub use angr_symex_core::state;
 pub(crate) mod state_bridge;
 pub use angr_symex_core::symbolic;
 pub(crate) mod syscalls;

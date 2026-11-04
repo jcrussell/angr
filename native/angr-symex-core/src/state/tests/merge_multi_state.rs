@@ -81,7 +81,7 @@ fn test_merge_filesystem_keeps_longest_stdout_branch() {
 }
 
 // angr-qwyti.2 / angr-n0irt.18: systematic 3-state coverage of the overlay-union
-// arms of RustSimState::merge (native/angr/src/state/fork.rs::merge). The
+// arms of RustSimState::merge (native/angr-symex-core/src/state/fork.rs::merge). The
 // pre-existing merge tests only exercised `hook_symbolic_memory` with 2 states,
 // so two documented policies were asserted nowhere:
 //   1. `symbolic_pages` and `addr_to_ast` share the identical union-with-

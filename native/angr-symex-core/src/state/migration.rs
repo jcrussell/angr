@@ -104,8 +104,8 @@ impl StateMigrationPayload {
     /// is guaranteed to fail. Test-only: it exists so the coordinator's
     /// reattach-failure path (angr-ph300.11) is reachable from a unit test
     /// without corrupting a real wave.
-    #[cfg(test)]
-    pub(crate) fn corrupt_for_test() -> Self {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn corrupt_for_test() -> Self {
         Self {
             state_bytes: vec![0xff; 8],
             symbolic_pages: OverlayMap::default(),

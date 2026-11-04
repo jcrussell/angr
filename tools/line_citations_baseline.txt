@@ -22,9 +22,6 @@ native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` at engines
 native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
 native/angr/src/interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
 native/angr/src/procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
-native/angr/src/state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
-native/angr/src/state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.
-native/angr/src/state/mod.rs	/// unconstrained stash without warning. See engines/successors.py:292-296.
 native/angr/src/syscalls/identity.rs	//! (`angr/state_plugins/posix.py:159`).
 native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
 native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).

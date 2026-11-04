@@ -375,25 +375,25 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
     (
         "tag comment cat-a (exempt) -> PASS, not even flagged",
         _synthetic_diff(
-            "native/angr/src/state/mod.rs",
+            "native/angr-symex-core/src/state/mod.rs",
             ["// SILENT(cat-a): expected control flow, planned absorb.", "return Ok(None);"],
         ),
-        ["native/angr/src/state/mod.rs"],
+        ["native/angr-symex-core/src/state/mod.rs"],
         0,
     ),
     (
         "commented-out macro call (dead code) -> PASS, not a real site",
         _synthetic_diff(
-            "native/angr/src/state/mod.rs",
+            "native/angr-symex-core/src/state/mod.rs",
             ['// silent_default!(cat_b, old_expr(), 0, "dead code, do not use")'],
         ),
-        ["native/angr/src/state/mod.rs"],
+        ["native/angr-symex-core/src/state/mod.rs"],
         0,
     ),
     (
         "unrelated diff, no silent-fallback lines -> PASS",
-        _synthetic_diff("native/angr/src/state/mod.rs", ["let x = 1 + 1;", 'println!("{x}");']),
-        ["native/angr/src/state/mod.rs"],
+        _synthetic_diff("native/angr-symex-core/src/state/mod.rs", ["let x = 1 + 1;", 'println!("{x}");']),
+        ["native/angr-symex-core/src/state/mod.rs"],
         0,
     ),
     (

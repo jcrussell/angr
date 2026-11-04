@@ -162,7 +162,7 @@ impl HistoryEntry {
     pub const JK_EXIT: u8 = 5;
 
     /// Create from JumpKind enum.
-    pub fn jumpkind_from_vex(jk: &crate::vex::JumpKind) -> u8 {
+    pub fn jumpkind_from_vex(jk: &angr_vex::JumpKind) -> u8 {
         if jk.is_call() {
             Self::JK_CALL
         } else if jk.is_ret() {
@@ -181,7 +181,7 @@ impl HistoryEntry {
     /// encoding adds on top of the enum — no `JumpKind` variant maps to it, so
     /// its string stays local, as does `JK_EXIT`'s, which only angr emits.
     pub fn jumpkind_str(jk: u8) -> &'static str {
-        use crate::vex::JumpKind;
+        use angr_vex::JumpKind;
         match jk {
             Self::JK_BORING => JumpKind::Boring.ijk_name(),
             Self::JK_CALL => JumpKind::Call.ijk_name(),

@@ -3479,7 +3479,7 @@ empty file fails with ``ValueError`` (``"empty snapshot envelope"``). The
 ``STASH_SNAPSHOT_VERSION`` constant lives at
 ``native/angr/src/stash.rs`` and bumps on any breaking shape change
 to the per-state codec (``RustSimStateSnapshot`` at
-``native/angr/src/state/snapshot.rs``).
+``native/angr-symex-core/src/state/snapshot.rs``).
 
 What is captured:
 

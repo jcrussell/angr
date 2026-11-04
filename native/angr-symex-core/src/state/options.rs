@@ -78,6 +78,10 @@ macro_rules! state_flags {
 /// `&self` rather than `&mut self` (the bit lives behind `self.solver`), so
 /// it keeps its hand-written pair, and hand-written pymethods in
 /// `state_bridge::pymethods`.
+///
+/// `#[macro_export]`ed because the engine shell's `state_bridge` expands it
+/// too (angr-mx00p.51.14); `state::state_flag_list` re-exports it.
+#[macro_export]
 macro_rules! state_flag_list {
     ($callback:ident) => {
         $callback! {
@@ -155,7 +159,6 @@ macro_rules! state_flag_list {
         }
     };
 }
-pub(crate) use state_flag_list;
 
 state_flag_list!(state_flags);
 

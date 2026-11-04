@@ -72,7 +72,7 @@ pub enum SnapshotError {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RustSimStateSnapshot {
     pub arch_name: String,
-    pub vex_arch: crate::vex::VexArch,
+    pub vex_arch: angr_vex::VexArch,
     pub registers: crate::arch::RegisterFile,
     pub memory: crate::memory::SymbolicMemorySnapshot,
     pub solver: crate::symbolic::SymContextSnapshot,
@@ -103,7 +103,7 @@ pub struct RustSimStateSnapshot {
     pub mmap_base: u64,
     /// See `RustSimState::pending_syscall` (angr-mx00p.132.12).
     #[serde(default)]
-    pub pending_syscall: Option<crate::vex::JumpKind>,
+    pub pending_syscall: Option<angr_vex::JumpKind>,
     /// See `RustSimState::exit_code` (angr-mx00p.132.8).
     #[serde(default)]
     pub exit_code: Option<RustBV>,
@@ -177,7 +177,7 @@ impl RustSimState {
     /// and that must see fully-materialized memory
     /// (angr-sqfj8.71, angr-sqfj8.26, angr-sqfj8.52). Mirrors [`Self::flush_and_export_full`]'s
     /// flush step.
-    pub(crate) fn flush_memory(&mut self) -> crate::memory::MultiFlushed {
+    pub fn flush_memory(&mut self) -> crate::memory::MultiFlushed {
         let ctx = self.solver.borrow();
         // SILENT(cat-b): same rationale as `flush_and_export_full` — a
         // lazy-write materialization failure costs the rest of the queue

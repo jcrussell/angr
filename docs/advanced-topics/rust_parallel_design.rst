@@ -102,7 +102,7 @@ Single-threaded. The relevant pieces:
   symbolic op (lazy materialization, see :doc:`rust_z3_sharing`) and
   shared by every state forked
   from the same parent through ``Arc``.
-* ``native/angr/src/state/mod.rs`` ``RustSimState`` carries register values,
+* ``native/angr-symex-core/src/state/mod.rs`` ``RustSimState`` carries register values,
   memory pages, and a reference to the symcontext.
 * ``native/angr/src/exploration/run_loop.rs`` drives the
   ``stash → step → categorize`` loop on the calling thread. It is a thin

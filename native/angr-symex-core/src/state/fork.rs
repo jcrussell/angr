@@ -334,7 +334,7 @@ impl RustSimState {
     /// mutation.
     ///
     /// A `BranchSnapshot` restores registers, memory, solver, call stack and
-    /// history at the branch, and [`fork_with`](Self::fork_with) copies every
+    /// history at the branch, and `fork_with` copies every
     /// other field from the base. A native SimProcedure that ran after the
     /// branch has written some of those fields (`fs` and its stdout buffer,
     /// `stdin_symbols`, the break pointers, the native resume stack), so a
@@ -344,7 +344,7 @@ impl RustSimState {
     /// The copy keeps this state's ids and shares its solver `Rc`, so the
     /// taken-path guard that materialization installs on the base lands on
     /// the continuing state.
-    pub(crate) fn fork_base_before_mutation(&self) -> Self {
+    pub fn fork_base_before_mutation(&self) -> Self {
         self.copy_with(
             self.registers.fork(),
             self.memory.fork(),

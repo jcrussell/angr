@@ -286,7 +286,7 @@ impl RustSimState {
 
     /// The syscall exit this state stopped at without running it. See the
     /// `RustSimState::pending_syscall` field doc.
-    pub fn pending_syscall(&self) -> Option<crate::vex::JumpKind> {
+    pub fn pending_syscall(&self) -> Option<angr_vex::JumpKind> {
         self.pending_syscall
     }
 
@@ -304,7 +304,7 @@ impl RustSimState {
     }
 
     /// Set or clear the pending syscall. See [`Self::pending_syscall`].
-    pub fn set_pending_syscall(&mut self, jumpkind: Option<crate::vex::JumpKind>) {
+    pub fn set_pending_syscall(&mut self, jumpkind: Option<angr_vex::JumpKind>) {
         self.pending_syscall = jumpkind;
     }
 
