@@ -78,7 +78,6 @@ pub(crate) mod perror;
 pub(crate) mod printf;
 pub(crate) mod pthread;
 pub(crate) mod puts;
-pub(crate) mod python_proc;
 pub(crate) mod rand;
 pub(crate) mod read;
 pub(crate) mod scanf;
@@ -666,7 +665,7 @@ impl NativeProcedureRegistry {
 
     /// Create an empty registry (no default procedures).
     ///
-    /// Test-only today: `stub_tests` / `python_proc_tests` build one to
+    /// Test-only today: `stub_tests` / `exploration/python_proc_tests` build one to
     /// exercise dispatch in isolation. Production always goes through
     /// `with_defaults` (angr-9ke6b.214).
     #[cfg_attr(not(test), allow(dead_code))]

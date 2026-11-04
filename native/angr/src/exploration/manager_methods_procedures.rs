@@ -133,7 +133,7 @@ impl RustExplorationManager {
         no_return: bool,
         callable: Py<PyAny>,
     ) {
-        let proc = std::sync::Arc::new(crate::procedures::python_proc::PythonNativeProcedure::new(
+        let proc = std::sync::Arc::new(super::python_proc::PythonNativeProcedure::new(
             name, num_args, no_return, callable,
         ));
         Arc::make_mut(&mut self.native_procedures).register(proc);

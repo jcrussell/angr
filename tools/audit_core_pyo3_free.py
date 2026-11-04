@@ -3,10 +3,14 @@
 
 The core modules (``arch/``, ``memory/``, ``symbolic/``, ``vex/``,
 ``interpreter/`` and ``state/`` under ``native/angr/src/``, and all of
-``native/angr-bv/src/``) are what the crate split (angr-mx00p.51) moves into
-a crate with no ``pyo3`` dependency. Their
+``native/angr-bv/src/``) and the native procedures and syscalls
+(``procedures/`` and ``syscalls/``) are what the crate split (angr-mx00p.51)
+moves into crates with no ``pyo3`` dependency. Their
 code reaches Python only through the PyO3 shell (``EngineHost`` for the
-interpreter, ``HostAst`` for the state's overlays), and their tests run
+interpreter, ``HostAst`` for the state's overlays; a procedure or syscall
+defers to Python by returning ``ProcedureError`` / ``SyscallError``, and the
+Python-callable procedure wrapper lives in the shell's
+``exploration/python_proc.rs``), and their tests run
 against plain-Rust doubles (``interpreter::TestHost``), so none of them starts
 an interpreter.
 
@@ -44,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-CORE_DIRS = ("arch", "memory", "symbolic", "vex", "interpreter", "state")
+CORE_DIRS = ("arch", "memory", "symbolic", "vex", "interpreter", "state", "procedures", "syscalls")
 SCAN = {"native/angr": CORE_DIRS, "native/angr-bv": ("",)}
 EXCLUDE = {"native/angr-macros": "proc-macro crate: compile-time code generation, not the engine core"}
 # Fewer files than this means the core moved out of CORE_DIRS.

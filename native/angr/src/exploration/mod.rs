@@ -62,6 +62,7 @@ mod native_proc_dispatch;
 mod native_technique;
 mod pending_api;
 mod profiling;
+mod python_proc;
 mod resume;
 mod run_loop;
 // NOTE (angr-sqfj8.144): these are plain `//` comments, not `///` doc

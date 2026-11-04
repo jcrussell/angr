@@ -19,7 +19,7 @@
 
 use pyo3::prelude::*;
 
-use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use crate::procedures::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
