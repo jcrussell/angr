@@ -332,6 +332,52 @@ class _RustExportedScratch(SimStateScratch):
         return c
 
 
+def _store_register_runs(state, named_regs) -> list:
+    """Store concrete named registers onto ``state.registers`` in bulk.
+
+    Registers whose offsets abut are packed into one concrete store per
+    contiguous run, written without inspect or actions, instead of one
+    ``setattr(state.regs, …)`` each (a per-name store that also walks
+    ``dir(SimStatePlugin)``; angr-mx00p.136.28). Returns the
+    ``(name, (value, bits))`` entries left for the caller's per-name path: a
+    name the arch does not list, a width that is not the arch's, or one
+    overlapping an already-placed register.
+    """
+    layout = state.arch.registers
+    placed = []
+    rest = []
+    for name, entry in named_regs.items():
+        reg = layout.get(name)
+        if reg is None or reg[1] * 8 != entry[1]:
+            rest.append((name, entry))
+        else:
+            placed.append((reg[0], reg[1], entry[0], name, entry))
+    if not placed:
+        return rest
+    placed.sort(key=lambda p: p[0])
+    byteorder = "little" if state.arch.register_endness == "Iend_LE" else "big"
+    runs = []
+    start = end = None
+    buf = bytearray()
+    for offset, size, value, name, entry in placed:
+        if end is not None and offset < end:
+            rest.append((name, entry))
+            continue
+        if offset != end:
+            if buf:
+                runs.append((start, bytes(buf)))
+            start = end = offset
+            buf = bytearray()
+        buf += (value & ((1 << (size * 8)) - 1)).to_bytes(size, byteorder)
+        end = offset + size
+    runs.append((start, bytes(buf)))
+    # The buffer is laid out in register-file byte order, so it is stored
+    # big-endian: byte 0 of the BVV lands at the run's first offset.
+    for start, data in runs:
+        state.registers.store(start, claripy.BVV(data), endness="Iend_BE", inspect=False, disable_actions=True)
+    return rest
+
+
 def _install_rust_last_block(state, block_addr: int) -> None:
     """Point ``state.scratch`` at the block Rust executed last.
 
@@ -1333,10 +1379,14 @@ class RustStateExportMixin:
         VEX-internal registers angr's plugin doesn't expose (ip_at_syscall
         etc.) are logged at debug and skipped. Always follows with the lazy
         symbolic-register recovery (angr-4ju9e), a no-op when the snapshot
-        reports none — keeps the plain register hot path free.
+        reports none — keeps the plain register hot path free. When the
+        recovery installs a ``RustRegisterProxy`` the plain register file is
+        gone, so the concrete writes are skipped (angr-mx00p.136.28).
         """
+        if self._recover_symbolic_registers_from_snapshot(state, snapshot):
+            return
         named_regs = snapshot.get_registers_named()
-        for reg_name, (value, size_bits) in named_regs.items():
+        for reg_name, (value, size_bits) in _store_register_runs(state, named_regs):
             try:
                 setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
             except Exception as e:
@@ -1344,7 +1394,6 @@ class RustStateExportMixin:
                 # (e.g. ip_at_syscall) that angr's register plugin doesn't
                 # expose. Log at debug only.
                 l.debug("Skipping register %s during sync: %s", reg_name, e)
-        self._recover_symbolic_registers_from_snapshot(state, snapshot)
 
     # Table-driven rust->python break-pointer sync (angr-hv4lt.13). Each entry
     # is (plugin_attr, py_field, getter_name): read Rust's per-state break
@@ -1665,7 +1714,7 @@ class RustStateExportMixin:
         Returns:
             An angr SimState.
         """
-        state = self._project.factory.blank_state(addr=snapshot.pc)
+        state = self._export_blank_state(snapshot.pc)
 
         self._load_snapshot_registers(state, snapshot)
 
@@ -1697,6 +1746,27 @@ class RustStateExportMixin:
             _install_rust_last_block(state, detailed[-1][0])
         self._install_rust_history_chain(state, snapshot.state_id, snapshot.get_detailed_history())
         self._bind_export(state, snapshot.state_id, snapshot=not mirror)
+        return state
+
+    def _export_blank_state(self, pc: int) -> angr.SimState:
+        """A blank state at ``pc``, copied from a per-manager cached template.
+
+        Equal to ``blank_state(addr=pc)``: ``state_blank`` reads ``addr`` only
+        for the ip and the root scratch addresses, so the copy sets those
+        and shares nothing else that is per-address. ``copy()`` is several
+        times cheaper than ``blank_state`` (angr-mx00p.136.4). The template
+        never leaves this method, so no caller can mutate it.
+        """
+        template = getattr(self, "_export_blank_template", None)
+        if template is None:
+            template = self._project.factory.blank_state()
+            self._export_blank_template = template
+        state = template.copy()
+        state.registers.store(
+            state.arch.ip_offset, claripy.BVV(pc, state.arch.bits), inspect=False, disable_actions=True
+        )
+        state.scratch.ins_addr = pc
+        state.scratch.bbl_addr = pc
         return state
 
     def _load_snapshot_registers(self, state: angr.SimState, snapshot):
@@ -1879,7 +1949,7 @@ class RustStateExportMixin:
         sim_registers_cls = state.plugin_preset.request_plugin("sym_memory")
         registers = sim_registers_cls(memory_id="reg", endness=state.arch.register_endness)
         state.register_plugin("registers", registers)
-        for reg_name, (value, size_bits) in snapshot.get_registers_named().items():
+        for reg_name, (value, size_bits) in _store_register_runs(state, snapshot.get_registers_named()):
             try:
                 setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
             except (AttributeError, KeyError, ValueError) as e:
@@ -1891,7 +1961,7 @@ class RustStateExportMixin:
             if ast is not None:
                 setattr(state.regs, reg_name, ast)
 
-    def _recover_symbolic_registers_from_snapshot(self, state: angr.SimState, snapshot):
+    def _recover_symbolic_registers_from_snapshot(self, state: angr.SimState, snapshot) -> bool:
         """Recover Rust-computed SYMBOLIC registers onto a plain export state.
 
         ``export_full`` writes only CONCRETE registers into ``named_registers``
@@ -1909,13 +1979,15 @@ class RustStateExportMixin:
         so the common hot path pays nothing — an eager full-AST recovery of
         every symbolic register here measurably regressed flareon2015_2 (see
         ``avoid-eager-symbolic-register-export``).
+
+        Returns whether the proxy was installed.
         """
         symbolic_names = snapshot.get_symbolic_register_names()
         if not symbolic_names:
-            return
+            return False
         state_id = getattr(snapshot, "state_id", None)
         if state_id is None:
-            return
+            return False
         from angr.exploration.rust_state_proxy import RustRegisterProxy
 
         # Share the binding the state's other proxies already hold: a
@@ -1936,6 +2008,8 @@ class RustStateExportMixin:
                 state_id,
                 e,
             )
+            return False
+        return True
 
     def _load_snapshot_pages(self, state: angr.SimState, snapshot, arch):
         """Load memory pages from snapshot, restoring symbolic regions with original ASTs."""

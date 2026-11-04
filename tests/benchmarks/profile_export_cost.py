@@ -9,8 +9,9 @@ time and, after each step, export every active state the way
 then ``_snapshot_to_angr``), timing each phase of ``_snapshot_to_angr``
 separately. It also times ``copy()`` of each plugin ``_restore_plugins_to_state``
 copies from the template, which bounds what a lazy fill on first
-``get_plugin`` could save, and ``copy()`` of a cached blank state, the
-candidate replacement for ``blank_state``.
+``get_plugin`` could save. ``_export_blank_state`` is the copy of the
+manager's cached blank template that replaced ``blank_state``
+(angr-mx00p.136.28).
 
 Each example runs in a child process under a 4 GB ``RLIMIT_AS``.
 
@@ -37,6 +38,7 @@ BINARIES = {"fauxware": "fauxware", "ais3_crackme": "ais3_crackme", "defcamp_r10
 
 # The phases of ``_snapshot_to_angr``, by the manager method that runs each.
 PHASE_METHODS = (
+    "_export_blank_state",
     "_load_snapshot_registers",
     "_restore_plugins_to_state",
     "_inject_rust_stdout",
@@ -71,11 +73,8 @@ def _child(out_q, example, steps, max_states):
     proj = angr.Project(os.path.join(EXAMPLES_DIR, example, BINARIES[example]), auto_load_libs=False)
     mgr = RustExplorationManager(proj, [_initial_state(proj, example)])
 
-    times: dict[str, list[int]] = {name: [] for name in ("step", "export_state", "blank_state", *PHASE_METHODS)}
+    times: dict[str, list[int]] = {name: [] for name in ("step", "export_state", *PHASE_METHODS)}
     times["export_total"] = []
-    # The candidate replacement for ``blank_state``: copy a cached blank.
-    times["blank_template_copy"] = []
-    blank_template = proj.factory.blank_state()
     plugin_copy: dict[str, list[int]] = {name: [] for name in TEMPLATE_PLUGINS}
 
     def timed(name, fn):
@@ -93,7 +92,6 @@ def _child(out_q, example, steps, max_states):
     # calls are timed.
     for name in PHASE_METHODS:
         setattr(mgr, name, timed(name, getattr(mgr, name)))
-    proj.factory.blank_state = timed("blank_state", proj.factory.blank_state)
 
     exports_per_step = []
     for _ in range(steps):
@@ -112,9 +110,6 @@ def _child(out_q, example, steps, max_states):
             t2 = time.perf_counter_ns()
             times["export_state"].append(t1 - t0)
             times["export_total"].append(t2 - t0)
-            t0 = time.perf_counter_ns()
-            blank_template.copy()
-            times["blank_template_copy"].append(time.perf_counter_ns() - t0)
             template = mgr._find_plugin_template_state(sid, snapshot.parent_id)
             if template is None:
                 continue
