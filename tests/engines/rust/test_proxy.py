@@ -2408,6 +2408,36 @@ class TestStatePluginsProxy:
                 opts = mgr.get_state_options_py(sid)
                 assert o.LAZY_SOLVES in opts, f"state {sid} in {stash} missing inherited LAZY_SOLVES"
 
+    def test_forks_inherit_after_the_root_leaves_every_stash(self, fauxware_project):
+        """A fork's first access still seeds from the root's options/globals
+        after the root's own id has left every stash and two cleanup ticks
+        ran (angr-mx00p.136.42)."""
+        from angr import sim_options as o
+
+        state = fauxware_project.factory.entry_state()
+        state.options.add(o.LAZY_SOLVES)
+        state.globals["init_key"] = "init_value"
+        mgr = RustExplorationManager(fauxware_project, [state])
+        root = mgr._rust_mgr.get_state_ids("active")[0]
+
+        for _ in range(60):
+            mgr.run(n=1)
+            if root in mgr._rust_mgr.get_state_ids("deadended"):
+                break
+        else:
+            pytest.fail("the root never deadended")
+        assert mgr._rust_mgr.drop_state_from_stash(root, "deadended")
+        # The first tick prunes the root's _state_roots self-entry, the second
+        # used to drop its options/globals.
+        mgr._cleanup_state_cache()
+        mgr._cleanup_state_cache()
+
+        proxies = mgr.proxy.active + mgr.proxy.deadended
+        assert proxies
+        for proxy in proxies:
+            assert o.LAZY_SOLVES in proxy.options
+            assert proxy.globals.get("init_key") == "init_value"
+
     def test_heap_mmap_base_exposed(self, fauxware_project):
         """state.heap.mmap_base reads/writes through to the Rust state."""
 

@@ -5653,6 +5653,22 @@ class RustExplorationManager(
         with contextlib.suppress(AttributeError):
             self._rust_mgr.finalize_parallel_session()
 
+    def _prune_state_metadata(self, live: set[int]) -> None:
+        """Drop ``_py_state_options`` / ``_py_state_globals`` entries outside ``live``.
+
+        A lineage root's entry survives while any of its forks lives:
+        ``get_state_options_py`` / ``get_state_globals_py`` seed a fork's first
+        access from the root's entry, and the root's own id can leave every
+        stash long before its forks do (angr-mx00p.136.42).
+        """
+        candidates = (self._py_state_options.keys() | self._py_state_globals.keys()) - live
+        if not candidates:
+            return
+        candidates -= set(self._rust_mgr.live_lineage_roots())
+        for sid in candidates:
+            self._py_state_options.pop(sid, None)
+            self._py_state_globals.pop(sid, None)
+
     def _cleanup_state_cache(self):
         """Bound ``_state_cache`` size while preserving correctness invariants.
 
@@ -5736,14 +5752,7 @@ class RustExplorationManager(
         for sid in list(self._state_cache.keys()):
             if sid not in live:
                 del self._state_cache[sid]
-        # Drop options/globals for state IDs that no longer exist in any stash.
-        live_with_roots = live
-        for sid in list(self._py_state_options.keys()):
-            if sid not in live_with_roots:
-                del self._py_state_options[sid]
-        for sid in list(self._py_state_globals.keys()):
-            if sid not in live_with_roots:
-                del self._py_state_globals[sid]
+        self._prune_state_metadata(live)
 
         # Prune _state_roots: drop entries whose key state no longer exists in
         # any Rust stash. The root state's own self-entry survives only while

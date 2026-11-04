@@ -158,3 +158,21 @@ fn get_state_root_has_no_self_entry_for_an_unforked_state() {
         );
     });
 }
+
+/// A forked lineage's root stays in `live_lineage_roots` after the root's own
+/// id leaves every stash, and goes with the last fork (angr-mx00p.136.42).
+#[test]
+fn live_lineage_roots_outlives_the_root_state() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let root = mgr.create_state("active").expect("create state");
+        let fork = mgr.fork_state_to_stash(root, "_copies").expect("fork");
+
+        assert!(mgr.drop_state_from_stash(root, "active"));
+        assert_eq!(mgr.live_lineage_roots(), vec![root]);
+
+        assert!(mgr.drop_state_from_stash(fork, "_copies"));
+        assert!(mgr.live_lineage_roots().is_empty());
+    });
+}

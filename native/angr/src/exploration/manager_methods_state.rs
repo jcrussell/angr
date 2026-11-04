@@ -204,6 +204,17 @@ impl RustExplorationManager {
         self.sm.roots().get(&state_id).copied()
     }
 
+    /// The lineage roots of every state the stash manager still tracks (a
+    /// stashed state, a `_copies` fork, a parked callback): a state's root
+    /// entry is dropped with the state, so a root id that has left every stash
+    /// stays here while one of its forks lives.
+    pub fn live_lineage_roots(&self) -> Vec<u64> {
+        let mut roots: Vec<u64> = self.sm.roots().values().copied().collect();
+        roots.sort_unstable();
+        roots.dedup();
+        roots
+    }
+
     /// Set the PC of the pending callback state (for external initialization).
     /// See `pending_api::_set_pending_state_pc` for the body.
     #[angr_macros::steady_guard_exempt(
