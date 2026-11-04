@@ -34,6 +34,7 @@ from angr.exploration.rust_manager import (
     resolve_main_address,
     rust_state_option_refusals,
     rust_supports_arch,
+    rust_unsupported_options,
     sim_error_for_rust_message,
 )
 from angr.exploration.rust_state_binding import binding_of
@@ -130,7 +131,9 @@ class RustBackend(SimulationBackend):
     step passes a ``successor_func`` or other run arguments, a technique on
     the manager overrides ``successors()`` and is not natively handled, the
     project uses a custom default engine, the state is still in the Python
-    init prefix, or its lineage was handed back to Python. Each answer is
+    init prefix, or its lineage was handed back to Python. A ``default_routed``
+    backend also declines the options a project-default route sends to Python
+    (UNICORN). Each answer is
     counted in :attr:`stats` and debug-logged.
     """
 
@@ -147,13 +150,21 @@ class RustBackend(SimulationBackend):
         prefer_native_library_hooks: bool | None = None,
         symlinks: dict | None = None,
         save_unconstrained: bool = True,
+        default_routed: bool = False,
     ):
         """The keyword arguments configure the private manager as they do a
         :class:`~angr.exploration.rust_manager.RustExplorationManager`, except that
         ``max_active_states`` defaults to no cap: between steps that active stash
         only ever holds one step's children, and the Python engine has none.
+
+        ``default_routed`` is for a backend the project's default route chose rather
+        than the caller: it declines the states :func:`~angr.exploration.rust_manager.rust_engine_eligible` routes to
+        Python (see ``_PYTHON_ROUTED_OPTION_NAMES``), whose Python step semantics the
+        Rust engine cannot reproduce. A backend the caller chose runs them, as an
+        explicit ``engine="rust"`` manager does (angr-mx00p.136.39).
         """
         self._project = project
+        self._option_refusals = rust_state_option_refusals if default_routed else rust_unsupported_options
         self._manager_kwargs = {
             "max_active_states": max_active_states,
             "parallel_workers": parallel_workers,
@@ -214,7 +225,7 @@ class RustBackend(SimulationBackend):
         arch_name = state.arch.name
         if not rust_supports_arch(arch_name):
             return f"arch {arch_name} not implemented by the rust engine"
-        refused = rust_state_option_refusals(state.options)
+        refused = self._option_refusals(state.options)
         if refused:
             return "state options not honored by the rust engine: " + ", ".join(refused)
         events = _unsupported_inspect_events(state)

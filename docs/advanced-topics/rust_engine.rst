@@ -1895,7 +1895,8 @@ in Rust mode.
        ``UNICORN`` set routes a ``Project(engine="rust")`` manager to
        Python (``_PYTHON_ROUTED_OPTION_NAMES``): a unicorn step runs
        many concrete blocks, so step counts would differ. An explicit
-       ``engine="rust"`` manager ignores it.
+       ``engine="rust"`` manager ignores it. ``RustBackend`` ignores it
+       too unless constructed with ``default_routed=True``.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
 

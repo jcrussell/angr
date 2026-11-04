@@ -32,9 +32,9 @@ def main_addr(project):
     return resolve_main_address(project)
 
 
-def _reason(project, state, successor_func=None, run_args=None, simgr=None):
+def _reason(project, state, successor_func=None, run_args=None, simgr=None, **backend_kwargs):
     simgr = simgr if simgr is not None else angr.SimulationManager(project, [state])
-    return RustBackend(project).decline_reason(simgr, state, successor_func, run_args or {})
+    return RustBackend(project, **backend_kwargs).decline_reason(simgr, state, successor_func, run_args or {})
 
 
 def test_eligible_state_at_main(project, main_addr):
@@ -54,8 +54,30 @@ def test_unsupported_arch():
 
 
 def test_refused_option(project, main_addr):
+    state = project.factory.blank_state(addr=main_addr, add_options={angr.options.TRACK_JMP_ACTIONS})
+    assert _reason(project, state) == "state options not honored by the rust engine: TRACK_JMP_ACTIONS"
+
+
+def test_python_routed_option_declined_only_when_default_routed(project, main_addr):
+    """UNICORN runs natively on a backend the caller chose, as on an explicit engine="rust" manager,
+    and goes to Python on a project-default route, as rust_engine_eligible sends it (angr-mx00p.136.39)."""
     state = project.factory.blank_state(addr=main_addr, add_options={angr.options.UNICORN})
-    assert _reason(project, state) == "state options not honored by the rust engine: UNICORN"
+    assert _reason(project, state) is None
+    assert _reason(project, state, default_routed=True) == "state options not honored by the rust engine: UNICORN"
+
+
+def test_unicorn_explore_runs_natively(project, main_addr):
+    def run(backend):
+        state = project.factory.blank_state(addr=main_addr, add_options={angr.options.UNICORN})
+        simgr = angr.SimulationManager(project, [state], backend=backend)
+        simgr.explore(find=FIND, avoid=AVOID)
+        return simgr
+
+    simgr = run(backend := RustBackend(project))
+    assert backend.stats["declined"] == {}
+    assert backend.stats["fast_path_runs"] == 1
+    assert simgr.found
+    assert [s.posix.dumps(0) for s in simgr.found] == [s.posix.dumps(0) for s in run(None).found]
 
 
 def test_inspect_breakpoint_added_between_steps(project, main_addr):
