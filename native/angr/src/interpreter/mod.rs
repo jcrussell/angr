@@ -206,11 +206,12 @@ pub(crate) struct VEXInterpreter<'a> {
     skip_hook_once: Option<u64>,
     /// VEX architecture.
     arch: VexArch,
-    /// Native libVEX lifter for this arch. When set (and the bytes qualify),
+    /// Native lifter for this arch. When set (and the bytes qualify),
     /// cold-block lifts are attempted in-process before the Python
     /// `lift_block` callback. `None` by default; Python enables it through
-    /// `RustExplorationManager.set_native_lift` (angr-z087y).
-    native_lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
+    /// `RustExplorationManager.set_native_lift` (angr-z087y). Shared, and
+    /// called only on a cache miss (angr-mx00p.51.7).
+    native_lifter: Option<Arc<dyn crate::vex::VEXLifter>>,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
     block_cache: LruCache<u64, Arc<IRSB>>,
     /// Deferred forks collected during execution.
@@ -970,7 +971,7 @@ impl<'a> VEXInterpreter<'a> {
             hook_addrs: Arc::clone(&self.hook_addrs),
             skip_hook_once: self.skip_hook_once,
             arch: self.arch,
-            native_lifter: self.native_lifter,
+            native_lifter: self.native_lifter.clone(),
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             deferred_forks: Vec::new(),            // Fresh deferred forks for fork
             deferred_fork_this_step: false,
@@ -1023,10 +1024,7 @@ impl<'a> VEXInterpreter<'a> {
     /// When set, [`Self::get_or_lift_block`] attempts an FFI lift before the
     /// Python `lift_block` callback, falling back cleanly on any miss
     /// (missing/symbolic bytes, or a libVEX error).
-    pub(crate) fn set_native_lifter(
-        &mut self,
-        lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
-    ) {
+    pub(crate) fn set_native_lifter(&mut self, lifter: Option<Arc<dyn crate::vex::VEXLifter>>) {
         self.native_lifter = lifter;
     }
 

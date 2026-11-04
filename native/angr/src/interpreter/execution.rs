@@ -572,8 +572,8 @@ impl<'a> VEXInterpreter<'a> {
         // (missing/symbolic bytes, or a libVEX error) falls through to the Python callback below — same result,
         // just slower — so behavior is unchanged when the native path can't
         // serve a block.
-        if let Some(lifter) = self.native_lifter {
-            match self.try_native_lift(&lifter, addr, callbacks) {
+        if let Some(lifter) = self.native_lifter.clone() {
+            match self.try_native_lift(lifter.as_ref(), addr, callbacks) {
                 Ok(irsb) => {
                     self.stats.native_lift_count += 1;
                     let arc_irsb = Arc::new(irsb);
@@ -626,11 +626,10 @@ impl<'a> VEXInterpreter<'a> {
             None
         };
 
-        // The callback's pyvex lift enters the same libVEX as a native lift on
-        // another worker; hold the shared lift lock across it (angr-mx00p.45).
-        let lift_guard = crate::vex::libvex_lifter::lift_lock();
+        // The host serializes the lift against native lifts on other workers
+        // (the shell's `PythonCallbacks` impl takes the libVEX lift lock,
+        // angr-mx00p.45).
         let outcome = callbacks.lift_block(addr, opt_level, dirty_bytes.as_deref());
-        drop(lift_guard);
         let outcome = outcome
             .map_err(|e| CbExecutionError::LiftError(format!("lift callback failed: {e}")))?;
         if self.profiling_enabled {
@@ -675,7 +674,7 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// Returns `Ok(irsb)` only when every prerequisite holds: rust_memory is
     /// present, the block's leading bytes are fully concrete, the arch is
-    /// supported by `NativeLibVEXLifter`, and libVEX lifts successfully.
+    /// supported by the lifter, and the lift succeeds.
     /// Returns `Err(NativeLiftMiss)` otherwise so the caller falls back to the
     /// Python `lift_block` callback (and can attribute the miss). The
     /// per-address and global VEX opt_level overrides are passed through, as
@@ -691,7 +690,7 @@ impl<'a> VEXInterpreter<'a> {
     /// MVP gap the native `constraints` fire has).
     fn try_native_lift(
         &self,
-        lifter: &crate::vex::libvex_lifter::NativeLibVEXLifter,
+        lifter: &dyn crate::vex::VEXLifter,
         addr: u64,
         callbacks: &dyn EngineHost,
     ) -> Result<crate::vex::ir::IRSB, NativeLiftMiss> {

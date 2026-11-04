@@ -12,7 +12,6 @@
 pub mod ccall;
 pub mod dirty;
 pub mod ir;
-pub mod libvex_lifter;
 mod lifter;
 pub mod opcode_map;
 pub(crate) mod opcode_map_float;

@@ -27,9 +27,11 @@ smart pointer and the ``Py*`` types and attribute macros
 (``#[pyclass]``, ``#[pymethods]``, ...). Scanning whole directories rather
 than test-named files means a test module of any name is covered.
 
-The only exemptions are the files in ``ALLOWED``, each with the reason the
-dependency is upstream's to remove. The set of other sites is empty and must
-stay empty, so there is no baseline.
+``ALLOWED`` is empty: the one upstream-owned exemption, the libVEX FFI
+lifter, now lives in the shell (``native/angr/src/libvex_lifter.rs``) behind
+the core's ``VEXLifter`` trait (angr-mx00p.51.7). A file added to it must carry
+the reason the dependency is upstream's to remove. The set of sites is empty
+and must stay empty, so there is no baseline.
 
 Usage::
 
@@ -62,12 +64,7 @@ def scan_files(repo_root: Path = REPO) -> list[Path]:
     return files
 
 # Files that keep PyO3 for an upstream reason, relative to REPO.
-ALLOWED = {
-    "native/angr/src/vex/libvex_lifter.rs": (
-        "built on upstream's ailment::vex_ffi (init_symbols(py)), which lives in "
-        "the rustylib crate; moving it needs vex_ffi in its own crate (RFC question)"
-    ),
-}
+ALLOWED: dict[str, str] = {}
 
 PYO3_RE = re.compile(
     r"""\bpyo3\b

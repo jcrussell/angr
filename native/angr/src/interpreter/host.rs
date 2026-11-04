@@ -91,6 +91,8 @@ pub(crate) trait EngineHost {
 
     // ---- Code --------------------------------------------------------------
 
+    /// Lift the block at `addr`. An impl whose lifter shares non-reentrant
+    /// state with the interpreter's `VEXLifter` serializes the two itself.
     fn lift_block(
         &self,
         addr: u64,

@@ -633,7 +633,7 @@ impl RustExplorationManager {
         cross_insn_opt: bool,
         selfmodifying_code: bool,
     ) -> PyResult<()> {
-        use crate::vex::libvex_lifter::{LiftSettings, NativeLibVEXLifter};
+        use crate::libvex_lifter::{LiftSettings, NativeLibVEXLifter};
         let settings = LiftSettings {
             default_opt_level,
             strict_block_end,
@@ -641,7 +641,10 @@ impl RustExplorationManager {
             selfmodifying_code,
         };
         self.memory_config.native_lifter = arch
-            .map(|a| NativeLibVEXLifter::from_py_arch(a).map(|l| l.with_settings(settings)))
+            .map(|a| {
+                NativeLibVEXLifter::from_py_arch(a)
+                    .map(|l| Arc::new(l.with_settings(settings)) as Arc<dyn crate::vex::VEXLifter>)
+            })
             .transpose()?;
         Ok(())
     }

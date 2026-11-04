@@ -405,7 +405,7 @@ pub(crate) fn native_lift_debug_for_test(
     addr: u64,
     opt_level: Option<i32>,
 ) -> PyResult<String> {
-    let lifter = crate::vex::libvex_lifter::NativeLibVEXLifter::from_py_arch(arch)?;
+    let lifter = crate::libvex_lifter::NativeLibVEXLifter::from_py_arch(arch)?;
     let name: String = arch.getattr("name")?.extract()?;
     let vex_arch = arch_from_name(&name)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {name}")))?
@@ -438,7 +438,7 @@ pub(crate) fn irsb_debug_for_test(irsb: &Bound<'_, PyAny>, pretty: bool) -> PyRe
 #[pyfunction]
 pub(crate) fn lift_lock_is_held_for_test(py: Python<'_>) -> bool {
     py.detach(|| {
-        std::thread::spawn(crate::vex::libvex_lifter::lift_lock_is_free_for_test)
+        std::thread::spawn(crate::libvex_lifter::lift_lock_is_free_for_test)
             .join()
             .map(|free| !free)
             .unwrap_or(false)
@@ -462,8 +462,8 @@ type NativeLiftTables = (Vec<(&'static str, u32)>, Vec<(&'static str, usize)>);
 #[pyfunction]
 pub(crate) fn native_lift_tables_for_test() -> NativeLiftTables {
     (
-        crate::vex::libvex_lifter::enum_tables_for_test(),
-        crate::vex::libvex_lifter::layouts_for_test(),
+        crate::libvex_lifter::enum_tables_for_test(),
+        crate::libvex_lifter::layouts_for_test(),
     )
 }
 

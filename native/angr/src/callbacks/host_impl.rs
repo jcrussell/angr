@@ -159,6 +159,9 @@ impl EngineHost for PythonCallbacks {
         opt_level: Option<i32>,
         dirty_bytes: Option<&[u8]>,
     ) -> Result<LiftBlockOutcome, String> {
+        // The callback's pyvex lift enters the same libVEX as a native lift on
+        // another worker; hold the shared lift lock across it (angr-mx00p.45).
+        let _lift_guard = crate::libvex_lifter::lift_lock();
         self.call_lift_block(addr, opt_level, dirty_bytes)
             .map_err(|e| message(&e))
     }

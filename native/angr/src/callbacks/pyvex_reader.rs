@@ -8,7 +8,7 @@
 //! round-trip (angr-mx00p.33) whose serializer and serde schema drifted apart
 //! on Python-built statements (angr-mx00p.44).
 //!
-//! Field conventions match [`crate::vex::libvex_lifter`], so a block reads the same
+//! Field conventions match [`crate::libvex_lifter`], so a block reads the same
 //! whichever path lifted it (`test_native_lift_parity.py`): an `IRTemp_INVALID`
 //! temp is `None`, `IRCallee.addr` is 0, and a `None` that libVEX would have
 //! written as 0 (a Spotter-built `Dirty`'s `mSize` / `nFxState`) reads as 0.

@@ -150,7 +150,7 @@ naming convention.
 
 There is no second, numeric table to keep in sync. The native libVEX
 FFI path converts its ``IROp`` discriminant back to the pyvex name
-first (``vex/libvex_lifter.rs::c_op`` → upstream's ``ailment::vexop::op_name``)
+first (``libvex_lifter.rs::c_op`` → upstream's ``ailment::vexop::op_name``)
 and then calls the same ``parse_opcode``, so a string arm added once covers
 both lifters. An opcode libVEX knows but ``op_name`` doesn't is
 routed as ``"Iop_UNKNOWN_<n>"``, which keeps the numeric tag visible in
@@ -301,7 +301,7 @@ The dispatch site is in
 If you're adding a *new* memory-access shape (e.g. a guarded load,
 load-linked, gather), the corresponding ``IRStmt`` / ``IRExpr``
 variant goes into ``vex/ir/ast.rs``, the lifter wiring goes into
-``callbacks/pyvex_reader.rs`` (pyvex-object side) and ``vex/libvex_lifter.rs``
+``callbacks/pyvex_reader.rs`` (pyvex-object side) and ``libvex_lifter.rs``
 (native side), and the *execution* goes into ``interpreter`` — not
 ``ops/mod.rs``. The split is durable: pure value-to-value transforms are
 in ``ops/mod.rs``; anything that touches memory, registers, temps,
@@ -366,7 +366,7 @@ doesn't know it yet. The end-to-end recipe:
 
 4. **Nothing to do for the FFI lifter.** The libVEX FFI path maps its
    numeric opcode back to the pyvex name before calling
-   ``parse_opcode`` (``vex/libvex_lifter.rs::c_op``), so step 3 already
+   ``parse_opcode`` (``libvex_lifter.rs::c_op``), so step 3 already
    covers it. The discriminant-to-name table is upstream's
    ``ailment::vexop_names::IROP_NAMES``.
 
@@ -409,7 +409,7 @@ doesn't know it yet. The end-to-end recipe:
 
 If at any point the lifter wiring is involved (e.g. you're adding an op
 whose pyvex name is *not* a simple ``Iop_<name><width>``), look at
-``callbacks/pyvex_reader.rs`` and ``vex/libvex_lifter.rs``: the former reads the
+``callbacks/pyvex_reader.rs`` and ``libvex_lifter.rs``: the former reads the
 ``IRSB`` the Python ``lift_block`` callback returns, the latter marshals the
 one native lifting gets from C-side libVEX (struct mirrors in upstream's
 ``ailment/vex_ffi.rs``).

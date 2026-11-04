@@ -46,7 +46,7 @@ Why binding pyvex's libVEX is parity-safe
    library constants.
 
 3. **Same configuration.** ``NativeLibVEXLifter::from_py_arch``
-   (``native/angr/src/vex/libvex_lifter.rs``) builds the guest tag and the
+   (``native/angr/src/libvex_lifter.rs``) builds the guest tag and the
    ``VexArchInfo`` from the project's ``arch.vex_arch`` and
    ``arch.vex_archinfo``, which is what ``pyvex.lifting.libvex.LibVEXLifter``
    passes. ``LiftSettings`` carries the engine's opt level,
@@ -103,7 +103,7 @@ They lift every block of ``tests/engines/rust/native_lift_corpus.json``
 through both paths and compare the resulting ``vex::ir`` trees, and check the
 enum tags and struct layouts against pyvex's cffi library. The pure
 marshalling helpers keep their unit tests in
-``native/angr/src/vex/libvex_lifter_tests.rs``.
+``native/angr/src/libvex_lifter_tests.rs``.
 
 Open risks
 ----------

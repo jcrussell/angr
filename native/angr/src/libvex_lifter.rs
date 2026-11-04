@@ -52,21 +52,21 @@ use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
-use super::ir::{
+use crate::ailment::vex_ffi as ffi;
+use crate::ailment::vexop;
+use crate::vex::ir::{
     DirtyFx, Endness, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IRRegArray, IRSB, IRStmt,
     IRType, JumpKind, MBusEvent, TypeEnv, VexArch,
 };
-use super::lifter::{LiftError, VEXLifter};
-use super::opcode_map::{parse_jumpkind, parse_opcode, parse_type_or_log};
-use crate::ailment::vex_ffi as ffi;
-use crate::ailment::vexop;
+use crate::vex::opcode_map::{parse_jumpkind, parse_opcode, parse_type_or_log};
+use crate::vex::{LiftError, VEXLifter};
 
 /// VEX's `IRTemp_INVALID` sentinel (an absent temp, e.g. the `oldHi` slot of a
 /// single-width CAS or an untyped Dirty result).
 const IRTEMP_INVALID: u32 = 0xFFFF_FFFF;
 
 /// pyvex `_lift` default (`pyvex/lifting/libvex.py`). Its `max_bytes`
-/// companion is the crate-shared `super::VEX_MAX_BYTES`.
+/// companion is the crate-shared `crate::vex::VEX_MAX_BYTES`.
 const VEX_MAX_INSTRUCTIONS: u32 = 99;
 
 /// `VexRegisterUpdates::VexRegUpdUnwindregsAtMemAccess`, the `px_control`
@@ -162,8 +162,9 @@ static LIFT_LOCK: ReentrantMutex<()> = parking_lot::const_reentrant_mutex(());
 /// Take the process-wide libVEX lift lock (angr-mx00p.45).
 ///
 /// Both of the engine's lift paths hold it: [`NativeLibVEXLifter`]'s FFI
-/// call, and the Python `lift_block` callback in
-/// `VEXInterpreter::get_or_lift_block`, whose pyvex lift enters the same
+/// call, and the Python `lift_block` callback (the `EngineHost::lift_block`
+/// impl for `PythonCallbacks`, which `VEXInterpreter::get_or_lift_block`
+/// calls on a native miss), whose pyvex lift enters the same
 /// libVEX with the GIL released inside cffi. The lock order is lift lock,
 /// then GIL: this never *waits* for the lock while holding the GIL, so a
 /// thread that holds the lock may block on the GIL (the callback does)
@@ -253,7 +254,7 @@ fn vex_arch_tag(name: &str) -> Option<u32> {
 /// Native libVEX lifter backed by `libpyvex`'s `vex_lift` shim, configured
 /// for one guest arch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeLibVEXLifter {
+pub(crate) struct NativeLibVEXLifter {
     guest: u32,
     info: ArchInfo,
     settings: LiftSettings,
@@ -263,7 +264,7 @@ pub struct NativeLibVEXLifter {
 /// `project.factory.block(addr)` — what the Python `lift_block` callback
 /// lifts with — so a native lift passes libVEX the same configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiftSettings {
+pub(crate) struct LiftSettings {
     /// The engine's `_default_opt_level`, used when no override applies.
     pub default_opt_level: i32,
     /// The engine's `default_strict_block_end`.
@@ -292,7 +293,7 @@ impl NativeLibVEXLifter {
     /// Resolves `vex_lift` in the loaded `libpyvex` (`vex_ffi::init_symbols`)
     /// and raises `RuntimeError` when it cannot be found, `ValueError` for an
     /// arch libVEX has no guest for.
-    pub fn from_py_arch(arch: &Bound<'_, PyAny>) -> PyResult<Self> {
+    pub(crate) fn from_py_arch(arch: &Bound<'_, PyAny>) -> PyResult<Self> {
         let py = arch.py();
         // pyvex must be imported for init_symbols to find libpyvex; importing
         // it also runs libVEX's one-time `vex_init`.
@@ -338,13 +339,13 @@ impl NativeLibVEXLifter {
     }
 
     /// This lifter with `settings` in place of angr's defaults.
-    pub fn with_settings(self, settings: LiftSettings) -> Self {
+    pub(crate) fn with_settings(self, settings: LiftSettings) -> Self {
         NativeLibVEXLifter { settings, ..self }
     }
 
     /// Lift at `opt_level` (`None` takes the default), forced to 0 under
     /// self-modifying code as angr's lifter does.
-    pub fn lift_at(
+    pub(crate) fn lift_at(
         &self,
         bytes: &[u8],
         addr: u64,
@@ -367,7 +368,7 @@ impl NativeLibVEXLifter {
         }
 
         // Cap max_bytes to the slice length so libVEX never reads past `bytes`.
-        let max_bytes = bytes.len().min(super::VEX_MAX_BYTES) as u32;
+        let max_bytes = bytes.len().min(crate::vex::VEX_MAX_BYTES) as u32;
         let settings = self.settings;
         let opt_level = if settings.selfmodifying_code {
             0
@@ -425,8 +426,15 @@ impl NativeLibVEXLifter {
 }
 
 impl VEXLifter for NativeLibVEXLifter {
-    fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
-        self.lift_at(bytes, addr, arch, None)
+    fn lift_at(
+        &self,
+        bytes: &[u8],
+        addr: u64,
+        arch: VexArch,
+        opt_level: Option<i32>,
+    ) -> Result<IRSB, LiftError> {
+        // The inherent method (inherent methods win path resolution).
+        Self::lift_at(self, bytes, addr, arch, opt_level)
     }
 }
 
@@ -490,7 +498,7 @@ fn c_type_parse(ty: u32) -> IRType {
 }
 
 /// Convert a C `IROp` tag to a Rust `IROp` via its pyvex name.
-fn c_op(op: u32) -> super::ir::IROp {
+fn c_op(op: u32) -> crate::vex::ir::IROp {
     match vexop::op_name(op) {
         Some(name) => parse_opcode(name),
         // Preserve the numeric tag so an unmapped op is still traceable.

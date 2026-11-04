@@ -41,5 +41,5 @@ pub(crate) struct MemoryConfiguration {
     /// Native (in-process) libVEX lifter handed to each interpreter, or
     /// `None` for Python-callback lifts only. Set by
     /// `RustExplorationManager.set_native_lift` (z087y Stage-2).
-    pub(crate) native_lifter: Option<crate::vex::libvex_lifter::NativeLibVEXLifter>,
+    pub(crate) native_lifter: Option<Arc<dyn crate::vex::VEXLifter>>,
 }

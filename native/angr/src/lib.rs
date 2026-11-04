@@ -31,7 +31,8 @@
 //! # Module map
 //!
 //! - [`vex`] / `interpreter` — IRSB lifting and VEX statement/expression
-//!   execution
+//!   execution; `libvex_lifter` is the in-process libVEX FFI lifter the
+//!   interpreter reaches through `vex::VEXLifter`
 //! - [`state`] / [`memory`] / [`stash`] — simulation state, the lazy
 //!   copy-on-write memory model, and the exploration stashes;
 //!   `state_bridge` is the state's PyO3 face (`RustSimState`,
@@ -374,6 +375,7 @@ pub(crate) mod errors;
 pub(crate) mod exploration;
 pub(crate) mod gil_profile;
 pub(crate) mod interpreter;
+pub(crate) mod libvex_lifter;
 pub mod memory;
 pub(crate) mod procedures;
 pub(crate) mod solver;

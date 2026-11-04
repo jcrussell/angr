@@ -1,6 +1,6 @@
 """Native libVEX lift parity with pyvex (angr-mx00p.33).
 
-The native lifter (``native/angr/src/vex/libvex_lifter.rs``) calls the same
+The native lifter (``native/angr/src/libvex_lifter.rs``) calls the same
 ``vex_lift`` in the loaded libpyvex that pyvex does, through upstream's
 runtime-resolved ``ailment::vex_ffi`` struct mirrors. That needs an imported
 pyvex, which ``cargo test`` does not have, so the checks live here:
