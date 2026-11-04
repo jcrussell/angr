@@ -132,7 +132,7 @@ _EXONERATED = {
     "answer. Listed as divergence-risk in the matrix only by association with the TRACK_* family. "
     "(angr-op0dn.14.7)",
     "ZERO_FILL_UNCONSTRAINED_REGISTERS": "Matches by default (angr-rhe2): Rust's `RegisterFile` "
-    "(native/angr/src/arch/mod.rs) backs registers with `vec![0; size]`, so an uninitialized "
+    "(native/angr-symex-core/src/arch/mod.rs) backs registers with `vec![0; size]`, so an uninitialized "
     "register already reads as concrete zero — exactly what the option asks Python for. Setting it "
     "cannot change a Rust answer. (The SYMBOL_FILL_UNCONSTRAINED_REGISTERS sibling is the "
     "divergent one and raises.) (angr-op0dn.14.9)",

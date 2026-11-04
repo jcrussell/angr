@@ -36,7 +36,7 @@ impl RegisterFile {
     /// and must go through [`Self::new_with_endian`] so a big-endian target
     /// gets its containment table (angr-21cz6).
     #[cfg(test)]
-    pub(crate) fn new(arch: Box<dyn Arch>) -> Self {
+    pub fn new(arch: Box<dyn Arch>) -> Self {
         Self::new_with_endian(arch, true)
     }
 
@@ -46,8 +46,8 @@ impl RegisterFile {
     /// `is_le` is the *state's* endianness (the `little_endian` override
     /// threaded through `RustSimState::with_solver_endian`), not
     /// `Arch::is_little_endian`. On a big-endian target it turns on the
-    /// [`Self::mirror_offset`] adapter; see there for why.
-    pub(crate) fn new_with_endian(arch: Box<dyn Arch>, is_le: bool) -> Self {
+    /// `Self::mirror_offset` adapter; see there for why.
+    pub fn new_with_endian(arch: Box<dyn Arch>, is_le: bool) -> Self {
         let size = arch.state_size();
         let containment = (!is_le).then(|| build_containment(arch.as_ref()));
         RegisterFile {
@@ -118,7 +118,7 @@ impl RegisterFile {
     }
 
     /// Get the architecture.
-    pub(crate) fn arch(&self) -> &dyn Arch {
+    pub fn arch(&self) -> &dyn Arch {
         self.arch.as_ref()
     }
 
@@ -186,8 +186,8 @@ impl RegisterFile {
     /// Read a register value by *raw VEX* offset and size.
     ///
     /// Mirrors the offset into storage coordinates (see
-    /// [`Self::mirror_offset`]) and delegates to [`Self::get_storage`].
-    pub(crate) fn get(&self, offset: u32, size: u32) -> RustBV {
+    /// `Self::mirror_offset`) and delegates to `Self::get_storage`.
+    pub fn get(&self, offset: u32, size: u32) -> RustBV {
         self.get_storage(self.mirror_offset(offset, size), size)
     }
 
@@ -301,7 +301,7 @@ impl RegisterFile {
     /// syscall-num and stack-pointer reads in the interpreter. Note this is
     /// distinct from `get_sp_value`, which reads raw concrete bytes and ignores
     /// the symbolic overlay.
-    pub(crate) fn get_offset_u64(&self, offset: u32) -> Option<u64> {
+    pub fn get_offset_u64(&self, offset: u32) -> Option<u64> {
         self.get(offset, self.arch.bytes()).as_u64()
     }
 
@@ -335,7 +335,7 @@ impl RegisterFile {
     }
 
     /// Write a register value by offset.
-    pub(crate) fn put(&mut self, offset: u32, value: RustBV) {
+    pub fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
         let write_bits = value.width();
         let offset = self.mirror_offset(offset, size);
@@ -453,14 +453,14 @@ impl RegisterFile {
     }
 
     /// Read a register by name.
-    pub(crate) fn get_reg(&self, name: &str) -> Option<RustBV> {
+    pub fn get_reg(&self, name: &str) -> Option<RustBV> {
         let offset = self.arch.register_offset(name)?;
         let size = self.arch.register_size(name)?;
         Some(self.get(offset, size))
     }
 
     /// Write a register by name.
-    pub(crate) fn put_reg(&mut self, name: &str, value: RustBV) -> bool {
+    pub fn put_reg(&mut self, name: &str, value: RustBV) -> bool {
         if let (Some(offset), Some(size)) = (
             self.arch.register_offset(name),
             self.arch.register_size(name),
@@ -473,27 +473,27 @@ impl RegisterFile {
     }
 
     /// Get the instruction pointer.
-    pub(crate) fn get_ip(&self) -> RustBV {
+    pub fn get_ip(&self) -> RustBV {
         let offset = self.arch.ip_offset();
         let size = self.arch.bytes();
         self.get(offset, size)
     }
 
     /// Set the instruction pointer.
-    pub(crate) fn set_ip(&mut self, value: RustBV) {
+    pub fn set_ip(&mut self, value: RustBV) {
         let offset = self.arch.ip_offset();
         self.put(offset, value);
     }
 
     /// Get the stack pointer.
-    pub(crate) fn get_sp(&self) -> RustBV {
+    pub fn get_sp(&self) -> RustBV {
         let offset = self.arch.sp_offset();
         let size = self.arch.bytes();
         self.get(offset, size)
     }
 
     /// Get the stack pointer as a concrete u64 value (for fast checks).
-    pub(crate) fn get_sp_value(&self) -> Option<u64> {
+    pub fn get_sp_value(&self) -> Option<u64> {
         let offset = self.arch.sp_offset() as usize;
         let size = self.arch.bytes() as usize;
         let end = offset.saturating_add(size);
@@ -508,7 +508,7 @@ impl RegisterFile {
     }
 
     /// Set the stack pointer.
-    pub(crate) fn set_sp(&mut self, value: RustBV) {
+    pub fn set_sp(&mut self, value: RustBV) {
         let offset = self.arch.sp_offset();
         self.put(offset, value);
     }
@@ -516,7 +516,7 @@ impl RegisterFile {
     /// Copy concrete register values from a byte slice.
     ///
     /// This is used to initialize the register file from external state.
-    pub(crate) fn copy_from_bytes(&mut self, bytes: &[u8]) {
+    pub fn copy_from_bytes(&mut self, bytes: &[u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
         Arc::make_mut(&mut self.data)[..len].copy_from_slice(&bytes[..len]);
         // Clear symbolic overlays since we're replacing with concrete values
@@ -537,7 +537,7 @@ impl RegisterFile {
     /// any concrete sub-register bytes composed into it: the register as a whole
     /// is not concretely representable, and the symbolic value itself travels
     /// separately (`get_symbolic_register_names` on the export snapshot).
-    pub(crate) fn copy_to_bytes(&self, bytes: &mut [u8]) {
+    pub fn copy_to_bytes(&self, bytes: &mut [u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
         bytes[..len].copy_from_slice(&self.data[..len]);
         for (&offset, sym_val) in &self.symbolic {
@@ -548,7 +548,7 @@ impl RegisterFile {
     }
 
     /// Fork the register file for path splitting.
-    pub(crate) fn fork(&self) -> RegisterFile {
+    pub fn fork(&self) -> RegisterFile {
         RegisterFile {
             // O(1) Arc refcount bump; the buffer is copied lazily on the
             // first write to either parent or child via `Arc::make_mut`.
@@ -576,13 +576,13 @@ impl RegisterFile {
     ///
     /// Every offset this function handles — the `symbolic` keys of both files
     /// and the `data` chunk indices — is a *storage* coordinate, so both files
-    /// are read through [`Self::get_storage`], never [`Self::get`]. On a
+    /// are read through `Self::get_storage`, never [`Self::get`]. On a
     /// big-endian file [`Self::get`] would mirror an already-mirrored key a
     /// second time and compose the wrong half of the containing register
     /// (angr-6cp06.74).
     ///
     /// Returns true if any register was actually merged (values differed).
-    pub(crate) fn merge(
+    pub fn merge(
         &mut self,
         other: &RegisterFile,
         merge_cond_other: &crate::symbolic::RustBV,

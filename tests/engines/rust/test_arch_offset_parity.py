@@ -240,7 +240,7 @@ def test_register_offset_and_size_match_archinfo(rust_arch, arch_id, name, arch_
             f"{rust_arch} has no register named {name!r}, and KNOWN_MISSING does not "
             "say why. A missing archinfo alias is usually a real bug (as 'pc', 'bp' "
             "and 'lr' once were): add the row to that arch's "
-            "ALIASES table in native/angr/src/arch/, or — if the omission is "
+            "ALIASES table in native/angr-symex-core/src/arch/, or — if the omission is "
             "deliberate — add a KNOWN_MISSING group here stating the reason."
         )
         pytest.skip(f"{rust_arch} has no register named {name!r} ({missing_reason})")

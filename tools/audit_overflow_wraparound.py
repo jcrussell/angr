@@ -104,14 +104,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # convention (invariant-rust-concrete-arith-must-wrap) and can be folded in as
 # a later extension.
 SUBSYSTEMS = (
-    "arch",
     "interpreter",
     "state",
     "syscalls",
     "procedures",
     "exploration",
 )
-SCAN = {"native/angr": SUBSYSTEMS, "native/angr-bv": ("",), "native/angr-symex-core": ("memory", "symbolic")}
+SCAN = {"native/angr": SUBSYSTEMS, "native/angr-bv": ("",), "native/angr-symex-core": ("arch", "memory", "symbolic")}
 EXCLUDE = {
     "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns",
     "native/angr-vex": "the VEX layer wraps by its own convention (invariant-rust-concrete-arith-must-wrap); see SUBSYSTEMS",

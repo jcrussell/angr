@@ -240,7 +240,7 @@ pub mod icicle;
 pub mod segmentlist;
 
 // VEX Engine modules
-pub(crate) mod arch;
+pub(crate) use angr_symex_core::arch;
 pub(crate) mod callbacks;
 pub(crate) mod claripy_bridge;
 pub(crate) mod engine;

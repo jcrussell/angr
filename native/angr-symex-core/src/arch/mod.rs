@@ -20,43 +20,43 @@
 //! non-empty pre-check.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-// `pub(crate)` rather than private: the per-arch `offsets` modules are the
+// `pub` rather than private: the per-arch `offsets` modules are the
 // single documented source of truth for VEX guest-state register offsets
 // (provenance comments cite `VEX/pub/libvex_guest_*.h`), and
 // `calling_conventions` references those consts by name instead of restating
 // the numbers as bare literals.
-pub(crate) mod amd64;
-pub(crate) mod arm;
-pub(crate) mod arm64;
-pub(crate) mod calling_conventions;
-pub(crate) mod mips;
-pub(crate) mod x86;
+pub mod amd64;
+pub mod arm;
+pub mod arm64;
+pub mod calling_conventions;
+pub mod mips;
+pub mod x86;
 
 // Sibling implementation modules split out of this file (angr-5mnx3.1).
 //
 // `register_file` is private — it only adds inherent methods to a type this
 // file already exports, so it has no surface of its own. `registry` is
-// `pub(crate)` because `ArchDesc` / `ALL_ARCHES` are read only by tests;
+// `pub` because `ArchDesc` / `ALL_ARCHES` are read only by tests;
 // re-exporting those two here would be an unused import in the plain lib
 // build. Its three lookup helpers are used crate-wide and are re-exported, so
 // `crate::arch::arch_from_name` and friends keep their existing paths.
 mod register_file;
-pub(crate) mod registry;
+pub mod registry;
 
-pub(crate) use registry::{arch_desc_from_name, arch_from_name, arch_from_vex};
+pub use registry::{arch_desc_from_name, arch_from_name, arch_from_vex};
 
-pub(crate) use amd64::AMD64;
-pub(crate) use arm::ARM;
-pub(crate) use arm64::ARM64;
-pub(crate) use calling_conventions::{
+pub use amd64::AMD64;
+pub use arm::ARM;
+pub use arm64::ARM64;
+pub use calling_conventions::{
     AArch64, ARMEABI, CallingConvention, Cdecl, ExtractionError, MAX_EXTRACT_ARGS, MipsN64,
     MipsO32, ReturnExtension, SystemVAMD64, cc_for_arch, default_cc_for_arch,
 };
-pub(crate) use mips::{MIPS32, MIPS64};
-pub(crate) use x86::X86;
+pub use mips::{MIPS32, MIPS64};
+pub use x86::X86;
 
 use crate::symbolic::{MAX_CONCRETE_CHUNK, RustBV, u128_le_byte};
-use crate::vex::VexArch;
+use angr_vex::VexArch;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -211,14 +211,14 @@ pub trait Arch: Send + Sync {
 /// `lookup_register_*` helpers below. Each register is listed once per
 /// (name, size) combination instead of being duplicated across three
 /// separate match statements.
-pub(crate) type RegEntry = (&'static str, u32, u32);
+pub type RegEntry = (&'static str, u32, u32);
 
 /// Look up a register's byte offset by name in the canonical or alias table.
 ///
 /// Names are matched ASCII-case-insensitively (every table entry is an
 /// ASCII-lowercase register name). The canonical table is searched first;
 /// aliases (sub-register names sharing an offset) are searched as a fallback.
-pub(crate) fn lookup_register_offset(
+pub fn lookup_register_offset(
     name: &str,
     canonical: &[RegEntry],
     aliases: &[RegEntry],
@@ -234,7 +234,7 @@ pub(crate) fn lookup_register_offset(
 ///
 /// Matching follows `lookup_register_offset`: ASCII-case-insensitive, canonical
 /// table before aliases.
-pub(crate) fn lookup_register_size(
+pub fn lookup_register_size(
     name: &str,
     canonical: &[RegEntry],
     aliases: &[RegEntry],
@@ -250,7 +250,7 @@ pub(crate) fn lookup_register_size(
 ///
 /// Only the canonical table is searched — aliases (e.g. "eax" sharing
 /// offset 16 with "rax") never appear here.
-pub(crate) fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Option<&'static str> {
+pub fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Option<&'static str> {
     canonical
         .iter()
         .find(|(_, off, _)| *off == offset)
@@ -263,11 +263,11 @@ pub(crate) fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Optio
 /// (`ExplorationStateSnapshot::get_registers_named`), and `RegisterFile::get`'s
 /// concrete read composes bytes into a `u128`, so a wider register's bytes
 /// travel only in the raw guest-state image.
-pub(crate) const NAMED_REGISTER_MAX_BYTES: u32 = 16;
+pub const NAMED_REGISTER_MAX_BYTES: u32 = 16;
 
 /// `Arch::register_names` for a `CANONICAL` table: every entry that fits the
 /// named-register channel ([`NAMED_REGISTER_MAX_BYTES`]), in table order.
-pub(crate) fn exported_register_names(canonical: &[RegEntry]) -> Vec<&'static str> {
+pub fn exported_register_names(canonical: &[RegEntry]) -> Vec<&'static str> {
     canonical
         .iter()
         .filter(|&&(_, _, size)| size <= NAMED_REGISTER_MAX_BYTES)
@@ -483,11 +483,11 @@ fn le_bytes_to_u128(bytes: &[u8]) -> u128 {
 /// cases explicitly should use [`Self::concrete`]; callers that want the
 /// logged fallback should use [`Self::or_log`].
 #[must_use]
-pub(crate) struct AddrOrSymbolic(Option<u64>);
+pub struct AddrOrSymbolic(Option<u64>);
 
 impl AddrOrSymbolic {
     /// The concrete address, or `None` when symbolic/unavailable.
-    pub(crate) fn concrete(&self) -> Option<u64> {
+    pub fn concrete(&self) -> Option<u64> {
         self.0
     }
 
@@ -505,7 +505,7 @@ impl AddrOrSymbolic {
     // literal 0 is a wrong-answer risk downstream (e.g. exported verbatim as
     // `CallStackEntry.stack_ptr`) — every caller must go through this single
     // logged fallback rather than a bare `.unwrap_or(0)`.
-    pub(crate) fn or_log(&self, accessor: &str, context: &str) -> u64 {
+    pub fn or_log(&self, accessor: &str, context: &str) -> u64 {
         silent_default!(
             cat_c,
             self.0,

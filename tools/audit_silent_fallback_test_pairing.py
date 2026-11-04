@@ -363,13 +363,13 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
     (
         "tag comment cat-c, no test touched -> FAIL",
         _synthetic_diff(
-            "native/angr/src/arch/mod.rs",
+            "native/angr-symex-core/src/arch/mod.rs",
             [
                 "// SILENT(cat-c): a symbolic SP collapsing to 0 is a wrong-answer risk.",
                 "let sp = 0u64;",
             ],
         ),
-        ["native/angr/src/arch/mod.rs"],
+        ["native/angr-symex-core/src/arch/mod.rs"],
         1,
     ),
     (
@@ -417,7 +417,7 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
 ]
 
 # The prefixes the synthetic diffs above are evaluated against.
-_SELF_TEST_PREFIXES = ("native/angr/src/", "native/angr-vex/src/")
+_SELF_TEST_PREFIXES = ("native/angr/src/", "native/angr-vex/src/", "native/angr-symex-core/src/")
 
 
 # ---------------------------------------------------------------------------

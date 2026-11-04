@@ -638,7 +638,7 @@ struct ShortTailArch;
 const SHORT_TAIL_STATE_SIZE: usize = 1060;
 
 impl Arch for ShortTailArch {
-    fn vex_arch(&self) -> crate::vex::VexArch {
+    fn vex_arch(&self) -> angr_vex::VexArch {
         AMD64.vex_arch()
     }
     fn name(&self) -> &'static str {

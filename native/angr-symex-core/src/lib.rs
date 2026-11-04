@@ -1,23 +1,26 @@
 //! The PyO3-free core of angr's native engine. Today it holds [`symbolic`]:
 //! the Z3 solver context (`SymContext`), constraint solving, the shared
 //! lineage solver and address concretization (`symbolic::concretize`);
-//! [`memory`], the lazy copy-on-write `SymbolicMemory`; and the crate-root
-//! helpers every engine module shares ([`arc_shared`], [`duration_ns`],
-//! [`elapsed_ns`]). `arch`, `state` and `interpreter` join it one module at
-//! a time (angr-mx00p.51).
+//! [`memory`], the lazy copy-on-write `SymbolicMemory`; [`arch`], the
+//! `Arch` trait, the per-arch register tables, `RegisterFile` and the
+//! calling conventions; and the crate-root helpers every engine module
+//! shares ([`arc_shared`], [`duration_ns`], [`elapsed_ns`]). `state` and
+//! `interpreter` join it one module at a time (angr-mx00p.51).
 //!
 //! **Dependencies.** `angr-bv`, `angr-vex`, `angr-symex-macros`,
 //! `clarirs-core`, `z3` and the plain-data crates: no `pyo3` (check with
 //! `cargo tree -p angr-symex-core -e normal`).
 //!
-//! The engine (`native/angr`) re-exports [`symbolic`] and [`memory`], so
-//! `crate::symbolic::` / `crate::memory::` and their `rustylib::` spellings
-//! name these items (angr-mx00p.51.11, angr-mx00p.51.12).
+//! The engine (`native/angr`) re-exports [`symbolic`], [`memory`] and
+//! [`arch`], so `crate::symbolic::` / `crate::memory::` / `crate::arch::`
+//! (and the `rustylib::` spellings of the first two) name these items
+//! (angr-mx00p.51.11, angr-mx00p.51.12, angr-mx00p.51.13).
 //!
 //! # File index
 //!
 //! | File | Holds |
 //! |------|-------|
+//! | `arch/` | The `Arch` trait and `AddrOrSymbolic`, the per-arch register tables and offsets, `RegisterFile`, the arch registry and the calling conventions; `arch/mod.rs` indexes its files. |
 //! | `memory/` | `SymbolicMemory`, its pages, loads, stores, merge and the multi-value overlay; `memory/mod.rs` indexes its files. |
 //! | `symbolic/` | `SymContext`, `ToZ3`, the Z3 plumbing, the `RustBV` re-export of `angr_bv::SymBV`, and `concretize`; `symbolic/mod.rs` indexes its files. |
 //! | `test_boundary_values.rs` | The boundary-value tables for the integer-overflow sweep; test-only, widened by feature `testing`. |
@@ -90,6 +93,7 @@ pub fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
     std::sync::Arc::new(value)
 }
 
+pub mod arch;
 pub mod memory;
 pub mod symbolic;
 

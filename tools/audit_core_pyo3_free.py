@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-CORE_DIRS = ("arch", "interpreter", "state", "procedures", "syscalls")
+CORE_DIRS = ("interpreter", "state", "procedures", "syscalls")
 SCAN = {
     "native/angr": CORE_DIRS,
     "native/angr-bv": ("",),

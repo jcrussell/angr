@@ -17,7 +17,7 @@
     "TRACK_MEMORY_MAPPING": "Vestigial: nothing in angr (or its ecosystem deps) ever *reads* it. The only in-tree reference adds it to an option set (analyses/identifier/runner.py, Runner.__init__); no code path branches on its presence, so ignoring it cannot change an answer. Listed as divergence-risk in the matrix only by association with the TRACK_* family. (angr-op0dn.14.7)",
     "UNSUPPORTED_BYPASS_ZERO_DEFAULT": "Modifier only \u2014 selects which value Python substitutes when its bypass fires, and that bypass runs in Python. Honored transparently.",
     "UNSUPPORTED_FORCE_CONCRETIZE": "Modifier only \u2014 same as UNSUPPORTED_BYPASS_ZERO_DEFAULT.",
-    "ZERO_FILL_UNCONSTRAINED_REGISTERS": "Matches by default (angr-rhe2): Rust's `RegisterFile` (native/angr/src/arch/mod.rs) backs registers with `vec![0; size]`, so an uninitialized register already reads as concrete zero \u2014 exactly what the option asks Python for. Setting it cannot change a Rust answer. (The SYMBOL_FILL_UNCONSTRAINED_REGISTERS sibling is the divergent one and raises.) (angr-op0dn.14.9)"
+    "ZERO_FILL_UNCONSTRAINED_REGISTERS": "Matches by default (angr-rhe2): Rust's `RegisterFile` (native/angr-symex-core/src/arch/mod.rs) backs registers with `vec![0; size]`, so an uninitialized register already reads as concrete zero \u2014 exactly what the option asks Python for. Setting it cannot change a Rust answer. (The SYMBOL_FILL_UNCONSTRAINED_REGISTERS sibling is the divergent one and raises.) (angr-op0dn.14.9)"
   },
   "fallbacks": {
     "flip_blocking_names": [],

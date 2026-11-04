@@ -4,111 +4,111 @@
 //! information for 32-bit ARM.
 
 use super::{Arch, RegEntry, impl_arch_registers};
-use crate::vex::VexArch;
+use angr_vex::VexArch;
 
 /// ARM (32-bit) architecture.
 ///
 /// Name mirrors archinfo's `ArchARM` / the VEX `Ijk`/guest-state spelling, and
 /// is matched against `archinfo` arch names elsewhere in `arch::mod`, so it
-/// keeps the all-caps form. (Visible to clippy because `arch` is a
-/// `pub(crate)` module — style lints skip exported items.)
-#[allow(clippy::upper_case_acronyms)]
+/// keeps the all-caps form. (`upper_case_acronyms` needs no allow: `arch` is
+/// a public module of angr-symex-core, and clippy's style lints skip
+/// exported items.)
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ARM;
+pub struct ARM;
 
 // ARM VEX guest state offsets (from VEX/pub/libvex_guest_arm.h)
 // These match the VexGuestARMState structure layout.
-pub(crate) mod offsets {
+pub mod offsets {
     // General purpose registers (R0-R15)
-    pub(crate) const R0: u32 = 8;
-    pub(crate) const R1: u32 = 12;
-    pub(crate) const R2: u32 = 16;
-    pub(crate) const R3: u32 = 20;
-    pub(crate) const R4: u32 = 24;
-    pub(crate) const R5: u32 = 28;
-    pub(crate) const R6: u32 = 32;
-    pub(crate) const R7: u32 = 36;
-    pub(crate) const R8: u32 = 40;
-    pub(crate) const R9: u32 = 44;
-    pub(crate) const R10: u32 = 48;
-    pub(crate) const R11: u32 = 52; // FP (frame pointer)
-    pub(crate) const R12: u32 = 56; // IP (intra-procedure scratch)
-    pub(crate) const R13: u32 = 60; // SP (stack pointer)
-    pub(crate) const R14: u32 = 64; // LR (link register)
-    pub(crate) const R15T: u32 = 68; // PC with Thumb bit
+    pub const R0: u32 = 8;
+    pub const R1: u32 = 12;
+    pub const R2: u32 = 16;
+    pub const R3: u32 = 20;
+    pub const R4: u32 = 24;
+    pub const R5: u32 = 28;
+    pub const R6: u32 = 32;
+    pub const R7: u32 = 36;
+    pub const R8: u32 = 40;
+    pub const R9: u32 = 44;
+    pub const R10: u32 = 48;
+    pub const R11: u32 = 52; // FP (frame pointer)
+    pub const R12: u32 = 56; // IP (intra-procedure scratch)
+    pub const R13: u32 = 60; // SP (stack pointer)
+    pub const R14: u32 = 64; // LR (link register)
+    pub const R15T: u32 = 68; // PC with Thumb bit
 
     // Condition code thunks
-    pub(crate) const CC_OP: u32 = 72;
-    pub(crate) const CC_DEP1: u32 = 76;
-    pub(crate) const CC_DEP2: u32 = 80;
-    pub(crate) const CC_NDEP: u32 = 84;
+    pub const CC_OP: u32 = 72;
+    pub const CC_DEP1: u32 = 76;
+    pub const CC_DEP2: u32 = 80;
+    pub const CC_NDEP: u32 = 84;
 
     // Thumb/ARM mode flag
-    pub(crate) const QFLAG32: u32 = 88;
-    pub(crate) const GEFLAG0: u32 = 92;
-    pub(crate) const GEFLAG1: u32 = 96;
-    pub(crate) const GEFLAG2: u32 = 100;
-    pub(crate) const GEFLAG3: u32 = 104;
+    pub const QFLAG32: u32 = 88;
+    pub const GEFLAG0: u32 = 92;
+    pub const GEFLAG1: u32 = 96;
+    pub const GEFLAG2: u32 = 100;
+    pub const GEFLAG3: u32 = 104;
 
     // Emulation-warning note
-    pub(crate) const EMNOTE: u32 = 108;
+    pub const EMNOTE: u32 = 108;
 
     // Chunk-marker / self-modifying-code fields and syscall bookkeeping.
     // These occupy the 112-127 VEX block that a prior revision omitted,
     // which shifted every VFP/FPSCR/TPIDRURO field -16 vs the real layout
     // (angr-ihfe5). Keep them named so IR PUT/GET offsets resolve.
-    pub(crate) const CMSTART: u32 = 112;
-    pub(crate) const CMLEN: u32 = 116;
-    pub(crate) const NRADDR: u32 = 120;
-    pub(crate) const IP_AT_SYSCALL: u32 = 124;
+    pub const CMSTART: u32 = 112;
+    pub const CMLEN: u32 = 116;
+    pub const NRADDR: u32 = 120;
+    pub const IP_AT_SYSCALL: u32 = 124;
 
     // NEON/VFP registers (D0-D31, Q0-Q15)
-    pub(crate) const D0: u32 = 128;
-    pub(crate) const D1: u32 = 136;
-    pub(crate) const D2: u32 = 144;
-    pub(crate) const D3: u32 = 152;
-    pub(crate) const D4: u32 = 160;
-    pub(crate) const D5: u32 = 168;
-    pub(crate) const D6: u32 = 176;
-    pub(crate) const D7: u32 = 184;
-    pub(crate) const D8: u32 = 192;
-    pub(crate) const D9: u32 = 200;
-    pub(crate) const D10: u32 = 208;
-    pub(crate) const D11: u32 = 216;
-    pub(crate) const D12: u32 = 224;
-    pub(crate) const D13: u32 = 232;
-    pub(crate) const D14: u32 = 240;
-    pub(crate) const D15: u32 = 248;
-    pub(crate) const D16: u32 = 256;
-    pub(crate) const D17: u32 = 264;
-    pub(crate) const D18: u32 = 272;
-    pub(crate) const D19: u32 = 280;
-    pub(crate) const D20: u32 = 288;
-    pub(crate) const D21: u32 = 296;
-    pub(crate) const D22: u32 = 304;
-    pub(crate) const D23: u32 = 312;
-    pub(crate) const D24: u32 = 320;
-    pub(crate) const D25: u32 = 328;
-    pub(crate) const D26: u32 = 336;
-    pub(crate) const D27: u32 = 344;
-    pub(crate) const D28: u32 = 352;
-    pub(crate) const D29: u32 = 360;
-    pub(crate) const D30: u32 = 368;
-    pub(crate) const D31: u32 = 376;
+    pub const D0: u32 = 128;
+    pub const D1: u32 = 136;
+    pub const D2: u32 = 144;
+    pub const D3: u32 = 152;
+    pub const D4: u32 = 160;
+    pub const D5: u32 = 168;
+    pub const D6: u32 = 176;
+    pub const D7: u32 = 184;
+    pub const D8: u32 = 192;
+    pub const D9: u32 = 200;
+    pub const D10: u32 = 208;
+    pub const D11: u32 = 216;
+    pub const D12: u32 = 224;
+    pub const D13: u32 = 232;
+    pub const D14: u32 = 240;
+    pub const D15: u32 = 248;
+    pub const D16: u32 = 256;
+    pub const D17: u32 = 264;
+    pub const D18: u32 = 272;
+    pub const D19: u32 = 280;
+    pub const D20: u32 = 288;
+    pub const D21: u32 = 296;
+    pub const D22: u32 = 304;
+    pub const D23: u32 = 312;
+    pub const D24: u32 = 320;
+    pub const D25: u32 = 328;
+    pub const D26: u32 = 336;
+    pub const D27: u32 = 344;
+    pub const D28: u32 = 352;
+    pub const D29: u32 = 360;
+    pub const D30: u32 = 368;
+    pub const D31: u32 = 376;
 
     // FPSCR
-    pub(crate) const FPSCR: u32 = 384;
+    pub const FPSCR: u32 = 384;
 
     // TPIDRURO (thread pointer)
-    pub(crate) const TPIDRURO: u32 = 388;
+    pub const TPIDRURO: u32 = 388;
 
     // IT state for conditional execution. guest_TPIDRURW (a UInt at 392,
     // not named here) sits between TPIDRURO and it.
-    pub(crate) const ITSTATE: u32 = 396;
+    pub const ITSTATE: u32 = 396;
 
     // Total guest state size. ITSTATE ends at 400, which is also
     // sizeof(VexGuestARMState).
-    pub(crate) const GUEST_STATE_SIZE: usize = 400;
+    pub const GUEST_STATE_SIZE: usize = 400;
 }
 
 // Canonical registers: drive `register_name(offset)` reverse lookups.
@@ -292,7 +292,7 @@ impl Arch for ARM {
 /// The syscall number an ARM-mode `svc` word encodes under the OABI, or
 /// `None` for an EABI `svc` (number in r7). Mirrors
 /// `SimCCARMLinuxSyscall.syscall_num`, bounds exclusive as there.
-pub(crate) fn oabi_syscall_num(svc_insn: u32) -> Option<u64> {
+pub fn oabi_syscall_num(svc_insn: u32) -> Option<u64> {
     let imm = svc_insn & 0x00FF_FFFF;
     (imm > 0x90_0000 && imm < 0x90_FFFF).then(|| u64::from(imm - 0x90_0000))
 }

@@ -37,7 +37,7 @@ fn unsupported_arch_msg(arch: VexArch) -> String {
 
 /// One row of [`ALL_ARCHES`]: everything the engine knows about a supported
 /// architecture, keyed by the names a caller may spell it with.
-pub(crate) struct ArchDesc {
+pub struct ArchDesc {
     /// Canonical name; equals `Arch::name()` of the arch `make_arch` builds.
     pub name: &'static str,
     /// Accepted spellings other than `name`. Matched case-insensitively,
@@ -67,7 +67,7 @@ pub(crate) struct ArchDesc {
 /// `make_cc`; `calling_conventions_tests::test_arch_from_name_names_all_have_a_cc`
 /// enforces that, and `test_arch_aliases_disjoint` enforces that no spelling
 /// belongs to two rows.
-pub(crate) const ALL_ARCHES: &[ArchDesc] = &[
+pub const ALL_ARCHES: &[ArchDesc] = &[
     ArchDesc {
         name: "X86",
         aliases: &["x86", "i386", "i486", "i586", "i686"],
@@ -114,19 +114,19 @@ pub(crate) const ALL_ARCHES: &[ArchDesc] = &[
 
 /// Look up the [`ArchDesc`] whose canonical name or alias list contains
 /// `name`. Matching is case-insensitive.
-pub(crate) fn arch_desc_from_name(name: &str) -> Option<&'static ArchDesc> {
+pub fn arch_desc_from_name(name: &str) -> Option<&'static ArchDesc> {
     ALL_ARCHES.iter().find(|d| {
         d.name.eq_ignore_ascii_case(name) || d.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
     })
 }
 
 /// Create an architecture by name.
-pub(crate) fn arch_from_name(name: &str) -> Option<Box<dyn Arch>> {
+pub fn arch_from_name(name: &str) -> Option<Box<dyn Arch>> {
     arch_desc_from_name(name).map(|d| (d.make_arch)())
 }
 
 /// Create an architecture from VexArch.
-pub(crate) fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
+pub fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
     match ALL_ARCHES.iter().find(|d| d.vex == arch) {
         Some(d) => (d.make_arch)(),
         // PPC32/PPC64/S390X are the only VexArch values with no row.

@@ -209,7 +209,7 @@ setting, read when each ``Project`` is built.
 A workload is ineligible (and so routes to Python) when any of these
 hold: the Rust extension is not built; the architecture is not one
 the Rust interpreter implements (the ``ALL_ARCHES`` registry in
-``native/angr/src/arch/registry.rs``: X86, AMD64, ARM, ARM64, MIPS32,
+``native/angr-symex-core/src/arch/registry.rs``: X86, AMD64, ARM, ARM64, MIPS32,
 MIPS64); a seeding state carries a
 raise-listed SimOption (``_RAISE_OPTION_NAMES`` — the ``TRACK_*_ACTIONS``
 family, the eager-solve options, …) or lacks a required one
@@ -764,7 +764,7 @@ Unsupported architectures (PPC32 / PPC64 / S390X)
 
 Python angr supports several architectures the Rust engine does **not**
 implement — notably PowerPC (PPC32/PPC64) and S390X. There is no
-``Arch`` implementor for these in ``native/angr/src/arch/``. The
+``Arch`` implementor for these in ``native/angr-symex-core/src/arch/``. The
 contract for them is *loud failure, then fall back to Python*:
 
 * ``RustExplorationManager`` construction rejects an unsupported arch at
@@ -787,7 +787,7 @@ Skeleton → Experimental → Supported promotion path above.
 
 Wired-up but not fully verified:
 
-* Register offsets for every arch in the table in ``native/angr/src/arch/*.rs``.
+* Register offsets for every arch in the table in ``native/angr-symex-core/src/arch/*.rs``.
 * Endianness flag: every endianness flavour of every arch is driven
   end-to-end through both cle loaders by the
   ``test_explore_solves_for_42`` sweep in
@@ -814,7 +814,7 @@ x86 (32-bit) single-CC note
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Rust engine registers only Cdecl in
-``native/angr/src/arch/calling_conventions.rs::default_cc_for_arch``
+``native/angr-symex-core/src/arch/calling_conventions.rs::default_cc_for_arch``
 for x86. The Windows i386 benchmarks
 (``flareon2015_2``, ``flareon2015_5``, ``flareon2015_10``,
 ``whitehatvn2015_re400``, ``ekopartyctf2016_sokohashv2``,
@@ -1631,7 +1631,7 @@ vs. Python.
    * - ``ZERO_FILL_UNCONSTRAINED_REGISTERS``
      - Default-zero registers instead of fresh symbols.
      - **Matches by default.** Rust's ``RegisterFile``
-       (``native/angr/src/arch/mod.rs``) always returns concrete zero
+       (``native/angr-symex-core/src/arch/mod.rs``) always returns concrete zero
        from its ``vec![0; size]`` storage — i.e., zero-fill is Rust's
        default for registers (the pair to
        ``SYMBOL_FILL_UNCONSTRAINED_REGISTERS``, which raises because

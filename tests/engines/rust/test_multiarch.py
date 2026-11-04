@@ -467,7 +467,7 @@ class TestMultiArchSupport:
 
         Regression test for the x86 half of the non-canonical-register
         export class (angr-2uw03). ``cs``/``ds``/``es``/``fs``/``gs``/``ss`` and
-        ``ldt``/``gdt`` used to sit in ``ALIASES`` (``native/angr/src/arch/x86.rs``)
+        ``ldt``/``gdt`` used to sit in ``ALIASES`` (``native/angr-symex-core/src/arch/x86.rs``)
         rather than ``CANONICAL``, so they never reached the export list (``Arch::register_names``) —
         the list ``RustStateSyncMixin._supported_register_names`` filters on
         and ``RustSimState::export_full`` walks for ``named_registers``. Both
@@ -514,7 +514,7 @@ class TestMultiArchSupport:
         Regression test for the MIPS half of the non-canonical-register export class (angr-n2556).
         ``f0``-``f31`` and ``fir``/``fccr``/``fexr``/``fenr``/``fcsr`` used to
         sit in ``ALIASES_MIPS32`` / ``ALIASES_MIPS64``
-        (``native/angr/src/arch/mips.rs``) rather than the ``CANONICAL_*``
+        (``native/angr-symex-core/src/arch/mips.rs``) rather than the ``CANONICAL_*``
         tables, so they never reached the MIPS export lists. That list
         is what ``RustStateSyncMixin._supported_register_names`` filters on and
         what ``RustSimState::export_full`` walks for ``named_registers``, so
@@ -534,7 +534,7 @@ class TestMultiArchSupport:
         (``Iend_BE`` here), so that base offset names the register's HIGH word;
         Rust's storage is unconditionally little-endian and used to name the
         low one, which made the two engines pick opposite halves. The fix is
-        ``RegisterFile::mirror_offset`` (``native/angr/src/arch/mod.rs``).
+        ``RegisterFile::mirror_offset`` (``native/angr-symex-core/src/arch/mod.rs``).
         """
         # cfc1 $v1,$31 ; ctc1 $v0,$31 ; mov.d $f0,$f2 ; b . ; nop
         # (both MIPS ids default to big-endian)
@@ -650,7 +650,7 @@ class TestMultiArchSupport:
         register dispatch.
 
         Beyond the r0/r1/sp/lr the basic tests touch (angr-9n19),
-        ``native/angr/src/arch/arm.rs`` defines d0-d31, q0-q15,
+        ``native/angr-symex-core/src/arch/arm.rs`` defines d0-d31, q0-q15,
         fpscr, and r8-r12 (plus the fp/ip aliases) that were verified only by
         Rust-side offset assertions — this exercises them through the same
         ``set_register``/``get_register`` path real explorations use.
@@ -788,7 +788,7 @@ class TestMultiArchSupport:
         """A Python-set vector register reaches Rust, and Rust's value comes back.
 
         Regression test (angr-l8kfw). ARM's d0-d31 and AArch64's q0-q31 used to
-        live in the per-arch ``ALIASES`` table (``native/angr/src/arch/arm.rs``,
+        live in the per-arch ``ALIASES`` table (``native/angr-symex-core/src/arch/arm.rs``,
         ``arm64.rs``) rather than ``CANONICAL``, so they were absent from
         the export list (``Arch::register_names``). That list is what
         ``RustStateSyncMixin._supported_register_names`` filters on and what
@@ -879,7 +879,7 @@ class TestMultiArchSupport:
         standard register dispatch.
 
         Beyond the x0/x1/sp the basic test touches (angr-9n19),
-        ``native/angr/src/arch/arm64.rs`` defines x8-x30 (+ w aliases),
+        ``native/angr-symex-core/src/arch/arm64.rs`` defines x8-x30 (+ w aliases),
         q0-q31/v0-v31 (128-bit), d0-d31 (low-64 views), and the VEX
         condition-code thunks (cc_op/cc_dep1/cc_dep2/cc_ndep). AArch64's VEX
         guest represents flags as those thunks, not a flat NZCV register, so

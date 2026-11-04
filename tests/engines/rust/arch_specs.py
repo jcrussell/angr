@@ -12,7 +12,7 @@ Two tables live here:
 
 :data:`ARCH_SPECS`
     One :class:`ArchSpec` per architecture the Rust engine supports — the same
-    six rows as ``ALL_ARCHES`` in ``native/angr/src/arch/mod.rs``. Carries the
+    six rows as ``ALL_ARCHES`` in ``native/angr-symex-core/src/arch/mod.rs``. Carries the
     archinfo id, the ELF ``e_machine``/``e_flags``/class, the endianness
     flavours the arch ships in, the hand-assembled "solve for 42" program the
     end-to-end explore sweep runs, and the calling-convention register names
