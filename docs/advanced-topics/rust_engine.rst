@@ -328,6 +328,13 @@ path constraints. The plugins Rust does not own (``posix``, ``libc``,
   exports, kept as of the call the same way. A fork costs nothing until
   something writes or Rust steps, and is dropped with the last copy that
   reads it.
+* **A pickled export is a plain state.** ``pickle.dumps(export)`` pickles a
+  copy given plugins of its own, as for a Python-engine step
+  (``SimState.__reduce_ex__``): memory from the Rust snapshot, the call
+  stack, and a solver holding the path constraints. The export itself stays
+  bound. A pickled ``SimulationManager`` drops its backend, so an unpickled
+  one steps on Python until it is given one (angr-mx00p.136.10). A state
+  bound to a pending callback does not pickle.
 * **Stepping or merging an export in Python.** The proxies cannot merge,
   push or pop, and a proxy concretizes a symbolic-address load to one
   witness where angr's memory returns every candidate. So whenever Python

@@ -1261,6 +1261,8 @@ class RustStateExportMixin:
         history = state.history
         history.parent = parent
         history.depth = parent.depth + 1
+        # SimStateHistory sets this from its parent only at construction (LengthLimiter reads it).
+        history.previous_block_count = parent.block_count
         _fill_history_node(history, entries[-1], arch)
         if entries[-1][1] in (3, 4):
             # cat-(b) FALLBACK WITH LOSS via _rust_state_get: an unreadable

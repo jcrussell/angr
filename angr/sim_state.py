@@ -57,6 +57,10 @@ merge_counter = itertools.count()
 
 
 # pylint: disable=not-callable
+def _unpickled_state(state):
+    return state
+
+
 class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
     """
     The SimState represents the state of a program, including its memory, registers, and so forth.
@@ -270,6 +274,20 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
 
         for p in list(self.plugins.values()):
             p.init_state()
+
+    def __reduce_ex__(self, protocol):
+        # A state exported by the Rust engine is a live view of a Rust state; it pickles as a copy
+        # with plugins of its own, as the Python engine would step it (see SuccessorsMixin.process).
+        # The copy is pickled as an object, not as its __getstate__ dict, so it outlives the
+        # pickling of the plugins that hold a weak reference to it.
+        detach = getattr(self.plugins.get("memory"), "detach_for_python_engine", None)
+        if detach is None:
+            return super().__reduce_ex__(protocol)
+        plain = self.copy()
+        plain.memory.detach_for_python_engine()
+        if hasattr(plain.memory, "detach_for_python_engine"):
+            raise SimStateError(f"cannot pickle {self!r}: it is bound to a pending Rust state")
+        return _unpickled_state, (plain,)
 
     def __getstate__(self):
         # Don't pickle attributes for plugins. These will be pickled
