@@ -155,3 +155,17 @@ fn test_block_count_and_evicted_visits_outlive_the_cap() {
     assert_eq!(untracked.block_count(), 1);
     assert!(untracked.history().is_empty());
 }
+
+#[test]
+fn procedure_steps_count_as_blocks() {
+    // Python's `history.block_count` counts a SimProcedure step like any
+    // block, and the native LengthLimiter reads `block_count`, so a return
+    // or exit recorded for a procedure must count one.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(0x50_0000);
+    state.return_from_procedure(0x40_1000);
+    assert_eq!(state.block_count(), 1);
+    state.record_exit(0x50_0010, None);
+    assert_eq!(state.block_count(), 2);
+    assert_eq!(state.detailed_history().len(), 2);
+}

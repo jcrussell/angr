@@ -178,12 +178,19 @@ pub(crate) fn apply_interpreter_step_result(
     if let Some(sym_ip) = symbolic_ip_at_exit {
         state.set_ip(sym_ip);
     }
+    // The interpreter appends one `detailed_history` entry per block it ran
+    // to the (capped) history it was handed, so the length gain is this
+    // step's block count; Python's `history.block_count` counts each of them.
+    let blocks_run = new_detailed_history
+        .len()
+        .saturating_sub(state.detailed_history().len());
     // Restore call stack and detailed history from interpreter.
     state.set_call_stack(new_call_stack);
     state.set_detailed_history(new_detailed_history);
     state.set_pending_syscall(new_pending_syscall);
-    // Add to history.
+    // Add to history. That counts one block; count the rest the step ran.
     state.add_to_history(state.pc());
+    state.count_blocks(blocks_run.saturating_sub(1) as u64);
 }
 
 // `StepError` carries an inline `RustSimState` (see enum doc above) so

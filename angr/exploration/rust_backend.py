@@ -323,7 +323,8 @@ class RustBackend(SimulationBackend):
         step. The private manager's ``explore`` runs them, then every state it
         holds is exported into the manager's stashes. A callable find or avoid
         is evaluated there on a ``RustStateProxy`` (angr-mx00p.136.15). Suggestions is treated
-        as transparent: it only reports errored states. Counted in
+        as transparent: it only reports errored states. One :class:`LengthLimiter` is
+        armed natively for the run (see :meth:`_fast_path_limiter`). Counted in
         ``stats["fast_path_runs"]``.
         """
         self._simgr = weakref.ref(simgr)
@@ -331,16 +332,19 @@ class RustBackend(SimulationBackend):
         states = simgr._stashes[stash]
         if explorer is None or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
             return False
+        limiter = self._fast_path_limiter(simgr, stash, states)
+        if limiter is False:
+            return False
         for state in states:
             self._ownership.set(state, _OWNED)
-        self._explore_native(simgr, stash, states, explorer)
+        self._explore_native(simgr, stash, states, explorer, limiter)
         self._counters["fast_path_runs"] += 1
         return True
 
     @staticmethod
     def _fast_path_explorer(simgr: SimulationManager, stash: str, n, until, run_args: dict):
         """The run's Explorer when the fast path can stand in for it, else None."""
-        from angr.exploration_techniques import Explorer, Suggestions
+        from angr.exploration_techniques import Explorer, LengthLimiter, Suggestions
         from angr.sim_manager import SimulationManager
 
         if n is not None or until is not None or run_args:
@@ -351,7 +355,7 @@ class RustBackend(SimulationBackend):
         ):
             return None
         explorers = [t for t in simgr._techniques if type(t) is Explorer]
-        if len(explorers) != 1 or any(type(t) not in (Explorer, Suggestions) for t in simgr._techniques):
+        if len(explorers) != 1 or any(type(t) not in (Explorer, Suggestions, LengthLimiter) for t in simgr._techniques):
             return None
         (explorer,) = explorers
         if explorer.cfg is not None or explorer.avoid_priority:
@@ -360,8 +364,44 @@ class RustBackend(SimulationBackend):
             return None
         return explorer
 
-    def _explore_native(self, simgr: SimulationManager, stash: str, states: list[SimState], explorer) -> None:
-        """Explore *states* in the private manager and export every state it ends with into *simgr*."""
+    def _fast_path_limiter(self, simgr: SimulationManager, stash: str, states: list[SimState]):
+        """The run's LengthLimiter as ``(max_length, drop)`` for the native limiter, None if it has none.
+
+        False when the native limiter cannot stand in for it. LengthLimiter's step() cuts from
+        ``active`` whatever stash is stepped, so *stash* must be ``active``. The native limiter
+        reads a state's native block count, which starts at zero on import and so misses the
+        blocks its lineage ran before (in Python, or in an earlier import), while Python's
+        ``history.block_count`` counts them all. The limit is offset by that gap, which the
+        states must share.
+        """
+        from angr.exploration_techniques import LengthLimiter
+
+        limiters = [t for t in simgr._techniques if type(t) is LengthLimiter]
+        if not limiters:
+            return None
+        if len(limiters) != 1 or stash != "active":
+            return False
+        mgr = self._manager()
+        gaps = set()
+        for state in states:
+            sid = self._parked_id(mgr, state)
+            native = 0 if sid is None else mgr._rust_mgr.get_state_block_count(sid)
+            gaps.add(state.history.block_count - native)
+        if len(gaps) != 1:
+            return False
+        (limiter,) = limiters
+        (count,) = gaps
+        if limiter._max_length is None or limiter._max_length < count:
+            return False
+        return limiter._max_length - count, bool(limiter._drop)
+
+    def _explore_native(
+        self, simgr: SimulationManager, stash: str, states: list[SimState], explorer, limiter=None
+    ) -> None:
+        """Explore *states* in the private manager and export every state it ends with into *simgr*.
+
+        *limiter* is :meth:`_fast_path_limiter`'s ``(max_length, drop)``, armed for this run only.
+        """
         mgr = self._manager()
         rust = mgr._rust_mgr
         sids = self._activate(mgr, states)
@@ -369,6 +409,8 @@ class RustBackend(SimulationBackend):
         num_find = explorer.num_find - len(simgr._stashes.get(explorer.find_stash, ()))
         drop_terminal = rust.stats()["drop_terminal_states"]
         rust.set_drop_terminal_states(False)
+        if limiter is not None:
+            rust.register_length_limiter(*limiter)
         try:
             mgr.explore(
                 find=_explore_target(explorer.find, explorer.static_find),
@@ -379,6 +421,9 @@ class RustBackend(SimulationBackend):
                 n=sys.maxsize,
             )
         finally:
+            if limiter is not None:
+                # The private manager arms nothing else natively.
+                rust.clear_native_techniques()
             rust.set_drop_terminal_states(drop_terminal)
             messages = {err_id: message for _, message, err_id in rust.get_errors()}
             rust.clear_errors()
@@ -398,6 +443,9 @@ class RustBackend(SimulationBackend):
                 if sid not in ended_ids:
                     self._unref(sid)
         targets = {"active": stash, "found": explorer.find_stash, "avoid": explorer.avoid_stash}
+        if limiter is not None and not limiter[1]:
+            # LengthLimiter's step() leaves a ``cut`` stash, empty or not.
+            targets["cut"] = "cut"
         simgr._stashes[stash] = []
         uncovered = None
         for name, cids in ended.items():

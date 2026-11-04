@@ -153,3 +153,47 @@ def test_a_state_the_backend_declines_keeps_the_per_step_path():
     assert backend.stats["declined"]["state is in the python init prefix"] > 0
     assert backend.stats["claimed"] > 0
     assert len(simgr.found) == 1
+
+
+# (name, max_length): a limit no path reaches, and limits that cut before and around the find
+LIMITER_CASES = [
+    ("fauxware", 1000),
+    ("fauxware", 30),
+    ("fauxware", 20),
+    ("ais3_crackme", 1000),
+    ("ais3_crackme", 20),
+    ("defcamp_r100", 8),
+]
+
+
+@pytest.mark.parametrize("drop", [False, True])
+@pytest.mark.parametrize(("name", "max_length"), LIMITER_CASES)
+def test_a_length_limiter_runs_natively_with_the_per_step_stashes(name, max_length, drop):
+    _, find, avoid = CASES[name]
+    runs = []
+    for fast in (True, False):
+        simgr, backend = _simgr(name)
+        simgr.use_technique(angr.exploration_techniques.LengthLimiter(max_length, drop=drop))
+        simgr.explore(find=find, avoid=avoid, n=None if fast else PER_STEP_N)
+        runs.append((simgr, backend))
+    (fast, fast_backend), (per_step, per_step_backend) = runs
+
+    assert fast_backend.stats["fast_path_runs"] == 1
+    assert per_step_backend.stats["fast_path_runs"] == 0
+    assert ("cut" in fast.stashes) == ("cut" in per_step.stashes) == (not drop)
+    assert _summary(fast) == _summary(per_step)
+
+
+def test_a_length_limiter_counts_the_blocks_run_before_the_explore():
+    runs = []
+    for fast in (True, False):
+        simgr, backend = _simgr("fauxware")
+        simgr.run(n=PER_STEP_N, until=lambda sm: sm.active[0].history.block_count >= 5)
+        simgr.use_technique(angr.exploration_techniques.LengthLimiter(30))
+        _, find, avoid = CASES["fauxware"]
+        simgr.explore(find=find, avoid=avoid, n=None if fast else PER_STEP_N)
+        runs.append((simgr, backend))
+    (fast, fast_backend), (per_step, _) = runs
+
+    assert fast_backend.stats["fast_path_runs"] == 1
+    assert _summary(fast) == _summary(per_step)

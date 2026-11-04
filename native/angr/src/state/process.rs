@@ -319,6 +319,7 @@ impl RustSimState {
     /// its `terminate` event. See the `RustSimState::exit_code` field doc.
     pub fn record_exit(&mut self, addr: u64, exit_code: Option<RustBV>) {
         self.add_history_entry(addr, super::HistoryEntry::JK_EXIT, addr);
+        self.count_blocks(1);
         self.exit_code = exit_code;
     }
 

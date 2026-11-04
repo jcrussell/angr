@@ -34,6 +34,13 @@ impl RustSimState {
         }
     }
 
+    /// Count `n` blocks in `block_count` without touching `history`: the
+    /// blocks a step ran beyond the one its `add_to_history` counted, or a
+    /// procedure step, which Python's `history.block_count` counts too.
+    pub fn count_blocks(&mut self, n: u64) {
+        self.block_count = self.block_count.wrapping_add(n);
+    }
+
     /// Blocks this path has executed, not capped by `max_history`.
     pub fn block_count(&self) -> u64 {
         self.block_count
@@ -133,6 +140,7 @@ impl RustSimState {
     pub fn return_from_procedure(&mut self, return_addr: u64) {
         let hook_addr = self.pc();
         self.add_history_entry(hook_addr, HistoryEntry::JK_RET, return_addr);
+        self.count_blocks(1);
         if let Some(i) = self
             .call_stack
             .iter()
