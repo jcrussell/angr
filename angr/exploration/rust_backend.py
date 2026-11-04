@@ -7,7 +7,7 @@ Python engine. A claimed state is stepped one block in a private
 (:meth:`RustBackend.step_state`), and its successors come back as exported
 SimStates. When nothing hooks the manager's ``step_state``, all the states
 it claims in one step go through one :meth:`RustBackend.step_states` call
-(angr-mx00p.136.13). An address-only ``explore()`` whose states it would all
+(angr-mx00p.136.13). An ``explore()`` whose states it would all
 claim runs to its end in the private manager's round-based explore instead
 (:meth:`RustBackend.try_run`, angr-mx00p.136.14). Between steps every Rust state the backend handed out waits in one
 private stash, kept only while its export is referenced: once that export is
@@ -104,6 +104,22 @@ def _queue_release(backend_ref, state_id: int) -> None:
     if backend is not None:
         backend._export_finalizers.pop(state_id, None)
         backend._released.append(state_id)
+
+
+def _explore_target(condition, static_addrs):
+    """Explorer's *condition* as :meth:`RustExplorationManager.explore` takes it: its addresses, else a predicate.
+
+    The predicate matches as :meth:`Explorer._filter_inner` does: ``True``, or
+    a set of addresses holding the state's (angr-mx00p.136.15).
+    """
+    if static_addrs is not None:
+        return sorted(static_addrs) or None
+
+    def matches(state) -> bool:
+        result = condition(state)
+        return bool(result) and (result is True or state.addr in result)
+
+    return matches
 
 
 class RustBackend(SimulationBackend):
@@ -298,14 +314,15 @@ class RustBackend(SimulationBackend):
                 self._release(mgr, cid)
 
     def try_run(self, simgr: SimulationManager, stash: str, n: int | None, until, run_args: dict) -> bool:
-        """Run an address-only ``explore()`` to its end in one native run (angr-mx00p.136.14).
+        """Run an ``explore()`` to its end in one native run (angr-mx00p.136.14).
 
         Taken when the run has no ``n``, ``until`` or step arguments, the
-        manager's only techniques are one :class:`Explorer` whose find and
-        avoid are addresses (no ``cfg``, no ``avoid_priority``) and the
-        default Suggestions, and every state of *stash* would be claimed this
+        manager's only techniques are one :class:`Explorer` (no ``cfg``, no
+        ``avoid_priority``) and the default Suggestions, and every state of
+        *stash* would be claimed this
         step. The private manager's ``explore`` runs them, then every state it
-        holds is exported into the manager's stashes. Suggestions is treated
+        holds is exported into the manager's stashes. A callable find or avoid
+        is evaluated there on a ``RustStateProxy`` (angr-mx00p.136.15). Suggestions is treated
         as transparent: it only reports errored states. Counted in
         ``stats["fast_path_runs"]``.
         """
@@ -337,9 +354,7 @@ class RustBackend(SimulationBackend):
         if len(explorers) != 1 or any(type(t) not in (Explorer, Suggestions) for t in simgr._techniques):
             return None
         (explorer,) = explorers
-        static_find = getattr(explorer, "static_find", None)
-        static_avoid = getattr(explorer, "static_avoid", None)
-        if static_find is None or static_avoid is None or explorer.cfg is not None or explorer.avoid_priority:
+        if explorer.cfg is not None or explorer.avoid_priority:
             return None
         if len({stash, explorer.find_stash, explorer.avoid_stash}) != 3:
             return None
@@ -356,8 +371,8 @@ class RustBackend(SimulationBackend):
         rust.set_drop_terminal_states(False)
         try:
             mgr.explore(
-                find=sorted(explorer.static_find) or None,
-                avoid=sorted(explorer.static_avoid) or None,
+                find=_explore_target(explorer.find, explorer.static_find),
+                avoid=_explore_target(explorer.avoid, explorer.static_avoid),
                 num_find=max(num_find, 1),
                 # In rounds, one native block step of every active state each, so the run stops on
                 # the same step, with the same frontier, as SimulationManager's own loop.

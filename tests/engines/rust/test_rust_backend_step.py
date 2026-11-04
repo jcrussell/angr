@@ -38,7 +38,8 @@ def project(request):
 
 def _explore(project, backend):
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
-    simgr.explore(find=lambda s: b"Welcome" in s.posix.dumps(1), avoid=lambda s: b"Go away" in s.posix.dumps(1))
+    # An n budget keeps the per-step path: without one, try_run explores natively (angr-mx00p.136.15).
+    simgr.explore(find=lambda s: b"Welcome" in s.posix.dumps(1), avoid=lambda s: b"Go away" in s.posix.dumps(1), n=1000)
     return simgr
 
 

@@ -1,6 +1,6 @@
-"""SimulationManager+RustBackend: an address-only explore() runs natively (angr-mx00p.136.14).
+"""SimulationManager+RustBackend: an explore() runs natively (angr-mx00p.136.14, angr-mx00p.136.15).
 
-With no ``n``, ``until`` or step arguments and only an address Explorer (plus
+With no ``n``, ``until`` or step arguments and only an Explorer (plus
 the default Suggestions) installed, :meth:`SimulationManager.run` hands the
 rest of the run to :meth:`RustBackend.try_run`, which explores in one native
 run and exports the states it ends with. ``explore(n=...)`` keeps the per-step
@@ -116,13 +116,32 @@ def test_a_second_explore_counts_only_its_own_finds():
     assert _summary(fast) == _summary(per_step)
 
 
-def test_a_predicate_find_keeps_the_per_step_path():
-    simgr, backend = _simgr("fauxware")
-    simgr.explore(find=lambda s: b"Welcome" in s.posix.dumps(1), avoid=lambda s: b"Go away" in s.posix.dumps(1))
+def _stdout_has(text):
+    return lambda s: text in s.posix.dumps(1)
 
-    assert backend.stats["fast_path_runs"] == 0
-    assert backend.stats["claimed"] > 0
-    assert len(simgr.found) == 1
+
+# name -> (find, avoid) predicates, as csgames2018 / fauxware scripts write them (angr-mx00p.136.15)
+PREDICATE_CASES = {
+    "fauxware": (_stdout_has(b"Welcome"), _stdout_has(b"Go away")),
+    "ais3_crackme": (_stdout_has(b"Correct"), None),
+    "defcamp_r100": (_stdout_has(b"Nice!"), 0x400855),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PREDICATE_CASES))
+def test_a_predicate_find_runs_natively_with_the_per_step_stashes(name):
+    find, avoid = PREDICATE_CASES[name]
+    runs = []
+    for fast in (True, False):
+        simgr, backend = _simgr(name)
+        simgr.explore(find=find, avoid=avoid, n=None if fast else PER_STEP_N)
+        runs.append((simgr, backend))
+    (fast, fast_backend), (per_step, per_step_backend) = runs
+
+    assert fast_backend.stats["fast_path_runs"] == 1
+    assert per_step_backend.stats["fast_path_runs"] == 0
+    assert len(fast.found) == 1
+    assert _summary(fast) == _summary(per_step)
 
 
 def test_a_state_the_backend_declines_keeps_the_per_step_path():
