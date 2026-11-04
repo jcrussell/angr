@@ -197,3 +197,39 @@ def test_a_length_limiter_counts_the_blocks_run_before_the_explore():
 
     assert fast_backend.stats["fast_path_runs"] == 1
     assert _summary(fast) == _summary(per_step)
+
+
+def _ordered(simgr):
+    # DFS's deferred order decides which state it resumes, so the stash order is compared too.
+    return {name: [(s.addr, s.history.depth) for s in states] for name, states in simgr.stashes.items() if states}
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_a_dfs_run_replays_its_deferrals_natively(name):
+    _, find, avoid = CASES[name]
+    runs = []
+    for fast in (True, False):
+        simgr, backend = _simgr(name)
+        dfs = angr.exploration_techniques.DFS()
+        simgr.use_technique(dfs)
+        simgr.explore(find=find, avoid=avoid, n=None if fast else PER_STEP_N)
+        runs.append((simgr, backend, dfs._random.getstate()))
+    (fast, fast_backend, fast_rng), (per_step, per_step_backend, per_step_rng) = runs
+
+    assert fast_backend.stats["fast_path_runs"] == 1
+    assert per_step_backend.stats["fast_path_runs"] == 0
+    assert len(fast.found) == 1
+    assert _ordered(fast) == _ordered(per_step)
+    assert _summary(fast) == _summary(per_step)
+    assert fast_rng == per_step_rng
+
+
+def test_a_dfs_with_states_already_deferred_keeps_the_per_step_path():
+    simgr, backend = _simgr("fauxware")
+    simgr.use_technique(angr.exploration_techniques.DFS())
+    simgr.run(n=PER_STEP_N, until=lambda sm: len(sm.deferred) > 0)
+    _, find, avoid = CASES["fauxware"]
+    simgr.explore(find=find, avoid=avoid)
+
+    assert backend.stats["fast_path_runs"] == 0
+    assert len(simgr.found) == 1

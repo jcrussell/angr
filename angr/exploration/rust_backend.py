@@ -324,7 +324,8 @@ class RustBackend(SimulationBackend):
         holds is exported into the manager's stashes. A callable find or avoid
         is evaluated there on a ``RustStateProxy`` (angr-mx00p.136.15). Suggestions is treated
         as transparent: it only reports errored states. One :class:`LengthLimiter` is
-        armed natively for the run (see :meth:`_fast_path_limiter`). Counted in
+        armed natively for the run (see :meth:`_fast_path_limiter`), or one :class:`DFS` is
+        replayed between its rounds (see :meth:`_fast_path_dfs`). Counted in
         ``stats["fast_path_runs"]``.
         """
         self._simgr = weakref.ref(simgr)
@@ -333,18 +334,19 @@ class RustBackend(SimulationBackend):
         if explorer is None or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
             return False
         limiter = self._fast_path_limiter(simgr, stash, states)
-        if limiter is False:
+        dfs = self._fast_path_dfs(simgr, stash, explorer)
+        if limiter is False or dfs is False or (limiter is not None and dfs is not None):
             return False
         for state in states:
             self._ownership.set(state, _OWNED)
-        self._explore_native(simgr, stash, states, explorer, limiter)
+        self._explore_native(simgr, stash, states, explorer, limiter, dfs)
         self._counters["fast_path_runs"] += 1
         return True
 
     @staticmethod
     def _fast_path_explorer(simgr: SimulationManager, stash: str, n, until, run_args: dict):
         """The run's Explorer when the fast path can stand in for it, else None."""
-        from angr.exploration_techniques import Explorer, LengthLimiter, Suggestions
+        from angr.exploration_techniques import DFS, Explorer, LengthLimiter, Suggestions
         from angr.sim_manager import SimulationManager
 
         if n is not None or until is not None or run_args:
@@ -355,7 +357,9 @@ class RustBackend(SimulationBackend):
         ):
             return None
         explorers = [t for t in simgr._techniques if type(t) is Explorer]
-        if len(explorers) != 1 or any(type(t) not in (Explorer, Suggestions, LengthLimiter) for t in simgr._techniques):
+        if len(explorers) != 1 or any(
+            type(t) not in (Explorer, Suggestions, LengthLimiter, DFS) for t in simgr._techniques
+        ):
             return None
         (explorer,) = explorers
         if explorer.cfg is not None or explorer.avoid_priority:
@@ -395,12 +399,55 @@ class RustBackend(SimulationBackend):
             return False
         return limiter._max_length - count, bool(limiter._drop)
 
+    @staticmethod
+    def _fast_path_dfs(simgr: SimulationManager, stash: str, explorer):
+        """The run's DFS, None if it has none, False when the fast path cannot replay it.
+
+        DFS's step() keeps one state of *stash* and defers the rest after each step; the private
+        manager does the same to its own stashes between rounds, with the technique's own
+        ``_random``, so the shuffles match the Python run's. The fast path runs only *stash*'s
+        states, so a deferred stash that already holds states, or one that is a stash the run
+        writes or the private manager keeps to itself, takes the per-step path.
+        """
+        from angr.exploration_techniques import DFS
+
+        dfs_list = [t for t in simgr._techniques if type(t) is DFS]
+        if not dfs_list:
+            return None
+        if len(dfs_list) != 1:
+            return False
+        (dfs,) = dfs_list
+        name = dfs.deferred_stash
+        if name.startswith("_") or name in (stash, explorer.find_stash, explorer.avoid_stash, "found", "avoid"):
+            return False
+        if simgr._stashes.get(name):
+            return False
+        return dfs
+
+    @staticmethod
+    def _dfs_round(rust, dfs):
+        """DFS.step()'s stash moves after a round, done on the private manager's ``active``."""
+
+        def reorder() -> None:
+            active = list(rust.get_state_ids("active"))
+            if len(active) > 1:
+                dfs._random.shuffle(active)
+                for sid in active[1:]:
+                    rust.move_state(sid, "active", dfs.deferred_stash)
+            elif not active:
+                deferred = rust.get_state_ids(dfs.deferred_stash)
+                if deferred:
+                    rust.move_state(deferred[-1], dfs.deferred_stash, "active")
+
+        return reorder
+
     def _explore_native(
-        self, simgr: SimulationManager, stash: str, states: list[SimState], explorer, limiter=None
+        self, simgr: SimulationManager, stash: str, states: list[SimState], explorer, limiter=None, dfs=None
     ) -> None:
         """Explore *states* in the private manager and export every state it ends with into *simgr*.
 
-        *limiter* is :meth:`_fast_path_limiter`'s ``(max_length, drop)``, armed for this run only.
+        *limiter* is :meth:`_fast_path_limiter`'s ``(max_length, drop)``, armed for this run only;
+        *dfs* is :meth:`_fast_path_dfs`'s DFS, replayed between rounds for this run only.
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
@@ -411,6 +458,8 @@ class RustBackend(SimulationBackend):
         rust.set_drop_terminal_states(False)
         if limiter is not None:
             rust.register_length_limiter(*limiter)
+        if dfs is not None:
+            mgr._round_reorder = self._dfs_round(rust, dfs)
         try:
             mgr.explore(
                 find=_explore_target(explorer.find, explorer.static_find),
@@ -421,6 +470,7 @@ class RustBackend(SimulationBackend):
                 n=sys.maxsize,
             )
         finally:
+            mgr._round_reorder = None
             if limiter is not None:
                 # The private manager arms nothing else natively.
                 rust.clear_native_techniques()
@@ -446,6 +496,8 @@ class RustBackend(SimulationBackend):
         if limiter is not None and not limiter[1]:
             # LengthLimiter's step() leaves a ``cut`` stash, empty or not.
             targets["cut"] = "cut"
+        if dfs is not None:
+            targets[dfs.deferred_stash] = dfs.deferred_stash
         simgr._stashes[stash] = []
         uncovered = None
         for name, cids in ended.items():

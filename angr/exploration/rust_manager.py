@@ -1587,6 +1587,10 @@ class RustExplorationManager(
         # owner (`RustBackend`) whose roots' own ids are exported and so may
         # not be cached. The owner drops each entry with its lineage.
         self._lineage_templates: dict[int, angr.SimState] = {}
+        # Called after every explore(n=) round when set, by an owner (`RustBackend`) standing in
+        # for a technique whose step() reorders the stashes, as DFS's does. See
+        # `_explore_reordered_rounds`.
+        self._round_reorder: Callable[[], None] | None = None
 
         # Per-state-id Python-side stand-ins for state.options and state.globals.
         # The Rust engine doesn't honor SimOptions (LAZY_SOLVES / STRICT_PAGE_ACCESS
@@ -4929,6 +4933,9 @@ class RustExplorationManager(
         # last round, as SimulationManager's last step steps them (angr-mx00p.136.14).
         rust.set_num_find(sys.maxsize)
         try:
+            if self._round_reorder is not None:
+                self._explore_reordered_rounds(n, num_find)
+                return self
             self._evaluate_predicates_on_active()
             for round_no in range(n):
                 # SimulationManager's Explorer filters before it steps, so nothing reached in the budget's
@@ -4957,7 +4964,28 @@ class RustExplorationManager(
             rust.set_drop_terminal_states(drop_terminal)
         return self
 
-    def _explore_last_round(self) -> None:
+    def _explore_reordered_rounds(self, n: int, num_find: int) -> None:
+        """Run :meth:`_explore_rounds`'s budget with :attr:`_round_reorder` called after every round.
+
+        The hook may move states between stashes, as DFS's step() does, so a
+        state that arrives at a find or avoid address must still be active when
+        it runs: each round filters first and steps with the targets disarmed,
+        as SimulationManager's Explorer does, and the run stops once the found
+        count is reached or ``active`` is empty after the hook (angr-mx00p.136.15).
+        """
+        rust = self._rust_mgr
+        for _ in range(n):
+            if not rust.get_state_ids("active"):
+                return
+            # A round that empties ``active`` stops the step loop, but the hook can refill it from
+            # the states it moved aside, as DFS does.
+            if not self._explore_last_round() and rust.get_state_ids("active"):
+                return
+            self._round_reorder()
+            if self._found_count() >= num_find:
+                return
+
+    def _explore_last_round(self) -> bool:
         """Filter the active states as Explorer does, then step them once with no find or avoid armed.
 
         SimulationManager's Explorer filters a state before stepping it, so a
@@ -4986,7 +5014,7 @@ class RustExplorationManager(
         rust.set_find_needs_python(False)
         rust.set_avoid_needs_python(False)
         self._invalidate_state_export_cache()
-        self._step_loop(1)
+        return self._step_loop(1)
 
     def _disarm_explore_targets(self) -> None:
         """Drop this explore()'s find/avoid/num_find from the Rust manager.
