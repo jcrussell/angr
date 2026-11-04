@@ -172,7 +172,8 @@ def test_explore_with_backend_equals_python(project):
 
     assert shape(with_backend) == shape(python)
     assert [s.posix.dumps(0) for s in with_backend.found] == [s.posix.dumps(0) for s in python.found]
-    assert backend.stats["claimed"] > 0
+    # An address-only explore of claimable states runs natively (angr-mx00p.136.14).
+    assert backend.stats["fast_path_runs"] == 1
 
 
 def test_step_with_backend_equals_python(project, main_addr):

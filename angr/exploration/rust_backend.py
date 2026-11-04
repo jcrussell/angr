@@ -7,7 +7,9 @@ Python engine. A claimed state is stepped one block in a private
 (:meth:`RustBackend.step_state`), and its successors come back as exported
 SimStates. When nothing hooks the manager's ``step_state``, all the states
 it claims in one step go through one :meth:`RustBackend.step_states` call
-(angr-mx00p.136.13). Between steps every Rust state the backend handed out waits in one
+(angr-mx00p.136.13). An address-only ``explore()`` whose states it would all
+claim runs to its end in the private manager's round-based explore instead
+(:meth:`RustBackend.try_run`, angr-mx00p.136.14). Between steps every Rust state the backend handed out waits in one
 private stash, kept only while its export is referenced: once that export is
 collected (dropped from every stash and not held), the state is dropped before
 the next step (angr-mx00p.136.9).
@@ -16,6 +18,7 @@ the next step (angr-mx00p.136.9).
 from __future__ import annotations
 
 import logging
+import sys
 import weakref
 from collections import Counter
 from typing import TYPE_CHECKING
@@ -119,7 +122,7 @@ class RustBackend(SimulationBackend):
         self._main_addr: int | None = None
         self._phase = _LineageMarks()
         self._ownership = _LineageMarks()
-        self.stats = {"claimed": 0, "declined": Counter(), "handed_back": 0}
+        self.stats = {"claimed": 0, "declined": Counter(), "handed_back": 0, "fast_path_runs": 0}
         self._mgr: RustExplorationManager | None = None
         # Ids of the Rust states waiting in _PARKED.
         self._resident: set[int] = set()
@@ -129,9 +132,10 @@ class RustBackend(SimulationBackend):
         # Resident ids whose export is gone, dropped from _PARKED before the next step. A
         # finalizer can run inside a Rust call (a callback's GC), so it only queues the id.
         self._released: list[int] = []
-        # The imported root each resident id descends from, and the resident ids per root:
-        # a root's `_lineage_templates` entry is dropped with its last resident id.
-        self._root_of: dict[int, int] = {}
+        # The imported roots each resident id descends from (several when a native run mixed
+        # lineages), and the resident ids per root: a root's `_lineage_templates` entry is
+        # dropped with its last resident id.
+        self._root_of: dict[int, tuple[int, ...]] = {}
         self._lineage_refs: Counter[int] = Counter()
         # Python-lifted block size per address, for the extra_stop_points check.
         self._block_sizes: dict[int, int] = {}
@@ -232,19 +236,7 @@ class RustBackend(SimulationBackend):
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
-        self._drop_released(mgr)
-        sids = [self._resident_id(mgr, state) for state in states]
-        for state, sid in zip(states, sids):
-            # The source is consumed: the step's children are exported anew, and a held source
-            # reads its own fork from here on.
-            finalizer = self._export_finalizers.pop(sid, None)
-            if finalizer is not None:
-                finalizer.detach()
-            self._detach_source(mgr, state, sid)
-        mgr._sync_hooks_before_step()
-        for sid in sids:
-            rust.move_state(sid, _PARKED, "active")
-            self._resident.discard(sid)
+        sids = self._activate(mgr, states)
         children = {}
         try:
             children = mgr._step_ids_once(sids)
@@ -256,14 +248,12 @@ class RustBackend(SimulationBackend):
             rust.move_states("active", _PARKED, None)
             unexported = set(sids)
             for sid in sids:
-                root = self._root_of[sid]
+                roots = self._root_of[sid]
                 for name, cids in children.get(sid, {}).items():
                     for cid in cids:
                         if name != "active":
                             rust.move_state(cid, name, _PARKED)
-                        if cid not in self._root_of:
-                            self._root_of[cid] = root
-                            self._lineage_refs[root] += 1
+                        self._adopt(cid, roots)
                     unexported.update(cids)
             self._resident.update(unexported)
         try:
@@ -271,6 +261,108 @@ class RustBackend(SimulationBackend):
         finally:
             for cid in unexported:
                 self._release(mgr, cid)
+
+    def try_run(self, simgr: SimulationManager, stash: str, n: int | None, until, run_args: dict) -> bool:
+        """Run an address-only ``explore()`` to its end in one native run (angr-mx00p.136.14).
+
+        Taken when the run has no ``n``, ``until`` or step arguments, the
+        manager's only techniques are one :class:`Explorer` whose find and
+        avoid are addresses (no ``cfg``, no ``avoid_priority``) and the
+        default Suggestions, and every state of *stash* would be claimed this
+        step. The private manager's ``explore`` runs them, then every state it
+        holds is exported into the manager's stashes. Suggestions is treated
+        as transparent: it only reports errored states. Counted in
+        ``stats["fast_path_runs"]``.
+        """
+        explorer = self._fast_path_explorer(simgr, stash, n, until, run_args)
+        states = simgr._stashes[stash]
+        if explorer is None or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
+            return False
+        for state in states:
+            self._ownership.set(state, _OWNED)
+        self._explore_native(simgr, stash, states, explorer)
+        self.stats["fast_path_runs"] += 1
+        return True
+
+    @staticmethod
+    def _fast_path_explorer(simgr: SimulationManager, stash: str, n, until, run_args: dict):
+        """The run's Explorer when the fast path can stand in for it, else None."""
+        from angr.exploration_techniques import Explorer, Suggestions
+        from angr.sim_manager import SimulationManager
+
+        if n is not None or until is not None or run_args:
+            return None
+        cls = type(simgr)
+        if any(
+            getattr(cls, m) is not getattr(SimulationManager, m) for m in ("step", "step_state", "filter", "selector")
+        ):
+            return None
+        explorers = [t for t in simgr._techniques if type(t) is Explorer]
+        if len(explorers) != 1 or any(type(t) not in (Explorer, Suggestions) for t in simgr._techniques):
+            return None
+        (explorer,) = explorers
+        static_find = getattr(explorer, "static_find", None)
+        static_avoid = getattr(explorer, "static_avoid", None)
+        if static_find is None or static_avoid is None or explorer.cfg is not None or explorer.avoid_priority:
+            return None
+        if len({stash, explorer.find_stash, explorer.avoid_stash}) != 3:
+            return None
+        return explorer
+
+    def _explore_native(self, simgr: SimulationManager, stash: str, states: list[SimState], explorer) -> None:
+        """Explore *states* in the private manager and export every state it ends with into *simgr*."""
+        mgr = self._manager()
+        rust = mgr._rust_mgr
+        sids = self._activate(mgr, states)
+        roots = tuple(sorted({root for sid in sids for root in self._root_of[sid]}))
+        num_find = explorer.num_find - len(simgr._stashes.get(explorer.find_stash, ()))
+        drop_terminal = rust.stats()["drop_terminal_states"]
+        rust.set_drop_terminal_states(False)
+        try:
+            mgr.explore(
+                find=sorted(explorer.static_find) or None,
+                avoid=sorted(explorer.static_avoid) or None,
+                num_find=max(num_find, 1),
+                # In rounds, one native block step of every active state each, so the run stops on
+                # the same step, with the same frontier, as SimulationManager's own loop.
+                n=sys.maxsize,
+            )
+        finally:
+            rust.set_drop_terminal_states(drop_terminal)
+            messages = {err_id: message for _, message, err_id in rust.get_errors()}
+            rust.clear_errors()
+            ended = {}
+            for name in rust.stash_counts():
+                # Underscored stashes are the manager's own (_PARKED, the held sources' forks, the
+                # step-round queues), never states this run ended with.
+                if not name.startswith("_"):
+                    ended[name] = list(rust.get_state_ids(name))
+                    rust.move_states(name, _PARKED, None)
+            for cids in ended.values():
+                for cid in cids:
+                    self._adopt(cid, roots)
+                    self._resident.add(cid)
+            ended_ids = {cid for cids in ended.values() for cid in cids}
+            for sid in sids:
+                if sid not in ended_ids:
+                    self._unref(sid)
+        targets = {"active": stash, "found": explorer.find_stash, "avoid": explorer.avoid_stash}
+        simgr._stashes[stash] = []
+        uncovered = None
+        for name, cids in ended.items():
+            if name == "errored":
+                for cid in cids:
+                    message = messages.get(cid, "rust engine error")
+                    error = sim_error_for_rust_message(message, RustErrorRecord._classify(message))
+                    simgr._errored.append(ErrorRecord(self._export(mgr, cid), error, None))
+                    if uncovered is None and not isinstance(error, simgr._resilience):
+                        uncovered = error
+                continue
+            exports = [self._export(mgr, cid) for cid in cids]
+            if exports or name in targets:
+                simgr._store_states(targets.get(name, name), exports)
+        if uncovered is not None:
+            raise uncovered
 
     def _outcome(self, mgr, simgr, sid, children, messages, unexported):
         """The callable :meth:`step_states` returns for *sid*: export its successors now, replay them later."""
@@ -314,11 +406,38 @@ class RustBackend(SimulationBackend):
         if sid in self._resident:
             self._resident.discard(sid)
             mgr.drop_copy(sid, _PARKED)
-            root = self._root_of.pop(sid)
+            self._unref(sid)
+
+    def _adopt(self, sid: int, roots: tuple[int, ...]) -> None:
+        """Count *sid*, a new id of a step, as descending from the imported *roots*."""
+        if sid not in self._root_of:
+            self._root_of[sid] = roots
+            self._lineage_refs.update(roots)
+
+    def _unref(self, sid: int) -> None:
+        """Forget *sid*'s roots, dropping a root's lineage template with its last id."""
+        for root in self._root_of.pop(sid):
             self._lineage_refs[root] -= 1
             if not self._lineage_refs[root]:
                 del self._lineage_refs[root]
-                mgr._lineage_templates.pop(root, None)
+                self._mgr._lineage_templates.pop(root, None)
+
+    def _activate(self, mgr: RustExplorationManager, states: list[SimState]) -> list[int]:
+        """Move *states* from ``_PARKED`` to the private manager's active stash, returning their ids."""
+        self._drop_released(mgr)
+        sids = [self._resident_id(mgr, state) for state in states]
+        for state, sid in zip(states, sids):
+            # The source is consumed: the step's children are exported anew, and a held source
+            # reads its own fork from here on.
+            finalizer = self._export_finalizers.pop(sid, None)
+            if finalizer is not None:
+                finalizer.detach()
+            self._detach_source(mgr, state, sid)
+        mgr._sync_hooks_before_step()
+        for sid in sids:
+            mgr._rust_mgr.move_state(sid, _PARKED, "active")
+            self._resident.discard(sid)
+        return sids
 
     def _drop_released(self, mgr: RustExplorationManager) -> None:
         """Drop the resident ids whose export was collected since the last step."""
@@ -360,8 +479,7 @@ class RustBackend(SimulationBackend):
         # The import's cached mirror is its lineage's plugin template, kept out of
         # `_state_cache` so it is never handed out as an export of sid.
         mgr._lineage_templates[sid] = mgr._state_cache.pop(sid)
-        self._root_of[sid] = sid
-        self._lineage_refs[sid] += 1
+        self._adopt(sid, (sid,))
         return sid
 
     def _detach_source(self, mgr: RustExplorationManager, state: SimState, sid: int) -> None:

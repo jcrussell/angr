@@ -33,6 +33,22 @@ class SimulationBackend:
         """
         return False, "the base SimulationBackend claims no state"
 
+    def try_run(self, simgr: SimulationManager, stash: str, n: int | None, until, run_args: dict) -> bool:
+        """
+        Offer to run ``stash`` to completion in one call, in place of the rest of :meth:`SimulationManager.run`.
+
+        Asked before each step of the run loop. A backend that takes the run leaves the manager's stashes as the
+        remaining steps would have, and returns True; the loop then ends.
+
+        :param simgr:       The running manager.
+        :param stash:       The stash being run.
+        :param n:           The run's step bound, or None.
+        :param until:       The run's ``until`` predicate, or None.
+        :param run_args:    The keyword arguments the run passes to each step.
+        :return:            True when the run is done, False to take the next step as usual.
+        """
+        return False
+
     def step_state(self, simgr: SimulationManager, state: SimState, error_list: list, **run_args) -> dict:
         """
         Step a claimed state once.

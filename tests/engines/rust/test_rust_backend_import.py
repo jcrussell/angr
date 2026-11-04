@@ -44,7 +44,8 @@ def test_a_mid_run_python_state_keeps_its_read_stdin(arch):
     backend = RustBackend(simgr._project)
     simgr._backend = backend
     simgr.explore(find=FIND[arch], avoid=AVOID[arch])
-    assert backend.stats["claimed"] > 0
+    # An address-only explore of claimable states runs natively (angr-mx00p.136.14).
+    assert backend.stats["fast_path_runs"] == 1
     assert simgr.found[0].posix.dumps(0) == SOSNEAKY
 
 

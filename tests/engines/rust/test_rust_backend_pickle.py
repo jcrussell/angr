@@ -79,7 +79,8 @@ def test_an_unpickled_manager_given_a_backend_steps_in_rust():
     backend = RustBackend(simgr._project)
     simgr._backend = backend
     simgr.explore(find=FIND["x86_64"], avoid=AVOID["x86_64"])
-    assert backend.stats["claimed"] > 0
+    # An address-only explore of claimable states runs natively (angr-mx00p.136.14).
+    assert backend.stats["fast_path_runs"] == 1
     assert simgr.found[0].posix.dumps(0) == SOSNEAKY
 
 

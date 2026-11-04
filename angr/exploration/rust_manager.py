@@ -4915,14 +4915,21 @@ class RustExplorationManager(
         drop_terminal = rust.stats()["drop_terminal_states"]
         rust.set_drop_terminal_states(False)
         was_granular = self.set_block_granular(True)
+        # Python checks the found count once a round is done. Left to Rust, the round's run(1)
+        # stops at the find that reaches num_find, so the states after it are not stepped in the
+        # last round, as SimulationManager's last step steps them (angr-mx00p.136.14).
+        rust.set_num_find(sys.maxsize)
         try:
-            for _ in range(n):
+            for round_no in range(n):
                 self._invalidate_state_export_cache()
                 # An empty visible stash still steps: the round's run(1) flushes parked bounces.
                 if not self._step_loop(1):
                     break
                 self._evaluate_predicates_on_active()
                 if self._found_count() >= num_find:
+                    if round_no + 1 < n and not self._active_techniques and until is None:
+                        self._explore_last_round()
+                        return self
                     break
                 if self._active_techniques and self._check_technique_complete():
                     break
@@ -4930,9 +4937,29 @@ class RustExplorationManager(
                     break
             self._evaluate_predicates_on_active()
         finally:
+            rust.set_num_find(num_find)
             self.set_block_granular(was_granular)
             rust.set_drop_terminal_states(drop_terminal)
         return self
+
+    def _explore_last_round(self) -> None:
+        """Step every active state once more, with no find or avoid armed.
+
+        SimulationManager's Explorer filters a state before stepping it, so a
+        state reaching a find address is stashed one step after it arrives,
+        and in that step every other active state advances once more. Rust
+        stashes on arrival, so the round that reaches ``num_find`` is one
+        round short of the Python run; this is that round. A state arriving
+        at a find or avoid address in it stays active, as on Python
+        (angr-mx00p.136.14).
+        """
+        rust = self._rust_mgr
+        rust.set_find_addrs([])
+        rust.set_avoid_addrs([])
+        rust.set_find_needs_python(False)
+        rust.set_avoid_needs_python(False)
+        self._invalidate_state_export_cache()
+        self._step_loop(1)
 
     def _disarm_explore_targets(self) -> None:
         """Drop this explore()'s find/avoid/num_find from the Rust manager.

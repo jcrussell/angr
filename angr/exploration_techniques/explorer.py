@@ -43,6 +43,9 @@ class Explorer(ExplorationTechnique):
         self.num_find = num_find
         self.avoid_priority = avoid_priority
 
+        # the normalized find/avoid addresses, or None for a callable condition
+        self.static_find = static_find
+        self.static_avoid = static_avoid
         # even if avoid or find addresses are not statically known, stop on those that we do know
         self._extra_stop_points = (static_find or set()) | (static_avoid or set())
         self._unknown_stop_points = static_find is None or static_avoid is None
