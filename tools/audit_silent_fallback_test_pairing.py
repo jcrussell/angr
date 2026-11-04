@@ -111,7 +111,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Same roots as audit_silent_fallback.py, the tagging audit this pairs with.
 # A diff has no file count, so there is no floor here; a missing or
 # unclassified root still fails.
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",), "native/angr-symex-core": ("",)}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 
 

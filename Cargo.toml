@@ -4,6 +4,7 @@ members = [
     "native/angr",
     "native/angr-bv",
     "native/angr-vex",
+    "native/angr-symex-core",
     "native/angr-symex-macros",
     "native/clarirs-core",
     "native/clarirs-num",

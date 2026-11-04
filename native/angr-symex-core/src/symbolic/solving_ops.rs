@@ -282,8 +282,8 @@ impl SymContext {
     /// Lives on `SymContext` rather than beside `build_solver_params` because
     /// the `solver_build` module is private to `symbolic/`, and the prune-gate
     /// tests in `state/tests/solver_gate.rs` need the same rig.
-    #[cfg(test)]
-    pub(crate) fn pin_rlimit_for_test(&self, rlimit: u32) {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pin_rlimit_for_test(&self, rlimit: u32) {
         self.with_z3_solver(|solver| {
             let mut params = super::solver_build::build_solver_params(self.timeout_ms());
             params.set_u32("rlimit", rlimit);

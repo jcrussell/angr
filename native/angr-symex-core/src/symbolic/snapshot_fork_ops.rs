@@ -91,7 +91,7 @@ impl SymContext {
     /// `debug_assert!` below.
     ///
     /// The rustdoc on
-    /// [`RustSimStateSnapshot`](crate::state::RustSimStateSnapshot) lists
+    /// the engine's `state::RustSimStateSnapshot` lists
     /// which surrounding state buckets are covered (RegisterFile /
     /// MemoryPage) versus deferred (Python-side `Py<PyAny>` overlays).
     pub fn to_snapshot(&self) -> SymContextSnapshot {

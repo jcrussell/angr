@@ -73,7 +73,7 @@
 //! - `v5ht-sampler-tick-bottleneck` — the sampler hook MUST be at the TOP
 //!   of the single-threaded loop (before any callback-path early-return) so
 //!   callback-heavy workloads still tick. See the comment at the call site
-//!   in `crate::exploration::run_loop_single`.
+//!   in the engine shell's `exploration::run_loop_single`.
 //! - **Hot-threshold calibration** — the dismantle threshold was calibrated
 //!   on a small workload set; widen the dataset before changing it.
 

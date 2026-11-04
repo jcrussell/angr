@@ -3,7 +3,7 @@
 
 The "look inside the solver" angle. While an exploration runs, the Rust engine
 maintains process-wide atomic counters around every ``solver.check()`` call
-(``native/angr/src/symbolic/context.rs``), broken down **per call-site** and
+(``native/angr-symex-core/src/symbolic/context.rs``), broken down **per call-site** and
 including **lazy-fork materialization** counts. Stock Python angr has no
 equivalent: you can time the whole ``explore()`` but you cannot cheaply ask
 "how much of that was Z3, and *which* query site drove it?".

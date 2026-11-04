@@ -26,7 +26,7 @@
 //! builds, or a decoded snapshot, meets it at its first query instead
 //! (angr-mx00p.116.5).
 //!
-//! Lowerings persist per thread in [`LOWERED`], keyed by node, so lowering a
+//! Lowerings persist per thread in `LOWERED`, keyed by node, so lowering a
 //! term that extends an already-lowered one builds only the new nodes. The
 //! engine builds terms op by op and wraps each in a `RustBV::Ast`; with a
 //! memo scoped to one call, every wrap would re-lower its whole subtree,
@@ -68,10 +68,10 @@ impl std::fmt::Display for LowerError {
 /// Deepest term [`lower`] accepts. The claripy import walk shares this budget
 /// (`claripy_bridge::import::MAX_LOWER_DEPTH`, which documents the
 /// calibration, angr-2a3i9).
-pub(crate) const MAX_LOWER_DEPTH: u32 = 4096;
+pub const MAX_LOWER_DEPTH: u32 = 4096;
 
 /// Lower a clarirs AST, sharing the lowering of repeated subtrees.
-pub(crate) fn lower(ast: &AstRef<'static>) -> Result<Dynamic, LowerError> {
+pub fn lower(ast: &AstRef<'static>) -> Result<Dynamic, LowerError> {
     // `depth` is cached on every node, so this bounds the recursion below
     // before it starts (same budget as the claripy import walk, angr-2a3i9).
     if ast.depth() > MAX_LOWER_DEPTH {
@@ -136,7 +136,7 @@ impl LoweredCache {
 
 /// Lower a bitvector-sorted clarirs AST to a z3-rs `BV`, the form a
 /// [`RustBV::Ast`](crate::symbolic::RustBV::Ast) term takes in the solver.
-pub(crate) fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, LowerError> {
+pub fn lower_bv(ast: &AstRef<'static>) -> Result<z3::ast::BV, LowerError> {
     let lowered = lower(ast)?;
     lowered
         .as_bv()
@@ -156,7 +156,7 @@ pub(crate) fn lower_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, LowerEr
 }
 
 /// `lowered` as a `Bool`, or `Err` naming its actual sort.
-pub(crate) fn expect_bool(lowered: Dynamic) -> Result<z3::ast::Bool, LowerError> {
+pub fn expect_bool(lowered: Dynamic) -> Result<z3::ast::Bool, LowerError> {
     lowered.as_bool().ok_or_else(|| {
         conversion(format!(
             "expected a Bool lowering, got {:?}",

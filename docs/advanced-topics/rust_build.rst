@@ -64,12 +64,15 @@ Incremental builds
 so it never sees the ``fuzzer`` / ``fuzzing`` code. CI runs
 ``cargo clippy --all-targets --all-features -- -D warnings`` from the repo
 root (no ``--manifest-path``, so the ``native/angr-symex-macros``,
-``native/angr-bv`` and ``native/angr-vex`` test targets are covered too).
+``native/angr-bv``, ``native/angr-vex`` and ``native/angr-symex-core``
+test targets are covered too).
 The value and VEX layers' own tests (``cargo test -p angr-bv``,
 ``cargo test -p angr-vex``) need the Z3 environment for their oracles,
 which link ``clarirs-z3`` as a dev-dependency; neither crate has a
 ``build.rs`` runpath, so ``LD_LIBRARY_PATH`` must name the libz3
-directory as well.
+directory as well. ``native/angr-symex-core`` links ``z3`` directly and
+carries a copy of ``native/angr/build.rs``, so
+``cargo test -p angr-symex-core`` needs only the Z3 environment.
 
 ``z3-sys`` links whatever ``Z3_LIBRARY_PATH_OVERRIDE`` names, and
 ``native/angr/build.rs`` runpaths the crate's binaries (the extension and

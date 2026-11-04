@@ -134,35 +134,9 @@
 #[macro_use]
 pub extern crate angr_vex as vex;
 
-/// Nanoseconds in `d`, saturating at `u64::MAX` instead of wrapping.
-///
-/// Every timing counter in this crate is a `u64` (they accumulate in
-/// `AtomicU64`/`u64` fields and are exported to Python through `stats()`), but
-/// `Duration::as_nanos` returns `u128`. The obvious `as u64` narrowing is
-/// silent even under `[profile.release-checked]` — `as` never panics — so a
-/// span past `u64::MAX` ns would report a near-zero duration rather than a huge
-/// one. Saturating keeps the impossible case implausible-looking instead of
-/// wrong, and gives the narrowing one documented home rather than one
-/// undocumented cast per timer (angr-0jh0j.80). Per the overflow rules
-/// (`invariant-overflow-fix-refuse-not-saturate-identities`) a *size*-like
-/// quantity must refuse rather than
-/// saturate; a monotonic timer has no such identity to corrupt, and a pinned
-/// `u64::MAX` is the loudest thing a counter can say.
-///
-/// The bound is ~584 years, so no real process reaches it; this is
-/// defensiveness and documentation, not a live bug fix.
-pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
-    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
-}
-
-/// Nanoseconds elapsed since `start`, saturating at `u64::MAX`.
-///
-/// The `Instant` spelling of [`duration_ns`], which carries the rationale.
-/// Timing sites should call this rather than narrowing `as_nanos()`'s `u128`
-/// with a bare `as u64`.
-pub(crate) fn elapsed_ns(start: std::time::Instant) -> u64 {
-    duration_ns(start.elapsed())
-}
+// The crate-root helpers live in angr-symex-core (angr-mx00p.51.11); these
+// re-exports keep `crate::arc_shared` and friends resolving.
+pub(crate) use angr_symex_core::{arc_shared, duration_ns, elapsed_ns};
 
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
@@ -281,54 +255,17 @@ pub(crate) mod solver;
 pub mod stash;
 pub mod state;
 pub(crate) mod state_bridge;
-pub mod symbolic;
+pub use angr_symex_core::symbolic;
 pub(crate) mod syscalls;
 pub(crate) mod vex_ccall;
 pub(crate) mod vex_irop;
 
-/// Shared boundary-value tables for the integer-overflow/wraparound proactive
-/// test sweep (Harness 6, see the module doc for the full rationale). Not
-/// tied to any one subsystem — call sites span `memory`, `state::filesystem`,
-/// `syscalls`, `procedures`, `interpreter`, `symbolic` and `segmentlist` — so
-/// it is declared once here at the crate root rather than nested under any of
-/// them.
-///
-/// `segmentlist`'s own tests sweep `boundary_addresses` over
-/// `SegmentList::{occupy,release}` too (angr-fs8kb.87).
+// The boundary-value tables live in angr-symex-core; see its
+// `test_boundary_values` module doc.
 #[cfg(test)]
-pub(crate) mod test_boundary_values;
+pub(crate) use angr_symex_core::test_boundary_values;
 
 use pyo3::prelude::*;
-
-/// Wrap a value in an `Arc` whose inner type is deliberately not `Send`/`Sync`.
-///
-/// The engine's core shared types (`RustBV`, Z3 AST handles, `FileDescriptor`)
-/// are `!Send` by design, and that is what makes the suppression sound — NOT
-/// single-threadedness. The engine does step states on real OS worker threads
-/// (`exploration::scheduler_pool::worker_thread`, spawned as `angr-worker-N`);
-/// what keeps these `Arc`s confined to one thread is that the only cross-thread
-/// transport for a state is `StateMigrationPayload` (`state/migration.rs`), which is
-/// `Send`-by-construction and guarded at compile time by an `assert_send::<..>()`
-/// check. There is no `unsafe impl Send`/`Sync` in production code, so an
-/// `arc_shared` `Arc` cannot escape its worker except by round-tripping through
-/// `detach_for_migration`/`reattach`, which rebuilds the shared state on the
-/// destination thread. Contributors adding a new cross-thread share must go
-/// through that payload — do not widen this suppression to cover an `Arc` that
-/// is genuinely handed between threads.
-///
-/// The `Arc`s over them are load-bearing: they give O(1) copy-on-write
-/// sharing across `fork()`/snapshot siblings, which `Rc` could not without
-/// leaking `!Send` through the public fork/snapshot API surface. Clippy's
-/// `arc_with_non_send_sync` flags every such `Arc::new` as a design smell;
-/// routing them through this generic helper documents the decision in ONE place
-/// and collapses the 7 scattered per-fn `#[allow]`s into this single site.
-/// The lone `#[allow]` below is the single, deliberate suppression that
-/// replaces the former per-call-site cluster (angr-inieg.1).
-#[allow(clippy::arc_with_non_send_sync)]
-#[inline]
-pub(crate) fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
-    std::sync::Arc::new(value)
-}
 
 /// Build and register a submodule under the `angr.rustylib` package.
 fn import_submodule(

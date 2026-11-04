@@ -465,7 +465,7 @@ class TestSolverOperations:
         added after fork() must not leak across.
 
         Locks the freeze-in-place fork invariant of ``SymContext::fork``
-        (native/angr/src/symbolic/context.rs): when push_level==0, fork
+        (native/angr-symex-core/src/symbolic/context.rs): when push_level==0, fork
         drains the local assumed/z3 vecs into a shared Arc — but each side's
         post-fork additions go into its own fresh local vec and must remain
         isolated (angr-agvl).

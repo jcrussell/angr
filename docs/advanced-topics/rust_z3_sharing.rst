@@ -91,7 +91,7 @@ the same context.
 Lifecycle of a ``SymContext``
 -----------------------------
 
-``SymContext`` (``native/angr/src/symbolic/context.rs``) is the
+``SymContext`` (``native/angr-symex-core/src/symbolic/context.rs``) is the
 single-state solver wrapper. Each ``RustSimState`` owns one;
 ``RustSolverContext`` (Python-exposed) wraps one too. Production
 states travel through three phases:
@@ -149,9 +149,9 @@ Push/pop discipline
 
 Scope save/restore on a ``SymContext`` is a **single** system today:
 ``push()`` / ``pop()`` / ``try_pop()``
-(``native/angr/src/symbolic/transaction_ops.rs``), layered over the
+(``native/angr-symex-core/src/symbolic/transaction_ops.rs``), layered over the
 ``scope_savepoint_push`` / ``scope_savepoint_pop`` helpers
-(``native/angr/src/symbolic/lineage_ops.rs``). ``push()`` calls
+(``native/angr-symex-core/src/symbolic/lineage_ops.rs``). ``push()`` calls
 ``scope_savepoint_push()`` then invalidates ``sat_cache`` and both
 cached witnesses (``model_cache`` / ``alt_model_cache``); ``pop()`` is
 symmetric.
@@ -213,7 +213,7 @@ Symmetry rules:
 Interaction with ``SharedLineageSolver``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``SharedLineageSolver`` (``native/angr/src/symbolic/lineage.rs``)
+``SharedLineageSolver`` (``native/angr-symex-core/src/symbolic/lineage.rs``)
 shares **one** ``z3::Solver`` across a forked lineage of states by
 tracking each state's ``scope_path`` and replaying pushes lazily on
 context switch. It is **opt-in only** (the
@@ -230,7 +230,7 @@ ownership of the shared solver would corrupt the parent's scope.
 The counter is consulted in three places:
 
 * The fork-time materialization gate in ``SymContext::fork``
-  (``native/angr/src/symbolic/snapshot_fork_ops.rs``) reads the parent
+  (``native/angr-symex-core/src/symbolic/snapshot_fork_ops.rs``) reads the parent
   counter.
 * ``SymContext::try_pop`` (``transaction_ops.rs``) uses it as the
   under-pop guard described above.

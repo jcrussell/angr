@@ -61,7 +61,7 @@
 /// leaves a struct's leading field(s) intact while wrapping a later one for
 /// any struct up to a couple hundred bytes, not just the call sites that
 /// motivated adding them.
-pub(crate) fn boundary_addresses() -> Vec<u64> {
+pub fn boundary_addresses() -> Vec<u64> {
     vec![
         0,
         1,
@@ -96,7 +96,7 @@ pub(crate) fn boundary_addresses() -> Vec<u64> {
 /// — callers for which that is genuinely out of domain should filter it out
 /// explicitly (with a comment saying why) rather than the table omitting it,
 /// since other call sites (byte-conversion loops) *do* need to see it.
-pub(crate) fn boundary_widths() -> Vec<u32> {
+pub fn boundary_widths() -> Vec<u32> {
     vec![0, 1, 127, 128, 129, 255, 256]
 }
 

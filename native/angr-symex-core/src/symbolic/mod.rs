@@ -91,9 +91,9 @@ mod solving_ops;
 mod stats;
 mod to_z3;
 mod transaction_ops;
-pub(crate) mod z3_lower;
+pub mod z3_lower;
 
-pub(crate) use angr_bv::names;
+pub use angr_bv::names;
 pub use angr_bv::stats::{
     record_bvop_concat, record_bvop_extract, record_bvop_reverse, record_zext_cmp_collapse,
     record_zext_cmp_trivial_decide,
@@ -122,4 +122,4 @@ pub(crate) use to_z3::lowered_or_warn;
 pub use to_z3::{ToZ3, admit_clarirs};
 pub use z3_lower::LowerError;
 // Used by the claripy export.
-pub(crate) use angr_bv::{Node, bool_inside};
+pub use angr_bv::{Node, bool_inside};

@@ -97,7 +97,7 @@ Threading model at design time
 
 Single-threaded. The relevant pieces:
 
-* ``native/angr/src/symbolic/context.rs:SymContext`` owns the single
+* ``native/angr-symex-core/src/symbolic/context.rs:SymContext`` owns the single
   ``z3::Context`` and the ``z3::Solver``. Constructed lazily on first
   symbolic op (lazy materialization, see :doc:`rust_z3_sharing`) and
   shared by every state forked
@@ -261,7 +261,7 @@ A single unlocked ``Z3_ast_*`` call is a data race.
 
 * Wrap the singleton context in ``Arc<Mutex<...>>``.
 * Audit every call to ``ctx.*`` and ``solver.*`` in
-  ``native/angr/src/symbolic/`` and ``solver.rs`` to confirm it
+  ``native/angr-symex-core/src/symbolic/`` and ``solver.rs`` to confirm it
   acquires the lock.
 * Add a regression test that exercises concurrent ``check()``
   through the lock.

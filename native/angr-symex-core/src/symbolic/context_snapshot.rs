@@ -46,7 +46,7 @@ use super::SymContext;
 /// Because the push stacks are dropped, capture and restore are only valid at
 /// a point with **no open push/pop scope**: `bare_z3_push_depth == 0`,
 /// `scope_savepoints` empty, `scope_path` at its base. All real callers
-/// ([`RustSimState::to_snapshot`](crate::state::RustSimState::to_snapshot) and
+/// (the engine's `state::RustSimState::to_snapshot` and
 /// the stash-manager round-trip) are top-level state-persistence points that
 /// satisfy this, and restore always runs against a freshly-constructed
 /// [`SymContext`] whose depth is 0 by construction.

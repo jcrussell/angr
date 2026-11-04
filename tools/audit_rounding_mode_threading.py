@@ -77,7 +77,10 @@ from rust_source_utils import (
 # Repo layout: this file lives at <repo>/tools/audit_rounding_mode_threading.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN = {"native/angr": ("interpreter",), "native/angr-vex": ("",), "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+EXCLUDE = {
+    "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns",
+    "native/angr-symex-core": "holds symbolic only, which applies no VEX op; scan it once interpreter moves in",
+}
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 40
 BASELINE_PATH = REPO_ROOT / "tools" / "rounding_mode_baseline.txt"

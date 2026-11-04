@@ -43,7 +43,7 @@ use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concret
 /// directly for every symbolic write address when `SYMBOLIC_WRITE_ADDRESSES` is
 /// off, so "fallback" in the name means the Any/Max *strategy*, not a
 /// last-resort code path.
-pub(crate) fn pin_fallback_addr(ctx: &SymContext, addr: &RustBV, chosen: u64) {
+pub fn pin_fallback_addr(ctx: &SymContext, addr: &RustBV, chosen: u64) {
     let pin = addr.eq(&RustBV::concrete(chosen as u128, addr.width()));
     ctx.assume_true(&pin);
 }

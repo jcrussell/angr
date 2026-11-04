@@ -179,7 +179,7 @@ z3-rs (the version pinned in ``native/angr/Cargo.toml``) does
 expose ``Array::store``/``select`` (``z3::ast::Array``).
 No version bump needed. There is no
 existing Z3 array usage anywhere under
-``native/angr/src/symbolic/``.
+``native/angr-symex-core/src/symbolic/``.
 
 Pros:
 

@@ -509,7 +509,8 @@ The Rust engine spans a Rust core and a thin Python wrapper that
 cooperate through PyO3:
 
 * **Rust core** (``native/angr/src/``, with the VEX IR and op semantics in
-  the ``native/angr-vex`` crate): VEX interpreter, symbolic
+  the ``native/angr-vex`` crate and the Z3 solver context in
+  ``native/angr-symex-core``): VEX interpreter, symbolic
   memory, Z3 solver, exploration loop, and native SimProcedures.
 * **Python wrapper** (``angr/exploration/rust_manager.py``): callback
   dispatch for Python SimProcedures, technique support, and state
@@ -898,7 +899,7 @@ Z3 solver profiling counters
 ----------------------------
 
 Process-wide atomic counters in
-``native/angr/src/symbolic/stats.rs`` (``get_solver_stats``) track every
+``native/angr-symex-core/src/symbolic/stats.rs`` (``get_solver_stats``) track every
 ``solver.check()`` call and a number of related events. Read or reset
 them through the manager:
 

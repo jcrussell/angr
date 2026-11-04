@@ -1,0 +1,45 @@
+[package]
+name = "angr-symex-core"
+version = "0.1.0"
+edition = "2024"
+description = "The PyO3-free core of angr's native engine: the Z3 solver context, constraint solving and address concretization."
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints.clippy]
+# The same table as native/angr-bv: group entries at a lower priority so the
+# specific settings win.
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+let_underscore_must_use = "deny"
+
+[lib]
+name = "angr_symex_core"
+
+[features]
+# Widens the shell-test-only helpers (`test_boundary_values`, the
+# `*_for_test` hooks on `SymContext`) to the crate's public surface so the
+# engine's tests can reach them. Dev-only: native/angr turns it on under
+# [dev-dependencies].
+testing = []
+
+[dependencies]
+angr-bv = { path = "../angr-bv" }
+angr-vex = { path = "../angr-vex" }
+clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
+log = "0.4.32"
+num-bigint = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+z3 = "0.21"
+z3-sys = "0.13"
+
+[dev-dependencies]
+quickcheck = "1.0"
+quickcheck_macros = "1.0"
+serde_json = { version = "1.0", features = ["unbounded_depth"] }

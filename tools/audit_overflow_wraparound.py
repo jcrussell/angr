@@ -33,8 +33,8 @@ and ``tools/audit_sp_default_zero.py`` do: a heuristic detector plus a
 checked-in baseline of already-triaged sites. Only *new* sites fail.
 
 Two detectors, over any non-test ``.rs`` file under
-``native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``
-and all of ``native/angr-bv/src/``:
+``native/angr/src/{arch,memory,interpreter,state,syscalls,procedures,exploration}/``,
+``native/angr-symex-core/src/symbolic/`` and all of ``native/angr-bv/src/``:
 
 1. :data:`BINOP_RE` -- a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not
    unary) whose left or right operand is a simple identifier / dotted field
@@ -107,13 +107,12 @@ SUBSYSTEMS = (
     "arch",
     "memory",
     "interpreter",
-    "symbolic",
     "state",
     "syscalls",
     "procedures",
     "exploration",
 )
-SCAN = {"native/angr": SUBSYSTEMS, "native/angr-bv": ("",)}
+SCAN = {"native/angr": SUBSYSTEMS, "native/angr-bv": ("",), "native/angr-symex-core": ("symbolic",)}
 EXCLUDE = {
     "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns",
     "native/angr-vex": "the VEX layer wraps by its own convention (invariant-rust-concrete-arith-must-wrap); see SUBSYSTEMS",

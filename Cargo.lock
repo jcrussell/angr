@@ -72,6 +72,7 @@ name = "angr"
 version = "0.1.0"
 dependencies = [
  "angr-bv",
+ "angr-symex-core",
  "angr-symex-macros",
  "angr-vex",
  "backtrace",
@@ -129,6 +130,24 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror",
+]
+
+[[package]]
+name = "angr-symex-core"
+version = "0.1.0"
+dependencies = [
+ "angr-bv",
+ "angr-vex",
+ "clarirs-core",
+ "log",
+ "num-bigint",
+ "parking_lot",
+ "quickcheck",
+ "quickcheck_macros",
+ "serde",
+ "serde_json",
+ "z3",
+ "z3-sys",
 ]
 
 [[package]]

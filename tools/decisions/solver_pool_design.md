@@ -23,7 +23,7 @@ That dedicated spike was never beaded. This document is it.
 
 ## 2. The cost being attacked
 
-`RustSolverContext::solver()` (`native/angr/src/symbolic/context.rs`, `fn solver`)
+`RustSolverContext::solver()` (`native/angr-symex-core/src/symbolic/context.rs`, `fn solver`)
 lazily builds a fresh `z3::Solver` on first post-fork access and re-asserts the
 ENTIRE assertion vector — the `Arc`-shared prefix (`z3_assertions_shared`) then
 the per-context delta (`local_constraints.z3_assertions`):
@@ -63,7 +63,7 @@ re-preprocesses). Full rationale: bd memory `per-fork-solver-share-infeasible`.
 
 The "solver POOL with a single active base + swap-in/swap-out + cache-invalidation
 tracking" that 2yyao called for is **already implemented and wired** — it is the
-`SharedLineageSolver` (`native/angr/src/symbolic/lineage.rs`, research spikes
+`SharedLineageSolver` (`native/angr-symex-core/src/symbolic/lineage.rs`, research spikes
 angr-hk7k → angr-v5a5 → angr-v5ht, wired into `SymContext::fork` by angr-3ms1).
 
 It is exactly the recommended design, point for point:
@@ -242,10 +242,10 @@ or re-evaluating) — only a *pre-fork* predictor of mint cost could move this.
 
 ## 8. Cross-references
 
-- Source: `native/angr/src/symbolic/context.rs` (`fn solver`),
-  `native/angr/src/symbolic/lineage.rs` (`SharedLineageSolver::switch_to`,
-  `assert_base`), `native/angr/src/symbolic/snapshot_fork_ops.rs` (fork-time
-  lineage minting), `native/angr/src/symbolic/solving_ops.rs` (`with_z3_solver`).
+- Source: `native/angr-symex-core/src/symbolic/context.rs` (`fn solver`),
+  `native/angr-symex-core/src/symbolic/lineage.rs` (`SharedLineageSolver::switch_to`,
+  `assert_base`), `native/angr-symex-core/src/symbolic/snapshot_fork_ops.rs` (fork-time
+  lineage minting), `native/angr-symex-core/src/symbolic/solving_ops.rs` (`with_z3_solver`).
 - Memories: `per-fork-solver-share-infeasible`, `invariant-v5ht-dismantle-child-none`,
   `invariant-bare-z3-push-depth`, `proxy-gate-audit-all-default-off`.
 - Beads: `angr-hk7k` / `angr-v5a5` (design options), `angr-ua1i` (DFS coupling),

@@ -4,7 +4,7 @@
 
 Interpreting a Z3 ``check()`` outcome must go through the single
 forcing-function ``SatOutcome::decided`` (in
-``native/angr/src/symbolic/solver_build.rs``), which turns ``Unknown``
+``native/angr-symex-core/src/symbolic/solver_build.rs``), which turns ``Unknown``
 (timeout / incompleteness) into ``None`` so every call site is forced to decide
 what a timeout means. Conflating ``Unknown`` with ``Unsat`` is the
 angr-ph300.43 / angr-n0irt.1 bug class (see the ``invariant-z3-unknown-not-unsat``
@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",), "native/angr-symex-core": ("",)}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, it never checks a solver"}
 # Fewer files than this means the code moved out of the scan roots.
 MIN_FILES = 400
@@ -137,10 +137,10 @@ _SELF_TEST_EXPECTED = [
     (3, "z3::SatResult::Sat => true,"),
     (8, "r == z3::SatResult::Unsat"),
 ]
-_SELF_TEST_PROD = Path("native/angr/src/symbolic/fixture.rs")
+_SELF_TEST_PROD = Path("native/angr-symex-core/src/symbolic/fixture.rs")
 _SELF_TEST_TEST_PATHS = (
-    Path("native/angr/src/symbolic/fixture_tests.rs"),
-    Path("native/angr/src/symbolic/context_tests/fixture.rs"),
+    Path("native/angr-symex-core/src/symbolic/fixture_tests.rs"),
+    Path("native/angr-symex-core/src/symbolic/context_tests/fixture.rs"),
 )
 
 

@@ -48,6 +48,7 @@ fuzzing = []
 [dependencies]
 angr-bv = { path = "../angr-bv" }
 angr-vex = { path = "../angr-vex" }
+angr-symex-core = { path = "../angr-symex-core" }
 angr-symex-macros = { path = "../angr-symex-macros" }
 backtrace = "0.3.76"
 clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
@@ -103,6 +104,7 @@ lru = "0.12"
 crossbeam-deque = "0.8"
 
 [dev-dependencies]
+angr-symex-core = { path = "../angr-symex-core", features = ["testing"] }
 angr-vex = { path = "../angr-vex", features = ["testing"] }
 tempfile = "3.27.0"
 quickcheck = "1.0"

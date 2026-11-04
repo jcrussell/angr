@@ -33,7 +33,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::vex::ops::VexOpFamily;
+use angr_vex::ops::VexOpFamily;
 
 // =============================================================================
 // Global Z3 Solver Profiling Counters
