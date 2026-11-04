@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
 import sys
@@ -465,22 +466,25 @@ class SimulationManager:
         target_stash = target_stash or stash
         error_list = error_list if error_list is not None else self._errored
 
-        for state in self._fetch_states(stash=stash):
-            goto = self.filter(state, filter_func=filter_func)
-            if isinstance(goto, tuple):
-                goto, state = goto
+        routes = self._step_routes(stash, filter_func, selector_func)
+        steps = None
+        if self._backend is not None and getattr(self.step_state, "__func__", None) is SimulationManager.step_state:
+            # Every claimed state steps in one backend call, so all are routed before any steps.
+            routes = list(routes)
+            to_step = [state for state, goto in routes if goto is None]
+            steps = iter(self._backend_step_batch(to_step, successor_func, error_list, run_args))
 
-            if goto not in (None, stash):
+        for state, goto in routes:
+            if goto is not None:
                 bucket[goto].append(state)
-                continue
-
-            if not self.selector(state, selector_func=selector_func):
-                bucket[stash].append(state)
                 continue
 
             pre_errored = len(error_list)
 
-            successors = self.step_state(state, successor_func=successor_func, error_list=error_list, **run_args)
+            if steps is not None:
+                successors = next(steps)()
+            else:
+                successors = self.step_state(state, successor_func=successor_func, error_list=error_list, **run_args)
             # handle degenerate stepping cases here. desired behavior:
             # if a step produced only unsat states, always add them to the unsat stash since this usually indicates bugs
             # if a step produced sat states and save_unsat is False, drop the unsats
@@ -515,26 +519,78 @@ class SimulationManager:
             return step_func(self)
         return self
 
+    def _step_routes(self, stash, filter_func, selector_func):
+        """Yield each state of *stash* with the stash it moves to unstepped, or None when it is to be stepped."""
+        for state in self._fetch_states(stash=stash):
+            goto = self.filter(state, filter_func=filter_func)
+            if isinstance(goto, tuple):
+                goto, state = goto
+
+            if goto not in (None, stash):
+                yield state, goto
+            elif not self.selector(state, selector_func=selector_func):
+                yield state, stash
+            else:
+                yield state, None
+
     def step_state(self, state, successor_func=None, error_list=None, **run_args):
         """
         Don't use this function manually - it is meant to interface with exploration techniques.
         """
         error_list = error_list if error_list is not None else self._errored
-        claimed = False
-        if self._backend is not None:
-            claimed, reason = self._backend.claims(self, state, successor_func, run_args)
-            if not claimed:
-                l.debug("Backend %r declined %r: %s", self._backend, state, reason)
-        try:
-            if claimed:
-                stashes = self._backend.step_state(self, state, error_list, **run_args)
+        if self._backend is not None and self._backend_claims(state, successor_func, run_args):
+            step = functools.partial(self._backend.step_state, self, state, error_list, **run_args)
+        else:
+            step = functools.partial(self._python_step_state, state, successor_func, run_args)
+        return self._guarded_step_state(state, error_list, step)
+
+    def _backend_claims(self, state, successor_func, run_args) -> bool:
+        claimed, reason = self._backend.claims(self, state, successor_func, run_args)
+        if not claimed:
+            l.debug("Backend %r declined %r: %s", self._backend, state, reason)
+        return claimed
+
+    def _backend_step_batch(self, states, successor_func, error_list, run_args):
+        """
+        Ask the backend about each of a step's states and step all it claims in one
+        :meth:`SimulationBackend.step_states` call; return one step callable per state, in order, each giving
+        what :meth:`step_state` gives for that state. Used only when nothing hooks or overrides ``step_state``.
+        """
+        claimed = {}
+        for state in states:
+            if id(state) not in claimed and self._backend_claims(state, successor_func, run_args):
+                claimed[id(state)] = state
+        outcomes = dict(zip(claimed, self._backend.step_states(self, list(claimed.values()), **run_args)))
+        steps = []
+        for state in states:
+            outcome = outcomes.pop(id(state), None)
+            if outcome is not None:
+                step = functools.partial(outcome, error_list)
+            elif id(state) in claimed:
+                # The same state listed twice: its first entry consumed the batched outcome.
+                steps.append(
+                    functools.partial(
+                        self.step_state, state, successor_func=successor_func, error_list=error_list, **run_args
+                    )
+                )
+                continue
             else:
-                successors = self.successors(state, successor_func=successor_func, **run_args)
-                stashes = {
-                    None: successors.flat_successors,
-                    "unsat": successors.unsat_successors,
-                    "unconstrained": successors.unconstrained_successors,
-                }
+                step = functools.partial(self._python_step_state, state, successor_func, run_args)
+            steps.append(functools.partial(self._guarded_step_state, state, error_list, step))
+        return steps
+
+    def _python_step_state(self, state, successor_func, run_args):
+        successors = self.successors(state, successor_func=successor_func, **run_args)
+        return {
+            None: successors.flat_successors,
+            "unsat": successors.unsat_successors,
+            "unconstrained": successors.unconstrained_successors,
+        }
+
+    def _guarded_step_state(self, state, error_list, step):
+        """Run ``step()`` for *state*, recording or rerouting the errors it raises as :meth:`step_state` does."""
+        try:
+            stashes = step()
 
         except (SimUnsatError, claripy.UnsatError) as e:
             if LAZY_SOLVES not in state.options:

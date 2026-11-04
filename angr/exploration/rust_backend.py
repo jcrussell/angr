@@ -5,7 +5,9 @@ steps a state (:meth:`RustBackend.claims`); a declined state runs on the
 Python engine. A claimed state is stepped one block in a private
 :class:`~angr.exploration.rust_manager.RustExplorationManager`
 (:meth:`RustBackend.step_state`), and its successors come back as exported
-SimStates. Between steps every Rust state the backend handed out waits in one
+SimStates. When nothing hooks the manager's ``step_state``, all the states
+it claims in one step go through one :meth:`RustBackend.step_states` call
+(angr-mx00p.136.13). Between steps every Rust state the backend handed out waits in one
 private stash, kept only while its export is referenced: once that export is
 collected (dropped from every stash and not held), the state is dropped before
 the next step (angr-mx00p.136.9).
@@ -19,7 +21,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from angr.engines import UberEngine
-from angr.errors import SimEngineError, SimMemoryError
+from angr.errors import SimEngineError, SimError, SimMemoryError
 from angr.exploration.rust_manager import (
     RustErrorRecord,
     RustExplorationManager,
@@ -218,43 +220,75 @@ class RustBackend(SimulationBackend):
         becomes an :class:`ErrorRecord` in *error_list*, and so propagates
         too when the resilience does not cover it.
         """
+        (outcome,) = self.step_states(simgr, [state], **run_args)
+        return outcome(error_list)
+
+    def step_states(self, simgr: SimulationManager, states: list[SimState], **run_args) -> list:
+        """Step every state of *states* one block in one ``_step_ids_once`` call (angr-mx00p.136.13).
+
+        Each state's successors are exported here; its callable replays what
+        :meth:`step_state` gives for it alone: it appends the errored forks'
+        records, then returns the successors or raises the state's own error.
+        """
         mgr = self._manager()
         rust = mgr._rust_mgr
         self._drop_released(mgr)
-        sid = self._resident_id(mgr, state)
-        # The source is consumed: the step's children are exported anew, and a held source
-        # reads its own fork from here on.
-        finalizer = self._export_finalizers.pop(sid, None)
-        if finalizer is not None:
-            finalizer.detach()
-        self._detach_source(mgr, state, sid)
+        sids = [self._resident_id(mgr, state) for state in states]
+        for state, sid in zip(states, sids):
+            # The source is consumed: the step's children are exported anew, and a held source
+            # reads its own fork from here on.
+            finalizer = self._export_finalizers.pop(sid, None)
+            if finalizer is not None:
+                finalizer.detach()
+            self._detach_source(mgr, state, sid)
         mgr._sync_hooks_before_step()
-        rust.move_state(sid, _PARKED, "active")
-        self._resident.discard(sid)
+        for sid in sids:
+            rust.move_state(sid, _PARKED, "active")
+            self._resident.discard(sid)
         children = {}
         try:
-            children = mgr._step_ids_once([sid]).get(sid, {})
+            children = mgr._step_ids_once(sids)
         finally:
             # Python owns stash membership, so every child waits in _PARKED whatever its Rust
             # stash; one that is not handed out below is dropped.
             messages = {err_id: message for _, message, err_id in rust.get_errors()}
             rust.clear_errors()
             rust.move_states("active", _PARKED, None)
-            for name, cids in children.items():
-                if name != "active":
+            unexported = set(sids)
+            for sid in sids:
+                root = self._root_of[sid]
+                for name, cids in children.get(sid, {}).items():
                     for cid in cids:
-                        rust.move_state(cid, name, _PARKED)
-            unexported = {cid for cids in children.values() for cid in cids} | {sid}
+                        if name != "active":
+                            rust.move_state(cid, name, _PARKED)
+                        if cid not in self._root_of:
+                            self._root_of[cid] = root
+                            self._lineage_refs[root] += 1
+                    unexported.update(cids)
             self._resident.update(unexported)
-            root = self._root_of[sid]
-            for cid in unexported - self._root_of.keys():
-                self._root_of[cid] = root
-                self._lineage_refs[root] += 1
         try:
-            return self._successors(mgr, simgr, sid, children, messages, error_list, unexported)
+            return [self._outcome(mgr, simgr, sid, children.get(sid, {}), messages, unexported) for sid in sids]
         finally:
             for cid in unexported:
                 self._release(mgr, cid)
+
+    def _outcome(self, mgr, simgr, sid, children, messages, unexported):
+        """The callable :meth:`step_states` returns for *sid*: export its successors now, replay them later."""
+        records = []
+        error = None
+        stashes = {}
+        try:
+            stashes = self._successors(mgr, simgr, sid, children, messages, records, unexported)
+        except SimError as e:
+            error = e
+
+        def replay(error_list: list) -> dict:
+            error_list.extend(records)
+            if error is not None:
+                raise error
+            return stashes
+
+        return replay
 
     def _successors(self, mgr, simgr, sid, children, messages, error_list, unexported) -> dict:
         """Export the children of *sid*'s step, discarding from *unexported* each id handed out."""
