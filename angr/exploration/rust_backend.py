@@ -56,6 +56,10 @@ _PARKED = "_simgr_backend_parked"
 # The run argument a claimed step honors; any other declines the state.
 _STOP_POINTS = "extra_stop_points"
 
+# The simgr stash a fast-path run keeps the states the backend declined in while it steps them
+# on Python, one step per native round (angr-mx00p.136.40.2).
+_HELD = "_rust_fast_path_held"
+
 # Python init prefix: a lineage seeded at an init seed runs on Python until it reaches main.
 _IN_INIT = "init"
 _PAST_INIT = "past-init"
@@ -182,6 +186,9 @@ class RustBackend(SimulationBackend):
         self._main_addr_resolved = False
         self._main_addr: int | None = None
         self._phase = _LineageMarks()
+        # True while a fast-path run steps its held states: they stay on Python, as the private
+        # manager is mid-run.
+        self._stepping_held = False
         self._ownership = _LineageMarks()
         self._counters = {"claimed": 0, "declined": Counter(), "handed_back": 0, "fast_path_runs": 0}
         self._mgr: RustExplorationManager | None = None
@@ -220,6 +227,8 @@ class RustBackend(SimulationBackend):
 
     def decline_reason(self, simgr: SimulationManager, state: SimState, successor_func, run_args: dict) -> str | None:
         """Why the Rust engine cannot step *state* this step, or None when it can."""
+        if self._stepping_held:
+            return "a fast-path run steps its declined states on python"
         if self._ownership.get(state) == _HANDED_BACK:
             return "lineage was handed back to python"
         arch_name = state.arch.name
@@ -299,6 +308,10 @@ class RustBackend(SimulationBackend):
         :meth:`step_state` gives for it alone: it appends the errored forks'
         records, then returns the successors or raises the state's own error.
         """
+        if not states:
+            # Nothing claimed, as when a fast-path run steps its held states: the private manager's
+            # ``active`` may be that run's, so it is not parked below.
+            return []
         mgr = self._manager()
         rust = mgr._rust_mgr
         sids = self._activate(mgr, states)
@@ -333,10 +346,12 @@ class RustBackend(SimulationBackend):
 
         Taken when the run has no ``until`` or step arguments, the
         manager's only techniques are at most one :class:`Explorer` (no ``cfg``, no
-        ``avoid_priority``) and the default Suggestions, and every state of
+        ``avoid_priority``) and the default Suggestions, and some state of
         *stash* would be claimed this
         step. The private manager's ``explore`` runs them, then every state it
-        holds is exported into the manager's stashes. A callable find or avoid
+        holds is exported into the manager's stashes. The states it would decline
+        step on Python in the same rounds (see :meth:`_held_round`), with no
+        LengthLimiter or DFS installed. A callable find or avoid
         is evaluated there on a ``RustStateProxy`` (angr-mx00p.136.15). Suggestions is treated
         as transparent: it only reports errored states. One :class:`LengthLimiter` is
         armed natively for the run (see :meth:`_fast_path_limiter`), or one :class:`DFS` is
@@ -345,16 +360,22 @@ class RustBackend(SimulationBackend):
         """
         self._simgr = weakref.ref(simgr)
         explorer = self._fast_path_explorer(simgr, stash, n, until, run_args)
-        states = simgr._stashes[stash]
-        if explorer is False or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
+        if explorer is False:
+            return False
+        states, held = [], []
+        for state in simgr._stashes[stash]:
+            (states if self.decline_reason(simgr, state, None, {}) is None else held).append(state)
+        if not states:
             return False
         limiter = self._fast_path_limiter(simgr, stash, states)
         dfs = self._fast_path_dfs(simgr, stash, explorer)
         if limiter is False or dfs is False or (limiter is not None and dfs is not None):
             return False
+        if held and (limiter is not None or dfs is not None):
+            return False
         for state in states:
             self._ownership.set(state, _OWNED)
-        self._explore_native(simgr, stash, states, explorer, limiter, dfs, n)
+        self._explore_native(simgr, stash, states, explorer, limiter, dfs, n, held)
         self._counters["fast_path_runs"] += 1
         return True
 
@@ -470,6 +491,7 @@ class RustBackend(SimulationBackend):
         limiter=None,
         dfs=None,
         n: int | None = None,
+        held: list[SimState] | None = None,
     ) -> None:
         """Explore *states* in the private manager and export every state it ends with into *simgr*.
 
@@ -477,6 +499,7 @@ class RustBackend(SimulationBackend):
         *dfs* is :meth:`_fast_path_dfs`'s DFS, replayed between rounds for this run only.
         *explorer* None runs *states* until no state is active, as a plain ``run()`` does.
         *n* is the steps left of the run's bound, None for an unbounded run.
+        *held* are the rest of *stash*'s states, stepped on Python by :meth:`_held_round`.
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
@@ -494,6 +517,9 @@ class RustBackend(SimulationBackend):
             rust.register_length_limiter(*limiter)
         if dfs is not None:
             mgr._round_reorder = self._dfs_round(rust, dfs)
+        if held:
+            simgr._stashes[_HELD] = list(held)
+            mgr._round_side_step = self._held_round(simgr, explorer)
         try:
             mgr.explore(
                 find=find,
@@ -506,6 +532,7 @@ class RustBackend(SimulationBackend):
             )
         finally:
             mgr._round_reorder = None
+            mgr._round_side_step = None
             if limiter is not None:
                 # The private manager arms nothing else natively.
                 rust.clear_native_techniques()
@@ -552,8 +579,32 @@ class RustBackend(SimulationBackend):
                     simgr._store_states(targets.get(name, name), exports)
         finally:
             self._uncache_exports(mgr)
+            if held:
+                simgr._stashes[stash].extend(simgr._stashes.pop(_HELD, ()))
         if uncovered is not None:
             raise uncovered
+
+    def _held_round(self, simgr: SimulationManager, explorer):
+        """The private manager's side-step hook for the states a fast-path run holds on Python.
+
+        Each call is one ``simgr.step`` of the held stash, under the simgr's own techniques, so
+        Explorer filters and stashes them as on the per-step path; its finds count toward the
+        run's ``num_find``. They stay on Python for the whole run, even past the init prefix: the
+        private manager cannot take a step call while it runs.
+        """
+        find_stash = None if explorer is None else explorer.find_stash
+        base = len(simgr._stashes.get(find_stash, ())) if find_stash else 0
+
+        def step() -> tuple[bool, int]:
+            self._stepping_held = True
+            try:
+                simgr.step(stash=_HELD)
+            finally:
+                self._stepping_held = False
+            found = len(simgr._stashes.get(find_stash, ())) - base if find_stash else 0
+            return bool(simgr._stashes.get(_HELD)), found
+
+        return step
 
     def _outcome(self, mgr, simgr, sid, children, messages, unexported):
         """The callable :meth:`step_states` returns for *sid*: export its successors now, replay them later."""

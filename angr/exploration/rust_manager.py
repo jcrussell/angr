@@ -1595,6 +1595,11 @@ class RustExplorationManager(
         # for a technique whose step() reorders the stashes, as DFS's does. See
         # `_explore_reordered_rounds`.
         self._round_reorder: Callable[[], None] | None = None
+        # Called after every explore(n=) round when set, by an owner (`RustBackend`) that keeps
+        # some of the run's states stepping on Python: it steps them once and returns whether
+        # any is still active and how many of them it has found so far. See
+        # `_explore_reordered_rounds`.
+        self._round_side_step: Callable[[], tuple[bool, int]] | None = None
 
         # Per-state-id Python-side stand-ins for state.options and state.globals.
         # The Rust engine doesn't honor SimOptions (LAZY_SOLVES / STRICT_PAGE_ACCESS
@@ -4937,7 +4942,7 @@ class RustExplorationManager(
         # last round, as SimulationManager's last step steps them (angr-mx00p.136.14).
         rust.set_num_find(sys.maxsize)
         try:
-            if self._round_reorder is not None:
+            if self._round_reorder is not None or self._round_side_step is not None:
                 self._explore_reordered_rounds(n, num_find)
                 return self
             self._evaluate_predicates_on_active()
@@ -4969,24 +4974,31 @@ class RustExplorationManager(
         return self
 
     def _explore_reordered_rounds(self, n: int, num_find: int) -> None:
-        """Run :meth:`_explore_rounds`'s budget with :attr:`_round_reorder` called after every round.
+        """Run :meth:`_explore_rounds`'s budget with :attr:`_round_reorder` and :attr:`_round_side_step` called after every round.
 
-        The hook may move states between stashes, as DFS's step() does, so a
+        The reorder hook may move states between stashes, as DFS's step() does, so a
         state that arrives at a find or avoid address must still be active when
         it runs: each round filters first and steps with the targets disarmed,
         as SimulationManager's Explorer does, and the run stops once the found
         count is reached or ``active`` is empty after the hook (angr-mx00p.136.15).
+        The side-step hook's states are part of that round, its finds of the count
+        and its active states of ``active``, so the run stops on the step the
+        Python loop over all of them stops on (angr-mx00p.136.40.2).
         """
         rust = self._rust_mgr
+        side_active, side_found = self._round_side_step is not None, 0
         for _ in range(n):
-            if not rust.get_state_ids("active"):
+            if not rust.get_state_ids("active") and not side_active:
                 return
             # A round that empties ``active`` stops the step loop, but the hook can refill it from
             # the states it moved aside, as DFS does.
             if not self._explore_last_round() and rust.get_state_ids("active"):
                 return
-            self._round_reorder()
-            if self._found_count() >= num_find:
+            if self._round_reorder is not None:
+                self._round_reorder()
+            if self._round_side_step is not None:
+                side_active, side_found = self._round_side_step()
+            if self._found_count() + side_found >= num_find:
                 return
 
     def _explore_last_round(self) -> bool:

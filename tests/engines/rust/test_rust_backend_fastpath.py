@@ -148,13 +148,37 @@ def test_a_predicate_find_runs_natively_with_the_per_step_stashes(name):
     assert _summary(fast) == _summary(per_step)
 
 
-def test_a_state_the_backend_declines_keeps_the_per_step_path():
+# r100 spends 30 steps in the init prefix from entry; the budgets end after it.
+@pytest.mark.parametrize("n", [None, 40, 60])
+def test_a_state_the_backend_declines_steps_on_python_beside_the_native_run(n):
+    # From entry, r100's ptrace-failure state never leaves the init prefix: it steps on Python in each
+    # native round, its finds count toward num_find, and it ends in the stash it would on the per-step
+    # path (angr-mx00p.136.40.2).
+    _, find, avoid = CASES["defcamp_r100"]
+    runs = []
+    for fast in (True, False):
+        simgr, backend = _simgr("defcamp_r100", from_entry=True)
+        simgr.explore(find=find, avoid=avoid, n=n, until=None if fast else PER_STEP_UNTIL)
+        runs.append((simgr, backend))
+    (fast, fast_backend), (per_step, per_step_backend) = runs
+
+    assert fast_backend.stats["fast_path_runs"] == 1
+    assert per_step_backend.stats["fast_path_runs"] == 0
+    assert fast_backend.stats["declined"]["state is in the python init prefix"] > 0
+    assert fast_backend.stats["declined"]["a fast-path run steps its declined states on python"] > 0
+    assert "_rust_fast_path_held" not in fast.stashes
+    assert _summary(fast) == _summary(per_step)
+    if n is None:
+        assert len(fast.found) == 1
+
+
+def test_a_declined_state_keeps_a_dfs_run_on_the_per_step_path():
     simgr, backend = _simgr("defcamp_r100", from_entry=True)
     _, find, avoid = CASES["defcamp_r100"]
+    simgr.use_technique(angr.exploration_techniques.DFS())
     simgr.explore(find=find, avoid=avoid)
 
     assert backend.stats["fast_path_runs"] == 0
-    assert backend.stats["declined"]["state is in the python init prefix"] > 0
     assert backend.stats["claimed"] > 0
     assert len(simgr.found) == 1
 
