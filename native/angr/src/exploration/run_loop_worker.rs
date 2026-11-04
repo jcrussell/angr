@@ -200,6 +200,15 @@ pub(crate) fn parallel_process_state(
         )]);
     }
 
+    // Mirror of `step_one`: the exit already ran in the previous granular step.
+    if state.exit_pending() {
+        shared.stepped.fetch_add(1, Ordering::Relaxed);
+        return TaskOutcome::summarized(vec![TerminalSummary::of(
+            &state,
+            SchedDisposition::Deadended,
+        )]);
+    }
+
     if cancel.preempts_in_flight() {
         // A peer already hit `num_find` (or the session finalized) while this
         // state was being dispatched.

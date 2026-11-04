@@ -732,11 +732,12 @@ fn apply_native_disposition(
 
 /// Materialize the forks a natively-completed proc deferred, then build the
 /// continue outcome: the main state continues alongside them, unless the proc
-/// was `no_return`, in which case it deadends and only the forks carry on.
+/// was `no_return`, in which case it deadends and only the forks carry on. A
+/// block-granular step defers that deadend by one step (`defer_exit`).
 fn continue_after_native_proc(
     cc: &CoreCtx,
     counters: &mut CoreCounters,
-    state: RustSimState,
+    mut state: RustSimState,
     fork_base: Option<RustSimState>,
     payload: ForkPayload,
     root_hint: u64,
@@ -756,7 +757,7 @@ fn continue_after_native_proc(
             fork_ids: &mut fork_ids,
         },
     );
-    if no_return {
+    if no_return && !cc.ctx.block_granular {
         // Deadend the main state; surviving forks continue.
         CoreOutcome {
             ret: CoreReturn::Continue(forks_out),
@@ -767,6 +768,12 @@ fn continue_after_native_proc(
             root_hint,
         }
     } else {
+        if no_return {
+            // A granular step leaves the state at the exit, like Python's
+            // `Ijk_Exit` successor (`RustSimState::exit_pending`).
+            let addr = state.pc();
+            state.defer_exit(addr);
+        }
         let mut succ = Vec::with_capacity(forks_out.len() + 1);
         succ.push((state, RoutingTag::main()));
         succ.extend(forks_out);

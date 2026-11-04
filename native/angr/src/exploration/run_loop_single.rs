@@ -305,6 +305,13 @@ impl RustExplorationManager {
         // instead of an endless find/avoid alternation (angr-03vl4.87).
         self.clear_predicate_skip_tokens(state_id);
 
+        // The no-return procedure already ran in the previous granular step;
+        // this step only deadends the state (`RustSimState::exit_pending`).
+        if state.exit_pending() {
+            self.push_or_drop_terminal(STASH_DEADENDED, state);
+            return Ok(StepOutcome::Routed);
+        }
+
         // Check hooks (SimProcedures)
         // Stack-based skip tracking for zero-length hooks. Expires
         // stale entries and pops at most one token for `pc`; see
@@ -370,6 +377,12 @@ impl RustExplorationManager {
                             // rejected() in fauxware, the post-call address
                             // happens to overlap main's start, causing infinite
                             // re-entry).
+                            // A granular step stops at the exit instead, like
+                            // Python's `Ijk_Exit` successor (angr-mx00p.136.30).
+                            if no_return && self.block_granular {
+                                state.defer_exit(pc);
+                                return Ok(StepOutcome::Successors(vec![state]));
+                            }
                             if no_return {
                                 self.push_or_drop_terminal(STASH_DEADENDED, state);
                                 return Ok(StepOutcome::Routed);

@@ -101,6 +101,7 @@ impl RustSimState {
             mmap_base: 0xC100_0000,
             pending_syscall: None,
             exit_code: None,
+            exit_pending: false,
             getopt_cursor: GetoptCursor::default(),
             getopt_extern: GetoptExternAddrs::default(),
             native_resume_stack: Vec::new(),

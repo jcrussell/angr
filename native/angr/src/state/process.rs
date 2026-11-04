@@ -322,6 +322,21 @@ impl RustSimState {
         self.exit_code = exit_code;
     }
 
+    /// Whether a block-granular step left this state at a no-return
+    /// procedure it already ran. See the `RustSimState::exit_pending` field doc.
+    pub fn exit_pending(&self) -> bool {
+        self.exit_pending
+    }
+
+    /// End a block-granular step at the no-return procedure at `addr` as
+    /// Python's does: [`Self::record_exit`] (no status), and the state stays
+    /// active until the next step deadends it. See the
+    /// `RustSimState::exit_pending` field doc.
+    pub fn defer_exit(&mut self, addr: u64) {
+        self.record_exit(addr, None);
+        self.exit_pending = true;
+    }
+
     /// Locale ctype table pointers (see [`CtypeLocPtrs`]). Read by the native
     /// `__ctype_b_loc` / `__ctype_tolower_loc` / `__ctype_toupper_loc` procs.
     pub fn ctype_loc(&self) -> CtypeLocPtrs {

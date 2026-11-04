@@ -2,8 +2,9 @@
 
 From fauxware's main (both engines seeded with the same Python-made state), each
 step must give the Python engine's active addresses and stash counts: the puts,
-read and strcmp SimProcedure steps, the strcmp fork and the open() call. The
-exit steps differ by one step (angr-mx00p.136.30), so they are xfail-strict.
+read and strcmp SimProcedure steps, the strcmp fork and the open() call, and
+both exits: an exit()ing state stays active at the procedure for one step, as
+Python's Ijk_Exit successor does (angr-mx00p.136.30).
 """
 
 from __future__ import annotations
@@ -71,7 +72,6 @@ def test_steps_match_python_through_procedures_and_fork(project, main_state):
     assert any(len(c.get("active", [])) == 2 for step in children for c in step.values()), "no fork step"
 
 
-@pytest.mark.xfail(strict=True, reason="angr-mx00p.136.30: exit deadends a step earlier in Rust")
 def test_exit_step_count_matches_python(project, main_state):
     expected = _python_steps(project, main_state, STEPS_TO_END)
     _, actual, _ = _rust_steps(project, main_state, STEPS_TO_END)

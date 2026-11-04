@@ -91,11 +91,14 @@ def test_a_copy_of_an_export_is_imported():
 
 
 def _held_after_constraints(project, backend):
-    """A simgr whose active[0] is single-successor past the first fork, so its export carries constraints."""
+    """A simgr whose active[0] carries constraints and is not at a hooked address.
+
+    An exit procedure's step leaves its state at the hook (angr-mx00p.136.30), so such a state would not move.
+    """
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
     for _ in range(200):
         simgr.step()
-        if any(s.solver.constraints for s in simgr.active) and len(simgr.active) == 1:
+        if simgr.active and simgr.active[0].solver.constraints and not project.is_hooked(simgr.active[0].addr):
             break
     assert simgr.active and simgr.active[0].solver.constraints
     return simgr

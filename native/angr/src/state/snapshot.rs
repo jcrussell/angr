@@ -53,7 +53,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
-///   pending_syscall, exit_code, getopt_cursor, getopt_extern,
+///   pending_syscall, exit_code, exit_pending, getopt_cursor, getopt_extern,
 ///   stdin_symbols, stdin_read_lengths, stdin_host_packets, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -107,6 +107,9 @@ pub struct RustSimStateSnapshot {
     /// See `RustSimState::exit_code` (angr-mx00p.132.8).
     #[serde(default)]
     pub exit_code: Option<RustBV>,
+    /// See `RustSimState::exit_pending` (angr-mx00p.136.30).
+    #[serde(default)]
+    pub exit_pending: bool,
     pub getopt_cursor: crate::state::GetoptCursor,
     pub getopt_extern: crate::state::GetoptExternAddrs,
     /// Suspended native sub-call continuations (bead angr-pn3w8). `#[serde(default)]`
@@ -247,6 +250,7 @@ impl RustSimState {
             mmap_base: self.mmap_base,
             pending_syscall: self.pending_syscall,
             exit_code: self.exit_code.clone(),
+            exit_pending: self.exit_pending,
             getopt_cursor: self.getopt_cursor,
             getopt_extern: self.getopt_extern,
             native_resume_stack: self.native_resume_stack.clone(),
@@ -314,6 +318,7 @@ impl RustSimState {
             mmap_base: snap.mmap_base,
             pending_syscall: snap.pending_syscall,
             exit_code: snap.exit_code,
+            exit_pending: snap.exit_pending,
             getopt_cursor: snap.getopt_cursor,
             getopt_extern: snap.getopt_extern,
             native_resume_stack: snap.native_resume_stack,

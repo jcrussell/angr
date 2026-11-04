@@ -101,6 +101,25 @@ fn test_record_exit_survives_fork_and_serialization() {
     }
 }
 
+/// `defer_exit` is a granular step's no-return procedure (angr-mx00p.136.30):
+/// the `Ijk_Exit` entry, no status, and the pending flag the next step
+/// deadends on, carried by fork and the serialized snapshot.
+#[test]
+fn test_defer_exit_survives_fork_and_serialization() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    assert!(!state.exit_pending());
+    state.defer_exit(0x70_0030);
+    let mut forked = state.fork();
+    let restored = RustSimState::from_serialized(&forked.to_serialized()).expect("from_serialized");
+    for s in [&state, &forked, &restored] {
+        assert!(s.exit_pending());
+        let last = s.detailed_history().back().expect("exit entry");
+        assert_eq!(last.addr, 0x70_0030);
+        assert_eq!(HistoryEntry::jumpkind_str(last.jumpkind), "Ijk_Exit");
+        assert_eq!(s.exit_code(), None);
+    }
+}
+
 #[test]
 fn test_block_count_and_evicted_visits_outlive_the_cap() {
     // `block_count` and `evicted_visits` keep what the `max_history` window

@@ -440,6 +440,12 @@ pub struct RustSimState {
     /// fork + snapshot.
     #[merge_policy = "warn_on_diverge"]
     exit_code: Option<RustBV>,
+    /// A block-granular step ran a no-return procedure and left the state
+    /// active at it, as Python's `Ijk_Exit` successor is. The next step
+    /// deadends it unchanged, as Python's `SimEngineFailure` does
+    /// (angr-mx00p.136.30). Set by `RustSimState::defer_exit`.
+    #[merge_policy = "warn_on_diverge"]
+    exit_pending: bool,
     /// glibc getopt(3)'s private scan state, mirroring Python's
     /// `state.libc.getopt_*` fields. See [`GetoptCursor`]. Carried across
     /// fork + snapshot, and synced with `state.libc` at state add
