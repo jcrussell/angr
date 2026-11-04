@@ -443,7 +443,7 @@ fn test_max_num_symbolic_constraint() {
 #[test]
 fn test_apply_rounding_nearest_edge_cases() {
     use super::float_arith::apply_rounding;
-    use crate::symbolic::VexRm;
+    use angr_bv::VexRm;
     let f64_cases: &[(f64, f64)] = &[
         (0.5, 0.0),
         (1.5, 2.0),
@@ -502,7 +502,7 @@ fn test_apply_rounding_nearest_edge_cases() {
 #[test]
 fn test_apply_rounding_nearest_away() {
     use super::float_arith::apply_rounding;
-    use crate::symbolic::VexRm;
+    use angr_bv::VexRm;
     for &(input, want) in &[
         (0.5f64, 1.0f64),
         (1.5, 2.0),

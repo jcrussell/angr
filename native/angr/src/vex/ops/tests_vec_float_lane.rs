@@ -298,7 +298,7 @@ impl FloatLaneOp for OverArityFloatLaneOp {
     fn symbolic(
         &self,
         args: Vec<RustBV>,
-        _prec: crate::symbolic::FloatPrec,
+        _prec: angr_bv::FloatPrec,
     ) -> RustBV {
         args[0].clone()
     }

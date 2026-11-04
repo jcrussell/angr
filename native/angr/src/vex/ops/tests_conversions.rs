@@ -289,7 +289,7 @@ fn test_i64u_to_f32_rounds_up_to_2_pow_64() {
 /// every VEX rounding mode.
 #[test]
 fn test_int_to_float_rm_symbolic_matches_concrete() {
-    use crate::symbolic::FloatPrec;
+    use angr_bv::FloatPrec;
     let x = ((1i64 << 53) + 1).wrapping_neg() as u64 as u128;
     // x stays a pinned symbol so that Z3, not the clarirs fold, rounds it.
     let (x_sym, pin) = pinned_symbol("itof_x", x, 64);

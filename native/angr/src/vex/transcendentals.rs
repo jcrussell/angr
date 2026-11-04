@@ -63,7 +63,7 @@
 //! internal tags — they do not have to track libVEX renumbering, they
 //! only have to stay distinct and agree with that router.
 
-use crate::symbolic::RustBV;
+use angr_bv::SymBV as RustBV;
 
 pub const IOP_ATAN_F64: u32 = 0x14de;
 pub const IOP_YL2X_F64: u32 = 0x14df;

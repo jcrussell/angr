@@ -34,4 +34,4 @@ pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
 pub use ir::*;
 pub use lifter::{LiftError, VEXLifter};
 pub use opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
-pub use ops::{OpError, VEXOps, iropclass};
+pub use ops::{OpError, VEXOps, VexOpFamily, iropclass};
