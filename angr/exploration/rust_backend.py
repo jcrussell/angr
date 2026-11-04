@@ -331,7 +331,7 @@ class RustBackend(SimulationBackend):
     def try_run(self, simgr: SimulationManager, stash: str, n: int | None, until, run_args: dict) -> bool:
         """Run an ``explore()`` or ``run()`` to its end in one native run (angr-mx00p.136.14).
 
-        Taken when the run has no ``n``, ``until`` or step arguments, the
+        Taken when the run has no ``until`` or step arguments, the
         manager's only techniques are at most one :class:`Explorer` (no ``cfg``, no
         ``avoid_priority``) and the default Suggestions, and every state of
         *stash* would be claimed this
@@ -354,7 +354,7 @@ class RustBackend(SimulationBackend):
             return False
         for state in states:
             self._ownership.set(state, _OWNED)
-        self._explore_native(simgr, stash, states, explorer, limiter, dfs)
+        self._explore_native(simgr, stash, states, explorer, limiter, dfs, n)
         self._counters["fast_path_runs"] += 1
         return True
 
@@ -364,7 +364,7 @@ class RustBackend(SimulationBackend):
         from angr.exploration_techniques import DFS, Explorer, LengthLimiter, Suggestions
         from angr.sim_manager import SimulationManager
 
-        if n is not None or until is not None or run_args:
+        if until is not None or run_args:
             return False
         cls = type(simgr)
         if any(
@@ -462,13 +462,21 @@ class RustBackend(SimulationBackend):
         return reorder
 
     def _explore_native(
-        self, simgr: SimulationManager, stash: str, states: list[SimState], explorer, limiter=None, dfs=None
+        self,
+        simgr: SimulationManager,
+        stash: str,
+        states: list[SimState],
+        explorer,
+        limiter=None,
+        dfs=None,
+        n: int | None = None,
     ) -> None:
         """Explore *states* in the private manager and export every state it ends with into *simgr*.
 
         *limiter* is :meth:`_fast_path_limiter`'s ``(max_length, drop)``, armed for this run only;
         *dfs* is :meth:`_fast_path_dfs`'s DFS, replayed between rounds for this run only.
         *explorer* None runs *states* until no state is active, as a plain ``run()`` does.
+        *n* is the steps left of the run's bound, None for an unbounded run.
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
@@ -492,8 +500,9 @@ class RustBackend(SimulationBackend):
                 avoid=avoid,
                 num_find=num_find,
                 # In rounds, one native block step of every active state each, so the run stops on
-                # the same step, with the same frontier, as SimulationManager's own loop.
-                n=sys.maxsize,
+                # the same step, with the same frontier, as SimulationManager's own loop
+                # (angr-mx00p.136.40.1 for a bounded run).
+                n=sys.maxsize if n is None else n,
             )
         finally:
             mgr._round_reorder = None

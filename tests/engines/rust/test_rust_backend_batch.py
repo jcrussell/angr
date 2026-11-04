@@ -54,7 +54,7 @@ def _run(name, path, per_state):
     simgr = angr.SimulationManager(project, [_entry_state(project, name)], backend=backend)
     if per_state:
         simgr.use_technique(_PerState())
-    simgr.run(n=STEPS)
+    simgr.run(n=STEPS, until=lambda sm: False)
     return simgr, backend, batch_sizes
 
 

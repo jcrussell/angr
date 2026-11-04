@@ -38,8 +38,12 @@ def project(request):
 
 def _explore(project, backend):
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
-    # An n budget keeps the per-step path: without one, try_run explores natively (angr-mx00p.136.15).
-    simgr.explore(find=lambda s: b"Welcome" in s.posix.dumps(1), avoid=lambda s: b"Go away" in s.posix.dumps(1), n=1000)
+    # An until keeps the per-step path: without one, try_run explores natively (angr-mx00p.136.15).
+    simgr.explore(
+        find=lambda s: b"Welcome" in s.posix.dumps(1),
+        avoid=lambda s: b"Go away" in s.posix.dumps(1),
+        until=lambda sm: False,
+    )
     return simgr
 
 
@@ -62,15 +66,20 @@ def test_explore_finds_the_python_stdin(project):
 def test_run_n_matches_python_active_addrs(project):
     main = resolve_main_address(project)
 
-    def run(backend):
+    def run(backend, until=None):
         simgr = angr.SimulationManager(project, [project.factory.blank_state(addr=main)], backend=backend)
-        simgr.run(n=10)
+        simgr.run(n=10, until=until)
         return sorted(s.addr for s in simgr.active)
 
-    backend = RustBackend(project)
-    assert run(backend) == run(None)
-    assert backend.stats["claimed"] > 0
-    assert backend.stats["declined"] == {}
+    expected = run(None)
+    # An until keeps the per-step path; without one, try_run takes the bounded run natively (angr-mx00p.136.40.1).
+    per_step = RustBackend(project)
+    assert run(per_step, until=lambda sm: False) == expected
+    assert per_step.stats["claimed"] > 0
+    assert per_step.stats["declined"] == {}
+    fast = RustBackend(project)
+    assert run(fast) == expected
+    assert fast.stats["fast_path_runs"] == 1
 
 
 def test_a_copy_of_an_export_is_imported():

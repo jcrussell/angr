@@ -42,7 +42,7 @@ class SimulationBackend:
 
         :param simgr:       The running manager.
         :param stash:       The stash being run.
-        :param n:           The run's step bound, or None.
+        :param n:           The steps left of the run's step bound, or None.
         :param until:       The run's ``until`` predicate, or None.
         :param run_args:    The keyword arguments the run passes to each step.
         :return:            True when the run is done, False to take the next step as usual.

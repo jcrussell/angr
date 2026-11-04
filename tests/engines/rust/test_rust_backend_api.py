@@ -23,8 +23,13 @@ pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust ext
 
 FIND = 0x4006ED
 AVOID = [0x4006AA, 0x4006FD]
-# A bound no run reaches, which keeps explore() on the per-step backend path.
-PER_STEP_N = 10**6
+
+
+# An ``until`` that never stops the run: it keeps explore() on the per-step backend path.
+def PER_STEP_UNTIL(_simgr):
+    return False
+
+
 COUNTERS = ("claimed", "declined", "handed_back", "fast_path_runs")
 FORWARDED = (
     "stats",
@@ -54,7 +59,7 @@ def project():
 def explored(project):
     backend = RustBackend(project)
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
-    simgr.explore(find=FIND, avoid=AVOID, n=PER_STEP_N)
+    simgr.explore(find=FIND, avoid=AVOID, until=PER_STEP_UNTIL)
     assert simgr.found, "fauxware must reach the authenticated branch"
     return simgr, backend
 
@@ -177,7 +182,7 @@ def test_construction_knobs_reach_the_private_manager(project, monkeypatch):
     }
     backend = RustBackend(project, **knobs)
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
-    simgr.explore(find=FIND, avoid=AVOID, n=PER_STEP_N)
+    simgr.explore(find=FIND, avoid=AVOID, until=PER_STEP_UNTIL)
     assert seen == knobs
     assert simgr.found
     assert backend.stats["claimed"] > 0

@@ -49,7 +49,8 @@ def test_undecodable_instruction_errors_as_no_decode(rust):
     project = _ud2_project()
     backend = _backend(project, rust)
     simgr = angr.SimulationManager(project, [_ud2_state(project)], backend=backend)
-    simgr.run(n=3)
+    # An until keeps the per-step path: without one, try_run takes the bounded run natively.
+    simgr.run(n=3, until=lambda sm: False)
     assert len(simgr.errored) == 1
     (record,) = simgr.errored
     assert isinstance(record.error, SimIRSBNoDecodeError), type(record.error)

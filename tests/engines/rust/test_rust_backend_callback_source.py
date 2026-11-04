@@ -52,16 +52,16 @@ def _flag(simgr, flag_chars):
     return "".join(chr(simgr.one_found.solver.eval(c)) for c in flag_chars)
 
 
-@pytest.mark.parametrize("n", [None, 10_000], ids=["fast-path", "per-step"])
-def test_a_python_proc_reads_the_globals_set_on_the_seed(n):
+@pytest.mark.parametrize("per_step", [False, True], ids=["fast-path", "per-step"])
+def test_a_python_proc_reads_the_globals_set_on_the_seed(per_step):
     project, flag_chars = _baby_re()
     backend = RustBackend(project)
     simgr = project.factory.simulation_manager(backend=backend)
     simgr.one_active.options.add(angr.options.LAZY_SOLVES)
     simgr.one_active.globals["scanf_count"] = 0
-    simgr.explore(find=BABY_RE_FIND, avoid=BABY_RE_AVOID, **({} if n is None else {"n": n}))
+    simgr.explore(find=BABY_RE_FIND, avoid=BABY_RE_AVOID, until=(lambda sm: False) if per_step else None)
     # The per-step run proves the proc's increment reaches the next step's export.
-    assert backend.stats["fast_path_runs"] == (1 if n is None else 0)
+    assert backend.stats["fast_path_runs"] == (0 if per_step else 1)
     assert _flag(simgr, flag_chars) == "Math is hard!"
     assert simgr.one_found.globals["scanf_count"] == 13
 

@@ -41,7 +41,7 @@ def _fauxware_simgr(arch):
     project = angr.Project(os.path.join(TEST_BINARIES_DIR, "..", arch, "fauxware"), auto_load_libs=False)
     backend = RustBackend(project)
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
-    simgr.run(n=PAST_INIT_STEPS)
+    simgr.run(n=PAST_INIT_STEPS, until=lambda sm: False)
     assert backend.stats["claimed"] > 0
     assert simgr.active and all(binding_of(s) is not None for s in simgr.active)
     return simgr
@@ -103,7 +103,7 @@ def test_an_errored_records_state_pickles():
     # jmp +0; ud2: the first step is stepped in Rust, so the errored source is an export.
     project = angr.load_shellcode(b"\xeb\x00\x0f\x0b", arch="amd64", load_address=0x400000)
     simgr = angr.SimulationManager(project, [project.factory.blank_state(addr=0x400000)], backend=RustBackend(project))
-    simgr.run(n=3)
+    simgr.run(n=3, until=lambda sm: False)
     (record,) = simgr.errored
     assert binding_of(record.state) is not None
     # The record's traceback does not pickle, on either engine; its state does.
@@ -117,7 +117,7 @@ def test_a_deep_copy_keeps_the_backend_and_steps_apart():
     before = sorted(s.addr for s in simgr.active)
     copied = simgr.copy(deep=True)
     assert copied._backend is simgr._backend
-    copied.run(n=5)
+    copied.run(n=5, until=lambda sm: False)
     assert sorted(s.addr for s in simgr.active) == before
     simgr.explore(find=FIND["x86_64"], avoid=AVOID["x86_64"])
     assert simgr.found[0].posix.dumps(0) == SOSNEAKY

@@ -370,9 +370,10 @@ class SimulationManager:
         :return:            The simulation manager, for chaining.
         :rtype:             SimulationManager
         """
-        for _ in itertools.count() if n is None else range(n):
+        for i in itertools.count() if n is None else range(n):
             if not self.complete() and self._stashes[stash]:
-                if self._backend is not None and self._backend.try_run(self, stash, n, until, kwargs):
+                left = None if n is None else n - i
+                if self._backend is not None and self._backend.try_run(self, stash, left, until, kwargs):
                     break
                 self.step(stash=stash, **kwargs)
                 if not (until and until(self)):

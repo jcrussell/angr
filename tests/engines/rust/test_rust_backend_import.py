@@ -65,7 +65,7 @@ def test_the_template_is_dropped_with_its_lineage():
     project = _project("x86_64")
     backend = RustBackend(project)
     simgr = angr.SimulationManager(project, [project.factory.entry_state()], backend=backend)
-    simgr.run(n=PAST_READS_STEPS)
+    simgr.run(n=PAST_READS_STEPS, until=lambda sm: False)
     assert backend.stats["claimed"] > 0
     templates = backend._mgr._lineage_templates
     assert templates
