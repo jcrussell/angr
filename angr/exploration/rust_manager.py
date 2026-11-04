@@ -1583,10 +1583,14 @@ class RustExplorationManager(
         # allocated and never reused, so this is safe).
         self._state_roots: dict[int, int] = {}
         # Plugin templates kept outside `_state_cache`, by root state id: a
-        # SimState whose posix/libc/heap/fs/log a root's exports copy, for an
+        # SimState whose posix/libc/heap/fs/log/globals a root's exports copy, for an
         # owner (`RustBackend`) whose roots' own ids are exported and so may
         # not be cached. The owner drops each entry with its lineage.
         self._lineage_templates: dict[int, angr.SimState] = {}
+        # The SimState an owner (`RustBackend`) last stepped each state id from, which it does
+        # not cache either: what a callback on the id, or its successors' plugins, copy from.
+        # Set as a step begins, so a successor exported mid-step never stands in for its parent.
+        self._step_sources: weakref.WeakValueDictionary[int, angr.SimState] = weakref.WeakValueDictionary()
         # Called after every explore(n=) round when set, by an owner (`RustBackend`) standing in
         # for a technique whose step() reorders the stashes, as DFS's does. See
         # `_explore_reordered_rounds`.

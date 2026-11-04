@@ -179,6 +179,9 @@ class RustBackend(SimulationBackend):
         # The finalizer of the export each resident id was handed out as; it queues the id in
         # _released when that export is collected.
         self._export_finalizers: dict[int, weakref.finalize] = {}
+        # The ids `_export` handed out a callback's cached mirror for in the current batch,
+        # uncached once it is done.
+        self._exported: list[int] = []
         # Resident ids whose export is gone, dropped from _PARKED before the next step. A
         # finalizer can run inside a Rust call (a callback's GC), so it only queues the id.
         self._released: list[int] = []
@@ -310,6 +313,7 @@ class RustBackend(SimulationBackend):
         try:
             return [self._outcome(mgr, simgr, sid, children.get(sid, {}), messages, unexported) for sid in sids]
         finally:
+            self._uncache_exports(mgr)
             for cid in unexported:
                 self._release(mgr, cid)
 
@@ -500,18 +504,21 @@ class RustBackend(SimulationBackend):
             targets[dfs.deferred_stash] = dfs.deferred_stash
         simgr._stashes[stash] = []
         uncovered = None
-        for name, cids in ended.items():
-            if name == "errored":
-                for cid in cids:
-                    message = messages.get(cid, "rust engine error")
-                    error = sim_error_for_rust_message(message, RustErrorRecord._classify(message))
-                    simgr._errored.append(ErrorRecord(self._export(mgr, cid), error, None))
-                    if uncovered is None and not isinstance(error, simgr._resilience):
-                        uncovered = error
-                continue
-            exports = [self._export(mgr, cid) for cid in cids]
-            if exports or name in targets:
-                simgr._store_states(targets.get(name, name), exports)
+        try:
+            for name, cids in ended.items():
+                if name == "errored":
+                    for cid in cids:
+                        message = messages.get(cid, "rust engine error")
+                        error = sim_error_for_rust_message(message, RustErrorRecord._classify(message))
+                        simgr._errored.append(ErrorRecord(self._export(mgr, cid), error, None))
+                        if uncovered is None and not isinstance(error, simgr._resilience):
+                            uncovered = error
+                    continue
+                exports = [self._export(mgr, cid) for cid in cids]
+                if exports or name in targets:
+                    simgr._store_states(targets.get(name, name), exports)
+        finally:
+            self._uncache_exports(mgr)
         if uncovered is not None:
             raise uncovered
 
@@ -584,6 +591,8 @@ class RustBackend(SimulationBackend):
             if finalizer is not None:
                 finalizer.detach()
             self._detach_source(mgr, state, sid)
+            # What a callback on sid or a successor's plugins copy from (angr-mx00p.136.38).
+            mgr._step_sources[sid] = state
         mgr._sync_hooks_before_step()
         for sid in sids:
             mgr._rust_mgr.move_state(sid, _PARKED, "active")
@@ -726,20 +735,35 @@ class RustBackend(SimulationBackend):
     def _export(self, mgr: RustExplorationManager, state_id: int) -> SimState:
         """A new stash-mirror SimState of *state_id*, owned by the backend.
 
-        The cached mirror is dropped first so the step's source, which keeps
-        the same id when it does not fork, is never returned as its own
-        successor.
+        A cached step source of *state_id* is dropped first so the step's source,
+        which keeps the same id when it does not fork, is never returned as its
+        own successor. A mirror a callback cached during the step is kept: it
+        carries the SimProcedure's edits to the plugins (angr-mx00p.136.38).
         """
-        mgr._state_cache.pop(state_id, None)
+        if mgr._state_cache.get(state_id) is mgr._step_sources.get(state_id):
+            mgr._state_cache.pop(state_id, None)
+        mirrored = state_id in mgr._state_cache
         export = mgr._materialize_single_state(state_id)
-        # Not cached: the export alone keeps the Rust state, which is released with it.
-        mgr._state_cache.pop(state_id, None)
+        if mirrored:
+            # A callback's mirror stays cached until the batch is exported (`_uncache_exports`):
+            # a later fork of this lineage copies its plugins from it, as on RustExplorationManager.
+            self._exported.append(state_id)
+        else:
+            # Not cached: the export alone keeps the Rust state, which is released with it.
+            mgr._state_cache.pop(state_id, None)
         self._export_finalizers[state_id] = weakref.finalize(
             binding_of(export), _queue_release, weakref.ref(self), state_id
         )
         self._phase.set(export, _PAST_INIT)
         self._ownership.set(export, _OWNED)
         return export
+
+    def _uncache_exports(self, mgr: RustExplorationManager) -> None:
+        """Drop the batch's exported mirrors from ``_state_cache``: each export alone keeps its
+        Rust state, which is released with it."""
+        exported, self._exported = self._exported, []
+        for sid in exported:
+            mgr._state_cache.pop(sid, None)
 
     def _in_init_prefix(self, state: SimState) -> bool:
         """True while a lineage seeded at an init seed has not reached main.

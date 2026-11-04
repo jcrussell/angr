@@ -2178,9 +2178,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         terminates because of it — its ``strncmp`` walks a pointer chain from a
         bogus 0x1337 and the fault is what ends the walk.
         """
-        from angr import sim_options
-
-        if sim_options.STRICT_PAGE_ACCESS in self._state_options():
+        if self._strict_page_access():
             raise self._segfault_unmapped(addr)
         # STRICT_PAGE_ACCESS off: angr maps the page on demand and reads back
         # the fill value, which for an untouched page is zero.
@@ -2476,17 +2474,20 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         """
         if "unmapped memory" not in str(exc):
             return False
-        from angr import sim_options
-
-        if sim_options.STRICT_PAGE_ACCESS in self._state_options():
+        if self._strict_page_access():
             raise self._segfault_unmapped(addr) from exc
         return True
 
-    def _state_options(self):
-        """State options for this state_id (empty when there is no manager)."""
-        if self._python_mgr is not None:
-            return self._python_mgr.get_state_options_py(self._state_id)
-        return set()
+    def _strict_page_access(self):
+        """Whether the Rust state enforces STRICT_PAGE_ACCESS.
+
+        Read from the Rust state, which mirrors the option, not from the
+        manager's Python-side options: a Rust-forked state inherits those from
+        its root, whose entry is pruned once the root leaves every stash, so a
+        later fork's SimProcedure saw no STRICT_PAGE_ACCESS and its unmapped
+        write mapped the page (angr-mx00p.136.38).
+        """
+        return bool(self._mgr.state_enforce_permissions(self._state_id))
 
     def _data_to_ast(self, data, size, endness):
         """Coerce ``data`` to a claripy AST, applying endness for concrete

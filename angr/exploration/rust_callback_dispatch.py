@@ -1973,6 +1973,21 @@ class RustCallbackDispatchMixin:
             parent_id = self._get_pending_parent_id()
             return [parent_id] if parent_id is not None else []
 
+    def _callback_source_state(self, state_id: int) -> angr.SimState | None:
+        """The SimState whose Python plugins a callback on *state_id* copies, else None.
+
+        A mirror cached under the id comes first, then the SimState an owner
+        (``RustBackend``) stepped the id from, which it does not cache and which
+        carries the caller's edits to it, then the lineage template of a root
+        id. Without the last two a backend's callback ran on a blank state
+        (angr-mx00p.136.38).
+        """
+        for source in (self._state_cache, self._step_sources, self._lineage_templates):
+            state = source.get(state_id)
+            if state is not None:
+                return state
+        return None
+
     def _create_state_for_callback(self, event: _ExplorationEvent) -> angr.SimState | None:
         """Create an angr state from the pending Rust state.
 
@@ -2006,29 +2021,24 @@ class RustCallbackDispatchMixin:
         cached_state = None
         lookup_state_id = state_id
 
-        if state_id is not None and state_id in self._state_cache:
-            cached_state = self._state_cache[state_id]
+        if state_id is not None and (cached_state := self._callback_source_state(state_id)) is not None:
             lookup_state_id = state_id
             # Fix 1B: Validate cached state has required attributes
-            if cached_state is not None and (
-                not hasattr(cached_state, "solver") or not hasattr(cached_state, "memory")
-            ):
+            if not hasattr(cached_state, "solver") or not hasattr(cached_state, "memory"):
                 l.warning(f"Cached state {state_id} invalid type: {type(cached_state)}, clearing")
-                del self._state_cache[state_id]
+                self._state_cache.pop(state_id, None)
                 cached_state = None
         elif state_id is not None:
             # Forked state - try root state first (most likely to be cached)
             root_id = self._get_pending_root_state_id()
-            if root_id is not None and root_id in self._state_cache:
-                cached_state = self._state_cache[root_id]
+            if root_id is not None and (cached_state := self._callback_source_state(root_id)) is not None:
                 lookup_state_id = root_id
                 if _DBG:
                     l.debug(f"Using root state {root_id} cache for forked state {state_id}")
             else:
                 # Walk full ancestry chain to find any cached ancestor
                 for ancestor_id in self._get_pending_ancestry():
-                    if ancestor_id in self._state_cache:
-                        cached_state = self._state_cache[ancestor_id]
+                    if (cached_state := self._callback_source_state(ancestor_id)) is not None:
                         lookup_state_id = ancestor_id
                         if _DBG:
                             l.debug(f"Using ancestor {ancestor_id} cache for forked state {state_id}")

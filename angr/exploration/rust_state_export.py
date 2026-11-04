@@ -2185,15 +2185,17 @@ class RustStateExportMixin:
         state_id: int,
         snapshot_parent_id: int | None = None,
     ) -> angr.SimState | None:
-        """Locate the best SimState to source plugins (posix/libc/heap/fs/log) from.
+        """Locate the best SimState to source plugins (posix/libc/heap/fs/log/globals) from.
 
         Walks ancestors in proximity order (closest first):
 
-        1. ``state_id`` itself, if cached. The state's own plugins reflect
-           its specific mutations and are always the right choice.
+        1. ``state_id`` itself, if cached or the step source of an owner
+           that does not cache its exports (``_step_sources``). The state's own plugins
+           reflect its specific mutations and are always the right choice.
         2. ``snapshot_parent_id`` (immediate parent from a snapshot), when
-           the caller has one. Plugin state at fork time is the closest
-           thing to "what this state should have started with."
+           the caller has one, looked up the same way. Plugin state at fork
+           time is the closest thing to "what this state should have started
+           with."
         3. ``_state_roots[state_id]`` then a Rust-side ``get_state_root``
            probe. The root is an entry state — its plugins are the
            unmutated baseline that descendants forked from. An uncached
@@ -2211,12 +2213,12 @@ class RustStateExportMixin:
 
         Returns ``None`` if nothing usable is cached.
         """
-        cached = self._state_cache.get(state_id)
+        cached = self._state_cache.get(state_id) or self._step_sources.get(state_id)
         if cached is not None:
             return cached
 
         if snapshot_parent_id is not None and snapshot_parent_id >= 0:
-            cached = self._state_cache.get(snapshot_parent_id)
+            cached = self._state_cache.get(snapshot_parent_id) or self._step_sources.get(snapshot_parent_id)
             if cached is not None:
                 return cached
 
@@ -2270,8 +2272,10 @@ class RustStateExportMixin:
             _install_rust_history_warning(state)
             return
 
-        # Copy plugins that are commonly needed
-        plugins_to_restore = ["posix", "libc", "heap", "fs", "log"]
+        # Copy plugins that are commonly needed. ``globals`` too: a snapshot export
+        # otherwise lost the user's seeded keys, as a root copy keeps them
+        # (angr-mx00p.136.38).
+        plugins_to_restore = ["posix", "libc", "heap", "fs", "log", "globals"]
 
         for plugin_name in plugins_to_restore:
             try:
