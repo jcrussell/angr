@@ -2,8 +2,10 @@
 
 :class:`RustBackend` decides per state and per step whether the Rust engine
 steps a state (:meth:`RustBackend.claims`); a declined state runs on the
-Python engine. Stepping itself is not wired yet, so every state is declined,
-an eligible one with the reason ``"stepping not implemented"``.
+Python engine. A claimed state is stepped one block in a private
+:class:`~angr.exploration.rust_manager.RustExplorationManager`
+(:meth:`RustBackend.step_state`), and its successors come back as exported
+SimStates.
 """
 
 from __future__ import annotations
@@ -14,14 +16,18 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from angr.engines import UberEngine
+from angr.errors import SimEngineError, SimError, SimMemoryError
 from angr.exploration.rust_manager import (
+    RustExplorationManager,
     _unsupported_inspect_events,
     is_python_init_seed,
     resolve_main_address,
     rust_state_option_refusals,
     rust_supports_arch,
 )
+from angr.exploration.rust_state_binding import binding_of
 from angr.exploration.rust_techniques import _NATIVE_STEP_TECH_NAMES
+from angr.sim_manager import ErrorRecord
 from angr.sim_manager_backend import SimulationBackend
 
 if TYPE_CHECKING:
@@ -30,7 +36,12 @@ if TYPE_CHECKING:
 
 l = logging.getLogger(name=__name__)
 
-_NOT_IMPLEMENTED = "stepping not implemented"
+# The private Rust stash every state the backend holds between steps waits in, so a step's
+# _step_ids_once parks nothing but the stepped state's own children.
+_PARKED = "_simgr_backend_parked"
+
+# The run argument a claimed step honors; any other declines the state.
+_STOP_POINTS = "extra_stop_points"
 
 # Python init prefix: a lineage seeded at an init seed runs on Python until it reaches main.
 _IN_INIT = "init"
@@ -95,13 +106,19 @@ class RustBackend(SimulationBackend):
         self._phase = _LineageMarks()
         self._ownership = _LineageMarks()
         self.stats = {"claimed": 0, "declined": Counter(), "handed_back": 0}
+        self._mgr: RustExplorationManager | None = None
+        # Ids of the Rust states waiting in _PARKED.
+        self._resident: set[int] = set()
+        # Python-lifted block size per address, for the extra_stop_points check.
+        self._block_sizes: dict[int, int] = {}
 
     def claims(self, simgr: SimulationManager, state: SimState, successor_func, run_args: dict) -> tuple[bool, str]:
         reason = self.decline_reason(simgr, state, successor_func, run_args)
         if reason is None:
             self._ownership.set(state, _OWNED)
-            reason = _NOT_IMPLEMENTED
-        elif self._ownership.get(state) == _OWNED:
+            self.stats["claimed"] += 1
+            return True, ""
+        if self._ownership.get(state) == _OWNED:
             self._ownership.set(state, _HANDED_BACK)
             self.stats["handed_back"] += 1
         self.stats["declined"][reason] += 1
@@ -123,8 +140,9 @@ class RustBackend(SimulationBackend):
             return "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
         if successor_func is not None:
             return "step passes a successor_func"
-        if run_args:
-            return "step passes run arguments: " + ", ".join(sorted(run_args))
+        unhonored = sorted(k for k in run_args if k != _STOP_POINTS)
+        if unhonored:
+            return "step passes run arguments: " + ", ".join(unhonored)
         hooks = sorted(
             type(tech).__name__
             for tech in simgr._techniques
@@ -137,7 +155,113 @@ class RustBackend(SimulationBackend):
             return f"project uses a custom SimEngine {engine.__name__}"
         if self._in_init_prefix(state):
             return "state is in the python init prefix"
+        if self._stop_point_inside_block(state, run_args.get(_STOP_POINTS)):
+            return "an extra_stop_points address lies inside the block"
         return None
+
+    def _stop_point_inside_block(self, state: SimState, stops) -> bool:
+        """True when a stop point would end the Python engine's block early.
+
+        Rust stops only at block boundaries, which a block-granular step does
+        anyway, so a stop point is honored unless it lies strictly inside the
+        block at the state's pc: there Python splits the block and Rust cannot.
+        """
+        if not stops:
+            return False
+        addr = state.addr
+        if addr in self._project._sim_procedures:
+            return False
+        size = self._block_sizes.get(addr)
+        if size is None:
+            try:
+                size = self._project.factory.block(addr).size
+            except (SimEngineError, SimMemoryError):
+                # SILENT(cat-a): an unliftable pc has no interior for a stop point to split; the step
+                # itself reports the lift failure.
+                size = 0
+            self._block_sizes[addr] = size
+        return any(addr < stop < addr + size for stop in stops)
+
+    def step_state(self, simgr: SimulationManager, state: SimState, error_list: list, **run_args) -> dict:
+        """Step *state* one block in Rust and return its successors as exported SimStates.
+
+        ``extra_stop_points`` needs no work here: :meth:`claims` declined the
+        state if one lies inside its block. A step whose only outcome is the
+        state itself deadending returns no successors, so
+        :meth:`SimulationManager.step` deadends the source as it does for the
+        Python engine; an errored child becomes an :class:`ErrorRecord` in
+        *error_list*.
+        """
+        mgr = self._manager()
+        rust = mgr._rust_mgr
+        sid = self._resident_id(mgr, state)
+        mgr._sync_hooks_before_step()
+        rust.move_state(sid, _PARKED, "active")
+        self._resident.discard(sid)
+        try:
+            children = mgr._step_ids_once([sid]).get(sid, {})
+        finally:
+            parked = rust.get_state_ids("active")
+            rust.move_states("active", _PARKED, None)
+            self._resident.update(parked)
+        if children == {"deadended": [sid]}:
+            return {}
+        stashes = {}
+        for name, cids in children.items():
+            if name == "errored":
+                messages = {err_id: message for _, message, err_id in rust.get_errors()}
+                for cid in cids:
+                    errored = state if cid == sid else self._export(mgr, cid)
+                    error_list.append(ErrorRecord(errored, SimError(messages.get(cid, "rust engine error")), None))
+                continue
+            stashes[None if name == "active" else name] = [self._export(mgr, cid) for cid in cids]
+        return stashes
+
+    def _manager(self) -> RustExplorationManager:
+        """The private Rust manager, built on first use with no states.
+
+        No active-state cap: its active stash only ever holds one step's
+        children, and the Python engine has none.
+        """
+        if self._mgr is None:
+            self._mgr = RustExplorationManager(self._project, max_active_states=None)
+        return self._mgr
+
+    def _resident_id(self, mgr: RustExplorationManager, state: SimState) -> int:
+        """The id of *state* in ``_PARKED``, importing it first when it is not a view of a parked state.
+
+        A root export of a parked state is that state; anything else (a
+        foreign SimState, a copy of an export, an export of another manager)
+        is imported as the constructor imports a seed.
+        """
+        binding = binding_of(state)
+        if (
+            binding is not None
+            and getattr(binding.owner, "manager", None) is mgr
+            and not binding.is_virtual
+            and binding._released is None
+            and binding.raw_id in self._resident
+        ):
+            return binding.raw_id
+        rust = mgr._rust_mgr
+        mgr._phase_activate([state])
+        (sid,) = rust.get_state_ids("active")
+        rust.move_states("active", _PARKED, None)
+        self._resident.add(sid)
+        return sid
+
+    def _export(self, mgr: RustExplorationManager, state_id: int) -> SimState:
+        """A new stash-mirror SimState of *state_id*, owned by the backend.
+
+        The cached mirror is dropped first so the step's source, which keeps
+        the same id when it does not fork, is never returned as its own
+        successor.
+        """
+        mgr._state_cache.pop(state_id, None)
+        export = mgr._materialize_single_state(state_id)
+        self._phase.set(export, _PAST_INIT)
+        self._ownership.set(export, _OWNED)
+        return export
 
     def _in_init_prefix(self, state: SimState) -> bool:
         """True while a lineage seeded at an init seed has not reached main.

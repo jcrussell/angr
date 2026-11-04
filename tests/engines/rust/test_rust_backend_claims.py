@@ -1,9 +1,8 @@
 """RustBackend.claims(): the per-state, per-step decline predicate (angr-mx00p.136.5).
 
 Each decline reason is driven with one state; an eligible state on fauxware
-past the init prefix gets no decline reason. Stepping is not wired yet, so
-claims() still declines it ("stepping not implemented"), and an explore with
-the backend must equal the Python engine's.
+past the init prefix gets no decline reason and is claimed, and an explore
+with the backend must equal the Python engine's.
 """
 
 from __future__ import annotations
@@ -44,9 +43,9 @@ def test_eligible_state_at_main(project, main_addr):
 
     backend = RustBackend(project)
     simgr = angr.SimulationManager(project, [state])
-    assert backend.claims(simgr, state, None, {}) == (False, "stepping not implemented")
-    assert backend.stats["declined"] == {"stepping not implemented": 1}
-    assert backend.stats["claimed"] == 0
+    assert backend.claims(simgr, state, None, {}) == (True, "")
+    assert backend.stats["declined"] == {}
+    assert backend.stats["claimed"] == 1
 
 
 def test_unsupported_arch():
@@ -112,8 +111,18 @@ def test_init_prefix_until_main(project, main_addr):
     # The lineage stays past the prefix after main returns into libc code.
     succ = project.factory.successors(at_main).flat_successors[0]
     assert backend.decline_reason(simgr, succ, None, {}) is None
-    # Explorer steps with extra_stop_points, a run argument the backend declines ahead of the prefix check.
-    assert set(backend.stats["declined"]) == {"step passes run arguments: extra_stop_points"}
+    # Explorer steps with extra_stop_points, which the backend honors, so only the prefix declined.
+    assert set(backend.stats["declined"]) == {"state is in the python init prefix"}
+
+
+def test_stop_point_inside_the_block_declines(project, main_addr):
+    state = project.factory.blank_state(addr=main_addr)
+    end = main_addr + project.factory.block(main_addr).size
+    assert _reason(project, state, run_args={"extra_stop_points": {main_addr, end}}) is None
+    assert (
+        _reason(project, state, run_args={"extra_stop_points": {main_addr + 1}})
+        == "an extra_stop_points address lies inside the block"
+    )
 
 
 def test_loader_stub_seed_is_in_init_prefix(project):
@@ -143,8 +152,8 @@ def test_decline_is_debug_logged(project, main_addr, caplog):
     state = project.factory.blank_state(addr=main_addr)
     simgr = angr.SimulationManager(project, [state])
     with caplog.at_level(logging.DEBUG, logger="angr.exploration.rust_backend"):
-        RustBackend(project).claims(simgr, state, None, {})
-    assert "simgr backend: python (stepping not implemented)" in caplog.messages
+        RustBackend(project).claims(simgr, state, project.factory.successors, {})
+    assert "simgr backend: python (step passes a successor_func)" in caplog.messages
 
 
 def _explore(project, backend):
@@ -163,8 +172,7 @@ def test_explore_with_backend_equals_python(project):
 
     assert shape(with_backend) == shape(python)
     assert [s.posix.dumps(0) for s in with_backend.found] == [s.posix.dumps(0) for s in python.found]
-    assert backend.stats["claimed"] == 0
-    assert sum(backend.stats["declined"].values()) > 0
+    assert backend.stats["claimed"] > 0
 
 
 def test_step_with_backend_equals_python(project, main_addr):
@@ -176,5 +184,5 @@ def test_step_with_backend_equals_python(project, main_addr):
 
     backend = RustBackend(project)
     assert run(backend) == run(None)
-    assert backend.stats["claimed"] == 0
-    assert backend.stats["declined"]["stepping not implemented"] > 0
+    assert backend.stats["claimed"] > 0
+    assert backend.stats["declined"] == {}
