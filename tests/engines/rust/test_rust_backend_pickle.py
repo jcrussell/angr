@@ -31,8 +31,10 @@ AVOID = {
     "mips": [0x400A10, 0x400774],
 }
 SOSNEAKY = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00SOSNEAKY\x00"
-# Steps until fauxware's states are past the Python init prefix and stepped in Rust.
-PAST_INIT_STEPS = 40
+# Steps until fauxware's states are past the Python init prefix and stepped in
+# Rust, and short of FIND: by 40 steps mips's SOSNEAKY state is past it, on
+# either engine.
+PAST_INIT_STEPS = 30
 
 
 def _fauxware_simgr(arch):
@@ -45,13 +47,7 @@ def _fauxware_simgr(arch):
     return simgr
 
 
-@pytest.mark.parametrize(
-    "arch",
-    [
-        pytest.param(arch, marks=pytest.mark.xfail(strict=True, reason="angr-mx00p.136.32")) if arch == "mips" else arch
-        for arch in sorted(FIND)
-    ],
-)
+@pytest.mark.parametrize("arch", sorted(FIND))
 def test_an_unpickled_manager_finds_fauxware_on_python(arch):
     simgr = _fauxware_simgr(arch)
     pickled = pickle.dumps(simgr, pickle.HIGHEST_PROTOCOL)
@@ -61,7 +57,21 @@ def test_an_unpickled_manager_finds_fauxware_on_python(arch):
     assert simgr._backend is None
     assert all(binding_of(s) is None for s in simgr.active)
     simgr.explore(find=FIND[arch], avoid=AVOID[arch])
+    assert not simgr.errored
     assert simgr.found[0].posix.dumps(0) == SOSNEAKY
+
+
+@pytest.mark.parametrize("arch", sorted(FIND))
+def test_a_pickled_export_keeps_the_after_main_continuation(arch):
+    # Python ran __libc_start_main's self.call(main); Rust frames carry no
+    # procedure_data, so a detached call stack must get it back on the frame
+    # main returns to, or after_main errors on Python (angr-mx00p.136.32).
+    simgr = _fauxware_simgr(arch)
+    main = simgr._project.loader.find_symbol("main").rebased_addr
+    plain = pickle.loads(pickle.dumps(simgr.active[0], pickle.HIGHEST_PROTOCOL))
+    (main_frame,) = [f for f in plain.callstack if f.func_addr == main]
+    assert main_frame.next.procedure_data is not None
+    assert main_frame.next.procedure_data[4] == main_frame.ret_addr
 
 
 @pytest.mark.xfail(strict=True, reason="angr-mx00p.136.31")

@@ -95,6 +95,17 @@ enum RegisterU128 {
     UnknownName,
 }
 
+/// Convert between the state's memory order and the LSB-first layout the
+/// `*_state_memory_ast` FFI speaks (byte `i` at bits `[i*8+7 : i*8]`). A
+/// byte reverse is its own inverse, so one helper serves load and store.
+fn lsb_first(state: &RustSimState, bv: RustBV) -> RustBV {
+    if state.is_little_endian() {
+        bv
+    } else {
+        bv.reverse_into()
+    }
+}
+
 impl RegisterU128 {
     /// Collapse to the `Option<u128>` the register-read APIs hand to Python.
     fn into_option(self) -> Option<u128> {
@@ -828,6 +839,9 @@ impl RustExplorationManager {
     /// bit positions `[i*8+7 : i*8]` (LSB-first), matching how
     /// `_set_state_memory_concrete` lays out concrete bytes. The proxy
     /// reverses for `Iend_BE`, returns verbatim for `Iend_LE`.
+    /// `memory_load` reads in the state's own endianness, so a big-endian
+    /// state's value is reversed here; `_set_state_memory_ast` is the inverse
+    /// (angr-mx00p.136.32).
     pub(crate) fn _get_state_memory_ast(
         &self,
         py: Python<'_>,
@@ -842,6 +856,7 @@ impl RustExplorationManager {
             .map_err(PyValueError::new_err)?;
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
+                let bv = lsb_first(state, bv);
                 let claripy = crate::claripy_bridge::claripy_module(py)?;
                 let ast = rustbv_to_claripy(py, &bv, claripy.as_any())
                     .map_err(|e| ast_export_err(&format!("memory 0x{addr:x} size {size}"), e))?;
@@ -915,8 +930,9 @@ impl RustExplorationManager {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
-                claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?
+                let bv = claripy_to_rustbv(py, ast, ctx_ref)
+                    .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
+                lsb_first(state, bv)
             };
             state.memory_store(addr, bv).py_value_err()
         })
@@ -945,8 +961,9 @@ impl RustExplorationManager {
                 let solver_ref = state.solver();
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
-                claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?
+                let bv = claripy_to_rustbv(py, ast, ctx_ref)
+                    .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
+                lsb_first(state, bv)
             };
             let size = (bv.width() / 8) as u64;
             state.add_memory_lazy_region(addr, size.max(1));

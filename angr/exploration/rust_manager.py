@@ -3929,6 +3929,9 @@ class RustExplorationManager(
         # top-first; Rust's call stack is push-ordered. The bottom sentinel
         # frame is not a call.
         self._push_python_call_frames(angr_state, rust_state)
+        # Rust frames have no procedure_data: keep the continuations the
+        # prefix armed (angr-mx00p.136.32).
+        self._extract_continuation_data(angr_state)
         self._seed_python_jumpkind(angr_state, rust_state)
 
         # Push posix.brk so Rust's NativeBrkSyscall starts from the correct

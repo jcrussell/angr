@@ -1829,6 +1829,13 @@ class RustStateExportMixin:
         if isinstance(state.plugins.get("callstack"), RustCallStackProxyPlugin):
             chain = CallStack()
             for call_site, func, ret_addr, sp in self._rust_mgr.get_state_call_stack(state_id):
+                # Rust frames carry no procedure_data. A continuation armed
+                # by a self.call() Python ran (__libc_start_main's
+                # after_main, captured at import) reads it from the frame
+                # left on top once this call returns (angr-mx00p.136.32).
+                pdata = self._pending_procedure_data.get(ret_addr)
+                if pdata is not None and chain.procedure_data is None:
+                    chain.procedure_data = pdata
                 chain = CallStack(
                     call_site_addr=call_site,
                     func_addr=func,
