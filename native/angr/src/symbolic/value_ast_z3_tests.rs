@@ -8,7 +8,7 @@ use crate::symbolic::ToZ3;
 use std::sync::Arc;
 use clarirs_core::prelude::*;
 use crate::symbolic::SymContext;
-use crate::claripy::ast::GLOBAL_CONTEXT;
+use clarirs_core::GLOBAL_CONTEXT;
 fn ctx() -> &'static Context<'static> {
     &GLOBAL_CONTEXT
 }

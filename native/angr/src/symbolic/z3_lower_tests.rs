@@ -10,7 +10,7 @@ use clarirs_core::prelude::*;
 use z3::ast::{Ast, BV, Bool};
 
 use super::{LowerError, lower};
-use crate::claripy::ast::GLOBAL_CONTEXT;
+use clarirs_core::GLOBAL_CONTEXT;
 
 fn bvv(value: u64, width: u32) -> AstRef<'static> {
     GLOBAL_CONTEXT.bvv(BitVec::from((value, width))).unwrap()
@@ -158,9 +158,17 @@ fn shared_subtrees_lower_once() {
 
 #[test]
 fn strings_are_refused_not_mislowered() {
+    // Operands lower first, so the string leaf is the op refused.
     let s = GLOBAL_CONTEXT.strings("lower_s").unwrap();
     let len = GLOBAL_CONTEXT.str_len(s).unwrap();
-    assert!(matches!(lower(&len), Err(LowerError::UnsupportedOp(_))));
+    assert_eq!(lower(&len).err(), Some(LowerError::UnsupportedOp("StringS".to_owned())));
+}
+
+#[test]
+fn unsupported_op_is_named_as_the_claripy_shell_names_it() {
+    // BVToStr is the one variant whose shell name differs from the variant.
+    let to_str = GLOBAL_CONTEXT.bv_to_str(bvv(7, 32)).unwrap();
+    assert_eq!(lower(&to_str).err(), Some(LowerError::UnsupportedOp("IntToStr".to_owned())));
 }
 
 #[test]

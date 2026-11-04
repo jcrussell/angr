@@ -723,7 +723,7 @@ mod tests {
         // A float term has no `BVOp` view; it used to count as variable-free
         // and so classify as trivially decided.
         use clarirs_core::prelude::{AstFactory, FSort};
-        let gc = &*crate::claripy::ast::GLOBAL_CONTEXT;
+        let gc = &*clarirs_core::GLOBAL_CONTEXT;
         let f = gc.fps("qc_float", FSort::f32()).unwrap();
         let bits = RustBV::from_clarirs(gc.fp_to_ieeebv(f).unwrap()).unwrap();
         assert_eq!(classify_eval(&bits, &[]), QueryClass::FreeWitness);

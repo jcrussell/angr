@@ -473,25 +473,38 @@ impl Lowerer<'_> {
                 unsafe { Z3_mk_fpa_to_fp_unsigned(c, rm.get_z3_ast(), arg(0)?, sort) }
             }
 
-            AstOp::StrContains(..)
-            | AstOp::StrPrefixOf(..)
-            | AstOp::StrSuffixOf(..)
-            | AstOp::StrIsDigit(..)
-            | AstOp::StrLen(..)
-            | AstOp::StrIndexOf(..)
-            | AstOp::StrToBV(..)
-            | AstOp::StringS(..)
-            | AstOp::StringV(..)
-            | AstOp::StrConcat(..)
-            | AstOp::StrSubstr(..)
-            | AstOp::StrReplace(..)
-            | AstOp::BVToStr(..)
-            | AstOp::Union(..)
-            | AstOp::Intersection(..)
-            | AstOp::Widen(..) => {
-                use crate::claripy::ast::opstring::ToOpString;
-                return Err(LowerError::UnsupportedOp(ast.to_opstring()));
+            // Named as the claripy shell's `ToOpString` names them, so the
+            // error message matches what Python reports for the same op.
+            AstOp::StrContains(..) => {
+                return Err(LowerError::UnsupportedOp("StrContains".to_owned()));
             }
+            AstOp::StrPrefixOf(..) => {
+                return Err(LowerError::UnsupportedOp("StrPrefixOf".to_owned()));
+            }
+            AstOp::StrSuffixOf(..) => {
+                return Err(LowerError::UnsupportedOp("StrSuffixOf".to_owned()));
+            }
+            AstOp::StrIsDigit(..) => {
+                return Err(LowerError::UnsupportedOp("StrIsDigit".to_owned()));
+            }
+            AstOp::StrLen(..) => return Err(LowerError::UnsupportedOp("StrLen".to_owned())),
+            AstOp::StrIndexOf(..) => {
+                return Err(LowerError::UnsupportedOp("StrIndexOf".to_owned()));
+            }
+            AstOp::StrToBV(..) => return Err(LowerError::UnsupportedOp("StrToBV".to_owned())),
+            AstOp::StringS(..) => return Err(LowerError::UnsupportedOp("StringS".to_owned())),
+            AstOp::StringV(..) => return Err(LowerError::UnsupportedOp("StringV".to_owned())),
+            AstOp::StrConcat(..) => return Err(LowerError::UnsupportedOp("StrConcat".to_owned())),
+            AstOp::StrSubstr(..) => return Err(LowerError::UnsupportedOp("StrSubstr".to_owned())),
+            AstOp::StrReplace(..) => {
+                return Err(LowerError::UnsupportedOp("StrReplace".to_owned()));
+            }
+            AstOp::BVToStr(..) => return Err(LowerError::UnsupportedOp("IntToStr".to_owned())),
+            AstOp::Union(..) => return Err(LowerError::UnsupportedOp("Union".to_owned())),
+            AstOp::Intersection(..) => {
+                return Err(LowerError::UnsupportedOp("Intersection".to_owned()));
+            }
+            AstOp::Widen(..) => return Err(LowerError::UnsupportedOp("Widen".to_owned())),
         };
         self.own(raw)
     }
