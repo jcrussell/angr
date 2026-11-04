@@ -24,6 +24,10 @@ EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repo
 # without binaries in angr-examples — MIPS, ARM64, etc.). Searched as a
 # fallback when EXAMPLES_DIR/<name>/solve.py does not exist.
 SYNTHETIC_EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetic_examples")
+# Set (by --simgr-backend) to build ``SimulationManager(backend=RustBackend(...))`` under
+# ``--engine rust`` instead of a RustExplorationManager. An env var so it reaches the
+# bench's worker process without threading a flag through every runner signature.
+SIMGR_BACKEND_ENV = "ANGR_BENCH_SIMGR_BACKEND"
 DEFAULT_MEM_LIMIT_MB = 4096  # 4 GB — leaves 4 GB for parent + OS on 8GB machine
 
 
@@ -268,6 +272,8 @@ def _run_in_child(
 
     # Track the RustExplorationManager instance for stats
     rust_mgr_instance = None
+    # What answers stats / perf_report: the manager itself, or the simgr's RustBackend.
+    rust_api = None
     snapshots: list = []
     original_sm = None
     original_simgr = None
@@ -288,8 +294,10 @@ def _run_in_child(
         from angr.exploration import RustExplorationManager
 
         def _make_rust_manager(project, states):
-            nonlocal rust_mgr_instance
-            rust_mgr_instance = RustExplorationManager(
+            nonlocal rust_mgr_instance, rust_api
+            if os.environ.get(SIMGR_BACKEND_ENV):
+                return _make_simgr_with_backend(project, states)
+            rust_mgr_instance = rust_api = RustExplorationManager(
                 project,
                 states,
                 use_shared_lineage_solver=use_shared_lineage_solver,
@@ -307,6 +315,26 @@ def _run_in_child(
                 install_snapshotter(
                     rust_mgr_instance, snapshots, interval=diff_interval, max_snapshots=diff_max_snapshots
                 )
+            return rust_mgr_instance
+
+        def _make_simgr_with_backend(project, states):
+            # angr-mx00p.136.18: the user-API shape, SimulationManager stepping through a
+            # RustBackend. rust_mgr_instance is the simgr (its stashes); rust_api is the
+            # backend (stats, perf_report). use_shared_lineage_solver and diff_state are
+            # RustExplorationManager-only and not honored here.
+            nonlocal rust_mgr_instance, rust_api
+            from angr.exploration.rust_backend import RustBackend
+
+            backend = RustBackend(
+                project,
+                deterministic=deterministic,
+                **({} if native_lift is None else {"use_native_lift": native_lift}),
+            )
+            backend._manager().enable_profiling()
+            if strategy != "bfs":
+                backend.set_exploration_strategy(strategy)
+            rust_api = backend
+            rust_mgr_instance = angr.SimulationManager(project, active_states=states, backend=backend)
             return rust_mgr_instance
 
         restore_engine_patch = install_rust_engine_patch(_make_rust_manager)
@@ -367,11 +395,11 @@ def _run_in_child(
             perf_local = None
             if engine == "rust" and rust_mgr_instance is not None:
                 try:
-                    stats_local = dict(rust_mgr_instance.stats)
+                    stats_local = dict(rust_api.stats)
                 except Exception:
                     pass
                 try:
-                    perf_local = rust_mgr_instance.perf_report()
+                    perf_local = rust_api.perf_report()
                 except Exception:
                     pass
                 # angr-zdho: walk every state's assumed-constraint RustBV
@@ -380,7 +408,8 @@ def _run_in_child(
                 # construction-time hash-cons would dedupe.
                 if stats_local is not None:
                     try:
-                        sharing = rust_mgr_instance._rust_mgr.analyze_constraint_sharing()
+                        private = rust_api._manager() if hasattr(rust_api, "_manager") else rust_api
+                        sharing = private._rust_mgr.analyze_constraint_sharing()
                         for k, v in sharing.items():
                             stats_local[f"constraint_sharing_{k}"] = v
                     except Exception:
@@ -829,6 +858,13 @@ def run_example(
                     parts.append(f"{key}={val}")
         if parts:
             print(f"  stats: {' '.join(parts)}")
+        if "claimed" in stats:
+            # --simgr-backend: RustBackend's own counters (declined is reason -> count).
+            declined = ", ".join(f"{reason}: {n}" for reason, n in dict(stats.get("declined", {})).items())
+            print(
+                f"  backend: claimed={stats['claimed']} handed_back={stats.get('handed_back')} "
+                f"fast_path_runs={stats.get('fast_path_runs')} declined={{{declined}}}"
+            )
 
         # Print Rust-side execution profiling breakdown
         rust_keys = [k for k in stats if k.startswith("rust_")]
@@ -1027,7 +1063,15 @@ def main():
         "--no-native-lift "
         "is the A/B control arm.",
     )
+    parser.add_argument(
+        "--simgr-backend",
+        action="store_true",
+        help="Rust engine only. Build SimulationManager(backend=RustBackend(...)) "
+        "instead of a RustExplorationManager (angr-mx00p.136.18).",
+    )
     args = parser.parse_args()
+    if args.simgr_backend:
+        os.environ[SIMGR_BACKEND_ENV] = "1"
 
     if args.list:
         print(f"{'Example':<35} {'Tier':<10} {'Rust OK':<10} {'Notes'}")

@@ -74,6 +74,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from run_single import (
     DEFAULT_MEM_LIMIT_MB,
     EXAMPLES_DIR,
+    SIMGR_BACKEND_ENV,
     _resolve_examples_dir,
     _run_in_child,
 )
@@ -941,7 +942,15 @@ def main():
         "(used by the perf dashboard to assemble historical "
         "time-series data).",
     )
+    parser.add_argument(
+        "--simgr-backend",
+        action="store_true",
+        help="Run the Rust side as SimulationManager(backend=RustBackend(...)) "
+        "instead of a RustExplorationManager (see run_single.py --simgr-backend).",
+    )
     args = parser.parse_args()
+    if args.simgr_backend:
+        os.environ[SIMGR_BACKEND_ENV] = "1"
 
     global REGRESSION_SUITE
     if args.full:
