@@ -2916,12 +2916,24 @@ when the workload matches the deep-input-loop shape.
 User-facing error taxonomy
 --------------------------
 
-Failures that originate inside the Rust engine surface to Python as one
-of the typed exceptions in the table below, exported from
-``angr.exploration`` (re-exported from ``angr.rustylib.vex_engine``).
-Every specialized class derives from ``RustExecutionError``, which itself derives from the built-in
-``Exception``, so ``except RustExecutionError:`` is the single-clause
-way to catch everything the Rust core raises.
+A state that errors during a live run lands in the errored stash with
+``record.error`` set to the ``angr.errors`` exception the Python engine
+raises for the same failure: ``SimIRSBNoDecodeError`` for an undecodable
+instruction, ``SimSegfaultException`` (with Python's ``reason``) for an
+unmapped or permission-violating access, ``SimZeroDivisionException``,
+``SimOperationError``, ``SimMemoryError``, and a plain ``SimError`` for a
+failure with no Python counterpart. The Rust message stays on
+``record.message`` (``RustErrorRecord``); the mapping is
+``sim_error_for_rust_message`` in ``angr/exploration/rust_manager.py``.
+Under the ``SimulationManager`` backend the error is raised inside
+``step_state``, so ``resilience`` decides whether it is recorded or
+propagates, as on the Python engine.
+
+The typed exceptions in the table below, exported from
+``angr.exploration`` (re-exported from ``angr.rustylib.vex_engine``), are
+a separate hierarchy. Every specialized class derives from
+``RustExecutionError``, which itself derives from the built-in
+``Exception``.
 
 The hierarchy and per-variant trigger conditions are derived from
 ``native/angr/src/errors.rs`` (the ``RustExecError`` enum and the
@@ -2943,8 +2955,8 @@ update.
    ``run_loop_single.rs::apply_terminal`` pushes into the
    errored stash as a ``(pc, message, state_id)`` record. The concrete
    variant is lost the moment a live step fails; only the formatted
-   message survives, readable off the errored-stash record
-   (``state.error``). A ``pytest.raises(RustUnsupportedVexOpError)``
+   message survives, which the errored-stash record maps to a
+   ``SimError`` subclass (above). A ``pytest.raises(RustUnsupportedVexOpError)``
    against a live run therefore will **not** match — drive
    ``execute_irsb_for_test`` to exercise the typed classes. The typed
    live path is not implemented. The "Where Rust raises it" column below names where each

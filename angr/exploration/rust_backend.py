@@ -16,14 +16,16 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from angr.engines import UberEngine
-from angr.errors import SimEngineError, SimError, SimMemoryError
+from angr.errors import SimEngineError, SimMemoryError
 from angr.exploration.rust_manager import (
+    RustErrorRecord,
     RustExplorationManager,
     _unsupported_inspect_events,
     is_python_init_seed,
     resolve_main_address,
     rust_state_option_refusals,
     rust_supports_arch,
+    sim_error_for_rust_message,
 )
 from angr.exploration.rust_state_binding import binding_of
 from angr.exploration.rust_techniques import _NATIVE_STEP_TECH_NAMES
@@ -189,8 +191,12 @@ class RustBackend(SimulationBackend):
         state if one lies inside its block. A step whose only outcome is the
         state itself deadending returns no successors, so
         :meth:`SimulationManager.step` deadends the source as it does for the
-        Python engine; an errored child becomes an :class:`ErrorRecord` in
-        *error_list*.
+        Python engine. When the state itself errors, its SimError
+        (:func:`~angr.exploration.rust_manager.sim_error_for_rust_message`)
+        is raised, so :meth:`SimulationManager.step_state`'s resilience
+        decides whether it is recorded or propagates; an errored fork of it
+        becomes an :class:`ErrorRecord` in *error_list*, and so propagates
+        too when the resilience does not cover it.
         """
         mgr = self._manager()
         rust = mgr._rust_mgr
@@ -211,9 +217,12 @@ class RustBackend(SimulationBackend):
         for name, cids in children.items():
             if name == "errored":
                 messages = {err_id: message for _, message, err_id in rust.get_errors()}
-                for cid in cids:
-                    errored = state if cid == sid else self._export(mgr, cid)
-                    error_list.append(ErrorRecord(errored, SimError(messages.get(cid, "rust engine error")), None))
+                for cid in sorted(cids, key=lambda c: c != sid):
+                    message = messages.get(cid, "rust engine error")
+                    error = sim_error_for_rust_message(message, RustErrorRecord._classify(message))
+                    if cid == sid or not isinstance(error, simgr._resilience):
+                        raise error
+                    error_list.append(ErrorRecord(self._export(mgr, cid), error, None))
                 continue
             stashes[None if name == "active" else name] = [self._export(mgr, cid) for cid in cids]
         return stashes

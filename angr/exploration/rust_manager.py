@@ -84,6 +84,7 @@ import gc
 import logging
 import os
 import pickle
+import re
 import struct
 import sys
 import time
@@ -104,9 +105,15 @@ from angr.errors import (
     AngrError,
     SimEngineError,
     SimError,
+    SimIRSBError,
+    SimIRSBNoDecodeError,
     SimMemoryAddressError,
+    SimMemoryError,
+    SimOperationError,
+    SimSegfaultException,
     SimSolverError,
     SimStateError,
+    SimUnsupportedError,
     SimZeroDivisionException,
     UnsupportedDirtyError,
 )
@@ -779,12 +786,53 @@ _ARCH_REG_SNAPSHOT: dict[str, tuple[str, ...]] = {
 }
 
 
+# The SimError subclass the Python engine raises for each Rust error class.
+_SIM_ERROR_BY_CLASS = {
+    "nodecode": SimIRSBNoDecodeError,
+    "lift": SimIRSBError,
+    "memory": SimMemoryError,
+    "operation": SimOperationError,
+    "unsupported": SimUnsupportedError,
+}
+
+# MemoryError's Display for the accesses Python reports as SimSegfaultException
+# (native/angr/src/memory/mod.rs, enum MemoryError).
+_SEGFAULT_RE = re.compile(r"memory error: (?:unmapped memory|unmapped page|permission violation) at (0x[0-9a-f]+)")
+
+# The required permission of a violation, named as Python's SimSegfaultException.reason names it
+# (privileged_mixin.py for loads and stores, the VEX engine's NX check for a fetch).
+_SEGFAULT_REASONS = (
+    ("execute: true", "non-executable"),
+    ("write: true", "non-writable"),
+    ("read: true", "non-readable"),
+)
+
+
+def sim_error_for_rust_message(message: str, error_class: str) -> SimError:
+    """The SimError the Python engine raises where the Rust engine errored with *message*.
+
+    *error_class* is :meth:`RustErrorRecord._classify` of *message*. An
+    unmapped or permission-violating access is a SimSegfaultException with
+    Python's reason; a class with no Python counterpart is a plain SimError
+    (angr-mx00p.136.8).
+    """
+    if message.startswith(RustErrorRecord._ZERODIV_TRAP):
+        return SimZeroDivisionException(message)
+    m = _SEGFAULT_RE.match(message)
+    if m is not None:
+        reason = next((r for perm, r in _SEGFAULT_REASONS if perm in message), "unmapped")
+        return SimSegfaultException(int(m.group(1), 16), reason)
+    return _SIM_ERROR_BY_CLASS.get(error_class, SimError)(message)
+
+
 class RustErrorRecord:
     """Container for an errored state, matching angr's ErrorRecord interface.
 
     Attributes:
         state:             The SimState at the point of error.
-        error:             An Exception describing what went wrong.
+        error:             The SimError the Python engine raises for this
+                           failure (:func:`sim_error_for_rust_message`).
+        message:           The Rust engine's error message.
         addr:              The instruction address where the error occurred.
         error_class:       Stable taxonomy string for the error
                            (e.g. 'unsupported', 'memory', 'lift', 'callback').
@@ -805,6 +853,7 @@ class RustErrorRecord:
     # CbExecutionError variants in native/angr/src/interpreter/execution_error.rs and
     # the formatted error strings in native/angr/src/exploration/stepping.rs.
     _ERROR_CLASS_PREFIXES = (
+        ("ir decoding error", "nodecode"),
         ("memory error", "memory"),
         ("operation error", "operation"),
         ("invalid vex ir", "invalid_ir"),
@@ -825,11 +874,10 @@ class RustErrorRecord:
 
     def __init__(self, state, message: str, addr: int = 0):
         self.state = state
-        self.error = (
-            SimZeroDivisionException(message) if message.startswith(self._ZERODIV_TRAP) else RuntimeError(message)
-        )
+        self.message = message
         self.addr = addr
         self.error_class = self._classify(message)
+        self.error = sim_error_for_rust_message(message, self.error_class)
         self.constraint_count = self._count_constraints(state)
         self.registers = self._snapshot_registers(state)
         self.last_statements = self._tail_history(state)
@@ -906,7 +954,7 @@ class RustErrorRecord:
         raise self.error
 
     def __repr__(self):
-        return f'<State errored at {hex(self.addr)} class={self.error_class} with "{self.error}">'
+        return f'<State errored at {hex(self.addr)} class={self.error_class} with "{self.message}">'
 
 
 # Default active-stash safety cap (angr-o4q3). A divergent / path-exploding

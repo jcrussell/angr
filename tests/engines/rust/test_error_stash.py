@@ -100,7 +100,7 @@ class TestErroredStash:
         from angr.exploration import RustErrorRecord
 
         record = RustErrorRecord(None, "test error", 0x401000)
-        with pytest.raises(RuntimeError, match="test error"):
+        with pytest.raises(angr.errors.SimError, match="test error"):
             record.reraise()
 
     def test_error_record_classifies_message(self):
@@ -108,6 +108,7 @@ class TestErroredStash:
         from angr.exploration import RustErrorRecord
 
         cases = {
+            "IR decoding error at 0x400000: undecodable instruction.": "nodecode",
             "memory error: unmapped 0xdead": "memory",
             "operation error: shift overflow": "operation",
             "invalid VEX IR: bogus": "invalid_ir",
