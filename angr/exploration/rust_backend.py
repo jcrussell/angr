@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from angr.engines import UberEngine
 from angr.errors import SimEngineError, SimError, SimMemoryError
 from angr.exploration.rust_manager import (
+    _STASH_ACCESSORS,
     RustErrorRecord,
     RustExplorationManager,
     _unsupported_inspect_events,
@@ -43,6 +44,7 @@ from angr.sim_manager_backend import SimulationBackend
 if TYPE_CHECKING:
     from angr.sim_manager import SimulationManager
     from angr.sim_state import SimState
+    from angr.state_plugins import SimStateEdgeHitmap
 
 l = logging.getLogger(name=__name__)
 
@@ -116,13 +118,45 @@ class RustBackend(SimulationBackend):
     counted in :attr:`stats` and debug-logged.
     """
 
-    def __init__(self, project):
+    def __init__(
+        self,
+        project,
+        *,
+        max_active_states: int | None = None,
+        parallel_workers: int = 1,
+        deterministic: bool = False,
+        solver_timeout_ms: int = 30000,
+        max_history: int = 1000,
+        use_native_lift: bool = True,
+        prefer_native_library_hooks: bool | None = None,
+        symlinks: dict | None = None,
+        save_unconstrained: bool = True,
+    ):
+        """The keyword arguments configure the private manager as they do a
+        :class:`~angr.exploration.rust_manager.RustExplorationManager`, except that
+        ``max_active_states`` defaults to no cap: between steps that active stash
+        only ever holds one step's children, and the Python engine has none.
+        """
         self._project = project
+        self._manager_kwargs = {
+            "max_active_states": max_active_states,
+            "parallel_workers": parallel_workers,
+            "deterministic": deterministic,
+            "solver_timeout_ms": solver_timeout_ms,
+            "max_history": max_history,
+            "use_native_lift": use_native_lift,
+            "prefer_native_library_hooks": prefer_native_library_hooks,
+            "symlinks": symlinks,
+            "save_unconstrained": save_unconstrained,
+        }
+        # The manager whose stashes the stash-scoped members (`<stash>_proxies`, `coverage_*`)
+        # read: the last one that asked this backend anything.
+        self._simgr: weakref.ref | None = None
         self._main_addr_resolved = False
         self._main_addr: int | None = None
         self._phase = _LineageMarks()
         self._ownership = _LineageMarks()
-        self.stats = {"claimed": 0, "declined": Counter(), "handed_back": 0, "fast_path_runs": 0}
+        self._counters = {"claimed": 0, "declined": Counter(), "handed_back": 0, "fast_path_runs": 0}
         self._mgr: RustExplorationManager | None = None
         # Ids of the Rust states waiting in _PARKED.
         self._resident: set[int] = set()
@@ -141,15 +175,16 @@ class RustBackend(SimulationBackend):
         self._block_sizes: dict[int, int] = {}
 
     def claims(self, simgr: SimulationManager, state: SimState, successor_func, run_args: dict) -> tuple[bool, str]:
+        self._simgr = weakref.ref(simgr)
         reason = self.decline_reason(simgr, state, successor_func, run_args)
         if reason is None:
             self._ownership.set(state, _OWNED)
-            self.stats["claimed"] += 1
+            self._counters["claimed"] += 1
             return True, ""
         if self._ownership.get(state) == _OWNED:
             self._ownership.set(state, _HANDED_BACK)
-            self.stats["handed_back"] += 1
-        self.stats["declined"][reason] += 1
+            self._counters["handed_back"] += 1
+        self._counters["declined"][reason] += 1
         l.debug("simgr backend: python (%s)", reason)
         return False, reason
 
@@ -274,6 +309,7 @@ class RustBackend(SimulationBackend):
         as transparent: it only reports errored states. Counted in
         ``stats["fast_path_runs"]``.
         """
+        self._simgr = weakref.ref(simgr)
         explorer = self._fast_path_explorer(simgr, stash, n, until, run_args)
         states = simgr._stashes[stash]
         if explorer is None or any(self.decline_reason(simgr, s, None, {}) is not None for s in states):
@@ -281,7 +317,7 @@ class RustBackend(SimulationBackend):
         for state in states:
             self._ownership.set(state, _OWNED)
         self._explore_native(simgr, stash, states, explorer)
-        self.stats["fast_path_runs"] += 1
+        self._counters["fast_path_runs"] += 1
         return True
 
     @staticmethod
@@ -446,22 +482,82 @@ class RustBackend(SimulationBackend):
             self._release(mgr, sid)
 
     def _manager(self) -> RustExplorationManager:
-        """The private Rust manager, built on first use with no states.
-
-        No active-state cap: its active stash only ever holds one step's
-        children, and the Python engine has none.
-        """
+        """The private Rust manager, built on first use with no states and the constructor's knobs."""
         if self._mgr is None:
-            self._mgr = RustExplorationManager(self._project, max_active_states=None)
+            self._mgr = RustExplorationManager(self._project, **self._manager_kwargs)
         return self._mgr
 
-    def _resident_id(self, mgr: RustExplorationManager, state: SimState) -> int:
-        """The id of *state* in ``_PARKED``, importing it first when it is not a view of a parked state.
+    # The Rust-only API (angr-mx00p.136.16). A RustExplorationManager's `backend` is the manager
+    # itself, so `mgr.backend.<member>` reads the same on either kind of manager.
 
-        A root export of a parked state is that state; anything else (a
-        foreign SimState, a copy of an export, an export of another manager)
-        is imported as the constructor imports a seed.
+    @property
+    def backend(self) -> RustBackend:
+        """This backend, as :attr:`RustExplorationManager.backend` is that manager."""
+        return self
+
+    @property
+    def stats(self) -> dict:
+        """The private manager's :attr:`RustExplorationManager.stats` plus this backend's own
+        counters: ``claimed``, ``declined`` (reason -> count), ``handed_back`` and
+        ``fast_path_runs``."""
+        result = dict(self._mgr.stats) if self._mgr is not None else {}
+        result.update(self._counters)
+        return result
+
+    def perf_report(self) -> str:
+        """:meth:`RustExplorationManager.perf_report` of the private manager."""
+        return self._manager().perf_report()
+
+    def get_solver_stats(self) -> dict:
+        """:meth:`RustExplorationManager.get_solver_stats` of the private manager."""
+        return self._manager().get_solver_stats()
+
+    def set_exploration_strategy(self, *args, **kwargs):
+        """:meth:`RustExplorationManager.set_exploration_strategy` on the private manager."""
+        return self._manager().set_exploration_strategy(*args, **kwargs)
+
+    def register_uniqueness_filter(self, register_names: list[str]):
+        """:meth:`RustExplorationManager.register_uniqueness_filter` on the private manager."""
+        return self._manager().register_uniqueness_filter(register_names)
+
+    def disable_uniqueness_filter(self):
+        """:meth:`RustExplorationManager.disable_uniqueness_filter` on the private manager."""
+        return self._manager().disable_uniqueness_filter()
+
+    def uniqueness_filter_enabled(self) -> bool:
+        """:meth:`RustExplorationManager.uniqueness_filter_enabled` of the private manager."""
+        return self._manager().uniqueness_filter_enabled()
+
+    def uniqueness_set_size(self) -> int:
+        """:meth:`RustExplorationManager.uniqueness_set_size` of the private manager."""
+        return self._manager().uniqueness_set_size()
+
+    def coverage_blocks(self, stashes: tuple[str, ...] = ("found",)) -> list[int]:
+        """:meth:`RustExplorationManager.coverage_blocks` over the Rust states in the manager's *stashes*."""
+        return self._manager()._coverage_blocks_of(self._stash_ids(stashes))
+
+    def coverage_report(self, stashes: tuple[str, ...] = ("found",)) -> SimStateEdgeHitmap:
+        """:meth:`RustExplorationManager.coverage_report` over the Rust states in the manager's *stashes*."""
+        return self._manager()._coverage_report_of(self._stash_ids(stashes))
+
+    def _stash_proxies(self, stash: str) -> list:
+        """A ``RustStateProxy`` per Rust state in the manager's *stash*."""
+        return self._manager()._proxies_of(self._stash_ids((stash,)))
+
+    def _stash_ids(self, stashes) -> list[int]:
+        """The ids of the Rust states in *stashes* of the manager this backend last served.
+
+        A state stepped on Python, or not yet stepped, has no Rust id and is
+        left out; so is everything before the backend has served a manager.
         """
+        simgr = self._simgr() if self._simgr is not None else None
+        if simgr is None or self._mgr is None:
+            return []
+        ids = (self._parked_id(self._mgr, state) for stash in stashes for state in simgr._stashes.get(stash, ()))
+        return [sid for sid in ids if sid is not None]
+
+    def _parked_id(self, mgr: RustExplorationManager, state: SimState) -> int | None:
+        """The id of *state* in ``_PARKED`` when it is a root export of a parked state, else None."""
         binding = binding_of(state)
         if (
             binding is not None
@@ -471,6 +567,18 @@ class RustBackend(SimulationBackend):
             and binding.raw_id in self._resident
         ):
             return binding.raw_id
+        return None
+
+    def _resident_id(self, mgr: RustExplorationManager, state: SimState) -> int:
+        """The id of *state* in ``_PARKED``, importing it first when it is not a view of a parked state.
+
+        A root export of a parked state is that state; anything else (a
+        foreign SimState, a copy of an export, an export of another manager)
+        is imported as the constructor imports a seed.
+        """
+        sid = self._parked_id(mgr, state)
+        if sid is not None:
+            return sid
         rust = mgr._rust_mgr
         mgr._phase_activate([state])
         (sid,) = rust.get_state_ids("active")
@@ -554,3 +662,21 @@ class RustBackend(SimulationBackend):
             and addr not in init_addrs
             and addr not in self._project._sim_procedures
         )
+
+
+def _install_stash_proxies(cls):
+    """Give *cls* a ``<stash>_proxies()`` per stash RustExplorationManager has one for."""
+    for stash, (_doc, _emit_property, emit_proxies) in _STASH_ACCESSORS.items():
+        if not emit_proxies:
+            continue
+
+        def _proxies(self, _stash=stash):
+            return self._stash_proxies(_stash)
+
+        _proxies.__name__ = f"{stash}_proxies"
+        _proxies.__qualname__ = f"{cls.__qualname__}.{stash}_proxies"
+        _proxies.__doc__ = f"A ``RustStateProxy`` per Rust state in the manager's ``{stash}`` stash."
+        setattr(cls, _proxies.__name__, _proxies)
+
+
+_install_stash_proxies(RustBackend)

@@ -4531,12 +4531,15 @@ class RustExplorationManager(
         Note: histories are capped by the state's ``max_history``; on a very
         long-running real binary the report reflects the retained tail.
         """
+        return self._coverage_blocks_of(sid for stash in stashes for sid in self._rust_mgr.get_state_ids(stash))
+
+    def _coverage_blocks_of(self, state_ids) -> list[int]:
+        """:meth:`coverage_blocks` over *state_ids* instead of whole stashes."""
         blocks: set[int] = set()
-        for stash in stashes:
-            for sid in self._rust_mgr.get_state_ids(stash):
-                hist = self._rust_mgr.get_state_bbl_history_tail(sid, 0)
-                if hist:
-                    blocks.update(hist)
+        for sid in state_ids:
+            hist = self._rust_mgr.get_state_bbl_history_tail(sid, 0)
+            if hist:
+                blocks.update(hist)
         return sorted(blocks)
 
     def coverage_report(self, stashes: tuple[str, ...] = ("found",)) -> SimStateEdgeHitmap:
@@ -4555,23 +4558,26 @@ class RustExplorationManager(
         wave loop does not retain ``deadended`` / ``pruned`` states, so widening
         ``stashes`` trades that guarantee for a fuller picture on serial runs.
         """
+        return self._coverage_report_of(sid for stash in stashes for sid in self._rust_mgr.get_state_ids(stash))
+
+    def _coverage_report_of(self, state_ids) -> SimStateEdgeHitmap:
+        """:meth:`coverage_report` over *state_ids* instead of whole stashes."""
         from angr.state_plugins import SimStateEdgeHitmap
 
         size = SimStateEdgeHitmap.HITMAP_SIZE
         hitmap = bytearray(size)
-        for stash in stashes:
-            for sid in self._rust_mgr.get_state_ids(stash):
-                hist = self._rust_mgr.get_state_bbl_history_tail(sid, 0)
-                if not hist:
-                    continue
-                for prev, cur in zip(hist, hist[1:]):
-                    # AFL indexes an edge by the two block ids; we have no
-                    # instrumentation ids, so hash the block addresses
-                    # deterministically. Shifting off the low 4 bits collapses
-                    # within-block offsets; the prev-shift keeps A->B and B->A
-                    # distinct. OR the bit in — a set folded into a bitmap.
-                    idx = ((prev >> 4) ^ ((cur >> 4) << 1)) % size
-                    hitmap[idx] = 0xFF
+        for sid in state_ids:
+            hist = self._rust_mgr.get_state_bbl_history_tail(sid, 0)
+            if not hist:
+                continue
+            for prev, cur in zip(hist, hist[1:]):
+                # AFL indexes an edge by the two block ids; we have no
+                # instrumentation ids, so hash the block addresses
+                # deterministically. Shifting off the low 4 bits collapses
+                # within-block offsets; the prev-shift keeps A->B and B->A
+                # distinct. OR the bit in — a set folded into a bitmap.
+                idx = ((prev >> 4) ^ ((cur >> 4) << 1)) % size
+                hitmap[idx] = 0xFF
         return SimStateEdgeHitmap(edge_hitmap=bytes(hitmap))
 
     def register_uniqueness_filter(self, register_names: list[str]):
@@ -6115,11 +6121,14 @@ class RustExplorationManager(
         the ``X_proxies()`` accessors below as a single chokepoint so the
         proxy-construction args stay in sync with ``mgr.proxy``.
         """
+        return self._proxies_of(self._rust_mgr.get_state_ids(stash_name))
+
+    def _proxies_of(self, state_ids) -> list:
+        """Wrap each of *state_ids* as a ``RustStateProxy`` (see :meth:`_stash_proxies`)."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         stdin_vars = getattr(self, "_stdin_vars", None)
         stdout_tracker = getattr(self, "_stdout_tracker", {}) or {}
-        state_ids = self._rust_mgr.get_state_ids(stash_name)
         return [
             RustStateProxy(
                 self._rust_mgr,
@@ -6139,6 +6148,13 @@ class RustExplorationManager(
     def stash_counts(self) -> dict:
         """Get state counts for all stashes."""
         return dict(self._rust_mgr.stash_counts())
+
+    @property
+    def backend(self) -> RustExplorationManager:
+        """This manager, so code reading the Rust-only API as ``mgr.backend.<member>`` also
+        runs on a :class:`~angr.sim_manager.SimulationManager` whose backend is a
+        :class:`~angr.exploration.rust_backend.RustBackend` (angr-mx00p.136.16)."""
+        return self
 
     @property
     def stats(self) -> dict:

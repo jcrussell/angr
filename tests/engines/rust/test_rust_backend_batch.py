@@ -72,7 +72,9 @@ def test_batched_and_per_state_steps_leave_the_same_stashes(name, path):
     per_state, per_state_backend, per_state_sizes = _run(name, path, per_state=True)
 
     assert batched_backend.stats["claimed"] > 0
-    assert batched_backend.stats == per_state_backend.stats
+    # The backend's own counters; the private manager's timing counters differ run to run.
+    counters = ("claimed", "declined", "handed_back", "fast_path_runs")
+    assert [batched_backend.stats[k] for k in counters] == [per_state_backend.stats[k] for k in counters]
     assert max(batched_sizes) > 1
     assert set(per_state_sizes) == {1}
     assert sum(batched_sizes) == sum(per_state_sizes)
