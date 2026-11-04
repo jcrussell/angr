@@ -35,6 +35,7 @@ angr-vex = { path = "../angr-vex" }
 clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
 fixedbitset = "0.5"
 im = "15.1"
+lru = "0.12"
 log = "0.4.32"
 num-bigint = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
@@ -46,5 +47,6 @@ z3 = "0.21"
 z3-sys = "0.13"
 
 [dev-dependencies]
+angr-vex = { path = "../angr-vex", features = ["testing"] }
 quickcheck = "1.0"
 quickcheck_macros = "1.0"

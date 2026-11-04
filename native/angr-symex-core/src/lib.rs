@@ -4,25 +4,29 @@
 //! [`memory`], the lazy copy-on-write `SymbolicMemory`; [`arch`], the
 //! `Arch` trait, the per-arch register tables, `RegisterFile` and the
 //! calling conventions; [`state`], `RustSimState` and its filesystem,
-//! snapshots and migration payload; and the crate-root helpers every engine
-//! module shares ([`arc_shared`], [`duration_ns`], [`elapsed_ns`]).
-//! `interpreter` joins it next (angr-mx00p.51).
+//! snapshots and migration payload; [`interpreter`], the VEX IRSB
+//! interpreter, which reaches the shell only through
+//! `interpreter::EngineHost` and a `dyn VEXLifter`; and the crate-root
+//! helpers every engine module shares ([`arc_shared`], [`duration_ns`],
+//! [`elapsed_ns`]).
 //!
 //! **Dependencies.** `angr-bv`, `angr-vex`, `angr-symex-macros`,
 //! `clarirs-core`, `z3` and the plain-data crates: no `pyo3` (check with
 //! `cargo tree -p angr-symex-core -e normal`).
 //!
-//! The engine (`native/angr`) re-exports [`symbolic`], [`memory`], [`arch`]
-//! and [`state`], so `crate::symbolic::` / `crate::memory::` /
-//! `crate::arch::` / `crate::state::` (and the `rustylib::` spellings of all
-//! but `arch`) name these items (angr-mx00p.51.11, angr-mx00p.51.12,
-//! angr-mx00p.51.13, angr-mx00p.51.14).
+//! The engine (`native/angr`) re-exports [`symbolic`], [`memory`], [`arch`],
+//! [`state`] and [`interpreter`], so `crate::symbolic::` / `crate::memory::` /
+//! `crate::arch::` / `crate::state::` / `crate::interpreter::` (and the
+//! `rustylib::` spellings of all but `arch` and `interpreter`) name these
+//! items (angr-mx00p.51.11, angr-mx00p.51.12, angr-mx00p.51.13,
+//! angr-mx00p.51.14, angr-mx00p.51.15).
 //!
 //! # File index
 //!
 //! | File | Holds |
 //! |------|-------|
 //! | `arch/` | The `Arch` trait and `AddrOrSymbolic`, the per-arch register tables and offsets, `RegisterFile`, the arch registry and the calling conventions; `arch/mod.rs` indexes its files. |
+//! | `interpreter/` | `VEXInterpreter`: statement and expression execution, exits, deferred forks, inspect bits, the `EngineHost` seam and its `TestHost` double; `interpreter/mod.rs` indexes its files. |
 //! | `memory/` | `SymbolicMemory`, its pages, loads, stores, merge and the multi-value overlay; `memory/mod.rs` indexes its files. |
 //! | `state/` | `RustSimState` (construction, fork/merge, registers, memory, history, inspection, export), its filesystem, snapshots and `StateMigrationPayload`; `state/mod.rs` indexes its files. |
 //! | `symbolic/` | `SymContext`, `ToZ3`, the Z3 plumbing, the `RustBV` re-export of `angr_bv::SymBV`, and `concretize`; `symbolic/mod.rs` indexes its files. |
@@ -97,6 +101,7 @@ pub fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
 }
 
 pub mod arch;
+pub mod interpreter;
 pub mod memory;
 pub mod state;
 pub mod symbolic;

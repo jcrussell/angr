@@ -143,6 +143,7 @@ dependencies = [
  "fixedbitset 0.5.7",
  "im",
  "log",
+ "lru",
  "num-bigint",
  "parking_lot",
  "quickcheck",

@@ -3382,7 +3382,7 @@ _COPY_NEEDS_MANAGER_MSG = (
 #      native/angr/src/callbacks.rs and the interpreter dispatch
 #      helpers.
 #   3. Instrument the corresponding interpreter site in
-#      native/angr/src/interpreter/.
+#      native/angr-symex-core/src/interpreter/.
 #   4. Add a `_cb_inspect_<name>` method on RustExplorationManager
 #      that builds the attrs dict and calls `_dispatch_inspect_event`.
 #   5. Register the callback in RustExplorationManager.set_callbacks().

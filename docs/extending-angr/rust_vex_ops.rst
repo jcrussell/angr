@@ -62,7 +62,7 @@ head as you read the worked examples below:
        which delegates to ``qop`` only for a concrete
        round-to-nearest-ties-to-even rm. Concrete fast paths live next
        to their Z3 symbolic fallbacks.
-   * - ``native/angr/src/interpreter/expressions_arith.rs``
+   * - ``native/angr-symex-core/src/interpreter/expressions_arith.rs``
      - The interpreter site that calls ``VEXOps::*`` (``eval_unop`` /
        ``eval_binop`` / ``eval_triop`` / ``eval_qop`` / ``eval_ccall``,
        plus the ``vex_op_fallback`` unsupported-op path). The dispatch
@@ -282,7 +282,7 @@ plane, which ``VEXOps`` deliberately does not have (its inputs are
 ``RustBV`` plus a solver context — nothing more).
 
 The dispatch site is in
-``native/angr/src/interpreter/expressions.rs`` (search
+``native/angr-symex-core/src/interpreter/expressions.rs`` (search
 ``IRExpr::Load {``); the arm itself only delegates to the
 ``eval_load`` helper in ``expressions_loads.rs``, which does the work:
 
@@ -322,7 +322,7 @@ Same story as ``Load`` but on the statement side (search
    }
 
 The dispatch site is in
-``native/angr/src/interpreter/statements.rs`` (search
+``native/angr-symex-core/src/interpreter/statements.rs`` (search
 ``IRStmt::Store {``):
 
 .. code-block:: rust
@@ -816,11 +816,11 @@ interpreter routes both to a Python VEX fallback via
 ``CbExecutionError::NeedPythonFallback`` rather than implementing
 native handlers
 (the ``IRExpr::VECRET | IRExpr::GSPTR`` arm of
-``native/angr/src/interpreter/expressions.rs::eval_expr_with_callbacks_inner``
+``native/angr-symex-core/src/interpreter/expressions.rs::eval_expr_with_callbacks_inner``
 — the public ``eval_expr_with_callbacks`` wrapper only adds profiling and
 ``inspect`` dispatch before delegating to it).
 The error reason carries the shared ``VECRET_GSPTR_REASON`` marker
-from ``native/angr/src/interpreter/execution_error.rs``; the manager scans
+from ``native/angr-symex-core/src/interpreter/execution_error.rs``; the manager scans
 fallback reasons in ``exploration::run_loop_single::callback_event`` and bumps
 ``vecret_gsptr_fallback_count`` so future regressions are
 visible via ``mgr.stats`` / ``mgr._rust_mgr.get_fallback_stats()``.

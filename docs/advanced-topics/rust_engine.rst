@@ -1472,7 +1472,7 @@ Honored options
        boundaries with a symbolic jump target the state routes to the
        ``unconstrained`` stash silently instead of being enumerated. The
        check fires inside ``VEXInterpreter::eval_next_addr_concretized``
-       (``native/angr/src/interpreter/exits.rs``). Matches Python's
+       (``native/angr-symex-core/src/interpreter/exits.rs``). Matches Python's
        ``engines/successors.py::_categorize_successor`` behavior
        (``max_targets=0`` with ``skip_max_targets_warning=True``).
    * - ``NO_SYMBOLIC_JUMP_RESOLUTION``
@@ -1505,7 +1505,7 @@ Honored options
        ``symbolic_ip_at_exit`` and the manager restores it via
        ``state.set_ip`` after ``state.set_pc(next_pc)``
        (``native/angr/src/exploration/stepping.rs``,
-       ``native/angr/src/interpreter/exits.rs``). Multi-target forks are
+       ``native/angr-symex-core/src/interpreter/exits.rs``). Multi-target forks are
        handled by
        ``core_outcome_handlers.rs::handle_symbolic_jump_target_core``.
        Mirrors Python's
@@ -1712,7 +1712,7 @@ vs. Python.
      - (a) honored transparently. Rust's interpreter routes unsupported
        VEX features through ``FallbackStrategy::PythonCallback``
        (the ``FallbackStrategy`` enum in
-       ``native/angr/src/interpreter/execution_error.rs``); Python re-runs
+       ``native/angr-symex-core/src/interpreter/execution_error.rs``); Python re-runs
        the block, sees the option, and substitutes. Syscalls fall back
        to Python's syscall engine via ``_handle_syscall_callback``,
        which also honors ``BYPASS_UNSUPPORTED_SYSCALL``.
@@ -2184,7 +2184,7 @@ dispatches, what attributes each populates, and which bit they occupy
 in the Rust callbacks ``inspect_enabled`` atomic bitmask
 (``AtomicU32``), with the
 bit-to-event mapping declared by the ``inspect_events!`` invocation that
-defines ``InspectBit`` in ``native/angr/src/interpreter/inspect_bits.rs``. The
+defines ``InspectBit`` in ``native/angr-symex-core/src/interpreter/inspect_bits.rs``. The
 manager-side registry (``_inspect_breakpoints``, ``_INSPECT_EVENT_BITS``
 in ``rust_manager.py``) and the registration-time rejection in
 ``RustInspectProxy._check_event`` both read from this table; the

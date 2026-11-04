@@ -838,7 +838,7 @@ class RustErrorRecord:
                            (e.g. 'unsupported', 'memory', 'lift', 'callback').
                            Derived from the message prefix; matches the
                            CbExecutionError variants in
-                           native/angr/src/interpreter/execution_error.rs.
+                           native/angr-symex-core/src/interpreter/execution_error.rs.
         constraint_count:  Number of solver constraints on the state at error
                            time. 0 if state is None or the count cannot be read.
         registers:         dict mapping register name -> int (concrete) or str
@@ -850,7 +850,7 @@ class RustErrorRecord:
     """
 
     # Stable error-class taxonomy. Prefixes match the Display impls of
-    # CbExecutionError variants in native/angr/src/interpreter/execution_error.rs and
+    # CbExecutionError variants in native/angr-symex-core/src/interpreter/execution_error.rs and
     # the formatted error strings in native/angr/src/exploration/stepping.rs.
     _ERROR_CLASS_PREFIXES = (
         ("ir decoding error", "nodecode"),

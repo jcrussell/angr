@@ -28,13 +28,12 @@ impl PyExecutionConfig {
     #[new]
     #[pyo3(signature = (max_deferred_forks=500, use_deferred_forks=true))]
     pub(crate) fn py_new(max_deferred_forks: u32, use_deferred_forks: bool) -> Self {
-        PyExecutionConfig {
-            inner: ExecutionConfig {
-                max_deferred_forks,
-                use_deferred_forks,
-                ..ExecutionConfig::default()
-            },
-        }
+        // `ExecutionConfig` is `#[non_exhaustive]`, so a struct literal is
+        // rejected outside angr-symex-core.
+        let mut inner = ExecutionConfig::default();
+        inner.max_deferred_forks = max_deferred_forks;
+        inner.use_deferred_forks = use_deferred_forks;
+        PyExecutionConfig { inner }
     }
 
     /// See [`ExecutionConfig::max_deferred_forks`].
