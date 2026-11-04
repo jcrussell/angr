@@ -4910,8 +4910,11 @@ class RustExplorationManager(
         the Python engine, and a find that is never reached still returns (angr-vmi2l.243).
         """
         rust = self._rust_mgr
-        rust.set_find_needs_python(self._find_predicate is not None)
-        rust.set_avoid_needs_python(self._avoid_predicate is not None)
+        # Python evaluates callable predicates between rounds, where Explorer's filter runs before each step. A
+        # Rust-side predicate bounce would spend a round's run(1) on the callback and leave the state unstepped
+        # (angr-mx00p.136.35).
+        rust.set_find_needs_python(False)
+        rust.set_avoid_needs_python(False)
         drop_terminal = rust.stats()["drop_terminal_states"]
         rust.set_drop_terminal_states(False)
         was_granular = self.set_block_granular(True)
@@ -4920,14 +4923,20 @@ class RustExplorationManager(
         # last round, as SimulationManager's last step steps them (angr-mx00p.136.14).
         rust.set_num_find(sys.maxsize)
         try:
+            self._evaluate_predicates_on_active()
             for round_no in range(n):
+                # SimulationManager's Explorer filters before it steps, so nothing reached in the budget's
+                # last step is stashed; the run ends with those states active (angr-mx00p.136.35).
+                if round_no + 1 == n and not self._active_techniques:
+                    self._explore_last_round()
+                    return self
                 self._invalidate_state_export_cache()
                 # An empty visible stash still steps: the round's run(1) flushes parked bounces.
                 if not self._step_loop(1):
                     break
                 self._evaluate_predicates_on_active()
                 if self._found_count() >= num_find:
-                    if round_no + 1 < n and not self._active_techniques and until is None:
+                    if not self._active_techniques and until is None:
                         self._explore_last_round()
                         return self
                     break
@@ -4943,17 +4952,29 @@ class RustExplorationManager(
         return self
 
     def _explore_last_round(self) -> None:
-        """Step every active state once more, with no find or avoid armed.
+        """Filter the active states as Explorer does, then step them once with no find or avoid armed.
 
         SimulationManager's Explorer filters a state before stepping it, so a
         state reaching a find address is stashed one step after it arrives,
         and in that step every other active state advances once more. Rust
         stashes on arrival, so the round that reaches ``num_find`` is one
-        round short of the Python run; this is that round. A state arriving
-        at a find or avoid address in it stays active, as on Python
-        (angr-mx00p.136.14).
+        round short of the Python run; this is that round (angr-mx00p.136.14).
+        The last round of an ``n`` budget is one too (angr-mx00p.136.35). A
+        state arriving at a find or avoid address in it stays active, as on
+        Python. The filter stands in for Rust's pre-step check, which the
+        disarm turns off: a state that starts the round at a target (a seed
+        when ``n=1``) is stashed unstepped, find first as Explorer checks.
         """
         rust = self._rust_mgr
+        self._evaluate_predicates_on_active()
+        find_addrs = set(self._explore_find_addrs or ())
+        avoid_addrs = set(self._explore_avoid_addrs or ())
+        if find_addrs or avoid_addrs:
+            for sid, addr, _stdout_len in rust.get_state_predicate_info("active"):
+                if addr in find_addrs:
+                    rust.move_state(sid, "active", "found")
+                elif addr in avoid_addrs:
+                    rust.move_state(sid, "active", "avoid")
         rust.set_find_addrs([])
         rust.set_avoid_addrs([])
         rust.set_find_needs_python(False)

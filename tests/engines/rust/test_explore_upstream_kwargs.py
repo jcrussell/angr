@@ -25,6 +25,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 FAUXWARE_FIND = 0x4006ED
+# The step from main in which fauxware's authenticated path reaches FAUXWARE_FIND.
+FAUXWARE_FIND_ROUND = 27
 BASE = 0x1000
 
 
@@ -89,6 +91,31 @@ class TestExploreHonors:
             mgr.explore(find=FAUXWARE_FIND, n=3)
             counts.append(_counts(mgr))
         assert counts[0] == counts[1] == {"active": 1}
+
+    @pytest.mark.parametrize("n", [1, FAUXWARE_FIND_ROUND, FAUXWARE_FIND_ROUND + 1])
+    @pytest.mark.parametrize(
+        "targets",
+        [
+            {"find": FAUXWARE_FIND},
+            {"find": 0x1234, "avoid": FAUXWARE_FIND},
+            {"find": lambda s: s.addr == FAUXWARE_FIND},
+            {"find": lambda _s: False, "avoid": lambda s: s.addr == FAUXWARE_FIND},
+        ],
+        ids=["find", "avoid", "find_predicate", "avoid_predicate"],
+    )
+    def test_n_budget_boundary_matches_python(self, targets, n):
+        """A target reached in the budget's last step stays active: Explorer filters before it steps (angr-mx00p.136.35)."""
+        stashes = []
+        for rust in (False, True):
+            project = load_fauxware()
+            pre = project.factory.simulation_manager(project.factory.entry_state())
+            pre.explore(find=project.loader.find_symbol("main").rebased_addr)
+            mgr = project.factory.simulation_manager(pre.found[0], engine="rust" if rust else None)
+            mgr.explore(n=n, **targets)
+            stashes.append({k: sorted(s.addr for s in v) for k, v in mgr.stashes.items() if v})
+        if n == FAUXWARE_FIND_ROUND:
+            assert FAUXWARE_FIND in stashes[0]["active"]
+        assert stashes[0] == stashes[1]
 
     def test_n_returns_on_an_unreachable_find(self):
         """``jmp $`` never reaches the find; n= is the only stop."""
