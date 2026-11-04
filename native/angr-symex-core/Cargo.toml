@@ -30,12 +30,17 @@ testing = []
 
 [dependencies]
 angr-bv = { path = "../angr-bv" }
+angr-symex-macros = { path = "../angr-symex-macros" }
 angr-vex = { path = "../angr-vex" }
 clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
+fixedbitset = "0.5"
+im = "15.1"
 log = "0.4.32"
 num-bigint = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
+rustc-hash = "2"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
+thiserror = { workspace = true }
 z3 = "0.21"
 z3-sys = "0.13"
 

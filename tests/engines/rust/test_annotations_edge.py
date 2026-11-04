@@ -559,7 +559,7 @@ class TestEdgeCases:
         fauxware_project,
     ):
         """SYMBOL_FILL_UNCONSTRAINED_MEMORY must NOT raise — Rust's
-        load_concrete_lazy in native/angr/src/memory/load.rs falls back to a
+        load_concrete_lazy in native/angr-symex-core/src/memory/load.rs falls back to a
         fresh symbolic BVS when zero_fill_unconstrained is unset, so the
         memory variant matches Python's symbolic-fill behavior. Only the
         REGISTERS variant is a silent divergence (angr-apre).

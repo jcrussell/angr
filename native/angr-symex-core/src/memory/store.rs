@@ -77,7 +77,7 @@ use crate::symbolic::{
     RustBV, SymContext, record_concretize_disjunction, record_mem_ite_depth,
     record_mem_lazy_page_fault, record_mem_store, record_mem_store_symbolic_addr,
 };
-use crate::vex::Endness;
+use angr_vex::Endness;
 
 use super::multi::MultiAlternative;
 use super::page::{MemoryPage, PAGE_SIZE, PageIndex, Permission};
@@ -410,7 +410,7 @@ impl SymbolicMemory {
         record_mem_store_symbolic_addr();
 
         // AVOID_MULTIVALUED_WRITES: silently drop the store. Mirrors the
-        // early `return` at `address_concretization_mixin.py:327-329`.
+        // early `return` in `AddressConcretizationMixin.store`.
         if concretizer.should_avoid_multivalued_write(&addr) {
             return Ok(());
         }
@@ -769,8 +769,8 @@ impl SymbolicMemory {
 
     /// angr-62li: hoist `Or(addr == a0, ..., addr == aK)` to the top-level
     /// solver when the concretizer returned `Multiple`. Python's
-    /// `address_concretization_mixin` (angr/storage/memory_mixins/
-    /// address_concretization_mixin.py:292-294, 342-344) does the same for
+    /// `AddressConcretizationMixin` (angr/storage/memory_mixins/
+    /// address_concretization_mixin.py, its `load` and `store`) does the same for
     /// every concretized read/write; the Rust-native path was missing it,
     /// so Z3's `propagate_values` tactic never saw the address domain
     /// restriction.

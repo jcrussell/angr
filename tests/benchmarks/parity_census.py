@@ -115,7 +115,7 @@ _EXONERATED = {
     "its bypass fires, and that bypass runs in Python. Honored transparently.",
     "UNSUPPORTED_FORCE_CONCRETIZE": "Modifier only — same as UNSUPPORTED_BYPASS_ZERO_DEFAULT.",
     "SYMBOL_FILL_UNCONSTRAINED_MEMORY": "Vacuously honored: Rust's load_concrete_lazy "
-    "(native/angr/src/memory/load.rs) already falls back to a fresh symbolic BVS when "
+    "(native/angr-symex-core/src/memory/load.rs) already falls back to a fresh symbolic BVS when "
     "zero_fill_unconstrained is unset, so symbol-fill IS Rust's default for memory. "
     "(The REGISTERS sibling is NOT exonerated — Rust zero-fills registers.)",
     "CONCRETIZE_SYMBOLIC_WRITE_SIZES": "Honored transparently: its only in-tree consumer is "

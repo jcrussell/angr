@@ -249,7 +249,7 @@ pub(crate) mod exploration;
 pub(crate) mod gil_profile;
 pub(crate) mod interpreter;
 pub(crate) mod libvex_lifter;
-pub mod memory;
+pub use angr_symex_core::memory;
 pub(crate) mod procedures;
 pub(crate) mod solver;
 pub mod stash;

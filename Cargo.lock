@@ -137,15 +137,20 @@ name = "angr-symex-core"
 version = "0.1.0"
 dependencies = [
  "angr-bv",
+ "angr-symex-macros",
  "angr-vex",
  "clarirs-core",
+ "fixedbitset 0.5.7",
+ "im",
  "log",
  "num-bigint",
  "parking_lot",
  "quickcheck",
  "quickcheck_macros",
+ "rustc-hash",
  "serde",
  "serde_json",
+ "thiserror",
  "z3",
  "z3-sys",
 ]

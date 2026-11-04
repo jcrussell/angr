@@ -45,7 +45,7 @@ pub(crate) type SymMap<K, V> =
 
 use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{RustBV, SymContext};
-use crate::vex::Endness;
+use angr_vex::Endness;
 
 mod address;
 mod concretize_glue;
@@ -58,7 +58,7 @@ mod store;
 mod symbolic_objects;
 test_submod!(tests);
 pub use address::Address;
-pub(crate) use load::{fresh_unconstrained_read_symbol, mem_filler_name};
+pub use load::{fresh_unconstrained_read_symbol, mem_filler_name};
 pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
 

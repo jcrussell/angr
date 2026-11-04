@@ -1429,7 +1429,7 @@ class TestErrorRecovery:
     # back to Python's state.memory.store.  These tests pin the routing
     # contract.  End-to-end correctness of the Rust Multi-cell helpers
     # themselves is covered by Rust unit tests in
-    # native/angr/src/memory/tests.rs (angr-aija).
+    # native/angr-symex-core/src/memory/tests.rs (angr-aija).
 
     def test_try_multi_cell_store_skips_when_no_annotation(self):
         """No MultiwriteAnnotation on addr → fall through (return False).

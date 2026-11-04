@@ -74,7 +74,7 @@ use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{
     RustBV, SymContext, record_mem_lazy_page_fault, record_mem_load, record_mem_load_symbolic_addr,
 };
-use crate::vex::Endness;
+use angr_vex::Endness;
 
 use super::page::{PAGE_SIZE, PageIndex, Permission};
 use super::{
@@ -134,7 +134,7 @@ impl SymbolicMemory {
     /// interpreter-side ones (`interpreter/expressions_loads.rs`,
     /// `interpreter/concretize_cache.rs`) pass a VEX type width, so the clamp
     /// is defense-in-depth on both (angr-0jh0j.35).
-    pub(crate) fn unconstrained_read_value(&self, size: u32) -> RustBV {
+    pub fn unconstrained_read_value(&self, size: u32) -> RustBV {
         if self.zero_fill_unconstrained {
             RustBV::concrete(0, fabricate_width_bits(size))
         } else {
@@ -1150,7 +1150,7 @@ pub(super) fn bytes_to_bv(bytes: &[u8], size: u32, endness: Endness) -> RustBV {
 /// Z3 identity is by name (`invariant-symbol-identity-is-by-name`), so a
 /// counter per path would make two independent reads one variable
 /// (angr-mx00p.17).
-pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32) -> RustBV {
+pub fn fresh_unconstrained_read_symbol(width_bits: u32) -> RustBV {
     let id = crate::symbolic::names::next("symbolic_read_unconstrained");
     RustBV::symbol(format!("symbolic_read_unconstrained_{id}"), width_bits)
 }
@@ -1160,7 +1160,7 @@ pub(crate) fn fresh_unconstrained_read_symbol(width_bits: u32) -> RustBV {
 /// keeping the id disjoint from Python's BVS counter. One counter for every
 /// minting site, since Z3 identity is by name
 /// (`invariant-symbol-identity-is-by-name`).
-pub(crate) fn mem_filler_name(addr: u64, bits: u32) -> String {
+pub fn mem_filler_name(addr: u64, bits: u32) -> String {
     let id = crate::symbolic::names::next("mem_filler");
     format!("mem_{addr:x}_rs{id}_{bits}")
 }

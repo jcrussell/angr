@@ -1648,7 +1648,7 @@ vs. Python.
    * - ``SYMBOL_FILL_UNCONSTRAINED_MEMORY``
      - Force symbolic fill on uninitialized memory reads.
      - **Matches by default.** Rust's ``load_concrete_lazy``
-       (``native/angr/src/memory/load.rs::load_concrete_lazy``) returns a fresh
+       (``native/angr-symex-core/src/memory/load.rs::load_concrete_lazy``) returns a fresh
        ``unc_mem_*`` symbolic BVS when ``zero_fill_unconstrained`` is
        unset — i.e., symbolic-fill is already Rust's default for memory.
        The option is silently accepted but has no effect because Rust
@@ -1849,7 +1849,7 @@ in Rust mode.
      - Reason
    * - ``ABSTRACT_MEMORY``
      - Rust uses its concrete-address paged memory (``SymbolicMemory``
-       in ``native/angr/src/memory/mod.rs``) only — there is no
+       in ``native/angr-symex-core/src/memory/mod.rs``) only — there is no
        SimAbstractMemory backend.
    * - ``ABSTRACT_SOLVER``
      - Rust does not have an abstract-domain solver.

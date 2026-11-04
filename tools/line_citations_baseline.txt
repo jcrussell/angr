@@ -21,8 +21,6 @@ native/angr/src/interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engin
 native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` at engines/successors.py:328). Also
 native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
 native/angr/src/interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
-native/angr/src/memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
-native/angr/src/memory/store.rs	/// address_concretization_mixin.py:292-294, 342-344) does the same for
 native/angr/src/procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
 native/angr/src/state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
 native/angr/src/state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.

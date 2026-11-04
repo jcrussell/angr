@@ -38,7 +38,7 @@ use std::cell::RefCell;
 use super::page::PageIndex;
 use super::{Address, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, record_mem_ite_depth};
-use crate::vex::Endness;
+use angr_vex::Endness;
 
 /// Phase 4.2 (angr-mmdh.2): max number of consecutive Multi bytes that
 /// `flush_multi_cells` will coalesce into a single wider `symbolic_objects`

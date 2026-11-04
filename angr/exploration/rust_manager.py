@@ -796,7 +796,7 @@ _SIM_ERROR_BY_CLASS = {
 }
 
 # MemoryError's Display for the accesses Python reports as SimSegfaultException
-# (native/angr/src/memory/mod.rs, enum MemoryError).
+# (native/angr-symex-core/src/memory/mod.rs, enum MemoryError).
 _SEGFAULT_RE = re.compile(r"memory error: (?:unmapped memory|unmapped page|permission violation) at (0x[0-9a-f]+)")
 
 # The required permission of a violation, named as Python's SimSegfaultException.reason names it
@@ -4068,7 +4068,7 @@ class RustExplorationManager(
         # non-X pages (ENABLE_NX, which Python additionally gates on
         # STRICT_PAGE_ACCESS — see angr/engines/vex/heavy/heavy.py:115-124).
         # add_state forks the state internally; both flags are preserved
-        # through forks (see SymbolicMemory::fork in native/angr/src/memory/mod.rs).
+        # through forks (see SymbolicMemory::fork in native/angr-symex-core/src/memory/mod.rs).
         if hasattr(angr_state, "options"):
             try:
                 from angr import sim_options as o

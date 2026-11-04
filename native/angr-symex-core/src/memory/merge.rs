@@ -24,7 +24,7 @@ use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{PAGE_SIZE, PageIndex};
 use super::{Address, MemoryPage, PendingWrite, SymMap, SymbolicMemory};
 use crate::symbolic::RustBV;
-use crate::vex::Endness;
+use angr_vex::Endness;
 
 impl SymbolicMemory {
     /// The page an arm that never mapped `base_addr` reads: the zero page

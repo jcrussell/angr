@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep PyO3 out of the engine core, its tests included (angr-mx00p.75).
 
-The core modules (``arch/``, ``memory/``, ``interpreter/`` and ``state/``
+The core modules (``arch/``, ``interpreter/`` and ``state/``
 under ``native/angr/src/``, and all of ``native/angr-bv/src/``,
 ``native/angr-vex/src/`` and ``native/angr-symex-core/src/``) and the native procedures and syscalls
 (``procedures/`` and ``syscalls/``) are what the crate split (angr-mx00p.51)
@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-CORE_DIRS = ("arch", "memory", "interpreter", "state", "procedures", "syscalls")
+CORE_DIRS = ("arch", "interpreter", "state", "procedures", "syscalls")
 SCAN = {
     "native/angr": CORE_DIRS,
     "native/angr-bv": ("",),
