@@ -2713,7 +2713,7 @@ class TestInitPreStepCarriesEveryState:
         proj = angr.load_shellcode(self.CODE, arch="amd64")
         # Make the seed a "loader stub" whose init prefix ends at MAIN.
         monkeypatch.setattr(proj.simos, "_loader_addr", self.STUB, raising=False)
-        monkeypatch.setattr(RustExplorationManager, "_resolve_main_address", lambda _self: self.MAIN)
+        monkeypatch.setattr("angr.exploration.rust_manager.resolve_main_address", lambda _project: self.MAIN)
         return proj
 
     def test_every_fork_and_terminal_state_is_seeded(self, monkeypatch):
@@ -2752,7 +2752,7 @@ class TestInitPreStepSpinningFork:
     def _manager(self, monkeypatch):
         proj = angr.load_shellcode(self.CODE, arch="amd64")
         monkeypatch.setattr(proj.simos, "_loader_addr", self.STUB, raising=False)
-        monkeypatch.setattr(RustExplorationManager, "_resolve_main_address", lambda _self: self.MAIN)
+        monkeypatch.setattr("angr.exploration.rust_manager.resolve_main_address", lambda _project: self.MAIN)
         return RustExplorationManager(proj, [proj.factory.blank_state(addr=self.STUB)])
 
     def test_spinning_fork_stops_the_pre_step(self, monkeypatch):

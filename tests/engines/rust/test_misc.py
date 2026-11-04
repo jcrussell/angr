@@ -11,6 +11,7 @@ import re
 import pytest
 
 import angr
+from angr.exploration.rust_manager import resolve_main_address
 
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
@@ -2299,14 +2300,14 @@ class TestCadetEasterEggStepLoop:
 class TestDirectCallEntryMainResolution:
     """Regression test (angr-027h): a "thin" entry that is a direct ``call main``
     (no ``__libc_start_main`` trampoline, e.g. DECREE/CGC binaries) has no
-    ``main`` symbol and no ``rdi``/``edi`` PUT for ``_resolve_main_address`` to
+    ``main`` symbol and no ``rdi``/``edi`` PUT for ``resolve_main_address`` to
     parse. Before the fix it returned ``None``, so ``_step_python_to_main``'s
     ``main_addr is None`` heuristic waited ``step > 10`` and grabbed an
     arbitrary mid-init address (inside ``__libc_csu_init``), starting the Rust
     exploration off the real CFG (the imported state began at 0x804840c, ran a
     ``pop;pop;pop;pop;ret`` gadget, and went unconstrained immediately).
 
-    The fix: ``_resolve_main_address`` falls back to the entry block's direct
+    The fix: ``resolve_main_address`` falls back to the entry block's direct
     call target when it lands on real code in the main object (a SimProcedure
     target means the ``__libc_start_main`` case, handled by the rdi parse).
     """
@@ -2315,8 +2316,7 @@ class TestDirectCallEntryMainResolution:
         proj = _load_cadet()
         # The CGC binary has no 'main' symbol and its entry is `call 0x8048080`.
         assert proj.loader.find_symbol("main") is None
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-        resolved = mgr._resolve_main_address()
+        resolved = resolve_main_address(proj)
         assert resolved == 0x8048080, (
             f"expected main resolved to 0x8048080 from direct-call entry, "
             f"got {resolved if resolved is None else hex(resolved)}"

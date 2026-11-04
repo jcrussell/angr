@@ -370,6 +370,20 @@ def rust_default_engine_env() -> bool:
     return os.environ.get("ANGR_DEFAULT_ENGINE", "").strip().lower() == "rust"
 
 
+def rust_state_option_refusals(options) -> list[str]:
+    """The option settings in *options* that route a state to the Python engine.
+
+    :func:`rust_unsupported_options` (what the Rust engine refuses), then each
+    ``_PYTHON_ROUTED_OPTION_NAMES`` member that is set (what it would accept but
+    the Python engine serves). Shared by :func:`rust_engine_eligible` and
+    :meth:`angr.exploration.rust_backend.RustBackend.decline_reason`.
+    """
+    offending = rust_unsupported_options(options)
+    if options is not None:
+        offending += sorted(name for name in _PYTHON_ROUTED_OPTION_NAMES if name in options)
+    return offending
+
+
 def rust_supports_arch(arch_name) -> bool:
     """True when the Rust engine implements *arch_name*.
 
@@ -416,10 +430,7 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
         return False, "simulation_manager kwargs not honored by the rust engine: " + ", ".join(unsupported_kwargs)
 
     for state in states or ():
-        options = getattr(state, "options", None)
-        offending = rust_unsupported_options(options)
-        if options is not None:
-            offending += sorted(name for name in _PYTHON_ROUTED_OPTION_NAMES if name in options)
+        offending = rust_state_option_refusals(getattr(state, "options", None))
         if offending:
             return False, "state options not honored by the rust engine: " + ", ".join(offending)
 
@@ -451,6 +462,75 @@ def _unsupported_inspect_events(state) -> list[str]:
         for event, bps in breakpoints.items()
         if bps and (event not in _RUST_INSPECT_SUPPORTED_EVENTS or event in _RUST_INSPECT_BOUNCE_ONLY_EVENTS)
     )
+
+
+def resolve_main_address(project) -> int | None:
+    """Find main function address; for stripped binaries, parse _start's PUT(rdi)."""
+    main_sym = project.loader.find_symbol("main")
+    if main_sym:
+        return main_sym.rebased_addr
+    try:
+        entry_block = project.factory.block(project.entry)
+        vex = entry_block.vex
+        rdi_offset = project.arch.registers.get("rdi", (None,))[0]
+        if rdi_offset is None:
+            rdi_offset = project.arch.registers.get("edi", (None,))[0]
+        if rdi_offset is not None:
+            for stmt in reversed(vex.statements):
+                s = str(stmt)
+                if f"PUT(offset={rdi_offset})" in s or "PUT(rdi)" in s:
+                    import re
+
+                    m_const = re.search(r"0x([0-9a-fA-F]+)", s)
+                    if m_const:
+                        candidate = int(m_const.group(1), 16)
+                        main_obj = project.loader.main_object
+                        if main_obj.min_addr <= candidate <= main_obj.max_addr:
+                            l.info(f"Extracted main=0x{candidate:x} from _start's rdi")
+                            return candidate
+                    break
+        # Fallback: a "thin" entry that is a direct `call main` (no
+        # __libc_start_main trampoline, e.g. DECREE/CGC binaries) leaves no
+        # rdi/edi PUT to parse. The entry block's call target IS main when it
+        # lands on real code in the main object (a SimProcedure target means
+        # this is the __libc_start_main case, which the rdi parse handles).
+        # Without this, _step_python_to_main's main_addr=None heuristic waits
+        # `step > 10` and grabs an arbitrary mid-init address (e.g. inside
+        # __libc_csu_init), starting Rust exploration off the real CFG.
+        if vex.jumpkind == "Ijk_Call":
+            import pyvex
+
+            if isinstance(vex.next, pyvex.expr.Const):
+                tgt = vex.next.con.value
+                main_obj = project.loader.main_object
+                if (
+                    main_obj.min_addr <= tgt <= main_obj.max_addr
+                    and tgt != project.entry
+                    and tgt not in project._sim_procedures
+                ):
+                    l.info(f"Resolved main=0x{tgt:x} from entry's direct call target")
+                    return tgt
+    except Exception as e:
+        # cat-(b) FALLBACK WITH LOSS: main address extraction from _start
+        # disassembly failed; caller resolves None and uses the post-init
+        # state at whatever PC step_python_to_main lands on. Debug-logs.
+        l.debug(f"Could not extract main from _start: {e}")
+    return None
+
+
+def is_python_init_seed(project, addr) -> bool:
+    """True when a state at *addr* starts the loader's init sequence, which runs on the Python engine.
+
+    Only a real init seed qualifies: the entry of a binary-format main
+    object, or the simos loader stub (``full_init_state``). A shellcode
+    blob has no init, and a user hook or extern SimProcedure seed is
+    ordinary code (angr-vmi2l.291).
+    """
+    if addr is None:
+        return False
+    if addr == project.entry:
+        return not isinstance(project.loader.main_object, cle.backends.Blob)
+    return addr == getattr(project.simos, "_loader_addr", None)
 
 
 # Every manager constructed in this process that is still alive (see _collect_dead_managers).
@@ -3233,17 +3313,12 @@ class RustExplorationManager(
         """
         main_obj = self._project.loader.main_object
         addr = state.addr
-        if addr == self._project.entry:
-            if isinstance(main_obj, cle.backends.Blob):
-                return [("active", state)]  # Shellcode: no init sequence to skip
-            l.info(f"State at entry point 0x{addr:x}, running Python init to main")
-        else:
-            if addr is None or addr != getattr(self._project.simos, "_loader_addr", None):
-                return [("active", state)]  # Not the loader stub: no init to skip
-            l.info(f"State at loader address 0x{addr:x}, running Python init to reach main binary")
+        if not is_python_init_seed(self._project, addr):
+            return [("active", state)]
+        l.info(f"State at init seed 0x{addr:x}, running Python init to main")
 
         try:
-            main_addr = self._resolve_main_address()
+            main_addr = resolve_main_address(self._project)
             return self._step_python_to_main(state, main_addr, main_obj)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: Python init step failed; original
@@ -3251,59 +3326,6 @@ class RustExplorationManager(
             # .init_array) may not have run. Already warns.
             l.warning(f"Python init failed: {e}, using original state")
             return [("active", state)]
-
-    def _resolve_main_address(self) -> int | None:
-        """Find main function address; for stripped binaries, parse _start's PUT(rdi)."""
-        main_sym = self._project.loader.find_symbol("main")
-        if main_sym:
-            return main_sym.rebased_addr
-        try:
-            entry_block = self._project.factory.block(self._project.entry)
-            vex = entry_block.vex
-            rdi_offset = self._project.arch.registers.get("rdi", (None,))[0]
-            if rdi_offset is None:
-                rdi_offset = self._project.arch.registers.get("edi", (None,))[0]
-            if rdi_offset is not None:
-                for stmt in reversed(vex.statements):
-                    s = str(stmt)
-                    if f"PUT(offset={rdi_offset})" in s or "PUT(rdi)" in s:
-                        import re
-
-                        m_const = re.search(r"0x([0-9a-fA-F]+)", s)
-                        if m_const:
-                            candidate = int(m_const.group(1), 16)
-                            main_obj = self._project.loader.main_object
-                            if main_obj.min_addr <= candidate <= main_obj.max_addr:
-                                l.info(f"Extracted main=0x{candidate:x} from _start's rdi")
-                                return candidate
-                        break
-            # Fallback: a "thin" entry that is a direct `call main` (no
-            # __libc_start_main trampoline, e.g. DECREE/CGC binaries) leaves no
-            # rdi/edi PUT to parse. The entry block's call target IS main when it
-            # lands on real code in the main object (a SimProcedure target means
-            # this is the __libc_start_main case, which the rdi parse handles).
-            # Without this, _step_python_to_main's main_addr=None heuristic waits
-            # `step > 10` and grabs an arbitrary mid-init address (e.g. inside
-            # __libc_csu_init), starting Rust exploration off the real CFG.
-            if vex.jumpkind == "Ijk_Call":
-                import pyvex
-
-                if isinstance(vex.next, pyvex.expr.Const):
-                    tgt = vex.next.con.value
-                    main_obj = self._project.loader.main_object
-                    if (
-                        main_obj.min_addr <= tgt <= main_obj.max_addr
-                        and tgt != self._project.entry
-                        and tgt not in self._project._sim_procedures
-                    ):
-                        l.info(f"Resolved main=0x{tgt:x} from entry's direct call target")
-                        return tgt
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: main address extraction from _start
-            # disassembly failed; caller resolves None and uses the post-init
-            # state at whatever PC step_python_to_main lands on. Debug-logs.
-            l.debug(f"Could not extract main from _start: {e}")
-        return None
 
     def _step_python_to_main(
         self, state: angr.SimState, main_addr: int | None, main_obj
@@ -4590,7 +4612,7 @@ class RustExplorationManager(
 
         targets = set(find_addrs)
         avoid = set(avoid_addrs)
-        main_addr = self._resolve_main_address()
+        main_addr = resolve_main_address(self._project)
         routed = False
 
         for _seed_addr, seed_state, _placed in self._preinit_seeds:
