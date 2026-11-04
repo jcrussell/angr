@@ -125,115 +125,14 @@
 // pre-feature coverage rather than silencing the lint crate-wide.
 #![warn(unreachable_pub)]
 
-/// Declare a test-only submodule that lives in a sibling file.
-///
-/// Every `#[cfg(test)] mod tests;` in this crate points at an out-of-line
-/// `*_tests.rs` (or a `*_tests/` directory of scoped test files) and has to
-/// re-`allow` the two test-only clippy lints, because each test module's own
-/// `deny` overrides the crate-wide `cfg_attr(test, allow(..))` at the top of
-/// this file. That is four attributes of identical boilerplate per site,
-/// repeated at every out-of-line test module (angr-12jjk.16); this macro is
-/// the single place the justification wording lives.
-///
-/// ```ignore
-/// test_submod!("stash_tests.rs" => tests);        // explicit `#[path]`
-/// test_submod!(tests_core);                       // default `tests_core.rs`
-/// test_submod!("context_tests/constraints.rs" => context_tests_constraints);
-/// test_submod!(tests_int_arith);
-/// ```
-///
-/// Defined before the crate's `mod` declarations so legacy textual macro scope
-/// reaches every module; invoke it unqualified.
-///
-/// It is the convention for **every** out-of-line test submodule, not just the
-/// ones where the `allow` is load-bearing. The payload only bites under a host
-/// module's own `#![deny(clippy::unwrap_used, clippy::expect_used)]` (for
-/// example `exploration::shadow_probe`), so the hand-written spelling compiles fine
-/// everywhere else — which is exactly why a partial sweep keeps looking
-/// complete (angr-c7xno.48, angr-03vl4.8, angr-03vl4.89). The invariant a
-/// future audit checks is therefore a simple one:
-/// outside this macro's own definition, `native/angr/src/**` contains no
-/// `#[cfg(test)] #[path = ...] mod ...;`.
-macro_rules! test_submod {
-    ($file:literal => $name:ident) => {
-        #[cfg(test)]
-        #[path = $file]
-        #[allow(
-            clippy::unwrap_used,
-            clippy::expect_used,
-            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-        )]
-        mod $name;
-    };
-    ($name:ident) => {
-        #[cfg(test)]
-        #[allow(
-            clippy::unwrap_used,
-            clippy::expect_used,
-            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-        )]
-        mod $name;
-    };
-}
-
-/// Take a fallible value's success payload, or log the failure and fall back to
-/// `$default`.
-///
-/// A site that discards an error and continues with a degraded result should
-/// say so in the log, and one that risks a wrong answer should log at `warn`.
-/// Writing that out by hand is four lines of `unwrap_or_else` boilerplate, so
-/// the tempting silent form (`.unwrap_or(0)`, `let _ = ...`) keeps winning
-/// (angr-91vj9.6). This macro makes the correct form the shorter one: the
-/// category picks the log level, and the invocation itself is greppable.
-///
-/// `cat_b` logs at `debug` (fallback with loss), `cat_c` at `warn`
-/// (wrong-answer risk). There is deliberately no `cat_a` arm: expected control
-/// flow needs no log, so it stays a plain `match`/`unwrap_or` with a comment.
-/// An unrecognized category is a compile error rather than a silent downgrade.
-///
-/// ```ignore
-/// // Option<T>: `None` is the failure, and there is nothing to `Display`.
-/// silent_default!(cat_c, maybe_symbolic_addr, 0, "address unavailable ({context})");
-///
-/// // Result<T, E>: `|err|` names a binding for the error, in scope for the
-/// // message. Not mentioning it is an unused-variable error under the crate's
-/// // `-D warnings`, so the cause cannot be dropped. (The binder must be
-/// // written by the caller rather than injected by the macro: macro_rules
-/// // hygiene would put a macro-defined `err` out of the message's scope.)
-/// silent_default!(cat_b, parse(s), Default::default(), |err| "bad input: {err}");
-/// ```
-///
-/// Defined before the crate's `mod` declarations so legacy textual macro scope
-/// reaches every module; invoke it unqualified.
-macro_rules! silent_default {
-    // `Result<T, E>` form. Listed first: its `|err|` prefix would otherwise be
-    // swallowed by the `$($msg:tt)+` of the `Option` arm below.
-    ($cat:ident, $fallible:expr, $default:expr, |$err:ident| $($msg:tt)+) => {
-        match $fallible {
-            Ok(value) => value,
-            Err($err) => {
-                silent_default!(@log $cat, $($msg)+);
-                $default
-            }
-        }
-    };
-    // `Option<T>` form.
-    ($cat:ident, $fallible:expr, $default:expr, $($msg:tt)+) => {
-        match $fallible {
-            Some(value) => value,
-            None => {
-                silent_default!(@log $cat, $($msg)+);
-                $default
-            }
-        }
-    };
-    // Internal: the category selects the log level. Keep in sync with the
-    // cat-a/b/c definitions in the `tools/audit_silent_fallback.py` docstring.
-    (@log cat_b, $($msg:tt)+) => { log::debug!($($msg)+) };
-    (@log cat_c, $($msg:tt)+) => { log::warn!($($msg)+) };
-}
-
-test_submod!("silent_default_tests.rs" => silent_default_tests);
+// The VEX layer is the `angr_vex` crate, re-exported as `vex` so
+// `crate::vex::` and `rustylib::vex::` paths name its items. It also
+// `#[macro_export]`s `test_submod!` and `silent_default!` (their docs live in
+// native/angr-vex/src/lib.rs); `#[macro_use]` ahead of the `mod` declarations
+// keeps every invocation unqualified. One `pub extern crate` does both: a
+// `pub use` of a `#[macro_use]` extern crate is rejected (E0365).
+#[macro_use]
+pub extern crate angr_vex as vex;
 
 /// Nanoseconds in `d`, saturating at `u64::MAX` instead of wrapping.
 ///
@@ -384,7 +283,6 @@ pub mod state;
 pub(crate) mod state_bridge;
 pub mod symbolic;
 pub(crate) mod syscalls;
-pub mod vex;
 pub(crate) mod vex_ccall;
 pub(crate) mod vex_irop;
 

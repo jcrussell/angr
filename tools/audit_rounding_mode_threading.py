@@ -20,7 +20,7 @@ This script closes the loop the same way ``tools/audit_silent_fallback.py`` and
 ``tools/check_line_citations.py`` do: a heuristic detector plus a checked-in
 baseline of already-known gaps. Only *new* mode-dropping closures fail.
 
-Two detectors run over ``native/angr/src/vex/**/*.rs`` and
+Two detectors run over ``native/angr-vex/src/**/*.rs``, ``native/angr-bv/src/**/*.rs`` and
 ``native/angr/src/interpreter/**/*.rs`` (test modules excluded).
 
 **Detector 1 (dropped closure mode)** — inside any ``fn <name>_rm(...)``,
@@ -76,7 +76,7 @@ from rust_source_utils import (
 
 # Repo layout: this file lives at <repo>/tools/audit_rounding_mode_threading.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN = {"native/angr": ("vex", "interpreter"), "native/angr-bv": ("",)}
+SCAN = {"native/angr": ("interpreter",), "native/angr-vex": ("",), "native/angr-bv": ("",)}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 40

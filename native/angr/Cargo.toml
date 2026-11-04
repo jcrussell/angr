@@ -28,7 +28,7 @@ expect_used = "warn"
 # flags exactly that shape. A discard that really is expected control flow
 # stays legal by spelling itself `drop(expr)` with a `SILENT(cat-a)` rationale
 # comment; a lossy one uses `silent_default!` (see its doc in
-# native/angr/src/lib.rs). When the
+# native/angr-vex/src/lib.rs). When the
 # discarded value is `Copy` (e.g. `compare_exchange`'s `Result<u64, u64>`),
 # `drop` is a no-op that clippy rejects in turn — those keep `let _ =` under an
 # `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): ...")]`.
@@ -47,6 +47,7 @@ fuzzing = []
 
 [dependencies]
 angr-bv = { path = "../angr-bv" }
+angr-vex = { path = "../angr-vex" }
 angr-symex-macros = { path = "../angr-symex-macros" }
 backtrace = "0.3.76"
 clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
@@ -102,6 +103,7 @@ lru = "0.12"
 crossbeam-deque = "0.8"
 
 [dev-dependencies]
+angr-vex = { path = "../angr-vex", features = ["testing"] }
 tempfile = "3.27.0"
 quickcheck = "1.0"
 quickcheck_macros = "1.0"

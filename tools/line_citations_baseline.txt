@@ -31,4 +31,3 @@ native/angr/src/syscalls/identity.rs	//! (`angr/state_plugins/posix.py:159`).
 native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
 native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).
 native/angr/src/syscalls/rlimit.rs	/// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).
-native/angr/src/vex/ops/vec_permute_mul.rs	/// `angr/engines/vex/claripy/irop.py:599`, generalised to the full

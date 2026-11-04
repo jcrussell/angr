@@ -73,6 +73,7 @@ version = "0.1.0"
 dependencies = [
  "angr-bv",
  "angr-symex-macros",
+ "angr-vex",
  "backtrace",
  "clarirs-core",
  "clarirs-num",
@@ -138,6 +139,22 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "trybuild",
+]
+
+[[package]]
+name = "angr-vex"
+version = "0.1.0"
+dependencies = [
+ "angr-bv",
+ "clarirs-core",
+ "clarirs-z3",
+ "log",
+ "num-bigint",
+ "num-traits",
+ "quickcheck",
+ "quickcheck_macros",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

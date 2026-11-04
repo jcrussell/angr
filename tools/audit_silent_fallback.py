@@ -60,7 +60,7 @@ from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roo
 # Repo layout: this file lives at <repo>/tools/audit_silent_fallback.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",)}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 # Fewer non-test, fork-owned files than this means the code moved out of the scan roots.
 MIN_FILES = 200

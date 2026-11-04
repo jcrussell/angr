@@ -770,7 +770,7 @@ _UNMAPPED_VEX_OPS_REAL = _UNMAPPED_NEON_QSHL_IMM + _UNMAPPED_FP_DECIMAL + _UNMAP
 
 # Currently-NeonUnimplemented (routes through OpError::UnsupportedNeon, not
 # UnsupportedVexOp, but both PyErr-map to RustUnsupportedVexOpError). Updated
-# from native/angr/src/vex/opcode_map.rs::parse_neon_unimplemented.
+# from native/angr-vex/src/opcode_map.rs::parse_neon_unimplemented.
 #
 # Empty: Iop_PwAdd32Fx2 maps to IROp::VFPwAdd (angr-cudgw.6), so no opcode
 # currently routes to NeonUnimplemented. The

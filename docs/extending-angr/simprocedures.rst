@@ -973,7 +973,7 @@ Testing a native procedure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The crate-wide convention is a **separate test file** pulled in by the
-``test_submod!`` macro (defined in ``native/angr/src/lib.rs``), not an
+``test_submod!`` macro (defined in ``native/angr-vex/src/lib.rs``), not an
 inline ``#[cfg(test)] mod tests`` block. ``strlen.rs``'s last line is:
 
 .. code-block:: rust

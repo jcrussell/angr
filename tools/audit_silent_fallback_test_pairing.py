@@ -21,7 +21,7 @@ the discipline of shipping a same-commit regression test proving the
 fallback's chosen value is *correct* for the edge case, not merely "doesn't
 crash". `cat_a` (expected control flow) is deliberately exempt -- there is no
 "wrong answer" for it to get right, so a test would be vacuous busywork
-(the `silent_default!` doc in native/angr/src/lib.rs).
+(the `silent_default!` doc in native/angr-vex/src/lib.rs).
 
 The rule this script enforces: a diff that adds a new `silent_default!(cat_b`
 or `silent_default!(cat_c` invocation, or a new `// SILENT(cat-b):` /
@@ -37,7 +37,7 @@ than an import: the two scripts scan fundamentally different things (whole
 tree vs. a diff) and have no shared runtime state, so importing one from the
 other would just be action-at-a-distance coupling for a four-line regex. Keep
 both in sync by hand if the tagging convention's syntax ever changes (both are
-anchored in the `silent_default!` doc in native/angr/src/lib.rs, which is the
+anchored in the `silent_default!` doc in native/angr-vex/src/lib.rs, which is the
 actual source of truth). `silent_default!(` alone is enough to flag the macro
 form without also checking which category follows: the macro (`lib.rs`) has
 no `cat_a` arm, so *any* invocation is inherently cat_b or cat_c already, and
@@ -111,7 +111,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Same roots as audit_silent_fallback.py, the tagging audit this pairs with.
 # A diff has no file count, so there is no floor here; a missing or
 # unclassified root still fails.
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",)}
+SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",)}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 
 
@@ -304,7 +304,7 @@ def evaluate(diff_text: str, touched: list[str], prefixes: Sequence[str]) -> tup
     lines.append(
         "\ncat_b/cat_c mark a fallback that silently degrades or risks a wrong answer -- "
         "exactly the shape this repo's audits keep re-finding (39 historical instances,\n"
-        'see the `silent_default!` doc in native/angr/src/lib.rs). Add a regression test '
+        'see the `silent_default!` doc in native/angr-vex/src/lib.rs). Add a regression test '
         "in the same change proving the fallback's chosen default is *correct* for this\n"
         "edge case (not just that it doesn't panic), touching a file matching `*_tests.rs` "
         "or under a `tests/` directory. If this really is `cat_a` (expected control flow,\n"
@@ -338,7 +338,7 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
     (
         "macro-call, no test touched -> FAIL",
         _synthetic_diff(
-            "native/angr/src/vex/opcode_map.rs",
+            "native/angr-vex/src/opcode_map.rs",
             [
                 "    silent_default!(",
                 "        cat_c,",
@@ -348,16 +348,16 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
                 "    )",
             ],
         ),
-        ["native/angr/src/vex/opcode_map.rs"],
+        ["native/angr-vex/src/opcode_map.rs"],
         1,
     ),
     (
         "macro-call, test file also touched -> PASS (structural)",
         _synthetic_diff(
-            "native/angr/src/vex/opcode_map.rs",
+            "native/angr-vex/src/opcode_map.rs",
             ["    silent_default!(", "        cat_b,", "        parsed,", "        0,", '        "msg"', "    )"],
         ),
-        ["native/angr/src/vex/opcode_map.rs", "native/angr/src/vex/opcode_map_tests.rs"],
+        ["native/angr-vex/src/opcode_map.rs", "native/angr-vex/src/opcode_map_tests.rs"],
         0,
     ),
     (
@@ -399,10 +399,10 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
     (
         "new site in a *_tests.rs file itself -> PASS, test files excluded from site scan",
         _synthetic_diff(
-            "native/angr/src/silent_default_tests.rs",
+            "native/angr-vex/src/silent_default_tests.rs",
             ['    let got = silent_default!(cat_c, None::<u64>, 0, "demo");'],
         ),
-        ["native/angr/src/silent_default_tests.rs"],
+        ["native/angr-vex/src/silent_default_tests.rs"],
         0,
     ),
     (
@@ -417,7 +417,7 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
 ]
 
 # The prefixes the synthetic diffs above are evaluated against.
-_SELF_TEST_PREFIXES = ("native/angr/src/",)
+_SELF_TEST_PREFIXES = ("native/angr/src/", "native/angr-vex/src/")
 
 
 # ---------------------------------------------------------------------------

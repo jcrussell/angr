@@ -100,8 +100,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # (angr-sqfj8.62, angr-sqfj8.63, angr-c7xno.29, angr-0jh0j.16) with no gate in
 # that directory at all -- the AddrOrSymbolic newtype closed the `.unwrap_or(0)`
 # half at compile time, but the bare `sp + ptr_size` half had nothing.
-# vex/ has its own written convention (invariant-rust-concrete-arith-must-wrap)
-# and can be folded in as a later extension.
+# The VEX layer (native/angr-vex, excluded below) has its own written
+# convention (invariant-rust-concrete-arith-must-wrap) and can be folded in as
+# a later extension.
 SUBSYSTEMS = (
     "arch",
     "memory",
@@ -113,7 +114,10 @@ SUBSYSTEMS = (
     "exploration",
 )
 SCAN = {"native/angr": SUBSYSTEMS, "native/angr-bv": ("",)}
-EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+EXCLUDE = {
+    "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns",
+    "native/angr-vex": "the VEX layer wraps by its own convention (invariant-rust-concrete-arith-must-wrap); see SUBSYSTEMS",
+}
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 150
 BASELINE_PATH = REPO_ROOT / "tools" / "overflow_baseline.txt"

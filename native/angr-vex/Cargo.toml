@@ -1,0 +1,42 @@
+[package]
+name = "angr-vex"
+version = "0.1.0"
+edition = "2024"
+description = "The VEX layer of angr's native engine: VEX IR, the opcode map, op semantics, ccalls and dirty helpers, with no solver or Python dependency."
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints.clippy]
+# The same table as native/angr-bv: group entries at a lower priority so the
+# specific settings win.
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+let_underscore_must_use = "deny"
+
+[lib]
+name = "angr_vex"
+
+[features]
+# Widens the rounding-mode sweep's op registry (`ops::rm_op_registry`) to the
+# crate's public surface so the engine's dispatcher-selection tests can drive
+# it. Dev-only: native/angr turns it on under [dev-dependencies].
+testing = []
+
+[dependencies]
+angr-bv = { path = "../angr-bv" }
+clarirs-core = { path = "../clarirs-core", features = ["runtime-checks"] }
+log = "0.4.32"
+num-bigint = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+clarirs-z3 = { path = "../clarirs-z3" }
+quickcheck = "1.0"
+quickcheck_macros = "1.0"

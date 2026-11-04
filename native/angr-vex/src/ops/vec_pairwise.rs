@@ -1,0 +1,188 @@
+//! NEON/SIMD pairwise vector VEX op helpers.
+//!
+//! `PwOp` (the per-pair combiner kind) lives in `ops` and the `FloatLaneOp`
+//! trait (with its `FAdd`/`FMin`/`FMax` markers) in `ops/lane_traits.rs`;
+//! both are reached via `super::`.
+//!
+//! Covers the pairwise widening add (Iop_PwAddL), the integer binary pairwise
+//! family (Iop_PwAdd/PwMin/PwMax), the FP pairwise family (Iop_PwAdd32Fx2,
+//! Iop_PwMax32Fx{2,4}, Iop_PwMin32Fx{2,4}), and the rounding halving add
+//! (Iop_Avg).
+
+use super::{FloatLaneOp, OpError, PwOp, VEXOps};
+use crate::ir::IRType;
+use angr_bv::SymBV as RustBV;
+
+impl VEXOps {
+    /// NEON pairwise widening add — `Iop_PwAddL{N}{S/U}x{M}`. Unary.
+    /// Output element `i` (width `2*elem`) = `sext_or_zext(a[2i])` +
+    /// `sext_or_zext(a[2i+1])`. Output lane count = `count / 2`; output total
+    /// width = input total width.
+    pub(super) fn vec_pairwise_add_long(
+        arg: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        Self::require_operand_width("vec_pairwise_add_long arg", arg.width(), total_width)?;
+        debug_assert!(count >= 2 && count.is_multiple_of(2));
+        let out_pairs = count / 2;
+        let out_elem_width = elem_width * 2;
+
+        // Per-lane symbolic build — RustBV ops short-circuit when concrete.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(out_pairs as usize);
+        for i in 0..out_pairs {
+            let lo_a = (2 * i as u32) * elem_width;
+            let hi_a = lo_a + elem_width - 1;
+            let lo_b = (2 * i as u32 + 1) * elem_width;
+            let hi_b = lo_b + elem_width - 1;
+            let a_lane = arg.extract(hi_a, lo_a);
+            let b_lane = arg.extract(hi_b, lo_b);
+            let a_wide = a_lane.extend_into(out_elem_width, signed);
+            let b_wide = b_lane.extend_into(out_elem_width, signed);
+            elements.push(a_wide.add_into(b_wide));
+        }
+        Ok(Self::concat_le_elements(elements))
+    }
+
+    /// NEON binary pairwise op — `Iop_PwAdd{N}x{M}` / `Iop_PwMin{N}{S/U}x{M}` /
+    /// `Iop_PwMax{N}{S/U}x{M}`. Output lane shape matches the inputs. Per-lane:
+    ///   * `result[i]           = op(a[2i],   a[2i+1])`            for i < count/2
+    ///   * `result[count/2 + i] = op(b[2i],   b[2i+1])`            for i < count/2
+    pub(super) fn vec_pairwise_binop(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        op: PwOp,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        Self::require_operand_width("vec_pairwise_binop left", left.width(), total_width)?;
+        Self::require_operand_width("vec_pairwise_binop right", right.width(), total_width)?;
+        debug_assert!(count >= 2 && count.is_multiple_of(2));
+        let half = count / 2;
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        // First half from `left`, then second half from `right` (same
+        // interleave order as the FP `vec_float_pairwise_add`).
+        for src in [&left, &right] {
+            for i in 0..half {
+                let lo_a = (2 * i as u32) * elem_width;
+                let hi_a = lo_a + elem_width - 1;
+                let lo_b = (2 * i as u32 + 1) * elem_width;
+                let hi_b = lo_b + elem_width - 1;
+                let a = src.extract(hi_a, lo_a);
+                let b = src.extract(hi_b, lo_b);
+                elements.push(Self::pw_combine(a, b, op));
+            }
+        }
+        Ok(Self::concat_le_elements(elements))
+    }
+
+    #[inline]
+    fn pw_combine(a: RustBV, b: RustBV, op: PwOp) -> RustBV {
+        match op {
+            PwOp::Add => a.add_into(b),
+            PwOp::MinS => {
+                let cond = a.clone().sle_into(b.clone());
+                cond.ite_into(a, b)
+            }
+            PwOp::MinU => {
+                let cond = a.clone().ule_into(b.clone());
+                cond.ite_into(a, b)
+            }
+            PwOp::MaxS => {
+                let cond = a.clone().sge_into(b.clone());
+                cond.ite_into(a, b)
+            }
+            PwOp::MaxU => {
+                let cond = a.clone().uge_into(b.clone());
+                cond.ite_into(a, b)
+            }
+        }
+    }
+
+    /// NEON pairwise FP binary op — `Iop_PwAdd32Fx2` (ARM VPADD.F32),
+    /// `Iop_PwMax32Fx{2,4}` / `Iop_PwMin32Fx{2,4}` (VPMAX.F32 / VPMIN.F32,
+    /// AArch64 FMAXP / FMINP). Binary; the FP analogue of `vec_pairwise_binop`,
+    /// but the per-pair combine comes from `op` (a `FloatLaneOp`, so both the
+    /// concrete and symbolic branches stay in lockstep with the packed
+    /// `VFAdd`/`VFMax`/`VFMin` of the same lane kind). Output lane shape matches
+    /// the inputs: first half from `left`, second half from `right`. For
+    /// `32Fx2` this yields `[a0 op a1, b0 op b1]`; for `32Fx4`,
+    /// `[a0 op a1, a2 op a3, b0 op b1, b2 op b3]`.
+    pub(super) fn vec_float_pairwise_op(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        op: &dyn FloatLaneOp,
+    ) -> Result<RustBV, OpError> {
+        debug_assert_eq!(op.arity(), 2);
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        Self::require_operand_width("vec_float_pairwise_op left", left.width(), total_width)?;
+        Self::require_operand_width("vec_float_pairwise_op right", right.width(), total_width)?;
+        debug_assert!(count >= 2 && count.is_multiple_of(2));
+        let half = count / 2;
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        // First half from `left`, then second half from `right` (same
+        // interleave order as the integer `vec_pairwise_binop`).
+        for src in [&left, &right] {
+            for i in 0..half {
+                let lo_a = (2 * i as u32) * elem_width;
+                let hi_a = lo_a + elem_width - 1;
+                let lo_b = (2 * i as u32 + 1) * elem_width;
+                let hi_b = lo_b + elem_width - 1;
+                let a = src.extract(hi_a, lo_a);
+                let b = src.extract(hi_b, lo_b);
+                // Reuse the single-lane FP path (count=1) so the concrete and
+                // symbolic branches match the packed op of the same kind.
+                elements.push(Self::vec_float_lane_op(&[a, b], elem, 1, op)?);
+            }
+        }
+        Ok(Self::concat_le_elements(elements))
+    }
+
+    /// NEON rounding halving add — `Iop_Avg{N}{S/U}x{M}`. Per-lane:
+    ///   `((a[i] + b[i] + 1) >> 1)` truncated to `elem` bits.
+    /// Each lane is sign- or zero-extended to `elem+1` bits to absorb the carry
+    /// from `+1`, summed, shifted right by 1 (logical — the high bit of the
+    /// widened sum carries the rounding bit for both signedness conventions),
+    /// then truncated back to `elem` bits.
+    pub(super) fn vec_rounding_avg(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = elem_width * count as u32;
+        Self::require_operand_width("vec_rounding_avg left", left.width(), total_width)?;
+        Self::require_operand_width("vec_rounding_avg right", right.width(), total_width)?;
+        let wide = elem_width + 1;
+        let one_wide = RustBV::concrete(1, wide);
+
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for i in 0..count as u32 {
+            let lo = i * elem_width;
+            let hi = lo + elem_width - 1;
+            let a_lane = left.extract(hi, lo);
+            let b_lane = right.extract(hi, lo);
+            let a_wide = a_lane.extend_into(wide, signed);
+            let b_wide = b_lane.extend_into(wide, signed);
+            let sum = a_wide.add_into(b_wide).add_into(one_wide.clone());
+            let shifted = sum.lshr_into(RustBV::concrete(1, wide));
+            // Truncate to elem bits — for signed, the (elem)th bit of `shifted`
+            // is the original sign bit by construction, so the low `elem` bits
+            // are the correct two's-complement representation.
+            elements.push(shifted.extract(elem_width - 1, 0));
+        }
+        Ok(Self::concat_le_elements(elements))
+    }
+}

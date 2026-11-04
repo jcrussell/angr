@@ -26,12 +26,12 @@ head as you read the worked examples below:
 
    * - File
      - Role
-   * - ``native/angr/src/vex/ir/ops_def.rs``
+   * - ``native/angr-vex/src/ir/ops_def.rs``
      - Defines the ``IROp`` enum (the engine's internal opcode set,
        parameterized by ``IRType`` width, which lives in
-       ``native/angr/src/vex/ir/types.rs``). Both are re-exported via
-       ``native/angr/src/vex/ir/mod.rs``. A new op gets a variant here.
-   * - ``native/angr/src/vex/opcode_map.rs``
+       ``native/angr-vex/src/ir/types.rs``). Both are re-exported via
+       ``native/angr-vex/src/ir/mod.rs``. A new op gets a variant here.
+   * - ``native/angr-vex/src/opcode_map.rs``
      - Translates pyvex's string opcodes (``"Iop_Add32"``) into
        ``IROp`` variants in ``parse_opcode``, which consults one
        ``parse_*`` sub-router per opcode family. This file holds the
@@ -42,15 +42,15 @@ head as you read the worked examples below:
        pyvex strings and the native libVEX FFI — funnel through this
        one string-based ``parse_opcode``; there is no separate numeric
        mapping.
-   * - ``native/angr/src/vex/opcode_map_float.rs``
+   * - ``native/angr-vex/src/opcode_map_float.rs``
      - Sibling module holding the FP sub-routers ``parse_float`` and
        ``parse_transcendental`` (angr-fs8kb.20).
-   * - ``native/angr/src/vex/opcode_map_vector.rs``
+   * - ``native/angr-vex/src/opcode_map_vector.rs``
      - Sibling module holding the SIMD sub-routers ``parse_vector``,
        ``parse_vreverse`` and ``parse_neon_unimplemented`` (angr-fs8kb.20).
        ``parse_vector`` is by far the largest of the
        family, which is what motivated the split.
-   * - ``native/angr/src/vex/ops/mod.rs``
+   * - ``native/angr-vex/src/ops/mod.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``qop`` and the
        rounding-mode-aware ``VEXOps::unop_with_rm`` / ``binop_with_rm``
        / ``qop_with_rm`` dispatch on the ``IROp`` variant and produce a
@@ -115,7 +115,7 @@ The minimum-friction case: a width-parameterized binary op whose
 implementation already exists on ``RustBV``.
 
 **ir/ops_def.rs** — the enum variant. ``Add`` lives in the ``IROp`` enum at
-``native/angr/src/vex/ir/ops_def.rs`` (search ``pub enum IROp`` then the
+``native/angr-vex/src/ir/ops_def.rs`` (search ``pub enum IROp`` then the
 ``// Arithmetic`` group):
 
 .. code-block:: rust
@@ -480,7 +480,7 @@ Unsupported op coverage matrix
 
 At-a-glance status for op families that have historically been
 placeholders. *Implemented* means a dispatch arm exists in
-``native/angr/src/vex/ops/mod.rs`` and the opcode parses to a concrete
+``native/angr-vex/src/ops/mod.rs`` and the opcode parses to a concrete
 ``IROp`` variant (not ``IROp::NeonUnimplemented`` or
 ``IROp::Unmapped``). *Placeholder* means the opcode parses but
 dispatch returns ``OpError::UnsupportedNeon``, which the engine
@@ -499,9 +499,9 @@ fabricating a fresh symbolic happens only under the opt-in
 families (``Pclmul*`` / ``Crc32C``) route to Python for
 concrete and symbolic operands alike.
 
-Source of truth: ``native/angr/src/vex/opcode_map_vector.rs``
+Source of truth: ``native/angr-vex/src/opcode_map_vector.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
-``native/angr/src/vex/ops/mod.rs`` (the dispatch arms). Update the
+``native/angr-vex/src/ops/mod.rs`` (the dispatch arms). Update the
 matching row in the same change that adds or graduates an op; the
 provenance column names the ``IROp`` variant that implements each family.
 
@@ -591,7 +591,7 @@ These ops have no named ``IROp`` variant. ``parse_transcendental``
 to ``IROp::Raw(tag)``, and the ``IROp::Raw`` arms of ``VEXOps::binop``
 (via its private ``binop_misc`` helper) and ``VEXOps::binop_with_rm``
 dispatch that into the concrete-only libm fast path in
-``native/angr/src/vex/transcendentals.rs``. A symbolic operand is
+``native/angr-vex/src/transcendentals.rs``. A symbolic operand is
 concretized before dispatch (sample-pin-replace) by the interpreter's
 ``eval_binop`` / ``eval_triop``, through ``interpreter/transcendental_pins.rs``,
 for the ops ``transcendentals::pins_binop`` / ``pins_triop`` name; ``VEXOps``
@@ -837,7 +837,7 @@ Catching new placeholders
 If you encounter ``RustUnsupportedVexOpError("Iop_<name>", arch)``
 on a new workload:
 
-1. ``grep "Iop_<name>"`` under ``native/angr/src/vex/`` to confirm
+1. ``grep "Iop_<name>"`` under ``native/angr-vex/src/`` to confirm
    it has no parse arm. (If it does, the missing piece is a dispatch
    arm in ``ops/mod.rs`` — see the "Pipeline overview" section above.)
 2. If it has no parse arm, decide which sub-router it belongs in

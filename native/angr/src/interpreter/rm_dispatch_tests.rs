@@ -8,7 +8,7 @@ use crate::interpreter::{TestHost, VEXInterpreter};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ir::{IRConst, IRExpr, IROp, TypeEnv, VexArch};
 use crate::vex::ops::{OpError, VEXOps};
-use crate::vex::ops::{Operand, RmDispatchKind, VEX_ROUNDING_MODES, all_rm_ops};
+use crate::vex::ops::rm_op_registry::{Operand, RmDispatchKind, VEX_ROUNDING_MODES, all_rm_ops};
 
 /// The caller-dispatch bug shape, reconstructed directly: call the rm-LESS
 /// sibling `VEXOps` method (always RNE) instead of the `*_with_rm` variant —

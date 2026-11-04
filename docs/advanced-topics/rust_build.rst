@@ -63,11 +63,12 @@ Incremental builds
 ``make check`` is **not** the CI gate: it compiles default features only,
 so it never sees the ``fuzzer`` / ``fuzzing`` code. CI runs
 ``cargo clippy --all-targets --all-features -- -D warnings`` from the repo
-root (no ``--manifest-path``, so the ``native/angr-symex-macros`` and
-``native/angr-bv`` test targets are covered too). The value layer's own
-tests (``cargo test -p angr-bv``) need the Z3 environment for their
-oracle, which links ``clarirs-z3`` as a dev-dependency; ``angr-bv`` has
-no ``build.rs`` runpath, so ``LD_LIBRARY_PATH`` must name the libz3
+root (no ``--manifest-path``, so the ``native/angr-symex-macros``,
+``native/angr-bv`` and ``native/angr-vex`` test targets are covered too).
+The value and VEX layers' own tests (``cargo test -p angr-bv``,
+``cargo test -p angr-vex``) need the Z3 environment for their oracles,
+which link ``clarirs-z3`` as a dev-dependency; neither crate has a
+``build.rs`` runpath, so ``LD_LIBRARY_PATH`` must name the libz3
 directory as well.
 
 ``z3-sys`` links whatever ``Z3_LIBRARY_PATH_OVERRIDE`` names, and

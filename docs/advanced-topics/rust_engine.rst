@@ -508,7 +508,8 @@ Architecture
 The Rust engine spans a Rust core and a thin Python wrapper that
 cooperate through PyO3:
 
-* **Rust core** (``native/angr/src/``): VEX interpreter, symbolic
+* **Rust core** (``native/angr/src/``, with the VEX IR and op semantics in
+  the ``native/angr-vex`` crate): VEX interpreter, symbolic
   memory, Z3 solver, exploration loop, and native SimProcedures.
 * **Python wrapper** (``angr/exploration/rust_manager.py``): callback
   dispatch for Python SimProcedures, technique support, and state
