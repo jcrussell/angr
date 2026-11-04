@@ -74,7 +74,6 @@ def test_a_pickled_export_keeps_the_after_main_continuation(arch):
     assert main_frame.next.procedure_data[4] == main_frame.ret_addr
 
 
-@pytest.mark.xfail(strict=True, reason="angr-mx00p.136.31")
 def test_an_unpickled_manager_given_a_backend_steps_in_rust():
     simgr = pickle.loads(pickle.dumps(_fauxware_simgr("x86_64"), pickle.HIGHEST_PROTOCOL))
     backend = RustBackend(simgr._project)

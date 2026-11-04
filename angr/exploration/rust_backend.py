@@ -127,6 +127,10 @@ class RustBackend(SimulationBackend):
         # Resident ids whose export is gone, dropped from _PARKED before the next step. A
         # finalizer can run inside a Rust call (a callback's GC), so it only queues the id.
         self._released: list[int] = []
+        # The imported root each resident id descends from, and the resident ids per root:
+        # a root's `_lineage_templates` entry is dropped with its last resident id.
+        self._root_of: dict[int, int] = {}
+        self._lineage_refs: Counter[int] = Counter()
         # Python-lifted block size per address, for the extra_stop_points check.
         self._block_sizes: dict[int, int] = {}
 
@@ -242,6 +246,10 @@ class RustBackend(SimulationBackend):
                         rust.move_state(cid, name, _PARKED)
             unexported = {cid for cids in children.values() for cid in cids} | {sid}
             self._resident.update(unexported)
+            root = self._root_of[sid]
+            for cid in unexported - self._root_of.keys():
+                self._root_of[cid] = root
+                self._lineage_refs[root] += 1
         try:
             return self._successors(mgr, simgr, sid, children, messages, error_list, unexported)
         finally:
@@ -272,6 +280,11 @@ class RustBackend(SimulationBackend):
         if sid in self._resident:
             self._resident.discard(sid)
             mgr.drop_copy(sid, _PARKED)
+            root = self._root_of.pop(sid)
+            self._lineage_refs[root] -= 1
+            if not self._lineage_refs[root]:
+                del self._lineage_refs[root]
+                mgr._lineage_templates.pop(root, None)
 
     def _drop_released(self, mgr: RustExplorationManager) -> None:
         """Drop the resident ids whose export was collected since the last step."""
@@ -310,6 +323,11 @@ class RustBackend(SimulationBackend):
         (sid,) = rust.get_state_ids("active")
         rust.move_states("active", _PARKED, None)
         self._resident.add(sid)
+        # The import's cached mirror is its lineage's plugin template, kept out of
+        # `_state_cache` so it is never handed out as an export of sid.
+        mgr._lineage_templates[sid] = mgr._state_cache.pop(sid)
+        self._root_of[sid] = sid
+        self._lineage_refs[sid] += 1
         return sid
 
     def _detach_source(self, mgr: RustExplorationManager, state: SimState, sid: int) -> None:

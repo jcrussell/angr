@@ -1582,6 +1582,11 @@ class RustExplorationManager(
         # longer in any Rust stash is dropped (state IDs are monotonically
         # allocated and never reused, so this is safe).
         self._state_roots: dict[int, int] = {}
+        # Plugin templates kept outside `_state_cache`, by root state id: a
+        # SimState whose posix/libc/heap/fs/log a root's exports copy, for an
+        # owner (`RustBackend`) whose roots' own ids are exported and so may
+        # not be cached. The owner drops each entry with its lineage.
+        self._lineage_templates: dict[int, angr.SimState] = {}
 
         # Per-state-id Python-side stand-ins for state.options and state.globals.
         # The Rust engine doesn't honor SimOptions (LAZY_SOLVES / STRICT_PAGE_ACCESS

@@ -2196,7 +2196,8 @@ class RustStateExportMixin:
            thing to "what this state should have started with."
         3. ``_state_roots[state_id]`` then a Rust-side ``get_state_root``
            probe. The root is an entry state — its plugins are the
-           unmutated baseline that descendants forked from.
+           unmutated baseline that descendants forked from. An uncached
+           root's ``_lineage_templates`` entry stands in for it.
         4. As a last resort, any other cached *root* state. Roots have
            clean baseline plugins so falling back to an unrelated root is
            safe — it may report the wrong ``posix.argv``, but it cannot
@@ -2229,7 +2230,7 @@ class RustStateExportMixin:
                 if rust_root is not None:
                     root_id = rust_root
         if root_id is not None:
-            cached = self._state_cache.get(root_id)
+            cached = self._state_cache.get(root_id) or self._lineage_templates.get(root_id)
             if cached is not None:
                 return cached
 
