@@ -119,6 +119,12 @@ impl RustSimState {
             .map(|_| ())
     }
 
+    /// Mark `[addr, addr + size)` of the mapped memory uninitialized
+    /// ([`SymbolicMemory::mark_uninit`](crate::memory::SymbolicMemory::mark_uninit)).
+    pub fn mark_memory_uninit(&mut self, addr: u64, size: u64) {
+        self.memory.mark_uninit(addr, size);
+    }
+
     /// Add a lazy region for on-demand page fetching.
     pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
         self.memory.add_lazy_region(start_addr, size);

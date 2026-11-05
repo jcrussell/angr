@@ -76,3 +76,15 @@ fn uninit_bitmap_survives_serde() {
     let back = MemoryPage::from(crate::memory::page::MemoryPageData::from(page));
     assert!(back.is_uninit(7));
 }
+
+/// A page mapped from host bytes can carry gaps the host never wrote: the
+/// synced SP stack page (angr-mx00p.132.58). `mark_uninit` reopens them and
+/// skips bytes on an unmapped page.
+#[test]
+fn mark_uninit_reopens_gaps_on_a_mapped_page() {
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map_data(BASE, &[0x41; 0x1000], Permission::RW);
+    assert!(mem.uninit_runs(BASE, 0x1000).is_empty());
+    mem.mark_uninit(BASE + 0xFF8, 0x10);
+    assert_eq!(mem.uninit_runs(BASE + 0xFF0, 0x20), vec![(BASE + 0xFF8, 8)]);
+}

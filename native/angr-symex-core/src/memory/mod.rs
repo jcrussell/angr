@@ -1199,6 +1199,27 @@ impl SymbolicMemory {
         self.pages.insert(page_num, page);
     }
 
+    /// Mark `[addr, addr + size)` uninitialized on the pages already mapped
+    /// under it; bytes on an unmapped page are skipped, as
+    /// [`uninit_runs`](Self::uninit_runs) does not count them either.
+    pub fn mark_uninit(&mut self, addr: impl Into<Address>, size: u64) {
+        let mut current = addr.into();
+        let mut remaining = size;
+        while remaining > 0 {
+            let offset = current.page_offset();
+            // overflow-ok: `page_offset < PAGE_SIZE`, so the difference is in
+            // `1..=PAGE_SIZE`.
+            let in_page = (PAGE_SIZE - u64::from(offset)).min(remaining);
+            if let Some(page) = self.pages.get_mut(&current.page_num()) {
+                page.mark_uninit(offset, in_page as usize);
+            }
+            // overflow-ok: `in_page <= remaining`.
+            remaining -= in_page;
+            // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`).
+            current = current + in_page;
+        }
+    }
+
     /// The maximal runs of uninitialized bytes in `[addr, addr + size)`, as
     /// `(start, len)` pairs, ascending. A byte on an unmapped page is not
     /// uninitialized here: that is the load path's `Unmapped` refusal.

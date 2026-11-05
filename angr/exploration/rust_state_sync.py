@@ -676,6 +676,12 @@ class RustStateSyncMixin:
                                 angr_state, sp_page, page_size, sd, symbolic_regions, concrete
                             )
                         rust_state.map_memory_data(sp_page, bytes(concrete), 6)
+                        if "ZERO_FILL_UNCONSTRAINED_MEMORY" not in angr_state.options:
+                            # concrete_load reads a never-written byte as zero;
+                            # Python's load mints a fill symbol for it, so Rust
+                            # must too (angr-mx00p.132.58).
+                            for start, size in self._ultrapage_uninit_runs(page_obj, sp_page, page_size):
+                                rust_state.mark_memory_uninit(sp_page + start, size)
                         used_fast_path = True
 
             if not used_fast_path:
@@ -728,6 +734,39 @@ class RustStateSyncMixin:
                         symbolic_regions.append((addr, val))
                     else:
                         concrete[start_offset + byte_off] = angr_state.solver.eval(val)
+
+    @staticmethod
+    def _ultrapage_uninit_runs(page_obj, page_addr: int, page_size: int) -> list:
+        """Page-local ``(offset, size)`` runs of never-written bytes on an
+        UltraPage: bytes whose ``symbolic_bitmap`` bit is set but that no
+        ``symbolic_data`` object covers, i.e. the bytes a Python load would
+        default-fill. A page without a bitmap reports none.
+        """
+        sb = getattr(page_obj, "symbolic_bitmap", None)
+        if sb is None:
+            return []
+        covered = []
+        for mo in getattr(page_obj, "symbolic_data", {}).values():
+            lo = max(0, mo.base - page_addr)
+            hi = min(page_size, mo.base + mo.length - page_addr)
+            if lo < hi:
+                covered.append((lo, hi))
+        covered.sort()
+        runs = []
+        off = sb.next_set(0, page_size)
+        while off < page_size:
+            end = sb.next_clear(off, page_size)
+            pos = off
+            for lo, hi in covered:
+                if hi <= pos or lo >= end:
+                    continue
+                if lo > pos:
+                    runs.append((pos, lo - pos))
+                pos = max(pos, hi)
+            if pos < end:
+                runs.append((pos, end - pos))
+            off = sb.next_set(end, page_size)
+        return runs
 
     @staticmethod
     def _has_user_symbolic_var(ast) -> bool:

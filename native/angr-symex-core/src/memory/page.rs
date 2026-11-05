@@ -347,6 +347,15 @@ impl MemoryPage {
         page
     }
 
+    /// Mark the page-local range `[offset, offset + len)` uninitialized, so a
+    /// load mints a filler there instead of reading `data`. For a page whose
+    /// host copy is only partly written (the SP stack page synced from an
+    /// UltraPage, angr-mx00p.132.58).
+    pub fn mark_uninit(&mut self, offset: u16, len: usize) {
+        let end = Self::clamped_end(offset, len);
+        self.uninit_bitmap.set_range(offset, end);
+    }
+
     /// Whether any byte on this page is uninitialized (O(1)).
     #[inline]
     pub fn has_uninit(&self) -> bool {
