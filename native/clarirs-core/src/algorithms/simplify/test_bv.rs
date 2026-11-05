@@ -1335,3 +1335,39 @@ fn test_shared_subterms_simplify_once_per_call() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn test_rotate_shift_mask_huge_amounts() -> Result<()> {
+    // The rotate-mask rewrite of ((A << a) | (A >> b)) & mask adds a and b;
+    // amounts whose sum overflows u64 must decline the rewrite rather than
+    // panic in a debug build (angr-mx00p.109). A pair whose sum wraps to the
+    // width, as (65, 2^64 - 1) does, would otherwise fire the rewrite in a
+    // release build and shift the mask by ~2^64 bits.
+    let ctx = Context::new();
+    let a = ctx.bvs("a", 64)?;
+    let half = 1u64 << 63;
+    // (a, b, value of the expression at A = 0x1234): a shift of 64 or more
+    // clears the operand.
+    for (lshift, rshift, expected) in [
+        (half, half, 0u64),
+        (u64::MAX, 1, (0x1234 >> 1) & 0xff),
+        (1, u64::MAX, (0x1234 << 1) & 0xff),
+        (u64::MAX, u64::MAX, 0),
+        (65, u64::MAX, 0),
+        (u64::MAX, 65, 0),
+    ] {
+        let shl = ctx.shl(&a, &ctx.bvv(BitVec::from((lshift, 64)))?)?;
+        let lshr = ctx.lshr(&a, &ctx.bvv(BitVec::from((rshift, 64)))?)?;
+        let mask = ctx.bvv(BitVec::from((0xffu64, 64)))?;
+        let expr = ctx.and2(&ctx.or2(&shl, &lshr)?, &mask)?;
+        let concrete = expr
+            .replace(&a, &ctx.bvv(BitVec::from((0x1234u64, 64)))?)?
+            .simplify()?;
+        let AstOp::BVV(result) = concrete.op() else {
+            panic!("expected concrete result for a={lshift} b={rshift}");
+        };
+        assert_eq!(result.to_biguint(), BigUint::from(expected));
+        expr.simplify()?;
+    }
+    Ok(())
+}

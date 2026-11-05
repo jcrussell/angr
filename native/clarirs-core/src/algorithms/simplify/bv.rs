@@ -154,7 +154,10 @@ pub(crate) fn simplify_bv<'c>(
                                             (shl_val.to_u64(), lshr_val.to_u64())
                                         {
                                             let bitwidth = a.size() as u64;
-                                            if lshift + rshift == bitwidth
+                                            // checked_add: two amounts near 2^64 would
+                                            // overflow; such a pair is never a rotate
+                                            // (angr-mx00p.109).
+                                            if lshift.checked_add(rshift) == Some(bitwidth)
                                                 && (bitwidth == 32 || bitwidth == 64)
                                             {
                                                 let mask_big = mask_val.to_biguint();
