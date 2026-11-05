@@ -35,8 +35,8 @@ use lru::LruCache;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::arch::{
-    AddrOrSymbolic, RegisterFile, arch_from_vex, calling_conventions::CallingConvention,
-    default_cc_for_arch,
+    AddrOrSymbolic, RegisterCheckpoint, RegisterFile, arch_from_vex,
+    calling_conventions::CallingConvention, default_cc_for_arch,
 };
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
@@ -778,6 +778,18 @@ impl<'a> VEXInterpreter<'a> {
         let id = self.next_condition_id;
         self.next_condition_id += 1;
         id
+    }
+
+    /// Undo the register writes and the still-buffered stores of a block
+    /// that bailed out mid-way, so the Python re-run of the whole block does
+    /// not apply its leading statements twice: a `push` before a `cpuid`
+    /// moved the stack pointer by two slots (angr-mx00p.132.33). Stores
+    /// already flushed (an auto-flush, or a mid-block deferred fork's flush)
+    /// and Python store callbacks are not undone.
+    fn discard_partial_block(&mut self, pre_block_registers: RegisterCheckpoint) {
+        self.registers.restore(pre_block_registers);
+        self.pending_stores.clear();
+        self.pending_symbolic_stores.clear();
     }
 
     /// Flush pending stores to Python via batch callback.

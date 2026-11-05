@@ -559,6 +559,23 @@ impl RegisterFile {
         }
     }
 
+    /// Capture the register contents for a later [`Self::restore`].
+    ///
+    /// O(1) for the byte image (an `Arc` bump; a write after this copies it
+    /// once) plus a clone of the symbolic overlay map.
+    pub fn checkpoint(&self) -> RegisterCheckpoint {
+        RegisterCheckpoint {
+            data: Arc::clone(&self.data),
+            symbolic: self.symbolic.clone(),
+        }
+    }
+
+    /// Roll the register contents back to `checkpoint`, taken from this file.
+    pub fn restore(&mut self, checkpoint: RegisterCheckpoint) {
+        self.data = checkpoint.data;
+        self.symbolic = checkpoint.symbolic;
+    }
+
     /// Merge another register file into this one using a merge condition.
     ///
     /// For each register offset, if the values differ between `self` and `other`,

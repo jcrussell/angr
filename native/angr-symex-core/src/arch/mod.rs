@@ -378,6 +378,14 @@ pub struct RegisterFile {
     containment: Option<Arc<Vec<(u32, u32)>>>,
 }
 
+/// A [`RegisterFile`]'s contents as of [`RegisterFile::checkpoint`], for
+/// [`RegisterFile::restore`]. The arch and containment adapter are immutable
+/// for a live file, so only the byte image and the symbolic overlay are kept.
+pub struct RegisterCheckpoint {
+    data: Arc<Vec<u8>>,
+    symbolic: FxHashMap<u32, RustBV>,
+}
+
 /// Serde shadow form for [`RegisterFile`].
 ///
 /// The architecture is represented by its `name()` string and rebuilt via

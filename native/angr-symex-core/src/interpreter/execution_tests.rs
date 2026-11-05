@@ -436,3 +436,44 @@ fn granular_run_stops_at_a_hooked_target_before_serving_it() {
     );
     assert_eq!(blocks, 0);
 }
+
+// A block that bails to Python mid-way is re-run there from its first
+// statement, so the registers and buffered stores its leading statements
+// wrote must be rolled back: a `push rbx` ahead of a `cpuid` (GSPTR arg)
+// otherwise moved rsp by two slots (angr-mx00p.132.33).
+#[test]
+fn python_fallback_mid_block_rolls_back_the_partial_block() {
+    const RSP: u32 = 48;
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    interp.registers.put(RSP, RustBV::concrete(0x7ff0, 64));
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.tyenv.types.push(IRType::I64);
+    irsb.statements.push(IRStmt::Put {
+        offset: RSP,
+        data: IRExpr::Const(IRConst::U64(0x7fe8)),
+    });
+    irsb.statements.push(IRStmt::Store {
+        addr: IRExpr::Const(IRConst::U64(0x1800)),
+        data: IRExpr::Const(IRConst::U64(0xdead)),
+        endness: Endness::Little,
+    });
+    irsb.statements.push(IRStmt::WrTmp {
+        tmp: 0,
+        data: IRExpr::GSPTR,
+    });
+    irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+    interp.cache_block(0x1000, irsb);
+    interp.set_pc(0x1000);
+
+    let callbacks = TestHost::default();
+    let (result, _blocks, _forks) =
+        interp.run_until_event(&callbacks, 4, &std::collections::HashSet::new(), false);
+    assert!(
+        matches!(result, RunResult::NeedPythonVEX { addr: 0x1000, .. }),
+        "expected NeedPythonVEX at the block start, got {result:?}"
+    );
+    assert_eq!(interp.registers.get(RSP, 8).as_u64(), Some(0x7ff0));
+    assert!(interp.store_buffers_empty());
+}

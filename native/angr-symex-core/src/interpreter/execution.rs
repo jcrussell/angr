@@ -221,8 +221,11 @@ impl<'a> VEXInterpreter<'a> {
                 );
             }
 
-            // Execute the block
+            // Execute the block. A block that bails to Python mid-way is
+            // re-run there from its first statement, so it must see the
+            // pre-block registers (angr-mx00p.132.33).
             let block_start = profile_start!(self);
+            let pre_block_registers = self.registers.checkpoint();
             match self.execute_block_with_callbacks(callbacks, &irsb) {
                 Ok(result) => {
                     blocks_executed += 1;
@@ -508,10 +511,13 @@ impl<'a> VEXInterpreter<'a> {
                     // Adding a CbExecutionError variant requires choosing a
                     // strategy in mod.rs; that decision lands here.
                     let result = match e.strategy() {
-                        FallbackStrategy::PythonCallback => RunResult::NeedPythonVEX {
-                            addr: self.pc,
-                            reason: e.to_string(),
-                        },
+                        FallbackStrategy::PythonCallback => {
+                            self.discard_partial_block(pre_block_registers);
+                            RunResult::NeedPythonVEX {
+                                addr: self.pc,
+                                reason: e.to_string(),
+                            }
+                        }
                         FallbackStrategy::Panic => RunResult::Error {
                             message: e.to_string(),
                             addr: self.pc,
