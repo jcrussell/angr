@@ -4896,7 +4896,11 @@ class RustExplorationManager(
         restore_veritesting = self._install_veritesting_target_filter(find, avoid)
         try:
             try:
-                if n is not None:
+                # SimulationManager.run() asks complete() before its first step, so a technique that is already
+                # complete steps nothing (angr-mx00p.132.40); the loops below only ask after a step.
+                if self._active_techniques and self._check_technique_complete():
+                    result = self
+                elif n is not None:
                     result = self._explore_rounds(n, num_find, until)
                 elif has_predicates or bool(self._active_techniques):
                     result = self._explore_with_predicates(num_find, until, timeout, max_steps)
@@ -6504,7 +6508,7 @@ class RustExplorationManager(
             import itertools
 
             for _ in itertools.count() if n is None else range(n):
-                if not self._rust_mgr.get_state_ids(stash):
+                if not self._rust_mgr.get_state_ids(stash) or self._check_technique_complete():
                     break
                 self.step(**kwargs)
                 if step_func is not None:

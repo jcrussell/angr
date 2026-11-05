@@ -1149,6 +1149,26 @@ class TestRustExplorationPython:
         assert answers[0] == answers[1]
         assert len(answers[0]) == 1
 
+    @pytest.mark.parametrize("n", [None, 3])
+    def test_complete_technique_steps_nothing_like_python(self, fauxware_project, n):
+        """run() asks complete() before the first step, so an already-complete technique's hooks never fire.
+
+        TechniqueBuilder's step_state hook returns None; stepping under it would raise (angr-mx00p.132.40).
+        """
+        calls = []
+        tech = angr.exploration_techniques.TechniqueBuilder(
+            step_state=lambda *a, **k: calls.append("step_state"),
+            complete=lambda *a, **k: True,
+        )
+        for mgr in (
+            fauxware_project.factory.simulation_manager(fauxware_project.factory.entry_state()),
+            RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()]),
+        ):
+            mgr.use_technique(tech)
+            mgr.run(n=n)
+            assert len(mgr.active) == 1
+        assert calls == []
+
     def test_strict_page_access_propagates_to_rust(self, fauxware_project):
         """A SimState with STRICT_PAGE_ACCESS option should flip the Rust
         memory model's enforce_permissions flag automatically (mirrors angr)."""
