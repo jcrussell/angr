@@ -2066,6 +2066,10 @@ class RustStateExportMixin:
                     arch,
                     recovery,
                 )
+            except MemoryError:
+                # Out of memory is not a page this state may lose: the blank
+                # page would read back as zeros (angr-mx00p.132.65).
+                raise
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: page failed to load. State
                 # memory at this page is left at its blank-state default,

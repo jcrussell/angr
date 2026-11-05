@@ -318,6 +318,10 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
         except _StepStateDeclined:
             # Boring block: leave the source in `stash` for the native run.
             continue
+        except MemoryError:
+            # The native run would step a source whose half-built export the
+            # hook could not finish (angr-mx00p.132.65).
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: the technique's step_state() raised;
             # leave the source in place so the native run still advances it.
