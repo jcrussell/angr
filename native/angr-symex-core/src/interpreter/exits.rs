@@ -285,6 +285,21 @@ impl<'a> VEXInterpreter<'a> {
             };
         }
 
+        // A jump onto a mapped page ENABLE_NX forbids executing ends the block
+        // there, so the next fetch faults in `get_or_lift_block` as Python's
+        // lift does. Without it a call into .data took the unmodeled-call
+        // generic skip below and the state ran on (angr-mx00p.132.57).
+        if self
+            .rust_memory
+            .as_ref()
+            .is_some_and(|mem| mem.check_executable(target).is_err())
+        {
+            return BlockResult::BlockEnd {
+                next_addr: target,
+                jumpkind,
+            };
+        }
+
         // Ahead of the out-of-image arms below: a call/jmp/ret into code the
         // state holds outside every loaded object is lifted from state memory
         // and executed, as Python does (angr-vmi2l.158).

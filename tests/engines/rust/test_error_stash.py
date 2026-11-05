@@ -5,6 +5,8 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import angr
@@ -12,6 +14,7 @@ import angr
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
+    BIN_LOCATION,
     RUST_EXPLORATION_AVAILABLE,
     TEST_BINARIES_DIR,
     ExplorationEvent,
@@ -40,10 +43,9 @@ class TestErroredStash:
         assertion lived inside a never-iterated loop — the test passed for any
         implementation. The high-level RustExplorationManager cannot be driven
         into the errored stash by unmapped/bad accesses (those are swallowed to
-        zero buffers or routed to deadended), and loader/lazy pages are all
-        mapped RWX (perms=7), so ENABLE_NX never fires on code pages. The one
-        non-executable page the high-level sync DOES map is the stack page
-        (perms=6, see rust_state_sync.py::_sync_stack_page / _setup_stack_region).
+        zero buffers or routed to deadended). The stack page is mapped
+        non-executable (perms=6, see rust_state_sync.py::_sync_stack_page /
+        _setup_stack_region).
         Pointing the PC into the eagerly-mapped stack page with ENABLE_NX (and
         its STRICT_PAGE_ACCESS gate) on therefore produces a deterministic NX
         permission violation that lands in errored as a real RustErrorRecord.
@@ -83,6 +85,30 @@ class TestErroredStash:
             assert isinstance(record.last_statements, list)
             assert isinstance(record.constraint_count, int)
             assert repr(record).startswith("<State errored")
+
+    def test_call_into_nx_data_errors_like_python(self):
+        """A call into .data under STRICT_PAGE_ACCESS + ENABLE_NX errors the state.
+
+        uc_stop's stop_segfault calls a function pointer into .data (RW).
+        Python errors the state at the fetch; Rust mapped loader pages RWX
+        and took the unmodeled-call generic skip, so the state ran on
+        (angr-mx00p.132.57).
+        """
+        from angr import sim_options as o
+
+        proj = angr.Project(os.path.join(BIN_LOCATION, "tests", "i386", "uc_stop"), auto_load_libs=False)
+
+        def seed():
+            return proj.factory.entry_state(args=["a"] * 7, add_options={o.STRICT_PAGE_ACCESS, o.ENABLE_NX})
+
+        python = angr.SimulationManager(proj, active_states=[seed()]).run()
+        rust = RustExplorationManager(proj, [seed()])
+        rust.run()
+        (expected,) = python.errored
+        assert rust.stash_counts().get("errored") == 1, rust.stash_counts()
+        (record,) = rust.errored
+        assert record.addr == expected.error.addr == 0x804A01C
+        assert list(record.state.history.bbl_addrs) == list(expected.state.history.bbl_addrs)
 
     def test_error_record_has_state(self):
         """RustErrorRecord wraps a state with error info."""

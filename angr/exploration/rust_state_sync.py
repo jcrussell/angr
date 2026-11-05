@@ -447,13 +447,29 @@ class RustStateSyncMixin:
                         with contextlib.suppress(Exception):
                             data = self._loader_page_bytes(page_addr, page_size)
                             if data is not None:
-                                batch_pages.append((page_addr, data, 7))
+                                batch_pages.append((page_addr, data, self._loader_page_perms(page_addr, page_size)))
                                 seen_page_addrs.add(page_addr)
                 region_start = obj.min_addr & ~(page_size - 1)
                 region_end = (obj.max_addr + page_size) & ~(page_size - 1)
                 if region_end - region_start > 0:
                     lazy_regions.append((region_start, region_end - region_start))
         return {"batch_pages": batch_pages, "lazy_regions": lazy_regions}
+
+    def _loader_page_perms(self, page_addr: int, page_size: int) -> int:
+        """Return a loader page's permission bits as the Python engine's page gets them.
+
+        Mirrors `ClemoryBackerMixin._initialize_page`: the segment holding the
+        page's first byte, else its last byte, else RWX. Mapping every loader
+        page RWX let STRICT_PAGE_ACCESS + ENABLE_NX execute .data, where Python
+        errors the state (angr-mx00p.132.57). The bits are in Rust's
+        `Permission::from_bits` order (R=4, W=2, X=1), not angr's (R=1, X=4).
+        """
+        loader = self._project.loader
+        for addr in (page_addr, page_addr + page_size - 1):
+            seg = loader.find_segment_containing(addr, skip_pseudo_objects=False)
+            if seg is not None:
+                return (4 if seg.is_readable else 0) | (2 if seg.is_writable else 0) | (1 if seg.is_executable else 0)
+        return 7
 
     def _loader_page_bytes(self, page_addr: int, page_size: int) -> bytes | None:
         """Return the loader's bytes for one page, or None if none are backed.
