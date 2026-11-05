@@ -1360,8 +1360,9 @@ class TestExplorationTechniqueStepHookDispatch:
         # stash_counts() being non-None is true for any manager and proves
         # nothing; on linear fauxware the single active state steps forward
         # without forking/draining, so assert the canonical progress counter
-        # (mgr.stats["steps"]) actually advanced.
-        assert mgr.stats["steps"] > 0, f"run made no progress despite fallback: stats={mgr.stats}"
+        # (mgr.backend.stats["steps"]) actually advanced.
+        stats = mgr.backend.stats
+        assert stats["steps"] > 0, f"run made no progress despite fallback: stats={stats}"
 
     def test_no_step_hook_means_no_dispatch_overhead(self, fauxware_project):
         """Techniques without step() override should NOT trigger dispatch."""
