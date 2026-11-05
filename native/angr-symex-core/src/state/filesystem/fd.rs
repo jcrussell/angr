@@ -166,6 +166,17 @@ pub struct FileDescriptor {
     /// a bounce, never a wrong answer.
     #[serde(default)]
     pub is_std_placeholder: bool,
+    /// The end offset of each write that extended `content` from its end,
+    /// in write order: the boundaries of Python's one-packet-per-write
+    /// `SimPacketsStream`, so an export lays stdout out as the Python engine
+    /// does (angr-mx00p.132.72). A write into the middle of `content` (after
+    /// an `lseek`, or a `pwrite`) records nothing; a truncation can leave
+    /// ends past `content.len()`, which the next appending write drops, so
+    /// the ends stay increasing but readers keep only those inside the bytes
+    /// they split. `#[serde(default)]` keeps older snapshots
+    /// loadable (reconstitutes to no boundaries, i.e. one packet).
+    #[serde(default)]
+    pub write_ends: Vec<usize>,
 }
 
 impl FileDescriptor {
@@ -184,6 +195,7 @@ impl FileDescriptor {
             registry_key: None,
             norm_name: None,
             is_std_placeholder: false,
+            write_ends: Vec::new(),
         }
     }
 
@@ -202,6 +214,7 @@ impl FileDescriptor {
             registry_key: None,
             norm_name: None,
             is_std_placeholder: false,
+            write_ends: Vec::new(),
         }
     }
 
@@ -221,6 +234,7 @@ impl FileDescriptor {
             registry_key: None,
             norm_name: None,
             is_std_placeholder: false,
+            write_ends: Vec::new(),
         }
     }
 

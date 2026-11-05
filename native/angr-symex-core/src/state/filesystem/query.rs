@@ -107,6 +107,16 @@ impl FileSystem {
             .unwrap_or(&[])
     }
 
+    /// The end offsets of the writes that appended to `fd`'s content, in
+    /// write order; see [`FileDescriptor::write_ends`].
+    pub fn fd_write_ends(&self, fd: u32) -> &[usize] {
+        let fd = self.desc_key(fd);
+        self.fds
+            .get(&fd)
+            .map(|d| d.write_ends.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Check if a file descriptor is open.
     pub fn is_open(&self, fd: u32) -> bool {
         let fd = self.desc_key(fd);

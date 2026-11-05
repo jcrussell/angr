@@ -13,8 +13,10 @@ import os
 import pytest
 
 import angr
+from angr import claripy
 from angr.exploration.rust_backend import RustBackend
 from angr.exploration.rust_state_binding import binding_of
+from angr.exploration.rust_state_export import _stream_packet_ends
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, TEST_BINARIES_DIR
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not built")
@@ -50,9 +52,12 @@ def test_merging_two_exports_leaves_them_bound():
     simgr.run(until=lambda sm: len(sm.active) > 1)
     a, b = simgr.active[:2]
     assert binding_of(a) is not None and binding_of(b) is not None
-    # Sibling exports carry their stdout in different packets (angr-mx00p.132.72).
+    # Native writes and reads keep Python's packet layout, so the posix
+    # plugins merge too (angr-mx00p.132.72).
     for s in (a, b):
-        s.release_plugin("posix")
+        assert [p[1].concrete_value for p in s.posix.stdout.content] == [10, 1, 10, 1]
+        assert [p[1].concrete_value for p in s.posix.stdin.content] == [8, 1, 8, 1]
+        assert (s.posix.stdout.pos, s.posix.stdin.pos) == (4, 4)
 
     merged, _, merging_occurred = a.merge(b)
 
@@ -61,3 +66,13 @@ def test_merging_two_exports_leaves_them_bound():
     assert sorted(merged.solver.eval_upto(merged.regs.ip, 3)) == sorted([a.addr, b.addr])
     assert binding_of(a) is not None and binding_of(b) is not None
     assert {a.addr, b.addr} == {s.addr for s in simgr.active[:2]}
+
+
+def test_stream_packet_ends_follow_the_python_packets():
+    # The write-back appends one Rust write per packet at these ends (angr-mx00p.132.72).
+    state = _fauxware("x86_64").factory.blank_state()
+    stdout = state.posix.stdout
+    stdout.write(None, claripy.BVV(b"Username: "))
+    stdout.write(None, claripy.BVV(b"\n"))
+    assert _stream_packet_ends(stdout) == [10, 11]
+    assert _stream_packet_ends(state.posix.stdin) == []

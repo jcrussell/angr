@@ -441,8 +441,24 @@ class RustCallbackDispatchMixin:
         if py_len >= len(rust_out):
             # The Python side is already caught up.
             return
+        # A packet stream gets one packet per native write, as the Python
+        # engine's per-write packets; SimPacketsStream.merge refuses siblings
+        # whose packet counts differ (angr-mx00p.132.72).
+        cuts = [py_len, len(rust_out)]
+        if isinstance(getattr(stream, "content", None), list):
+            try:
+                ends = self._rust_mgr.get_state_fd_write_ends(state_id, fd)
+            except MemoryError:
+                raise
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: the missing output lands as one
+                # packet, not one per write. Debug-logs.
+                l.debug("get_state_fd_write_ends(%d, %d) failed: %s", state_id, fd, e)
+                ends = []
+            cuts[1:1] = [e for e in ends if py_len < e < len(rust_out)]
         try:
-            stream.write(None, claripy.BVV(rust_out[py_len:]), events=False)
+            for start, end in zip(cuts, cuts[1:]):
+                stream.write(None, claripy.BVV(rust_out[start:end]), events=False)
         except MemoryError:
             raise
         except Exception as e:
@@ -704,7 +720,7 @@ class RustCallbackDispatchMixin:
         """Splice the stdin Rust read, natively or in a bounce, into ``posix.stdin``.
 
         Rust's leaves and the packets bounced procs read (``_sync_state_stdin_to_rust``)
-        are laid out in read order, each run of leaves as one evaluated packet;
+        are laid out in read order, each native read as one evaluated packet;
         any copy of them the cached stream carried is dropped first. ``pos``
         moves past the last of them, so a bounced proc reads a fresh packet
         (angr-azp2b).
@@ -717,8 +733,17 @@ class RustCallbackDispatchMixin:
             # each leaf at its recorded width: a hardcoded 8 minted a fresh
             # unconstrained const for scanf %d/%ld (32/64-bit) symbols, so the
             # solved value never reached posix.dumps(0) (angr-ph300.18).
-            host_packets = sorted(host_packets, key=lambda p: p[0])
-            leaf_runs = self._rust_mgr.eval_stdin_leaf_runs(state_id, [after for after, _, _ in host_packets])
+            # A run is cut at each host packet and at each native read's end,
+            # so every read is its own packet as in the Python engine:
+            # SimPacketsStream.merge refuses siblings whose stdin pos differs
+            # (angr-mx00p.132.72). A cut carries its host packet, or None.
+            cuts = [(after, (data, size)) for after, data, size in host_packets]
+            read_end = 0
+            for symbols, _ in self._rust_mgr.get_state_stdin_packets(state_id)[:-1]:
+                read_end += len(symbols)
+                cuts.append((read_end, None))
+            cuts.sort(key=lambda cut: (cut[0], cut[1] is None))
+            leaf_runs = self._rust_mgr.eval_stdin_leaf_runs(state_id, [after for after, _ in cuts])
             if leaf_runs is None:
                 return
             posix = getattr(state, "posix", None)
@@ -738,8 +763,9 @@ class RustCallbackDispatchMixin:
                 return raw
 
             chunks = [leaf_runs[0]]
-            for (_, data, size), leaf_run in zip(host_packets, leaf_runs[1:]):
-                chunks.append(host_packet(data, size))
+            for (_, hosted), leaf_run in zip(cuts, leaf_runs[1:]):
+                if hosted is not None:
+                    chunks.append(host_packet(*hosted))
                 chunks.append(leaf_run)
             chunks = [chunk for chunk in chunks if chunk]
             for chunk in chunks:

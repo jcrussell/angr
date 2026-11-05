@@ -165,6 +165,26 @@ def _concrete_stream_len(stream) -> int | None:
     return _bvv_int(getattr(stream, "size", None))
 
 
+def _stream_packet_ends(stream) -> list[int]:
+    """The end offset of each packet of a ``SimPackets`` stream, in order.
+
+    ``[]`` for a flat ``SimFile`` stream or one with a symbolic packet length.
+    The reverse of ``FileDescriptor::write_ends``, which the inbound
+    ``_inject_rust_fd_output`` splits at (angr-mx00p.132.72).
+    """
+    packets = getattr(stream, "content", None)
+    if not isinstance(packets, list):
+        return []
+    ends, total = [], 0
+    for _, length in packets:
+        n = _bvv_int(length)
+        if n is None:
+            return []
+        total += n
+        ends.append(total)
+    return ends
+
+
 def _concrete_stream_bytes(state, stream) -> bytes | None:
     """The full concrete content of a posix stream, or None if any of it is
     symbolic (Rust's fd buffers hold concrete bytes only)."""
@@ -1578,8 +1598,12 @@ class RustStateExportMixin:
             if data is None:
                 # Unreachable: py_len is concrete, so every length is.
                 continue
+            # One append per Python packet, so Rust records each as a write
+            # end and the next export lays them out alike (angr-mx00p.132.72).
+            cuts = [rust_len, *(e for e in _stream_packet_ends(stream) if rust_len < e < py_len), py_len]
             try:
-                self._rust_mgr.append_state_fd_output(state_id, fd, data[rust_len:])
+                for start, end in zip(cuts, cuts[1:]):
+                    self._rust_mgr.append_state_fd_output(state_id, fd, data[start:end])
             except MemoryError:
                 raise
             except Exception as e:

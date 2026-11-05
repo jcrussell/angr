@@ -388,6 +388,13 @@ impl RustExplorationManager {
         self._get_state_fd_output(state_id, fd)
     }
 
+    /// The end offset of each write that appended to a file descriptor's
+    /// output buffer, in write order: Python's per-write packet boundaries
+    /// (`FileDescriptor::write_ends`).
+    pub fn get_state_fd_write_ends(&self, state_id: u64, fd: u32) -> PyResult<Vec<usize>> {
+        self._get_state_fd_write_ends(state_id, fd)
+    }
+
     /// Check whether a file descriptor has any output (no allocation).
     pub fn has_state_fd_output(&self, state_id: u64, fd: u32) -> bool {
         self._has_state_fd_output(state_id, fd)

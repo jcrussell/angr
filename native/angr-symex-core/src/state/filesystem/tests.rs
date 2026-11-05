@@ -142,6 +142,32 @@ fn write_overwrites_in_place_and_zero_fills_after_a_sparse_seek() {
 }
 
 #[test]
+fn appending_writes_record_their_ends_and_a_shrink_drops_the_stale_ones() {
+    // `write_ends` are Python's per-write packet boundaries (angr-mx00p.132.72).
+    let mut fs = FileSystem::default();
+    assert!(fs.write(1, b"Username: "));
+    assert!(fs.write(1, b"\n"));
+    assert_eq!(fs.fd_write_ends(1), [10, 11]);
+
+    let fd = fs
+        .open("out.bin".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    assert!(fs.write(fd, b"abc"));
+    assert!(fs.write(fd, b"def"));
+    // An overwrite inside the content is no packet boundary.
+    assert_eq!(fs.seek(fd, 0, 0), Some(0));
+    assert!(fs.write(fd, b"XY"));
+    assert_eq!(fs.fd_write_ends(fd), [3, 6]);
+
+    // A bounce that shrank the content leaves ends past it; the next
+    // appending write drops them so the ends stay increasing.
+    assert!(fs.update_fd(fd, b"ab".to_vec(), 2));
+    assert!(fs.write(fd, b"!"));
+    assert_eq!(fs.fd_content(fd), b"ab!");
+    assert_eq!(fs.fd_write_ends(fd), [3]);
+}
+
+#[test]
 fn write_at_position_zero_fills_gap() {
     let mut fs = FileSystem::default();
     let fd = fs

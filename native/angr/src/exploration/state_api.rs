@@ -1032,6 +1032,12 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.fd_buffer(fd).to_vec()))
     }
 
+    pub(crate) fn _get_state_fd_write_ends(&self, state_id: u64, fd: u32) -> PyResult<Vec<usize>> {
+        self.with_state(state_id, |state| {
+            Ok(state.file_system_ref().fd_write_ends(fd).to_vec())
+        })
+    }
+
     pub(crate) fn _has_state_fd_output(&self, state_id: u64, fd: u32) -> bool {
         self.find_state(state_id)
             .is_some_and(|state| !state.fd_buffer(fd).is_empty())

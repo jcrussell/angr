@@ -521,6 +521,13 @@ impl FileSystem {
         // overflow-ok: the `start.saturating_add(data.len()) > MAX_FS_FILE_SIZE`
         // refusal above bounds both terms by `MAX_FS_FILE_SIZE` (0x100_0000).
         let end = start + data.len();
+        if start == desc.content.len() {
+            // Ends a truncation left past the new end are no boundaries.
+            while desc.write_ends.last().is_some_and(|&e| e > start) {
+                desc.write_ends.pop();
+            }
+            desc.write_ends.push(end);
+        }
         if end > desc.content.len() {
             desc.content.resize(end, 0);
         }
