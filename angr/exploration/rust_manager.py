@@ -448,6 +448,10 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
         if events:
             return False, "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
 
+        events = _inspect_action_events(state)
+        if events:
+            return False, "state.inspect actions cannot read the rust state mid-step: " + ", ".join(events)
+
     return True, "rust engine supports this project, state options, kwargs, and inspect breakpoints"
 
 
@@ -472,6 +476,24 @@ def _unsupported_inspect_events(state) -> list[str]:
         for event, bps in breakpoints.items()
         if bps and (event not in _RUST_INSPECT_SUPPORTED_EVENTS or event in _RUST_INSPECT_BOUNCE_ONLY_EVENTS)
     )
+
+
+def _inspect_action_events(state) -> list[str]:
+    """Inspect events *state* has a breakpoint with an action for.
+
+    A BP action runs mid-step, while the interpreter holds the state and the
+    manager is mutably borrowed, so every ``RustStateProxy`` read it makes
+    (``state.addr``, memory, ``state.block()``) fails and the dispatcher drops
+    the action (rust_engine.rst "Reentrancy"). SelfModifyingCodeAnalysis's
+    TraceClassifier is the upstream case: it reads ``state.block()`` and then
+    reports no SMC (angr-mx00p.132.52). Only ``state.inspect`` attrs are safe,
+    and an action cannot be checked for that, so any action is a Python
+    workload. ``BP``'s default action is ``BP_IPDB``, which reads the state too.
+    """
+    breakpoints = getattr(getattr(state, "inspect", None), "_breakpoints", None)
+    if not breakpoints:
+        return []
+    return sorted(event for event, bps in breakpoints.items() if any(bp.action is not None for bp in bps))
 
 
 def resolve_main_address(project) -> int | None:

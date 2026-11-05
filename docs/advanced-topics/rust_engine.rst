@@ -2097,7 +2097,10 @@ firing event is currently held by the interpreter (not in any stash),
 so reads through ``RustStateProxy`` from inside a BP raise a "state not
 found" error that the dispatcher swallows. Use the BP attributes
 (``s.inspect.mem_read_address`` etc.) rather than going through the
-proxy.
+proxy. Because an action cannot be checked for that, a seed state
+carrying any BP action makes ``simulation_manager()`` on a
+``Project(engine="rust")`` project pick the Python engine
+(``_inspect_action_events`` in ``angr/exploration/rust_manager.py``).
 
 Workaround for unsupported events
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

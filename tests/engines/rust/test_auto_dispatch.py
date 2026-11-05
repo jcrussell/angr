@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import angr
 from angr.exploration import (
     RustExplorationManager,
     rust_engine_eligible,
@@ -151,9 +152,26 @@ class TestEligibilityPredicate:
 
     def test_supported_inspect_breakpoint_stays_eligible(self, fauxware_project):
         state = fauxware_project.factory.entry_state()
-        state.inspect.b("mem_read", action=lambda _s: None)
+        state.inspect.b("mem_read", action=None)
         eligible, _ = rust_engine_eligible(fauxware_project, [state], {})
         assert eligible is True
+
+    @pytest.mark.parametrize("action", [lambda _s: None, angr.BP_IPDB])
+    def test_inspect_action_routes_python(self, fauxware_project, action):
+        """A BP action runs mid-step, where it cannot read the Rust state, so
+        SMC's TraceClassifier reported no SMC (angr-mx00p.132.52)."""
+        state = fauxware_project.factory.entry_state()
+        state.inspect.b("mem_read", action=None)
+        state.inspect.b("instruction", action=action)
+        eligible, reason = rust_engine_eligible(fauxware_project, [state], {})
+        assert eligible is False
+        assert reason == "state.inspect actions cannot read the rust state mid-step: instruction"
+
+    def test_smc_analysis_finds_smc_on_a_rust_project(self):
+        project = angr.load_shellcode(
+            "inc dword ptr [here+1]\nhere:\nmov rax, 0xdeadbeef\nret", "amd64", selfmodifying_code=True, engine="rust"
+        )
+        assert project.analyses.SMC(project.entry).result
 
 
 class TestFactoryDispatch:
