@@ -12,7 +12,7 @@
 //! [`mint_stdin_bytes`] is the one place that does it.
 
 use super::ProcedureError;
-use crate::state::RustSimState;
+use crate::state::{RustSimState, StdinReadLength};
 use crate::symbolic::RustBV;
 
 /// Mint one fresh 8-bit leaf symbol per name, consuming any harness-seeded
@@ -57,6 +57,32 @@ pub(crate) fn mint_stdin_bytes(state: &mut RustSimState, names: &[String]) -> Ve
         state.record_stdin_symbol(name.clone(), 8);
     }
 
+    sym_bytes
+}
+
+/// [`mint_stdin_bytes`] for one read that is its own `posix.stdin` packet,
+/// recording it as a [`StdinReadLength`] that returned `length` bytes (all
+/// of them when `None`). A read the harness seed fully served records
+/// nothing, as its bytes are already in the stream.
+pub(crate) fn mint_stdin_read(
+    state: &mut RustSimState,
+    names: &[String],
+    length: Option<(String, u32)>,
+) -> Vec<RustBV> {
+    let recorded_before = state.stdin_symbols().len();
+    let sym_bytes = mint_stdin_bytes(state, names);
+    // overflow-ok: minting only appends to `stdin_symbols`.
+    let recorded = state.stdin_symbols().len() - recorded_before;
+    if recorded > 0 {
+        // overflow-ok: `mint_stdin_bytes` records at most one leaf per name.
+        let seeded = names.len() - recorded;
+        state.record_stdin_read_length(StdinReadLength {
+            first_leaf: names[seeded].clone(),
+            leaves: recorded,
+            seeded,
+            length,
+        });
+    }
     sym_bytes
 }
 

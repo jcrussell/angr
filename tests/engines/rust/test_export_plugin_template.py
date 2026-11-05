@@ -44,3 +44,29 @@ def test_exports_merge_on_a_custom_key_like_python(fauxware_project):
         assert merged, rust
         counts[rust] = (before, len(mgr.deadended))
     assert counts[True] == counts[False]
+
+
+def test_merged_stdin_solves_under_each_merge_condition_like_python(fauxware_project):
+    """Each native ``read`` is its own stdin packet, and merging keeps every path constraint.
+
+    An export's stdin was one evaluated packet for every read, so ``content[2]``
+    (the password) did not exist, and the merge exported solvers that deferred
+    to Rust, so ``SimStateSolver.merge`` saw no constraints to put under the
+    merge conditions (angr-mx00p.132.54).
+    """
+    for rust in (False, True):
+        mgr = _deadended(fauxware_project, rust)
+        for state in mgr.deadended:
+            state.release_plugin("fs")
+            if 3 in state.posix.fd:
+                state.posix.close(3)
+        mgr.merge(stash="deadended", merge_key=lambda s: s.addr)
+        welcome = [b"Welcome" in s.posix.dumps(1) for s in mgr.deadended]
+        path = mgr.deadended[welcome.index(True)]
+        assert [d.length for d, _ in path.posix.stdin.content] == [64, 8, 64, 8], rust
+        password = path.posix.stdin.content[2][0]
+        solved = {
+            b"SOSNEAKY" in path.solver.eval(password, cast_to=bytes, extra_constraints=(cond,))
+            for cond in path.history.merge_conditions
+        }
+        assert solved == {True, False}, rust

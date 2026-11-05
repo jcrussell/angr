@@ -34,12 +34,13 @@
 
 use super::arch_word;
 use super::stdin_common::{
-    bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes, stdin_seed_has_concrete_stop,
+    bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes, mint_stdin_read,
+    stdin_seed_has_concrete_stop,
 };
 use super::{ProcedureError, symbol_counter};
 use crate::memory::MemoryError;
 use crate::procedures::stream_ops::read_fileno;
-use crate::state::{RustSimState, StdinReadLength};
+use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::MAX_IO_SIZE as MAX_FGETS_SIZE;
 
@@ -58,7 +59,7 @@ const MAX_GETS_SIZE: u64 = 256;
 ///
 /// `names` name the `size-1` stdin leaves, minted here through
 /// [`mint_stdin_bytes`]; the leaves it records are tagged with `real_size`
-/// ([`StdinReadLength`]) so `posix.dumps(0)` keeps only the bytes the read
+/// ([`StdinReadLength`](crate::state::StdinReadLength)) so `posix.dumps(0)` keeps only the bytes the read
 /// returned. `label`/`read_id` name the fresh `real_size`/`eof` symbols.
 /// Mirrors `procedures/libc/{fgets,gets}.py` case 2.
 ///
@@ -77,21 +78,8 @@ pub(crate) fn store_symbolic_line(
 ) -> Result<RustBV, ProcedureError> {
     bounce_if_seed_ends_before(state, names.len(), label)?;
     let bits = state.arch().bits();
-    let recorded_before = state.stdin_symbols().len();
-    let sym_bytes = mint_stdin_bytes(state, names);
-    // overflow-ok: minting only appends to `stdin_symbols`.
-    let recorded = state.stdin_symbols().len() - recorded_before;
     let real_size_name = format!("{label}_realsize_{read_id}");
-    if recorded > 0 {
-        // overflow-ok: `mint_stdin_bytes` records at most one leaf per name.
-        let seeded = names.len() - recorded;
-        state.record_stdin_read_length(StdinReadLength {
-            first_leaf: names[seeded].clone(),
-            leaves: recorded,
-            seeded,
-            length: (real_size_name.clone(), bits),
-        });
-    }
+    let sym_bytes = mint_stdin_read(state, names, Some((real_size_name.clone(), bits)));
     // overflow-ok: every caller guards size >= 1 before reaching here (the
     // `call` block's size==0 fast path, or MAX_GETS_SIZE for gets()).
     let read_count = size - 1;

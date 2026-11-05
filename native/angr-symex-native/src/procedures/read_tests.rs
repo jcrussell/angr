@@ -55,6 +55,32 @@ fn test_read_records_stdin_symbols() {
 }
 
 #[test]
+fn each_stdin_read_is_its_own_packet() {
+    // Python's `read` is one SimPackets packet per call, so `posix.stdin.content[i]`
+    // is the `i`th read (angr-mx00p.132.54).
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    for count in [8, 1, 8] {
+        let _ = NativeRead
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(count, 64),
+                ],
+            )
+            .unwrap();
+    }
+    let shape: Vec<(usize, bool)> = state
+        .stdin_packets()
+        .iter()
+        .map(|(syms, read)| (syms.len(), read.is_some_and(|r| r.length.is_none())))
+        .collect();
+    assert_eq!(shape, vec![(8, true), (1, true), (8, true)]);
+}
+
+#[test]
 fn test_read_zero_count() {
     let mut state = RustSimState::new("amd64").unwrap();
     let result = NativeRead

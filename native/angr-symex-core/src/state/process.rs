@@ -73,16 +73,16 @@ impl RustSimState {
     }
 
     /// Record that the `leaves` stdin symbols starting at `first_leaf` (the
-    /// last ones recorded) were minted by a read returning `length` bytes,
-    /// `seeded` of which came from the harness seed. See [`StdinReadLength`].
+    /// last ones recorded) were minted by one read, returning `length` bytes
+    /// (all of them when `None`), `seeded` of which came from the harness
+    /// seed. See [`StdinReadLength`].
     pub fn record_stdin_read_length(&mut self, read: StdinReadLength) {
         self.stdin_read_lengths.push(read);
     }
 
-    /// `stdin_symbols` in read order, split into packets: each
-    /// variable-length read is its own packet carrying its
-    /// [`StdinReadLength`], and every run of fixed-length reads between them
-    /// is one packet with `None`.
+    /// `stdin_symbols` in read order, split into packets: each recorded
+    /// read is its own packet carrying its [`StdinReadLength`], and every run
+    /// of unrecorded leaves between them is one packet with `None`.
     pub fn stdin_packets(&self) -> Vec<StdinPacket<'_>> {
         let syms = &self.stdin_symbols;
         let mut packets = Vec::new();

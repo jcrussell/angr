@@ -34,7 +34,7 @@
 //! symbolic-file model can take over.
 
 use super::arch_word;
-use super::stdin_common::{bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes};
+use super::stdin_common::{bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_read};
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -168,7 +168,9 @@ fn read_stdin_symbolic(
     // `stdin_common::mint_stdin_bytes` for why the seed is bound by constraint
     // rather than stored into the buffer.
     let names: Vec<String> = (0..count).map(|i| format!("stdin_{read_id}_{i}")).collect();
-    let sym_bytes = mint_stdin_bytes(state, &names);
+    // Python's `read` is one SimPackets packet per call, and callers index
+    // `posix.stdin.content` by read (angr-mx00p.132.54).
+    let sym_bytes = mint_stdin_read(state, &names, None);
 
     write_bv_bytes(state, buf, sym_bytes)?;
 

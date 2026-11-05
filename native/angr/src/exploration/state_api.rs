@@ -1064,7 +1064,11 @@ impl RustExplorationManager {
                 .stdin_packets()
                 .into_iter()
                 .map(|(syms, read)| {
-                    let length = read.map(|r| (r.length.0.clone(), r.length.1, r.seeded));
+                    let length = read.and_then(|r| {
+                        r.length
+                            .as_ref()
+                            .map(|(name, bits)| (name.clone(), *bits, r.seeded))
+                    });
                     (syms.to_vec(), length)
                 })
                 .collect())
@@ -1283,7 +1287,7 @@ fn stdin_leaves(state: &crate::state::RustSimState) -> Vec<Option<&(String, u32)
     for (syms, read) in state.stdin_packets() {
         let kept = read
             .and_then(|r| {
-                let (name, bits) = &r.length;
+                let (name, bits) = r.length.as_ref()?;
                 let returned = ctx.eval(&crate::symbolic::RustBV::symbol(name, (*bits).max(1)))?;
                 // A count short of the seeded prefix keeps no leaf.
                 Some((returned as u64).saturating_sub(r.seeded as u64))

@@ -209,13 +209,17 @@ pub struct GetoptExternAddrs {
     pub optopt: Option<u64>,
 }
 
-/// The symbolic byte count of one variable-length stdin read (native
-/// `fgets` under SHORT_READS, and `gets`), which returns a symbolic
-/// `real_size` but records every leaf it minted in
-/// [`RustSimState::stdin_symbols`]. Python stores such a read as one SimPackets
-/// packet whose size is `real_size`, so `posix.dumps(0)` keeps only the bytes
-/// the read returned; the export does the same through
-/// [`RustSimState::stdin_packets`] (angr-mx00p.132.3).
+/// One stdin read that is its own SimPackets packet in Python, as
+/// [`RustSimState::stdin_packets`] splits it out of
+/// [`RustSimState::stdin_symbols`].
+///
+/// A variable-length read (native `fgets` under SHORT_READS, and `gets`)
+/// returns a symbolic `real_size` but records every leaf it minted. Python
+/// stores it as one packet whose size is `real_size`, so `posix.dumps(0)`
+/// keeps only the bytes the read returned; the export does the same
+/// (angr-mx00p.132.3). A native `read` has no symbolic count (`length` is
+/// `None`) but is still one packet per call, so `posix.stdin.content[i]` is
+/// the `i`th read's symbols, as in Python (angr-mx00p.132.54).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StdinReadLength {
     /// The read's first leaf recorded in `stdin_symbols`.
@@ -225,8 +229,9 @@ pub struct StdinReadLength {
     /// Harness-seeded bytes the read consumed ahead of `first_leaf`; they are
     /// not recorded (`mint_stdin_bytes`) but count toward `length`.
     pub seeded: usize,
-    /// Name and width of the symbolic byte count the read returned.
-    pub length: (String, u32),
+    /// Name and width of the symbolic byte count the read returned, `None`
+    /// when the read returned all of its leaves.
+    pub length: Option<(String, u32)>,
 }
 
 /// A stdin packet a Python SimProcedure read during a bounce (angr-azp2b).
@@ -250,7 +255,7 @@ pub struct StdinHostPacket {
 pub type StdinHostPacketExport = (usize, (String, u32), Option<(String, u32)>);
 
 /// One packet of [`RustSimState::stdin_packets`]: a run of `stdin_symbols`
-/// and, for a variable-length read, its [`StdinReadLength`].
+/// and, when it is one recorded read, its [`StdinReadLength`].
 pub type StdinPacket<'a> = (&'a [(String, u32)], Option<&'a StdinReadLength>);
 
 /// A [`StdinPacket`] as `get_state_stdin_packets` hands it to Python: the
@@ -481,8 +486,8 @@ pub struct RustSimState {
     #[merge_policy = "union"]
     #[merge_manual = "set-like union over a Vec keyed by name, not a bool OR"]
     stdin_symbols: Vec<(String, u32)>,
-    /// The byte count of each variable-length read among `stdin_symbols`; see
-    /// [`StdinReadLength`].
+    /// Each read among `stdin_symbols` that is its own packet, with its
+    /// byte count when that is symbolic; see [`StdinReadLength`].
     #[merge_policy = "union"]
     #[merge_manual = "set-like union over a Vec keyed by first leaf, like stdin_symbols"]
     stdin_read_lengths: Vec<StdinReadLength>,

@@ -7037,8 +7037,12 @@ class RustExplorationManager(
                     # Python merges it and the result is re-imported after the
                     # _merge_drop below removes ``sid``, so it needs plugins of
                     # its own rather than proxies bound to ``sid``
-                    # (angr-vmi2l.314, angr-mx00p.61).
-                    self._detach_export_proxies(py_state, sid)
+                    # (angr-vmi2l.314, angr-mx00p.61). Its Python solver holds
+                    # the Rust path constraints, as SimStateSolver.merge ORs
+                    # each state's constraints under its merge condition, and
+                    # stdin is the symbols Rust read, so the merged packets are
+                    # solvable under each condition (angr-mx00p.132.54).
+                    self._prepare_for_python_step(py_state, sid, rust_solver=False)
                     py_states.append(py_state)
                     sid_by_state_key[id(py_state)] = sid
                     try:

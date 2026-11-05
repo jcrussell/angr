@@ -920,7 +920,8 @@ fn short_read_fgets_is_its_own_stdin_packet_sized_by_real_size() {
     let read = packets[1].1.unwrap();
     assert_eq!(read.seeded, 0);
     assert_eq!(read.first_leaf, packets[1].0[0].0);
-    let length = RustBV::symbol(&read.length.0, read.length.1);
+    let (name, bits) = read.length.as_ref().unwrap();
+    let length = RustBV::symbol(name, *bits);
     let ctx = state.solver().borrow();
     assert!(
         !ctx.solution(&length.eq(&real_size), 0),
