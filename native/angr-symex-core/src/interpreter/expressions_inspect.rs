@@ -53,15 +53,17 @@ impl<'a> VEXInterpreter<'a> {
         // The user injected a new value via state.inspect.mem_read_expr;
         // reject a width mismatch defensively so a bad override can't
         // silently corrupt downstream ops.
-        let bv = callbacks.inspect_mem_read(
-            self.ctx,
-            self.current_state_id,
-            "after",
-            addr_u64,
-            size as u32,
-            value,
-            endness_str,
-        )?;
+        let bv = self.fire_inspect(callbacks, || {
+            callbacks.inspect_mem_read(
+                self.ctx,
+                self.current_state_id,
+                "after",
+                addr_u64,
+                size as u32,
+                value,
+                endness_str,
+            )
+        })?;
         if bv.width() == (size * 8) as u32 {
             Some(bv)
         } else {
@@ -85,7 +87,9 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::RegRead) {
             return;
         }
-        callbacks.inspect_reg_read(self.current_state_id, "after", offset, size, value);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_reg_read(self.current_state_id, "after", offset, size, value)
+        });
     }
 
     /// Fire a `tmp_read` inspect callback for a VEX `RdTmp` (angr-64pi).
@@ -104,7 +108,9 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::TmpRead) {
             return;
         }
-        callbacks.inspect_tmp_read(self.current_state_id, "after", tmp_num, value);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_tmp_read(self.current_state_id, "after", tmp_num, value)
+        });
     }
 
     /// Fire an `expr` inspect callback for a VEX IRExpr eval (angr-lge2).
@@ -121,7 +127,9 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::Expr) {
             return;
         }
-        callbacks.inspect_expr(self.current_state_id, "after", value);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_expr(self.current_state_id, "after", value)
+        });
     }
 
     /// Fire an `address_concretization` inspect callback (angr-vfst).
@@ -146,13 +154,15 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::AddressConcretization) {
             return;
         }
-        callbacks.inspect_address_concretization(
-            self.current_state_id,
-            when,
-            action,
-            addr_val,
-            result,
-        );
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_address_concretization(
+                self.current_state_id,
+                when,
+                action,
+                addr_val,
+                result,
+            )
+        });
     }
 
     /// Fire a `symbolic_variable` inspect callback (angr-vfst).
@@ -172,6 +182,14 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::SymbolicVariable) {
             return;
         }
-        callbacks.inspect_symbolic_variable(self.current_state_id, "after", name, size_bits, value);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_symbolic_variable(
+                self.current_state_id,
+                "after",
+                name,
+                size_bits,
+                value,
+            )
+        });
     }
 }

@@ -14,7 +14,7 @@
 //! too: [`LiftBlockOutcome`] here, `InspectBit` in `inspect_bits`, the
 //! run-loop results in `run_result` and the execution knobs in `config`.
 
-use super::InspectBit;
+use super::{InspectBit, InspectView};
 use crate::symbolic::{RustBV, SymContext};
 
 /// What the host's lift produced ([`EngineHost::lift_block`]).
@@ -59,6 +59,13 @@ pub trait EngineHost {
     /// Whether a `state.inspect` breakpoint is registered for `event`. Called
     /// per statement and per expression, so it must stay a cheap read.
     fn inspect_event_enabled(&self, event: InspectBit) -> bool;
+    /// Whether a registered breakpoint has an action, so the interpreter
+    /// should publish an [`InspectView`] around each fire. Checked once per
+    /// fire, after the event's enable bit.
+    fn inspect_wants_view(&self) -> bool;
+    /// Hold `view` for the inspect fire that follows; `None` drops it once
+    /// the fire returns (angr-mx00p.132.53).
+    fn publish_inspect_view(&self, view: Option<InspectView>);
 
     // ---- Memory ------------------------------------------------------------
 

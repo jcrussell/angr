@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 /// Stores are appended in execution order and flushed on block boundary or
 /// auto-flush threshold. Loads forward through pending stores by checking the
 /// most recent store covering each load address.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct PendingStoreBuffer {
     /// Stores in chronological insertion order: (address, data).
     stores: Vec<(u64, Vec<u8>)>,

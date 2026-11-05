@@ -846,7 +846,9 @@ impl<'a> VEXInterpreter<'a> {
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs.
         if callbacks.inspect_event_enabled(InspectBit::Irsb) {
-            callbacks.inspect_irsb(self.current_state_id, "before", irsb.addr);
+            self.fire_inspect(callbacks, || {
+                callbacks.inspect_irsb(self.current_state_id, "before", irsb.addr)
+            });
         }
 
         // Execute statements
@@ -860,7 +862,9 @@ impl<'a> VEXInterpreter<'a> {
             // gate keeps the no-BP cost at one `AtomicU32::load + AND` per
             // statement.
             if callbacks.inspect_event_enabled(InspectBit::Statement) {
-                callbacks.inspect_statement(self.current_state_id, "before", stmt_idx as u32);
+                self.fire_inspect(callbacks, || {
+                    callbacks.inspect_statement(self.current_state_id, "before", stmt_idx as u32)
+                });
             }
             let stmt_start = profile_start!(self);
             match self.execute_stmt_with_callbacks(callbacks, stmt, irsb)? {
@@ -955,7 +959,9 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(InspectBit::Call) {
             return;
         }
-        callbacks.inspect_call(self.current_state_id, when, function_address);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_call(self.current_state_id, when, function_address)
+        });
     }
 
     /// Fire a `return` inspect callback into Python for an Ijk_Ret exit.
@@ -973,7 +979,9 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(InspectBit::Return) {
             return;
         }
-        callbacks.inspect_return(self.current_state_id, when, function_address);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_return(self.current_state_id, when, function_address)
+        });
     }
 }
 

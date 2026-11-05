@@ -7,7 +7,9 @@
 
 use super::*;
 use crate::claripy_bridge::{claripy_module, claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
-use crate::interpreter::{EngineHost, HostLoad, HostPage, InspectBit, LiftBlockOutcome};
+use crate::interpreter::{
+    EngineHost, HostLoad, HostPage, InspectBit, InspectView, LiftBlockOutcome,
+};
 use crate::symbolic::{RustBV, SymContext};
 
 /// `value` as a claripy AST, or `None` when the export fails (the breakpoint
@@ -82,6 +84,15 @@ impl EngineHost for PythonCallbacks {
     #[inline]
     fn inspect_event_enabled(&self, event: InspectBit) -> bool {
         PythonCallbacks::inspect_event_enabled(self, event)
+    }
+
+    fn inspect_wants_view(&self) -> bool {
+        self.inspect_wants_view
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn publish_inspect_view(&self, view: Option<InspectView>) {
+        super::inspect_view::publish(view);
     }
 
     fn memory_load(&self, ctx: &SymContext, addr: u64, size: u32) -> Result<HostLoad, String> {

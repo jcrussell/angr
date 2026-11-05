@@ -579,6 +579,7 @@ pub(crate) fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustExplorationManager>()?;
     m.add_class::<ExplorationEvent>()?;
     m.add_function(pyo3::wrap_pyfunction!(get_stepping_state_id, m)?)?;
+    crate::callbacks::inspect_view::register(m)?;
     Ok(())
 }
 

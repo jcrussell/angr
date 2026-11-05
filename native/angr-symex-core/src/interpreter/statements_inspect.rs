@@ -51,15 +51,17 @@ impl<'a> VEXInterpreter<'a> {
         // (only meaningful for when='before', pre-store; angr-inh0). Reject a
         // width mismatch defensively so a bad override can't silently corrupt
         // the store.
-        let bv = callbacks.inspect_mem_write(
-            self.ctx,
-            self.current_state_id,
-            when,
-            addr_u64,
-            data_size as u32,
-            data_val,
-            endness_str,
-        )?;
+        let bv = self.fire_inspect(callbacks, || {
+            callbacks.inspect_mem_write(
+                self.ctx,
+                self.current_state_id,
+                when,
+                addr_u64,
+                data_size as u32,
+                data_val,
+                endness_str,
+            )
+        })?;
         if bv.width() == (data_size * 8) as u32 {
             Some(bv)
         } else {
@@ -80,7 +82,9 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::RegWrite) {
             return;
         }
-        callbacks.inspect_reg_write(self.current_state_id, "after", offset, size, value);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_reg_write(self.current_state_id, "after", offset, size, value)
+        });
     }
 
     /// Fire a `tmp_write` inspect callback for a VEX `WrTmp` (angr-64pi).
@@ -99,7 +103,9 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::TmpWrite) {
             return;
         }
-        callbacks.inspect_tmp_write(self.current_state_id, "after", tmp_num, value);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_tmp_write(self.current_state_id, "after", tmp_num, value)
+        });
     }
 
     /// Fire an `instruction` inspect callback into Python for a VEX `IMark`.
@@ -111,7 +117,9 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(InspectBit::Instruction) {
             return;
         }
-        callbacks.inspect_instruction(self.current_state_id, "before", addr);
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_instruction(self.current_state_id, "before", addr)
+        });
     }
 
     /// Fire an `exit` inspect callback into Python for a VEX conditional `Exit`.
@@ -127,12 +135,14 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::Exit) {
             return;
         }
-        callbacks.inspect_exit(
-            self.current_state_id,
-            "before",
-            target,
-            jk.ijk_name(),
-            guard,
-        );
+        self.fire_inspect(callbacks, || {
+            callbacks.inspect_exit(
+                self.current_state_id,
+                "before",
+                target,
+                jk.ijk_name(),
+                guard,
+            )
+        });
     }
 }

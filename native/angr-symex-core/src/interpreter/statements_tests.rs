@@ -134,6 +134,73 @@ fn lift_cut_exits_at_an_interior_imark_only() {
     });
 }
 
+/// Run `rax = 0xcafe; [0x4000] = 0xdeadbeef` and then the next instruction's
+/// `IMark`, with `host` serving the `instruction` event.
+fn fire_after_put_and_store(host: &TestHost) {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.pc = 0x1000;
+    let irsb = make_irsb_with_temps(0x1000, &[]);
+    let stmts = [
+        IRStmt::Put {
+            offset: 16,
+            data: IRExpr::Const(IRConst::U64(0xcafe)),
+        },
+        IRStmt::Store {
+            addr: IRExpr::Const(IRConst::U64(0x4000)),
+            data: IRExpr::Const(IRConst::U32(0xdead_beef)),
+            endness: Endness::Little,
+        },
+        IRStmt::IMark {
+            addr: 0x1004,
+            len: 4,
+            delta: 0,
+        },
+    ];
+    for stmt in &stmts {
+        interp
+            .execute_stmt_with_callbacks(host, stmt, &irsb)
+            .expect("stmt");
+    }
+}
+
+/// A BP action mid-block reads the interpreter's live values: a register the
+/// block wrote and a store still in `pending_stores`, neither yet in the
+/// state (angr-mx00p.132.53).
+#[test]
+fn instruction_fire_publishes_the_live_view() {
+    let host = TestHost {
+        inspect_instructions: true,
+        want_views: true,
+        ..TestHost::default()
+    };
+    fire_after_put_and_store(&host);
+    let views = host.instruction_views.borrow();
+    let [Some(view)] = views.as_slice() else {
+        panic!("one fire with a view expected");
+    };
+    assert_eq!(view.block_addr(), 0x1000);
+    assert_eq!(view.insn_addr(), 0x1004);
+    assert_eq!(view.register(16, 8).as_u64(), Some(0xcafe));
+    assert_eq!(
+        view.load(0x4000, 4).and_then(|v| v.as_u64()),
+        Some(0xdead_beef)
+    );
+    assert!(view.load(0x8000, 4).is_none(), "an unserved load must not read as zero");
+    assert!(host.view_live.borrow().is_none(), "the view is dropped after the fire");
+}
+
+/// With no BP action registered the fire publishes nothing.
+#[test]
+fn instruction_fire_without_an_action_takes_no_view() {
+    let host = TestHost {
+        inspect_instructions: true,
+        ..TestHost::default()
+    };
+    fire_after_put_and_store(&host);
+    assert!(matches!(host.instruction_views.borrow().as_slice(), [None]));
+}
+
 #[test]
 fn abihint_is_no_op() {
     let ctx = SymContext::new_mock();

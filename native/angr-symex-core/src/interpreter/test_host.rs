@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 
-use super::{EngineHost, HostLoad, HostPage, InspectBit, LiftBlockOutcome};
+use super::{EngineHost, HostLoad, HostPage, InspectBit, InspectView, LiftBlockOutcome};
 use crate::symbolic::{RustBV, SymContext};
 
 /// How [`TestHost`] answers `memory_store_symbolic_value`.
@@ -59,6 +59,16 @@ pub struct TestHost {
     pub dirty_result: Option<RustBV>,
     /// The name of every dirty helper the interpreter handed over.
     pub dirty_calls: RefCell<Vec<String>>,
+    /// Report the `instruction` event enabled.
+    pub inspect_instructions: bool,
+    /// Ask for an [`InspectView`] around each fire, as the shell does while a
+    /// BP with an action is registered.
+    pub want_views: bool,
+    /// One entry per `instruction` fire, in fire order: the view published
+    /// around it, or `None` when none was.
+    pub instruction_views: RefCell<Vec<Option<InspectView>>>,
+    /// The view published right now, between the `Some` and `None` publishes.
+    pub view_live: RefCell<Option<InspectView>>,
 }
 
 fn not_set<T>(slot: &str) -> Result<T, String> {
@@ -110,8 +120,16 @@ impl EngineHost for TestHost {
             .is_none_or(|pages| pages.contains(&page_addr))
     }
 
-    fn inspect_event_enabled(&self, _event: InspectBit) -> bool {
-        false
+    fn inspect_event_enabled(&self, event: InspectBit) -> bool {
+        self.inspect_instructions && event == InspectBit::Instruction
+    }
+
+    fn inspect_wants_view(&self) -> bool {
+        self.want_views
+    }
+
+    fn publish_inspect_view(&self, view: Option<InspectView>) {
+        *self.view_live.borrow_mut() = view;
     }
 
     fn memory_load(&self, _ctx: &SymContext, addr: u64, size: u32) -> Result<HostLoad, String> {
@@ -263,7 +281,10 @@ impl EngineHost for TestHost {
     ) {
     }
     fn inspect_symbolic_variable(&self, _: i64, _: &str, _: &str, _: u32, _: &RustBV) {}
-    fn inspect_instruction(&self, _: i64, _: &str, _: u64) {}
+    fn inspect_instruction(&self, _: i64, _: &str, _: u64) {
+        let view = self.view_live.borrow_mut().take();
+        self.instruction_views.borrow_mut().push(view);
+    }
     fn inspect_irsb(&self, _: i64, _: &str, _: u64) {}
     fn inspect_statement(&self, _: i64, _: &str, _: u32) {}
     fn inspect_call(&self, _: i64, _: &str, _: u64) {}

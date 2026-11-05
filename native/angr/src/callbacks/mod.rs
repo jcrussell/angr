@@ -144,6 +144,7 @@ mod dispatch;
 mod host_impl;
 mod inspect;
 mod inspect_test_entries;
+pub(crate) mod inspect_view;
 pub(crate) mod pyvex_reader;
 
 // Shared `defs`/`obj`/`recorder` plumbing for the `callbacks/` test modules
@@ -499,6 +500,12 @@ pub struct PythonCallbacks {
     /// the same word. It is `AtomicU32` so call/return (bits 8/9) and `expr`
     /// (bit 16, after `statement` at bit 15) all fit (angr-4ai9, angr-lge2).
     pub inspect_enabled: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Whether a registered breakpoint has an action, so the interpreter
+    /// publishes an [`InspectView`](crate::interpreter::InspectView) around
+    /// each fire (`inspect_view.rs`). Python writes it via
+    /// `set_inspect_wants_view`; `Arc` for the same reason as
+    /// `inspect_enabled`.
+    pub inspect_wants_view: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The set of page addresses `fetch_page` / `batch_fetch_pages` could
     /// actually serve, snapshotted from the Python state at setup (angr-gorvf.4.6).
     ///
@@ -561,6 +568,9 @@ impl PythonCallbacks {
                     inspect_enabled: std::sync::Arc::new(
                         std::sync::atomic::AtomicU32::new(0),
                     ),
+                    inspect_wants_view: std::sync::Arc::new(
+                        std::sync::atomic::AtomicBool::new(false),
+                    ),
                     python_servable_pages: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     python_page_universe: std::sync::Arc::new(std::sync::RwLock::new(None)),
                 }
@@ -591,6 +601,15 @@ impl PythonCallbacks {
     pub fn py_set_inspect_enabled(&self, mask: u32) {
         self.inspect_enabled
             .store(mask, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Ask the interpreter to publish its live state around every inspect
+    /// fire, for BP actions to read (`inspect_view.rs`). Python sets it while
+    /// any registered breakpoint has an action.
+    #[pyo3(name = "set_inspect_wants_view")]
+    pub fn py_set_inspect_wants_view(&self, wants: bool) {
+        self.inspect_wants_view
+            .store(wants, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Install the snapshot of pages Python's `fetch_page` can serve
@@ -708,6 +727,7 @@ impl PythonCallbacks {
                 let Self {
                     $($field,)+
                     inspect_enabled,
+                    inspect_wants_view,
                     // Non-`Py` state: shared with the Python side through
                     // `Arc`, not part of the reference cycle, so `__clear__`
                     // leaves it alone. Named (rather than elided with `..`)
@@ -717,6 +737,7 @@ impl PythonCallbacks {
                 } = self;
                 $(*$field = None;)+
                 inspect_enabled.store(0, std::sync::atomic::Ordering::Relaxed);
+                inspect_wants_view.store(false, std::sync::atomic::Ordering::Relaxed);
             }};
         }
         with_callback_fields!(clear_all);

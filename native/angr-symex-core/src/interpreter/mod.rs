@@ -129,6 +129,7 @@ mod expressions_loads;
 mod fork_state;
 mod host;
 mod inspect_bits;
+mod inspect_view;
 mod pending_store;
 mod prefetch;
 mod run_result;
@@ -167,6 +168,7 @@ pub use execution_error::{
 pub use execution_stats::ExecutionStats;
 pub use host::{EngineHost, HostLoad, HostPage, LiftBlockOutcome};
 pub use inspect_bits::InspectBit;
+pub use inspect_view::InspectView;
 pub use run_result::{ErrorRoute, RunErrorKind, RunResult};
 pub use simprocedures::SimProcedureInfo;
 
