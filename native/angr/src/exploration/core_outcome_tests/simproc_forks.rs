@@ -38,6 +38,23 @@ fn dispatch_with_fork(path_taken: bool, with_snapshot: bool) -> SeededDispatch {
     )
 }
 
+/// The main successor and the sibling out of a two-state `Continue`, checking
+/// Python's order on the way: the sibling precedes main when it took the exit
+/// target (`path_taken == false`), and follows it otherwise (angr-mx00p.132.59).
+fn main_and_fork(
+    succ: &[(RustSimState, RoutingTag)],
+    path_taken: bool,
+) -> (&RustSimState, &RustSimState) {
+    assert_eq!(succ.len(), 2, "main successor plus the sibling");
+    let (main, fork) = if path_taken {
+        (&succ[0], &succ[1])
+    } else {
+        (&succ[1], &succ[0])
+    };
+    assert!(!main.1.is_fork && fork.1.is_fork, "path_taken={path_taken}");
+    (&main.0, &fork.0)
+}
+
 /// amd64 return register, for reading back what the proc wrote.
 fn amd64_return_register() -> u32 {
     RustExplorationManager::new("amd64", None)
@@ -157,14 +174,15 @@ fn simproc_success_fork_guard_polarities_are_opposite() {
             let CoreReturn::Continue(succ) = d.outcome.ret else {
                 panic!("expected Continue");
             };
+            let (main, fork) = main_and_fork(&succ, path_taken);
             let want = |v: bool| Some(u128::from(v));
             assert_eq!(
-                succ[0].0.eval(&guard),
+                main.eval(&guard),
                 want(path_taken),
                 "main successor carries the taken-path guard (path_taken={path_taken})"
             );
             assert_eq!(
-                succ[1].0.eval(&guard),
+                fork.eval(&guard),
                 want(!path_taken),
                 "sibling carries the opposite guard (path_taken={path_taken})"
             );
@@ -203,15 +221,16 @@ fn simproc_success_fork_without_snapshot_survives_with_opposite_guard() {
                 panic!("expected Continue");
             };
             assert_eq!(succ.len(), 2, "main successor plus the sibling");
-            assert_eq!(succ[1].0.state_id(), d.outcome.fork_ids[0]);
+            let (main, fork) = main_and_fork(&succ, path_taken);
+            assert_eq!(fork.state_id(), d.outcome.fork_ids[0]);
             let want = |v: bool| Some(u128::from(v));
             assert_eq!(
-                succ[0].0.eval(&guard),
+                main.eval(&guard),
                 want(path_taken),
                 "main successor carries the taken-path guard (path_taken={path_taken})"
             );
             assert_eq!(
-                succ[1].0.eval(&guard),
+                fork.eval(&guard),
                 want(!path_taken),
                 "sibling carries the opposite guard (path_taken={path_taken})"
             );

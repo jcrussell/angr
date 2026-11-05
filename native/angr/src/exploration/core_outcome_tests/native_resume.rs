@@ -308,7 +308,10 @@ fn native_resume_nested_subcall_fork_does_not_inherit_the_new_frame() {
             panic!("expected Continue");
         };
         assert_eq!(succ.len(), 2);
-        let (main, fork) = (&succ[0].0, &succ[1].0);
+        // The sibling took the exit target, so it comes first, as in Python
+        // (angr-mx00p.132.59).
+        assert!(succ[0].1.is_fork, "an exit-target sibling precedes main");
+        let (fork, main) = (&succ[0].0, &succ[1].0);
         assert_eq!(main.native_resume_stack().len(), 1, "nested frame pushed");
         assert_eq!(
             main.native_resume_stack()[0].resume_tag,
