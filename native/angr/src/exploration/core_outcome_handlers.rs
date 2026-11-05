@@ -758,7 +758,11 @@ fn continue_after_native_proc(
         },
     );
     if no_return && !cc.ctx.block_granular {
-        // Deadend the main state; surviving forks continue.
+        // Deadend the main state; surviving forks continue. The exit is
+        // recorded as Python's `SimProcedure.exit` step records it, so the
+        // export's `bbl_addrs` ends at the procedure (angr-mx00p.132.55).
+        let addr = state.pc();
+        state.record_exit(addr, None);
         CoreOutcome {
             ret: CoreReturn::Continue(forks_out),
             pruned,

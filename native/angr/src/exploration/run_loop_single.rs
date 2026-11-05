@@ -384,6 +384,9 @@ impl RustExplorationManager {
                                 return Ok(StepOutcome::Successors(vec![state]));
                             }
                             if no_return {
+                                // Recorded as Python's `SimProcedure.exit`
+                                // step does (angr-mx00p.132.55).
+                                state.record_exit(pc, None);
                                 self.push_or_drop_terminal(STASH_DEADENDED, state);
                                 return Ok(StepOutcome::Routed);
                             }

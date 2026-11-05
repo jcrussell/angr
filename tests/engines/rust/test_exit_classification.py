@@ -14,6 +14,10 @@
 * Python no-return procedure exit (angr-mx00p.132.8): a state a Python
   ``SimProcedure.exit`` ends reports ``Ijk_Exit`` and the ``terminate``
   event's status, also when the exit-only fast path skips the procedure.
+* Native no-return procedure exit (angr-mx00p.132.55): a state a native
+  no-return procedure deadends records the procedure as its last
+  ``bbl_addrs`` entry with ``Ijk_Exit``, as Python's ``SimProcedure.exit``
+  step does.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ import os
 import pytest
 
 import angr
-from tests.engines.conftest import FORK_TREE_8_PATH, RUST_EXPLORATION_AVAILABLE, RustExplorationManager
+from tests.engines.conftest import BIN_LOCATION, FORK_TREE_8_PATH, RUST_EXPLORATION_AVAILABLE, RustExplorationManager
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration engine not built")
 
@@ -107,6 +111,20 @@ class TestPythonProcedureExit:
         for state in mgr.deadended:
             self._assert_exited(state, 0xC0000409)
             assert list(state.history.bbl_addrs)[-1] == proj.simos.fastfail.addr
+
+
+class TestNativeProcedureExit:
+    def test_after_main_exit_is_the_last_block(self):
+        # main returns into __libc_start_main.after_main, which the native
+        # __libc_start_main deadends; Python's records it as an Ijk_Exit block.
+        proj = angr.Project(os.path.join(BIN_LOCATION, "tests", "i386", "uc_stop"), auto_load_libs=False)
+        python = angr.SimulationManager(proj, active_states=[proj.factory.entry_state(args=["a"])]).run()
+        rust = RustExplorationManager(proj, [proj.factory.entry_state(args=["a"])])
+        rust.run()
+        (expected,) = python.deadended
+        (state,) = rust.deadended
+        assert list(state.history.bbl_addrs) == list(expected.history.bbl_addrs)
+        assert state.history.jumpkind == expected.history.jumpkind == "Ijk_Exit"
 
 
 class TestVsyscallHookSyscall:
