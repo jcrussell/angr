@@ -2792,6 +2792,12 @@ class RustExplorationManager(
             if self._inspect_breakpoints.get(event):
                 mask |= 1 << bit
         self._callbacks.set_inspect_enabled(mask)
+        # A BP action may read the stepping state, which the step holds, so
+        # ask Rust for the mid-step view only while one is registered
+        # (angr-mx00p.132.53).
+        self._callbacks.set_inspect_wants_view(
+            any(bp.action is not None for bps in self._inspect_breakpoints.values() for bp in bps)
+        )
 
     def _seed_inspect_breakpoints(self, angr_state) -> None:
         """Adopt the breakpoints *angr_state*'s own ``SimInspector`` carries.
@@ -2831,12 +2837,16 @@ class RustExplorationManager(
         unknown — keeps the BP firing rather than silently dropping.
         """
         if state_id is not None and state_id >= 0:
-            from angr.exploration.rust_state_proxy import RustStateProxy
+            from angr.exploration.rust_state_proxy import RustInspectViewStateProxy, RustStateProxy
+            from angr.rustylib.vex_engine import inspect_view_addrs
 
+            # A fire mid-step publishes the stepping state's view; its reads
+            # must not touch the borrowed manager (angr-mx00p.132.53).
+            proxy_cls = RustStateProxy if inspect_view_addrs() is None else RustInspectViewStateProxy
             # cat-(a) EXPECTED CONTROL FLOW: state may have been
             # dropped from Rust between dispatch and proxy build.
             with contextlib.suppress(Exception):
-                return RustStateProxy(self._rust_mgr, state_id, self._project, python_mgr=self)
+                return proxy_cls(self._rust_mgr, state_id, self._project, python_mgr=self)
         return self._get_callback_state() or self._get_default_state()
 
     def _dispatch_inspect_event(self, event_type: str, state_id: int, when: str, **attrs):

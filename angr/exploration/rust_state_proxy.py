@@ -4110,6 +4110,18 @@ class RustStateProxy:
             return self._python_mgr.get_state_globals_py(self._state_id)
         return {}
 
+    def block(self, *args, **kwargs):
+        """The basic block at this state's address, as ``SimState.block`` builds it.
+
+        No ``backup_state``: the lifter would fire ``vex_lift`` breakpoints and
+        read code through it, which a proxy does not serve. A selfmodifying_code
+        project, the one case that reads code from the state, stays on the
+        Python engine (``SELFMODIFYING_CODE_REASON``).
+        """
+        if not args and "addr" not in kwargs:
+            kwargs["addr"] = self.addr
+        return self.project.factory.block(*args, **kwargs)
+
     def add_constraints(self, *constraints):
         """Add constraints to this proxy's view of the solver.
 
@@ -4204,6 +4216,164 @@ class RustStateProxy:
             if python_mgr is None:
                 return
             python_mgr.drop_copy(self._state_id)
+
+
+def _inspect_view_addrs():
+    """``(block_addr, insn_addr)`` of the published mid-step view, or ``None``."""
+    from angr.rustylib.vex_engine import inspect_view_addrs  # pylint: disable=import-outside-toplevel
+
+    return inspect_view_addrs()
+
+
+_INSPECT_VIEW_WRITE_MSG = (
+    "a BP action fired mid-step cannot write the Rust state: the step holds it, "
+    "and the mid-step view is read-only (angr-mx00p.132.53)"
+)
+
+
+def _view_int(value, what):
+    """``value`` as an int, refusing a symbolic AST the view cannot solve."""
+    value = _raw_ast(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, claripy.ast.Base) and value.concrete:
+        return value.concrete_value
+    raise NotImplementedError(f"symbolic {what} cannot be read from the mid-step inspect view: {value!r}")
+
+
+class _InspectViewRegisters:
+    """``state.regs`` over the mid-step view; the live proxy once no view is up."""
+
+    def __init__(self, owner):
+        object.__setattr__(self, "_owner", owner)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        owner = self._owner
+        if _inspect_view_addrs() is None:
+            return getattr(RustStateProxy.regs.fget(owner), name)
+        from angr.rustylib.vex_engine import inspect_view_register  # pylint: disable=import-outside-toplevel
+
+        try:
+            offset, size = owner.arch.registers[name]
+        except KeyError:
+            raise AttributeError(name) from None
+        return inspect_view_register(offset, size)
+
+    def __setattr__(self, name, value):
+        if _inspect_view_addrs() is not None:
+            raise NotImplementedError(_INSPECT_VIEW_WRITE_MSG)
+        setattr(RustStateProxy.regs.fget(self._owner), name, value)
+
+
+class _InspectViewMemory:
+    """``state.memory`` over the mid-step view; the live proxy once no view is up."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def _live(self):
+        return RustStateProxy.memory.fget(self._owner)
+
+    def load(self, addr, size=None, *, endness=None, **kwargs):
+        """``SimMemory.load`` of a concrete range the view holds whole.
+
+        The view's value is little-endian, as ``bytes_to_bv`` assembles it, so
+        it is reversed for angr's default big-endian ``endness``. A range the
+        view cannot serve raises ``SimMemoryError`` rather than reading the
+        state's stale pre-step memory.
+        """
+        if _inspect_view_addrs() is None:
+            return self._live().load(addr, size, endness=endness, **kwargs)
+        from angr.errors import SimMemoryError  # pylint: disable=import-outside-toplevel
+        from angr.rustylib.vex_engine import inspect_view_load  # pylint: disable=import-outside-toplevel
+
+        addr = _view_int(addr, "load address")
+        size = self._owner.arch.bytes if size is None else _view_int(size, "load size")
+        value = inspect_view_load(addr, size)
+        if value is None:
+            raise SimMemoryError(f"the mid-step inspect view cannot serve {size} bytes at {addr:#x}")
+        return value if endness == "Iend_LE" else value.reversed
+
+    def store(self, *args, **kwargs):
+        if _inspect_view_addrs() is not None:
+            raise NotImplementedError(_INSPECT_VIEW_WRITE_MSG)
+        return self._live().store(*args, **kwargs)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._live(), name)
+
+
+class _InspectViewSolver:
+    """``state.solver`` over the mid-step view; the live proxy once no view is up.
+
+    The view carries no constraints, so only a concrete expression evaluates.
+    """
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def _live(self):
+        return RustStateProxy.solver.fget(self._owner)
+
+    def eval(self, expr, cast_to=None, **kwargs):
+        if _inspect_view_addrs() is None:
+            return self._live().eval(expr, cast_to=cast_to, **kwargs)
+        value = _view_int(expr, "expression")
+        return value if cast_to is None else cast_to(value)
+
+    def eval_one(self, expr, **kwargs):
+        if _inspect_view_addrs() is None:
+            return self._live().eval_one(expr, **kwargs)
+        return self.eval(expr, **kwargs)
+
+    def solution(self, expr, v):
+        if _inspect_view_addrs() is None:
+            return self._live().solution(expr, v)
+        return _view_int(expr, "expression") == _view_int(v, "solution")
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._live(), name)
+
+
+class RustInspectViewStateProxy(RustStateProxy):
+    """The state a BP action sees when it fires mid-step (angr-mx00p.132.53).
+
+    While the interpreter publishes its ``InspectView`` (``callbacks/inspect_view.rs``)
+    the manager is borrowed by the step, so ``addr`` / ``regs`` / ``memory.load``
+    / ``solver.eval`` read the view through the ``vex_engine.inspect_view_*``
+    pyfunctions instead. ``addr`` reads the live instruction pointer, as
+    ``SimState.addr`` does: VEX puts it ahead of an instruction that may
+    fault, so it can be past the block address. Once the fire returns, every read
+    falls back to the normal proxy path, so a proxy the action kept reads the
+    post-step state.
+    """
+
+    @property
+    def addr(self):
+        if _inspect_view_addrs() is None:
+            return super().addr
+        from angr.rustylib.vex_engine import inspect_view_register  # pylint: disable=import-outside-toplevel
+
+        arch = self.arch
+        return _view_int(inspect_view_register(arch.ip_offset, arch.bytes), "instruction pointer")
+
+    @property
+    def regs(self):
+        return _InspectViewRegisters(self)
+
+    @property
+    def memory(self):
+        return _InspectViewMemory(self)
+
+    @property
+    def solver(self):
+        return _InspectViewSolver(self)
 
 
 # Rust step_state() bucket names -> SimulationManager.step_state() stash keys.
