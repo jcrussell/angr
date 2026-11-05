@@ -13,8 +13,8 @@ import warnings
 import weakref
 from typing import TYPE_CHECKING
 
-from angr import claripy
-from angr.errors import SimUnsatError
+from angr import claripy, sim_options
+from angr.errors import SimMemoryError, SimUnsatError
 from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_state_binding import RustStateBinding
 from angr.state_plugins.history import SimStateHistory
@@ -2111,16 +2111,23 @@ class RustStateExportMixin:
         # Lazily populated on the first region that needs recovery so a
         # concrete-only snapshot pays nothing.
         recovery: dict = {}
+        # Under STRICT_PAGE_ACCESS a plain store refuses a read-only page and
+        # a page Python never mapped (one native mmap made), so the export
+        # maps the missing page with Rust's permissions and writes with
+        # ``priv`` (angr-mx00p.132.73).
+        strict = sim_options.STRICT_PAGE_ACCESS in state.options
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
             if page is None:
                 continue
-            page_addr, data, _perms, symbolic_offsets = page
+            page_addr, data, perms, symbolic_offsets = page
             try:
+                if strict:
+                    self._map_missing_page(state, page_addr, len(data), perms)
                 # Rust's page bytes are in memory order: store them as bytes.
                 # A BVV stored with the arch's (little) endness would reverse
                 # the whole page (angr-mx00p.90).
-                state.memory.store(page_addr, bytes(data), inspect=False)
+                state.memory.store(page_addr, bytes(data), inspect=False, priv=strict)
                 if not symbolic_offsets:
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
@@ -2141,6 +2148,21 @@ class RustStateExportMixin:
                 # memory at this page is left at its blank-state default,
                 # so loads return zeros instead of Rust's values.
                 l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
+
+    @staticmethod
+    def _map_missing_page(state: angr.SimState, page_addr: int, page_size: int, rust_perms: int) -> None:
+        """Map a page the Python state lacks, with the Rust page's permissions.
+
+        ``rust_perms`` is in Rust's `Permission::to_bits` order (R=4, W=2,
+        X=1); angr's page bits are R=1, W=2, X=4. A page the state already
+        has, through its own pages or a loader backer, keeps its Python
+        permissions.
+        """
+        try:
+            state.memory.permissions(page_addr)
+        except SimMemoryError:
+            py_perms = ((rust_perms & 4) >> 2) | (rust_perms & 2) | ((rust_perms & 1) << 2)
+            state.memory.map_region(page_addr, page_size, py_perms)
 
     @staticmethod
     def _find_contiguous_regions(symbolic_offsets) -> list:
