@@ -210,7 +210,10 @@ A workload is ineligible (and so routes to Python) when any of these
 hold: the Rust extension is not built; the architecture is not one
 the Rust interpreter implements (the ``ALL_ARCHES`` registry in
 ``native/angr-symex-core/src/arch/registry.rs``: X86, AMD64, ARM, ARM64, MIPS32,
-MIPS64); a seeding state carries a
+MIPS64); the project sets ``selfmodifying_code``, since the Rust
+engine neither relifts a block that patches its own later instructions
+nor invalidates code cached outside the loaded binaries
+(``SELFMODIFYING_CODE_REASON``); a seeding state carries a
 raise-listed SimOption (``_RAISE_OPTION_NAMES`` — the ``TRACK_*_ACTIONS``
 family, the eager-solve options, …) or lacks a required one
 (``_REQUIRED_OPTION_NAMES``); the caller passed a

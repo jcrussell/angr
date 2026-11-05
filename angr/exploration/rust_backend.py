@@ -27,6 +27,7 @@ from angr.engines import UberEngine
 from angr.errors import SimEngineError, SimError, SimMemoryError
 from angr.exploration.rust_manager import (
     _STASH_ACCESSORS,
+    SELFMODIFYING_CODE_REASON,
     RustErrorRecord,
     RustExplorationManager,
     _unsupported_inspect_events,
@@ -255,6 +256,8 @@ class RustBackend(SimulationBackend):
         engine = self._project.factory.default_engine_factory
         if engine is not UberEngine:
             return f"project uses a custom SimEngine {engine.__name__}"
+        if self._project.selfmodifying_code:
+            return SELFMODIFYING_CODE_REASON
         if self._in_init_prefix(state):
             return "state is in the python init prefix"
         if self._stop_point_inside_block(state, run_args.get(_STOP_POINTS)):

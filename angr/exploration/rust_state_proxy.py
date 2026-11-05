@@ -595,6 +595,12 @@ class RustSolverProxyBase(_SolutionCountMixin):
             return expr
         if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
             return bool(expr.args[0])
+        if isinstance(expr, claripy.ast.BV) and expr.op == "BVV":
+            # SimSolver reads a concrete BV as its truth value (non-zero is
+            # true); the Rust context takes Bools only and answered False, so
+            # PrivilegedPagingMixin's ``is_true(page.perm_read)`` on the
+            # fallback memory saw every page as unreadable (angr-mx00p.132.30).
+            return expr.args[0] != 0
         return self._query_ctx().is_true(expr)
 
     def is_false(self, expr, extra_constraints=(), **kwargs):
@@ -604,6 +610,8 @@ class RustSolverProxyBase(_SolutionCountMixin):
             return not expr
         if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
             return not bool(expr.args[0])
+        if isinstance(expr, claripy.ast.BV) and expr.op == "BVV":
+            return expr.args[0] == 0
         return self._query_ctx().is_false(expr)
 
     def solution(self, expr, value, extra_constraints=(), **kwargs):

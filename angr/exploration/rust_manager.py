@@ -414,6 +414,13 @@ def rust_supports_arch(arch_name) -> bool:
     return arch_supported(str(arch_name))
 
 
+#: Why a ``selfmodifying_code`` project stays on Python (angr-mx00p.132.30): a
+#: store invalidates cached IRSBs only inside loaded binary regions, and a store
+#: into a later instruction of the running block does not relift it as
+#: ``SimReliftException`` does, so code patched on the stack runs stale.
+SELFMODIFYING_CODE_REASON = "project enables selfmodifying_code, which the rust engine does not relift"
+
+
 def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
     """Decide whether *project* / *states* / *kwargs* can run on the Rust engine.
 
@@ -437,6 +444,9 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
     arch_name = getattr(getattr(project, "arch", None), "name", None)
     if not rust_supports_arch(arch_name):
         return False, f"arch {arch_name} not implemented by the rust engine"
+
+    if getattr(project, "selfmodifying_code", False):
+        return False, SELFMODIFYING_CODE_REASON
 
     unsupported_kwargs = unsupported_rust_manager_kwargs(kwargs)
     if unsupported_kwargs:
