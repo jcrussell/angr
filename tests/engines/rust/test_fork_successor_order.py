@@ -9,10 +9,13 @@ test_unicorn's test_stops) was the other arm.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import angr
 from angr.exploration.rust_manager import RustExplorationManager
+from tests.engines.conftest import BIN_LOCATION
 
 LOAD = 0x400000
 # Forward: cmp rdi,10; je +2; jmp $; jmp $  -> exit target 0x8, fall-through 0x6.
@@ -37,3 +40,19 @@ def test_conditional_exit_successors_in_python_order(engine, code, start, expect
         mgr = proj.factory.simulation_manager(state)
     mgr.step()
     assert [s.addr - LOAD for s in mgr.active] == expected
+
+
+@pytest.mark.parametrize("engine", ["py", "rust"])
+def test_run_deadends_the_fork_arms_in_python_order(engine, monkeypatch):
+    """A default-routed run() deadends the arms of uc_stop's symbolic exit as SimulationManager.run() does.
+
+    A chained step ran the fall-through arm (0x8048591) on to its deadend while the exit-target arm (0x8048587)
+    waited in active, so ``one_deadended`` was the other arm (angr-mx00p.132.61).
+    """
+    monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust" if engine == "rust" else "python")
+    proj = angr.Project(os.path.join(BIN_LOCATION, "tests", "i386", "uc_stop"), auto_load_libs=False)
+    mgr = proj.factory.simulation_manager(proj.factory.entry_state(args=["a"] * 10))
+    assert isinstance(mgr, RustExplorationManager) == (engine == "rust")
+    mgr.run()
+    arms = [a for s in mgr.deadended for a in s.history.bbl_addrs if a in (0x8048587, 0x8048591)]
+    assert arms == [0x8048587, 0x8048591]

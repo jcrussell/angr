@@ -6642,7 +6642,16 @@ class RustExplorationManager(
         # (angr-58v9a). Only delegate to the run-to-completion explore() path
         # when neither `n` nor step_func is given.
         if n is None and step_func is None:
-            return self.explore(**kwargs)
+            # A default-routed manager runs one block per pop, as its step() does: a chained step runs the
+            # fall-through arm of a fork on to its deadend while the exit-target arm waits in active, so the
+            # deadended stash lists the arms in the reverse of SimulationManager.run()'s order
+            # (angr-mx00p.132.61; ``block-granular-step-mode``).
+            was_granular = self.set_block_granular(True) if self._python_handoff_kwargs is not None else None
+            try:
+                return self.explore(**kwargs)
+            finally:
+                if was_granular is not None:
+                    self.set_block_granular(was_granular)
 
         # Bounded / step_func mode: step one at a time. step_func (used by
         # Callable for concrete_only pruning) is applied after each step,
