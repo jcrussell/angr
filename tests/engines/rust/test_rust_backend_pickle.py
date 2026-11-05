@@ -80,6 +80,26 @@ def test_a_factory_built_rust_manager_pickles(arch):
     assert simgr.found[0].posix.dumps(0) == SOSNEAKY
 
 
+def test_a_factory_built_rust_manager_runs_the_spiller():
+    # The factory route of upstream test_spiller's test_palindrome2: Spiller's
+    # step hook drives a SimulationManager with a RustBackend, which spills and
+    # restores exports (angr-mx00p.132.31). fauxware forks once, so the spill
+    # goes straight to the vault, with no staging stash.
+    project = angr.Project(
+        os.path.join(TEST_BINARIES_DIR, "..", "x86_64", "fauxware"), auto_load_libs=False, engine="rust"
+    )
+    simgr = project.factory.simulation_manager()
+    spiller = Spiller(min=1, max=1, staging_stash=None, staging_min=0, staging_max=0)
+    simgr.use_technique(spiller)
+    simgr.run()
+    assert isinstance(simgr.backend, RustBackend)
+    assert simgr.backend.stats["claimed"] > 0
+    assert spiller._ever_pickled > 0
+    assert spiller._ever_unpickled == spiller._ever_pickled
+    assert not simgr.errored
+    assert SOSNEAKY in [s.posix.dumps(0) for s in simgr.deadended]
+
+
 @pytest.mark.parametrize("arch", sorted(FIND))
 def test_a_pickled_export_keeps_the_after_main_continuation(arch):
     # Python ran __libc_start_main's self.call(main); Rust frames carry no
