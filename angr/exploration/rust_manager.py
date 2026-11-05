@@ -1171,6 +1171,9 @@ class RustExplorationManager(
             print(state.solver.eval(state.posix.dumps(0)))
     """
 
+    # SimulationManager.DROP: a to_stash that discards states (split(to_stash=DROP)).
+    DROP = "_DROP"
+
     # Class-level cache for loader-pages output keyed (weakly) by the
     # cle.Loader instance. The output is a pure function of loader state,
     # so reusing it across Callable-spawned RustExplorationManagers on the
@@ -6718,32 +6721,62 @@ class RustExplorationManager(
         return self
 
     def split(
-        self, stash_from: str = "active", stash_to: str = "stashed", limit: int = 8, filter_func=None
+        self,
+        stash_splitter=None,
+        stash_ranker=None,
+        state_ranker=None,
+        limit: int = 8,
+        from_stash: str = "active",
+        to_stash: str = "stashed",
     ) -> RustExplorationManager:
-        """Split states between stashes.
+        """Split ``from_stash`` in two, with ``SimulationManager.split``'s signature and contract.
 
-        Moves excess states to another stash to limit exploration width.
-
-        Args:
-            stash_from: Source stash. Defaults to 'active'.
-            stash_to: Destination for excess states. Defaults to 'stashed'.
-            limit: Maximum states to keep in source stash. Defaults to 8.
-            filter_func: Optional predicate to determine which states to move.
+        ``stash_splitter`` overrides ``stash_ranker``, which overrides ``state_ranker``; with none of them the first
+        ``limit`` states stay. ``from_stash`` keeps the kept states in the order the callable returned them, and
+        ``to_stash == DROP`` drops the rest (angr-mx00p.132.35).
 
         Returns:
             Self, for chaining.
         """
-        state_ids = list(self._rust_mgr.get_state_ids(stash_from))
+        state_ids = list(self._rust_mgr.get_state_ids(from_stash))
+        if stash_splitter is None and stash_ranker is None and state_ranker is None:
+            keep_ids, split_ids = state_ids[:limit], state_ids[limit:]
+            reorder = False
+        else:
+            refs = self._get_stash_states(from_stash)
+            sid_of = {id(ref): ref._lazy_state_id for ref in refs}
 
-        if len(state_ids) <= limit:
-            return self
+            def to_ids(states) -> list[int]:
+                try:
+                    return [sid_of[id(st)] for st in states]
+                except KeyError:
+                    raise ValueError(
+                        f"split(): a ranker or splitter returned a state that is not in stash {from_stash!r}"
+                    ) from None
 
-        # Move excess states to destination stash
-        excess_ids = state_ids[limit:]
-        for state_id in excess_ids:
-            # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-            with contextlib.suppress(RuntimeError, KeyError):
-                self._rust_mgr.move_state(state_id, stash_from, stash_to)
+            if stash_splitter is not None:
+                keep, split = stash_splitter(refs)
+            elif stash_ranker is not None:
+                ranked = list(stash_ranker(refs))
+                keep, split = ranked[:limit], ranked[limit:]
+            else:
+                ranked = sorted(refs, key=state_ranker)
+                keep, split = ranked[:limit], ranked[limit:]
+            keep_ids, split_ids = to_ids(keep), to_ids(split)
+            reorder = True
+
+        if to_stash == self.DROP:
+            self._preserve_exports(split_ids)
+            for state_id in split_ids:
+                self._rust_mgr.drop_state_from_stash(state_id, from_stash)
+        else:
+            for state_id in split_ids:
+                self._rust_mgr.move_state(state_id, from_stash, to_stash)
+        if reorder:
+            # Rust appends on move, so a round trip through a staging stash leaves from_stash in keep_ids order.
+            for state_id in keep_ids:
+                self._rust_mgr.move_state(state_id, from_stash, "_split_keep")
+            self._rust_mgr.move_states("_split_keep", from_stash, None)
 
         return self
 

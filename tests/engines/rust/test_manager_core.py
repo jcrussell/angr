@@ -1149,6 +1149,35 @@ class TestRustExplorationPython:
         assert answers[0] == answers[1]
         assert len(answers[0]) == 1
 
+    def test_split_takes_upstream_kwargs_like_python(self, fauxware_project):
+        """split() has SimulationManager.split's signature: from_stash/to_stash, rankers, DROP (angr-mx00p.132.35)."""
+
+        def states():
+            out = []
+            for v in (5, 2, 4, 1, 3):
+                st = fauxware_project.factory.entry_state()
+                st.regs.rbx = v
+                out.append(st)
+            return out
+
+        def rbx(st):
+            return st.solver.eval(st.regs.rbx)
+
+        results = []
+        for mgr in (
+            fauxware_project.factory.simulation_manager(states()),
+            RustExplorationManager(fauxware_project, states()),
+        ):
+            mgr.split(from_stash="active", to_stash="rest", limit=4)
+            plain = ([rbx(s) for s in mgr.active], [rbx(s) for s in mgr.rest])
+            mgr.split(state_ranker=rbx, limit=2, from_stash="active", to_stash=mgr.DROP)
+            ranked = [rbx(s) for s in mgr.active]
+            mgr.split(stash_splitter=lambda ss: (ss[1:], ss[:1]), from_stash="active", to_stash="rest")
+            splitter = ([rbx(s) for s in mgr.active], [rbx(s) for s in mgr.rest])
+            results.append((plain, ranked, splitter, len(mgr.stashes["_DROP"])))
+        assert results[0] == results[1]
+        assert results[0] == (([5, 2, 4, 1], [3]), [1, 2], ([2], [3, 1]), 0)
+
     @pytest.mark.parametrize("n", [None, 3])
     def test_complete_technique_steps_nothing_like_python(self, fauxware_project, n):
         """run() asks complete() before the first step, so an already-complete technique's hooks never fire.
