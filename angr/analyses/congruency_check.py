@@ -47,10 +47,10 @@ class CongruencyCheck(Analysis):
         Checks that the specified paths stay the same over the next `depth` states.
         """
 
-        simgr = self.project.factory.simulation_manager(right_state)
+        # Seed both states, so the factory's engine choice sees each one's options and the manager owns both.
+        simgr = self.project.factory.simulation_manager([right_state, left_state])
+        simgr.split(limit=1, to_stash="left")
         simgr.stash(to_stash="right")
-        simgr.active.append(left_state)
-        simgr.stash(to_stash="left")
         simgr.stash(to_stash="stashed_left")
         simgr.stash(to_stash="stashed_right")
 

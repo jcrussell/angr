@@ -272,7 +272,10 @@ _RAISE_OPTION_NAMES = frozenset(
 # engine="rust" manager, which ignores them. UNICORN makes one Python step run
 # every concrete block up to the next symbolic one, so step counts (and where a
 # state errors) change; the Rust engine has no unicorn mode (angr-mx00p.132.10).
-_PYTHON_ROUTED_OPTION_NAMES = frozenset({"UNICORN"})
+# FAST_MEMORY / FAST_REGISTERS give the state a FastMemory plugin, whose
+# contents the state sync cannot read, so they would reach Rust lost
+# (angr-mx00p.132.39).
+_PYTHON_ROUTED_OPTION_NAMES = frozenset({"UNICORN", "FAST_MEMORY", "FAST_REGISTERS"})
 
 # Options whose ABSENCE the engine cannot honor. EXTENDED_IROP_SUPPORT ships in
 # every bundle and only widens Python's op table; unset, a user asks for the

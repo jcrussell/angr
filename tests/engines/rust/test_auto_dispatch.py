@@ -116,6 +116,13 @@ class TestEligibilityPredicate:
         assert eligible is False
         assert "UNICORN" in reason
 
+    @pytest.mark.parametrize("option", ["FAST_MEMORY", "FAST_REGISTERS"])
+    def test_fast_memory_routes_python(self, option):
+        """angr-mx00p.132.39: the option swaps in a FastMemory plugin the state sync cannot read."""
+        eligible, reason = rust_engine_eligible(_fake_project(), [_fake_state(option)], {})
+        assert eligible is False
+        assert option in reason
+
     def test_offending_option_on_a_later_seed_state_counts(self):
         states = [_fake_state("SYMBOLIC"), _fake_state("CALLLESS")]
         eligible, reason = rust_engine_eligible(_fake_project(), states, {})
@@ -226,6 +233,25 @@ class TestFactoryDispatch:
         mgr.run()
         assert not mgr.errored
         assert mgr.one_deadended.symbolizer.symbolized_count > count
+
+    def test_congruency_check_seeds_both_states_like_python(self, rust_project):
+        """CongruencyCheck's left state (UNICORN) routes the pair to Python, and the manager owns both
+        (angr-mx00p.132.39: the left state was appended to a copy of a Rust manager's active stash)."""
+        ca = rust_project.analyses.CongruencyCheck(throw=True)
+        # The option sets of tests/common.py::run_simple_unicorn_congruency_check, which congruent fauxware runs under.
+        dropped = {angr.options.LAZY_SOLVES, angr.options.TRACK_MEMORY_MAPPING, angr.options.COMPOSITE_SOLVER}
+        ca.set_state_options(
+            left_add_options=angr.options.unicorn,
+            left_remove_options=dropped,
+            right_add_options={angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+            right_remove_options=dropped,
+        )
+        assert type(ca.simgr) is SimulationManager
+        assert len(ca.simgr.left) == 1
+        assert len(ca.simgr.right) == 1
+        assert angr.options.UNICORN in ca.simgr.one_left.options
+        assert angr.options.UNICORN not in ca.simgr.one_right.options
+        ca.run(depth=1)
 
     def test_symbolizer_on_an_explicit_rust_manager_still_raises(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")

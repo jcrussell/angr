@@ -1797,7 +1797,11 @@ vs. Python.
        ``UNDER_CONSTRAINED_SYMEXEC``
      - Select alternate Python engines / memory plugins.
      - (b) explicitly reject — fundamentally incompatible with Rust state
-       model.
+       model. ``FAST_MEMORY`` and ``FAST_REGISTERS`` give the state a
+       ``FastMemory`` plugin the state sync cannot read, so a seed with
+       either set routes a ``Project(engine="rust")`` manager to Python
+       (``_PYTHON_ROUTED_OPTION_NAMES``); an explicit ``engine="rust"``
+       manager warns.
    * - ``USE_SYSTEM_TIMES``
      - Return the host's real ``int(time.time())`` from the time
        SimProcedures instead of a fresh symbolic value.
