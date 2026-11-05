@@ -230,7 +230,10 @@ Techniques arrive after that decision, so one more case is caught at
 manager never dispatches, or one whose ``step()`` feeds its states to
 a Python analysis that needs a real ``SimState`` (``Director`` hands
 them to ``CFGEmulated``; ``_PYTHON_ANALYSIS_TECH_NAMES`` in
-``rust_techniques.py``). On a project-default manager that has not
+``rust_techniques.py``), or one whose ``step()`` keys its bookkeeping
+on state identity across steps (``UniqueSearch``;
+``_STATE_IDENTITY_TECH_NAMES``), which a step hook's per-read proxies
+do not keep. On a project-default manager that has not
 stepped yet, ``use_technique`` turns the manager into a Python
 ``SimulationManager`` in place, rebuilt from the seed states, the
 caller's kwargs and the techniques already registered, and logs the

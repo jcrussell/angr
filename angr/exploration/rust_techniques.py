@@ -69,6 +69,12 @@ def _has_dispatched_step_hook(tech) -> bool:
 # run falls back to a direct run with no goal ever checked (angr-mx00p.132.27).
 _PYTHON_ANALYSIS_TECH_NAMES = frozenset({"Director"})
 
+# Techniques whose step() keys its bookkeeping on state identity across steps: UniqueSearch scores states in a
+# dict keyed by the state object and moves the winner back with ``filter_func=lambda s: s is unique_state``. A
+# step hook sees a fresh RustStateProxy per stash read, so the winner never matches and active drains
+# (angr-mx00p.132.32).
+_STATE_IDENTITY_TECH_NAMES = frozenset({"UniqueSearch"})
+
 
 def technique_needs_python_engine(tech) -> str | None:
     """Why `tech` cannot run on the Rust manager, or None if it can.
@@ -76,13 +82,16 @@ def technique_needs_python_engine(tech) -> str | None:
     A technique that overrides successors() needs Python because the Rust manager never dispatches that hook:
     LoopSeer's trip counts, Bucketizer's transitions and Oppologist's recovery all live there, so on the Rust
     manager they silently no-op. A ``_PYTHON_ANALYSIS_TECH_NAMES`` member needs Python because its step() feeds
-    states to an analysis that rejects a proxy. An Explorer needs Python when it sets a stash, priority or CFG
+    states to an analysis that rejects a proxy, and a ``_STATE_IDENTITY_TECH_NAMES`` member because a step hook's
+    proxies are not the same objects from one stash read to the next. An Explorer needs Python when it sets a stash, priority or CFG
     option the native find/avoid arming ignores. A default-routed manager hands off to the Python engine instead
     (``RustExplorationManager._hand_off_to_python``).
     """
     tech_name = type(tech).__name__
     if tech_name in _PYTHON_ANALYSIS_TECH_NAMES:
         return f"technique {tech_name} feeds its states to a Python analysis that needs a SimState"
+    if tech_name in _STATE_IDENTITY_TECH_NAMES:
+        return f"technique {tech_name} keys its step() bookkeeping on state identity across steps"
     if tech_name not in _NATIVE_STEP_TECH_NAMES and tech._is_overridden("successors"):
         return f"technique {tech_name} overrides successors()"
     if tech_name in _FIND_AVOID_TECH_NAMES:

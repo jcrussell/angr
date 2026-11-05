@@ -30,7 +30,7 @@ import pytest
 from angr.engines import UberEngine
 from angr.errors import AngrError
 from angr.exploration import RustExplorationManager
-from angr.exploration_techniques import DFS, Director, ExplorationTechnique
+from angr.exploration_techniques import DFS, Director, ExplorationTechnique, UniqueSearch
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import BIN_LOCATION, RUST_EXPLORATION_AVAILABLE, load_fauxware
 
@@ -156,6 +156,18 @@ class TestSuccessorsTechniqueHandsOff:
 
         assert type(mgr) is SimulationManager
         assert director in mgr._techniques
+
+    def test_unique_search_hands_off(self, rust_project):
+        """UniqueSearch moves its pick back with ``s is unique_state``, which a step hook's proxies never match
+        (angr-mx00p.132.32)."""
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        unique = mgr.use_technique(UniqueSearch())
+
+        assert type(mgr) is SimulationManager
+        assert unique in mgr._techniques
+        mgr.step()
+        assert len(mgr.active) == 1
+        assert unique.uniqueness == {}
 
 
 class TestStepRunArgsHandOff:
