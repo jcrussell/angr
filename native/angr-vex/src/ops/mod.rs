@@ -493,6 +493,8 @@ impl VEXOps {
             | IROp::VQNarrowBin { .. }
             | IROp::VInterleaveLO { .. }
             | IROp::VInterleaveHI { .. }
+            | IROp::VCatEvenLanes { .. }
+            | IROp::VCatOddLanes { .. }
             | IROp::VShlN { .. }
             | IROp::VShrN { .. }
             | IROp::VSarN { .. }
@@ -821,6 +823,8 @@ impl VEXOps {
             // BV being built.
             IROp::VInterleaveLO { elem, .. } => Self::vec_interleave_lo(left, right, elem),
             IROp::VInterleaveHI { elem, .. } => Self::vec_interleave_hi(left, right, elem),
+            IROp::VCatEvenLanes { elem, .. } => Self::vec_cat_lanes(left, right, elem, false),
+            IROp::VCatOddLanes { elem, .. } => Self::vec_cat_lanes(left, right, elem, true),
 
             IROp::VPerm { elem, count } => Self::vec_perm(left, right, elem, count),
 

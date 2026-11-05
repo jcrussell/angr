@@ -1,7 +1,8 @@
 //! Vector element-wise comparison and interleave VEX op helpers.
 //!
 //! Covers the low/high interleave (unpack) ops
-//! (Iop_Interleave{LO,HI}{N}x{M}). The element-wise compare family
+//! (Iop_Interleave{LO,HI}{N}x{M}) and the odd/even-lane deinterleave ops
+//! (Iop_Cat{Even,Odd}Lanes{N}x{M}). The element-wise compare family
 //! (Iop_Cmp{EQ,GT}{N}x{M}) moved to the generic `vec_int_lane_op` driver
 //! (`ICmpEq`/`ICmpGt` in `ops/mod.rs`).
 
@@ -88,6 +89,49 @@ impl VEXOps {
             elements.push(l_elem);
         }
 
+        Ok(Self::concat_le_elements(elements))
+    }
+
+    /// Odd/even-lane deinterleave (`Iop_Cat{Even,Odd}Lanes{N}x{M}`). Lane 0
+    /// is the least significant; `odd` picks lanes 1, 3, … instead of 0, 2, ….
+    /// The right operand's picked lanes fill the low half of the result and
+    /// the left's the high half, as irop.py's `_op_generic_CatEvenLanes` /
+    /// `_op_generic_CatOddLanes` build it.
+    pub(super) fn vec_cat_lanes(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        odd: bool,
+    ) -> Result<RustBV, OpError> {
+        let elem_width = elem.bits();
+        let total_width = left.width();
+        Self::require_operand_width("vec_cat_lanes right", right.width(), total_width)?;
+        let count = total_width / elem_width;
+        let first = u32::from(odd);
+        let picked = || (first..count).step_by(2);
+
+        // Concrete fast path, under the same u128 bound as `vec_interleave`.
+        if total_width <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
+            let elem_mask = Self::low_bit_mask_u128(elem_width);
+            let mut result: u128 = 0;
+            for (dst, src) in picked().enumerate() {
+                let dst_lo = dst as u32 * elem_width;
+                let src_lo = src * elem_width;
+                result |= ((r >> src_lo) & elem_mask) << dst_lo;
+                result |= ((l >> src_lo) & elem_mask) << (dst_lo + total_width / 2);
+            }
+            return Ok(RustBV::concrete(result, total_width));
+        }
+
+        let lanes = |v: &RustBV| -> Vec<RustBV> {
+            picked()
+                .map(|i| v.extract(i * elem_width + elem_width - 1, i * elem_width))
+                .collect()
+        };
+        let mut elements = lanes(&right);
+        elements.extend(lanes(&left));
         Ok(Self::concat_le_elements(elements))
     }
 }

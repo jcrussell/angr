@@ -411,6 +411,19 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
+    /// Concatenate the even-numbered lanes of two vectors
+    /// (`Iop_CatEvenLanes{N}x{M}`): the right operand's even lanes fill the
+    /// low half, the left's the high half. `count` is the lane count, as for
+    /// `VInterleaveLO`.
+    VCatEvenLanes {
+        elem: IRType,
+        count: u8,
+    },
+    /// Concatenate the odd-numbered lanes — see `VCatEvenLanes`.
+    VCatOddLanes {
+        elem: IRType,
+        count: u8,
+    },
     /// Permute/shuffle (`Iop_Perm{N}x{M}`, `Iop_PermOrZero8x{8,16}`):
     /// (table, control) -> vec. `count` is the lane count, so the result width
     /// is `elem * count` (64 for `Perm8x8`, 128 for `Perm8x16`/`Perm32x4`, 256
@@ -1124,7 +1137,10 @@ impl IROp {
             // which is 64 for the D-reg NEON shapes (Iop_InterleaveLO8x8 and
             // friends) — the old hardcoded V128 was wrong by 2x for those
             // (angr-sqfj8.142).
-            IROp::VInterleaveLO { elem, count } | IROp::VInterleaveHI { elem, count } => {
+            IROp::VInterleaveLO { elem, count }
+            | IROp::VInterleaveHI { elem, count }
+            | IROp::VCatEvenLanes { elem, count }
+            | IROp::VCatOddLanes { elem, count } => {
                 Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 

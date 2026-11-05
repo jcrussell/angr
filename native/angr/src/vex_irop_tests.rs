@@ -358,16 +358,6 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
     // LANE_SHUFFLE_ODD_EVEN
     (
         &[
-            "Iop_CatEvenLanes16x4",
-            "Iop_CatEvenLanes16x8",
-            "Iop_CatEvenLanes32x4",
-            "Iop_CatEvenLanes8x16",
-            "Iop_CatEvenLanes8x8",
-            "Iop_CatOddLanes16x4",
-            "Iop_CatOddLanes16x8",
-            "Iop_CatOddLanes32x4",
-            "Iop_CatOddLanes8x16",
-            "Iop_CatOddLanes8x8",
             "Iop_InterleaveEvenLanes16x4",
             "Iop_InterleaveEvenLanes16x8",
             "Iop_InterleaveEvenLanes32x4",
@@ -379,7 +369,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_InterleaveOddLanes8x16",
             "Iop_InterleaveOddLanes8x8",
         ],
-        "Odd/even-lane deinterleave (CatOddLanes/CatEvenLanes) and interleave (InterleaveOddLanes/InterleaveEvenLanes) vector shuffles — siblings of the already-mapped InterleaveHI/InterleaveLO family; not yet implemented.",
+        "Odd/even-lane interleave (InterleaveOddLanes/InterleaveEvenLanes) vector shuffles — siblings of the already-mapped InterleaveHI/InterleaveLO and CatOddLanes/CatEvenLanes families; not yet implemented.",
     ),
     // CTZ
     (

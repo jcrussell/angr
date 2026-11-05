@@ -160,6 +160,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VCmpGT { .. }
         | IROp::VInterleaveLO { .. }
         | IROp::VInterleaveHI { .. }
+        | IROp::VCatEvenLanes { .. }
+        | IROp::VCatOddLanes { .. }
         | IROp::VPerm { .. }
         | IROp::VGetElem { .. }
         | IROp::VSetElem { .. }
@@ -253,6 +255,8 @@ pub fn is_int_lane_vec(op: &IROp) -> bool {
             | IROp::VCmpGT { .. }
             | IROp::VInterleaveLO { .. }
             | IROp::VInterleaveHI { .. }
+            | IROp::VCatEvenLanes { .. }
+            | IROp::VCatOddLanes { .. }
             | IROp::VPerm { .. }
             | IROp::VGetElem { .. }
             | IROp::VSetElem { .. }

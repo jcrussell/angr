@@ -273,3 +273,64 @@ fn test_vec_interleave_lo_8x32_256_bit() {
         }
     }
 }
+
+// =========================================================================
+// CatEvenLanes/CatOddLanes — odd/even-lane deinterleave
+// =========================================================================
+
+/// `Iop_CatEvenLanes16x4` / `Iop_CatOddLanes16x4` (SSSE3 phaddw's operand
+/// split, as pyvex lifts it). libvex_ir.h: CatEvenLanes16x4(a3a2a1a0,
+/// b3b2b1b0) = a2a0b2b0 and CatOddLanes16x4 = a3a1b3b1, written MSB lane
+/// first, so the right operand fills the low half.
+#[test]
+fn test_vec_cat_lanes_16x4_concrete() {
+    let l: [u128; 4] = [0x0A00, 0x0A01, 0x0A02, 0x0A03];
+    let r: [u128; 4] = [0x0B00, 0x0B01, 0x0B02, 0x0B03];
+    let lv = RustBV::concrete(pack_lanes_uint(&l, 16), 64);
+    let rv = RustBV::concrete(pack_lanes_uint(&r, 16), 64);
+    for (op, exp) in [
+        (
+            IROp::VCatEvenLanes {
+                elem: IRType::I16,
+                count: 4,
+            },
+            [0x0B00, 0x0B02, 0x0A00, 0x0A02],
+        ),
+        (
+            IROp::VCatOddLanes {
+                elem: IRType::I16,
+                count: 4,
+            },
+            [0x0B01, 0x0B03, 0x0A01, 0x0A03],
+        ),
+    ] {
+        let result = VEXOps::binop(op, lv.clone(), rv.clone()).unwrap();
+        assert_eq!(result.width(), 64, "{op:?}");
+        assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 16);
+    }
+}
+
+/// The symbolic extract+concat path of `vec_cat_lanes` over the Q-reg
+/// `Iop_CatOddLanes32x4` shape builds the same lane order as the concrete one.
+#[test]
+fn test_vec_cat_odd_lanes_32x4_symbolic() {
+    let l_lanes: [u128; 4] = [0xA000_0000, 0xA000_0001, 0xA000_0002, 0xA000_0003];
+    let r_lanes: [u128; 4] = [0xB000_0000, 0xB000_0001, 0xB000_0002, 0xB000_0003];
+    let exp: [u128; 4] = [0xB000_0001, 0xB000_0003, 0xA000_0001, 0xA000_0003];
+
+    let l = RustBV::symbol("vcat_l", 128);
+    let cs = vec![l.eq(&RustBV::concrete(pack_lanes_uint(&l_lanes, 32), 128))];
+    let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 32), 128);
+    let result = VEXOps::binop(
+        IROp::VCatOddLanes {
+            elem: IRType::I32,
+            count: 4,
+        },
+        l,
+        r,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    let model = z3_eval(&result, &cs).expect("eval(result) returned None");
+    assert_int_lanes_eq(model, &exp, 32);
+}

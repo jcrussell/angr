@@ -421,6 +421,19 @@ pub(super) fn parse_vector(op_str: &str) -> Option<IROp> {
         "64x2" => (I64, 2),
     });
 
+    // Odd/even-lane deinterleave. libVEX defines no 32x2 or 64x2 shape: two
+    // lanes per operand make it InterleaveLO/HI.
+    vec_arms!(op_str; "Iop_CatEvenLanes" => VCatEvenLanes {
+        "8x8" => (I8, 8), "8x16" => (I8, 16),
+        "16x4" => (I16, 4), "16x8" => (I16, 8),
+        "32x4" => (I32, 4),
+    });
+    vec_arms!(op_str; "Iop_CatOddLanes" => VCatOddLanes {
+        "8x8" => (I8, 8), "8x16" => (I8, 16),
+        "16x4" => (I16, 4), "16x8" => (I16, 8),
+        "32x4" => (I32, 4),
+    });
+
     // Packed integer min/max — signed (S suffix) and unsigned (U suffix).
     // The AVX2 256-bit block covers 8/16/32-bit lanes only: the sole 64-bit-lane
     // 256-bit min/max libVEX declares are the *float* `Iop_Min64Fx4` /

@@ -757,16 +757,6 @@ UNSERVED = {
     # Vector integer lanes.
     **dict.fromkeys(
         (
-            "Iop_CatEvenLanes8x8",
-            "Iop_CatEvenLanes8x16",
-            "Iop_CatEvenLanes16x4",
-            "Iop_CatEvenLanes16x8",
-            "Iop_CatEvenLanes32x4",
-            "Iop_CatOddLanes8x8",
-            "Iop_CatOddLanes8x16",
-            "Iop_CatOddLanes16x4",
-            "Iop_CatOddLanes16x8",
-            "Iop_CatOddLanes32x4",
             "Iop_CmpNEZ8x4",
             "Iop_CmpNEZ8x8",
             "Iop_CmpNEZ8x16",
