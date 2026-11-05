@@ -799,6 +799,12 @@ class _LazySimStateRef:
             )
         ):
             raise AttributeError(name)
+        if (
+            self._lazy_pinned is None
+            and name in self._lazy_mgr._PYTHON_ENGINE_PLUGINS
+            and self._lazy_mgr._hand_off_for_python_plugin(name)
+        ):
+            return getattr(self._lazy_pinned, name)
         return getattr(self._materialize(), name)
 
     def __setattr__(self, name, value):

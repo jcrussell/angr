@@ -6475,7 +6475,44 @@ class RustExplorationManager(
         self._hand_off_to_python(reason)
         return True
 
-    def _hand_off_to_python(self, reason: str) -> None:
+    # State plugins the Rust engine cannot host: SimSymbolizer's init_state needs angr's paged memory, and its
+    # mem_write BP action rewrites the store mid-step (angr-mx00p.132.37). See _hand_off_for_python_plugin.
+    _PYTHON_ENGINE_PLUGINS = frozenset({"symbolizer"})
+
+    def _hand_off_for_python_plugin(self, name: str) -> bool:
+        """Hand off to the Python engine before plugin *name* first registers on one of this manager's states.
+
+        The factory routes on the seeds, so a plugin the caller adds through ``simgr.one_active`` arrives too late
+        for ``rust_engine_eligible``. Unlike a technique handoff the states carry over as they are now, not as the
+        pristine seeds: each is a copy given plugins of its own (:meth:`_detach_for_python_engine`), so a write the
+        caller made through an export survives, and every lazy ref handed out is pinned to its copy. Returns False,
+        leaving the plugin to raise, for a manager that cannot hand off (stepped, or ``engine="rust"`` by name).
+        """
+        from angr.exploration.rust_state_export import _LazySimStateRef
+
+        if name not in self._PYTHON_ENGINE_PLUGINS:
+            return False
+        if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
+            return False
+        stashes = {}
+        for stash, refs in self.stashes.items():
+            states = []
+            for ref in refs:
+                if not isinstance(ref, _LazySimStateRef):
+                    states.append(ref)
+                    continue
+                state = ref._materialize().copy()
+                detach = getattr(state.plugins.get("memory"), "detach_for_python_engine", None)
+                if detach is not None:
+                    detach()
+                object.__setattr__(ref, "_lazy_pinned", state)
+                states.append(state)
+            if states:
+                stashes[stash] = states
+        self._hand_off_to_python(f"state plugin {name!r} needs the python engine", stashes=stashes)
+        return True
+
+    def _hand_off_to_python(self, reason: str, stashes: dict[str, list] | None = None) -> None:
         """Turn this not-yet-stepped, default-routed manager into a Python ``SimulationManager`` in place.
 
         The factory decides the engine before any technique exists, so a technique the Rust manager cannot honor
@@ -6483,18 +6520,25 @@ class RustExplorationManager(
         docs/advanced-topics/rust_engine.rst), so the caller's reference becomes the manager the Python engine would
         have built: the pristine seed copies, the caller's kwargs, and the techniques already registered. Swapping
         the class before ``SimulationManager.__init__`` runs keeps the hooks it installs bound to this object.
+        *stashes*, when given, replaces the seeds: its ``active`` list seeds the manager and every other stash is
+        populated as is.
         """
         from angr.sim_manager import SimulationManager
 
         l.info("simulation_manager: handing off to the python engine (%s)", reason)
         project = self._project
-        seeds = getattr(self, "_initial_seed_states", None) or []
+        if stashes is None:
+            stashes = {"active": getattr(self, "_initial_seed_states", None) or []}
+        seeds = stashes.get("active", [])
         kwargs = self._python_handoff_kwargs
         techniques = list(self._active_techniques)
         _live_managers.discard(self)
         self.__dict__.clear()
         self.__class__ = SimulationManager
         SimulationManager.__init__(self, project, active_states=seeds, **kwargs)
+        for stash, states in stashes.items():
+            if stash != "active":
+                self.populate(stash, states)
         for tech in techniques:
             self.use_technique(tech)
 

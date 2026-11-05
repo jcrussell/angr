@@ -211,6 +211,27 @@ class TestFactoryDispatch:
         mgr.step()
         assert mgr.active
 
+    def test_symbolizer_on_a_routed_manager_hands_off_to_python(self, rust_project):
+        """SimSymbolizer needs angr's paged memory, and the caller adds it after routing (angr-mx00p.132.37)."""
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        ref = mgr.one_active
+        ref.regs.rbx = 0x1234
+        ref.symbolizer.set_symbolization_for_all_pages()
+        assert type(mgr) is SimulationManager
+        assert ref.solver.eval_one(ref.regs.rbx) == 0x1234
+        assert mgr.one_active.symbolizer is ref.symbolizer
+        ref.symbolizer.resymbolize()
+        count = ref.symbolizer.symbolized_count
+        assert count
+        mgr.run()
+        assert not mgr.errored
+        assert mgr.one_deadended.symbolizer.symbolized_count > count
+
+    def test_symbolizer_on_an_explicit_rust_manager_still_raises(self, rust_project):
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")
+        with pytest.raises(TypeError, match="paged memory model"):
+            _ = mgr.one_active.symbolizer
+
     def test_explicit_rust_still_raises_on_unsupported_kwarg(self, rust_project):
         """Naming the engine keeps its loud contract even on an opted-in project."""
         with pytest.raises(NotImplementedError, match="resilience"):

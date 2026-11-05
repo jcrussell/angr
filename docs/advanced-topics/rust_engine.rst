@@ -239,6 +239,17 @@ reason on ``angr.exploration.rust_manager`` at info level
 ``engine="rust"``, or one that has already stepped, keeps the Rust
 engine and the warning that the hook will not run.
 
+A state plugin the Rust engine cannot host hands off the same way the
+first time a state of the manager is asked for it. That means
+``SimSymbolizer``, which needs angr's paged memory and rewrites stores
+from a mid-step breakpoint action; the set is
+``RustExplorationManager._PYTHON_ENGINE_PLUGINS``. Here the manager is
+rebuilt from its states as they are, not from the seeds. Each state is
+detached into plugins of its own, so writes made through
+``simgr.one_active`` survive, and the export already handed out points
+at its copy (``RustExplorationManager._hand_off_for_python_plugin``). On
+a manager that cannot hand off, the plugin raises its own ``TypeError``.
+
 ``engine="rust"`` swaps the **manager**, not the ``SimEngine``:
 ``factory.default_engine_factory`` stays ``UberEngine``, so ``block()``,
 the CFG, and every other lifting/analysis path are untouched.
