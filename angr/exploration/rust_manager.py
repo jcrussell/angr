@@ -96,6 +96,7 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 import cle
+import mulpyplexer
 import pyvex
 from pyvex.errors import PyVEXError
 
@@ -7223,6 +7224,18 @@ class RustExplorationManager(
             stash_name = name[4:]  # Remove "one_" prefix
             states = self._get_stash_states(stash_name)
             return states[0] if states else None
+
+        # mp_* reads a stash as a mulpyplexer, as SimulationManager._fetch_states does (angr-mx00p.132.42).
+        if name.startswith("mp_"):
+            stash_name = name[3:]
+            if stash_name == "_ALL":
+                return mulpyplexer.MP(list(chain.from_iterable(self.stashes.values())))
+            try:
+                states = getattr(self, stash_name)
+            except AttributeError:
+                # cat-(a) EXPECTED CONTROL FLOW: SimulationManager reads a missing stash's mp_ form as empty.
+                states = []
+            return mulpyplexer.MP(list(states))
 
         try:
             self._rust_mgr.get_state_ids(name)

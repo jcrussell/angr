@@ -1131,6 +1131,24 @@ class TestRustExplorationPython:
 
         assert mgr.stash_counts()["active"] == 1, "entry_state should produce exactly 1 active state"
 
+    def test_mp_stash_is_a_mulpyplexer_like_python(self, fauxware_project):
+        """``mp_<stash>`` reads as a mulpyplexer on both engines (angr-mx00p.132.42)."""
+        import mulpyplexer
+
+        answers = []
+        for mgr in (
+            fauxware_project.factory.simulation_manager(fauxware_project.factory.entry_state()),
+            RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()]),
+        ):
+            mgr.explore(find=0x4006ED, num_find=1)
+            assert isinstance(mgr.mp_found, mulpyplexer.MP)
+            assert isinstance(mgr.mp_never_made, mulpyplexer.MP)
+            assert mgr.mp_never_made.mp_items == []
+            assert len(mgr.mp__ALL.mp_items) >= len(mgr.found) == 1
+            answers.append(sorted(mgr.mp_found.posix.dumps(0).mp_items))
+        assert answers[0] == answers[1]
+        assert len(answers[0]) == 1
+
     def test_strict_page_access_propagates_to_rust(self, fauxware_project):
         """A SimState with STRICT_PAGE_ACCESS option should flip the Rust
         memory model's enforce_permissions flag automatically (mirrors angr)."""
