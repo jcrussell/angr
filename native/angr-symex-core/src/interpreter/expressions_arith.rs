@@ -170,7 +170,7 @@ impl<'a> VEXInterpreter<'a> {
         };
         let fallback_width = fabricated_result_width(&op, &[left_val.width(), right_val.width()]);
         let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
-        match VEXOps::binop(op, left_val, right_val) {
+        match VEXOps::binop_for_guest(self.arch, op, left_val, right_val) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
             // fresh-symbolic fallback below swallow it. See the rustdoc on

@@ -26,6 +26,9 @@ _SIMPLIFIED_CCALL_NAMES = frozenset({"amd64g_calculate_condition", "x86g_calcula
 # back to irop.py for every call Rust refuses. ANGR_RUST_IROPS=0 sends every op to irop.py.
 RUST_IROPS = os.environ.get("ANGR_RUST_IROPS", "1") != "0"
 _RUST_IROP_NAMES = frozenset(vex_irop.SUPPORTED).intersection(irop.operations)
+# The vector float Min/Max ops, whose rule depends on the guest: Rust serves them only with the state's arch, and only
+# for a guest whose rule it implements (angr-mx00p.128).
+_RUST_GUEST_IROP_NAMES = frozenset(vex_irop.GUEST_SUPPORTED).intersection(irop.operations)
 zero = claripy.BVV(0, 32)
 
 
@@ -143,6 +146,11 @@ class ClaripyDataMixin(VEXMixin):
         # Without SUPPORT_FLOATING_POINT irop.py refuses every float op, so Rust must not serve one (angr-mx00p.101.1).
         if RUST_IROPS and op in _RUST_IROP_NAMES and op in irop.operations and (fp or not irop.operations[op]._float):
             result = vex_irop.irop(op, tuple(args))
+            if result is not None:
+                return result
+        elif RUST_IROPS and fp and op in _RUST_GUEST_IROP_NAMES and op in irop.operations:
+            arch = getattr(self.state, "arch", None)
+            result = vex_irop.irop(op, tuple(args), arch.name if arch is not None else None)
             if result is not None:
                 return result
         simop = irop.vexop_to_simop(op, extended=o.EXTENDED_IROP_SUPPORT in options, fp=fp)

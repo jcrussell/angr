@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import struct
 from types import SimpleNamespace
 
@@ -21,6 +22,7 @@ import pytest
 import pyvex
 
 from angr import claripy, load_shellcode
+from angr import options as o
 from angr.engines.vex.claripy import datalayer, irop
 from angr.errors import UnsupportedIROpError
 from angr.rustylib import vex_irop  # pylint:disable=no-name-in-module
@@ -610,11 +612,120 @@ def test_rust_irop_exclusions():
     assert {"Iop_Add64F0x2", "Iop_Add32Fx4", "Iop_Mul64F0x2", "Iop_CmpLT64F0x2"} <= supported
     # clarirs folds fpSub of a NaN with the NaN's sign flipped (angr-mx00p.127).
     assert not {n for n in supported if n.startswith("Iop_Sub") and "F" in n[7:]}
-    # irop.py's float Min/Max match neither x86 nor AArch64 on +-0 and NaN (angr-mx00p.128).
-    assert not {n for n in supported if n.startswith(("Iop_Min", "Iop_Max", "Iop_PwMin", "Iop_PwMax")) and "F" in n}
+    # irop.py's float Min/Max match neither x86 nor AArch64 on +-0 and NaN, so Rust serves them only per guest
+    # (angr-mx00p.128).
+    minmax = {n for n in irop.operations if n.startswith(("Iop_Min", "Iop_Max")) and "F" in n}
+    assert minmax and not minmax & supported
+    assert minmax <= set(vex_irop.GUEST_SUPPORTED)
     # libVEX leaves an out-of-range lane undefined, and Rust and irop.py fill it differently (angr-mx00p.129).
     assert not {n for n in supported if n.startswith("Iop_F32toI32") and "x" in n[12:]}
     assert datalayer._RUST_IROP_NAMES.issubset(irop.operations)
+
+
+def _minmax_shape(name):
+    """(is_max, pairwise, scalar, lane bits, lane count) of a vector float Min/Max op name."""
+    m = re.fullmatch(r"Iop_(Pw)?(Min|Max)(32|64)F(0?x)(\d+)", name)
+    assert m, name
+    return m[2] == "Max", m[1] is not None, m[4] == "0x", int(m[3]), int(m[5])
+
+
+def _as_float(bits, lane):
+    return struct.unpack("<f" if lane == 32 else "<d", bits.to_bytes(lane // 8, "little"))[0]
+
+
+def _subnormal_or_infinite(bits, lane):
+    f = _as_float(bits, lane)
+    return math.isinf(f) or (f != 0 and abs(f) < (1.1754943508222875e-38 if lane == 32 else 2.2250738585072014e-308))
+
+
+def _x86_minmax(a, b, lane, is_max):
+    """MINPS/MAXPS: a < b ? a : b and a > b ? a : b, so b wins on equal or unordered lanes."""
+    fa, fb = _as_float(a, lane), _as_float(b, lane)
+    return a if (fa > fb if is_max else fa < fb) else b
+
+
+def _arm64_minmax(a, b, lane, is_max):
+    """AArch64 FMIN/FMAX, FPCR.DN=0: a signalling NaN, else the first NaN, propagates quieted; -0 < +0."""
+    fa, fb = _as_float(a, lane), _as_float(b, lane)
+    quiet = 1 << (22 if lane == 32 else 51)
+    if math.isnan(fa) or math.isnan(fb):
+        a_snan, b_snan = math.isnan(fa) and not a & quiet, math.isnan(fb) and not b & quiet
+        return (a if a_snan or (not b_snan and math.isnan(fa)) else b) | quiet
+    if fa == fb:
+        a_negative = bool(a >> (lane - 1))
+        return a if a_negative != is_max else b
+    return a if (fa > fb if is_max else fa < fb) else b
+
+
+def _minmax_expected(name, rule, left, right):
+    is_max, pairwise, scalar, lane, count = _minmax_shape(name)
+    ls, rs = _split(lane, left, count), _split(lane, right, count)
+    if pairwise:
+        pairs = [(ls[i], ls[i + 1]) for i in range(0, count, 2)] + [(rs[i], rs[i + 1]) for i in range(0, count, 2)]
+        return _join(lane, [rule(a, b, lane, is_max) for a, b in pairs])
+    if scalar:
+        return _join(lane, [rule(ls[0], rs[0], lane, is_max), *ls[1:]])
+    return _join(lane, [rule(a, b, lane, is_max) for a, b in zip(ls, rs)])
+
+
+# The archinfo names each rule is served under, and the op shapes its lifter emits (FloatMinMaxRule::covers).
+MINMAX_GUESTS = {
+    "AMD64": (_x86_minmax, lambda pairwise, scalar: not pairwise),
+    "X86": (_x86_minmax, lambda pairwise, scalar: not pairwise),
+    "AARCH64": (_arm64_minmax, lambda pairwise, scalar: not scalar),
+}
+
+
+@pytest.mark.parametrize("name", sorted(vex_irop.GUEST_SUPPORTED))
+def test_rust_irop_minmax_follows_the_guest(name):
+    """Each guest's MIN/MAX rule, concrete and symbolic, against an independent model of it (angr-mx00p.128); a
+    call with no arch, or one whose rule Rust does not implement, declines."""
+    _, pairwise, scalar, lane, count = _minmax_shape(name)
+    bits = lane * count
+    rng = random.Random(name)
+    edges = FLOAT_EDGES[lane]
+    pairs = [(rng.choice(edges), rng.choice(edges)) for _ in range(40)] + [(a, b) for a in edges for b in edges[:10]]
+    cases = [(_join(lane, [a] * count), _join(lane, [b] * count)) for a, b in pairs]
+    served = 0
+    for arch, (rule, covers) in MINMAX_GUESTS.items():
+        if not covers(pairwise, scalar):
+            assert vex_irop.irop(name, (claripy.BVV(0, bits), claripy.BVV(0, bits)), arch) is None
+            continue
+        for left, right in cases:
+            out = vex_irop.irop(name, (claripy.BVV(left, bits), claripy.BVV(right, bits)), arch)
+            assert out is not None and not out.symbolic, (arch, hex(left), hex(right))
+            expected = _minmax_expected(name, rule, left, right)
+            assert out.concrete_value == expected, (arch, hex(left), hex(right), hex(out.concrete_value))
+        x = claripy.BVS("x", bits)
+        # claripy's solver orders a symbolic float against an infinite or subnormal literal wrongly (angr-mx00p.137).
+        sym_edges = [e for e in edges if not _subnormal_or_infinite(e, lane)]
+        right = _join(lane, [rng.choice(sym_edges) for _ in range(count)])
+        out = vex_irop.irop(name, (x, claripy.BVV(right, bits)), arch)
+        assert out is not None and out.symbolic
+        for _ in range(4):
+            left = _join(lane, [rng.choice(sym_edges) for _ in range(count)])
+            solver = claripy.Solver(timeout=SOLVER_TIMEOUT_MS)
+            solver.add(x == left)
+            assert list(solver.eval(out, 2)) == [_minmax_expected(name, rule, left, right)], (arch, hex(left))
+        served += 1
+    assert served
+    for arch in (None, "ARMEL", "PPC64"):
+        assert vex_irop.irop(name, (claripy.BVV(0, bits), claripy.BVV(0, bits)), arch) is None
+
+
+@pytest.mark.parametrize("arch", ["AMD64", "AARCH64", "ARMEL"])
+def test_engine_serves_minmax_under_the_state_s_arch(arch):
+    """The engine's op dispatch hands Rust the state's arch, and a guest without a rule keeps irop.py's answer."""
+    l = _join(32, [0, 0x80000000, 0x7FC00001, 0x3F800000])
+    r = _join(32, [0x80000000, 0, 0x3F800000, 0x7FC00001])
+    args = [claripy.BVV(l, 128), claripy.BVV(r, 128)]
+    state = SimpleNamespace(arch=SimpleNamespace(name=arch), options={o.SUPPORT_FLOATING_POINT})
+    out = datalayer.ClaripyDataMixin._perform_vex_expr_Op(SimpleNamespace(state=state), "Iop_Min32Fx4", args)
+    if arch == "ARMEL":
+        assert out.identical(_python("Iop_Min32Fx4", args)[0])
+    else:
+        rule = MINMAX_GUESTS[arch][0]
+        assert out.concrete_value == _minmax_expected("Iop_Min32Fx4", rule, l, r)
 
 
 UNMAPPED = "not mapped in vex/opcode_map"
@@ -659,7 +770,7 @@ UNSERVED = {
             "Iop_Min64Fx2",
             "Iop_Min64Fx4",
         ),
-        "excluded: Min/Max per-guest semantics",
+        "guest-ruled: served only under the state's arch (GUEST_SUPPORTED)",
     ),
     **dict.fromkeys(
         (

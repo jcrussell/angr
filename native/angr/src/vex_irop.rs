@@ -39,12 +39,15 @@ use pyo3::types::PyTuple;
 use rustc_hash::FxHashMap;
 
 use crate::ailment::vexop_names::IROP_NAMES;
+use crate::callbacks::pyvex_reader::parse_arch;
 use crate::claripy::ast::GLOBAL_CONTEXT;
 use crate::claripy::ast::base::Base;
 use crate::symbolic::RustBV;
 use crate::vex::ir::{IROp, IRType};
 use crate::vex::opcode_map::parse_opcode;
-use crate::vex::ops::{VEXOps, VexOpFamily, iropclass, is_int_lane_vec, is_vector_float_op};
+use crate::vex::ops::{
+    FloatMinMaxRule, VEXOps, VexOpFamily, iropclass, is_int_lane_vec, is_vector_float_op,
+};
 
 /// The libVEX names [`irop`] serves, with their parsed opcodes.
 static SERVED: LazyLock<FxHashMap<&'static str, IROp>> = LazyLock::new(|| {
@@ -57,14 +60,8 @@ static SERVED: LazyLock<FxHashMap<&'static str, IROp>> = LazyLock::new(|| {
                 IROp::Reinterpret { .. } => false,
                 // clarirs folds fpSub of a NaN as an add of its negation, flipping the NaN's sign (angr-mx00p.127).
                 IROp::FSub(_) | IROp::VFSub { .. } | IROp::VFSubS { .. } => false,
-                // x86 MINPS/MAXPS and AArch64 FMIN/FMAX share these ops and differ on +-0 and NaN; irop.py follows
-                // neither (angr-mx00p.128).
-                IROp::VFMin { .. }
-                | IROp::VFMax { .. }
-                | IROp::VFMinS { .. }
-                | IROp::VFMaxS { .. }
-                | IROp::VFPwMin { .. }
-                | IROp::VFPwMax { .. } => false,
+                // Served per guest: see `GUEST_SUPPORTED` in `vex_irop`.
+                _ if is_guest_ruled(&op) => true,
                 // libVEX leaves an out-of-range, infinite or NaN lane undefined; Rust saturates, irop.py's fold
                 // gives 0 (angr-mx00p.129).
                 IROp::VF32toI32 { .. } => false,
@@ -89,14 +86,47 @@ static SERVED: LazyLock<FxHashMap<&'static str, IROp>> = LazyLock::new(|| {
         .collect()
 });
 
-/// `irop(name, args)`: run the VEX op `name` on the claripy bitvectors
-/// `args`, or return `None` when Rust does not serve this call.
+/// Whether `op` is a vector float min/max op, whose rule depends on the
+/// guest ([`FloatMinMaxRule`]): [`irop`] serves it only when called with an
+/// `arch` whose rule covers it. irop.py follows neither x86 nor AArch64 on +-0
+/// and NaN (angr-mx00p.128).
+fn is_guest_ruled(op: &IROp) -> bool {
+    matches!(
+        op,
+        IROp::VFMin { .. }
+            | IROp::VFMax { .. }
+            | IROp::VFMinS { .. }
+            | IROp::VFMaxS { .. }
+            | IROp::VFPwMin { .. }
+            | IROp::VFPwMax { .. }
+    )
+}
+
+/// `irop(name, args, arch=None)`: run the VEX op `name` on the claripy
+/// bitvectors `args`, or return `None` when Rust does not serve this call. An
+/// op in `GUEST_SUPPORTED` is served only under the archinfo name `arch` of a
+/// guest whose rule Rust implements.
 #[pyfunction]
-fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Option<Py<PyAny>>> {
+#[pyo3(signature = (name, args, arch=None))]
+fn irop(
+    py: Python<'_>,
+    name: &str,
+    args: &Bound<'_, PyTuple>,
+    arch: Option<&str>,
+) -> PyResult<Option<Py<PyAny>>> {
     let Some(&op) = SERVED.get(name) else {
         // SILENT(cat-a): not a served op; the caller runs irop.py.
         return Ok(None);
     };
+    let guest = arch.and_then(parse_arch);
+    if is_guest_ruled(&op)
+        && !guest
+            .and_then(FloatMinMaxRule::for_guest)
+            .is_some_and(|rule| rule.covers(&op))
+    {
+        // SILENT(cat-a): no guest, or one whose rule Rust does not implement; irop.py serves the call.
+        return Ok(None);
+    }
     let mut imported = Vec::with_capacity(args.len());
     let mut terms = Vec::with_capacity(args.len());
     let mut carried = Vec::new();
@@ -194,7 +224,10 @@ fn irop(py: Python<'_>, name: &str, args: &Bound<'_, PyTuple>) -> PyResult<Optio
                 // SILENT(cat-a): libVEX leaves it undefined; irop.py's reading of it stands (angr-mx00p.129).
                 return Ok(None);
             }
-            VEXOps::binop(op, l.clone(), r.clone())
+            match guest {
+                Some(guest) => VEXOps::binop_for_guest(guest, op, l.clone(), r.clone()),
+                None => VEXOps::binop(op, l.clone(), r.clone()),
+            }
         }
         // `Iop_SetElem*` and `Iop_SliceV128` (`binop_with_rm` reads their first operand as the vector) and scalar
         // and packed float arithmetic under the VEX rounding mode are the served Triops. `Iop_Sqrt*` is a Binop
@@ -441,9 +474,14 @@ fn literal_index_past_count(op: IROp, index: &RustBV) -> bool {
 
 pub(crate) fn vex_irop(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(irop, m)?)?;
-    let mut names: Vec<&str> = SERVED.keys().copied().collect();
+    let (mut guest, mut names): (Vec<&str>, Vec<&str>) = SERVED
+        .keys()
+        .copied()
+        .partition(|name| is_guest_ruled(&SERVED[name]));
     names.sort_unstable();
+    guest.sort_unstable();
     m.add("SUPPORTED", names)?;
+    m.add("GUEST_SUPPORTED", guest)?;
     Ok(())
 }
 

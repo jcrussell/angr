@@ -32,7 +32,7 @@
 
 use angr_bv::{FloatOpKind, FloatPrec, SymBV as RustBV, VexRm};
 
-use super::ir::{IROp, IRType};
+use super::ir::{IROp, IRType, VexArch};
 use super::transcendentals;
 
 /// Per-lane vector op traits (`FloatLaneOp` / `IntLaneOp`), their marker
@@ -44,9 +44,9 @@ use super::transcendentals;
 mod lane_traits;
 
 use lane_traits::{
-    FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMin, FMul, FNeg, FRoundToInt, FSqrt, FSub,
-    FloatLaneOp, IAbs, IAdd, ICmpEq, ICmpGt, IMinMax, IMul, INT_LANE_OP_MAX_ARITY, ISub, IntLaneOp,
-    build_float_expr, float_prec_of,
+    FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMaxArm64, FMin, FMinArm64, FMul, FNeg,
+    FRoundToInt, FSqrt, FSub, FloatLaneOp, IAbs, IAdd, ICmpEq, ICmpGt, IMinMax, IMul,
+    INT_LANE_OP_MAX_ARITY, ISub, IntLaneOp, build_float_expr, float_prec_of,
 };
 
 /// Compress same-width unary arms: `require_operand_width(width(arg), ty.bits())?;
@@ -399,6 +399,51 @@ impl VEXOps {
     /// to `binop_misc` which returns `OpError::NotBinary` for the default
     /// case along with the typed-error sentinels (`NeonUnimplemented`,
     /// `Unmapped`, `Raw`, `SetV128lo*`, `FSqrt`).
+    /// [`Self::binop`] on `guest`: a vector float min/max op
+    /// [`FloatMinMaxRule::covers`] follows that guest's rule
+    /// ([`Self::float_minmax`]), and every other op, on any guest, is
+    /// [`Self::binop`], whose min/max is the x86 rule.
+    pub fn binop_for_guest(
+        guest: VexArch,
+        op: IROp,
+        left: RustBV,
+        right: RustBV,
+    ) -> Result<RustBV, OpError> {
+        match FloatMinMaxRule::for_guest(guest) {
+            Some(rule) if rule.covers(&op) => Self::float_minmax(op, rule, left, right),
+            _ => Self::binop(op, left, right),
+        }
+    }
+
+    /// A vector float min/max op `rule` [`FloatMinMaxRule::covers`], under
+    /// that rule; any other op is [`OpError::NotBinary`].
+    pub fn float_minmax(
+        op: IROp,
+        rule: FloatMinMaxRule,
+        left: RustBV,
+        right: RustBV,
+    ) -> Result<RustBV, OpError> {
+        if !rule.covers(&op) {
+            return Err(OpError::NotBinary(op));
+        }
+        match (rule, op) {
+            (FloatMinMaxRule::X86, _) => Self::binop(op, left, right),
+            (FloatMinMaxRule::Arm64, IROp::VFMin { elem, count }) => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FMinArm64)
+            }
+            (FloatMinMaxRule::Arm64, IROp::VFMax { elem, count }) => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &FMaxArm64)
+            }
+            (FloatMinMaxRule::Arm64, IROp::VFPwMin { elem, count }) => {
+                Self::vec_float_pairwise_op(left, right, elem, count, &FMinArm64)
+            }
+            (FloatMinMaxRule::Arm64, IROp::VFPwMax { elem, count }) => {
+                Self::vec_float_pairwise_op(left, right, elem, count, &FMaxArm64)
+            }
+            (FloatMinMaxRule::Arm64, _) => Err(OpError::NotBinary(op)),
+        }
+    }
+
     #[inline]
     pub fn binop(op: IROp, left: RustBV, right: RustBV) -> Result<RustBV, OpError> {
         match &op {
@@ -1260,6 +1305,51 @@ impl VEXOps {
 /// `use super::OpError` in the sibling modules keeps resolving.
 mod error;
 
+/// Which guest instruction a vector float min/max IROp stands for. libVEX
+/// lifts x86 MINPS/MAXPS/MINSS/MAXSD and AArch64 FMIN/FMAX/FMINP/FMAXP to
+/// the same `Iop_{Min,Max}*F*` and `Iop_Pw{Min,Max}*F*` ops, and the two
+/// disagree on +-0 and NaN (angr-mx00p.128).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatMinMaxRule {
+    /// MINPS/MAXPS: `a < b ? a : b` / `a > b ? a : b`, so the second operand
+    /// wins on equal (+-0) or unordered (NaN) lanes, bit for bit.
+    X86,
+    /// FMIN/FMAX under FPCR.DN=0: a NaN propagates quieted (a signalling one
+    /// first, then the first operand) and -0 orders below +0.
+    Arm64,
+}
+
+impl FloatMinMaxRule {
+    /// The rule `guest` follows, or `None` for a guest whose rule Rust does
+    /// not implement.
+    pub fn for_guest(guest: VexArch) -> Option<Self> {
+        match guest {
+            VexArch::X86 | VexArch::AMD64 => Some(Self::X86),
+            VexArch::ARM64 => Some(Self::Arm64),
+            _ => None,
+        }
+    }
+
+    /// Whether `op` is a vector float min/max op this guest's lifter emits:
+    /// the packed and scalar-in-vector forms on x86, the packed and pairwise
+    /// forms on AArch64.
+    pub fn covers(self, op: &IROp) -> bool {
+        match self {
+            Self::X86 => matches!(
+                op,
+                IROp::VFMin { .. } | IROp::VFMax { .. } | IROp::VFMinS { .. } | IROp::VFMaxS { .. }
+            ),
+            Self::Arm64 => matches!(
+                op,
+                IROp::VFMin { .. }
+                    | IROp::VFMax { .. }
+                    | IROp::VFPwMin { .. }
+                    | IROp::VFPwMax { .. }
+            ),
+        }
+    }
+}
+
 pub use error::OpError;
 
 /// Integer widening-multiply / divmod helpers, split out of this file
@@ -1424,6 +1514,8 @@ test_submod!(tests_vec_pairwise);
 test_submod!(tests_vec_permute_mul);
 
 test_submod!(tests_vec_float_lane);
+
+test_submod!(tests_float_minmax_rule);
 
 test_submod!(tests_vec_float_scalar);
 
