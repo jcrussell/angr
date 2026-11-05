@@ -54,3 +54,25 @@ def test_longjmp_stub_deadends(engine, mode):
     assert mgr.deadended[0].addr == stub
     if engine == "rust":
         assert "longjmp" not in mgr._rust_mgr.native_procedure_stats()["call_counts"]
+
+
+# mov rax, 7; jmp +0; jmp $ -- the PathTerminator hook sits on the `jmp $`.
+_SHELLCODE = bytes.fromhex("48c7c007000000" + "eb00" + "ebfe")
+_HOOK = 0x400009
+
+
+@pytest.mark.parametrize(("engine", "mode"), [("py", "step"), ("py", "explore"), ("rust", "step"), ("rust", "explore")])
+def test_path_terminator_hook_deadends(engine, mode):
+    """A ``NO_RET`` stub mid-shellcode deadends the state instead of leaving it active at the hook (angr-xrkpl)."""
+    proj = angr.load_shellcode(_SHELLCODE, arch="amd64", load_address=0x400000)
+    proj.hook(_HOOK, angr.SIM_PROCEDURES["stubs"]["PathTerminator"]())
+    state = proj.factory.blank_state(addr=0x400000)
+    mgr = proj.factory.simulation_manager(state) if engine == "py" else RustExplorationManager(proj, [state])
+    if mode == "explore":
+        mgr.explore(find=0x999, n=5)
+    else:
+        for _ in range(4):
+            mgr.step()
+    stashes = {k: len(v) for k, v in mgr.stashes.items() if v}
+    assert stashes == {"deadended": 1}, stashes
+    assert mgr.deadended[0].addr == _HOOK
