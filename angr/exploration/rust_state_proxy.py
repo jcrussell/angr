@@ -381,6 +381,20 @@ class _SolutionCountMixin:
         return results
 
 
+def _replayed_at_handoff(plugin):
+    """Wrap a proxy plugin write method so a handoff can replay it on ``state.<plugin>`` (``_handoff_write``)."""
+
+    def wrap(method):
+        @functools.wraps(method)
+        def wrapper(self, *args, **kwargs):
+            with self._handoff_write(lambda state: getattr(getattr(state, plugin), method.__name__)(*args, **kwargs)):
+                return method(self, *args, **kwargs)
+
+        return wrapper
+
+    return wrap
+
+
 class _ProxyStatePluginMixin:
     """Shared ``SimStatePlugin`` protocol stubs for the Rust proxy plugins.
 
@@ -419,6 +433,27 @@ class _ProxyStatePluginMixin:
     @property
     def _write_state_id(self):
         return self.__dict__["_binding"].writable_id()
+
+    @contextlib.contextmanager
+    def _handoff_write(self, replay):
+        """Report the write made inside this block to the manager once it lands, for a later handoff to replay.
+
+        ``replay`` makes the same write on a plain ``SimState``
+        (``RustExplorationManager._record_handoff_write``). Only the outermost
+        write reports: a register ``store`` lands through ``__setattr__`` and
+        replays once, as the caller made it.
+        """
+        if self.__dict__.get("_in_handoff_write"):
+            yield
+            return
+        object.__setattr__(self, "_in_handoff_write", True)
+        try:
+            yield
+        finally:
+            object.__setattr__(self, "_in_handoff_write", False)
+        mgr = self.__dict__.get("_python_mgr")
+        if mgr is not None:
+            mgr._record_handoff_write(self.__dict__["_binding"], replay)
 
     def _rebind(self, binding):
         """Point this plugin at ``binding`` and drop what it cached for the old state."""
@@ -1007,6 +1042,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     _prepare_expr = _unwrap_constraint
 
     @_sim_unsat
+    @_replayed_at_handoff("solver")
     def add(self, *constraints):
         """Add constraint(s) to the underlying Rust state's solver.
 
@@ -1550,6 +1586,10 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         if name.startswith("_") or name in self._PLUGIN_ATTRS:
             object.__setattr__(self, name, value)
             return
+        with self._handoff_write(lambda state: setattr(state.regs, name, value)):
+            self._write_register(name, value)
+
+    def _write_register(self, name, value):
         canonical = self._canonical_name(name)
         slice_of = self._unmodelled_register_slice(canonical)
         if slice_of is not None:
@@ -1655,6 +1695,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             return claripy.Extract(hi, lo, getattr(self, covering))
         raise TypeError(f"register load expects str name or int offset, got {type(reg_name_or_offset).__name__}")
 
+    @_replayed_at_handoff("registers")
     def store(self, addr, data, size=None, *, condition=None, **kwargs):
         """Store ``data`` into the register named/offset by ``addr``.
 
@@ -2209,6 +2250,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
         return SimSegfaultException(addr - (addr % self.PAGE_SIZE), "unmapped")
 
+    @_replayed_at_handoff("memory")
     def store(
         self,
         addr,

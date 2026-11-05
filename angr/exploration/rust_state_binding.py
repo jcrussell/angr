@@ -256,7 +256,9 @@ _NO_FORK_OWNER = _NoForkOwner()
 
 def _drop_copy(mgr_ref, state_id):
     mgr = mgr_ref()
-    if mgr is not None:
+    # A manager handed off to the Python engine is a SimulationManager now, and
+    # its Rust manager, copies and all, went with the handoff.
+    if mgr is not None and hasattr(type(mgr), "drop_copy"):
         mgr.drop_copy(state_id)
 
 

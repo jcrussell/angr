@@ -238,10 +238,19 @@ on state identity across steps (``UniqueSearch``;
 ``_STATE_IDENTITY_TECH_NAMES``), which a step hook's per-read proxies
 do not keep. On a project-default manager that has not
 stepped yet, ``use_technique`` turns the manager into a Python
-``SimulationManager`` in place, rebuilt from the seed states, the
-caller's kwargs and the techniques already registered, and logs the
-reason on ``angr.exploration.rust_manager`` at info level
-(``RustExplorationManager._hand_off_to_python``). A manager built with
+``SimulationManager`` in place, rebuilt from the states it would hold
+had it never been Rust, the caller's kwargs and the techniques already
+registered, and logs the reason on ``angr.exploration.rust_manager`` at
+info level (``RustExplorationManager._hand_off_to_python``). Those
+states are the manager's states as they are now, each detached into
+plugins of its own, so writes made through ``simgr.one_active`` survive
+and the export already handed out points at its copy. An init seed is
+the exception: the constructor already stepped it to ``main`` on Python,
+so the manager is rebuilt from the pristine seed, onto which the
+register, memory and constraint writes made through its exports are
+replayed (``RustExplorationManager._handoff_stashes``). A step or run
+argument the Rust engine cannot honor (``num_inst``, ``insn_bytes``, …)
+hands off the same way. A manager built with
 ``engine="rust"``, or one that has already stepped, keeps the Rust
 engine and the warning that the hook will not run.
 
@@ -249,11 +258,8 @@ A state plugin the Rust engine cannot host hands off the same way the
 first time a state of the manager is asked for it. That means
 ``SimSymbolizer``, which needs angr's paged memory and rewrites stores
 from a mid-step breakpoint action; the set is
-``RustExplorationManager._PYTHON_ENGINE_PLUGINS``. Here the manager is
-rebuilt from its states as they are, not from the seeds. Each state is
-detached into plugins of its own, so writes made through
-``simgr.one_active`` survive, and the export already handed out points
-at its copy (``RustExplorationManager._hand_off_for_python_plugin``). On
+``RustExplorationManager._PYTHON_ENGINE_PLUGINS``
+(``RustExplorationManager._hand_off_for_python_plugin``). On
 a manager that cannot hand off, the plugin raises its own ``TypeError``.
 
 ``engine="rust"`` swaps the **manager**, not the ``SimEngine``:

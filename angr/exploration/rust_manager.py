@@ -1780,7 +1780,8 @@ class RustExplorationManager(
             if not getattr(self, "_phase2_reseeding", False):
                 self._initial_seed_states = [s.copy() for s in active_states]
                 self._frontier_is_seeds = True
-            for state in active_states:
+                self._seed_of_state_id = {}
+            for seed_index, state in enumerate(active_states):
                 # Detect state options
                 if hasattr(state, "options"):
                     # Hard-fail on options the Rust engine cannot honor
@@ -1864,8 +1865,10 @@ class RustExplorationManager(
                 # seeds mid-explore; parking them again would double-report the
                 # find (angr-bdeqa), so only the original activation parks.
                 pre_stepped = carried != [("active", seed_state)]
-                if pre_stepped and not getattr(self, "_phase2_reseeding", False):
-                    self._preinit_seeds.append((seed_addr, seed_state, placed))
+                if not getattr(self, "_phase2_reseeding", False):
+                    self._seed_of_state_id.update((state_id, seed_index) for _, state_id in placed)
+                    if pre_stepped:
+                        self._preinit_seeds.append((seed_addr, seed_state, placed))
 
         self._install_python_servable_pages()
 
@@ -6502,7 +6505,7 @@ class RustExplorationManager(
         if self._python_handoff_kwargs is not None and self._rust_mgr.step_count == 0:
             python_reason = technique_needs_python_engine(technique)
             if python_reason is not None:
-                self._hand_off_to_python(python_reason)
+                self._hand_off_to_python(python_reason, stashes=self._handoff_stashes())
                 return self.use_technique(technique)
         return use_technique(self, technique, **kwargs)
 
@@ -6510,22 +6513,16 @@ class RustExplorationManager(
         """Fail loudly on SimulationManager arguments *method* cannot honor; True when the manager handed off.
 
         A not-yet-stepped, default-routed manager hands off to the Python engine (:meth:`_hand_off_to_python`), so
-        the caller re-dispatches *method* on the SimulationManager it became; any other manager raises
-        NotImplementedError naming each argument (angr-mx00p.132.23, angr-vmi2l.243). The states carry over as
-        they are now (:meth:`_carried_over_stashes`), so a write the caller made through ``simgr.one_active``
-        survives (angr-mx00p.114), unless a seed is an init seed: the constructor already stepped that one to main
-        on Python, so only the pristine seed is the state the Python engine would step.
+        the caller re-dispatches *method* on the SimulationManager it became, with the states of
+        :meth:`_handoff_stashes`; any other manager raises NotImplementedError naming each argument
+        (angr-mx00p.132.23, angr-vmi2l.243).
         """
         if not unhonored:
             return False
         reason = f"{method}() cannot honor {', '.join(unhonored)}"
         if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
             raise NotImplementedError(f"RustExplorationManager.{reason}; build the manager without engine='rust'.")
-        seeds = getattr(self, "_initial_seed_states", None) or ()
-        if any(is_python_init_seed(self._project, seed.addr) for seed in seeds):
-            self._hand_off_to_python(reason)
-        else:
-            self._hand_off_to_python(reason, stashes=self._carried_over_stashes())
+        self._hand_off_to_python(reason, stashes=self._handoff_stashes())
         return True
 
     # State plugins the Rust engine cannot host: SimSymbolizer's init_state needs angr's paged memory, and its
@@ -6536,16 +6533,67 @@ class RustExplorationManager(
         """Hand off to the Python engine before plugin *name* first registers on one of this manager's states.
 
         The factory routes on the seeds, so a plugin the caller adds through ``simgr.one_active`` arrives too late
-        for ``rust_engine_eligible``. Unlike a technique handoff the states carry over as they are now, not as the
-        pristine seeds (:meth:`_carried_over_stashes`). Returns False, leaving the plugin to raise, for a manager
-        that cannot hand off (stepped, or ``engine="rust"`` by name).
+        for ``rust_engine_eligible``; the states carry over as :meth:`_handoff_stashes` gives them. Returns False,
+        leaving the plugin to raise, for a manager that cannot hand off (stepped, or ``engine="rust"`` by name).
         """
         if name not in self._PYTHON_ENGINE_PLUGINS:
             return False
         if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
             return False
-        self._hand_off_to_python(f"state plugin {name!r} needs the python engine", stashes=self._carried_over_stashes())
+        self._hand_off_to_python(f"state plugin {name!r} needs the python engine", stashes=self._handoff_stashes())
         return True
+
+    def _handoff_stashes(self) -> dict[str, list]:
+        """The states a not-yet-stepped manager hands the Python engine: those it would hold had it never been Rust.
+
+        Without an init seed they are this manager's stashes as they are now (:meth:`_carried_over_stashes`), so a
+        write the caller made through ``simgr.one_active`` survives (angr-mx00p.114). The constructor already stepped
+        an init seed to main on Python, where the Python engine would start at the seed itself, so then they are the
+        pristine seeds with the caller's writes replayed onto them (:meth:`_record_handoff_write`,
+        angr-mx00p.132.64), and every lazy ref handed out is pinned to the seed it descends from.
+        """
+        seeds = getattr(self, "_initial_seed_states", None) or []
+        if not any(is_python_init_seed(self._project, seed.addr) for seed in seeds):
+            return self._carried_over_stashes()
+        writes = getattr(self, "_handoff_writes", None) or []
+        seed_of = self._seed_of_state_id
+        written = defaultdict(set)
+        for state_id, _ in writes:
+            written[seed_of[state_id]].add(state_id)
+        if any(len(ids) > 1 for ids in written.values()):
+            raise NotImplementedError(
+                "RustExplorationManager cannot hand off to the python engine: writes were made to more than one "
+                "state descended from one seed, and the python engine holds only the seed; build the manager "
+                "without engine='rust'."
+            )
+        for state_id, replay in writes:
+            replay(seeds[seed_of[state_id]])
+        from angr.exploration.rust_state_export import _LazySimStateRef
+
+        for refs in self.stashes.values():
+            for ref in refs:
+                if isinstance(ref, _LazySimStateRef) and ref._lazy_state_id in seed_of:
+                    object.__setattr__(ref, "_lazy_pinned", seeds[seed_of[ref._lazy_state_id]])
+        return {"active": seeds}
+
+    def _record_handoff_write(self, binding, replay: Callable[[angr.SimState], object]) -> None:
+        """Log a write a caller made through an exported stash state, for :meth:`_handoff_stashes` to replay.
+
+        The Rust proxy plugins call this after every outermost write (``_ProxyStatePluginMixin._handoff_write``).
+        Only a default-routed manager that has not stepped can still hand off, and only a write to a state its
+        seeds placed (an export's own binding, not a copy's fork or a callback scope) lands in a stash the
+        handoff rebuilds from the seed.
+        """
+        if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
+            return
+        from angr.exploration.rust_state_binding import CopyStashForkOwner
+
+        state_id = binding.state_id
+        if not isinstance(binding.owner, CopyStashForkOwner) or state_id not in self.__dict__.get(
+            "_seed_of_state_id", ()
+        ):
+            return
+        self.__dict__.setdefault("_handoff_writes", []).append((state_id, replay))
 
     def _carried_over_stashes(self) -> dict[str, list]:
         """This not-yet-stepped manager's stashes as Python states, for :meth:`_hand_off_to_python`.
@@ -6572,23 +6620,20 @@ class RustExplorationManager(
                 stashes[stash] = states
         return stashes
 
-    def _hand_off_to_python(self, reason: str, stashes: dict[str, list] | None = None) -> None:
+    def _hand_off_to_python(self, reason: str, stashes: dict[str, list]) -> None:
         """Turn this not-yet-stepped, default-routed manager into a Python ``SimulationManager`` in place.
 
         The factory decides the engine before any technique exists, so a technique the Rust manager cannot honor
         arrives too late for ``rust_engine_eligible``. A project-default route never diverges (see
         docs/advanced-topics/rust_engine.rst), so the caller's reference becomes the manager the Python engine would
-        have built: the pristine seed copies, the caller's kwargs, and the techniques already registered. Swapping
+        have built: the states of :meth:`_handoff_stashes` (*stashes*: its ``active`` list seeds the manager and
+        every other stash is populated as is), the caller's kwargs, and the techniques already registered. Swapping
         the class before ``SimulationManager.__init__`` runs keeps the hooks it installs bound to this object.
-        *stashes*, when given, replaces the seeds: its ``active`` list seeds the manager and every other stash is
-        populated as is.
         """
         from angr.sim_manager import SimulationManager
 
         l.info("simulation_manager: handing off to the python engine (%s)", reason)
         project = self._project
-        if stashes is None:
-            stashes = {"active": getattr(self, "_initial_seed_states", None) or []}
         seeds = stashes.get("active", [])
         kwargs = self._python_handoff_kwargs
         techniques = list(self._active_techniques)

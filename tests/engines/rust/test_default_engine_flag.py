@@ -27,6 +27,7 @@ import os
 
 import pytest
 
+from angr import claripy
 from angr.engines import UberEngine
 from angr.errors import AngrError
 from angr.exploration import RustExplorationManager
@@ -200,6 +201,36 @@ class TestStepRunArgsHandOff:
             assert type(mgr) is SimulationManager
             results.append(mgr.one_active.solver.eval(mgr.one_active.regs.rax))
         assert results == [0x12, 0x12]
+
+    def test_hand_off_replays_writes_onto_an_init_seed(self, rust_project, fauxware_project):
+        """An init seed hands off as the pristine seed plus the caller's writes, where Python steps it (angr-mx00p.132.64).
+
+        The constructor already stepped the entry seed to main on Python, so the export the caller wrote to is at
+        main; the handoff must still step from the entry, carrying the register, memory and constraint writes made
+        through the export, and none made to a copy of it.
+        """
+        x = claripy.BVS("handoff_x", 32)
+        results = []
+        for proj in (rust_project, fauxware_project):
+            mgr = proj.factory.simulation_manager()
+            state = mgr.one_active
+            state.regs.rax = 3
+            state.memory.store(0x500000, x, endness="Iend_LE")
+            state.solver.add(x == 0x41)
+            clone = state.copy()
+            clone.regs.rax = 9
+            mgr.step(num_inst=1)
+            assert type(mgr) is SimulationManager
+            (succ,) = mgr.active
+            results.append(
+                (
+                    succ.addr,
+                    succ.solver.eval(succ.regs.rax),
+                    succ.solver.eval_upto(succ.memory.load(0x500000, 4, endness="Iend_LE"), 2),
+                )
+            )
+        second_insn = fauxware_project.factory.block(fauxware_project.entry).instruction_addrs[1]
+        assert results == [(second_insn, 3, [0x41])] * 2
 
     def test_stash_active_stays_rust(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
