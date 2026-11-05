@@ -2389,9 +2389,7 @@ class RustCallbackDispatchMixin:
         # Find template state for plugin restoration
         template = None
         if state_id is not None:
-            root_id = self._state_roots.get(state_id, state_id)
-            if root_id in self._state_cache:
-                template = self._state_cache[root_id]
+            template = self._root_template(self._state_roots.get(state_id, state_id))
 
         # Fall back to any cached state
         if template is None and self._state_cache:

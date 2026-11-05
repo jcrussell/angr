@@ -99,6 +99,12 @@ class _RustOwnedSimStateHistory(SimStateHistory):
             stacklevel=3,
         )
 
+    def copy(self, memo):
+        # SimStateHistory.copy builds the base class, and SimState.merge copies
+        # its first operand, so two exports would otherwise refuse to merge on
+        # "differing plugin classes" (angr-mx00p.132.36).
+        return type(self)(clone=self)
+
     @property
     def actions(self):
         type(self)._warn_once("actions")
@@ -974,6 +980,7 @@ class RustStateExportMixin:
         if scratch is not None:
             scratch.rust_fully_synced = False
             scratch.rust_mirror_id = state_id
+            scratch.rust_user_owned = False
         self._state_cache[state_id] = state
 
     def _get_stash_states(self, stash: str) -> list:
@@ -1028,6 +1035,12 @@ class RustStateExportMixin:
         """
         state = self._state_cache.get(state_id)
         if state is not None:
+            # A root's cached frame is its lineage's plugin template, and this
+            # hands it to the caller, who may mutate it (``release_plugin``).
+            # Keep an unhanded copy as the template, so a sibling exported
+            # later still starts from the seed's plugins (angr-mx00p.132.36).
+            if self._state_roots.get(state_id) == state_id and not getattr(state.scratch, "rust_user_owned", False):
+                self._lineage_templates[state_id] = self._copy_bound_to(state, state_id)
             # De-alias (angr-ibx8j): the cached frame may be shared with other
             # Rust ids (see `_cache_state_mirror`). Syncing a shared object in
             # place rebinds its register proxy to `state_id`, so every sibling
@@ -1051,8 +1064,9 @@ class RustStateExportMixin:
                 # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust root id;
                 # absence is normal for entry / unparented states.
                 root = None
-        if root is not None and root in self._state_cache:
-            state = self._copy_bound_to(self._state_cache[root], state_id)
+        template = self._root_template(root)
+        if template is not None:
+            state = self._copy_bound_to(template, state_id)
             self._sync_cached_state(state, state_id)
             # Cache the copy so it stays alive (prevents weakref death
             # during chained attribute access like sm.active[1].posix.dumps()).
@@ -1295,8 +1309,13 @@ class RustStateExportMixin:
         """Per-state stdin restore + posix weakref fix.
 
         Equivalent to the per-state body of the old end-of-``_get_stash_states``
-        loop; called once for every successful materialization.
+        loop; called once for every successful materialization. Marks the
+        frame ``rust_user_owned``: the caller may now mutate it, so
+        ``_root_template`` stops serving it (angr-mx00p.132.36).
         """
+        scratch = getattr(state, "scratch", None)
+        if scratch is not None:
+            scratch.rust_user_owned = True
         if self._stdin_content:
             try:
                 posix = getattr(state, "posix", None)
@@ -2198,8 +2217,8 @@ class RustStateExportMixin:
            with."
         3. ``_state_roots[state_id]`` then a Rust-side ``get_state_root``
            probe. The root is an entry state — its plugins are the
-           unmutated baseline that descendants forked from. An uncached
-           root's ``_lineage_templates`` entry stands in for it.
+           unmutated baseline that descendants forked from
+           (``_root_template``).
         4. As a last resort, any other cached *root* state. Roots have
            clean baseline plugins so falling back to an unrelated root is
            safe — it may report the wrong ``posix.argv``, but it cannot
@@ -2232,18 +2251,33 @@ class RustStateExportMixin:
                 if rust_root is not None:
                     root_id = rust_root
         if root_id is not None:
-            cached = self._state_cache.get(root_id) or self._lineage_templates.get(root_id)
+            cached = self._root_template(root_id)
             if cached is not None:
                 return cached
 
         # Last-resort: any cached *root*. Skip non-root descendants — they
         # carry per-fork mutations that must not leak across paths.
         for candidate_root in self._state_roots.values():
-            cached = self._state_cache.get(candidate_root)
+            cached = self._root_template(candidate_root)
             if cached is not None:
                 return cached
 
         return None
+
+    def _root_template(self, root_id: int | None) -> angr.SimState | None:
+        """The SimState whose plugins *root_id*'s descendants start from, else None.
+
+        The cached frame comes first: a callback mirror there carries a Python
+        proc's plugin edits. Once ``_materialize_single_state`` has handed the
+        frame to the caller (``rust_user_owned``) it carries the caller's edits
+        instead, and the ``_lineage_templates`` copy taken at hand-out wins.
+        """
+        if root_id is None:
+            return None
+        cached = self._state_cache.get(root_id)
+        if cached is not None and not getattr(cached.scratch, "rust_user_owned", False):
+            return cached
+        return self._lineage_templates.get(root_id) or cached
 
     def _restore_plugins_to_state(
         self,
