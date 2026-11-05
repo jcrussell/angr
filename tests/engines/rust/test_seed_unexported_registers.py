@@ -96,3 +96,33 @@ def test_seeded_values(answers):
         assert found["mm3"] == [False, True]
     else:
         assert found["mm7"] == [False, True]
+
+
+ST0 = 0x4004000000000000  # 2.5 as an IEEE double
+FSTP_CODE = bytes([0xDD, 0x1C, 0x24, 0xEB, 0xFE])  # fstp qword [sp]; jmp $
+
+
+def _run_fstp(engine, arch):
+    """Seed a one-deep x87 stack (ftop 7, tag 7 set, slot 7 = 2.5) and let an
+    in-block ``fstp`` spill and pop it, so the Rust block consumes the seeded
+    ftop/tag/slot bytes rather than only carrying them through."""
+    from angr.exploration.rust_manager import RustExplorationManager
+
+    proj = angr.load_shellcode(FSTP_CODE, arch=arch, load_address=LOAD)
+    state = proj.factory.blank_state(addr=LOAD)
+    state.regs.ftop = 7
+    state.registers.store(proj.arch.registers["fpu_tags"][0] + 7, claripy.BVV(1, 8))
+    state.registers.store(proj.arch.registers["fpu_regs"][0] + 7 * 8, claripy.BVV(ST0, 64), endness="Iend_LE")
+    mgr = RustExplorationManager(proj, [state]) if engine == "rust" else proj.factory.simulation_manager(state)
+    mgr.explore(find=LOAD + 3)
+    assert len(mgr.found) == 1
+    found = mgr.found[0]
+    spilled = found.memory.load(found.regs.sp, 8, endness="Iend_LE")
+    return found.solver.eval_upto(spilled, 2), found.solver.eval_upto(found.regs.ftop, 2)
+
+
+@pytest.mark.parametrize("arch", sorted(SEEDS))
+def test_seeded_x87_stack_feeds_the_block(arch):
+    python = _run_fstp("python", arch)
+    assert python == ([ST0], [8])
+    assert _run_fstp("rust", arch) == python
