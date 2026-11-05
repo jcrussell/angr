@@ -24,8 +24,8 @@ name = "angr_symex_core"
 [features]
 # Widens the shell-test-only helpers (`test_boundary_values`, the
 # `*_for_test` hooks on `SymContext`) to the crate's public surface so the
-# engine's tests can reach them. Dev-only: native/angr turns it on under
-# [dev-dependencies].
+# dependent crates' tests can reach them. Dev-only: native/angr and
+# native/angr-symex-native turn it on under [dev-dependencies].
 testing = []
 
 [dependencies]

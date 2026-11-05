@@ -18,7 +18,7 @@ boundaries — breaking any one of them tends to produce silent correctness
 bugs (lost state, infinite loops) rather than loud failures, so they are
 documented here and pinned by the named regression tests. The numbers are stable
 identifiers cited from other files (``native/angr/src/stash.rs``,
-``native/angr/src/syscalls/mmap.rs``), so a retired invariant leaves a gap
+``native/angr-symex-native/src/syscalls/mmap.rs``), so a retired invariant leaves a gap
 rather than renumbering the rest.
 
 I5. Register filter at the FFI boundary
@@ -3631,7 +3631,7 @@ class RustExplorationManager(
         return None
 
     # The native procedures that read or write ``RustSimState``'s environment
-    # map (``native/angr/src/procedures/getenv.rs``). They go off together: a
+    # map (``native/angr-symex-native/src/procedures/getenv.rs``). They go off together: a
     # native setenv whose value only the map holds would be invisible to a
     # Python getenv.
     _NATIVE_ENV_PROCS = ("getenv", "setenv", "unsetenv", "clearenv", "putenv")

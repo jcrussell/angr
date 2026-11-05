@@ -80,6 +80,7 @@ SCAN = {"native/angr-symex-core": ("interpreter",), "native/angr-vex": ("",), "n
 EXCLUDE = {
     "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns",
     "native/angr": "the PyO3 shell: it applies no VEX op itself, the interpreter (in angr-symex-core) does",
+    "native/angr-symex-native": "native procedures and syscalls: they apply no VEX op",
 }
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 40

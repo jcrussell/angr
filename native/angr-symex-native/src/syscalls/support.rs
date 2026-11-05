@@ -57,7 +57,7 @@ pub(crate) const MAX_MAP_SIZE: u64 = 0x1000_0000;
 /// variants; intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
-pub(crate) enum SyscallError {
+pub enum SyscallError {
     #[error("symbolic argument: {0}")]
     SymbolicArgument(String),
     /// Memory operation failed. Carries the structured `MemoryError`
@@ -202,7 +202,7 @@ pub(crate) fn mint_symbolic_bytes(
 
 /// What the dispatcher should do after a syscall handler runs.
 #[derive(Debug)]
-pub(crate) enum SyscallOutcome {
+pub enum SyscallOutcome {
     /// State should continue at PC. `ret` is written to the return
     /// register (rax on amd64).
     Continue { ret: u64 },
@@ -214,7 +214,7 @@ pub(crate) enum SyscallOutcome {
     Exit,
 }
 
-pub(crate) trait NativeSyscall: Send + Sync {
+pub trait NativeSyscall: Send + Sync {
     /// Human-readable handler label (e.g. `"read"`, `"getuid"`).
     ///
     /// Dispatch never reads this label: the registry resolves angr's syscall

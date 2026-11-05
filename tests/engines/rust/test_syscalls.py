@@ -35,7 +35,7 @@ class TestNativeIdentitySyscalls:
     / ``geteuid`` / ``getgid`` / ``getegid`` handlers must short-circuit the
     Python callback path (``syscall_python_fallback_count`` stays 0).
 
-    The Rust unit tests in ``native/angr/src/syscalls/identity.rs`` already
+    The Rust unit tests in ``native/angr-symex-native/src/syscalls/identity.rs`` already
     pin the return values (pid=1337, ppid=1336, uid/gid=1000); this is the
     cross-the-FFI dispatch check.
     """
@@ -73,7 +73,7 @@ class TestNativeSetuidSetgidSyscalls:
     """angr-pqgu: native ``setuid`` / ``setgid`` handlers mirror the
     Python ``syscall_stub`` ReturnUnconstrained fallback. The Rust
     cargo unit test ``setuid_setgid_return_fresh_symbolic`` in
-    ``native/angr/src/syscalls/identity.rs`` pins the symbolic-return
+    ``native/angr-symex-native/src/syscalls/identity.rs`` pins the symbolic-return
     invariant (fresh BV each call, width == arch().bits()); this is
     the cross-the-FFI dispatch check (``syscall_python_fallback_count``
     stays 0).
@@ -109,7 +109,7 @@ class TestNativeMemoryExtraSyscalls:
     / ``munlock`` / ``mlockall`` / ``munlockall`` handlers mirror the
     Python ``syscall_stub`` ReturnUnconstrained fallback. The Rust cargo
     unit test ``memory_extras_return_fresh_symbolic_on_all_arches`` in
-    ``native/angr/src/syscalls/memory_extras.rs`` pins the symbolic-return
+    ``native/angr-symex-native/src/syscalls/memory_extras.rs`` pins the symbolic-return
     invariant (fresh BV each call, width == arch().bits()); this is the
     cross-the-FFI dispatch check (``syscall_python_fallback_count`` stays
     0).
@@ -158,7 +158,7 @@ class TestNativeSignalSyscalls:
     intentionally NOT native (its Python impl mutates
     ``state.posix.sigmask`` which ``RustSimState`` does not carry).
 
-    The Rust cargo unit tests in ``native/angr/src/syscalls/signals.rs``
+    The Rust cargo unit tests in ``native/angr-symex-native/src/syscalls/signals.rs``
     pin the per-handler invariants; this is the cross-the-FFI dispatch
     check (``syscall_python_fallback_count`` stays 0 for each one).
     """
@@ -199,7 +199,7 @@ class TestNativeResourceLimitSyscalls:
     ``*rlim`` and returns 0; other resources return a fresh symbolic.
     ``setrlimit`` and ``prlimit64`` have no Python ``SimProcedure`` and
     mirror the ``syscall_stub`` ReturnUnconstrained fallback. Rust unit
-    tests in ``native/angr/src/syscalls/rlimit.rs`` pin the per-handler
+    tests in ``native/angr-symex-native/src/syscalls/rlimit.rs`` pin the per-handler
     invariants; this is the cross-FFI dispatch + integration check.
     """
 
@@ -272,7 +272,7 @@ class TestNativeResourceLimitSyscalls:
 class TestNativeSimTimeSyscalls:
     """angr-0y0v: native ``gettimeofday`` (96), ``time`` (201), and
     ``clock_gettime`` (228) handlers in
-    ``native/angr/src/syscalls/sim_time.rs`` always write a fresh symbolic
+    ``native/angr-symex-native/src/syscalls/sim_time.rs`` always write a fresh symbolic
     ``timeval``/``timespec`` (``USE_SYSTEM_TIMES`` is rejected, not honored
     — see ``_REJECTED_OPTION_NAMES``). Rust unit tests pin the per-handler
     semantics; this is the cross-FFI dispatch check (each takes the Rust
@@ -310,7 +310,7 @@ class TestNativeSimTimeSyscalls:
 
 class TestNativeDirectorySyscalls:
     """angr-0y0v: native directory-family handlers in
-    ``native/angr/src/syscalls/directory.rs``. ``getcwd`` (79) is a real
+    ``native/angr-symex-native/src/syscalls/directory.rs``. ``getcwd`` (79) is a real
     handler (``size``=0 → ERANGE, no write); ``fchdir`` (81), ``rename``
     (82), ``mkdir`` (83), ``rmdir`` (84), and ``unlink`` (87) are
     ``stub_syscall!`` handlers that return a fresh symbolic regardless of
@@ -368,7 +368,7 @@ class TestNativeReadlinkSyscall:
     because the Rust ``FileSystem`` has no symlinks (EINVAL for known
     paths, ENOENT for unknown). The buffer is left untouched.
 
-    Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin
+    Rust cargo tests in ``native/angr-symex-native/src/syscalls/file_path/`` pin
     the per-handler semantics (unknown→-1, known→-1, empty→-1, buf
     untouched, symbolic-pathname fallback, cross-arch). This Python
     test pins cross-FFI dispatch (``syscall_python_fallback_count``
@@ -486,7 +486,7 @@ class TestNativeFaccessatSyscall:
     dirfd return ``-1`` (matches ``NativeOpenatSyscall``'s policy — we
     do not model directory fds).
 
-    Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin
+    Rust cargo tests in ``native/angr-symex-native/src/syscalls/file_path/`` pin
     the per-handler semantics (unknown→-1, known→0, AT_FDCWD vs
     arbitrary dirfd, empty path→-1, symbolic fallback,
     cross-arch). This Python test pins cross-FFI dispatch
@@ -522,7 +522,7 @@ class TestNativeFdAllocatingSyscalls:
     existing ``procedures/fileops::NativeOpen`` / ``NativeClose`` libc
     procs and do NOT mirror Python's ``state.posix.fd`` / ``state.fs``
     — same trade-off as ``dup``/``dup2``. The Rust cargo tests in
-    ``native/angr/src/syscalls/file_path/`` pin per-handler semantics
+    ``native/angr-symex-native/src/syscalls/file_path/`` pin per-handler semantics
     (fresh fd, NEG_ONE for empty/relative-without-AT_FDCWD paths, fd
     book-keeping for close); this is the cross-the-FFI dispatch check
     (``syscall_python_fallback_count`` stays 0 for a writing open /
@@ -608,7 +608,7 @@ class TestNativeAccessSyscall:
     Pre-populated Python ``state.fs`` entries are NOT mirrored into
     the Rust side automatically — same trade-off as the FD-allocating
     handlers in ``TestNativeFdAllocatingSyscalls``. Rust cargo tests
-    in ``native/angr/src/syscalls/file_path/`` pin the per-handler
+    in ``native/angr-symex-native/src/syscalls/file_path/`` pin the per-handler
     semantics (unknown→-1, known→0, empty path→-1, symbolic
     fallback); this test pins cross-FFI dispatch
     (``syscall_python_fallback_count`` stays 0).
@@ -646,7 +646,7 @@ class TestNativeFstatSyscall:
     is concrete (``content_len`` of the fd's backing buffer).
 
     An fd not open in Rust falls back to Python (angr-mx00p.132.15).
-    Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin the
+    Rust cargo tests in ``native/angr-symex-native/src/syscalls/file_path/`` pin the
     per-arch field offsets and the symbolic/unmapped fallback paths;
     this test pins that fallback across the FFI.
     """
@@ -682,7 +682,7 @@ class TestNativeStatSyscall:
     ``procedures/linux_kernel/stat.py``'s open→fstat→close in that the
     Rust path never mutates the fd table.
 
-    Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin
+    Rust cargo tests in ``native/angr-symex-native/src/syscalls/file_path/`` pin
     the per-handler semantics (unknown→fallback, empty→-1, known→0,
     largest-content-len-across-fds, unsupported-arch, symbolic fd /
     statbuf fallback, unmapped buf MemoryError). This Python test pins
@@ -717,7 +717,7 @@ class TestNativeLstatSyscall:
     x86 / ARM EABI / MIPS32 carry the legacy 32-bit ``struct stat``
     with no Python proc.
 
-    Rust cargo tests in ``native/angr/src/syscalls/file_path/`` pin
+    Rust cargo tests in ``native/angr-symex-native/src/syscalls/file_path/`` pin
     the per-handler semantics (unknown→fallback, empty→-1, known→0,
     unsupported-arch, symbolic-pathname fallback, unmapped-buf
     MemoryError). This Python test pins cross-FFI dispatch
@@ -842,7 +842,7 @@ class TestNativeFileDescriptorSyscalls:
     ``RustSimState::file_system()`` directly rather than the Python
     ``state.posix.fd`` (angr-vp19), so no Python fallback is needed.
 
-    Rust unit tests in ``native/angr/src/syscalls/file_descriptor.rs``
+    Rust unit tests in ``native/angr-symex-native/src/syscalls/file_descriptor.rs``
     pin the per-handler invariants (correct ``name()``/arity, fresh
     symbolic on each call). This is the cross-FFI dispatch check.
     """

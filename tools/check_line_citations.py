@@ -59,6 +59,7 @@ SCAN = {
     "native/angr-bv": ("",),
     "native/angr-vex": ("",),
     "native/angr-symex-core": ("",),
+    "native/angr-symex-native": ("",),
 }
 EXCLUDE: dict[str, str] = {}
 # Fewer Rust files than this means the code moved out of the scan roots.

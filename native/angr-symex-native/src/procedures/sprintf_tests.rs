@@ -725,10 +725,11 @@ fn test_asprintf_symbolic_format_falls_back() {
 
 // --- Integer length-modifier width narrowing (angr-n0irt.4) ---
 //
-// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
-// before formatting: hh->8, h->16, none->32, l/ll->64. Native must narrow to
-// the same width or %hd/%hhd/%hu/%hx/%ho diverge from Python. These mirror
-// scanf_tests.rs's assert_scanf_store_width suite on the formatting side.
+// format_parser.py's `FormatString.replace` masks each concretized int arg to
+// `size*8` bits before formatting: hh->8, h->16, none->32, l/ll->64. Native
+// must narrow to the same width or %hd/%hhd/%hu/%hx/%ho diverge from Python.
+// These mirror scanf_tests.rs's assert_scanf_store_width suite on the
+// formatting side.
 
 /// Run a single-vararg sprintf and return the bytes written to the dest buffer
 /// (excluding the trailing NUL), or `Err` if the proc deferred to Python.

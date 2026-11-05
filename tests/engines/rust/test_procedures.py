@@ -60,7 +60,7 @@ def _native_stand_in(proc_name: str, attrs: dict):
 class TestSymbolicLibcProcedures:
     """Integration tests for symbolic libc SimProcedures via RustExplorationManager.
 
-    Native Rust unit tests in `native/angr/src/procedures/*.rs` exercise each
+    Native Rust unit tests in `native/angr-symex-native/src/procedures/*.rs` exercise each
     procedure directly on a `RustSimState`. These Python-level tests cover the
     surrounding integration path that the Rust tests do not: claripy↔Z3
     bridging, ITE-chain construction across the FFI boundary, callback
@@ -1102,7 +1102,7 @@ class TestNativeFileDescriptorProcedures:
 
     Native open/close/lseek/dup/dup2/pipe are registered by default in
     `NativeProcedureRegistry::new` and live in
-    `native/angr/src/procedures/fileops.rs`. Cargo unit tests in that module
+    `native/angr-symex-native/src/procedures/fileops.rs`. Cargo unit tests in that module
     cover concrete arg handling and error returns. This Python-level test
     asserts the full integration path: the manager dispatches the native
     procedure when a hook is set at an out-of-binary address (i.e. extern
@@ -1234,7 +1234,7 @@ class TestNativeFileDescriptorErrorReturns:
     ``close`` is not here: an fd not open in Rust is Python's to close
     (angr-mx00p.132.15), which the Cargo ``NativeClose`` tests pin.
 
-    Each native proc in `native/angr/src/procedures/fileops.rs` returns -1
+    Each native proc in `native/angr-symex-native/src/procedures/fileops.rs` returns -1
     (the EBADF-style sentinel) when handed a never-opened fd. The Cargo
     unit tests pin the per-proc behavior; this Python-level test pins the
     full integration contract that's relevant to Python callers:
@@ -1708,7 +1708,7 @@ class TestNativeFreadBoundary:
     """Python-boundary regression for native fread dispatch (angr-c42t7).
 
     `feat(procedures/fread)` (d4d1ad1c4) shipped 7 Cargo unit tests in
-    `native/angr/src/procedures/fread_tests.rs` that call `NativeFread.call`
+    `native/angr-symex-native/src/procedures/fread_tests.rs` that call `NativeFread.call`
     directly, but no Python-level test. The concrete-content *serving* path
     cannot be reached from a clean Python integration test: the only seeder
     of FS content is `FileSystem::open_with_content`, which has no Python
@@ -1738,7 +1738,7 @@ class TestNativeFreadBoundary:
     DST_ADDR = 0x601300  # fread destination buffer (distinct page region)
 
     # AMD64 _IO_FILE._fileno offset (mirrors AMD64_FILENO_OFF in
-    # native/angr/src/procedures/fread_tests.rs / io_file_for_arch).
+    # native/angr-symex-native/src/procedures/fread_tests.rs / io_file_for_arch).
     FILENO_OFF = 112
 
     @staticmethod
@@ -3084,7 +3084,7 @@ class TestNativeMemoryCopyAndSet:
 class TestNativePthreadOnce:
     """End-to-end test for native pthread_once (xxukz) through the real run loop.
 
-    Native unit tests in `native/angr/src/procedures/pthread_tests.rs` cover
+    Native unit tests in `native/angr-symex-native/src/procedures/pthread_tests.rs` cover
     call_ex/resume directly; the run-loop dispatch (Path A fresh-entry →
     CallAndResume setup → guest routine runs & `ret`s to the resume sentinel →
     Path B resume → return to caller) needs a Python FFI context and real VEX

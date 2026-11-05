@@ -11,7 +11,7 @@
 //!
 //! RustSimState does not currently carry a posix plugin, so the pid/ppid
 //! defaults are hardcoded here to match Python's defaults
-//! (`angr/state_plugins/posix.py:159`).
+//! (`SimSystemPosix.__init__` in `angr/state_plugins/posix.py`).
 //!
 //! Note on `setuid` / `setgid`: angr has no Python `SimProcedure` for
 //! these — the unhandled syscall falls through to `procedures/stubs/
@@ -32,9 +32,9 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
+/// Angr's default `state.posix.pid` (see `SimSystemPosix.__init__`).
 const DEFAULT_PID: u64 = 1337;
-/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).
+/// Angr's default `state.posix.ppid` (see `SimSystemPosix.__init__`).
 const DEFAULT_PPID: u64 = 1336;
 /// Angr's default `getuid` / `getgid` / `geteuid` / `getegid` return value
 /// (see `procedures/linux_kernel/getuid.py` etc.).

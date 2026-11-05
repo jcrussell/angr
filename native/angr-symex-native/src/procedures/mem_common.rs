@@ -71,6 +71,8 @@ pub(crate) fn check_symbolic_addr_size(size_bv: &RustBV) -> Result<Option<u64>, 
         .as_u64()
         .ok_or_else(|| ProcedureError::SymbolicArgument("size".to_string()))?;
     if size == 0 {
+        // SILENT(cat-a): a zero size is the documented no-op signal, not a
+        // lost value; the caller returns the pointer unchanged.
         return Ok(None);
     }
     if size > MAX_SYMBOLIC_ADDR_SIZE {

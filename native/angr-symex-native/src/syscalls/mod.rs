@@ -104,18 +104,19 @@ use std::sync::Arc;
 use crate::vex::ir::JumpKind;
 
 pub(crate) use support::{
-    BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
-    bounded_value, extract_bounded_concrete_arg, extract_concrete_arg, fresh_byte_names,
-    fresh_symbolic, gather_concrete_bytes, gather_concrete_bytes_into, mint_symbolic_bytes,
-    require_syscall_args, stub_syscall, symbolic_outcome,
+    BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, bounded_value, extract_bounded_concrete_arg,
+    extract_concrete_arg, fresh_byte_names, fresh_symbolic, gather_concrete_bytes,
+    gather_concrete_bytes_into, mint_symbolic_bytes, require_syscall_args, stub_syscall,
+    symbolic_outcome,
 };
+pub use support::{NativeSyscall, SyscallError, SyscallOutcome};
 pub(crate) use write_gate::write_path_gate;
 
 /// A syscall ABI the native handlers are written for: one numbering and one
 /// syscall calling convention, named by the key angr's
 /// `SimSyscallLibrary.syscall_number_mapping` uses for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) enum SyscallAbi {
+pub enum SyscallAbi {
     Amd64,
     I386,
     Arm,
@@ -370,13 +371,13 @@ static BY_NAME: &[ByName] = by_name![
 /// Built per manager by [`NativeSyscallRegistry::from_angr_tables`] from the
 /// numbering of the project's SimOS. A lookup is two O(1) hash probes (ABI,
 /// then number), never a scan of the rows (angr-k95c).
-pub(crate) struct NativeSyscallRegistry {
+pub struct NativeSyscallRegistry {
     handlers: HashMap<SyscallAbi, HashMap<u64, Arc<dyn NativeSyscall>>>,
 }
 
 impl NativeSyscallRegistry {
     /// A registry with no handlers: every syscall goes to the Python path.
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         NativeSyscallRegistry {
             handlers: HashMap::new(),
         }
@@ -387,13 +388,11 @@ impl NativeSyscallRegistry {
     /// (`{number: name}`), for the ABIs the project's SimOS lists in
     /// `syscall_abis`.
     ///
-    /// A number resolves to the [`BY_NAME`] row whose name angr gives it and
+    /// A number resolves to the `BY_NAME` row whose name angr gives it and
     /// whose scope includes the ABI; a name with no row stays with Python.
-    /// [`IGNORED_ABIS`] are skipped. Any other ABI name is an error: angr
+    /// `IGNORED_ABIS` are skipped. Any other ABI name is an error: angr
     /// numbering the engine was never written against must not dispatch.
-    pub(crate) fn from_angr_tables(
-        tables: &[(String, HashMap<u64, String>)],
-    ) -> Result<Self, String> {
+    pub fn from_angr_tables(tables: &[(String, HashMap<u64, String>)]) -> Result<Self, String> {
         let mut registry = Self::empty();
         for (abi_name, mapping) in tables {
             let Some(abi) = SyscallAbi::from_angr(abi_name) else {
@@ -421,7 +420,7 @@ impl NativeSyscallRegistry {
     /// A registry holding the DECREE table (a CGC project's SimOS lists only
     /// `cgcabi`) dispatches every syscall through it: DECREE runs on x86 but
     /// its numbers 1-7 collide with Linux i386.
-    pub(crate) fn get_for_exit(
+    pub fn get_for_exit(
         &self,
         arch_name: &str,
         jumpkind: JumpKind,
@@ -447,15 +446,15 @@ impl NativeSyscallRegistry {
 
     /// Register `syscall` under `num` on `abi`, for tests that need a
     /// handler `BY_NAME` does not have.
-    #[cfg(test)]
-    pub(crate) fn register(&mut self, abi: SyscallAbi, num: u64, syscall: Arc<dyn NativeSyscall>) {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn register(&mut self, abi: SyscallAbi, num: u64, syscall: Arc<dyn NativeSyscall>) {
         self.handlers.entry(abi).or_default().insert(num, syscall);
     }
 
     /// Every `BY_NAME` row as `(angr syscall name, angr ABI names in scope)`,
     /// for `test_native_syscall_parity.py`'s check that each row's name is
     /// one angr actually uses.
-    pub(crate) fn by_name_rows() -> Vec<(&'static str, Vec<&'static str>)> {
+    pub fn by_name_rows() -> Vec<(&'static str, Vec<&'static str>)> {
         BY_NAME
             .iter()
             .map(|row| {
@@ -472,7 +471,7 @@ impl NativeSyscallRegistry {
     /// The ABI name is the key angr's `SimSyscallLibrary.syscall_number_mapping`
     /// uses for the same numbering, so `test_native_syscall_parity.py` can
     /// check each row against angr's own table.
-    pub(crate) fn table(&self) -> Vec<(&'static str, u64, &'static str)> {
+    pub fn table(&self) -> Vec<(&'static str, u64, &'static str)> {
         let mut rows = Vec::new();
         for (&abi, by_num) in &self.handlers {
             for (&num, handler) in by_num {

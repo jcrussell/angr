@@ -111,7 +111,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Same roots as audit_silent_fallback.py, the tagging audit this pairs with.
 # A diff has no file count, so there is no floor here; a missing or
 # unclassified root still fails.
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",), "native/angr-symex-core": ("",)}
+SCAN = {
+    "native/angr": ("",),
+    "native/angr-bv": ("",),
+    "native/angr-vex": ("",),
+    "native/angr-symex-core": ("",),
+    "native/angr-symex-native": ("",),
+}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a compile error, not a runtime fallback"}
 
 
@@ -121,6 +127,7 @@ def src_prefixes(repo_root: Path = REPO_ROOT) -> list[str]:
     Raises ScanRootError when the roots do not match the workspace.
     """
     return [root.relative_to(repo_root).as_posix().rstrip("/") + "/" for root in scan_roots(repo_root, SCAN, EXCLUDE)]
+
 
 # See the module docstring's "Site detection" paragraph for why these two
 # alternatives (and not a same-line `cat_b|cat_c` match) are the right shape.
@@ -304,7 +311,7 @@ def evaluate(diff_text: str, touched: list[str], prefixes: Sequence[str]) -> tup
     lines.append(
         "\ncat_b/cat_c mark a fallback that silently degrades or risks a wrong answer -- "
         "exactly the shape this repo's audits keep re-finding (39 historical instances,\n"
-        'see the `silent_default!` doc in native/angr-vex/src/lib.rs). Add a regression test '
+        "see the `silent_default!` doc in native/angr-vex/src/lib.rs). Add a regression test "
         "in the same change proving the fallback's chosen default is *correct* for this\n"
         "edge case (not just that it doesn't panic), touching a file matching `*_tests.rs` "
         "or under a `tests/` directory. If this really is `cat_a` (expected control flow,\n"

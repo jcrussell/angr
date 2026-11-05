@@ -73,7 +73,7 @@ BUCKET_DESC = {
     "C": "irreducible user Python hook — bench leaves the gate denominator",
 }
 
-_PROCS_DIR = os.path.join(os.path.dirname(_HERE), os.pardir, "native", "angr", "src", "procedures")
+_PROCS_DIR = os.path.join(os.path.dirname(_HERE), os.pardir, "native", "angr-symex-native", "src", "procedures")
 _NAME_ATTR_RE = re.compile(r'^\s*name = "([^"]+)"')
 
 
@@ -81,7 +81,7 @@ def native_registry_names() -> set[str]:
     """Symbols the Rust native-procedure registry claims.
 
     Read out of the ``name = "..."`` attribute on each ``#[native_procedure]``
-    in ``native/angr/src/procedures/*.rs`` (test modules excluded). Needed
+    in ``native/angr-symex-native/src/procedures/*.rs`` (test modules excluded). Needed
     because a bounce whose proc IS natively implemented is a *dispatch* gap
     (bucket B), not a missing-proc gap (bucket A) — and the runtime
     ``native_proc_*_fallbacks_by_name`` counters cannot tell them apart: a proc

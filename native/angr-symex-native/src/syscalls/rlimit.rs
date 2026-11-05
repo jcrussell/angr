@@ -40,7 +40,7 @@ use crate::symbolic::RustBV;
 /// `getrlimit` impl writes a concrete value for.
 const RLIMIT_STACK: u64 = 3;
 /// Python writes `8 * 1024 * 1024 = 8388608` as `rlim_cur` for
-/// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).
+/// RLIMIT_STACK (see `getrlimit.run` in `procedures/linux_kernel/getrlimit.py`).
 const RLIMIT_STACK_CUR: u128 = 8 * 1024 * 1024;
 
 pub(crate) struct NativeGetrlimitSyscall;

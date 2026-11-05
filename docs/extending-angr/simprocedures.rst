@@ -345,9 +345,9 @@ Add one only if all of these are true:
 The trait
 ^^^^^^^^^
 
-Every native procedure lives in ``native/angr/src/procedures/`` and
+Every native procedure lives in ``native/angr-symex-native/src/procedures/`` and
 implements the ``NativeSimProcedure`` trait defined in
-``native/angr/src/procedures/mod.rs``:
+``native/angr-symex-native/src/procedures/mod.rs``:
 
 .. code-block:: rust
 
@@ -518,7 +518,7 @@ Mechanics, for procedures that need them:
 Design rationale: ``tools/decisions/native_subcall_dispatcher_design.md``
 (bead ``angr-5gf0s``, Option B). Regression coverage:
 ``native/angr/src/exploration/subcall_tests.rs`` and
-``native/angr/src/procedures/pthread_tests.rs``.
+``native/angr-symex-native/src/procedures/pthread_tests.rs``.
 
 Argument extraction with ``declare_proc!``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -527,7 +527,7 @@ Most procedures need concrete ``u64`` arguments (addresses, sizes,
 indices). Writing the boilerplate by hand drifts out of sync — the
 ``num_args()`` count and the argument-extraction code can disagree
 silently. The ``declare_proc!`` macro (in
-``native/angr/src/procedures/macros.rs``) drives both from a single
+``native/angr-symex-native/src/procedures/macros.rs``) drives both from a single
 declaration:
 
 .. code-block:: rust
@@ -697,7 +697,7 @@ Regression coverage for this contract lives at
 (native-tried-then-Python case).
 
 For a contributor: adding a new procedure means (1) writing a module
-under ``native/angr/src/procedures/``, (2) declaring it ``pub mod`` from
+under ``native/angr-symex-native/src/procedures/``, (2) declaring it ``pub mod`` from
 ``mod.rs``, and (3) adding a single row to the ``register_procs!`` list in
 ``NativeProcedureRegistry::new``. The acceptance bar is then a handful of
 test cases exercising the happy path, the symbolic-arg fallback, and any
@@ -714,7 +714,7 @@ The simplest interesting shape: the address argument *must* be concrete
 the bytes the procedure reads may themselves be symbolic, in which case
 the procedure still produces a useful symbolic ``size_t`` rather than
 bailing out. Source:
-``native/angr/src/procedures/strlen.rs``.
+``native/angr-symex-native/src/procedures/strlen.rs``.
 
 .. code-block:: rust
 
@@ -757,7 +757,7 @@ Worked example 2: graded symbolic fallback — ``memcpy``
 bail out on the first symbolic argument. It declares all three args as
 ``bv`` and picks a tier based on which of them the solver can pin down,
 falling back to Python only when a tier's work budget is blown. Source:
-``native/angr/src/procedures/memcpy.rs``.
+``native/angr-symex-native/src/procedures/memcpy.rs``.
 
 .. code-block:: rust
 
@@ -847,7 +847,7 @@ Worked example 3: allocator state — ``malloc``
 ``malloc`` is interesting because it doesn't just transform memory —
 it mutates engine state (the heap bump pointer) that *must* survive
 into the next instruction and into forked successor states. Source:
-``native/angr/src/procedures/malloc.rs``.
+``native/angr-symex-native/src/procedures/malloc.rs``.
 
 .. code-block:: rust
 
@@ -960,7 +960,7 @@ Terminal procedures: ``no_return``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``exit`` and ``abort`` are tiny but instructive — see
-``native/angr/src/procedures/exit.rs``. They override
+``native/angr-symex-native/src/procedures/exit.rs``. They override
 ``fn no_return(&self) -> bool { true }`` and return ``Ok(None)``. The
 dispatcher (``exploration/native_proc_dispatch.rs``) recognizes
 ``no_return`` and stashes the state in ``STASH_DEADENDED`` instead of

@@ -1,7 +1,7 @@
 """Native syscall dispatch vs angr's own syscall numbering (angr-mx00p.35).
 
 The Rust engine registers its syscall handlers by the name angr's syscall
-library gives each syscall (``BY_NAME`` in ``native/angr/src/syscalls/mod.rs``)
+library gives each syscall (``BY_NAME`` in ``native/angr-symex-native/src/syscalls/mod.rs``)
 and takes the numbers from the project's SimOS. A number that resolves to the
 wrong handler is silently wrong, so this module checks the live table against
 angr's:

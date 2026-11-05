@@ -8,8 +8,3 @@ docs/advanced-topics/debug_var.rst	# Resolve 'a' in state before execute line 10
 docs/advanced-topics/debug_var.rst	# the addr to line 7 is 0x401193 you can search for it with
 native/angr/src/callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
 native/angr/src/callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
-native/angr/src/procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
-native/angr/src/syscalls/identity.rs	//! (`angr/state_plugins/posix.py:159`).
-native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
-native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).
-native/angr/src/syscalls/rlimit.rs	/// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).

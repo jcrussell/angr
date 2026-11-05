@@ -120,11 +120,11 @@ impl LengthModifier {
 /// Returns `(width, bytes_consumed)`. If no digits are present, returns
 /// `(0, 0)` so callers can distinguish "no width" from "width zero" by
 /// looking at the consumed count.
-// Stays crate-`pub` (not `pub(crate)`) because `lib.rs::fuzz_api` re-exports it
-// for the cargo-fuzz targets under `fuzz/`. That re-export only exists under the
-// `fuzzing` feature, so a stock build sees an unreachable `pub` — suppressed
-// here rather than widened, since narrowing it breaks `--features fuzzing`
-// with E0364 (angr-9ke6b.214).
+// Stays crate-`pub` (not `pub(crate)`) because `procedures/mod.rs` re-exports
+// it for the engine's `fuzz_api` (the cargo-fuzz targets under `fuzz/`). That
+// re-export only exists under the `fuzzing` feature, so a stock build sees an
+// unreachable `pub` — suppressed here rather than widened, since narrowing it
+// breaks `--features fuzzing` with E0364 (angr-9ke6b.214).
 #[cfg_attr(not(feature = "fuzzing"), allow(unreachable_pub))]
 pub fn parse_width_digits(fmt: &[u8], start: usize) -> (usize, usize) {
     let mut width: usize = 0;

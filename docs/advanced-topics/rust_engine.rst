@@ -509,8 +509,9 @@ The Rust engine spans a Rust core and a thin Python wrapper that
 cooperate through PyO3:
 
 * **Rust core** (``native/angr/src/``, with the VEX IR and op semantics in
-  the ``native/angr-vex`` crate and the Z3 solver context in
-  ``native/angr-symex-core``): VEX interpreter, symbolic
+  the ``native/angr-vex`` crate, the Z3 solver context in
+  ``native/angr-symex-core`` and the native SimProcedures and syscalls in
+  ``native/angr-symex-native``): VEX interpreter, symbolic
   memory, Z3 solver, exploration loop, and native SimProcedures.
 * **Python wrapper** (``angr/exploration/rust_manager.py``): callback
   dispatch for Python SimProcedures, technique support, and state
@@ -1561,7 +1562,7 @@ Inherited (option works because the code path runs in Python)
        bytes to the Rust interpreter.
    * - ``CGC_NO_SYMBOLIC_RECEIVE_LENGTH``, ``CGC_ENFORCE_FD``
      - DECREE (CGC) syscalls have native handlers in
-       ``native/angr/src/syscalls/cgc.rs`` for the concrete-fd happy
+       ``native/angr-symex-native/src/syscalls/cgc.rs`` for the concrete-fd happy
        paths (transmit to stdout/stderr clones, receive on fd 0). The
        Rust handlers fall back to Python on symbolic counts and on
        non-standard fds, so the Python SimProcedure honors the option
@@ -1790,7 +1791,7 @@ vs. Python.
      - Return the host's real ``int(time.time())`` from the time
        SimProcedures instead of a fresh symbolic value.
      - **(b) explicitly reject** — the native syscall handlers
-       (``native/angr/src/syscalls/sim_time.rs``:
+       (``native/angr-symex-native/src/syscalls/sim_time.rs``:
        ``gettimeofday``/``time``/``clock_gettime``) always write a fresh
        symbolic ``timeval``/``timespec`` and never consult the option.
        Warn-once so a user who opted into concrete host times learns the
@@ -1825,7 +1826,7 @@ vs. Python.
      - When *not* set, Python's ``fdwait`` SimProcedure returns symbolic
        1-bit ready flags for each fd; when set, it returns concrete 1.
      - **Honored** in both directions (``angr-op0dn.14.8``). Rust's
-       ``NativeFdwaitSyscall`` (``native/angr/src/syscalls/cgc.rs``)
+       ``NativeFdwaitSyscall`` (``native/angr-symex-native/src/syscalls/cgc.rs``)
        writes concrete 1-bits — i.e., it implements exactly the
        option-is-set behavior — and returns a ``SyscallError`` when the
        option is unset, deferring to the Python ``fdwait`` proc that

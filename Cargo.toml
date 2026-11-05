@@ -6,6 +6,7 @@ members = [
     "native/angr-vex",
     "native/angr-symex-core",
     "native/angr-symex-macros",
+    "native/angr-symex-native",
     "native/clarirs-core",
     "native/clarirs-num",
     "native/clarirs-vsa",

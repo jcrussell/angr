@@ -74,6 +74,7 @@ dependencies = [
  "angr-bv",
  "angr-symex-core",
  "angr-symex-macros",
+ "angr-symex-native",
  "angr-vex",
  "backtrace",
  "clarirs-core",
@@ -164,6 +165,17 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "trybuild",
+]
+
+[[package]]
+name = "angr-symex-native"
+version = "0.1.0"
+dependencies = [
+ "angr-symex-core",
+ "angr-vex",
+ "log",
+ "thiserror",
+ "z3",
 ]
 
 [[package]]

@@ -41,7 +41,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, is_test_file, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",), "native/angr-symex-core": ("",)}
+SCAN = {
+    "native/angr": ("",),
+    "native/angr-bv": ("",),
+    "native/angr-vex": ("",),
+    "native/angr-symex-core": ("",),
+    "native/angr-symex-native": ("",),
+}
 EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: its tests never start Python"}
 # Fewer test files than this means the tests moved out of the scan roots.
 MIN_FILES = 150
@@ -52,6 +58,7 @@ def scan_files(repo_root: Path = REPO) -> list[Path]:
     files = [p for p in rust_files(scan_roots(repo_root, SCAN, EXCLUDE)) if is_test_file(p.relative_to(repo_root))]
     require_floor(files, MIN_FILES, "audit_test_import_guard")
     return files
+
 
 IMPORT_RE = re.compile(r"""\bimport(?:_bound)?\s*\(\s*(?:py\s*,\s*)?"angr(?:\.|")""")
 EXEMPT_RE = re.compile(r"import-guard-ok:\s*\S")

@@ -18,7 +18,7 @@ guest routine and resume (e.g. `atexit`/`__cxa_atexit` handler replay,
 
 Native procs today are **return-only**. The contract is
 `NativeSimProcedure::call(&self, state, args) -> Result<Option<RustBV>, ProcedureError>`
-(`native/angr/src/procedures/mod.rs`, `trait NativeSimProcedure`). The dispatcher
+(`native/angr-symex-native/src/procedures/mod.rs`, `trait NativeSimProcedure`). The dispatcher
 in `native/angr/src/exploration/stepping.rs` (the `Ok(ret_val)` arm around
 `native_proc.call`, ~L781-806) consumes that as:
 
@@ -199,10 +199,10 @@ go/no-go on `angr-5gf0s`. iter42 *recommended* the trait-method pair on KISS
 grounds; this addendum replaces that judgement call with a measured edit count so
 the human can decide in one read. Counts are over the **`NativeSimProcedure`**
 trait scope only — syscalls are a separate `NativeSyscall` trait
-(`native/angr/src/syscalls/mod.rs`) and `pthread_once` is a *procedure*, so the
+(`native/angr-symex-native/src/syscalls/mod.rs`) and `pthread_once` is a *procedure*, so the
 syscall side is untouched by either option.
 
-Measured on HEAD (`grep` over `native/angr/src/procedures/`):
+Measured on HEAD (`grep` over `native/angr-symex-native/src/procedures/`):
 
 | Surface | Count |
 |---|---|

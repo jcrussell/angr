@@ -3,8 +3,8 @@
 
 The core (all of ``native/angr-bv/src/``, ``native/angr-vex/src/`` and
 ``native/angr-symex-core/src/``) and the native procedures and syscalls
-(``procedures/`` and ``syscalls/`` under ``native/angr/src/``) are what the crate split (angr-mx00p.51)
-moves into crates with no ``pyo3`` dependency. Their
+(all of ``native/angr-symex-native/src/``) are the crates the crate split
+(angr-mx00p.51) left with no ``pyo3`` dependency. Their
 code reaches Python only through the PyO3 shell (``EngineHost`` for the
 interpreter, ``HostAst`` for the state's overlays; a procedure or syscall
 defers to Python by returning ``ProcedureError`` / ``SyscallError``, and the
@@ -49,15 +49,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source_utils import ScanRootError, blank_noise, require_floor, rust_files, scan_roots, self_test_scan_roots
 
 REPO = Path(__file__).resolve().parent.parent
-CORE_DIRS = ("procedures", "syscalls")
 SCAN = {
-    "native/angr": CORE_DIRS,
     "native/angr-bv": ("",),
     "native/angr-vex": ("",),
     "native/angr-symex-core": ("",),
+    "native/angr-symex-native": ("",),
 }
-EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, not the engine core"}
-# Fewer files than this means the core moved out of CORE_DIRS.
+EXCLUDE = {
+    "native/angr": "the PyO3 shell: it owns the Python boundary",
+    "native/angr-symex-macros": "proc-macro crate: compile-time code generation, not the engine core",
+}
+# Fewer files than this means the core moved out of SCAN.
 MIN_FILES = 150
 
 
@@ -66,6 +68,7 @@ def scan_files(repo_root: Path = REPO) -> list[Path]:
     files = rust_files(scan_roots(repo_root, SCAN, EXCLUDE))
     require_floor(files, MIN_FILES, "audit_core_pyo3_free")
     return files
+
 
 # Files that keep PyO3 for an upstream reason, relative to REPO.
 ALLOWED: dict[str, str] = {}

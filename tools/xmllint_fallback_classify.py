@@ -48,7 +48,7 @@ FALLBACKS = {
     "calloc": 1,
 }
 
-# Native procs confirmed present in native/angr/src/procedures/ registry.
+# Native procs confirmed present in native/angr-symex-native/src/procedures/ registry.
 NATIVE_PROCS = {
     "strcmp",
     "pthread_once",

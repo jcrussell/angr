@@ -5,12 +5,12 @@ The Rust engine (``engine="rust"``) ships with two parallel
 registries that short-circuit angr's Python dispatch for ubiquitous
 calls:
 
-* ``NativeProcedureRegistry`` (``native/angr/src/procedures/mod.rs``) —
+* ``NativeProcedureRegistry`` (``native/angr-symex-native/src/procedures/mod.rs``) —
   intercepts SimProcedure calls by **name**, e.g. ``strlen``,
   ``malloc``, ``printf``. See
   :doc:`simprocedures` (the *Native (Rust) SimProcedures* section)
   for the dispatch-priority chain and the contributor guide.
-* ``NativeSyscallRegistry`` (``native/angr/src/syscalls/mod.rs``) —
+* ``NativeSyscallRegistry`` (``native/angr-symex-native/src/syscalls/mod.rs``) —
   intercepts syscalls. Handlers are registered by the name angr's
   syscall library gives each syscall, and each manager resolves the
   numbers from its project's SimOS, so the same handler serves every
@@ -31,7 +31,7 @@ Native SimProcedure coverage
 ----------------------------
 
 Every entry below is registered in ``NativeProcedureRegistry::new``
-(``native/angr/src/procedures/mod.rs``). The registry is **name-keyed**
+(``native/angr-symex-native/src/procedures/mod.rs``). The registry is **name-keyed**
 across all architectures — the calling-convention layer extracts
 arguments from the right registers, so a single handler serves every
 arch where the C ABI matches. Rows are grouped by function family and
@@ -230,7 +230,7 @@ obvious from the code). A brand-new family gets a new row. The two
 Native syscall coverage
 -----------------------
 
-Every entry below is a row of ``BY_NAME`` (``native/angr/src/syscalls/mod.rs``),
+Every entry below is a row of ``BY_NAME`` (``native/angr-symex-native/src/syscalls/mod.rs``),
 keyed by the syscall's name in angr's syscall library. No syscall number
 is spelled in Rust: when the manager is built, the Python wrapper hands
 ``set_syscall_tables`` angr's ``syscall_number_mapping`` for each ABI the
@@ -579,7 +579,7 @@ angr's ``SimCGC`` lists only its own ``cgcabi`` numbering
 (``angr/procedures/definitions/cgc.py``), so a CGC project's registry
 holds only the DECREE table and every syscall dispatches through it; the
 ``BY_NAME`` rows scoped to ``cgcabi`` map those names to the handlers in
-``native/angr/src/syscalls/cgc.rs``. The module doc of ``cgc.rs`` is
+``native/angr-symex-native/src/syscalls/cgc.rs``. The module doc of ``cgc.rs`` is
 authoritative for each handler's divergences; the Python counterparts live
 under ``angr/procedures/cgc/``.
 

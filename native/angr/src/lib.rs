@@ -144,7 +144,7 @@ pub(crate) use angr_symex_core::elapsed_ns;
 // `fuzzing`, so a stock build never sees it.
 #[cfg(feature = "fuzzing")]
 pub mod fuzz_api {
-    pub use crate::procedures::format_common::{parse_length_modifier, parse_width_digits};
+    pub use crate::procedures::{parse_length_modifier, parse_width_digits};
 }
 
 // Modules shared with upstream angr (always built). They are kept
@@ -250,20 +250,15 @@ pub(crate) mod gil_profile;
 pub(crate) use angr_symex_core::interpreter;
 pub(crate) mod libvex_lifter;
 pub use angr_symex_core::memory;
-pub(crate) mod procedures;
+pub(crate) use angr_symex_native::procedures;
 pub(crate) mod solver;
 pub mod stash;
 pub use angr_symex_core::state;
 pub(crate) mod state_bridge;
 pub use angr_symex_core::symbolic;
-pub(crate) mod syscalls;
+pub(crate) use angr_symex_native::syscalls;
 pub(crate) mod vex_ccall;
 pub(crate) mod vex_irop;
-
-// The boundary-value tables live in angr-symex-core; see its
-// `test_boundary_values` module doc.
-#[cfg(test)]
-pub(crate) use angr_symex_core::test_boundary_values;
 
 use pyo3::prelude::*;
 

@@ -85,8 +85,16 @@ from rust_source_utils import (
 
 # Repo layout: this file lives at <repo>/tools/audit_page_shift.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN = {"native/angr": ("",), "native/angr-bv": ("",), "native/angr-vex": ("",), "native/angr-symex-core": ("",)}
-EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"}
+SCAN = {
+    "native/angr": ("",),
+    "native/angr-bv": ("",),
+    "native/angr-vex": ("",),
+    "native/angr-symex-core": ("",),
+    "native/angr-symex-native": ("",),
+}
+EXCLUDE = {
+    "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns"
+}
 # Fewer non-test files than this means the code moved out of the scan roots.
 MIN_FILES = 200
 BASELINE_PATH = REPO_ROOT / "tools" / "page_shift_baseline.txt"

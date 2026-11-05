@@ -780,7 +780,7 @@ _UNMAPPED_VEX_OPS_REAL = _UNMAPPED_NEON_QSHL_IMM + _UNMAPPED_FP_DECIMAL + _UNMAP
 # _UNMAPPED_NEON_QSHL_IMM (they route to IROp::Unmapped).
 _NEON_UNIMPLEMENTED: list[str] = []
 
-# Linux syscall names that lack a native handler in native/angr/src/syscalls/.
+# Linux syscall names that lack a native handler in native/angr-symex-native/src/syscalls/.
 # Production code returns `SyscallError` for symbolic/unsupported and routes to
 # the Python callback — the typed-error surface exists ONLY via
 # `_raise_typed_test_error`, so this group exercises the Python-facing exception
@@ -2204,7 +2204,7 @@ class TestCgcEndToEndNativeDispatch:
 
     Complements ``TestCgcReceiveStdinSync`` (which only asserts the crashing
     input is non-empty) by proving the native CGC syscall handlers
-    (``native/angr/src/syscalls/cgc.rs``) actually fired through the
+    (``native/angr-symex-native/src/syscalls/cgc.rs``) actually fired through the
     ``os_name=="cgc"`` dispatch table: ``stats["syscall_native_count"] > 0``
     with zero Python syscall fallbacks. Until this test, the only coverage of
     CGC dispatch was Rust ``#[test]``s on the handlers in isolation — no
