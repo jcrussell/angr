@@ -212,14 +212,20 @@ impl EngineHost for PythonCallbacks {
         ctx: &SymContext,
         state_id: i64,
         when: &str,
-        addr: u64,
+        addr: &RustBV,
         size: u32,
         value: &RustBV,
         endness: &str,
     ) -> Option<RustBV> {
         let value_ast = to_claripy(value)?;
+        let addr_obj = match addr.as_u64() {
+            Some(addr) => {
+                Python::attach(|py| addr.into_pyobject(py).map(|a| a.into_any().unbind())).ok()?
+            }
+            None => to_claripy(addr)?,
+        };
         let mutated = self
-            .call_inspect_mem_write(state_id, when, addr, size, Some(&value_ast), endness)
+            .call_inspect_mem_write(state_id, when, &addr_obj, size, Some(&value_ast), endness)
             .ok()??;
         from_claripy_any(ctx, &mutated)
     }

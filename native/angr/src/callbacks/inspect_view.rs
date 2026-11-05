@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use crate::claripy_bridge::{claripy_module, rustbv_to_claripy};
+use crate::claripy_bridge::{claripy_module, claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter::InspectView;
 use crate::symbolic::RustBV;
 
@@ -64,10 +64,32 @@ pub(crate) fn inspect_view_load(
     value.map(|v| to_ast(py, &v)).transpose()
 }
 
+/// `expr` (a claripy AST) evaluated under the stepping state's path
+/// constraints, or `None` when the solver cannot answer it
+/// (`InspectView::eval`).
+#[pyfunction]
+pub(crate) fn inspect_view_eval(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<Option<u128>> {
+    with_view(|view| {
+        let bv = claripy_to_rustbv(py, expr, view.solver())
+            .map_err(|e| PyRuntimeError::new_err(format!("inspect view eval: {e}")))?;
+        Ok(view.eval(&bv))
+    })
+    .ok_or_else(no_view)?
+}
+
+/// The concrete bytes the view holds from `addr` on, at most `max`
+/// (`InspectView::concrete_bytes`).
+#[pyfunction]
+pub(crate) fn inspect_view_bytes(addr: u64, max: usize) -> PyResult<Vec<u8>> {
+    with_view(|view| view.concrete_bytes(addr, max)).ok_or_else(no_view)
+}
+
 /// Register the view pyfunctions on the `vex_engine` module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_addrs, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_register, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_load, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(inspect_view_eval, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(inspect_view_bytes, m)?)?;
     Ok(())
 }

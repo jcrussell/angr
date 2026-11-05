@@ -64,6 +64,7 @@ fn unset_inspect_callbacks_are_ok() {
     Python::attach(|py| {
         let cb = PythonCallbacks::new();
         let none = py.None();
+        let addr = 0x1000u64.into_pyobject(py).unwrap().into_any().unbind();
         let guard = crate::symbolic::RustBV::concrete(1, 1);
 
         assert!(
@@ -72,7 +73,7 @@ fn unset_inspect_callbacks_are_ok() {
                 .is_none()
         );
         assert!(
-            cb.call_inspect_mem_write(1, "before", 0x1000, 4, None, "Iend_LE")
+            cb.call_inspect_mem_write(1, "before", &addr, 4, None, "Iend_LE")
                 .unwrap()
                 .is_none()
         );
@@ -167,9 +168,10 @@ def bp(state_id, when, addr, size, value, endness):
         cb.set_inspect_mem_write(obj(&globals, "bp"));
 
         let value = py.None();
-        cb.call_inspect_mem_write(1, "before", 0x1000, 8, Some(&value), "Iend_LE")
+        let addr = 0x1000u64.into_pyobject(py).unwrap().into_any().unbind();
+        cb.call_inspect_mem_write(1, "before", &addr, 8, Some(&value), "Iend_LE")
             .unwrap();
-        cb.call_inspect_mem_write(1, "after", 0x1000, 8, Some(&value), "Iend_LE")
+        cb.call_inspect_mem_write(1, "after", &addr, 8, Some(&value), "Iend_LE")
             .unwrap();
 
         let whens: Vec<String> = recorder(&globals, "_whens").extract().unwrap();
@@ -430,7 +432,8 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
         event: "mem_write",
         set: PythonCallbacks::set_inspect_mem_write,
         invoke: |cb| {
-            cb.call_inspect_mem_write(1, "before", 0x1000, 4, None, "Iend_LE")
+            let addr = Python::attach(|py| 0x1000u64.into_pyobject(py).unwrap().into_any().unbind());
+            cb.call_inspect_mem_write(1, "before", &addr, 4, None, "Iend_LE")
                 .map(drop)
         },
     },

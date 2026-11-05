@@ -187,11 +187,12 @@ inspect_dispatch! {
     /// user's `mem_write_expr` override to substitute for the stored value
     /// (angr-inh0) — and `when='after'` (post-store), where the return is
     /// informational only. See `dispatch_mem_write_inspect`.
+    /// `addr` is an int, or a claripy AST for a symbolic address.
     pub(crate) fn mem_write(
         &self,
         state_id: i64,
         when: &str,
-        addr: u64,
+        addr: &Py<PyAny>,
         size: u32,
         value_ast: Option<&Py<PyAny>>,
         endness: &str,

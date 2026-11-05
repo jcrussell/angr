@@ -164,15 +164,14 @@ class TestEligibilityPredicate:
         assert eligible is True
 
     @pytest.mark.parametrize("action", [lambda _s: None, angr.BP_IPDB])
-    def test_inspect_action_routes_python(self, fauxware_project, action):
-        """A BP action runs mid-step, where it cannot read the Rust state, so
-        SMC's TraceClassifier reported no SMC (angr-mx00p.132.52)."""
+    def test_inspect_action_stays_eligible(self, fauxware_project, action):
+        """A BP action reads the mid-step view, so it no longer routes a seed
+        to Python (angr-mx00p.132.53.3)."""
         state = fauxware_project.factory.entry_state()
         state.inspect.b("mem_read", action=None)
         state.inspect.b("instruction", action=action)
-        eligible, reason = rust_engine_eligible(fauxware_project, [state], {})
-        assert eligible is False
-        assert reason == "state.inspect actions cannot read the rust state mid-step: instruction"
+        eligible, _ = rust_engine_eligible(fauxware_project, [state], {})
+        assert eligible is True
 
     def test_smc_analysis_finds_smc_on_a_rust_project(self):
         project = angr.load_shellcode(

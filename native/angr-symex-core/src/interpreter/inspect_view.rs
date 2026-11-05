@@ -13,8 +13,8 @@ use super::*;
 
 /// An owned snapshot of the stepping state's live values at an inspect fire.
 ///
-/// Every field is cheap to take: [`RegisterFile`] and [`SymbolicMemory`] fork
-/// copy-on-write, and the store buffers hold only the writes Rust memory
+/// Every field is cheap to take: [`RegisterFile`], [`SymbolicMemory`] and the
+/// [`SymContext`] fork copy-on-write, and the store buffers hold only the writes Rust memory
 /// refused (empty on the common path).
 pub struct InspectView {
     block_addr: u64,
@@ -25,6 +25,7 @@ pub struct InspectView {
     pending_symbolic_stores: FxHashMap<u64, RustBV>,
     flushed_stores: FxHashMap<u64, Vec<u8>>,
     flushed_symbolic_stores: FxHashMap<u64, RustBV>,
+    solver: SymContext,
 }
 
 impl InspectView {
@@ -75,6 +76,39 @@ impl InspectView {
     }
 }
 
+impl InspectView {
+    /// `bv` evaluated under the stepping state's path constraints, as the
+    /// action's `state.solver.eval` reads it; `None` when the solver cannot
+    /// answer (unsat, unknown, or wider than 128 bits).
+    pub fn eval(&self, bv: &RustBV) -> Option<u128> {
+        self.solver.eval(bv)
+    }
+
+    /// The solver the view evaluates under, for a host that must build a
+    /// value against it.
+    pub fn solver(&self) -> &SymContext {
+        &self.solver
+    }
+
+    /// The concrete bytes from `addr` on, at most `max`, stopping at the
+    /// first byte [`Self::load`] cannot serve concretely: the code a
+    /// `state.block()` lift reads on a self-modifying-code project.
+    pub fn concrete_bytes(&self, addr: u64, max: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(max);
+        for i in 0..max {
+            // overflow-ok: a code read near the top of the address space wraps, as the lifter's fetch does
+            let Some(byte) = self
+                .load(addr.wrapping_add(i as u64), 1)
+                .and_then(|v| v.as_u64())
+            else {
+                break;
+            };
+            out.push(byte as u8);
+        }
+        out
+    }
+}
+
 /// A symbolic store recorded at exactly `addr`, cut to its low `bits` as
 /// `VEXInterpreter::symbolic_store_load` does. An overlapping store that does
 /// not start at `addr` is not served.
@@ -103,6 +137,7 @@ impl<'a> VEXInterpreter<'a> {
             pending_symbolic_stores: self.pending_symbolic_stores.clone(),
             flushed_stores: self.all_flushed_stores.clone(),
             flushed_symbolic_stores: self.all_flushed_symbolic_stores.clone(),
+            solver: self.ctx.fork(),
         }
     }
 

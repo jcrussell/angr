@@ -1953,8 +1953,9 @@ Event          Fires when        BP attributes
 ============   ===============   ==================================================
 ``mem_read``    ``after``         ``mem_read_address``, ``mem_read_length``,
                                  ``mem_read_expr``, ``mem_read_endness``
-``mem_write``   ``before``/``after`` ``mem_write_address``, ``mem_write_length``,
-                                 ``mem_write_expr``, ``mem_write_endness``
+``mem_write``   ``before``/``after`` ``mem_write_address`` (an AST when symbolic),
+                                 ``mem_write_length``, ``mem_write_expr``,
+                                 ``mem_write_endness``
 ``reg_read``    ``after``         ``reg_read_offset``, ``reg_read_length``,
                                  ``reg_read_expr``
 ``reg_write``   ``after``         ``reg_write_offset``, ``reg_write_length``,
@@ -2114,14 +2115,16 @@ Reentrancy
 A BP action that triggers another inspect dispatch on the same manager
 is suppressed via ``_inspect_dispatch_depth`` — outer attrs would
 otherwise be clobbered by the inner action. The state owning the
-firing event is currently held by the interpreter (not in any stash),
-so reads through ``RustStateProxy`` from inside a BP raise a "state not
-found" error that the dispatcher swallows. Use the BP attributes
-(``s.inspect.mem_read_address`` etc.) rather than going through the
-proxy. Because an action cannot be checked for that, a seed state
-carrying any BP action makes ``simulation_manager()`` on a
-``Project(engine="rust")`` project pick the Python engine
-(``_inspect_action_events`` in ``angr/exploration/rust_manager.py``).
+firing event is held by the interpreter (not in any stash), so while
+any BP has an action the interpreter publishes an ``InspectView`` of
+its live registers, memory and solver around each fire
+(``native/angr-symex-core/src/interpreter/inspect_view.rs``), and the
+action's state is a ``RustInspectViewStateProxy``
+(``angr/exploration/rust_state_proxy.py``). Its ``addr``, ``regs``,
+``memory.load``, ``solver.eval`` (symbolic expressions evaluate under
+the state's path constraints) and ``block()`` read the view; a write
+raises. On a ``selfmodifying_code`` project ``block()`` lifts the bytes
+the view holds, as ``SimState.block`` reads code from state memory.
 
 Workaround for unsupported events
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

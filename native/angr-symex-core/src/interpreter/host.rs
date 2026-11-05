@@ -142,12 +142,14 @@ pub trait EngineHost {
         clippy::too_many_arguments,
         reason = "one argument per breakpoint attr"
     )]
+    /// `addr` is the store's address as the block computed it, symbolic
+    /// included: Python's `mem_write` BP sees it before concretization.
     fn inspect_mem_write(
         &self,
         ctx: &SymContext,
         state_id: i64,
         when: &str,
-        addr: u64,
+        addr: &RustBV,
         size: u32,
         value: &RustBV,
         endness: &str,

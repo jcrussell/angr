@@ -4116,7 +4116,9 @@ class RustStateProxy:
         No ``backup_state``: the lifter would fire ``vex_lift`` breakpoints and
         read code through it, which a proxy does not serve. A selfmodifying_code
         project, the one case that reads code from the state, stays on the
-        Python engine (``SELFMODIFYING_CODE_REASON``).
+        Python engine by default (``SELFMODIFYING_CODE_REASON``); on an explicit
+        manager, a BP action's ``RustInspectViewStateProxy.block`` lifts the
+        mid-step view's bytes.
         """
         if not args and "addr" not in kwargs:
             kwargs["addr"] = self.addr
@@ -4310,7 +4312,8 @@ class _InspectViewMemory:
 class _InspectViewSolver:
     """``state.solver`` over the mid-step view; the live proxy once no view is up.
 
-    The view carries no constraints, so only a concrete expression evaluates.
+    A symbolic expression evaluates under the stepping state's path
+    constraints (``InspectView::eval``).
     """
 
     def __init__(self, owner):
@@ -4322,7 +4325,17 @@ class _InspectViewSolver:
     def eval(self, expr, cast_to=None, **kwargs):
         if _inspect_view_addrs() is None:
             return self._live().eval(expr, cast_to=cast_to, **kwargs)
-        value = _view_int(expr, "expression")
+        expr = _raw_ast(expr)
+        if isinstance(expr, claripy.ast.Base) and expr.symbolic:
+            from angr.rustylib.vex_engine import inspect_view_eval  # pylint: disable=import-outside-toplevel
+
+            value = inspect_view_eval(expr)
+            if value is None:
+                from angr.errors import SimUnsatError  # pylint: disable=import-outside-toplevel
+
+                raise SimUnsatError(f"the mid-step inspect view cannot evaluate {expr!r}")
+        else:
+            value = _view_int(expr, "expression")
         return value if cast_to is None else cast_to(value)
 
     def eval_one(self, expr, **kwargs):
@@ -4374,6 +4387,28 @@ class RustInspectViewStateProxy(RustStateProxy):
     @property
     def solver(self):
         return _InspectViewSolver(self)
+
+    def block(self, *args, **kwargs):
+        """``SimState.block``; a selfmodifying_code project lifts the view's bytes.
+
+        ``SimState.block`` hands the lifter ``backup_state``, which reads the
+        code from state memory on such a project. The view serves the code
+        Rust memory holds; code it does not hold (a loaded binary's pages the
+        host serves) lifts from the loader, as on any other project.
+        """
+        if _inspect_view_addrs() is None or not getattr(self.project, "selfmodifying_code", False):
+            return super().block(*args, **kwargs)
+        from angr.engines.vex.lifter import VEX_IRSB_MAX_SIZE  # pylint: disable=import-outside-toplevel
+        from angr.rustylib.vex_engine import inspect_view_bytes  # pylint: disable=import-outside-toplevel
+
+        if not args and "addr" not in kwargs:
+            kwargs["addr"] = self.addr
+        addr = args[0] if args else kwargs["addr"]
+        if "byte_string" not in kwargs:
+            code = bytes(inspect_view_bytes(addr, kwargs.get("size") or VEX_IRSB_MAX_SIZE))
+            if code:
+                kwargs["byte_string"] = code
+        return self.project.factory.block(*args, **kwargs)
 
 
 # Rust step_state() bucket names -> SimulationManager.step_state() stash keys.

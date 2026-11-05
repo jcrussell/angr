@@ -53,12 +53,12 @@ inspect_test_entries! {
         &self,
         state_id: i64,
         when: &str,
-        addr: u64,
+        addr: Py<PyAny>,
         size: u32,
         value_ast: Option<Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
-        self.forward(state_id, when, addr, size, value_ast.as_ref(), endness)
+        self.forward(state_id, when, &addr, size, value_ast.as_ref(), endness)
     }
 
     /// Test entry point: invoke the registered reg_read callback directly.

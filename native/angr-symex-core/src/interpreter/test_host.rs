@@ -257,7 +257,7 @@ impl EngineHost for TestHost {
         _ctx: &SymContext,
         _state_id: i64,
         _when: &str,
-        _addr: u64,
+        _addr: &RustBV,
         _size: u32,
         _value: &RustBV,
         _endness: &str,

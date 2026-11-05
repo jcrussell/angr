@@ -14,9 +14,9 @@ impl<'a> VEXInterpreter<'a> {
     /// Fire a `mem_write` inspect callback into Python for this store.
     ///
     /// Gated on `inspect_event_enabled(InspectBit::MemWrite)` so the common case
-    /// (no breakpoints) is a single bitmask test per Store. Only concrete
-    /// addresses dispatch; a symbolic address skips the breakpoint
-    /// (angr-uq4n.4).
+    /// (no breakpoints) is a single bitmask test per Store. A symbolic
+    /// address dispatches as the AST, as Python's `SimMemory.store` fires
+    /// `mem_write` before it concretizes (angr-mx00p.132.53.3).
     ///
     /// Fired twice per Store to mirror Python angr: `when='before'`
     /// (pre-commit) so a BP overriding `state.inspect.mem_write_expr`
@@ -42,7 +42,6 @@ impl<'a> VEXInterpreter<'a> {
         if !self.inspect_enabled(callbacks, InspectBit::MemWrite) {
             return None;
         }
-        let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
             Endness::Big => "Iend_BE",
@@ -56,7 +55,7 @@ impl<'a> VEXInterpreter<'a> {
                 self.ctx,
                 self.current_state_id,
                 when,
-                addr_u64,
+                addr_val,
                 data_size as u32,
                 data_val,
                 endness_str,
