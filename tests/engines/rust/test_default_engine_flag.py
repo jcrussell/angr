@@ -188,6 +188,19 @@ class TestStepRunArgsHandOff:
         assert type(mgr) is SimulationManager
         assert [s.addr for s in mgr.active] == [second_insn]
 
+    def test_hand_off_keeps_a_write_made_before_stepping(self, rust_project, fauxware_project):
+        """A non-init seed carries over as the caller left it, not as the seed was (angr-mx00p.114)."""
+        addr = rust_project.entry + 0x10
+        insn_bytes = b"\x48\x83\xc0\x0f"  # add rax, 0xf
+        results = []
+        for proj in (rust_project, fauxware_project):
+            mgr = proj.factory.simulation_manager(proj.factory.blank_state(addr=addr))
+            mgr.one_active.regs.rax = 3
+            mgr.step(insn_bytes=insn_bytes)
+            assert type(mgr) is SimulationManager
+            results.append(mgr.one_active.solver.eval(mgr.one_active.regs.rax))
+        assert results == [0x12, 0x12]
+
     def test_stash_active_stays_rust(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
         mgr.step(stash="active")

@@ -1256,6 +1256,32 @@ class TestStateMetadataStorage:
 
         assert sid_pinned in mgr._state_cache, "current callback state must not be evicted under cache pressure"
 
+    def test_cleanup_state_cache_keeps_a_rust_only_lineage_root(self, fauxware_project):
+        """A seed whose own id has left every stash stays cached while a fork Rust made of it lives.
+
+        ``_state_roots`` drops the seed's entry once its id is in no stash, so
+        only ``live_lineage_roots`` still knows it: without it, the next
+        SimProcedure callback on the fork found no cached ancestor and ran on a
+        blank state, as ``__getmainargs`` did in test_windows_args (angr-mx00p.114).
+        """
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        (seed,) = mgr._rust_mgr.get_state_ids("active")
+        for _ in range(40):
+            mgr.step()
+            active = mgr._rust_mgr.get_state_ids("active")
+            if active and seed not in active:
+                break
+        assert active and seed not in active, "fauxware never forked the seed into a new id"
+        assert seed in mgr._rust_mgr.live_lineage_roots()
+        mgr._rust_mgr.clear_stash("deadended")
+
+        mgr._cleanup_state_cache()  # drops the seed's `_state_roots` entry
+        mgr._cleanup_state_cache()
+
+        assert seed not in mgr._state_roots
+        assert seed in mgr._state_cache
+
     def test_cleanup_state_cache_prunes_state_roots(self, fauxware_project):
         """`_cleanup_state_cache` must drop `_state_roots` entries whose key
         state no longer exists in any Rust stash. Without this, the dict

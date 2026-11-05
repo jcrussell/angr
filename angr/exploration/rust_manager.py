@@ -5884,8 +5884,17 @@ class RustExplorationManager(
         # first Python callback without itself or its (Rust-only) ancestors
         # being in cache; the only way to avoid the blank-state fallback is
         # to fall back to the root, so the root must survive eviction even
-        # when it is no longer in active/found.
-        live |= set(self._state_roots.values())
+        # when it is no longer in active/found. ``_state_roots`` holds only the
+        # roots Python registered; a root whose own id left every stash while a
+        # Rust-side fork lives is in ``live_lineage_roots`` alone (angr-mx00p.114).
+        # Only a plain SimState mirror is worth pinning there: one whose proxy
+        # plugins read the root's own Rust state fails once that state is gone.
+        rust_roots = {
+            sid
+            for sid in self._rust_mgr.live_lineage_roots()
+            if (cached := self._state_cache.get(sid)) is not None and binding_of(cached) is None
+        }
+        live |= set(self._state_roots.values()) | rust_roots
         for sid in list(self._state_cache.keys()):
             if sid not in live:
                 del self._state_cache[sid]
@@ -5925,7 +5934,7 @@ class RustExplorationManager(
             if sid not in any_stash:
                 del self._lazy_state_refs[sid]
 
-        pinned = set(self._state_roots.values())
+        pinned = set(self._state_roots.values()) | rust_roots
         if self._current_callback_state_id is not None:
             pinned.add(self._current_callback_state_id)
             # cat-(b) FALLBACK WITH LOSS: effective-state lookup failed; only
@@ -6502,14 +6511,21 @@ class RustExplorationManager(
 
         A not-yet-stepped, default-routed manager hands off to the Python engine (:meth:`_hand_off_to_python`), so
         the caller re-dispatches *method* on the SimulationManager it became; any other manager raises
-        NotImplementedError naming each argument (angr-mx00p.132.23, angr-vmi2l.243).
+        NotImplementedError naming each argument (angr-mx00p.132.23, angr-vmi2l.243). The states carry over as
+        they are now (:meth:`_carried_over_stashes`), so a write the caller made through ``simgr.one_active``
+        survives (angr-mx00p.114), unless a seed is an init seed: the constructor already stepped that one to main
+        on Python, so only the pristine seed is the state the Python engine would step.
         """
         if not unhonored:
             return False
         reason = f"{method}() cannot honor {', '.join(unhonored)}"
         if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
             raise NotImplementedError(f"RustExplorationManager.{reason}; build the manager without engine='rust'.")
-        self._hand_off_to_python(reason)
+        seeds = getattr(self, "_initial_seed_states", None) or ()
+        if any(is_python_init_seed(self._project, seed.addr) for seed in seeds):
+            self._hand_off_to_python(reason)
+        else:
+            self._hand_off_to_python(reason, stashes=self._carried_over_stashes())
         return True
 
     # State plugins the Rust engine cannot host: SimSymbolizer's init_state needs angr's paged memory, and its
@@ -6521,16 +6537,24 @@ class RustExplorationManager(
 
         The factory routes on the seeds, so a plugin the caller adds through ``simgr.one_active`` arrives too late
         for ``rust_engine_eligible``. Unlike a technique handoff the states carry over as they are now, not as the
-        pristine seeds: each is a copy given plugins of its own (:meth:`_detach_for_python_engine`), so a write the
-        caller made through an export survives, and every lazy ref handed out is pinned to its copy. Returns False,
-        leaving the plugin to raise, for a manager that cannot hand off (stepped, or ``engine="rust"`` by name).
+        pristine seeds (:meth:`_carried_over_stashes`). Returns False, leaving the plugin to raise, for a manager
+        that cannot hand off (stepped, or ``engine="rust"`` by name).
         """
-        from angr.exploration.rust_state_export import _LazySimStateRef
-
         if name not in self._PYTHON_ENGINE_PLUGINS:
             return False
         if self._python_handoff_kwargs is None or self._rust_mgr.step_count != 0:
             return False
+        self._hand_off_to_python(f"state plugin {name!r} needs the python engine", stashes=self._carried_over_stashes())
+        return True
+
+    def _carried_over_stashes(self) -> dict[str, list]:
+        """This not-yet-stepped manager's stashes as Python states, for :meth:`_hand_off_to_python`.
+
+        Each state is a copy given plugins of its own (``detach_for_python_engine``), so a write the caller made
+        through an export survives the handoff, and every lazy ref handed out is pinned to its copy.
+        """
+        from angr.exploration.rust_state_export import _LazySimStateRef
+
         stashes = {}
         for stash, refs in self.stashes.items():
             states = []
@@ -6546,8 +6570,7 @@ class RustExplorationManager(
                 states.append(state)
             if states:
                 stashes[stash] = states
-        self._hand_off_to_python(f"state plugin {name!r} needs the python engine", stashes=stashes)
-        return True
+        return stashes
 
     def _hand_off_to_python(self, reason: str, stashes: dict[str, list] | None = None) -> None:
         """Turn this not-yet-stepped, default-routed manager into a Python ``SimulationManager`` in place.
