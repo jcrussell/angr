@@ -2747,6 +2747,36 @@ class RustExplorationManager(
                 mask |= 1 << bit
         self._callbacks.set_inspect_enabled(mask)
 
+    def _seed_inspect_breakpoints(self, angr_state) -> None:
+        """Adopt the breakpoints *angr_state*'s own ``SimInspector`` carries.
+
+        ``SimulationManager`` steps the seed state itself, so BPs set with
+        ``state.inspect.b(...)`` before ``factory.simgr(state)`` fire; the Rust
+        registry is manager-wide, so without this they are silently dropped
+        (angr-mx00p.132.52). ``rust_engine_eligible`` has already routed a
+        state with an event Rust cannot dispatch to Python. Identity dedup
+        keeps a re-added state (a found hit, a merge result, a copy sharing
+        the same ``BP`` objects) from registering a BP twice.
+        """
+        plugins = getattr(angr_state, "plugins", None)
+        inspector = plugins.get("inspect") if isinstance(plugins, dict) else None
+        breakpoints = getattr(inspector, "_breakpoints", None)
+        if not breakpoints or breakpoints is self._inspect_breakpoints:
+            return
+        added = False
+        for event, bps in breakpoints.items():
+            if not bps:
+                continue
+            registry = self._inspect_breakpoints.get(event)
+            if registry is None:
+                raise NotImplementedError(f"state.inspect event {event!r} is not dispatched by the rust engine")
+            for bp in bps:
+                if not any(bp is known for known in registry):
+                    registry.append(bp)
+                    added = True
+        if added:
+            self._update_inspect_bitmask()
+
     def _make_inspect_state_for(self, state_id: int):
         """Build the state object the user action sees during inspect dispatch.
 
@@ -3970,6 +4000,8 @@ class RustExplorationManager(
             if exporter is None:
                 raise SimStateError(f"cannot add {caller_state!r}: it is a view of a Rust state whose manager is gone")
             exporter._detach_export_proxies(angr_state, binding.state_id)
+
+        self._seed_inspect_breakpoints(caller_state)
 
         # Concretize stack-relative registers for Rust compatibility
         self._concretize_stack_registers(angr_state)

@@ -1178,6 +1178,32 @@ class TestRustExplorationPython:
         assert results[0] == results[1]
         assert results[0] == (([5, 2, 4, 1], [3]), [1, 2], ([2], [3, 1]), 0)
 
+    def test_seed_state_breakpoints_fire_like_python(self):
+        """BPs set on the seed state before simgr() fire, and read state.inspect.attrs (angr-mx00p.132.52)."""
+        project = angr.load_shellcode(
+            "inc dword ptr [here+1]\nhere:\nmov rax, 0xdeadbeef\nret", "amd64", selfmodifying_code=True
+        )
+        results = []
+        for make in (project.factory.simulation_manager, lambda s: RustExplorationManager(project, s)):
+            seen = []
+            state = project.factory.call_state(project.entry)
+            state.inspect.b(
+                "mem_write",
+                when=angr.BP_BEFORE,
+                action=lambda st, seen=seen: seen.append(
+                    ("w", st.inspect.attrs.mem_write_address.concrete_value, st.inspect.attrs.mem_write_length)
+                ),
+            )
+            state.inspect.b(
+                "instruction",
+                when=angr.BP_BEFORE,
+                action=lambda st, seen=seen: seen.append(st.inspect.attrs.instruction),
+            )
+            make(state).run(n=3)
+            results.append(seen)
+        assert results[0] == results[1]
+        assert results[0] == [0, ("w", 8, 4), 7, 17]
+
     @pytest.mark.parametrize("n", [None, 3])
     def test_complete_technique_steps_nothing_like_python(self, fauxware_project, n):
         """run() asks complete() before the first step, so an already-complete technique's hooks never fire.

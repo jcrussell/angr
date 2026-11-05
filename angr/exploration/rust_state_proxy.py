@@ -3781,6 +3781,17 @@ class RustInspectProxy:
         """Compat with code that pokes into SimInspector._breakpoints."""
         return self._mgr._inspect_breakpoints
 
+    @property
+    def attrs(self):
+        """``SimInspector.attrs``: the in-flight event's fields.
+
+        The proxy stages them on itself, so the namespace is the proxy: a
+        write through ``state.inspect.attrs`` is the override the dispatcher
+        reads back, and ``BP.check`` reads its conditions from here
+        (angr-mx00p.132.52).
+        """
+        return self
+
     def set_state(self, state):
         """Bind the state passed to BP.check / BP.fire during the next action().
 
