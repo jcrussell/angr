@@ -504,14 +504,19 @@ class RustCallbackDispatchMixin:
         file's real content, and a bounced ``fscanf(stdin, ...)``-style
         fallback would silently read Python's stale default stdin instead.
 
+        A mirror whose native fd has since closed is dropped, as the native
+        ``close`` would have: left in place, the outbound half re-registers it
+        as open after the bounce, and the next export mirrors the file back
+        into ``state.fs`` even after a bounced ``unlink`` (angr-mx00p.132.70).
+
         Fast check: the standard three fds always exist on both sides, so a
         state that opened nothing natively -- and never dup2'd onto fd 0 --
-        never crosses the FFI further.
+        and holds no mirror above stderr never crosses the FFI further.
         """
-        if not self._rust_mgr.has_state_extra_fds(state_id):
-            return
         posix = state.plugins.get("posix")
         if posix is None:
+            return
+        if not self._rust_mgr.has_state_extra_fds(state_id) and not any(fd > 2 for fd in posix.fd):
             return
         try:
             rust_fds = self._rust_mgr.get_state_open_fds(state_id)
@@ -533,9 +538,13 @@ class RustCallbackDispatchMixin:
             # unconditional posix.fd[newfd] = posix.fd[oldfd] dup2 does on
             # the Python side (angr/procedures/posix/dup.py's dup2 class).
             is_dup2d_stdin = fd == 0 and fd0_dup2d
-            if (fd <= 2 and not is_dup2d_stdin) or not is_open or not name:
+            if (fd <= 2 and not is_dup2d_stdin) or not name:
                 continue
             path = name.encode() if isinstance(name, str) else name
+            if not is_open:
+                if fd in posix.fd and self._is_concrete_mirror(state, posix.fd[fd], path):
+                    del posix.fd[fd]
+                continue
             stale = fd in posix.fd and not is_dup2d_stdin
             if stale and not self._is_concrete_mirror(state, posix.fd[fd], path):
                 continue

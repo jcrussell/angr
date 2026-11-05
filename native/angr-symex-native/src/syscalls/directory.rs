@@ -1,7 +1,8 @@
 //! Directory / file-name syscall handlers (angr-0hif.2).
 //!
 //! Covers `chdir`, `fchdir`, `getcwd`, `mkdir`, `mkdirat`, `rmdir`,
-//! `unlink`, `unlinkat`, `rename`, `renameat`, `renameat2`.
+//! `unlinkat`, `rename`, `renameat`, `renameat2`. `unlink` has no native
+//! handler: the registry leaves it to Python (`syscalls::BY_NAME`).
 //!
 //! ## Coverage shape
 //!
@@ -21,13 +22,10 @@
 //!   wired up; see follow-up note below.)
 //! * **`mkdir` / `mkdirat` / `rmdir` / `rename` / `renameat` /
 //!   `renameat2`** — no Python proc either; same stub shape.
-//! * **`unlink` / `unlinkat`** — `procedures/linux_kernel/unlink.py`
-//!   defines real semantics (`state.fs.delete(path)`), but `FileSystem`
-//!   in Rust is purely fd-keyed (no path → SimFile map yet). The
-//!   handlers below mirror `syscall_stub` for now; angr's real `unlink`
-//!   path stays accessible to callers that route through the Python
-//!   manager directly. This is the same trade-off as the `open` / `close`
-//!   family (angr-k3ol).
+//! * **`unlinkat`** — no Python proc; same stub shape. `unlink` is not
+//!   registered at all: `procedures/linux_kernel/unlink.py` deletes the
+//!   path from `state.fs` and records the unlink, so it bounces to Python
+//!   (angr-mx00p.132.70).
 //!
 //! ## What is intentionally NOT covered yet
 //!
@@ -99,9 +97,6 @@ stub_syscall!(NativeMkdirSyscall, "mkdir", "syscall_stub_mkdir", 2);
 stub_syscall!(NativeMkdiratSyscall, "mkdirat", "syscall_stub_mkdirat", 3);
 // rmdir(path) → int — no Python SimProcedure.
 stub_syscall!(NativeRmdirSyscall, "rmdir", "syscall_stub_rmdir", 1);
-// unlink(path) → int — Python proc exists but needs SimFile plumbing;
-// stub for now (see module doc).
-stub_syscall!(NativeUnlinkSyscall, "unlink", "syscall_stub_unlink", 1);
 // unlinkat(dfd, path, flag) → int — Python lacks a dedicated proc.
 stub_syscall!(
     NativeUnlinkatSyscall,

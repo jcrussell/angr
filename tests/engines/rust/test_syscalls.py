@@ -312,10 +312,11 @@ class TestNativeDirectorySyscalls:
     """angr-0y0v: native directory-family handlers in
     ``native/angr-symex-native/src/syscalls/directory.rs``. ``getcwd`` (79) is a real
     handler (``size``=0 → ERANGE, no write); ``fchdir`` (81), ``rename``
-    (82), ``mkdir`` (83), ``rmdir`` (84), and ``unlink`` (87) are
-    ``stub_syscall!`` handlers that return a fresh symbolic regardless of
-    args. Rust unit tests pin per-handler semantics; this is the cross-FFI
-    dispatch check (Rust fast path, no Python fallback).
+    (82), ``mkdir`` (83) and ``rmdir`` (84) are ``stub_syscall!`` handlers
+    that return a fresh symbolic regardless of args. ``unlink`` (87) has no
+    native handler: Python's proc deletes the path (angr-mx00p.132.70). Rust
+    unit tests pin per-handler semantics; this is the cross-FFI dispatch
+    check (Rust fast path, no Python fallback).
     """
 
     @pytest.mark.parametrize(
@@ -326,7 +327,6 @@ class TestNativeDirectorySyscalls:
             (82, "rename"),
             (83, "mkdir"),
             (84, "rmdir"),
-            (87, "unlink"),
         ],
     )
     def test_directory_syscall_dispatches_natively(self, syscall_num, label):

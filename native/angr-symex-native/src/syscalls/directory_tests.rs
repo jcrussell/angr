@@ -8,7 +8,7 @@ use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscall, SyscallOutcome};
 
-/// Sweep the 9 stub handlers across every supported arch and verify
+/// Sweep the stub handlers across every supported arch and verify
 /// they return a fresh `RustBV::symbol` of width `arch().bits()`.
 /// Successive invocations must yield distinct fresh symbols.
 #[test]
@@ -18,7 +18,6 @@ fn dir_stub_handlers_return_fresh_symbolic_on_all_arches() {
         (&NativeMkdirSyscall, "mkdir", 2),
         (&NativeMkdiratSyscall, "mkdirat", 3),
         (&NativeRmdirSyscall, "rmdir", 1),
-        (&NativeUnlinkSyscall, "unlink", 1),
         (&NativeUnlinkatSyscall, "unlinkat", 3),
         (&NativeRenameSyscall, "rename", 2),
         (&NativeRenameatSyscall, "renameat", 4),

@@ -909,6 +909,38 @@ class TestPathContentSurvivesClose:
         mgr._inject_rust_closed_files(state, 1)
         assert state.fs.get(b"/tmp/closed.txt") is None, "an unlinked file came back"
 
+    def test_natively_closed_fd_drops_its_stale_mirror(self, mgr_and_sid):
+        """angr-mx00p.132.70: a mirror the cached callback state holds for an fd
+        native code has since closed must go, or the outbound sync re-registers
+        it as open and the next export mirrors an unlinked file back. Once the
+        fd closes nothing above stderr is open, so the fast check alone would
+        skip the fd list."""
+        proj, mgr, _sid = mgr_and_sid
+
+        class NativeFd:
+            is_open = True
+
+            def has_state_extra_fds(self, _state_id):
+                return self.is_open
+
+            def state_fd0_is_dup2d(self, _state_id):
+                return False
+
+            def get_state_open_fds(self, _state_id):
+                return [(3, "/tmp/f.txt", 0, TestPathContentSurvivesClose.O_RDONLY, 6, self.is_open)]
+
+            def get_state_fd_content(self, _state_id, _fd):
+                return b"foobar"
+
+        mgr._rust_mgr = native = NativeFd()
+        cached = proj.factory.entry_state()
+        mgr._inject_rust_fds(cached, 1)
+        assert cached.posix.get_fd(3).file.concretize() == b"foobar"
+
+        native.is_open = False
+        mgr._inject_rust_fds(cached, 1)
+        assert 3 not in cached.posix.fd, "the natively closed fd's mirror survived"
+
     def test_reopen_after_fclose_reads_the_written_bytes(self):
         """End to end: fopen/fputs/fclose, open/lseek/fdopen/getc, unlink."""
         path = os.path.join(BIN_LOCATION, "tests", "x86_64", "test_multi_open_file")
@@ -923,6 +955,7 @@ class TestPathContentSurvivesClose:
         final = simgr.deadended[0]
         assert final.posix.dumps(2) == b""
         assert [f.concretize() for _, f in final.fs.unlinks] == [b"foobar and baz"]
+        assert final.fs._files == {}, "the unlinked file came back (angr-mx00p.132.70)"
 
     def test_exported_state_carries_a_natively_closed_file(self):
         """angr-mx00p.132.14: an exported state's ``fs`` comes from a cached

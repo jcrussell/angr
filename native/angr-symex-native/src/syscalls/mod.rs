@@ -241,8 +241,11 @@ macro_rules! by_name {
 ///
 /// Deliberately absent although angr lists them: `rt_sigprocmask` (its
 /// Python implementation mutates `state.posix.sigmask`, which
-/// `RustSimState` does not carry) and amd64's pre-2.6 `epoll_ctl_old` /
-/// `epoll_wait_old`.
+/// `RustSimState` does not carry), `unlink` (its Python implementation
+/// deletes the `state.fs` path and records the `fs_unlink` event and
+/// `state.fs.unlinks` entry, which a native stub would skip, leaving the
+/// file in the exported state; angr-mx00p.132.70) and amd64's pre-2.6
+/// `epoll_ctl_old` / `epoll_wait_old`.
 static BY_NAME: &[ByName] = by_name![
     // Process exit.
     "exit" => exit::NativeExitSyscall,
@@ -281,7 +284,6 @@ static BY_NAME: &[ByName] = by_name![
     "mkdir" => directory::NativeMkdirSyscall,
     "mkdirat" => directory::NativeMkdiratSyscall,
     "rmdir" => directory::NativeRmdirSyscall,
-    "unlink" => directory::NativeUnlinkSyscall,
     "unlinkat" => directory::NativeUnlinkatSyscall,
     // File descriptors.
     "ioctl" => file_descriptor::NativeIoctlSyscall,

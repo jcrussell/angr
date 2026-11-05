@@ -440,7 +440,7 @@ Per-arch matrix
      - ✓
      - ✓
      - ✓
-   * - ``mkdir`` / ``rmdir`` / ``unlink`` / ``rename``
+   * - ``mkdir`` / ``rmdir`` / ``rename`` (``unlink`` runs the Python proc)
      - ✓
      - ✓
      - ✓

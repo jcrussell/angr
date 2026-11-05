@@ -184,6 +184,8 @@ fn names_angr_lists_but_the_engine_must_not_run_are_out_of_scope() {
     assert!(NativeSyscallRegistry::handler_for(SyscallAbi::I386, "arch_prctl").is_none());
     assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Amd64, "arch_prctl").is_some());
     assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Amd64, "rt_sigprocmask").is_none());
+    // unlink must reach Python's proc, which deletes the `state.fs` path.
+    assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Amd64, "unlink").is_none());
     // DECREE names never resolve on a Linux ABI and vice versa.
     assert!(NativeSyscallRegistry::handler_for(SyscallAbi::I386, "transmit").is_none());
     assert!(NativeSyscallRegistry::handler_for(SyscallAbi::Cgc, "write").is_none());
