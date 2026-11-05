@@ -93,11 +93,48 @@ export Z3_SYS_Z3_VERSION="${Z3_SYS_Z3_VERSION:-$(python -c 'import z3; print(z3.
 # cannot find the wheel's libz3 at load time without this.
 export LD_LIBRARY_PATH="$Z3_LIBRARY_PATH_OVERRIDE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# A cold release-checked build runs two rustc instances of the angr crate (lib
+# + test harness) at once, and under a 4 GiB cgroup (the remote session's,
+# bd memory env-remote-session-4g-cgroup) even CARGO_BUILD_JOBS=2 passed 3.4 GB
+# anon and OOM-killed the container; -j1 peaked at 3.06 GB (angr-mx00p.122).
+# So when the tightest memory.max on this process's cgroup v2 path is at or
+# below RALPH_GATE_SERIAL_BUILD_MAX_BYTES, default the job count to 1. An
+# explicit CARGO_BUILD_JOBS always wins.
+cgroup_memory_max() {
+    p=$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)
+    [ -n "$p" ] || return 0
+    min=""
+    while :; do
+        f="/sys/fs/cgroup$p/memory.max"
+        if [ -r "$f" ]; then
+            v=$(cat "$f")
+            if [ "$v" != max ] && { [ -z "$min" ] || [ "$v" -lt "$min" ]; }; then
+                min=$v
+            fi
+        fi
+        [ "$p" = / ] && break
+        p=$(dirname "$p")
+    done
+    echo "$min"
+}
+: "${RALPH_GATE_SERIAL_BUILD_MAX_BYTES:=4294967296}"
+if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
+    mem_max=$(cgroup_memory_max)
+    if [ -n "$mem_max" ] && [ "$mem_max" -le "$RALPH_GATE_SERIAL_BUILD_MAX_BYTES" ]; then
+        export CARGO_BUILD_JOBS=1
+        echo "cgroup memory.max is $mem_max bytes: building with CARGO_BUILD_JOBS=1"
+    fi
+fi
+
 echo "== ralph gate [1/2]: cargo test --profile release-checked =="
 : "${CARGO_TEST_TIMEOUT_SECS:=600}"
 # `rc=$?` must be captured on the || side, not inside `if ! cmd`: the `!`
 # rewrites $? to 0 in the then-block, so the gate would exit 0 on a failure.
 rc=0
+# Compile outside the timeout: the cap is for a hung test, and a cold build
+# at CARGO_BUILD_JOBS=1 can take longer than the whole test run.
+cargo test --profile release-checked --no-run || rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
 timeout --kill-after=30s --signal=TERM "${CARGO_TEST_TIMEOUT_SECS}s" cargo test --profile release-checked || rc=$?
 if [ "$rc" -ne 0 ]; then
     echo "cargo test --profile release-checked failed or timed out after ${CARGO_TEST_TIMEOUT_SECS}s (rc=$rc);" \
