@@ -10,6 +10,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from angr.exploration._fallback import suppress_recoverable
 from angr.misc.hookset import HookSet
 
 if TYPE_CHECKING:
@@ -165,6 +166,8 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
         if _has_dispatched_step_hook(tech):
             try:
                 HookSet.install_hooks(proxy, step=tech.step)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: hook install failed; skip this
                 # tech's step() and continue with the others.
@@ -176,6 +179,8 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
 
     try:
         proxy.step(stash=stash)
+    except MemoryError:
+        raise
     except Exception as e:
         # cat-(b) FALLBACK WITH LOSS: a technique's step() raised. We still
         # need to advance Rust so the run loop makes progress; fall back to a
@@ -284,6 +289,8 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
         if _has_dispatched_step_state_hook(tech):
             try:
                 HookSet.install_hooks(proxy, step_state=tech.step_state)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: hook install failed; that
                 # technique's step_state() won't fire this batch.
@@ -347,6 +354,8 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
                     new_id = mgr._add_rust_state(target, st)
                     if source_constraints:
                         mgr._rust_mgr.import_z3_constraint_ptrs(new_id, source_constraints)
+                except MemoryError:
+                    raise
                 except Exception as e:
                     l.warning("Failed to re-import step_state successor into %r: %s", target, e)
         # Drop the (still-present) source state now that it's been replaced.
@@ -486,13 +495,13 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
                     mock = _MockState(addr)
                     # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
                     # may reject mock state; fall through to avoid probe.
-                    with contextlib.suppress(Exception):
+                    with suppress_recoverable():
                         if find_func(mock):
                             find_addrs.append(addr)
                             continue
                     # cat-(a) EXPECTED CONTROL FLOW: user-supplied predicate
                     # may reject mock state; addr is simply not classified.
-                    with contextlib.suppress(Exception):
+                    with suppress_recoverable():
                         if avoid_func(mock):
                             avoid_addrs.append(addr)
 
@@ -527,6 +536,8 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
                 # Mark as natively handled so filter() is skipped in Python
                 technique._native_uniqueness = True
                 l.debug(f"CheckUniqueness registered natively with {len(regs)} registers")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: native registration failed; the
                 # Python technique.filter() path still runs (just slower).
@@ -543,6 +554,8 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
                 mgr._rust_mgr.register_length_limiter(max_length, drop)
                 technique._native_length_limiter = True
                 l.debug(f"LengthLimiter registered natively (max_length={max_length}, drop={drop})")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: native registration failed; the
                 # Python technique._filter() path still runs (just slower).
@@ -558,6 +571,8 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
                 mgr._rust_mgr.register_timeout(float(timeout_val))
                 technique._native_timeout = True
                 l.debug(f"Timeout registered natively ({timeout_val}s)")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: native registration failed; the
                 # Python check_technique_complete() path still runs.
@@ -579,6 +594,8 @@ def _arm_native_technique(mgr: RustExplorationManager, technique) -> None:
                 mgr._rust_mgr.register_merge_point(address, int(wait_counter))
                 technique._native_merge_point = True
                 l.debug(f"ManualMergepoint registered natively (address={address:#x}, wait_counter={wait_counter})")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: native registration failed. Unlike
                 # LengthLimiter/Timeout there is no Python filter fallback, and
@@ -623,6 +640,8 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     # project would AttributeError on the first dispatch (angr-op0dn.11.7).
     try:
         technique.project = mgr._project
+    except MemoryError:
+        raise
     except Exception as e:  # pragma: no cover - defensive
         l.debug("Could not set project on technique %s: %s", tech_name, e)
 
@@ -631,6 +650,8 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
         if hasattr(technique, "setup"):
             technique.setup(mgr)
             l.debug(f"Called setup() on technique {tech_name}")
+    except MemoryError:
+        raise
     except Exception as e:
         # cat-(b) FALLBACK WITH LOSS: technique setup failed; we keep going
         # with a partially-initialized technique. Warn so the user sees it.
@@ -688,6 +709,8 @@ def _disarm_native_technique(mgr: RustExplorationManager, technique) -> None:
     def reset(what, fn):
         try:
             fn()
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: the reset entry point is missing or
             # failed, so the native effect outlives the removal. Warn — this is
@@ -780,6 +803,8 @@ def apply_technique_filters(mgr: RustExplorationManager):
         try:
             for sid, addr, stdout_len in mgr._rust_mgr.get_state_predicate_info(stash):
                 state_sigs[sid] = (addr, stdout_len)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: no signatures for this stash means
             # change detection is disabled here; non-monotonic filters re-run
@@ -868,10 +893,12 @@ def apply_technique_filters(mgr: RustExplorationManager):
                     if sid not in mgr._state_cache:
                         # cat-(a) EXPECTED CONTROL FLOW: state may not have
                         # a Rust-tracked root; that's OK, the move succeeded.
-                        with contextlib.suppress(Exception):
+                        with suppress_recoverable():
                             root = mgr._rust_mgr.get_state_root(sid)
                             if root is not None:
                                 mgr._state_roots[sid] = root
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: move_state failed; the state
                     # stays in its current stash and the next sweep will retry.
@@ -884,7 +911,7 @@ def apply_technique_filters(mgr: RustExplorationManager):
         mgr._filtered_cleanup_counter = 0
         # cat-(a) EXPECTED CONTROL FLOW: best-effort cache GC; if we can't
         # enumerate stashes the set just grows until next sweep.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             live = set()
             for stash_name in ("active", "found", "errored", "deadended", "avoid"):
                 live.update(mgr._rust_mgr.get_state_ids(stash_name))
@@ -925,6 +952,8 @@ def check_technique_complete(mgr: RustExplorationManager) -> bool:
                 if time.time() - tech.start_time > timeout_val:
                     try:
                         mgr._rust_mgr.move_states("active", "timeout", None)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(b) FALLBACK WITH LOSS: timeout-stash move failed;
                         # active states remain in 'active' but caller still gets

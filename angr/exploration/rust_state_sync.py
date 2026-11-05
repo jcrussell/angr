@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -11,6 +10,7 @@ from sortedcontainers import SortedDict
 
 from angr import claripy
 from angr.errors import SimMemoryMissingError
+from angr.exploration._fallback import suppress_recoverable
 from angr.rustylib.vex_engine import arch_register_info
 from angr.storage.memory_mixins.paged_memory.pages import UltraPage
 from angr.storage.memory_object import SimMemoryObject
@@ -273,6 +273,8 @@ class RustStateSyncMixin:
                         # shared symbol cache and round-trip back to the user's
                         # symbol on export.
                         rust_state.set_register_symbolic_ast(reg_name, reg_val)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic register not
                         # synced; Rust will see stale/uninit BVS for this
@@ -289,6 +291,8 @@ class RustStateSyncMixin:
                 # but state doesn't expose it (rare, but harmless to skip).
                 if _DBG:
                     l.debug("Register %s not on state, skipping", reg_name)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: unexpected failure (e.g.
                 # solver.eval on concrete value raises) — register won't
@@ -329,6 +333,8 @@ class RustStateSyncMixin:
                     bulk_regs[name] = angr_state.solver.eval(val)
                 else:
                     rust_state.set_register_symbolic_ast(name, val)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: the Rust state keeps its default
                 # for these bytes while the seed holds a written value.
@@ -379,7 +385,7 @@ class RustStateSyncMixin:
             # cat-(b) FALLBACK WITH LOSS: get_symbolic_addrs() failed;
             # fall through to the _pages bitmap scan below. Both
             # populate symbolic_pages, so this is a graceful fallback.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 for addr in angr_state.memory.get_symbolic_addrs():
                     symbolic_pages.add(addr & ~(page_size - 1))
         if not symbolic_pages and hasattr(angr_state.memory, "_pages"):
@@ -418,7 +424,7 @@ class RustStateSyncMixin:
             # (object lacks expected attributes). That object's pages
             # won't be eagerly mapped; lazy_region in
             # _add_loader_lazy_regions catches accesses on demand.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 if hasattr(obj, "segments") and obj.segments:
                     ranges = []
                     for seg in obj.segments:
@@ -444,7 +450,7 @@ class RustStateSyncMixin:
                         # may hit unmapped gaps in object's page range
                         # (esp. ELF .bss gaps). Skip silently — the
                         # lazy region added below catches accesses.
-                        with contextlib.suppress(Exception):
+                        with suppress_recoverable():
                             data = self._loader_page_bytes(page_addr, page_size)
                             if data is not None:
                                 batch_pages.append((page_addr, data, self._loader_page_perms(page_addr, page_size)))
@@ -552,7 +558,7 @@ class RustStateSyncMixin:
                     # relocations applied — may misresolve external
                     # references. Lazy fetch_page from Python catches
                     # this on access in most cases.
-                    with contextlib.suppress(Exception):
+                    with suppress_recoverable():
                         val = angr_state.memory.load(
                             section.min_addr, section.memsize, endness="Iend_BE", inspect=False, disable_actions=True
                         )
@@ -591,7 +597,7 @@ class RustStateSyncMixin:
             # cat-(b) FALLBACK WITH LOSS: page lacks concrete_load or
             # contains symbolic bytes that can't be eagerly loaded.
             # Rust falls back to memory_load callback for this page.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 concrete = bytes(page_obj.concrete_load(0, page_size))
                 if len(concrete) == page_size:
                     rust_state.map_memory_data(page_addr, concrete, 7)
@@ -610,7 +616,7 @@ class RustStateSyncMixin:
             # cat-(b) FALLBACK WITH LOSS: lazy region registration
             # failed for this object; accesses to its pages can't
             # be auto-fetched and will fail to load on demand.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 rust_state.add_lazy_region(region_start, region_size)
 
     def _setup_stack_region(self, angr_state: angr.SimState, rust_state: _RustSimState, arch, page_size: int):
@@ -620,6 +626,8 @@ class RustStateSyncMixin:
         """
         try:
             sp = angr_state.solver.eval(angr_state.regs.sp)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: state has symbolic SP and no
             # default; pick the conventional stack-base for this arch.
@@ -660,12 +668,12 @@ class RustStateSyncMixin:
         # (slow path raised). Rust will fetch the stack page lazily
         # via fetch_page callback on first access — correct but pays
         # FFI roundtrip per page.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             if page_obj is not None and hasattr(page_obj, "concrete_load"):
                 # cat-(a) EXPECTED CONTROL FLOW: concrete_load fast
                 # path failed (page has symbolic content). Fall
                 # through to slow path below.
-                with contextlib.suppress(Exception):
+                with suppress_recoverable():
                     concrete = bytearray(page_obj.concrete_load(0, page_size))
                     if len(concrete) == page_size:
                         # Targeted scan of symbolic_data ranges only, far
@@ -728,7 +736,7 @@ class RustStateSyncMixin:
                 # symbolic_regions and will be served as the concrete
                 # fast-path byte. Loss is partial: only that single
                 # byte's symbolic identity is missed.
-                with contextlib.suppress(Exception):
+                with suppress_recoverable():
                     val = angr_state.memory.load(addr, 1, endness="Iend_BE", inspect=False, disable_actions=True)
                     if val.symbolic:
                         symbolic_regions.append((addr, val))
@@ -777,6 +785,8 @@ class RustStateSyncMixin:
                 not n.startswith("mem_") and not n.startswith("reg_") and not n.startswith("unconstrained")
                 for n in ast.variables
             )
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: ast lacks .variables
             # (concrete claripy wrapper). Treat as no-user-symbolic.
@@ -833,7 +843,7 @@ class RustStateSyncMixin:
         # cat-(b) FALLBACK WITH LOSS: outer iteration failed (rare,
         # _pages dict shape mismatch). All non-loader pages skip
         # eager sync; lazy fetch_page handles them.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             mem_pages = getattr(angr_state.memory, "_pages", None)
             if mem_pages is None:
                 return
@@ -880,6 +890,8 @@ class RustStateSyncMixin:
                     # concrete_load.
                     try:
                         concrete = bytes(page_obj.concrete_load(0, page_size))
+                    except MemoryError:
+                        raise
                     except Exception:
                         # cat-(b) FALLBACK WITH LOSS: per-page sync failed;
                         # lazy fetch_page handles it on first access.
@@ -902,6 +914,8 @@ class RustStateSyncMixin:
                     if concrete is None:
                         try:
                             concrete = bytes(page_obj.concrete_load(0, page_size))
+                        except MemoryError:
+                            raise
                         except Exception:
                             # cat-(b) FALLBACK WITH LOSS: classification path
                             # worked but second load failed; keep the lazy
@@ -941,14 +955,14 @@ class RustStateSyncMixin:
         # symbolic_regions is empty, so user symbolic memory is not
         # imported into Rust — same risk class as the inner cat-(c)
         # but at this point the exploration likely won't run at all.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             pages = getattr(angr_state.memory, "_pages", {})
             user_sym_pages = set()
             if hasattr(angr_state.memory, "get_symbolic_addrs"):
                 # cat-(b) FALLBACK WITH LOSS: get_symbolic_addrs() is
                 # an opt-in API; if it raises, we fall through to the
                 # symbolic_data fallback walk below.
-                with contextlib.suppress(Exception):
+                with suppress_recoverable():
                     for addr in angr_state.memory.get_symbolic_addrs():
                         user_sym_pages.add(addr // page_size)
             if not user_sym_pages:
@@ -972,7 +986,7 @@ class RustStateSyncMixin:
                 # concrete value rather than fork on the symbol.
                 # (Wider impact than (b) per-byte miss because the
                 # whole page is dropped.)
-                with contextlib.suppress(Exception):
+                with suppress_recoverable():
                     page_data = angr_state.memory.load(
                         page_addr, page_size, endness="Iend_BE", inspect=False, disable_actions=True
                     )
@@ -1015,6 +1029,8 @@ class RustStateSyncMixin:
                             )
                             if wide_val.symbolic:
                                 out.append((region_start, wide_val))
+                        except MemoryError:
+                            raise
                         except Exception:
                             # cat-(a) EXPECTED CONTROL FLOW: wide load
                             # failed; fall through to per-byte loop
@@ -1024,7 +1040,7 @@ class RustStateSyncMixin:
                                 # cat-(b) FALLBACK WITH LOSS: per-byte
                                 # load also failed; that byte not
                                 # imported, served as concrete instead.
-                                with contextlib.suppress(Exception):
+                                with suppress_recoverable():
                                     val = angr_state.memory.load(
                                         addr, 1, endness="Iend_BE", inspect=False, disable_actions=True
                                     )
@@ -1060,6 +1076,8 @@ class RustStateSyncMixin:
                             region_len += 1
                         else:
                             break
+                    except MemoryError:
+                        raise
                     except Exception:
                         # cat-(a) EXPECTED CONTROL FLOW: scan stopped at
                         # an inaccessible byte; treat it as a region
@@ -1071,6 +1089,8 @@ class RustStateSyncMixin:
                         region_start, region_len, endness="Iend_BE", inspect=False, disable_actions=True
                     )
                     out.append((region_start, wide_val))
+                except MemoryError:
+                    raise
                 except Exception:
                     # cat-(a) EXPECTED CONTROL FLOW: wide consolidation
                     # load failed; emit just the first byte we already
@@ -1078,6 +1098,8 @@ class RustStateSyncMixin:
                     out.append((addr, val))
 
                 offset += region_len
+            except MemoryError:
+                raise
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: per-byte scan failed at
                 # the start of a candidate region; advance by one and
@@ -1098,7 +1120,7 @@ class RustStateSyncMixin:
             # The page's concrete bytes still load via fast paths,
             # so the user-visible value is wrong only if the missed
             # byte was meaningful (e.g. a constraint leaf).
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 val = angr_state.memory.load(addr, 1, endness="Iend_BE", inspect=False, disable_actions=True)
                 # Check if this contains a user-defined variable
                 # (not just unconstrained fill from entry_state)
@@ -1141,6 +1163,8 @@ class RustStateSyncMixin:
                     state.solver.add(reg_val == sp_val)
                     setattr(state.regs, sp_reg, sp_val)
                     l.debug(f"Concretized {sp_reg} to 0x{sp_val:x} (constraint added)")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: SP stays symbolic; Rust will
                 # not be able to map a concrete stack region. The lazy
@@ -1156,6 +1180,8 @@ class RustStateSyncMixin:
                     concrete_val = self._eval_or_default(state, reg_val, 0)
                     setattr(state.regs, bp_reg, concrete_val)
                     l.debug(f"Concretized {bp_reg} to 0x{concrete_val:x}")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: BP stays symbolic; Rust
                 # frame-pointer-relative addressing will see a symbolic
@@ -1238,6 +1264,8 @@ class RustStateSyncMixin:
 
             if symbolic_regions:
                 l.debug(f"Extracted {len(symbolic_regions)} symbolic memory regions")
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: outer extract loop failed.
             # Returns empty regions dict; downstream Rust restoration
@@ -1251,7 +1279,7 @@ class RustStateSyncMixin:
         cat-(b) FALLBACK WITH LOSS on load failure: returns None, so the
         caller drops that byte and Rust will see concrete data (or zeros).
         """
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
             if hasattr(val, "symbolic") and val.symbolic:
                 return val
@@ -1271,6 +1299,8 @@ class RustStateSyncMixin:
             return False
         try:
             symbolic_addrs = state.memory.get_symbolic_addrs()
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: opt-in API; fall through.
             l.debug(f"get_symbolic_addrs failed: {e}")
@@ -1313,7 +1343,7 @@ class RustStateSyncMixin:
         if sb is None or not sb.any_set(0, sb.size):
             return True
         # cat-(b) FALLBACK WITH LOSS: page-level walk failed.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             changed = page.all_bytes_changed_in_history()
             had_changed = False
             for segment in changed:
@@ -1421,7 +1451,7 @@ class RustStateSyncMixin:
         # cat-(b) FALLBACK WITH LOSS: outer setup failed (SP eval).
         # No stack data is synced from Rust to Python; Python
         # callback runs with potentially stale stack contents.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             sp = state.solver.eval(state.regs._sp) if not state.regs._sp.symbolic else None
             if not sp:
                 return
@@ -1433,7 +1463,7 @@ class RustStateSyncMixin:
             # cat-(a) EXPECTED CONTROL FLOW: bulk-page FFI not
             # available or failed; fall through to per-pointer
             # fallback below.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 page_data = self._rust_mgr.pending_memory_load_page(self._current_callback_state_id, sp_page)
                 if page_data and len(page_data) == PAGE_SIZE:
                     # Write non-zero pointer-sized values from SP upward
@@ -1457,7 +1487,7 @@ class RustStateSyncMixin:
                 # cat-(b) FALLBACK WITH LOSS: individual pointer
                 # load failed; that slot is not synced. Python
                 # callback may see zeros where Rust has data.
-                with contextlib.suppress(Exception):
+                with suppress_recoverable():
                     data = self._rust_mgr.pending_memory_load(self._current_callback_state_id, addr, ptr_size)
                     if data and len(data) == ptr_size:
                         int_val = int.from_bytes(data, "little")
@@ -1596,6 +1626,8 @@ class RustStateSyncMixin:
             return
         try:
             dirty_pages = self._rust_mgr.get_pending_dirty_pages(self._current_callback_state_id)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: dirty-page API unavailable on
             # this build; skip replay. NativeRead/NativeWrite-style sync
@@ -1610,6 +1642,8 @@ class RustStateSyncMixin:
             _t0 = time.perf_counter_ns()
             try:
                 page_bytes = self._rust_mgr.pending_memory_load_page(self._current_callback_state_id, page_addr)
+            except MemoryError:
+                raise
             except Exception:
                 page_bytes = None
             _ffi_ns += time.perf_counter_ns() - _t0
@@ -1645,6 +1679,8 @@ class RustStateSyncMixin:
                             inspect=False,
                             disable_actions=True,
                         )
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: concrete page replay failed;
                     # cached Python state's memory page stays out of sync with
@@ -1665,6 +1701,8 @@ class RustStateSyncMixin:
                 if page is not None and blitted:
                     try:
                         fast = self._blit_symbolic_page(page, page_addr, sym_entries, endness)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(a) EXPECTED CONTROL FLOW: unexpected page shape;
                         # the per-entry loop below is the general path.
@@ -1706,6 +1744,8 @@ class RustStateSyncMixin:
                                 disable_actions=True,
                             )
                         self._register_handle(id(ast), ast)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(b) FALLBACK WITH LOSS: symbolic store at addr
                         # raised; that byte stays at the cached Python value
@@ -1799,6 +1839,8 @@ class RustStateSyncMixin:
                     state.memory.store(start_addr, ast, endness=state.arch.memory_endness)
                     restored_count += 1
                     self._register_handle(id(ast), ast)
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(c) WRONG-ANSWER RISK: per-byte symbolic restore
                     # failed; that byte is left at the state's pre-restore
@@ -1814,6 +1856,8 @@ class RustStateSyncMixin:
                     state.memory.store(start_addr, ast, endness=state.arch.memory_endness)
                     restored_count += 1
                     self._register_handle(id(ast), ast)
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(c) WRONG-ANSWER RISK: multi-byte symbolic
                     # restore failed; entire region is wrong. failed_count
@@ -1867,6 +1911,8 @@ class RustStateSyncMixin:
                 restored_count += 1
                 if _DBG:
                     l.debug(f"Restored hook symbolic memory at 0x{addr:x} (size={size})")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: hook-tracked symbolic memory
                 # not restored; subsequent Python operations on that

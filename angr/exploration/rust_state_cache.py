@@ -72,6 +72,8 @@ class RustStateCacheMixin:
         actual_size = size if size is not None else (ast.length // 8 if hasattr(ast, "length") else 1)
         try:
             self._rust_mgr.set_state_addr_to_ast(effective_id, addr, ast, actual_size)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: state may have been dropped
             # from Rust between fork and registration; the addr->AST
@@ -131,6 +133,8 @@ class RustStateCacheMixin:
             try:
                 for sid, addr, stdout_len in self._rust_mgr.get_state_predicate_info(stash):
                     state_info[sid] = (addr, stdout_len)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: this stash's states go
                 # unevaluated this sweep; the next sweep retries.
@@ -172,6 +176,8 @@ class RustStateCacheMixin:
                     try:
                         if self._rust_mgr.move_state(sid, stash, target):
                             break
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(b) FALLBACK WITH LOSS: state classified but the
                         # move failed; it stays where it was and is not

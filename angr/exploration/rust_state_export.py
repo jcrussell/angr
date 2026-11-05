@@ -7,7 +7,6 @@ mixin class that RustExplorationManager inherits from.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import threading
 import warnings
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from angr import claripy
 from angr.errors import SimUnsatError
+from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_state_binding import RustStateBinding
 from angr.state_plugins.history import SimStateHistory
 from angr.state_plugins.scratch import SimStateScratch
@@ -307,6 +307,8 @@ class _RustExportedScratch(SimStateScratch):
                 # reads as None, the pre-block default.
                 try:
                     irsb = project.factory.block(addr).vex
+                except MemoryError:
+                    raise
                 except Exception:  # pylint: disable=broad-exception-caught
                     l.debug("scratch.irsb: block %#x does not lift", addr, exc_info=True)
                 self.__dict__["irsb"] = irsb
@@ -495,7 +497,7 @@ class RustSolverFallback:
         if ctx is not None:
             # Teardown-time best-effort: a torn-down module just falls back
             # to pyo3's leak-safe cross-thread drop refusal.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 
                 _release_owned_ctx(ctx, self.__dict__.get("_cached_rust_ctx_owner"))
@@ -541,7 +543,7 @@ class RustSolverFallback:
         ctx = self.__dict__.get("_cached_rust_ctx")
         if ctx is not None:
             # Best-effort release; pyo3 refuses unsafe cross-thread drops.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 
                 _release_owned_ctx(ctx, self.__dict__.get("_cached_rust_ctx_owner"))
@@ -557,7 +559,7 @@ class RustSolverFallback:
             # cat-(a) EXPECTED CONTROL FLOW: set_timeout is a best-effort
             # tuning knob; older Rust contexts may not expose it. Default
             # 30s timeout still applies.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 ctx.set_timeout(120000)
             self._cached_rust_ctx = ctx
             self._cached_rust_ctx_owner = threading.get_ident()
@@ -568,6 +570,8 @@ class RustSolverFallback:
             for c in new_constraints:
                 try:
                     self._cached_rust_ctx.add_constraint_ast(c)
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: a post-attach constraint
                     # added by the caller could not be replayed into Rust's
@@ -646,6 +650,8 @@ class RustSolverFallback:
             result, unsat = _with_extra_constraints(rust_ctx, query, extra=extra_constraints)
             if result is not None:
                 return result
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust eval failed; Python solver
             # is the fallback and has the same constraints (constraint sync
@@ -674,6 +680,8 @@ class RustSolverFallback:
                     nbytes = (expr.length + 7) // 8
                     return [r.to_bytes(nbytes, "big") for r in results]
                 return list(results)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust eval_upto failed; Python
             # solver produces the result. Same constraint set, so no
@@ -705,6 +713,8 @@ class RustSolverFallback:
             result, unsat = _with_extra_constraints(rust_ctx, query, extra=extra_constraints)
             if result is not None:
                 return _signed_extremum(result, expr, signed)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust min/max failed; Python solver
             # is the fallback. Same constraint set.
@@ -727,6 +737,8 @@ class RustSolverFallback:
         try:
             rust_ctx = self._get_rust_ctx()
             return _with_extra_constraints(rust_ctx, rust_ctx.satisfiable, extra=extra_constraints)
+        except MemoryError:
+            raise
         except Exception as e_rust:
             # cat-(b) FALLBACK WITH LOSS: Rust solver failed; Python is
             # tried next.
@@ -1066,6 +1078,8 @@ class RustStateExportMixin:
         if root is None:
             try:
                 root = self._rust_mgr.get_state_root(state_id)
+            except MemoryError:
+                raise
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: probing for a Rust root id;
                 # absence is normal for entry / unparented states.
@@ -1329,6 +1343,8 @@ class RustStateExportMixin:
                     stdin = getattr(posix, "stdin", None)
                     if stdin is not None and hasattr(stdin, "content") and not stdin.content:
                         stdin.content = list(self._stdin_content)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: stdin restore best-effort; state's
                 # posix plugin shape may differ from the template. Original
@@ -1347,7 +1363,7 @@ class RustStateExportMixin:
         # cat-(a) EXPECTED CONTROL FLOW: states without posix plugin
         # (custom factories, blank states) hit attribute / type errors
         # that we silently absorb. Weakref refresh is fix-up only.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             posix = getattr(state, "posix", None)
             if posix is None:
                 return
@@ -1378,6 +1394,8 @@ class RustStateExportMixin:
             return
         try:
             snapshot = self._rust_mgr.export_state(state_id)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: registers in Python state are now
             # stale. User code reading state.regs.* after exploration will
@@ -1407,6 +1425,8 @@ class RustStateExportMixin:
         for reg_name, (value, size_bits) in _store_register_runs(state, named_regs):
             try:
                 setattr(state.regs, reg_name, claripy.BVV(value, size_bits))
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(a) EXPECTED CONTROL FLOW: VEX internal registers
                 # (e.g. ip_at_syscall) that angr's register plugin doesn't
@@ -1454,6 +1474,8 @@ class RustStateExportMixin:
             return
         try:
             rust_val = getattr(self._rust_mgr, getter)(state_id)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: per-state break pointer unavailable
             # (state may have been dropped from Rust). Python keeps its current
@@ -1509,6 +1531,8 @@ class RustStateExportMixin:
             try:
                 if py_val > getattr(self._rust_mgr, getter)(state_id):
                     getattr(self._rust_mgr, setter)(state_id, py_val)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: the Python-side bump does not
                 # reach Rust, so a later native allocation may overlap the
@@ -1541,6 +1565,8 @@ class RustStateExportMixin:
                 continue
             try:
                 rust_len = len(self._rust_mgr.get_state_fd_output(state_id, fd))
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: cannot tell what Rust already
                 # has, so skip rather than risk duplicating the output.
@@ -1554,6 +1580,8 @@ class RustStateExportMixin:
                 continue
             try:
                 self._rust_mgr.append_state_fd_output(state_id, fd, data[rust_len:])
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: the bounced proc's output does
                 # not reach Rust; posix.dumps(fd) on the exported state misses
@@ -1588,6 +1616,8 @@ class RustStateExportMixin:
                 continue
             try:
                 self._rust_mgr.record_stdin_host_packet(state_id, data.args[0], data.size(), size_sym)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: posix.dumps(0) on a state Rust
                 # forks from this one misses the packet. The state may simply
@@ -1624,6 +1654,8 @@ class RustStateExportMixin:
             # overwrites them), so a bounced open that reused one still
             # registers (angr-mx00p.132.13).
             rust_fds = {info[0] for info in self._rust_mgr.get_state_open_fds(state_id) if info[5]}
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: cannot tell which fds Rust already
             # has, so skip rather than risk clobbering one. The state may
@@ -1648,6 +1680,8 @@ class RustStateExportMixin:
                 # left off (angr-mx00p.132.46). A no-op when nothing changed.
                 try:
                     self._rust_mgr.update_state_fd(state_id, fd, content, pos)
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: the native fd keeps its
                     # pre-bounce position and bytes.
@@ -1659,6 +1693,8 @@ class RustStateExportMixin:
             flags = _bvv_int(getattr(desc, "flags", 0)) or 0
             try:
                 self._rust_mgr.register_state_fd(state_id, fd, name, flags, content, pos)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: the fd the bounced proc opened
                 # does not reach Rust; a later native op on it falls back.
@@ -1689,6 +1725,8 @@ class RustStateExportMixin:
             try:
                 angr_state = self._snapshot_to_angr(snapshot)
                 states.append(angr_state)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(c) WRONG-ANSWER RISK: a found state is dropped
                 # from the result list. Caller may report fewer
@@ -1708,6 +1746,8 @@ class RustStateExportMixin:
         try:
             snapshot = self._rust_mgr.export_state(state_id)
             return self._snapshot_to_angr(snapshot)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: returning None hides the
             # underlying failure. Callers checking "if state is None"
@@ -2024,6 +2064,8 @@ class RustStateExportMixin:
         try:
             proxy = RustRegisterProxy(self._rust_mgr, binding, state.arch, python_mgr=self)
             state.register_plugin("registers", proxy)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: proxy install failed; the symbolic
             # register stays dropped (0 / fresh BVS). Warn so it is visible.
@@ -2140,6 +2182,8 @@ class RustStateExportMixin:
         """
         try:
             return self._rust_mgr.get_state_memory_ast(state_id, sym_addr, size)
+        except MemoryError:
+            raise
         except Exception as e:
             # SILENT(cat-b): the snapshot may outlive the Rust state (or the
             # region may not round-trip through claripy). Losing the AST here
@@ -2194,6 +2238,8 @@ class RustStateExportMixin:
         if root_id is None:
             try:
                 root_id = self._rust_mgr.get_state_root(snapshot.state_id)
+            except MemoryError:
+                raise
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: probing for Rust root id;
                 # absence is normal for entry / unparented states. We
@@ -2256,7 +2302,7 @@ class RustStateExportMixin:
             # cat-(a) EXPECTED CONTROL FLOW: Rust root probe failed
             # (state already evicted / unknown id). Falls through to
             # the any-cached-root fallback below.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 rust_root = self._rust_mgr.get_state_root(state_id)
                 if rust_root is not None:
                     root_id = rust_root
@@ -2339,6 +2385,8 @@ class RustStateExportMixin:
                         # be silently lost on every exported/found state (angr-9cjmg).
                         state.register_plugin(plugin_name, plugin.copy())
                         l.debug(f"Restored {plugin_name} plugin to state")
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: per-plugin restore failed
                 # (incompatible copy()). State is left without that

@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 import angr
+from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_manager import RustExplorationManager
 from tests.engines.conftest import FAUXWARE_PATH, RUST_EXPLORATION_AVAILABLE
 
@@ -77,3 +78,18 @@ def test_step_state_hook_other_error_leaves_the_source_to_the_native_run(project
     mgr.use_technique(_Raises(RuntimeError("hook failed")))
     mgr.explore(find=0x4006ED, max_steps=200)
     assert len(mgr.found) == 1
+
+
+def test_suppress_recoverable_swallows_an_ordinary_error():
+    with suppress_recoverable():
+        raise ValueError("ignored")
+
+
+def test_suppress_recoverable_reraises_memory_error():
+    with pytest.raises(MemoryError), suppress_recoverable():
+        raise MemoryError
+
+
+def test_suppress_recoverable_lets_base_exceptions_through():
+    with pytest.raises(KeyboardInterrupt), suppress_recoverable():
+        raise KeyboardInterrupt

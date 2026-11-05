@@ -24,6 +24,7 @@ import struct
 import threading
 
 from angr import claripy
+from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_state_binding import RustStateBinding, unscoped_binding
 from angr.exploration.rust_state_export import _LazySimStateRef, rust_stdin_read_symbols
 from angr.sim_state import SimState
@@ -85,7 +86,7 @@ def _release_owned_ctx(ctx, owner_tid) -> None:
     # cat-(a) EXPECTED CONTROL FLOW: teardown-time best-effort; a missing
     # close()/is_closed() (older .so) or a torn-down module just means we
     # fall back to pyo3's leak-safe cross-thread drop refusal.
-    with contextlib.suppress(Exception):
+    with suppress_recoverable():
         ctx.close()
         if not ctx.is_closed():
             with _SOLVER_GRAVEYARD_LOCK:
@@ -116,7 +117,7 @@ def drain_solver_graveyard() -> int:
         if current != owner_tid:
             requeue.append((ctx, owner_tid))
             continue
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             ctx.close()
             drained += 1
     if requeue:
@@ -151,6 +152,8 @@ def _rust_state_get(mgr, getter: str, state_id: int, *args, default=None, warn: 
     """
     try:
         return getattr(mgr, getter)(state_id, *args)
+    except MemoryError:
+        raise
     except Exception as e:
         prefix = f"{who}." if who else ""
         extra = "".join(f", {a!r}" for a in args)
@@ -688,6 +691,8 @@ class RustSolverProxyBase(_SolutionCountMixin):
         state_id = self._state_id
         try:
             return self._mgr.get_state_solver_timeout(state_id)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: state may have been GC'd or backend
             # lacks Z3 — return 0 as default. (No log: this property is read
@@ -813,7 +818,7 @@ class RustSolverProxy(RustSolverProxyBase):
         # the graveyard). Shared contexts (``_shared_ctx_getter`` set) are
         # aliased by the parent proxy — never close those here.
         # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             if self.__dict__.get("_shared_ctx_getter") is None:
                 _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
 
@@ -1138,7 +1143,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # on a scheduler worker never triggers pyo3's unsendable cross-thread
         # drop refusal.
         # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"), self.__dict__.get("_rust_ctx_cache_owner"))
 
     @_sim_unsat
@@ -1365,6 +1370,8 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         state_id = self._state_id
         try:
             values = self._mgr.get_state_registers_batch(state_id, [canonical for _, canonical in pairs])
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: prefetch is a best-effort
             # optimization; missing prefetch falls back to per-register
@@ -1835,7 +1842,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # (or defer to the graveyard). Shared contexts (``_shared_ctx_getter``
         # set) are aliased by the parent proxy — never close those here.
         # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             if self.__dict__.get("_shared_ctx_getter") is None:
                 _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
 
@@ -2007,6 +2014,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             state_id = self._write_state_id
             try:
                 self._mgr.add_constraints_to_state(state_id, [pin])
+            except MemoryError:
+                raise
             except Exception as e:
                 l.debug(
                     "RustMemoryProxy._pin_addr_witness: state pin failed for state %d: %s",
@@ -2021,7 +2030,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # address re-picks witness 0 and re-aliases. Guarded by
         # ``_solver_ctx is not None`` — the caller has already ensured it.
         if self._solver_ctx is not None:
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 self._solver_ctx.add_constraint_ast(pin)
 
     def load(
@@ -2203,6 +2212,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             return None
         try:
             result = fallback.load(conc_addr, size, endness=endness)
+        except MemoryError:
+            raise
         except Exception:
             # Fallback memory could not satisfy the read either (unmapped,
             # unsat address, or a plugin that doesn't accept these kwargs):
@@ -2460,7 +2471,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # residual failure and drop the store rather than kill the
             # SimProcedure state (p1s02 keep-alive semantics).
             state_id = self._write_state_id
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 self._mgr.set_state_memory_ast_automap(state_id, conc, data_ast)
             return
 
@@ -2980,6 +2991,8 @@ class RustPosixProxy:
                     byte_len = max(1, var.length // 8)
                     result.extend(val.to_bytes(byte_len, "big"))
             return bytes(result)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: returning empty bytes when stdin eval
             # fails could be misread as "the input was empty" by callers
@@ -3008,6 +3021,8 @@ class RustPosixProxy:
                 val = self._mgr.eval_stdin_symbol(self._state_id, name, bits)
                 out += (0 if val is None else val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little")
             return bytes(out)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: empty bytes read as "the input was
             # empty"; logged at warn like the stdin_vars path above.
@@ -4218,12 +4233,16 @@ class RustStateProxy:
     def __repr__(self):
         try:
             stash = self._mgr.state_stash(self._state_id)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: __repr__ is best-effort; skip
             # missing stash field rather than fail repr().
             stash = None
         try:
             n_constraints = self._mgr.state_constraint_count(self._state_id)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: __repr__ is best-effort; skip
             # missing constraint count rather than fail repr().
@@ -4249,11 +4268,11 @@ class RustStateProxy:
         # fork_state_solver in _get_shared_solver_ctx) on its owning thread, or
         # defer to the graveyard. Must run regardless of _owns_copy.
         # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             _release_owned_ctx(self.__dict__.get("_shared_solver_ctx"), self.__dict__.get("_shared_solver_ctx_owner"))
         # cat-(a) EXPECTED CONTROL FLOW: __del__ is best-effort; swallow
         # everything to match the SimulationManagerProxy.__del__ pattern.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             if not getattr(self, "_owns_copy", False):
                 return
             python_mgr = getattr(self, "_python_mgr", None)
@@ -4693,6 +4712,8 @@ class _StashDict:
             # Clear the stash — common pattern: simgr.stashes['found'] = []
             try:
                 self._simgr._mgr.clear_stash(key)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: stash clear failed; user expects
                 # the stash to be empty afterward but it may not be. Log so
@@ -4757,6 +4778,8 @@ class _StashDict:
             if sid not in seen:
                 try:
                     mgr.drop_state_from_stash(sid, key)
+                except MemoryError:
+                    raise
                 except Exception as e:  # pragma: no cover - defensive
                     l.debug("drop_state_from_stash(%d, %r) failed: %s: %s", sid, key, type(e).__name__, e)
 
@@ -4806,6 +4829,8 @@ class _StashDict:
     def get(self, key, default=None):
         try:
             return self[key]
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: dict.get() contract — return the
             # caller-supplied default when the key is missing or unfetchable.

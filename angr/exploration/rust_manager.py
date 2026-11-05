@@ -121,6 +121,7 @@ from angr.errors import (
     UnsupportedDirtyError,
 )
 from angr.exploration._constants import PAGE_SIZE
+from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
     _pending_syscall_resume,
@@ -533,6 +534,8 @@ def resolve_main_address(project) -> int | None:
                 ):
                     l.info(f"Resolved main=0x{tgt:x} from entry's direct call target")
                     return tgt
+    except MemoryError:
+        raise
     except Exception as e:
         # cat-(b) FALLBACK WITH LOSS: main address extraction from _start
         # disassembly failed; caller resolves None and uses the post-init
@@ -746,6 +749,8 @@ def _apply_rust_log_env() -> None:
         return
     try:
         set_rust_log_level(level)
+    except MemoryError:
+        raise
     except Exception as e:
         # cat-(b) FALLBACK WITH LOSS: env-driven level could not be applied;
         # manager construction proceeds, but Rust-side log output stays at
@@ -919,6 +924,8 @@ class RustErrorRecord:
             return 0
         try:
             return len(state.solver.constraints)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; constraint
             # count of 0 on read failure is fine — RustErrorRecord is diagnostic.
@@ -930,6 +937,8 @@ class RustErrorRecord:
             return {}
         try:
             arch_name = state.arch.name
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; if arch
             # is unreadable, return empty registers dict.
@@ -939,6 +948,8 @@ class RustErrorRecord:
         for name in names:
             try:
                 val = getattr(state.regs, name)
+            except MemoryError:
+                raise
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; skip a
                 # register that fails to read.
@@ -948,6 +959,8 @@ class RustErrorRecord:
                     snap[name] = val.concrete_value
                 else:
                     snap[name] = str(val)
+            except MemoryError:
+                raise
             except Exception:
                 # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; .concrete
                 # probe failed — fall through to str() repr.
@@ -960,6 +973,8 @@ class RustErrorRecord:
             return []
         try:
             bbls = list(state.history.recent_bbl_addrs)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: best-effort error report; missing
             # history attribute is fine — return empty list.
@@ -1151,6 +1166,8 @@ def _unresolvable_syscall_jumpkinds(simos, arch) -> list[str]:
             syscall_abi(probe)
         except AngrSyscallError:
             out.append(jk)
+        except MemoryError:
+            raise
         except Exception:  # pylint:disable=broad-exception-caught
             l.debug("syscall_abi probe for %s failed; leaving it to the Python syscall path", jk, exc_info=True)
     return out
@@ -1750,6 +1767,8 @@ class RustExplorationManager(
                     # are already set up on the old manager
                     self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
                     return True
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: multi-stage manager reuse failed;
                     # falls back to building a fresh Rust manager from this state.
@@ -1994,6 +2013,8 @@ class RustExplorationManager(
         # self.stats — values may be 0 if the run never tripped the path.
         try:
             fb = self.stats
+        except MemoryError:
+            raise
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: stats unavailable; the perf report
             # omits the fallback-counter section but still prints other phases.
@@ -2158,6 +2179,8 @@ class RustExplorationManager(
                     try:
                         val = val()
                         coerce_attempts += 1
+                    except MemoryError:
+                        raise
                     except Exception:
                         # cat-(b) FALLBACK WITH LOSS: thunk in memory failed to resolve;
                         # replace with a fresh BVS so the load proceeds. Caller pays a
@@ -2400,6 +2423,8 @@ class RustExplorationManager(
                                                 no_ret = _proc_no_return(proc)
                                                 l.debug(f"Resolved PLT at 0x{addr:x} to {proc_name} via GOT value")
                                                 return (proc_name, num_args, no_ret)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(b) FALLBACK WITH LOSS: PLT block lift / capstone parse
                         # failed; falls through to the next resolution heuristic (symbol
@@ -2679,6 +2704,8 @@ class RustExplorationManager(
 
             if not has_anno(MultiwriteAnnotation):
                 return False
+        except MemoryError:
+            raise
         except (ImportError, AttributeError, Exception) as e:
             # cat-(a) EXPECTED CONTROL FLOW: annotation introspection failed
             # (claripy API drift, exotic AST). Fall through to Python path.
@@ -2694,6 +2721,8 @@ class RustExplorationManager(
             # cat-(a) EXPECTED CONTROL FLOW: older Rust build without the
             # Phase 1.4 entry point — keep the Python path.
             return False
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust side raised; debug-log and
             # let the Python fallback try.
@@ -2826,7 +2855,7 @@ class RustExplorationManager(
             proxy_cls = RustStateProxy if inspect_view_addrs() is None else RustInspectViewStateProxy
             # cat-(a) EXPECTED CONTROL FLOW: state may have been
             # dropped from Rust between dispatch and proxy build.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 return proxy_cls(self._rust_mgr, state_id, self._project, python_mgr=self)
         return self._get_callback_state() or self._get_default_state()
 
@@ -2910,6 +2939,8 @@ class RustExplorationManager(
                 mutated = getattr(proxy, _inject)
                 if mutated is not _original:
                     return mutated
+        except MemoryError:
+            raise
         except Exception as e:
             l.warning("inspect %s dispatch failed: %s: %s", event_type, type(e).__name__, e)
         return None
@@ -3341,6 +3372,8 @@ class RustExplorationManager(
                     active_ids = self._rust_mgr.get_state_ids("active")
                     if active_ids:
                         state_id = active_ids[0]
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: no state to attribute the lift to;
             # this vex_lift event is dropped (no breakpoint fired).
@@ -3397,6 +3430,8 @@ class RustExplorationManager(
                     size = region.max_addr - region.min_addr + 1
                     data = self._project.loader.memory.load(region.min_addr, size)
                     regions.append((region.min_addr, bytes(data)))
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) FALLBACK WITH LOSS: executable region not loaded into Rust;
                     # attempts to lift a block in this region will fall through to
@@ -3501,6 +3536,8 @@ class RustExplorationManager(
         try:
             main_addr = resolve_main_address(self._project)
             return self._step_python_to_main(state, main_addr, main_obj)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: Python init step failed; original
             # state is used unmodified, so init-side-effects (constructors,
@@ -3707,6 +3744,8 @@ class RustExplorationManager(
             if (not asts and not has_end) or len(asts) > self._FS_EXPORT_MAX_FILE_SIZE:
                 return
             self._rust_mgr.seed_stdin_content(state_id, asts, consumed, has_end)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: stdin seeding failed; native read(0)
             # mints fresh symbols, so the harness's BVS stays unconstrained on
@@ -3837,6 +3876,8 @@ class RustExplorationManager(
 
             if entries:
                 self._rust_mgr.seed_environment(state_id, entries)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: initial-environment push failed; the
             # Rust environment map stays empty, so native getenv returns NULL
@@ -3895,6 +3936,8 @@ class RustExplorationManager(
             # always bytes on the Python side.
             self._rust_mgr.set_fs_cwd(state_id, fs.cwd)
             files = fs._files
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: fs export preamble failed (non-UTF-8
             # cwd, missing fs plugin, FFI error); every file in this state
@@ -3944,6 +3987,8 @@ class RustExplorationManager(
                 data = simfile.load(0, size, disable_actions=True, inspect=False)
                 self._rust_mgr.register_file_content(state_id, path_str, data.chop(8))
                 exported += 1
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: this file stays Python-served
                 # (the pre-Phase-3 behavior). Debug-logs.
@@ -4080,6 +4125,8 @@ class RustExplorationManager(
             py_brk = getattr(getattr(angr_state, "posix", None), "brk", None)
             if isinstance(py_brk, int):
                 rust_state.posix_brk = py_brk
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: posix.brk push to Rust failed; Rust's
             # brk syscall will base-from its hardcoded default and may overlap
@@ -4097,6 +4144,8 @@ class RustExplorationManager(
             py_loc = getattr(getattr(angr_state, "heap", None), "heap_location", None)
             if isinstance(py_loc, int):
                 rust_state.heap_brk = py_loc
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: heap_location push to Rust failed;
             # Rust's native allocator bases from its default and may overlap a
@@ -4122,6 +4171,8 @@ class RustExplorationManager(
                     val = getattr(libc, attr, None)
                     if isinstance(val, int):
                         setattr(rust_state, setter, val)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: ctype table-ptr push failed; the
             # native __ctype_*_loc procs will defer to Python. Debug-logs.
@@ -4147,6 +4198,8 @@ class RustExplorationManager(
                     sym = loader.find_symbol(name)
                     if sym is not None:
                         setattr(rust_state, setter, sym.rebased_addr)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: getopt extern-addr push failed; the
             # native getopt proc will defer to Python. Debug-logs.
@@ -4164,6 +4217,8 @@ class RustExplorationManager(
                     libc.getopt_first_nonopt,
                     libc.getopt_last_nonopt,
                 )
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: getopt cursor push failed (a cursor
             # field outside u32); native getopt starts a fresh scan. Debug-logs.
@@ -4211,6 +4266,8 @@ class RustExplorationManager(
                 # clear, not merely "not set".
                 for _opt in _NATIVE_SIMOPTIONS:
                     rust_state.set_option(_opt, _opt in angr_state.options)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: option detection failed; Rust
                 # permission/NX enforcement and IP-handling gating stay off —
@@ -4231,6 +4288,8 @@ class RustExplorationManager(
         for link, target in getattr(self, "_pending_symlinks", {}).items():
             try:
                 rust_state.register_symlink(link, target)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: symlink push failed; native
                 # readlink for this link returns -1 (the pre-6.2 behavior).
@@ -4278,6 +4337,8 @@ class RustExplorationManager(
                             f"Rust manager (state {old_state_id}), sat={sat}"
                         )
                         installed = True
+                except MemoryError:
+                    raise
                 except (AttributeError, Exception) as e:
                     # cat-(b) FALLBACK WITH LOSS: Z3 pointer transfer from old manager
                     # failed; falls through to Python-side install below, which on a
@@ -4296,6 +4357,8 @@ class RustExplorationManager(
                             f"Installed {len(py_constraints)} Python constraints to Rust state "
                             f"{actual_state_id}, sat={sat}"
                         )
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: constraint install to Rust failed; the
                         # new state has fewer constraints than the source state — eval /
@@ -4341,6 +4404,8 @@ class RustExplorationManager(
                 inner = getattr(src_opts, "_options", None)
                 if isinstance(inner, dict):
                     self._py_state_options[actual_state_id] = {name for name, value in inner.items() if value is True}
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: seeding _py_state_options from source
                 # state failed; child uses an empty options set on first access.
@@ -4349,6 +4414,8 @@ class RustExplorationManager(
             try:
                 if "globals" in getattr(angr_state, "plugins", {}):
                     self._py_state_globals[actual_state_id] = dict(angr_state.globals)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: seeding _py_state_globals from source
                 # state failed; child sees an empty globals dict on first access.
@@ -4369,6 +4436,8 @@ class RustExplorationManager(
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported_sym += 1
                         self._register_memory_order_ast(ast, addr, actual_state_id, angr_state.arch)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic page import to Rust failed;
                         # Rust sees only the concrete-witness bytes for this page, losing
@@ -4389,6 +4458,8 @@ class RustExplorationManager(
                         self._rust_mgr.import_symbolic_to_state(actual_state_id, addr, import_ast)
                         imported += 1
                         self._register_memory_order_ast(ast, addr, actual_state_id, angr_state.arch)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: pending symbolic import to Rust failed;
                         # the symbolic value is not visible to Rust — downstream loads see
@@ -4449,6 +4520,8 @@ class RustExplorationManager(
             return
         try:
             demoted = source_mgr.get_demoted_paths(source_sid)
+        except MemoryError:
+            raise
         except Exception as e:
             # Non-fatal: a failed query just means the re-added state may
             # re-arm a native write-demotion (the documented, content-harmless
@@ -4459,6 +4532,8 @@ class RustExplorationManager(
             try:
                 if self._rust_mgr.demote_file_path(target_sid, path):
                     self._stats_symfile_redemotions += 1
+            except MemoryError:
+                raise
             except Exception as e:
                 l.debug("re-demote %r on state %s failed: %s: %s", path, target_sid, type(e).__name__, e)
 
@@ -4558,7 +4633,7 @@ class RustExplorationManager(
                 # cat-(b) FALLBACK WITH LOSS: progress callback raised; suppress so
                 # user code can't break exploration. The callback's view skips this
                 # tick.
-                with contextlib.suppress(Exception):
+                with suppress_recoverable():
                     cb(
                         {
                             "step_count": steps_taken,
@@ -4767,6 +4842,8 @@ class RustExplorationManager(
                     if self._rust_mgr.drop_state_from_stash(sid, stash):
                         self._state_cache.pop(sid, None)
                         self._state_roots.pop(sid, None)
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(b) BENIGN: the advanced state stays in its stash and
                     # is explored redundantly; the seed is still reported as found.
@@ -5357,6 +5434,8 @@ class RustExplorationManager(
                 try:
                     if until(self):
                         break
+                except MemoryError:
+                    raise
                 except Exception:
                     # cat-(b) FALLBACK WITH LOSS: until predicate raised; we keep
                     # exploring and let the user fix their predicate. Debug-logs with
@@ -5555,6 +5634,8 @@ class RustExplorationManager(
                     if until(self):
                         l.debug("until predicate returned True, stopping exploration")
                         break
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(c) WRONG-ANSWER RISK: until predicate raised; exploration
                     # continues past the user's intended stop. Already warns.
@@ -5656,6 +5737,8 @@ class RustExplorationManager(
             return opts
         try:
             root_id = self._rust_mgr.get_state_root(state_id)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;
             # treat as no parent and start from a fresh empty options set.
@@ -5681,6 +5764,8 @@ class RustExplorationManager(
             return glb
         try:
             root_id = self._rust_mgr.get_state_root(state_id)
+        except MemoryError:
+            raise
         except Exception:
             # cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;
             # treat as no parent and start from a fresh empty globals dict.
@@ -5758,6 +5843,8 @@ class RustExplorationManager(
         """
         try:
             dropped = self._rust_mgr.drop_state_from_stash(copy_state_id, stash)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: state may already be gone (e.g.
             # double-drop) or the Rust manager torn down. drop_copy is
@@ -5773,6 +5860,8 @@ class RustExplorationManager(
             tracker.pop(copy_state_id, None)
         try:
             self._rust_mgr.clear_state_metadata(copy_state_id)
+        except MemoryError:
+            raise
         except Exception as e:
             # cat-(a) EXPECTED CONTROL FLOW: metadata clear is best-effort.
             l.debug("clear_state_metadata(sid=%d) after drop_copy failed: %s: %s", copy_state_id, type(e).__name__, e)
@@ -5944,7 +6033,7 @@ class RustExplorationManager(
             # the direct callback id is pinned, so an in-flight forked state
             # could be evicted. Tolerated — eviction is recoverable via re-
             # fetch on next access.
-            with contextlib.suppress(Exception):
+            with suppress_recoverable():
                 eff_id = self._get_effective_state_id(self._current_callback_state_id)
                 if eff_id is not None:
                     pinned.add(eff_id)
@@ -6237,7 +6326,7 @@ class RustExplorationManager(
         """
         # cat-(a) EXPECTED CONTROL FLOW: best-effort cleanup; never let a
         # drain hiccup escape into the step loop.
-        with contextlib.suppress(Exception):
+        with suppress_recoverable():
             from angr.exploration.rust_state_proxy import drain_solver_graveyard
 
             drain_solver_graveyard()
@@ -6815,6 +6904,8 @@ class RustExplorationManager(
                     py_state = self._snapshot_to_angr(snapshot)
                     matched = bool(filter_func(py_state))
                 (matched_ids if matched else unmatched_ids).append(state_id)
+            except MemoryError:
+                raise
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: predicate raised on a state; leave
                 # it where it is rather than moving/dropping it. Debug-logs.
@@ -7143,6 +7234,8 @@ class RustExplorationManager(
                     sid_by_state_key[id(py_state)] = sid
                     try:
                         demoted_by_sid[sid] = self._rust_mgr.get_demoted_paths(sid)
+                    except MemoryError:
+                        raise
                     except Exception as e:
                         # Non-fatal: a missing demoted-path query just means the
                         # merged state may re-arm a native write-demotion (the
@@ -7226,6 +7319,8 @@ class RustExplorationManager(
                             try:
                                 if self._rust_mgr.demote_file_path(new_sid, path):
                                     self._stats_symfile_redemotions += 1
+                            except MemoryError:
+                                raise
                             except Exception as e:
                                 l.debug(
                                     "re-demote %r on state %s failed: %s: %s",
@@ -7234,12 +7329,16 @@ class RustExplorationManager(
                                     type(e).__name__,
                                     e,
                                 )
+                except MemoryError:
+                    raise
                 except Exception as e:
                     # cat-(c) WRONG-ANSWER RISK: failed to re-add merged state; the
                     # merge result is lost — caller sees fewer states than expected.
                     # Already warns.
                     l.warning("Failed to re-add merged state: %s", e)
 
+        except MemoryError:
+            raise
         except Exception:
             # cat-(c) WRONG-ANSWER RISK: outer merge raised; states are left
             # unmerged (some already moved to _merge_drop and cleared above).
