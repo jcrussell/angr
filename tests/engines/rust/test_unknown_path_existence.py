@@ -51,7 +51,6 @@ class TestUnknownPathExistence:
         assert _stdouts(method, all_exist=False, might_exist=True) == [b"c0de\n", b"nothing\n"]
 
 
-@pytest.mark.xfail(strict=True, reason="a second explore() on RustBackend reads a released state (angr-mx00p.136.44)")
 def test_repeat_explore_counts_only_new_finds():
     # Like SimulationManager.explore, num_find counts finds made by this call:
     # the upstream test loops explore() until active drains, and a second call

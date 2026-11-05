@@ -25,8 +25,14 @@ from typing import TYPE_CHECKING
 from angr import claripy
 from angr.errors import SimStateError
 from angr.exploration._fallback import suppress_recoverable
-from angr.exploration.rust_state_binding import CALLBACK_FORK_STASH, CallbackForkScope
+from angr.exploration.rust_state_binding import (
+    CALLBACK_FORK_STASH,
+    CallbackForkScope,
+    RustStateBinding,
+    RustStateReleasedError,
+)
 from angr.exploration.rust_state_export import (
+    _PROXY_PLUGIN_NAMES,
     POSIX_SYNC_FDS,
     _concrete_stream_bytes,
     _concrete_stream_len,
@@ -2046,11 +2052,37 @@ class RustCallbackDispatchMixin:
         id. Without the last two a backend's callback ran on a blank state
         (angr-mx00p.136.38).
         """
-        for source in (self._state_cache, self._step_sources, self._lineage_templates):
+        cached = self._readable_mirror(state_id)
+        if cached is not None:
+            return cached
+        for source in (self._step_sources, self._lineage_templates):
             state = source.get(state_id)
             if state is not None:
                 return state
         return None
+
+    def _readable_mirror(self, state_id: int) -> angr.SimState | None:
+        """The mirror cached under *state_id*, unless its proxies read a Rust state that is gone.
+
+        A callback caches its successor bound to the state's own id, and the
+        state can fork away mid-run, before ``_release_gone_exports`` releases
+        the binding; copying such a mirror re-reads its ip (angr-mx00p.136.44).
+        """
+        state = self._state_cache.get(state_id)
+        if state is None:
+            return None
+        for name in _PROXY_PLUGIN_NAMES:
+            plugin = state.plugins.get(name)
+            binding = plugin.__dict__.get("_binding") if plugin is not None else None
+            if not isinstance(binding, RustStateBinding):
+                continue
+            try:
+                bound_id = binding.state_id
+            except RustStateReleasedError:
+                return None
+            if self._rust_mgr.get_state_pc_by_id(bound_id) is None:
+                return None
+        return state
 
     def _create_state_for_callback(self, event: _ExplorationEvent) -> angr.SimState | None:
         """Create an angr state from the pending Rust state.
@@ -2093,15 +2125,21 @@ class RustCallbackDispatchMixin:
                 self._state_cache.pop(state_id, None)
                 cached_state = None
         elif state_id is not None:
-            # Forked state - try root state first (most likely to be cached)
+            # Forked state - try the root's cached mirror first (most likely to be cached)
             root_id = self._get_pending_root_state_id()
-            if root_id is not None and (cached_state := self._callback_source_state(root_id)) is not None:
+            if root_id is not None and (cached_state := self._readable_mirror(root_id)) is not None:
                 lookup_state_id = root_id
                 if _DBG:
                     l.debug(f"Using root state {root_id} cache for forked state {state_id}")
             else:
-                # Walk full ancestry chain to find any cached ancestor
-                for ancestor_id in self._get_pending_ancestry():
+                # Walk full ancestry chain to find any cached ancestor. The root's
+                # step source or lineage template comes after them: a nearer
+                # ancestor's mirror carries the callbacks run since the root
+                # (angr-mx00p.136.44).
+                ancestry = self._get_pending_ancestry()
+                if root_id is not None and root_id not in ancestry:
+                    ancestry.append(root_id)
+                for ancestor_id in ancestry:
                     if (cached_state := self._callback_source_state(ancestor_id)) is not None:
                         lookup_state_id = ancestor_id
                         if _DBG:
