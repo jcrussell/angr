@@ -102,8 +102,8 @@ class TestProjectEngineSentinel:
 class TestNamingTheEngineStaysLoud:
     def test_explicit_rust_keeps_its_loud_contract(self, rust_project):
         """The project default must not soften the per-call opt-in's raise."""
-        with pytest.raises(NotImplementedError, match="resilience"):
-            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", resilience=True)
+        with pytest.raises(NotImplementedError, match="hierarchy"):
+            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", hierarchy=None)
 
     def test_python_on_a_rust_project_is_a_plain_simulation_manager(self, rust_project):
         """The per-call way back to Python is the stock constructor."""

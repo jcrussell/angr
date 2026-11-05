@@ -1235,6 +1235,7 @@ class RustExplorationManager(
         use_native_lift: bool = True,
         parallel_workers: int = 1,
         symlinks: dict | None = None,
+        resilience=None,
     ):
         """Initialize the Rust exploration manager.
 
@@ -1316,6 +1317,12 @@ class RustExplorationManager(
                 this kwarg (benches set it explicitly). Passing >1 together
                 with ``deterministic=True`` raises ``ValueError`` — the
                 work-stealing steal order is nondeterministic by design.
+            resilience: As ``SimulationManager``'s (``None``, ``True``,
+                ``False`` or a tuple of exception types). A state the Rust
+                engine errors still lands in ``errored``; when its error
+                (:func:`sim_error_for_rust_message`, a ``SimError``) is not
+                one of these types, the ``step()`` / ``explore()`` that
+                errored it raises that error, as the Python engine does.
         """
         # angr-op0dn.13.5 (M5-B16): the work-stealing steal order is
         # nondeterministic by design, so a reproducible (deterministic) run and
@@ -1376,6 +1383,10 @@ class RustExplorationManager(
         # ``_add_rust_state`` replays these onto every seed state; forks
         # inherit via the Rust ``FileSystem`` Arc clone.
         self._pending_symlinks: dict[str, bytes] = {}
+        from angr.sim_manager import resilience_errors
+
+        self._resilience = resilience_errors(resilience)
+        self._errors_raised: set[int] = set()
         if symlinks:
             for link, target in symlinks.items():
                 self._pending_symlinks[str(link)] = (
@@ -5039,6 +5050,7 @@ class RustExplorationManager(
                 for sid in self._rust_mgr.get_state_ids(source):
                     if sid not in before:
                         self._rust_mgr.move_state(sid, source, target)
+        self._raise_uncovered_error()
         return result
 
     def _explore_rounds(self, n: int, num_find: int, until: Callable | None) -> RustExplorationManager:
@@ -6043,7 +6055,25 @@ class RustExplorationManager(
 
         self._release_gone_exports()
         self._drain_solver_graveyard()
+        self._raise_uncovered_error()
         return self
+
+    def _raise_uncovered_error(self) -> None:
+        """Raise the error of a newly errored state that ``resilience`` does not cover.
+
+        The state stays in ``errored``; each error id is raised at most once, so a later
+        ``step()`` goes on with the other states. Every Rust error maps to a ``SimError``,
+        so a resilience that covers ``SimError`` (the default and ``True``) never raises.
+        """
+        if any(issubclass(SimError, kind) for kind in self._resilience):
+            return
+        for _, message, state_id in self._rust_mgr.get_errors():
+            if state_id in self._errors_raised:
+                continue
+            self._errors_raised.add(state_id)
+            error = sim_error_for_rust_message(message, RustErrorRecord._classify(message))
+            if not isinstance(error, self._resilience):
+                raise error
 
     def _step_loop(self, n: int) -> bool:
         """Run ``n`` steps for :meth:`step`, stopping early on a callback or an empty stash; False when it stopped.

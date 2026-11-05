@@ -26,6 +26,27 @@ from .state_plugins.sim_event import resource_event
 l = logging.getLogger(name=__name__)
 
 
+def resilience_errors(resilience) -> tuple[type[BaseException], ...]:
+    """The exception types a manager built with ``resilience=`` *resilience* records in ``errored``."""
+    if resilience is None:
+        return (AngrError, SimError, claripy.ClaripyError)
+    if resilience is True:
+        return (
+            AngrError,
+            SimError,
+            claripy.ClaripyError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            ArithmeticError,
+            MemoryError,
+        )
+    if resilience is False:
+        return ()
+    return tuple(resilience)
+
+
 class SimulationManager:
     """
     The Simulation Manager is the future future.
@@ -111,24 +132,7 @@ class SimulationManager:
         }
         self._techniques = []
 
-        if resilience is None:
-            self._resilience = (AngrError, SimError, claripy.ClaripyError)
-        elif resilience is True:
-            self._resilience = (
-                AngrError,
-                SimError,
-                claripy.ClaripyError,
-                KeyError,
-                IndexError,
-                TypeError,
-                ValueError,
-                ArithmeticError,
-                MemoryError,
-            )
-        elif resilience is False:
-            self._resilience = ()
-        else:
-            self._resilience = tuple(resilience)
+        self._resilience = resilience_errors(resilience)
 
         if suggestions:
             self.use_technique(Suggestions())

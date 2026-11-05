@@ -4,8 +4,8 @@ never *silently drops* a kwarg.
 The contract: every kwarg the Python ``SimulationManager`` accepts either
 reaches the Rust manager built by
 :meth:`angr.factory.AngrObjectFactory.simulation_manager` or raises loudly, so
-``simulation_manager(state, engine="rust", resilience=True)`` never
-constructs a manager that quietly ignores ``resilience`` (angr-op0dn.14.5.1).
+``simulation_manager(state, engine="rust", hierarchy=...)`` never
+constructs a manager that quietly ignores ``hierarchy`` (angr-op0dn.14.5.1).
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ class TestRaiseOptionPredicate:
 
     def test_kwargs_predicate_matches_the_signature(self):
         assert unsupported_rust_manager_kwargs({"save_unconstrained": True, "deterministic": True}) == []
-        assert unsupported_rust_manager_kwargs({"hierarchy": None, "resilience": True}) == [
+        assert unsupported_rust_manager_kwargs({"hierarchy": None, "save_unsat": True}) == [
             "hierarchy",
-            "resilience",
+            "save_unsat",
         ]

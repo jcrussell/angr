@@ -202,9 +202,9 @@ class TestFactoryDispatch:
         assert "TRACK_MEMORY_ACTIONS" in reason
 
     def test_falls_back_to_python_on_unsupported_kwarg(self, rust_project, caplog):
-        mgr, reason = _routed(caplog, rust_project, rust_project.factory.entry_state(), resilience=True)
+        mgr, reason = _routed(caplog, rust_project, rust_project.factory.entry_state(), hierarchy=None)
         assert type(mgr) is SimulationManager
-        assert "resilience" in reason
+        assert "hierarchy" in reason
 
     def test_falls_back_to_python_on_unimplemented_arch(self, rust_project, monkeypatch, caplog):
         monkeypatch.setattr("angr.exploration.rust_manager.rust_supports_arch", lambda _name: False)
@@ -260,8 +260,8 @@ class TestFactoryDispatch:
 
     def test_explicit_rust_still_raises_on_unsupported_kwarg(self, rust_project):
         """Naming the engine keeps its loud contract even on an opted-in project."""
-        with pytest.raises(NotImplementedError, match="resilience"):
-            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", resilience=True)
+        with pytest.raises(NotImplementedError, match="hierarchy"):
+            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", hierarchy=None)
 
     def test_simgr_alias_routes_too(self, rust_project):
         mgr = rust_project.factory.simgr(rust_project.factory.entry_state())

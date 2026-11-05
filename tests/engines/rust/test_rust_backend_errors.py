@@ -3,7 +3,8 @@
 An undecodable instruction errors with SimIRSBNoDecodeError and an NX fetch
 with SimSegfaultException on both engines, the record's state is a SimState,
 and resilience=False propagates the error out of step() as it does on the
-Python engine.
+Python engine. RustExplorationManager honors resilience= the same way
+(angr-mx00p.132.43).
 """
 
 from __future__ import annotations
@@ -98,6 +99,37 @@ def test_rust_manager_record_holds_the_sim_error():
     assert isinstance(record.error, SimIRSBNoDecodeError)
     assert record.message.startswith("IR decoding error at 0x400000")
     assert record.message in repr(record)
+
+
+@pytest.mark.parametrize(
+    ("resilience", "raises"),
+    [(None, False), (True, False), ((SimIRSBNoDecodeError,), False), (False, True), ((SimSegfaultException,), True)],
+)
+@pytest.mark.parametrize("call", ["step", "run"])
+def test_rust_manager_honors_resilience(resilience, raises, call):
+    """The error a resilience does not cover leaves step() / run(), and the state is still in errored."""
+    project = _ud2_project()
+    mgr = RustExplorationManager(project, [_ud2_state(project)], resilience=resilience)
+    stepped = mgr.step if call == "step" else mgr.run
+    if raises:
+        with pytest.raises(SimIRSBNoDecodeError):
+            stepped()
+    else:
+        stepped()
+    (record,) = mgr.errored
+    assert isinstance(record.error, SimIRSBNoDecodeError)
+    # Each error is raised once: the next step goes on with what is left.
+    mgr.step()
+
+
+def test_default_routed_resilience_manager_runs_on_rust():
+    """A project-default route keeps a resilience= manager on Rust; its Python handoff keeps the kwarg."""
+    project = angr.load_shellcode(UD2, arch="amd64", load_address=LOAD, engine="rust")
+    mgr = project.factory.simulation_manager(_ud2_state(project), resilience=False)
+    assert isinstance(mgr, RustExplorationManager)
+    assert mgr._python_handoff_kwargs == {"resilience": False}
+    with pytest.raises(SimIRSBNoDecodeError):
+        mgr.step()
 
 
 @pytest.mark.parametrize(
