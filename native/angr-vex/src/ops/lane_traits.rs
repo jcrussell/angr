@@ -198,18 +198,25 @@ macro_rules! impl_float_lane_minmax {
 impl_float_lane_minmax!(FMin, <, false);
 impl_float_lane_minmax!(FMax, >, true);
 
-/// AArch64 FMIN/FMAX (vector and pairwise) under FPCR.DN=0, the lane ops
-/// [`super::FloatMinMaxRule::Arm64`] picks: a NaN operand propagates quieted,
-/// a signalling one first and then the first operand, and -0 orders below +0.
-pub(super) struct FMinArm64;
-/// See [`FMinArm64`].
-pub(super) struct FMaxArm64;
+/// ARM FMIN/FMAX (vector and pairwise), the lane op
+/// [`super::FloatMinMaxRule::Arm64`] and
+/// [`super::FloatMinMaxRule::Arm32Neon`] pick: -0 orders below +0, and a NaN
+/// operand gives the default NaN when `default_nan` (Advanced SIMD's standard
+/// FPSCR, DN=1), else propagates quieted, a signalling one first and then the
+/// first operand (AArch64 FPCR.DN=0).
+pub(super) struct ArmFMinMax {
+    pub(super) is_max: bool,
+    pub(super) default_nan: bool,
+}
 
-/// Generate the concrete AArch64 FMIN/FMAX lane rule for one float type.
-macro_rules! arm64_minmax_concrete {
-    ($name:ident, $ty:ty, $quiet:expr) => {
-        fn $name(a: $ty, b: $ty, is_max: bool) -> $ty {
+/// Generate the concrete ARM FMIN/FMAX lane rule for one float type.
+macro_rules! arm_minmax_concrete {
+    ($name:ident, $ty:ty, $quiet:expr, $default_nan:expr) => {
+        fn $name(a: $ty, b: $ty, op: &ArmFMinMax) -> $ty {
             if a.is_nan() || b.is_nan() {
+                if op.default_nan {
+                    return <$ty>::from_bits($default_nan);
+                }
                 let signalling = |x: $ty| x.is_nan() && x.to_bits() & $quiet == 0;
                 let nan = if signalling(a) || (!signalling(b) && a.is_nan()) {
                     a
@@ -220,49 +227,57 @@ macro_rules! arm64_minmax_concrete {
             }
             // Equal operands differ only in a zero's sign.
             let pick_a = if a == b {
-                a.is_sign_negative() != is_max
+                a.is_sign_negative() != op.is_max
             } else {
-                (a < b) != is_max
+                (a < b) != op.is_max
             };
             if pick_a { a } else { b }
         }
     };
 }
 
-arm64_minmax_concrete!(arm64_minmax_f32, f32, 1u32 << 22);
-arm64_minmax_concrete!(arm64_minmax_f64, f64, 1u64 << 51);
+arm_minmax_concrete!(arm_minmax_f32, f32, 1u32 << 22, 0x7fc0_0000);
+arm_minmax_concrete!(arm_minmax_f64, f64, 1u64 << 51, 0x7ff8_0000_0000_0000);
 
-/// The symbolic form of [`arm64_minmax_f32`] / [`arm64_minmax_f64`].
+/// The symbolic form of [`arm_minmax_f32`] / [`arm_minmax_f64`].
 #[allow(
     clippy::expect_used,
     reason = "arity-2 dispatch invariant: the only route here is `FloatLaneOp::symbolic` from `vec_float_lane_op` / `vec_float_pairwise_op`, which pass `arity()` lanes — see the module Panic policy header"
 )]
-fn arm64_minmax_symbolic(args: Vec<RustBV>, prec: FloatPrec, is_max: bool) -> RustBV {
+fn arm_minmax_symbolic(args: Vec<RustBV>, prec: FloatPrec, op: &ArmFMinMax) -> RustBV {
     let mut iter = args.into_iter();
-    let a = iter.next().expect("FMinArm64/FMaxArm64 arity 2");
-    let b = iter.next().expect("FMinArm64/FMaxArm64 arity 2");
+    let a = iter.next().expect("ArmFMinMax arity 2");
+    let b = iter.next().expect("ArmFMinMax arity 2");
     let bits = prec.bits();
     // The quiet bit is the top mantissa bit.
     let q = match prec {
         FloatPrec::F32 => 22,
         FloatPrec::F64 => 51,
     };
-    let quiet = RustBV::concrete(1u128 << q, bits);
     let is_nan = |x: &RustBV| build_float_expr(FloatOpKind::IsNaN, prec, vec![x.clone()]);
-    let quiet_bit_clear = |x: &RustBV| x.extract(q, q).eq_into(RustBV::concrete(0, 1));
     let (a_nan, b_nan) = (is_nan(&a), is_nan(&b));
-    let a_snan = a_nan.clone().and_into(quiet_bit_clear(&a));
-    let b_snan = b_nan.clone().and_into(quiet_bit_clear(&b));
-    let nan_is_a = a_snan.or_into(b_snan.not_into().and_into(a_nan.clone()));
-    let nan = nan_is_a.ite_into(a.clone(), b.clone()).or_into(quiet);
-    let ordered = if is_max {
+    let nan = if op.default_nan {
+        let default_nan = match prec {
+            FloatPrec::F32 => u128::from(f32::NAN.to_bits()),
+            FloatPrec::F64 => u128::from(f64::NAN.to_bits()),
+        };
+        RustBV::concrete(default_nan, bits)
+    } else {
+        let quiet = RustBV::concrete(1u128 << q, bits);
+        let quiet_bit_clear = |x: &RustBV| x.extract(q, q).eq_into(RustBV::concrete(0, 1));
+        let a_snan = a_nan.clone().and_into(quiet_bit_clear(&a));
+        let b_snan = b_nan.clone().and_into(quiet_bit_clear(&b));
+        let nan_is_a = a_snan.or_into(b_snan.not_into().and_into(a_nan.clone()));
+        nan_is_a.ite_into(a.clone(), b.clone()).or_into(quiet)
+    };
+    let ordered = if op.is_max {
         build_float_expr(FloatOpKind::CmpLt, prec, vec![b.clone(), a.clone()])
     } else {
         build_float_expr(FloatOpKind::CmpLt, prec, vec![a.clone(), b.clone()])
     };
     let a_negative = a.extract(bits - 1, bits - 1);
     let zero_tie = build_float_expr(FloatOpKind::CmpEq, prec, vec![a.clone(), b.clone()]).and_into(
-        if is_max {
+        if op.is_max {
             a_negative.not_into()
         } else {
             a_negative
@@ -272,28 +287,20 @@ fn arm64_minmax_symbolic(args: Vec<RustBV>, prec: FloatPrec, is_max: bool) -> Ru
     a_nan.or_into(b_nan).ite_into(nan, value)
 }
 
-/// Generate the `FloatLaneOp` impl for an AArch64 FMIN/FMAX lane op.
-macro_rules! impl_float_lane_arm64_minmax {
-    ($name:ident, $is_max:expr) => {
-        impl FloatLaneOp for $name {
-            fn arity(&self) -> usize {
-                2
-            }
-            fn concrete_f32(&self, a: &[f32]) -> f32 {
-                arm64_minmax_f32(a[0], a[1], $is_max)
-            }
-            fn concrete_f64(&self, a: &[f64]) -> f64 {
-                arm64_minmax_f64(a[0], a[1], $is_max)
-            }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV {
-                arm64_minmax_symbolic(args, prec, $is_max)
-            }
-        }
-    };
+impl FloatLaneOp for ArmFMinMax {
+    fn arity(&self) -> usize {
+        2
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        arm_minmax_f32(a[0], a[1], self)
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        arm_minmax_f64(a[0], a[1], self)
+    }
+    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec) -> RustBV {
+        arm_minmax_symbolic(args, prec, self)
+    }
 }
-
-impl_float_lane_arm64_minmax!(FMinArm64, false);
-impl_float_lane_arm64_minmax!(FMaxArm64, true);
 
 /// Maximum arity supported by `IntLaneOp`. Sized for the current set of
 /// per-lane integer ops (unary Abs and binary Add/Sub/Mul/CmpEQ/CmpGT/Min/Max).

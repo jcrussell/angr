@@ -44,9 +44,9 @@ use super::transcendentals;
 mod lane_traits;
 
 use lane_traits::{
-    FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMaxArm64, FMin, FMinArm64, FMul, FNeg,
-    FRoundToInt, FSqrt, FSub, FloatLaneOp, IAbs, IAdd, ICmpEq, ICmpGt, IMinMax, IMul,
-    INT_LANE_OP_MAX_ARITY, ISub, IntLaneOp, build_float_expr, float_prec_of,
+    ArmFMinMax, FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMin, FMul, FNeg, FRoundToInt,
+    FSqrt, FSub, FloatLaneOp, IAbs, IAdd, ICmpEq, ICmpGt, IMinMax, IMul, INT_LANE_OP_MAX_ARITY,
+    ISub, IntLaneOp, build_float_expr, float_prec_of,
 };
 
 /// Compress same-width unary arms: `require_operand_width(width(arg), ty.bits())?;
@@ -426,21 +426,29 @@ impl VEXOps {
         if !rule.covers(&op) {
             return Err(OpError::NotBinary(op));
         }
-        match (rule, op) {
-            (FloatMinMaxRule::X86, _) => Self::binop(op, left, right),
-            (FloatMinMaxRule::Arm64, IROp::VFMin { elem, count }) => {
-                Self::vec_float_lane_op(&[left, right], elem, count, &FMinArm64)
+        let default_nan = match rule {
+            FloatMinMaxRule::X86 => return Self::binop(op, left, right),
+            FloatMinMaxRule::Arm64 => false,
+            FloatMinMaxRule::Arm32Neon => true,
+        };
+        let lane = |is_max| ArmFMinMax {
+            is_max,
+            default_nan,
+        };
+        match op {
+            IROp::VFMin { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &lane(false))
             }
-            (FloatMinMaxRule::Arm64, IROp::VFMax { elem, count }) => {
-                Self::vec_float_lane_op(&[left, right], elem, count, &FMaxArm64)
+            IROp::VFMax { elem, count } => {
+                Self::vec_float_lane_op(&[left, right], elem, count, &lane(true))
             }
-            (FloatMinMaxRule::Arm64, IROp::VFPwMin { elem, count }) => {
-                Self::vec_float_pairwise_op(left, right, elem, count, &FMinArm64)
+            IROp::VFPwMin { elem, count } => {
+                Self::vec_float_pairwise_op(left, right, elem, count, &lane(false))
             }
-            (FloatMinMaxRule::Arm64, IROp::VFPwMax { elem, count }) => {
-                Self::vec_float_pairwise_op(left, right, elem, count, &FMaxArm64)
+            IROp::VFPwMax { elem, count } => {
+                Self::vec_float_pairwise_op(left, right, elem, count, &lane(true))
             }
-            (FloatMinMaxRule::Arm64, _) => Err(OpError::NotBinary(op)),
+            _ => Err(OpError::NotBinary(op)),
         }
     }
 
@@ -1306,9 +1314,10 @@ impl VEXOps {
 mod error;
 
 /// Which guest instruction a vector float min/max IROp stands for. libVEX
-/// lifts x86 MINPS/MAXPS/MINSS/MAXSD and AArch64 FMIN/FMAX/FMINP/FMAXP to
-/// the same `Iop_{Min,Max}*F*` and `Iop_Pw{Min,Max}*F*` ops, and the two
-/// disagree on +-0 and NaN (angr-mx00p.128).
+/// lifts x86 MINPS/MAXPS/MINSS/MAXSD, AArch64 FMIN/FMAX/FMINP/FMAXP and ARM32
+/// NEON VMIN/VMAX/VPMIN/VPMAX.F32 to the same `Iop_{Min,Max}*F*` and
+/// `Iop_Pw{Min,Max}*F*` ops, and they disagree on +-0 and NaN
+/// (angr-mx00p.128, angr-mx00p.138).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatMinMaxRule {
     /// MINPS/MAXPS: `a < b ? a : b` / `a > b ? a : b`, so the second operand
@@ -1317,6 +1326,11 @@ pub enum FloatMinMaxRule {
     /// FMIN/FMAX under FPCR.DN=0: a NaN propagates quieted (a signalling one
     /// first, then the first operand) and -0 orders below +0.
     Arm64,
+    /// NEON VMIN/VMAX/VPMIN/VPMAX.F32 under Advanced SIMD's standard FPSCR
+    /// (DN=1): a NaN operand gives the default NaN and -0 orders below +0.
+    /// The standard FPSCR's flush-to-zero is not modelled, as for every other
+    /// NEON float op.
+    Arm32Neon,
 }
 
 impl FloatMinMaxRule {
@@ -1326,20 +1340,21 @@ impl FloatMinMaxRule {
         match guest {
             VexArch::X86 | VexArch::AMD64 => Some(Self::X86),
             VexArch::ARM64 => Some(Self::Arm64),
+            VexArch::ARM => Some(Self::Arm32Neon),
             _ => None,
         }
     }
 
     /// Whether `op` is a vector float min/max op this guest's lifter emits:
     /// the packed and scalar-in-vector forms on x86, the packed and pairwise
-    /// forms on AArch64.
+    /// forms on AArch64 and ARM32.
     pub fn covers(self, op: &IROp) -> bool {
         match self {
             Self::X86 => matches!(
                 op,
                 IROp::VFMin { .. } | IROp::VFMax { .. } | IROp::VFMinS { .. } | IROp::VFMaxS { .. }
             ),
-            Self::Arm64 => matches!(
+            Self::Arm64 | Self::Arm32Neon => matches!(
                 op,
                 IROp::VFMin { .. }
                     | IROp::VFMax { .. }

@@ -88,8 +88,8 @@ static SERVED: LazyLock<FxHashMap<&'static str, IROp>> = LazyLock::new(|| {
 
 /// Whether `op` is a vector float min/max op, whose rule depends on the
 /// guest ([`FloatMinMaxRule`]): [`irop`] serves it only when called with an
-/// `arch` whose rule covers it. irop.py follows neither x86 nor AArch64 on +-0
-/// and NaN (angr-mx00p.128).
+/// `arch` whose rule covers it. irop.py follows none of the x86, AArch64 and
+/// ARM32 NEON rules on +-0 and NaN (angr-mx00p.128).
 fn is_guest_ruled(op: &IROp) -> bool {
     matches!(
         op,

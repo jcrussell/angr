@@ -652,6 +652,13 @@ def _arm64_minmax(a, b, lane, is_max):
     return a if (fa > fb if is_max else fa < fb) else b
 
 
+def _arm32_neon_minmax(a, b, lane, is_max):
+    """NEON VMIN/VMAX under the standard FPSCR (DN=1): any NaN gives the default NaN; -0 < +0."""
+    if math.isnan(_as_float(a, lane)) or math.isnan(_as_float(b, lane)):
+        return 0x7FC00000 if lane == 32 else 0x7FF8000000000000
+    return _arm64_minmax(a, b, lane, is_max)
+
+
 def _minmax_expected(name, rule, left, right):
     is_max, pairwise, scalar, lane, count = _minmax_shape(name)
     ls, rs = _split(lane, left, count), _split(lane, right, count)
@@ -668,6 +675,8 @@ MINMAX_GUESTS = {
     "AMD64": (_x86_minmax, lambda pairwise, scalar: not pairwise),
     "X86": (_x86_minmax, lambda pairwise, scalar: not pairwise),
     "AARCH64": (_arm64_minmax, lambda pairwise, scalar: not scalar),
+    "ARMEL": (_arm32_neon_minmax, lambda pairwise, scalar: not scalar),
+    "ARMHF": (_arm32_neon_minmax, lambda pairwise, scalar: not scalar),
 }
 
 
@@ -702,11 +711,11 @@ def test_rust_irop_minmax_follows_the_guest(name):
             assert list(solver.eval(out, 2)) == [_minmax_expected(name, rule, left, right)], (arch, hex(left))
         served += 1
     assert served
-    for arch in (None, "ARMEL", "PPC64"):
+    for arch in (None, "MIPS32", "PPC64"):
         assert vex_irop.irop(name, (claripy.BVV(0, bits), claripy.BVV(0, bits)), arch) is None
 
 
-@pytest.mark.parametrize("arch", ["AMD64", "AARCH64", "ARMEL"])
+@pytest.mark.parametrize("arch", ["AMD64", "AARCH64", "ARMEL", "MIPS32"])
 def test_engine_serves_minmax_under_the_state_s_arch(arch):
     """The engine's op dispatch hands Rust the state's arch, and a guest without a rule keeps irop.py's answer."""
     l = _join(32, [0, 0x80000000, 0x7FC00001, 0x3F800000])
@@ -714,7 +723,7 @@ def test_engine_serves_minmax_under_the_state_s_arch(arch):
     args = [claripy.BVV(l, 128), claripy.BVV(r, 128)]
     state = SimpleNamespace(arch=SimpleNamespace(name=arch), options={o.SUPPORT_FLOATING_POINT})
     out = datalayer.ClaripyDataMixin._perform_vex_expr_Op(SimpleNamespace(state=state), "Iop_Min32Fx4", args)
-    if arch == "ARMEL":
+    if arch == "MIPS32":
         assert out.identical(_python("Iop_Min32Fx4", args)[0])
     else:
         rule = MINMAX_GUESTS[arch][0]

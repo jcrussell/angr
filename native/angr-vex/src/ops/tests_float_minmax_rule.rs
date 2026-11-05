@@ -1,6 +1,7 @@
 //! Per-guest vector float min/max ([`FloatMinMaxRule`], angr-mx00p.128):
 //! x86 MINPS/MAXPS pick the second operand on +-0 and NaN, AArch64 FMIN/FMAX
-//! propagate the NaN quieted and order -0 below +0.
+//! propagate the NaN quieted and order -0 below +0, ARM32 NEON VMIN/VMAX give
+//! the default NaN and order -0 below +0 (angr-mx00p.138).
 
 use super::*;
 use crate::ir::IRType;
@@ -106,12 +107,45 @@ fn arm64_minmax_f64_and_pairwise() {
     assert_eq!(out.as_u128(), Some(u128::from(NEG0) | (u128::from(NEG0) << 32)));
 }
 
+/// NEON VMIN/VMAX under the standard FPSCR: any NaN lane, signalling or
+/// quiet, in either position, gives the default NaN.
+#[test]
+fn arm32_neon_minmax_order_zeros_and_give_the_default_nan() {
+    const DEFAULT_NAN: u32 = 0x7fc0_0000;
+    let g = VexArch::ARM;
+    assert_eq!(FloatMinMaxRule::for_guest(g), Some(FloatMinMaxRule::Arm32Neon));
+    let nans = [DEFAULT_NAN; 2];
+    assert_eq!(lanes(g, VMIN, L, R), [NEG0, NEG0, nans[0], nans[1]]);
+    assert_eq!(lanes(g, VMAX, L, R), [POS0, POS0, nans[0], nans[1]]);
+    assert_eq!(lanes(g, VMIN, [ONE; 4], [TWO; 4]), [ONE; 4]);
+    assert_eq!(lanes(g, VMAX, [ONE; 4], [TWO; 4]), [TWO; 4]);
+    let l = [QNAN, SNAN, 0xffc0_0001, SNAN];
+    let r = [SNAN, QNAN, ONE, 0xff80_0002];
+    assert_eq!(lanes(g, VMIN, l, r), [DEFAULT_NAN; 4]);
+    assert_eq!(lanes(g, VMAX, l, r), [DEFAULT_NAN; 4]);
+    // VPMIN.F32 over a (+0, -0) pair and a (QNaN, 1) pair.
+    let left = u128::from(NEG0) << 32;
+    let right = u128::from(QNAN) | (u128::from(ONE) << 32);
+    let out = VEXOps::binop_for_guest(
+        g,
+        IROp::VFPwMin {
+            elem: IRType::F32,
+            count: 2,
+        },
+        RustBV::concrete(left, 64),
+        RustBV::concrete(right, 64),
+    )
+    .unwrap();
+    assert_eq!(out.as_u128(), Some(u128::from(NEG0) | (u128::from(DEFAULT_NAN) << 32)));
+    assert!(!FloatMinMaxRule::Arm32Neon.covers(&IROp::VFMinS { elem: IRType::F32 }));
+}
+
 /// A guest without a rule, and an op its rule does not cover, keep
 /// [`VEXOps::binop`]; [`VEXOps::float_minmax`] refuses an uncovered op.
 #[test]
 fn rule_coverage() {
-    assert_eq!(FloatMinMaxRule::for_guest(VexArch::ARM), None);
-    assert_eq!(lanes(VexArch::ARM, VMIN, L, R), R);
+    assert_eq!(FloatMinMaxRule::for_guest(VexArch::MIPS32), None);
+    assert_eq!(lanes(VexArch::MIPS32, VMIN, L, R), R);
     let scalar = IROp::VFMinS { elem: IRType::F32 };
     assert!(FloatMinMaxRule::X86.covers(&scalar));
     assert!(!FloatMinMaxRule::Arm64.covers(&scalar));
@@ -138,5 +172,8 @@ fn arm64_minmax_symbolic_builds() {
     let x = RustBV::symbol("x", 128);
     let out = VEXOps::binop_for_guest(VexArch::ARM64, VMIN, x, RustBV::concrete(0, 128)).unwrap();
     assert_eq!(out.width(), 128);
+    assert!(out.is_symbolic());
+    let x = RustBV::symbol("x", 128);
+    let out = VEXOps::binop_for_guest(VexArch::ARM, VMAX, x, RustBV::concrete(0, 128)).unwrap();
     assert!(out.is_symbolic());
 }

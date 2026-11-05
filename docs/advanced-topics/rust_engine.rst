@@ -485,9 +485,9 @@ lanes of a vector register (``vex::ops::is_vector_float_op``), except:
   ``irop.py`` builds from fresh symbols;
 - the vector float ``Sub`` ops, whose ``irop.py`` results pass through a
   clarirs ``fpSub`` fold that flips a NaN's sign (angr-mx00p.127);
-- the vector float ``Min`` / ``Max`` ops, which x86 and AArch64 define
-  differently on signed zeros and NaN and ``irop.py`` matches neither
-  (angr-mx00p.128);
+- the vector float ``Min`` / ``Max`` ops, which x86, AArch64 and ARM32
+  NEON define differently on signed zeros and NaN and ``irop.py`` matches
+  none of (angr-mx00p.128, angr-mx00p.138);
 - the packed ``Iop_F32toI32*`` conversions: libVEX leaves an out-of-range
   lane undefined, Rust saturates it and ``irop.py`` gives 0
   (angr-mx00p.129).
