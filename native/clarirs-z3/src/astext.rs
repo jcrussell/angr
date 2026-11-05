@@ -93,6 +93,37 @@ fn mk_bv2int(bv: &RcAst) -> Result<RcAst, ClarirsError> {
     Z3_CONTEXT.with(|&z3_ctx| unsafe { RcAst::try_from(Z3_mk_bv2int(z3_ctx, **bv, false)) })
 }
 
+/// Z3's `=` / `distinct` on floats is SMT object identity (NaN equals NaN,
+/// +0 differs from -0), while clarirs `Eq` / `Neq` on floats are IEEE `fp.eq`.
+/// Rebuild the identity from IEEE predicates so a Z3 simplify result such as
+/// `fp.lt(x, +oo)` → `(and (not (= x +oo)) (not (= x NaN)))` keeps its
+/// meaning on the way back (angr-mx00p.137).
+fn fp_structural_eq<'c>(
+    ctx: &'c Context<'c>,
+    lhs: AstRef<'c>,
+    rhs: AstRef<'c>,
+) -> Result<AstRef<'c>, ClarirsError> {
+    let (sym, lit) = match (lhs.op(), rhs.op()) {
+        (_, AstOp::FPV(f)) => (&lhs, Some(f)),
+        (AstOp::FPV(f), _) => (&rhs, Some(f)),
+        _ => (&lhs, None),
+    };
+    match lit {
+        Some(f) if f.is_nan() => ctx.fp_is_nan(sym),
+        // fp.eq agrees with identity for any literal that is neither NaN nor a zero.
+        Some(f) if !f.is_zero() => ctx.fp_eq(&lhs, &rhs),
+        // A non-NaN's IEEE bit pattern is exact, so identity is bit equality
+        // unless both sides are NaN (whose to_ieee_bv is unspecified).
+        _ => ctx.or(vec![
+            ctx.and(vec![ctx.fp_is_nan(&lhs)?, ctx.fp_is_nan(&rhs)?])?,
+            ctx.and(vec![
+                ctx.not(ctx.fp_is_nan(&lhs)?)?,
+                ctx.eq_(ctx.fp_to_ieeebv(&lhs)?, ctx.fp_to_ieeebv(&rhs)?)?,
+            ])?,
+        ]),
+    }
+}
+
 fn decode_custom_unicode(input: &str) -> String {
     let re = Regex::new(r"\\u\{([0-9a-fA-F]+)\}").unwrap();
     re.replace_all(input, |caps: &regex::Captures| {
@@ -643,8 +674,12 @@ impl<'c> AstExtZ3<'c> for AstRef<'c> {
                         DeclKind::Eq => {
                             let lhs = AstRef::from_z3(ctx, arg(0)?)?;
                             let rhs = AstRef::from_z3(ctx, arg(1)?)?;
-                            // eq_ picks the right per-sort equality from the operand type.
-                            ctx.eq_(lhs, rhs)
+                            if lhs.ast_type().is_float() {
+                                fp_structural_eq(ctx, lhs, rhs)
+                            } else {
+                                // eq_ picks the right per-sort equality from the operand type.
+                                ctx.eq_(lhs, rhs)
+                            }
                         }
                         DeclKind::Distinct => {
                             if Z3_get_app_num_args(z3_ctx, app) != 2 {
@@ -654,7 +689,11 @@ impl<'c> AstExtZ3<'c> for AstRef<'c> {
                             }
                             let lhs = AstRef::from_z3(ctx, arg(0)?)?;
                             let rhs = AstRef::from_z3(ctx, arg(1)?)?;
-                            ctx.neq(lhs, rhs)
+                            if lhs.ast_type().is_float() {
+                                ctx.not(fp_structural_eq(ctx, lhs, rhs)?)
+                            } else {
+                                ctx.neq(lhs, rhs)
+                            }
                         }
                         DeclKind::Ult => ctx.ult(
                             AstRef::from_z3(ctx, arg(0)?)?,
@@ -879,11 +918,27 @@ impl<'c> AstExtZ3<'c> for AstRef<'c> {
                                 Z3_fpa_get_ebits(z3_ctx, sort),
                                 Z3_fpa_get_sbits(z3_ctx, sort) - 1,
                             );
-                            let val = Z3_get_numeral_double(z3_ctx, *ast);
-                            if fsort == FSort::f32() {
-                                ctx.fpv(Float::F32(val as f32))
+                            // Decode through the IEEE bit pattern: Z3_get_numeral_double
+                            // flushes a subnormal numeral to 0 (angr-mx00p.137). An FpaNum
+                            // is never NaN, so to_ieee_bv is exact here.
+                            let bits_ast = RcAst::try_from(Z3_mk_fpa_to_ieee_bv(z3_ctx, *ast))?;
+                            let bits_ast = RcAst::try_from(Z3_simplify(z3_ctx, *bits_ast))?;
+                            let mut bits = 0u64;
+                            if fsort == FSort::f32()
+                                && Z3_get_numeral_uint64(z3_ctx, *bits_ast, &mut bits)
+                            {
+                                let bits = u32::try_from(bits).map_err(|_| {
+                                    ClarirsError::ConversionError(
+                                        "f32 numeral wider than 32 bits".to_string(),
+                                    )
+                                })?;
+                                ctx.fpv(Float::F32(f32::from_bits(bits)))
+                            } else if fsort == FSort::f64()
+                                && Z3_get_numeral_uint64(z3_ctx, *bits_ast, &mut bits)
+                            {
+                                ctx.fpv(Float::F64(f64::from_bits(bits)))
                             } else {
-                                ctx.fpv(Float::F64(val))
+                                ctx.fpv(Float::F64(Z3_get_numeral_double(z3_ctx, *ast)))
                             }
                         }
                         DeclKind::FpaNan => {

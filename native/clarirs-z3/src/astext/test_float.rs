@@ -997,3 +997,94 @@ mod semantics {
         }
     }
 }
+
+// angr-mx00p.137: special literals survive from_z3, and Z3's structural `=`
+// on floats keeps its meaning after a simplify round trip.
+mod special_literals {
+    use super::*;
+    use crate::Z3Solver;
+
+    fn f32_bits<'c>(ctx: &'c Context<'c>, bits: u32) -> AstRef<'c> {
+        ctx.fpv(Float::F32(f32::from_bits(bits))).unwrap()
+    }
+
+    /// Whether `expr` is forced true / forced false once `x == a` is asserted.
+    fn verdict<'c>(ctx: &'c Context<'c>, a: u32, expr: &AstRef<'c>) -> (bool, bool) {
+        let x = ctx.bvs("x", 32).unwrap();
+        let mut s = Z3Solver::new(ctx);
+        s.add(
+            &ctx.eq_(x, ctx.bvv(BitVec::from((u64::from(a), 32u32))).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        (s.has_true(expr).unwrap(), s.has_false(expr).unwrap())
+    }
+
+    #[test]
+    fn subnormal_numerals_round_trip() {
+        let ctx = Context::new();
+        for bits in [0x1u32, 0x007f_ffff, 0x8000_0001] {
+            let f = f32_bits(&ctx, bits);
+            assert_eq!(round_trip(&ctx, &f).unwrap(), f, "{bits:#x}");
+        }
+        for bits in [0x1u64, 0x000f_ffff_ffff_ffff] {
+            let f = ctx.fpv(Float::F64(f64::from_bits(bits))).unwrap();
+            assert_eq!(round_trip(&ctx, &f).unwrap(), f, "{bits:#x}");
+        }
+    }
+
+    #[test]
+    fn fp_lt_against_inf_and_subnormal_literals_matches_the_fold() {
+        let ctx = Context::new();
+        let fx = ctx
+            .bv_to_fp(ctx.bvs("x", 32).unwrap(), FSort::f32())
+            .unwrap();
+        for (a, b) in [
+            (0x7fc0_0000u32, 0x7f80_0000u32),
+            (0, 1),
+            (0x8000_0000, 1),
+            (1, 0x007f_ffff),
+        ] {
+            let want = f32::from_bits(a) < f32::from_bits(b);
+            let e = ctx.fp_lt(&fx, f32_bits(&ctx, b)).unwrap();
+            // Both the raw constraint and its Z3-simplified form.
+            for expr in [e.clone(), e.simplify_z3().unwrap()] {
+                assert_eq!(verdict(&ctx, a, &expr), (want, !want), "{a:#x} < {b:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn z3_structural_eq_on_floats_is_identity() {
+        let ctx = Context::new();
+        let x = RcAst::mk_fp("fx", FSort::f32());
+        let fx = ctx.fps("fx", FSort::f32()).unwrap();
+        // (z3 literal, x value, identity holds)
+        let cases = [
+            (f32::NAN, f32::NAN, true),
+            (0.0f32, -0.0f32, false),
+            (-0.0f32, -0.0f32, true),
+            (1.5f32, 1.5f32, true),
+        ];
+        for (lit, val, want) in cases {
+            let eq = Z3_CONTEXT.with(|&z3_ctx| unsafe {
+                let l = RcAst::mk_fp_val_f32(lit);
+                RcAst::try_from(Z3_mk_eq(z3_ctx, *x, *l)).unwrap()
+            });
+            let back = AstRef::from_z3(&ctx, eq).unwrap();
+            let pin = if val.is_nan() {
+                ctx.fp_is_nan(&fx).unwrap()
+            } else {
+                let bits = ctx.bvv(BitVec::from((u64::from(val.to_bits()), 32u32)));
+                ctx.eq_(ctx.fp_to_ieeebv(&fx).unwrap(), bits.unwrap())
+                    .unwrap()
+            };
+            let mut s = Z3Solver::new(&ctx);
+            s.add(&pin).unwrap();
+            assert_eq!(s.has_true(&back).unwrap(), want, "{lit} = {val}");
+            assert_eq!(s.has_false(&back).unwrap(), !want, "{lit} = {val}");
+            let ne = ctx.not(&back).unwrap();
+            assert_eq!(s.has_true(&ne).unwrap(), !want, "{lit} != {val}");
+        }
+    }
+}

@@ -633,11 +633,6 @@ def _as_float(bits, lane):
     return struct.unpack("<f" if lane == 32 else "<d", bits.to_bytes(lane // 8, "little"))[0]
 
 
-def _subnormal_or_infinite(bits, lane):
-    f = _as_float(bits, lane)
-    return math.isinf(f) or (f != 0 and abs(f) < (1.1754943508222875e-38 if lane == 32 else 2.2250738585072014e-308))
-
-
 def _x86_minmax(a, b, lane, is_max):
     """MINPS/MAXPS: a < b ? a : b and a > b ? a : b, so b wins on equal or unordered lanes."""
     fa, fb = _as_float(a, lane), _as_float(b, lane)
@@ -697,13 +692,11 @@ def test_rust_irop_minmax_follows_the_guest(name):
             expected = _minmax_expected(name, rule, left, right)
             assert out.concrete_value == expected, (arch, hex(left), hex(right), hex(out.concrete_value))
         x = claripy.BVS("x", bits)
-        # claripy's solver orders a symbolic float against an infinite or subnormal literal wrongly (angr-mx00p.137).
-        sym_edges = [e for e in edges if not _subnormal_or_infinite(e, lane)]
-        right = _join(lane, [rng.choice(sym_edges) for _ in range(count)])
+        right = _join(lane, [rng.choice(edges) for _ in range(count)])
         out = vex_irop.irop(name, (x, claripy.BVV(right, bits)), arch)
         assert out is not None and out.symbolic
         for _ in range(4):
-            left = _join(lane, [rng.choice(sym_edges) for _ in range(count)])
+            left = _join(lane, [rng.choice(edges) for _ in range(count)])
             solver = claripy.Solver(timeout=SOLVER_TIMEOUT_MS)
             solver.add(x == left)
             assert list(solver.eval(out, 2)) == [_minmax_expected(name, rule, left, right)], (arch, hex(left))

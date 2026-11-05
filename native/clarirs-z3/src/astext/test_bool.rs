@@ -744,7 +744,9 @@ mod from_z3 {
     }
 
     #[test]
-    fn fp_neq() {
+    fn fp_distinct_is_not_identity() {
+        // Z3's distinct on floats is object identity, not IEEE inequality
+        // (angr-mx00p.137): NaN is not distinct from NaN, +0 is from -0.
         let ctx = Context::new();
         Z3_CONTEXT.with(|z3_ctx| unsafe {
             let a = RcAst::mk_fp("a", FSort::f32());
@@ -753,12 +755,25 @@ mod from_z3 {
             let z3_ast = RcAst::try_from(Z3_mk_distinct(*z3_ctx, 2, args.as_ptr())).unwrap();
 
             let result = AstRef::from_z3(&ctx, z3_ast).unwrap();
-            let expected = ctx
-                .neq(
-                    ctx.fps("a", FSort::f32()).unwrap(),
-                    ctx.fps("b", FSort::f32()).unwrap(),
-                )
+            let fa = ctx.fps("a", FSort::f32()).unwrap();
+            let fb = ctx.fps("b", FSort::f32()).unwrap();
+            let both_nan = ctx
+                .and(vec![
+                    ctx.fp_is_nan(&fa).unwrap(),
+                    ctx.fp_is_nan(&fb).unwrap(),
+                ])
                 .unwrap();
+            let same_bits = ctx
+                .and(vec![
+                    ctx.not(ctx.fp_is_nan(&fa).unwrap()).unwrap(),
+                    ctx.eq_(
+                        ctx.fp_to_ieeebv(&fa).unwrap(),
+                        ctx.fp_to_ieeebv(&fb).unwrap(),
+                    )
+                    .unwrap(),
+                ])
+                .unwrap();
+            let expected = ctx.not(ctx.or(vec![both_nan, same_bits]).unwrap()).unwrap();
             assert_eq!(result, expected);
         });
     }
