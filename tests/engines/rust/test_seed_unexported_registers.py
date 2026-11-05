@@ -2,7 +2,7 @@
 
 Seed import used to iterate the engine's ``exported`` register names only, so
 a seed's write to the x87/MMX file (engine ``fpreg``, archinfo ``fpu_regs``)
-or to a ymm upper lane read 0 on every Rust state (angr-vmi2l.320). Each
+or to a ymm/zmm upper lane read 0 on every Rust state (angr-vmi2l.320, angr-vmi2l.217). Each
 seeded register below is read on a SimProcedure hook state, a find predicate
 and the exported found state, and compared with the Python engine.
 """
@@ -23,7 +23,7 @@ HOOK = LOAD + 1
 FIND = LOAD + 2
 
 SEEDS = {
-    "AMD64": {"mm0": 0x5566, "mm3": "sym", "ymm0hx": 0x77 << 100, "zmm1hy": 0x99},
+    "AMD64": {"mm0": 0x5566, "mm3": "sym", "ymm0hx": 0x77 << 100, "zmm1hy": 0x99, "zmm16hy": "sym", "ymm16hx": 0x42},
     "X86": {"mm0": 0x5566, "mm7": "sym"},
 }
 
@@ -94,6 +94,8 @@ def test_seeded_values(answers):
         assert found["ymm0hx"] == [0x77 << 100]
         assert found["zmm1hy"] == [0x99]
         assert found["mm3"] == [False, True]
+        assert found["ymm16hx"] == [0x42]
+        assert found["zmm16hy"] == [False, True]
     else:
         assert found["mm7"] == [False, True]
 
