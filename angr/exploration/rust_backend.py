@@ -139,7 +139,9 @@ class RustBackend(SimulationBackend):
     init prefix, or its lineage was handed back to Python. A ``default_routed``
     backend also declines the options a project-default route sends to Python
     (UNICORN). Each answer is
-    counted in :attr:`stats` and debug-logged.
+    counted in :attr:`stats` and debug-logged. A ``strict`` backend raises
+    NotImplementedError instead of declining for a reason the caller could
+    change (:attr:`_ROUTING_DECLINES` are the internal ones it still declines).
     """
 
     def __init__(
@@ -156,6 +158,7 @@ class RustBackend(SimulationBackend):
         symlinks: dict | None = None,
         save_unconstrained: bool = True,
         default_routed: bool = False,
+        strict: bool = False,
     ):
         """The keyword arguments configure the private manager as they do a
         :class:`~angr.exploration.rust_manager.RustExplorationManager`, except that
@@ -167,8 +170,13 @@ class RustBackend(SimulationBackend):
         Python (see ``_PYTHON_ROUTED_OPTION_NAMES``), whose Python step semantics the
         Rust engine cannot reproduce. A backend the caller chose runs them, as an
         explicit ``engine="rust"`` manager does (angr-mx00p.136.39).
+
+        ``strict`` is for ``simulation_manager(engine="rust")``: the first decline the caller
+        could avoid raises NotImplementedError naming the reason, where a project-default
+        route would quietly step the state on Python (angr-mx00p.136.1, angr-mx00p.136.19).
         """
         self._project = project
+        self._strict = strict
         self._option_refusals = rust_state_option_refusals if default_routed else rust_unsupported_options
         self._manager_kwargs = {
             "max_active_states": max_active_states,
@@ -223,15 +231,28 @@ class RustBackend(SimulationBackend):
             self._ownership.set(state, _HANDED_BACK)
             self._counters["handed_back"] += 1
         self._counters["declined"][reason] += 1
+        if self._strict and reason not in self._ROUTING_DECLINES:
+            raise NotImplementedError(
+                f"simulation_manager(engine='rust') cannot step {state!r} on the rust engine: {reason}. "
+                "Drop engine='rust' to run it on the Python engine. See docs/advanced-topics/rust_engine.rst."
+            )
         l.debug("simgr backend: python (%s)", reason)
         return False, reason
+
+    _HELD_REASON = "a fast-path run steps its declined states on python"
+    _HANDED_BACK_REASON = "lineage was handed back to python"
+    _INIT_PREFIX_REASON = "state is in the python init prefix"
+    _STOP_POINT_REASON = "an extra_stop_points address lies inside the block"
+    # Declines that are the backend's own routing, not a capability the caller asked for: a strict
+    # backend still steps these states on Python.
+    _ROUTING_DECLINES = frozenset({_HELD_REASON, _HANDED_BACK_REASON, _INIT_PREFIX_REASON, _STOP_POINT_REASON})
 
     def decline_reason(self, simgr: SimulationManager, state: SimState, successor_func, run_args: dict) -> str | None:
         """Why the Rust engine cannot step *state* this step, or None when it can."""
         if self._stepping_held:
-            return "a fast-path run steps its declined states on python"
+            return self._HELD_REASON
         if self._ownership.get(state) == _HANDED_BACK:
-            return "lineage was handed back to python"
+            return self._HANDED_BACK_REASON
         arch_name = state.arch.name
         if not rust_supports_arch(arch_name):
             return f"arch {arch_name} not implemented by the rust engine"
@@ -259,9 +280,9 @@ class RustBackend(SimulationBackend):
         if self._project.selfmodifying_code:
             return SELFMODIFYING_CODE_REASON
         if self._in_init_prefix(state):
-            return "state is in the python init prefix"
+            return self._INIT_PREFIX_REASON
         if self._stop_point_inside_block(state, run_args.get(_STOP_POINTS)):
-            return "an extra_stop_points address lies inside the block"
+            return self._STOP_POINT_REASON
         return None
 
     def _stop_point_inside_block(self, state: SimState, stops) -> bool:

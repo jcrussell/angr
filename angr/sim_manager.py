@@ -174,6 +174,11 @@ class SimulationManager:
         errored_repr = f" ({len(self.errored)} errored)" if self.errored else ""
         return f"<SimulationManager with {stashes_repr}{errored_repr}>"
 
+    @property
+    def backend(self) -> SimulationBackend | None:
+        """The stepping backend this manager consults per state per step, or None."""
+        return self._backend
+
     def __getattr__(self, item):
         try:
             return object.__getattribute__(self, item)

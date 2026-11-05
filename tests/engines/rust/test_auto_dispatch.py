@@ -1,12 +1,15 @@
 """The engine dispatcher behind ``Project(engine="rust")`` (angr-op0dn.14.5.2, angr-mx00p.62).
 
 On a project built with ``engine="rust"``, ``factory.simulation_manager()``
-called with no ``engine`` runs on the Rust engine when it can execute the
-workload faithfully, and on the Python engine when it cannot — never raising,
-never diverging. That is what converts the Rust engine's loud surface
-(raise-options, unimplemented arches, unsupported kwargs) into "transparently
-routed to Python". ``simulation_manager(engine="rust")`` keeps the loud
-contract.
+called with no ``engine`` builds a ``SimulationManager`` with a
+``RustBackend`` (angr-mx00p.136.19), which steps each state on the Rust
+engine when it can execute it faithfully and declines it to the Python engine
+when it cannot — never raising, never diverging. That is what converts the
+Rust engine's loud surface (raise-options, unimplemented arches) into
+"transparently stepped on Python", decided per state per step and counted in
+``mgr.backend.stats["declined"]``. ``simulation_manager(engine="rust")`` keeps
+the loud contract: its first such decline raises NotImplementedError at step
+time.
 """
 
 from __future__ import annotations
@@ -18,10 +21,10 @@ import pytest
 
 import angr
 from angr.exploration import (
-    RustExplorationManager,
     rust_engine_eligible,
     rust_supports_arch,
 )
+from angr.exploration.rust_backend import RustBackend
 from angr.exploration.rust_manager import _RAISE_OPTION_NAMES
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
@@ -50,14 +53,32 @@ def rust_project():
     return load_fauxware(engine="rust")
 
 
-def _routed(caplog, project, *args, **kwargs):
-    """Build a manager through *project*'s factory and return it with the logged routing reason."""
-    with caplog.at_level(logging.DEBUG, logger="angr.factory"):
+def _main_state(project, **kwargs):
+    """A state at fauxware's ``main``, past the init prefix the backend declines for its own routing."""
+    return project.factory.blank_state(addr=project.loader.find_symbol("main").rebased_addr, **kwargs)
+
+
+def _stepped(caplog, project, state, **kwargs):
+    """Build a manager over *state* through *project*'s factory, step it once, and return it with the
+    backend's logged decline messages."""
+    mgr = project.factory.simulation_manager(state, **kwargs)
+    assert type(mgr) is SimulationManager
+    assert isinstance(mgr.backend, RustBackend)
+    with caplog.at_level(logging.DEBUG, logger="angr.exploration.rust_backend"):
         caplog.clear()
-        mgr = project.factory.simulation_manager(*args, **kwargs)
-    reasons = [r.getMessage() for r in caplog.records if r.name == "angr.factory"]
-    assert len(reasons) == 1, reasons
-    return mgr, reasons[0]
+        mgr.step()
+    declines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("simgr backend: python")]
+    return mgr, declines
+
+
+def _assert_declined_once(mgr, declines, needle: str) -> None:
+    """The one stepped state was declined, for a reason naming *needle*, and stepped on Python."""
+    stats = mgr.backend.stats
+    assert stats["claimed"] == 0
+    [(reason, count)] = stats["declined"].items()
+    assert needle in reason
+    assert count == 1
+    assert declines == [f"simgr backend: python ({reason})"]
 
 
 def _fake_project(arch_name: str = "AMD64"):
@@ -189,27 +210,34 @@ class TestFactoryDispatch:
         assert not [r for r in caplog.records if r.name == "angr.factory"]
 
     def test_selects_rust_when_eligible(self, rust_project, caplog):
-        mgr, reason = _routed(caplog, rust_project, rust_project.factory.entry_state())
-        assert isinstance(mgr, RustExplorationManager)
-        assert "rust engine supports this project" in reason
+        mgr, declines = _stepped(caplog, rust_project, _main_state(rust_project))
+        stats = mgr.backend.stats
+        assert stats["claimed"] == 1
+        assert not stats["declined"]
+        assert not declines
+        assert mgr.active
 
     def test_falls_back_to_python_on_raise_option(self, rust_project, caplog):
         """The whole point: a state the Rust engine refuses must not raise."""
-        state = rust_project.factory.entry_state(add_options={"TRACK_MEMORY_ACTIONS"})
-        mgr, reason = _routed(caplog, rust_project, state)
-        assert type(mgr) is SimulationManager
-        assert "TRACK_MEMORY_ACTIONS" in reason
+        state = _main_state(rust_project, add_options={"TRACK_MEMORY_ACTIONS"})
+        mgr, declines = _stepped(caplog, rust_project, state)
+        _assert_declined_once(mgr, declines, "TRACK_MEMORY_ACTIONS")
+        assert mgr.active
 
-    def test_falls_back_to_python_on_unsupported_kwarg(self, rust_project, caplog):
-        mgr, reason = _routed(caplog, rust_project, rust_project.factory.entry_state(), hierarchy=None)
-        assert type(mgr) is SimulationManager
-        assert "hierarchy" in reason
+    def test_manager_kwarg_stays_on_rust(self, rust_project):
+        """A SimulationManager-only kwarg no longer routes anything: the manager honors it itself."""
+        hierarchy = angr.state_hierarchy.StateHierarchy()
+        mgr = rust_project.factory.simulation_manager(_main_state(rust_project), hierarchy=hierarchy)
+        assert isinstance(mgr.backend, RustBackend)
+        assert mgr._hierarchy is hierarchy
+        mgr.step()
+        assert mgr.backend.stats["claimed"] == 1
 
     def test_falls_back_to_python_on_unimplemented_arch(self, rust_project, monkeypatch, caplog):
-        monkeypatch.setattr("angr.exploration.rust_manager.rust_supports_arch", lambda _name: False)
-        mgr, reason = _routed(caplog, rust_project, rust_project.factory.entry_state())
-        assert type(mgr) is SimulationManager
-        assert "not implemented" in reason
+        monkeypatch.setattr("angr.exploration.rust_backend.rust_supports_arch", lambda _name: False)
+        mgr, declines = _stepped(caplog, rust_project, _main_state(rust_project))
+        _assert_declined_once(mgr, declines, "not implemented")
+        assert mgr.active
 
     def test_routed_rust_manager_runs(self, rust_project):
         """The auto-selected manager is a working one, not just the right type."""
@@ -252,19 +280,17 @@ class TestFactoryDispatch:
         assert angr.options.UNICORN not in ca.simgr.one_right.options
         ca.run(depth=1)
 
-    def test_symbolizer_on_an_explicit_rust_manager_still_raises(self, rust_project):
-        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")
-        with pytest.raises(TypeError, match="paged memory model"):
-            _ = mgr.one_active.symbolizer
-
-    def test_explicit_rust_still_raises_on_unsupported_kwarg(self, rust_project):
+    def test_explicit_rust_still_raises_on_a_declined_state(self, rust_project):
         """Naming the engine keeps its loud contract even on an opted-in project."""
-        with pytest.raises(NotImplementedError, match="hierarchy"):
-            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", hierarchy=None)
+        state = _main_state(rust_project, add_options={"TRACK_MEMORY_ACTIONS"})
+        mgr = rust_project.factory.simulation_manager(state, engine="rust")
+        with pytest.raises(NotImplementedError, match="TRACK_MEMORY_ACTIONS"):
+            mgr.step()
 
     def test_simgr_alias_routes_too(self, rust_project):
         mgr = rust_project.factory.simgr(rust_project.factory.entry_state())
-        assert isinstance(mgr, RustExplorationManager)
+        assert type(mgr) is SimulationManager
+        assert isinstance(mgr.backend, RustBackend)
 
     def test_no_dispatch_reason_attribute(self, rust_project):
         """The routing decision is logged, not stored on the manager (angr-mx00p.62)."""
@@ -278,10 +304,11 @@ class TestActionTrackingRoutes:
     The Rust engine deliberately records no ``SimAction``s: they wrap claripy
     objects Python-side, so emitting them natively would violate the
     Rust/Python boundary, and no mode bundle sets a ``TRACK_*_ACTIONS`` option
-    by default. The dispatcher — not a native implementation — is the answer:
-    every action-tracking option is raise-listed, so an action-tracking state
-    is ineligible and gets a plain Python ``SimulationManager``, with
-    ``state.history.actions`` populated exactly as it is today.
+    by default. The backend's per-state decline — not a native implementation —
+    is the answer: every action-tracking option is raise-listed, so a
+    default-routed backend declines an action-tracking state and it steps on
+    the Python engine, with ``state.history.actions`` populated exactly as it
+    is today.
     """
 
     def test_family_is_raise_listed(self):
@@ -291,23 +318,24 @@ class TestActionTrackingRoutes:
 
     @pytest.mark.parametrize("option", sorted(ACTION_TRACKING_OPTIONS))
     def test_routes_each_action_option_to_python(self, rust_project, option, caplog):
-        state = rust_project.factory.entry_state(add_options={option})
-        mgr, reason = _routed(caplog, rust_project, state)
-        assert type(mgr) is SimulationManager
-        assert option in reason
+        state = _main_state(rust_project, add_options={option})
+        mgr, declines = _stepped(caplog, rust_project, state)
+        _assert_declined_once(mgr, declines, option)
 
     @pytest.mark.parametrize("option", sorted(ACTION_TRACKING_OPTIONS))
     def test_explicit_rust_still_raises_on_each_action_option(self, fauxware_project, option):
-        """Loudness preserved: naming the engine still refuses the workload."""
+        """Loudness preserved: naming the engine still refuses the workload, at its first step."""
         state = fauxware_project.factory.entry_state(add_options={option})
+        mgr = fauxware_project.factory.simulation_manager(state, engine="rust")
         with pytest.raises(NotImplementedError, match=option):
-            fauxware_project.factory.simulation_manager(state, engine="rust")
+            mgr.step()
 
-    def test_track_action_history_alone_stays_on_rust(self, rust_project):
+    def test_track_action_history_alone_stays_on_rust(self, rust_project, caplog):
         """TRACK_ACTION_HISTORY does not gate action recording (demoted, angr-fkvt)."""
-        state = rust_project.factory.entry_state(add_options={"TRACK_ACTION_HISTORY"})
-        mgr = rust_project.factory.simulation_manager(state)
-        assert isinstance(mgr, RustExplorationManager)
+        state = _main_state(rust_project, add_options={"TRACK_ACTION_HISTORY"})
+        mgr, declines = _stepped(caplog, rust_project, state)
+        assert mgr.backend.stats["claimed"] == 1
+        assert not declines
 
     def test_routed_manager_records_actions_like_python(self, rust_project, fauxware_project):
         """The parity that matters: the routed run's actions match a stock Python run."""

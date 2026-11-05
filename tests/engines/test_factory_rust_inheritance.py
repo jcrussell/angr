@@ -11,7 +11,7 @@ needs to update either this contract or the table of per-analysis verdicts
 so the safer default cannot regress silently.
 
 The test does **not** drive an analysis end-to-end — it inspects the
-return type of ``factory.simulation_manager(...)`` (and the
+stepping backend of ``factory.simulation_manager(...)`` (and the
 ``factory.successors`` engine dispatch) under the same call patterns
 that internal analyses use.
 """
@@ -25,6 +25,7 @@ import os
 import pytest
 
 import angr
+from angr.exploration.rust_backend import RustBackend
 from angr.sim_manager import SimulationManager
 
 # Availability guard and examples-dir resolution live in conftest (angr-7gdp).
@@ -47,8 +48,8 @@ def proj():
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestFactoryRustInheritance:
     """``factory.simulation_manager(engine="rust")`` chooses per-call;
-    omitting the kwarg on a stock project always lands on the Python
-    ``SimulationManager``.
+    omitting the kwarg on a stock project always lands on a
+    ``SimulationManager`` with no backend (the Python engine).
     """
 
     def test_default_returns_python_manager(self, proj):
@@ -57,10 +58,11 @@ class TestFactoryRustInheritance:
         assert isinstance(sm, SimulationManager)
         assert not isinstance(sm, RustExplorationManager)
 
-    def test_engine_rust_returns_rust_manager(self, proj):
-        """Explicit opt-in → ``RustExplorationManager``."""
+    def test_engine_rust_returns_rust_backed_manager(self, proj):
+        """Explicit opt-in → a ``SimulationManager`` stepping through a ``RustBackend``."""
         sm = proj.factory.simulation_manager(engine="rust")
-        assert isinstance(sm, RustExplorationManager)
+        assert isinstance(sm, SimulationManager)
+        assert isinstance(sm.backend, RustBackend)
 
     def test_rust_choice_does_not_persist_across_calls(self, proj):
         """Constructing a Rust manager once must not bias later calls.
@@ -68,14 +70,14 @@ class TestFactoryRustInheritance:
         Pins the "no project-level toggle" half of the contract: if any
         future change stored a per-call ``engine`` on ``proj`` or
         ``proj.factory``, this test would fail when the second call
-        unexpectedly returned a Rust manager.
+        unexpectedly returned a Rust-backed manager.
         """
         rust_sm = proj.factory.simulation_manager(engine="rust")
-        assert isinstance(rust_sm, RustExplorationManager)
+        assert isinstance(rust_sm.backend, RustBackend)
 
         default_sm = proj.factory.simulation_manager()
         assert isinstance(default_sm, SimulationManager)
-        assert not isinstance(default_sm, RustExplorationManager)
+        assert default_sm.backend is None
 
     def test_simgr_alias_honors_per_call_selector(self, proj):
         """The ``factory.simgr(...)`` alias defers to
@@ -84,27 +86,27 @@ class TestFactoryRustInheritance:
         """
         default_simgr = proj.factory.simgr()
         assert isinstance(default_simgr, SimulationManager)
-        assert not isinstance(default_simgr, RustExplorationManager)
+        assert default_simgr.backend is None
 
         rust_simgr = proj.factory.simgr(engine="rust")
-        assert isinstance(rust_simgr, RustExplorationManager)
+        assert isinstance(rust_simgr.backend, RustBackend)
 
     def test_default_engine_is_not_rust_after_rust_manager(self, proj):
         """``factory.successors(state, ...)`` dispatches to
         ``factory.default_engine.process(...)``. Internal analyses
         (``CFGEmulated``, ``Identifier``, ``VFG``, ``Jumptable``
         resolver) step states through this path; the contract is that
-        it always uses the Python engine even after a
-        ``RustExplorationManager`` has been built against the project.
+        it always uses the Python engine even after a Rust-backed
+        manager has been built against the project.
         """
         from angr.engines.vex.heavy.heavy import HeavyVEXMixin
 
         mgr = proj.factory.simulation_manager(engine="rust")
         # Pin the precondition: if ``engine="rust"`` silently fell
-        # back to a Python ``SimulationManager``, the test's premise
-        # ("after a RustExplorationManager has been built") would be false
+        # back to a backend-less ``SimulationManager``, the test's premise
+        # ("after a Rust-backed manager has been built") would be false
         # and the assertion below would pass vacuously.
-        assert isinstance(mgr, RustExplorationManager)
+        assert isinstance(mgr.backend, RustBackend)
         engine = proj.factory.default_engine
         # The default engine is ``UberEngine`` / ``UberEnginePcode``;
         # both inherit from HeavyVEXMixin (the Python VEX interpreter).

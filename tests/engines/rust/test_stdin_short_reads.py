@@ -12,6 +12,7 @@ import os
 import pytest
 
 import angr
+from angr.exploration import RustExplorationManager
 from tests.common import bin_location
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE
 
@@ -21,11 +22,10 @@ FGETS = os.path.join(bin_location, "tests", "x86_64", "fgets")
 
 
 def _found(symbol: str):
-    proj = angr.Project(FGETS, auto_load_libs=False, engine="rust")
+    proj = angr.Project(FGETS, auto_load_libs=False)
     state = proj.factory.entry_state(add_options={angr.sim_options.SHORT_READS})
     state.options.add(angr.sim_options.SYMBOL_FILL_UNCONSTRAINED_MEMORY)
-    mgr = proj.factory.simgr(state)
-    assert type(mgr).__name__ == "RustExplorationManager"
+    mgr = RustExplorationManager(proj, [state])
     mgr.explore(find=proj.loader.find_symbol(symbol).rebased_addr)
     assert mgr.found, symbol
     return mgr.found[0]

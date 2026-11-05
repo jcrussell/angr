@@ -208,13 +208,16 @@ class AngrObjectFactory:
 
         :param thing:           What to put in the new SimulationManager's active stash (either a SimState or a list of
                                 SimStates).
-        :param engine:          ``"rust"`` builds a :class:`~angr.exploration.RustExplorationManager`, raising when this
-                                project, state or kwargs combination is one the Rust engine cannot honor. Left unset,
-                                the project decides: a project built with ``Project(..., engine="rust")`` (or under
-                                ``ANGR_DEFAULT_ENGINE=rust``) runs on the Rust engine whenever it can run the workload
-                                faithfully and on the Python engine otherwise; any other project builds a plain
-                                SimulationManager. See docs/advanced-topics/rust_engine.rst.
-        :param kwargs:          Any additional keyword arguments will be passed to the SimulationManager constructor
+        :param engine:          ``"rust"`` steps the states on the Rust engine through a
+                                :class:`~angr.exploration.RustBackend`, raising NotImplementedError at the first state
+                                it would decline. Left unset, the project decides: a project built with
+                                ``Project(..., engine="rust")`` (or under ``ANGR_DEFAULT_ENGINE=rust``) gets the same
+                                backend, which steps each state the Rust engine can run faithfully and leaves the rest
+                                to the Python engine; any other project has no backend. See
+                                docs/advanced-topics/rust_engine.rst.
+        :param kwargs:          Any additional keyword arguments will be passed to the SimulationManager constructor,
+                                except that on a Rust route the RustBackend knobs (``max_active_states``,
+                                ``parallel_workers``, ...) configure the backend
         :returns:               The new SimulationManager
         :rtype:                 angr.sim_manager.SimulationManager
 
@@ -239,45 +242,38 @@ class AngrObjectFactory:
         else:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
 
-        if engine is None:
-            if not (self.project._rust_default and self._rust_eligible(thing, kwargs)):
-                return SimulationManager(self.project, active_states=thing, **kwargs)
-            from angr.exploration import RustExplorationManager
+        if engine is None and not self.project._rust_default:
+            return SimulationManager(self.project, active_states=thing, **kwargs)
+        from angr.exploration.rust_backend import RustBackend
+        from angr.exploration.rust_manager import RUST_EXPLORATION_AVAILABLE
 
-            handoff_kwargs = dict(kwargs)
-            mgr = RustExplorationManager(self.project, active_states=thing, **kwargs)
-            mgr._python_handoff_kwargs = handoff_kwargs
-            return mgr
-
-        from angr.exploration import RustExplorationManager, unsupported_rust_manager_kwargs
-
-        unsupported = unsupported_rust_manager_kwargs(kwargs)
-        if unsupported:
-            names = ", ".join(unsupported)
-            raise NotImplementedError(
-                f"simulation_manager(engine='rust') cannot honor {{{names}}}. "
-                "These are SimulationManager-only constructor arguments; the Rust "
-                "engine would silently drop them. Drop engine='rust' to run "
-                "them on the Python engine. See docs/advanced-topics/rust_engine.rst."
-            )
-        return RustExplorationManager(self.project, active_states=thing, **kwargs)
-
-    def _rust_eligible(self, states: list[SimState], kwargs: dict) -> bool:
-        """Whether a ``Project(engine="rust")`` project runs this ``simulation_manager()`` call on the Rust engine.
-
-        Never raises and never selects the Rust engine for a workload it would refuse, warn about, or silently
-        execute differently: an ineligible workload is simply a Python one. The decision and its reason are logged
-        at debug level.
-        """
-        try:
-            from angr.exploration import rust_engine_eligible
-        except ImportError:
+        if not RUST_EXPLORATION_AVAILABLE:
+            if engine is not None:
+                raise NotImplementedError("simulation_manager(engine='rust'): the rust extension is not built")
             l.debug("simulation_manager: python engine (rust extension not built)")
-            return False
+            return SimulationManager(self.project, active_states=thing, **kwargs)
 
-        eligible, reason = rust_engine_eligible(self.project, states, kwargs)
-        l.debug("simulation_manager: %s engine (%s)", "rust" if eligible else "python", reason)
-        return eligible
+        knobs = {name: kwargs.pop(name) for name in self._RUST_BACKEND_KNOBS if name in kwargs}
+        if "save_unconstrained" in knobs:
+            # SimulationManager drops the unconstrained successors of the states the backend declines.
+            kwargs["save_unconstrained"] = knobs["save_unconstrained"]
+        strict = engine is not None
+        backend = RustBackend(self.project, default_routed=not strict, strict=strict, **knobs)
+        return SimulationManager(self.project, active_states=thing, backend=backend, **kwargs)
+
+    # The RustBackend constructor knobs simulation_manager() takes from its kwargs on a Rust route; every other kwarg
+    # goes to SimulationManager.
+    _RUST_BACKEND_KNOBS = (
+        "max_active_states",
+        "parallel_workers",
+        "deterministic",
+        "solver_timeout_ms",
+        "max_history",
+        "use_native_lift",
+        "prefer_native_library_hooks",
+        "symlinks",
+        "save_unconstrained",
+    )
 
     def simgr(self, *args, **kwargs):
         """

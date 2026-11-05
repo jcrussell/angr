@@ -123,13 +123,15 @@ def test_rust_manager_honors_resilience(resilience, raises, call):
 
 
 def test_default_routed_resilience_manager_runs_on_rust():
-    """A project-default route keeps a resilience= manager on Rust; its Python handoff keeps the kwarg."""
+    """A project-default route keeps a resilience= manager on Rust, and the manager honors the kwarg itself."""
     project = angr.load_shellcode(UD2, arch="amd64", load_address=LOAD, engine="rust")
     mgr = project.factory.simulation_manager(_ud2_state(project), resilience=False)
-    assert isinstance(mgr, RustExplorationManager)
-    assert mgr._python_handoff_kwargs == {"resilience": False}
+    assert isinstance(mgr.backend, RustBackend)
     with pytest.raises(SimIRSBNoDecodeError):
         mgr.step()
+    stats = mgr.backend.stats
+    assert stats["claimed"] == 1
+    assert not stats["declined"]
 
 
 @pytest.mark.parametrize(

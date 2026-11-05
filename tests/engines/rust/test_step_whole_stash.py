@@ -49,9 +49,13 @@ def _branch_tree() -> bytes:
 
 def _forked(rust: bool):
     """A manager one step in: two active states, at +0x05 and +0x20."""
-    kwargs = {"engine": "rust"} if rust else {}
-    project = angr.load_shellcode(_branch_tree(), arch="amd64", load_address=BASE, **kwargs)
-    mgr = project.factory.simulation_manager(project.factory.blank_state(addr=BASE))
+    project = angr.load_shellcode(_branch_tree(), arch="amd64", load_address=BASE)
+    state = project.factory.blank_state(addr=BASE)
+    if rust:
+        mgr = RustExplorationManager(project, [state])
+        mgr.set_block_granular(True)
+    else:
+        mgr = project.factory.simulation_manager(state)
     mgr.step()
     return mgr
 

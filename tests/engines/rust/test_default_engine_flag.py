@@ -2,17 +2,18 @@
 
 ``engine="rust"`` is the one engine-selection knob. On ``Project(binary,
 engine="rust")`` (or for every project, ``ANGR_DEFAULT_ENGINE=rust``) it makes
-``factory.simulation_manager()`` calls that name no engine route through the
-eligibility predicate (``test_auto_dispatch.py``) instead of unconditionally
-building a Python ``SimulationManager``. On ``simulation_manager(...,
-engine="rust")`` it demands the Rust engine and raises when it cannot honor
-the workload.
+``factory.simulation_manager()`` calls that name no engine build a
+``SimulationManager`` with a ``RustBackend`` (angr-mx00p.136.19), which
+decides per state per step whether the Rust engine steps it
+(``test_auto_dispatch.py``). On ``simulation_manager(..., engine="rust")`` the
+backend is strict: the first state it would decline raises NotImplementedError
+at that step.
 
 The invariants this file pins:
 
 * **Flag off = zero diff.** A stock project still builds a plain
-  ``SimulationManager``.
-* **The flip swaps the manager, not the SimEngine.** ``engine="rust"`` must
+  ``SimulationManager`` with no backend.
+* **The flip adds a backend, not a SimEngine.** ``engine="rust"`` must
   leave ``default_engine_factory`` on ``UberEngine`` — ``block()``, the CFG, and
   every lifting path keep using it.
 * **Naming the engine stays loud.** ``simulation_manager(engine="rust")``
@@ -31,6 +32,7 @@ from angr import claripy
 from angr.engines import UberEngine
 from angr.errors import AngrError
 from angr.exploration import RustExplorationManager
+from angr.exploration.rust_backend import RustBackend
 from angr.exploration_techniques import DFS, Director, ExplorationTechnique, UniqueSearch
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import BIN_LOCATION, RUST_EXPLORATION_AVAILABLE, load_fauxware
@@ -60,7 +62,7 @@ class TestFlagOff:
 
 class TestProjectEngineSentinel:
     def test_default_engine_factory_stays_uberengine(self, rust_project):
-        """The flip swaps the MANAGER, not the SimEngine block()/CFG/lifting use."""
+        """The flip adds a stepping BACKEND, not the SimEngine block()/CFG/lifting use."""
         assert rust_project.factory.default_engine_factory is UberEngine
         assert rust_project.factory.default_engine.__class__ is UberEngine
         # ...and the lifting path it drives still works.
@@ -69,14 +71,16 @@ class TestProjectEngineSentinel:
     def test_unset_engine_selects_rust(self, rust_project):
         assert rust_project._rust_default is True
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
-        assert isinstance(mgr, RustExplorationManager)
+        assert type(mgr) is SimulationManager
+        assert isinstance(mgr.backend, RustBackend)
+        assert mgr.backend._strict is False
 
     def test_no_seed_state_selects_rust(self, rust_project):
         """The entry_state() the factory seeds for itself is routed too."""
-        assert isinstance(rust_project.factory.simulation_manager(), RustExplorationManager)
+        assert isinstance(rust_project.factory.simulation_manager().backend, RustBackend)
 
     def test_simgr_alias_honors_the_default(self, rust_project):
-        assert isinstance(rust_project.factory.simgr(), RustExplorationManager)
+        assert isinstance(rust_project.factory.simgr().backend, RustBackend)
 
     def test_routed_manager_runs(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
@@ -103,8 +107,11 @@ class TestProjectEngineSentinel:
 class TestNamingTheEngineStaysLoud:
     def test_explicit_rust_keeps_its_loud_contract(self, rust_project):
         """The project default must not soften the per-call opt-in's raise."""
-        with pytest.raises(NotImplementedError, match="hierarchy"):
-            rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust", hierarchy=None)
+        state = rust_project.factory.entry_state(add_options={"TRACK_MEMORY_ACTIONS"})
+        mgr = rust_project.factory.simulation_manager(state, engine="rust")
+        assert mgr.backend._strict is True
+        with pytest.raises(NotImplementedError, match="TRACK_MEMORY_ACTIONS"):
+            mgr.step()
 
     def test_python_on_a_rust_project_is_a_plain_simulation_manager(self, rust_project):
         """The per-call way back to Python is the stock constructor."""
@@ -125,7 +132,8 @@ class _CountingSuccessors(ExplorationTechnique):
 
 
 class TestSuccessorsTechniqueHandsOff:
-    """A default-routed manager hands off to Python for a successors() technique (angr-mx00p.132.25)."""
+    """A default-routed backend declines a state whose manager has a successors() technique, so the
+    technique runs on the Python step (angr-mx00p.132.25)."""
 
     def test_default_route_hands_off_before_stepping(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
@@ -139,16 +147,22 @@ class TestSuccessorsTechniqueHandsOff:
         assert tech.calls == 1
         assert mgr.active
 
-    def test_named_engine_stays_rust(self, rust_project):
+    def test_named_engine_raises_at_step(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")
-        mgr.use_technique(_CountingSuccessors())
-        assert isinstance(mgr, RustExplorationManager)
+        tech = mgr.use_technique(_CountingSuccessors())
+        with pytest.raises(NotImplementedError, match="_CountingSuccessors"):
+            mgr.step()
+        assert tech.calls == 0
 
-    def test_stepped_manager_stays_rust(self, rust_project):
+    def test_technique_added_after_a_step_declines_the_next(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
         mgr.step()
-        mgr.use_technique(_CountingSuccessors())
-        assert isinstance(mgr, RustExplorationManager)
+        tech = mgr.use_technique(_CountingSuccessors())
+        stepped = len(mgr.active)
+        assert stepped
+        mgr.step()
+        assert tech.calls == stepped
+        assert mgr.backend.stats["declined"]["techniques override successors(): _CountingSuccessors"] == stepped
 
     def test_director_hands_off(self, rust_project):
         """Director's step() hands simgr.active to CFGEmulated, which rejects a proxy (angr-mx00p.132.27)."""
@@ -172,7 +186,8 @@ class TestSuccessorsTechniqueHandsOff:
 
 
 class TestStepRunArgsHandOff:
-    """``step(num_inst=...)`` stops mid-block, as SimulationManager.step does (angr-mx00p.132.23).
+    """``step(num_inst=...)`` stops mid-block, as SimulationManager.step does (angr-mx00p.132.23): a
+    default-routed backend declines the state for that step, so the Python engine honors the run argument.
 
     StringObfuscationFinder steps to just before a call with ``num_inst``; the
     Rust step dropped the kwarg and ran the call, so the callee read its stack
@@ -233,20 +248,31 @@ class TestStepRunArgsHandOff:
         assert results == [(second_insn, 3, [0x41])] * 2
 
     def test_stash_active_stays_rust(self, rust_project):
-        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
+        main = rust_project.loader.find_symbol("main").rebased_addr
+        mgr = rust_project.factory.simulation_manager(rust_project.factory.blank_state(addr=main))
         mgr.step(stash="active")
-        assert isinstance(mgr, RustExplorationManager)
+        assert mgr.backend.stats["claimed"] == 1
+        assert not mgr.backend.stats["declined"]
 
     def test_named_engine_raises(self, rust_project):
         mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state(), engine="rust")
         with pytest.raises(NotImplementedError, match="num_inst"):
             mgr.step(num_inst=1)
 
-    def test_stepped_manager_raises(self, rust_project):
-        mgr = rust_project.factory.simulation_manager(rust_project.factory.entry_state())
-        mgr.step()
-        with pytest.raises(NotImplementedError, match="num_inst"):
+    def test_stepped_manager_declines_and_honors_num_inst(self, rust_project, fauxware_project):
+        """A manager the backend already stepped declines the num_inst step and lands where Python does."""
+        managers = []
+        for proj in (rust_project, fauxware_project):
+            main = proj.loader.find_symbol("main").rebased_addr
+            mgr = proj.factory.simulation_manager(proj.factory.blank_state(addr=main))
+            mgr.step()
+            managers.append((mgr, len(mgr.active)))
             mgr.step(num_inst=1)
+        (rust, rust_stepped), (python, _) = managers
+        assert sorted(s.addr for s in rust.active) == sorted(s.addr for s in python.active)
+        stats = rust.backend.stats
+        assert stats["claimed"] == 1
+        assert stats["declined"]["step passes run arguments: num_inst"] == rust_stepped
 
 
 class TestRemovedKnobs:
@@ -263,7 +289,7 @@ class TestRemovedKnobs:
             rust_project.factory.simulation_manager(use_rust_engine=True)
 
     def test_use_rust_engine_with_engine_rust_raises(self, fauxware_project):
-        with pytest.raises(NotImplementedError, match="use_rust_engine"):
+        with pytest.raises(TypeError, match="use_rust_engine"):
             fauxware_project.factory.simulation_manager(engine="rust", use_rust_engine=True)
 
     @pytest.mark.parametrize("value", ["1", "0", "true"])
@@ -294,7 +320,7 @@ class TestEnvGate:
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust")
         proj = load_fauxware()
         assert proj._rust_default is True
-        assert isinstance(proj.factory.simulation_manager(), RustExplorationManager)
+        assert isinstance(proj.factory.simulation_manager().backend, RustBackend)
 
     def test_env_is_case_insensitive(self, monkeypatch):
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "RuSt")
@@ -308,36 +334,40 @@ class TestEnvGate:
         assert type(proj.factory.simulation_manager()) is SimulationManager
 
     def test_env_applies_even_with_an_explicit_simengine_class(self, monkeypatch):
-        """The env gate picks the manager; the SimEngine class stays the caller's."""
+        """The env gate picks the backend; the SimEngine class stays the caller's."""
         monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust")
         proj = load_fauxware(engine=UberEngine)
         assert proj.factory.default_engine_factory is UberEngine
-        assert isinstance(proj.factory.simulation_manager(), RustExplorationManager)
+        assert isinstance(proj.factory.simulation_manager().backend, RustBackend)
 
 
 class TestParityUnderTheFlag:
     """A flag-on run and a stock Python run reach the same answer.
 
     The routing decision is only safe if the routed-to engine agrees with the
-    one it displaced. Two halves, matching the two routes the flag can take:
-    an eligible workload (goes to Rust) and an ineligible one (stays on Python).
+    one it displaced. Two halves, matching the two routes the backend can take:
+    an eligible workload (stepped on Rust) and an ineligible one (declined to Python).
     """
 
     @staticmethod
     def _solve(proj, **state_kwargs):
         state = proj.factory.entry_state(**state_kwargs)
         mgr = proj.factory.simulation_manager(state)
-        mgr.explore(find=lambda s: b"Welcome" in s.posix.dumps(1), max_steps=60)
+        # No max_steps=: it was a RustExplorationManager.explore() budget; on a SimulationManager it is an
+        # engine run argument, which the backend declines and the Python engine ignores.
+        mgr.explore(find=lambda s: b"Welcome" in s.posix.dumps(1))
         assert mgr.found, "fauxware backdoor not reached"
         found = mgr.found[0]
-        return type(mgr), found.addr, found.posix.dumps(0)
+        return mgr.backend, found.addr, found.posix.dumps(0)
 
     def test_eligible_workload_matches_python(self, rust_project, fauxware_project):
-        rust_kind, _, rust_stdin = self._solve(rust_project)
-        py_kind, _, py_stdin = self._solve(fauxware_project)
+        rust_backend, _, rust_stdin = self._solve(rust_project)
+        py_backend, _, py_stdin = self._solve(fauxware_project)
 
-        assert issubclass(rust_kind, RustExplorationManager)
-        assert py_kind is SimulationManager
+        assert isinstance(rust_backend, RustBackend)
+        stats = rust_backend.stats
+        assert stats["claimed"] + stats["fast_path_runs"] >= 1, "the rust engine stepped nothing"
+        assert py_backend is None
         # The solved input is the comparable artifact, not the found address: an
         # output-content predicate trips at whatever block boundary the engine
         # happens to check on, and the two engines batch steps differently.
@@ -346,13 +376,16 @@ class TestParityUnderTheFlag:
         assert b"SOSNEAKY" in py_stdin
 
     def test_ineligible_workload_is_untouched(self, rust_project, fauxware_project):
-        """An action-tracking state routes to Python under the flag and behaves identically."""
+        """An action-tracking state is declined to Python under the flag and behaves identically."""
         opts = {"add_options": {"TRACK_MEMORY_ACTIONS"}}
-        routed_kind, routed_addr, _ = self._solve(rust_project, **opts)
-        py_kind, py_addr, _ = self._solve(fauxware_project, **opts)
+        routed_backend, routed_addr, _ = self._solve(rust_project, **opts)
+        py_backend, py_addr, _ = self._solve(fauxware_project, **opts)
 
-        assert routed_kind is SimulationManager
-        assert py_kind is SimulationManager
+        assert isinstance(routed_backend, RustBackend)
+        stats = routed_backend.stats
+        assert stats["claimed"] == 0
+        assert stats["declined"]["state options not honored by the rust engine: TRACK_MEMORY_ACTIONS"] >= 1
+        assert py_backend is None
         assert routed_addr == py_addr
 
 
@@ -373,18 +406,17 @@ class TestDefaultRoutedStepIsOneBlock:
             pytest.skip(f"binary not found: {path}")
         project = angr.Project(path, auto_load_libs=False, engine="rust")
         mgr = project.factory.simulation_manager(project.factory.blank_state(addr=0x86DC))
-        assert isinstance(mgr, RustExplorationManager)
+        assert isinstance(mgr.backend, RustBackend)
 
         mgr.step()
 
+        assert mgr.backend.stats["claimed"] == 1
         assert sorted(s.addr for s in mgr.active) == [0x86F0, 0x86F8]
         for state in mgr.active:
             assert state.scratch.bbl_addr == 0x86DC
             assert state.scratch.irsb.addr == 0x86DC
             # The executed block, not a re-lift at the successor.
             assert state.scratch.irsb.default_exit_target == 0x86F0
-        # The toggle is scoped to the call.
-        assert mgr.set_block_granular(False) is False
 
 
 class TestDefaultRoutedSyscallIsItsOwnStep:
@@ -408,12 +440,13 @@ class TestDefaultRoutedSyscallIsItsOwnStep:
     def test_syscall_errors_on_the_second_step(self):
         project, state = self._seed()
         mgr = project.factory.simulation_manager(state)
-        assert isinstance(mgr, RustExplorationManager)
+        assert isinstance(mgr.backend, RustBackend)
 
         mgr.step()
+        assert mgr.backend.stats["claimed"] == 1
         assert [s.addr for s in mgr.active] == [0x2]
         assert mgr.active[0].history.jumpkind == "Ijk_Sys_int128"
-        assert mgr.stash_counts()["errored"] == 0
+        assert not mgr.errored
         mgr.step()
         assert not mgr.active
         assert len(mgr.errored) == 1
@@ -438,8 +471,9 @@ class TestDefaultRoutedSyscallIsItsOwnStep:
         assert stepped.history.jumpkind.startswith("Ijk_Sys")
 
         mgr = project.factory.simulation_manager(stepped)
-        assert isinstance(mgr, RustExplorationManager)
+        assert isinstance(mgr.backend, RustBackend)
         mgr.step()
+        assert mgr.backend.stats["claimed"] == 1
         # The syscall, not the block at 0x2.
         assert not mgr.active
         assert len(mgr.errored) == 1
@@ -462,7 +496,8 @@ class TestForkSiblingHistory:
         if not os.path.exists(path):
             pytest.skip(f"binary not found: {path}")
         project = angr.Project(path, auto_load_libs=False, engine="rust")
-        mgr = project.factory.simulation_manager(project.factory.blank_state(addr=0x86DC))
+        # Deferred-fork bookkeeping is the private manager's, so drive one directly.
+        mgr = RustExplorationManager(project, active_states=[project.factory.blank_state(addr=0x86DC)])
         mgr.set_block_granular(granular)
 
         mgr._rust_mgr.run(1)
@@ -486,7 +521,8 @@ class TestForkSiblingHistory:
         if not os.path.exists(path):
             pytest.skip(f"binary not found: {path}")
         project = angr.Project(path, auto_load_libs=False, engine="rust")
-        mgr = project.factory.simulation_manager(project.factory.blank_state(addr=0x86DC))
+        # Deferred-fork bookkeeping is the private manager's, so drive one directly.
+        mgr = RustExplorationManager(project, active_states=[project.factory.blank_state(addr=0x86DC)])
         mgr.set_block_granular(granular)
 
         mgr._rust_mgr.run(1)

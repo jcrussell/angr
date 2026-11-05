@@ -13,6 +13,7 @@ import pytest
 
 import angr
 from angr import claripy
+from angr.exploration import RustExplorationManager
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
@@ -21,12 +22,12 @@ pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exp
 @pytest.fixture
 def sqrtss_state():
     """One step of the lone ``sqrtss xmm1, xmm1`` over a symbolic single-precision input."""
-    proj = angr.load_shellcode(b"\xf3\x0f\x51\xc9", "amd64", load_address=0, engine="rust")
+    proj = angr.load_shellcode(b"\xf3\x0f\x51\xc9", "amd64", load_address=0)
     state = proj.factory.blank_state(addr=0)
     xmm1 = claripy.FPS("v", claripy.FSORT_FLOAT)
     state.regs.xmm1 = xmm1.to_bv()
-    mgr = proj.factory.simgr(state)
-    assert type(mgr).__name__ == "RustExplorationManager"
+    mgr = RustExplorationManager(proj, [state])
+    mgr.set_block_granular(True)
     mgr.step()
     assert len(mgr.active) == 1
     final = mgr.active[0]

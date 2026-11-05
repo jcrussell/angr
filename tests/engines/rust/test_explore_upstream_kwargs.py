@@ -5,6 +5,12 @@
 name in ``**kwargs``: ``explore(n=)`` ran to the find (a hang on a loop),
 ``find_stash=`` left the find in ``found``, and an engine argument changed
 nothing.
+
+A Rust-routed manager is a ``SimulationManager`` with a ``RustBackend``
+(angr-mx00p.136.19): it honors every manager-level keyword itself, so a
+keyword is either honored exactly as on the Python engine or, for one that
+reaches the per-state step (``successor_func``, engine run arguments), a
+strict ``engine="rust"`` manager raises at that step.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ import pytest
 
 import angr
 from angr.exploration import RustExplorationManager
+from angr.exploration.rust_backend import RustBackend
 from angr.exploration_techniques import Explorer
 from angr.sim_manager import SimulationManager
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
@@ -50,6 +57,30 @@ def _counts(mgr) -> dict[str, int]:
     return {k: len(v) for k, v in mgr.stashes.items() if v}
 
 
+def _addrs(mgr) -> dict[str, list[int]]:
+    return {k: sorted(s.addr for s in v) for k, v in mgr.stashes.items() if v}
+
+
+def _main_mgr(rust: bool):
+    """A fauxware manager whose one active state is at ``main``, past the init prefix the backend declines."""
+    project = load_fauxware()
+    pre = project.factory.simulation_manager(project.factory.entry_state())
+    pre.explore(find=project.loader.find_symbol("main").rebased_addr)
+    return project.factory.simulation_manager(pre.found[0], engine="rust" if rust else None)
+
+
+# A non-default value per upstream step() parameter besides stash/n/successor_func; each changes where the
+# step's states land, so a dropped one shows in the stashes.
+_STEP_VALUES = {
+    "target_stash": lambda: "other",
+    "selector_func": lambda: lambda _s: True,
+    "step_func": lambda: lambda m: m.move("active", "stepped"),
+    "error_list": list,
+    "until": lambda: lambda _m: True,
+    "filter_func": lambda: lambda _s: "filtered",
+}
+
+
 class TestSignatures:
     def test_explore_names_every_upstream_parameter(self):
         missing = set(_named_params(SimulationManager.explore)) - set(_named_params(RustExplorationManager.explore))
@@ -60,14 +91,26 @@ class TestSignatures:
         mgr = _fauxware_mgr(rust=True)
         mgr.run(stash="active", n=1, until=lambda _m: True)
 
-    @pytest.mark.parametrize(
-        "name",
-        sorted(set(_named_params(SimulationManager.step)) - {"stash", "n"}),
-    )
-    def test_step_refuses_each_other_upstream_parameter(self, name):
+    def test_step_values_cover_every_other_upstream_parameter(self):
+        assert set(_STEP_VALUES) == set(_named_params(SimulationManager.step)) - {"stash", "n", "successor_func"}
+
+    @pytest.mark.parametrize("name", sorted(_STEP_VALUES))
+    def test_step_honors_each_other_upstream_parameter_as_python(self, name):
+        results = []
+        for rust in (False, True):
+            mgr = _main_mgr(rust)
+            mgr.step(**{name: _STEP_VALUES[name]()})
+            results.append(_addrs(mgr))
+        assert results[0] == results[1]
+        assert isinstance(mgr.backend, RustBackend)
+        if name != "filter_func":
+            # filter_func moves the state aside unstepped, so only the other parameters reach the backend.
+            assert mgr.backend.stats["claimed"] >= 1
+
+    def test_step_refuses_successor_func(self):
         mgr = _fauxware_mgr(rust=True)
-        with pytest.raises(NotImplementedError, match=name):
-            mgr.step(**{name: object()})
+        with pytest.raises(NotImplementedError, match="successor_func"):
+            mgr.step(successor_func=lambda s: s.step())
 
     def test_init_takes_no_unknown_kwargs(self):
         project = load_fauxware()
@@ -128,26 +171,38 @@ class TestExploreHonors:
 class TestExploreRefuses:
     @pytest.mark.parametrize(
         "kwargs",
-        [{"selector_func": lambda _s: True}, {"num_inst": 1}, {"stash": "other"}, {"cfg": object()}],
-        ids=["selector_func", "num_inst", "stash", "cfg"],
+        [{"num_inst": 1}],
+        ids=["num_inst"],
     )
     def test_explicit_manager_raises(self, kwargs):
         mgr = _fauxware_mgr(rust=True)
         with pytest.raises(NotImplementedError, match=next(iter(kwargs))):
             mgr.explore(find=FAUXWARE_FIND, **kwargs)
 
-    def test_avoid_priority_raises(self):
-        mgr = _fauxware_mgr(rust=True)
-        with pytest.raises(NotImplementedError, match="avoid_priority"):
-            mgr.explore(find=FAUXWARE_FIND, avoid_priority=True)
 
-    def test_default_route_hands_off_and_honors(self):
+class TestExploreHonorsManagerKwargs:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"selector_func": lambda _s: True}, {"stash": "other"}, {"avoid_priority": True}],
+        ids=["selector_func", "stash", "avoid_priority"],
+    )
+    def test_explicit_manager_matches_python(self, kwargs):
+        results = []
+        for rust in (False, True):
+            mgr = _main_mgr(rust)
+            mgr.explore(find=FAUXWARE_FIND, n=FAUXWARE_FIND_ROUND + 1, **kwargs)
+            results.append(_addrs(mgr))
+        assert results[0] == results[1]
+        assert isinstance(mgr.backend, RustBackend)
+
+    def test_default_route_honors_avoid_priority(self):
         project = load_fauxware(engine="rust")
         mgr = project.factory.simulation_manager(project.factory.entry_state())
-        assert isinstance(mgr, RustExplorationManager)
+        assert isinstance(mgr.backend, RustBackend)
         mgr.explore(find=FAUXWARE_FIND, avoid_priority=True)
         assert type(mgr) is SimulationManager
         assert len(mgr.found) == 1
+        assert mgr.backend.stats["claimed"] >= 1
 
 
 class TestExplorerTechnique:
@@ -159,8 +214,12 @@ class TestExplorerTechnique:
         mgr.run()
         assert len(mgr.mine) == 1
 
-    def test_explicit_manager_warns_for_find_stash(self, caplog):
+    def test_explicit_manager_honors_find_stash(self):
         mgr = _fauxware_mgr(rust=True)
-        with caplog.at_level("WARNING"):
-            mgr.use_technique(Explorer(find=FAUXWARE_FIND, find_stash="mine"))
-        assert "find_stash" in caplog.text
+        mgr.use_technique(Explorer(find=FAUXWARE_FIND, find_stash="mine"))
+        mgr.run()
+        assert len(mgr.mine) == 1
+        assert not mgr.stashes.get("found")
+        # run() takes the backend's fast path here, which steps on the private manager without per-state claims.
+        stats = mgr.backend.stats
+        assert stats["claimed"] + stats["fast_path_runs"] >= 1

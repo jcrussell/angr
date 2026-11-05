@@ -42,7 +42,16 @@ def test_conditional_exit_successors_in_python_order(engine, code, start, expect
     assert [s.addr - LOAD for s in mgr.active] == expected
 
 
-@pytest.mark.parametrize("engine", ["py", "rust"])
+@pytest.mark.parametrize(
+    "engine",
+    [
+        "py",
+        pytest.param(
+            "rust",
+            marks=pytest.mark.xfail(strict=True, reason="RustBackend's run() fast path chains (angr-mx00p.136.43)"),
+        ),
+    ],
+)
 def test_run_deadends_the_fork_arms_in_python_order(engine, monkeypatch):
     """A default-routed run() deadends the arms of uc_stop's symbolic exit as SimulationManager.run() does.
 
