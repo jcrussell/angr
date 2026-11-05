@@ -8,13 +8,14 @@ with the backend must equal the Python engine's.
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
 import angr
 from angr.exploration.rust_backend import RustBackend
 from angr.exploration.rust_manager import resolve_main_address
-from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, load_fauxware
+from tests.engines.conftest import FAUXWARE_PATH, RUST_EXPLORATION_AVAILABLE, load_fauxware
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust extension not built")
 
@@ -150,6 +151,32 @@ def test_stop_point_inside_the_block_declines(project, main_addr):
 def test_loader_stub_seed_is_in_init_prefix(project):
     state = project.factory.full_init_state()
     assert _reason(project, state) == "state is in the python init prefix"
+
+
+def test_loader_stub_seed_keeps_its_initializers_in_init_prefix():
+    """The initializers the loader stub calls stay on Python with it (angr-mx00p.132.67).
+
+    Rust frames carry no procedure_data, so an initializer stepped in Rust
+    returned to LinuxLoader's run_initializer continuation with none, and
+    Python raised "inapplicable stack frame". The libraries are loaded so the
+    stub has initializers to call.
+    """
+    if not os.path.exists(FAUXWARE_PATH):
+        pytest.skip("fauxware binary not found")
+    project = angr.Project(FAUXWARE_PATH, auto_load_libs=True)
+    main_addr = resolve_main_address(project)
+    state = project.factory.full_init_state()
+    backend = RustBackend(project)
+    simgr = angr.SimulationManager(project, [state], backend=backend)
+    assert backend.decline_reason(simgr, state, None, {}) == "state is in the python init prefix"
+    (initializer,) = project.factory.successors(state).flat_successors
+    assert project._sim_procedures.get(initializer.addr) is None
+    assert backend.decline_reason(simgr, initializer, None, {}) == "state is in the python init prefix"
+
+    simgr.explore(find=main_addr)
+    assert not simgr.errored
+    (at_main,) = simgr.found
+    assert backend.decline_reason(simgr, at_main, None, {}) is None
 
 
 def test_handed_back_lineage_is_sticky(project, main_addr):

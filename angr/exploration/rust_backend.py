@@ -880,13 +880,15 @@ class RustBackend(SimulationBackend):
         loader's own SimProcedures run on Python wherever they appear.
         """
         addr = state.addr
-        proc = self._project._sim_procedures.get(addr)
-        if proc is not None and type(proc).__module__.startswith("angr.procedures.linux_loader"):
-            return True
+        # The phase is read first: the simos loader stub seed is itself a loader SimProcedure, and
+        # its mark is what keeps the initializers it calls on Python (angr-mx00p.132.67).
         phase = self._phase.get(state)
         if phase is None:
             phase = _IN_INIT if is_python_init_seed(self._project, addr) else _PAST_INIT
             self._phase.set(state, phase)
+        proc = self._project._sim_procedures.get(addr)
+        if proc is not None and type(proc).__module__.startswith("angr.procedures.linux_loader"):
+            return True
         if phase == _PAST_INIT:
             return False
         if self._at_main(state):
