@@ -51,10 +51,18 @@ impl RustExplorationManager {
     // =========================================================================
 
     /// Resume after a SimProcedure callback. See `resume::_resume_after_simprocedure` for the body.
-    #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    ///
+    /// `executed_block` is `(block address, exit jumpkind)` when the callback
+    /// was a Python VEX fallback, so the history records that block instead
+    /// of a procedure's `Ijk_Ret` (see `resume::apply_callback_resume`).
+    #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None, executed_block=None))]
     #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
                   mutate exploration config or the active stash."
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the resume payload: new pc, register / memory / constraint writes and the executed block"
     )]
     pub fn resume_after_simprocedure(
         &mut self,
@@ -64,6 +72,7 @@ impl RustExplorationManager {
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+        executed_block: Option<(u64, String)>,
     ) -> PyResult<()> {
         self._resume_after_simprocedure(
             py,
@@ -72,6 +81,7 @@ impl RustExplorationManager {
             register_changes,
             memory_changes,
             new_constraints,
+            executed_block.as_ref().map(|(a, jk)| (*a, jk.as_str())),
         )
     }
 
@@ -95,7 +105,7 @@ impl RustExplorationManager {
     /// Finish an extra successor of a callback whose Rust state is the fork
     /// `fork_id` parked in `stash`, and route it. See
     /// `resume::_resume_forked_successor` for the body.
-    #[pyo3(signature = (fork_id, stash, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[pyo3(signature = (fork_id, stash, new_pc, register_changes=None, memory_changes=None, new_constraints=None, executed_block=None))]
     #[angr_symex_macros::steady_guard_exempt(
         reason = "routes one callback successor like resume_after_simprocedure routes the \
                   pending state; drives the bounce/resume protocol, does not mutate exploration \
@@ -114,6 +124,7 @@ impl RustExplorationManager {
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+        executed_block: Option<(u64, String)>,
     ) -> PyResult<()> {
         self._resume_forked_successor(
             py,
@@ -123,6 +134,7 @@ impl RustExplorationManager {
             register_changes,
             memory_changes,
             new_constraints,
+            executed_block.as_ref().map(|(a, jk)| (*a, jk.as_str())),
         )
     }
 
@@ -149,6 +161,7 @@ impl RustExplorationManager {
             register_changes,
             memory_changes,
             new_constraints,
+            None,
         )
     }
 

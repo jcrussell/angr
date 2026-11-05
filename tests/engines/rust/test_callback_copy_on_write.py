@@ -73,9 +73,7 @@ class TestTwoSuccessorHookParity:
         expected = sorted(_summary(s, sym, (0x111, 0x222)) for s in py_simgr.active)
         assert [e[0] for e in expected] == [TARGET_1, TARGET_2]
 
-        mgr = RustExplorationManager(
-            proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)]
-        )
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)])
         mgr.run(max_steps=1)
         got = sorted(_summary(s, sym, (0x111, 0x222)) for s in mgr.active)
 
@@ -89,9 +87,7 @@ class TestTwoSuccessorHookParity:
         proj = hookable_project
         sym = claripy.BVS("cow_guard", 64)
         proj.hook(HOOK_ADDR, _two_successor_proc(sym))
-        mgr = RustExplorationManager(
-            proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)]
-        )
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=HOOK_ADDR, add_options=ZERO_FILL)])
         mgr.run(max_steps=1)
         rust = mgr._rust_mgr
         guards = {}
@@ -178,6 +174,33 @@ def test_python_vex_fallback_conditional_exit_parity():
     got = sorted(summary(s) for s in mgr.active)
     assert got == expected
     assert mgr._rust_mgr.stash_count(CALLBACK_FORK_STASH) == 0
+
+
+def test_python_vex_fallback_records_the_block_in_history_like_python():
+    """Both successors of a VEX-fallback block record that block and its exit
+    jumpkind, not a procedure's ``(next pc, Ijk_Ret)`` (angr-mx00p.132.56)."""
+    proj = angr.load_shellcode(_VEX_FALLBACK_CODE, arch="amd64", start_offset=0, load_address=0x400000)
+
+    def entry():
+        st = proj.factory.blank_state(addr=0x400000, add_options=ZERO_FILL)
+        st.regs.rdi = claripy.BVS("hist_vex_x", 64)
+        return st
+
+    def history(states):
+        return sorted((s.addr, tuple(s.history.bbl_addrs), s.history.jumpkind) for s in states)
+
+    py_simgr = proj.factory.simgr(entry())
+    py_simgr.step()
+    expected = history(py_simgr.active)
+    assert expected == [
+        (_VEX_FALLTHROUGH, (0x400000,), "Ijk_Boring"),
+        (_VEX_TAKEN, (0x400000,), "Ijk_Boring"),
+    ]
+
+    mgr = RustExplorationManager(proj, [entry()])
+    mgr.run(max_steps=1)
+    assert mgr._perf_stats._stats["callback_vex_fallback_count"] == 1
+    assert history(mgr.active) == expected
 
 
 def test_copy_reads_parent_as_of_copy_and_unclaimed_copy_is_released(hookable_project):

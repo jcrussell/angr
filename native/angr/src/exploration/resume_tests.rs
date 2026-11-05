@@ -117,7 +117,7 @@ fn all_three_entry_points_materialize_the_same_deferred_fork() {
             pending_with_one_fork(state, &cond, reason, Some(snapshot)),
         );
         Python::attach(|py| {
-            mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None)
+            mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None, None)
                 .expect("resume simprocedure");
         });
         let forks = fork_placements(&mgr);
@@ -222,7 +222,7 @@ fn snapshotless_resume_keeps_deferred_fork_live_in_every_entry_point() {
     };
     let sid = park(&mut mgr, pending_with_one_fork(state, &cond, reason, None));
     Python::attach(|py| {
-        mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None)
+        mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None, None)
             .expect("resume simprocedure");
     });
     let simproc_forks = fork_placements(&mgr);
@@ -320,7 +320,7 @@ fn adopted_fork_is_the_state_the_pending_callback_resumes() {
     assert_eq!(mgr.stash_count(COW_STASH), 0, "fork left the holding stash");
 
     Python::attach(|py| {
-        mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None)
+        mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None, None)
             .expect("resume");
     });
     assert!(mgr.pending_callbacks.is_empty());
@@ -380,9 +380,9 @@ fn forked_successor_routes_from_its_own_fork() {
     }
 
     Python::attach(|py| {
-        mgr._resume_forked_successor(py, live, COW_STASH, 0x40_3000, None, None, None)
+        mgr._resume_forked_successor(py, live, COW_STASH, 0x40_3000, None, None, None, None)
             .expect("resume live fork");
-        mgr._resume_forked_successor(py, dead, COW_STASH, 0x40_4000, None, None, None)
+        mgr._resume_forked_successor(py, dead, COW_STASH, 0x40_4000, None, None, None, None)
             .expect("resume dead fork");
     });
 
@@ -404,7 +404,7 @@ fn forked_successor_routes_from_its_own_fork() {
     );
     Python::attach(|py| {
         assert!(
-            mgr._resume_forked_successor(py, live, COW_STASH, 0, None, None, None)
+            mgr._resume_forked_successor(py, live, COW_STASH, 0, None, None, None, None)
                 .is_err(),
             "a fork already routed is not in the holding stash any more"
         );

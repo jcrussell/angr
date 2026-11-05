@@ -169,3 +169,26 @@ fn procedure_steps_count_as_blocks() {
     assert_eq!(state.block_count(), 2);
     assert_eq!(state.detailed_history().len(), 2);
 }
+
+#[test]
+fn python_block_records_its_own_address_and_exit() {
+    // A block Python's VEX engine ran for the interpreter records the block
+    // and its exit jumpkind, as angr's VEX step does (angr-mx00p.132.56),
+    // and only an `Ijk_Ret` exit unwinds the frame expecting the target.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.push_call(0x40_0000, 0x50_0000, 0x40_1000, 0x7fff_0000);
+    state.set_pc(0x40_1000);
+    state.finish_python_block(0x50_0000, HistoryEntry::JK_BORING, 0x40_1000);
+    let last = state.detailed_history().back().unwrap().clone();
+    assert_eq!(
+        (last.addr, last.jumpkind, last.jump_target),
+        (0x50_0000, HistoryEntry::JK_BORING, 0x40_1000)
+    );
+    assert_eq!(state.call_stack().len(), 1);
+    assert_eq!(state.pc(), 0x40_1000);
+    assert_eq!(state.block_count(), 1);
+
+    state.finish_python_block(0x50_0010, HistoryEntry::JK_RET, 0x40_1000);
+    assert!(state.call_stack().is_empty());
+    assert_eq!(state.block_count(), 2);
+}

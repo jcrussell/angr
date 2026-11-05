@@ -139,16 +139,27 @@ impl RustSimState {
     /// the jumpkind that led to `return_addr` (angr-mx00p.89).
     pub fn return_from_procedure(&mut self, return_addr: u64) {
         let hook_addr = self.pc();
-        self.add_history_entry(hook_addr, HistoryEntry::JK_RET, return_addr);
+        self.finish_python_block(hook_addr, HistoryEntry::JK_RET, return_addr);
+    }
+
+    /// Record a block that Python's VEX engine executed in place of the
+    /// interpreter (a `NeedPythonVEX` fallback): the entry is the block at
+    /// `block_addr` leaving through `jumpkind` to `target`, as angr's VEX
+    /// step records it (angr-mx00p.132.56). Only an `Ijk_Ret` exit unwinds a
+    /// frame; an `Ijk_Call` exit pushes none, since the call's stack pointer
+    /// lives in the Python successor.
+    pub fn finish_python_block(&mut self, block_addr: u64, jumpkind: u8, target: u64) {
+        self.add_history_entry(block_addr, jumpkind, target);
         self.count_blocks(1);
-        if let Some(i) = self
-            .call_stack
-            .iter()
-            .rposition(|f| f.return_addr == return_addr)
+        if jumpkind == HistoryEntry::JK_RET
+            && let Some(i) = self
+                .call_stack
+                .iter()
+                .rposition(|f| f.return_addr == target)
         {
             self.call_stack.truncate(i);
         }
-        self.set_pc(return_addr);
+        self.set_pc(target);
     }
 
     /// Replace the call stack (used when restoring from interpreter).

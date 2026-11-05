@@ -22,6 +22,10 @@ impl RustExplorationManager {
     /// Inner body of the pymethods-exposed `resume_after_simprocedure`.
     /// See the wrapper in `manager_methods_run.rs` for the public Python
     /// signature.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the resume payload: new pc, register / memory / constraint writes and the executed block"
+    )]
     pub(crate) fn _resume_after_simprocedure(
         &mut self,
         py: Python<'_>,
@@ -30,6 +34,7 @@ impl RustExplorationManager {
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+        executed_block: Option<(u64, &str)>,
     ) -> PyResult<()> {
         crate::gil_profile::park_end();
         let pending = self
@@ -45,6 +50,7 @@ impl RustExplorationManager {
             register_changes,
             memory_changes,
             new_constraints,
+            executed_block,
         )?;
 
         // NOTE: deferred forks whose condition_id is absent from stored_conditions
@@ -165,14 +171,23 @@ impl RustExplorationManager {
     }
 
     /// Apply one callback successor's resume payload to `state`: the
-    /// register / memory writes and the new PC, the procedure-return
-    /// bookkeeping, then the constraints the Python side added. Returns
+    /// register / memory writes and the new PC, the history entry for the
+    /// step Python ran, then the constraints the Python side added. Returns
     /// `true` when the constraint sync left the state unsatisfiable.
+    ///
+    /// `executed_block` is `(block address, exit jumpkind)` when Python's VEX
+    /// engine ran a block for the interpreter
+    /// ([`RustSimState::finish_python_block`]); `None` records a procedure's
+    /// return ([`RustSimState::return_from_procedure`]).
     ///
     /// Shared by the pending state's own resume
     /// ([`Self::_resume_after_simprocedure`]) and every extra successor of the
     /// same callback ([`Self::_resume_forked_successor`]), so a successor is
     /// finished identically whichever slot it came out of.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the resume payload: new pc, register / memory / constraint writes and the executed block"
+    )]
     pub(crate) fn apply_callback_resume(
         &self,
         py: Python<'_>,
@@ -181,6 +196,7 @@ impl RustExplorationManager {
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+        executed_block: Option<(u64, &str)>,
     ) -> PyResult<bool> {
         let mut changes = StateChanges::new();
         changes.new_pc = Some(new_pc);
@@ -191,8 +207,17 @@ impl RustExplorationManager {
             changes.memory_writes = mem_changes;
         }
         state.apply_changes(&changes);
-        // The procedure ran in Python: no Ijk_Ret popped its frame here.
-        state.return_from_procedure(new_pc);
+        match executed_block {
+            Some((block_addr, jumpkind)) => state.finish_python_block(
+                block_addr,
+                crate::state::HistoryEntry::jumpkind_from_vex(&crate::vex::parse_jumpkind(
+                    jumpkind,
+                )),
+                new_pc,
+            ),
+            // The procedure ran in Python: no Ijk_Ret popped its frame here.
+            None => state.return_from_procedure(new_pc),
+        }
 
         // Sync the constraints the SimProcedure added on the Python side
         // (e.g. strcmp return conditions) into the Rust solver.
@@ -278,6 +303,7 @@ impl RustExplorationManager {
         register_changes: Option<Vec<(u32, u32, Vec<u8>)>>,
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
+        executed_block: Option<(u64, &str)>,
     ) -> PyResult<()> {
         let mut state = self.sm.take_state_from(fork_id, stash).ok_or_else(|| {
             PyValueError::new_err(format!(
@@ -291,6 +317,7 @@ impl RustExplorationManager {
             register_changes,
             memory_changes,
             new_constraints,
+            executed_block,
         )?;
         if unsat || !state.survives_sat_prune(self.constraint_solver.lazy_solves) {
             self.drop_unsat(state);

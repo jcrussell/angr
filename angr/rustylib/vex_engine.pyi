@@ -324,6 +324,7 @@ class RustExplorationManager:
         register_changes: Any = None,
         memory_changes: Any = None,
         new_constraints: Any = None,
+        executed_block: Any = None,
     ) -> Any: ...
     def resume_after_symbolic_branch(
         self, state_id: Any, true_pc: Any, false_pc: Any, true_constraints: Any = None, false_constraints: Any = None

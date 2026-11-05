@@ -1447,7 +1447,9 @@ class RustCallbackDispatchMixin:
         if state_id is not None:
             self._cache_state_mirror(state_id, state)
 
-    def _add_forked_state(self, succ_state: angr.SimState, fork_id: int) -> None:
+    def _add_forked_state(
+        self, succ_state: angr.SimState, fork_id: int, executed_block: tuple[int, str] | None = None
+    ) -> None:
         """Finish an extra callback successor from its own Rust fork.
 
         ``fork_id`` is the fork ``_settle_callback_successors`` handed this
@@ -1456,6 +1458,8 @@ class RustCallbackDispatchMixin:
         (angr-mx00p.112, angr-vmi2l.294). Only the PC has not reached Rust
         yet; it is applied to that fork, never to the pending state, and
         ``resume_forked_successor`` routes it (or prunes it if unsat).
+        ``executed_block`` is passed through for a VEX-fallback successor
+        (see :meth:`_vex_fallback_history`).
         """
         syscall = _pending_syscall_resume(succ_state)
         if syscall is not None:
@@ -1467,7 +1471,9 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_to_rust(succ_state, fork_id)
         self._sync_state_stdin_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)
-        self._rust_mgr.resume_forked_successor(fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None)
+        self._rust_mgr.resume_forked_successor(
+            fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None, executed_block=executed_block
+        )
         self._callback_fork_scope.consumed(fork_id)
         if _DBG:
             l.debug(f"Finished forked successor {fork_id} at PC 0x{new_pc:x}")
@@ -2462,6 +2468,16 @@ class RustCallbackDispatchMixin:
         finally:
             self._perf_stats.record_vex_fallback_call(time.perf_counter_ns() - _vf_total_start)
 
+    @staticmethod
+    def _vex_fallback_history(block_addr: int, succ: angr.SimState) -> tuple[int, str]:
+        """The ``executed_block`` resume argument for a VEX-fallback successor.
+
+        Python's engine stepped the block at ``block_addr``, so Rust records
+        it with the successor's exit jumpkind, as angr's own VEX step does,
+        not as a procedure's ``Ijk_Ret`` (angr-mx00p.132.56).
+        """
+        return block_addr, succ.history.jumpkind or "Ijk_Boring"
+
     def _handle_python_vex_fallback_inner(self, event: _ExplorationEvent):
         addr = event.callback_addr
         state_id = event.callback_state_id
@@ -2505,14 +2521,21 @@ class RustCallbackDispatchMixin:
             if succ is not None:
                 # Register, memory and constraint writes landed in the
                 # successor's Rust state through the proxies.
-                self._rust_mgr.resume_after_simprocedure(state_id, self._resolve_next_pc(succ), None, None, None)
+                self._rust_mgr.resume_after_simprocedure(
+                    state_id,
+                    self._resolve_next_pc(succ),
+                    None,
+                    None,
+                    None,
+                    executed_block=self._vex_fallback_history(addr, succ),
+                )
 
             # Additional successors (symbolic branches in the fallback block)
             # are finished from their own forks so the convergent path isn't
             # silently dropped.
             for extra_succ, fork_id in extras:
                 try:
-                    self._add_forked_state(extra_succ, fork_id)
+                    self._add_forked_state(extra_succ, fork_id, self._vex_fallback_history(addr, extra_succ))
                 except Exception as fork_err:
                     # cat-(b) FALLBACK WITH LOSS: forking an additional VEX-fallback
                     # successor failed; that branch is silently dropped. Already warns.
