@@ -373,6 +373,9 @@ static BY_NAME: &[ByName] = by_name![
 /// then number), never a scan of the rows (angr-k95c).
 pub struct NativeSyscallRegistry {
     handlers: HashMap<SyscallAbi, HashMap<u64, Arc<dyn NativeSyscall>>>,
+    /// Syscall exit kinds the project's SimOS cannot resolve to an ABI. See
+    /// [`NativeSyscallRegistry::resolves_exit`].
+    unresolvable_exits: Vec<JumpKind>,
 }
 
 impl NativeSyscallRegistry {
@@ -380,6 +383,7 @@ impl NativeSyscallRegistry {
     pub fn empty() -> Self {
         NativeSyscallRegistry {
             handlers: HashMap::new(),
+            unresolvable_exits: Vec::new(),
         }
     }
 
@@ -432,6 +436,23 @@ impl NativeSyscallRegistry {
             SyscallAbi::for_exit(arch_name, jumpkind)?
         };
         self.handlers.get(&abi)?.get(&num)
+    }
+
+    /// Mark `jumpkinds` as exits the SimOS cannot resolve, replacing any
+    /// earlier set.
+    pub fn set_unresolvable_exits(&mut self, jumpkinds: Vec<JumpKind>) {
+        self.unresolvable_exits = jumpkinds;
+    }
+
+    /// Whether the SimOS can resolve a syscall exit of kind `jumpkind`.
+    ///
+    /// `false` for a kind on which `SimOS.syscall` raises (SimLinux's
+    /// `syscall_abi` on AMD64 for an `int N` other than `int 0x80`). Python's
+    /// `SimSuccessors._categorize_successor` resolves the syscall in the same
+    /// step as the block and sends such a successor to `unsat`, so the step
+    /// that stops at the exit routes it there too (angr-mx00p.132.38).
+    pub fn resolves_exit(&self, jumpkind: JumpKind) -> bool {
+        !self.unresolvable_exits.contains(&jumpkind)
     }
 
     /// The handler `from_angr_tables` would register for the syscall angr

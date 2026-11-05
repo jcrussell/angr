@@ -60,7 +60,7 @@ use crate::callbacks::PythonCallbacks;
 use crate::interpreter::{BranchSnapshot, ExecutionStats};
 use crate::interpreter::{DeferredFork, ErrorRoute, RunResult};
 use crate::procedures::{NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome};
-use crate::stash::STASH_DEADENDED;
+use crate::stash::{STASH_DEADENDED, STASH_UNSAT};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
@@ -403,6 +403,60 @@ pub(crate) struct PostStepInputs {
     pub(crate) fork_snapshots: FxHashMap<u64, BranchSnapshot>,
 }
 
+/// The live-successor outcome of a step that ends without a Python bounce:
+/// `state` continues alongside its materialized deferred forks.
+///
+/// `syscall_exit` is the `Ijk_Sys*` exit `state` stopped at, if any. When the
+/// SimOS cannot resolve it (`NativeSyscallRegistry::resolves_exit`), Python's
+/// `SimSuccessors._categorize_successor` files the successor as unsat, and its
+/// SimulationManager keeps that in `unsat` only when the step produced
+/// nothing else; with live forks the unsat state is dropped
+/// (angr-mx00p.132.38).
+fn block_end_core(
+    cc: &CoreCtx,
+    state: RustSimState,
+    payload: ForkPayload,
+    root_hint: u64,
+    counters: CoreCounters,
+    syscall_exit: Option<angr_vex::JumpKind>,
+) -> CoreOutcome {
+    let mut forks_out = Vec::new();
+    let mut pruned = Vec::new();
+    let mut fork_ids = Vec::new();
+    materialize_deferred_forks_core(
+        cc,
+        &state,
+        payload,
+        root_hint,
+        false,
+        ForkSink {
+            forks: &mut forks_out,
+            pruned: &mut pruned,
+            fork_ids: &mut fork_ids,
+        },
+    );
+    let mut terminal_pushes = Vec::new();
+    let mut succ = Vec::with_capacity(forks_out.len() + 1);
+    if syscall_exit.is_some_and(|jk| !cc.native_syscalls.resolves_exit(jk)) {
+        if forks_out.is_empty() {
+            terminal_pushes.push((state, STASH_UNSAT));
+        } else {
+            pruned.push(state);
+        }
+    } else {
+        succ.push((state, RoutingTag::main()));
+    }
+    succ.extend(forks_out);
+    CoreOutcome {
+        ret: CoreReturn::Continue(succ),
+        pruned,
+        fork_ids,
+        terminal_pushes,
+        counters,
+        root_hint,
+    }
+}
+
 /// `&mut self`-free post-interpreter classification + fork materialization.
 ///
 /// Takes the stepped `state` by value (it becomes a successor / terminal /
@@ -434,32 +488,8 @@ pub(crate) fn run_post_step_core(
         | RunResult::MaxDeferredForks { pc }
         | RunResult::BlockEnd { next_addr: pc, .. } => {
             state.set_pc(pc);
-            let mut forks_out = Vec::new();
-            let mut pruned = Vec::new();
-            let mut fork_ids = Vec::new();
-            materialize_deferred_forks_core(
-                cc,
-                &state,
-                payload,
-                root_hint,
-                false,
-                ForkSink {
-                    forks: &mut forks_out,
-                    pruned: &mut pruned,
-                    fork_ids: &mut fork_ids,
-                },
-            );
-            let mut succ = Vec::with_capacity(forks_out.len() + 1);
-            succ.push((state, RoutingTag::main()));
-            succ.extend(forks_out);
-            CoreOutcome {
-                ret: CoreReturn::Continue(succ),
-                pruned,
-                fork_ids,
-                terminal_pushes: Vec::new(),
-                counters,
-                root_hint,
-            }
+            let syscall_exit = state.pending_syscall();
+            block_end_core(cc, state, payload, root_hint, counters, syscall_exit)
         }
 
         RunResult::Hook { addr } => bounce(

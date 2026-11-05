@@ -145,8 +145,8 @@ def test_amd64_int_0x80_is_not_the_amd64_abi():
 
     eax=1 is i386 ``exit`` but amd64 ``write``. The Rust engine used to look
     it up in the amd64 table and keep executing (angr-mx00p.57); now it
-    defers to the SimOS, which stops the state at the ``int 0x80`` just as the
-    Python engine does.
+    defers to the SimOS, which stops the state at the ``int 0x80`` in the
+    ``unsat`` stash just as the Python engine does (angr-mx00p.132.38).
     """
     # mov eax,1 ; xor ebx,ebx ; int 0x80 ; mov eax,60 ; mov edi,7 ; syscall
     sc = bytes.fromhex("b80100000031dbcd80b83c000000bf070000000f05")
@@ -156,11 +156,13 @@ def test_amd64_int_0x80_is_not_the_amd64_abi():
     simgr = proj.factory.simulation_manager(proj.factory.entry_state(addr=0x1000))
     simgr.run()
     assert not simgr.deadended and not simgr.active
+    assert [s.addr for s in simgr.unsat] == [after_int80]
 
     mgr = RustExplorationManager(proj, [proj.factory.entry_state(addr=0x1000)])
     mgr.run()
     assert not mgr.deadended, "the int 0x80 ran as amd64 write and execution reached the exit syscall"
-    assert [s.addr for s in mgr.errored] == [after_int80]
+    assert not mgr.errored
+    assert [s.addr for s in mgr.unsat] == [after_int80]
 
 
 def test_arm_oabi_svc_takes_number_from_immediate():

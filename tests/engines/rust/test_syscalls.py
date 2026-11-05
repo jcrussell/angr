@@ -942,3 +942,46 @@ class TestPythonSyscallFallbackSyncsChanges:
         # PC must be the instruction after the 2-byte `syscall`, not addr+1.
         rip = mgr._rust_mgr.get_state_register(sid, "rip")
         assert rip == 0x1002, f"resumed at wrong PC: {rip:#x}"
+
+
+class TestUnresolvableSyscallExitIsUnsat:
+    """angr-mx00p.132.38: a syscall exit SimLinux cannot resolve (``int 0xd2``
+    on AMD64) is an unsat successor of the step that reaches it, as Python's
+    ``SimSuccessors._categorize_successor`` files it, not an errored state one
+    step later.
+    """
+
+    @staticmethod
+    def _project(code):
+        import cle
+
+        proj = angr.load_shellcode(code, "amd64")
+        proj.loader._tls = cle.backends.tls.ELFThreadManager(proj.loader, proj.arch)
+        proj.simos = angr.simos.SimLinux(proj)
+        proj.simos.configure_project()
+        return proj
+
+    def test_unknown_interrupt_goes_to_unsat_like_python(self):
+        proj = self._project(b"\xcd\xd2")
+        for mgr in (
+            proj.factory.simulation_manager(proj.factory.blank_state(addr=0)),
+            RustExplorationManager(proj, [proj.factory.blank_state(addr=0)]),
+        ):
+            mgr.step()
+            assert (len(mgr.active), len(mgr.unsat), len(mgr.errored)) == (0, 1, 0), type(mgr).__name__
+
+    def test_syscall_instruction_still_resolves(self):
+        """``syscall`` is SimLinux's amd64 ABI; ``int N`` lifts as ``Ijk_Sys_int``, which it rejects on AMD64."""
+        from angr.exploration.rust_manager import _unresolvable_syscall_jumpkinds
+
+        proj = self._project(b"\x0f\x05")
+        unresolvable = _unresolvable_syscall_jumpkinds(proj.simos, proj.arch)
+        assert "Ijk_Sys_int" in unresolvable
+        assert "Ijk_Sys_int128" not in unresolvable
+        assert "Ijk_Sys_syscall" not in unresolvable
+        for mgr in (
+            proj.factory.simulation_manager(proj.factory.blank_state(addr=0)),
+            RustExplorationManager(proj, [proj.factory.blank_state(addr=0)]),
+        ):
+            mgr.step()
+            assert (len(mgr.active), len(mgr.unsat)) == (1, 0), type(mgr).__name__

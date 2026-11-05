@@ -82,15 +82,31 @@ impl RustExplorationManager {
     /// plain `SimOS`, or Windows): Python's engine has no syscall procedures
     /// there, so every syscall takes the Python path.
     ///
+    /// `unresolvable_jumpkinds` names the `Ijk_Sys*` exits the SimOS cannot
+    /// resolve (`NativeSyscallRegistry::resolves_exit`); a step stopping at
+    /// one sends the state to the `unsat` stash.
+    ///
     /// Raises `ValueError` for an angr ABI the engine has no handlers for
-    /// and does not knowingly skip.
+    /// and does not knowingly skip, or for a name that is not a syscall
+    /// jumpkind.
     #[angr_symex_macros::steady_guarded]
+    #[pyo3(signature = (tables, unresolvable_jumpkinds=Vec::new()))]
     pub fn set_syscall_tables(
         &mut self,
         tables: Vec<(String, HashMap<u64, String>)>,
+        unresolvable_jumpkinds: Vec<String>,
     ) -> PyResult<()> {
-        let registry =
+        let mut registry =
             NativeSyscallRegistry::from_angr_tables(&tables).map_err(PyValueError::new_err)?;
+        let unresolvable = unresolvable_jumpkinds
+            .iter()
+            .map(String::as_str)
+            .map(crate::state_bridge::parse_syscall_jumpkind)
+            .collect::<PyResult<Vec<_>>>()?;
+        if !unresolvable.is_empty() {
+            self.sm.declare_stash(crate::stash::STASH_UNSAT);
+        }
+        registry.set_unresolvable_exits(unresolvable);
         self.native_syscalls = Arc::new(registry);
         Ok(())
     }

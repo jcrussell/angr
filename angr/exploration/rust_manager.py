@@ -88,6 +88,7 @@ import re
 import struct
 import sys
 import time
+import types
 import warnings
 import weakref
 from collections import defaultdict
@@ -104,6 +105,7 @@ from angr import claripy
 from angr.claripy.errors import ClaripyError
 from angr.errors import (
     AngrError,
+    AngrSyscallError,
     SimEngineError,
     SimError,
     SimIRSBError,
@@ -1100,6 +1102,47 @@ def _syscall_tables(simos) -> list[tuple[str, dict[int, str]]]:
     return [(abi, dict(library.syscall_number_mapping[abi])) for abi in getattr(simos, "syscall_abis", {})]
 
 
+# Every ``Ijk_Sys*`` jumpkind the Rust engine lifts (``JumpKind::is_syscall``).
+_SYSCALL_JUMPKINDS = (
+    "Ijk_Sys_syscall",
+    "Ijk_Sys_int128",
+    "Ijk_Sys_int129",
+    "Ijk_Sys_int130",
+    "Ijk_Sys_int145",
+    "Ijk_Sys_int210",
+    "Ijk_Sys_sysenter",
+    "Ijk_Sys_int",
+    "Ijk_Sys_int32",
+    "Ijk_Sys",
+)
+
+
+def _unresolvable_syscall_jumpkinds(simos, arch) -> list[str]:
+    """The syscall jumpkinds on which ``simos.syscall_abi`` raises ``AngrSyscallError`` for ``arch``.
+
+    The second input to ``set_syscall_tables``. Python's
+    ``SimSuccessors._categorize_successor`` resolves a syscall in the step that
+    reaches it and files the successor as unsat when that raises (SimLinux on
+    AMD64 knows only ``syscall`` and ``int 0x80``). ``syscall_abi`` reads only
+    the arch and the jumpkind there, so a stand-in state probes it once per
+    kind; a probe that fails any other way leaves the kind to the per-syscall
+    Python path, which still errors the state.
+    """
+    syscall_abi = getattr(simos, "syscall_abi", None)
+    if syscall_abi is None:
+        return []
+    out = []
+    for jk in _SYSCALL_JUMPKINDS:
+        probe = types.SimpleNamespace(arch=arch, history=types.SimpleNamespace(jumpkind=jk, parent=None))
+        try:
+            syscall_abi(probe)
+        except AngrSyscallError:
+            out.append(jk)
+        except Exception:  # pylint:disable=broad-exception-caught
+            l.debug("syscall_abi probe for %s failed; leaving it to the Python syscall path", jk, exc_info=True)
+    return out
+
+
 @_install_stash_accessors
 class RustExplorationManager(
     RustCallbackDispatchMixin,
@@ -1346,7 +1389,8 @@ class RustExplorationManager(
         # a syscall library (plain SimOS, Windows) has no syscall procedures on
         # the Python engine either (``SimOS.syscall`` returns None), so it gets
         # no native handlers.
-        self._rust_mgr.set_syscall_tables(_syscall_tables(getattr(project, "simos", None)))
+        simos = getattr(project, "simos", None)
+        self._rust_mgr.set_syscall_tables(_syscall_tables(simos), _unresolvable_syscall_jumpkinds(simos, project.arch))
 
         # angr-op0dn.10.3: strict-deterministic witness selection. The Z3 seed
         # pin above only stabilizes *which model Z3 builds*; this makes the

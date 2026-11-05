@@ -39,6 +39,9 @@ pub const STASH_DEADENDED: &str = "deadended";
 pub const STASH_ERRORED: &str = "errored";
 pub const STASH_PRUNED: &str = "pruned";
 pub const STASH_UNCONSTRAINED: &str = "unconstrained";
+/// Successors Python's `SimSuccessors` would file as unsat and its
+/// SimulationManager keep; declared by `set_syscall_tables` when it can fill.
+pub const STASH_UNSAT: &str = "unsat";
 /// Quarantine stash holding the successors of a `step_state()` call (E1.a).
 /// `step_state` deliberately does NOT auto-stash: the Python caller owns
 /// placement and moves each returned state out with `move_state()`.

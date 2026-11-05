@@ -985,6 +985,16 @@ pub(super) fn handle_syscall_core(
     let ctx = cc.ctx;
     let native_syscalls = cc.native_syscalls;
     state.set_pc(pc);
+    if !native_syscalls.resolves_exit(jumpkind) {
+        return block_end_core(
+            cc,
+            state,
+            payload,
+            root_hint,
+            std::mem::take(counters),
+            Some(jumpkind),
+        );
+    }
     state.add_to_history(pc);
 
     let native_handler =

@@ -70,10 +70,13 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
             "set_solver_timeout applied the new timeout"
         );
 
-        mgr.set_syscall_tables(vec![(
-            "cgcabi".to_string(),
-            HashMap::from([(2, "transmit".to_string())]),
-        )])
+        mgr.set_syscall_tables(
+            vec![(
+                "cgcabi".to_string(),
+                HashMap::from([(2, "transmit".to_string())]),
+            )],
+            Vec::new(),
+        )
         .expect("cgcabi is a known ABI");
         assert_eq!(
             mgr.native_syscall_table()["cgcabi"][&2],
