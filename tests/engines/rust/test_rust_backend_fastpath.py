@@ -232,22 +232,10 @@ def _ordered(simgr):
     return {name: [(s.addr, s.history.depth) for s in states] for name, states in simgr.stashes.items() if states}
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="the fast path runs through fauxware's mid-block avoid 0x4006aa (angr-mx00p.132.60)",
-            ),
-        )
-        if name == "fauxware"
-        else name
-        for name in sorted(CASES)
-    ],
-)
+@pytest.mark.parametrize("name", sorted(CASES))
 def test_a_dfs_run_replays_its_deferrals_natively(name):
+    # fauxware's DFS arm runs block 0x400699 holding the mid-block avoid 0x4006aa, which the fast path's
+    # disarmed rounds must still split the block at (angr-mx00p.132.60).
     _, find, avoid = CASES[name]
     runs = []
     for fast in (True, False):

@@ -65,6 +65,7 @@ impl RustExplorationManager {
             find_addrs: HashSet::new(),
             avoid_addrs: HashSet::new(),
             stop_addrs: HashSet::new(),
+            lift_cut_addrs: HashSet::new(),
             block_granular: false,
             // angr-x39ae: keep (materialize) the deferred forks pending at an
             // UnconstrainedJump by default — dropping them silently lost every
@@ -223,6 +224,13 @@ impl RustExplorationManager {
         self.avoid_addrs = addrs.into_iter().collect();
         self.avoid_needs_python = false;
         self.rebuild_stop_addrs();
+    }
+
+    /// Set the addresses blocks end before, without stopping a state that
+    /// starts at one (see the `lift_cut_addrs` field doc).
+    #[angr_symex_macros::steady_guarded]
+    pub fn set_lift_cut_addrs(&mut self, addrs: Vec<u64>) {
+        self.lift_cut_addrs = addrs.into_iter().collect();
     }
 
     /// Recompute the union of find + avoid addresses (the interpreter's

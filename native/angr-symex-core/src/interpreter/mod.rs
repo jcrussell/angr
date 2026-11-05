@@ -198,6 +198,11 @@ pub struct VEXInterpreter<'a> {
     /// Hook addresses (return to Python when hit).
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
     hook_addrs: Arc<FxHashSet<u64>>,
+    /// Addresses a block ends before, as Python's `extra_stop_points` split a
+    /// block, without stopping a state that starts there: the explore targets
+    /// of a round stepped with find/avoid disarmed (angr-mx00p.132.60). See
+    /// [`Self::lift_window`] and the `IMark` arm of `execute_stmt_with_callbacks`.
+    lift_cuts: Arc<FxHashSet<u64>>,
     /// A hook to step over once: the zero-length hook the run resumes at,
     /// already serviced by its callback. [`Self::is_hooked`] reports it
     /// unhooked until the run's first `IMark` at that address consumes it,
@@ -420,6 +425,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_addr: 0,
             current_insn_len: 0,
             hook_addrs: Arc::new(FxHashSet::default()),
+            lift_cuts: Arc::new(FxHashSet::default()),
             skip_hook_once: None,
             arch,
             native_lifter: None,
@@ -918,6 +924,22 @@ impl<'a> VEXInterpreter<'a> {
         Arc::make_mut(&mut self.hook_addrs).remove(&addr);
     }
 
+    /// Add an address blocks end before; see `Self::lift_cuts`.
+    pub fn add_lift_cut(&mut self, addr: u64) {
+        Arc::make_mut(&mut self.lift_cuts).insert(addr);
+    }
+
+    /// True when a lift cut lies strictly inside `[addr, addr + size)`, so a
+    /// block of that span must be lifted again, ending at the cut.
+    pub(super) fn spans_lift_cut(&self, addr: u64, size: u64) -> bool {
+        // A distance, as `lift_window` measures one: a cut below `addr` wraps
+        // to a huge delta and fails the `< size` test.
+        self.lift_cuts.iter().any(|&cut| {
+            let delta = cut.wrapping_sub(addr);
+            delta > 0 && delta < size
+        })
+    }
+
     /// Step over the hook at `addr` once; see `Self::skip_hook_once`.
     pub fn set_skip_hook_once(&mut self, addr: u64) {
         self.skip_hook_once = Some(addr);
@@ -981,6 +1003,7 @@ impl<'a> VEXInterpreter<'a> {
             current_insn_addr: self.current_insn_addr,
             current_insn_len: self.current_insn_len,
             hook_addrs: Arc::clone(&self.hook_addrs),
+            lift_cuts: Arc::clone(&self.lift_cuts),
             skip_hook_once: self.skip_hook_once,
             arch: self.arch,
             native_lifter: self.native_lifter.clone(),

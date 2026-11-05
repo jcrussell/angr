@@ -132,7 +132,12 @@ impl<'a> VEXInterpreter<'a> {
                 // instruction runs once; past it the hook is live again.
                 if self.skip_hook_once == Some(*addr) {
                     self.skip_hook_once = None;
-                } else if self.is_hooked(*addr) {
+                } else if self.is_hooked(*addr)
+                    || (*addr != irsb.addr && self.lift_cuts.contains(addr))
+                {
+                    // A lift cut past the block's start ends it there, for a
+                    // block the lift window could not cut (a Python-callback
+                    // lift) (angr-mx00p.132.60).
                     return Ok(StmtResult::Exit {
                         target: *addr,
                         jumpkind: JumpKind::Boring,

@@ -86,6 +86,8 @@ pub(crate) struct StepContext {
     pub(crate) avoid_addrs: HashSet<u64>,
     /// Union of find + avoid addresses (interpreter block-chain stop set).
     pub(crate) stop_addrs: HashSet<u64>,
+    /// Addresses the interpreter's blocks end before (`VEXInterpreter::add_lift_cut`).
+    pub(crate) lift_cut_addrs: HashSet<u64>,
     /// Maximum blocks per interpreter run.
     pub(crate) max_steps_per_run: u32,
     /// Block-granular stepping (break the block chain at every boundary).
@@ -144,6 +146,7 @@ impl RustExplorationManager {
             find_addrs: self.find_addrs.clone(),
             avoid_addrs: self.avoid_addrs.clone(),
             stop_addrs: self.stop_addrs.clone(),
+            lift_cut_addrs: self.lift_cut_addrs.clone(),
             max_steps_per_run: self.max_steps_per_run,
             block_granular: self.block_granular,
             find_needs_python: self.find_needs_python,
@@ -284,6 +287,9 @@ pub(crate) fn run_interpreter_step_core(
     }
     for &addr in &ctx.avoid_addrs {
         interp.add_hook(addr);
+    }
+    for &addr in &ctx.lift_cut_addrs {
+        interp.add_lift_cut(addr);
     }
 
     // Copy binary regions for code lifting (O(1) Arc clone per region)

@@ -477,3 +477,32 @@ fn python_fallback_mid_block_rolls_back_the_partial_block() {
     assert_eq!(interp.registers.get(RSP, 8).as_u64(), Some(0x7ff0));
     assert!(interp.store_buffers_empty());
 }
+
+/// A lift cut caps the lift window and marks a cached block that runs through
+/// it, as Python's `extra_stop_points` split a block (angr-mx00p.132.60).
+#[test]
+fn lift_cut_caps_the_window_and_flags_a_spanning_block() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_lift_cut(0x4004);
+    assert_eq!(interp.lift_window(0x4000), 4);
+    assert_eq!(interp.lift_window(0x4004), VEX_MAX_BYTES);
+    assert_eq!(interp.lift_window(0x4005), VEX_MAX_BYTES);
+    assert!(interp.spans_lift_cut(0x4000, 8));
+    assert!(!interp.spans_lift_cut(0x4000, 4));
+    assert!(!interp.spans_lift_cut(0x4004, 8));
+}
+
+/// A block that ends at a lift cut stays out of the cache, so a later run
+/// without the cut lifts the whole block; any other block is cached.
+#[test]
+fn a_block_ending_at_a_lift_cut_is_not_cached() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_lift_cut(0x4004);
+    let cut = interp.cache_lifted_block(0x4000, make_irsb(0x4000, 4));
+    assert_eq!(cut.addr, 0x4000);
+    assert!(!interp.has_cached_block(0x4000));
+    interp.cache_lifted_block(0x5000, make_irsb(0x5000, 4));
+    assert!(interp.has_cached_block(0x5000));
+}

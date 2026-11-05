@@ -177,6 +177,11 @@ pub struct RustExplorationManager {
     /// past an address-based target (angr-027h). Kept in sync by
     /// `set_find_addrs` / `set_avoid_addrs`.
     pub(crate) stop_addrs: HashSet<u64>,
+    /// Addresses a block ends before without stopping a state that starts
+    /// there, as Python's Explorer splits a block at its targets through
+    /// `extra_stop_points`. Set by `set_lift_cut_addrs` for an explore round
+    /// that steps with find/avoid disarmed (angr-mx00p.132.60).
+    pub(crate) lift_cut_addrs: HashSet<u64>,
     /// Block-granular stepping mode (angr-bmyx). When `true`, the VEX
     /// interpreter breaks its internal block chain at *every* basic-block
     /// boundary, so each `step(n=1)` advances exactly one block and every

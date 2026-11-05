@@ -5123,6 +5123,8 @@ class RustExplorationManager(
         Python. The filter stands in for Rust's pre-step check, which the
         disarm turns off: a state that starts the round at a target (a seed
         when ``n=1``) is stashed unstepped, find first as Explorer checks.
+        The targets stay lift cuts for the step, so a block ends at one it
+        holds, as Explorer's ``extra_stop_points`` split it (angr-mx00p.132.60).
         """
         rust = self._rust_mgr
         self._evaluate_predicates_on_active()
@@ -5139,7 +5141,11 @@ class RustExplorationManager(
         rust.set_find_needs_python(False)
         rust.set_avoid_needs_python(False)
         self._invalidate_state_export_cache()
-        return self._step_loop(1)
+        rust.set_lift_cut_addrs(sorted(find_addrs | avoid_addrs))
+        try:
+            return self._step_loop(1)
+        finally:
+            rust.set_lift_cut_addrs([])
 
     def _disarm_explore_targets(self) -> None:
         """Drop this explore()'s find/avoid/num_find from the Rust manager.

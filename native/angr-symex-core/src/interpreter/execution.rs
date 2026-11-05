@@ -564,9 +564,14 @@ impl<'a> VEXInterpreter<'a> {
         // `profiling_enabled`): a `u64 += 1` per cache lookup is negligible
         // compared to the lift work it precedes, and these counters need to
         // be reliable for capacity-tuning regardless of profiling state.
-        if let Some(irsb) = self.block_cache.get(&addr) {
+        // A cached block that runs through a lift cut is lifted again, ending
+        // at the cut (angr-mx00p.132.60); `cache_lifted_block` keeps the cut
+        // lift out of the cache.
+        if let Some(irsb) = self.block_cache.get(&addr).map(Arc::clone)
+            && !self.spans_lift_cut(addr, u64::from(irsb.size()))
+        {
             self.stats.cache_hit_count += 1;
-            return Ok(Arc::clone(irsb));
+            return Ok(irsb);
         }
 
         self.stats.cache_miss_count += 1;
@@ -582,11 +587,7 @@ impl<'a> VEXInterpreter<'a> {
             match self.try_native_lift(lifter.as_ref(), addr, callbacks) {
                 Ok(irsb) => {
                     self.stats.native_lift_count += 1;
-                    let arc_irsb = Arc::new(irsb);
-                    if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {
-                        self.stats.cache_eviction_count += 1;
-                    }
-                    return Ok(arc_irsb);
+                    return Ok(self.cache_lifted_block(addr, irsb));
                 }
                 Err(miss) => {
                     self.stats.native_lift_fallback_count += 1;
@@ -666,14 +667,27 @@ impl<'a> VEXInterpreter<'a> {
 
         profile_add!(lift_start, self.stats.lift_time_ns);
 
-        // Cache it - Arc allows O(1) cloning. Post-miss: any returned Some
-        // is an eviction (key was just confirmed not present).
+        Ok(self.cache_lifted_block(addr, irsb))
+    }
+
+    /// Cache the block just lifted at `addr` and hand it back.
+    ///
+    /// Arc allows O(1) cloning. A `put` that returns `Some` is an eviction,
+    /// or the replaced block that ran through a lift cut. A block that ends at
+    /// a lift cut is not cached: the cut holds for one run only, and a later
+    /// run without it must lift the whole block, as Python does with no
+    /// `extra_stop_points` (angr-mx00p.132.60). A block ending there
+    /// naturally is lifted again too, which costs a lift and changes nothing.
+    pub(super) fn cache_lifted_block(&mut self, addr: u64, irsb: IRSB) -> Arc<IRSB> {
         let arc_irsb = Arc::new(irsb);
+        let end = addr.wrapping_add(u64::from(arc_irsb.size()));
+        if self.lift_cuts.contains(&end) {
+            return arc_irsb;
+        }
         if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {
             self.stats.cache_eviction_count += 1;
         }
-
-        Ok(arc_irsb)
+        arc_irsb
     }
 
     /// Attempt an in-process native libVEX lift of the block at `addr`.
@@ -740,7 +754,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// The byte budget for a lift at `addr`: [`VEX_MAX_BYTES`], cut at the
-    /// first hook past `addr`, as Python's `VEXLifter._first_stoppoint` cuts
+    /// first hook or lift cut past `addr`, as Python's `VEXLifter._first_stoppoint` cuts
     /// a block at a hooked address. The IMark check stops the run there
     /// anyway, but a block lifted through the hook is optimized as a whole:
     /// libVEX drops a register Put that a later instruction overwrites, so
@@ -748,7 +762,7 @@ impl<'a> VEXInterpreter<'a> {
     /// test_loops: `lw $v0` before a hooked `sll $v0`; angr-mx00p.132.5).
     pub(super) fn lift_window(&self, addr: u64) -> usize {
         let mut max_bytes = VEX_MAX_BYTES;
-        for &hook_addr in self.hook_addrs.iter() {
+        for &hook_addr in self.hook_addrs.iter().chain(self.lift_cuts.iter()) {
             // Distance rather than `hook_addr < addr + max_bytes`: the
             // lift window is guest-PC-relative and `addr + max_bytes`
             // overflows for a block at the top of the address space.

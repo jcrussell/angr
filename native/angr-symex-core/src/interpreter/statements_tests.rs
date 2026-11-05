@@ -110,6 +110,30 @@ fn skip_hook_once_steps_over_the_first_imark_only() {
     });
 }
 
+/// A lift cut ends the block at an interior instruction, but not at the
+/// block's first, so a state starting there still runs (angr-mx00p.132.60).
+#[test]
+fn lift_cut_exits_at_an_interior_imark_only() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_lift_cut(0x3004);
+    let interior = IRStmt::IMark {
+        addr: 0x3004,
+        len: 1,
+        delta: 0,
+    };
+    with_test_host(|cb| {
+        let res = interp
+            .execute_stmt_with_callbacks(cb, &interior, &make_irsb_with_temps(0x3000, &[]))
+            .expect("imark");
+        assert!(matches!(res, StmtResult::Exit { target: 0x3004, .. }));
+        let res = interp
+            .execute_stmt_with_callbacks(cb, &interior, &make_irsb_with_temps(0x3004, &[]))
+            .expect("imark");
+        assert!(matches!(res, StmtResult::Continue));
+    });
+}
+
 #[test]
 fn abihint_is_no_op() {
     let ctx = SymContext::new_mock();
