@@ -231,10 +231,15 @@ pub(crate) struct CoreCounters {
 }
 
 /// Where a routed state came from: `is_fork` and `root_hint` drive `sm.set_root`.
+///
+/// `precedes_main` marks a deferred fork that took a guarded exit's target
+/// while the stepped state fell through it; [`with_forks_in_python_order`]
+/// lists it ahead of the stepped state.
 #[derive(Clone, Copy)]
 pub(crate) struct RoutingTag {
     pub(crate) root_hint: Option<u64>,
     pub(crate) is_fork: bool,
+    pub(crate) precedes_main: bool,
 }
 
 impl RoutingTag {
@@ -243,6 +248,7 @@ impl RoutingTag {
         RoutingTag {
             root_hint: None,
             is_fork: false,
+            precedes_main: false,
         }
     }
     #[inline]
@@ -250,8 +256,39 @@ impl RoutingTag {
         RoutingTag {
             root_hint: Some(root_hint),
             is_fork: true,
+            precedes_main: false,
         }
     }
+    /// The tag for the sibling minted from `fork`: it precedes the stepped
+    /// state when the stepped state fell through the guard
+    /// (`!fork.path_taken`), so the sibling is the exit statement's target.
+    #[inline]
+    fn deferred_fork(root_hint: u64, fork: &DeferredFork) -> Self {
+        RoutingTag {
+            precedes_main: !fork.path_taken,
+            ..Self::fork(root_hint)
+        }
+    }
+}
+
+/// `main` (the stepped state, when it survives) and its materialized deferred
+/// forks in Python's successor order. `HeavyVEXMixin` adds one successor per
+/// `Ist_Exit` in statement order and the default exit last, so an exit-target
+/// sibling comes before the fall-through path and a fall-through sibling (the
+/// stepped state took a backward exit) after it. `forks` is already in
+/// statement order; this is a stable partition around `main`
+/// (angr-mx00p.132.59).
+fn with_forks_in_python_order(
+    main: Option<RustSimState>,
+    forks: Vec<(RustSimState, RoutingTag)>,
+) -> Vec<(RustSimState, RoutingTag)> {
+    // overflow-ok: `usize` capacity hint over an in-memory `Vec` of states.
+    let mut succ = Vec::with_capacity(forks.len() + 1);
+    let (before, after): (Vec<_>, Vec<_>) = forks.into_iter().partition(|(_, t)| t.precedes_main);
+    succ.extend(before);
+    succ.extend(main.map(|s| (s, RoutingTag::main())));
+    succ.extend(after);
+    succ
 }
 
 /// Which Python-bouncing handler the coordinator must run (with `&mut self` and
@@ -436,7 +473,7 @@ fn block_end_core(
         },
     );
     let mut terminal_pushes = Vec::new();
-    let mut succ = Vec::with_capacity(forks_out.len() + 1);
+    let mut main = None;
     if syscall_exit.is_some_and(|jk| !cc.native_syscalls.resolves_exit(jk)) {
         if forks_out.is_empty() {
             terminal_pushes.push((state, STASH_UNSAT));
@@ -444,9 +481,9 @@ fn block_end_core(
             pruned.push(state);
         }
     } else {
-        succ.push((state, RoutingTag::main()));
+        main = Some(state);
     }
-    succ.extend(forks_out);
+    let succ = with_forks_in_python_order(main, forks_out);
     CoreOutcome {
         ret: CoreReturn::Continue(succ),
         pruned,

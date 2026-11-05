@@ -121,7 +121,7 @@ pub(super) fn materialize_deferred_forks_core(
                     ParallelProfiling::add(&prof.solver_sat_time_ns, crate::elapsed_ns(start));
                     ParallelProfiling::add(&prof.solver_sat_count, 1);
                 }
-                forks_out.push((forked, RoutingTag::fork(root_hint)));
+                forks_out.push((forked, RoutingTag::deferred_fork(root_hint, &fork)));
             } else {
                 if let Some(start) = sat_start {
                     ParallelProfiling::add(&prof.solver_sat_time_ns, crate::elapsed_ns(start));
@@ -148,7 +148,7 @@ pub(super) fn materialize_deferred_forks_core(
             fork_ids_out.push(forked.state_id());
 
             if forked.survives_sat_prune(ctx.lazy_solves) {
-                forks_out.push((forked, RoutingTag::fork(root_hint)));
+                forks_out.push((forked, RoutingTag::deferred_fork(root_hint, &fork)));
             } else {
                 log::debug!(
                     "Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
@@ -210,7 +210,7 @@ fn process_deferred_forks_into_core(
             fork_ids_out.push(forked.state_id());
 
             if forked.survives_sat_prune(ctx.lazy_solves) {
-                forks_out.push((forked, RoutingTag::fork(root_hint)));
+                forks_out.push((forked, RoutingTag::deferred_fork(root_hint, fork)));
             } else {
                 pruned_out.push(forked);
             }
@@ -220,7 +220,7 @@ fn process_deferred_forks_into_core(
             fork_ids_out.push(forked.state_id());
 
             if forked.survives_sat_prune(ctx.lazy_solves) {
-                forks_out.push((forked, RoutingTag::fork(root_hint)));
+                forks_out.push((forked, RoutingTag::deferred_fork(root_hint, fork)));
             } else {
                 pruned_out.push(forked);
             }
@@ -460,9 +460,7 @@ pub(super) fn handle_symbolic_jump_target_core(
                 fork_ids: &mut fork_ids,
             },
         );
-        let mut succ = Vec::with_capacity(forks_out.len() + 1);
-        succ.push((first, RoutingTag::main()));
-        succ.extend(forks_out);
+        let succ = with_forks_in_python_order(Some(first), forks_out);
         return CoreOutcome {
             ret: CoreReturn::Continue(succ),
             pruned,
@@ -778,9 +776,7 @@ fn continue_after_native_proc(
             let addr = state.pc();
             state.defer_exit(addr);
         }
-        let mut succ = Vec::with_capacity(forks_out.len() + 1);
-        succ.push((state, RoutingTag::main()));
-        succ.extend(forks_out);
+        let succ = with_forks_in_python_order(Some(state), forks_out);
         CoreOutcome {
             ret: CoreReturn::Continue(succ),
             pruned,
@@ -963,9 +959,7 @@ fn handle_native_resume_core(
             fork_ids: &mut fork_ids,
         },
     );
-    let mut succ = Vec::with_capacity(forks_out.len() + 1);
-    succ.push((state, RoutingTag::main()));
-    succ.extend(forks_out);
+    let succ = with_forks_in_python_order(Some(state), forks_out);
     CoreOutcome {
         ret: CoreReturn::Continue(succ),
         pruned,
@@ -1152,9 +1146,7 @@ fn syscall_continue(
             root_hint,
         }
     } else {
-        let mut succ = Vec::with_capacity(forks_out.len() + 1);
-        succ.push((state, RoutingTag::main()));
-        succ.extend(forks_out);
+        let succ = with_forks_in_python_order(Some(state), forks_out);
         CoreOutcome {
             ret: CoreReturn::Continue(succ),
             pruned,
