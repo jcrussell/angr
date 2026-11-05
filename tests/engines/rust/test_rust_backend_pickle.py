@@ -62,6 +62,25 @@ def test_an_unpickled_manager_finds_fauxware_on_python(arch):
 
 
 @pytest.mark.parametrize("arch", sorted(FIND))
+def test_a_factory_built_rust_manager_pickles(arch):
+    # The factory route of upstream test_fauxware's test_pickling: a
+    # Project(engine="rust") manager is a SimulationManager with a RustBackend,
+    # so it pickles (angr-mx00p.132.34).
+    project = angr.Project(os.path.join(TEST_BINARIES_DIR, "..", arch, "fauxware"), auto_load_libs=False, engine="rust")
+    simgr = project.factory.simulation_manager().run(n=PAST_INIT_STEPS, until=lambda sm: False)
+    assert isinstance(simgr.backend, RustBackend)
+    assert simgr.backend.stats["claimed"] > 0
+    pickled = pickle.dumps(simgr, pickle.HIGHEST_PROTOCOL)
+    del project, simgr
+    gc.collect()
+    simgr = pickle.loads(pickled)
+    assert simgr.backend is None
+    simgr.explore(find=FIND[arch], avoid=AVOID[arch])
+    assert not simgr.errored
+    assert simgr.found[0].posix.dumps(0) == SOSNEAKY
+
+
+@pytest.mark.parametrize("arch", sorted(FIND))
 def test_a_pickled_export_keeps_the_after_main_continuation(arch):
     # Python ran __libc_start_main's self.call(main); Rust frames carry no
     # procedure_data, so a detached call stack must get it back on the frame
