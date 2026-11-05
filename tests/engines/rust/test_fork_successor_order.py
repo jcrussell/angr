@@ -14,6 +14,7 @@ import os
 import pytest
 
 import angr
+from angr.exploration.rust_backend import RustBackend
 from angr.exploration.rust_manager import RustExplorationManager
 from tests.engines.conftest import BIN_LOCATION
 
@@ -42,16 +43,7 @@ def test_conditional_exit_successors_in_python_order(engine, code, start, expect
     assert [s.addr - LOAD for s in mgr.active] == expected
 
 
-@pytest.mark.parametrize(
-    "engine",
-    [
-        "py",
-        pytest.param(
-            "rust",
-            marks=pytest.mark.xfail(strict=True, reason="RustBackend's run() fast path chains (angr-mx00p.136.43)"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("engine", ["py", "rust"])
 def test_run_deadends_the_fork_arms_in_python_order(engine, monkeypatch):
     """A default-routed run() deadends the arms of uc_stop's symbolic exit as SimulationManager.run() does.
 
@@ -61,7 +53,7 @@ def test_run_deadends_the_fork_arms_in_python_order(engine, monkeypatch):
     monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust" if engine == "rust" else "python")
     proj = angr.Project(os.path.join(BIN_LOCATION, "tests", "i386", "uc_stop"), auto_load_libs=False)
     mgr = proj.factory.simulation_manager(proj.factory.entry_state(args=["a"] * 10))
-    assert isinstance(mgr, RustExplorationManager) == (engine == "rust")
+    assert isinstance(mgr.backend, RustBackend) == (engine == "rust")
     mgr.run()
     arms = [a for s in mgr.deadended for a in s.history.bbl_addrs if a in (0x8048587, 0x8048591)]
     assert arms == [0x8048587, 0x8048591]
