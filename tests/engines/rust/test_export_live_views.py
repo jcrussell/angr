@@ -19,7 +19,7 @@ import pytest
 import angr
 from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
-from angr.exploration.rust_state_binding import RustStateReleasedError
+from angr.exploration.rust_state_binding import RustStateReleasedError, binding_of
 
 ADDR = 0x600000
 
@@ -527,8 +527,12 @@ class TestHandedToThePythonEngine:
             )
         assert results[0] == results[1] == ([1, 2], 2)
 
-    def test_merging_views_raises(self):
+    def test_merging_views_merges_copies_of_their_own(self):
+        """``SimState.merge`` merges plain copies of the views, which stay
+        bound (angr-mx00p.132.68)."""
         mgr, _x = _explore_cmp()
         a, b = mgr.found[0].copy(), mgr.found[0].copy()
-        with pytest.raises(NotImplementedError, match="cannot merge Rust states"):
-            a.merge(b)
+        merged, _, _ = a.merge(b)
+        assert binding_of(merged) is None
+        assert binding_of(a) is not None and binding_of(b) is not None
+        assert merged.addr == a.addr

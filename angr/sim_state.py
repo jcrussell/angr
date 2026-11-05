@@ -280,14 +280,24 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
         # with plugins of its own, as the Python engine would step it (see SuccessorsMixin.process).
         # The copy is pickled as an object, not as its __getstate__ dict, so it outlives the
         # pickling of the plugins that hold a weak reference to it.
-        detach = getattr(self.plugins.get("memory"), "detach_for_python_engine", None)
-        if detach is None:
+        plain = self._plain_copy()
+        if plain is None:
             return super().__reduce_ex__(protocol)
-        plain = self.copy()
-        plain.memory.detach_for_python_engine()
         if hasattr(plain.memory, "detach_for_python_engine"):
             raise SimStateError(f"cannot pickle {self!r}: it is bound to a pending Rust state")
         return _unpickled_state, (plain,)
+
+    def _plain_copy(self):
+        """
+        A copy of this state with plugins of its own when it is a live view of a Rust state, else None.
+
+        A callback state's copy stays bound to its pending Rust state (see ``detach_for_python_engine``).
+        """
+        if getattr(self.plugins.get("memory"), "detach_for_python_engine", None) is None:
+            return None
+        plain = self.copy()
+        plain.memory.detach_for_python_engine()
+        return plain
 
     def __getstate__(self):
         # Don't pickle attributes for plugins. These will be pickled
@@ -634,15 +644,22 @@ class SimState[IPTypeConc, IPTypeSym](PluginHub[SimStatePlugin]):
                 for mc in merge_conditions
             ]
 
+        # A state exported by the Rust engine merges as a copy with plugins of its own: its proxy plugins
+        # read a Rust state and cannot merge (angr-mx00p.132.68).
+        base = self._plain_copy() or self
+        others = tuple(o._plain_copy() or o for o in others)
+        if common_ancestor is not None:
+            common_ancestor = common_ancestor._plain_copy() or common_ancestor
+
         if len({o.arch.name for o in others}) != 1:
             raise SimMergeError("Unable to merge due to different architectures.")
 
-        all_plugins = set(self.plugins.keys()) | set.union(*(set(o.plugins.keys()) for o in others))
+        all_plugins = set(base.plugins.keys()) | set.union(*(set(o.plugins.keys()) for o in others))
 
         if plugin_whitelist is not None:
             all_plugins = all_plugins.intersection(set(plugin_whitelist))
 
-        merged = self.copy()
+        merged = base.copy()
         merging_occurred = False
 
         # fix parent
