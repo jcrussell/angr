@@ -781,6 +781,8 @@ fn test_strtol_no_conversion_endptr_is_nptr() {
         (b"  -x", 10, 0),
         (b"x", 10, 0),
         (b"+", 10, 0),
+        (b"-", 10, 0),
+        (b"+abc", 10, 0),
         (b"   ", 10, 0),
         (b"09", 0, 1),
         (b"0z", 0, 1),
