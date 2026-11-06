@@ -812,11 +812,12 @@ impl RustExplorationManager {
             let res: PyResult<Vec<u8>> =
                 crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
                     let bv = state.memory_load(a, n).map_err(|_| unreadable())?;
-                    if let Some(val) = bv.as_u128() {
-                        return Ok(crate::symbolic::u128_to_le_bytes(val, n as usize));
-                    }
                     // Symbolic: concretize to any satisfying witness.
-                    let val = state.eval(&bv).ok_or_else(unreadable)?;
+                    let val = match bv.as_u128() {
+                        Some(val) => val,
+                        None => state.eval(&bv).ok_or_else(unreadable)?,
+                    };
+                    let val = state.memory().le_packed_chunk(val, n);
                     Ok(crate::symbolic::u128_to_le_bytes(val, n as usize))
                 });
             match res {
@@ -887,6 +888,7 @@ impl RustExplorationManager {
         // entry point shares that helper (angr-9ke6b.230).
         self.with_state_mut(state_id, |state| {
             crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+                let bv = state.memory().le_packed_chunk_bv(bv);
                 state.memory_store(chunk_addr, bv).py_value_err()
             })
         })
@@ -909,6 +911,7 @@ impl RustExplorationManager {
         self.with_state_mut(state_id, |state| {
             state.add_memory_lazy_region(addr, (data.len() as u64).max(1));
             crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+                let bv = state.memory().le_packed_chunk_bv(bv);
                 state.memory_store(chunk_addr, bv).py_value_err()
             })
         })

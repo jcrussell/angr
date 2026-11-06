@@ -146,22 +146,16 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
     ),
     "mips32": (
         (
-            frozenset({"ulr", "cond", "cp0_status"}),
-            (
-                "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
-                "status) that the Rust MIPS table does not model"
-            ),
+            frozenset({"cond", "cp0_status"}),
+            "VEX guest-state words (condition word, CP0 status) that the Rust MIPS table does not model",
         ),
         (frozenset({"dspcontrol"}) | _numbered("ac", 4), "MIPS DSP-ASE accumulators and control word"),
         (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
     ),
     "mips64": (
         (
-            frozenset({"ulr", "cond", "cp0_status"}),
-            (
-                "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
-                "status) that the Rust MIPS table does not model"
-            ),
+            frozenset({"cond", "cp0_status"}),
+            "VEX guest-state words (condition word, CP0 status) that the Rust MIPS table does not model",
         ),
         (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
     ),

@@ -92,6 +92,8 @@ pub mod offsets32 {
     pub const FEXR: u32 = 416;
     pub const FENR: u32 = 420;
     pub const FCSR: u32 = 424;
+    // User-local register: the TLS thread pointer `rdhwr $29` reads.
+    pub const ULR: u32 = 428;
 
     // Late VEX bookkeeping state (per archinfo): the emulation-note word and
     // the self-modifying-code / redirect fields. All UInts on MIPS32.
@@ -189,6 +191,8 @@ pub mod offsets64 {
     pub const FEXR: u32 = 560;
     pub const FENR: u32 = 564;
     pub const FCSR: u32 = 568;
+    // User-local register: the TLS thread pointer `rdhwr $29` reads.
+    pub const ULR: u32 = 576;
 
     // Late VEX bookkeeping state (per archinfo): `guest_EMNOTE` is a UInt at
     // 584 followed by the UInt `guest_COND` at 588 (no const -- nothing in the
@@ -287,6 +291,10 @@ const CANONICAL_MIPS32: &[RegEntry] = &[
     ("fexr", offsets32::FEXR, 4),
     ("fenr", offsets32::FENR, 4),
     ("fcsr", offsets32::FCSR, 4),
+    // The TLS thread pointer the loader sets. Without a row it never
+    // crossed the boundary, so `rdhwr $29` read 0 and every glibc TLS access
+    // (errno, `multiple_threads`) landed just below 2^32 (angr-mx00p.132.74).
+    ("ulr", offsets32::ULR, 4),
 ];
 
 const ALIASES_MIPS32: &[RegEntry] = &[
@@ -490,6 +498,8 @@ const CANONICAL_MIPS64: &[RegEntry] = &[
     ("fexr", offsets64::FEXR, 4),
     ("fenr", offsets64::FENR, 4),
     ("fcsr", offsets64::FCSR, 4),
+    // Same reason as MIPS32's `ulr` row (angr-mx00p.132.74).
+    ("ulr", offsets64::ULR, 8),
 ];
 
 const ALIASES_MIPS64: &[RegEntry] = &[

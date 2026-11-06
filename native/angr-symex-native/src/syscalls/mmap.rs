@@ -127,9 +127,15 @@ fn do_mmap(
 
     // File-backed mappings need sim_fd. Python compares `fd[31:0] == -1`
     // — i.e. only the low 32 bits matter. Anonymous: fd == 0xFFFFFFFF.
+    // Python keys "anonymous" on fd alone and reads `MAP_ANONYMOUS` (the
+    // generic 0x20) only as `init_zero`; without it the pages get the
+    // unconstrained fill, which is zero under ZERO_FILL_UNCONSTRAINED_MEMORY,
+    // the same bytes this zeroed map gives. MIPS spells MAP_ANONYMOUS 0x800,
+    // so requiring the bit declined every MIPS anonymous map, and the bounced
+    // Python mmap cannot map outside the heap region (angr-mx00p.132.74).
     let fd_low32 = fd_full & 0xFFFF_FFFF;
-    let is_anonymous = (flags & MAP_ANONYMOUS) != 0;
-    if !is_anonymous || fd_low32 != 0xFFFF_FFFF {
+    let zero_init = (flags & MAP_ANONYMOUS) != 0 || state.memory().zero_fill_unconstrained();
+    if !zero_init || fd_low32 != 0xFFFF_FFFF {
         return Err(SyscallError::Other(
             "mmap: file-backed (fd != -1) — fall back".into(),
         ));

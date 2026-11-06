@@ -301,34 +301,35 @@ class TestMultiArchSupport:
             _RustExplorationManager("nonexistent-arch")
 
     def test_mips32_big_endian(self):
-        """MIPS32 big-endian memory lays out multi-byte values MSB-first.
+        """MIPS32 big-endian memory reads multi-byte values MSB-first.
 
         Regression test (angr-a116s.7): a register round-trip is
         endian-agnostic (RegisterFile::put_reg/get_reg are pure offset+size
         ops with no byte ordering), so it cannot detect a dropped
         ``little_endian=False`` override. MIPS32's arch default is
         little-endian, so the override is the only thing that selects BE —
-        exercise a memory store whose physical byte layout differs under BE
-        vs LE to make the override load-bearing.
+        read a value whose meaning differs under BE vs LE to make the override
+        load-bearing. ``memory_store`` / ``memory_load`` move bytes in memory
+        order under either endness (angr-mx00p.132.74), so the value-level
+        read is ``probe_symbolic_load_value_range``, which loads through the
+        interpreter's path and returns the value's ``(min, max)``.
         """
         be = RustSimState("mips32", little_endian=False)
         be.map_memory(0x1000, 0x1000, 7)  # RWX
-        # Raw input bytes pack little-endian into the value 0x11223344,
-        # which the SymbolicMemory then lays out per its endness.
-        be.memory_store(0x1000, b"\x44\x33\x22\x11")
-        # Big-endian: most-significant byte (0x11) lands at the lowest addr.
+        be.memory_store(0x1000, b"\x11\x22\x33\x44")
         assert be.memory_load(0x1000, 1)[0] == 0x11
-        # A full-width round-trip is endness-symmetric, so it still recovers
-        # the original input bytes regardless of endianness.
-        assert list(be.memory_load(0x1000, 4)) == [0x44, 0x33, 0x22, 0x11]
+        assert list(be.memory_load(0x1000, 4)) == [0x11, 0x22, 0x33, 0x44]
+        # Big-endian: the byte at the lowest address is the most significant.
+        assert be.probe_symbolic_load_value_range(0x1000, 4) == (0x11223344, 0x11223344)
 
-        # Contrast with the little-endian default: LSB (0x44) at lowest addr.
-        # If the override were dropped, `be` above would behave like this and
-        # the MSB assertion would fail.
+        # Contrast with the little-endian default: the same bytes read as the
+        # reversed value. If the override were dropped, `be` above would
+        # behave like this and its value assertion would fail.
         le = RustSimState("mips32")
         le.map_memory(0x1000, 0x1000, 7)
-        le.memory_store(0x1000, b"\x44\x33\x22\x11")
-        assert le.memory_load(0x1000, 1)[0] == 0x44
+        le.memory_store(0x1000, b"\x11\x22\x33\x44")
+        assert list(le.memory_load(0x1000, 4)) == [0x11, 0x22, 0x33, 0x44]
+        assert le.probe_symbolic_load_value_range(0x1000, 4) == (0x44332211, 0x44332211)
 
     def test_mips32_full_register_family_dispatch(self):
         """MIPS32 FPU, HI/LO, and previously-untested GPRs round-trip via

@@ -749,6 +749,7 @@ impl RustSimState {
             let memory = &mut self.memory;
             let res =
                 crate::symbolic::store_concrete_bytes_chunked(*addr, bytes, |chunk_addr, bv| {
+                    let bv = memory.le_packed_chunk_bv(bv);
                     memory.store_concrete(chunk_addr, bv)
                 });
             // SILENT(cat-c): the write came from a Python SimProcedure that

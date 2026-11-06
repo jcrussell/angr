@@ -530,6 +530,7 @@ impl PyRustSimState {
                     "memory_load at 0x{chunk_addr:x} returned a symbolic value; cannot convert to concrete bytes",
                 ))
             })?;
+            let value = self.inner.memory().le_packed_chunk(value, chunk_size);
             Ok(u128_to_le_bytes(value, chunk_size as usize))
         })
     }
@@ -544,6 +545,7 @@ impl PyRustSimState {
     /// `exploration` memory-set entry points (angr-9ke6b.230).
     pub fn memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
         store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+            let bv = self.inner.memory().le_packed_chunk_bv(bv);
             self.inner.memory_store(chunk_addr, bv).py_value_err()
         })
     }

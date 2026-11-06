@@ -177,6 +177,35 @@ fn file_backed_falls_back() {
 }
 
 #[test]
+fn fd_minus_one_without_the_generic_anonymous_bit_needs_zero_fill() {
+    // angr-mx00p.132.74: MIPS spells MAP_ANONYMOUS 0x800. Python treats
+    // fd == -1 as anonymous and fills the pages unconstrained, which is zero
+    // only under ZERO_FILL_UNCONSTRAINED_MEMORY, so only then does the zeroed
+    // native map give the same bytes.
+    const MIPS_ANON_PRIVATE: u64 = 0x800 | MAP_PRIVATE;
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let err = h
+        .call(&mut state, &args(0, 0x1000, 0x3, MIPS_ANON_PRIVATE, ANON_FD, 0))
+        .expect_err("symbolic fill is Python's");
+    assert!(matches!(err, SyscallError::Other(_)));
+    assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
+
+    state.memory_mut().set_zero_fill_unconstrained(true);
+    match h
+        .call(&mut state, &args(0, 0x1000, 0x3, MIPS_ANON_PRIVATE, ANON_FD, 0))
+        .expect("zero fill maps natively")
+    {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_MMAP_BASE),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.memory().page_permissions(DEFAULT_MMAP_BASE >> 12),
+        Some(Permission::RW),
+    );
+}
+
+#[test]
 fn anonymous_with_real_fd_falls_back() {
     let h = NativeMmapSyscall;
     let mut state = fresh_state();

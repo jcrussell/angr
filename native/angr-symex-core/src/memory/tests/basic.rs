@@ -868,3 +868,31 @@ fn test_read_concrete_bytes_for_lift_wraps_past_top_of_address_space() {
         "a lift read that wraps into an unmapped page 0 must stop, not duplicate"
     );
 }
+
+#[test]
+fn test_byte_slice_chunks_keep_memory_order_under_either_endness() {
+    // angr-mx00p.132.74: a byte-slice store packs each <=16-byte chunk
+    // little-endian, so a big-endian `store_concrete` of that value reversed
+    // the chunk unless `le_packed_chunk_bv` reorders it first; the load side
+    // undoes it with `le_packed_chunk`.
+    let data: Vec<u8> = (0..40u8).map(|i| 0x50 ^ i).collect();
+    for endness in [Endness::Little, Endness::Big] {
+        let mut mem = SymbolicMemory::new(endness);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+        crate::symbolic::store_concrete_bytes_chunked(0x1000, &data, |a, bv| {
+            let bv = mem.le_packed_chunk_bv(bv);
+            mem.store_concrete(a, bv)
+        })
+        .unwrap();
+        for (i, &b) in data.iter().enumerate() {
+            let loaded = mem.load_concrete(0x1000 + i as u64, 1).unwrap();
+            assert_eq!(loaded.as_u64(), Some(b as u64), "{endness:?} byte {i}");
+        }
+        let back = crate::symbolic::load_concrete_bytes_chunked(0x1000, data.len() as u32, |a, n| {
+            let val = mem.load_concrete(a, n)?.as_u128().unwrap();
+            Ok::<_, MemoryError>(crate::symbolic::u128_to_le_bytes(mem.le_packed_chunk(val, n), n as usize))
+        })
+        .unwrap();
+        assert_eq!(back, data, "{endness:?} load");
+    }
+}

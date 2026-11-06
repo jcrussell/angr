@@ -37,6 +37,9 @@ fn test_mips64_reverse_name_lookup_is_complete() {
     // $30 canonicalizes to fp; s8 is an alias.
     assert_eq!(arch.register_name(offsets64::R30), Some("fp"));
     assert_eq!(arch.register_offset("s8"), Some(offsets64::R30));
+    // The TLS thread pointer is canonical, so it crosses the boundary
+    // (angr-mx00p.132.74).
+    assert_eq!(arch.register_name(offsets64::ULR), Some("ulr"));
 }
 
 #[test]
@@ -55,4 +58,5 @@ fn test_mips32_reverse_name_lookup_is_complete() {
     // $30 canonicalizes to fp; s8 is an alias, matching MIPS64.
     assert_eq!(arch.register_name(offsets32::R30), Some("fp"));
     assert_eq!(arch.register_offset("s8"), Some(offsets32::R30));
+    assert_eq!(arch.register_name(offsets32::ULR), Some("ulr"));
 }

@@ -710,6 +710,35 @@ impl SymbolicMemory {
         self.endness
     }
 
+    /// Convert a concrete `nbytes`-wide chunk between the little-endian byte
+    /// packing of `symbolic::store_concrete_bytes_chunked` /
+    /// `load_concrete_bytes_chunked` (byte `i` of memory in bits
+    /// `[8i+7 : 8i]`) and the value [`Self::store_concrete`] / `load_concrete`
+    /// take and give, which puts the MSB at the lowest address under
+    /// big-endian. The identity on little-endian, a byte swap on big-endian,
+    /// and its own inverse. Without it a byte-slice store or load on a
+    /// big-endian state reversed every chunk (angr-mx00p.132.74).
+    pub fn le_packed_chunk(&self, val: u128, nbytes: u32) -> u128 {
+        match self.endness {
+            Endness::Little => val,
+            Endness::Big if nbytes == 0 => 0,
+            // A chunk is at most 16 bytes, so the shift is in 0..128.
+            Endness::Big => val.swap_bytes() >> (128 - 8 * nbytes.min(16)),
+        }
+    }
+
+    /// [`Self::le_packed_chunk`] over a concrete chunk value; anything else is
+    /// returned as is (the chunk helpers only build concrete values).
+    pub fn le_packed_chunk_bv(&self, bv: RustBV) -> RustBV {
+        match (self.endness, bv.as_u128()) {
+            (Endness::Big, Some(val)) => {
+                let width = bv.width();
+                RustBV::concrete(self.le_packed_chunk(val, width / 8), width)
+            }
+            _ => bv,
+        }
+    }
+
     /// Map a memory region.
     pub fn map(&mut self, addr: impl Into<Address>, size: u64, permissions: Permission) {
         // A zero-length map is a true no-op regardless of alignment, matching
