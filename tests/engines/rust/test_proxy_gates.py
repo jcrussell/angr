@@ -808,25 +808,23 @@ class TestRustMemoryProxyPluginGapStubs:
         mgr._install_callback_memory_proxy(cb_state, seed_id)
         return cb_state
 
-    def test_permissions_read_returns_default_rwx(self, fauxware_project):
-        """``permissions(addr)`` (no second arg) returns a 3-bit BVV
-        encoding RWX. Lets ``is_bad_ptr`` / ``mprotect`` proceed without
-        crashing under the proxy."""
+    def test_permissions_read_returns_the_rust_page_bits(self, fauxware_project):
+        """``permissions(addr)`` (no second arg) returns the Rust page's bits
+        as a 3-bit BVV in angr's order: fauxware's text page is R+X (angr-vmi2l.330)."""
         from angr import claripy
 
         cb_state = self._install_proxy(fauxware_project)
         result = cb_state.memory.permissions(fauxware_project.entry)
         assert isinstance(result, claripy.ast.Base)
         assert result.length == 3
-        assert result.concrete_value == 7
+        assert result.concrete_value == 5
 
-    def test_permissions_write_is_noop(self, fauxware_project):
-        """``permissions(addr, perms)`` accepts and returns the prior
-        permissive default. Permission bits are owned by Rust's memory
-        model; the proxy doesn't track them on the Python side."""
+    def test_permissions_write_reaches_the_rust_page(self, fauxware_project):
+        """``permissions(addr, perms)`` returns the prior bits and sets the
+        Rust page's, so the next read sees them (angr-vmi2l.330)."""
         cb_state = self._install_proxy(fauxware_project)
-        result = cb_state.memory.permissions(fauxware_project.entry, 5)
-        assert result.concrete_value == 7
+        assert cb_state.memory.permissions(fauxware_project.entry, 7).concrete_value == 5
+        assert cb_state.memory.permissions(fauxware_project.entry).concrete_value == 7
 
     def test_map_region_inside_rust_heap_is_accepted(self, fauxware_project):
         """A bounced heap growth (``SimHeapBase._ensure_mapped``) maps inside

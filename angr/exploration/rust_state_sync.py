@@ -83,6 +83,15 @@ _DBG = l.isEnabledFor(logging.DEBUG)
 _RUST_REGISTER_TABLES: dict[str, dict | None] = {}
 
 
+def swap_permission_bit_order(bits: int) -> int:
+    """Convert permission bits between angr's order (R=1, W=2, X=4) and Rust's.
+
+    Rust's `Permission::from_bits` / `to_bits` use R=4, W=2, X=1. Swapping the
+    R and X bits is its own inverse, so this converts in either direction.
+    """
+    return (4 if bits & 1 else 0) | (bits & 2) | (1 if bits & 4 else 0)
+
+
 def rust_register_table(arch) -> dict | None:
     """The engine's register table for ``arch``, cached per arch name.
 
@@ -523,7 +532,7 @@ class RustStateSyncMixin:
             if getattr(bits, "symbolic", True):
                 return default
             bits = bits.concrete_value
-        return (4 if bits & 1 else 0) | (bits & 2) | (1 if bits & 4 else 0)
+        return swap_permission_bit_order(bits)
 
     def _loader_page_bytes(self, page_addr: int, page_size: int) -> bytes | None:
         """Return the loader's bytes for one page, or None if none are backed.

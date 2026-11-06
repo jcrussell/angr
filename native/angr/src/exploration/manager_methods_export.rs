@@ -293,6 +293,29 @@ impl RustExplorationManager {
         self._set_state_memory_concrete(state_id, addr, data)
     }
 
+    /// Rust-order permission bits (R=4, W=2, X=1) of the page holding `addr`
+    /// on a state, or `None` if the state does not map it.
+    /// See `state_api::_get_state_page_permissions` for the body.
+    pub fn get_state_page_permissions(&self, state_id: u64, addr: u64) -> PyResult<Option<u8>> {
+        self._get_state_page_permissions(state_id, addr)
+    }
+
+    /// Set the page holding `addr` on a state to Rust-order permission `bits`;
+    /// `false` if the state does not map the page.
+    /// See `state_api::_set_state_page_permissions` for the body.
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own page permissions; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn set_state_page_permissions(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        bits: u8,
+    ) -> PyResult<bool> {
+        self._set_state_page_permissions(state_id, addr, bits)
+    }
+
     /// Like `set_state_memory_concrete`, but widens the state's lazy region to
     /// cover the target page so a store to an otherwise-unmapped address
     /// auto-maps instead of erroring `Unmapped` (angr-ijwp0). Used by

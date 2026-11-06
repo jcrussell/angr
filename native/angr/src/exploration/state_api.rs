@@ -595,6 +595,40 @@ impl RustExplorationManager {
         })
     }
 
+    /// The Rust-order permission bits (`Permission::to_bits`: R=4, W=2,
+    /// X=1) of the page holding `addr`, or `None` when the state does not
+    /// map it. Backs `RustMemoryProxy.permissions` reads (angr-vmi2l.330).
+    pub(crate) fn _get_state_page_permissions(
+        &self,
+        state_id: u64,
+        addr: u64,
+    ) -> PyResult<Option<u8>> {
+        self.with_state(state_id, |state| {
+            let page_num = crate::memory::Address::new(addr).page_num();
+            Ok(state
+                .memory()
+                .page_permissions(page_num)
+                .map(|perm| perm.to_bits()))
+        })
+    }
+
+    /// Set the page holding `addr` to the Rust-order permission `bits`.
+    /// Returns `false`, changing nothing, when the state does not map the
+    /// page. Backs `RustMemoryProxy.permissions` writes (angr-vmi2l.330).
+    pub(crate) fn _set_state_page_permissions(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        bits: u8,
+    ) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| {
+            let page_num = crate::memory::Address::new(addr).page_num();
+            Ok(state
+                .memory_mut()
+                .set_page_permissions(page_num, crate::memory::Permission::from_bits(bits)))
+        })
+    }
+
     /// Every program-written symbolic object in a state's memory, as
     /// `(addr, value)` pairs.
     ///

@@ -1961,18 +1961,35 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
     # ---------------------------------------------------------------
 
     def permissions(self, addr, permissions=None, **_kwargs):
-        """``state.memory.permissions(addr [, permissions])`` stub.
+        """``state.memory.permissions(addr [, permissions])`` on the Rust state's page.
 
-        Returns a fully-permissive 3-bit BVV (RWX = 7) for reads; silently
-        accepts writes. Permission bits are not tracked on the Python side
-        of the proxy — Rust's memory model owns enforcement. Returning the
-        permissive default keeps callers like ``mprotect`` /
-        ``is_bad_ptr`` / ``VirtualProtect`` from crashing; the actual page
-        permissions inside Rust are unaffected because no FFI is invoked
-        here.
+        Returns the page's bits before any change as a 3-bit BVV in angr's
+        order (R=1, W=2, X=4), and a write sets the Rust page's permissions,
+        as ``PagedMemoryMixin.permissions`` does. A page the Rust state does
+        not map raises ``SimMemoryError``, as on the Python engine; a write
+        never lands only on the Python side (angr-vmi2l.330).
         """
-        del addr, permissions
-        return claripy.BVV(7, 3)
+        from angr.errors import SimMemoryError  # pylint: disable=import-outside-toplevel
+        from angr.exploration.rust_state_sync import (  # pylint: disable=import-outside-toplevel
+            swap_permission_bit_order,
+        )
+
+        if not isinstance(addr, int):
+            raise TypeError("addr must be an int in paged memory")
+        bits = self._mgr.get_state_page_permissions(self._state_id, addr)
+        if bits is None:
+            raise SimMemoryError(f"{addr:#x} is not mapped")
+        result = claripy.BVV(swap_permission_bit_order(bits), 3)
+        if permissions is not None:
+            if not isinstance(permissions, int):
+                if permissions.symbolic:
+                    raise SimMemoryError("the Rust engine cannot set symbolic page permissions")
+                permissions = permissions.concrete_value
+            new_bits = swap_permission_bit_order(permissions)
+            with self._handoff_write(lambda state: state.memory.permissions(addr, permissions)):
+                if not self._mgr.set_state_page_permissions(self._write_state_id, addr, new_bits):
+                    raise SimMemoryError(f"{addr:#x} is not mapped")
+        return result
 
     def map_region(self, addr, length, permissions, **_kwargs):
         """``state.memory.map_region(addr, length, permissions)`` on a callback state.

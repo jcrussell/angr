@@ -537,6 +537,41 @@ fn set_state_memory_concrete_automap_accepts_what_the_plain_store_refuses() {
     );
 }
 
+/// `RustMemoryProxy.permissions` reads and writes through this pair, so a
+/// write must be visible to the next read and an unmapped page must answer
+/// `None` / `false` rather than a default (angr-vmi2l.330).
+#[test]
+fn state_page_permissions_read_back_a_write_and_refuse_an_unmapped_page() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x5_0000, 0x1000, crate::memory::Permission::from_bits(6));
+    let state_id = stash_found(&mut mgr, state);
+
+    assert_eq!(
+        mgr._get_state_page_permissions(state_id, 0x5_0123)
+            .expect("state found"),
+        Some(6),
+    );
+    assert!(
+        mgr._set_state_page_permissions(state_id, 0x5_0000, 5)
+            .expect("state found"),
+    );
+    assert_eq!(
+        mgr._get_state_page_permissions(state_id, 0x5_0000)
+            .expect("state found"),
+        Some(5),
+    );
+    assert_eq!(
+        mgr._get_state_page_permissions(state_id, 0x7_0000)
+            .expect("state found"),
+        None,
+    );
+    assert!(
+        !mgr._set_state_page_permissions(state_id, 0x7_0000, 7)
+            .expect("state found"),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // File-descriptor inspection (angr-0jh0j.26)
 // ---------------------------------------------------------------------------
