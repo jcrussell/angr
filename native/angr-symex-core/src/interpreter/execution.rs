@@ -567,7 +567,13 @@ impl<'a> VEXInterpreter<'a> {
         // A cached block that runs through a lift cut is lifted again, ending
         // at the cut (angr-mx00p.132.60); `cache_lifted_block` keeps the cut
         // lift out of the cache.
-        if let Some(irsb) = self.block_cache.get(&addr).map(Arc::clone)
+        //
+        // A block this state's own stores may have patched skips the shared
+        // cache both ways: a cached entry was lifted from another state's bytes,
+        // and its own lift must not reach them (angr-vmi2l.163).
+        let own_code = self.is_code_range_dirtied(addr, VEX_MAX_BYTES as u64);
+        if !own_code
+            && let Some(irsb) = self.block_cache.get(&addr).map(Arc::clone)
             && !self.spans_lift_cut(addr, u64::from(irsb.size()))
         {
             self.stats.cache_hit_count += 1;
@@ -678,10 +684,12 @@ impl<'a> VEXInterpreter<'a> {
     /// run without it must lift the whole block, as Python does with no
     /// `extra_stop_points` (angr-mx00p.132.60). A block ending there
     /// naturally is lifted again too, which costs a lift and changes nothing.
+    /// Nor is a block over this state's dirtied code pages, which belongs to
+    /// this state alone (angr-vmi2l.163).
     pub(super) fn cache_lifted_block(&mut self, addr: u64, irsb: IRSB) -> Arc<IRSB> {
         let arc_irsb = Arc::new(irsb);
         let end = addr.wrapping_add(u64::from(arc_irsb.size()));
-        if self.lift_cuts.contains(&end) {
+        if self.lift_cuts.contains(&end) || self.is_code_range_dirtied(addr, VEX_MAX_BYTES as u64) {
             return arc_irsb;
         }
         if self.block_cache.put(addr, Arc::clone(&arc_irsb)).is_some() {

@@ -175,6 +175,21 @@ fn delegate_heap_metadata_unions_allocation_records_across_branches() {
     );
 }
 
+/// union (manual): `dirtied_code_pages`. A page either branch patched stays
+/// off the shared IRSB cache for the merged state (angr-vmi2l.163).
+#[test]
+fn union_dirtied_code_pages_keeps_every_branchs_pages() {
+    use crate::memory::PageIndex;
+    let (mut a, mut b) = base_pair("amd64");
+    a.set_dirtied_code_pages(Arc::new([PageIndex::of(0x1000)].into_iter().collect()));
+    b.set_dirtied_code_pages(Arc::new([PageIndex::of(0x5000)].into_iter().collect()));
+    let [m0, m1] = conds("dirtied_code_union");
+    let merged = a.merge(&[&b], &[m0, m1]);
+    let pages = merged.dirtied_code_pages();
+    assert!(pages.contains(&PageIndex::of(0x1000)));
+    assert!(pages.contains(&PageIndex::of(0x5000)));
+}
+
 /// joint (6 of 8; `fs` and the overlay maps get their own tests below):
 /// `hooks`+`removed_hooks`, `sim_options`+`removed_sim_options`,
 /// `environment`+`removed_env_keys`. Exhaustive 3-way-tie and

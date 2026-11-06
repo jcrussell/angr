@@ -313,6 +313,19 @@ impl RustSimState {
         }
     }
 
+    /// See the `RustSimState::dirtied_code_pages` field doc.
+    pub fn dirtied_code_pages(&self) -> &Arc<rustc_hash::FxHashSet<crate::memory::PageIndex>> {
+        &self.dirtied_code_pages
+    }
+
+    /// Replace the dirtied code pages with the set a step ended with.
+    pub fn set_dirtied_code_pages(
+        &mut self,
+        pages: Arc<rustc_hash::FxHashSet<crate::memory::PageIndex>>,
+    ) {
+        self.dirtied_code_pages = pages;
+    }
+
     /// Set or clear the pending syscall. See [`Self::pending_syscall`].
     pub fn set_pending_syscall(&mut self, jumpkind: Option<angr_vex::JumpKind>) {
         self.pending_syscall = jumpkind;

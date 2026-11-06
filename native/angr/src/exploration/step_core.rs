@@ -303,6 +303,9 @@ pub(crate) fn run_interpreter_step_core(
     // VEX execution. Loads/stores go to SymbolicMemory directly
     // instead of calling back to Python.
     interp.set_rust_memory(state.take_memory());
+    // The state's own code patches, carried from earlier steps: the block
+    // cache below is shared by every state (angr-vmi2l.163).
+    interp.set_dirtied_code_pages(Arc::clone(state.dirtied_code_pages()));
 
     // Share the exploration-level block cache with the interpreter
     // so lifted blocks persist across steps (avoids re-lifting).
@@ -349,6 +352,9 @@ pub(crate) fn run_interpreter_step_core(
     // Flush any remaining pending stores to rust_memory before recovery.
     interp.flush_stores_to_rust_memory();
     let recovered_memory = interp.take_rust_memory();
+    // Written back here, ahead of any fork: a successor forked before the
+    // store inherits it too, which only costs it re-lifts.
+    state.set_dirtied_code_pages(interp.take_dirtied_code_pages());
 
     // Return shared block cache to exploration before interpreter is dropped.
     // The placeholder left behind in `interp.block_cache` is only dropped a few

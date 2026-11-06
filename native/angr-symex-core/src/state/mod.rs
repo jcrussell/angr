@@ -463,6 +463,14 @@ pub struct RustSimState {
     /// (`interpreter::TrapSide`).
     #[merge_policy = "warn_on_diverge"]
     pending_syscall: Option<angr_vex::JumpKind>,
+    /// Pages of loaded binary regions this state has stored to. The
+    /// interpreter skips the manager-wide IRSB cache for a block whose lift
+    /// window touches one, so one state's patched code is never served to a
+    /// sibling, nor a sibling's clean block to it (angr-vmi2l.163). Arc-shared
+    /// on fork; an over-wide set only costs re-lifts.
+    #[merge_policy = "union"]
+    #[merge_manual = "set union over a PageIndex set, not a bool OR"]
+    dirtied_code_pages: Arc<rustc_hash::FxHashSet<crate::memory::PageIndex>>,
     /// The status a no-return procedure ended this state with, recorded with
     /// its `HistoryEntry::JK_EXIT` entry by `record_exit`. An export replays
     /// it as Python's `terminate` event (angr-mx00p.132.8). Carried across

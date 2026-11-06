@@ -103,6 +103,7 @@ impl RustSimState {
             mmap_base: 0xC100_0000,
             process_ids: ProcessIds::default(),
             pending_syscall: None,
+            dirtied_code_pages: Arc::default(),
             exit_code: None,
             exit_pending: false,
             getopt_cursor: GetoptCursor::default(),

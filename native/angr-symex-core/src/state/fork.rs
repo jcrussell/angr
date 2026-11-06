@@ -277,6 +277,7 @@ impl RustSimState {
             mmap_base: self.mmap_base,
             process_ids: self.process_ids,
             pending_syscall: self.pending_syscall,
+            dirtied_code_pages: Arc::clone(&self.dirtied_code_pages),
             exit_code: self.exit_code.clone(),
             exit_pending: self.exit_pending,
             getopt_cursor: self.getopt_cursor,
@@ -811,6 +812,15 @@ impl RustSimState {
             mmap_base: self.merge_field_mmap_base(others),
             process_ids: self.merge_field_process_ids(others),
             pending_syscall: self.merge_field_pending_syscall(others),
+            dirtied_code_pages: {
+                let mut pages = Arc::clone(&self.dirtied_code_pages);
+                for o in others {
+                    if !o.dirtied_code_pages.is_subset(&pages) {
+                        Arc::make_mut(&mut pages).extend(o.dirtied_code_pages.iter().copied());
+                    }
+                }
+                pages
+            },
             exit_code: self.merge_field_exit_code(others),
             exit_pending: self.merge_field_exit_pending(others),
             getopt_cursor: self.merge_field_getopt_cursor(others),

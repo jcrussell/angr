@@ -31,6 +31,9 @@ pub(super) fn sym_file_bytes(n: usize, prefix: &str) -> Vec<RustBV> {
 pub(super) fn build_populated_state() -> RustSimState {
     let mut s = RustSimState::new("amd64").unwrap();
     s.set_pc(0x4012a0);
+    s.set_dirtied_code_pages(Arc::new(
+        [crate::memory::PageIndex::of(0x401000)].into_iter().collect(),
+    ));
 
     // Bucket B (registers): one concrete, one symbolic.
     s.set_register("rax", RustBV::concrete(0xdead_beef, 64));

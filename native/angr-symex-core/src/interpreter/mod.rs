@@ -353,11 +353,13 @@ pub struct VEXInterpreter<'a> {
     /// Per-address VEX optimization level overrides.
     /// Arc-shared on fork (O(1) clone). Setters replace the Arc wholesale.
     pub vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
-    /// Pages inside loaded binary regions that have been overwritten by a
-    /// store. Used to invalidate cached IRSBs and to redirect the Python lift
-    /// callback to read fresh bytes from `rust_memory` instead of the original
-    /// (now stale) binary image.
-    dirtied_code_pages: FxHashSet<crate::memory::PageIndex>,
+    /// Pages inside loaded binary regions that the stepping state has
+    /// overwritten by a store, in this step or an earlier one: the step seeds
+    /// it from, and writes it back to, `RustSimState::dirtied_code_pages`.
+    /// A block whose lift window touches one bypasses `block_cache`, which is
+    /// shared by every state (angr-vmi2l.163), and its Python lift reads fresh
+    /// bytes from `rust_memory` instead of the stale binary image.
+    dirtied_code_pages: Arc<FxHashSet<crate::memory::PageIndex>>,
     /// State id of the state currently being stepped. Forwarded to
     /// `EngineHost::inspect_mem_*` so the Python dispatcher can
     /// build a `RustStateProxy` for the BP action. -1 means "unknown" —
@@ -477,7 +479,7 @@ impl<'a> VEXInterpreter<'a> {
             detailed_history: Vec::new(),
             vex_opt_level: None,
             vex_opt_level_overrides: Arc::new(FxHashMap::default()),
-            dirtied_code_pages: FxHashSet::default(),
+            dirtied_code_pages: Arc::default(),
             current_state_id: -1,
         }
     }

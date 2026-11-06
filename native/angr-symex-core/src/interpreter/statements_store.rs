@@ -379,7 +379,7 @@ impl<'a> VEXInterpreter<'a> {
                             crate::memory::PageIndex::range_covering(region.base, region.size)
                         })
                         .collect();
-                    self.dirtied_code_pages.extend(pages);
+                    Arc::make_mut(&mut self.dirtied_code_pages).extend(pages);
                 }
             }
             ConcretizationResult::Failed(_) => {

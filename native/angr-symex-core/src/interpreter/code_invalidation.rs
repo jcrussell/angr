@@ -24,6 +24,17 @@ impl<'a> VEXInterpreter<'a> {
             .any(|page| self.dirtied_code_pages.contains(&page))
     }
 
+    /// Seed the dirtied code pages from the stepping state's
+    /// `RustSimState::dirtied_code_pages`.
+    pub fn set_dirtied_code_pages(&mut self, pages: Arc<FxHashSet<crate::memory::PageIndex>>) {
+        self.dirtied_code_pages = pages;
+    }
+
+    /// The dirtied code pages this step ended with, for the state to keep.
+    pub fn take_dirtied_code_pages(&mut self) -> Arc<FxHashSet<crate::memory::PageIndex>> {
+        std::mem::take(&mut self.dirtied_code_pages)
+    }
+
     /// Mark code pages overlapping `[addr, addr + size)` as dirtied and
     /// invalidate cached IRSBs whose byte ranges cover any of those bytes.
     /// Caller must verify the address is in a binary region first.
@@ -32,7 +43,7 @@ impl<'a> VEXInterpreter<'a> {
             return;
         }
         let end = addr.saturating_add(size as u64 - 1);
-        self.dirtied_code_pages
+        Arc::make_mut(&mut self.dirtied_code_pages)
             .extend(crate::memory::PageIndex::range_covering(addr, size as u64));
         // Find cached IRSBs whose [start, start + irsb.size()) overlaps the
         // write. LruCache::iter is O(N) but N <= BLOCK_CACHE_CAPACITY and this
