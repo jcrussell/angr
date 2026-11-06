@@ -25,10 +25,38 @@ use serde::{Deserialize, Serialize};
 use crate::prelude::*;
 
 /// The format version [`WireDag::encode`] writes and [`WireDag::decode`] accepts.
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 fn first_version() -> u32 {
     1
+}
+
+/// An FPV constant by its IEEE bit pattern (angr-vmi2l.274). serde_json
+/// writes NaN and infinities as `null`, which it cannot read back as a float,
+/// and its default parser can misread a finite double by one ULP; a bit
+/// pattern keeps every value exact, NaN payloads and `-0.0` included.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum WireFloat {
+    F32(u32),
+    F64(u64),
+}
+
+impl From<&Float> for WireFloat {
+    fn from(f: &Float) -> Self {
+        match f {
+            Float::F32(v) => WireFloat::F32(v.to_bits()),
+            Float::F64(v) => WireFloat::F64(v.to_bits()),
+        }
+    }
+}
+
+impl From<WireFloat> for Float {
+    fn from(f: WireFloat) -> Self {
+        match f {
+            WireFloat::F32(bits) => Float::F32(f32::from_bits(bits)),
+            WireFloat::F64(bits) => Float::F64(f64::from_bits(bits)),
+        }
+    }
 }
 
 /// ASTs flattened into a child-first node list. See the module docs.
@@ -73,7 +101,7 @@ macro_rules! wire_ops {
             BVS(String, u32),
             BVV(BitVec),
             FPS(String, FSort),
-            FPV(Float),
+            FPV(WireFloat),
             StringS(String),
             StringV(String),
             $($nary,)*
@@ -90,7 +118,7 @@ macro_rules! wire_ops {
                     AstOp::BVS(s, width) => WireOp::BVS(s.as_str().to_owned(), *width),
                     AstOp::BVV(v) => WireOp::BVV(v.clone()),
                     AstOp::FPS(s, sort) => WireOp::FPS(s.as_str().to_owned(), *sort),
-                    AstOp::FPV(f) => WireOp::FPV(f.clone()),
+                    AstOp::FPV(f) => WireOp::FPV(f.into()),
                     AstOp::StringS(s) => WireOp::StringS(s.as_str().to_owned()),
                     AstOp::StringV(s) => WireOp::StringV(s.clone()),
                     $(AstOp::$nary(..) => WireOp::$nary,)*
@@ -138,9 +166,9 @@ macro_rules! wire_ops {
                         arity(0)?;
                         AstOp::FPS(ctx.intern_string(s), sort)
                     }
-                    WireOp::FPV(ref f) => {
+                    WireOp::FPV(f) => {
                         arity(0)?;
-                        AstOp::FPV(f.clone())
+                        AstOp::FPV(f.into())
                     }
                     WireOp::StringS(ref s) => {
                         arity(0)?;

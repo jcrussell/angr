@@ -140,37 +140,113 @@ fn decoding_into_another_context_rebuilds_the_same_structure() -> Result<(), Cla
 #[test]
 fn malformed_input_is_an_error_not_a_panic() {
     let ctx = Context::new();
-    let forward: WireDag = serde_json::from_str(
-        r#"{"nodes":[{"op":"Not","children":[1]},{"op":{"BoolV":true}}],"roots":[0]}"#,
-    )
-    .unwrap();
-    assert!(forward.decode(&ctx).is_err());
-    let arity: WireDag = serde_json::from_str(
-        r#"{"nodes":[{"op":{"BoolV":true}},{"op":"Not","children":[0,0]}],"roots":[1]}"#,
-    )
-    .unwrap();
-    assert!(arity.decode(&ctx).is_err());
-    let root: WireDag =
-        serde_json::from_str(r#"{"nodes":[{"op":{"BoolV":true}}],"roots":[3]}"#).unwrap();
-    assert!(root.decode(&ctx).is_err());
+    let decode = |nodes_and_roots: &str| {
+        let json = format!(r#"{{"version":{WIRE_VERSION},{nodes_and_roots}}}"#);
+        let dag: WireDag = serde_json::from_str(&json).unwrap();
+        dag.decode(&ctx)
+    };
+    let forward =
+        decode(r#""nodes":[{"op":"Not","children":[1]},{"op":{"BoolV":true}}],"roots":[0]"#);
+    assert!(matches!(forward, Err(ClarirsError::InvalidArguments(m)) if m.contains("precede")));
+    let arity =
+        decode(r#""nodes":[{"op":{"BoolV":true}},{"op":"Not","children":[0,0]}],"roots":[1]"#);
+    assert!(matches!(arity, Err(ClarirsError::InvalidArguments(m)) if m.contains("children")));
+    let root = decode(r#""nodes":[{"op":{"BoolV":true}}],"roots":[3]"#);
+    assert!(matches!(root, Err(ClarirsError::InvalidArguments(m)) if !m.contains("version")));
 }
 
 #[test]
-fn json_without_the_version_or_empty_lists_still_decodes() -> Result<(), ClarirsError> {
-    // Payloads written before the version field, which also left out empty
-    // children and annotations.
+fn json_without_empty_lists_still_decodes() -> Result<(), ClarirsError> {
+    // Earlier payloads left out empty children and annotations.
     let ctx = Context::new();
     let x = ctx.bvs("x", 8)?;
     let e = ctx.add(&x, &ctx.bvv(BitVec::from((1, 8)))?)?;
     let mut value = serde_json::to_value(WireDag::encode(std::slice::from_ref(&e))).unwrap();
     let object = value.as_object_mut().unwrap();
-    object.remove("version");
     for node in object["nodes"].as_array_mut().unwrap() {
         let node = node.as_object_mut().unwrap();
         node.retain(|_, v| v.as_array().is_none_or(|a| !a.is_empty()));
     }
     let dag: WireDag = serde_json::from_value(value).unwrap();
     assert_same_nodes(&[e], &dag.decode(&ctx)?);
+    Ok(())
+}
+
+#[test]
+fn json_without_the_version_is_version_one_and_rejected() -> Result<(), ClarirsError> {
+    // Version 1 carried FPV constants as floats; postcard would misread
+    // those as bit patterns, so a version 1 payload must not decode.
+    let ctx = Context::new();
+    let mut value = serde_json::to_value(WireDag::encode(&[ctx.bvs("x", 8)?])).unwrap();
+    value.as_object_mut().unwrap().remove("version");
+    let dag: WireDag = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        dag.decode(&ctx),
+        Err(ClarirsError::InvalidArguments(_))
+    ));
+    Ok(())
+}
+
+/// Every f64 here is either not finite (serde_json writes it as `null`) or
+/// exact only by bit pattern (`-0.0`, a NaN payload, subnormals), or was seen
+/// to come back one ULP off through serde_json's default float parser.
+const AWKWARD_F64S: &[f64] = &[
+    f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    -0.0,
+    f64::MIN_POSITIVE,
+    f64::MAX,
+    f64::MIN,
+    f64::EPSILON,
+    5e-324,
+    f64::from_bits(0x000f_ffff_ffff_ffff),
+    0.1,
+    1.0 / 3.0,
+    std::f64::consts::SQRT_2,
+    std::f64::consts::PI,
+    std::f64::consts::E,
+    9007199254740993.0,
+    1.7976931348623157e308,
+    4.35667759336598e-299,
+    1.2345678901234567e-123,
+    8.98846567431158e307,
+];
+
+#[test]
+fn fpv_constants_round_trip_by_bit_pattern() -> Result<(), ClarirsError> {
+    let ctx = Context::new();
+    let nan_payload = f64::from_bits(0x7ff8_dead_beef_0001);
+    let mut values: Vec<Float> = AWKWARD_F64S
+        .iter()
+        .chain(std::iter::once(&nan_payload))
+        .map(|&v| Float::F64(v))
+        .collect();
+    values.extend(
+        [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0f32,
+            f32::from_bits(1),
+            f32::from_bits(0x7fc0_1234),
+            0.1f32,
+        ]
+        .map(Float::F32),
+    );
+    let roots = values
+        .iter()
+        .map(|v| ctx.fpv(*v))
+        .collect::<Result<Vec<_>, _>>()?;
+    let json = serde_json::to_string(&WireDag::encode(&roots)).unwrap();
+    assert!(!json.contains("null"), "{json}");
+    let decoded = round_trip(&ctx, &roots);
+    for (want, got) in values.iter().zip(&decoded) {
+        let AstOp::FPV(got) = got.op() else {
+            panic!("{got:?} is not an FPV");
+        };
+        assert_eq!(WireFloat::from(want), WireFloat::from(got), "{want:?}");
+    }
     Ok(())
 }
 
