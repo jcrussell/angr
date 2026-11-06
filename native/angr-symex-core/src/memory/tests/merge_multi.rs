@@ -114,6 +114,41 @@ fn test_both_multi_union_collapses_to_correct_arm() {
     assert_eq!(v, Some(0x11), "m==0 collapses to self's alternative");
 }
 
+/// Non-exhaustive conds over differing page bytes: when no alternative of the
+/// live arm holds, the union falls through to *that* arm's page byte, not
+/// self's, which the merged page keeps as the collapse else-leaf
+/// (angr-vmi2l.188).
+#[test]
+fn test_both_multi_union_falls_through_to_the_live_arms_page_byte() {
+    let addr = Address(ADDR);
+    let zero = || RustBV::concrete(0, 1);
+
+    let arm = |page_byte: u8| {
+        let mut m = SymbolicMemory::new(Endness::Little);
+        m.map(ADDR, PAGE_SIZE, Permission::RW);
+        m.store_concrete(addr, RustBV::concrete(u128::from(page_byte), 8))
+            .expect("mapped store");
+        m.set_multi_alternatives(
+            addr,
+            MultiPayload::from_alternatives(vec![multi_cell(zero(), 0xAA)]),
+        );
+        m
+    };
+
+    for (m, want) in [(1, 0x22), (0, 0x11)] {
+        let mut a = arm(0x11);
+        let b = arm(0x22);
+        assert!(a.merge(&b, &RustBV::concrete(m, 1)));
+        let default = a.pages[&addr.page_num()].load_concrete(addr.page_offset(), 1)[0];
+        let v = a
+            .get_multi_alternatives(addr)
+            .expect("byte stays a Multi cell after merge")
+            .collapse(default)
+            .as_u128();
+        assert_eq!(v, Some(want), "m=={m} falls through to that arm's page byte");
+    }
+}
+
 /// A byte Multi on one arm and plain-concrete on the other falls back to the
 /// collapse-and-ITE path (a single `symbolic_objects` cell), not a Multi union.
 #[test]

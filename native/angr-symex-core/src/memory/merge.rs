@@ -153,9 +153,13 @@ impl SymbolicMemory {
                 // Both-Multi lazy union (design-doc merge rule): keep
                 // the result a Multi cell, guarding each arm's
                 // alternatives so exactly one arm's chain is live per
-                // model. The page's concrete byte is a don't-care
-                // default: exactly one arm's guard is true per
-                // model, so the else-leaf is never selected.
+                // model. Neither chain is exhaustive (each alternative
+                // is `addr == cand_i`), so a model where no candidate
+                // of the live arm matches falls through to that arm's
+                // page byte. The merged page keeps self's byte as the
+                // collapse else-leaf, so other's differing byte rides
+                // as the innermost alternative under `merge_cond_other`
+                // (angr-vmi2l.188).
                 if s_multi && o_multi {
                     let not_cond = merge_cond_other.not();
                     let sp_pl = self
@@ -166,7 +170,13 @@ impl SymbolicMemory {
                         .multi_objects
                         .get(&addr)
                         .expect("o_multi implies a payload");
-                    let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len());
+                    let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len() + 1);
+                    if s_byte != o_byte {
+                        alts.push(MultiAlternative::new(
+                            merge_cond_other.clone(),
+                            RustBV::concrete(u128::from(o_byte), 8),
+                        ));
+                    }
                     for alt in sp_pl.alternatives() {
                         alts.push(MultiAlternative::new(
                             not_cond.and(&alt.cond),
