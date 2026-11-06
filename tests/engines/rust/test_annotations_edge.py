@@ -140,6 +140,61 @@ class TestClaripyAnnotationRoundtrip:
                 )
 
 
+class _RegTaint(claripy.Annotation):
+    """Neither eliminatable nor relocatable: it stays on the node it was put on."""
+
+    @property
+    def relocatable(self):
+        return False
+
+    @property
+    def eliminatable(self):
+        return False
+
+    def __hash__(self):
+        return hash("_RegTaint")
+
+    def __eq__(self, other):
+        return isinstance(other, _RegTaint)
+
+
+class TestAnnotatedRegisterRoundtrip:
+    """An annotated compound BV, BVV or ZeroExt seeded in a register keeps its
+    annotation through a Rust run, as under the Python engine (angr-vmi2l.219)."""
+
+    _LOAD = 0x400000
+
+    @staticmethod
+    def _seeded():
+        project = angr.load_shellcode(bytes([0x90, 0x90, 0xEB, 0xFE]), arch="AMD64", load_address=0x400000)
+        state = project.factory.blank_state(addr=0x400000)
+        state.regs.rbx = (claripy.BVS("ann_x", 64) + claripy.BVS("ann_y", 64)).annotate(_RegTaint())
+        state.regs.rdx = claripy.BVV(5, 64).annotate(_RegTaint())
+        state.regs.r8 = claripy.ZeroExt(32, claripy.BVS("ann_a", 32)).annotate(_RegTaint())
+        return project, state
+
+    @pytest.mark.parametrize("reg", ["rbx", "rdx", "r8"])
+    def test_annotation_survives_on_both_engines(self, reg):
+        project, state = self._seeded()
+        seeded = getattr(state.regs, reg)
+        rust = RustExplorationManager(project, [state.copy()])
+        rust.explore(find=self._LOAD + 2)
+        python = project.factory.simulation_manager(state.copy())
+        python.explore(find=self._LOAD + 2)
+        assert len(rust.found) == len(python.found) == 1
+
+        for found in (python.found[0], rust.found[0]):
+            value = getattr(found.regs, reg)
+            assert value.has_annotation_type(_RegTaint), f"{reg} lost its annotation: {value!r}"
+            assert value is seeded, f"{reg} came back as a different node: {value!r} vs {seeded!r}"
+
+    def test_annotated_literal_still_evaluates(self):
+        project, state = self._seeded()
+        rust = RustExplorationManager(project, [state])
+        rust.explore(find=self._LOAD + 2)
+        assert rust.found[0].solver.eval(rust.found[0].regs.rdx) == 5
+
+
 class TestEdgeCases:
     """End-to-end edge-case tests for RustExplorationManager (angr-32ky).
 

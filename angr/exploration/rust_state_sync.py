@@ -296,7 +296,11 @@ class RustStateSyncMixin:
         for reg_name in reg_names:
             try:
                 reg_val = getattr(regs, reg_name)
-                if reg_val.op == "BVV":
+                # An annotated value goes through the AST import even when
+                # concrete: an int would drop the annotation (angr-vmi2l.219).
+                if reg_val.annotations:
+                    rust_state.set_register_symbolic_ast(reg_name, reg_val)
+                elif reg_val.op == "BVV":
                     bulk_regs[reg_name] = reg_val.args[0]
                 elif not reg_val.symbolic:
                     bulk_regs[reg_name] = angr_state.solver.eval(reg_val)

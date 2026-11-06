@@ -434,7 +434,8 @@ fn claripy_to_rustbv_depth(
 
 /// [`claripy_to_rustbv_depth`] over a clarirs `AstRef`, without the Python
 /// attribute walk. The value keeps the clarirs nodes it is built from, so it
-/// exports as those nodes, annotations included.
+/// exports as those nodes, annotations included: a node that carries an
+/// annotation is never rebuilt operand-wise.
 ///
 /// Op semantics and every width / bounds check mirror the attribute walk's
 /// arms one for one.
@@ -537,8 +538,26 @@ fn import_clarirs_node(
         || node.ast_type().is_string()
         || children().any(|c| c.ast_type().is_float() || c.ast_type().is_string());
 
+    // An annotated BV node is taken whole too: rebuilding it from `RustBV`
+    // ops mints a fresh, unannotated node (a literal would even collapse to
+    // `RustBV::Concrete`), so a user's taint annotation would not survive
+    // the round trip (angr-vmi2l.219). The node stays `RustBV::Ast` even
+    // when it is a literal, since `RustBV::Concrete` has nowhere to keep
+    // the annotation. A width-0 leaf keeps its degenerate import below.
+    let annotated_bv = !is_bool && node.size() != 0 && !node.annotations().is_empty();
+    let whole_annotated = || {
+        whole().map(|value| match value {
+            RustBV::Concrete { width, .. } => RustBV::Ast {
+                width,
+                ast: node.clone(),
+            },
+            kept @ RustBV::Ast { .. } => kept,
+        })
+    };
+
     match node.op() {
         _ if opaque => whole(),
+        _ if annotated_bv => whole_annotated(),
         AstOp::BVV(value) => {
             let width = value.len();
             check_bv_width("BVV", width).map_err(BridgeError::InvalidArgs)?;
