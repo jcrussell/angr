@@ -230,6 +230,21 @@ impl PyRustSimState {
         self.inner.set_heap_brk(addr);
     }
 
+    /// Get the mmap base pointer (mirrors Python's `state.heap.mmap_base`,
+    /// where an addr=0 mmap places its region).
+    #[getter]
+    pub fn mmap_base(&self) -> u64 {
+        self.inner.mmap_base()
+    }
+
+    /// Set the mmap base pointer. Used by the Python wrapper at state-creation
+    /// time to push a user-set `state.heap.mmap_base` into Rust so native
+    /// addr=0 mmaps start there (angr-vmi2l.150).
+    #[setter]
+    pub fn set_mmap_base(&mut self, addr: u64) {
+        self.inner.set_mmap_base(addr);
+    }
+
     /// Push Python's `state.libc.ctype_b_loc_table_ptr` into Rust so the native
     /// `__ctype_b_loc` proc can return it without a Python round-trip.
     #[setter]

@@ -1574,6 +1574,35 @@ class RustStateExportMixin:
                 # state may simply have been dropped from Rust by now.
                 l.debug("heap %s write-back to Rust state %d failed: %s", attr, state_id, e)
 
+    def _sync_state_posix_brk_to_rust(self, state: angr.SimState, state_id: int):
+        """Push a Python fallback's ``state.posix.brk`` advance back into Rust.
+
+        Reverse of ``_sync_rust_posix_brk_to_state``. A bounced brk (symbolic
+        argument, or a collision ``set_brk`` resolves by moving the break)
+        rewrites ``posix.brk``, often as a BVV; without this a later native
+        ``brk(0)`` reports the stale break (angr-vmi2l.150). A symbolic break
+        is not pushed, and the break never walks backwards.
+        """
+        posix = state.plugins.get("posix")
+        if posix is None:
+            return
+        try:
+            brk = posix.brk
+            if not isinstance(brk, int):
+                if state.solver.symbolic(brk):
+                    l.debug("posix.brk is symbolic; not written back to Rust state %d", state_id)
+                    return
+                brk = state.solver.eval_one(brk)
+            if brk > self._rust_mgr.get_state_posix_brk(state_id):
+                self._rust_mgr.set_state_posix_brk(state_id, brk)
+        except MemoryError:
+            raise
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust keeps its old break, so a later
+            # native brk(0) reports it. Debug only — the state may have been
+            # dropped from Rust by now.
+            l.debug("posix.brk write-back to Rust state %d failed: %s", state_id, e)
+
     def _sync_rust_cgc_to_state(self, state: angr.SimState, state_id: int):
         """Overwrite ``state.cgc``'s allocator with the Rust state's.
 

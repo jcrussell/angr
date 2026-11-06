@@ -1689,9 +1689,12 @@ class RustCallbackDispatchMixin:
 
                     # Register, memory and constraint writes landed in the
                     # successor's Rust state through the proxies; the cgc
-                    # allocator lives on a plain plugin (angr-vmi2l.332). A
+                    # allocator (angr-vmi2l.332), the heap cursors and
+                    # posix.brk (angr-vmi2l.150) live on plain plugins. A
                     # fork the first successor owned is adopted into the
                     # pending slot by now, so write to ``state_id``.
+                    self._sync_state_heap_to_rust(succ_state, state_id)
+                    self._sync_state_posix_brk_to_rust(succ_state, state_id)
                     self._sync_state_cgc_to_rust(succ_state, state_id)
                     self._rust_mgr.resume_after_syscall(state_id, new_pc, None, None, None)
 

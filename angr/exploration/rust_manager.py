@@ -4187,17 +4187,24 @@ class RustExplorationManager(
         # mallocs bumps heap_location, and without this push a subsequent
         # native alloc in Rust would hand out an overlapping address
         # (angr-um39j). Only push a plain int that's past Rust's default base.
+        # heap.mmap_base rides along so a user-set base places native addr=0
+        # mmaps where Python's would (angr-vmi2l.150); the plugin default
+        # equals Rust's.
         try:
-            py_loc = getattr(getattr(angr_state, "heap", None), "heap_location", None)
+            heap = getattr(angr_state, "heap", None)
+            py_loc = getattr(heap, "heap_location", None)
             if isinstance(py_loc, int):
                 rust_state.heap_brk = py_loc
+            py_mmap = getattr(heap, "mmap_base", None)
+            if isinstance(py_mmap, int):
+                rust_state.mmap_base = py_mmap
         except MemoryError:
             raise
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: heap_location push to Rust failed;
             # Rust's native allocator bases from its default and may overlap a
             # Python-allocated region. Debug-logs.
-            l.debug("heap.heap_location init push failed: %s", e)
+            l.debug("heap.heap_location / mmap_base init push failed: %s", e)
 
         # Push the locale ctype table pointers so the native __ctype_b_loc /
         # __ctype_tolower_loc / __ctype_toupper_loc procs can return them
