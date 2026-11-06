@@ -292,3 +292,42 @@ fn getrlimit_rlim_boundary_sweep_never_panics_and_wraps_correctly() {
          right-at-top (first field already overflows) values"
     );
 }
+
+/// `struct rlimit` is two `unsigned long`s: 8 bytes on a 32-bit ABI
+/// (angr-vmi2l.152). Both fields are 32 bits wide at a 4-byte stride,
+/// in the state's endianness, and nothing past `rlim + 8` is written.
+#[test]
+fn getrlimit_rlimit_stack_uses_32bit_layout_on_32bit_abis() {
+    let states = [
+        RustSimState::new("x86").expect("x86 state"),
+        RustSimState::new("armel").expect("armel state"),
+        RustSimState::new_with_endian("mips32", Some(false)).expect("mips32 BE state"),
+    ];
+    for mut state in states {
+        let arch = state.arch().name();
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+        // Sentinel the 16 bytes a 64-bit-wide write would cover.
+        state
+            .memory_store(0x4000, RustBV::concrete(u128::MAX, 128))
+            .expect("prefill");
+
+        let outcome = NativeGetrlimitSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(RLIMIT_STACK as u128, 32),
+                    RustBV::concrete(0x4000, 32),
+                ],
+            )
+            .expect("ok");
+        assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+
+        // `memory_load` decodes in the state's endianness.
+        let cur = state.memory_load(0x4000, 4).expect("rlim_cur");
+        assert_eq!(cur.as_u64(), Some(RLIMIT_STACK_CUR as u64), "rlim_cur on {arch}");
+        let max = state.memory_load(0x4004, 4).expect("rlim_max");
+        assert!(max.is_symbolic(), "rlim_max symbolic on {arch}");
+        let past = state.memory_load(0x4008, 8).expect("past the struct");
+        assert_eq!(past.as_u64(), Some(u64::MAX), "nothing written past rlim+8 on {arch}");
+    }
+}

@@ -3,9 +3,11 @@
 //!
 //! * `getrlimit(resource, rlim)` mirrors
 //!   `procedures/linux_kernel/getrlimit.py`:
-//!   - if `resource == RLIMIT_STACK (3)`: write `8388608` (8 bytes,
-//!     little-endian) at `*rlim` for `rlim_cur`, and a fresh symbolic
-//!     64-bit BV at `*rlim + 8` for `rlim_max`. Return `0`.
+//!   - if `resource == RLIMIT_STACK (3)`: write `8388608` at `*rlim` for
+//!     `rlim_cur`, and a fresh symbolic BV at `*rlim + bits/8` for
+//!     `rlim_max`. `struct rlimit` is two `unsigned long`s, so both
+//!     fields are `arch().bits()` wide and stored in the arch's memory
+//!     endianness (angr-vmi2l.152). Return `0`.
 //!   - else: return a fresh symbolic BV (the Python code uses
 //!     `sizeof[int]` = 32 bits; the native handler uses
 //!     `arch().bits()` instead — the dispatcher writes whatever width
@@ -64,15 +66,18 @@ impl NativeSyscall for NativeGetrlimitSyscall {
         let rlim = extract_concrete_arg(&args[1], "getrlimit rlim")?;
 
         if resource == RLIMIT_STACK {
-            // rlim_cur (8 bytes) = 8388608, rlim_max (8 bytes) = fresh symbolic.
-            let cur = RustBV::concrete(RLIMIT_STACK_CUR, 64);
-            let max = { fresh_symbolic("rlim_max", 64) };
+            // rlim_cur = 8388608, rlim_max = fresh symbolic, each an
+            // `unsigned long` (angr-vmi2l.152).
+            let bits = state.arch().bits();
+            let cur = RustBV::concrete(RLIMIT_STACK_CUR, bits);
+            let max = fresh_symbolic("rlim_max", bits);
+            let stride = u64::from(bits / 8);
             state.memory_store(rlim, cur)?;
             // `rlim` is unchecked `extract_concrete_arg` output and release
             // builds disable overflow checks, so wrap explicitly rather than
             // panic only under CI's `release-checked` profile
             // (`invariant-proc-address-arith-wrapping`).
-            state.memory_store(rlim.wrapping_add(8), max)?;
+            state.memory_store(rlim.wrapping_add(stride), max)?;
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
