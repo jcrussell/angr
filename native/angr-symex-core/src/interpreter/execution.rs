@@ -835,10 +835,6 @@ impl<'a> VEXInterpreter<'a> {
         callbacks: &dyn EngineHost,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
-        // Reset incremental branch solver state for this block
-        self.block_solver_pushed = false;
-        self.block_forks_asserted = 0;
-
         // Clear per-block concretization cache (constraints don't change within a block)
         self.concretize_cache.clear();
 
@@ -896,7 +892,6 @@ impl<'a> VEXInterpreter<'a> {
                 StmtResult::Exit { target, jumpkind } => {
                     // Flush pending stores before returning
                     self.flush_stores(callbacks)?;
-                    self.pop_block_solver_if_pushed();
                     return Ok(self.handle_exit(target, jumpkind));
                 }
                 StmtResult::SymbolicBranch {
@@ -906,7 +901,6 @@ impl<'a> VEXInterpreter<'a> {
                 } => {
                     // Flush pending stores before returning
                     self.flush_stores(callbacks)?;
-                    self.pop_block_solver_if_pushed();
 
                     // Generate unique condition ID and store condition for later retrieval
                     let cond_id = self.next_cond_id();
@@ -941,21 +935,8 @@ impl<'a> VEXInterpreter<'a> {
         // Flush pending stores at block end
         self.flush_stores(callbacks)?;
 
-        // Pop incremental branch solver context if pushed
-        self.pop_block_solver_if_pushed();
-
         // Handle default exit
         self.handle_default_exit(irsb)
-    }
-
-    /// Pop the solver if we pushed for incremental branch constraint tracking.
-    #[inline]
-    fn pop_block_solver_if_pushed(&mut self) {
-        if self.block_solver_pushed {
-            self.ctx.pop();
-            self.block_solver_pushed = false;
-            self.block_forks_asserted = 0;
-        }
     }
 
     /// Fire a `call` inspect callback into Python for an Ijk_Call exit.

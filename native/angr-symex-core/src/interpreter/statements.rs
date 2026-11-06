@@ -418,56 +418,31 @@ impl<'a> VEXInterpreter<'a> {
         let (can_be_true, can_be_false) = if self.lazy_solves {
             (true, true)
         } else {
-            // Incremental assertion: push once per block, assert new fork
-            // conditions incrementally. This avoids re-asserting all N prior
-            // conditions for the N-th Exit (O(N) → O(1) per check).
+            // Prior forks' taken-path conditions are not yet permanent (fork
+            // processing applies them after the step), so assert them in a
+            // scope that brackets only this check. The scope must close
+            // before any later statement runs: a pin or other permanent
+            // constraint added inside it would be discarded by the pop while
+            // the access it pinned stays done (angr-vmi2l.161). The pop also
+            // truncates the scope's `assumed` export-log entries before the
+            // `BranchSnapshot` fork below (angr-ype54).
             if !self.deferred_forks.is_empty() {
-                // These prev-fork assumes exist ONLY to make
-                // `check_branch_feasibility` accurate inside the bare
-                // block-solver `push()` scope. The matching `pop()` at
-                // block end does discard both their Z3 assertions and
-                // their `assumed` export-log entries (`scope_savepoint_pop`
-                // truncates `local.assumed`, angr-ph300.41/.42) — but that
-                // pop only runs at block teardown, while the `self.ctx.fork()`
-                // taken for the `BranchSnapshot` below happens mid-scope,
-                // right here. A snapshot forked with these assumes still in
-                // the log would carry them into a wave migration that
-                // re-asserts the log verbatim — the ype54 poison
-                // (angr-ype54). Bracket every assume with a savepoint +
-                // truncate so the log is clean before that fork while the
-                // Z3 solver still sees the constraints for feasibility.
-                let assumed_savepoint = self.ctx.assumed_local_len();
-                if !self.block_solver_pushed {
-                    // First time in this block with prior forks: push and assert all
-                    self.ctx.push();
-                    self.block_solver_pushed = true;
-                    for prev_fork in &self.deferred_forks {
-                        if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
-                            if prev_fork.path_taken {
-                                self.ctx.assume_true(cond);
-                            } else {
-                                self.ctx.assume_false(cond);
-                            }
+                self.ctx.push();
+                for prev_fork in &self.deferred_forks {
+                    if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                        if prev_fork.path_taken {
+                            self.ctx.assume_true(cond);
+                        } else {
+                            self.ctx.assume_false(cond);
                         }
-                    }
-                    self.block_forks_asserted = self.deferred_forks.len();
-                } else {
-                    // Subsequent Exits: only assert NEW fork conditions
-                    while self.block_forks_asserted < self.deferred_forks.len() {
-                        let prev_fork = &self.deferred_forks[self.block_forks_asserted];
-                        if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
-                            if prev_fork.path_taken {
-                                self.ctx.assume_true(cond);
-                            } else {
-                                self.ctx.assume_false(cond);
-                            }
-                        }
-                        self.block_forks_asserted += 1;
                     }
                 }
-                self.ctx.truncate_assumed_local(assumed_savepoint);
+                let feasibility = self.ctx.check_branch_feasibility(&guard_val);
+                self.ctx.pop();
+                feasibility
+            } else {
+                self.ctx.check_branch_feasibility(&guard_val)
             }
-            self.ctx.check_branch_feasibility(&guard_val)
         };
         match GuardClass::from_feasibility(can_be_true, can_be_false) {
             GuardClass::Symbolic => {

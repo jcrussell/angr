@@ -67,16 +67,6 @@ fn block_cache_round_trip() {
 }
 
 #[test]
-fn pop_block_solver_if_pushed_is_no_op_when_not_pushed() {
-    let ctx = SymContext::new_mock();
-    let mut interp = new_interp(&ctx);
-    assert!(!interp.block_solver_pushed);
-    // Should not panic / not double-pop.
-    interp.pop_block_solver_if_pushed();
-    assert!(!interp.block_solver_pushed);
-}
-
-#[test]
 fn next_cond_id_is_monotonic() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
@@ -505,4 +495,81 @@ fn a_block_ending_at_a_lift_cut_is_not_cached() {
     assert!(!interp.has_cached_block(0x4000));
     interp.cache_lifted_block(0x5000, make_irsb(0x5000, 4));
     assert!(interp.has_cached_block(0x5000));
+}
+
+// The feasibility scope a symbolic Exit opens to assert earlier forks' path
+// conditions must close before the next statement runs. Here the second
+// Exit's check used to leave that scope open until block end, so the pin the
+// symbolic-address store took after it was popped while the store stayed at
+// the pinned address (angr-vmi2l.161).
+#[test]
+fn a_pin_taken_after_a_second_symbolic_exit_survives_the_block() {
+    const RDX: u32 = 32;
+    const RSI: u32 = 64;
+    const RDI: u32 = 72;
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut mem = crate::memory::SymbolicMemory::new(Endness::Little);
+    mem.map_page(0x4000u64, vec![0u8; 0x1000], crate::memory::Permission::RW);
+    interp.set_rust_memory(mem);
+    let rdx = RustBV::symbol("store_addr", 64);
+    ctx.assume_true(&rdx.uge(&RustBV::concrete(0x4000, 64)));
+    ctx.assume_true(&rdx.ule(&RustBV::concrete(0x4fff, 64)));
+    interp.registers.put(RDI, RustBV::symbol("sel_a", 64));
+    interp.registers.put(RSI, RustBV::symbol("sel_b", 64));
+    interp.registers.put(RDX, rdx.clone());
+
+    let mut irsb = make_irsb(0x1000, 4);
+    let eq_zero = |offset| IRExpr::Binop {
+        op: IROp::CmpEQ(IRType::I64),
+        left: Box::new(IRExpr::Get {
+            offset,
+            ty: IRType::I64,
+        }),
+        right: Box::new(IRExpr::Const(IRConst::U64(0))),
+    };
+    for (tmp, offset) in [(0, RDI), (1, RSI)] {
+        irsb.tyenv.new_temp(IRType::I1);
+        irsb.statements.push(IRStmt::WrTmp {
+            tmp,
+            data: eq_zero(offset),
+        });
+        irsb.statements.push(IRStmt::Exit {
+            guard: IRExpr::RdTmp(tmp),
+            dst: 0x9000,
+            jk: JumpKind::Boring,
+            offsIP: 184,
+        });
+    }
+    irsb.statements.push(IRStmt::Store {
+        addr: IRExpr::Get {
+            offset: RDX,
+            ty: IRType::I64,
+        },
+        data: IRExpr::Const(IRConst::U8(0x41)),
+        endness: Endness::Little,
+    });
+    irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+
+    let callbacks = TestHost::default();
+    interp
+        .execute_block(&callbacks, &irsb)
+        .expect("block with two symbolic exits and a symbolic store");
+    assert_eq!(interp.deferred_forks.len(), 2, "both exits deferred a fork");
+    let written: Vec<u64> = (0x4000..0x5000u64)
+        .filter(|&a| {
+            interp
+                .rust_memory
+                .as_ref()
+                .and_then(|m| m.load_concrete(a, 1).ok())
+                .and_then(|v| v.as_u64())
+                == Some(0x41)
+        })
+        .collect();
+    assert_eq!(written.len(), 1, "the store landed at one pinned address");
+    assert!(
+        !ctx.can_be_false(&rdx.eq(&RustBV::concrete(u128::from(written[0]), 64))),
+        "the address pin at {:#x} must outlive the block",
+        written[0]
+    );
 }
