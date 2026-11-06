@@ -173,7 +173,7 @@ pub(crate) fn claripy_to_rustbv(
 ///
 /// Export has no twin bound: it is a single `Base::from_ast` with no
 /// recursion.
-pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = crate::symbolic::z3_lower::MAX_LOWER_DEPTH;
+pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
 
 /// Depth-guarded recursive implementation of [`claripy_to_rustbv`]. See that
 /// function's doc comment for the public contract; see

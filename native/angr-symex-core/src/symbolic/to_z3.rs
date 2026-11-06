@@ -3,9 +3,10 @@
 //! [`admit_clarirs`], the trust-boundary constructor that refuses a term
 //! with no Z3 form. A value is a `Concrete` (a Z3 numeral) or a clarirs
 //! term, lowered through `symbolic::z3_lower`, whose per-thread cache is the
-//! only lowering cache. Lowering can fail (a term deeper than
-//! `z3_lower::MAX_LOWER_DEPTH`, angr-mx00p.116.2), so each conversion
-//! returns a [`LowerError`] for its query to fail on.
+//! only lowering cache. Lowering is total in a term's depth
+//! (angr-vmi2l.83) but can still refuse an op with no Z3 form, so each
+//! conversion returns a [`LowerError`] for its query to fail on
+//! (angr-mx00p.116.2).
 //!
 //! The value layer itself (`value.rs`, `value_ops.rs`) never names Z3:
 //! [`RustBV::from_clarirs`] only encodes the sort, and lowering lives here
@@ -132,10 +133,9 @@ fn lower_clarirs_bool(ast: &AstRef<'static>) -> Result<z3::ast::Bool, LowerError
 /// claripy AST, a ccall result, a solver-side import): the same sort
 /// encoding, then the term is lowered, which both warms `z3_lower`'s cache
 /// and refuses what has no Z3 form (strings nested in a bitvector, the VSA
-/// ops, a term deeper than `z3_lower::MAX_LOWER_DEPTH`) at the boundary.
-/// Terms the ops build later over the result can still outgrow that depth,
-/// which is why [`ToZ3::to_z3_ast`] returns a `Result` (angr-mx00p.116.2,
-/// angr-mx00p.116.5).
+/// ops) at the boundary. [`ToZ3::to_z3_ast`] still returns a `Result`, so
+/// a term that slipped past this check fails its query instead of aborting
+/// (angr-mx00p.116.2, angr-mx00p.116.5).
 pub fn admit_clarirs(ast: AstRef<'static>) -> Result<RustBV, ClarirsError> {
     let value = RustBV::from_clarirs(ast)?;
     if let RustBV::Ast { ast, .. } = &value {
@@ -161,9 +161,9 @@ test_submod!("value_ops_z3_property_tests.rs" => value_ops_z3_property_tests);
 test_submod!("names_z3_tests.rs" => names_z3_tests);
 
 /// `lowered`'s Z3 term, or `None` after a warn naming the `query` that must
-/// go without it. A term with no Z3 form (one deeper than
-/// `z3_lower::MAX_LOWER_DEPTH`) fails the query it was lowered for, the way a
-/// Z3 Unknown does, instead of aborting the process (angr-mx00p.116.2).
+/// go without it. A term with no Z3 form (an op `z3_lower` refuses) fails
+/// the query it was lowered for, the way a Z3 Unknown does, instead of
+/// aborting the process (angr-mx00p.116.2).
 pub(crate) fn lowered_or_warn<T>(lowered: Result<T, LowerError>, query: &str) -> Option<T> {
     silent_default!(
         cat_c,

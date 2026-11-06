@@ -51,8 +51,6 @@ pub enum LowerError {
     UnsupportedOp(String),
     /// Malformed operands for an op.
     InvalidArgs(String),
-    /// A term deeper than `MAX_LOWER_DEPTH`.
-    RecursionLimit(String),
 }
 
 impl std::fmt::Display for LowerError {
@@ -60,26 +58,13 @@ impl std::fmt::Display for LowerError {
         match self {
             LowerError::UnsupportedOp(m) => write!(f, "unsupported operation: {m}"),
             LowerError::InvalidArgs(m) => write!(f, "invalid arguments: {m}"),
-            LowerError::RecursionLimit(m) => write!(f, "recursion limit: {m}"),
         }
     }
 }
 
-/// Deepest term [`lower`] accepts. The claripy import walk shares this budget
-/// (`claripy_bridge::import::MAX_LOWER_DEPTH`, which documents the
-/// calibration, angr-2a3i9).
-pub const MAX_LOWER_DEPTH: u32 = 4096;
-
-/// Lower a clarirs AST, sharing the lowering of repeated subtrees.
+/// Lower a clarirs AST, sharing the lowering of repeated subtrees. Total in
+/// the term's depth: the walk keeps its own stack (angr-vmi2l.83).
 pub fn lower(ast: &AstRef<'static>) -> Result<Dynamic, LowerError> {
-    // `depth` is cached on every node, so this bounds the recursion below
-    // before it starts (same budget as the claripy import walk, angr-2a3i9).
-    if ast.depth() > MAX_LOWER_DEPTH {
-        return Err(LowerError::RecursionLimit(format!(
-            "z3 lowering: AST depth {} exceeds {MAX_LOWER_DEPTH}",
-            ast.depth()
-        )));
-    }
     let ctx = z3::Context::thread_local();
     LOWERED.with_borrow_mut(|cache| {
         cache.enter(&ctx);
@@ -263,19 +248,46 @@ impl Lowerer<'_> {
         Ok(acc)
     }
 
-    fn lower(&mut self, ast: &AstRef<'static>) -> Result<Dynamic, LowerError> {
-        if let Some(done) = self.cache.get(ast) {
-            return Ok(done);
+    /// Post-order walk on an explicit stack, so a term of any depth lowers
+    /// in bounded native stack (angr-vmi2l.83). An `Expand` frame pushes its
+    /// node's `Build` frame under its children; a `Build` frame takes its
+    /// children's terms off the top of `done`, in operand order.
+    fn lower(&mut self, root: &AstRef<'static>) -> Result<Dynamic, LowerError> {
+        enum Frame {
+            Expand(AstRef<'static>),
+            Build(AstRef<'static>, usize),
         }
-        let children = ast
-            .child_iter()
-            .map(|child| self.lower(&child))
-            .collect::<Result<Vec<_>, _>>()?;
-        let term = self.node(ast, &children)?;
-        #[cfg(test)]
-        NODES_BUILT.set(NODES_BUILT.get() + 1);
-        self.cache.insert(ast, &term);
-        Ok(term)
+        let mut frames = vec![Frame::Expand(root.clone())];
+        let mut done: Vec<Dynamic> = Vec::new();
+        while let Some(frame) = frames.pop() {
+            match frame {
+                Frame::Expand(ast) => {
+                    if let Some(term) = self.cache.get(&ast) {
+                        done.push(term);
+                        continue;
+                    }
+                    let children: Vec<_> = ast.child_iter().collect();
+                    frames.push(Frame::Build(ast, children.len()));
+                    frames.extend(children.into_iter().rev().map(Frame::Expand));
+                }
+                Frame::Build(ast, arity) => {
+                    let first = done
+                        .len()
+                        .checked_sub(arity)
+                        .ok_or_else(|| conversion("lowering stack underflow"))?;
+                    let children = done.split_off(first);
+                    let term = self.node(&ast, &children)?;
+                    #[cfg(test)]
+                    NODES_BUILT.set(NODES_BUILT.get() + 1);
+                    self.cache.insert(&ast, &term);
+                    done.push(term);
+                }
+            }
+        }
+        match <[Dynamic; 1]>::try_from(done) {
+            Ok([term]) => Ok(term),
+            Err(_) => Err(conversion("lowering stack left more than one term")),
+        }
     }
 
     /// Build one node from its already-lowered children.

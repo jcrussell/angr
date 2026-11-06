@@ -70,9 +70,7 @@ impl SymBV {
     /// fits a `u128` as `Concrete`, anything else as an `Ast` lowered on
     /// demand. A subterm of a lowered term qualifies, and so does a term the
     /// constructors build over such operands with the ops
-    /// `value_clarirs::build_term` emits. The lazy lowering can still refuse
-    /// a term that grew deeper than `z3_lower::MAX_LOWER_DEPTH`, and
-    /// `to_z3_ast` reports that as an error (angr-mx00p.116.2).
+    /// `value_clarirs::build_term` emits, at any depth (angr-vmi2l.83).
     pub fn from_clarirs_lowerable(ast: Term) -> SymBV {
         if let AstOp::BVV(value) = ast.op()
             && let Some(v) = super::value::literal_u128(value)

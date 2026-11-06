@@ -678,10 +678,10 @@ impl SymContext {
         // avoiding the ITE(cmp, BV(1,1), BV(0,1)).eq(BV(1,1)) round-trip; the
         // false polarity negates that bool directly.
         //
-        // A cond with no Z3 form (deeper than `z3_lower::MAX_LOWER_DEPTH`)
-        // cannot reach the solver. It stays in the `assumed` export log, but
-        // the solver goes without it, with a warn: the state is
-        // under-constrained, never pruned, the side a Z3 Unknown errs on
+        // A cond with no Z3 form (an op `z3_lower` refuses) cannot reach
+        // the solver. It stays in the `assumed` export log, but the solver
+        // goes without it, with a warn: the state is under-constrained,
+        // never pruned, the side a Z3 Unknown errs on
         // (`invariant-z3-unknown-not-unsat`, angr-mx00p.116.2).
         let Some(bool_ast) = super::lowered_or_warn(cond.to_z3_bool(), "assume") else {
             self.local_constraints

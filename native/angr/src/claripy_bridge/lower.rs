@@ -13,7 +13,6 @@ impl From<LowerError> for BridgeError {
         match err {
             LowerError::UnsupportedOp(m) => BridgeError::UnsupportedOp(m),
             LowerError::InvalidArgs(m) => BridgeError::InvalidArgs(m),
-            LowerError::RecursionLimit(m) => BridgeError::RecursionLimit(m),
         }
     }
 }

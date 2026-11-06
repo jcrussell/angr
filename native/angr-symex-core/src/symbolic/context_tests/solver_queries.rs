@@ -1794,41 +1794,53 @@ fn test_bitcount_ops_above_64_bits_on_zero_operand() {
     assert_eq!(pc, 0, "popcount of an all-zero operand must be 0");
 }
 
-/// A term deeper than `z3_lower::MAX_LOWER_DEPTH` has no Z3 form. The ops
-/// build it without complaint; lowering it is an error, and every query on
-/// it fails the way a Z3 Unknown does instead of aborting (angr-mx00p.116.2).
+/// Lowering is total in a term's depth: an engine-built chain far deeper than
+/// a recursive walk's native stack allows lowers, solves and branches like a
+/// shallow one (angr-vmi2l.83; it used to fail every query past depth 4096).
+/// The body runs on a large stack only because dropping the chain recurses
+/// in clarirs `AstNode`'s drop glue, which the lowering does not touch.
 #[test]
-fn test_term_past_the_lowering_depth_fails_its_queries() {
+fn test_deep_term_lowers_and_solves() {
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(deep_term_lowers_and_solves)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn deep_term_lowers_and_solves() {
+    const DEPTH: usize = 5000;
     let ctx = SymContext::new();
     let x = RustBV::symbol("deep_x", 32);
     let y = RustBV::symbol("deep_y", 32);
-    let mut deep = x.clone();
-    for _ in 0..=super::super::z3_lower::MAX_LOWER_DEPTH {
-        deep = deep.add_into(y.clone());
+    let mut sum = x.clone();
+    for _ in 0..DEPTH {
+        sum = sum.add_into(y.clone());
     }
-    assert!(deep.to_clarirs().unwrap().depth() > super::super::z3_lower::MAX_LOWER_DEPTH);
-    assert!(matches!(deep.to_z3_ast(), Err(crate::symbolic::LowerError::RecursionLimit(_))));
-    let cond = deep.eq(&RustBV::concrete(7, 32));
-    assert!(matches!(cond.to_z3_bool(), Err(crate::symbolic::LowerError::RecursionLimit(_))));
+    let five = RustBV::concrete(5, 64);
+    let r = RustBV::symbol("deep_r", 64);
+    let b = RustBV::symbol("deep_b", 64);
+    let mut hash = r.clone();
+    for _ in 0..DEPTH {
+        hash = hash.rotl_into(five.clone()).xor(&b);
+    }
+    for deep in [&sum, &hash] {
+        assert!(deep.to_clarirs().unwrap().depth() > 4096);
+        assert!(deep.to_z3_ast().is_ok());
+        assert!(deep.eq(&RustBV::concrete(7, deep.width())).to_z3_bool().is_ok());
+        assert!(ctx.eval(deep).is_some());
+    }
 
-    // Value queries fail rather than answer without the term.
-    assert_eq!(ctx.eval(&deep), None);
-    assert_eq!(ctx.eval_wide(&deep), None);
-    assert_eq!(ctx.eval_many(&[x.clone(), deep.clone()]), None);
-    assert_eq!(ctx.min(&deep, false), None);
-    assert_eq!(ctx.max(&deep, false), None);
-    let upto = ctx.eval_upto_checked(&deep, 4);
-    assert!(upto.undecided && upto.values.is_empty());
-    assert!(!ctx.solution(&deep, 7));
-
-    // A branch on it is undecided, so neither side is pruned; assuming it
-    // leaves the solver without it but keeps the export log whole.
+    // The branch on it is decided by the solver, and assuming one side
+    // reaches it: `sum == 7` with y pinned forces x.
+    let cond = sum.eq(&RustBV::concrete(7, 32));
     assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
-    let before = ctx.get_assumed_constraints().len();
+    ctx.assume_true(&y.eq(&RustBV::concrete(1, 32)));
     ctx.assume_true(&cond);
-    assert_eq!(ctx.get_assumed_constraints().len(), before + 1);
     assert!(ctx.is_sat());
-    assert!(ctx.eval(&x).is_some(), "the rest of the context still solves");
+    let expected = 7u32.wrapping_sub(u32::try_from(DEPTH).unwrap());
+    assert_eq!(ctx.eval(&x), Some(u128::from(expected)));
 }
 
 /// `takes_every_value` (angr-plh49): a free leaf or a `Concat` of distinct
