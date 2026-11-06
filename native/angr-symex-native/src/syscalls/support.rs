@@ -164,6 +164,23 @@ pub(crate) fn symbolic_outcome(state: &RustSimState, prefix: &'static str) -> Sy
     SyscallOutcome::ContinueSymbolic { ret }
 }
 
+/// Refuse a stream read under `SHORT_READS`, so Python models it (angr-vmi2l.139).
+///
+/// Python's `SimPackets.read` returns a symbolic length `<= count` under the
+/// option, while the native stream readers (stdin, a symbolic-stream fd, CGC
+/// `receive`) always return `count`. Their libc twin
+/// `procedures/read.rs::read_stdin_symbolic` models the short read; these
+/// handlers defer instead. A concrete- or bounded-symbolic-content fd is a
+/// `SimFile`, which the option does not touch, so those paths do not call this.
+pub(crate) fn refuse_short_read(state: &RustSimState, what: &str) -> Result<(), SyscallError> {
+    if state.has_option("SHORT_READS") {
+        return Err(SyscallError::Other(format!(
+            "{what} under SHORT_READS has a symbolic length; falls back to Python"
+        )));
+    }
+    Ok(())
+}
+
 /// Allocate the `<prefix>_<id>_<i>` names for a batch of `count` fresh
 /// symbolic bytes, drawing one index from the `counter` key of
 /// [`crate::symbolic::names`] for the whole batch.

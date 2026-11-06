@@ -1101,3 +1101,23 @@ fn lseek_x86_negative_offset_sign_extends_and_rejects_negative_target() {
     assert_eq!(lseek(&mut state, -5, 0), NEG_ONE);
     assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 5);
 }
+
+/// readv's stdin scatter defers under SHORT_READS, as `read` does
+/// (angr-vmi2l.139).
+#[test]
+fn readv_stdin_under_short_reads_falls_back() {
+    let mut state = fresh_state();
+    state.set_option("SHORT_READS", true);
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 4)]);
+    let err = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect_err("fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+}

@@ -106,8 +106,8 @@ use crate::vex::ir::JumpKind;
 pub(crate) use support::{
     BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, bounded_value, extract_bounded_concrete_arg,
     extract_concrete_arg, fresh_byte_names, fresh_symbolic, gather_concrete_bytes,
-    gather_concrete_bytes_into, mint_symbolic_bytes, require_syscall_args, stub_syscall,
-    symbolic_outcome,
+    gather_concrete_bytes_into, mint_symbolic_bytes, refuse_short_read, require_syscall_args,
+    stub_syscall, symbolic_outcome,
 };
 pub use support::{NativeSyscall, SyscallError, SyscallOutcome};
 pub(crate) use write_gate::write_path_gate;

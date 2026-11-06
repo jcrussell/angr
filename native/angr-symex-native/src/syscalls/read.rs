@@ -15,7 +15,8 @@
 //!     bounced — a fallback would split the position cursor (angr-8j16).
 //!
 //! Falls back to the Python `_handle_syscall_callback` path
-//! (`state.posix.get_fd(fd).read(...)`) for: symbolic args, counts beyond
+//! (`state.posix.get_fd(fd).read(...)`) for: symbolic args, a stdin or
+//! symbolic-stream read under `SHORT_READS` (`refuse_short_read`), counts beyond
 //! `MAX_READ_SIZE` (stdin / concrete-content fds), fds not open in Rust's
 //! `FileSystem`, and non-stdin open fds with neither concrete nor symbolic
 //! content (Python's symbolic-file model owns those reads).
@@ -146,6 +147,7 @@ fn read_stdin(
     buf: u64,
     count: u64,
 ) -> Result<SyscallOutcome, SyscallError> {
+    crate::syscalls::refuse_short_read(state, "read(0)")?;
     // A read past a seed that ends the stream is short; Python returns what
     // is left (angr-vmi2l.110).
     if crate::procedures::stdin_common::stdin_seed_ends_before(state, count as usize) {
@@ -166,6 +168,7 @@ fn read_symbolic(
     count: u64,
     prefix: &str,
 ) -> Result<SyscallOutcome, SyscallError> {
+    crate::syscalls::refuse_short_read(state, "read from a symbolic stream")?;
     crate::syscalls::mint_symbolic_bytes(state, buf, count, prefix, SYS_READ_COUNTER)?;
     Ok(SyscallOutcome::Continue { ret: count })
 }

@@ -21,8 +21,9 @@
 //! * `3 receive(fd, buf, count, rx_bytes)` — writes `count` fresh
 //!   symbolic bytes (tracked in `state.stdin_symbols`) into `[buf, ...)`
 //!   when `fd==0`. Stores `count` (32-bit LE) at `*rx_bytes`. Returns 0
-//!   on success. Falls back to Python for symbolic args, other fds, or
-//!   large counts. Mirrors the Python `receive` SimProcedure's
+//!   on success. Falls back to Python for symbolic args, other fds,
+//!   large counts, or under `CGC_NO_SYMBOLIC_RECEIVE_LENGTH` / `SHORT_READS`.
+//!   `CGC_ENFORCE_FD` maps any fd to 0 (to 1 for `transmit`). Mirrors the Python `receive` SimProcedure's
 //!   stdin-only happy path.
 //! * `4 fdwait(nfds, readfds, writefds, timeout, readyfds)` — stub that
 //!   models the `CGC_NON_BLOCKING_FDS` mode: every fd is "ready", and
@@ -128,7 +129,10 @@ impl NativeSyscall for NativeTransmitSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
+        // `CGC_ENFORCE_FD` sends every transmit to fd 1, whatever the guest
+        // passed, as `procedures/cgc/transmit.py` does (angr-vmi2l.139).
         let fd = match extract_concrete_arg(&args[0], "transmit fd") {
+            Ok(_) if state.has_option("CGC_ENFORCE_FD") => 1,
             Ok(fd) => fd,
             Err(e) => {
                 // Symbolic fd on a write path: any bounded symbolic file
@@ -197,7 +201,14 @@ impl NativeSyscall for NativeReceiveSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
+        // `CGC_ENFORCE_FD` reads every receive from fd 0, as
+        // `procedures/cgc/receive.py` does (angr-vmi2l.139).
         let fd = extract_concrete_arg(&args[0], "receive fd")?;
+        let fd = if state.has_option("CGC_ENFORCE_FD") {
+            0
+        } else {
+            fd
+        };
         let buf = extract_concrete_arg(&args[1], "receive buf")?;
         let count = extract_concrete_arg(&args[2], "receive count")?;
         let rx_bytes = extract_concrete_arg(&args[3], "receive rx_bytes")?;
@@ -223,6 +234,18 @@ impl NativeSyscall for NativeReceiveSyscall {
                 "receive fd={fd} falls back to Python"
             )));
         }
+
+        // Under `CGC_NO_SYMBOLIC_RECEIVE_LENGTH` Python clamps `count` to
+        // `state.cgc.max_receive_size`, which the Rust state does not carry,
+        // and under `SHORT_READS` its stdin read has a symbolic length; both
+        // defer (angr-vmi2l.139).
+        if state.has_option("CGC_NO_SYMBOLIC_RECEIVE_LENGTH") {
+            return Err(SyscallError::Other(
+                "receive under CGC_NO_SYMBOLIC_RECEIVE_LENGTH clamps to cgc.max_receive_size; falls back to Python"
+                    .to_string(),
+            ));
+        }
+        super::refuse_short_read(state, "receive")?;
 
         if count == 0 {
             if rx_bytes != 0 {

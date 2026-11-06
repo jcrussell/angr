@@ -982,3 +982,61 @@ fn receive_consumes_seeded_stdin() {
     // Only the 2 bytes past the seed are recorded for posix.dumps(0).
     assert_eq!(state.stdin_symbols().len(), 2);
 }
+
+fn receive_args(fd: u128) -> [RustBV; 4] {
+    [
+        RustBV::concrete(fd, 32),
+        RustBV::concrete(0x2000, 32),
+        RustBV::concrete(4, 32),
+        RustBV::concrete(0x2800, 32),
+    ]
+}
+
+/// Under `CGC_ENFORCE_FD` Python's transmit writes fd 1 whatever the guest
+/// fd (angr-vmi2l.139).
+#[test]
+fn transmit_under_enforce_fd_writes_stdout() {
+    let h = NativeTransmitSyscall;
+    let mut state = x86_state_with_buf();
+    state.set_option("CGC_ENFORCE_FD", true);
+    state.map_memory_data(0x3000, b"hi", Permission::RWX);
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(2, 32),
+                RustBV::concrete(0x3000, 32),
+                RustBV::concrete(2, 32),
+                RustBV::concrete(0, 32),
+            ],
+        )
+        .expect("ok");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert_eq!(state.stdout_buffer(), b"hi");
+}
+
+/// Under `CGC_ENFORCE_FD` Python's receive reads fd 0 whatever the guest fd,
+/// so a receive on fd 3 is served natively from stdin (angr-vmi2l.139).
+#[test]
+fn receive_under_enforce_fd_reads_stdin() {
+    let h = NativeReceiveSyscall;
+    let mut state = x86_state_with_buf();
+    state.set_option("CGC_ENFORCE_FD", true);
+    let outcome = h.call(&mut state, &receive_args(3)).expect("ok");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert_eq!(state.memory_load(0x2800, 4).expect("load").as_u64(), Some(4));
+}
+
+/// `CGC_NO_SYMBOLIC_RECEIVE_LENGTH` clamps to `cgc.max_receive_size`, which
+/// Rust does not carry, and `SHORT_READS` gives the stdin read a symbolic
+/// length; receive defers under either (angr-vmi2l.139).
+#[test]
+fn receive_under_length_options_falls_back() {
+    for opt in ["CGC_NO_SYMBOLIC_RECEIVE_LENGTH", "SHORT_READS"] {
+        let h = NativeReceiveSyscall;
+        let mut state = x86_state_with_buf();
+        state.set_option(opt, true);
+        let err = h.call(&mut state, &receive_args(0)).expect_err(opt);
+        assert!(matches!(err, SyscallError::Other(_)), "{opt}");
+    }
+}

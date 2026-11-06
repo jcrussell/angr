@@ -1580,12 +1580,20 @@ Inherited (option works because the code path runs in Python)
      - Simplification happens inside claripy when building the AST (e.g.
        ``state.solver.simplify``). Rust embeds those ASTs unchanged.
    * - ``ALLOW_SEND_FAILURES``, ``FILES_HAVE_EOF``, ``ALL_FILES_EXIST``,
-       ``ANY_FILE_MIGHT_EXIST``, ``SHORT_READS``,
-       ``CONCRETIZE_SYMBOLIC_FILE_READ_SIZES``
+       ``ANY_FILE_MIGHT_EXIST``, ``CONCRETIZE_SYMBOLIC_FILE_READ_SIZES``
      - POSIX SimProcedures (``read``, ``write``, ``open``, ``recv``,
        ``send``) execute in Python and consult the angr SimState
        directly; a native POSIX procedure that served these paths would
        bypass the flags, so none does.
+   * - ``SHORT_READS``
+     - Mirrored onto the Rust state (``_NATIVE_SIMOPTIONS``). The native
+       libc ``read``, ``fgets``, ``fgetc`` and ``getchar`` model
+       the short read themselves; ``scanf``'s ``%s`` falls back. The
+       ``read`` and ``readv`` syscalls on stdin or a symbolic stream, and
+       CGC ``receive``, fall back to Python through
+       ``syscalls::refuse_short_read`` (``native/angr-symex-native/src/syscalls/support.rs``).
+       A read from a concrete or bounded symbolic file stays native, since
+       the option only shortens ``SimPackets`` reads.
    * - ``RUN_HOOKS_AT_PLT``
      - Hook dispatch is orchestrated by the Python wrapper; PLT
        detection runs against the Python project.
@@ -1593,12 +1601,13 @@ Inherited (option works because the code path runs in Python)
      - pyvex still produces the IRSB on the Python side before handing
        bytes to the Rust interpreter.
    * - ``CGC_NO_SYMBOLIC_RECEIVE_LENGTH``, ``CGC_ENFORCE_FD``
-     - DECREE (CGC) syscalls have native handlers in
-       ``native/angr-symex-native/src/syscalls/cgc.rs`` for the concrete-fd happy
-       paths (transmit to stdout/stderr clones, receive on fd 0). The
-       Rust handlers fall back to Python on symbolic counts and on
-       non-standard fds, so the Python SimProcedure honors the option
-       on the fallback path.
+     - Mirrored onto the Rust state (``_NATIVE_SIMOPTIONS``) for the
+       DECREE handlers in ``native/angr-symex-native/src/syscalls/cgc.rs``.
+       Under ``CGC_ENFORCE_FD`` the native ``transmit`` writes fd 1 and
+       ``receive`` reads fd 0, whatever the guest fd, as the Python
+       procedures do. Under ``CGC_NO_SYMBOLIC_RECEIVE_LENGTH`` the native
+       ``receive`` falls back, because Python clamps the count to
+       ``state.cgc.max_receive_size``, which the Rust state does not carry.
 
 Ignored — divergence-risk
 ~~~~~~~~~~~~~~~~~~~~~~~~~

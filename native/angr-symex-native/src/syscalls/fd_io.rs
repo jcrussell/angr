@@ -317,6 +317,7 @@ fn scatter_symbolic(
     segments: &[(u64, u64)],
     prefix: &str,
 ) -> Result<SyscallOutcome, SyscallError> {
+    crate::syscalls::refuse_short_read(state, "readv from a stream")?;
     let mut total = 0u64;
     for &(base, len) in segments {
         // One counter bump per segment (not per call), so two segments of the

@@ -507,3 +507,50 @@ fn read_stdin_binds_seeded_bytes() {
     probe.assume_true(&loaded.eq(&RustBV::concrete(u128::from(u16::from_le_bytes(*b"ab")), 16)).not());
     assert!(!probe.is_sat(), "the read bytes are not bound to the seeded \"ab\"");
 }
+
+/// Under SHORT_READS Python's `SimPackets.read` returns a symbolic length, so
+/// a stdin or symbolic-stream read defers rather than returning `count`
+/// (angr-vmi2l.139). A concrete-content fd is a `SimFile` and stays native.
+#[test]
+fn stream_reads_under_short_reads_fall_back() {
+    let h = NativeReadSyscall;
+    let mut state = fresh_state_with_buf();
+    state.set_option("SHORT_READS", true);
+    let sym_fd = state
+        .file_system()
+        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    for fd in [0u128, sym_fd as u128] {
+        let err = h
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(4, 64),
+                ],
+            )
+            .expect_err("a stream read under SHORT_READS falls back");
+        assert!(matches!(err, SyscallError::Other(_)), "fd {fd}");
+    }
+
+    let file_fd = state
+        .file_system()
+        .open_with_content(
+            "data.txt".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"abcd".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .expect("a concrete-content read stays native");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 4 }));
+}

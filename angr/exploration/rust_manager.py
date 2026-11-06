@@ -169,8 +169,17 @@ _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug ca
 # ``RustSimState.has_option`` (angr-kzjv6). Add one only when a native proc
 # consults it. SYMBOLIC_INITIAL_VALUES is seeded on in Rust (every stock bundle
 # has it), so the mirror mostly exists to clear it after remove_options=
-# (angr-c7xno.61).
-_NATIVE_SIMOPTIONS = frozenset({"SHORT_READS", "SYMBOLIC_INITIAL_VALUES"})
+# (angr-c7xno.61). The CGC options gate the DECREE handlers in syscalls/cgc.rs
+# (angr-vmi2l.139).
+_NATIVE_SIMOPTIONS = frozenset(
+    {
+        "CGC_ENFORCE_FD",
+        "CGC_NON_BLOCKING_FDS",
+        "CGC_NO_SYMBOLIC_RECEIVE_LENGTH",
+        "SHORT_READS",
+        "SYMBOLIC_INITIAL_VALUES",
+    }
+)
 
 
 def _options_on(state) -> set:
