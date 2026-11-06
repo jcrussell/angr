@@ -36,10 +36,24 @@ class TestPickle(unittest.TestCase):
         rm = claripy.fp.RM.RM_TowardsZero
         self.assert_round_trip(claripy.fpMin(x, y))
         self.assert_round_trip(claripy.fpMax(x, y))
-        # RM itself does not pickle, so check the rebuild unpickling would do
-        for expr in (claripy.fpFMA(rm, x, y, x), claripy.fpRoundToIntegral(rm, x)):
-            rebuilt = type(expr)(expr.op, list(expr.args))
-            self.assertEqual(rebuilt.hash(), expr.hash())
+        self.assert_round_trip(claripy.fpFMA(rm, x, y, x))
+        self.assert_round_trip(claripy.fpRoundToIntegral(rm, x))
+
+    def test_rounding_modes(self):
+        x = claripy.FPS("x", claripy.FSORT_DOUBLE)
+        one = claripy.FPV(1.0, claripy.FSORT_DOUBLE)
+        for name in (
+            "RM_NearestTiesEven",
+            "RM_NearestTiesAwayFromZero",
+            "RM_TowardsZero",
+            "RM_TowardsPositiveInf",
+            "RM_TowardsNegativeInf",
+        ):
+            rm = getattr(claripy.fp.RM, name)
+            self.assertEqual(pickle.loads(pickle.dumps(rm)), rm)
+            expr = claripy.fpAdd(rm, x, one)
+            self.assert_round_trip(expr)
+            self.assertEqual(pickle.loads(pickle.dumps(expr)).args[-1], rm)
 
 
 if __name__ == "__main__":

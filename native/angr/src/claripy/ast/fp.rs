@@ -8,12 +8,9 @@ use crate::claripy::prelude::*;
 
 static FPS_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-#[pyclass(
-    name = "RM",
-    module = "angr.rustylib.claripy.ast.fp",
-    eq,
-    from_py_object
-)]
+// `module` must name the module that exports `RM` (claripy/mod.rs adds it
+// to `fp`), or pickle cannot find the class (angr-vmi2l.278).
+#[pyclass(name = "RM", module = "angr.rustylib.claripy.fp", eq, from_py_object)]
 #[derive(Clone, PartialEq, Eq, Default)]
 #[allow(non_camel_case_types)]
 pub enum PyRM {
@@ -31,6 +28,30 @@ impl PyRM {
     #[allow(clippy::should_implement_trait)]
     pub fn default() -> PyRM {
         <PyRM as Default>::default()
+    }
+
+    /// Pickles as `getattr(RM, "<variant>")`, so a pickle names the
+    /// variant rather than its position (angr-vmi2l.278).
+    pub fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        let name = match self {
+            PyRM::RM_NearestTiesEven => "RM_NearestTiesEven",
+            PyRM::RM_NearestTiesAwayFromZero => "RM_NearestTiesAwayFromZero",
+            PyRM::RM_TowardsZero => "RM_TowardsZero",
+            PyRM::RM_TowardsPositiveInf => "RM_TowardsPositiveInf",
+            PyRM::RM_TowardsNegativeInf => "RM_TowardsNegativeInf",
+        };
+        let getattr = py.import("builtins")?.getattr("getattr")?;
+        let args = PyTuple::new(
+            py,
+            [
+                py.get_type::<PyRM>().into_any(),
+                name.into_pyobject(py)?.into_any(),
+            ],
+        )?;
+        Ok((getattr, args))
     }
 }
 
