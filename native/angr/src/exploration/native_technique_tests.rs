@@ -295,6 +295,25 @@ fn timeout_after_deadline_drains_active_into_timeout_stash() {
     assert_eq!(mgr.sm.state_ids("timeout"), vec![a, b]);
 }
 
+/// Firing disarms the timer, as Python's `Timeout.step` resets `start_time`,
+/// so a re-populated frontier gets a fresh window instead of draining on the
+/// next apply (angr-vmi2l.32).
+#[test]
+fn timeout_rearms_after_firing() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    push_active_with_history(&mut mgr, &[0x1000]);
+    mgr.register_timeout(3600.0);
+    expire_timeouts(&mut mgr);
+    assert!(mgr.apply_native_techniques(), "expired timeout fires");
+
+    let c = push_active_with_history(&mut mgr, &[0x3000]);
+    assert!(
+        !mgr.apply_native_techniques(),
+        "a fresh window must not fire on its first apply"
+    );
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![c]);
+}
+
 /// An expired timeout with nothing active still reports complete (the run
 /// ends on the deadline, not on having states to move).
 #[test]

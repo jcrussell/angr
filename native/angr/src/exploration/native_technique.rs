@@ -92,6 +92,10 @@ impl RustExplorationManager {
                 } => {
                     let start = start_time.get_or_insert_with(std::time::Instant::now);
                     if start.elapsed().as_secs_f64() > *timeout_secs {
+                        // Disarm, as Python's `Timeout.step` does, so a later
+                        // run on this manager gets a fresh window
+                        // (angr-vmi2l.32).
+                        *start_time = None;
                         log::info!(
                             "Native Timeout: exploration timed out after {timeout_secs:.1}s"
                         );
