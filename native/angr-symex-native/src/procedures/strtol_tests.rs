@@ -817,3 +817,59 @@ fn test_strtol_symbolic_base0_leading_zero_endptr_past_zero() {
     assert_eq!(ctx.min(&end, false), Some(0x10001));
     assert_eq!(ctx.max(&end, false), Some(0x10001));
 }
+
+/// Run strtoul on `arch` over a concrete `'1'` then `n_sym` symbolic bytes,
+/// each constrained to `'9'`, and return the solved (min, max).
+fn strtoul_concrete_led_nines(arch: &str, n_sym: u64) -> (Option<u128>, Option<u128>) {
+    let mut state = RustSimState::new(arch).unwrap();
+    let bits = state.arch().bits();
+    let mut text = vec![b'1'];
+    text.extend(std::iter::repeat_n(b'X', n_sym as usize));
+    setup_string(&mut state, 0x10000, &text);
+    let nine = RustBV::concrete(u128::from(b'9'), 8);
+    for i in 1..=n_sym {
+        let sym = place_symbolic_byte(&mut state, 0x10000 + i, &format!("n{i}"));
+        state.add_constraint(sym.eq(&nine));
+    }
+    let word = |v: u128| RustBV::concrete(v, bits);
+    let result = NativeStrtoul
+        .call(&mut state, &[word(0x10000), word(0), word(10)])
+        .unwrap()
+        .unwrap();
+    let ctx = state.solver().borrow();
+    (ctx.min(&result, false), ctx.max(&result, false))
+}
+
+/// A concrete-led symbolic digit run that overflows the register clamps at
+/// the same cap as the concrete path instead of wrapping (angr-mx00p.132.78).
+#[test]
+fn test_strtoul_symbolic_run_overflow_clamps() {
+    // x86: Python's signed-max clamp.
+    let cap32 = Some(0x7FFF_FFFF);
+    assert_eq!(strtoul_concrete_led_nines("x86", 12), (cap32, cap32));
+    // amd64: the full register max, as the concrete path's ULONG_MAX.
+    let cap64 = Some(u128::from(u64::MAX));
+    assert_eq!(strtoul_concrete_led_nines("amd64", 22), (cap64, cap64));
+    // A run that fits stays exact: "1" + "999" = 1999.
+    assert_eq!(strtoul_concrete_led_nines("amd64", 3), (Some(1999), Some(1999)));
+}
+
+/// The concrete path clamps a 64-bit overflow at the register max too, so a
+/// symbolic run solved to the same digits returns the same value.
+#[test]
+fn test_strtoul_concrete_overflow_clamps_amd64() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x1000, b"1999999999999999999999");
+    let result = NativeStrtoul
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(10, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(u64::MAX));
+}

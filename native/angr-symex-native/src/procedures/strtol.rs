@@ -62,9 +62,22 @@ const MAX_SCAN_BYTES: usize = 4096;
 /// Python's `_string_to_int` clamps the accumulated magnitude at the SIGNED max
 /// `2^(bits-1) - 1` — `strtol.run` always calls `strtol_inner(..., signed=True)`,
 /// even for `strtoul`, so the whole family shares this cap. Only defined for
-/// `bits` in `[2, 64]`; callers gate on `bits < 64` (see `run_strtol`).
+/// `bits` in `[2, 64]`; `magnitude_cap` gates on `bits < 64`.
 fn signed_max(bits: u32) -> u128 {
     (1u128 << (bits - 1)) - 1
+}
+
+/// The magnitude every native path clamps at before negating: `signed_max`
+/// below 64 bits (Python's clamp), the full unsigned register max at 64 bits
+/// (C's `ULONG_MAX`, so strtoull keeps values above `i64::MAX`; see
+/// `MAX_DIGITS` for why 64-bit does not follow Python). Clamping instead of
+/// wrapping keeps an unsigned digit run from turning negative.
+fn magnitude_cap(bits: u32) -> u128 {
+    if bits < 64 {
+        signed_max(bits)
+    } else {
+        u128::MAX >> (128 - bits)
+    }
 }
 
 /// Mask a concrete register value to `w` low bits when `ret_int_bits` requests
@@ -345,6 +358,11 @@ fn parse_concrete_digits(bytes: &[u8], base: u32) -> (u128, usize) {
 /// Build the ITE accumulator over `bytes[start..]` for the given concrete
 /// `base` (in [2, 36]) and the chosen result width.
 ///
+/// The accumulator runs at twice `result_bits` and clamps at `cap` after each
+/// step, so no digit run wraps: `cap * 36 + 35` fits the double width, and
+/// accumulation is monotone, so the per-step clamp equals a final clamp
+/// (angr-mx00p.132.78).
+///
 /// At each position the accumulator either advances (if the byte is a
 /// valid digit and we have not yet been terminated by a non-digit) or
 /// stays put. The "terminated" flag is sticky: once a non-digit appears,
@@ -358,15 +376,19 @@ fn build_symbolic_accumulator(
     start: usize,
     base: u32,
     result_bits: u32,
+    cap: u128,
 ) -> (RustBV, RustBV) {
-    let zero_acc = RustBV::concrete(0, result_bits);
-    let base_bv = RustBV::concrete(base as u128, result_bits);
+    // overflow-ok: result_bits is an arch width, at most 64.
+    let wide = result_bits * 2;
+    let zero_acc = RustBV::concrete(0, wide);
+    let base_bv = RustBV::concrete(base as u128, wide);
+    let cap_bv = RustBV::concrete(cap, wide);
     let zero_byte = RustBV::concrete(b'0' as u128, 8);
     let max_dec = (base.min(10) - 1) as u8;
     let dec_high = RustBV::concrete((b'0' + max_dec) as u128, 8);
 
     let one = RustBV::concrete(1, result_bits);
-    let mut run_len = zero_acc.clone();
+    let mut run_len = RustBV::concrete(0, result_bits);
     let mut accum = zero_acc;
     let mut terminated = RustBV::concrete(0, 1);
 
@@ -379,7 +401,7 @@ fn build_symbolic_accumulator(
 
         // Decimal-digit predicate: byte in ['0', '0' + min(base,10) - 1].
         let is_dec = byte_8.uge(&zero_byte).and(&byte_8.ule(&dec_high));
-        let dec_value = byte_8.sub(&zero_byte).zero_extend(result_bits);
+        let dec_value = byte_8.sub(&zero_byte).zero_extend(wide);
 
         let (is_digit, digit_value) = if base > 10 {
             // overflow-ok: base > 10 is guaranteed by the enclosing `if`.
@@ -391,9 +413,9 @@ fn build_symbolic_accumulator(
             let in_lower = byte_8.uge(&lower_lo).and(&byte_8.ule(&lower_hi));
             let in_upper = byte_8.uge(&upper_lo).and(&byte_8.ule(&upper_hi));
             let is_alpha = in_lower.or(&in_upper);
-            let ten_bv = RustBV::concrete(10, result_bits);
-            let lower_v = byte_8.sub(&lower_lo).zero_extend(result_bits).add(&ten_bv);
-            let upper_v = byte_8.sub(&upper_lo).zero_extend(result_bits).add(&ten_bv);
+            let ten_bv = RustBV::concrete(10, wide);
+            let lower_v = byte_8.sub(&lower_lo).zero_extend(wide).add(&ten_bv);
+            let upper_v = byte_8.sub(&upper_lo).zero_extend(wide).add(&ten_bv);
             let alpha_v = in_lower.ite(&lower_v, &upper_v);
             let any = is_dec.or(&is_alpha);
             let val = is_dec.ite(&dec_value, &alpha_v);
@@ -403,12 +425,14 @@ fn build_symbolic_accumulator(
         };
 
         let accum_advanced = accum.mul(&base_bv).add(&digit_value);
+        let accum_advanced = accum_advanced.ule(&cap_bv).ite(&accum_advanced, &cap_bv);
         let stay = terminated.or(&is_digit.not());
         accum = stay.ite(&accum, &accum_advanced);
         run_len = stay.ite(&run_len, &run_len.add(&one));
         terminated = stay;
     }
-    (accum, run_len)
+    // overflow-ok: result_bits >= 1.
+    (accum.extract(result_bits - 1, 0), run_len)
 }
 
 /// Common engine for atoi/atol/strtol/strtoul.
@@ -470,13 +494,10 @@ fn run_strtol(
         // 64-bit archs Python's 11-digit cap rejects any i63-overflowing
         // concrete input as unsat *before* the clamp fires, so there is no
         // Python value to match — native keeps its C-style full-width parse
-        // (this is what lets strtoull return values above i64::MAX). See the
-        // MAX_DIGITS note (angr-vu1q4).
-        let clamped = if bits < 64 {
-            mag.min(signed_max(bits))
-        } else {
-            mag
-        };
+        // (this is what lets strtoull return values above i64::MAX), clamped
+        // at the register max rather than wrapped. See the MAX_DIGITS note
+        // (angr-vu1q4).
+        let clamped = mag.min(magnitude_cap(bits));
         let reg_val = if negative {
             0u128.wrapping_sub(clamped)
         } else {
@@ -506,14 +527,16 @@ fn run_strtol(
     let sym_end = bytes.len().min(prefix_end.saturating_add(MAX_DIGITS));
     let ctx_handle = state.solver().clone();
     let ctx = ctx_handle.borrow();
-    let (accum, run_len) = build_symbolic_accumulator(&bytes[..sym_end], prefix_end, base, bits);
+    let (accum, run_len) = build_symbolic_accumulator(
+        &bytes[..sym_end],
+        prefix_end,
+        base,
+        bits,
+        magnitude_cap(bits),
+    );
     let result = if negative { accum.neg() } else { accum };
     // atoi returns int-width bits (Python: `val[sizeof(int)*8 - 1 : 0]`).
     // Extract the low `w` bits then zero-extend back into the return register.
-    // NOTE: the symbolic accumulator itself still wraps at `bits` (Python
-    // accumulates double-width and clamps at signed_max); the symbolic clamp
-    // is not implemented, so a symbolic result wraps at `bits` (angr-vu1q4,
-    // axis 1, symbolic).
     let result = match ret_int_bits {
         Some(w) if w < bits => result.extract(w - 1, 0).zero_extend(bits),
         _ => result,
