@@ -43,6 +43,36 @@ def _ultrapage_bytes(page, *, writing: bool = False):
     return data
 
 
+def _with_concrete_objects(page, page_addr: int, data):
+    """``data`` (a page's ``concrete_load`` bytes) with every concrete ``symbolic_data`` object written over its bytes.
+
+    UltraPage keeps an annotated BVV in ``symbolic_data``, which leaves zeros in ``concrete_data``; the symbolic-region
+    import only takes objects with a symbolic variable, so without this Rust reads those bytes as zero
+    (angr-vmi2l.224). Returns ``data`` itself when there is nothing to write, else a new ``bytearray``.
+    """
+    sd = getattr(page, "symbolic_data", None)
+    if not sd:
+        return data
+    bitmap = page.symbolic_bitmap
+    keys = list(sd.keys())
+    out = None
+    for i, key in enumerate(keys):
+        mo = sd[key]
+        obj = getattr(mo, "object", None)
+        if not isinstance(obj, claripy.ast.BV) or obj.symbolic:
+            continue
+        stop = min(keys[i + 1] if i + 1 < len(keys) else len(data), mo.base + mo.length - page_addr, len(data))
+        if stop <= key:
+            continue
+        piece = mo.bytes_at(page_addr + key, stop - key).concrete_value.to_bytes(stop - key, "big")
+        for off in range(key, stop):
+            if bitmap.get(off):
+                if out is None:
+                    out = bytearray(data)
+                out[off] = piece[off - key]
+    return data if out is None else out
+
+
 if TYPE_CHECKING:
     import angr
     from angr.rustylib.vex_engine import RustSimState as _RustSimState
@@ -620,7 +650,7 @@ class RustStateSyncMixin:
             # contains symbolic bytes that can't be eagerly loaded.
             # Rust falls back to memory_load callback for this page.
             with suppress_recoverable():
-                concrete = bytes(page_obj.concrete_load(0, page_size))
+                concrete = bytes(_with_concrete_objects(page_obj, page_addr, page_obj.concrete_load(0, page_size)))
                 if len(concrete) == page_size:
                     rust_state.map_memory_data(page_addr, concrete, self._python_page_perms(page_obj, 7))
                     state_overlay_count += 1
@@ -696,7 +726,9 @@ class RustStateSyncMixin:
                 # path failed (page has symbolic content). Fall
                 # through to slow path below.
                 with suppress_recoverable():
-                    concrete = bytearray(page_obj.concrete_load(0, page_size))
+                    concrete = bytearray(
+                        _with_concrete_objects(page_obj, sp_page, page_obj.concrete_load(0, page_size))
+                    )
                     if len(concrete) == page_size:
                         # Targeted scan of symbolic_data ranges only, far
                         # cheaper than a full _extract_symbolic_regions scan.
@@ -903,15 +935,21 @@ class RustStateSyncMixin:
                     # phase (and skipped entirely for lazy-only zero pages).
                     # A never-written page has no store yet and reads as the
                     # shared zero buffer, which is already the bytes to send.
-                    is_nonzero = cd != _ZERO_PAGE_BA
+                    full = _with_concrete_objects(page_obj, page_addr, cd)
+                    is_nonzero = full != _ZERO_PAGE_BA
+                    # map_memory_data takes bytes; a bytearray raises TypeError.
                     cached = cd if cd is _ZERO_PAGE_BYTES else None
+                    if full is not cd:
+                        cached = bytes(full)
                     raw_pages.append((page_addr, page_obj, is_nonzero, perms, cached))
                 else:
                     # Non-UltraPage backend: materialize bytes once and keep
                     # the buffer for the FFI phase to avoid a second
                     # concrete_load.
                     try:
-                        concrete = bytes(page_obj.concrete_load(0, page_size))
+                        concrete = bytes(
+                            _with_concrete_objects(page_obj, page_addr, page_obj.concrete_load(0, page_size))
+                        )
                     except MemoryError:
                         raise
                     except Exception:
@@ -935,7 +973,9 @@ class RustStateSyncMixin:
                     concrete = cached
                     if concrete is None:
                         try:
-                            concrete = bytes(page_obj.concrete_load(0, page_size))
+                            concrete = bytes(
+                                _with_concrete_objects(page_obj, page_addr, page_obj.concrete_load(0, page_size))
+                            )
                         except MemoryError:
                             raise
                         except Exception:
