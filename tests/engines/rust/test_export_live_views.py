@@ -527,6 +527,29 @@ class TestHandedToThePythonEngine:
             )
         assert results[0] == results[1] == ([1, 2], 2)
 
+    def test_detached_copies_share_pages_and_leave_dirty_addrs_alone(self):
+        """Veritesting keeps every state it steps alive, so a detach must not
+        leave a page copy per state or a ``dirty_addrs`` entry per loaded byte
+        behind (angr-mx00p.132.79)."""
+        mgr, _x = _explore_cmp()
+        a, b = mgr.found[0].copy(), mgr.found[0].copy()
+        a.memory.detach_for_python_engine()
+        b.memory.detach_for_python_engine()
+        assert binding_of(a) is None and binding_of(b) is None
+        assert not a.scratch.dirty_addrs and not b.scratch.dirty_addrs
+        # A concrete page is shared copy-on-write; the page holding the
+        # symbolic rax store is not shared.
+        code = 0x400000 // a.memory.page_size
+        assert a.memory._pages[code] is b.memory._pages[code]
+        sym = ADDR // a.memory.page_size
+        assert a.memory._pages[sym] is not b.memory._pages[sym]
+        slot = 0x400100
+        before = b.solver.eval(b.memory.load(slot, 8))
+        a.memory.store(slot, claripy.BVV(0x1122334455667788, 64))
+        assert a.memory._pages[code] is not b.memory._pages[code]
+        assert a.solver.eval(a.memory.load(slot, 8)) == 0x1122334455667788
+        assert b.solver.eval(b.memory.load(slot, 8)) == before
+
     def test_merging_views_merges_copies_of_their_own(self):
         """``SimState.merge`` merges plain copies of the views, which stay
         bound (angr-mx00p.132.68)."""

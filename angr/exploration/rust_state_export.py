@@ -1952,7 +1952,13 @@ class RustStateExportMixin:
             if base is None or isinstance(base, RustMemoryProxy):
                 base = self._project.factory.blank_state().memory
             state.register_plugin("memory", base.copy({}))
+            # Loading the snapshot is not a program write: left in
+            # scratch.dirty_addrs, its addresses (a set entry per byte of
+            # every page) lived as long as the state, and Veritesting keeps
+            # every state alive (angr-mx00p.132.79).
+            dirty = set(state.scratch.dirty_addrs)
             self._load_snapshot_pages(state, self._rust_mgr.export_state(state_id), state.arch)
+            state.scratch.dirty_addrs = dirty
         if isinstance(state.plugins.get("callstack"), RustCallStackProxyPlugin):
             chain = CallStack()
             for call_site, func, ret_addr, sp in self._rust_mgr.get_state_call_stack(state_id):
@@ -2165,8 +2171,10 @@ class RustStateExportMixin:
                 # Rust's page bytes are in memory order: store them as bytes.
                 # A BVV stored with the arch's (little) endness would reverse
                 # the whole page (angr-mx00p.90).
-                state.memory.store(page_addr, bytes(data), inspect=False, priv=strict)
+                data = bytes(data)
+                state.memory.store(page_addr, data, inspect=False, priv=strict)
                 if not symbolic_offsets:
+                    self._share_identical_page(state.memory, page_addr, data)
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
                 self._restore_symbolic_regions(
@@ -2186,6 +2194,44 @@ class RustStateExportMixin:
                 # memory at this page is left at its blank-state default,
                 # so loads return zeros instead of Rust's values.
                 l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
+
+    def _share_identical_page(self, memory, page_addr: int, data: bytes) -> None:
+        """Swap the page ``data`` was just stored to for an identical one an earlier export built.
+
+        Veritesting turns on EFFICIENT_STATE_MERGING, so every history keeps
+        its state alive. A Python step shares unwritten pages copy-on-write; a
+        detached export stores every snapshot page afresh, so each retained
+        state held its own copy of each page (angr-mx00p.132.79). One page per
+        address is kept, holding a shared reference, so the next export whose
+        bytes match takes that page and its own copy is freed; a write still
+        copies first. A page with symbolic bytes is never shared.
+        """
+        pageno, offset = divmod(page_addr, memory.page_size)
+        page = memory._pages.get(pageno)
+        if offset or len(data) != memory.page_size or page is None:
+            return
+        cache = getattr(self, "_detach_page_cache", None)
+        if cache is None:
+            cache = self._detach_page_cache = {}
+        hit = cache.get(page_addr)
+        if hit is not None:
+            cached_data, cached = hit
+            if cached is page:
+                return
+            perms = getattr(page.permission_bits, "concrete_value", None)
+            if (
+                cached_data == data
+                and type(cached) is type(page)
+                and perms is not None
+                and getattr(cached.permission_bits, "concrete_value", None) == perms
+            ):
+                cached.acquire_shared()
+                page.release_shared()
+                memory._pages[pageno] = cached
+                return
+            cached.release_shared()
+        page.acquire_shared()
+        cache[page_addr] = (data, page)
 
     @staticmethod
     def _map_missing_page(state: angr.SimState, page_addr: int, page_size: int, rust_perms: int) -> None:
