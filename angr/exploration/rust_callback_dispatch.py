@@ -644,12 +644,7 @@ class RustCallbackDispatchMixin:
                 l.debug("could not insert mirror SimFile for closed native file %s", name)
 
     def _inject_rust_stdin(self, state, state_id):
-        """Inject Rust-side stdin data into posix.dumps(0).
-
-        Native fgets/fgetc/getchar create symbolic stdin bytes in Rust.
-        Since these BVS variables live in the Rust Z3 context (not Python's),
-        we evaluate them via the Rust solver and inject the concrete result
-        into the stdin stream so posix.dumps(0) returns the correct value.
+        """Splice the stdin Rust read into ``posix.stdin`` (``_inject_rust_stdin_inner``).
 
         Must catch ALL exceptions (including AttributeError) to prevent
         propagation through @property descriptors which triggers __getattr__.
@@ -719,32 +714,14 @@ class RustCallbackDispatchMixin:
     def _inject_rust_stdin_inner(self, state, state_id):
         """Splice the stdin Rust read, natively or in a bounce, into ``posix.stdin``.
 
-        Rust's leaves and the packets bounced procs read (``_sync_state_stdin_to_rust``)
-        are laid out in read order, each native read as one evaluated packet;
-        any copy of them the cached stream carried is dropped first. ``pos``
-        moves past the last of them, so a bounced proc reads a fresh packet
-        (angr-azp2b).
+        The packets are ``_rust_stdin_packets``, each tagged
+        ``_RustInjectedStdin``; any copy of them the cached stream carried is
+        dropped first. ``pos`` moves past the last of them, so a bounced proc
+        reads a fresh packet (angr-azp2b).
         """
         try:
             host_packets = self._rust_stdin_host_packets(state_id)
             if not host_packets and not self._rust_mgr.has_state_stdin_symbols(state_id):
-                return
-            # One Rust call evaluates every leaf run between the host packets,
-            # each leaf at its recorded width: a hardcoded 8 minted a fresh
-            # unconstrained const for scanf %d/%ld (32/64-bit) symbols, so the
-            # solved value never reached posix.dumps(0) (angr-ph300.18).
-            # A run is cut at each host packet and at each native read's end,
-            # so every read is its own packet as in the Python engine:
-            # SimPacketsStream.merge refuses siblings whose stdin pos differs
-            # (angr-mx00p.132.72). A cut carries its host packet, or None.
-            cuts = [(after, (data, size)) for after, data, size in host_packets]
-            read_end = 0
-            for symbols, _ in self._rust_mgr.get_state_stdin_packets(state_id)[:-1]:
-                read_end += len(symbols)
-                cuts.append((read_end, None))
-            cuts.sort(key=lambda cut: (cut[0], cut[1] is None))
-            leaf_runs = self._rust_mgr.eval_stdin_leaf_runs(state_id, [after for after, _ in cuts])
-            if leaf_runs is None:
                 return
             posix = getattr(state, "posix", None)
             if posix is None:
@@ -752,26 +729,10 @@ class RustCallbackDispatchMixin:
             stdin_stream = getattr(posix, "stdin", None)
             if stdin_stream is None or not self._drop_rust_stdin_packets(stdin_stream, host_packets):
                 return
-            word = state.arch.bits
-
-            def host_packet(data, size):
-                name, bits = data
-                raw = self._rust_mgr.eval_stdin_symbol_bytes(state_id, name, bits) or b"\x00" * (bits // 8)
-                if size is not None:
-                    n = self._rust_mgr.eval_stdin_symbol(state_id, *size)
-                    raw = raw[: len(raw) if n is None else n]
-                return raw
-
-            chunks = [leaf_runs[0]]
-            for (_, hosted), leaf_run in zip(cuts, leaf_runs[1:]):
-                if hosted is not None:
-                    chunks.append(host_packet(*hosted))
-                chunks.append(leaf_run)
-            chunks = [chunk for chunk in chunks if chunk]
-            for chunk in chunks:
-                data = claripy.BVV(chunk).annotate(_RustInjectedStdin())
-                stdin_stream.content.append((data, claripy.BVV(len(chunk), word)))
-            if chunks and isinstance(getattr(stdin_stream, "pos", None), int):
+            packets = self._rust_stdin_packets(state_id, host_packets, state.arch.bits)
+            for data, size in packets:
+                stdin_stream.content.append((data.annotate(_RustInjectedStdin()), size))
+            if packets and isinstance(getattr(stdin_stream, "pos", None), int):
                 stdin_stream.pos = max(stdin_stream.pos, len(stdin_stream.content))
         except MemoryError:
             raise

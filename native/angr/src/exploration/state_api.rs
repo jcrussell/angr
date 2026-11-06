@@ -1348,53 +1348,6 @@ impl RustExplorationManager {
         })
     }
 
-    /// `eval_stdin_leaf_runs`: the bytes `posix.stdin` gets for each run of
-    /// [`stdin_leaves`] that `cuts` delimits, in one solver borrow (one FFI
-    /// per export, not one per leaf, angr-mx00p.136.29). The runs are
-    /// `[done, cut)` for each cut in order, with `done` the furthest cut so
-    /// far, then `[done, len)`; a run past the end is empty. Each leaf is
-    /// evaluated as `_eval_stdin_symbol` does and written as its low
-    /// `max(1, width / 8)` bytes, little-endian, or as that many zeros when
-    /// it does not evaluate; a `None` leaf writes nothing. `None` for an
-    /// unknown state.
-    pub(crate) fn _eval_stdin_leaf_runs(
-        &self,
-        state_id: u64,
-        cuts: &[usize],
-    ) -> Option<Vec<Vec<u8>>> {
-        let state = self.find_state(state_id)?;
-        let leaves = stdin_leaves(state);
-        let ctx = state.solver().borrow();
-        let run = |start: usize, end: usize| {
-            let mut out = Vec::new();
-            let end = end.min(leaves.len());
-            for (name, width) in leaves[start.min(end)..end].iter().flatten() {
-                let nbytes = (*width / 8).max(1) as usize;
-                // Truncated to u64 as `_eval_stdin_symbol` answers; a wider
-                // leaf is zero-padded past its low 8 bytes.
-                let value = ctx
-                    .eval_bv_symbol(name, (*width).max(1))
-                    .map_or(0, |v| v as u64);
-                out.extend(
-                    value
-                        .to_le_bytes()
-                        .into_iter()
-                        .chain(std::iter::repeat(0))
-                        .take(nbytes),
-                );
-            }
-            out
-        };
-        let mut runs = Vec::with_capacity(cuts.len().saturating_add(1));
-        let mut done = 0;
-        for &cut in cuts {
-            runs.push(run(done, cut));
-            done = done.max(cut);
-        }
-        runs.push(run(done, leaves.len()));
-        Some(runs)
-    }
-
     /// `eval_stdin_seed`: fd 0's seeded content (`_seed_stdin_content`), the
     /// whole of it whatever the read position, one byte per element,
     /// evaluated under the state's constraints (`0` for a byte that does not

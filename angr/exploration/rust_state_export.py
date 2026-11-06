@@ -2089,19 +2089,16 @@ class RustStateExportMixin:
                 plain.add(*constraints)
 
     def _symbolic_rust_stdin(self, state: angr.SimState, state_id: int) -> None:
-        """Replace the evaluated stdin packet on ``state`` with the symbols Rust read.
+        """Lay ``state``'s stdin out as the symbols Rust read, untagged, for a re-import.
 
-        An export carries stdin as one concrete packet, each byte Rust read
-        evaluated under its constraints (``_inject_rust_stdin``): right for
-        ``posix.dumps(0)`` on a finished state, wrong for one that keeps
-        running, whose later constraints must stay on the input symbols. The
-        packet becomes those symbols, already read, so the re-import seeds them
-        to Rust as consumed (``_seed_stdin_to_rust``). Rust records only the
-        bytes it read past the seeded content (``mint_stdin_bytes``), so the
-        packet follows any seeded packets on the stream, and every packet
-        counts as read: dropping it lost the bytes a re-imported Veritesting
-        successor read natively (angr-mx00p.132.26). A variable-length read is
-        its own packet, sized by its symbolic byte count (angr-mx00p.132.3).
+        The export's packets (``_inject_rust_stdin``) carry the
+        ``_RustInjectedStdin`` tag, so a later export drops them for Rust to
+        re-supply. A state that is re-imported (``_seed_stdin_to_rust``) is
+        seeded with them as consumed, and Rust records only the bytes read
+        past the seeded content (``mint_stdin_bytes``), so here they must
+        outlive every later export; every packet counts as read: dropping it
+        lost the bytes a re-imported Veritesting successor read natively
+        (angr-mx00p.132.26).
         """
         host_packets = self._rust_stdin_host_packets(state_id)
         if not host_packets and not self._rust_mgr.has_state_stdin_symbols(state_id):
@@ -2109,10 +2106,24 @@ class RustStateExportMixin:
         stdin = getattr(state.posix, "stdin", None)
         if not self._drop_rust_stdin_packets(stdin, host_packets):
             return
-        content = stdin.content
-        word = state.arch.bits
-        # A packet a bounced proc read goes back between the leaves read
-        # before and after it (``_inject_rust_stdin_inner``).
+        stdin.content.extend(self._rust_stdin_packets(state_id, host_packets, state.arch.bits))
+        stdin.pos = len(stdin.content)
+
+    def _rust_stdin_packets(self, state_id: int, host_packets, word: int) -> list:
+        """The ``SimPackets`` entries for the stdin Rust read, natively or in a bounce.
+
+        Each entry is the symbols themselves, not their evaluated bytes, so
+        ``posix.dumps(0)`` solves them under the state's constraints as they
+        stand when it is called, ``extra_constraints`` included
+        (angr-vmi2l.334). Every native read is its own packet, as in the
+        Python engine: ``SimPacketsStream.merge`` refuses siblings whose stdin
+        pos differs (angr-mx00p.132.72). A packet a bounced proc read
+        (``_sync_state_stdin_to_rust``) goes back between the leaves read
+        before and after it. A variable-length read is sized by its symbolic
+        byte count (angr-mx00p.132.3), which ``SimPackets.concretize`` cuts
+        it to.
+        """
+        packets = []
         pending = sorted(host_packets, key=lambda p: p[0])
         read = 0
 
@@ -2123,28 +2134,30 @@ class RustStateExportMixin:
                     size_bv = claripy.BVV(bits // 8, word)
                 else:
                     size_bv = claripy.BVS(size[0], size[1], explicit_name=True)
-                content.append((claripy.BVS(name, bits, explicit_name=True), size_bv))
+                packets.append((claripy.BVS(name, bits, explicit_name=True), size_bv))
 
-        # A run of fixed-length reads is one packet; split it where a bounced
+        # A run of fixed-length reads is one record; split it where a bounced
         # proc's packet falls inside it.
         cuts = {after for after, _, _ in host_packets}
-        packets, base = [], 0
+        reads, base = [], 0
         for symbols, length in self._rust_mgr.get_state_stdin_packets(state_id):
             start = 0
             if length is None:
                 for i in range(1, len(symbols)):
                     if base + i in cuts:
-                        packets.append((symbols[start:i], None))
+                        reads.append((symbols[start:i], None))
                         start = i
-            packets.append((symbols[start:], length))
+            reads.append((symbols[start:], length))
             base += len(symbols)
-        for symbols, length in packets:
+        for symbols, length in reads:
             flush_host_packets(read)
+            if not symbols:
+                continue
             read += len(symbols)
             leaves = []
             for name, bits in symbols:
                 sym = claripy.BVS(name, bits, explicit_name=True)
-                # _inject_rust_stdin lays a wider symbol (scanf %d) out little-endian.
+                # A wider symbol (scanf %d) is laid out little-endian (angr-ph300.18).
                 leaves.append(sym.reversed if bits > 8 else sym)
             data = claripy.Concat(*leaves) if len(leaves) > 1 else leaves[0]
             size = claripy.BVV(data.length // 8, word)
@@ -2153,9 +2166,9 @@ class RustStateExportMixin:
                 returned = claripy.BVS(name, bits, explicit_name=True).zero_extend(word - bits)
                 seeded_bv = claripy.BVV(seeded, word)
                 size = claripy.If(returned > seeded_bv, returned - seeded_bv, claripy.BVV(0, word))
-            content.append((data, size))
+            packets.append((data, size))
         flush_host_packets(read)
-        stdin.pos = len(content)
+        return packets
 
     def _detach_register_proxy(self, state: angr.SimState, state_id: int) -> None:
         """Give ``state`` its own register file in place of a ``RustRegisterProxy``.

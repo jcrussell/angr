@@ -539,23 +539,6 @@ impl SymContext {
         self.deterministic.store(v, Ordering::Relaxed);
     }
 
-    /// [`eval`](Self::eval) of the BV symbol `name` at `width` bits. On a
-    /// cached-model hit it builds the named Z3 const directly, which is the
-    /// const `z3_lower` lowers `RustBV::symbol(name, width)` to, and skips
-    /// building and lowering the term: an export evaluates every stdin leaf
-    /// this way (angr-mx00p.136.29). Anything else goes through `eval`.
-    pub fn eval_bv_symbol(&self, name: &str, width: u32) -> Option<u128> {
-        if !self.is_deterministic() {
-            let cache = self.model_cache.borrow();
-            if let Some(ref model) = *cache
-                && let Some(result) = model.eval(&z3::ast::BV::new_const(name, width), true)
-            {
-                return extract_bv_value(&result);
-            }
-        }
-        self.eval(&RustBV::symbol(name, width))
-    }
-
     /// Evaluate a bitvector to a concrete value if possible.
     pub fn eval(&self, bv: &RustBV) -> Option<u128> {
         // Fast path for concrete values

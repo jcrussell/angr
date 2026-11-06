@@ -98,7 +98,7 @@ def test_equal_std_streams_still_merge_natively():
     py_count, py_arms, _ = _run("py", code)
     rust_count, rust_arms, mgr = _run("rust", code)
     assert py_count == rust_count == 1
-    # Stdout only: an export carries stdin as evaluated bytes, which
-    # dumps(0, extra_constraints=...) cannot re-solve.
-    assert [(label, out) for label, _, out in rust_arms] == [(label, out) for label, _, out in py_arms]
+    # stdin too: dumps(0, extra_constraints=...) re-solves an export's stdin (angr-vmi2l.334).
+    assert rust_arms == py_arms
+    assert ("A", b"A", b"X") in rust_arms
     assert mgr.stats.get("states_merged_native") == 2

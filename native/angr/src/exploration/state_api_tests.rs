@@ -781,62 +781,6 @@ fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
     );
 }
 
-/// `_eval_stdin_leaf_runs` is the per-leaf `_eval_stdin_symbol` loop the
-/// export used to run over FFI, in one call (angr-mx00p.136.29): each leaf's
-/// low `max(1, width / 8)` bytes little-endian, at its recorded width, split
-/// at the cuts the way the old Python `leaf_packet(done, after)` loop split
-/// them (a cut behind `done` gives an empty run, one past the end clamps).
-#[test]
-fn eval_stdin_leaf_runs_matches_per_leaf_eval() {
-    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
-    let mut state = RustSimState::new("amd64").expect("amd64 state");
-    let leaves = [
-        ("stdin_0".to_string(), 8),
-        ("stdin_scanf_1".to_string(), 32),
-        ("stdin_2".to_string(), 8),
-    ];
-    {
-        let ctx = state.solver().borrow();
-        for ((name, width), value) in leaves.iter().zip([0x41_u128, 0x4142_4344, 0x7a]) {
-            let sym = RustBV::symbol(name, *width);
-            ctx.assume_true(&sym.eq(&RustBV::concrete(value, *width)));
-        }
-    }
-    for (name, width) in &leaves {
-        state.record_stdin_symbol(name.clone(), *width);
-    }
-    let state_id = stash_found(&mut mgr, state);
-
-    let per_leaf: Vec<Vec<u8>> = leaves
-        .iter()
-        .map(|(name, width)| {
-            let value = mgr
-                ._eval_stdin_symbol(state_id, name, *width)
-                .expect("constrained leaf evals");
-            value.to_le_bytes()[..(*width / 8) as usize].to_vec()
-        })
-        .collect();
-    assert_eq!(per_leaf.concat(), [0x41, 0x44, 0x43, 0x42, 0x41, 0x7a]);
-    assert_eq!(
-        mgr._get_state_stdin_leaves(state_id).expect("state found"),
-        leaves.iter().cloned().map(Some).collect::<Vec<_>>(),
-    );
-    assert_eq!(
-        mgr._eval_stdin_leaf_runs(state_id, &[]),
-        Some(vec![per_leaf.concat()]),
-    );
-    assert_eq!(
-        mgr._eval_stdin_leaf_runs(state_id, &[1, 0, 9]),
-        Some(vec![
-            per_leaf[0].clone(),
-            Vec::new(),
-            per_leaf[1..].concat(),
-            Vec::new(),
-        ]),
-    );
-    assert_eq!(mgr._eval_stdin_leaf_runs(state_id + 999, &[]), None);
-}
-
 /// Export the symbolic objects of a fresh found-stash state built by `build`,
 /// returning the exported base addresses (angr-ccp2w helpers).
 fn exported_addrs(build: impl FnOnce(&mut RustSimState)) -> Vec<u64> {

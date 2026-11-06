@@ -23,7 +23,7 @@
 //!   `state_memory_store_symbolic_multi`, `get_state_mem_fillers`.
 //! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
 //!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`,
-//!   `get_state_stdin_leaves`, `eval_stdin_leaf_runs`, `eval_stdin_symbol{,_bytes}`,
+//!   `get_state_stdin_leaves`, `eval_stdin_symbol`,
 //!   `record_stdin_host_packet`, `get_state_stdin_host_packets`,
 //!   `get_state_open_fds`, `has_state_extra_fds`, `get_state_fd_content`,
 //!   `register_state_fd`.
@@ -752,33 +752,11 @@ impl RustExplorationManager {
         self._get_state_stdin_leaves(state_id)
     }
 
-    /// The packet bytes for each run of `get_state_stdin_leaves` that the
-    /// sorted leaf indices `cuts` delimit, `len(cuts) + 1` runs, all in one
-    /// call. Each leaf gives its low `max(1, bits / 8)` bytes, little-endian
-    /// (zeros when it does not evaluate). `None` for an unknown state.
-    pub fn eval_stdin_leaf_runs(&self, state_id: u64, cuts: Vec<usize>) -> Option<Vec<Vec<u8>>> {
-        self._eval_stdin_leaf_runs(state_id, &cuts)
-    }
-
     /// fd 0's seeded content evaluated to bytes, the prefix of the stream
     /// the stdin leaves follow, so a proxy's `posix.dumps(0)` lays stdin out
     /// as an export does (angr-vmi2l.267). Empty when nothing was seeded;
     /// `None` for an unknown state.
     pub fn eval_stdin_seed(&self, state_id: u64) -> Option<Vec<u8>> {
         self._eval_stdin_seed(state_id)
-    }
-
-    /// Evaluate a stdin symbol of any width to its big-endian bytes, as
-    /// `eval_stdin_symbol` does for one of at most 64 bits. Used for a
-    /// packet's data symbol (`get_state_stdin_host_packets`).
-    pub fn eval_stdin_symbol_bytes(
-        &self,
-        state_id: u64,
-        name: &str,
-        width: u32,
-    ) -> Option<Vec<u8>> {
-        let state = self.find_state(state_id)?;
-        let ctx = state.solver().borrow();
-        ctx.eval_wide(&crate::symbolic::RustBV::symbol(name, width.max(1)))
     }
 }
