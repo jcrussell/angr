@@ -55,7 +55,11 @@ def test_strict_load_below_sp_reads_the_allocated_stack_page():
 
 
 def test_selfmodifying_project_is_ineligible():
-    project = SimpleNamespace(arch=SimpleNamespace(name="AMD64"), selfmodifying_code=True)
+    project = SimpleNamespace(
+        arch=SimpleNamespace(name="AMD64"),
+        factory=SimpleNamespace(default_engine_factory=angr.engines.UberEngine),
+        selfmodifying_code=True,
+    )
     state = SimpleNamespace(options={"EXTENDED_IROP_SUPPORT"})
     assert rust_engine_eligible(project, [state], {}) == (False, SELFMODIFYING_CODE_REASON)
 

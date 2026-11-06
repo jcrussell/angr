@@ -210,7 +210,9 @@ A workload is ineligible (and so routes to Python) when any of these
 hold: the Rust extension is not built; the architecture is not one
 the Rust interpreter implements (the ``ALL_ARCHES`` registry in
 ``native/angr-symex-core/src/arch/registry.rs``: X86, AMD64, ARM, ARM64, MIPS32,
-MIPS64); the project sets ``selfmodifying_code``, since the Rust
+MIPS64); the project was built with a SimEngine other than the stock
+``UberEngine``, whose overrides the Rust engine would bypass
+(``custom_engine_reason``); the project sets ``selfmodifying_code``, since the Rust
 engine neither relifts a block that patches its own later instructions
 nor invalidates code cached outside the loaded binaries
 (``SELFMODIFYING_CODE_REASON``); a seeding state carries a

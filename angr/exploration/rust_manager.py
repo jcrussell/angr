@@ -422,6 +422,22 @@ def rust_supports_arch(arch_name) -> bool:
 SELFMODIFYING_CODE_REASON = "project enables selfmodifying_code, which the rust engine does not relift"
 
 
+def custom_engine_reason(project) -> str | None:
+    """Why *project*'s SimEngine keeps it on Python, or None for the stock ``UberEngine``.
+
+    The Rust engine replaces the whole SimEngine, so a subclass's ``process_successors``
+    and mixin overrides would never run (angr-vmi2l.281). Shared by
+    :func:`rust_engine_eligible` and
+    :meth:`angr.exploration.rust_backend.RustBackend.decline_reason`.
+    """
+    from angr.engines import UberEngine
+
+    engine = project.factory.default_engine_factory
+    if engine is UberEngine:
+        return None
+    return f"project uses a custom SimEngine {engine.__name__}"
+
+
 def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
     """Decide whether *project* / *states* / *kwargs* can run on the Rust engine.
 
@@ -446,6 +462,10 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
     if not rust_supports_arch(arch_name):
         return False, f"arch {arch_name} not implemented by the rust engine"
 
+    engine_reason = custom_engine_reason(project)
+    if engine_reason is not None:
+        return False, engine_reason
+
     if getattr(project, "selfmodifying_code", False):
         return False, SELFMODIFYING_CODE_REASON
 
@@ -462,7 +482,7 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
         if events:
             return False, "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
 
-    return True, "rust engine supports this project, state options, kwargs, and inspect breakpoints"
+    return True, "rust engine supports this project's engine, state options, kwargs, and inspect breakpoints"
 
 
 def _unsupported_inspect_events(state) -> list[str]:

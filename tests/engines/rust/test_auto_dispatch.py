@@ -81,8 +81,8 @@ def _assert_declined_once(mgr, declines, needle: str) -> None:
     assert declines == [f"simgr backend: python ({reason})"]
 
 
-def _fake_project(arch_name: str = "AMD64"):
-    return SimpleNamespace(arch=SimpleNamespace(name=arch_name))
+def _fake_project(arch_name: str = "AMD64", engine=angr.engines.UberEngine):
+    return SimpleNamespace(arch=SimpleNamespace(name=arch_name), factory=SimpleNamespace(default_engine_factory=engine))
 
 
 def _fake_state(*options: str):
@@ -353,3 +353,37 @@ class TestActionTrackingRoutes:
         baseline = _action_kinds(fauxware_project)
         assert routed == baseline
         assert any(kinds for kinds in routed), "action tracking recorded nothing at all"
+
+
+class _CountingEngine(angr.engines.UberEngine):
+    calls = 0
+
+    def process_successors(self, successors, **kwargs):
+        type(self).calls += 1
+        return super().process_successors(successors, **kwargs)
+
+
+class TestCustomEngine:
+    """angr-vmi2l.281: the Rust engine replaces the whole SimEngine, so a project
+    built with a SimEngine subclass must not lose its overrides to it."""
+
+    def test_predicate_declines_a_custom_engine(self):
+        eligible, reason = rust_engine_eligible(_fake_project(engine=_CountingEngine), [_fake_state()], {})
+        assert (eligible, reason) == (False, "project uses a custom SimEngine _CountingEngine")
+
+    def test_env_default_route_runs_the_custom_engine(self, monkeypatch):
+        monkeypatch.setenv("ANGR_DEFAULT_ENGINE", "rust")
+        proj = load_fauxware(engine=_CountingEngine)
+        simgr = proj.factory.simgr()
+        assert isinstance(simgr.backend, RustBackend)
+        _CountingEngine.calls = 0
+        simgr.run(n=5)
+        assert _CountingEngine.calls > 0
+        assert simgr.backend.stats["claimed"] == 0
+        assert set(simgr.backend.stats["declined"]) == {"project uses a custom SimEngine _CountingEngine"}
+
+    def test_explicit_rust_engine_raises_on_a_custom_engine(self):
+        proj = load_fauxware(engine=_CountingEngine)
+        simgr = proj.factory.simgr(engine="rust")
+        with pytest.raises(NotImplementedError, match="custom SimEngine _CountingEngine"):
+            simgr.step()

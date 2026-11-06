@@ -23,7 +23,6 @@ import weakref
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from angr.engines import UberEngine
 from angr.errors import SimEngineError, SimError, SimMemoryError
 from angr.exploration.rust_manager import (
     _STASH_ACCESSORS,
@@ -31,6 +30,7 @@ from angr.exploration.rust_manager import (
     RustErrorRecord,
     RustExplorationManager,
     _unsupported_inspect_events,
+    custom_engine_reason,
     is_python_init_seed,
     resolve_main_address,
     rust_state_option_refusals,
@@ -274,9 +274,9 @@ class RustBackend(SimulationBackend):
         )
         if hooks:
             return "techniques override successors(): " + ", ".join(hooks)
-        engine = self._project.factory.default_engine_factory
-        if engine is not UberEngine:
-            return f"project uses a custom SimEngine {engine.__name__}"
+        engine_reason = custom_engine_reason(self._project)
+        if engine_reason is not None:
+            return engine_reason
         if self._project.selfmodifying_code:
             return SELFMODIFYING_CODE_REASON
         if self._in_init_prefix(state):
