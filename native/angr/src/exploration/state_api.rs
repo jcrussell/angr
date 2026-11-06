@@ -1175,6 +1175,10 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _forget_state_path(&mut self, state_id: u64, path: &str) -> PyResult<bool> {
+        self.with_state_mut(state_id, |state| Ok(state.file_system().forget_path(path)))
+    }
+
     pub(crate) fn _update_state_fd(
         &mut self,
         state_id: u64,

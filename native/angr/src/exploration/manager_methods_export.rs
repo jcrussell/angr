@@ -630,6 +630,17 @@ impl RustExplorationManager {
         self._get_state_closed_files(state_id)
     }
 
+    /// Forget `path` in a state's FileSystem after a bounced Python `unlink`
+    /// deleted it (`FileSystem::forget_path`, angr-mx00p.132.71). Returns
+    /// whether the path was known; raises ValueError for an unknown state.
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own path table; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn forget_state_path(&mut self, state_id: u64, path: &str) -> PyResult<bool> {
+        self._forget_state_path(state_id, path)
+    }
+
     /// Carry a bounced proc's position/content change on an fd both sides
     /// know back into the native fd (`FileSystem::update_fd`). Returns False
     /// when nothing changed or the fd is not a concrete open native one.

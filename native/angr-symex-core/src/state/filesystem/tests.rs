@@ -1053,6 +1053,37 @@ fn reopening_a_path_reads_the_bytes_written_through_a_closed_fd() {
     assert_eq!(fs.closed_files().len(), 1, "a std fd's buffer is not a file");
 }
 
+/// angr-mx00p.132.71: a bounced Python unlink forgets the path, so a later
+/// read-only open is Python's call (ENOENT) instead of reading the old bytes;
+/// an fd still open on it keeps its content.
+#[test]
+fn forget_path_drops_a_closed_file_but_not_an_open_fd() {
+    let mut fs = FileSystem::default();
+    let w = fs.open("/tmp/f".to_string(), FdFlags::WriteOnly).unwrap();
+    assert!(fs.write(w, b"gone"));
+    assert!(fs.close(w));
+    let held = fs.open("/tmp/f".to_string(), FdFlags::ReadOnly).unwrap();
+    assert!(fs.native_open_decides("/tmp/f", FdFlags::ReadOnly));
+
+    assert!(fs.forget_path("/tmp/f"));
+    assert!(!fs.is_path_known("/tmp/f"));
+    assert!(!fs.native_open_decides("/tmp/f", FdFlags::ReadOnly));
+    assert!(fs.closed_files().is_empty());
+    assert_eq!(fs.fd_content(held), b"gone");
+    assert!(!fs.forget_path("/tmp/f"), "a second forget is a no-op");
+
+
+    // With no fd left on it, a write-mode re-create starts empty, not from the
+    // unlinked bytes.
+    let mut fs = FileSystem::default();
+    let w = fs.open("/tmp/f".to_string(), FdFlags::WriteOnly).unwrap();
+    assert!(fs.write(w, b"gone"));
+    assert!(fs.close(w));
+    assert!(fs.forget_path("/tmp/f"));
+    let again = fs.open("/tmp/f".to_string(), FdFlags::WriteOnly).unwrap();
+    assert!(fs.fd_content(again).is_empty());
+}
+
 /// angr-mx00p.132.46: a bounced proc's read/write on a mirrored fd is carried
 /// back by `update_fd`, which refuses closed, unknown and symbolic fds.
 #[test]

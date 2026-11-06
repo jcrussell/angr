@@ -294,6 +294,33 @@ impl FileSystem {
         self.note_known_path(norm);
     }
 
+    /// Forget `name`, the inverse of [`register_known_path`]: it leaves
+    /// `known_paths`, the `file_contents` registry and `closed_contents`, so a
+    /// later read-only open, `access` or `stat` of it fails as on Python. An fd
+    /// still open on the path keeps its bytes, as POSIX unlink does (a
+    /// write-mode open of the path while one is still open starts from them,
+    /// where Python creates an empty file). Drives the
+    /// write-back of a bounced Python `unlink` (angr-mx00p.132.71). Returns
+    /// whether the path was known.
+    ///
+    /// [`register_known_path`]: FileSystem::register_known_path
+    pub fn forget_path(&mut self, name: &str) -> bool {
+        let norm = self.normalize_path(name);
+        // Peek first (`arc-make-mut-cow`): forgetting an unknown path must not
+        // deep-clone the maps away from forked siblings.
+        let known = self.known_paths.contains(&norm);
+        if known {
+            Arc::make_mut(&mut self.known_paths).remove(&norm);
+        }
+        if self.file_contents.contains_key(&norm) {
+            Arc::make_mut(&mut self.file_contents).remove(&norm);
+        }
+        if self.closed_contents.contains_key(&norm) {
+            Arc::make_mut(&mut self.closed_contents).remove(&norm);
+        }
+        known
+    }
+
     /// Register a symlink: `link` resolves to `target` (raw bytes, as
     /// `readlink(2)` returns — NOT NUL-terminated). Overwrites any
     /// existing entry. Used by tests and the state-export path,

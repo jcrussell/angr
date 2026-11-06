@@ -124,6 +124,13 @@ class _RustOwnedSimStateHistory(SimStateHistory):
 # inbound injection establishes.
 POSIX_SYNC_FDS = (1, 2)
 
+# SimFile of a ``state.fs.unlinks`` entry -> the ``(id(rust_mgr), state_id)``
+# pairs whose FileSystem already forgot it. The cached callback state keeps its
+# unlinks across bounces and its copies share the entries' SimFiles, so this is
+# what makes ``_sync_state_unlinks_to_rust`` forget each unlink once per state:
+# a path native code re-created after the unlink is not forgotten again.
+_SYNCED_UNLINKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
 
 def _posix_stream(state, fd: int):
     """The posix stream backing ``fd``, or None if the plugin is absent."""
@@ -1723,6 +1730,37 @@ class RustStateExportMixin:
                 # cat-(b) FALLBACK WITH LOSS: the fd the bounced proc opened
                 # does not reach Rust; a later native op on it falls back.
                 l.debug("fd %d registration into Rust state %d failed: %s", fd, state_id, e)
+
+    def _sync_state_unlinks_to_rust(self, state: angr.SimState, state_id: int):
+        """Forget in Rust's FileSystem each path a bounced Python ``unlink`` deleted.
+
+        Companion to ``_sync_state_posix_fds_to_rust``. Python's unlink proc
+        removes the path from the callback state's ``state.fs``; without this
+        Rust still knows the path, so a later native read-only open of it
+        succeeds with the old bytes instead of Python's ENOENT
+        (angr-mx00p.132.71). Each entry is forgotten once per Rust state; see
+        ``_SYNCED_UNLINKS``.
+        """
+        fs = state.plugins.get("fs")
+        unlinks = getattr(fs, "_unlinks", None)
+        if not unlinks:
+            return
+        key = (id(self._rust_mgr), state_id)
+        for path, simfile in unlinks:
+            synced = _SYNCED_UNLINKS.setdefault(simfile, set())
+            if key in synced:
+                continue
+            try:
+                self._rust_mgr.forget_state_path(state_id, path.decode("utf-8", "replace"))
+            except MemoryError:
+                raise
+            except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: Rust keeps the unlinked path, so
+                # a native read-only open of it still succeeds. The state may
+                # simply have been dropped from Rust by now.
+                l.debug("forget of unlinked %r in Rust state %d failed: %s", path, state_id, e)
+                continue
+            synced.add(key)
 
     def _attach_rust_solver_fallback(self, state, state_id):
         """Wrap state.solver so eval/min/max/satisfiable defer to the Rust solver.

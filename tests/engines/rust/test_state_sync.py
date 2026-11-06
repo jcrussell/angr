@@ -941,6 +941,39 @@ class TestPathContentSurvivesClose:
         mgr._inject_rust_fds(cached, 1)
         assert 3 not in cached.posix.fd, "the natively closed fd's mirror survived"
 
+    def test_bounced_unlink_forgets_the_path_in_rust(self, mgr_and_sid):
+        """angr-mx00p.132.71: a path a bounced Python unlink deleted must leave
+        Rust's FileSystem, or a later native read-only open of it succeeds."""
+        proj, mgr, sid = mgr_and_sid
+        assert mgr._rust_mgr.register_state_fd(sid, 3, "/tmp/gone.txt", self.O_RDONLY, b"gone", 0)
+        state = proj.factory.entry_state()
+        state.fs.insert(b"/tmp/gone.txt", angr.SimFile(b"/tmp/gone.txt", content=b"gone"))
+        assert state.fs.delete(b"/tmp/gone.txt")
+
+        mgr._sync_state_unlinks_to_rust(state, sid)
+        assert not mgr._rust_mgr.forget_state_path(sid, "/tmp/gone.txt"), "Rust still knows the unlinked path"
+
+    def test_bounced_unlink_is_forgotten_once_per_state(self, mgr_and_sid):
+        """The cached callback state keeps its unlinks across bounces, so a
+        path native code re-created after the unlink is not forgotten again;
+        a fork's own Rust state still gets the forget."""
+        proj, mgr, _sid = mgr_and_sid
+        forgets = []
+
+        class Forget:
+            def forget_state_path(self, state_id, path):
+                forgets.append((state_id, path))
+                return True
+
+        mgr._rust_mgr = Forget()
+        state = proj.factory.entry_state()
+        state.fs.insert(b"/tmp/f.txt", angr.SimFile(b"/tmp/f.txt", content=b"x"))
+        assert state.fs.delete(b"/tmp/f.txt")
+        mgr._sync_state_unlinks_to_rust(state, 1)
+        mgr._sync_state_unlinks_to_rust(state, 1)
+        mgr._sync_state_unlinks_to_rust(state.copy(), 2)
+        assert forgets == [(1, "/tmp/f.txt"), (2, "/tmp/f.txt")]
+
     def test_reopen_after_fclose_reads_the_written_bytes(self):
         """End to end: fopen/fputs/fclose, open/lseek/fdopen/getc, unlink."""
         path = os.path.join(BIN_LOCATION, "tests", "x86_64", "test_multi_open_file")

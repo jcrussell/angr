@@ -1388,6 +1388,7 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._sync_state_stdin_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
+        self._sync_state_unlinks_to_rust(state, event.callback_state_id)
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, ret_addr, None, None)
 
     @staticmethod
@@ -1466,6 +1467,7 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_to_rust(succ_state, event.callback_state_id)
         self._sync_state_stdin_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(succ_state, event.callback_state_id)
+        self._sync_state_unlinks_to_rust(succ_state, event.callback_state_id)
 
         _sb_resume_start = time.perf_counter_ns()
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
@@ -1518,6 +1520,7 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._sync_state_stdin_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
+        self._sync_state_unlinks_to_rust(state, event.callback_state_id)
 
         self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
         state_id = event.callback_state_id
@@ -1550,6 +1553,7 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_to_rust(succ_state, fork_id)
         self._sync_state_stdin_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)
+        self._sync_state_unlinks_to_rust(succ_state, fork_id)
         self._rust_mgr.resume_forked_successor(
             fork_id, CALLBACK_FORK_STASH, new_pc, None, None, None, executed_block=executed_block
         )
