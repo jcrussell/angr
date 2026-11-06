@@ -1395,6 +1395,7 @@ class RustCallbackDispatchMixin:
 
         ret_addr = event.callback_return_addr or (addr + 1)
         self._sync_state_heap_to_rust(state, event.callback_state_id)
+        self._sync_state_cgc_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._sync_state_stdin_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
@@ -1474,6 +1475,7 @@ class RustCallbackDispatchMixin:
         # A bounced allocator bumped the Python break pointers; push them back
         # so a later native malloc does not overlap what it handed out.
         self._sync_state_heap_to_rust(succ_state, event.callback_state_id)
+        self._sync_state_cgc_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_to_rust(succ_state, event.callback_state_id)
         self._sync_state_stdin_to_rust(succ_state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(succ_state, event.callback_state_id)
@@ -1527,6 +1529,7 @@ class RustCallbackDispatchMixin:
 
         # Push back any heap bump the hook made (see _resume_with_state).
         self._sync_state_heap_to_rust(state, event.callback_state_id)
+        self._sync_state_cgc_to_rust(state, event.callback_state_id)
         self._sync_state_posix_to_rust(state, event.callback_state_id)
         self._sync_state_stdin_to_rust(state, event.callback_state_id)
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
@@ -1560,6 +1563,7 @@ class RustCallbackDispatchMixin:
         else:
             new_pc = self._resolve_next_pc(succ_state)
         self._sync_state_heap_to_rust(succ_state, fork_id)
+        self._sync_state_cgc_to_rust(succ_state, fork_id)
         self._sync_state_posix_to_rust(succ_state, fork_id)
         self._sync_state_stdin_to_rust(succ_state, fork_id)
         self._sync_state_posix_fds_to_rust(succ_state, fork_id)
@@ -1684,7 +1688,11 @@ class RustCallbackDispatchMixin:
                     new_pc = self._resolve_next_pc(succ_state)
 
                     # Register, memory and constraint writes landed in the
-                    # successor's Rust state through the proxies.
+                    # successor's Rust state through the proxies; the cgc
+                    # allocator lives on a plain plugin (angr-vmi2l.332). A
+                    # fork the first successor owned is adopted into the
+                    # pending slot by now, so write to ``state_id``.
+                    self._sync_state_cgc_to_rust(succ_state, state_id)
                     self._rust_mgr.resume_after_syscall(state_id, new_pc, None, None, None)
 
                     # Update cache
@@ -2356,6 +2364,7 @@ class RustCallbackDispatchMixin:
                 # The options and globals proxies wrote (angr-vmi2l.265).
                 self._apply_state_metadata(state, event.callback_state_id)
                 self._install_lazy_heap_sync(state, event.callback_state_id)
+                self._sync_rust_cgc_to_state(state, event.callback_state_id)
                 # angr-op0dn.14.1.4: a bounced proc that reads its own stdout
                 # (or appends to it) must see the native output that preceded
                 # it. Idempotent, so the reused cached state is safe.

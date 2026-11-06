@@ -372,6 +372,31 @@ impl RustExplorationManager {
         self._set_state_mmap_base(state_id, addr)
     }
 
+    /// Get a state's CGC allocator, `(allocation_base, sinkholes)` (mirrors
+    /// Python's `state.cgc.allocation_base` / `state.cgc.sinkholes`). The
+    /// native CGC `allocate` / `deallocate` move it; Python reads it before a
+    /// bounced allocate so the fallback does not reuse a page native mapped.
+    /// See `state_api::_get_state_cgc_allocator` for the body.
+    pub fn get_state_cgc_allocator(&self, state_id: u64) -> PyResult<(u64, Vec<(u64, u64)>)> {
+        self._get_state_cgc_allocator(state_id)
+    }
+
+    /// Overwrite a state's CGC allocator with the Python plugin's after a
+    /// bounced allocate / deallocate.
+    /// See `state_api::_set_state_cgc_allocator` for the body.
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own CGC allocator metadata; does not \
+                  mutate exploration config or the active stash."
+    )]
+    pub fn set_state_cgc_allocator(
+        &mut self,
+        state_id: u64,
+        allocation_base: u64,
+        sinkholes: Vec<(u64, u64)>,
+    ) -> PyResult<()> {
+        self._set_state_cgc_allocator(state_id, allocation_base, sinkholes)
+    }
+
     /// Get the per-state posix brk pointer (mirrors Python's
     /// `state.posix.brk`). The native brk syscall handler bumps this on
     /// concrete `brk(addr)` calls; Python imports it on stash export to keep

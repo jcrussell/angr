@@ -4169,6 +4169,17 @@ class RustExplorationManager(
         if isinstance(pid, int) and isinstance(ppid, int):
             rust_state.posix_pids = (pid, ppid)
 
+        # Push state.cgc's allocator so the native CGC allocate starts where
+        # a Python-side allocate left it (angr-vmi2l.332). A plugin that was
+        # never materialized holds the defaults Rust already has.
+        cgc = angr_state.plugins.get("cgc")
+        if cgc is not None:
+            base = cgc.allocation_base
+            if not isinstance(base, int) and not angr_state.solver.symbolic(base):
+                base = angr_state.solver.eval_one(base)
+            if isinstance(base, int) and all(isinstance(v, int) for hole in cgc.sinkholes for v in hole):
+                rust_state.cgc_allocator = (base, list(cgc.sinkholes))
+
         # Push state.heap.heap_location so Rust's malloc bump allocator
         # (heap_alloc) starts past any Python-side allocation. Symmetric with
         # the posix.brk push above and the export-side

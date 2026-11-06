@@ -1148,6 +1148,7 @@ class RustStateExportMixin:
             self._sync_rust_mmap_base_to_state(angr_state, snapshot.state_id)
             self._sync_rust_posix_brk_to_state(angr_state, snapshot.state_id)
             self._sync_rust_heap_brk_to_state(angr_state, snapshot.state_id)
+            self._sync_rust_cgc_to_state(angr_state, snapshot.state_id)
             angr_state.scratch.rust_fully_synced = True
             angr_state.scratch.rust_mirror_id = snapshot.state_id
             self._state_cache[snapshot.state_id] = angr_state
@@ -1269,6 +1270,7 @@ class RustStateExportMixin:
         self._sync_rust_mmap_base_to_state(state, state_id)
         self._sync_rust_posix_brk_to_state(state, state_id)
         self._sync_rust_heap_brk_to_state(state, state_id)
+        self._sync_rust_cgc_to_state(state, state_id)
         self._sync_rust_last_block_to_state(state, state_id)
         self._install_rust_history_chain(state, state_id)
         state.scratch.rust_fully_synced = True
@@ -1571,6 +1573,66 @@ class RustStateExportMixin:
                 # block the bounced proc just handed out. Debug only — the
                 # state may simply have been dropped from Rust by now.
                 l.debug("heap %s write-back to Rust state %d failed: %s", attr, state_id, e)
+
+    def _sync_rust_cgc_to_state(self, state: angr.SimState, state_id: int):
+        """Overwrite ``state.cgc``'s allocator with the Rust state's.
+
+        The native CGC allocate / deallocate move Rust's allocation_base and
+        sinkholes; a bounced allocate on a stale plugin would carve its region
+        from the old base and collide with a page native already mapped
+        (angr-vmi2l.332). Rust is authoritative for ``state_id``: every Python
+        change is written back by ``_sync_state_cgc_to_rust``, so this
+        overwrites rather than merges. No-op on a state without a cgc plugin.
+        """
+        cgc = state.plugins.get("cgc")
+        if cgc is None:
+            return
+        try:
+            base, sinkholes = self._rust_mgr.get_state_cgc_allocator(state_id)
+        except MemoryError:
+            raise
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: the plugin keeps its own allocator,
+            # so a bounced allocate may collide with a native one and error
+            # the state loudly (SimMemoryError). Debug only — the state may
+            # have been dropped from Rust.
+            l.debug("get_state_cgc_allocator(%d) failed: %s", state_id, e)
+            return
+        cgc.allocation_base = base
+        cgc.sinkholes = set(sinkholes)
+
+    def _sync_state_cgc_to_rust(self, state: angr.SimState, state_id: int):
+        """Push ``state.cgc``'s allocator back into Rust (callback write-back).
+
+        Reverse of ``_sync_rust_cgc_to_state``: a bounced allocate or
+        deallocate moved the plugin's allocation_base (allocate.py makes it a
+        BVV) or sinkholes, and a later native allocate must start from there.
+        A symbolic base is not pushed; Rust keeps its own.
+        """
+        cgc = state.plugins.get("cgc")
+        if cgc is None:
+            return
+        try:
+            solver = state.solver
+            base = cgc.allocation_base
+            if not isinstance(base, int):
+                if solver.symbolic(base):
+                    l.debug("cgc allocation_base is symbolic; not written back to Rust state %d", state_id)
+                    return
+                base = solver.eval_one(base)
+            sinkholes = [
+                (a if isinstance(a, int) else solver.eval_one(a), n if isinstance(n, int) else solver.eval_one(n))
+                for a, n in cgc.sinkholes
+            ]
+            self._rust_mgr.set_state_cgc_allocator(state_id, base, sinkholes)
+        except MemoryError:
+            raise
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: Rust keeps its old allocator, so a
+            # later native allocate may collide with the bounced one and
+            # error the state loudly. Debug only — the state may have been
+            # dropped from Rust by now.
+            l.debug("cgc allocator write-back to Rust state %d failed: %s", state_id, e)
 
     def _sync_state_posix_to_rust(self, state: angr.SimState, state_id: int):
         """Push a bounced proc's stdout/stderr writes back into Rust.

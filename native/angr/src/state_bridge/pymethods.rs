@@ -159,6 +159,25 @@ impl PyRustSimState {
         });
     }
 
+    /// `(allocation_base, sinkholes)`, the CGC allocator the native
+    /// `allocate` / `deallocate` move (mirrors `state.cgc.allocation_base` /
+    /// `sinkholes`).
+    #[getter]
+    pub fn cgc_allocator(&self) -> (u64, Vec<(u64, u64)>) {
+        (
+            self.inner.cgc_allocation_base(),
+            self.inner.cgc_sinkholes().to_vec(),
+        )
+    }
+
+    /// Set the CGC allocator. The Python wrapper pushes `state.cgc` here at
+    /// state-creation time (angr-vmi2l.332).
+    #[setter]
+    pub fn set_cgc_allocator(&mut self, allocator: (u64, Vec<(u64, u64)>)) {
+        self.inner.set_cgc_allocation_base(allocator.0);
+        self.inner.set_cgc_sinkholes(allocator.1);
+    }
+
     /// Get the getopt(3) `optind` cursor (mirrors `state.libc.getopt_optind`).
     #[getter]
     pub fn getopt_optind(&self) -> u32 {

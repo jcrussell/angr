@@ -411,6 +411,32 @@ impl RustExplorationManager {
         set _set_state_heap_brk(addr: u64) = set_heap_brk;
     }
 
+    /// The CGC allocator state, `(allocation_base, sinkholes)`, that the
+    /// native `allocate` / `deallocate` syscalls move and Python's
+    /// `state.cgc` plugin mirrors.
+    pub(crate) fn _get_state_cgc_allocator(
+        &self,
+        state_id: u64,
+    ) -> PyResult<(u64, Vec<(u64, u64)>)> {
+        self.with_state(state_id, |state| {
+            Ok((state.cgc_allocation_base(), state.cgc_sinkholes().to_vec()))
+        })
+    }
+
+    /// Overwrite the CGC allocator state after a Python allocate/deallocate.
+    pub(crate) fn _set_state_cgc_allocator(
+        &mut self,
+        state_id: u64,
+        allocation_base: u64,
+        sinkholes: Vec<(u64, u64)>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            state.set_cgc_allocation_base(allocation_base);
+            state.set_cgc_sinkholes(sinkholes);
+            Ok(())
+        })
+    }
+
     // -------------------------------------------------------------------------
     // Per-state Python-AST metadata
     // -------------------------------------------------------------------------

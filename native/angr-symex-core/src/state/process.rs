@@ -412,6 +412,13 @@ impl RustSimState {
         &self.cgc_sinkholes
     }
 
+    /// Replace the CGC sinkhole freelist wholesale. The write-back half of
+    /// the Python cgc-plugin sync, after a bounced allocate/deallocate
+    /// rewrote `state.cgc.sinkholes`.
+    pub fn set_cgc_sinkholes(&mut self, sinkholes: Vec<(u64, u64)>) {
+        self.cgc_sinkholes = sinkholes;
+    }
+
     /// Add a region to the CGC sinkhole freelist. Mirrors
     /// `SimStateCGC.add_sinkhole`. Duplicate `(addr, length)` pairs are
     /// silently merged into a single entry (the Python plugin uses a `set`).
