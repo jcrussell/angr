@@ -13,8 +13,9 @@ use std::cell::RefCell;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use crate::claripy_bridge::{claripy_module, claripy_to_rustbv, rustbv_to_claripy};
+use crate::claripy_bridge::{claripy_module, rustbv_to_claripy};
 use crate::interpreter::InspectView;
+use crate::solver::RustSolverContext;
 use crate::symbolic::RustBV;
 
 thread_local! {
@@ -64,17 +65,12 @@ pub(crate) fn inspect_view_load(
     value.map(|v| to_ast(py, &v)).transpose()
 }
 
-/// `expr` (a claripy AST) evaluated under the stepping state's path
-/// constraints, or `None` when the solver cannot answer it
-/// (`InspectView::eval`).
+/// A fork of the stepping state's solver, the context a BP action's
+/// `state.solver` queries run against mid-step: the manager's
+/// `fork_state_solver` would need the borrowed manager (angr-vmi2l.338).
 #[pyfunction]
-pub(crate) fn inspect_view_eval(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<Option<u128>> {
-    with_view(|view| {
-        let bv = claripy_to_rustbv(py, expr, view.solver())
-            .map_err(|e| PyRuntimeError::new_err(format!("inspect view eval: {e}")))?;
-        Ok(view.eval(&bv))
-    })
-    .ok_or_else(no_view)?
+pub(crate) fn inspect_view_fork_solver() -> PyResult<RustSolverContext> {
+    with_view(|view| RustSolverContext::from_sym_context(view.solver().fork())).ok_or_else(no_view)
 }
 
 /// The concrete bytes the view holds from `addr` on, at most `max`
@@ -89,7 +85,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_addrs, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_register, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_load, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(inspect_view_eval, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(inspect_view_fork_solver, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(inspect_view_bytes, m)?)?;
     Ok(())
 }

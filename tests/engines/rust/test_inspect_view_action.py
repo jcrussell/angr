@@ -146,6 +146,67 @@ def test_a_symbolic_store_fires_mem_write_and_evaluates_under_constraints_like_p
     assert _symbolic_store_seen(project, lambda s: RustExplorationManager(project, [s])) == expected
 
 
+def _solver_queries_seen(project, make_mgr):
+    """Every query on the action's ``state.solver``, at the store to ``[rdi]``."""
+    seen = []
+
+    def action(s):
+        rdi = s.regs.rdi
+        low = rdi < 0x5000
+        seen.append(
+            {
+                "satisfiable": s.solver.satisfiable(),
+                "satisfiable_extra": s.solver.satisfiable(extra_constraints=[low]),
+                # Neither is decided either way: Python answers these structurally.
+                "is_true": s.solver.is_true(rdi == 0x5004),
+                "is_false": s.solver.is_false(rdi == 0x5004),
+                "min": s.solver.min(rdi),
+                "max_extra": s.solver.max(rdi, extra_constraints=[rdi < 0x5010]),
+                "eval_extra": s.solver.eval(rdi, extra_constraints=[rdi == 0x5008]),
+                "eval_upto": sorted(s.solver.eval_upto(rdi, 3, extra_constraints=[rdi < 0x5002])),
+                "unique": s.solver.unique(rdi),
+                "solution": s.solver.solution(rdi, 0x5004),
+            }
+        )
+
+    rdi = claripy.BVS("rdi", 64)
+    state = project.factory.blank_state(addr=project.entry)
+    state.regs.rdi = rdi
+    state.solver.add(rdi >= 0x5000, rdi < 0x6000)
+    state.inspect.b("mem_write", when="before", action=action)
+    make_mgr(state).step()
+    return seen
+
+
+def test_a_bp_actions_solver_queries_run_against_the_stepping_state_like_python():
+    """A symbolic query mid-step reached the borrowed manager, so the action
+    raised "Already mutably borrowed" and was dropped (angr-vmi2l.338)."""
+    project = angr.load_shellcode("mov dword ptr [rdi], 1\nret", "amd64")
+    expected = _solver_queries_seen(project, lambda s: SimulationManager(project, [s]))
+    assert expected[0]["satisfiable_extra"] is False
+    assert expected[0]["max_extra"] == 0x500F
+    assert _solver_queries_seen(project, lambda s: RustExplorationManager(project, [s])) == expected
+
+
+def test_a_bp_actions_solver_add_mid_step_refuses():
+    """A constraint on the view's solver fork would not reach the state."""
+    project = angr.load_shellcode("mov dword ptr [rdi], 1\nret", "amd64")
+    raised = []
+
+    def action(s):
+        try:
+            s.solver.add(s.regs.rdi == 0x5000)
+        except NotImplementedError as e:
+            raised.append(str(e))
+
+    state = project.factory.blank_state(addr=project.entry)
+    state.regs.rdi = claripy.BVS("rdi", 64)
+    state.inspect.b("mem_write", when="before", action=action)
+    RustExplorationManager(project, [state]).step()
+    assert len(raised) == 1
+    assert "read-only" in raised[0]
+
+
 SMC_CASES = {
     "not_smc_shellcode": (
         lambda: angr.load_shellcode("mov rax, 0xdeadbeef\nret", "amd64", selfmodifying_code=True),

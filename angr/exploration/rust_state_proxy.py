@@ -658,8 +658,19 @@ class RustSolverProxyBase(_SolutionCountMixin):
         return self._query_ctx().is_false(expr)
 
     def solution(self, expr, value, extra_constraints=(), **kwargs):
-        """Check if value is a valid solution for expr."""
-        return self._query_ctx().solution(self._prepare_expr(expr), value)
+        """Check if value is a valid solution for expr.
+
+        A plain or concrete ``expr`` is compared directly: ``BP.check`` passes
+        an int attr and its int filter, which the Rust context cannot import.
+        """
+        expr, value = self._prepare_expr(expr), self._prepare_expr(value)
+        if isinstance(value, claripy.ast.Base) and value.concrete:
+            value = value.concrete_value
+        if isinstance(expr, claripy.ast.Base) and expr.concrete:
+            expr = expr.concrete_value
+        if not isinstance(expr, claripy.ast.Base):
+            return expr == value
+        return self._query_ctx().solution(expr, value)
 
     def unique(self, expr, **kwargs):
         """``SimSolver.unique``: a plain value is unique, else ask for two solutions.
@@ -4502,9 +4513,30 @@ class _InspectViewMemory:
 class _InspectViewSolver:
     """``state.solver`` over the mid-step view; the live proxy once no view is up.
 
-    A symbolic expression evaluates under the stepping state's path
-    constraints (``InspectView::eval``).
+    A query runs against a fork of the stepping state's solver
+    (``inspect_view_fork_solver``), so a symbolic expression is solved under
+    the path constraints the block has reached; the live proxy would need the
+    borrowed manager (angr-vmi2l.338). The fork is taken once per owner, i.e.
+    once per fire. ``add`` refuses, as a register or memory write does: a
+    constraint on the fork would not reach the state.
     """
+
+    # The solver queries the fork serves; anything else reads the live proxy.
+    _VIEW_QUERIES = frozenset(
+        {
+            "eval",
+            "eval_one",
+            "eval_upto",
+            "satisfiable",
+            "min",
+            "max",
+            "is_true",
+            "is_false",
+            "solution",
+            "unique",
+            "symbolic",
+        }
+    )
 
     def __init__(self, owner):
         self._owner = owner
@@ -4512,36 +4544,36 @@ class _InspectViewSolver:
     def _live(self):
         return RustStateProxy.solver.fget(self._owner)
 
-    def eval(self, expr, cast_to=None, **kwargs):
-        if _inspect_view_addrs() is None:
-            return self._live().eval(expr, cast_to=cast_to, **kwargs)
-        expr = _raw_ast(expr)
-        if isinstance(expr, claripy.ast.Base) and expr.symbolic:
-            from angr.rustylib.vex_engine import inspect_view_eval  # pylint: disable=import-outside-toplevel
+    def _view_proxy(self):
+        owner = self._owner
+        proxy = owner.__dict__.get("_inspect_view_solver")
+        if proxy is None:
+            from angr.rustylib.vex_engine import inspect_view_fork_solver  # pylint: disable=import-outside-toplevel
 
-            value = inspect_view_eval(expr)
-            if value is None:
-                from angr.errors import SimUnsatError  # pylint: disable=import-outside-toplevel
+            ctx = inspect_view_fork_solver()
+            proxy = RustSolverProxy(owner._mgr, owner._state_id, shared_ctx_getter=lambda: ctx)
+            owner.__dict__["_inspect_view_solver"] = proxy
+        return proxy
 
-                raise SimUnsatError(f"the mid-step inspect view cannot evaluate {expr!r}")
-        else:
-            value = _view_int(expr, "expression")
-        return value if cast_to is None else cast_to(value)
+    def add(self, *constraints):
+        if _inspect_view_addrs() is not None:
+            raise NotImplementedError(_INSPECT_VIEW_WRITE_MSG)
+        return self._live().add(*constraints)
 
     def eval_one(self, expr, **kwargs):
-        if _inspect_view_addrs() is None:
-            return self._live().eval_one(expr, **kwargs)
         return self.eval(expr, **kwargs)
-
-    def solution(self, expr, v):
-        if _inspect_view_addrs() is None:
-            return self._live().solution(expr, v)
-        return _view_int(expr, "expression") == _view_int(v, "solution")
 
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
-        return getattr(self._live(), name)
+        if name not in self._VIEW_QUERIES or _inspect_view_addrs() is None:
+            return getattr(self._live(), name)
+        method = getattr(self._view_proxy(), name)
+
+        def query(*args, **kwargs):
+            return method(*(_raw_ast(a) for a in args), **_raw_ast(kwargs))
+
+        return query
 
 
 class RustInspectViewStateProxy(RustStateProxy):
@@ -4549,7 +4581,7 @@ class RustInspectViewStateProxy(RustStateProxy):
 
     While the interpreter publishes its ``InspectView`` (``callbacks/inspect_view.rs``)
     the manager is borrowed by the step, so ``addr`` / ``regs`` / ``memory.load``
-    / ``solver.eval`` read the view through the ``vex_engine.inspect_view_*``
+    / the ``solver`` queries read the view through the ``vex_engine.inspect_view_*``
     pyfunctions instead. ``addr`` reads the live instruction pointer, as
     ``SimState.addr`` does: VEX puts it ahead of an instruction that may
     fault, so it can be past the block address. Once the fire returns, every read

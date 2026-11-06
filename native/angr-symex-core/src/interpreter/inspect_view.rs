@@ -77,14 +77,7 @@ impl InspectView {
 }
 
 impl InspectView {
-    /// `bv` evaluated under the stepping state's path constraints, as the
-    /// action's `state.solver.eval` reads it; `None` when the solver cannot
-    /// answer (unsat, unknown, or wider than 128 bits).
-    pub fn eval(&self, bv: &RustBV) -> Option<u128> {
-        self.solver.eval(bv)
-    }
-
-    /// The solver the view evaluates under, for a host that must build a
+    /// The stepping state's solver, for a host that queries it or builds a
     /// value against it.
     pub fn solver(&self) -> &SymContext {
         &self.solver

@@ -2160,9 +2160,11 @@ its live registers, memory and solver around each fire
 (``native/angr-symex-core/src/interpreter/inspect_view.rs``), and the
 action's state is a ``RustInspectViewStateProxy``
 (``angr/exploration/rust_state_proxy.py``). Its ``addr``, ``regs``,
-``memory.load``, ``solver.eval`` (symbolic expressions evaluate under
-the state's path constraints) and ``block()`` read the view; a write
-raises. On a ``selfmodifying_code`` project ``block()`` lifts the bytes
+``memory.load``, the ``solver`` queries (``eval``, ``eval_upto``,
+``satisfiable``, ``min``, ``max``, ``is_true``, ``is_false``,
+``solution``, ``unique``, each against a fork of the state's solver, so
+symbolic expressions are solved under its path constraints) and
+``block()`` read the view; a write, ``solver.add`` included, raises. On a ``selfmodifying_code`` project ``block()`` lifts the bytes
 the view holds, as ``SimState.block`` reads code from state memory.
 
 Workaround for unsupported events
