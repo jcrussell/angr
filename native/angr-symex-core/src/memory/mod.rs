@@ -814,6 +814,43 @@ impl SymbolicMemory {
             |err| "unmap: {err}"
         );
 
+        // A remapped page must read fresh, so every side table keyed by a byte
+        // of the range goes with the pages (angr-vmi2l.180): a dead symbolic
+        // object or Multi cell would otherwise surface through
+        // `try_byte_merge_load`'s overlap arm and the symbolic export. The
+        // tables are scanned rather than the range walked, since an unmap can
+        // span far more bytes than the tables hold.
+        let in_range = |a: Address| (start_page..end_page).contains(&a.page_num());
+        if !self.symbolic_objects.is_empty() {
+            let mut hits: Vec<Address> = self
+                .symbolic_objects
+                .keys()
+                .chain(self.symbolic_spans.keys())
+                .copied()
+                .filter(|&a| in_range(a))
+                .collect();
+            hits.sort_unstable();
+            hits.dedup();
+            // Splitting an object that straddles the range keeps its outside
+            // bytes as lanes; the lanes it leaves inside are hits themselves.
+            for a in hits {
+                self.retire_symbolic_object_at(a);
+            }
+        }
+        self.symbolic_spans.retain(|&a, _| !in_range(a));
+        self.imported_addrs.retain(|&a, _| !in_range(a));
+        let multi_hits: Vec<Address> = self
+            .multi_objects
+            .keys()
+            .copied()
+            .filter(|&a| in_range(a))
+            .collect();
+        for a in multi_hits {
+            self.clear_multi_at(a);
+        }
+        // `dirty_pages` keeps its marks: a page written before the unmap
+        // differs from the Python mirror, so a remap must still be replayed.
+
         for page_num in start_page..end_page {
             self.pages.remove(&page_num);
         }

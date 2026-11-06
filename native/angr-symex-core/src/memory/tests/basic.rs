@@ -405,6 +405,43 @@ fn test_unmap_zero_size_is_noop_regardless_of_alignment() {
     );
 }
 
+/// angr-vmi2l.180: a remapped page reads fresh at every width, and the
+/// unmapped range leaves no symbolic object, span, Multi cell or import
+/// record behind, while an object straddling the range keeps its outside lane.
+#[test]
+fn test_unmap_retires_symbolic_side_tables() {
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x2000, Permission::RW);
+    let a = RustBV::symbol("a", 8);
+    let b = RustBV::symbol("b", 8);
+    mem.store_concrete(0x2010u64, a).unwrap();
+    mem.store_concrete(0x2011u64, b).unwrap();
+    // A 16-bit object over 0x1fff..0x2001: its low lane survives the unmap.
+    mem.store_concrete(0x1fffu64, RustBV::symbol("w", 16)).unwrap();
+    mem.import_symbolic_value(0x2020u64, RustBV::symbol("imp", 32), None)
+        .unwrap();
+    mem.set_multi_alternatives(
+        0x2030u64,
+        MultiPayload::from_alternatives(vec![MultiAlternative::new(
+            RustBV::symbol("c", 1),
+            RustBV::concrete(0xAA, 8),
+        )]),
+    );
+
+    mem.unmap(0x2000u64, 0x1000);
+    mem.map(0x2000, 0x1000, Permission::RW);
+
+    assert_eq!(mem.load_concrete(0x2010u64, 2).unwrap().as_u64(), Some(0));
+    assert_eq!(mem.load_concrete(0x2010u64, 1).unwrap().as_u64(), Some(0));
+    assert_eq!(mem.load_concrete(0x2000u64, 1).unwrap().as_u64(), Some(0));
+    assert_eq!(mem.load_concrete(0x2030u64, 1).unwrap().as_u64(), Some(0));
+    assert_eq!(mem.multi_cell_count(), 0);
+    assert!(!mem.is_imported_addr(0x2020u64));
+    let live: Vec<u64> = mem.symbolic_objects_iter().map(|(a, _)| a.raw()).collect();
+    assert_eq!(live, vec![0x1fff], "only the outside lane of `w` survives");
+    assert!(!mem.load_concrete(0x1fffu64, 1).unwrap().is_concrete());
+}
+
 #[test]
 fn test_memory_fork() {
 

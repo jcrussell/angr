@@ -486,10 +486,16 @@ impl SymbolicMemory {
                 self.bump_multi_version(*byte_addr);
                 let page_num = byte_addr.page_num();
                 let offset = byte_addr.page_offset();
-                let concrete_byte: u8 = match self.pages.get(&page_num) {
-                    Some(page) => page.load_concrete(offset, 1).first().copied().unwrap_or(0),
-                    None => continue,
-                };
+                // `unmap` retires a range's Multi cells with its pages
+                // (angr-vmi2l.180), so a payload whose page is gone has
+                // nowhere to land: say so rather than drop it unlogged.
+                let page = silent_default!(
+                    cat_c,
+                    self.pages.get(&page_num),
+                    continue,
+                    "flush_multi_cells: Multi cell at {byte_addr:?} has no page; payload dropped"
+                );
+                let concrete_byte: u8 = page.load_concrete(offset, 1).first().copied().unwrap_or(0);
                 let acc = payload.collapse(concrete_byte);
                 if let Some(page) = self.pages.get_mut(&page_num) {
                     page.clear_multi(offset);
