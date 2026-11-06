@@ -239,8 +239,7 @@ project's SimOS lists (``amd64``, ``i386``, ``arm``, ``aarch64``,
 below), and ``NativeSyscallRegistry::from_angr_tables`` resolves each
 number through its name. Handlers themselves are arch-agnostic. A row
 carries an explicit ABI scope only where angr's name means a different
-handler on some ABI (``mmap`` is the struct-argument form on arm and
-mips-o32) or must stay unregistered there (MIPS64 leaves the stat family
+handler on some ABI (``mmap`` is the struct-argument form on arm only) or must stay unregistered there (MIPS64 leaves the stat family
 unregistered because ``write_stat_for_arch`` has no MIPS64
 ``struct stat`` writer). A SimOS without a syscall library (a plain
 ``SimOS``, Windows) gets no native syscalls, as Python's engine has no
@@ -361,14 +360,14 @@ Per-arch matrix
      - — (uses ``old_mmap`` / ``mmap2``)
      - — (uses ``old_mmap`` / ``mmap2``)
      - ✓
-     - — (uses ``old_mmap`` only)
+     - ✓ (number 4090; args 5–6 read from the O32 stack)
      - ✓
    * - ``old_mmap``
      - —
      - ✓
      - ✓
      - —
-     - ✓
+     - —
      - —
    * - ``mmap2``
      - —

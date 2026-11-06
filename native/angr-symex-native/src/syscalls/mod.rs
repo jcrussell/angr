@@ -228,9 +228,10 @@ macro_rules! by_name {
 ///
 /// A row carries an explicit scope only where angr's name means a different
 /// handler on some ABI, or where a name angr lists must stay unregistered:
-/// - `mmap` is the 6-register byte-offset form on amd64, aarch64 and
-///   mips-n64, but angr's arm and mips-o32 tables call the struct-argument
-///   `old_mmap` "mmap" (i386 calls it `old_mmap`).
+/// - `mmap` is the 6-argument byte-offset form on amd64, aarch64, mips-n64
+///   and mips-o32 (4090 is `sys_mips_mmap`, args 5-6 on the stack), but
+///   angr's arm table calls the struct-argument `old_mmap` (OABI 90) "mmap"
+///   (i386 calls it `old_mmap`).
 /// - `stat` / `lstat` / `fstat` on i386, arm and mips-o32 are the pre-LFS
 ///   `struct stat`, which has no writer; those ABIs reach the stat writers
 ///   through the `*64` names. mips-n64 has no writer at all
@@ -296,8 +297,8 @@ static BY_NAME: &[ByName] = by_name![
     "dup3" => file_descriptor::NativeDup3Syscall,
     // Memory.
     "brk" => brk::NativeBrkSyscall,
-    "mmap" @ &[SyscallAbi::Amd64, SyscallAbi::Aarch64, SyscallAbi::MipsN64] => mmap::NativeMmapSyscall,
-    "mmap" @ &[SyscallAbi::Arm, SyscallAbi::MipsO32] => mmap::NativeOldMmapSyscall,
+    "mmap" @ &[SyscallAbi::Amd64, SyscallAbi::Aarch64, SyscallAbi::MipsN64, SyscallAbi::MipsO32] => mmap::NativeMmapSyscall,
+    "mmap" @ &[SyscallAbi::Arm] => mmap::NativeOldMmapSyscall,
     "old_mmap" => mmap::NativeOldMmapSyscall,
     "mmap2" => mmap::NativeMmap2Syscall,
     "mprotect" => mprotect::NativeMprotectSyscall,

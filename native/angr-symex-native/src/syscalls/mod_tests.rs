@@ -151,13 +151,14 @@ fn from_angr_tables_skips_ignored_abis_and_rejects_unknown_ones() {
 }
 
 #[test]
-fn mmap_name_means_the_struct_argument_form_on_arm_and_mips_o32() {
+fn mmap_name_means_the_struct_argument_form_on_arm_only() {
     for (abi, expected) in [
         (SyscallAbi::Amd64, "mmap"),
         (SyscallAbi::Aarch64, "mmap"),
         (SyscallAbi::MipsN64, "mmap"),
+        // angr-vmi2l.147: o32 4090 is the 6-argument sys_mips_mmap.
+        (SyscallAbi::MipsO32, "mmap"),
         (SyscallAbi::Arm, "old_mmap"),
-        (SyscallAbi::MipsO32, "old_mmap"),
     ] {
         let h = NativeSyscallRegistry::handler_for(abi, "mmap").expect("mmap row");
         assert_eq!(h.name(), expected, "{abi:?}");

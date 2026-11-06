@@ -2,13 +2,14 @@
 //!
 //! Three flavors share a `do_mmap` core:
 //!
-//! * `NativeMmapSyscall` — modern 6-register form (amd64 syscall 9,
-//!   ARM64 syscall 222). Mirrors `procedures/posix/mmap.py`. Argument
+//! * `NativeMmapSyscall` — modern 6-argument form (amd64 syscall 9,
+//!   ARM64 syscall 222, MIPS64 n64 5009, MIPS32 o32 4090, whose args 5-6
+//!   are on the stack as for mmap2). Mirrors `procedures/posix/mmap.py`. Argument
 //!   order matches the Linux amd64 syscall ABI (see
 //!   `invariant-syscall-arg-extraction`):
 //!   rdi=addr, rsi=length, rdx=prot, r10=flags, r8=fd, r9=offset.
 //! * `NativeOldMmapSyscall` — legacy struct-arg form (i386 syscall 90,
-//!   ARM EABI 90, MIPS32 4090). One pointer argument; the handler reads
+//!   ARM OABI 90). One pointer argument; the handler reads
 //!   six 32-bit fields (addr, length, prot, flags, fd, offset) from
 //!   guest memory and dispatches into `do_mmap`. Mirrors
 //!   `procedures/linux_kernel/mmap.py::old_mmap`.
@@ -317,7 +318,7 @@ impl NativeSyscall for NativeMmapSyscall {
     }
 }
 
-/// Legacy struct-arg mmap (i386 syscall 90, ARM EABI 90, MIPS32 4090).
+/// Legacy struct-arg mmap (i386 syscall 90, ARM OABI 90).
 ///
 /// One pointer argument; the kernel reads six 32-bit fields from
 /// `[arg, arg+24)`:

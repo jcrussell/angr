@@ -248,6 +248,32 @@ fn mips_anonymous_maps_use_the_mips_map_anonymous_bit() {
 }
 
 #[test]
+fn mips_o32_mmap_is_the_six_argument_form_with_a_byte_offset() {
+    // angr-vmi2l.147: o32 4090 is sys_mips_mmap(addr, len, prot, flags, fd,
+    // off), not the struct-argument old_mmap, so a non-zero hint is an
+    // address to map at, not a pointer to read the arguments from.
+    let hint = 0x60_0000;
+    let mut state = RustSimState::new("mips32").expect("mips state");
+    let h = crate::syscalls::NativeSyscallRegistry::handler_for(
+        crate::syscalls::SyscallAbi::MipsO32,
+        "mmap",
+    )
+    .expect("mmap row");
+    let outcome = h.call(&mut state, &args(hint, 0x2000, 0x3, 0x802, ANON_FD, 0));
+    match outcome.expect("o32 anonymous mmap is native") {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, hint),
+        _ => panic!("expected Continue"),
+    }
+    for page in [hint, hint + 0x2000 - 1] {
+        assert_eq!(
+            state.memory().page_permissions(page >> 12),
+            Some(Permission::RW),
+            "{page:#x}"
+        );
+    }
+}
+
+#[test]
 fn mips_generic_anonymous_bit_is_map_rename_and_needs_zero_fill() {
     // 0x20 is MAP_RENAME on MIPS, not MAP_ANONYMOUS: without the 0x800 bit a
     // fd -1 request is not anonymous there, so it stays Python's.
