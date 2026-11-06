@@ -141,6 +141,24 @@ impl PyRustSimState {
         self.inner.set_posix_brk(addr);
     }
 
+    /// `(pid, ppid)`, which the native getpid/gettid/getppid return (mirrors
+    /// `state.posix.pid` / `ppid`).
+    #[getter]
+    pub fn posix_pids(&self) -> (u64, u64) {
+        let ids = self.inner.process_ids();
+        (ids.pid, ids.ppid)
+    }
+
+    /// Set `(pid, ppid)`. The Python wrapper pushes `state.posix.pid` /
+    /// `ppid` here at state-creation time (angr-vmi2l.149).
+    #[setter]
+    pub fn set_posix_pids(&mut self, ids: (u64, u64)) {
+        self.inner.set_process_ids(crate::state::ProcessIds {
+            pid: ids.0,
+            ppid: ids.1,
+        });
+    }
+
     /// Get the getopt(3) `optind` cursor (mirrors `state.libc.getopt_optind`).
     #[getter]
     pub fn getopt_optind(&self) -> u32 {

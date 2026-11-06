@@ -4,14 +4,13 @@
 //! geteuid,getegid}.py`. All seven are constant-return getters in angr's
 //! Python implementation:
 //!
-//! * `getpid`, `gettid` — return `state.posix.pid` (default 1337).
-//! * `getppid`            — return `state.posix.ppid` (default 1336).
+//! * `getpid`, `gettid` — return `state.posix.pid`.
+//! * `getppid`            — return `state.posix.ppid`.
 //! * `getuid`, `geteuid`, `getgid`, `getegid` — return the literal 1000
 //!   (matches `Sim*Procedure.run`).
 //!
-//! RustSimState does not currently carry a posix plugin, so the pid/ppid
-//! defaults are hardcoded here to match Python's defaults
-//! (`SimSystemPosix.__init__` in `angr/state_plugins/posix.py`).
+//! The pid/ppid come from `RustSimState::process_ids`, which the manager
+//! seeds from `state.posix` (angr-vmi2l.149).
 //!
 //! Note on `setuid` / `setgid`: angr has no Python `SimProcedure` for
 //! these — the unhandled syscall falls through to `procedures/stubs/
@@ -32,10 +31,6 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome, stub_syscall};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Angr's default `state.posix.pid` (see `SimSystemPosix.__init__`).
-const DEFAULT_PID: u64 = 1337;
-/// Angr's default `state.posix.ppid` (see `SimSystemPosix.__init__`).
-const DEFAULT_PPID: u64 = 1336;
 /// Angr's default `getuid` / `getgid` / `geteuid` / `getegid` return value
 /// (see `procedures/linux_kernel/getuid.py` etc.).
 ///
@@ -44,13 +39,14 @@ const DEFAULT_PPID: u64 = 1336;
 /// second copy in sync (angr-5mnx3.35).
 pub(crate) const DEFAULT_UID_GID: u64 = 1000;
 
-/// Macro to declare a zero-arg constant-return syscall handler.
+/// Macro to declare a zero-arg syscall handler whose return value is
+/// `$ret` evaluated against the state (bound to `$state`).
 ///
 /// Cuts the boilerplate for `name() / num_args() == 0 / call() -> Continue { ret }`
 /// for the identity getters. Each handler is a unit struct so the
 /// registry can key on a unique type per name.
 macro_rules! constant_syscall {
-    ($ty:ident, $label:expr, $ret:expr) => {
+    ($ty:ident, $label:expr, |$state:ident| $ret:expr) => {
         pub(crate) struct $ty;
 
         impl NativeSyscall for $ty {
@@ -64,7 +60,7 @@ macro_rules! constant_syscall {
 
             fn call(
                 &self,
-                _state: &mut RustSimState,
+                $state: &mut RustSimState,
                 _args: &[RustBV],
             ) -> Result<SyscallOutcome, SyscallError> {
                 Ok(SyscallOutcome::Continue { ret: $ret })
@@ -73,13 +69,19 @@ macro_rules! constant_syscall {
     };
 }
 
-constant_syscall!(NativeGetpidSyscall, "getpid", DEFAULT_PID);
-constant_syscall!(NativeGettidSyscall, "gettid", DEFAULT_PID);
-constant_syscall!(NativeGetppidSyscall, "getppid", DEFAULT_PPID);
-constant_syscall!(NativeGetuidSyscall, "getuid", DEFAULT_UID_GID);
-constant_syscall!(NativeGeteuidSyscall, "geteuid", DEFAULT_UID_GID);
-constant_syscall!(NativeGetgidSyscall, "getgid", DEFAULT_UID_GID);
-constant_syscall!(NativeGetegidSyscall, "getegid", DEFAULT_UID_GID);
+constant_syscall!(NativeGetpidSyscall, "getpid", |state| state
+    .process_ids()
+    .pid);
+constant_syscall!(NativeGettidSyscall, "gettid", |state| state
+    .process_ids()
+    .pid);
+constant_syscall!(NativeGetppidSyscall, "getppid", |state| state
+    .process_ids()
+    .ppid);
+constant_syscall!(NativeGetuidSyscall, "getuid", |_state| DEFAULT_UID_GID);
+constant_syscall!(NativeGeteuidSyscall, "geteuid", |_state| DEFAULT_UID_GID);
+constant_syscall!(NativeGetgidSyscall, "getgid", |_state| DEFAULT_UID_GID);
+constant_syscall!(NativeGetegidSyscall, "getegid", |_state| DEFAULT_UID_GID);
 
 // setuid / setgid: 1-arg stubs (no dedicated Python SimProcedure).
 stub_syscall!(NativeSetuidSyscall, "setuid", "syscall_stub_setuid", 1);

@@ -4161,6 +4161,14 @@ class RustExplorationManager(
             # mapped memory. Debug-logs.
             l.debug("posix.brk init push failed: %s", e)
 
+        # Push posix.pid / ppid so the native getpid/gettid/getppid return a
+        # user-set value, not SimSystemPosix's defaults (angr-vmi2l.149).
+        posix = getattr(angr_state, "posix", None)
+        pid = getattr(posix, "pid", None)
+        ppid = getattr(posix, "ppid", None)
+        if isinstance(pid, int) and isinstance(ppid, int):
+            rust_state.posix_pids = (pid, ppid)
+
         # Push state.heap.heap_location so Rust's malloc bump allocator
         # (heap_alloc) starts past any Python-side allocation. Symmetric with
         # the posix.brk push above and the export-side

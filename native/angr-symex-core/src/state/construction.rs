@@ -99,6 +99,7 @@ impl RustSimState {
             heap_brk: 0xC000_0000,
             posix_brk: 0x1B0_0000,
             mmap_base: 0xC100_0000,
+            process_ids: ProcessIds::default(),
             pending_syscall: None,
             exit_code: None,
             exit_pending: false,

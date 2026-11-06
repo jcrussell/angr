@@ -2,6 +2,7 @@
 // Extracted from the inline `mod tests` block; see rust-module-root-split-recipe.
 
 use super::*;
+use crate::state::ProcessIds;
 
 fn assert_continue(outcome: SyscallOutcome, expected: u64) {
     match outcome {
@@ -17,7 +18,7 @@ fn getpid_returns_default_pid() {
     assert_eq!(h.name(), "getpid");
     assert_eq!(h.num_args(), 0);
     let outcome = h.call(&mut state, &[]).expect("getpid never errs");
-    assert_continue(outcome, DEFAULT_PID);
+    assert_continue(outcome, 1337);
 }
 
 #[test]
@@ -27,7 +28,7 @@ fn gettid_returns_default_pid() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     assert_eq!(h.name(), "gettid");
     let outcome = h.call(&mut state, &[]).expect("gettid never errs");
-    assert_continue(outcome, DEFAULT_PID);
+    assert_continue(outcome, 1337);
 }
 
 #[test]
@@ -36,7 +37,28 @@ fn getppid_returns_default_ppid() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     assert_eq!(h.name(), "getppid");
     let outcome = h.call(&mut state, &[]).expect("getppid never errs");
-    assert_continue(outcome, DEFAULT_PPID);
+    assert_continue(outcome, 1336);
+}
+
+#[test]
+fn pid_getters_return_the_state_process_ids() {
+    // A user-set `state.posix.pid` / `ppid` reaches the getters through
+    // `process_ids` (angr-vmi2l.149).
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.set_process_ids(ProcessIds {
+        pid: 4242,
+        ppid: 4241,
+    });
+    let pid = NativeGetpidSyscall.call(&mut state, &[]).expect("getpid");
+    assert_continue(pid, 4242);
+    let tid = NativeGettidSyscall.call(&mut state, &[]).expect("gettid");
+    assert_continue(tid, 4242);
+    let ppid = NativeGetppidSyscall.call(&mut state, &[]).expect("getppid");
+    assert_continue(ppid, 4241);
+    // Forks and snapshots carry them.
+    let restored = RustSimState::from_snapshot(state.fork().to_snapshot()).expect("restore");
+    assert_eq!(restored.process_ids().pid, 4242);
+    assert_eq!(restored.process_ids().ppid, 4241);
 }
 
 #[test]

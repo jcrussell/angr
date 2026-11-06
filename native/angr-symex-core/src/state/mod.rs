@@ -192,6 +192,26 @@ impl Default for GetoptCursor {
     }
 }
 
+/// The process ids `state.posix.pid` / `state.posix.ppid` carry, which the
+/// native `getpid` / `gettid` / `getppid` return. The manager's entry-state
+/// push seeds them from the Python state (angr-vmi2l.149); nothing in the
+/// engine changes them afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProcessIds {
+    pub pid: u64,
+    pub ppid: u64,
+}
+
+impl Default for ProcessIds {
+    /// `SimSystemPosix.__init__`'s defaults.
+    fn default() -> Self {
+        Self {
+            pid: 1337,
+            ppid: 1336,
+        }
+    }
+}
+
 /// Guest-memory addresses of the glibc getopt(3) extern globals `optind`,
 /// `optarg`, and `optopt`, resolved Python-side once via
 /// `proj.loader.find_symbol(name).rebased_addr` and pushed into Rust at
@@ -431,6 +451,9 @@ pub struct RustSimState {
     /// at the syscall callback boundary.
     #[merge_policy = "max"]
     mmap_base: u64,
+    /// `state.posix.pid` / `ppid`; see [`ProcessIds`].
+    #[merge_policy = "warn_on_diverge"]
+    process_ids: ProcessIds,
     /// The `Ijk_Sys*` exit of the last block, when its syscall has not run
     /// yet. A block-granular step stops at the exit like Python's, whose
     /// syscall is its own step, and the next step serves it before lifting

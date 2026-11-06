@@ -52,7 +52,7 @@ pub enum SnapshotError {
 /// Covers all bucket A/B/C fields:
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
-///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
+///   detailed_history, max_history, heap_brk, posix_brk, mmap_base, process_ids,
 ///   pending_syscall, exit_code, exit_pending, getopt_cursor, getopt_extern,
 ///   stdin_symbols, stdin_read_lengths, stdin_host_packets, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
@@ -101,6 +101,9 @@ pub struct RustSimStateSnapshot {
     pub heap_brk: u64,
     pub posix_brk: u64,
     pub mmap_base: u64,
+    /// See `RustSimState::process_ids` (angr-vmi2l.149).
+    #[serde(default)]
+    pub process_ids: crate::state::ProcessIds,
     /// See `RustSimState::pending_syscall` (angr-mx00p.132.12).
     #[serde(default)]
     pub pending_syscall: Option<angr_vex::JumpKind>,
@@ -248,6 +251,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
+            process_ids: self.process_ids,
             pending_syscall: self.pending_syscall,
             exit_code: self.exit_code.clone(),
             exit_pending: self.exit_pending,
@@ -316,6 +320,7 @@ impl RustSimState {
             heap_brk: snap.heap_brk,
             posix_brk: snap.posix_brk,
             mmap_base: snap.mmap_base,
+            process_ids: snap.process_ids,
             pending_syscall: snap.pending_syscall,
             exit_code: snap.exit_code,
             exit_pending: snap.exit_pending,

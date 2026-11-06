@@ -250,6 +250,16 @@ impl RustSimState {
         self.posix_brk = addr;
     }
 
+    /// `state.posix.pid` / `ppid`. See [`ProcessIds`].
+    pub fn process_ids(&self) -> ProcessIds {
+        self.process_ids
+    }
+
+    /// Replace `state.posix.pid` / `ppid`. See [`ProcessIds`].
+    pub fn set_process_ids(&mut self, ids: ProcessIds) {
+        self.process_ids = ids;
+    }
+
     /// glibc getopt(3)'s scan state. See [`GetoptCursor`].
     pub fn getopt_cursor(&self) -> GetoptCursor {
         self.getopt_cursor
