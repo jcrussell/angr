@@ -318,6 +318,21 @@ impl RustSimState {
         &self.dirtied_code_pages
     }
 
+    /// Record a symbol a native handler minted under Python's variable key
+    /// `key`. See the `RustSimState::tracked_variables` field doc.
+    pub fn track_variable(&mut self, name: impl Into<String>, bits: u32, key: &[&str]) {
+        self.tracked_variables.push_back(super::TrackedVariable {
+            name: name.into(),
+            bits,
+            key: key.iter().map(|k| (*k).to_owned()).collect(),
+        });
+    }
+
+    /// See the `RustSimState::tracked_variables` field doc.
+    pub fn tracked_variables(&self) -> &im::Vector<super::TrackedVariable> {
+        &self.tracked_variables
+    }
+
     /// Replace the dirtied code pages with the set a step ended with.
     pub fn set_dirtied_code_pages(
         &mut self,

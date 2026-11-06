@@ -90,7 +90,7 @@
 
 use super::{
     NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
-    symbolic_outcome,
+    symbolic_outcome, syscall_stub_key,
 };
 use crate::state::{MAX_FD, RustSimState};
 use crate::symbolic::RustBV;
@@ -187,8 +187,9 @@ fn tiocgwinsz_for_arch(arch_name: &str) -> Option<u64> {
 /// the LFS `arg` payload (locks); the four trivial getter / setter
 /// cmds we handle do not read `arg`, so the dispatch is identical.
 fn fcntl_dispatch(
-    state: &RustSimState,
+    state: &mut RustSimState,
     args: &[RustBV],
+    label: &'static str,
     stub_name: &'static str,
 ) -> Result<SyscallOutcome, SyscallError> {
     let fd = extract_concrete_arg(&args[0], "fcntl fd")?;
@@ -208,7 +209,7 @@ fn fcntl_dispatch(
             Ok(SyscallOutcome::Continue { ret })
         }
         F_SETFL => Ok(SyscallOutcome::Continue { ret: 0 }),
-        _ => Ok(symbolic_outcome(state, stub_name)),
+        _ => Ok(symbolic_outcome(state, stub_name, &syscall_stub_key(label))),
     }
 }
 
@@ -229,7 +230,7 @@ impl NativeSyscall for NativeFcntlSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        fcntl_dispatch(state, args, "syscall_stub_fcntl")
+        fcntl_dispatch(state, args, self.name(), "syscall_stub_fcntl")
     }
 }
 
@@ -251,7 +252,7 @@ impl NativeSyscall for NativeFcntl64Syscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        fcntl_dispatch(state, args, "syscall_stub_fcntl64")
+        fcntl_dispatch(state, args, self.name(), "syscall_stub_fcntl64")
     }
 }
 
@@ -284,7 +285,11 @@ impl NativeSyscall for NativeIoctlSyscall {
         if Some(cmd) == tiocgwinsz_for_arch(arch_name) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ENOTTY });
         }
-        Ok(symbolic_outcome(state, "syscall_stub_ioctl"))
+        Ok(symbolic_outcome(
+            state,
+            "syscall_stub_ioctl",
+            &syscall_stub_key(self.name()),
+        ))
     }
 }
 

@@ -1281,19 +1281,24 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
     # ---------------------------------------------------------------
 
     def _register_rust_fillers(self):
-        """Register, once, each filler Rust minted for never-written bytes.
+        """Register, once, each variable Rust minted under a tracking key.
 
         Python's ``DefaultFillerMixin`` registers its filler under the
         temporal ``("mem", addr)`` key; a Rust-minted one is only in the
         state's memory record (``get_state_mem_fillers``, angr-vmi2l.321).
-        Every tracking entry point runs this first, so the Rust fillers keep
-        their counters ahead of any key registered on the proxy since.
+        Likewise a native proc's symbol (``rand``, ``time``, a stub, ...) is
+        only in the state's ``get_state_tracked_variables`` record, under the
+        key Python's proc passes to ``BVS`` (angr-vmi2l.126). Every tracking
+        entry point runs this first, so the Rust variables keep their
+        counters ahead of any key registered on the proxy since.
         """
         if self.__dict__.get("_rust_fillers_registered"):
             return
         object.__setattr__(self, "_rust_fillers_registered", True)
         for addr, name, bits in self._mgr.get_state_mem_fillers(self._state_id):
             self.register_variable(claripy.BVS(name, bits, explicit_name=True), ("mem", addr), eternal=False)
+        for name, bits, key in self._mgr.get_state_tracked_variables(self._state_id):
+            self.register_variable(claripy.BVS(name, bits, explicit_name=True), tuple(key), eternal=False)
 
     def register_variable(self, v, key, eternal=True):
         if type(key) is not tuple:

@@ -331,3 +331,37 @@ fn getrlimit_rlimit_stack_uses_32bit_layout_on_32bit_abis() {
         assert_eq!(past.as_u64(), Some(u64::MAX), "nothing written past rlim+8 on {arch}");
     }
 }
+
+// angr-vmi2l.126: each symbol is recorded under the key Python's proc mints
+// it with, so the solver proxy's `get_variables` finds it.
+#[test]
+fn getrlimit_and_setrlimit_record_python_variable_keys() {
+    let mut state = fresh_state();
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+    let ptr = RustBV::concrete(0x4000, 64);
+    let stack = RustBV::concrete(u128::from(RLIMIT_STACK), 64);
+    let other = RustBV::concrete(7, 64);
+    NativeGetrlimitSyscall
+        .call(&mut state, &[stack, ptr.clone()])
+        .unwrap();
+    NativeGetrlimitSyscall
+        .call(&mut state, &[other.clone(), ptr.clone()])
+        .unwrap();
+    NativeSetrlimitSyscall
+        .call(&mut state, &[other, ptr])
+        .unwrap();
+    let keys: Vec<Vec<String>> = state
+        .tracked_variables()
+        .iter()
+        .map(|v| v.key.clone())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            vec!["api", "rlimit", "stack"],
+            vec!["api", "rlimit", "other"],
+            vec!["syscall", "?", "setrlimit"],
+        ]
+    );
+    assert!(state.tracked_variables().iter().all(|v| v.bits == 64));
+}

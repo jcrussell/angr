@@ -21,6 +21,7 @@
 //! - **Memory**: `get_state_memory{,_ast}`,
 //!   `set_state_memory_{concrete,ast}{,_automap}`,
 //!   `state_memory_store_symbolic_multi`, `get_state_mem_fillers`.
+//! - **Variable keys**: `get_state_tracked_variables`.
 //! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
 //!   `{has,get}_state_stdin_symbols`, `get_state_stdin_packets`,
 //!   `get_state_stdin_leaves`, `eval_stdin_symbol`,
@@ -534,6 +535,23 @@ impl RustExplorationManager {
                 .memory()
                 .fillers()
                 .map(|f| (f.addr, f.name.clone(), f.bits))
+                .collect())
+        })
+    }
+
+    /// The symbols native procedures and syscalls minted on a state under a
+    /// Python variable-tracking key, in mint order, as `(name, bits, key)`:
+    /// the solver proxy registers each under `tuple(key)`, as Python's proc
+    /// does when it mints (angr-vmi2l.126).
+    pub fn get_state_tracked_variables(
+        &self,
+        state_id: u64,
+    ) -> PyResult<Vec<(String, u32, Vec<String>)>> {
+        self.with_state(state_id, |state| {
+            Ok(state
+                .tracked_variables()
+                .iter()
+                .map(|v| (v.name.clone(), v.bits, v.key.clone()))
                 .collect())
         })
     }

@@ -31,6 +31,8 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(restored.mmap_base(), orig.mmap_base());
     assert!(!orig.dirtied_code_pages().is_empty());
     assert_eq!(restored.dirtied_code_pages(), orig.dirtied_code_pages());
+    assert!(!orig.tracked_variables().is_empty());
+    assert_eq!(restored.tracked_variables(), orig.tracked_variables());
     assert_eq!(restored.getopt_cursor(), orig.getopt_cursor());
     {
         let (ro, oo) = (restored.getopt_extern(), orig.getopt_extern());

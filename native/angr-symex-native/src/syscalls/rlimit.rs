@@ -32,9 +32,10 @@
 
 use super::require_syscall_args;
 use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic,
-    stub_syscall, symbolic_outcome,
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
+    symbolic_outcome,
 };
+use crate::procedures::fresh_tracked_symbol;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -70,7 +71,7 @@ impl NativeSyscall for NativeGetrlimitSyscall {
             // `unsigned long` (angr-vmi2l.152).
             let bits = state.arch().bits();
             let cur = RustBV::concrete(RLIMIT_STACK_CUR, bits);
-            let max = fresh_symbolic("rlim_max", bits);
+            let max = fresh_tracked_symbol(state, "rlim_max", bits, &["api", "rlimit", "stack"]);
             let stride = u64::from(bits / 8);
             state.memory_store(rlim, cur)?;
             // `rlim` is unchecked `extract_concrete_arg` output and release
@@ -85,7 +86,11 @@ impl NativeSyscall for NativeGetrlimitSyscall {
         // `symbolic_outcome` is what keeps the width at `arch().bits()`, so
         // the return register is fully populated like every other stub-style
         // native handler.
-        Ok(symbolic_outcome(state, "rlimit"))
+        Ok(symbolic_outcome(
+            state,
+            "rlimit",
+            &["api", "rlimit", "other"],
+        ))
     }
 }
 

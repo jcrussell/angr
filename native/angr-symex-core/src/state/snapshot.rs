@@ -53,7 +53,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base, process_ids,
-///   pending_syscall, dirtied_code_pages, exit_code, exit_pending, getopt_cursor, getopt_extern,
+///   pending_syscall, dirtied_code_pages, tracked_variables, exit_code, exit_pending, getopt_cursor, getopt_extern,
 ///   stdin_symbols, stdin_read_lengths, stdin_host_packets, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -110,6 +110,9 @@ pub struct RustSimStateSnapshot {
     /// See `RustSimState::dirtied_code_pages` (angr-vmi2l.163).
     #[serde(default)]
     pub dirtied_code_pages: Vec<crate::memory::PageIndex>,
+    /// See `RustSimState::tracked_variables` (angr-vmi2l.126).
+    #[serde(default)]
+    pub tracked_variables: Vec<crate::state::TrackedVariable>,
     /// See `RustSimState::exit_code` (angr-mx00p.132.8).
     #[serde(default)]
     pub exit_code: Option<RustBV>,
@@ -261,6 +264,7 @@ impl RustSimState {
                 pages.sort_unstable();
                 pages
             },
+            tracked_variables: self.tracked_variables.iter().cloned().collect(),
             exit_code: self.exit_code.clone(),
             exit_pending: self.exit_pending,
             getopt_cursor: self.getopt_cursor,
@@ -331,6 +335,7 @@ impl RustSimState {
             process_ids: snap.process_ids,
             pending_syscall: snap.pending_syscall,
             dirtied_code_pages: Arc::new(snap.dirtied_code_pages.into_iter().collect()),
+            tracked_variables: snap.tracked_variables.into_iter().collect(),
             exit_code: snap.exit_code,
             exit_pending: snap.exit_pending,
             getopt_cursor: snap.getopt_cursor,

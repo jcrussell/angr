@@ -66,7 +66,7 @@ impl NativeSyscall for NativeFutexSyscall {
         if op & 1 == 1 {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
-        Ok(symbolic_outcome(state, "futex"))
+        Ok(symbolic_outcome(state, "futex", &["api", "futex"]))
     }
 }
 

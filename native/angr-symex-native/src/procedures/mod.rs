@@ -227,8 +227,24 @@ pub(crate) fn arch_signed_word(state: &RustSimState, raw: u64) -> i64 {
     }
 }
 
-/// Mint a fresh symbolic bitvector of `src_bits` and zero-extend it to
-/// `ext_bits`, naming it `<prefix>_<counter>` via [`symbol_counter`].
+/// Mint a fresh symbolic bitvector of `bits` named `<prefix>_<counter>` (via
+/// [`symbol_counter`]) and record it on the state under Python's
+/// variable-tracking `key`, the one the Python proc passes to `BVS` /
+/// `Unconstrained` (angr-vmi2l.126).
+pub(crate) fn fresh_tracked_symbol(
+    state: &mut RustSimState,
+    prefix: &'static str,
+    bits: u32,
+    key: &[&str],
+) -> RustBV {
+    let counter = symbol_counter(prefix);
+    let name = format!("{prefix}_{counter}");
+    state.track_variable(name.as_str(), bits, key);
+    RustBV::symbol(&name, bits)
+}
+
+/// Mint a fresh tracked symbolic bitvector of `src_bits` (see
+/// [`fresh_tracked_symbol`]) and zero-extend it to `ext_bits`.
 ///
 /// Models the "symbol narrower than the C return type" shape: `rand` mints 31
 /// bits and `system` 8, each zero-extended to `sizeof(int)` (angr-6cp06.13).
@@ -241,13 +257,13 @@ pub(crate) fn arch_signed_word(state: &RustSimState, raw: u64) -> i64 {
 /// `zero_extend` takes the latter, which is why the Python procs read
 /// `zero_extend(sizeof(int) - 8)`).
 pub(crate) fn fresh_zero_extended_symbol(
+    state: &mut RustSimState,
     prefix: &'static str,
     src_bits: u32,
     ext_bits: u32,
+    key: &[&str],
 ) -> RustBV {
-    let counter = symbol_counter(prefix);
-    let name = format!("{prefix}_{counter}");
-    RustBV::symbol(&name, src_bits).zero_extend(ext_bits)
+    fresh_tracked_symbol(state, prefix, src_bits, key).zero_extend(ext_bits)
 }
 
 /// Reserved SimProcedure name for the native sub-call **resume sentinel**.

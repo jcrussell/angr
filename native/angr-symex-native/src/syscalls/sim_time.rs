@@ -114,7 +114,8 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
 pub(crate) fn fresh_monotonic_time(state: &mut RustSimState) -> RustBV {
     let bits = state.arch().bits();
     let (sys_time, monotonic_constraint) = {
-        let sys_time = fresh_symbolic("sys_time", bits);
+        let sys_time =
+            crate::procedures::fresh_tracked_symbol(state, "sys_time", bits, &["api", "time"]);
         let zero = RustBV::concrete(0, bits);
         // Monotonic constraint: sys_time >= last_time (or >= 0 first call).
         let lower = state.last_time().cloned().unwrap_or(zero);

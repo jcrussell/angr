@@ -1,6 +1,6 @@
 //! Merging the scalar/watermark state fields: other-only overlay union and max
 //! brk, the TSC counter's fork-and-merge watermark rule, the symbolic max of
-//! `last_time`, and native resume-stack depth-mismatch divergence detection.
+//! `last_time`, the tracked-variable union, and native resume-stack depth-mismatch divergence detection.
 //!
 //! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69).
 
@@ -197,4 +197,28 @@ fn test_native_resume_stack_diverges_detects_depth_mismatch() {
         1,
         "merge must keep self's frame (self-wins), not silently b's empty stack"
     );
+}
+
+// angr-vmi2l.126: a fork inherits the tracked variables minted before it, and
+// a merge keeps both arms' (each once), so the merged state's solver proxy
+// still registers every native symbol under its Python key.
+#[test]
+fn test_merge_keeps_each_arms_tracked_variables_once() {
+    let mut a = RustSimState::new("amd64").unwrap();
+    a.track_variable("rand_0", 31, &["api", "rand"]);
+    let mut b = a.fork();
+    assert_eq!(b.tracked_variables(), a.tracked_variables());
+    a.track_variable("rand_1", 31, &["api", "rand"]);
+    b.track_variable("sys_time_0", 64, &["api", "time"]);
+
+    let m0 = RustBV::symbol("vmi2l_126_m0", 1);
+    let m1 = RustBV::symbol("vmi2l_126_m1", 1);
+    let merged = a.merge(&[&b], &[m0, m1]);
+    let names: Vec<&str> = merged
+        .tracked_variables()
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    assert_eq!(names, ["rand_0", "rand_1", "sys_time_0"]);
+    assert_eq!(merged.tracked_variables()[2].key, ["api", "time"]);
 }

@@ -104,6 +104,7 @@ impl RustSimState {
             process_ids: ProcessIds::default(),
             pending_syscall: None,
             dirtied_code_pages: Arc::default(),
+            tracked_variables: im::Vector::new(),
             exit_code: None,
             exit_pending: false,
             getopt_cursor: GetoptCursor::default(),

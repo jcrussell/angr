@@ -34,6 +34,7 @@ pub(super) fn build_populated_state() -> RustSimState {
     s.set_dirtied_code_pages(Arc::new(
         [crate::memory::PageIndex::of(0x401000)].into_iter().collect(),
     ));
+    s.track_variable("rand_0", 31, &["api", "rand"]);
 
     // Bucket B (registers): one concrete, one symbolic.
     s.set_register("rax", RustBV::concrete(0xdead_beef, 64));

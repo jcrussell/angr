@@ -39,9 +39,11 @@ crate::declare_proc! {
             return Ok(Some(RustBV::concrete(0, 32)));
         }
         Ok(Some(fresh_zero_extended_symbol(
+            state,
             "system_returncode",
             8,
             32,
+            &["api", "system"],
         )))
     }
 }

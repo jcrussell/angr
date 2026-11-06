@@ -278,6 +278,7 @@ impl RustSimState {
             process_ids: self.process_ids,
             pending_syscall: self.pending_syscall,
             dirtied_code_pages: Arc::clone(&self.dirtied_code_pages),
+            tracked_variables: self.tracked_variables.clone(),
             exit_code: self.exit_code.clone(),
             exit_pending: self.exit_pending,
             getopt_cursor: self.getopt_cursor,
@@ -820,6 +821,17 @@ impl RustSimState {
                     }
                 }
                 pages
+            },
+            tracked_variables: {
+                let mut vars = self.tracked_variables.clone();
+                for o in others {
+                    for v in &o.tracked_variables {
+                        if !vars.contains(v) {
+                            vars.push_back(v.clone());
+                        }
+                    }
+                }
+                vars
             },
             exit_code: self.merge_field_exit_code(others),
             exit_pending: self.merge_field_exit_pending(others),

@@ -334,6 +334,16 @@ pub type HostAst = Arc<dyn std::any::Any + Send + Sync>;
 /// values are `Arc`s, so the shared entries cost nothing per fork.
 pub type OverlayMap<V> = im::HashMap<u64, V, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
 
+/// One symbol a native handler minted under a Python variable-tracking key
+/// (see `RustSimState::tracked_variables`): the leaf's name and width, and
+/// the key, whose elements are all strings at every native mint site.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TrackedVariable {
+    pub name: String,
+    pub bits: u32,
+    pub key: Vec<String>,
+}
+
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
@@ -471,6 +481,14 @@ pub struct RustSimState {
     #[merge_policy = "union"]
     #[merge_manual = "set union over a PageIndex set, not a bool OR"]
     dirtied_code_pages: Arc<rustc_hash::FxHashSet<crate::memory::PageIndex>>,
+    /// The symbols native procedures and syscalls minted under one of
+    /// Python's variable-tracking keys, in mint order. Python registers each
+    /// with `solver.register_variable` as it mints it; the solver proxy
+    /// replays these so `get_variables('api', ...)` on a Rust-explored state
+    /// finds them (angr-vmi2l.126). A merge keeps every arm's, deduplicated.
+    #[merge_policy = "union"]
+    #[merge_manual = "deduplicating append over a Vector, not a bool OR"]
+    tracked_variables: im::Vector<TrackedVariable>,
     /// The status a no-return procedure ended this state with, recorded with
     /// its `HistoryEntry::JK_EXIT` entry by `record_exit`. An export replays
     /// it as Python's `terminate` event (angr-mx00p.132.8). Carried across

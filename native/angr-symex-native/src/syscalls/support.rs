@@ -158,10 +158,22 @@ pub(crate) fn fresh_symbolic(prefix: &'static str, width: u32) -> RustBV {
 /// `stub_syscall!` expands to a call to this, as do the partial handlers that
 /// only fall back on their unhandled branches (`futex` wait, `getrlimit` for
 /// resources other than `RLIMIT_STACK`, `fcntl`/`ioctl` on an unknown `cmd`).
-pub(crate) fn symbolic_outcome(state: &RustSimState, prefix: &'static str) -> SyscallOutcome {
+///
+/// `key` is the variable-tracking key Python's proc mints under (see
+/// `procedures::fresh_tracked_symbol`); a stub's is [`syscall_stub_key`].
+pub(crate) fn symbolic_outcome(
+    state: &mut RustSimState,
+    prefix: &'static str,
+    key: &[&str],
+) -> SyscallOutcome {
     let bits = state.arch().bits();
-    let ret = { fresh_symbolic(prefix, bits) };
+    let ret = crate::procedures::fresh_tracked_symbol(state, prefix, bits, key);
     SyscallOutcome::ContinueSymbolic { ret }
+}
+
+/// Python's `stubs/syscall_stub.py` key for the syscall named `label`.
+pub(crate) fn syscall_stub_key(label: &str) -> [&str; 3] {
+    ["syscall", "?", label]
 }
 
 /// Refuse a stream read under `SHORT_READS`, so Python models it (angr-vmi2l.139).
@@ -277,7 +289,11 @@ macro_rules! stub_syscall {
                 state: &mut $crate::state::RustSimState,
                 _args: &[$crate::symbolic::RustBV],
             ) -> Result<$crate::syscalls::SyscallOutcome, $crate::syscalls::SyscallError> {
-                Ok($crate::syscalls::symbolic_outcome(state, $sym_name))
+                Ok($crate::syscalls::symbolic_outcome(
+                    state,
+                    $sym_name,
+                    &$crate::syscalls::syscall_stub_key($label),
+                ))
             }
         }
     };
