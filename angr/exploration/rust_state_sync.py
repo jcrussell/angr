@@ -477,6 +477,24 @@ class RustStateSyncMixin:
                 return (4 if seg.is_readable else 0) | (2 if seg.is_writable else 0) | (1 if seg.is_executable else 0)
         return 7
 
+    @staticmethod
+    def _python_page_perms(page_obj, default: int) -> int:
+        """Return a Python page's permission bits in Rust's `Permission::from_bits` order.
+
+        angr's `PermissionsMixin` keeps R=1, W=2, X=4; Rust wants R=4, W=2,
+        X=1. A page with no bits, or symbolic ones, gets ``default``. Mapping
+        every seed page RWX let STRICT_PAGE_ACCESS / ENABLE_NX accept a write
+        or execute that Python faults (angr-vmi2l.273).
+        """
+        bits = getattr(page_obj, "permission_bits", None)
+        if bits is None:
+            return default
+        if not isinstance(bits, int):
+            if getattr(bits, "symbolic", True):
+                return default
+            bits = bits.concrete_value
+        return (4 if bits & 1 else 0) | (bits & 2) | (1 if bits & 4 else 0)
+
     def _loader_page_bytes(self, page_addr: int, page_size: int) -> bytes | None:
         """Return the loader's bytes for one page, or None if none are backed.
 
@@ -564,7 +582,11 @@ class RustStateSyncMixin:
                         )
                         if not val.symbolic:
                             data = angr_state.solver.eval(val).to_bytes(section.memsize, "big")
-                            rust_state.map_memory_data(section.min_addr, data, 7)
+                            rust_state.map_memory_data(
+                                section.min_addr,
+                                data,
+                                self._loader_page_perms(section.min_addr & ~PAGE_MASK, PAGE_SIZE),
+                            )
 
     def _overlay_python_state_pages(
         self,
@@ -600,7 +622,7 @@ class RustStateSyncMixin:
             with suppress_recoverable():
                 concrete = bytes(page_obj.concrete_load(0, page_size))
                 if len(concrete) == page_size:
-                    rust_state.map_memory_data(page_addr, concrete, 7)
+                    rust_state.map_memory_data(page_addr, concrete, self._python_page_perms(page_obj, 7))
                     state_overlay_count += 1
         if state_overlay_count:
             l.debug(f"Overlaid {state_overlay_count} loader pages with Python state data")
@@ -873,7 +895,7 @@ class RustStateSyncMixin:
                 page_obj = mem_pages.get(page_no)
                 if page_obj is None:
                     continue
-                perms = 6 if stack_start <= page_addr < stack_base else 7
+                perms = self._python_page_perms(page_obj, 6 if stack_start <= page_addr < stack_base else 7)
                 cd = _ultrapage_bytes(page_obj) if page_size == PAGE_SIZE else None
                 if cd is not None:
                     # UltraPage fast path: classify via memcmp on the backing
@@ -1636,6 +1658,27 @@ class RustStateSyncMixin:
         if not dirty_pages:
             return
 
+        # The replay mirrors writes Rust already committed, so it is privileged:
+        # under STRICT_PAGE_ACCESS an unprivileged store into a read-only page
+        # would segfault and be dropped at debug, leaving the mirror stale
+        # (angr-vmi2l.273).
+        state.scratch.push_priv(True)
+        try:
+            self._replay_dirty_page_list(state, dirty_pages)
+        finally:
+            state.scratch.pop_priv()
+
+        try:
+            self._rust_mgr.clear_pending_dirty_tracking(self._current_callback_state_id)
+        except (AttributeError, RuntimeError):
+            # cat-(a) EXPECTED CONTROL FLOW: clear-API missing on older builds;
+            # dirty bits stay set but next replay is idempotent (writes the
+            # same page bytes again).
+            if _DBG:
+                l.debug("clear_pending_dirty_tracking failed after replay")
+
+    def _replay_dirty_page_list(self, state: angr.SimState, dirty_pages) -> None:
+        """Write each dirty page's concrete then symbolic bytes into ``state.memory``."""
         for page_addr in dirty_pages:
             _ffi_ns = 0
             _store_ns = 0
@@ -1755,15 +1798,6 @@ class RustStateSyncMixin:
             _sym_ns = time.perf_counter_ns() - _t0
             _store_ns += _sym_ns
             self._perf_stats.add_replay_page(_ffi_ns, _store_ns, _sym_ns, n_sym)
-
-        try:
-            self._rust_mgr.clear_pending_dirty_tracking(self._current_callback_state_id)
-        except (AttributeError, RuntimeError):
-            # cat-(a) EXPECTED CONTROL FLOW: clear-API missing on older builds;
-            # dirty bits stay set but next replay is idempotent (writes the
-            # same page bytes again).
-            if _DBG:
-                l.debug("clear_pending_dirty_tracking failed after replay")
 
     def _lookup_via_ancestry(self, getter, state_id, what=""):
         """Fetch a falsy-when-empty payload via direct, root, then ancestry lookup.

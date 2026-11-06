@@ -861,7 +861,10 @@ def sim_error_for_rust_message(message: str, error_class: str) -> SimError:
         return SimZeroDivisionException(message)
     m = _SEGFAULT_RE.match(message)
     if m is not None:
-        reason = next((r for perm, r in _SEGFAULT_REASONS if perm in message), "unmapped")
+        # Only the required half names the violated permission: the "have" half
+        # of a write into an R+X page also says "execute: true" (angr-vmi2l.273).
+        required = message.partition("required ")[2].partition(", have ")[0]
+        reason = next((r for perm, r in _SEGFAULT_REASONS if perm in required), "unmapped")
         return SimSegfaultException(int(m.group(1), 16), reason)
     return _SIM_ERROR_BY_CLASS.get(error_class, SimError)(message)
 

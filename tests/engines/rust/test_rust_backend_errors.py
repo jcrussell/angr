@@ -146,6 +146,12 @@ def test_default_routed_resilience_manager_runs_on_rust():
             SimSegfaultException,
             (0x2000, "non-writable"),
         ),
+        (
+            "memory error: permission violation at 0x2000: required Permission { read: false, write: true, "
+            "execute: false }, have Permission { read: true, write: false, execute: true }",
+            SimSegfaultException,
+            (0x2000, "non-writable"),
+        ),
         ("memory error: zero-size memory access at 0x10", SimMemoryError, None),
         ("operation error: shift overflow", SimOperationError, None),
         ("unexecutable VEX trap exit Ijk_SigFPE_IntDiv at 0x400683", SimZeroDivisionException, None),
