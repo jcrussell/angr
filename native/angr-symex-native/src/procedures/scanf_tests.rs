@@ -810,6 +810,24 @@ fn test_scanf_more_conversions_than_pointer_args_falls_back() {
 }
 
 #[test]
+fn test_scanf_wide_string_and_char_fall_back() {
+    // `%ls`/`%lc` store `wchar_t`s, which a narrow native store would not
+    // match (angr-vmi2l.114).
+    for fmt in [&b"%ls\x00"[..], &b"%lc\x00"[..], &b"%*ls%d\x00"[..]] {
+        let mut state = setup_state();
+        state.map_memory_data(0x1000, fmt, Permission::RWX);
+        let args: Vec<_> = std::iter::once(RustBV::concrete(0x1000, 64))
+            .chain((0..MAX_VARARGS as u128).map(|i| RustBV::concrete(0x2000 + 8 * i, 64)))
+            .collect();
+        assert!(
+            scanf_off_stdin(&mut state, &args).is_err(),
+            "{} should defer to Python",
+            String::from_utf8_lossy(fmt)
+        );
+    }
+}
+
+#[test]
 fn test_scanf_scanset_falls_back() {
     // %[...] / %[^...] must defer the whole call to Python (Err), NOT mint a
     // symbolic string natively. Python's ScanfFormatParser.basic_spec has no

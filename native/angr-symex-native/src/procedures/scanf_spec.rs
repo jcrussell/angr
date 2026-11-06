@@ -16,7 +16,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
-use super::format_common::{parse_length_modifier, parse_width_digits};
+use super::format_common::{LengthModifier, parse_length_modifier, parse_width_digits};
 use super::strings::MAX_SYMBOLIC_SCAN_BYTES;
 
 /// Clamp on an explicit field width (`%<w>s`, `%<w>d`), so a huge digit run
@@ -166,6 +166,14 @@ pub(super) fn parse_scanf_format(
 
         let spec = fmt[i];
         i += 1;
+        // `%ls`/`%lc` store `wchar_t`s; Python's `ScanfFormatParser` has no
+        // wide entry either, so a narrow native store would match neither
+        // reference (angr-vmi2l.114).
+        if matches!(spec, b's' | b'c') && modifier != LengthModifier::None {
+            return Err(ProcedureError::Other(
+                "scanf %s/%c with a length modifier defers to Python".to_string(),
+            ));
+        }
         let width = has_width.then_some(field_width);
         let literal_before = std::mem::take(&mut literal);
 

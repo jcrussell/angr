@@ -1057,6 +1057,19 @@ fn test_sprintf_string_width_is_ignored() {
 }
 
 #[test]
+fn test_sprintf_wide_string_and_char_fall_back() {
+    // `%ls`/`%lc` take wide arguments that neither glibc nor Python render as
+    // narrow bytes (angr-vmi2l.114).
+    for fmt in [b"[%ls]\x00".as_slice(), b"[%lc]\x00".as_slice()] {
+        assert!(
+            render(fmt, &[0x3000]).is_err(),
+            "{} should defer to Python",
+            String::from_utf8_lossy(fmt)
+        );
+    }
+}
+
+#[test]
 fn test_sprintf_char_zero_pad_uses_zeros() {
     // `FormatString.replace` pads `%c` with `pad_chr`: "%03c" is "00A",
     // where glibc gives "  A" (angr-vmi2l.115).

@@ -7,6 +7,7 @@
 //! the specifier shape — an unsigned operand with its high bit set, an
 //! unterminated `%s` string — is decided here.
 
+use super::format_common::LengthModifier;
 use super::sprintf_spec::ConversionSpec;
 use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded};
 use super::{ProcedureError, extract_concrete_arg};
@@ -135,6 +136,14 @@ pub(super) fn render_conversion(
     arch_bits: u32,
     output: &mut Vec<u8>,
 ) -> Result<(), ProcedureError> {
+    // `%ls`/`%lc` take `wchar_t*`/`wint_t`: glibc renders the wide string
+    // and Python's `_match_spec` emits the literal, so a narrow native render
+    // matches neither (angr-vmi2l.114).
+    if matches!(cspec.conv, b's' | b'c') && cspec.modifier != LengthModifier::None {
+        return Err(ProcedureError::Other(
+            "%s/%c with a length modifier defers to Python".to_string(),
+        ));
+    }
     match cspec.conv {
         b'd' | b'i' => {
             let val = next_arg(args, arg_idx, "int arg")?;
