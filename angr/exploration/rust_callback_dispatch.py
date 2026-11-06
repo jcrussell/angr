@@ -1598,15 +1598,10 @@ class RustCallbackDispatchMixin:
         # Create a state for syscall handling (uses cached state if available)
         state = self._create_state_for_callback(event)
         if state is None:
-            l.warning(f"Could not create state for syscall {syscall_num}")
-            # Continue after syscall
-            pc = self._rust_mgr.get_pending_register(state_id, "rip") or 0
-            self._rust_mgr.resume_after_syscall(state_id, pc + 1, None, None)
+            # Nothing executed the syscall, so the state cannot continue past
+            # it (angr-vmi2l.156).
+            self._rust_mgr.resume_after_error(state_id, f"could not create a state for syscall {syscall_num}")
             return
-
-        # The pc to skip to if the syscall fails, read now: once the
-        # successors settle, ``state``'s own proxies may be released.
-        syscall_pc = state.addr
 
         # Run the syscall
         try:
@@ -1699,18 +1694,21 @@ class RustCallbackDispatchMixin:
                 for succ, fork_id in extras:
                     self._add_forked_state(succ, fork_id)
             else:
-                self._rust_mgr.resume_after_syscall(state_id, syscall_pc + 1, None, None)
+                # No successors at all: SimulationManager files nothing, so
+                # the state ends here (angr-vmi2l.156).
+                self._rust_mgr.deadend_pending_callback(state_id)
 
         except MemoryError:
             raise
         except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: syscall execution raised; we resume
-            # at PC+1 rather than re-running the syscall, discarding every
-            # register/memory change the syscall made. Counted so a run that
-            # hit this path is identifiable from stats() (angr-89w70).
+            # The syscall procedure raised. The Python engine errors the state
+            # with that exception, as the resolve-error branch above does;
+            # resuming past the syscall would run on with none of its effects
+            # (angr-vmi2l.156). Counted so a run that hit this path is
+            # identifiable from stats() (angr-89w70).
             self._perf_stats.record_syscall_error()
             l.warning(f"Syscall execution error: {e}")
-            self._rust_mgr.resume_after_syscall(state_id, syscall_pc + 1, None, None)
+            self._rust_mgr.resume_after_error(state_id, f"{type(e).__name__}: {e}")
         finally:
             # Clear callback state to avoid stale references
             self._set_callback_state(None)
