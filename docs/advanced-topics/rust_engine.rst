@@ -2065,7 +2065,11 @@ the rest fire read-only (mutations are ignored).
   ``when='before'`` (pre-commit, injection point) and ``when='after'``
   (post-commit, informational). The override is width-guarded against
   ``mem_write_length * 8`` exactly like ``mem_read_expr``; a mismatch is
-  rejected and the original value is stored.
+  rejected and the original value is stored. A guarded ``IRStmt::StoreG``
+  (an ARM ``strhi``) fires the same pair, and a guarded ``IRStmt::LoadG``
+  fires ``mem_read``, unless the guard is provably false; the guard is
+  ``mem_write_condition`` / ``mem_read_condition`` (``guard == 1``), as in
+  Python angr, and ``None`` for an unguarded access (angr-vmi2l.337).
 * ``dirty_result`` — a ``dirty`` BP_AFTER that assigns
   ``state.inspect.dirty_result`` replaces the dirty handler's return
   value before it is concretized and handed back to the interpreter.

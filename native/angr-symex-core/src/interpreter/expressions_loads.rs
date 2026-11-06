@@ -43,7 +43,7 @@ impl<'a> VEXInterpreter<'a> {
         let value = self.load_layered(callbacks, &addr_val, size, load_start)?;
 
         if let Some(injected) =
-            self.dispatch_mem_read_inspect(callbacks, &addr_val, &value, size, endness)
+            self.dispatch_mem_read_inspect(callbacks, &addr_val, &value, size, endness, None)
         {
             return Ok(injected);
         }

@@ -248,6 +248,7 @@ impl EngineHost for TestHost {
         _size: u32,
         _value: &RustBV,
         _endness: &str,
+        _condition: Option<&RustBV>,
     ) -> Option<RustBV> {
         None
     }
@@ -261,6 +262,7 @@ impl EngineHost for TestHost {
         _size: u32,
         _value: &RustBV,
         _endness: &str,
+        _condition: Option<&RustBV>,
     ) -> Option<RustBV> {
         None
     }

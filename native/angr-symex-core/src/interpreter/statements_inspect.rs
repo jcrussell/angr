@@ -30,6 +30,14 @@ impl<'a> VEXInterpreter<'a> {
     /// caller substitutes it for the stored value. Returns `None` when
     /// unchanged (and always for `when='after'`, post-commit), so the
     /// original store value stands.
+    ///
+    /// `condition` is a `StoreG`'s guard (`None` for a plain `Store`): Python
+    /// fires `mem_write` for every guarded store whose guard is not provably
+    /// false, with the guard as `mem_write_condition`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per breakpoint attr"
+    )]
     pub(super) fn dispatch_mem_write_inspect(
         &self,
         callbacks: &dyn EngineHost,
@@ -37,6 +45,7 @@ impl<'a> VEXInterpreter<'a> {
         data_val: &RustBV,
         data_size: usize,
         endness: Endness,
+        condition: Option<&RustBV>,
         when: &str,
     ) -> Option<RustBV> {
         if !self.inspect_enabled(callbacks, InspectBit::MemWrite) {
@@ -59,6 +68,7 @@ impl<'a> VEXInterpreter<'a> {
                 data_size as u32,
                 data_val,
                 endness_str,
+                condition,
             )
         })?;
         if bv.width() == (data_size * 8) as u32 {

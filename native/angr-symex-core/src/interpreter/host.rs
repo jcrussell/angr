@@ -137,6 +137,7 @@ pub trait EngineHost {
         size: u32,
         value: &RustBV,
         endness: &str,
+        condition: Option<&RustBV>,
     ) -> Option<RustBV>;
     #[allow(
         clippy::too_many_arguments,
@@ -144,6 +145,8 @@ pub trait EngineHost {
     )]
     /// `addr` is the store's address as the block computed it, symbolic
     /// included: Python's `mem_write` BP sees it before concretization.
+    /// `condition` is a guarded access's 1-bit guard (`StoreG` / `LoadG`),
+    /// `None` for a plain one; the host exposes it as `mem_*_condition`.
     fn inspect_mem_write(
         &self,
         ctx: &SymContext,
@@ -153,6 +156,7 @@ pub trait EngineHost {
         size: u32,
         value: &RustBV,
         endness: &str,
+        condition: Option<&RustBV>,
     ) -> Option<RustBV>;
     fn inspect_reg_read(&self, state_id: i64, when: &str, offset: u32, size: u32, value: &RustBV);
     fn inspect_reg_write(&self, state_id: i64, when: &str, offset: u32, size: u32, value: &RustBV);

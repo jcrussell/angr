@@ -162,6 +162,13 @@ inspect_dispatch! {
     /// injection); `None` when unchanged, no breakpoint fired,
     /// or no callback is registered. The caller converts a returned AST
     /// back to a `RustBV` and substitutes it for the loaded value.
+    ///
+    /// `condition_ast` is a guarded load's 1-bit guard, passed as Python
+    /// `None` for a plain load.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per breakpoint attr"
+    )]
     pub(crate) fn mem_read(
         &self,
         state_id: i64,
@@ -170,10 +177,15 @@ inspect_dispatch! {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
+        condition_ast: Option<&Py<PyAny>>,
     ) -> PyResult<Option<Py<PyAny>>> {
         self.with_slot(None, |py, cb| {
             let value_obj = opt_ast_or_none(py, value_ast);
-            let ret = cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+            let condition_obj = opt_ast_or_none(py, condition_ast);
+            let ret = cb.call1(
+                py,
+                (state_id, when, addr, size, value_obj, endness, condition_obj),
+            )?;
             if ret.is_none(py) {
                 Ok(None)
             } else {
@@ -187,7 +199,12 @@ inspect_dispatch! {
     /// user's `mem_write_expr` override to substitute for the stored value
     /// (angr-inh0) — and `when='after'` (post-store), where the return is
     /// informational only. See `dispatch_mem_write_inspect`.
-    /// `addr` is an int, or a claripy AST for a symbolic address.
+    /// `addr` is an int, or a claripy AST for a symbolic address;
+    /// `condition_ast` is as for `call_inspect_mem_read`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per breakpoint attr"
+    )]
     pub(crate) fn mem_write(
         &self,
         state_id: i64,
@@ -196,10 +213,15 @@ inspect_dispatch! {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
+        condition_ast: Option<&Py<PyAny>>,
     ) -> PyResult<Option<Py<PyAny>>> {
         self.with_slot(None, |py, cb| {
             let value_obj = opt_ast_or_none(py, value_ast);
-            let ret = cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
+            let condition_obj = opt_ast_or_none(py, condition_ast);
+            let ret = cb.call1(
+                py,
+                (state_id, when, addr, size, value_obj, endness, condition_obj),
+            )?;
             if ret.is_none(py) {
                 Ok(None)
             } else {

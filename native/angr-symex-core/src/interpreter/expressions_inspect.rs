@@ -34,6 +34,9 @@ impl<'a> VEXInterpreter<'a> {
     /// `state.inspect.mem_read_expr` (value injection; angr-uy32); the
     /// caller substitutes it for the loaded value. Returns `None` when the
     /// value is unchanged, so the original load result stands.
+    ///
+    /// `condition` is a `LoadG`'s guard (`None` for a plain `Load`), exposed
+    /// as `mem_read_condition` like Python's guarded load.
     pub(super) fn dispatch_mem_read_inspect(
         &self,
         callbacks: &dyn EngineHost,
@@ -41,6 +44,7 @@ impl<'a> VEXInterpreter<'a> {
         value: &RustBV,
         size: usize,
         endness: Endness,
+        condition: Option<&RustBV>,
     ) -> Option<RustBV> {
         if !self.inspect_enabled(callbacks, InspectBit::MemRead) {
             return None;
@@ -62,6 +66,7 @@ impl<'a> VEXInterpreter<'a> {
                 size as u32,
                 value,
                 endness_str,
+                condition,
             )
         })?;
         if bv.width() == (size * 8) as u32 {

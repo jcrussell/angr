@@ -68,12 +68,12 @@ fn unset_inspect_callbacks_are_ok() {
         let guard = crate::symbolic::RustBV::concrete(1, 1);
 
         assert!(
-            cb.call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE")
+            cb.call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE", None)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            cb.call_inspect_mem_write(1, "before", &addr, 4, None, "Iend_LE")
+            cb.call_inspect_mem_write(1, "before", &addr, 4, None, "Iend_LE", None)
                 .unwrap()
                 .is_none()
         );
@@ -112,8 +112,8 @@ fn mem_read_maps_none_return_to_none_and_object_to_some() {
         let globals = defs(
             py,
             c"_calls = []
-def bp(state_id, when, addr, size, value, endness):
-    _calls.append((state_id, when, addr, size, value, endness))
+def bp(state_id, when, addr, size, value, endness, condition):
+    _calls.append((state_id, when, addr, size, value, endness, condition))
     return 'substituted' if addr == 0x2000 else None
 ",
         );
@@ -121,13 +121,13 @@ def bp(state_id, when, addr, size, value, endness):
         cb.set_inspect_mem_read(obj(&globals, "bp"));
 
         assert!(
-            cb.call_inspect_mem_read(7, "before", 0x1000, 4, None, "Iend_LE")
+            cb.call_inspect_mem_read(7, "before", 0x1000, 4, None, "Iend_LE", None)
                 .unwrap()
                 .is_none(),
             "a None return means 'unchanged'"
         );
         let injected = cb
-            .call_inspect_mem_read(7, "after", 0x2000, 4, None, "Iend_BE")
+            .call_inspect_mem_read(7, "after", 0x2000, 4, None, "Iend_BE", None)
             .unwrap()
             .expect("substituted AST must be returned to the caller");
         assert_eq!(injected.extract::<String>(py).unwrap(), "substituted");
@@ -146,6 +146,8 @@ def bp(state_id, when, addr, size, value, endness):
         );
         // A `None` value_ast is passed through as Python None, not omitted.
         assert!(first.get_item(4).unwrap().is_none());
+        // So is a plain load's `None` condition.
+        assert!(first.get_item(6).unwrap().is_none());
     });
 }
 
@@ -159,7 +161,7 @@ fn mem_write_passes_both_fire_directions() {
         let globals = defs(
             py,
             c"_whens = []
-def bp(state_id, when, addr, size, value, endness):
+def bp(state_id, when, addr, size, value, endness, condition):
     _whens.append(when)
     return None
 ",
@@ -169,9 +171,9 @@ def bp(state_id, when, addr, size, value, endness):
 
         let value = py.None();
         let addr = 0x1000u64.into_pyobject(py).unwrap().into_any().unbind();
-        cb.call_inspect_mem_write(1, "before", &addr, 8, Some(&value), "Iend_LE")
+        cb.call_inspect_mem_write(1, "before", &addr, 8, Some(&value), "Iend_LE", None)
             .unwrap();
-        cb.call_inspect_mem_write(1, "after", &addr, 8, Some(&value), "Iend_LE")
+        cb.call_inspect_mem_write(1, "after", &addr, 8, Some(&value), "Iend_LE", None)
             .unwrap();
 
         let whens: Vec<String> = recorder(&globals, "_whens").extract().unwrap();
@@ -307,7 +309,7 @@ fn inspect_errors_from_the_bp_action_propagate() {
         assert!(err.to_string().contains("bp exploded"), "got {err}");
 
         let err = cb
-            .call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE")
+            .call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE", None)
             .expect_err("BP exception must propagate");
         assert!(err.to_string().contains("bp exploded"), "got {err}");
     });
@@ -424,7 +426,7 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
         event: "mem_read",
         set: PythonCallbacks::set_inspect_mem_read,
         invoke: |cb| {
-            cb.call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE")
+            cb.call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE", None)
                 .map(drop)
         },
     },
@@ -433,7 +435,7 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
         set: PythonCallbacks::set_inspect_mem_write,
         invoke: |cb| {
             let addr = Python::attach(|py| 0x1000u64.into_pyobject(py).unwrap().into_any().unbind());
-            cb.call_inspect_mem_write(1, "before", &addr, 4, None, "Iend_LE")
+            cb.call_inspect_mem_write(1, "before", &addr, 4, None, "Iend_LE", None)
                 .map(drop)
         },
     },

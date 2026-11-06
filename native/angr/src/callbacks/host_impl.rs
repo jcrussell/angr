@@ -199,10 +199,23 @@ impl EngineHost for PythonCallbacks {
         size: u32,
         value: &RustBV,
         endness: &str,
+        condition: Option<&RustBV>,
     ) -> Option<RustBV> {
         let value_ast = to_claripy(value)?;
+        let condition_ast = match condition {
+            Some(guard) => Some(to_claripy(guard)?),
+            None => None,
+        };
         let mutated = self
-            .call_inspect_mem_read(state_id, when, addr, size, Some(&value_ast), endness)
+            .call_inspect_mem_read(
+                state_id,
+                when,
+                addr,
+                size,
+                Some(&value_ast),
+                endness,
+                condition_ast.as_ref(),
+            )
             .ok()??;
         from_claripy_any(ctx, &mutated)
     }
@@ -216,8 +229,13 @@ impl EngineHost for PythonCallbacks {
         size: u32,
         value: &RustBV,
         endness: &str,
+        condition: Option<&RustBV>,
     ) -> Option<RustBV> {
         let value_ast = to_claripy(value)?;
+        let condition_ast = match condition {
+            Some(guard) => Some(to_claripy(guard)?),
+            None => None,
+        };
         let addr_obj = match addr.as_u64() {
             Some(addr) => {
                 Python::attach(|py| addr.into_pyobject(py).map(|a| a.into_any().unbind())).ok()?
@@ -225,7 +243,15 @@ impl EngineHost for PythonCallbacks {
             None => to_claripy(addr)?,
         };
         let mutated = self
-            .call_inspect_mem_write(state_id, when, &addr_obj, size, Some(&value_ast), endness)
+            .call_inspect_mem_write(
+                state_id,
+                when,
+                &addr_obj,
+                size,
+                Some(&value_ast),
+                endness,
+                condition_ast.as_ref(),
+            )
             .ok()??;
         from_claripy_any(ctx, &mutated)
     }

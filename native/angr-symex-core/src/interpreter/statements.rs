@@ -24,6 +24,7 @@ pub(super) struct LoadGArgs<'s> {
     pub(super) addr: &'s IRExpr,
     pub(super) alt: &'s IRExpr,
     pub(super) cvt: &'s IRLoadGOp,
+    pub(super) endness: Endness,
 }
 
 /// Tristate classification of a guarded statement's guard expression.
@@ -189,7 +190,7 @@ impl<'a> VEXInterpreter<'a> {
                 // the store; data_size is unchanged because the guard rejects a
                 // width mismatch.
                 if let Some(injected) = self.dispatch_mem_write_inspect(
-                    callbacks, &addr_val, &data_val, data_size, *endness, "before",
+                    callbacks, &addr_val, &data_val, data_size, *endness, None, "before",
                 ) {
                     data_val = injected;
                 }
@@ -208,7 +209,7 @@ impl<'a> VEXInterpreter<'a> {
                         self.stats.rust_memory_store_count += 1;
                     }
                     self.dispatch_mem_write_inspect(
-                        callbacks, &addr_val, &data_val, data_size, *endness, "after",
+                        callbacks, &addr_val, &data_val, data_size, *endness, None, "after",
                     );
                     return Ok(StmtResult::Continue);
                 }
@@ -223,7 +224,7 @@ impl<'a> VEXInterpreter<'a> {
                 record_mem_store(data_size as u64);
                 self.fallback_to_python_store(callbacks, &addr_val, data_val.clone(), data_size)?;
                 self.dispatch_mem_write_inspect(
-                    callbacks, &addr_val, &data_val, data_size, *endness, "after",
+                    callbacks, &addr_val, &data_val, data_size, *endness, None, "after",
                 );
                 Ok(StmtResult::Continue)
             }
@@ -260,8 +261,11 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             IRStmt::StoreG {
-                guard, addr, data, ..
-            } => self.handle_storeg(callbacks, guard, addr, data, irsb),
+                guard,
+                addr,
+                data,
+                endness,
+            } => self.handle_storeg(callbacks, guard, addr, data, *endness, irsb),
 
             IRStmt::LoadG {
                 dst,
@@ -269,7 +273,7 @@ impl<'a> VEXInterpreter<'a> {
                 addr,
                 alt,
                 cvt,
-                ..
+                endness,
             } => self.handle_loadg(
                 callbacks,
                 LoadGArgs {
@@ -278,6 +282,7 @@ impl<'a> VEXInterpreter<'a> {
                     addr,
                     alt,
                     cvt,
+                    endness: *endness,
                 },
                 irsb,
             ),
@@ -580,63 +585,81 @@ impl<'a> VEXInterpreter<'a> {
     /// (symbolic always-false/always-true/both via ITE, plus concrete guard),
     /// with symbolic-address concretization fallbacks. Extracted verbatim from
     /// `execute_stmt_with_callbacks` (cudgw.18).
+    ///
+    /// A store whose guard is not provably false fires `mem_write` before and
+    /// after like a plain `Store`, with the guard as `mem_write_condition`,
+    /// as Python's `memory.store(.., condition=guard)` does (angr-vmi2l.337).
     fn handle_storeg(
         &mut self,
         callbacks: &dyn EngineHost,
         guard: &IRExpr,
         addr: &IRExpr,
         data: &IRExpr,
+        endness: Endness,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
         // Evaluate guard condition
         let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
-
-        match self.classify_guard(&guard_val) {
-            // Guard is false - skip the store.
-            GuardClass::Never => return Ok(StmtResult::Continue),
-            GuardClass::Always => {
-                // Guard is true - the store is semantically identical to a plain
-                // IRStmt::Store of data_val at addr_val. Route through the shared
-                // dispatcher (angr-myzjx.26): this replaces a near-verbatim clone of
-                // handle_symbolic_store's concretization ladder that (a) never
-                // invalidated the code cache or evicted overlapping symbolic
-                // shadows, and (b) stored concrete data at a symbolic address via
-                // call_memory_store(0, ..) — a hard-coded address 0.
-                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-                let data_size = data_val.width().div_ceil(8) as usize;
-                self.store_value(callbacks, &addr_val, data_val, data_size)?;
-                return Ok(StmtResult::Continue);
-            }
-            GuardClass::Symbolic => {
-                // Both paths possible with symbolic guard - use ITE for conditional store
-                // Store ITE(guard, new_data, current_data)
-                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-                let data_size = data_val.width().div_ceil(8) as usize;
-
-                if let Some(addr_concrete) = addr_val.as_u64() {
-                    self.store_guarded_ite(
-                        callbacks,
-                        addr_concrete,
-                        &guard_val,
-                        &data_val,
-                        data_size,
-                        GuardedStoreAddr::Literal,
-                    )?;
-                } else {
-                    self.store_guarded_symbolic_addr(
-                        callbacks,
-                        &addr_val,
-                        &guard_val,
-                        &data_val,
-                        &data_val,
-                        "guarded store",
-                    )?;
-                }
-            }
+        let guard_class = self.classify_guard(&guard_val);
+        // Guard is false - skip the store.
+        if guard_class == GuardClass::Never {
+            return Ok(StmtResult::Continue);
+        }
+        let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+        let mut data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
+        let data_size = data_val.width().div_ceil(8) as usize;
+        if let Some(injected) = self.dispatch_mem_write_inspect(
+            callbacks,
+            &addr_val,
+            &data_val,
+            data_size,
+            endness,
+            Some(&guard_val),
+            "before",
+        ) {
+            data_val = injected;
         }
 
+        if guard_class == GuardClass::Always {
+            // Guard is true - the store is semantically identical to a plain
+            // IRStmt::Store of data_val at addr_val. Route through the shared
+            // dispatcher (angr-myzjx.26): this replaces a near-verbatim clone of
+            // handle_symbolic_store's concretization ladder that (a) never
+            // invalidated the code cache or evicted overlapping symbolic
+            // shadows, and (b) stored concrete data at a symbolic address via
+            // call_memory_store(0, ..) — a hard-coded address 0.
+            self.store_value(callbacks, &addr_val, data_val.clone(), data_size)?;
+        } else if let Some(addr_concrete) = addr_val.as_u64() {
+            // Both paths possible with symbolic guard - use ITE for conditional store
+            // Store ITE(guard, new_data, current_data)
+            self.store_guarded_ite(
+                callbacks,
+                addr_concrete,
+                &guard_val,
+                &data_val,
+                data_size,
+                GuardedStoreAddr::Literal,
+            )?;
+        } else {
+            self.store_guarded_symbolic_addr(
+                callbacks,
+                &addr_val,
+                &guard_val,
+                &data_val,
+                &data_val,
+                "guarded store",
+            )?;
+        }
+
+        self.dispatch_mem_write_inspect(
+            callbacks,
+            &addr_val,
+            &data_val,
+            data_size,
+            endness,
+            Some(&guard_val),
+            "after",
+        );
         Ok(StmtResult::Continue)
     }
 
@@ -656,6 +679,7 @@ impl<'a> VEXInterpreter<'a> {
             addr,
             alt,
             cvt,
+            endness,
         } = args;
         // Evaluate guard condition
         let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
@@ -685,22 +709,29 @@ impl<'a> VEXInterpreter<'a> {
         let result = match self.classify_guard(&guard_val) {
             // Guard is false - the load never happens; take the alt value.
             GuardClass::Never => alt_val,
-            GuardClass::Always => {
-                // Guard is true - perform the load unconditionally.
+            guard_class => {
+                // The guard can be true: load, and fire `mem_read` with the
+                // guard as `mem_read_condition`, as Python's guarded load
+                // does (angr-vmi2l.337).
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let loaded = self.load_layered(callbacks, &addr_val, load_size, None)?;
-                self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
-            }
-            GuardClass::Symbolic => {
-                // Both paths possible - evaluate address and load, then ITE
-                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let loaded = self.load_layered(callbacks, &addr_val, load_size, None)?;
-
-                // Apply conversion to loaded value
+                let mut loaded = self.load_layered(callbacks, &addr_val, load_size, None)?;
+                if let Some(injected) = self.dispatch_mem_read_inspect(
+                    callbacks,
+                    &addr_val,
+                    &loaded,
+                    load_size,
+                    endness,
+                    Some(&guard_val),
+                ) {
+                    loaded = injected;
+                }
                 let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
-
-                // Create ITE: if guard then loaded else alt
-                guard_val.ite(&converted, &alt_val)
+                if guard_class == GuardClass::Always {
+                    converted
+                } else {
+                    // Both paths possible: if guard then loaded else alt
+                    guard_val.ite(&converted, &alt_val)
+                }
             }
         };
 

@@ -34,7 +34,11 @@ inspect_test_entries! {
     PythonCallbacks =>
 
     /// Test entry point: invoke the registered mem_read callback directly.
-    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per breakpoint attr"
+    )]
+    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness, condition_ast=None))]
     pub fn mem_read(
         &self,
         state_id: i64,
@@ -43,12 +47,17 @@ inspect_test_entries! {
         size: u32,
         value_ast: Option<Py<PyAny>>,
         endness: &str,
+        condition_ast: Option<Py<PyAny>>,
     ) -> PyResult<Option<Py<PyAny>>> {
-        self.forward(state_id, when, addr, size, value_ast.as_ref(), endness)
+        self.forward(state_id, when, addr, size, value_ast.as_ref(), endness, condition_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered mem_write callback directly.
-    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per breakpoint attr"
+    )]
+    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness, condition_ast=None))]
     pub fn mem_write(
         &self,
         state_id: i64,
@@ -57,8 +66,9 @@ inspect_test_entries! {
         size: u32,
         value_ast: Option<Py<PyAny>>,
         endness: &str,
+        condition_ast: Option<Py<PyAny>>,
     ) -> PyResult<Option<Py<PyAny>>> {
-        self.forward(state_id, when, &addr, size, value_ast.as_ref(), endness)
+        self.forward(state_id, when, &addr, size, value_ast.as_ref(), endness, condition_ast.as_ref())
     }
 
     /// Test entry point: invoke the registered reg_read callback directly.

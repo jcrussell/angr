@@ -3020,13 +3020,17 @@ class RustExplorationManager(
         size: int,
         value_ast,
         endness: str,
+        condition=None,
     ):
         """PyO3 callback target for mem_read events from Rust.
 
         Returns the possibly-mutated ``mem_read_expr`` AST when the user's
         BP action overrode it (value injection, angr-uy32); the Rust caller
         substitutes it for the loaded value. Returns ``None`` when unchanged,
-        so the original load result stands.
+        so the original load result stands. ``condition`` is a guarded
+        load's 1-bit guard (``None`` for a plain load); it becomes
+        ``mem_read_condition`` as ``guard == 1``, the Bool Python's VEX
+        engine passes.
         """
         return self._fire_inspect_event(
             "mem_read",
@@ -3038,6 +3042,7 @@ class RustExplorationManager(
             mem_read_length=size,
             mem_read_expr=value_ast,
             mem_read_endness=endness,
+            mem_read_condition=None if condition is None else condition == 1,
         )
 
     def _cb_inspect_mem_write(
@@ -3048,6 +3053,7 @@ class RustExplorationManager(
         size: int,
         value_ast,
         endness: str,
+        condition=None,
     ):
         """PyO3 callback target for mem_write events from Rust.
 
@@ -3055,7 +3061,8 @@ class RustExplorationManager(
         action overrode it (value injection, angr-inh0); the Rust caller
         substitutes it for the stored value before commit. Returns ``None``
         when unchanged (and always for ``when='after'``, post-commit), so the
-        original store value stands.
+        original store value stands. ``condition`` is as for
+        ``_cb_inspect_mem_read``.
         """
         return self._fire_inspect_event(
             "mem_write",
@@ -3067,6 +3074,7 @@ class RustExplorationManager(
             mem_write_length=size,
             mem_write_expr=value_ast,
             mem_write_endness=endness,
+            mem_write_condition=None if condition is None else condition == 1,
         )
 
     def _cb_inspect_reg_read(
