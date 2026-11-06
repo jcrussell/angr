@@ -50,6 +50,7 @@ Run it:
 from __future__ import annotations
 
 import os
+import subprocess
 
 import angr
 from angr import claripy
@@ -92,6 +93,11 @@ def solve():
 def test():
     sm = solve()
     assert sm.found, "did not reach the all-digits win path within the step budget"
+    # Replay the found stdin on the real binary (angr-vmi2l.120): reaching win
+    # is not enough if the recorded stdin does not drive the binary there.
+    stdin = sm.found[0].posix.dumps(0)
+    out = subprocess.run([_binary_path()], input=stdin, capture_output=True, timeout=10, check=False).stdout
+    assert b"ALL DIGITS" in out, f"replaying stdin {stdin!r} printed {out!r}"
 
 
 if __name__ == "__main__":

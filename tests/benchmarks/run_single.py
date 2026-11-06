@@ -19,6 +19,8 @@ import multiprocessing
 import os
 import sys
 
+from replay_oracle import REPLAY_ORACLES, host_can_replay, replay
+
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 # Synthetic examples shipped in-repo (e.g. inline-ELF benchmarks for arches
 # without binaries in angr-examples — MIPS, ARM64, etc.). Searched as a
@@ -472,7 +474,27 @@ def _run_in_child(
                 test_fn = getattr(module, "test", None)
                 if test_fn is None:
                     raise RuntimeError("solve.py defines no test() oracle")
+                replay_spec = REPLAY_ORACLES.get(example_name) if host_can_replay() else None
+                found_stdins = []
+                if replay_spec is not None:
+                    # test() looks its entry up in the module globals, so
+                    # this wrapper sees every answer it checks.
+                    bench_main = getattr(module, replay_spec.entry)
+
+                    def _recording_main(*a, **kw):
+                        result = bench_main(*a, **kw)
+                        found_stdins.append(result)
+                        return result
+
+                    setattr(module, replay_spec.entry, _recording_main)
                 test_fn()
+                if replay_spec is not None:
+                    if not found_stdins:
+                        raise AssertionError(f"replay oracle: test() never called {replay_spec.entry}()")
+                    for found_stdin in found_stdins:
+                        replay_error = replay(replay_spec, example_dir, found_stdin)
+                        if replay_error is not None:
+                            raise AssertionError(f"replay oracle: {replay_error}")
         except MemoryError:
             sys.stdout = original_stdout
             elapsed = time.perf_counter() - start
