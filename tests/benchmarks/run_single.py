@@ -19,6 +19,10 @@ import multiprocessing
 import os
 import sys
 
+# replay_oracle is a sibling script, not a package member; a caller that loads
+# this file by path (test_misc.py's TestCounterParity) has no script dir on
+# sys.path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from replay_oracle import REPLAY_ORACLES, host_can_replay, replay
 
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")

@@ -55,7 +55,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -185,11 +185,14 @@ pub struct SymContext {
     /// check (angr-vmi2l.318). Same invariant and invalidation as
     /// `model_cache`, which it is promoted into when that one goes stale.
     pub(super) alt_model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
-    /// List of Z3 tracking boolean constants for unsat core mapping.
-    /// Each entry is a (track_bool, constraint_ast) pair.
+    /// `(track_bool, constraint)` pairs for unsat core mapping; a tracker's
+    /// position is the index `unsat_core` reports. Each constraint is also
+    /// in the z3 assertion log once, so the cold-start replay in
+    /// [`Self::solver`] re-tracks it, and `fork` clones the list so a child
+    /// keeps the parent's index space (angr-vmi2l.91).
     /// `pub(super)` for `add_constraint_tracked_indexed` in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
-    pub(super) constraint_trackers: Mutex<Vec<z3::ast::Bool>>,
+    pub(super) constraint_trackers: Mutex<Vec<(z3::ast::Bool, z3::ast::Bool)>>,
     /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
     /// `pub(super)` for `set_timeout`/`timeout_ms` in `transaction_ops.rs`
     /// (slice 10, angr-a2br.2.8).
@@ -362,17 +365,37 @@ impl SymContext {
     pub(super) fn solver(&self) -> parking_lot::MappedMutexGuard<'_, z3::Solver> {
         let mut guard = self.solver.lock();
         if guard.is_none() {
+            use z3::ast::Ast;
             let start = std::time::Instant::now();
             let new_solver = build_solver(self.timeout_ms.load(Ordering::SeqCst));
 
-            // Replay cached Z3 assertions: shared prefix then local additions
+            // Replay cached Z3 assertions: shared prefix then local additions.
+            // A tracked constraint is replayed with its tracker, one log
+            // entry per tracker, so an identical untracked copy stays plain
+            // (angr-vmi2l.91).
+            let mut pending: HashMap<usize, VecDeque<z3::ast::Bool>> = HashMap::new();
+            for (tracker, constraint) in self.constraint_trackers.lock().iter() {
+                pending
+                    .entry(constraint.get_z3_ast().as_ptr() as usize)
+                    .or_default()
+                    .push_back(tracker.clone());
+            }
+            let mut replay = |constraint: &z3::ast::Bool| {
+                let tracker = pending
+                    .get_mut(&(constraint.get_z3_ast().as_ptr() as usize))
+                    .and_then(VecDeque::pop_front);
+                match tracker {
+                    Some(t) => new_solver.assert_and_track(constraint, &t),
+                    None => new_solver.assert(constraint),
+                }
+            };
             let shared = Arc::clone(&self.z3_assertions_shared.lock());
             for constraint in shared.iter() {
-                new_solver.assert(constraint);
+                replay(constraint);
             }
             let local = self.local_constraints.lock();
             for constraint in local.z3_assertions.iter() {
-                new_solver.assert(constraint);
+                replay(constraint);
             }
 
             *guard = Some(new_solver);

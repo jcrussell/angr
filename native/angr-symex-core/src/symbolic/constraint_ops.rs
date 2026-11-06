@@ -545,13 +545,6 @@ impl SymContext {
         let track_name = format!("__track_{idx}");
         let track_bool = z3::ast::Bool::new_const(track_name.as_str());
 
-        let tracker_idx = {
-            let mut trackers = self.constraint_trackers.lock();
-            let i = trackers.len();
-            trackers.push(track_bool.clone());
-            i
-        };
-
         // angr-sqfj8.101: every other adder (`add_constraint_raw_inner`,
         // `add_constraints_raw_batch`) logs into `local.z3_assertions`, so
         // `fork()` and `SymContext::solver()`'s lazy rematerialization see
@@ -583,7 +576,16 @@ impl SymContext {
         // `unsat_core_assumed` (see `add_constraint_raw_assumed`'s doc
         // comment). Pushing after means any cold-start replay triggered by
         // `install_constraint` above only sees the *previous* z3_assertions
-        // state, not this constraint — no duplicate.
+        // state, not this constraint — no duplicate. The tracker is pushed
+        // with it for the same reason: the replay pairs each tracker with
+        // one logged copy of its constraint, and an earlier untracked copy
+        // must not take this tracker (angr-vmi2l.91).
+        let tracker_idx = {
+            let mut trackers = self.constraint_trackers.lock();
+            let i = trackers.len();
+            trackers.push((track_bool, constraint.clone()));
+            i
+        };
         {
             use z3::ast::Ast;
             let mut local = self.local_constraints.lock();

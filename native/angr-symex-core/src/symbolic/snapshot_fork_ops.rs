@@ -623,7 +623,9 @@ impl SymContext {
             sat_cache: Cell::new(self.sat_cache.get()),
             model_cache: RefCell::new(self.model_cache.borrow().clone()),
             alt_model_cache: RefCell::new(self.alt_model_cache.borrow().clone()),
-            constraint_trackers: Mutex::new(Vec::new()),
+            // angr-vmi2l.91: the child replays the parent's tracked
+            // constraints tracked and continues its index space.
+            constraint_trackers: Mutex::new(self.constraint_trackers.lock().clone()),
             timeout_ms: AtomicU32::new(self.timeout_ms.load(Ordering::SeqCst)),
             // angr-op0dn.10.2: a whole lineage stays in one witness-selection
             // mode — a child forked from a deterministic parent is deterministic.

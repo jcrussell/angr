@@ -590,6 +590,33 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     );
 }
 
+/// angr-vmi2l.91: a fork keeps the parent's trackers. The child's cold
+/// start replays the parent's tracked constraint tracked, so it shows up in
+/// the child's core, and the child's own tracked add continues the parent's
+/// index space instead of restarting at 0. A conflict between the parent's
+/// tracked constraint and a child's untracked one reports the parent's index.
+#[test]
+fn test_fork_keeps_tracked_constraints_in_unsat_core() {
+    let parent = SymContext::new();
+    let x = RustBV::symbol("test_fork_tracked_x", 8);
+    let c1 = x.eq(&RustBV::concrete(1, 8)).to_z3_bool().unwrap();
+    assert_eq!(parent.add_constraint_tracked_indexed(c1), 0);
+
+    let child = parent.fork();
+    let c2 = x.eq(&RustBV::concrete(2, 8)).to_z3_bool().unwrap();
+    assert_eq!(child.add_constraint_tracked_indexed(c2), 1);
+    assert!(!child.is_sat());
+    let mut core = child.unsat_core();
+    core.sort_unstable();
+    assert_eq!(core, vec![0, 1]);
+
+    let untracked = parent.fork();
+    let c3 = x.eq(&RustBV::concrete(3, 8)).to_z3_bool().unwrap();
+    untracked.add_constraint_raw(c3);
+    assert!(!untracked.is_sat());
+    assert_eq!(untracked.unsat_core(), vec![0]);
+}
+
 /// angr-v5a5 slice 4c.2b: with a lineage attached,
 /// `add_constraint_tracked_indexed` mints a fresh `ScopeFrame`,
 /// appends it to `scope_path`, and routes the assert through the

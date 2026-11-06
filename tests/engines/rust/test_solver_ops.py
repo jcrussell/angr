@@ -314,6 +314,30 @@ class TestSolverOperations:
         # Parent is untouched by the child's extra constraint.
         assert ctx.satisfiable() is True
 
+    def test_fork_keeps_tracker_indices_in_unsat_core(self):
+        """A fork's unsat_core() reports the parent's tracked constraints,
+        and the child's own tracked adds continue the parent's indices
+        (angr-vmi2l.91). The fork used to drop the trackers and replay the
+        parent's constraints untracked, so the core missed them and the
+        child's first tracked add collided with the parent's index 0.
+        """
+        from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        assert ctx.add_constraint_tracked_ast(x == 1) == 0
+
+        child = ctx.fork()
+        assert child.add_constraint_tracked_ast(x == 2) == 1
+        assert child.satisfiable() is False
+        assert sorted(child.unsat_core()) == [0, 1]
+
+        other = ctx.fork()
+        other.add_constraint_ast(x == 3)
+        assert other.satisfiable() is False
+        assert other.unsat_core() == [0]
+
     def test_unsat_core_empty_when_untracked(self):
         """unsat_core() returns [] when constraints were added via
         add_constraint_ast() (the untracked fast path), even on UNSAT.

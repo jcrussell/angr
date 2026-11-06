@@ -554,7 +554,9 @@ impl RustSolverContext {
 
     /// Fork the solver context.
     ///
-    /// Returns a new RustSolverContext with the same constraints.
+    /// Returns a new RustSolverContext with the same constraints. Tracked
+    /// constraints stay tracked: the child's `unsat_core` reports the
+    /// parent's indices, and its own tracked adds continue after them.
     /// With z3-rs 0.19+, all solvers on the same thread share the
     /// thread-local Z3 context.
     pub fn fork(&self) -> Self {
