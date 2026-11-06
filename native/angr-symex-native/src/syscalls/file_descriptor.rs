@@ -13,7 +13,8 @@
 //!   (success).
 //! * `F_GETFL` (3): file status flags. Reads the `FdFlags` (RO/WO/RW)
 //!   from the Rust `FileSystem` and returns the matching `O_RDONLY` /
-//!   `O_WRONLY` / `O_RDWR` value. `-EBADF` when the fd is not open.
+//!   `O_WRONLY` / `O_RDWR` value. An fd not open here falls back to
+//!   Python (see [`require_open_fd`]).
 //! * `F_SETFL` (4): set file status flags. Ignored; returns `0`
 //!   (success). The new flags are not stored — `FdFlags` only models
 //!   the access mode, not the per-syscall blocking / append bits.
@@ -83,9 +84,9 @@
 //! remaining divergence is Python's multi-gap scan quirk — see
 //! `FileSystem::dup`'s doc comment.
 //!
-//! Error returns use the kernel ABI: `-EBADF` (negative errno) on
-//! invalid `oldfd` and on out-of-range `newfd` for `dup2`/`dup3`
-//! (matches Python's 4096-fd ulimits ceiling).
+//! An `oldfd` not open in the Rust `FileSystem` falls back to Python (see
+//! [`require_open_fd`]). Out-of-range `newfd` for `dup2`/`dup3` returns
+//! `-EBADF` in the kernel ABI (matches Python's 4096-fd ulimits ceiling).
 
 use super::{
     NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
@@ -108,7 +109,7 @@ const NEWFD_LIMIT: u64 = MAX_FD as u64;
 
 /// Shared `dup2`/`dup3` body. Mirrors angr's Python `dup2`/`dup3`
 /// (`procedures/posix/dup.py`) check ordering **exactly** for parity:
-///   1. `oldfd` not open        → `-EBADF`
+///   1. `oldfd` not open        → `Err` (Python answers, see [`require_open_fd`])
 ///   2. `oldfd == newfd`        → return `newfd` (no-op success, *before* the
 ///      range check — so `dup2(fd, fd)` on an open high fd succeeds even when
 ///      `fd >= NEWFD_LIMIT`, matching Python)
@@ -120,20 +121,39 @@ const NEWFD_LIMIT: u64 = MAX_FD as u64;
 /// targets Python-engine parity, so we deliberately match Python (no EINVAL)
 /// here; adding EINVAL would diverge from the reference engine
 /// (angr-1yge9.7).
-fn dup2_body(state: &mut RustSimState, oldfd: u64, newfd: u64) -> u64 {
-    if !state.file_system().is_open(oldfd as u32) {
-        return NEG_EBADF;
-    }
+fn dup2_body(
+    state: &mut RustSimState,
+    name: &str,
+    oldfd: u64,
+    newfd: u64,
+) -> Result<u64, SyscallError> {
+    require_open_fd(state, name, oldfd)?;
     if oldfd == newfd {
-        return newfd;
+        return Ok(newfd);
     }
     if newfd >= NEWFD_LIMIT {
-        return NEG_EBADF;
+        return Ok(NEG_EBADF);
     }
-    match state.file_system().dup2(oldfd as u32, newfd as u32) {
+    Ok(match state.file_system().dup2(oldfd as u32, newfd as u32) {
         Some(fd) => fd as u64,
         None => NEG_EBADF,
+    })
+}
+
+/// `Err` when `fd` is not open in the Rust `FileSystem`, so Python answers.
+/// The Rust fd table is not seeded from Python's `posix.fd`: an fd the
+/// harness opened before the run, or one a bounced proc opened on a
+/// symbolic file, lives only in Python, which knows whether it is open. An
+/// fd Rust minted and closed was never mirrored into Python either, so
+/// Python's `-EBADF` for it is still right. Same rule as the native
+/// `read`, `close` and `fstat` (angr-vmi2l.137).
+fn require_open_fd(state: &RustSimState, name: &str, fd: u64) -> Result<(), SyscallError> {
+    if state.file_system_ref().is_open(fd as u32) {
+        return Ok(());
     }
+    Err(SyscallError::Other(format!(
+        "{name} of fd={fd} (not open in Rust FileSystem) falls back to Python"
+    )))
 }
 
 // fcntl / ioctl `cmd` constants — uniform across Linux ABIs we support.
@@ -180,9 +200,10 @@ fn fcntl_dispatch(
     match cmd {
         F_GETFD | F_SETFD => Ok(SyscallOutcome::Continue { ret: 0 }),
         F_GETFL => {
+            require_open_fd(state, stub_name, fd)?;
             let ret = match state.file_system_ref().fd_info(fd as u32) {
-                Some((_, _, flags, _, is_open)) if is_open => flags as u64,
-                _ => NEG_EBADF,
+                Some((_, _, flags, _, _)) => flags as u64,
+                None => NEG_EBADF,
             };
             Ok(SyscallOutcome::Continue { ret })
         }
@@ -273,7 +294,7 @@ stub_syscall!(NativePipeSyscall, "pipe", "syscall_stub_pipe", 1);
 stub_syscall!(NativePipe2Syscall, "pipe2", "syscall_stub_pipe2", 2);
 
 /// `dup(oldfd) → newfd` — allocate a fresh fd that aliases `oldfd`.
-/// Returns `-EBADF` if `oldfd` is not open.
+/// An `oldfd` not open here falls back to Python ([`require_open_fd`]).
 pub(crate) struct NativeDupSyscall;
 
 impl NativeSyscall for NativeDupSyscall {
@@ -291,6 +312,7 @@ impl NativeSyscall for NativeDupSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
+        require_open_fd(state, "dup", oldfd)?;
         let ret = match state.file_system().dup(oldfd as u32) {
             Some(newfd) => newfd as u64,
             None => NEG_EBADF,
@@ -301,7 +323,7 @@ impl NativeSyscall for NativeDupSyscall {
 
 /// `dup2(oldfd, newfd) → newfd` — make `newfd` an alias of `oldfd`,
 /// closing the previous `newfd` if it was open. Returns `-EBADF` if
-/// `oldfd` is closed or `newfd` is out of range.
+/// `newfd` is out of range; an `oldfd` not open here falls back to Python.
 pub(crate) struct NativeDup2Syscall;
 
 impl NativeSyscall for NativeDup2Syscall {
@@ -320,7 +342,7 @@ impl NativeSyscall for NativeDup2Syscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
         let newfd = extract_concrete_arg(&args[1], "newfd")?;
-        let ret = dup2_body(state, oldfd, newfd);
+        let ret = dup2_body(state, "dup2", oldfd, newfd)?;
         Ok(SyscallOutcome::Continue { ret })
     }
 }
@@ -351,7 +373,7 @@ impl NativeSyscall for NativeDup3Syscall {
         // value is never read; accept any value (including symbolic)
         // without forcing concretization, same as fcntl_dispatch/ioctl.
         // Parity with Python `dup3` (no EINVAL for oldfd==newfd — see dup2_body).
-        let ret = dup2_body(state, oldfd, newfd);
+        let ret = dup2_body(state, "dup3", oldfd, newfd)?;
         Ok(SyscallOutcome::Continue { ret })
     }
 }

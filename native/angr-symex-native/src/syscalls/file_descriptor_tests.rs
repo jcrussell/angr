@@ -89,14 +89,13 @@ fn fcntl_dispatch_concrete_cmds_across_arches() {
                 other => panic!("{arch} {label} F_GETFL(1) expected Continue, got {other:?}"),
             }
 
-            // F_GETFL on closed fd → -EBADF.
-            let getfl_bad = handler
-                .call(&mut state, &[bv(99), bv(F_GETFL), bv(0)])
-                .unwrap();
-            match getfl_bad {
-                SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EBADF),
-                other => panic!("{arch} {label} F_GETFL(99) expected Continue, got {other:?}"),
-            }
+            // F_GETFL on an fd Rust does not hold → Python answers (it may
+            // be a harness-opened fd; angr-vmi2l.137).
+            let getfl_bad = handler.call(&mut state, &[bv(99), bv(F_GETFL), bv(0)]);
+            assert!(
+                matches!(getfl_bad, Err(SyscallError::Other(_))),
+                "{arch} {label} F_GETFL(99) must fall back, got {getfl_bad:?}"
+            );
 
             // F_GETFD / F_SETFD / F_SETFL all return 0 regardless of fd.
             for cmd in [F_GETFD, F_SETFD, F_SETFL] {
@@ -236,14 +235,12 @@ fn dup_handlers_allocate_and_alias_across_arches() {
         assert_eq!(newfd, 3, "{arch} dup(0) should allocate next_fd=3");
         assert!(state.file_system_ref().is_open(newfd as u32));
 
-        // dup of a never-opened fd returns -EBADF.
-        let bad = NativeDupSyscall
-            .call(&mut state, &[RustBV::concrete(99, bits)])
-            .unwrap();
-        match bad {
-            SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EBADF),
-            _ => panic!("{arch} dup(99): expected Continue"),
-        }
+        // dup of an fd Rust does not hold falls back to Python.
+        let bad = NativeDupSyscall.call(&mut state, &[RustBV::concrete(99, bits)]);
+        assert!(
+            matches!(bad, Err(SyscallError::Other(_))),
+            "{arch} dup(99) must fall back, got {bad:?}"
+        );
     }
 }
 
@@ -279,17 +276,13 @@ fn dup2_handler_covers_alias_collision_and_ebadf() {
         _ => panic!("dup2(0,0) expected Continue"),
     }
 
-    // dup2(99, 6) — oldfd never opened; returns -EBADF.
-    let bad_old = NativeDup2Syscall
-        .call(
-            &mut state,
-            &[RustBV::concrete(99, 64), RustBV::concrete(6, 64)],
-        )
-        .unwrap();
-    match bad_old {
-        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EBADF),
-        _ => panic!("dup2(99,6) expected Continue"),
-    }
+    // dup2(99, 6) — oldfd not held by Rust; falls back to Python.
+    let bad_old = NativeDup2Syscall.call(
+        &mut state,
+        &[RustBV::concrete(99, 64), RustBV::concrete(6, 64)],
+    );
+    assert!(matches!(bad_old, Err(SyscallError::Other(_))), "{bad_old:?}");
+    assert!(!state.file_system_ref().is_open(6));
 
     // dup2(0, 4096) — out-of-range newfd; returns -EBADF.
     let bad_new = NativeDup2Syscall
@@ -344,21 +337,16 @@ fn dup3_handler_ignores_flags_and_matches_dup2() {
         _ => panic!("dup3(0,8,O_CLOEXEC) expected Continue"),
     }
 
-    // dup3(99, 9, 0) — oldfd never opened; -EBADF.
-    let bad_old = NativeDup3Syscall
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(99, 64),
-                RustBV::concrete(9, 64),
-                RustBV::concrete(0, 64),
-            ],
-        )
-        .unwrap();
-    match bad_old {
-        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EBADF),
-        _ => panic!("dup3(99,9,0) expected Continue"),
-    }
+    // dup3(99, 9, 0) — oldfd not held by Rust; falls back to Python.
+    let bad_old = NativeDup3Syscall.call(
+        &mut state,
+        &[
+            RustBV::concrete(99, 64),
+            RustBV::concrete(9, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(matches!(bad_old, Err(SyscallError::Other(_))), "{bad_old:?}");
 
     // dup3(0, 5000, 0) — out-of-range newfd; -EBADF.
     let bad_new = NativeDup3Syscall
