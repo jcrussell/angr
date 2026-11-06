@@ -7203,18 +7203,21 @@ class RustExplorationManager(
         ``_step_round_*`` staging stashes excluded) plus the standard names, and reads a missing name as ``[]``
         (angr-9ij0m).
         """
+        result = defaultdict(list)
+        for name in self._stash_names():
+            result[name] = self._get_stash_states(name)
+        return result
+
+    def _stash_names(self) -> dict[str, None]:
+        """The stash names this manager answers for, in order: the standard ones (a name Rust has not created
+        yet reads as empty, as ``SimulationManager``'s integral stashes do) plus every non-staging stash Rust
+        holds, empty ones included. ``get_state_ids`` reads any other name as empty, so this set, not Rust,
+        decides whether a name is a stash (angr-vmi2l.238)."""
         names = dict.fromkeys(
-            ["active", "found", "avoid", "deadended", "errored", "unconstrained", "pruned", "stashed"]
+            ["active", "found", "avoid", "deadended", "errored", "unconstrained", "pruned", "stashed", "unsat"]
         )
         names.update(dict.fromkeys(n for n in self._rust_mgr.stash_counts() if not n.startswith("_")))
-        result = defaultdict(list)
-        for name in names:
-            try:
-                result[name] = self._get_stash_states(name)
-            except (RuntimeError, KeyError):
-                # cat-(a) EXPECTED CONTROL FLOW: a standard name Rust has not created yet reads as empty.
-                result[name] = []
-        return result
+        return names
 
     @property
     def one_active(self):
@@ -7751,11 +7754,8 @@ class RustExplorationManager(
                 states = []
             return mulpyplexer.MP(list(states))
 
-        try:
-            self._rust_mgr.get_state_ids(name)
-        except (RuntimeError, KeyError):
-            # cat-(a) EXPECTED CONTROL FLOW: stash name unknown to Rust;
-            # raise AttributeError so getattr-style probes return the default.
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        # A stash the caller named (explore(find_stash=)) reads as states, as a SimulationManager's does.
+        # A typo or feature probe raises, as SimulationManager._fetch_states does, so hasattr / getattr
+        # defaults work; a stash the caller named (explore(find_stash=)) reads as states (angr-vmi2l.238).
+        if name not in self._stash_names():
+            raise AttributeError(f"No such stash: {name}")
         return self._get_stash_states(name)

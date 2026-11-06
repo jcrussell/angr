@@ -1138,7 +1138,7 @@ class TestMultiArchSupport:
         assert len(mgr.found) >= 1, f"concrete x0==42 did not reach found; counts={mgr.stash_counts()}"
         # The key assertion: the concretely-infeasible avoid branch must not
         # have been forked into existence.
-        assert len(mgr.avoided) == 0, (
+        assert len(mgr.avoid) == 0, (
             f"spurious fork: concrete-flag B.EQ created the infeasible avoid branch; counts={mgr.stash_counts()}"
         )
 

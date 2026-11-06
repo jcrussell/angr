@@ -2311,6 +2311,42 @@ class TestManagerCopy:
         assert [s.addr for s in simgr.active] == before
 
 
+class TestManagerStashAttributes:
+    """A stash attribute reads as SimulationManager's does: unknown names raise (angr-vmi2l.238)."""
+
+    @pytest.fixture
+    def managers(self, fauxware_project):
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        sm = angr.SimulationManager(fauxware_project, active_states=[fauxware_project.factory.entry_state()])
+        return mgr, sm
+
+    @pytest.mark.parametrize("name", ["actve", "win", "completion_mode", "complete"])
+    def test_unknown_name_raises_like_python(self, managers, name):
+        for m in managers:
+            if name in ("completion_mode", "complete") and m is managers[1]:
+                continue  # real SimulationManager members: probes the Rust manager must answer False
+            with pytest.raises(AttributeError, match=f"No such stash: {name}"):
+                getattr(m, name)
+            assert getattr(m, name, "DEFAULT") == "DEFAULT"
+            assert not hasattr(m, name)
+
+    def test_standard_and_custom_stashes_read_as_states(self, managers):
+        mgr, sm = managers
+        for m in managers:
+            assert m.stashed == [] and m.unsat == []
+            m.run(until=lambda s: len(s.active) > 1)
+            m.move("active", "parked")
+        # The engines split blocks differently, so the forked addresses differ; the shape must not.
+        assert len(mgr.parked) == len(sm.parked) == 2
+        assert all(isinstance(s.addr, int) for s in mgr.parked)
+        assert mgr.one_parked is mgr.parked[0]
+        # An emptied custom stash still exists on both engines.
+        for m in managers:
+            m.move("parked", "active")
+            assert m.parked == []
+            assert m.mp_parked.mp_items == []
+
+
 class TestRustEdgeCases:
     """Edge-case tests for Rust state and solver."""
 
